@@ -147,7 +147,7 @@ fn replay_witness<G: Workload>(game: &G, run: &G::Run, input: &Input<G::Action>)
             aggregate,
             &[*action],
             input.actions.len(),
-            RetentionPolicy::AdmitAlive,
+            RetentionPolicy::Unprobed,
         )?;
         let [last] = result.actions.as_slice() else {
             return Err("witness did not execute its next action".into());
@@ -201,7 +201,7 @@ where
         run: run.clone(),
         suffix: suffix_shape_from_identifier(&request.suffix)?,
         mixture: draw_mixture_from_identifier(&request.mixture)?,
-        retention: RetentionPolicy::AdmitAlive,
+        retention: RetentionPolicy::Unprobed,
         selector: selector_policy_from_identifier(
             &request.selector,
             G::Key::groups().saturating_sub(2),
@@ -249,7 +249,7 @@ where
         &mut stream,
         Some(&mut progress),
         CampaignExecutionOptions {
-            frame_budget: request.frames,
+            work_budget: request.frames,
             result_buffering,
         },
     )?;
@@ -323,21 +323,21 @@ where
         }
     }
     let verification_seconds = verify_started.elapsed().as_secs_f64();
-    let solved = victory_within_budget(report.frames_to_first_victory, request.frames);
+    let solved = victory_within_budget(report.work_to_first_victory, request.frames);
     write_json(
         &out.join("result.json"),
         &json!({"format":"nes-eval-result-v1", "status":"complete", "solved":solved,
             "victory_observed":report.victories>0,
-            "frame_budget_overshoot":request.frames.map(|limit| report.frames_emulated.saturating_sub(limit)),
-            "executions": report.executions_completed, "frames_emulated":report.frames_emulated,
-            "frames_to_first_victory":report.frames_to_first_victory, "executions_to_first_victory":report.executions_to_first_victory,
+            "frame_budget_overshoot":request.frames.map(|limit| report.execution_work.saturating_sub(limit)),
+            "executions": report.executions_completed, "frames_emulated":report.execution_work,
+            "frames_to_first_victory":report.work_to_first_victory, "executions_to_first_victory":report.executions_to_first_victory,
             "preparation_seconds":preparation_seconds, "search_seconds":search_seconds, "executions_per_second":report.executions_completed as f64 / search_seconds,
-            "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": report.frames_emulated as f64 / search_seconds,
+            "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": report.execution_work as f64 / search_seconds,
             "export_seconds":export_seconds, "verification_seconds":verification_seconds,
             "witness_replays":2, "campaign_replay":full,
             "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
             "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full,
-            "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.frames_emulated >= limit) {"frame_limit"} else {"wall_limit"}
+            "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.execution_work >= limit) {"frame_limit"} else {"wall_limit"}
         }),
     )?;
     phase(out, "done", started)

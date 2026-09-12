@@ -324,8 +324,8 @@ fn execute_suffix(
                 .snapshot()
                 .ok_or("failed to snapshot Mega Man 2 suffix")?;
             let viable = match retention {
-                RetentionPolicy::ProbeAtAdmission45 => admission_is_viable(target, &snapshot)?,
-                RetentionPolicy::AdmitAlive => true,
+                RetentionPolicy::ProbeAtAdmission => admission_is_viable(target, &snapshot)?,
+                RetentionPolicy::Unprobed => true,
             };
             Some(CampaignCandidate {
                 key: archive_key(target.mechanical_state()),
@@ -406,8 +406,14 @@ impl Reporting for Mm2Game {
         SNAPSHOT_CHECKPOINT_FORMAT
     }
 
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(&self.rom))
+    }
+    fn action_cost_unit(&self) -> &'static str {
+        "frames"
+    }
+    fn execution_work_unit(&self) -> &'static str {
+        "frames"
     }
 
     fn result_sha256(&self, result: &Mm2CampaignJobResult) -> Result<String, Box<dyn Error>> {
@@ -442,7 +448,7 @@ impl InputPolicy for Mm2Game {
         MAX_MM2_ACTIONS
     }
 
-    fn longest_action_time(&self) -> u64 {
+    fn max_action_cost(&self) -> u64 {
         u64::from(crate::mm2::archive::LONGEST_HOLD_FRAMES)
     }
 
@@ -564,7 +570,7 @@ impl InputPolicy for Mm2Game {
 }
 
 impl TargetExecution for Mm2Game {
-    fn action_time_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 
@@ -595,8 +601,8 @@ impl TargetExecution for Mm2Game {
         target.restore(snapshot)
     }
 
-    fn frames_clocked(&self, target: &Mm2Target) -> u64 {
-        target.frames_clocked()
+    fn execution_work(&self, target: &Mm2Target) -> u64 {
+        target.execution_work()
     }
 
     fn apply_action(

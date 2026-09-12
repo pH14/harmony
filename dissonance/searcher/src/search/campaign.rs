@@ -68,7 +68,7 @@ impl ResultBuffering {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CampaignExecutionOptions {
-    pub frame_budget: Option<u64>,
+    pub work_budget: Option<u64>,
     pub result_buffering: ResultBuffering,
 }
 
@@ -159,7 +159,9 @@ pub trait Reporting: CampaignTypes {
     }
     fn stream_format(&self) -> &'static str;
     fn checkpoint_format(&self) -> &'static str;
-    fn image_sha256(&self) -> String;
+    fn workload_identity_sha256(&self) -> String;
+    fn action_cost_unit(&self) -> &'static str;
+    fn execution_work_unit(&self) -> &'static str;
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
     fn archive_report(
         &self,
@@ -170,7 +172,7 @@ pub trait Reporting: CampaignTypes {
 
 pub trait InputPolicy: CampaignTypes {
     fn max_action_limit(&self) -> usize;
-    fn longest_action_time(&self) -> u64;
+    fn max_action_cost(&self) -> u64;
     fn policies(&self, run: &Self::Run) -> WorkloadPolicies;
     fn resolve_recorded(&self, policies: &WorkloadPolicies) -> Result<Self::Run, Box<dyn Error>>;
     fn draw_state_memory_reserve_bytes(&self, run: &Self::Run, max_actions: usize) -> usize;
@@ -243,8 +245,8 @@ pub trait TargetExecution: CampaignTypes {
         target: &mut Self::Target,
         snapshot: &Self::Snapshot,
     ) -> Result<(), Box<dyn Error>>;
-    fn frames_clocked(&self, target: &Self::Target) -> u64;
-    fn action_time_fn(&self) -> fn(&Self::Action) -> u64;
+    fn execution_work(&self, target: &Self::Target) -> u64;
+    fn action_cost_fn(&self) -> fn(&Self::Action) -> u64;
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
     fn apply_action(
         &self,
@@ -465,7 +467,7 @@ pub struct CampaignStreamHeader<T> {
     pub resume_actions: usize,
     pub execution_budget: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub frame_budget: Option<u64>,
+    pub work_budget: Option<u64>,
     pub wall_budget_seconds: Option<u64>,
     pub action_limit: usize,
     pub archive_entry_limit: usize,
@@ -482,7 +484,9 @@ pub struct CampaignStreamHeader<T> {
     pub parent_scheduler: String,
     pub executor_mode: String,
     pub worker_seed_derivation: String,
-    pub rom_sha256: String,
+    pub workload_identity_sha256: String,
+    pub action_cost_unit: String,
+    pub execution_work_unit: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -513,7 +517,7 @@ pub struct CampaignJobRecord<C> {
     pub worker: u32,
     pub parent_id: u64,
     pub mutation_seed: u64,
-    pub frames: u64,
+    pub execution_work: u64,
     pub result_sha256: String,
     pub decisions: Vec<CampaignAdmissionDecision>,
     pub mixture_weight: u8,
@@ -578,7 +582,7 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub origin: CampaignOriginRecord,
     pub execution_budget: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub frame_budget: Option<u64>,
+    pub work_budget: Option<u64>,
     pub executions_completed: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executions_to_first_victory: Option<u64>,
@@ -596,19 +600,21 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub parent_scheduler: String,
     pub executor_mode: String,
     pub worker_seed_derivation: String,
-    pub rom_sha256: String,
-    pub bootstrap_frames: u64,
+    pub workload_identity_sha256: String,
+    pub action_cost_unit: String,
+    pub execution_work_unit: String,
+    pub bootstrap_execution_work: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tree_import: Option<TreeImportCounts>,
-    pub frames_emulated: u64,
+    pub execution_work: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub frames_to_first_victory: Option<u64>,
+    pub work_to_first_victory: Option<u64>,
     pub duplicates_skipped: u64,
     pub probe_refused: u64,
     pub victories: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub victory_input: Option<Input<A>>,
-    pub replacement_frames_displaced: u64,
+    pub replacement_cost_displaced: u64,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub snapshot_evictions: u64,
     #[serde(default, skip_serializing_if = "is_zero_usize")]
@@ -844,7 +850,7 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignJobResult<G> {
 
 fn verify_selector_annotation(draw: &SelectorDraw) -> Result<(), Box<dyn Error>> {
     match (draw.path, draw.concentration) {
-        (SelectorPath::GroupWalk, None) => {
+        (SelectorPath::HierarchyWalk, None) => {
             Err("cell draw is missing its concentration record".into())
         }
         (SelectorPath::Uniform | SelectorPath::Continuation, Some(_)) => {
@@ -889,7 +895,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         archive_entry_limit: usize,
         memory_budget_mib: Option<usize>,
     ) -> Self {
-        let mut archive = Archive::new(workload.action_time_fn());
+        let mut archive = Archive::new(workload.action_cost_fn());
         archive.max_entries = archive_entry_limit;
         if let Some(memory_budget_mib) = memory_budget_mib {
             let total = memory_budget_mib.saturating_mul(1024 * 1024);
@@ -1357,7 +1363,7 @@ fn stream_header<G: Workload>(
         resume_input_sha256: origin.resume_input_sha256.clone(),
         resume_actions: origin.resume_actions,
         execution_budget: config.execution_budget,
-        frame_budget: None,
+        work_budget: None,
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
         action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
@@ -1376,7 +1382,9 @@ fn stream_header<G: Workload>(
         executor_mode: "snapshot_resume_archive".to_owned(),
         worker_seed_derivation: "sha256(campaign_seed_le || worker_index_le)[0..8] as u64 le"
             .to_owned(),
-        rom_sha256: workload.image_sha256(),
+        workload_identity_sha256: workload.workload_identity_sha256(),
+        action_cost_unit: workload.action_cost_unit().to_owned(),
+        execution_work_unit: workload.execution_work_unit().to_owned(),
     }
 }
 
@@ -1408,15 +1416,21 @@ impl<'a> StreamWriter<'a> {
 }
 
 struct CampaignCounters {
-    bootstrap_frames: u64,
+    bootstrap_execution_work: u64,
     tree_import: Option<TreeImportCounts>,
-    job_frames: u64,
-    frames_to_first_victory: Option<u64>,
+    job_execution_work: u64,
+    work_to_first_victory: Option<u64>,
     executions_to_first_victory: Option<u64>,
     duplicates_skipped: u64,
     draw_state_memory_bytes: usize,
     jobs_per_worker: Vec<u64>,
     skips_per_worker: Vec<u64>,
+}
+
+fn execution_work_delta(before: u64, after: u64, scope: &str) -> Result<u64, Box<dyn Error>> {
+    after
+        .checked_sub(before)
+        .ok_or_else(|| format!("{scope} execution-work counter rewound").into())
 }
 
 #[derive(Default, Serialize)]
@@ -1433,32 +1447,32 @@ struct LiveCoordinatorProfile {
     selections: u64,
     replay_jobs: u64,
     replay_actions: u64,
-    replay_time: u64,
+    replay_cost: u64,
     suffix_actions: u64,
-    suffix_time: u64,
+    suffix_cost: u64,
 }
 
 impl LiveCoordinatorProfile {
     fn note_dispatch<G: Workload + ?Sized>(
         &mut self,
         spec: &JobSpec<G>,
-        time: fn(&G::Action) -> u64,
+        cost: fn(&G::Action) -> u64,
     ) {
         if !self.enabled {
             return;
         }
-        let total = |actions: &[G::Action]| actions.iter().map(time).sum::<u64>();
+        let total = |actions: &[G::Action]| actions.iter().map(cost).sum::<u64>();
         if !spec.replay.is_empty() {
             self.replay_jobs = self.replay_jobs.saturating_add(1);
         }
         self.replay_actions = self
             .replay_actions
             .saturating_add(u64::try_from(spec.replay.len()).unwrap_or(u64::MAX));
-        self.replay_time = self.replay_time.saturating_add(total(&spec.replay));
+        self.replay_cost = self.replay_cost.saturating_add(total(&spec.replay));
         self.suffix_actions = self
             .suffix_actions
             .saturating_add(u64::try_from(spec.suffix.len()).unwrap_or(u64::MAX));
-        self.suffix_time = self.suffix_time.saturating_add(total(&spec.suffix));
+        self.suffix_cost = self.suffix_cost.saturating_add(total(&spec.suffix));
     }
 }
 
@@ -1491,19 +1505,21 @@ fn profile_elapsed(started: Option<Instant>) -> u128 {
 
 impl CampaignCounters {
     fn note_first_victory(&mut self, sequence: u64) {
-        if self.frames_to_first_victory.is_none() {
-            self.frames_to_first_victory =
-                Some(self.bootstrap_frames.saturating_add(self.job_frames));
+        if self.work_to_first_victory.is_none() {
+            self.work_to_first_victory = Some(
+                self.bootstrap_execution_work
+                    .saturating_add(self.job_execution_work),
+            );
             self.executions_to_first_victory = Some(sequence);
         }
     }
 
     fn new(workers: u32) -> Self {
         Self {
-            bootstrap_frames: 0,
+            bootstrap_execution_work: 0,
             tree_import: None,
-            job_frames: 0,
-            frames_to_first_victory: None,
+            job_execution_work: 0,
+            work_to_first_victory: None,
             executions_to_first_victory: None,
             duplicates_skipped: 0,
             draw_state_memory_bytes: 0,
@@ -1526,7 +1542,7 @@ fn build_report<G: Workload>(
     let probe_refused = core.probe_refused;
     let victories = core.victories;
     let victory_input = core.victory_input.clone();
-    let replacement_frames_displaced = core.archive.replacement_time_displaced();
+    let replacement_cost_displaced = core.archive.replacement_cost_displaced();
     let snapshot_evictions = core.archive.snapshot_evictions();
     let resident_snapshot_bytes = core.archive.resident_snapshot_bytes();
     let history_memory_bytes = core.archive.history_memory_bytes();
@@ -1564,7 +1580,7 @@ fn build_report<G: Workload>(
         schedule_identity: CAMPAIGN_SCHEDULE_IDENTITY.to_owned(),
         origin,
         execution_budget: header.execution_budget,
-        frame_budget: header.frame_budget,
+        work_budget: header.work_budget,
         executions_completed,
         executions_to_first_victory: counters.executions_to_first_victory,
         wall_budget_seconds: header.wall_budget_seconds,
@@ -1579,18 +1595,20 @@ fn build_report<G: Workload>(
         parent_scheduler: header.parent_scheduler.clone(),
         executor_mode: header.executor_mode.clone(),
         worker_seed_derivation: header.worker_seed_derivation.clone(),
-        rom_sha256: header.rom_sha256.clone(),
-        bootstrap_frames: counters.bootstrap_frames,
+        workload_identity_sha256: header.workload_identity_sha256.clone(),
+        action_cost_unit: header.action_cost_unit.clone(),
+        execution_work_unit: header.execution_work_unit.clone(),
+        bootstrap_execution_work: counters.bootstrap_execution_work,
         tree_import: counters.tree_import,
-        frames_emulated: counters
-            .bootstrap_frames
-            .saturating_add(counters.job_frames),
-        frames_to_first_victory: counters.frames_to_first_victory,
+        execution_work: counters
+            .bootstrap_execution_work
+            .saturating_add(counters.job_execution_work),
+        work_to_first_victory: counters.work_to_first_victory,
         duplicates_skipped: counters.duplicates_skipped,
         probe_refused,
         victories,
         victory_input,
-        replacement_frames_displaced,
+        replacement_cost_displaced,
         snapshot_evictions,
         resident_snapshot_bytes,
         history_memory_bytes,
@@ -1674,7 +1692,7 @@ struct CompletedJob<G: Workload + ?Sized> {
     physical_worker: u32,
     pending: PendingJob<G>,
     result: CampaignJobResult<G>,
-    frames: u64,
+    execution_work: u64,
     result_sha256: String,
 }
 
@@ -1725,10 +1743,10 @@ pub struct CampaignProgressRecord<K> {
     pub unix_time: u64,
     pub executions: u64,
     #[serde(default)]
-    pub frames_emulated: u64,
+    pub execution_work: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deepest_key: Option<K>,
-    pub cheapest_time_in_group: u64,
+    pub cheapest_cost_in_group: u64,
     pub retained: u64,
     #[serde(default)]
     pub active_entries: usize,
@@ -1802,11 +1820,11 @@ fn write_live_progress<G: Workload>(
             .map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX)),
         unix_time,
         executions: sequence,
-        frames_emulated: counters
-            .bootstrap_frames
-            .saturating_add(counters.job_frames),
+        execution_work: counters
+            .bootstrap_execution_work
+            .saturating_add(counters.job_execution_work),
         deepest_key,
-        cheapest_time_in_group: cheapest,
+        cheapest_cost_in_group: cheapest,
         retained,
         active_entries: core.archive.active_count(),
         resident_snapshots: core.archive.resident_snapshot_count(),
@@ -1905,30 +1923,13 @@ pub fn run_campaign_checkpointed<G: Workload>(
 where
     G::ArchiveReport: Serialize,
 {
-    run_campaign_checkpointed_with_frame_budget(workload, config, origin, stream, progress, None)
-}
-
-pub fn run_campaign_checkpointed_with_frame_budget<G: Workload>(
-    workload: &G,
-    config: &CampaignConfig<G>,
-    origin: &CampaignOrigin<G>,
-    stream: &mut dyn Write,
-    progress: Option<&mut dyn Write>,
-    frame_budget: Option<u64>,
-) -> Result<CampaignOutcome<G>, Box<dyn Error>>
-where
-    G::ArchiveReport: Serialize,
-{
     run_campaign_checkpointed_with_options(
         workload,
         config,
         origin,
         stream,
         progress,
-        CampaignExecutionOptions {
-            frame_budget,
-            ..CampaignExecutionOptions::default()
-        },
+        CampaignExecutionOptions::default(),
     )
 }
 
@@ -1944,10 +1945,10 @@ pub fn run_campaign_checkpointed_with_options<G: Workload>(
 where
     G::ArchiveReport: Serialize,
 {
-    let frame_budget = options.frame_budget;
+    let work_budget = options.work_budget;
     let result_limit = options.result_buffering.capacity();
-    if frame_budget == Some(0) {
-        return Err("frame budget must be nonzero".into());
+    if work_budget == Some(0) {
+        return Err("work budget must be nonzero".into());
     }
     if config.workers == 0 {
         return Err("campaign mode requires at least one worker".into());
@@ -1988,7 +1989,7 @@ where
         return Err("initial draw state exceeds its deterministic memory reserve".into());
     }
     let mut header = stream_header(workload, config, &origin_record, draw_header);
-    header.frame_budget = frame_budget;
+    header.work_budget = work_budget;
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
 
@@ -2006,7 +2007,7 @@ where
     let mut bootstrap_target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the bootstrap target: {error}").into()
     })?;
-    let frames_before = workload.frames_clocked(&bootstrap_target);
+    let work_before = workload.execution_work(&bootstrap_target);
     counters.tree_import = bootstrap_core(
         workload,
         &config.run,
@@ -2014,9 +2015,11 @@ where
         &mut bootstrap_target,
         origin,
     )?;
-    counters.bootstrap_frames = workload
-        .frames_clocked(&bootstrap_target)
-        .saturating_sub(frames_before);
+    counters.bootstrap_execution_work = execution_work_delta(
+        work_before,
+        workload.execution_work(&bootstrap_target),
+        "bootstrap",
+    )?;
     drop(bootstrap_target);
     let bootstrap_memory_bytes = core
         .archive
@@ -2042,8 +2045,8 @@ where
     let mut reserved = 0_u64;
     let mut coordinator_profile =
         live_coordinator_profile(std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some());
-    let action_time = workload.action_time_fn();
-    let longest_action_time = workload.longest_action_time();
+    let action_cost = workload.action_cost_fn();
+    let max_action_cost = workload.max_action_cost();
 
     let max_actions = config.action_limit;
     let retention = config.retention;
@@ -2052,7 +2055,7 @@ where
         |_| workload.new_target(),
         |target, spec: JobSpec<G>| {
             let reservation = spec.reservation;
-            let frames_before = workload.frames_clocked(target);
+            let work_before = workload.execution_work(target);
             workload
                 .execute_job(
                     &config.run,
@@ -2069,14 +2072,12 @@ where
                     let result_sha256 = workload
                         .result_sha256(&result)
                         .map_err(|error| error.to_string())?;
-                    Ok((
-                        reservation,
-                        result,
-                        workload
-                            .frames_clocked(target)
-                            .saturating_sub(frames_before),
-                        result_sha256,
-                    ))
+                    let execution_work = execution_work_delta(
+                        work_before,
+                        workload.execution_work(target),
+                        "worker",
+                    )?;
+                    Ok((reservation, result, execution_work, result_sha256))
                 })
                 .map_err(|error| error.to_string())
         },
@@ -2090,10 +2091,10 @@ where
                           worker: u32|
              -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
                 if *reserved >= config.execution_budget
-                    || frame_budget.is_some_and(|budget| {
+                    || work_budget.is_some_and(|budget| {
                         counters
-                            .bootstrap_frames
-                            .saturating_add(counters.job_frames)
+                            .bootstrap_execution_work
+                            .saturating_add(counters.job_execution_work)
                             >= budget
                     })
                     || stop_reservations_after_victory(
@@ -2126,7 +2127,7 @@ where
                         let mut suffix = continuation.actions;
                         config
                             .suffix
-                            .bound_time(&mut suffix, action_time, longest_action_time);
+                            .bound_cost(&mut suffix, action_cost, max_action_cost);
                         if core.all_prefixes_archived(parent_index, &suffix) {
                             continue;
                         }
@@ -2248,7 +2249,7 @@ where
                     };
                     config
                         .suffix
-                        .bound_time(&mut suffix, action_time, longest_action_time);
+                        .bound_cost(&mut suffix, action_cost, max_action_cost);
                     let all_prefixes_archived = consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                         && core.all_prefixes_archived(parent_index, &suffix);
                     if all_prefixes_archived {
@@ -2328,7 +2329,7 @@ where
                 let Some((mut spec, pending_job)) = selected else {
                     break;
                 };
-                coordinator_profile.note_dispatch(&spec, action_time);
+                coordinator_profile.note_dispatch(&spec, action_cost);
                 let reservation = usize::try_from(reserved.saturating_sub(1))?;
                 spec.reservation = reservation;
                 if pending.insert(reservation, pending_job).is_some() {
@@ -2376,7 +2377,7 @@ where
                     *queued = queued
                         .checked_sub(1)
                         .ok_or("campaign worker replied without queued work")?;
-                    let (reservation, result, frames, result_sha256) = outcome;
+                    let (reservation, result, execution_work, result_sha256) = outcome;
                     let pending_job = pending
                         .remove(&reservation)
                         .ok_or("campaign worker replied for an unknown reservation")?;
@@ -2387,7 +2388,7 @@ where
                                 physical_worker,
                                 pending: pending_job,
                                 result,
-                                frames,
+                                execution_work,
                                 result_sha256,
                             },
                         )
@@ -2405,7 +2406,7 @@ where
                     let pending_job = completed_job.pending;
                     let worker_index = usize::try_from(pending_job.worker)?;
                     let result = completed_job.result;
-                    let frames = completed_job.frames;
+                    let execution_work = completed_job.execution_work;
                     let result_sha256 = completed_job.result_sha256;
                     let physical_worker = completed_job.physical_worker;
                     let victories_before = core.victories;
@@ -2491,7 +2492,7 @@ where
                         worker: pending_job.worker,
                         parent_id: pending_job.parent_id,
                         mutation_seed: pending_job.mutation_seed,
-                        frames,
+                        execution_work,
                         result_sha256,
                         decisions,
                         mixture_weight: pending_job.mixture_weight,
@@ -2506,7 +2507,8 @@ where
                         .saturating_add(profile_elapsed(stream_started));
                     counters.jobs_per_worker[worker_index] =
                         counters.jobs_per_worker[worker_index].saturating_add(1);
-                    counters.job_frames = counters.job_frames.saturating_add(frames);
+                    counters.job_execution_work =
+                        counters.job_execution_work.saturating_add(execution_work);
                     if victories_before == 0 && core.victories > 0 {
                         counters.note_first_victory(sequence);
                     }
@@ -2524,7 +2526,7 @@ where
                         )?;
                         if coordinator_profile.enabled {
                             eprintln!(
-                                "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} available_result_slots={} queued_specs={} completed_buffered={} job_frames={} replay_jobs={} replay_actions={} replay_time={} suffix_actions={} suffix_time={}",
+                                "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} available_result_slots={} queued_specs={} completed_buffered={} job_execution_work={} replay_jobs={} replay_actions={} replay_cost={} suffix_actions={} suffix_cost={}",
                                 coordinator_profile.receive_wait_ns,
                                 coordinator_profile.admission_ns,
                                 coordinator_profile.bookkeeping_ns,
@@ -2557,12 +2559,12 @@ where
                                 result_slots.available(),
                                 queued_specs.len(),
                                 completed.len(),
-                                counters.job_frames,
+                                counters.job_execution_work,
                                 coordinator_profile.replay_jobs,
                                 coordinator_profile.replay_actions,
-                                coordinator_profile.replay_time,
+                                coordinator_profile.replay_cost,
                                 coordinator_profile.suffix_actions,
-                                coordinator_profile.suffix_time,
+                                coordinator_profile.suffix_cost,
                             );
                         }
                     }
@@ -2585,7 +2587,7 @@ where
                     coordinator_profile.selections =
                         coordinator_profile.selections.saturating_add(1);
                     if let Some((mut spec, pending_job)) = selected {
-                        coordinator_profile.note_dispatch(&spec, action_time);
+                        coordinator_profile.note_dispatch(&spec, action_cost);
                         let reservation = usize::try_from(reserved.saturating_sub(1))?;
                         spec.reservation = reservation;
                         if pending.insert(reservation, pending_job).is_some() {
@@ -2732,8 +2734,8 @@ where
     if header.memory_budget_mib == Some(0) {
         return Err("recorded memory budget must be greater than zero".into());
     }
-    if header.frame_budget == Some(0) {
-        return Err("recorded frame budget must be nonzero".into());
+    if header.work_budget == Some(0) {
+        return Err("recorded work budget must be nonzero".into());
     }
     if header.format != workload.stream_format() {
         return Err("campaign stream format is not recognized".into());
@@ -2744,8 +2746,16 @@ where
     if !progress_policy_is_supported(&header.progress_policy) {
         return Err("campaign stream progress policy is not recognized".into());
     }
-    if header.rom_sha256 != workload.image_sha256() {
-        return Err("campaign replay ROM does not match the recorded stream".into());
+    if header.workload_identity_sha256 != workload.workload_identity_sha256() {
+        return Err("campaign replay workload identity does not match the recorded stream".into());
+    }
+    if header.action_cost_unit != workload.action_cost_unit() {
+        return Err("campaign replay action-cost unit does not match the recorded stream".into());
+    }
+    if header.execution_work_unit != workload.execution_work_unit() {
+        return Err(
+            "campaign replay execution-work unit does not match the recorded stream".into(),
+        );
     }
     let record_lines = lines.collect::<Vec<_>>();
     let mut required_draw_versions = BTreeSet::new();
@@ -2814,8 +2824,8 @@ where
     let replay_suffix = suffix_shape_from_identifier(&header.suffix_policy)?;
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
     let replay_run = workload.resolve_recorded(&header.workload_policies)?;
-    let action_time = workload.action_time_fn();
-    let longest_action_time = workload.longest_action_time();
+    let action_cost = workload.action_cost_fn();
+    let max_action_cost = workload.max_action_cost();
     if let Some(checkpoint) = origin_checkpoint {
         let sha256_matches =
             header.origin_checkpoint_sha256.as_deref() == Some(checkpoint.file_sha256.as_str());
@@ -2867,7 +2877,7 @@ where
     let mut target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
     })?;
-    let frames_before = workload.frames_clocked(&target);
+    let work_before = workload.execution_work(&target);
     counters.tree_import = match header.origin_kind.as_str() {
         ORIGIN_GENESIS => {
             core.bootstrap(workload, &mut target)?;
@@ -2890,9 +2900,11 @@ where
         )?),
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
-    counters.bootstrap_frames = workload
-        .frames_clocked(&target)
-        .saturating_sub(frames_before);
+    counters.bootstrap_execution_work = execution_work_delta(
+        work_before,
+        workload.execution_work(&target),
+        "replay bootstrap",
+    )?;
     let bootstrap_memory_bytes = core
         .archive
         .resident_memory_bytes()
@@ -2962,7 +2974,7 @@ where
                         skip.mutation_seed,
                     )?,
                 };
-                replay_suffix.bound_time(&mut suffix, action_time, longest_action_time);
+                replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
@@ -3037,8 +3049,8 @@ where
                         job.mutation_seed,
                     )?,
                 };
-                replay_suffix.bound_time(&mut suffix, action_time, longest_action_time);
-                let job_frames_before = workload.frames_clocked(&target);
+                replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
+                let job_execution_work_before = workload.execution_work(&target);
                 let result = workload.execute_job(
                     &replay_run,
                     &mut target,
@@ -3050,13 +3062,15 @@ where
                     header.action_limit,
                     replay_retention,
                 )?;
-                let frames = workload
-                    .frames_clocked(&target)
-                    .saturating_sub(job_frames_before);
-                if frames != job.frames {
+                let execution_work = execution_work_delta(
+                    job_execution_work_before,
+                    workload.execution_work(&target),
+                    "replayed job",
+                )?;
+                if execution_work != job.execution_work {
                     return Err(format!(
-                        "replayed job {} emulated {frames} frames against recorded {}",
-                        job.sequence, job.frames
+                        "replayed job {} measured {execution_work} execution-work units against recorded {}",
+                        job.sequence, job.execution_work
                     )
                     .into());
                 }
@@ -3150,7 +3164,8 @@ where
                 }
                 counters.jobs_per_worker[worker] =
                     counters.jobs_per_worker[worker].saturating_add(1);
-                counters.job_frames = counters.job_frames.saturating_add(frames);
+                counters.job_execution_work =
+                    counters.job_execution_work.saturating_add(execution_work);
                 if victories_before == 0 && core.victories > 0 {
                     counters.note_first_victory(sequence);
                 }
@@ -3192,7 +3207,7 @@ mod tests {
         InputPolicy, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS, Reporting,
         SPLICE_ACTION_CAP, TargetExecution, WorkloadPolicies, admission_window_depth,
         archive_entry_limit_is_valid, compact_progress_curve, completed_results_within_bound,
-        draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
+        draw_state_memory_is_within_reserve, execution_work_delta, finish_record, is_zero_usize,
         live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
         progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
         replay_campaign_checkpointed, replay_splice, resident_memory_is_within_budget,
@@ -3228,8 +3243,8 @@ mod tests {
         }
     }
 
-    fn test_action_time(action: &TestAction) -> u64 {
-        u64::from(action.hold_frames)
+    fn test_action_cost(action: &TestAction) -> u64 {
+        u64::from(action.hold_frames).saturating_mul(2)
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -3259,13 +3274,15 @@ mod tests {
     #[derive(Default)]
     struct TestTarget {
         value: u8,
-        frames: u64,
+        execution_work: u64,
     }
 
     impl TestTarget {
         fn apply(&mut self, action: &TestAction) {
             self.value = self.value.wrapping_add(action.input);
-            self.frames = self.frames.saturating_add(u64::from(action.hold_frames));
+            self.execution_work = self
+                .execution_work
+                .saturating_add(u64::from(action.hold_frames));
         }
 
         fn snapshot(&self) -> Result<u8, Box<dyn Error>> {
@@ -3303,8 +3320,14 @@ mod tests {
         fn checkpoint_format(&self) -> &'static str {
             "test-checkpoint-v1"
         }
-        fn image_sha256(&self) -> String {
+        fn workload_identity_sha256(&self) -> String {
             "test-image".to_owned()
+        }
+        fn action_cost_unit(&self) -> &'static str {
+            "test-cost"
+        }
+        fn execution_work_unit(&self) -> &'static str {
+            "test-work"
         }
         fn result_sha256(
             &self,
@@ -3362,8 +3385,8 @@ mod tests {
             64
         }
 
-        fn longest_action_time(&self) -> u64 {
-            1
+        fn max_action_cost(&self) -> u64 {
+            2
         }
     }
 
@@ -3372,7 +3395,7 @@ mod tests {
             Ok(TestTarget::default())
         }
         fn reset(&self, target: &mut Self::Target) {
-            *target = TestTarget::default();
+            target.value = 0;
         }
         fn restore(
             &self,
@@ -3380,11 +3403,10 @@ mod tests {
             snapshot: &Self::Snapshot,
         ) -> Result<(), Box<dyn Error>> {
             target.value = *snapshot;
-            target.frames = 0;
             Ok(())
         }
-        fn frames_clocked(&self, target: &Self::Target) -> u64 {
-            target.frames
+        fn execution_work(&self, target: &Self::Target) -> u64 {
+            target.execution_work
         }
         fn apply_action(
             &self,
@@ -3413,8 +3435,8 @@ mod tests {
             Err("test fixture does not execute worker jobs".into())
         }
 
-        fn action_time_fn(&self) -> fn(&Self::Action) -> u64 {
-            test_action_time
+        fn action_cost_fn(&self) -> fn(&Self::Action) -> u64 {
+            test_action_cost
         }
 
         fn snapshot_memory_charge(_snapshot: &Self::Snapshot) -> usize {
@@ -3541,7 +3563,7 @@ mod tests {
         }
 
         fn outcome(&self) -> Result<Outcome, Box<dyn Error>> {
-            if self.initial_terminal && self.target.frames == 0 {
+            if self.initial_terminal && self.target.execution_work == 0 {
                 return Ok(Outcome {
                     dead: true,
                     ..Outcome::default()
@@ -3596,7 +3618,7 @@ mod tests {
             (),
             &[TestAction::new(1, 1)],
             8,
-            RetentionPolicy::AdmitAlive,
+            RetentionPolicy::Unprobed,
         )
         .expect("terminal parent is a valid no-op rollout");
         assert!(result.actions.is_empty());
@@ -3617,7 +3639,7 @@ mod tests {
                 TestAction::new(4, 1),
             ],
             3,
-            RetentionPolicy::ProbeAtAdmission45,
+            RetentionPolicy::ProbeAtAdmission,
         )
         .expect("bounded rollout");
         assert_eq!(result.actions.len(), 2);
@@ -3648,7 +3670,7 @@ mod tests {
                 TestAction::new(1, 1),
             ],
             8,
-            RetentionPolicy::AdmitAlive,
+            RetentionPolicy::Unprobed,
         )
         .expect("terminal action rollout");
         assert_eq!(result.actions.len(), 2);
@@ -3665,7 +3687,7 @@ mod tests {
                 (),
                 &[TestAction::new(1, 1)],
                 8,
-                RetentionPolicy::AdmitAlive,
+                RetentionPolicy::Unprobed,
             )
             .is_err()
         );
@@ -3680,7 +3702,7 @@ mod tests {
                 (),
                 &[TestAction::new(1, 1)],
                 8,
-                RetentionPolicy::ProbeAtAdmission45,
+                RetentionPolicy::ProbeAtAdmission,
             )
             .is_err()
         );
@@ -3693,9 +3715,10 @@ mod tests {
 "action_limit":64,"archive_entry_limit":128,"controller_vocabulary":"nes_down_ten",
 "key_policy":"frozen_area_span","duration_policy":"stratified","suffix_policy":"one_or_two",
 "chord_policy":"chord_uniform","replacement_policy":"fewest_frames_in_level",
-"resume_policy":"whole_tree","retention_policy":"admit_alive",
-"parent_scheduler":"room_cell_uniform_128","executor_mode":"snapshot_resume_archive",
-"worker_seed_derivation":"x","mixture_policy":"biased_half","rom_sha256":"cd"}"#;
+"resume_policy":"whole_tree","retention_policy":"unprobed",
+"parent_scheduler":"hierarchy_uniform_128","executor_mode":"snapshot_resume_archive",
+"worker_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
+"action_cost_unit":"frames","execution_work_unit":"frames"}"#;
 
     #[test]
     fn incremental_postcard_digest_matches_encoded_bytes() {
@@ -4132,22 +4155,22 @@ mod tests {
     #[test]
     fn the_first_victory_counters_exclude_jobs_that_drain_after_the_win() {
         let mut counters = CampaignCounters::new(4);
-        counters.bootstrap_frames = 1_000;
-        counters.job_frames = 250;
+        counters.bootstrap_execution_work = 1_000;
+        counters.job_execution_work = 250;
         counters.note_first_victory(11);
-        assert_eq!(counters.frames_to_first_victory, Some(1_250));
+        assert_eq!(counters.work_to_first_victory, Some(1_250));
         assert_eq!(counters.executions_to_first_victory, Some(11));
 
         for (sequence, drained) in [(12, 90), (13, 140), (14, 70)] {
-            counters.job_frames = counters.job_frames.saturating_add(drained);
+            counters.job_execution_work = counters.job_execution_work.saturating_add(drained);
             counters.note_first_victory(sequence);
         }
-        assert_eq!(counters.frames_to_first_victory, Some(1_250));
+        assert_eq!(counters.work_to_first_victory, Some(1_250));
         assert_eq!(counters.executions_to_first_victory, Some(11));
         assert_eq!(
             counters
-                .bootstrap_frames
-                .saturating_add(counters.job_frames),
+                .bootstrap_execution_work
+                .saturating_add(counters.job_execution_work),
             1_550
         );
     }
@@ -4155,9 +4178,9 @@ mod tests {
     #[test]
     fn a_run_that_never_wins_has_no_first_victory_counters() {
         let mut counters = CampaignCounters::new(1);
-        counters.bootstrap_frames = 10;
-        counters.job_frames = 20;
-        assert_eq!(counters.frames_to_first_victory, None);
+        counters.bootstrap_execution_work = 10;
+        counters.job_execution_work = 20;
+        assert_eq!(counters.work_to_first_victory, None);
         assert_eq!(counters.executions_to_first_victory, None);
     }
 
@@ -4230,6 +4253,13 @@ mod tests {
         ));
         assert!(!progress_policy_is_supported("mechanical_watermark_v1"));
         assert!(!progress_policy_is_supported("unknown-progress"));
+    }
+
+    #[test]
+    fn execution_work_delta_rejects_a_counter_rewind() {
+        assert_eq!(execution_work_delta(7, 11, "worker").unwrap(), 4);
+        let error = execution_work_delta(11, 7, "worker").unwrap_err();
+        assert_eq!(error.to_string(), "worker execution-work counter rewound");
     }
 
     #[test]
@@ -4313,8 +4343,8 @@ mod tests {
     #[test]
     fn a_recorded_job_keeps_its_draw_checkpoint_field_names() {
         let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":0,"mutation_seed":9,
-"frames":12,"result_sha256":"ef","decisions":[],"mixture_weight":128,"splice_weight":128,
-"selector":{"path":"room_cell_uniform","classes_skipped":0,"counter_reset":false},
+"execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":128,"splice_weight":128,
+"selector":{"path":"hierarchy_uniform","classes_skipped":0,"counter_reset":false},
 "draw_checkpoint_before":{"records":3,"retained_successes":1,"table_sha256":"aa"},
 "draw_checkpoint_after":{"records":4,"retained_successes":2,"table_sha256":"bb"}}"#
             .replace('\n', "");
@@ -4327,7 +4357,7 @@ mod tests {
             job.splice, None,
             "jobs without a splice carry no splice evidence"
         );
-        assert_eq!(job.selector.path, SelectorPath::GroupWalk);
+        assert_eq!(job.selector.path, SelectorPath::HierarchyWalk);
         assert_eq!(
             job.draw_checkpoint_before,
             Some(EmpiricalStepCheckpoint {
@@ -4345,7 +4375,7 @@ mod tests {
             serde_json::from_value(written).expect("job round-trips");
         assert_eq!(round_trip, job);
         let _ = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -4355,7 +4385,7 @@ mod tests {
     #[test]
     fn a_job_records_its_dispatch_time_splice_resolution() {
         let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":3,"mutation_seed":9,
-"frames":12,"result_sha256":"ef","decisions":[],"mixture_weight":85,"splice_weight":85,
+"execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":85,"splice_weight":85,
 "splice":{"outcome":"tail","donor_id":4,"leaf_id":9,"tail_postcard":[1,2]},
 "selector":{"path":"uniform","classes_skipped":0,"counter_reset":false}}"#
             .replace('\n', "");

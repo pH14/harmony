@@ -380,6 +380,7 @@ pub struct Mm2Target {
     failed: bool,
     genesis_weapons: u8,
     genesis_prefix: Vec<ButtonChord>,
+    execution_work: u64,
 }
 
 fn idle_chords(frames: u32) -> Vec<ButtonChord> {
@@ -546,6 +547,7 @@ impl Mm2Target {
             failed: false,
             genesis_weapons: state.weapons_obtained,
             genesis_prefix,
+            execution_work: 0,
         })
     }
 
@@ -577,8 +579,8 @@ impl Mm2Target {
     }
 
     #[must_use]
-    pub fn frames_clocked(&self) -> u64 {
-        self.machine.now().0
+    pub fn execution_work(&self) -> u64 {
+        self.execution_work
     }
 
     #[must_use]
@@ -784,6 +786,9 @@ impl Mm2Target {
             return None;
         }
         let frames = self.machine.frames().to_vec();
+        self.execution_work = self
+            .execution_work
+            .saturating_add(u64::try_from(frames.len()).unwrap_or(u64::MAX));
         (!frames.is_empty()).then_some(frames)
     }
 }

@@ -246,6 +246,7 @@ pub struct MetroidTarget {
     action_observations: Vec<MetroidObservations>,
     failed: bool,
     genesis_prefix: Vec<ButtonChord>,
+    execution_work: u64,
 }
 
 impl MetroidTarget {
@@ -321,6 +322,7 @@ impl MetroidTarget {
             observation,
             failed: false,
             genesis_prefix,
+            execution_work: 0,
         })
     }
 
@@ -358,8 +360,8 @@ impl MetroidTarget {
     }
 
     #[must_use]
-    pub fn frames_clocked(&self) -> u64 {
-        self.machine.now().0
+    pub fn execution_work(&self) -> u64 {
+        self.execution_work
     }
 
     #[must_use]
@@ -438,6 +440,9 @@ impl Target for MetroidTarget {
             self.failed = true;
             return;
         };
+        self.execution_work = self
+            .execution_work
+            .saturating_add(u64::try_from(frames.len()).unwrap_or(u64::MAX));
         let Ok(cartridge) = self.cartridge() else {
             self.failed = true;
             return;

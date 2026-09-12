@@ -17,8 +17,8 @@ impl TestAction {
     }
 }
 
-fn test_action_time(action: &TestAction) -> u64 {
-    u64::from(action.hold_frames)
+fn test_action_cost(action: &TestAction) -> u64 {
+    u64::from(action.hold_frames).saturating_mul(2)
 }
 
 fn test_draw_action(fingerprint: u32, mutation_seed: u64) -> TestAction {
@@ -73,13 +73,15 @@ impl ArchiveKey for TestKey {
 #[derive(Default)]
 struct TestTarget {
     value: u8,
-    frames: u64,
+    execution_work: u64,
 }
 
 impl TestTarget {
     fn apply(&mut self, action: &TestAction) {
         self.value = self.value.wrapping_add(action.input);
-        self.frames = self.frames.saturating_add(u64::from(action.hold_frames));
+        self.execution_work = self
+            .execution_work
+            .saturating_add(u64::from(action.hold_frames));
     }
 
     fn snapshot(&self) -> Result<u8, Box<dyn Error>> {
@@ -121,8 +123,14 @@ impl Reporting for TestWorkload {
     fn checkpoint_format(&self) -> &'static str {
         "test-checkpoint-v1"
     }
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         "test-image".to_owned()
+    }
+    fn action_cost_unit(&self) -> &'static str {
+        "test-cost"
+    }
+    fn execution_work_unit(&self) -> &'static str {
+        "test-work"
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
         postcard_value_sha256(result)
@@ -250,8 +258,8 @@ impl InputPolicy for TestWorkload {
         64
     }
 
-    fn longest_action_time(&self) -> u64 {
-        1
+    fn max_action_cost(&self) -> u64 {
+        2
     }
 }
 
@@ -271,8 +279,8 @@ impl TargetExecution for TestWorkload {
 
         Ok(())
     }
-    fn frames_clocked(&self, target: &Self::Target) -> u64 {
-        target.frames
+    fn execution_work(&self, target: &Self::Target) -> u64 {
+        target.execution_work
     }
     fn apply_action(
         &self,
@@ -286,8 +294,8 @@ impl TargetExecution for TestWorkload {
     fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
         target.snapshot()
     }
-    fn action_time_fn(&self) -> fn(&Self::Action) -> u64 {
-        test_action_time
+    fn action_cost_fn(&self) -> fn(&Self::Action) -> u64 {
+        test_action_cost
     }
 
     fn snapshot_memory_charge(_snapshot: &Self::Snapshot) -> usize {
@@ -410,7 +418,7 @@ fn isolated_continuation_admission_does_not_tune_the_next_ordinary_splice_draw()
     record_mixture_outcome(
         &mut energy,
         isolated,
-        SelectorPath::GroupWalk,
+        SelectorPath::HierarchyWalk,
         seed,
         0,
         255,
@@ -456,7 +464,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
                 2 => DrawMixture::EnergySpliceContinuationIsolated { scale: 6 },
                 _ => DrawMixture::EnergySpliceContinuation { scale: 6 },
             },
-            retention: RetentionPolicy::AdmitAlive,
+            retention: RetentionPolicy::Unprobed,
             selector: if persistent {
                 SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
                     entry: 3,
@@ -492,7 +500,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             &mut buffered_bytes,
             None,
             CampaignExecutionOptions {
-                frame_budget: None,
+                work_budget: None,
                 result_buffering: ResultBuffering::TwoPerWorker,
             },
         )
@@ -503,6 +511,24 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         );
         assert_eq!(buffered, (live.clone(), checkpoint.clone()));
         let text = std::str::from_utf8(&bytes).unwrap();
+        if workers == 1 && !semantic && !persistent && mode == 0 {
+            for field in ["action_cost_unit", "execution_work_unit"] {
+                let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+                let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+                header[field] = serde_json::Value::String("wrong-unit".to_owned());
+                lines[0] = serde_json::to_string(&header).unwrap();
+                assert!(
+                    replay_campaign_checkpointed(
+                        &TestWorkload,
+                        lines.join("\n").as_bytes(),
+                        None,
+                        None,
+                    )
+                    .is_err(),
+                    "replay accepted a mismatched {field}"
+                );
+            }
+        }
         if workers == 1 {
             let mut with_sidecar = Vec::new();
             let mut sidecar = Vec::new();
@@ -584,17 +610,20 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             assert!(history.keys > 0 && history.hits > 0);
         }
         let mut bounded_stream = Vec::new();
-        let (bounded, bounded_checkpoint) = run_campaign_checkpointed_with_frame_budget(
+        let (bounded, bounded_checkpoint) = run_campaign_checkpointed_with_options(
             &TestWorkload,
             &config,
             &CampaignOrigin::Genesis,
             &mut bounded_stream,
             None,
-            Some(128),
+            CampaignExecutionOptions {
+                work_budget: Some(128),
+                result_buffering: ResultBuffering::OnePerWorker,
+            },
         )
         .unwrap();
-        assert_eq!(bounded.frame_budget, Some(128));
-        assert!(bounded.frames_emulated >= 128);
+        assert_eq!(bounded.work_budget, Some(128));
+        assert!(bounded.execution_work >= 128);
         assert!(bounded.executions_completed < config.execution_budget);
         let mut bounded_buffered_bytes = Vec::new();
         let bounded_buffered = run_campaign_checkpointed_with_options(
@@ -604,7 +633,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             &mut bounded_buffered_bytes,
             None,
             CampaignExecutionOptions {
-                frame_budget: Some(128),
+                work_budget: Some(128),
                 result_buffering: ResultBuffering::TwoPerWorker,
             },
         )

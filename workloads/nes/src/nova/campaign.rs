@@ -429,8 +429,14 @@ impl<M: NovaMachineKind> Reporting for NovaGame<M> {
     fn checkpoint_format(&self) -> &'static str {
         SNAPSHOT_CHECKPOINT_FORMAT
     }
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(&self.rom))
+    }
+    fn action_cost_unit(&self) -> &'static str {
+        "frames"
+    }
+    fn execution_work_unit(&self) -> &'static str {
+        "frames"
     }
     fn result_sha256(&self, result: &NovaCampaignJobResult<M>) -> Result<String, Box<dyn Error>> {
         nova_result_sha256(result)
@@ -544,7 +550,7 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
         }
     }
 
-    fn longest_action_time(&self) -> u64 {
+    fn max_action_cost(&self) -> u64 {
         u64::from(crate::nova::archive::LONGEST_HOLD_FRAMES)
     }
 }
@@ -566,8 +572,8 @@ impl<M: NovaMachineKind> TargetExecution for NovaGame<M> {
     ) -> Result<(), Box<dyn Error>> {
         target.restore(snapshot)
     }
-    fn frames_clocked(&self, target: &NovaTarget<M>) -> u64 {
-        target.frames_clocked()
+    fn execution_work(&self, target: &NovaTarget<M>) -> u64 {
+        target.execution_work()
     }
     fn apply_action(
         &self,
@@ -598,7 +604,7 @@ impl<M: NovaMachineKind> TargetExecution for NovaGame<M> {
             .ok_or_else(|| "failed to snapshot Nova".into())
     }
 
-    fn action_time_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 

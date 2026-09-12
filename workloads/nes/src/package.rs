@@ -143,7 +143,7 @@ where
         run,
         suffix: SuffixShape::default(),
         mixture: DrawMixture::default(),
-        retention: RetentionPolicy::AdmitAlive,
+        retention: RetentionPolicy::Unprobed,
         selector: SelectorPolicy::GroupUniform,
         victory_input_path: Some(options.output.join("victory.json")),
     };

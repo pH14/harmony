@@ -9,9 +9,9 @@ pub const SUFFIX_ONE_OR_TWO_IDENTIFIER: &str = "one_or_two";
 pub const SUFFIX_ONE_TO_SIX_IDENTIFIER: &str = "one_to_six";
 
 pub const SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER: &str =
-    "one_to_six_within_3_longest_actions_full_hold";
+    "one_to_six_within_3_max_action_cost_full_hold";
 
-pub const SUFFIX_TIME_BOUND_LONGEST_ACTIONS: u64 = 3;
+pub const SUFFIX_COST_BOUND_MAX_ACTIONS: u64 = 3;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SuffixShape {
@@ -22,19 +22,19 @@ pub enum SuffixShape {
 }
 
 impl SuffixShape {
-    pub(crate) fn bound_time<A>(
+    pub(crate) fn bound_cost<A>(
         self,
         suffix: &mut Vec<A>,
-        time: fn(&A) -> u64,
-        longest_action_time: u64,
+        cost: fn(&A) -> u64,
+        max_action_cost: u64,
     ) {
         if self != Self::OneToSixBounded {
             return;
         }
-        let bound = SUFFIX_TIME_BOUND_LONGEST_ACTIONS.saturating_mul(longest_action_time);
+        let bound = SUFFIX_COST_BOUND_MAX_ACTIONS.saturating_mul(max_action_cost);
         let mut total = 0_u64;
         let reached = suffix.iter().position(|action| {
-            total = total.saturating_add(time(action));
+            total = total.saturating_add(cost(action));
             total >= bound
         });
         if let Some(index) = reached {
@@ -301,19 +301,19 @@ mod tests {
 
     #[test]
     fn the_bounded_shape_cuts_a_suffix_after_the_action_that_reaches_the_bound() {
-        let time = |action: &u64| *action;
+        let cost = |action: &u64| *action;
         let longest = 120;
         let mut suffix = vec![100, 200, 60, 5, 5];
-        SuffixShape::OneToSixBounded.bound_time(&mut suffix, time, longest);
+        SuffixShape::OneToSixBounded.bound_cost(&mut suffix, cost, longest);
         assert_eq!(suffix, vec![100, 200, 60]);
         let mut short = vec![100, 200, 59];
-        SuffixShape::OneToSixBounded.bound_time(&mut short, time, longest);
+        SuffixShape::OneToSixBounded.bound_cost(&mut short, cost, longest);
         assert_eq!(short, vec![100, 200, 59]);
         let mut one = vec![1_000, 1];
-        SuffixShape::OneToSixBounded.bound_time(&mut one, time, longest);
+        SuffixShape::OneToSixBounded.bound_cost(&mut one, cost, longest);
         assert_eq!(one, vec![1_000]);
         let mut unbounded = vec![100, 200, 60, 5, 5];
-        SuffixShape::OneToSix.bound_time(&mut unbounded, time, longest);
+        SuffixShape::OneToSix.bound_cost(&mut unbounded, cost, longest);
         assert_eq!(unbounded.len(), 5);
     }
 

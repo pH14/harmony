@@ -14,7 +14,7 @@ struct TinyAction(u8);
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct TinySnapshot {
     value: u8,
-    frames: u64,
+    execution_work: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -44,7 +44,7 @@ impl ArchiveKey for TinyKey {
 #[derive(Default)]
 struct TinyTarget {
     value: u8,
-    frames: u64,
+    execution_work: u64,
 }
 
 struct TinyExecution;
@@ -65,8 +65,8 @@ impl CampaignTypes for TinyExecution {
     type DrawHeader = ();
 }
 
-fn action_time(action: &TinyAction) -> u64 {
-    u64::from(action.0)
+fn action_cost(action: &TinyAction) -> u64 {
+    u64::from(action.0).saturating_mul(2)
 }
 
 impl TargetExecution for TinyExecution {
@@ -76,7 +76,6 @@ impl TargetExecution for TinyExecution {
 
     fn reset(&self, target: &mut Self::Target) {
         target.value = 0;
-        target.frames = 0;
     }
 
     fn restore(
@@ -85,16 +84,15 @@ impl TargetExecution for TinyExecution {
         snapshot: &Self::Snapshot,
     ) -> Result<(), Box<dyn Error>> {
         target.value = snapshot.value;
-        target.frames = snapshot.frames;
         Ok(())
     }
 
-    fn frames_clocked(&self, target: &Self::Target) -> u64 {
-        target.frames
+    fn execution_work(&self, target: &Self::Target) -> u64 {
+        target.execution_work
     }
 
-    fn action_time_fn(&self) -> fn(&Self::Action) -> u64 {
-        action_time
+    fn action_cost_fn(&self) -> fn(&Self::Action) -> u64 {
+        action_cost
     }
 
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize {
@@ -108,7 +106,7 @@ impl TargetExecution for TinyExecution {
         milestones: &mut Self::Milestones,
     ) -> Result<(), Box<dyn Error>> {
         target.value = target.value.saturating_add(action.0);
-        target.frames = target.frames.saturating_add(u64::from(action.0));
+        target.execution_work = target.execution_work.saturating_add(u64::from(action.0));
         *milestones = target.value;
         Ok(())
     }
@@ -120,7 +118,7 @@ impl TargetExecution for TinyExecution {
     fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
         Ok(TinySnapshot {
             value: target.value,
-            frames: target.frames,
+            execution_work: target.execution_work,
         })
     }
 }
@@ -133,22 +131,22 @@ fn exercise_execution<T: TargetExecution>(
     let mut target = execution.new_target().map_err(io::Error::other)?;
     execution.reset(&mut target);
     let origin = execution.snapshot(&mut target)?;
-    assert_eq!(execution.frames_clocked(&target), 0);
+    assert_eq!(execution.execution_work(&target), 0);
     assert_eq!(
         T::snapshot_memory_charge(&origin),
         std::mem::size_of_val(&origin)
     );
-    assert!((execution.action_time_fn())(&action) > 0);
+    assert!((execution.action_cost_fn())(&action) > 0);
 
     let mut milestones = T::Milestones::default();
     execution.apply_action(&mut target, &action, &mut milestones)?;
-    assert!(execution.frames_clocked(&target) > 0);
+    assert!(execution.execution_work(&target) > 0);
     assert!(!execution.rollout_observations(&target).is_empty());
     let after_action = execution.snapshot(&mut target)?;
     assert_ne!(after_action, origin);
 
     execution.restore(&mut target, &origin)?;
-    assert_eq!(execution.frames_clocked(&target), 0);
+    assert!(execution.execution_work(&target) > 0);
     assert!(execution.rollout_probe(run, &mut target, &after_action)?);
     assert_eq!(execution.snapshot(&mut target)?, after_action);
     Ok(())

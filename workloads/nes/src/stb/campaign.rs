@@ -278,10 +278,10 @@ fn execute_suffix(
         } else {
             let snapshot = target.snapshot().ok_or("failed to snapshot Stb suffix")?;
             let viable = match retention {
-                RetentionPolicy::AdmitAlive => true,
-                RetentionPolicy::ProbeAtAdmission45 => {
+                RetentionPolicy::Unprobed => true,
+                RetentionPolicy::ProbeAtAdmission => {
                     return Err(
-                        "STB deliberately rejects ProbeAtAdmission45: ordinary admission is sufficient".into(),
+                        "STB deliberately rejects ProbeAtAdmission: ordinary admission is sufficient".into(),
                     );
                 }
             };
@@ -360,8 +360,14 @@ impl Reporting for StbGame {
         SNAPSHOT_CHECKPOINT_FORMAT
     }
 
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(&self.rom))
+    }
+    fn action_cost_unit(&self) -> &'static str {
+        "frames"
+    }
+    fn execution_work_unit(&self) -> &'static str {
+        "frames"
     }
 
     fn result_sha256(&self, result: &StbCampaignJobResult) -> Result<String, Box<dyn Error>> {
@@ -396,7 +402,7 @@ impl InputPolicy for StbGame {
         MAX_STB_ACTIONS
     }
 
-    fn longest_action_time(&self) -> u64 {
+    fn max_action_cost(&self) -> u64 {
         u64::from(crate::stb::archive::LONGEST_HOLD_FRAMES)
     }
 
@@ -516,7 +522,7 @@ impl InputPolicy for StbGame {
 }
 
 impl TargetExecution for StbGame {
-    fn action_time_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 
@@ -546,8 +552,8 @@ impl TargetExecution for StbGame {
         target.restore(snapshot)
     }
 
-    fn frames_clocked(&self, target: &StbTarget) -> u64 {
-        target.frames_clocked()
+    fn execution_work(&self, target: &StbTarget) -> u64 {
+        target.execution_work()
     }
 
     fn apply_action(

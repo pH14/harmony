@@ -56,7 +56,7 @@ id = "R3-C02"
 lens = "retirement"
 component_class = "retirement (untried against the stalled column in rounds 1-2)"
 hypothesis = "Earlier generic exhaustion retirement at thresholds 2,4,8,1 redirects attempts from barren parents and bounds snapshot growth while retaining the incumbent energy-frontier-cheapest ranking."
-configuration = "champion binary with selector room_cell_uniform_128_energy_frontier_cheapest:2,4,8,1; suffix and retention unchanged"
+configuration = "champion binary with selector hierarchy_uniform_128_energy_frontier_cheapest:2,4,8,1; suffix and retention unchanged"
 allowed_modules = ["no policy code required", "direct configuration validation", "observation-only reduction"]
 predicted_complexity = "zero new concepts; changes recorded thresholds of the incumbent selector"
 

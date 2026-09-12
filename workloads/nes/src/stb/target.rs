@@ -215,6 +215,7 @@ pub struct StbTarget<M: Machine = QuickNesMachine> {
     player_b_ko_count: u8,
     failed: bool,
     snapshot_base: Option<M::Portable>,
+    execution_work: u64,
 }
 
 impl<M: Machine> StbTarget<M> {
@@ -252,6 +253,7 @@ impl<M: Machine> StbTarget<M> {
             player_b_ko_count: 0,
             failed: false,
             snapshot_base: None,
+            execution_work: 0,
         })
     }
 
@@ -271,8 +273,8 @@ impl<M: Machine> StbTarget<M> {
     }
 
     #[must_use]
-    pub fn frames_clocked(&self) -> u64 {
-        self.machine.now().0
+    pub fn execution_work(&self) -> u64 {
+        self.execution_work
     }
 
     #[must_use]
@@ -532,6 +534,9 @@ impl<M: Machine> StbTarget<M> {
             self.failed = true;
             return;
         }
+        self.execution_work = self
+            .execution_work
+            .saturating_add(u64::try_from(produced_frames).unwrap_or(u64::MAX));
         let terminal_index = self
             .machine
             .frames()
@@ -1257,6 +1262,8 @@ mod tests {
     fn restore_across_invalid_phase_and_another_worker_preserves_stock_evidence() {
         let mut target = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
         target.apply(&ButtonChord::new(1, 5));
+        let first_work = target.execution_work();
+        assert!(first_work > 0);
         let saved = target.snapshot().unwrap();
         assert_eq!(saved.observation.decoded.gameplay, None);
         assert_eq!(saved.player_b_ko_count, 4);
@@ -1264,10 +1271,18 @@ mod tests {
         target.apply(&continuation);
         let expected = target.observe();
         let expected_events = target.last_action_observations().to_vec();
+        let second_work = target.execution_work();
+        assert!(second_work > first_work);
         target.restore(&saved).unwrap();
+        assert_eq!(target.execution_work(), second_work);
         target.apply(&ButtonChord::new(4, 1));
+        let discarded_work = target.execution_work();
+        assert!(discarded_work > second_work);
         target.restore(&saved).unwrap();
+        assert_eq!(target.execution_work(), discarded_work);
         target.apply(&continuation);
+        let final_work = target.execution_work();
+        assert!(final_work > discarded_work);
         assert_eq!(target.observe(), expected);
         assert_eq!(target.last_action_observations(), expected_events);
         assert_eq!(expected.player_b_ko_count, 5);
@@ -1276,6 +1291,10 @@ mod tests {
         other.apply(&continuation);
         assert_eq!(other.observe(), expected);
         assert_eq!(other.fingerprint(), target.fingerprint());
+        target.reset();
+        assert_eq!(target.execution_work(), final_work);
+        target.apply(&ButtonChord::new(1, 5));
+        assert!(target.execution_work() > discarded_work);
         target.reset();
         assert_eq!(target.observe().frame_count, 0);
         assert_eq!(target.observe().player_b_ko_count, 0);

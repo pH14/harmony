@@ -139,7 +139,7 @@ pub fn merge_progress_watermark(
 }
 
 #[must_use]
-pub fn action_time(_action: &FaultAction) -> u64 {
+pub fn action_cost(_action: &FaultAction) -> u64 {
     1
 }
 
@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn every_action_costs_one_horizon() {
-        assert_eq!(action_time(&FaultAction::Wait), 1);
-        assert_eq!(action_time(&FaultAction::Kill(4)), 1);
+        assert_eq!(action_cost(&FaultAction::Wait), 1);
+        assert_eq!(action_cost(&FaultAction::Kill(4)), 1);
     }
 }

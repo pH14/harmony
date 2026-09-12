@@ -66,21 +66,21 @@ impl<A: Ord> Default for Input<A> {
     }
 }
 
-pub const RETENTION_IDENTIFIER: &str = "probe_at_admission_45";
+pub const RETENTION_PROBE_IDENTIFIER: &str = "probe_at_admission";
 
-pub const RETENTION_ADMIT_ALIVE_IDENTIFIER: &str = "admit_alive";
+pub const RETENTION_UNPROBED_IDENTIFIER: &str = "unprobed";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetentionPolicy {
-    ProbeAtAdmission45,
-    AdmitAlive,
+    ProbeAtAdmission,
+    Unprobed,
 }
 
 #[must_use]
 pub fn retention_policy_identifier(policy: RetentionPolicy) -> &'static str {
     match policy {
-        RetentionPolicy::ProbeAtAdmission45 => RETENTION_IDENTIFIER,
-        RetentionPolicy::AdmitAlive => RETENTION_ADMIT_ALIVE_IDENTIFIER,
+        RetentionPolicy::ProbeAtAdmission => RETENTION_PROBE_IDENTIFIER,
+        RetentionPolicy::Unprobed => RETENTION_UNPROBED_IDENTIFIER,
     }
 }
 
@@ -88,13 +88,13 @@ pub fn retention_policy_from_identifier(
     identifier: &str,
 ) -> Result<RetentionPolicy, Box<dyn Error>> {
     match identifier {
-        RETENTION_IDENTIFIER => Ok(RetentionPolicy::ProbeAtAdmission45),
-        RETENTION_ADMIT_ALIVE_IDENTIFIER => Ok(RetentionPolicy::AdmitAlive),
+        RETENTION_PROBE_IDENTIFIER => Ok(RetentionPolicy::ProbeAtAdmission),
+        RETENTION_UNPROBED_IDENTIFIER => Ok(RetentionPolicy::Unprobed),
         _ => Err(format!("retention policy {identifier} is not recognized").into()),
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "room_cell_uniform_128";
+pub const SELECTOR_IDENTIFIER: &str = "hierarchy_uniform_128";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetireThresholds {
@@ -262,8 +262,8 @@ const CELL_NOVELTY_RANK_SCALE: usize = 8;
 pub enum SelectorPath {
     Continuation,
     Uniform,
-    #[serde(rename = "room_cell_uniform")]
-    GroupWalk,
+    #[serde(rename = "hierarchy_uniform")]
+    HierarchyWalk,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -313,14 +313,6 @@ pub struct RetirementAccounting {
 }
 
 #[derive(Deserialize, Serialize)]
-struct RetirementWireNamed {
-    entries_over_threshold: u64,
-    cells_over_threshold: u64,
-    bands_over_threshold: u64,
-    rooms_over_threshold: u64,
-}
-
-#[derive(Deserialize, Serialize)]
 struct RetirementWireGeneric {
     entries_over_threshold: u64,
     groups_over_threshold: Vec<u64>,
@@ -328,45 +320,20 @@ struct RetirementWireGeneric {
 
 impl Serialize for RetirementAccounting {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if let [cells, bands, rooms] = self.groups_over_threshold[..] {
-            RetirementWireNamed {
-                entries_over_threshold: self.entries_over_threshold,
-                cells_over_threshold: cells,
-                bands_over_threshold: bands,
-                rooms_over_threshold: rooms,
-            }
-            .serialize(serializer)
-        } else {
-            RetirementWireGeneric {
-                entries_over_threshold: self.entries_over_threshold,
-                groups_over_threshold: self.groups_over_threshold.clone(),
-            }
-            .serialize(serializer)
+        RetirementWireGeneric {
+            entries_over_threshold: self.entries_over_threshold,
+            groups_over_threshold: self.groups_over_threshold.clone(),
         }
+        .serialize(serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for RetirementAccounting {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Named(RetirementWireNamed),
-            Generic(RetirementWireGeneric),
-        }
-        Ok(match Wire::deserialize(deserializer)? {
-            Wire::Named(wire) => Self {
-                entries_over_threshold: wire.entries_over_threshold,
-                groups_over_threshold: vec![
-                    wire.cells_over_threshold,
-                    wire.bands_over_threshold,
-                    wire.rooms_over_threshold,
-                ],
-            },
-            Wire::Generic(wire) => Self {
-                entries_over_threshold: wire.entries_over_threshold,
-                groups_over_threshold: wire.groups_over_threshold,
-            },
+        let wire = RetirementWireGeneric::deserialize(deserializer)?;
+        Ok(Self {
+            entries_over_threshold: wire.entries_over_threshold,
+            groups_over_threshold: wire.groups_over_threshold,
         })
     }
 }
@@ -578,13 +545,13 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     opened_cell: Vec<bool>,
     cells_seen: BTreeSet<K::Group>,
     selector_accounting: SelectorAccounting,
-    time_in_group: Vec<u64>,
-    replacement_time_displaced: u64,
+    cost_in_group: Vec<u64>,
+    replacement_cost_displaced: u64,
     lineages: Vec<K::Lineage>,
     deepest_leaf: Vec<(K, usize)>,
     pub selector_policy: SelectorPolicy,
     group_barren: Vec<BTreeMap<K::Group, u64>>,
-    action_time: fn(&A) -> u64,
+    action_cost: fn(&A) -> u64,
     live_progress: Option<(K, u64)>,
     frontier_cap: Option<usize>,
     active_ids: ActiveIds,
@@ -1047,7 +1014,7 @@ where
     S: Clone,
 {
     #[must_use]
-    pub fn new(action_time: fn(&A) -> u64) -> Self {
+    pub fn new(action_cost: fn(&A) -> u64) -> Self {
         Self {
             max_entries: MAX_ARCHIVE_ENTRIES,
             entries: Vec::new(),
@@ -1076,13 +1043,13 @@ where
                 },
                 ..SelectorAccounting::default()
             },
-            time_in_group: Vec::new(),
-            replacement_time_displaced: 0,
+            cost_in_group: Vec::new(),
+            replacement_cost_displaced: 0,
             lineages: Vec::new(),
             deepest_leaf: Vec::new(),
             selector_policy: SelectorPolicy::GroupUniform,
             group_barren: vec![BTreeMap::new(); K::groups().saturating_sub(2)],
-            action_time,
+            action_cost,
             live_progress: None,
             frontier_cap: None,
             active_ids: ActiveIds::default(),
@@ -1474,7 +1441,7 @@ where
         self.in_window_ever = retain_marked(std::mem::take(&mut self.in_window_ever), &keep);
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
-        self.time_in_group = retain_marked(std::mem::take(&mut self.time_in_group), &keep);
+        self.cost_in_group = retain_marked(std::mem::take(&mut self.cost_in_group), &keep);
         self.lineages = retain_marked(std::mem::take(&mut self.lineages), &keep);
         self.snapshot_selectable =
             retain_marked(std::mem::take(&mut self.snapshot_selectable), &keep);
@@ -1849,7 +1816,7 @@ where
                     .flatten()
                     .copied()
                     .filter(|id| !self.is_liveness_anchor(*id))
-                    .max_by_key(|id| (self.time_in_group[*id], self.entries[*id].id));
+                    .max_by_key(|id| (self.cost_in_group[*id], self.entries[*id].id));
                 let Some(replaced) = replaced else {
                     return false;
                 };
@@ -2101,13 +2068,13 @@ where
     }
 
     #[must_use]
-    pub fn replacement_time_displaced(&self) -> u64 {
-        self.replacement_time_displaced
+    pub fn replacement_cost_displaced(&self) -> u64 {
+        self.replacement_cost_displaced
     }
 
     #[cfg(test)]
-    pub(crate) fn entry_time_in_group(&self, id: usize) -> u64 {
-        self.time_in_group[id]
+    pub(crate) fn entry_cost_in_group(&self, id: usize) -> u64 {
+        self.cost_in_group[id]
     }
 
     #[must_use]
@@ -2116,20 +2083,20 @@ where
             .map(|(deepest, cheapest)| (deepest, cheapest, self.retained))
     }
 
-    fn time_in_group_of(&self, parent_id: Option<usize>, suffix: &[A], key: K) -> u64 {
-        let time_of = |actions: &[A]| -> u64 {
+    fn cost_in_group_of(&self, parent_id: Option<usize>, suffix: &[A], key: K) -> u64 {
+        let cost_of = |actions: &[A]| -> u64 {
             actions
                 .iter()
-                .map(|action| (self.action_time)(action))
+                .map(|action| (self.action_cost)(action))
                 .sum()
         };
         let Some(parent) = parent_id.and_then(|id| self.entries.get(id)) else {
-            return time_of(suffix);
+            return cost_of(suffix);
         };
-        let added = time_of(suffix);
+        let added = cost_of(suffix);
         let depth = Self::coarsest_depth();
         if parent.key.group(depth) == key.group(depth) {
-            self.time_in_group
+            self.cost_in_group
                 .get(parent_id.unwrap_or_default())
                 .copied()
                 .unwrap_or(0)
@@ -2180,7 +2147,7 @@ where
             _ => K::Lineage::default(),
         };
         K::record(&mut lineage, key);
-        let candidate_time_in_group = self.time_in_group_of(parent_id, &suffix, key);
+        let candidate_cost_in_group = self.cost_in_group_of(parent_id, &suffix, key);
         let slot = self.slots.entry(key.group(0)).or_default().clone();
         let new_slot = slot.is_empty();
         let slot_full = slot.len() >= K::slot_capacity().max(1);
@@ -2191,12 +2158,12 @@ where
                 left_entry
                     .key
                     .preference_cmp(right_entry.key)
-                    .then_with(|| self.time_in_group[*right].cmp(&self.time_in_group[*left]))
+                    .then_with(|| self.cost_in_group[*right].cmp(&self.cost_in_group[*left]))
                     .then_with(|| right_entry.id.cmp(&left_entry.id))
             });
             worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
                 Ordering::Greater => true,
-                Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
+                Ordering::Equal => candidate_cost_in_group < self.cost_in_group[*id],
                 Ordering::Less => false,
             })
         } else {
@@ -2242,7 +2209,7 @@ where
             }
         }
         if let Some(replaced) = replace {
-            self.replacement_time_displaced = self.replacement_time_displaced.saturating_add(1);
+            self.replacement_cost_displaced = self.replacement_cost_displaced.saturating_add(1);
             self.deactivate(replaced);
         }
         let id = self.entries.len();
@@ -2298,17 +2265,17 @@ where
         self.active.push(true);
         self.active_count = self.active_count.saturating_add(1);
         self.lineages.push(lineage);
-        self.time_in_group.push(candidate_time_in_group);
+        self.cost_in_group.push(candidate_cost_in_group);
         match &mut self.live_progress {
             Some((deepest, cheapest)) if key > *deepest => {
                 *deepest = key;
-                *cheapest = candidate_time_in_group;
+                *cheapest = candidate_cost_in_group;
             }
             Some((deepest, cheapest)) if key == *deepest => {
-                *cheapest = (*cheapest).min(candidate_time_in_group);
+                *cheapest = (*cheapest).min(candidate_cost_in_group);
             }
             Some(_) => {}
-            None => self.live_progress = Some((key, candidate_time_in_group)),
+            None => self.live_progress = Some((key, candidate_cost_in_group)),
         }
         self.selected.push(0);
         self.productive.push(0);
@@ -2473,7 +2440,7 @@ where
                 return Ok((
                     id,
                     SelectorDraw {
-                        path: SelectorPath::GroupWalk,
+                        path: SelectorPath::HierarchyWalk,
                         classes_skipped,
                         counter_reset,
                         concentration: Some(concentration),
@@ -2939,7 +2906,7 @@ where
         sampleable
             .rev()
             .take(CONCENTRATION_WINDOW)
-            .map(|id| self.time_in_group[*id])
+            .map(|id| self.cost_in_group[*id])
             .min()
     }
 
@@ -2966,7 +2933,7 @@ where
         ) {
             let mut ranked = window
                 .iter()
-                .map(|id| (self.time_in_group[*id], *id))
+                .map(|id| (self.cost_in_group[*id], *id))
                 .collect::<Vec<_>>();
             ranked.sort_unstable();
             let count_weighted = matches!(
@@ -3227,7 +3194,7 @@ where
                     .uniform_selections
                     .saturating_add(1);
             }
-            SelectorPath::GroupWalk => {
+            SelectorPath::HierarchyWalk => {
                 self.selector_accounting.cell_selections =
                     self.selector_accounting.cell_selections.saturating_add(1);
             }
@@ -3982,7 +3949,7 @@ mod tests {
         assert_eq!(archive.barren_group_count(), 0);
 
         let draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -4042,7 +4009,7 @@ mod tests {
             .expect("a budgeted run has an anchor");
 
         let draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -4373,7 +4340,7 @@ mod tests {
             .expect("retain root");
         archive.rebuild_selector_index(1);
         archive.establish_liveness_anchor(1);
-        archive.time_in_group[0] = 100;
+        archive.cost_in_group[0] = 100;
         for (id, suffix) in [(1_u64, 1_u8), (2, 2)] {
             archive
                 .insert(
@@ -4526,7 +4493,7 @@ mod tests {
         archive.record_selection(
             id,
             &SelectorDraw {
-                path: SelectorPath::GroupWalk,
+                path: SelectorPath::HierarchyWalk,
                 classes_skipped: 0,
                 counter_reset: false,
                 concentration: None,
@@ -4546,7 +4513,7 @@ mod tests {
             });
         let old = archive.entries[0].key;
         let draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -5065,7 +5032,7 @@ mod tests {
 
             let Some(cached) = cached else {
                 let draw = SelectorDraw {
-                    path: SelectorPath::GroupWalk,
+                    path: SelectorPath::HierarchyWalk,
                     classes_skipped: cached_skipped,
                     counter_reset: true,
                     concentration: None,
@@ -5075,7 +5042,7 @@ mod tests {
             };
             let id = cached[step % cached.len()];
             let draw = SelectorDraw {
-                path: SelectorPath::GroupWalk,
+                path: SelectorPath::HierarchyWalk,
                 classes_skipped: cached_skipped,
                 counter_reset: false,
                 concentration: None,
@@ -5097,7 +5064,7 @@ mod tests {
         archive.active[0] = false;
         archive.index_remove(0);
         let draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -5224,7 +5191,7 @@ mod tests {
     fn the_retiring_selector_parses_under_a_shallow_key() {
         for depths in [1_usize, 2] {
             let pooled = depths.saturating_sub(2);
-            let policy = selector_policy_from_identifier("room_cell_uniform_128_retire:3", pooled)
+            let policy = selector_policy_from_identifier("hierarchy_uniform_128_retire:3", pooled)
                 .expect("shallow retiring selector");
             assert_eq!(
                 policy,
@@ -5234,7 +5201,7 @@ mod tests {
                 })
             );
             assert!(
-                selector_policy_from_identifier("room_cell_uniform_128_retire:3,6", pooled)
+                selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6", pooled)
                     .is_err()
             );
         }
@@ -5298,7 +5265,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("walk selection");
-            if draw.path != SelectorPath::GroupWalk {
+            if draw.path != SelectorPath::HierarchyWalk {
                 continue;
             }
             cell_draws += 1;
@@ -5334,7 +5301,7 @@ mod tests {
             groups: vec![64, 1, 64],
         });
         let barren_draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -5346,7 +5313,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection");
-            if draw.path == SelectorPath::GroupWalk {
+            if draw.path == SelectorPath::HierarchyWalk {
                 assert_eq!(id, 2, "cell draws must fall through to the 124 band");
                 assert_eq!(draw.classes_skipped, 1);
                 assert!(!draw.counter_reset);
@@ -5361,7 +5328,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection after reset");
-            if draw.path == SelectorPath::GroupWalk && (id == 0 || id == 1) {
+            if draw.path == SelectorPath::HierarchyWalk && (id == 0 || id == 1) {
                 upper_band_seen = true;
             }
         }
@@ -5383,7 +5350,7 @@ mod tests {
             groups: vec![1_024, 1, 1_024],
         });
         let barren_draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -5399,7 +5366,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("energy selection");
-            if draw.path != SelectorPath::GroupWalk {
+            if draw.path != SelectorPath::HierarchyWalk {
                 continue;
             }
             assert_eq!(draw.classes_skipped, 0);
@@ -5485,7 +5452,7 @@ mod tests {
         );
         archive.selector_policy = policy;
         for id in 0..40 {
-            archive.time_in_group[id] = id as u64;
+            archive.cost_in_group[id] = id as u64;
         }
         for id in 0..4 {
             archive.selected[id] = 1000;
@@ -5523,7 +5490,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("frontier selection");
-            if draw.path != SelectorPath::GroupWalk {
+            if draw.path != SelectorPath::HierarchyWalk {
                 continue;
             }
             walks += 1;
@@ -5552,7 +5519,7 @@ mod tests {
             groups: vec![64, 64, 1],
         });
         let barren_draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -5564,7 +5531,7 @@ mod tests {
             let (_, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection under a retired class");
-            if draw.path == SelectorPath::GroupWalk {
+            if draw.path == SelectorPath::HierarchyWalk {
                 if draw.counter_reset {
                     reset_seen = true;
                     break;
@@ -5580,7 +5547,7 @@ mod tests {
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 124), (1, 0, 123), (0, 0, 100)];
         let mut archive = selector_archive(&keys);
         let exhausting_draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -5594,7 +5561,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection");
-            if draw.path == SelectorPath::GroupWalk {
+            if draw.path == SelectorPath::HierarchyWalk {
                 fell_through += 1;
                 assert!(
                     id == 1 || id == 2,
@@ -5616,7 +5583,7 @@ mod tests {
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (0, 0, 100)];
         let mut archive = selector_archive(&keys);
         let exhausting_draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -5632,7 +5599,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection");
-            if draw.path == SelectorPath::GroupWalk {
+            if draw.path == SelectorPath::HierarchyWalk {
                 assert!(
                     draw.counter_reset,
                     "the first cell draw after full exhaustion must reset"
@@ -5662,7 +5629,7 @@ mod tests {
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("concentrated selection");
             match draw.path {
-                SelectorPath::GroupWalk => {
+                SelectorPath::HierarchyWalk => {
                     cell_draws += 1;
                     assert!(
                         id >= 12,
@@ -5688,7 +5655,7 @@ mod tests {
             entry.key.player_y_bucket = 0;
         }
         let exhausting_draw = SelectorDraw {
-            path: SelectorPath::GroupWalk,
+            path: SelectorPath::HierarchyWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -5704,7 +5671,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("concentrated selection");
-            if draw.path == SelectorPath::GroupWalk {
+            if draw.path == SelectorPath::HierarchyWalk {
                 assert_eq!(id, 0, "the only unexhausted member must be sampled");
                 assert_eq!(draw.classes_skipped, 0);
                 assert!(!draw.counter_reset);
@@ -5757,7 +5724,7 @@ mod tests {
     }
 
     #[test]
-    fn time_in_group_counts_from_the_recorded_coarse_transition() {
+    fn cost_in_group_counts_from_the_recorded_coarse_transition() {
         let mut archive = ChordArchive::new(TestAction::duration);
         let genesis = archive
             .insert(
@@ -5772,7 +5739,7 @@ mod tests {
             )
             .expect("genesis insert")
             .expect("genesis retained");
-        assert_eq!(archive.entry_time_in_group(genesis), 0);
+        assert_eq!(archive.entry_cost_in_group(genesis), 0);
         let (first, input) = chain_insert(
             &mut archive,
             Some(genesis),
@@ -5782,7 +5749,7 @@ mod tests {
             probe_key(0, 0, 4, 0),
         );
         let first = first.expect("first retained");
-        assert_eq!(archive.entry_time_in_group(first), 30);
+        assert_eq!(archive.entry_cost_in_group(first), 30);
         let (second, input) = chain_insert(
             &mut archive,
             Some(first),
@@ -5792,7 +5759,7 @@ mod tests {
             probe_key(0, 0, 8, 0),
         );
         let second = second.expect("second retained");
-        assert_eq!(archive.entry_time_in_group(second), 50);
+        assert_eq!(archive.entry_cost_in_group(second), 50);
         let (crossed, input) = chain_insert(
             &mut archive,
             Some(second),
@@ -5802,7 +5769,7 @@ mod tests {
             probe_key(0, 1, 2, 0),
         );
         let crossed = crossed.expect("crossing retained");
-        assert_eq!(archive.entry_time_in_group(crossed), 40);
+        assert_eq!(archive.entry_cost_in_group(crossed), 40);
         let (after, _) = chain_insert(
             &mut archive,
             Some(crossed),
@@ -5811,7 +5778,7 @@ mod tests {
             10,
             probe_key(0, 1, 6, 0),
         );
-        assert_eq!(archive.entry_time_in_group(after.expect("retained")), 50);
+        assert_eq!(archive.entry_cost_in_group(after.expect("retained")), 50);
     }
 
     #[test]
@@ -5853,8 +5820,8 @@ mod tests {
         let admitted = chain_insert(&mut archive, fast, &input, 0x04, 6, slot)
             .0
             .expect("the eleven-frame route displaces a slower one");
-        assert_eq!(archive.entry_time_in_group(admitted), 11);
-        assert_eq!(archive.replacement_time_displaced(), 1);
+        assert_eq!(archive.entry_cost_in_group(admitted), 11);
+        assert_eq!(archive.replacement_cost_displaced(), 1);
         assert_eq!(archive.active_count(), 4);
         let (slower, _) = chain_insert(&mut archive, fast, &input, 0x04, 200, slot);
         assert!(
@@ -5931,7 +5898,7 @@ mod tests {
             let mut counts = [0; 3];
             for _ in 0..12_000 {
                 let (id, draw) = archive.select_parent(&mut rand, 64).unwrap();
-                if draw.path == SelectorPath::GroupWalk {
+                if draw.path == SelectorPath::HierarchyWalk {
                     counts[id] += 1;
                 }
             }

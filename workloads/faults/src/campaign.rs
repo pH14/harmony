@@ -23,7 +23,7 @@ use crate::{
     archive::{
         DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord, FaultInput,
         FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS,
-        REPLACEMENT_IDENTIFIER, action_time, archive_key, bug_outcome, merge_milestones,
+        REPLACEMENT_IDENTIFIER, action_cost, archive_key, bug_outcome, merge_milestones,
         merge_progress_watermark, milestone_key, milestones, sample_action,
     },
     bundle::FaultVocabulary,
@@ -266,11 +266,19 @@ impl Reporting for FaultWorkload {
         SNAPSHOT_CHECKPOINT_FORMAT
     }
 
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         let mut digest = Sha256::new();
         digest.update(&self.kernel);
         digest.update(&self.initramfs);
         format!("{:x}", digest.finalize())
+    }
+
+    fn action_cost_unit(&self) -> &'static str {
+        "logical_actions"
+    }
+
+    fn execution_work_unit(&self) -> &'static str {
+        "horizons"
     }
 
     fn result_sha256(&self, result: &FaultCampaignJobResult) -> Result<String, Box<dyn Error>> {
@@ -307,7 +315,7 @@ impl InputPolicy for FaultWorkload {
         MAX_FAULT_ACTIONS
     }
 
-    fn longest_action_time(&self) -> u64 {
+    fn max_action_cost(&self) -> u64 {
         1
     }
 
@@ -416,12 +424,12 @@ impl TargetExecution for FaultWorkload {
         target.restore(snapshot)
     }
 
-    fn frames_clocked(&self, target: &FaultTarget) -> u64 {
+    fn execution_work(&self, target: &FaultTarget) -> u64 {
         target.horizons_clocked()
     }
 
-    fn action_time_fn(&self) -> fn(&FaultAction) -> u64 {
-        action_time
+    fn action_cost_fn(&self) -> fn(&FaultAction) -> u64 {
+        action_cost
     }
 
     fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
@@ -680,7 +688,10 @@ mod tests {
         let etcd = game();
         let postgres = FaultWorkload::new(b"kernel", b"postgres-initramfs", &config(&[]));
         assert_ne!(etcd.image_identity(), postgres.image_identity());
-        assert_ne!(etcd.image_sha256(), postgres.image_sha256());
+        assert_ne!(
+            etcd.workload_identity_sha256(),
+            postgres.workload_identity_sha256()
+        );
     }
 
     #[test]
@@ -698,7 +709,10 @@ mod tests {
             },
         );
         assert!(short.resolve_recorded(&policies).is_err());
-        assert_eq!(game.image_sha256(), short.image_sha256());
+        assert_eq!(
+            game.workload_identity_sha256(),
+            short.workload_identity_sha256()
+        );
         assert_eq!(
             policies.get(HORIZON_FIELD).map(String::as_str),
             Some("2000000000")

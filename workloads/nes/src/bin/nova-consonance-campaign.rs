@@ -253,7 +253,7 @@ mod real {
             archive_entry_limit: MAX_ARCHIVE_ENTRIES,
             memory_budget_mib: Some(memory_budget.archive_memory_budget_mib),
             materialize_final_artifacts: true,
-            retention: RetentionPolicy::AdmitAlive,
+            retention: RetentionPolicy::Unprobed,
             selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
                 entry: 3,
                 groups: vec![6, 12, 2],
@@ -306,7 +306,7 @@ mod real {
             "peak_rss_mib": bytes_to_mib_ceil(peak_rss_bytes),
             "execution_budget": report.execution_budget,
             "executions": report.executions_completed,
-            "frames_emulated": report.frames_emulated,
+            "frames_emulated": report.execution_work,
             "stream_sha256": report.stream_sha256,
             "archive_entries": report.archive.entries.len(),
             "retained": report.archive.retained,

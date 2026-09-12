@@ -94,7 +94,8 @@ key policy v8; named boss observation bytes require stream/checkpoint/result
 digest v4 (v2 introduced named Kraid/Ridley flags; v3 added Mother Brain state;
 v4 latches transient Tourian events). Named-progress v2 and replay-probe v2 also
 correct origin/retrospective route timestamps to exclude genesis setup; the probe
-reports physical work and setup separately. Earlier v1 timestamps in the 007
+reports action execution work and setup separately; probes and backend snapshot
+replay are outside the execution-work counter. Earlier v1 timestamps in the 007
 audit are superseded by the corrected audit, not silently rewritten.
 Existing v7 results and the v2 reporting measurements remain immutable. The unrelated legacy combined
 capacity score remains explicit rather than silently redefining past policies.

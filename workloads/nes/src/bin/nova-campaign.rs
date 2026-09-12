@@ -157,7 +157,7 @@ fn campaign_config(args: &Args) -> NovaCampaignConfig {
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
-        retention: RetentionPolicy::AdmitAlive,
+        retention: RetentionPolicy::Unprobed,
         selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 3,
             groups: vec![6, 12, 2],
@@ -207,7 +207,7 @@ fn run_marketing_soak(
         "execution_budget": live.execution_budget,
         "executions": live.executions_completed,
         "execution_budget_exact": live.executions_completed == live.execution_budget,
-        "frames_emulated": live.frames_emulated,
+        "frames_emulated": live.execution_work,
         "stream_sha256": &live.stream_sha256,
         "archive_entries": live.archive.entries.len(),
         "retained": live.archive.retained,

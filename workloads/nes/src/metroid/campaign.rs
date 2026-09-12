@@ -324,7 +324,7 @@ fn execute_suffix(
     max_actions: usize,
     retention: RetentionPolicy,
 ) -> Result<MetroidCampaignJobResult, Box<dyn Error>> {
-    if retention != RetentionPolicy::AdmitAlive {
+    if retention != RetentionPolicy::Unprobed {
         return Err("Metroid campaigns admit every live candidate".into());
     }
     let (genesis_items, genesis_tanks) = genesis;
@@ -453,8 +453,14 @@ impl Reporting for MetroidGame {
         SNAPSHOT_CHECKPOINT_FORMAT
     }
 
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(&self.rom))
+    }
+    fn action_cost_unit(&self) -> &'static str {
+        "frames"
+    }
+    fn execution_work_unit(&self) -> &'static str {
+        "frames"
     }
 
     fn result_sha256(&self, result: &MetroidCampaignJobResult) -> Result<String, Box<dyn Error>> {
@@ -489,7 +495,7 @@ impl InputPolicy for MetroidGame {
         MAX_METROID_ACTIONS
     }
 
-    fn longest_action_time(&self) -> u64 {
+    fn max_action_cost(&self) -> u64 {
         u64::from(crate::metroid::archive::LONGEST_HOLD_FRAMES)
     }
 
@@ -613,7 +619,7 @@ impl InputPolicy for MetroidGame {
 }
 
 impl TargetExecution for MetroidGame {
-    fn action_time_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 
@@ -643,8 +649,8 @@ impl TargetExecution for MetroidGame {
         target.restore(snapshot)
     }
 
-    fn frames_clocked(&self, target: &MetroidTarget) -> u64 {
-        target.frames_clocked()
+    fn execution_work(&self, target: &MetroidTarget) -> u64 {
+        target.execution_work()
     }
 
     fn apply_action(

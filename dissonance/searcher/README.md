@@ -45,7 +45,7 @@ campaign and target contracts:
 
 | Contract | Workload responsibility |
 | --- | --- |
-| `TargetExecution` | Construct, drive, restore, and snapshot targets; capture observations and account for execution cost. |
+| `TargetExecution` | Construct, drive, restore, and snapshot targets; capture observations and account for deterministic execution work. |
 | `InputPolicy` | Define the action vocabulary, draw suffixes, retain policy history, and checkpoint draw state. |
 | `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
@@ -83,6 +83,17 @@ Workload packages live in `../../workloads`. They own adapters, execution
 integration, and campaign binaries. A probe must restore candidate state before
 returning, including adapter caches and pending input.
 
+`TargetExecution::execution_work` is a monotonic logical lifetime counter. It
+starts at the workload's search genesis after setup, survives reset and
+snapshot restore, and excludes probe work. The campaign records this measured
+work separately from the declared per-action cost used by archive paths and
+suffix bounds. Each workload declares both unit labels; the stream header and
+report carry them, and replay rejects a workload whose identity or units do not
+match. A work budget stops new admissions after the measured total reaches the
+budget; already reserved jobs drain and can overshoot it. Physical cache or
+backend counters remain workload diagnostics and never replace the logical
+counter.
+
 Run the core checks with:
 
 ```sh
@@ -92,10 +103,10 @@ cargo clippy --manifest-path dissonance/searcher/Cargo.toml --all-targets -- -D 
 
 ## Search evaluation policies
 
-The legacy selector identifiers retain their exact behavior. Search experiments
-use independent versioned identifiers:
+Selector identifiers describe the generic hierarchy and retain their exact
+selection behavior. Search experiments use independent versioned identifiers:
 
-- `room_cell_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
+- `hierarchy_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
   each within-cell cost weight by one plus that entry's admitted selections.
   Cheap members get early attempts, while repeatedly sampled members yield some
   probability to alternatives. No workload field is added.
@@ -137,7 +148,7 @@ fixture exercises actual continuation dispatch, snapshot eviction, concurrent
 reservations, exact report/checkpoint replay, and planted recording corruption
 without a workload runtime or external artifact.
 
-`room_cell_uniform_128_energy_frontier_cheapest_key_count_v1:<thresholds>` is a
+`hierarchy_uniform_128_energy_frontier_cheapest_key_count_v1:<thresholds>` is a
 separate count-history experiment. It uses the larger of an entry's selection
 count and the remembered count of its depth-0 retention key. A cache of 16,384
 recently selected keys survives entry replacement and metadata compaction within
@@ -154,13 +165,13 @@ improvements, which may reduce their ordinary draw share; the companion workload
 panels must check that tradeoff. No default change is implied by the mechanism.
 
 Progress sidecars carry objective workload evidence, actual admitted execution
-frames, final totals, logical memory categories, and monotonic host time. With
+work, final totals, logical memory categories, and monotonic host time. With
 `HARMONY_COORDINATOR_PROFILE=1`, they also contain coordinator phase durations
-and dispatched replay/suffix action budgets. Those action budgets are requested
-time, not actual emulator frames. Profiling values and clocks never enter
+and dispatched replay/suffix action costs. Those costs are declared path cost,
+not measured execution work. Profiling values and clocks never enter
 search decisions or the deterministic campaign stream.
 
-`room_cell_uniform_128_energy_progress_cheapest_count_v1:<thresholds>` is a
+`hierarchy_uniform_128_energy_progress_cheapest_count_v1:<thresholds>` is a
 separate experiment that uses `ArchiveKey::progress_cmp` for class preference
 and frontier weighting. Equivalent/incomparable coarsest classes share draws;
 identity still orders maps, never the potentially partial progress relation.
@@ -173,13 +184,14 @@ bias in the legacy control. This policy changes parent selection; ordinary
 splice donor ranking retains its historical key ordering and remains a separate
 ablation concern for nonlinear workloads.
 
-`run_campaign_checkpointed_with_frame_budget` adds an optional deterministic
-admitted-frame cutoff without changing existing `CampaignConfig` callers. The
-stream and report record that budget only when present. Already reserved jobs
-drain normally; evaluators must score first-victory cost against the threshold,
-not treat a later victory from the drained window as a budgeted success.
+`run_campaign_checkpointed_with_options` accepts an optional deterministic work
+budget without changing existing `CampaignConfig` callers. The stream and
+report record that budget only when present. Already reserved jobs drain
+normally; evaluators must score first-objective work against the threshold and
+account for any drained overshoot. Omitting the option leaves the campaign
+without a work-budget cutoff.
 
-`room_cell_uniform_128_energy_progress_cheapest_v1:<thresholds>` isolates semantic
+`hierarchy_uniform_128_energy_progress_cheapest_v1:<thresholds>` isolates semantic
 progress weighting from entry-count weighting. It uses the same progress walk
 and cheapest-cell preference as the count variant, with the original per-entry
 weights. This recovers the location-neutral frontier behavior of the historical

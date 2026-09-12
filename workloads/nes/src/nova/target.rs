@@ -239,6 +239,7 @@ pub struct NovaTarget<M: Machine = QuickNesMachine> {
     snapshot_base: Option<M::Portable>,
     genesis_cleared: u8,
     halt_on_level_clear: bool,
+    execution_work: u64,
 }
 
 impl<M: Machine> NovaTarget<M> {
@@ -278,6 +279,7 @@ impl<M: Machine> NovaTarget<M> {
             snapshot_base: None,
             genesis_cleared: state.cleared_count(),
             halt_on_level_clear: true,
+            execution_work: 0,
         })
     }
 }
@@ -371,8 +373,8 @@ impl<M: Machine> NovaTarget<M> {
     }
 
     #[must_use]
-    pub fn frames_clocked(&self) -> u64 {
-        self.machine.now().0
+    pub fn execution_work(&self) -> u64 {
+        self.execution_work
     }
 
     #[must_use]
@@ -686,6 +688,14 @@ impl<M: Machine> Target for NovaTarget<M> {
             return;
         }
 
+        let frame_count = self.machine.frames().len();
+        if frame_count == 0 {
+            self.failed = true;
+            return;
+        }
+        self.execution_work = self
+            .execution_work
+            .saturating_add(u64::try_from(frame_count).unwrap_or(u64::MAX));
         let save_ram = match self
             .machine
             .read(SAVE_RAM_BASE as u64, SAVE_RAM_SIZE as u32)
@@ -697,10 +707,6 @@ impl<M: Machine> Target for NovaTarget<M> {
             }
         };
         let frames = self.machine.frames();
-        if frames.is_empty() {
-            self.failed = true;
-            return;
-        }
         let mut prior_wram = prior_wram;
         let mut prior_state = prior_state;
         let mut emitted = false;
@@ -1205,6 +1211,8 @@ mod tests {
     fn generic_snapshot_restore_and_reset_keep_handles_bounded() {
         let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
         target.apply(&ButtonChord::new(0x01, 2));
+        let first_work = target.execution_work();
+        assert_eq!(first_work, 2);
         let snapshot = target.snapshot().expect("portable snapshot");
         assert_eq!(target.machine.export_base_calls, 0);
         let same = target.snapshot().expect("shared portable snapshot");
@@ -1217,16 +1225,20 @@ mod tests {
         assert_eq!(target.machine.snapshots.len(), 2);
 
         target.apply(&ButtonChord::new(0x02, 2));
+        let second_work = target.execution_work();
+        assert_eq!(second_work, 4);
         assert_eq!(target.machine.snapshots.len(), 2);
         target
             .restore(&snapshot)
             .expect("restore portable snapshot");
+        assert_eq!(target.execution_work(), second_work);
         assert_eq!(target.machine.import_calls, 1);
         assert_eq!(target.machine.replay_calls, 1);
         assert_eq!(target.machine.snapshots.len(), 2);
         assert_eq!(target.observe().frame_count, 2);
 
         target.reset();
+        assert_eq!(target.execution_work(), second_work);
         assert_eq!(target.machine.snapshots.len(), 1);
         assert_eq!(target.machine.drop_calls, 3);
         assert_eq!(target.observe().frame_count, 0);

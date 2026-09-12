@@ -805,8 +805,14 @@ where
     fn checkpoint_format(&self) -> &'static str {
         self.snapshot_checkpoint_format()
     }
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(&self.rom))
+    }
+    fn action_cost_unit(&self) -> &'static str {
+        "frames"
+    }
+    fn execution_work_unit(&self) -> &'static str {
+        "frames"
     }
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
         postcard_result_sha256(result)
@@ -998,7 +1004,7 @@ where
         crate::smb::archive::MAX_SMB_COMPLETION_ACTIONS
     }
 
-    fn longest_action_time(&self) -> u64 {
+    fn max_action_cost(&self) -> u64 {
         u64::from(crate::smb::archive::LONG_HOLD_FRAMES.1)
     }
 }
@@ -1021,8 +1027,8 @@ where
     ) -> Result<(), Box<dyn Error>> {
         target.restore(snapshot)
     }
-    fn frames_clocked(&self, target: &SmbTarget<M, P>) -> u64 {
-        target.frames_clocked()
+    fn execution_work(&self, target: &SmbTarget<M, P>) -> u64 {
+        target.execution_work()
     }
     fn apply_action(
         &self,
@@ -1048,7 +1054,7 @@ where
         target.snapshot().ok_or_else(|| "failed to snapshot".into())
     }
 
-    fn action_time_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 
@@ -1381,7 +1387,7 @@ mod tests {
             memory_budget_mib: None,
             materialize_final_artifacts: true,
             chord: SmbCampaignChordPolicy::default(),
-            retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
+            retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission,
             selector: crate::search::archive::SelectorPolicy::GroupUniform,
             suffix: SuffixShape::default(),
             mixture: DrawMixture::BiasedHalf,
@@ -1746,7 +1752,7 @@ mod tests {
                 SmbMilestones::default(),
                 &[ButtonChord::new(0x01, 1)],
                 96,
-                crate::search::archive::RetentionPolicy::AdmitAlive,
+                crate::search::archive::RetentionPolicy::Unprobed,
             )
             .expect("execute room action");
         let candidate = result.actions[0]
@@ -1807,7 +1813,7 @@ mod tests {
                 SmbMilestones::default(),
                 &suffix,
                 96,
-                crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
+                crate::search::archive::RetentionPolicy::ProbeAtAdmission,
             )
             .expect("execute job on first instance");
         let on_second = game
@@ -1820,7 +1826,7 @@ mod tests {
                 SmbMilestones::default(),
                 &suffix,
                 96,
-                crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
+                crate::search::archive::RetentionPolicy::ProbeAtAdmission,
             )
             .expect("execute job on second instance");
         assert_eq!(on_first, on_second);
@@ -1849,7 +1855,7 @@ mod tests {
                 SmbMilestones::default(),
                 &[ButtonChord::new(0x01, 4)],
                 96,
-                crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
+                crate::search::archive::RetentionPolicy::ProbeAtAdmission,
             )
             .expect("execute job");
         assert!(result.actions.is_empty());
@@ -1963,7 +1969,7 @@ mod tests {
     fn twelve_worker_windowed_streams_are_repeatable_and_replay_exactly() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca21, 12, 24);
-        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        config.retention = crate::search::archive::RetentionPolicy::Unprobed;
         let mut first_stream = Vec::new();
         let first = run_smb_campaign(
             &rom,
@@ -2006,7 +2012,7 @@ mod tests {
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect("live campaign without a victory");
         assert_eq!(live.victories, 0);
-        assert_eq!(live.frames_to_first_victory, None);
+        assert_eq!(live.work_to_first_victory, None);
         assert_eq!(live.executions_to_first_victory, None);
         assert!(live.executions_completed > 0);
         let json = serde_json::to_string(&live).expect("serialize report");
@@ -2081,7 +2087,7 @@ mod tests {
     fn obsolete_campaign_policies_are_rejected_before_replay() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca44, 2, 128);
-        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        config.retention = crate::search::archive::RetentionPolicy::Unprobed;
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 1;
         let mut stream = Vec::new();
@@ -2231,8 +2237,8 @@ mod tests {
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
         for identifier in [
-            "room_cell_uniform_128",
-            "probe_at_admission_45",
+            "hierarchy_uniform_128",
+            "probe_at_admission",
             "fewest_frames_in_level",
             "whole_tree",
             "nes_pressable_36",
@@ -2245,7 +2251,7 @@ mod tests {
         for line in text.lines().skip(1) {
             assert!(line.contains("\"selector\""));
             assert_eq!(
-                line.contains("\"room_cell_uniform\""),
+                line.contains("\"hierarchy_uniform\""),
                 line.contains("\"concentration\"")
             );
         }
@@ -2273,7 +2279,7 @@ mod tests {
     fn budgeted_64_entry_campaign_reactivates_at_action_limit_and_replays_exactly() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca31, 4, 8_192);
-        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        config.retention = crate::search::archive::RetentionPolicy::Unprobed;
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 64;
         let mut stream = Vec::new();
@@ -2318,7 +2324,7 @@ mod tests {
     fn budgeted_single_entry_campaign_reactivates_displaced_anchor() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca32, 1, 128);
-        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        config.retention = crate::search::archive::RetentionPolicy::Unprobed;
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 1;
         let mut stream = Vec::new();
@@ -2386,7 +2392,7 @@ mod tests {
     }
 
     #[test]
-    fn admit_alive_campaign_probes_nothing_and_replays_byte_identically() {
+    fn unprobed_campaign_probes_nothing_and_replays_byte_identically() {
         let rom = synthetic_nrom();
         let probing = genesis_config(0x5eed_ca20, 4, 32);
         let mut probing_stream = Vec::new();
@@ -2398,19 +2404,17 @@ mod tests {
         )
         .expect("probing campaign");
         let mut config = genesis_config(0x5eed_ca20, 4, 32);
-        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        config.retention = crate::search::archive::RetentionPolicy::Unprobed;
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect("admit-alive campaign");
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
-        assert!(header.contains("\"retention_policy\":\"admit_alive\""));
+        assert!(header.contains("\"retention_policy\":\"unprobed\""));
         assert_eq!(live.probe_refused, 0);
-        assert!(
-            live.frames_emulated < probed.frames_emulated,
-            "skipping the probe must emulate fewer frames: {} against {}",
-            live.frames_emulated,
-            probed.frames_emulated
+        assert_eq!(
+            live.execution_work, probed.execution_work,
+            "probe work is restored and excluded from logical execution work"
         );
         let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay admit-alive");
         assert_eq!(
@@ -2434,7 +2438,7 @@ mod tests {
             .expect("retiring campaign");
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
-        assert!(header.contains("room_cell_uniform_128_retire:2,4,8,16"));
+        assert!(header.contains("hierarchy_uniform_128_retire:2,4,8,16"));
         assert!(live.archive.selector.retirement.is_some());
         let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay retiring");
         assert_eq!(
@@ -2458,7 +2462,7 @@ mod tests {
             .expect("energy campaign");
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
-        assert!(header.contains("room_cell_uniform_128_energy:2,4,8,16"));
+        assert!(header.contains("hierarchy_uniform_128_energy:2,4,8,16"));
         assert!(live.archive.selector.retirement.is_some());
         let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay energy");
         assert_eq!(
@@ -2472,7 +2476,7 @@ mod tests {
         let rom = synthetic_nrom();
         for seed in 0..24_u64 {
             let mut config = genesis_config(0x5eed_d000 + seed, 4, 64);
-            config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+            config.retention = crate::search::archive::RetentionPolicy::Unprobed;
             config.selector = crate::search::archive::SelectorPolicy::Retire(
                 crate::search::archive::RetireThresholds {
                     entry: 1,
@@ -2494,10 +2498,7 @@ mod tests {
             retention_policy_identifier, selector_policy_identifier,
         };
         use crate::smb::archive::selector_policy_from_identifier;
-        for policy in [
-            RetentionPolicy::ProbeAtAdmission45,
-            RetentionPolicy::AdmitAlive,
-        ] {
+        for policy in [RetentionPolicy::ProbeAtAdmission, RetentionPolicy::Unprobed] {
             assert_eq!(
                 retention_policy_from_identifier(retention_policy_identifier(policy))
                     .expect("retention round trip"),
@@ -2530,8 +2531,8 @@ mod tests {
             );
         }
         assert!(retention_policy_from_identifier("no_probe").is_err());
-        assert!(selector_policy_from_identifier("room_cell_uniform_128_retire:3,6,12").is_err());
-        assert!(selector_policy_from_identifier("room_cell_uniform_128_retire:3,6,12,0").is_err());
+        assert!(selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6,12").is_err());
+        assert!(selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6,12,0").is_err());
     }
 
     #[test]
@@ -2543,8 +2544,8 @@ mod tests {
             .expect("live campaign");
         let text = String::from_utf8(stream).expect("stream is utf-8");
         for (from, to) in [
-            ("room_cell_uniform_128", "concentrated_recency_128"),
-            ("probe_at_admission_45", "probe_at_admission_45_snapback_16"),
+            ("hierarchy_uniform_128", "concentrated_recency_128"),
+            ("probe_at_admission", "probe_at_admission_snapback_16"),
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),
             ("nes_pressable_36", "frozen_nine_mask"),
@@ -2727,7 +2728,7 @@ mod tests {
         )
         .expect("checkpoint-restored campaign");
         assert_eq!(restored_live.archive, tree_live.archive);
-        assert!(restored_live.bootstrap_frames < tree_live.bootstrap_frames);
+        assert!(restored_live.bootstrap_execution_work < tree_live.bootstrap_execution_work);
         assert_eq!(
             restored_live.origin.checkpoint_sha256.as_deref(),
             Some(checkpoint.file_sha256.as_str())
@@ -2826,7 +2827,7 @@ mod tests {
         assert_eq!(records.first().unwrap().executions, 1);
         let progress = records.last().unwrap();
         assert_eq!(progress.executions, observed.executions_completed);
-        assert_eq!(progress.frames_emulated, observed.frames_emulated);
+        assert_eq!(progress.execution_work, observed.execution_work);
         assert!(progress.progress.is_some());
         assert!(progress.search_elapsed_millis.is_some());
         let replayed =

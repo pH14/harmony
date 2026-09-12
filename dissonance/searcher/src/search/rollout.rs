@@ -139,8 +139,8 @@ pub fn execute_suffix<G: Workload + ?Sized>(
             let snapshot = target.snapshot()?;
             let key = target.key()?;
             let viable = match retention {
-                RetentionPolicy::ProbeAtAdmission45 => target.probe(&snapshot)?,
-                RetentionPolicy::AdmitAlive => true,
+                RetentionPolicy::ProbeAtAdmission => target.probe(&snapshot)?,
+                RetentionPolicy::Unprobed => true,
             };
             Some(CampaignCandidate {
                 key,
