@@ -22,7 +22,12 @@ pub enum SuffixShape {
 }
 
 impl SuffixShape {
-    pub fn bound_time<A>(self, suffix: &mut Vec<A>, time: fn(&A) -> u64, longest_action_time: u64) {
+    pub(crate) fn bound_time<A>(
+        self,
+        suffix: &mut Vec<A>,
+        time: fn(&A) -> u64,
+        longest_action_time: u64,
+    ) {
         if self != Self::OneToSixBounded {
             return;
         }
@@ -39,7 +44,7 @@ impl SuffixShape {
 }
 
 #[must_use]
-pub fn suffix_shape_identifier(shape: SuffixShape) -> &'static str {
+pub(crate) fn suffix_shape_identifier(shape: SuffixShape) -> &'static str {
     match shape {
         SuffixShape::OneOrTwo => SUFFIX_ONE_OR_TWO_IDENTIFIER,
         SuffixShape::OneToSix => SUFFIX_ONE_TO_SIX_IDENTIFIER,
@@ -95,7 +100,7 @@ impl DrawMixture {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EnergyStrategy {
+pub(crate) enum EnergyStrategy {
     Table,
     Splice,
     Alphabet,
@@ -110,7 +115,7 @@ pub const MIXTURE_ENERGY_PREFIX: &str = "energy:";
 pub const MIXTURE_ENERGY_SPLICE_PREFIX: &str = "energy_splice:";
 
 #[must_use]
-pub fn draw_mixture_identifier(mixture: DrawMixture) -> String {
+pub(crate) fn draw_mixture_identifier(mixture: DrawMixture) -> String {
     match mixture {
         DrawMixture::EnergySpliceContinuation { scale } => {
             format!("energy_splice_continuation_v1:{scale}")
@@ -171,7 +176,7 @@ pub struct MixtureDraw {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct MixtureEnergy {
+pub(crate) struct MixtureEnergy {
     barren: [u64; 3],
 }
 
@@ -182,14 +187,14 @@ fn energy_share(barren: u64, scale: u64) -> u64 {
 
 impl MixtureEnergy {
     #[must_use]
-    pub fn biased_weight(&self, scale: u64) -> u8 {
+    pub(crate) fn biased_weight(&self, scale: u64) -> u8 {
         let biased = energy_share(self.barren[0], scale);
         let total = biased + energy_share(self.barren[2], scale);
         u8::try_from(((256 * biased) / total).clamp(1, 255)).unwrap_or(128)
     }
 
     #[must_use]
-    pub fn splice_weights(&self, scale: u64) -> (u8, u8) {
+    pub(crate) fn splice_weights(&self, scale: u64) -> (u8, u8) {
         let shares = self.barren.map(|barren| energy_share(barren, scale));
         let total: u64 = shares.iter().sum();
         let weight = |share: u64| ((256 * share) / total).clamp(1, 253);
@@ -201,7 +206,7 @@ impl MixtureEnergy {
         )
     }
 
-    pub fn record_outcome(&mut self, strategy: EnergyStrategy, new_slot: bool) {
+    pub(crate) fn record_outcome(&mut self, strategy: EnergyStrategy, new_slot: bool) {
         let index = match strategy {
             EnergyStrategy::Table => 0,
             EnergyStrategy::Splice => 1,
@@ -215,7 +220,7 @@ impl MixtureEnergy {
     }
 }
 
-pub fn energy_strategy(
+pub(crate) fn energy_strategy(
     mutation_seed: u64,
     biased_weight: u8,
     splice_weight: u8,
@@ -229,13 +234,6 @@ pub fn energy_strategy(
         return Ok(EnergyStrategy::Splice);
     }
     Ok(EnergyStrategy::Alphabet)
-}
-
-pub fn energy_strategy_is_biased(
-    mutation_seed: u64,
-    biased_weight: u8,
-) -> Result<bool, Box<dyn Error>> {
-    Ok(energy_strategy(mutation_seed, biased_weight, 0)? == EnergyStrategy::Table)
 }
 
 pub fn draw_suffix<A, B, U>(
@@ -297,8 +295,8 @@ where
 mod tests {
     use super::{
         DrawMixture, EnergyStrategy, MixtureEnergy, SuffixShape, draw_mixture_from_identifier,
-        draw_mixture_identifier, draw_suffix, energy_strategy, energy_strategy_is_biased,
-        suffix_shape_from_identifier, suffix_shape_identifier,
+        draw_mixture_identifier, draw_suffix, energy_strategy, suffix_shape_from_identifier,
+        suffix_shape_identifier,
     };
 
     #[test]
@@ -465,11 +463,6 @@ mod tests {
                     assert!(
                         from_table || suffix.iter().all(|action| *action == 0),
                         "a suffix must draw every action from one strategy"
-                    );
-                    assert_eq!(
-                        from_table,
-                        energy_strategy_is_biased(*seed, weight).expect("strategy"),
-                        "the helper must re-derive the strategy draw"
                     );
                     from_table
                 })

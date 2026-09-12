@@ -29,19 +29,3 @@ pub trait Target {
         Err("target uses deterministic replay instead of snapshots".into())
     }
 }
-
-pub fn execute_actions<T>(target: &mut T, actions: &[T::Action]) -> Vec<T::Observations>
-where
-    T: Target,
-{
-    target.reset();
-    let mut observations = vec![target.observe()];
-    for action in actions {
-        target.apply(action);
-        observations.push(target.observe());
-        if target.exit_kind() != ExitKind::Ok {
-            break;
-        }
-    }
-    observations
-}
