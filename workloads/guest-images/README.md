@@ -3,18 +3,12 @@
 # guest-images
 
 Image recipes for the PostgreSQL, Docker, and k3s guest workloads. Each
-`build-*.sh` script assembles one initramfs; the `*-init.sh` scripts and the
-kernel config fragment are the payloads those scripts install into the guest
-root.
+`build-*.sh` assembles one initramfs; the `*-init.sh` scripts and the kernel
+config fragment are the payloads it installs into the guest root.
 
-The scripts run on Linux and reuse the guest platform's shared build library,
-kernel patches, and pinned versions under `consonance/harmony-linux/linux/`.
-Each one resolves that directory and changes into it before sourcing
-`lib-build.sh`, so every platform-relative path inside behaves as it does for
-the platform's own builders. `$workload_dir` points back here, for the payload
-files the recipe installs.
-
-Build them through the platform Makefile, which is the documented entry point:
+They run on Linux and reuse the guest platform's shared build library, kernel
+patches, and pinned versions under `consonance/harmony-linux/linux/`. Build them
+through the platform Makefile:
 
 ```
 make -C consonance/harmony-linux/linux postgres-image
