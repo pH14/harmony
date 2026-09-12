@@ -68,3 +68,8 @@ limit until VM teardown rather than freeing memory still named by host evidence.
 
 The mapped slice's bounds are exercised under Miri. Allocation, mapping lifetime,
 and cross-process access require the platform's real Linux guest tests.
+
+The PR Miri lane runs every loopback property with four generated cases to fit
+its 15-minute budget. The lane sets `HARMONY_MIRI_PR_SMOKE` at compile time;
+nightly and ordinary local Miri runs retain 16 cases. Native property tests keep
+their 256/512-case budgets.

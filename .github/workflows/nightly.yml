@@ -73,6 +73,7 @@ jobs:
       matrix: ${{ fromJSON(needs.miri-scope.outputs.matrix) }}
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
+      HARMONY_MIRI_PR_SMOKE: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned nightly + Miri
