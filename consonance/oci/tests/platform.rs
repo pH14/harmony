@@ -149,3 +149,10 @@ mod platform {
         Ok(())
     }
 }
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+#[ignore = "requires the Linux in-process hardware backend"]
+fn oci_platform_replay() {
+    panic!("platform qualification requires a Linux hardware backend");
+}
