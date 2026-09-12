@@ -2,8 +2,6 @@
 
 use crate::ram::{WORK_RAM_LEN, addr};
 
-/// Initialize a core's cartridge memory to the native power-on value.
-///
 /// # Safety
 /// A non-null pointer with a length in 1..=65536 must identify that many
 /// exclusively writable bytes for the duration of this call.

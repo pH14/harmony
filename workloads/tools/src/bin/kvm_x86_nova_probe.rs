@@ -362,7 +362,7 @@ fn run() -> Result<(), String> {
         let events = sdk_events(session, profile)?;
         let observation =
             read_observation(session, profile, observation_handle, observation_length)?;
-        let frame = Some(observation_frame(&observation)?);
+        let frame = observation_frame(&observation)?;
         let hash = session
             .state_hash()
             .map_err(|error| format!("whole-state hash: {error}"))?;
@@ -370,15 +370,12 @@ fn run() -> Result<(), String> {
             before_faults.and_then(|_| consonance_client::session::host_minor_faults());
         let touched_pages =
             before_faults.and_then(|before| after_faults.map(|after| after.saturating_sub(before)));
-        let frames = frame.zip(before_frame).map_or_else(
-            || frame.unwrap_or(0),
-            |(after, before)| after.saturating_sub(before),
-        );
+        let frames = before_frame.map_or(frame, |before| frame.saturating_sub(before));
         profile.action(
             frames,
             session.doorbell_exits().saturating_sub(before_exits),
             touched_pages,
-            frame,
+            Some(frame),
         );
         Ok((
             hash,
@@ -393,6 +390,8 @@ fn run() -> Result<(), String> {
         evidence: Vec<u8>,
     }
 
+    type OracleOutcome = (Option<control_proto::SnapId>, [u8; 32], Vec<u8>);
+
     fn oracle_action(
         session: &mut Session,
         profile: &mut ProbeProfile,
@@ -401,7 +400,7 @@ fn run() -> Result<(), String> {
         seal: bool,
         observation_handle: u32,
         observation_length: u32,
-    ) -> Result<(Option<control_proto::SnapId>, [u8; 32], Vec<u8>), String> {
+    ) -> Result<OracleOutcome, String> {
         let before_faults = profile
             .enabled
             .then(consonance_client::session::host_minor_faults)
@@ -418,7 +417,7 @@ fn run() -> Result<(), String> {
         let events = sdk_events(session, profile)?;
         let observation =
             read_observation(session, profile, observation_handle, observation_length)?;
-        let frame = Some(observation_frame(&observation)?);
+        let frame = observation_frame(&observation)?;
         let hash = session
             .state_hash()
             .map_err(|error| format!("whole-state hash: {error}"))?;
@@ -426,15 +425,12 @@ fn run() -> Result<(), String> {
             before_faults.and_then(|_| consonance_client::session::host_minor_faults());
         let touched_pages =
             before_faults.and_then(|before| after_faults.map(|after| after.saturating_sub(before)));
-        let frames = frame.zip(before_frame).map_or_else(
-            || frame.unwrap_or(0),
-            |(after, before)| after.saturating_sub(before),
-        );
+        let frames = before_frame.map_or(frame, |before| frame.saturating_sub(before));
         profile.action(
             frames,
             session.doorbell_exits().saturating_sub(before_exits),
             touched_pages,
-            frame,
+            Some(frame),
         );
         Ok((
             child,
