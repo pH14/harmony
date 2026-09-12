@@ -40,7 +40,28 @@ this lens checks that behavior placed in an otherwise correctly classified
 crate still belongs there. Identify the mechanism being changed, its consumer,
 and the snapshot/replay contract that observes its state or output. Report
 scenarios where an interface-owned rule has leaked into an adapter or where a
-workload-specific policy has become part of a reusable core.
+workload-specific concept, vocabulary, policy, or special case has become part
+of Consonance or Dissonance instead of remaining in a workload package or
+composition layer.
+
+## Consonance direction
+
+Use this lens for changes to Consonance architecture, machine composition,
+virtualization backends, snapshots, forking, or replay. Confirm that host CPU
+and operating-system dependencies are minimized and encapsulated behind narrow
+boundaries. Check that the design remains viable on both KVM and HVF, on
+bare-metal hosts and under nested virtualization, without expanding the
+single-vCPU execution model. Look for regressions in fork and replay latency or
+in the memory efficiency of snapshots and forks.
+
+## Dissonance direction
+
+Use this lens for changes to Dissonance search policy, coordination, retention,
+or worker execution. Confirm that the change moves search behavior toward a
+single adaptive algorithm rather than introducing search-tuning knobs. Check
+its CPU and memory costs and whether coordinator serialization, admission
+ordering, shared state, or result buffering prevents search throughput from
+scaling efficiently with additional cores.
 
 ## Unsafe code
 
