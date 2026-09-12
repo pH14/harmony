@@ -97,9 +97,9 @@ fn run() -> Result<(), String> {
         nox2apic hpet=disable harmony_pvclock rdinit=/init";
     #[cfg(target_arch = "aarch64")]
     const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
-    const HANDLE_REGISTER: u32 = 11;
-    const LENGTH_REGISTER: u32 = 12;
-    const FRAME_REGISTER: u32 = 10;
+    const HANDLE_REGISTER: u32 = 1;
+    const LENGTH_REGISTER: u32 = 2;
+    const OBSERVATION_FRAME_OFFSET: usize = 8;
     const SDK_NAMESPACE_SHIFT: u32 = 24;
     const SDK_STATE_NAMESPACE: u8 = 2;
     const SDK_STATE_SET: u8 = 0;
@@ -237,23 +237,6 @@ fn run() -> Result<(), String> {
         }
     }
 
-    fn latest_frame(events: &[SdkEvent]) -> Option<u64> {
-        let event_id = (u32::from(SDK_STATE_NAMESPACE) << SDK_NAMESPACE_SHIFT) | FRAME_REGISTER;
-        let mut frame = None;
-        for (_, id, bytes) in events {
-            if *id != event_id || bytes.len() != 9 {
-                continue;
-            }
-            let value = u64::from_le_bytes(bytes[1..9].try_into().ok()?);
-            match bytes[0] {
-                SDK_STATE_SET => frame = Some(value),
-                SDK_STATE_MAX => frame = Some(frame.unwrap_or(0).max(value)),
-                _ => {}
-            }
-        }
-        frame
-    }
-
     fn latest_register(events: &[SdkEvent], register: u32) -> Result<u64, String> {
         let event_id = (u32::from(SDK_STATE_NAMESPACE) << SDK_NAMESPACE_SHIFT) | register;
         let mut value = None;
@@ -297,6 +280,16 @@ fn run() -> Result<(), String> {
             .map_err(|error| format!("observation read: {error}"))?;
         profile.read();
         Ok(bytes)
+    }
+
+    fn observation_frame(observation: &[u8]) -> Result<u64, String> {
+        let frame = observation
+            .get(OBSERVATION_FRAME_OFFSET..OBSERVATION_FRAME_OFFSET + 4)
+            .ok_or_else(|| "observation header is truncated".to_owned())?;
+        let frame: [u8; 4] = frame
+            .try_into()
+            .map_err(|_| "observation frame field is malformed".to_owned())?;
+        Ok(u64::from(u32::from_le_bytes(frame)))
     }
 
     fn branch(
@@ -367,9 +360,9 @@ fn run() -> Result<(), String> {
         branch(session, profile, parent, vec![0x81, 12])?;
         let at = run_to_snapshot(session, profile, parent)?;
         let events = sdk_events(session, profile)?;
-        let frame = latest_frame(&events);
         let observation =
             read_observation(session, profile, observation_handle, observation_length)?;
+        let frame = Some(observation_frame(&observation)?);
         let hash = session
             .state_hash()
             .map_err(|error| format!("whole-state hash: {error}"))?;
@@ -423,9 +416,9 @@ fn run() -> Result<(), String> {
             None
         };
         let events = sdk_events(session, profile)?;
-        let frame = latest_frame(&events);
         let observation =
             read_observation(session, profile, observation_handle, observation_length)?;
+        let frame = Some(observation_frame(&observation)?);
         let hash = session
             .state_hash()
             .map_err(|error| format!("whole-state hash: {error}"))?;
@@ -656,6 +649,7 @@ fn run() -> Result<(), String> {
     if setup_observation.is_empty() {
         return Err("setup observation is empty".to_owned());
     }
+    profile.last_frame = Some(observation_frame(&setup_observation)?);
     let setup_console = session
         .console_tail()
         .map_err(|error| format!("guest console: {error}"))?;
