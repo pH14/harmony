@@ -16,5 +16,7 @@ startup and application exit markers before forcing the guest to reboot.
 
 The artifact builder supplies BusyBox, `/usr/bin/runc`, the supervisor, and
 the platform device nodes. Architecture specific console transport belongs in
-the platform image; this script writes status to `/dev/console` and falls back
-to its inherited output when that node is unavailable.
+the platform image. This script writes status to its inherited output. On x86
+that is the kernel console. On ARM the fixed entrypoint routes output through
+the platform MMIO console service and drains it before reboot; the OCI payload
+does not receive the service's physical-memory device.

@@ -9,14 +9,16 @@ BUNDLE=/harmony-oci
 CONTAINER_ID=harmony
 
 log() {
-    if ! printf '%s\n' "$*" >/dev/console 2>/dev/null; then
-        printf '%s\n' "$*"
-    fi
+    printf '%s\n' "$*"
 }
 
 finish() {
     status=$1
     log "HARMONY_OCI_EXIT rc=$status"
+    if [ -n "${HARMONY_CONSOLE_PID:-}" ]; then
+        exec >/dev/null 2>&1
+        wait "$HARMONY_CONSOLE_PID" || status=125
+    fi
     "$BUSYBOX" reboot -f 2>/dev/null || true
     exit "$status"
 }
@@ -66,18 +68,21 @@ mount_required cgroup2 none /sys/fs/cgroup
 [ -e /dev/harmony-park ] || startup_failure 125
 
 runc_pid=
+# shellcheck disable=SC2329
 forward_term() {
     if [ -n "$runc_pid" ]; then
         "$BUSYBOX" kill -TERM "$runc_pid" 2>/dev/null || true
     fi
 }
 
+# shellcheck disable=SC2329
 forward_int() {
     if [ -n "$runc_pid" ]; then
         "$BUSYBOX" kill -INT "$runc_pid" 2>/dev/null || true
     fi
 }
 
+# shellcheck disable=SC2329
 forward_hup() {
     if [ -n "$runc_pid" ]; then
         "$BUSYBOX" kill -HUP "$runc_pid" 2>/dev/null || true

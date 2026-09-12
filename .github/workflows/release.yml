@@ -36,50 +36,48 @@ jobs:
         include:
           - runner: ubuntu-24.04
             isa: x86_64
-            targets: kernel postgres-image
+            target: x86_64-unknown-linux-musl
           - runner: ubuntu-24.04-arm
-            isa: arm64
-            targets: arm64-postgres-kernel arm64-oci-image
+            isa: aarch64
+            target: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - run: |
+      - uses: Swatinem/rust-cache@v2
+      - name: Build canonical platform runtime
+        env:
+          GUEST_TARGET: ${{ matrix.target }}
+          HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
+          HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
+        run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential flex bison libelf-dev libssl-dev bc cpio kmod bzip2 wget
-      - run: make -C consonance/harmony-linux fetch
-      # arm64: from-source musl-static payloads; build directly on the runner.
-      - if: matrix.isa == 'arm64'
-        run: sudo make -C consonance/harmony-linux ${{ matrix.targets }}
-      # x86: the kernel builds on the runner (the counter-opcode scan
-      # baselines are per-toolchain — select the runner-toolchain gcc 13
-      # lists), and the postgres image builds in a Debian trixie container,
-      # the pinned build environment its deb shared-library closure needs
-      # (consonance/harmony-linux/README.md).
-      - if: matrix.isa == 'x86_64'
+            build-essential flex bison libelf-dev libssl-dev bc cpio kmod bzip2 wget python3
+          rustup toolchain install nightly-2026-06-16 --profile minimal --component rust-src --target "$GUEST_TARGET"
+          make -C consonance/harmony-linux fetch
+          consonance/harmony-linux/scripts/build-platform-runtime.sh
+      - name: Verify exact platform inputs
+        env:
+          GUEST_ISA: ${{ matrix.isa }}
         run: |
-          HARMONY_RDTSC_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt" \
-          HARMONY_RDRAND_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt" \
-          make -C consonance/harmony-linux kernel
-          sudo docker run --rm -v "$PWD:/work" -w /work debian:trixie bash -euc '
-            apt-get update
-            apt-get install -y --no-install-recommends \
-              build-essential bzip2 gzip cpio kmod e2fsprogs util-linux locales
-            # The image build extracts the pinned debs and copies their
-            # shared-library closure from the host /lib; installing the same
-            # debs pulls that closure (libicu and friends) into the container.
-            apt-get install -y --no-install-recommends \
-              ./consonance/harmony-linux/dl/*.deb
-            echo "en_US.UTF-8 UTF-8" >/etc/locale.gen && locale-gen
-            make -C consonance/harmony-linux postgres-image'
-      # The x86 build writes bzImage + initramfs at build/ top level; the
-      # tarball layout is build/<isa>/ (the CLI's share/harmony/guest/<isa>).
-      - if: matrix.isa == 'x86_64'
+          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture "$GUEST_ISA" \
+            --artifacts "consonance/harmony-linux/build/$GUEST_ISA" --output platform-provenance.json
+          python3 -c 'import json; assert json.load(open("platform-provenance.json"))["scope"] == "exact-input"'
+      - name: Qualify the released runtime on hardware
+        env:
+          GUEST_ISA: ${{ matrix.isa }}
         run: |
-          mkdir -p consonance/harmony-linux/build/x86_64
-          cp consonance/harmony-linux/build/bzImage \
-             consonance/harmony-linux/build/initramfs-postgres.cpio.gz \
-             consonance/harmony-linux/build/x86_64/
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          export HARMONY_PLATFORM_INITRAMFS="$GITHUB_WORKSPACE/consonance/harmony-linux/build/$GUEST_ISA/initramfs-oci.cpio.gz"
+          export HARMONY_PLATFORM_FIXTURE="$GITHUB_WORKSPACE/consonance/harmony-linux/build/$GUEST_ISA/fixture"
+          if [[ "$GUEST_ISA" == aarch64 ]]; then
+            export HARMONY_PLATFORM_KERNEL="$GITHUB_WORKSPACE/consonance/harmony-linux/build/$GUEST_ISA/Image"
+          else
+            export HARMONY_PLATFORM_KERNEL="$GITHUB_WORKSPACE/consonance/harmony-linux/build/$GUEST_ISA/bzImage"
+          fi
+          timeout -k 10 720 cargo test --locked --release -p oci-support --test platform -- --ignored --nocapture
       - run: tar -C consonance/harmony-linux/build -czf harmony-guest-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz ${{ matrix.isa }}
       - uses: actions/upload-artifact@v4
         with:

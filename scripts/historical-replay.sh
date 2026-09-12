@@ -31,8 +31,8 @@ esac
 }
 
 harmony=${PWD}/tools/harmony
-kernel=${PWD}/guest/bzImage-faultlab
-base_initramfs=${PWD}/guest/initramfs.cpio.gz
+kernel=${PWD}/guest/bzImage
+base_initramfs=${PWD}/guest/initramfs-oci.cpio.gz
 chmod +x "${harmony}"
 test -x "${harmony}" && test -s "${kernel}" && test -s "${base_initramfs}"
 

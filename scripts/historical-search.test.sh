@@ -21,8 +21,8 @@ cp "$FAKE_SUMMARY" "$out/campaign-summary.json"
 exit "${FAKE_EXIT_STATUS:-0}"
 EOF
 chmod +x "${work}/tools/harmony"
-printf x >"${work}/guest/bzImage-faultlab"
-printf x >"${work}/guest/initramfs.cpio.gz"
+printf x >"${work}/guest/bzImage"
+printf x >"${work}/guest/initramfs-oci.cpio.gz"
 printf x >"${work}/oci-images/pgcic-14.3.oci"
 printf '%s\n' '{"id":"pgcic"}' >"${work}/case/case.json"
 

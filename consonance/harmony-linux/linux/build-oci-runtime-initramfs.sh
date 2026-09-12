@@ -28,8 +28,8 @@ case "$runtime_arch" in
 esac
 require_tools cc make gzip readelf python3 sed grep awk nproc
 
-runtime_init=${HARMONY_RUNTIME_INIT:-${HARMONY_PLATFORM_INIT:-}}
-runtime_supervisor=${HARMONY_RUNTIME_SUPERVISOR:-${HARMONY_PLATFORM_SUPERVISOR:-}}
+runtime_init=${HARMONY_RUNTIME_INIT:-}
+runtime_supervisor=${HARMONY_RUNTIME_SUPERVISOR:-}
 : "${runtime_init:?set HARMONY_RUNTIME_INIT to the platform PID 1 script}"
 : "${runtime_supervisor:?set HARMONY_RUNTIME_SUPERVISOR to the platform supervisor}"
 [ -x "$runtime_init" ] || {
@@ -69,6 +69,7 @@ busybox_obj=$BUILD_ROOT/busybox-build-oci-$runtime_arch
 oci_root=$BUILD_ROOT/oci-runtime-root-$runtime_arch
 rm -rf "$busybox_obj" "$oci_root"
 mkdir -p "$busybox_obj" "$oci_root"
+extract_busybox
 prepare_busybox_build_source
 make -C "$BBSRC" O="$busybox_obj" allnoconfig >/dev/null
 
@@ -91,7 +92,7 @@ enable_busybox_symbol() {
 for symbol in STATIC BUSYBOX ASH SH_IS_ASH MOUNT UMOUNT MKDIR MKNOD CHMOD CHOWN \
     CAT ECHO GREP HALT POWEROFF REBOOT SETSID SETUIDGID ENV ID KILL SLEEP \
     LN RM CP MV TRUE FALSE TEST SYNC PRINTF HEAD TAIL TEE CUT WC PS SED TOUCH \
-    STAT READLINK; do
+    STAT READLINK MKFIFO; do
     enable_busybox_symbol "$symbol"
 done
 grep -qxF 'CONFIG_STATIC=y' "$busybox_obj/.config" || {
@@ -114,7 +115,7 @@ make -C "$BBSRC" O="$busybox_obj" CC="$busybox_cc" -j"$(nproc)" busybox >/dev/nu
 for symbol in STATIC BUSYBOX ASH SH_IS_ASH MOUNT UMOUNT MKDIR MKNOD CHMOD CHOWN \
     CAT ECHO GREP HALT POWEROFF REBOOT SETSID SETUIDGID ENV ID KILL SLEEP \
     LN RM CP MV TRUE FALSE TEST SYNC PRINTF HEAD TAIL TEE CUT WC PS SED TOUCH \
-    STAT READLINK; do
+    STAT READLINK MKFIFO; do
     grep -qxF "CONFIG_${symbol}=y" "$busybox_obj/.config" || {
         echo "FAIL: platform BusyBox lost CONFIG_${symbol}" >&2
         exit 1
@@ -153,10 +154,12 @@ done
 install -m 0755 "$runc_binary" "$oci_root/usr/bin/runc"
 install -m 0755 "$runtime_init" "$oci_root/usr/lib/harmony/init"
 install -m 0755 "$runtime_supervisor" "$oci_root/usr/lib/harmony/supervisor"
-install -m 0755 "$LINUX_DIR/oci-init.sh" "$oci_root/init"
 if [ "$runtime_arch" = aarch64 ]; then
+    install -m 0755 "$LINUX_DIR/arm64-oci-init.sh" "$oci_root/init"
     "$busybox_cc" -static -Os "${busybox_flag_args[@]}" -Wall -Wextra -Werror \
         "$LINUX_DIR/arm64-mmio-console.c" -o "$oci_root/usr/bin/mmio-console"
+else
+    install -m 0755 "$LINUX_DIR/oci-init.sh" "$oci_root/init"
 fi
 
 printf 'root:x:0:0:root:/root:/bin/sh\n' >"$oci_root/etc/passwd"

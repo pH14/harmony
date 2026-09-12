@@ -3,6 +3,13 @@
 The instruction scanners reject unsupported instructions in shipped guest
 executables. Their planted negative controls must continue to fail.
 
+`build-platform-runtime.sh` builds the native architecture's kernel, static
+supervisor, OCI runtime, and OCI smoke fixture, then seals their manifest. Run
+`make -C consonance/harmony-linux fetch` first. Install the pinned
+`nightly-2026-06-16` Rust toolchain with `rust-src` and the architecture's Linux
+musl target. ARM builds rebuild the Rust standard library against LSE musl and
+scan the complete shipped binaries for unsupported instructions.
+
 `runtime-artifacts.py` records and verifies the canonical kernel, OCI runtime,
 and platform fixture. `source-key` hashes platform build sources and pinned
 contracts; generated build/download directories are excluded. `seal` records

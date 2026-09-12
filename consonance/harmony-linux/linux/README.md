@@ -22,23 +22,20 @@ The x86 build publishes `build/x86_64/bzImage` and
 directory also contains a checksum and `oci-runtime.manifest` describing the
 kernel, initramfs, BusyBox, `runc`, PID 1, and supervisor inputs.
 
-Build the runtime after building its kernel and provide the platform binaries:
+Build the complete runtime from the repository root on native Linux:
 
 ```sh
-HARMONY_RUNTIME_INIT=/path/to/platform-init \
-HARMONY_RUNTIME_SUPERVISOR=/path/to/platform-supervisor \
-make -C consonance/harmony-linux/linux oci-runtime-image
-
-HARMONY_RUNTIME_INIT=/path/to/platform-init \
-HARMONY_RUNTIME_SUPERVISOR=/path/to/platform-supervisor \
-make -C consonance/harmony-linux/linux arm64-oci-image
+make -C consonance/harmony-linux fetch
+consonance/harmony-linux/scripts/build-platform-runtime.sh
 ```
 
-The first command requires Linux/x86_64. The second requires the validated
-native Linux/aarch64 builder. The runtime builder fails when either binary,
-the matching kernel, or the verified `runc` asset is missing. It scans every
-ELF shipped by the platform runtime; arm64 binaries must satisfy the existing
-LSE and counter reachability gates.
+The build requires `nightly-2026-06-16` with `rust-src` and the native Linux
+musl target. It builds the matching kernel and static guest binaries, packages
+the platform OCI fixture, and records a source and artifact manifest. The
+lower-level `build-oci-runtime-initramfs.sh` accepts the built platform init and
+supervisor through `HARMONY_RUNTIME_INIT` and `HARMONY_RUNTIME_SUPERVISOR`.
+It fails when a required input is missing. Every ARM executable must satisfy
+the existing LSE and counter reachability gates.
 
 ## Direct platform fixtures
 
