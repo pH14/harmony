@@ -770,3 +770,462 @@ impl Backend for KvmBackend {
         Some(std::sync::Arc::clone(&self.cancel_run))
     }
 }
+
+#[cfg(all(test, not(miri)))]
+mod xsave_diagnostic {
+    use super::*;
+
+    use crate::arch::x86::{CpuidEntry, MsrRange};
+    use crate::exit::CommonExit;
+    use crate::types::MpState;
+    use std::fmt::Write as _;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    const RAM_LEN: usize = 0x4000;
+    const CODE_GPA: usize = 0x1000;
+    const MMIO_GPA: u64 = 0xFEE0_0080;
+    const MMIO_VALUE: u8 = 5;
+    const XSTATE_BV: std::ops::Range<usize> = 512..520;
+    const XCOMP_BV: std::ops::Range<usize> = 520..528;
+    const SSE_XMM0: std::ops::Range<usize> = 160..176;
+    const ACTIVE_XMM0: [u8; 16] = [
+        0xA5, 0x5A, 0x3C, 0xC3, 0x96, 0x69, 0x78, 0x87, 0x12, 0x21, 0x34, 0x43, 0x56, 0x65, 0xAB,
+        0xBA,
+    ];
+    const ZERO_XMM0: [u8; 16] = [0; 16];
+
+    struct MmapRam {
+        ptr: *mut libc::c_void,
+        len: usize,
+    }
+
+    impl MmapRam {
+        fn new(len: usize) -> std::io::Result<Self> {
+            let ptr = unsafe {
+                // SAFETY: `len` is a nonzero page-sized mapping length selected by this test.
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            if ptr == libc::MAP_FAILED {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(Self { ptr, len })
+            }
+        }
+
+        fn as_mut_bytes(&mut self) -> &mut [u8] {
+            unsafe {
+                // SAFETY: `ptr` is a live private mapping owned by this value, and the returned
+                // slice is the only mutable borrow used while the guest is stopped.
+                std::slice::from_raw_parts_mut(self.ptr.cast::<u8>(), self.len)
+            }
+        }
+    }
+
+    impl Drop for MmapRam {
+        fn drop(&mut self) {
+            unsafe {
+                // SAFETY: `ptr` and `len` came from one successful mmap and are unmapped once.
+                libc::munmap(self.ptr, self.len);
+            }
+        }
+    }
+
+    fn diagnostic_policy() -> X86Policy {
+        X86Policy {
+            cpuid: CpuidModel {
+                entries: vec![
+                    CpuidEntry {
+                        leaf: 0,
+                        eax: 0xD,
+                        ebx: 0x756E_6547,
+                        ecx: 0x6C65_746E,
+                        edx: 0x4965_6E69,
+                        ..Default::default()
+                    },
+                    CpuidEntry {
+                        leaf: 1,
+                        eax: 0x0009_06EC,
+                        ebx: 0x0001_0800,
+                        ecx: 0x36DA_3203,
+                        edx: 0x0F8B_BB7F,
+                        ..Default::default()
+                    },
+                    CpuidEntry {
+                        leaf: 0xD,
+                        subleaf_significant: true,
+                        eax: 7,
+                        ebx: 0x340,
+                        ecx: 0x340,
+                        ..Default::default()
+                    },
+                    CpuidEntry {
+                        leaf: 0xD,
+                        subleaf: 1,
+                        subleaf_significant: true,
+                        ..Default::default()
+                    },
+                    CpuidEntry {
+                        leaf: 0xD,
+                        subleaf: 2,
+                        subleaf_significant: true,
+                        eax: 0x100,
+                        ebx: 0x240,
+                        ..Default::default()
+                    },
+                ],
+            },
+            msr_filter: MsrFilter {
+                allow_inkernel: vec![MsrRange {
+                    base: 0x174,
+                    count: 3,
+                }],
+            },
+        }
+    }
+
+    fn mmio_program() -> [u8; 13] {
+        [
+            0x67,
+            0x66,
+            0xC7,
+            0x05,
+            MMIO_GPA as u8,
+            (MMIO_GPA >> 8) as u8,
+            (MMIO_GPA >> 16) as u8,
+            (MMIO_GPA >> 24) as u8,
+            MMIO_VALUE,
+            0,
+            0,
+            0,
+            0xF4,
+        ]
+    }
+
+    fn header(image: &[u8]) -> (u64, u64) {
+        assert!(
+            image.len() >= XCOMP_BV.end,
+            "XSAVE image is shorter than its header"
+        );
+        let xstate_bv = u64::from_le_bytes(
+            image[XSTATE_BV]
+                .try_into()
+                .expect("XSAVE XSTATE_BV has eight bytes"),
+        );
+        let xcomp_bv = u64::from_le_bytes(
+            image[XCOMP_BV]
+                .try_into()
+                .expect("XSAVE XCOMP_BV has eight bytes"),
+        );
+        (xstate_bv, xcomp_bv)
+    }
+
+    fn cpuid_words(backend: &KvmBackend, leaf: u32, subleaf: u32) -> [u32; 4] {
+        let cpuid = backend
+            .vcpu
+            .get_cpuid2(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+            .unwrap_or_else(|e| panic!("KVM_GET_CPUID2 failed: {e}"));
+        let entry = cpuid
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == leaf && entry.index == subleaf)
+            .unwrap_or_else(|| panic!("guest CPUID leaf {leaf:#x}/{subleaf} missing"));
+        [entry.eax, entry.ebx, entry.ecx, entry.edx]
+    }
+
+    fn backend_xcr0(backend: &KvmBackend) -> u64 {
+        let xcrs = backend
+            .vcpu
+            .get_xcrs()
+            .unwrap_or_else(|e| panic!("KVM_GET_XCRS failed: {e}"));
+        xcrs.xcrs
+            .iter()
+            .find(|xcr| xcr.xcr == 0)
+            .map(|xcr| xcr.value)
+            .unwrap_or_else(|| panic!("guest XCR0 missing from KVM_GET_XCRS"))
+    }
+
+    fn write_image(dir: &Path, name: &str, image: &[u8]) {
+        fs::write(dir.join(name), image)
+            .unwrap_or_else(|e| panic!("write {} failed: {e}", dir.join(name).display()));
+    }
+
+    fn assert_xmm0(image: &[u8], expected: &[u8; 16], phase: &str, label: &str) {
+        assert_eq!(
+            &image[SSE_XMM0], expected,
+            "{label} XMM0 changed during {phase}"
+        );
+    }
+
+    fn words_hex(words: [u32; 4]) -> String {
+        format!(
+            "{:08x},{:08x},{:08x},{:08x}",
+            words[0], words[1], words[2], words[3]
+        )
+    }
+
+    fn run_variant(report_root: &Path, active_sse: bool) {
+        let label = if active_sse {
+            "active-initialized-sse"
+        } else {
+            "zero-sse-control"
+        };
+        let report_dir = report_root.join(label);
+        fs::create_dir_all(&report_dir)
+            .unwrap_or_else(|e| panic!("create {} failed: {e}", report_dir.display()));
+
+        let mut ram =
+            MmapRam::new(RAM_LEN).unwrap_or_else(|e| panic!("guest RAM mmap failed: {e}"));
+        ram.as_mut_bytes()[CODE_GPA..CODE_GPA + mmio_program().len()]
+            .copy_from_slice(&mmio_program());
+
+        let mut backend =
+            KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed for {label}: {e}"));
+        let xsave_len = backend
+            .xsave2_size
+            .unwrap_or_else(|| panic!("KVM_CAP_XSAVE2 is unavailable for {label}"));
+        assert!(
+            xsave_len >= size_of::<kvm_xsave>(),
+            "KVM_CAP_XSAVE2 returned a short image"
+        );
+
+        unsafe {
+            // SAFETY: `ram` is page-aligned, pinned for this scope, and outlives `backend`.
+            backend
+                .map_memory(Gpa(0), ram.as_mut_bytes())
+                .unwrap_or_else(|e| panic!("map_memory failed for {label}: {e}"));
+        }
+        backend
+            .set_policy(&diagnostic_policy())
+            .unwrap_or_else(|e| panic!("set_policy failed for {label}: {e}"));
+
+        let mut state = backend
+            .save()
+            .unwrap_or_else(|e| panic!("save entry state failed for {label}: {e}"));
+        state.sregs.cs.base = 0;
+        state.sregs.cs.selector = 0;
+        state.sregs.ds.base = 0;
+        state.sregs.ds.selector = 0;
+        state.sregs.ds.limit = u32::MAX;
+        state.sregs.ds.g = 1;
+        state.sregs.cr4 |= 1 << 18;
+        state.sregs.cr0 &= !((1 << 2) | (1 << 3));
+        state.regs.rip = CODE_GPA as u64;
+        state.regs.rflags = 2;
+        state.regs.rbx = 0;
+        state.mp_state = MpState::Runnable;
+        state.xcr0 = 3;
+        state.xsave_restore_bv = None;
+        state.xsave[SSE_XMM0].fill(0);
+        state.xsave[XCOMP_BV].fill(0);
+        state.xsave[XSTATE_BV].copy_from_slice(&if active_sse {
+            2u64.to_le_bytes()
+        } else {
+            0u64.to_le_bytes()
+        });
+        if active_sse {
+            state.xsave[SSE_XMM0].copy_from_slice(&ACTIVE_XMM0);
+        }
+        backend
+            .restore(&state)
+            .unwrap_or_else(|e| panic!("restore entry state failed for {label}: {e}"));
+
+        let cpuid1 = cpuid_words(&backend, 1, 0);
+        let cpuid_d0 = cpuid_words(&backend, 0xD, 0);
+        let xcr0_before_run = backend_xcr0(&backend);
+        assert_eq!(
+            xcr0_before_run, 3,
+            "configured guest XCR0 was not retained for {label}"
+        );
+
+        let boundary = backend
+            .run()
+            .unwrap_or_else(|e| panic!("boundary run failed for {label}: {e}"));
+        assert!(
+            matches!(
+                boundary,
+                Exit::Common(CommonExit::Mmio {
+                    gpa: Gpa(MMIO_GPA),
+                    size: 4,
+                    write: Some(_),
+                })
+            ),
+            "{label} did not stop at the expected MMIO boundary: {boundary:?}"
+        );
+        assert!(
+            backend.exit_counts().total() > 0,
+            "{label} reported zero executed exits"
+        );
+
+        let fd = backend.vcpu.as_raw_fd();
+        let raw_before_1 = unsafe {
+            // SAFETY: the owned vCPU is stopped at the checked MMIO boundary and the capability
+            // sized buffer is retained until KVM finishes the direct ioctl.
+            raw_get_xsave2(fd, xsave_len)
+        }
+        .unwrap_or_else(|e| panic!("first raw KVM_GET_XSAVE2 failed for {label}: {e}"));
+        let raw_before_2 = unsafe {
+            // SAFETY: the vCPU remains stopped and the second independent buffer has the same
+            // kernel-reported capability size as the first direct read.
+            raw_get_xsave2(fd, xsave_len)
+        }
+        .unwrap_or_else(|e| panic!("second raw KVM_GET_XSAVE2 failed for {label}: {e}"));
+        let mut canonical_before_1 = raw_before_1.clone();
+        let mut canonical_before_2 = raw_before_2.clone();
+        let canonical_restore_bv_1 = canonicalize_xsave_with_restore_bv(&mut canonical_before_1);
+        let canonical_restore_bv_2 = canonicalize_xsave_with_restore_bv(&mut canonical_before_2);
+        write_image(&report_dir, "raw-before-1.bin", &raw_before_1);
+        write_image(&report_dir, "raw-before-2.bin", &raw_before_2);
+        write_image(&report_dir, "canonical-before-1.bin", &canonical_before_1);
+        write_image(&report_dir, "canonical-before-2.bin", &canonical_before_2);
+
+        unsafe {
+            // SAFETY: the stopped vCPU owns the direct KVM XSAVE target and `raw_before_1` has
+            // the complete capability-sized image returned by KVM_GET_XSAVE2.
+            raw_set_xsave(fd, &raw_before_1)
+        }
+        .unwrap_or_else(|e| panic!("raw KVM_SET_XSAVE failed for {label}: {e}"));
+        let raw_after_set = unsafe {
+            // SAFETY: the vCPU is still stopped after KVM_SET_XSAVE and the output buffer is
+            // capability-sized and exclusively owned by this test.
+            raw_get_xsave2(fd, xsave_len)
+        }
+        .unwrap_or_else(|e| panic!("raw post-SET KVM_GET_XSAVE2 failed for {label}: {e}"));
+        let mut canonical_after_set = raw_after_set.clone();
+        let canonical_restore_bv_after_set =
+            canonicalize_xsave_with_restore_bv(&mut canonical_after_set);
+        write_image(&report_dir, "raw-after-set.bin", &raw_after_set);
+        write_image(&report_dir, "canonical-after-set.bin", &canonical_after_set);
+
+        backend
+            .retire_pending_completion()
+            .unwrap_or_else(|e| panic!("retire MMIO write completion failed for {label}: {e}"));
+
+        let endpoint = backend
+            .run()
+            .unwrap_or_else(|e| panic!("bounded continuation run failed for {label}: {e}"));
+        let raw_endpoint = unsafe {
+            // SAFETY: the vCPU is stopped after the bounded continuation and the output buffer
+            // is capability-sized.
+            raw_get_xsave2(fd, xsave_len)
+        }
+        .unwrap_or_else(|e| panic!("endpoint raw KVM_GET_XSAVE2 failed for {label}: {e}"));
+        let mut canonical_endpoint = raw_endpoint.clone();
+        let canonical_restore_bv_endpoint =
+            canonicalize_xsave_with_restore_bv(&mut canonical_endpoint);
+        write_image(&report_dir, "raw-endpoint.bin", &raw_endpoint);
+        write_image(&report_dir, "canonical-endpoint.bin", &canonical_endpoint);
+
+        let expected_xmm0 = if active_sse { &ACTIVE_XMM0 } else { &ZERO_XMM0 };
+        assert_xmm0(&raw_before_1, expected_xmm0, "first boundary read", label);
+        assert_xmm0(&raw_before_2, expected_xmm0, "second boundary read", label);
+        assert_xmm0(&raw_after_set, expected_xmm0, "raw SET round trip", label);
+        assert_xmm0(
+            &raw_endpoint,
+            expected_xmm0,
+            "one guest continuation",
+            label,
+        );
+        assert!(
+            matches!(endpoint, Exit::Common(CommonExit::Idle)),
+            "{label} continuation did not reach HLT: {endpoint:?}"
+        );
+        assert_eq!(
+            backend.exit_counts().total(),
+            2,
+            "{label} executed more than the boundary and one continuation"
+        );
+        let xcr0_endpoint = backend_xcr0(&backend);
+
+        let (before_bv_1, before_xcomp_1) = header(&raw_before_1);
+        let (before_bv_2, before_xcomp_2) = header(&raw_before_2);
+        let (after_set_bv, after_set_xcomp) = header(&raw_after_set);
+        let (endpoint_bv, endpoint_xcomp) = header(&raw_endpoint);
+        let mut metadata = String::new();
+        writeln!(
+            metadata,
+            "phase=stopped-at-mmio-write-exit-before-retirement"
+        )
+        .expect("metadata write");
+        writeln!(metadata, "continuation=retire-mmio-then-one-run-to-hlt").expect("metadata write");
+        writeln!(metadata, "mode={label}").expect("metadata write");
+        writeln!(metadata, "xsave_len={xsave_len}").expect("metadata write");
+        writeln!(metadata, "xcr0_before_run={xcr0_before_run:#x}").expect("metadata write");
+        writeln!(metadata, "xcr0_endpoint={xcr0_endpoint:#x}").expect("metadata write");
+        writeln!(metadata, "xcr0_source=KVM_GET_XCRS").expect("metadata write");
+        writeln!(metadata, "cpuid_source=KVM_GET_CPUID2").expect("metadata write");
+        writeln!(metadata, "guest_visible_cpuid1={}", words_hex(cpuid1)).expect("metadata write");
+        writeln!(metadata, "guest_visible_cpuid_d0={}", words_hex(cpuid_d0))
+            .expect("metadata write");
+        writeln!(metadata, "before1_raw_bv={before_bv_1:#x}").expect("metadata write");
+        writeln!(metadata, "before1_raw_xcomp_bv={before_xcomp_1:#x}").expect("metadata write");
+        writeln!(metadata, "before2_raw_bv={before_bv_2:#x}").expect("metadata write");
+        writeln!(metadata, "before2_raw_xcomp_bv={before_xcomp_2:#x}").expect("metadata write");
+        writeln!(metadata, "after_set_raw_bv={after_set_bv:#x}").expect("metadata write");
+        writeln!(metadata, "after_set_raw_xcomp_bv={after_set_xcomp:#x}").expect("metadata write");
+        writeln!(metadata, "endpoint_raw_bv={endpoint_bv:#x}").expect("metadata write");
+        writeln!(metadata, "endpoint_raw_xcomp_bv={endpoint_xcomp:#x}").expect("metadata write");
+        writeln!(
+            metadata,
+            "before_reads_equal={}",
+            raw_before_1 == raw_before_2
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_before_reads_equal={}",
+            canonical_before_1 == canonical_before_2
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_restore_bv_1={canonical_restore_bv_1:?}"
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_restore_bv_2={canonical_restore_bv_2:?}"
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_restore_bv_after_set={canonical_restore_bv_after_set:?}"
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_restore_bv_endpoint={canonical_restore_bv_endpoint:?}"
+        )
+        .expect("metadata write");
+        fs::write(report_dir.join("metadata.txt"), metadata).unwrap_or_else(|e| {
+            panic!(
+                "write {} failed: {e}",
+                report_dir.join("metadata.txt").display()
+            )
+        });
+    }
+
+    #[test]
+    #[ignore = "live Linux x86 KVM XSAVE provenance diagnostic; set XSAVE_RAW_REPORT_DIR"]
+    fn raw_xsave_presence_phases() {
+        assert!(
+            Path::new("/dev/kvm").exists(),
+            "/dev/kvm is required for this ignored hardware diagnostic"
+        );
+        let report_root = PathBuf::from(
+            std::env::var_os("XSAVE_RAW_REPORT_DIR")
+                .expect("XSAVE_RAW_REPORT_DIR must capture complete raw evidence"),
+        );
+        fs::create_dir_all(&report_root)
+            .unwrap_or_else(|e| panic!("create {} failed: {e}", report_root.display()));
+        run_variant(&report_root, true);
+        run_variant(&report_root, false);
+    }
+}

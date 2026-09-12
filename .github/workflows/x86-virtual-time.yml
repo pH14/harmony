@@ -611,6 +611,27 @@ jobs:
             exit 1
           fi
           printf '%s\n' 'SNAPSHOT_GATE_STATUS=passed' | tee snapshot-report/required-tests.status
+      - name: Record raw XSAVE acquisition and restore phases
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        env:
+          CARGO_TERM_COLOR: never
+          XSAVE_RAW_REPORT_DIR: ${{ github.workspace }}/snapshot-report/xsave-raw
+        run: |
+          set -euo pipefail
+          mkdir -p "$XSAVE_RAW_REPORT_DIR"
+          set +e
+          timeout -k 10 120 cargo test --locked --release -p vmm-backend --lib \
+            kvm_sys::xsave_diagnostic::raw_xsave_presence_phases \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee snapshot-report/xsave-raw.log
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          printf 'CARGO_EXIT=%s\nTEE_EXIT=%s\n' "${pipeline_status[0]}" "${pipeline_status[1]}" \
+            > snapshot-report/xsave-raw.status
+          test "${pipeline_status[0]}" -eq 0
+          test "${pipeline_status[1]}" -eq 0
+          grep -Fq 'running 1 test' snapshot-report/xsave-raw.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/xsave-raw.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -64,3 +64,12 @@ unmasked, nonzero-offset, or reserved timer-control states before mutating the
 vCPU. ARM KVM and HVF expose pure restore-shape checks through the `Backend`
 trait, so portable snapshot import rejects their known invalid vCPU records
 before guest RAM or backend state is changed.
+
+The ignored Linux x86 test `kvm_sys::xsave_diagnostic::raw_xsave_presence_phases`
+is a bounded XSAVE provenance diagnostic. Set `XSAVE_RAW_REPORT_DIR` and run
+`cargo test --locked --release -p vmm-backend --lib kvm_sys::xsave_diagnostic::raw_xsave_presence_phases -- --ignored --exact --nocapture`
+on a KVM host. It records complete raw `KVM_GET_XSAVE2` images at a stopped
+MMIO boundary, canonicalized copies, a raw SET/GET round trip, and one HLT
+continuation for an initialized SSE case and an otherwise identical zero-SSE
+control. The report is evidence about the host/KVM path and does not change
+snapshot semantics.
