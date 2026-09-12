@@ -58,3 +58,15 @@ its LSE-only binary scans; a native ARM host is required for that recipe.
 
 The arm64 platform kernel recipe owns its generic namespace and filesystem
 configuration. Workload packages do not select a named platform kernel profile.
+
+The scheduled Workload backends acceptance lane runs each nested recipe twice
+through the canonical x86 runtime and compares complete serial logs, application
+and runtime exit statuses, and readiness evidence. The Docker recipe launches
+the official PostgreSQL image with Docker's bundled `runc`; the K3s recipe also
+checks pod-to-PostgreSQL traffic through the guest CNI. The lane requires an
+exact qualified platform artifact and preserves image hashes and run records.
+Run that lane independently on a proposed branch with:
+
+```sh
+gh workflow run nova-consonance-experiment.yml --ref YOUR_BRANCH -f suite=nested-runtime
+```

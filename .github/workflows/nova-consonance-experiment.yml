@@ -2,7 +2,16 @@
 name: Acceptance / Workload backends
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Acceptance suite to run
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - nested-runtime
   pull_request:
     paths:
       - .github/workflows/nova-consonance-experiment.yml
@@ -39,7 +48,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: nova-consonance-${{ github.event_name }}-${{ github.ref }}
+  group: nova-consonance-${{ github.event_name }}-${{ github.ref }}-${{ inputs.suite || 'all' }}
   cancel-in-progress: true
 
 defaults:
@@ -54,7 +63,7 @@ env:
 jobs:
   whole-vm-search-campaign:
     name: Dissonance search · QuickNES guest · Consonance snapshots
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'nested-runtime')
     runs-on: ubuntu-24.04
     # A cold guest build precedes the 10,000-execution campaign. Slow hosted
     # replicas need more than 50 minutes for the fixed work; the assertions
@@ -252,7 +261,7 @@ jobs:
   compare-replicas:
     name: Compare deterministic campaign hashes across replicas
     needs: whole-vm-search-campaign
-    if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.whole-vm-search-campaign.result == 'success' }}
+    if: ${{ always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'nested-runtime')) && needs.whole-vm-search-campaign.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -301,7 +310,7 @@ jobs:
 
   package-backend-acceptance:
     name: NES package native/Consonance backend acceptance
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'nested-runtime')
     runs-on: ubuntu-24.04
     # Leave room for a cold guest build before the two backend checks.
     timeout-minutes: 75
@@ -650,3 +659,293 @@ jobs:
           path: nova-consonance-pr-smoke
           if-no-files-found: error
           retention-days: 14
+
+  nested-runtime-qualification:
+    name: Docker/K3s nested runtime qualification
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      HARMONY_GUEST_DIR: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Initialize qualification report
+        run: |
+          mkdir -p nested-runtime-report/build-logs
+          mkdir -p nested-runtime-report/console
+          mkdir -p nested-runtime-report/runs
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+      - name: Install workload image build tools
+        run: |
+          set -euo pipefail
+          {
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends \
+              bc binutils bison build-essential bzip2 cpio curl \
+              flex g++ jq kmod libelf-dev libssl-dev musl-tools python3 wget xz-utils
+            sudo systemctl enable --now containerd
+            sudo ctr version
+          } 2>&1 | tee nested-runtime-report/host-setup.log
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+      - name: Compute platform source key
+        id: platform-source
+        run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
+      - name: Restore the exact platform runtime
+        id: platform-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: consonance/harmony-linux/build/x86_64
+          key: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
+      - name: Locate the exact cross-branch platform handoff
+        id: platform-handoff
+        if: steps.platform-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_KEY: ${{ steps.platform-source.outputs.key }}
+        run: |
+          set -euo pipefail
+          run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
+            -f name="consonance-platform-v1-x86_64-$SOURCE_KEY" -F per_page=100 \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .workflow_run.id // empty')
+          echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
+      - name: Clear the runtime directory before handoff
+        if: steps.platform-handoff.outputs.run_id != ''
+        run: rm -rf consonance/harmony-linux/build/x86_64
+      - uses: actions/download-artifact@v4
+        if: steps.platform-handoff.outputs.run_id != ''
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.platform-handoff.outputs.run_id }}
+          name: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
+          path: consonance/harmony-linux/build/x86_64
+      - name: Require exact platform provenance
+        id: platform-provenance
+        env:
+          CACHE_HIT: ${{ steps.platform-cache.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.platform-cache.outputs.cache-matched-key }}
+          CACHE_REQUESTED_KEY: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
+          HANDOFF_RUN_ID: ${{ steps.platform-handoff.outputs.run_id }}
+          SOURCE_KEY: ${{ steps.platform-source.outputs.key }}
+        run: |
+          set -euo pipefail
+          mkdir -p nested-runtime-report
+          if [[ "$CACHE_HIT" != true && -z "$HANDOFF_RUN_ID" ]]; then
+            cat >nested-runtime-report/cache-unavailable.txt <<'EOF'
+          No exact platform runtime cache or exact cross-branch handoff was available. Run the platform qualification publisher before this lane.
+          EOF
+            echo '::error::Nested runtime qualification requires an exact platform runtime handoff.'
+            exit 1
+          fi
+          if [[ -n "$HANDOFF_RUN_ID" ]]; then
+            provenance=exact-cross-branch-handoff
+          else
+            provenance=exact-cache
+          fi
+          cat >nested-runtime-report/cache-provenance.txt <<EOF
+          requested_key=${CACHE_REQUESTED_KEY}
+          source_key=${SOURCE_KEY}
+          matched_key=${CACHE_MATCHED_KEY}
+          cache_hit=${CACHE_HIT}
+          handoff_run_id=${HANDOFF_RUN_ID}
+          provenance=${provenance}
+          commit=$(git rev-parse HEAD)
+          EOF
+          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
+            --artifacts consonance/harmony-linux/build/x86_64 \
+            --output nested-runtime-report/platform-provenance.json
+          scope=$(python3 -c 'import json; print(json.load(open("nested-runtime-report/platform-provenance.json"))["scope"])')
+          if [[ "$scope" != exact-input ]]; then
+            echo "::error::Nested runtime qualification requires exact-input platform artifacts (got $scope)."
+            exit 1
+          fi
+          sha256sum \
+            consonance/harmony-linux/build/x86_64/bzImage \
+            consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
+            consonance/harmony-linux/build/x86_64/runtime-manifest.json \
+            >nested-runtime-report/platform-sha256.txt
+      - name: Build pinned Docker and K3s workload images
+        run: |
+          set -euo pipefail
+          {
+            echo '== fetching pinned workload inputs'
+            sudo env PATH="$PATH" \
+              HARMONY_DOWNLOAD_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/dl" \
+              HARMONY_ARTIFACT_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/build" \
+              GUEST_BUILD_ROOT=/tmp/harmony-workload-build \
+              make -C workloads/guest-images fetch
+            for input in postgres-image.tar k3s-pause-image.tar; do
+              test -s "$GITHUB_WORKSPACE/consonance/harmony-linux/dl/$input" || {
+                echo "FAIL: required fetched input is missing or empty: $input" >&2
+                exit 1
+              }
+            done
+            echo '== building the Docker workload image'
+            sudo env PATH="$PATH" \
+              HARMONY_DOWNLOAD_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/dl" \
+              HARMONY_ARTIFACT_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/build" \
+              GUEST_BUILD_ROOT=/tmp/harmony-workload-build \
+              make -C workloads/guest-images docker-image
+            echo '== building the K3s workload image'
+            sudo env PATH="$PATH" \
+              HARMONY_DOWNLOAD_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/dl" \
+              HARMONY_ARTIFACT_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/build" \
+              GUEST_BUILD_ROOT=/tmp/harmony-workload-build \
+              make -C workloads/guest-images k3s-image
+          } 2>&1 | tee nested-runtime-report/workload-build.log
+      - name: Collect workload build diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p nested-runtime-report/build-logs
+          if [[ -d /tmp/harmony-workload-build ]]; then
+            sudo find /tmp/harmony-workload-build -type f -name '*.log' \
+              -exec cp -f {} nested-runtime-report/build-logs/ \; || true
+          fi
+          if [[ -f consonance/harmony-linux/build/x86_64/runtime-manifest.json ]]; then
+            cp -f consonance/harmony-linux/build/x86_64/runtime-manifest.json \
+              nested-runtime-report/platform-runtime-manifest.json
+          fi
+          if [[ -d consonance/harmony-linux/build/oci-images ]]; then
+            find consonance/harmony-linux/build/oci-images -type f -print0 \
+              | sort -z | xargs -0r sha256sum >nested-runtime-report/workload-layouts.sha256
+          fi
+          if [[ -d consonance/harmony-linux/dl ]]; then
+            sha256sum consonance/harmony-linux/dl/postgres-image.tar \
+              consonance/harmony-linux/dl/k3s-pause-image.tar \
+              >nested-runtime-report/workload-inputs.sha256 2>/dev/null || true
+          fi
+      - name: Verify workload image layouts
+        run: |
+          set -euo pipefail
+          for image in docker k3s; do
+            layout="consonance/harmony-linux/build/oci-images/${image}.oci"
+            test -d "$layout"
+            test -s "$layout/index.json"
+            test -s "$layout/oci-layout"
+          done
+      - name: Build Harmony CLI
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p harmony-cli 2>&1 \
+            | tee nested-runtime-report/cli-build.log
+      - name: Grant nested KVM access
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          stat -c '%n mode=%a owner=%U group=%G' /dev/kvm \
+            | tee nested-runtime-report/kvm.txt
+          grep -m1 'model name' /proc/cpuinfo | tee nested-runtime-report/runner.txt
+      - name: Verify CLI host and guest preflight
+        run: |
+          set -euo pipefail
+          target/release/harmony preflight --json \
+            | tee nested-runtime-report/preflight.json
+      - name: Run both nested workloads twice through the canonical runtime
+        run: |
+          set -uo pipefail
+          report=nested-runtime-report
+          run_workload() {
+            local name=$1
+            local image="$GITHUB_WORKSPACE/consonance/harmony-linux/build/oci-images/${name}.oci"
+            local repetition out console serial marker
+            local -a markers
+            case "$name" in
+              docker)
+                markers=(
+                  'DK38: OCI workload: nested runc'
+                  'DK38: launching official postgres OCI container via nested runc'
+                  'DK38: GUEST_READY'
+                )
+                ;;
+              k3s)
+                markers=(
+                  'K8S49: CLUSTER_UP'
+                  'K8S49: POSTGRES_READY'
+                  'K8S49: client connected to the postgres pod over the CNI'
+                  'K8S49: CNI pod IPs:'
+                  'K8S49: result rc=0 (client workload completed over the CNI)'
+                )
+                ;;
+              *)
+                echo "unknown workload: $name" >&2
+                return 1
+                ;;
+            esac
+            for repetition in 1 2; do
+              out="$report/runs/${name}-${repetition}"
+              console="$report/console/${name}-${repetition}.txt"
+              rm -rf "$out"
+              echo "== running $name repetition $repetition"
+              if ! timeout -k 10 1200 target/release/harmony oci run "$image" \
+                --seed 20260901 --ram-mib 2048 --timeout 1200 --out "$out" \
+                2>&1 | tee "$console"; then
+                echo "FAIL: $name repetition $repetition did not complete" >&2
+                return 1
+              fi
+              test -s "$out/serial.log" || {
+                echo "FAIL: missing serial log for $name repetition $repetition" >&2
+                return 1
+              }
+              test -s "$out/run.json" || {
+                echo "FAIL: missing run record for $name repetition $repetition" >&2
+                return 1
+              }
+              jq -e '.container_rc == 0 and .runtime_rc == 0' "$out/run.json" >/dev/null || {
+                echo "FAIL: nonzero application/runtime status for $name repetition $repetition" >&2
+                return 1
+              }
+              serial="$out/serial.log"
+              if [[ "$name" == k3s ]] && ! grep -Eq $'^GUEST_READY\r?$' "$serial"; then
+                echo "FAIL: missing final K3s readiness line" >&2
+                return 1
+              fi
+              for marker in "${markers[@]}"; do
+                grep -Fq "$marker" "$serial" || {
+                  echo "FAIL: missing marker for $name repetition $repetition: $marker" >&2
+                  return 1
+                }
+              done
+            done
+            if ! cmp -s "$report/runs/${name}-1/serial.log" \
+              "$report/runs/${name}-2/serial.log"; then
+              echo "FAIL: full serial logs differ for same-seed $name runs" >&2
+              sha256sum "$report/runs/${name}-1/serial.log" \
+                "$report/runs/${name}-2/serial.log" >&2
+              return 1
+            fi
+            test "$(jq -r .serial_sha256 "$report/runs/${name}-1/run.json")" = \
+              "$(jq -r .serial_sha256 "$report/runs/${name}-2/run.json")" || {
+              echo "FAIL: run records disagree on same-seed $name serial digest" >&2
+              return 1
+            }
+            sha256sum "$report/runs/${name}-1/serial.log" \
+              >"$report/${name}-serial.sha256"
+            echo "PASS: $name has identical same-seed serial logs and zero app/runtime exits"
+          }
+
+          status=0
+          run_workload docker || status=1
+          run_workload k3s || status=1
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nested-runtime-qualification-${{ github.run_id }}
+          path: |
+            nested-runtime-report
+            consonance/harmony-linux/build/oci-images
+          if-no-files-found: warn
+          retention-days: 30
