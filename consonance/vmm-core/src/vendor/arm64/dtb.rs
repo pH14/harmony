@@ -3,18 +3,16 @@
 use super::board::{CNTFRQ_HZ, GICD, GICR, PL011, PL011_SPI, RAM_BASE, VIRT_TIMER_INTID};
 use sha2::{Digest, Sha256};
 
-const BOOT_RNG_SEED: [u8; 64] = [
-    0x48, 0x61, 0x72, 0x6d, 0x6f, 0x6e, 0x79, 0x2d, 0x41, 0x41, 0x35, 0x2d, 0x72, 0x6e, 0x67, 0x2d,
-    0x73, 0x65, 0x65, 0x64, 0x2d, 0x76, 0x31, 0x2d, 0x64, 0x65, 0x74, 0x65, 0x72, 0x6d, 0x69, 0x6e,
-    0x69, 0x73, 0x74, 0x69, 0x63, 0x2d, 0x66, 0x69, 0x78, 0x65, 0x64, 0x2d, 0x62, 0x79, 0x2d, 0x63,
-    0x6f, 0x6e, 0x73, 0x74, 0x72, 0x75, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x2d, 0x30, 0x30, 0x30, 0x31,
+#[cfg(test)]
+const ZERO_RNG_SEED: [u8; 64] = [
+    0x9c, 0x4a, 0xff, 0x70, 0xcc, 0x37, 0xb9, 0x68, 0x29, 0x7a, 0x78, 0x33, 0x6f, 0xfa, 0xa8, 0xe6,
+    0x0a, 0x4e, 0x01, 0x3d, 0xe9, 0x09, 0xf6, 0x1b, 0xe2, 0x8a, 0x21, 0x46, 0x51, 0x7e, 0x7d, 0x42,
+    0x3b, 0x52, 0xe2, 0x2d, 0xc7, 0xbe, 0xa4, 0x34, 0xdc, 0x2e, 0x24, 0xd4, 0xbe, 0xd2, 0xa2, 0x61,
+    0x2d, 0x06, 0xe8, 0x2f, 0x54, 0x94, 0xfe, 0x79, 0xb3, 0x98, 0x29, 0xc2, 0x18, 0xd7, 0xd7, 0x91,
 ];
 const BOOT_RNG_DOMAIN: &[u8] = b"consonance.arm64-boot-rng.v1\0";
 
 fn boot_rng_seed(seed: u64) -> [u8; 64] {
-    if seed == 0 {
-        return BOOT_RNG_SEED;
-    }
     let mut output = [0u8; 64];
     for (block, chunk) in output.chunks_exact_mut(32).enumerate() {
         let mut digest = Sha256::new();
@@ -142,22 +140,6 @@ pub fn build(ram_len: u64, pvclock_gpa: u64, bootargs: &str) -> Vec<u8> {
     build_inner(ram_len, pvclock_gpa, bootargs, None, 0)
 }
 
-pub(crate) fn build_with_initrd(
-    ram_len: u64,
-    pvclock_gpa: u64,
-    bootargs: &str,
-    initrd_start: u64,
-    initrd_end: u64,
-) -> Vec<u8> {
-    build_inner(
-        ram_len,
-        pvclock_gpa,
-        bootargs,
-        Some((initrd_start, initrd_end)),
-        0,
-    )
-}
-
 pub(crate) fn build_with_seed(
     ram_len: u64,
     pvclock_gpa: u64,
@@ -175,9 +157,6 @@ pub(crate) fn build_with_initrd_seed(
     initrd_end: u64,
     seed: u64,
 ) -> Vec<u8> {
-    if seed == 0 {
-        return build_with_initrd(ram_len, pvclock_gpa, bootargs, initrd_start, initrd_end);
-    }
     build_inner(
         ram_len,
         pvclock_gpa,
@@ -499,8 +478,8 @@ mod tests {
         );
         assert_eq!(
             p.prop("chosen", "rng-seed").unwrap(),
-            BOOT_RNG_SEED,
-            "the guest CRNG must receive the fixed seed the owned kernel contract requires"
+            ZERO_RNG_SEED,
+            "the guest CRNG must receive the derived zero-seed entropy"
         );
         assert_eq!(p.prop("psci", "method").unwrap(), b"hvc\0");
         assert_eq!(
@@ -571,8 +550,8 @@ mod tests {
         );
         assert_eq!(
             zero.prop("chosen", "rng-seed").unwrap(),
-            BOOT_RNG_SEED.as_slice(),
-            "the zero seed retains the substrate boot entropy seed"
+            ZERO_RNG_SEED.as_slice(),
+            "zero uses the same domain-separated boot seed derivation"
         );
     }
 
@@ -580,12 +559,13 @@ mod tests {
     fn linux_initramfs_range_round_trips_as_two_address_cells() {
         let start = RAM_BASE + 0x0200_0000;
         let end = start + 0x0012_3456;
-        let dtb = build_with_initrd(
+        let dtb = build_with_initrd_seed(
             0x2000_0000,
             SAMPLE_PVCLOCK_GPA,
             "console=ttyAMA0",
             start,
             end,
+            0,
         );
         let parsed = parse(&dtb).unwrap();
         assert_eq!(
