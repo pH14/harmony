@@ -188,6 +188,7 @@ mod tests {
         finish_calls: Arc<AtomicUsize>,
         finish_response: Option<Exit<X86>>,
         finish_error: bool,
+        validation_calls: Arc<AtomicUsize>,
     }
 
     impl Backend for DefaultRetireBackend {
@@ -255,6 +256,15 @@ mod tests {
             Ok(VcpuState::default())
         }
 
+        fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
+            self.validation_calls.fetch_add(1, Ordering::SeqCst);
+            if state.xsave.len() == 1 {
+                Err(BackendError::InvalidState)
+            } else {
+                Ok(())
+            }
+        }
+
         fn restore(&mut self, _state: &VcpuState) -> Result<()> {
             Ok(())
         }
@@ -304,6 +314,7 @@ mod tests {
             finish_calls: Arc::clone(&calls),
             finish_response: Some(continuation.clone()),
             finish_error: false,
+            ..Default::default()
         });
         assert_eq!(
             boxed.finish_exit().expect("forwarded continuation"),
@@ -318,6 +329,7 @@ mod tests {
             finish_calls: Arc::clone(&error_calls),
             finish_response: None,
             finish_error: true,
+            ..Default::default()
         });
         assert!(matches!(
             failing.finish_exit(),
@@ -326,6 +338,37 @@ mod tests {
             })
         ));
         assert_eq!(error_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn box_forwards_restore_shape_validation_without_changing_the_state() {
+        let invalid = VcpuState {
+            xsave: vec![0],
+            ..Default::default()
+        };
+        let before = invalid.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let plain = DefaultRetireBackend {
+            validation_calls: Arc::clone(&calls),
+            ..Default::default()
+        };
+        assert!(matches!(
+            plain.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(invalid, before);
+
+        let boxed: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend {
+            validation_calls: Arc::clone(&calls),
+            ..Default::default()
+        });
+        assert!(matches!(
+            boxed.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(invalid, before);
     }
 
     #[test]

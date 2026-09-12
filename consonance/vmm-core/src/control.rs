@@ -4252,6 +4252,14 @@ mod tests {
             let result = destination
                 .import_portable_snapshot(full.as_slice())
                 .map(|_| ());
+            if malformed == 0 {
+                assert!(matches!(
+                    &result,
+                    Err(PortableSnapshotError::Snapshot(
+                        crate::snapshot::SnapshotError::EngineState(_)
+                    ))
+                ));
+            }
             assert_import_rejection_preserves_server(&mut destination, &before, result);
             assert_post_rejection_continuation(&mut destination);
         }

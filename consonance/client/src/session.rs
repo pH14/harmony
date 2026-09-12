@@ -905,6 +905,33 @@ mod tests {
     }
 
     #[test]
+    fn drop_snapshot_reports_an_unexpected_control_reply() {
+        let mut client = snapshot_client([Ok(Ok(Reply::Snapshot {
+            id: SnapId(41),
+            at: control_proto::Moment(0),
+            sdk_events: 0,
+            tainted: false,
+        }))]);
+
+        let error = drop_control_handle(&mut client, SnapId(41))
+            .expect_err("a non-unit drop reply must be rejected");
+        assert!(matches!(
+            error.downcast_ref::<SessionError>(),
+            Some(SessionError::Reply {
+                operation: "drop snapshot",
+                reply: Reply::Snapshot { id: SnapId(41), .. }
+            })
+        ));
+        assert_eq!(
+            client.transport().requests,
+            vec![
+                control_proto::Request::Hello(test_caps()),
+                control_proto::Request::Drop(SnapId(41))
+            ]
+        );
+    }
+
+    #[test]
     fn deferred_checkpoint_hashing_is_opt_in_and_off_by_default() {
         let plain = SessionConfig::new(PAGE_SIZE, 1, 2, "cmdline");
         assert!(!plain.defer_virtual_time_checkpoint_hashes);
