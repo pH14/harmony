@@ -439,7 +439,6 @@ mod real {
         use std::sync::atomic::{AtomicU8, Ordering};
 
         const RETRO_MEMORY_SAVE_RAM: c_uint = 0;
-        const MAX_SAVE_RAM_SIZE: usize = 64 * 1024;
 
         #[repr(C)]
         struct RetroGameInfo {
@@ -665,7 +664,7 @@ mod real {
                 let get_memory_size: GetMemorySizeFn =
                     unsafe { sym(handle, "retro_get_memory_size")? };
 
-                let mut core = LibretroCore {
+                let core = LibretroCore {
                     run,
                     serialize_size,
                     serialize,
@@ -673,7 +672,14 @@ mod real {
                     get_memory_size,
                     _rom: rom,
                 };
-                core.initialize_save_ram();
+                // SAFETY: the loaded core owns the reported writable save RAM,
+                // and no core call or other access races with initialization.
+                unsafe {
+                    harmony_play_agent::core_seam::initialize_save_ram(
+                        (core.get_memory_data)(RETRO_MEMORY_SAVE_RAM).cast::<u8>(),
+                        (core.get_memory_size)(RETRO_MEMORY_SAVE_RAM),
+                    );
+                }
                 Ok(core)
             }
         }
@@ -725,24 +731,6 @@ mod real {
                 let copied = src.len().min(out.len());
                 out[..copied].copy_from_slice(&src[..copied]);
                 Some(copied)
-            }
-
-            fn initialize_save_ram(&mut self) {
-                // SAFETY: the pinned libretro core owns the reported save RAM
-                // region, and no other core call occurs between its pointer and
-                // length queries and the fill.
-                let (memory, length) = unsafe {
-                    (
-                        (self.get_memory_data)(RETRO_MEMORY_SAVE_RAM).cast::<u8>(),
-                        (self.get_memory_size)(RETRO_MEMORY_SAVE_RAM),
-                    )
-                };
-                if memory.is_null() || !(1..=MAX_SAVE_RAM_SIZE).contains(&length) {
-                    return;
-                }
-                // SAFETY: `memory` is non-null and `length` is bounded by the
-                // validated libretro save RAM extent.
-                unsafe { std::ptr::write_bytes(memory, 0xff, length) };
             }
         }
 

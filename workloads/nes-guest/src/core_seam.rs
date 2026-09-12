@@ -2,6 +2,19 @@
 
 use crate::ram::{WORK_RAM_LEN, addr};
 
+/// Initialize a core's cartridge memory to the native power-on value.
+///
+/// # Safety
+/// A non-null pointer with a length in 1..=65536 must identify that many
+/// exclusively writable bytes for the duration of this call.
+pub unsafe fn initialize_save_ram(memory: *mut u8, length: usize) {
+    if memory.is_null() || !(1..=64 * 1024).contains(&length) {
+        return;
+    }
+    // SAFETY: the caller owns the writable extent, and invalid extents return above.
+    unsafe { std::ptr::write_bytes(memory, 0xff, length) };
+}
+
 pub trait Core {
     fn serialize_size(&mut self) -> usize;
 
@@ -14,8 +27,6 @@ pub trait Core {
     fn read_save_ram(&mut self, _out: &mut [u8]) -> Option<usize> {
         None
     }
-
-    fn initialize_save_ram(&mut self) {}
 }
 
 #[derive(Clone, Debug)]
@@ -138,14 +149,11 @@ impl Core for MockCore {
         out[..self.save_ram.len()].copy_from_slice(&self.save_ram);
         Some(self.save_ram.len())
     }
-
-    fn initialize_save_ram(&mut self) {
-        self.save_ram.fill(0xff);
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::initialize_save_ram;
     use super::*;
     use crate::chord::joypad::RIGHT;
 
@@ -194,10 +202,25 @@ mod tests {
     }
 
     #[test]
-    fn save_ram_initialization_matches_native_baseline() {
-        let mut core = MockCore::new();
-        core.save_ram_mut().fill(0);
-        core.initialize_save_ram();
-        assert!(core.save_ram.iter().all(|byte| *byte == 0xff));
+    fn save_ram_initialization_preserves_surrounding_memory() {
+        let mut bytes = [0x5a; 10];
+        // SAFETY: this pointer owns the exclusive eight-byte interior slice.
+        unsafe { initialize_save_ram(bytes[1..9].as_mut_ptr(), 8) };
+        assert_eq!(
+            bytes,
+            [0x5a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x5a]
+        );
+    }
+
+    #[test]
+    fn save_ram_initialization_ignores_absent_or_unbounded_regions() {
+        let mut byte = 0x5a;
+        // SAFETY: null, empty, and excessive extents are never dereferenced.
+        unsafe {
+            initialize_save_ram(std::ptr::null_mut(), 8);
+            initialize_save_ram(&mut byte, 0);
+            initialize_save_ram(&mut byte, 64 * 1024 + 1);
+        }
+        assert_eq!(byte, 0x5a);
     }
 }
