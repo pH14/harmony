@@ -28,6 +28,18 @@
             url = "https://musl.libc.org/releases/musl-1.2.6.tar.gz";
             sha256 = "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a";
           };
+          runcX86 = pkgs.fetchurl {
+            url = "https://github.com/opencontainers/runc/releases/download/v1.5.0/runc.amd64";
+            sha256 = "0363e69bebd3a027d1239364ab9b4f4873f6bc4e7a7878e94b4ea59f08551297";
+          };
+          runcSource = pkgs.fetchurl {
+            url = "https://github.com/opencontainers/runc/archive/refs/tags/v1.5.0.tar.gz";
+            sha256 = "1bcd55af6081cf080557b148d906f64e6e4ca886d8345fe4b5510a90b52815d1";
+          };
+          goArmBootstrap = pkgs.fetchurl {
+            url = "https://dl.google.com/go/go1.25.0.linux-arm64.tar.gz";
+            sha256 = "05de75d6994a2783699815ee553bd5a9327d8b79991de36e38b66862782f54ae";
+          };
           postgresSource = pkgs.fetchurl {
             url = "https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.bz2";
             sha256 = "078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c90";
@@ -60,6 +72,7 @@
           nativeRuntimeInputs = commonRuntimeInputs
             ++ nixpkgs.lib.optionals isArm64 [
               pkgs.gcc
+              pkgs.rsync
             ]
             ++ nixpkgs.lib.optionals (!isArm64) [
               pkgs.elfutils
@@ -80,8 +93,11 @@
               export HARMONY_NIX_BUSYBOX_SOURCE=${busyboxSource}
               ${nixpkgs.lib.optionalString isArm64 ''
                 export HARMONY_NIX_MUSL_SOURCE=${muslSource}
+                export HARMONY_NIX_RUNC_SOURCE=${runcSource}
+                export HARMONY_NIX_GO_ARM_BOOTSTRAP=${goArmBootstrap}
               ''}
               ${nixpkgs.lib.optionalString (!isArm64) ''
+                export HARMONY_NIX_RUNC_X86_SOURCE=${runcX86}
                 export NIX_CFLAGS_COMPILE="-I${pkgs.elfutils.dev}/include -I${pkgs.openssl.dev}/include''${NIX_CFLAGS_COMPILE:+ $NIX_CFLAGS_COMPILE}"
                 export NIX_LDFLAGS="-L${pkgs.elfutils.out}/lib -L${pkgs.openssl.out}/lib -L${pkgs.glibc.static}/lib''${NIX_LDFLAGS:+ $NIX_LDFLAGS}"
                 export LIBRARY_PATH="${pkgs.glibc.static}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"

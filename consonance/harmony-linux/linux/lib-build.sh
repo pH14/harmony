@@ -134,10 +134,6 @@ extract_runc() {
             url=$RUNC_X86_64_URL
             sha=$RUNC_X86_64_SHA256
             ;;
-        aarch64)
-            url=$RUNC_AARCH64_URL
-            sha=$RUNC_AARCH64_SHA256
-            ;;
         *)
             echo "FAIL: unsupported runc architecture: $arch" >&2
             exit 1

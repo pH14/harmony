@@ -113,8 +113,10 @@ if [ "$host_arch" = aarch64 ]; then
 fi
 if [ "$oci_runtime" -eq 1 ]; then
     if [ "$host_arch" = aarch64 ]; then
-        : "${HARMONY_NIX_RUNC_ARM_SOURCE:?--oci-runtime requires HARMONY_NIX_RUNC_ARM_SOURCE}"
-        install -m 0755 "$HARMONY_NIX_RUNC_ARM_SOURCE" "$downloads/runc.arm64"
+        : "${HARMONY_NIX_RUNC_SOURCE:?--oci-runtime requires HARMONY_NIX_RUNC_SOURCE}"
+        : "${HARMONY_NIX_GO_ARM_BOOTSTRAP:?--oci-runtime requires HARMONY_NIX_GO_ARM_BOOTSTRAP}"
+        install -m 0644 "$HARMONY_NIX_RUNC_SOURCE" "$downloads/v1.5.0.tar.gz"
+        install -m 0644 "$HARMONY_NIX_GO_ARM_BOOTSTRAP" "$downloads/go1.25.0.linux-arm64.tar.gz"
     else
         : "${HARMONY_NIX_RUNC_X86_SOURCE:?--oci-runtime requires HARMONY_NIX_RUNC_X86_SOURCE}"
         install -m 0755 "$HARMONY_NIX_RUNC_X86_SOURCE" "$downloads/runc.amd64"

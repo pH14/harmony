@@ -46,7 +46,12 @@ runtime_supervisor=${HARMONY_RUNTIME_SUPERVISOR:-}
 }
 
 extract_kernel
-runc_binary=$(extract_runc "$runtime_arch")
+if [ "$runtime_arch" = aarch64 ]; then
+    ./build-arm64-runc.sh
+    runc_binary=$AARCH64_ART_DIR/runc
+else
+    runc_binary=$(extract_runc "$runtime_arch")
+fi
 verify_static_runc "$runc_binary" "$runtime_arch"
 if [ "$runtime_arch" = aarch64 ]; then
     echo "== OCI runtime: qualifying pinned runc before assembly"
@@ -92,7 +97,7 @@ enable_busybox_symbol() {
 for symbol in STATIC BUSYBOX ASH SH_IS_ASH MOUNT UMOUNT MKDIR MKNOD CHMOD CHOWN \
     CAT ECHO GREP HALT POWEROFF REBOOT SETSID SETUIDGID ENV ID KILL SLEEP \
     LN RM CP MV TRUE FALSE TEST SYNC PRINTF HEAD TAIL TEE CUT WC PS SED TOUCH \
-    STAT READLINK MKFIFO; do
+    STAT READLINK MKFIFO TEST1; do
     enable_busybox_symbol "$symbol"
 done
 grep -qxF 'CONFIG_STATIC=y' "$busybox_obj/.config" || {
@@ -115,7 +120,7 @@ make -C "$BBSRC" O="$busybox_obj" CC="$busybox_cc" -j"$(nproc)" busybox >/dev/nu
 for symbol in STATIC BUSYBOX ASH SH_IS_ASH MOUNT UMOUNT MKDIR MKNOD CHMOD CHOWN \
     CAT ECHO GREP HALT POWEROFF REBOOT SETSID SETUIDGID ENV ID KILL SLEEP \
     LN RM CP MV TRUE FALSE TEST SYNC PRINTF HEAD TAIL TEE CUT WC PS SED TOUCH \
-    STAT READLINK MKFIFO; do
+    STAT READLINK MKFIFO TEST1; do
     grep -qxF "CONFIG_${symbol}=y" "$busybox_obj/.config" || {
         echo "FAIL: platform BusyBox lost CONFIG_${symbol}" >&2
         exit 1
@@ -191,6 +196,7 @@ file /usr/bin/runc $oci_root/usr/bin/runc 0755 0 0
 file /usr/lib/harmony/init $oci_root/usr/lib/harmony/init 0755 0 0
 file /usr/lib/harmony/supervisor $oci_root/usr/lib/harmony/supervisor 0755 0 0
 slink /bin/cat /bin/busybox 0777 0 0
+slink /bin/[ /bin/busybox 0777 0 0
 slink /bin/chmod /bin/busybox 0777 0 0
 slink /bin/chown /bin/busybox 0777 0 0
 slink /bin/cp /bin/busybox 0777 0 0
