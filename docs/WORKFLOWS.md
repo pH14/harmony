@@ -30,6 +30,23 @@ workloads are acceptance tests that run on an off-hours schedule.
 | Benchmarks / Historical bugs | Nightly search; bounded replay on relevant PRs |
 | Release / Harmony | Version tags |
 
+## Skill evaluation boundary
+
+The skill evaluator is not part of this checkout. When its `benchmarks/skills/`
+prerequisite lands, keep its two CI purposes separate:
+
+| Workflow | Automatic triggers | Owns |
+| --- | --- | --- |
+| Checks / Skill evaluator | Relevant PRs; manual guest qualification | Sandbox, build, guest-delivery, and grading qualification without model calls. Automatic jobs stay within 15 minutes; the guest job is manual-only and may use the 45-minute ceiling when given a trusted `guest_artifact_run_id`. |
+| Benchmarks / Developer skills | Nightly schedule; manual dispatch | Real-model investigation, integration, and end-to-end panels under their declared budgets. The job must fail before starting a paid attempt when provider credentials are missing. |
+
+The no-model runner and fixture qualification belong in `Checks / Skill
+evaluator`, alongside the other qualification harness checks. The benchmark
+workflow should invoke the shared runner for its panels without copying those
+checks or adding a real-model pull-request job. Do not add either workflow
+until the evaluator sources are present on the base branch; branch-only
+workflow definitions must not point at an absent `benchmarks/skills/` tree.
+
 ## Job conventions
 
 Use `fail-fast: false` on case matrices so one failure does not cancel other
