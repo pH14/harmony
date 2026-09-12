@@ -107,7 +107,7 @@ entries while the 14.4 image stays silent. That says the image and its oracle
 are wired correctly; it says nothing about whether a Consonance search reaches
 the same overlap, which is what CI measures.
 
-The concurrency the bug needs comes from the fault agent spawning hooks without
+The concurrency the bug needs comes from the platform supervisor spawning hooks without
 waiting, so overlapping hook 1 and hook 2 windows are what a campaign must
 produce. Knobs: `faultlab.churn_rows` (default 20, spread evenly over the
 table), `faultlab.churn_slices` (default 2 transactions per cycle) and
@@ -120,7 +120,8 @@ profiles serve glibc's and PostgreSQL's userspace `RDTSC`/`RDTSCP` reads from
 Harmony's virtual clock; the fault-library profile additionally carries the
 task-park fault. The same build writes
 `x86_64/initramfs.cpio.gz`, the package-neutral base image `--base-initramfs`
-names; preparation appends the workload rootfs and the fault agent to it.
+names; canonical OCI preparation supplies the workload rootfs and platform
+supervisor bundle to the guest.
 
 `case.json` is the machine-readable form of all of this: the pins, the node and
 hook table, the oracle, the run settings and the search budget. `probe.json` is

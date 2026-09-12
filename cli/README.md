@@ -14,7 +14,7 @@ harmony search --package nes --backend native smb.nes --core quicknes_libretro.s
 harmony search --package nes --backend consonance smb.nes \
   --kernel bzImage --base-initramfs initramfs-nes.cpio.gz
 harmony search --package faults foo.oci --kernel bzImage \
-  --base-initramfs initramfs.cpio.gz --fault-agent fault-agent --out run
+  --base-initramfs initramfs.cpio.gz --out run
 ```
 
 NES identifies SMB or Nova by ROM hash and defaults to `native`. Supply the
@@ -25,13 +25,12 @@ adds the ROM and launch command. It requires a supported Linux KVM host.
 
 The faults package defaults to `consonance`. Its OCI image supplies
 `/etc/harmony/bundle`, which names the workload's nodes, hooks, setup and
-readiness commands in the [bundle format](../workloads/fault-agent/README.md),
-plus the executables those lines run. Every node and the fault agent execute
-inside one VM on one virtual CPU. Supply the controlled kernel with `--kernel`,
-the Linux base image with `--base-initramfs`, and the static musl fault agent
-with `--fault-agent` or `HARMONY_FAULT_AGENT`. Installed artifacts are
-discovered through `HARMONY_GUEST_DIR`. Preparation injects the agent into the
-staged image; its commands execute inside the guest.
+readiness commands in the platform supervisor's bundle format, plus the
+executables those lines run. Every node and hook execute inside one VM on one
+virtual CPU. Supply the controlled kernel with `--kernel` and the Linux base
+image with `--base-initramfs`. The platform runtime provides the supervisor and
+its SDK devices; installed kernel and base-image artifacts are discovered
+through `HARMONY_GUEST_DIR`.
 
 `--horizon-ms` sets the guest time one fault action runs for and `--ram-mib` the
 guest RAM. `--knobs "k=v k=v"` adds guest command-line words, `--places FILE`

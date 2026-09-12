@@ -36,8 +36,6 @@ pub struct Args {
     kernel: Option<PathBuf>,
     #[arg(long)]
     base_initramfs: Option<PathBuf>,
-    #[arg(long)]
-    fault_agent: Option<PathBuf>,
     #[arg(long, default_value_t = 500)]
     horizon_ms: u64,
     #[arg(long, default_value_t = 1024)]
@@ -97,7 +95,6 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
                 &args.input,
                 args.kernel,
                 args.base_initramfs,
-                args.fault_agent,
                 &faults,
                 replay.as_deref(),
                 args.repeat,
@@ -218,7 +215,6 @@ fn run_faults_consonance(
     input: &std::path::Path,
     kernel: Option<PathBuf>,
     base: Option<PathBuf>,
-    agent: Option<PathBuf>,
     options: &faults_workload::Options,
     replay: Option<&[faults_workload::FaultAction]>,
     repeat: u32,
@@ -236,20 +232,13 @@ fn run_faults_consonance(
         let base = base
             .or_else(|| crate::oci::select_base_initramfs(&installed.initramfs).cloned())
             .ok_or("guest base image missing: use --base-initramfs")?;
-        let agent = agent
-            .or_else(|| std::env::var_os("HARMONY_FAULT_AGENT").map(PathBuf::from))
-            .or_else(|| installed.dir.map(|dir| dir.join("fault-agent")))
-            .ok_or("fault agent missing: use --fault-agent or HARMONY_FAULT_AGENT")?;
-        let agent = std::fs::read(agent)?;
         let prepared = faults_workload::prepare::prepare_oci(
             input.to_str().ok_or("OCI input must be UTF-8")?,
             &std::fs::read(base)?,
-            &agent,
         )?;
         let artifacts = faults_workload::Artifacts {
             kernel: std::fs::read(kernel)?,
             initramfs: prepared.initramfs,
-            agent,
         };
         let report = match replay {
             Some(actions) => {
@@ -274,7 +263,7 @@ fn run_faults_consonance(
         any(target_arch = "x86_64", target_arch = "aarch64")
     )))]
     {
-        let _ = (input, kernel, base, agent, options, replay, repeat);
+        let _ = (input, kernel, base, options, replay, repeat);
         Err("faults Consonance execution requires a supported Linux KVM host".into())
     }
 }
@@ -306,7 +295,6 @@ mod tests {
             core: None,
             kernel: None,
             base_initramfs: None,
-            fault_agent: None,
             horizon_ms: 500,
             ram_mib: 1024,
             knobs: None,
@@ -359,7 +347,6 @@ mod tests {
             std::path::Path::new("missing-oci"),
             Some(PathBuf::from("missing-kernel")),
             Some(PathBuf::from("missing-initramfs")),
-            Some(PathBuf::from("missing-agent")),
             &faults_options(&args(Package::Faults, Backend::Consonance)).expect("options"),
             None,
             1,

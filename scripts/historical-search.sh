@@ -29,11 +29,10 @@ esac
 
 oracle=$(dirname "$0")/historical-oracle.sh
 harmony=${PWD}/tools/harmony
-agent=${PWD}/tools/fault-agent
 kernel=${PWD}/guest/bzImage-faultlab
 base_initramfs=${PWD}/guest/initramfs.cpio.gz
-chmod +x "${harmony}" "${agent}"
-test -x "${harmony}" && test -x "${agent}" && test -s "${kernel}" && test -s "${base_initramfs}"
+chmod +x "${harmony}"
+test -x "${harmony}" && test -s "${kernel}" && test -s "${base_initramfs}"
 
 mkdir -p reports
 out="reports/${CASE_ID}.${ARM}.search"
@@ -51,7 +50,6 @@ timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
     --backend consonance \
     --kernel "${kernel}" \
     --base-initramfs "${base_initramfs}" \
-    --fault-agent "${agent}" \
     --seed "${SEED}" \
     --workers "${WORKERS}" \
     --executions "${EXECUTIONS}" \

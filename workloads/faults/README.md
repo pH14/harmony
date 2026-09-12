@@ -3,28 +3,28 @@
 `faults-workload` searches a distributed workload for bugs that only appear
 when nodes die, stall, or restart at the wrong moment. The workload runs
 unmodified inside one deterministic VM; every fault is enforced from inside the
-guest by [`harmony-fault-agent`](../fault-agent), and the whole run is a
-Consonance session, so a bug reproduces from its action list alone.
+guest by the platform supervisor, and the whole run is a Consonance session, so
+a bug reproduces from its action list alone.
 
 ## The image contract
 
 A workload image is an OCI image carrying one extra file, `/etc/harmony/bundle`,
-in the fault agent's bundle format:
+in the platform supervisor's bundle format:
 
 | line | meaning |
 |---|---|
-| `node <name> <argv...>` | one workload process the agent supervises |
+| `node <name> <argv...>` | one workload process the supervisor supervises |
 | `hook <id> <argv...>` | a command the search can run at any moment |
 | `setup <argv...>` | runs once, before any node starts |
 | `ready <argv...>` | must pass before the run's setup point is sealed |
 
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
-alphabet, and assembles a guest initramfs: the base image, the OCI rootfs, and
-a control member holding the static fault agent and this package's init. The
-init mounts the pseudo-filesystems, binds and chroots into the workload rootfs,
-and execs the agent. The control member is appended after the compressed
-members and padded to four bytes, which Linux initramfs requires before a raw
-`newc` header.
+alphabet, and passes the image to the canonical OCI preparation API with
+`/etc/harmony/bundle` selected for structured supervision. The platform control
+member contains the read-only execution specification and mounts the pinned
+supervisor, SDK devices, and bundle path. The supervisor runs setup and
+readiness commands with the resolved image credentials before it publishes the
+setup point, then owns the node process groups and hook launches.
 
 ## Actions
 
@@ -37,12 +37,12 @@ time ([`target`](src/target.rs)):
 | `Kill(node)` | the node stays down for the whole horizon |
 | `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
 | `Restart(node)` | the node is killed and comes back inside the horizon |
-| `Hook(id)` | the agent runs that hook once |
+| `Hook(id)` | the supervisor runs that hook once |
 | `Park(node, addr, hits, hold)` | guest threads are held at an execution place |
 | `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's seal when settling carried it past that start |
 
 Every action but `Interrupt` becomes a standing-fault window on the shared
-[`fault-policy`](../fault-policy) wire form. The package answers the agent's
+[`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
 moment, so an input is fully described by its encoded window list and one
 branch installs it.
@@ -74,15 +74,15 @@ hook-completion count.
 ```
 harmony search --package faults IMAGE.oci --backend consonance \
     --kernel vmlinux --base-initramfs initramfs.cpio.gz \
-    --fault-agent fault-agent --seed 1 --workers 8 --executions 100000 \
+    --seed 1 --workers 8 --executions 100000 \
     --actions 12 --horizon-ms 500 --ram-mib 1024 --out run/
 harmony search --package faults IMAGE.oci --backend consonance \
     --kernel vmlinux --base-initramfs initramfs.cpio.gz \
-    --fault-agent fault-agent --replay run/bug-1.json --repeat 10 --out confirm/
+    --replay run/bug-1.json --repeat 10 --out confirm/
 ```
 
 Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
-image, kernel and agent hashes, the execution identity, the run bounds, and
+image and kernel hashes, the execution identity, the run bounds, and
 either the bugs found or the replay outcomes.
 
 The search report and `campaign-summary.json` also record

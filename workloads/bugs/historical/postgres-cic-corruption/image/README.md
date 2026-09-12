@@ -72,7 +72,7 @@ the same privileges without it.
 
 ## The bundle
 
-`/etc/harmony/bundle` names the scripts the fault agent runs:
+`/etc/harmony/bundle` names the scripts the platform supervisor runs:
 
 | line | script | what it does |
 |---|---|---|

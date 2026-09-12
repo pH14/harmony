@@ -320,7 +320,6 @@ dependencies = [
  "control-proto",
  "environment",
  "fault-policy",
- "guest-image",
  "oci-support",
  "searcher",
  "serde",
