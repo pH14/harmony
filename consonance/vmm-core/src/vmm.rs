@@ -10,6 +10,7 @@ use vm_state::SnapshotRecords;
 use vmm_backend::{Arch, Backend, CommonExit, Exit};
 use vtime::{IdlePlanner, VClock, VClockConfig};
 
+use crate::engine_state::EngineState;
 use crate::snapshot::SnapshotError;
 use crate::vendor::Vendor;
 use crate::virtual_time::LiveVirtualTimeTrace;
@@ -317,6 +318,17 @@ where
     pub(crate) idle_wake_vns: Option<u64>,
     pub(crate) sdk: Option<SdkChannel>,
     pub(crate) pvclock: Option<PvclockChannel>,
+}
+
+struct RestorePreparation<B: Backend>
+where
+    B::A: Vendor,
+{
+    engine_state: EngineState,
+    vcpu: VcpuOf<B>,
+    clock_offset: u64,
+    vendor: <B::A as Vendor>::RestorePrep,
+    vtime: Option<(VClockConfig, VClock, SeededEntropy)>,
 }
 
 impl<B: Backend> Vmm<B>
@@ -765,17 +777,11 @@ where
         Ok(state)
     }
 
-    pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
-        if self.completion_staged {
-            return Err(VmmError::ContractViolation(
-                "restore_vm_state into a backend with a staged completion: the VM just serviced a \
-                 read/MSR/CPUID exit whose completion is pending in kvm_run and is not \
-                 cleared by restore — it would commit the old exit on the next run. Complete and \
-                 retire the old exit first, or use a freshly-booted VM."
-                    .to_string(),
-            ));
-        }
-        let engine_state = crate::engine_state::EngineState::decode(s.engine_state())?;
+    fn prepare_restore_vm_state(
+        &self,
+        s: &<B::A as Vendor>::Snapshot,
+    ) -> Result<RestorePreparation<B>, VmmError> {
+        let engine_state = EngineState::decode(s.engine_state())?;
         if *s.timers() != vm_state::TimerQueueState::default() {
             return Err(VmmError::ContractViolation(
                 "restore_vm_state: snapshot carries a non-empty timer queue, but vmm-core has no \
@@ -821,15 +827,48 @@ where
                 None
             }
         };
+        Ok(RestorePreparation {
+            engine_state,
+            vcpu,
+            clock_offset,
+            vendor: prep,
+            vtime: vtime_commit,
+        })
+    }
+
+    pub(crate) fn preflight_restore_vm_state(
+        &self,
+        s: &<B::A as Vendor>::Snapshot,
+    ) -> Result<(), VmmError> {
+        self.prepare_restore_vm_state(s).map(|_| ())
+    }
+
+    pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
+        if self.completion_staged {
+            return Err(VmmError::ContractViolation(
+                "restore_vm_state into a backend with a staged completion: the VM just serviced a \
+                 read/MSR/CPUID exit whose completion is pending in kvm_run and is not \
+                 cleared by restore — it would commit the old exit on the next run. Complete and \
+                 retire the old exit first, or use a freshly-booted VM."
+                    .to_string(),
+            ));
+        }
+        let RestorePreparation {
+            engine_state,
+            vcpu,
+            clock_offset,
+            vendor,
+            vtime,
+        } = self.prepare_restore_vm_state(s)?;
         self.backend.restore(&vcpu)?;
-        if let Some((cfg, clock, entropy)) = vtime_commit {
+        if let Some((cfg, clock, entropy)) = vtime {
             let vt = self.vtime.as_mut().expect("vtime_commit implies wired");
             vt.cfg = cfg;
             vt.clock = clock;
             vt.entropy = entropy;
             vt.guest_clock_offset = clock_offset;
         }
-        <B::A as Vendor>::commit_restore(self, prep);
+        <B::A as Vendor>::commit_restore(self, vendor);
         let restored_clockevent = <B::A as Vendor>::clockevent_trace_schedule(self);
         if let Some(trace) = self.virtual_time_trace.as_mut() {
             trace
