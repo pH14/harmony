@@ -658,6 +658,63 @@ fn dump_state_diff(vmm_a: &StockVmm, vmm_b: &StockVmm) {
     }
 }
 
+fn dump_byte_diff(label: &str, bytes_a: &[u8], bytes_b: &[u8]) {
+    if bytes_a == bytes_b {
+        return;
+    }
+    println!("X2_{label}_LEN A={} B={}", bytes_a.len(), bytes_b.len());
+    if let Some(off) = (0..bytes_a.len().min(bytes_b.len())).find(|&i| bytes_a[i] != bytes_b[i]) {
+        let lo = off.saturating_sub(64);
+        for (tag, bytes) in [("A", bytes_a), ("B", bytes_b)] {
+            let hi = (off + 64).min(bytes.len());
+            println!("X2_{label}_DIFF {tag} @{off}: {}", hex(&bytes[lo..hi]));
+        }
+    }
+}
+
+fn dump_captured_state_diff(capture_a: &SelectedCheckpoint, capture_b: &SelectedCheckpoint) {
+    let components_a = &capture_a.components;
+    let components_b = &capture_b.components;
+    assert_eq!(
+        components_a.len(),
+        components_b.len(),
+        "captured component breakdowns must have one shape"
+    );
+    let mut diffs = 0u32;
+    for ((label_a, digest_a), (label_b, digest_b)) in components_a.iter().zip(components_b) {
+        assert_eq!(label_a, label_b, "captured component labels must align");
+        let verdict = if digest_a == digest_b {
+            "MATCH"
+        } else {
+            diffs += 1;
+            "DIFF"
+        };
+        println!("X2_COMPONENT {label_a}={verdict}");
+    }
+    println!("X2_COMPONENT_DIFFS={diffs}");
+    dump_byte_diff("SERIAL", &capture_a.serial, &capture_b.serial);
+    dump_byte_diff("RAM", &capture_a.memory, &capture_b.memory);
+    dump_byte_diff("STATE_BLOB", &capture_a.state_blob, &capture_b.state_blob);
+    dump_byte_diff("VMST_RAW", &capture_a.vm_state, &capture_b.vm_state);
+    let state_a = vm_state::VmState::decode(&capture_a.vm_state)
+        .expect("decode retained reference VMST for component diff");
+    let state_b = vm_state::VmState::decode(&capture_b.vm_state)
+        .expect("decode retained candidate VMST for component diff");
+    if state_a.regs != state_b.regs {
+        println!("X2_REGS_DIFF A={:?} B={:?}", state_a.regs, state_b.regs);
+    }
+    if state_a.sregs != state_b.sregs {
+        println!("X2_SREGS_DIFF A={:?} B={:?}", state_a.sregs, state_b.sregs);
+    }
+    dump_byte_diff("VMST_XSAVE", &state_a.xsave.0, &state_b.xsave.0);
+    if state_a.xsave_restore_bv != state_b.xsave_restore_bv {
+        println!(
+            "X2_XSAVE_RESTORE_BV_DIFF A={:?} B={:?}",
+            state_a.xsave_restore_bv, state_b.xsave_restore_bv
+        );
+    }
+}
+
 fn first_checkpoint_hash(run: &BootRun) -> [u8; 32] {
     run.log
         .events
@@ -870,19 +927,61 @@ fn x2_component_diff_selected_checkpoint() {
     assert!(attempts > 0, "X2_CKPT_ATTEMPTS must be positive");
     let report = report_root("X2_REPORT_DIR");
 
-    let mut vmm_ref =
-        boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
-            .expect("boot_linux_stock_virtual_time");
-    let reference = run_to_selected_checkpoint(&mut vmm_ref, target);
-    report_selected_checkpoint("reference", &reference);
-    retain_selected_checkpoint(report.as_deref(), "reference", &reference);
-
-    for attempt in 0..attempts {
-        let mut vmm =
+    let reference = {
+        let mut vmm_ref =
             boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
                 .expect("boot_linux_stock_virtual_time");
-        let candidate = run_to_selected_checkpoint(&mut vmm, target);
-        report_selected_checkpoint(&format!("candidate {attempt}"), &candidate);
+        let reference = run_to_selected_checkpoint(&mut vmm_ref, target);
+        report_selected_checkpoint("reference", &reference);
+        retain_selected_checkpoint(report.as_deref(), "reference", &reference);
+        let completion = run_boot(&mut vmm_ref, false);
+        report_run("checkpoint reference completion", &completion);
+        assert!(
+            completion.clean()
+                && completion.reached_userspace
+                && completion.guest_ready
+                && completion.pvclock_registered
+                && completion.placement_error.is_none(),
+            "checkpoint reference must complete as a clean userspace boot with the clock page registered \
+             (terminal {:?}, step_error {:?})",
+            completion.reason,
+            completion.step_error
+        );
+        reference
+    };
+
+    for attempt in 0..attempts {
+        let candidate = {
+            let mut vmm =
+                boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+                    .expect("boot_linux_stock_virtual_time");
+            let candidate = run_to_selected_checkpoint(&mut vmm, target);
+            report_selected_checkpoint(&format!("candidate {attempt}"), &candidate);
+            if candidate.event.state_hash != reference.event.state_hash {
+                retain_selected_checkpoint(
+                    report.as_deref(),
+                    "candidate-first-divergent",
+                    &candidate,
+                );
+            }
+            let completion = run_boot(&mut vmm, false);
+            report_run(
+                &format!("checkpoint candidate {attempt} completion"),
+                &completion,
+            );
+            assert!(
+                completion.clean()
+                    && completion.reached_userspace
+                    && completion.guest_ready
+                    && completion.pvclock_registered
+                    && completion.placement_error.is_none(),
+                "checkpoint candidate {attempt} must complete as a clean userspace boot with the clock page registered \
+                 (terminal {:?}, step_error {:?})",
+                completion.reason,
+                completion.step_error
+            );
+            candidate
+        };
         if candidate.event.state_hash != reference.event.state_hash {
             eprintln!(
                 "[x2] checkpoint diagnostic first divergent candidate replay: attempt={attempt}"
@@ -898,8 +997,7 @@ fn x2_component_diff_selected_checkpoint() {
                     .state_hash
                     .expect("reported candidate checkpoint hash")),
             );
-            retain_selected_checkpoint(report.as_deref(), "candidate-first-divergent", &candidate);
-            dump_state_diff(&vmm_ref, &vmm);
+            dump_captured_state_diff(&reference, &candidate);
             return;
         }
     }
