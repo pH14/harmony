@@ -9,6 +9,9 @@ use core::{mem::size_of, ptr};
 use hypercall_proto::HEADER_LEN;
 
 #[cfg(all(feature = "linux-device", target_os = "linux"))]
+pub mod observation;
+
+#[cfg(all(feature = "linux-device", target_os = "linux"))]
 pub mod linux {
     use core::mem::size_of;
     use std::fs::File;

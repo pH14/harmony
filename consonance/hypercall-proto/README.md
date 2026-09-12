@@ -45,3 +45,14 @@ bytes opaquely; this crate does not depend on the environment catalog.
 Golden, protocol, stateful, and public-API tests cover frame canonicalization,
 service routing, state restoration, and client-side bounds. The crate is
 portable and contains no hypervisor-specific device code.
+
+## Observation descriptors
+
+`observation` defines the platform-owned mapping registration event
+`0x04000002`. Its 24-byte little-endian body contains version (u32, currently 1),
+opaque handle (nonzero u32), guest address (u64), logical byte length (u32), and
+reserved zero (u32). A zero address and length revoke the handle. Active regions
+are at most 2 MiB and may not overflow the address space. Producers publish this
+event through the kernel driver; applications use opaque handles. The client
+resolves the latest descriptor in the restored SDK history and bounds every
+read against its logical length. Revoked or unknown handles are errors.

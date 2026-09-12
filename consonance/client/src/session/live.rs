@@ -482,6 +482,17 @@ impl Session {
         Ok(events)
     }
 
+    pub fn read_observation(
+        &mut self,
+        handle: u32,
+        offset: u32,
+        len: u32,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        let events = self.sdk_events()?;
+        let region = super::observation_descriptor(&events, handle)?;
+        self.read(region.range(offset, len)?, len)
+    }
+
     pub fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
         match self
             .client

@@ -1787,6 +1787,27 @@ where
             }
             let id = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
             let data = &payload[4..];
+            if id == hypercall_proto::observation::EVENT_ID
+                && hypercall_proto::observation::Descriptor::decode(data)
+                    .ok()
+                    .is_none_or(|region| {
+                        region.len != 0
+                            && self
+                                .guest_slice(region.address, region.len as usize)
+                                .is_none()
+                    })
+            {
+                let n = encode_response(
+                    ServiceId::Event,
+                    1,
+                    header.seq,
+                    Status::BadRequest,
+                    &[],
+                    resp,
+                )
+                .unwrap_or(0);
+                return (n, None);
+            }
             let (stop, defer) = match Self::classify_sdk_event(id, data) {
                 SdkEventAction::Malformed => {
                     let n = encode_response(
@@ -3164,6 +3185,51 @@ mod tests {
 
         assert_eq!(classify(state_id, &[0, 1, 2, 3]), C::Capture);
         assert_eq!(classify((9u32 << SDK_NS_SHIFT) | 7, &[1, 2, 3]), C::Capture);
+    }
+
+    #[test]
+    fn observation_registration_is_ram_bounded_and_survives_sdk_restore() {
+        use hypercall_proto::observation::{Descriptor, EVENT_ID};
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        vmm.enable_sdk(nominal_env(1), &ServiceConfig::default());
+        let ring = |vmm: &mut Vmm<MockBackend>, data: &[u8]| {
+            let mut payload = EVENT_ID.to_le_bytes().to_vec();
+            payload.extend_from_slice(data);
+            let mut request = [0; HC_PAGE];
+            let n = hypercall_proto::encode_request(ServiceId::Event, 1, 1, &payload, &mut request)
+                .unwrap();
+            let mut response = [0; HC_PAGE];
+            let (len, stop) = vmm.dispatch_doorbell(7, &request[..n], &mut response);
+            assert!(stop.is_none());
+            decode(&response[..len]).unwrap().0.status
+        };
+        let region = Descriptor {
+            handle: 1,
+            address: 0x1000,
+            len: 4096,
+        };
+        assert_eq!(ring(&mut vmm, &region.encode().unwrap()), Status::Ok as u16);
+        let saved = vmm.sdk_snapshot().unwrap().unwrap();
+        let original = vmm.sdk_events().to_vec();
+        let outside = Descriptor {
+            address: TEST_RAM as u64,
+            ..region
+        };
+        assert_eq!(
+            ring(&mut vmm, &outside.encode().unwrap()),
+            Status::BadRequest as u16
+        );
+        assert_eq!(ring(&mut vmm, &[0; 23]), Status::BadRequest as u16);
+        assert_eq!(vmm.sdk_events(), original);
+        let closed = Descriptor {
+            address: 0,
+            len: 0,
+            ..region
+        };
+        assert_eq!(ring(&mut vmm, &closed.encode().unwrap()), Status::Ok as u16);
+        assert_eq!(vmm.sdk_events().len(), 2);
+        vmm.sdk_restore(&saved).unwrap();
+        assert_eq!(vmm.sdk_events(), original);
     }
 
     #[test]

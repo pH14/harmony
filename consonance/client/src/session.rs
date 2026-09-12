@@ -668,6 +668,27 @@ mod live;
 pub use live::{Session, host_minor_faults};
 
 pub type SdkEvent = (u64, u32, Vec<u8>);
+
+pub fn observation_descriptor(
+    events: &[SdkEvent],
+    handle: u32,
+) -> Result<hypercall_proto::observation::Descriptor, Box<dyn std::error::Error>> {
+    use hypercall_proto::observation::{Descriptor, EVENT_ID};
+    for (_, id, bytes) in events.iter().rev() {
+        if *id != EVENT_ID {
+            continue;
+        }
+        let descriptor = Descriptor::decode(bytes)?;
+        if descriptor.handle == handle {
+            if descriptor.len == 0 {
+                return Err("observation handle was revoked".into());
+            }
+            return Ok(descriptor);
+        }
+    }
+    Err("observation handle is not registered".into())
+}
+
 #[cfg_attr(
     not(all(
         target_os = "linux",
@@ -744,6 +765,36 @@ fn bytes_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observation_lookup_tracks_registration_revocation_and_restored_events() {
+        use hypercall_proto::observation::{Descriptor, EVENT_ID};
+        let region = Descriptor {
+            handle: 7,
+            address: 0x8000,
+            len: 8192,
+        };
+        let mut events = vec![(1, EVENT_ID, region.encode().unwrap().to_vec())];
+        assert_eq!(observation_descriptor(&events, 7).unwrap(), region);
+        assert!(observation_descriptor(&events, 8).is_err());
+        let snapshot_events = events.clone();
+        events.push((
+            2,
+            EVENT_ID,
+            Descriptor {
+                address: 0,
+                len: 0,
+                ..region
+            }
+            .encode()
+            .unwrap()
+            .to_vec(),
+        ));
+        assert!(observation_descriptor(&events, 7).is_err());
+        assert_eq!(observation_descriptor(&snapshot_events, 7).unwrap(), region);
+        events.push((3, EVENT_ID, vec![0; 23]));
+        assert!(observation_descriptor(&events, 7).is_err());
+    }
 
     #[test]
     fn deferred_checkpoint_hashing_is_opt_in_and_off_by_default() {

@@ -8,6 +8,7 @@ license.workspace = true
 in-process = ["dep:vmm-core", "dep:vmm-backend", "dep:environment"]
 
 [dependencies]
+hypercall-proto = { path = "../hypercall-proto", version = "=0.1.0", default-features = false }
 vmm-core = { path = "../vmm-core", version = "=0.1.0", optional = true }
 vmm-backend = { path = "../vmm-backend", version = "=0.1.0", optional = true }
 control-proto = { path = "../control-proto", version = "=0.1.0" }

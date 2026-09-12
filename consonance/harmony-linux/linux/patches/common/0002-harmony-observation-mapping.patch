@@ -1,0 +1,181 @@
+Add bounded, kernel-owned observation mappings to the SDK device
+
+The mapping remains owned by its file until the final VMA and descriptor close.
+Registration and revocation use recorded SDK events; all bytes are ordinary guest
+RAM and are read by the host only at stopped execution boundaries.
+
+--- a/drivers/misc/harmony.c
++++ b/drivers/misc/harmony.c
+@@ -9,6 +9,7 @@
+ #include <linux/ioctl.h>
+ #include <linux/kernel.h>
+ #include <linux/miscdevice.h>
++#include <linux/mm.h>
+ #include <linux/module.h>
+ #include <linux/mutex.h>
+ #include <linux/sched.h>
+@@ -70,6 +71,9 @@
+ 	_IOWR(HARMONY_IOC_MAGIC, 1, struct harmony_ioc_exchange)
+ 
+ struct harmony_file {
++	void *region;
++	u32 region_len;
++	u32 region_handle;
+ 	u8 entropy[8];
+ 	bool entropy_ready;
+ 	u8 coverage[12];
+@@ -356,6 +360,103 @@
+ 	return ret;
+ }
+ 
++struct harmony_region_request {
++	__u32 length;
++	__u32 handle;
++};
++
++#define HARMONY_IOC_REGION _IOWR(HARMONY_IOC_MAGIC, 2, struct harmony_region_request)
++#define HARMONY_REGION_MAX (2U * 1024U * 1024U)
++#define HARMONY_REGION_LIMIT 16U
++#define HARMONY_REGION_EVENT 0x04000002U
++
++static u32 harmony_region_next = 1;
++static u32 harmony_region_count;
++
++static int harmony_region_event(struct harmony_file *state, bool active)
++{
++	u8 payload[28] = { 0 };
++	u32 response_len = 0;
++	int ret;
++
++	put_unaligned_le32(HARMONY_REGION_EVENT, payload);
++	put_unaligned_le32(1, payload + 4);
++	put_unaligned_le32(state->region_handle, payload + 8);
++	if (active) {
++		put_unaligned_le64(virt_to_phys(state->region), payload + 12);
++		put_unaligned_le32(state->region_len, payload + 20);
++	}
++	ret = harmony_exchange(HC_SERVICE_EVENT, HC_OPCODE_ONE,
++			       payload, sizeof(payload), NULL, 0, &response_len);
++	if (!ret && response_len)
++		ret = -EPROTO;
++	return ret;
++}
++
++static long harmony_region_create(struct file *file, void __user *argp)
++{
++	struct harmony_file *state = file->private_data;
++	struct harmony_region_request request;
++	int ret;
++
++	if (copy_from_user(&request, argp, sizeof(request)))
++		return -EFAULT;
++	if (!request.length || request.length > HARMONY_REGION_MAX || request.handle)
++		return -EINVAL;
++	if (mutex_lock_interruptible(&harmony_lock))
++		return -ERESTARTSYS;
++	if (state->region) {
++		ret = -EALREADY;
++		goto out;
++	}
++	if (harmony_region_count >= HARMONY_REGION_LIMIT || !harmony_region_next) {
++		ret = -ENOSPC;
++		goto out;
++	}
++	state->region = alloc_pages_exact(PAGE_ALIGN(request.length), GFP_KERNEL | __GFP_ZERO);
++	if (!state->region) {
++		ret = -ENOMEM;
++		goto out;
++	}
++	state->region_len = request.length;
++	state->region_handle = harmony_region_next++;
++	ret = harmony_region_event(state, true);
++	if (ret) {
++		free_pages_exact(state->region, PAGE_ALIGN(state->region_len));
++		state->region = NULL;
++		goto out;
++	}
++	harmony_region_count++;
++	request.handle = state->region_handle;
++	ret = copy_to_user(argp, &request, sizeof(request)) ? -EFAULT : 0;
++out:
++	mutex_unlock(&harmony_lock);
++	return ret;
++}
++
++static int harmony_mmap(struct file *file, struct vm_area_struct *vma)
++{
++	struct harmony_file *state = file->private_data;
++	int ret;
++
++	if (mutex_lock_interruptible(&harmony_lock))
++		return -ERESTARTSYS;
++	if (!state->region || vma->vm_pgoff ||
++	    vma->vm_end - vma->vm_start != PAGE_ALIGN(state->region_len) ||
++	    !(vma->vm_flags & VM_SHARED) || (vma->vm_flags & VM_EXEC)) {
++		ret = -EINVAL;
++		goto out;
++	}
++	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
++	vm_flags_clear(vma, VM_MAYEXEC);
++	ret = remap_pfn_range(vma, vma->vm_start,
++			     virt_to_phys(state->region) >> PAGE_SHIFT,
++			     PAGE_ALIGN(state->region_len), vma->vm_page_prot);
++out:
++	mutex_unlock(&harmony_lock);
++	return ret;
++}
++
+ static int harmony_open(struct inode *inode, struct file *file)
+ {
+ 	struct harmony_file *state;
+@@ -371,6 +472,16 @@
+ {
+ 	struct harmony_file *state = file->private_data;
+ 
++	mutex_lock(&harmony_lock);
++	if (state->region) {
++		if (harmony_region_event(state, false)) {
++			pr_err("observation revocation failed; retaining allocation\n");
++		} else {
++			free_pages_exact(state->region, PAGE_ALIGN(state->region_len));
++			harmony_region_count--;
++		}
++	}
++	mutex_unlock(&harmony_lock);
+ 	memzero_explicit(state->entropy, sizeof(state->entropy));
+ 	memzero_explicit(state->coverage, sizeof(state->coverage));
+ 	kfree(state);
+@@ -445,6 +554,16 @@
+ 		mutex_unlock(&harmony_lock);
+ 		return -EFAULT;
+ 	}
++	mutex_lock(&harmony_lock);
++	if (state->region) {
++		if (harmony_region_event(state, false)) {
++			pr_err("observation revocation failed; retaining allocation\n");
++		} else {
++			free_pages_exact(state->region, PAGE_ALIGN(state->region_len));
++			harmony_region_count--;
++		}
++	}
++	mutex_unlock(&harmony_lock);
+ 	memzero_explicit(state->entropy, sizeof(state->entropy));
+ 	state->entropy_ready = false;
+ 	mutex_unlock(&harmony_lock);
+@@ -467,6 +584,8 @@
+ 	struct harmony_raw_context context;
+ 	int ret;
+ 
++	if (command == HARMONY_IOC_REGION)
++		return harmony_region_create(file, argp);
+ 	if (command != HARMONY_IOC_EXCHANGE)
+ 		return -ENOTTY;
+ 	if (copy_from_user(&exchange, argp, sizeof(exchange)))
+@@ -624,6 +743,7 @@
+ 	.read = harmony_read,
+ 	.write = harmony_write,
+ 	.unlocked_ioctl = harmony_ioctl,
++	.mmap = harmony_mmap,
+ 	.compat_ioctl = harmony_ioctl,
+ 	.llseek = noop_llseek,
+ };

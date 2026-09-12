@@ -1,4 +1,4 @@
-x86: add the /dev/harmony synchronous SDK transport
+Add the architecture-independent /dev/harmony synchronous SDK transport
 
 Applications and agents must not need iopl(2) or /dev/mem to reach Harmony's
 deterministic doorbell. Add a built-in misc character device which owns the
@@ -6,7 +6,7 @@ fixed request and response pages, serializes every exchange, emits attributed
 Antithesis JSON on write(2), implements deterministic entropy as a one-byte
 write followed by an eight-byte read, carries the SDK coverage-threshold command
 as a 17-byte write followed by a 12-byte read, and exposes a bounded raw-frame
-ioctl for guest agents. The hypercall remains the existing OUT 0x0ca1 path. A
+ioctl for guest agents. The kernel owns the architecture-specific port or MMIO doorbell. A
 KUnit concurrency test blocks one in-flight transaction and proves a second
 ringer cannot enter the page/doorbell critical section.
 
@@ -23,7 +23,7 @@ consonance/harmony-linux/linux/patches/ per the repository's kernel-patch except
 +
 +config HARMONY_DEVICE
 +	bool "Harmony deterministic hypercall character device"
-+	depends on X86_64
++	depends on X86_64 || ARM64
 +	default n
 +	help
 +	  Expose /dev/harmony for synchronous application traffic to the
@@ -31,7 +31,7 @@ consonance/harmony-linux/linux/patches/ per the repository's kernel-patch except
 +	  JSON with caller attribution; a one-byte NUL write followed by an
 +	  eight-byte read obtains entropy from the seeded hypercall stream.
 +	  The driver owns the fixed 0xe000/0xf000 frame pages and rings I/O
-+	  port 0x0ca1, so applications need neither /dev/mem nor iopl(2).
++	  port or board MMIO doorbell, so applications need no physical access.
 +
 +config HARMONY_DEVICE_KUNIT_TEST
 +	bool "KUnit test for Harmony transaction serialization"
@@ -56,7 +56,7 @@ consonance/harmony-linux/linux/patches/ per the repository's kernel-patch except
  obj-$(CONFIG_MCHP_LAN966X_PCI)	+= lan966x-pci.o
 --- /dev/null
 +++ b/drivers/misc/harmony.c
-@@ -0,0 +1,650 @@
+@@ -0,0 +1,674 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/* Synchronous /dev/harmony transport over the deterministic doorbell ABI. */
 +#define pr_fmt(fmt) "harmony: " fmt
@@ -87,6 +87,7 @@ consonance/harmony-linux/linux/patches/ per the repository's kernel-patch except
 +#include <asm/ptrace.h>
 +
 +#define HARMONY_DOORBELL_PORT	0x0ca1
++#define HARMONY_DOORBELL_MMIO	0x0a000000UL
 +#define HARMONY_REQ_GPA		0xe000UL
 +#define HARMONY_RESP_GPA	0xf000UL
 +#define HARMONY_PAGE_SIZE	4096U
@@ -138,6 +139,18 @@ consonance/harmony-linux/linux/patches/ per the repository's kernel-patch except
 +static void *harmony_req_page;
 +static void *harmony_resp_page;
 +static u32 harmony_seq = 1;
++#ifdef CONFIG_ARM64
++static void __iomem *harmony_doorbell;
++#endif
++
++static void harmony_ring(u32 length)
++{
++#ifdef CONFIG_X86_64
++	outl(length, HARMONY_DOORBELL_PORT);
++#else
++	writel(length, harmony_doorbell);
++#endif
++}
 +
 +static u32 harmony_next_seq(void)
 +{
@@ -188,7 +201,7 @@ consonance/harmony-linux/linux/patches/ per the repository's kernel-patch except
 +	memset(harmony_resp_page, 0, HARMONY_PAGE_SIZE);
 +	memcpy(harmony_req_page, request, request_len);
 +	virt_wmb();
-+	outl(request_len, HARMONY_DOORBELL_PORT);
++	harmony_ring(request_len);
 +	virt_rmb();
 +
 +	payload_len = le32_to_cpu(resp->payload_len);
@@ -249,7 +262,7 @@ consonance/harmony-linux/linux/patches/ per the repository's kernel-patch except
 +		memcpy((u8 *)harmony_req_page + HC_HEADER_LEN, payload, payload_len);
 +
 +	virt_wmb();
-+	outl(HC_HEADER_LEN + payload_len, HARMONY_DOORBELL_PORT);
++	harmony_ring(HC_HEADER_LEN + payload_len);
 +	virt_rmb();
 +
 +	len = le32_to_cpu(resp->payload_len);
@@ -693,6 +706,13 @@ consonance/harmony-linux/linux/patches/ per the repository's kernel-patch except
 +		ret = -ENOMEM;
 +		goto out_unmap;
 +	}
++#ifdef CONFIG_ARM64
++	harmony_doorbell = ioremap(HARMONY_DOORBELL_MMIO, sizeof(u32));
++	if (!harmony_doorbell) {
++		ret = -ENOMEM;
++		goto out_unmap;
++	}
++#endif
 +	ret = misc_register(&harmony_device);
 +	if (ret)
 +		goto out_unmap;
@@ -700,6 +720,10 @@ consonance/harmony-linux/linux/patches/ per the repository's kernel-patch except
 +	return 0;
 +
 +out_unmap:
++#ifdef CONFIG_ARM64
++	if (harmony_doorbell)
++		iounmap(harmony_doorbell);
++#endif
 +	if (harmony_req_page)
 +		memunmap(harmony_req_page);
 +	if (harmony_resp_page)

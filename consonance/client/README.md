@@ -82,3 +82,9 @@ the outer sparse archive field layout remains version 2.
 cargo test -p consonance-client
 cargo clippy -p consonance-client --all-features --all-targets -- -D warnings
 ```
+
+`Session::read_observation` reads a bounded range of a kernel-published observation
+handle while execution is stopped. Registration is resolved from SDK events in
+the current snapshot, so restoring an earlier snapshot also restores its handle
+lifetime. Unknown, revoked, malformed, and out-of-bounds observations fail before
+a guest-memory read. Workload adapters own interpretation of the returned bytes.
