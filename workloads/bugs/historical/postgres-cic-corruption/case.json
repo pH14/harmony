@@ -112,7 +112,20 @@
     "wall_minutes": 150
   },
   "probe": "workloads/bugs/historical/postgres-cic-corruption/probe.json",
+  "samples": [
+    {
+      "id": "quiet-wait",
+      "path": "workloads/bugs/historical/postgres-cic-corruption/samples/quiet-wait.json",
+      "expect": "clean"
+    }
+  ],
   "discovery_mode": "guided",
   "status": "reproduced",
-  "witness": "workloads/bugs/historical/postgres-cic-corruption/witness.json"
+  "witness": "workloads/bugs/historical/postgres-cic-corruption/witness.json",
+  "ci": {
+    "status": "runnable",
+    "image_prefix": "pgcic",
+    "replay_max_sessions": 3,
+    "replay_timeout_seconds": 1800
+  }
 }

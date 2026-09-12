@@ -56,6 +56,12 @@ jobs:
         run: node --test scripts/benchmark-report.test.cjs
       - name: Historical-bug oracle checks
         run: scripts/historical-oracle.test.sh
+      - name: Historical-bug replay budget checks
+        run: scripts/historical-replay.test.sh
+      - name: Historical-bug search status checks
+        run: scripts/historical-search.test.sh
+      - name: Historical-bug manifest checks
+        run: scripts/historical-manifest.test.sh
       - name: Kernel patch-series checks
         run: bash consonance/harmony-linux/linux/test-patch-series.sh
       - name: Install stable toolchain

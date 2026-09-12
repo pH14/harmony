@@ -106,6 +106,8 @@ pub struct Report {
     pub replays: Vec<ReplaySummary>,
     pub horizons_clocked: u64,
     pub wall_seconds: u64,
+    #[serde(default)]
+    pub watchdog_cutoffs: u64,
 }
 
 impl Report {
@@ -129,6 +131,7 @@ impl Report {
             replays: Vec::new(),
             horizons_clocked: 0,
             wall_seconds: 0,
+            watchdog_cutoffs: 0,
         }
     }
 
@@ -293,6 +296,7 @@ mod live {
             "bugs_found": campaign_report.bugs_found,
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),
+            "watchdog_cutoffs": archive.watchdog_cutoffs,
         });
         std::fs::write(
             options.output.join("campaign-summary.json"),
@@ -335,6 +339,7 @@ mod live {
         report.first_bug_execution = first_confirmed_bug(&report.bugs);
         report.bug_found = report.first_bug_execution.is_some();
         report.wall_seconds = started.elapsed().as_secs();
+        report.watchdog_cutoffs = archive.watchdog_cutoffs;
         report.write(&options.output)?;
         Ok(report)
     }

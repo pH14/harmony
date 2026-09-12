@@ -218,6 +218,8 @@ pub struct FaultArchiveReport {
     pub retained: u64,
     pub rejected: u64,
     pub deaths: u64,
+    #[serde(default)]
+    pub watchdog_cutoffs: u64,
     pub bugs: Vec<FaultBugRecord>,
     #[serde(default)]
     pub selector: SelectorAccounting,

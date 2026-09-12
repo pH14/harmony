@@ -282,6 +282,8 @@ pub struct FaultObservations {
     pub sometimes: BTreeSet<u32>,
     pub violations: BTreeSet<u32>,
     pub stop: FaultStop,
+    #[serde(default)]
+    pub watchdog_cutoff: bool,
 }
 
 impl FaultObservations {
@@ -301,6 +303,7 @@ impl FaultObservations {
             sometimes: capture.sometimes.clone(),
             violations: capture.violations.clone(),
             stop,
+            watchdog_cutoff: false,
         }
     }
 

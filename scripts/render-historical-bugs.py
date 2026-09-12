@@ -29,6 +29,7 @@ COLUMNS = (
     "bug",
     "versions",
     "status",
+    "CI",
     "discovery",
     "latest replay",
     "latest control",
@@ -38,7 +39,7 @@ COLUMNS = (
 
 # Report directory names carry the arm and the mode; a replay of either kind
 # feeds the replay columns and a search feeds the executions column.
-REPLAY_MODES = ("probe", "witness")
+REPLAY_MODES = ("discovery", "probe", "witness")
 
 
 def repo_root() -> Path:
@@ -103,9 +104,8 @@ def first_hit(reports: dict, case_id: str) -> str:
 
 
 def replay_command(case: dict) -> str:
-    """The command that replays this case's strongest committed input."""
-    target = case.get("witness") or case.get("probe")
-    if not target:
+    """Show the command shape for a reproducer from the current run."""
+    if case.get("ci", {}).get("status", "runnable") != "runnable":
         return "—"
     version = case.get("arms", {}).get("vulnerable", {}).get("version", "?")
     run = case.get("run", {})
@@ -115,7 +115,7 @@ def replay_command(case: dict) -> str:
         f"--backend consonance "
         f"--kernel bzImage-{case.get('kernel_profile', '?')} "
         f"--base-initramfs initramfs.cpio.gz "
-        f"--fault-agent fault-agent --replay {target} --repeat 2 "
+        f"--fault-agent fault-agent --replay OUT/first-bug-input.json --repeat 1 "
         f"--horizon-ms {run.get('horizon_ms', '?')} "
         f"--ram-mib {run.get('ram_mib', '?')} "
         f"--knobs \"{knobs}\" --out OUT`"
@@ -137,6 +137,12 @@ def render(cases: list[dict], reports: dict) -> str:
             f"[{case_id}]({case_id}/README.md)",
             f"{vulnerable} / {fixed}",
             case.get("status", "?"),
+            case.get("ci", {}).get("status", "runnable")
+            + (
+                f": {case['ci']['reason']}"
+                if case.get("ci", {}).get("status") == "deferred"
+                else ""
+            ),
             case.get("discovery_mode", "?"),
             replay_outcome(reports, case_id, "vulnerable"),
             replay_outcome(reports, case_id, "control"),
