@@ -16,7 +16,7 @@ in the platform supervisor's bundle format:
 | `node <name> <argv...>` | one workload process the supervisor supervises |
 | `hook <id> <argv...>` | a command the search can run at any moment |
 | `setup <argv...>` | runs once, before any node starts |
-| `ready <argv...>` | must pass before the run's setup point is sealed |
+| `ready <argv...>` | must pass before setup is sealed and before new hooks launch after a supervised node start |
 
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
 alphabet, and passes the image to the canonical OCI preparation API with
@@ -25,6 +25,12 @@ member contains the read-only execution specification and mounts the pinned
 supervisor, SDK devices, and bundle path. The supervisor runs setup and
 readiness commands with the resolved image credentials before it publishes the
 setup point, then owns the node process groups and hook launches.
+
+After setup, readiness probes run asynchronously while standing-fault polling
+continues. The configured command decides readiness, including whether it can
+operate with some nodes down. Already-running hooks continue reporting their
+assertions across restarts; readiness only gates new launches. Bundles without
+a readiness command keep immediate hook launches.
 
 ## Actions
 

@@ -34,7 +34,16 @@ children and reaps them individually, so a finished hook cannot lose its status
 to the node reaper.
 The canonical kernels require `CONFIG_PROC_CHILDREN` for this enumeration.
 
-`bundle`, `directive`, `reconcile`, and `supervise` are portable library
+The `ready` command is checked before setup completes. After setup, every
+supervised node start begins a recovery generation and launches the command as
+an asynchronous child probe. Standing-window polling continues while the probe
+runs, and a failed attempt is retried on the next tick. New hook requests remain
+queued in request order until the current generation becomes ready; hooks that
+were already running retain their results. The hooks-started register advances
+only after a queued or immediate request successfully spawns. A bundle without
+a readiness command launches hooks immediately.
+
+`bundle`, `directive`, `reconcile`, `recovery`, and `supervise` are portable library
 modules. Linux device and process wiring is isolated to the binary. The
 standalone crate can be checked on a development host with:
 

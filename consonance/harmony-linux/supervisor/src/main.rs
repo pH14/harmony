@@ -111,6 +111,7 @@ mod runtime {
     use harmony_supervisor::directive::{Directive, LineReader, parse_directive};
     use harmony_supervisor::process;
     use harmony_supervisor::reconcile::ActiveWindows;
+    use harmony_supervisor::recovery::RecoveryGate;
     use harmony_supervisor::regs::{
         REG_ALIVE, REG_HOOKS_FINISHED, REG_HOOKS_STARTED, REG_PARKED, REG_RESTARTS, REG_SOMETIMES,
         REG_TICKS, REG_UNEXPECTED_DEATHS, Registers,
@@ -156,6 +157,31 @@ mod runtime {
         child: Child,
         output: File,
         reader: LineReader,
+    }
+
+    struct RecoveryProbe {
+        generation: u64,
+        child: Child,
+    }
+
+    struct HookRuntime {
+        hooks: Vec<Hook>,
+        launches: u64,
+        recovery: RecoveryGate,
+        recovery_probe: Option<RecoveryProbe>,
+        retired_probes: Vec<Child>,
+    }
+
+    impl HookRuntime {
+        fn new() -> Self {
+            Self {
+                hooks: Vec::new(),
+                launches: 0,
+                recovery: RecoveryGate::initially_ready(),
+                recovery_probe: None,
+                retired_probes: Vec::new(),
+            }
+        }
     }
 
     pub fn run(spec: &execution_proto::ExecutionSpec, bundle_path: &Path) -> Result<(), String> {
@@ -232,9 +258,8 @@ mod runtime {
     ) -> Result<(), String> {
         let mut supervisor = Supervisor::new(nodes.len());
         let mut registers = Registers::new();
-        let mut hooks = Vec::new();
+        let mut runtime = HookRuntime::new();
         let mut buffer = [0_u8; MAX_PAYLOAD];
-        let mut launches = 0_u64;
 
         loop {
             thread::sleep(Duration::from_nanos(harmony_supervisor::TICK_NANOS));
@@ -243,14 +268,42 @@ mod runtime {
             let tick = supervisor.counters().ticks + 1;
             for action in supervisor.tick(&active, &deaths) {
                 log(tick, &action.describe());
-                apply(action, spec, bundle, nodes, &mut hooks, &mut launches, tick)?;
+                apply(
+                    action,
+                    spec,
+                    bundle,
+                    nodes,
+                    &mut supervisor,
+                    &mut runtime,
+                    tick,
+                )?;
+            }
+            let ready_hooks = poll_recovery(
+                spec,
+                bundle.ready.as_deref(),
+                &mut runtime.recovery,
+                &mut runtime.recovery_probe,
+                &mut runtime.retired_probes,
+            )?;
+            for ready in ready_hooks {
+                launch_ready_hook(
+                    ready,
+                    spec,
+                    bundle,
+                    &mut runtime.hooks,
+                    &mut runtime.launches,
+                    &mut supervisor,
+                    tick,
+                )?;
             }
             watch_parks(nodes, &mut supervisor, tick)?;
-            drain_hooks(&mut hooks, &mut supervisor, sdk, tick)?;
+            drain_hooks(&mut runtime.hooks, &mut supervisor, sdk, tick)?;
             let tracked: Vec<_> = nodes
                 .iter()
                 .filter_map(|node| node.child.as_ref().map(Child::id))
-                .chain(hooks.iter().map(|hook| hook.child.id()))
+                .chain(runtime.hooks.iter().map(|hook| hook.child.id()))
+                .chain(runtime.recovery_probe.iter().map(|probe| probe.child.id()))
+                .chain(runtime.retired_probes.iter().map(Child::id))
                 .collect();
             process::reap_available_except(&tracked)
                 .map_err(|error| format!("reap descendants: {error}"))?;
@@ -301,8 +354,8 @@ mod runtime {
         spec: &execution_proto::ExecutionSpec,
         bundle: &Bundle,
         nodes: &mut [Node],
-        hooks: &mut Vec<Hook>,
-        launches: &mut u64,
+        supervisor: &mut Supervisor,
+        runtime: &mut HookRuntime,
         tick: u64,
     ) -> Result<(), String> {
         match action {
@@ -324,6 +377,15 @@ mod runtime {
                     let _ = child.wait();
                 }
                 entry.child = Some(spawn_node(spec, &entry.spec)?);
+                if bundle.ready.is_some() {
+                    if let Some(probe) = runtime.recovery_probe.take() {
+                        retire_probe(probe.child, &mut runtime.retired_probes)?;
+                    }
+                    runtime
+                        .recovery
+                        .restarted()
+                        .map_err(|error| format!("recovery: {error}"))?;
+                }
             }
             Action::Park(node, park) => {
                 let Some(entry) = nodes.get_mut(usize::from(node)) else {
@@ -366,13 +428,106 @@ mod runtime {
                     }
                 }
             }
-            Action::RunHook(id) => match bundle.hook(id) {
-                Some(hook) => {
-                    *launches += 1;
-                    hooks.push(spawn_hook(spec, hook, *launches)?);
+            Action::RunHook(id) => {
+                let ready_hooks = runtime.recovery.request_hook(id);
+                for ready in ready_hooks {
+                    launch_ready_hook(
+                        ready,
+                        spec,
+                        bundle,
+                        &mut runtime.hooks,
+                        &mut runtime.launches,
+                        supervisor,
+                        tick,
+                    )?;
                 }
-                None => log(tick, &format!("hook {id} is not declared")),
-            },
+            }
+        }
+        Ok(())
+    }
+
+    fn poll_recovery(
+        spec: &execution_proto::ExecutionSpec,
+        ready: Option<&[String]>,
+        recovery: &mut RecoveryGate,
+        current: &mut Option<RecoveryProbe>,
+        retired: &mut Vec<Child>,
+    ) -> Result<Vec<u32>, String> {
+        let mut index = 0;
+        while index < retired.len() {
+            match retired[index].try_wait() {
+                Ok(Some(_)) => {
+                    retired.remove(index);
+                }
+                Ok(None) => index += 1,
+                Err(error) => return Err(format!("retired ready probe: {error}")),
+            }
+        }
+
+        if !recovery.is_pending() {
+            return Ok(Vec::new());
+        }
+        let Some(argv) = ready else {
+            return Ok(recovery.mark_ready(recovery.generation()));
+        };
+
+        if current
+            .as_ref()
+            .is_some_and(|probe| probe.generation != recovery.generation())
+        {
+            if let Some(probe) = current.take() {
+                retire_probe(probe.child, retired)?;
+            }
+        } else if let Some(probe) = current.as_mut() {
+            match probe.child.try_wait() {
+                Ok(Some(status)) => {
+                    let generation = probe.generation;
+                    *current = None;
+                    if status.success() {
+                        return Ok(recovery.mark_ready(generation));
+                    }
+                }
+                Ok(None) => return Ok(Vec::new()),
+                Err(error) => return Err(format!("ready probe {:?}: {error}", argv[0])),
+            }
+        }
+
+        let mut command = process::command(spec, argv)
+            .map_err(|error| format!("ready probe {:?}: {error}", argv[0]))?;
+        let child = command
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("ready probe {:?}: {error}", argv[0]))?;
+        *current = Some(RecoveryProbe {
+            generation: recovery.generation(),
+            child,
+        });
+        Ok(Vec::new())
+    }
+
+    fn retire_probe(child: Child, retired: &mut Vec<Child>) -> Result<(), String> {
+        process::signal_group(child.id(), libc::SIGKILL).map_err(|error| error.to_string())?;
+        retired.push(child);
+        Ok(())
+    }
+
+    fn launch_ready_hook(
+        id: u32,
+        spec: &execution_proto::ExecutionSpec,
+        bundle: &Bundle,
+        hooks: &mut Vec<Hook>,
+        launches: &mut u64,
+        supervisor: &mut Supervisor,
+        tick: u64,
+    ) -> Result<(), String> {
+        match bundle.hook(id) {
+            Some(hook) => {
+                *launches += 1;
+                hooks.push(spawn_hook(spec, hook, *launches)?);
+                supervisor.note_hook_started();
+            }
+            None => log(tick, &format!("hook {id} is not declared")),
         }
         Ok(())
     }
