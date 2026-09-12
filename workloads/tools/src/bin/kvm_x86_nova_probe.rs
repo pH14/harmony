@@ -99,6 +99,7 @@ fn run() -> Result<(), String> {
     };
     use vmm_core::{
         control::{ControlServer, RestoreMode, VmmFactory, host_minor_faults, server_caps},
+        portable_snapshot::compare_portable_execution_state,
         snapshot::DEFAULT_MAX_CHAIN_LEN,
     };
 
@@ -704,6 +705,196 @@ fn run() -> Result<(), String> {
             initial_components: Vec<(&'static str, [u8; 32])>,
         }
 
+        struct EndpointEvidence {
+            at: Moment,
+            frame: Option<u64>,
+            events_len: usize,
+            events: Vec<u8>,
+            state: Vec<u8>,
+            hash: [u8; 32],
+            artifact: Vec<u8>,
+            snapshot: SnapId,
+        }
+
+        fn branch_to_boundary(
+            server: &mut Server,
+            parent: SnapId,
+            payload: Vec<u8>,
+            profile: &mut ProbeProfile,
+        ) -> Result<Moment, String> {
+            match drive(
+                server,
+                &Request::Branch {
+                    snap: parent,
+                    env: payload_env(vec![payload, vec![0, 1]]),
+                },
+                profile,
+            )? {
+                Reply::Unit => {}
+                other => return Err(format!("A/B restore branch returned {other:?}")),
+            }
+            run_to_snapshot(server, profile)
+        }
+
+        fn sdk_events_evidence(
+            server: &mut Server,
+            profile: &mut ProbeProfile,
+        ) -> Result<(Vec<u8>, Option<u64>, usize), String> {
+            let mut events = Vec::new();
+            let mut offset = 0u32;
+            loop {
+                let page = match drive(server, &Request::SdkEvents { offset }, profile)? {
+                    Reply::SdkEvents(page) => page,
+                    other => return Err(format!("SDK event fetch returned {other:?}")),
+                };
+                if page.is_empty() {
+                    break;
+                }
+                let page_len = u32::try_from(page.len())
+                    .map_err(|_| "SDK event page is too large".to_owned())?;
+                offset = offset
+                    .checked_add(page_len)
+                    .ok_or("SDK event stream exceeds its offset range")?;
+                events.extend(page);
+            }
+            let frame = latest_frame(&events);
+            Ok((format!("{events:?}").into_bytes(), frame, events.len()))
+        }
+
+        fn endpoint_after_continuation(
+            server: &mut Server,
+            profile: &mut ProbeProfile,
+        ) -> Result<EndpointEvidence, String> {
+            let at = run_to_snapshot(server, profile)?;
+            let (events, frame, events_len) = sdk_events_evidence(server, profile)?;
+            let state = server
+                .vmm()
+                .ok_or("oracle VM unavailable")?
+                .state_blob()
+                .map_err(|error| format!("endpoint state export failed: {error}"))?;
+            let hash = hash_whole(server, profile)?;
+            let (snapshot, artifact) = snapshot_current(server, profile)?;
+            Ok(EndpointEvidence {
+                at,
+                frame,
+                events_len,
+                events,
+                state,
+                hash,
+                artifact,
+                snapshot,
+            })
+        }
+
+        fn compare_endpoint(
+            label: &str,
+            expected: &EndpointEvidence,
+            actual: &EndpointEvidence,
+        ) -> Result<(), String> {
+            if expected.at == actual.at
+                && expected.frame == actual.frame
+                && expected.events_len == actual.events_len
+                && expected.events == actual.events
+                && expected.state == actual.state
+                && expected.hash == actual.hash
+                && expected.artifact == actual.artifact
+            {
+                return Ok(());
+            }
+            retain_oracle_mismatch(
+                &format!("{label}-portable"),
+                &expected.artifact,
+                &actual.artifact,
+            )?;
+            if expected.state != actual.state {
+                retain_oracle_mismatch(&format!("{label}-state"), &expected.state, &actual.state)?;
+            }
+            if expected.events != actual.events {
+                retain_oracle_mismatch(
+                    &format!("{label}-events"),
+                    &expected.events,
+                    &actual.events,
+                )?;
+            }
+            Err(format!("restore-oracle {label} endpoint differed"))
+        }
+
+        fn compare_different_history_endpoint(
+            label: &str,
+            expected: &EndpointEvidence,
+            actual: &EndpointEvidence,
+            expected_memory_len: usize,
+        ) -> Result<(u64, u64, u64, u64), String> {
+            let comparison = match compare_portable_execution_state(
+                expected.artifact.as_slice(),
+                actual.artifact.as_slice(),
+                expected_memory_len,
+            ) {
+                Ok(comparison) => comparison,
+                Err(error) => {
+                    retain_oracle_mismatch(
+                        &format!("{label}-portable"),
+                        &expected.artifact,
+                        &actual.artifact,
+                    )?;
+                    return Err(format!(
+                        "restore-oracle {label} portable comparison failed: {error}"
+                    ));
+                }
+            };
+            let observations_equal = expected.at == actual.at
+                && expected.frame == actual.frame
+                && expected.events_len == actual.events_len
+                && expected.events == actual.events
+                && expected.state == actual.state
+                && expected.hash == actual.hash;
+            if observations_equal && comparison.equal {
+                return Ok((
+                    comparison.left_trace_events,
+                    comparison.right_trace_events,
+                    comparison.left_trace_schedules,
+                    comparison.right_trace_schedules,
+                ));
+            }
+            retain_oracle_mismatch(
+                &format!("{label}-portable"),
+                &expected.artifact,
+                &actual.artifact,
+            )?;
+            if expected.state != actual.state {
+                retain_oracle_mismatch(&format!("{label}-state"), &expected.state, &actual.state)?;
+            }
+            if expected.events != actual.events {
+                retain_oracle_mismatch(
+                    &format!("{label}-events"),
+                    &expected.events,
+                    &actual.events,
+                )?;
+            }
+            Err(format!("restore-oracle {label} endpoint differed"))
+        }
+
+        fn assert_endpoint_progress(
+            label: &str,
+            boundary: Moment,
+            boundary_events_len: usize,
+            endpoint: &EndpointEvidence,
+        ) -> Result<(), String> {
+            if endpoint.at <= boundary {
+                return Err(format!(
+                    "restore-oracle {label} continuation did not advance: boundary={boundary:?} endpoint={:?}",
+                    endpoint.at
+                ));
+            }
+            if endpoint.events_len <= boundary_events_len {
+                return Err(format!(
+                    "restore-oracle {label} continuation did not consume SDK suffix: boundary_events={boundary_events_len} endpoint_events={}",
+                    endpoint.events_len
+                ));
+            }
+            Ok(())
+        }
+
         let sample_start = profile.branch_wall_samples_ns.len();
         let bytes_start = profile.restore_bytes;
         let fallbacks_start = server.in_place_fallbacks();
@@ -882,6 +1073,11 @@ fn run() -> Result<(), String> {
             equal = equal.saturating_add(1);
         }
 
+        let ab_edge = control_edges
+            .get(4)
+            .cloned()
+            .ok_or("restore-oracle A/B control edge 16 is absent")?;
+
         for edge in control_edges {
             let (_, replay_hash, _) =
                 oracle_action(server, edge.parent, edge.payload.clone(), false, profile)?;
@@ -967,6 +1163,282 @@ fn run() -> Result<(), String> {
             return Err("restore-oracle performed no raw full-state comparisons".to_owned());
         }
 
+        let a_s_at = branch_to_boundary(server, ab_edge.parent, ab_edge.payload.clone(), profile)?;
+        let (a_s_events, _a_s_frame, a_s_events_len) = sdk_events_evidence(server, profile)?;
+        let a_endpoint = endpoint_after_continuation(server, profile)?;
+        temporary_snapshots.push(a_endpoint.snapshot);
+        assert_endpoint_progress("a", a_s_at, a_s_events_len, &a_endpoint)?;
+
+        let b1_s_at = branch_to_boundary(server, ab_edge.parent, ab_edge.payload.clone(), profile)?;
+        let (b1_s_events, _b1_s_frame, b1_s_events_len) = sdk_events_evidence(server, profile)?;
+        if a_s_at != b1_s_at || a_s_events != b1_s_events {
+            retain_oracle_mismatch("ab1-boundary-events", &a_s_events, &b1_s_events)?;
+            return Err("restore-oracle A/B1 boundary evidence differed".to_owned());
+        }
+        let (b1_s_snapshot, b1_s_artifact) = snapshot_current(server, profile)?;
+        temporary_snapshots.push(b1_s_snapshot);
+        let b1_endpoint = endpoint_after_continuation(server, profile)?;
+        temporary_snapshots.push(b1_endpoint.snapshot);
+        assert_endpoint_progress("b1", b1_s_at, b1_s_events_len, &b1_endpoint)?;
+        compare_endpoint("b1", &a_endpoint, &b1_endpoint)?;
+        drop(b1_endpoint);
+
+        let b3_s_at = branch_to_boundary(server, ab_edge.parent, ab_edge.payload.clone(), profile)?;
+        let (b3_s_events, _b3_s_frame, b3_s_events_len) = sdk_events_evidence(server, profile)?;
+        if a_s_at != b3_s_at || a_s_events != b3_s_events {
+            retain_oracle_mismatch("ab3-boundary-events", &a_s_events, &b3_s_events)?;
+            return Err("restore-oracle A/B3 boundary evidence differed".to_owned());
+        }
+        let (b3_s_snapshot, b3_s_artifact) = snapshot_current(server, profile)?;
+        temporary_snapshots.push(b3_s_snapshot);
+        if b3_s_artifact != b1_s_artifact {
+            retain_oracle_mismatch("ab1-ab3-capture", &b1_s_artifact, &b3_s_artifact)?;
+            return Err("restore-oracle B1/B3 first capture differed".to_owned());
+        }
+        let (b3_s_repeat, b3_s_repeat_artifact) = snapshot_current(server, profile)?;
+        temporary_snapshots.push(b3_s_repeat);
+        if b3_s_repeat_artifact != b3_s_artifact {
+            retain_oracle_mismatch(
+                "ab3-repeated-capture-1",
+                &b3_s_artifact,
+                &b3_s_repeat_artifact,
+            )?;
+            return Err("restore-oracle repeated B3 capture differed".to_owned());
+        }
+        drop(b3_s_repeat_artifact);
+        let (b3_s_repeat, b3_s_repeat_artifact) = snapshot_current(server, profile)?;
+        temporary_snapshots.push(b3_s_repeat);
+        if b3_s_repeat_artifact != b3_s_artifact {
+            retain_oracle_mismatch(
+                "ab3-repeated-capture-2",
+                &b3_s_artifact,
+                &b3_s_repeat_artifact,
+            )?;
+            return Err("restore-oracle repeated B3 capture differed".to_owned());
+        }
+        drop(b3_s_repeat_artifact);
+        drop(b3_s_artifact);
+        let b3_endpoint = endpoint_after_continuation(server, profile)?;
+        temporary_snapshots.push(b3_endpoint.snapshot);
+        assert_endpoint_progress("b3", b3_s_at, b3_s_events_len, &b3_endpoint)?;
+        compare_endpoint("b3", &a_endpoint, &b3_endpoint)?;
+        drop(b3_endpoint);
+
+        let alternate_payload = if ab_edge.payload == vec![0x42, 7] {
+            vec![0x81, 12]
+        } else {
+            vec![0x42, 7]
+        };
+        branch_to_boundary(server, ab_edge.parent, alternate_payload, profile)?;
+        match drive(server, &Request::Replay(b1_s_snapshot), profile)? {
+            Reply::Unit => {}
+            other => return Err(format!("restore-oracle C replay returned {other:?}")),
+        }
+        let c_endpoint = endpoint_after_continuation(server, profile)?;
+        temporary_snapshots.push(c_endpoint.snapshot);
+        assert_endpoint_progress("c", b1_s_at, b1_s_events_len, &c_endpoint)?;
+        let c_trace = compare_different_history_endpoint("c", &a_endpoint, &c_endpoint, RAM)?;
+        drop(c_endpoint);
+
+        let parent_artifact = export_snapshot(server, ab_edge.parent)?;
+        let mut source = cold_factory()?;
+        let mut source_profile = ProbeProfile::new(true);
+        match drive(
+            &mut source,
+            &Request::Hello(server_caps()),
+            &mut source_profile,
+        )? {
+            Reply::Hello(caps) if caps == server_caps() => {}
+            other => return Err(format!("destroyed-source hello returned {other:?}")),
+        }
+        let source_parent = source
+            .import_portable_snapshot(parent_artifact.as_slice())
+            .map_err(|error| format!("destroyed-source parent import failed: {error}"))?;
+        drop(parent_artifact);
+        let source_s_at = branch_to_boundary(
+            &mut source,
+            source_parent.id,
+            ab_edge.payload.clone(),
+            &mut source_profile,
+        )?;
+        if source_s_at != b1_s_at {
+            return Err(format!(
+                "destroyed-source boundary differed: source={source_s_at:?} B1={b1_s_at:?}"
+            ));
+        }
+        let source_s_snapshot = match drive(&mut source, &Request::Snapshot, &mut source_profile)? {
+            Reply::Snapshot { id, at, .. } if at == source_s_at => id,
+            Reply::Snapshot { at, .. } => {
+                return Err(format!(
+                    "destroyed-source snapshot boundary differed: run={source_s_at:?} capture={at:?}"
+                ));
+            }
+            other => return Err(format!("destroyed-source snapshot returned {other:?}")),
+        };
+        let source_s_artifact = export_snapshot(&source, source_s_snapshot)?;
+        if source.in_place_fallbacks() != 0 {
+            return Err(format!(
+                "restore-oracle destroyed-source used {} fresh-VM fallbacks",
+                source.in_place_fallbacks()
+            ));
+        }
+        drop(source);
+        if source_s_artifact != b1_s_artifact {
+            retain_oracle_mismatch("destroyed-source-s", &b1_s_artifact, &source_s_artifact)?;
+            return Err("restore-oracle destroyed-source S differed".to_owned());
+        }
+        drop(b1_s_artifact);
+
+        let mut destination = cold_factory()?;
+        let mut destination_profile = ProbeProfile::new(true);
+        match drive(
+            &mut destination,
+            &Request::Hello(server_caps()),
+            &mut destination_profile,
+        )? {
+            Reply::Hello(caps) if caps == server_caps() => {}
+            other => return Err(format!("destroyed-destination hello returned {other:?}")),
+        }
+        let destination_s = destination
+            .import_portable_snapshot(source_s_artifact.as_slice())
+            .map_err(|error| format!("destroyed-destination S import failed: {error}"))?;
+        drop(source_s_artifact);
+        match drive(
+            &mut destination,
+            &Request::Replay(destination_s.id),
+            &mut destination_profile,
+        )? {
+            Reply::Unit => {}
+            other => return Err(format!("destroyed-destination replay returned {other:?}")),
+        }
+        let d_endpoint = endpoint_after_continuation(&mut destination, &mut destination_profile)?;
+        if destination.in_place_fallbacks() != 0 {
+            return Err(format!(
+                "restore-oracle destroyed-destination used {} fresh-VM fallbacks",
+                destination.in_place_fallbacks()
+            ));
+        }
+        assert_endpoint_progress("d-destroyed-source", b1_s_at, b1_s_events_len, &d_endpoint)?;
+        let d_trace = compare_different_history_endpoint(
+            "d-destroyed-source",
+            &a_endpoint,
+            &d_endpoint,
+            RAM,
+        )?;
+
+        drop(d_endpoint);
+        drop(destination);
+        drop(a_endpoint);
+
+        enum EWork {
+            Visit(usize),
+            Cleanup(SnapId),
+        }
+
+        let mut children_by_parent = std::collections::BTreeMap::<SnapId, Vec<usize>>::new();
+        for (index, edge) in edges.iter().enumerate() {
+            children_by_parent
+                .entry(edge.parent)
+                .or_default()
+                .push(index);
+        }
+        let mut e_work = Vec::new();
+        if let Some(root_children) = children_by_parent.get(&base) {
+            for &index in root_children {
+                e_work.push(EWork::Visit(index));
+            }
+        }
+        let mut e_seen = vec![false; edges.len()];
+        let mut e_remapped = std::collections::BTreeMap::from([(base, base)]);
+        let mut e_controls = 0u64;
+        let mut e_reordered_positions = 0u64;
+        let mut e_cleanup = 0u64;
+        while let Some(work) = e_work.pop() {
+            match work {
+                EWork::Cleanup(snap) => {
+                    temporary_snapshots.push(snap);
+                    e_cleanup = e_cleanup.saturating_add(1);
+                }
+                EWork::Visit(index) => {
+                    if e_seen.get(index).copied() != Some(false) {
+                        return Err(format!(
+                            "restore-oracle reordered tree visited edge {index} more than once"
+                        ));
+                    }
+                    e_seen[index] = true;
+                    let edge = edges
+                        .get(index)
+                        .ok_or("restore-oracle reordered tree edge disappeared")?;
+                    let parent = e_remapped
+                        .get(&edge.parent)
+                        .copied()
+                        .ok_or("restore-oracle reordered tree parent was not mapped")?;
+                    let (new_child, new_hash, initial) =
+                        oracle_action(server, parent, edge.payload.clone(), true, profile)?;
+                    let new_child =
+                        new_child.ok_or("restore-oracle reordered tree action did not seal")?;
+                    drop(initial);
+                    let expected_artifact = export_snapshot(server, edge.child)?;
+                    let actual_artifact = export_snapshot(server, new_child)?;
+                    let hash_equal = new_hash == edge.hash;
+                    let artifact_equal = actual_artifact == expected_artifact;
+                    let sdk_equal = edge.sdk_capture
+                        == format!(
+                            "{:?}",
+                            server.vmm().ok_or("oracle VM unavailable")?.sdk_snapshot()
+                        );
+                    if !hash_equal || !artifact_equal || !sdk_equal {
+                        retain_oracle_mismatch(
+                            "reordered-tree",
+                            &expected_artifact,
+                            &actual_artifact,
+                        )?;
+                        return Err(format!(
+                            "restore-oracle reordered tree differed at edge {index}: hash_equal={hash_equal} artifact_equal={artifact_equal} sdk_equal={sdk_equal}"
+                        ));
+                    }
+                    drop(actual_artifact);
+                    drop(expected_artifact);
+                    if e_remapped.insert(edge.child, new_child).is_some() {
+                        return Err(format!(
+                            "restore-oracle reordered tree remapped edge {index} twice"
+                        ));
+                    }
+                    if index != e_controls as usize {
+                        e_reordered_positions = e_reordered_positions.saturating_add(1);
+                    }
+                    e_controls = e_controls.saturating_add(1);
+                    e_work.push(EWork::Cleanup(new_child));
+                    if let Some(child_indices) = children_by_parent.get(&edge.child) {
+                        for &child_index in child_indices {
+                            e_work.push(EWork::Visit(child_index));
+                        }
+                    }
+                }
+            }
+        }
+        if e_controls != edges.len() as u64 || e_seen.iter().any(|seen| !seen) {
+            return Err(format!(
+                "restore-oracle reordered tree covered {e_controls}/{} edges",
+                edges.len()
+            ));
+        }
+        if e_cleanup != e_controls || e_remapped.len() != e_controls as usize + 1 {
+            return Err(
+                "restore-oracle reordered tree cleanup or mapping was incomplete".to_owned(),
+            );
+        }
+        if e_reordered_positions == 0 {
+            return Err("restore-oracle reordered tree did not change traversal order".to_owned());
+        }
+
+        let a_controls = 1u64;
+        let b1_controls = 1u64;
+        let b3_controls = 1u64;
+        let b3_captures = 3u64;
+        let c_controls = 1u64;
+        let d_controls = 1u64;
+
         for snap in temporary_snapshots {
             match drive(server, &Request::Drop(snap), profile)? {
                 Reply::Unit => {}
@@ -983,11 +1455,27 @@ fn run() -> Result<(), String> {
         let mut samples = profile.branch_wall_samples_ns[sample_start..].to_vec();
         samples.sort_unstable();
         println!(
-            "NOVA_CONSONANCE_RESTORE_ORACLE_OK equal={} tree_actions={} fresh_equal={} full_state_equal={} tree_seed={} branch_median_ns={} branch_p99_ns={} restore_bytes={} fallbacks={}",
+            "NOVA_CONSONANCE_RESTORE_ORACLE_OK equal={} tree_actions={} fresh_equal={} full_state_equal={} a_controls={} b1_controls={} b3_controls={} b3_captures={} c_controls={} d_controls={} e_controls={} e_reordered_positions={} c_trace_events_left={} c_trace_events_right={} c_trace_schedules_left={} c_trace_schedules_right={} d_trace_events_left={} d_trace_events_right={} d_trace_schedules_left={} d_trace_schedules_right={} tree_seed={} branch_median_ns={} branch_p99_ns={} restore_bytes={} fallbacks={}",
             equal,
             edges.len(),
             fresh_equal,
             full_state_equal,
+            a_controls,
+            b1_controls,
+            b3_controls,
+            b3_captures,
+            c_controls,
+            d_controls,
+            e_controls,
+            e_reordered_positions,
+            c_trace.0,
+            c_trace.1,
+            c_trace.2,
+            c_trace.3,
+            d_trace.0,
+            d_trace.1,
+            d_trace.2,
+            d_trace.3,
             tree_seed,
             percentile(&samples, 50),
             percentile(&samples, 99),

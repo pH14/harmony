@@ -15,9 +15,30 @@ covering VMST, guest RAM, service state, and control state. The backend README
 documents the generic KVM restoration invariant; this workload-specific
 validation remains with its tool.
 
+After those controls, the oracle runs one additional comparison at the
+historical comparison-16 edge. A reaches the boundary without an additional
+oracle capture or state read at S, while normal production checkpoints remain
+active, then captures only the continuation endpoint. B1 captures the boundary
+once before the same continuation. B3 rebranches to the
+same boundary, captures it three times, and takes the same continuation. C runs
+a different branch before replaying B1's boundary snapshot, and D exports that
+boundary from a temporary source, destroys that source in the same process,
+and imports it into a new server before continuing. All five endpoints compare
+their moment, SDK events, raw state, and whole-state hash. Same-history
+captures require identical portable bytes; differing-history C and D
+comparisons use the portable execution-state comparator and report both trace
+counters. E then traverses the same 50-edge tree in reverse-sibling depth-first
+order, remaps each parent to a newly sealed snapshot, and requires each hash
+and complete portable artifact to match the original tree. This fixed
+reordering covers 50 edges; broader randomized exploration remains outside
+the bounded postpass.
+
 Set `HARMONY_CONSONANCE_ORACLE_REPORT_DIR` to retain expected and actual raw
 artifacts on a mismatch. The PR smoke enforces a 240-second execution bound and
-requires all 200 history comparisons and eight complete-state cold controls.
+requires all 200 history comparisons, eight complete-state cold controls, and
+the single A/B1/B3/C/D/E postpass (`a_controls=1 b1_controls=1 b3_controls=1
+b3_captures=3 c_controls=1 d_controls=1 e_controls=50
+e_reordered_positions>0`).
 For extended qualification, `HARMONY_CONSONANCE_ORACLE_TREE_SEED` selects a
 fixed decimal seed for tree construction and edge replay. Leaving it unset
 preserves the historical sequence; every success report records the seed.
