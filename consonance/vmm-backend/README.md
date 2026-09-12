@@ -27,6 +27,11 @@ entry at all. An MSR fault queues its exception without executing the handler.
 
 KVM construction enables the exception-payload API so pending exceptions remain
 distinct from injected ones and restores replace the complete exception record.
+Snapshots retain general registers verbatim, including `RFLAGS.RF`: that flag
+suppresses the next instruction breakpoint and can change the continuation.
+The live resume-flag test compares original, saved, and cold execution against
+an RF-cleared control that must enter the guest debug handler.
+
 Exit counters include continuation accesses exactly once. Virtual-time policy,
 device models, snapshot formats, and entropy live above this crate.
 
@@ -46,3 +51,9 @@ memory while retaining the same paging registers. Linux performs this reset
 conditionally in [`__set_sregs2`](https://github.com/torvalds/linux/blob/v6.12/arch/x86/kvm/x86.c#L11986). Synthetic tests check the
 write sequence and error handling; KVM integration coverage exercises restored
 continuations across a branching snapshot tree.
+
+The HVF state oracle uses the default policy with virtual timer masking enabled
+and a zero timer offset. It round trips valid general, SIMD/floating-point,
+system-register, debug, timer, and pending-interrupt records, and rejects
+unmasked, nonzero-offset, or reserved timer-control states before mutating the
+vCPU.
