@@ -427,6 +427,102 @@ def resource_cells(item, rowspan=1):
                    for value in values)
 
 
+def mechanism(item):
+    """Return the recorded search mechanism, without exposing private inputs."""
+    request = item.get('search_request', {})
+    identity = item.get('identity') or {}
+    return {
+        'backend': identity.get('backend', 'unavailable'),
+        'adapter_policies': identity.get('policies', 'unavailable'),
+        'selector': request.get('selector', 'unavailable'),
+        'suffix': request.get('suffix', 'unavailable'),
+        'mixture': request.get('mixture', 'unavailable'),
+    }
+
+
+def outcome(item):
+    result = item.get('result') or {}
+    status = item.get('status', 'unavailable')
+    if status not in {'complete', 'regression'}:
+        return status
+    if result.get('solved'):
+        return 'victory within declared frame budget'
+    if result.get('victory_observed'):
+        return 'victory observed beyond declared frame budget'
+    return result.get('stop_reason', 'unsolved')
+
+
+def replay_confirmation(item):
+    result = item.get('result') or {}
+    witness = result.get('witness') or {}
+    if not witness:
+        return 'unavailable'
+    count = result.get('witness_replays', 2)
+    witness_text = f'bounded witness replay ×{count}'
+    if result.get('verification') == 'campaign' or result.get('campaign_replay'):
+        return witness_text + ' and full campaign replay confirmed'
+    return witness_text + ' confirmed'
+
+
+def progress_summary(item):
+    result = item.get('result') or {}
+    progress = result.get('progress')
+    if progress is None:
+        progress = (item.get('last_progress') or {}).get('progress')
+    if progress is None:
+        diagnostics = (item.get('last_progress') or {}).get('workload_diagnostics') or {}
+        progress = diagnostics.get('named_progress')
+    return progress if progress is not None else 'unavailable'
+
+
+def roster_row(item):
+    request = item.get('search_request', {})
+    result = item.get('result') or {}
+    return {
+        'cell': item.get('cell'),
+        'case': item.get('case'),
+        'game': request.get('game', 'unavailable'),
+        'origin': item.get('origin', 'unavailable'),
+        'mechanism': mechanism(item),
+        'seed': request.get('seed'),
+        'budgets': {
+            'executions': request.get('executions'),
+            'actions': request.get('actions'),
+            'frames': request.get('frames'),
+            'wall_seconds': request.get('wall_seconds'),
+            'workers': request.get('workers'),
+            'memory_mib': request.get('memory_mib'),
+        },
+        'outcome': outcome(item),
+        'status': item.get('status', 'unavailable'),
+        'solved': result.get('solved'),
+        'progress': progress_summary(item),
+        'replay': {
+            'confirmation': replay_confirmation(item),
+            'verification': result.get('verification', request.get('verification', 'unavailable')),
+            'witness_replays': result.get('witness_replays'),
+            'campaign_replay': result.get('campaign_replay'),
+            'witness_snapshot_sha256': (result.get('witness') or {}).get('snapshot_sha256'),
+        },
+        'resources': {
+            'peak_process_tree_rss_bytes_sampled': item.get('peak_process_tree_rss_bytes_sampled'),
+            'max_process_rss_bytes': item.get('max_process_rss_bytes'),
+            'last_logical_memory_bytes': (item.get('last_progress') or {}).get('resident_memory_bytes'),
+            'peak_disk_logical_bytes_sampled': item.get('peak_disk_logical_bytes_sampled'),
+            'cpu_seconds': item.get('cpu_seconds'),
+        },
+        'failure': None if item.get('status') == 'complete' else {
+            'status': item.get('status', 'unavailable'),
+            'exit_code': item.get('exit_code'),
+            'error': item.get('error'),
+        },
+    }
+
+
+def roster(results):
+    return [roster_row(item) for item in sorted(results, key=lambda x: x.get('cell', ''))]
+
+
 def metroid_html(results):
     items = [item for item in results if item.get('search_request', {}).get('game') == 'metroid']
     if not items:
@@ -482,20 +578,27 @@ def report_html(results, title):
         return 'unavailable' if value is None else f'{value:,.1f}' if isinstance(value, float) else f'{value:,}'
     rows = []
     for item in results:
-        r = item.get('result') or {}
-        cell = html.escape(item['cell'])
+        row = roster_row(item)
+        cell = html.escape(row['cell'])
+        budgets = row['budgets']
+        budget_text = ('exec ≤' + number(budgets['executions']) +
+                       '; frames ' + number(budgets['frames']) +
+                       '; wall ≤' + number(budgets['wall_seconds']) + 's')
+        mechanism_text = html.escape(json.dumps(row['mechanism'], sort_keys=True, separators=(',', ':')))
+        progress_text = html.escape(json.dumps(row['progress'], sort_keys=True, separators=(',', ':')))
+        replay_text = html.escape(row['replay']['confirmation'])
         rows.append('<tr>' + ''.join('<td>' + str(x) + '</td>' for x in [
-            f'<a href="{cell}/summary.json">{cell}</a>', html.escape(item['status']),
-            'yes' if r.get('solved') else 'no' if r else 'unavailable', number(r.get('frames_to_first_victory')),
-            number(r.get('frames_emulated')), number(r.get('frames_per_second')), number(r.get('search_seconds'))])
-            + resource_cells(item) + '</tr>')
+            f'<a href="{cell}/summary.json">{cell}</a>',
+            html.escape(row['game']), html.escape(row['origin']), html.escape(str(row['seed'])),
+            html.escape(budget_text), mechanism_text, html.escape(row['outcome']), progress_text,
+            replay_text]) + resource_cells(item) + '</tr>')
     panels = ''.join('<li>' + html.escape(json.dumps(row, sort_keys=True)) + '</li>' for row in aggregates(results))
     return '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>''' + html.escape(title) + '''</title><style>body{font:15px/1.55 system-ui;margin:2rem;color:#162132;background:#f7f9fc}table{border-collapse:collapse;background:white;white-space:nowrap}th,td{padding:.55rem;text-align:right;border-bottom:1px solid #dce3ef}th:first-child,td:first-child{text-align:left}a{color:#1356a0}li{margin:.8rem 0;overflow-wrap:anywhere}.scroll{overflow:auto}h1{font-size:1.6rem}</style>
 <h1>''' + html.escape(title) + '''</h1><p>Fresh search runs with frozen workload policies. Independent stage and level fixtures are separate from whole-game completion. Missing victories are censored at the recorded budget; failures remain visible.</p>
-<p>Frames include admitted emulator work and replay/probes inside search. Throughput excludes witness verification and external export. Peak RSS is the operating system's process maximum; disk peaks sample the cell output directory. Shared assets/builds and temporary files outside that directory are excluded. See each summary for phase measurements, process-group RSS, logical archive memory, I/O and provenance.</p>
-<div class="scroll"><table><thead><tr><th>Cell</th><th>Status</th><th>Solved</th><th>Frames to victory</th><th>Total frames</th><th>Frames/s</th><th>Search s</th>''' + RESOURCE_HEADERS + '</tr></thead><tbody>' + ''.join(rows) + '''</tbody></table></div>
-''' + metroid_html(results) + '''<h2>Seed panels</h2><p>Wilson 95% intervals describe uncertainty in solve fractions. Time-to-victory medians include successes only and are not estimates for censored runs. Three-seed pilots are exploratory.</p><ul>''' + panels + '''</ul><p><a href="results.json">Results JSON</a> · <a href="suite.json">Frozen matrix</a> · <a href="matrix.json">Build and host</a> · <a href="checksums.json">SHA-256 manifest</a></p></html>'''
+<p>Each row records the game, origin, seed, search mechanism, execution/frame/wall budgets, progress and outcome, replay confirmation, and resource costs. Frames include admitted emulator work and replay/probes inside search. Throughput excludes witness verification and external export. Peak RSS is the operating system's process maximum; disk peaks sample the cell output directory. Shared assets/builds and temporary files outside that directory are excluded. See each summary for phase measurements, process-group RSS, logical archive memory, I/O and provenance.</p>
+<div class="scroll"><table><thead><tr><th>Cell</th><th>Game</th><th>Origin</th><th>Seed</th><th>Budgets</th><th>Mechanism</th><th>Outcome</th><th>Progress</th><th>Replay</th>''' + RESOURCE_HEADERS + '</tr></thead><tbody>' + ''.join(rows) + '''</tbody></table></div>
+''' + metroid_html(results) + '''<h2>Seed panels</h2><p>Wilson 95% intervals describe uncertainty in solve fractions. Time-to-victory medians include successes only and are not estimates for censored runs. Three-seed pilots are exploratory.</p><ul>''' + panels + '''</ul><p><a href="results.json">Results JSON</a> · <a href="roster.json">Roster JSON</a> · <a href="suite.json">Frozen matrix</a> · <a href="matrix.json">Build and host</a> · <a href="checksums.json">SHA-256 manifest</a></p></html>'''
 
 
 def export(matrix, out):
@@ -532,6 +635,7 @@ def export(matrix, out):
         shutil.copyfile(source, destination)
     (out / 'index.html').write_text(report_html(results, read_json(matrix / 'suite.json')['id']))
     write_json(out / 'aggregates.json', aggregates(results))
+    write_json(out / 'roster.json', roster(results))
     checksums = {str(p.relative_to(out)): digest(p) for p in sorted(out.rglob('*')) if p.is_file()}
     write_json(out / 'checksums.json', checksums)
 

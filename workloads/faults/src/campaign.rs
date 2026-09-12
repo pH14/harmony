@@ -91,6 +91,7 @@ impl FaultGame {
 pub struct FaultCampaignEvidence {
     aggregate: FaultMilestones,
     watermark: FaultProgressWatermark,
+    watchdog_cutoffs: u64,
     champion_input: FaultInput,
     champion_milestones: FaultMilestones,
     bugs: Vec<FaultBugRecord>,
@@ -294,6 +295,7 @@ impl Reporting for FaultGame {
             retained: state.retained,
             rejected: state.rejected,
             deaths: state.deaths,
+            watchdog_cutoffs: evidence.watchdog_cutoffs,
             bugs: evidence.bugs.clone(),
             selector: state.selector,
         }
@@ -552,6 +554,13 @@ impl Evaluation for FaultGame {
     {
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
+        evidence.watchdog_cutoffs = evidence.watchdog_cutoffs.saturating_add(
+            action
+                .observations
+                .iter()
+                .filter(|observation| observation.watchdog_cutoff)
+                .count() as u64,
+        );
         let bug = action
             .observations
             .iter()

@@ -113,7 +113,7 @@ preferences are never compared between unrelated locations. A workload that
 reports no preference improvements gets no continuation attempts.
 
 These are experiments, not new defaults. Promote policies based on paired game
-panels, fresh SMB completion, and resource costs through
+panels, fresh completion results, and resource costs through
 [`benchmarks/search`](../../benchmarks/search/README.md). The generic resource
 fixture exercises actual continuation dispatch, snapshot eviction, concurrent
 reservations, exact report/checkpoint replay, and planted recording corruption
@@ -165,7 +165,7 @@ not treat a later victory from the drained window as a budgeted success.
 progress weighting from entry-count weighting. It uses the same progress walk
 and cheapest-cell preference as the count variant, with the original per-entry
 weights. This recovers the location-neutral frontier behavior of the historical
-Metroid Pareto experiment: within an inventory class, its declared progress
+Pareto experiment: within an inventory class, its declared progress
 relation considers map cells equal, so no map cell can dominate another. It is
 not the full historical cross-location preference/Pareto implementation, and
 it does not restore the prototype's improvement-replay queues. Its separate

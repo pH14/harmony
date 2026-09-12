@@ -1,101 +1,147 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Judge one historical-bug report against the case's own oracle.
+# Judge one historical case report.
 #
-#   historical-oracle.sh replay <report.json> <arm> <repeats> <actions>
 #   historical-oracle.sh search <report.json> <arm>
+#   historical-oracle.sh replay <report.json> <arm> <runs> <actions>
+#   historical-oracle.sh discovery <report.json> control <runs> <actions>
+#   historical-oracle.sh sample <report.json> <arm> <runs> <actions>
 #
-# ORACLE_ASSERTION is the case's `oracle.assertion` id and ORACLE_EVIDENCE its
-# `oracle.evidence` id: the assertion whose violation is this bug, and the
-# reachable point the detector publishes whenever it reached a verdict. Both
-# arms are judged on those two ids rather than on the generic bug flag, which
-# any crash or any other assertion would also raise.
-#
-# A verdict line goes to stdout: `pass`, or `fail: <reason>`.
+# Search and replay have different evidence contracts. A search miss means no
+# candidate was found; a candidate whose fresh replay did not verify is
+# reported separately. A clean control replay must reach the detector, while a
+# violation on the fixed arm is an actual replay mismatch.
 set -euo pipefail
 
 : "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
 
-mode=$1
-report=$2
-arm=$3
+mode=${1:?mode is required}
+report=${2:?report is required}
+arm=${3:?arm is required}
 
 case "${arm}" in
-    vulnerable | control) ;;
-    *) echo "fail: unknown arm ${arm}"; exit 2 ;;
+    vulnerable|control) ;;
+    *) echo "fail: infra-failure (unknown arm ${arm})"; exit 1 ;;
 esac
 
 if [[ ! -s "${report}" ]]; then
-    echo "fail: no report at ${report}"
+    echo "fail: infra-failure (no report at ${report})"
     exit 1
 fi
 
-# Each rule is one jq test with the words that go in the verdict when it does
-# not hold, so a failing run names the missing evidence rather than a boolean.
-rules=()
-add_rule() { rules+=("$1"$'\n'"$2"); }
+is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
+if ! is_uint "${ORACLE_ASSERTION}" || ! is_uint "${ORACLE_EVIDENCE}"; then
+    echo "fail: infra-failure (oracle ids must be non-negative integers)"
+    exit 1
+fi
+
+fail() {
+    echo "fail: $1"
+    exit 1
+}
+
+check() {
+    local reason=$1 filter=$2
+    if ! jq -e "${filter}" "${report}" >/dev/null 2>&1; then
+        fail "${reason}"
+    fi
+}
+
+assertion=${ORACLE_ASSERTION}
+evidence=${ORACLE_EVIDENCE}
 
 case "${mode}" in
-    replay)
-        repeats=$4
-        actions=$5
-        add_rule 'the report is not a replay report' '.mode == "replay"'
-        add_rule "the report holds no ${repeats} replay runs" \
-            "(.replays | length) == ${repeats}"
-        # A run whose guest horizons fall short of the actions it applied took
-        # part of its prefix from a snapshot an earlier run cached, so it never
-        # executed the recorded actions end to end.
-        add_rule 'a run reused a cached prefix instead of executing its actions' \
-            'all(.replays[]; .guest_horizons == .actions_applied)'
-        add_rule 'a run applied no action at all' \
-            'all(.replays[]; .actions_applied >= 1)'
-        add_rule "a run applied more than ${actions} actions" \
-            "all(.replays[]; .actions_applied <= ${actions})"
-        # Silence is only evidence when the detector ran: the workload's oracle
-        # publishes this point on every verdict it reached, corrupt or clean.
-        add_rule "a run never reached the oracle's verdict (point ${ORACLE_EVIDENCE})" \
-            "all(.replays[]; .sometimes | index(${ORACLE_EVIDENCE}) != null)"
-        if [[ "${arm}" == vulnerable ]]; then
-            add_rule "a run did not violate assertion ${ORACLE_ASSERTION}" \
-                "all(.replays[]; .violations | index(${ORACLE_ASSERTION}) != null)"
-        else
-            add_rule 'a control run reported a bug' 'all(.replays[]; .bug == false)'
-            add_rule 'a control run violated an assertion' \
-                'all(.replays[]; (.violations | length) == 0)'
-            add_rule "a control run stopped before its ${actions} actions were applied" \
-                "all(.replays[]; .actions_applied == ${actions})"
-        fi
-        ;;
     search)
-        add_rule 'the report is not a search report' '.mode == "search"'
+        check infra-failure '.mode == "search"'
+
+        raw=$(jq -r --argjson id "${assertion}" \
+            'any(.bugs[]?; (.violations // [] | index($id)) != null)' "${report}")
         if [[ "${arm}" == vulnerable ]]; then
-            add_rule "no confirmed bug carries assertion ${ORACLE_ASSERTION} and the oracle's verdict evidence" \
-                "any(.bugs[]; .confirmed
-                     and (.violations | index(${ORACLE_ASSERTION}) != null)
-                     and (.sometimes | index(${ORACLE_EVIDENCE}) != null))"
-            add_rule 'the report records no bug' '.bug_found == true'
-        else
-            # The control campaign has no per-execution oracle record, so its
-            # verdict is that nothing fired; the probe replay is where the
-            # control's oracle is shown to run and pass.
-            add_rule 'the control campaign reported a bug' '.bug_found == false'
-            add_rule "a control bug violated assertion ${ORACLE_ASSERTION}" \
-                "all(.bugs[]; (.violations | index(${ORACLE_ASSERTION})) == null)"
+            [[ "${raw}" == true ]] || fail search-miss
+
+            # The package's campaign already performs one fresh replay for
+            # each recorded bug. Its summary must carry the same detector
+            # evidence and prove that no cached prefix answered it.
+            verified=$(jq -r --argjson assertion "${assertion}" \
+                --argjson evidence "${evidence}" '
+                any(.bugs[]?;
+                    .confirmed == true
+                    and ((.violations // []) | index($assertion)) != null
+                    and ((.sometimes // []) | index($evidence)) != null
+                    and (.replay != null)
+                    and (.replay.bug == true)
+                    and (((.replay.violations // []) | index($assertion)) != null)
+                    and (((.replay.sometimes // []) | index($evidence)) != null)
+                    and (.replay.guest_horizons == .replay.actions_applied)
+                )' "${report}")
+            [[ "${verified}" == true ]] && { echo pass; exit 0; }
+
+            replayed=$(jq -r --argjson assertion "${assertion}" '
+                any(.bugs[]?;
+                    .confirmed == true
+                    and ((.violations // []) | index($assertion)) != null
+                    and (.replay != null)
+                )' "${report}")
+            [[ "${replayed}" == true ]] && fail replay-mismatch
+            fail found-but-replay-unverified
         fi
+
+        # A control search is a discovery control only. Its fresh differential
+        # replay below proves the detector ran; a campaign hit is still an
+        # actual control-arm violation, not a successful search.
+        bug_count=$(jq -r '(.bugs // []) | length' "${report}")
+        bug_found=$(jq -r '.bug_found == true' "${report}")
+        if [[ "${bug_count}" -gt 0 || "${bug_found}" == true ]]; then
+            confirmed=$(jq -r 'any(.bugs[]?; .confirmed == true)' "${report}")
+            [[ "${confirmed}" == true ]] && fail actual-replay-mismatch
+            fail found-but-replay-unverified
+        fi
+        echo pass
+        ;;
+
+    replay|discovery|sample)
+        repeats=${4:?replay count is required}
+        actions=${5:?action count is required}
+        is_uint "${repeats}" || fail infra-failure
+        is_uint "${actions}" || fail infra-failure
+        check infra-failure '.mode == "replay"'
+        check infra-failure "(.replays | length) == ${repeats}"
+        check infra-failure \
+            "all(.replays[]; (.guest_horizons == .actions_applied)\
+                and (.actions_applied >= 1)\
+                and (.actions_applied <= ${actions}))"
+
+        case "${mode}:${arm}" in
+            replay:vulnerable)
+                check replay-inconclusive \
+                    "all(.replays[]; (.sometimes // []) | index(${evidence}) != null)"
+                check replay-mismatch \
+                    "all(.replays[]; (.bug == true)\
+                        and (((.violations // []) | index(${assertion})) != null))"
+                ;;
+            replay:control|discovery:control|sample:*)
+                check infra-failure \
+                    "all(.replays[]; .actions_applied == ${actions})"
+                if jq -e --argjson assertion "${assertion}" \
+                    'any(.replays[]; .bug == true or ((.violations // []) | length) > 0)' \
+                    "${report}" >/dev/null 2>&1; then
+                    fail actual-replay-mismatch
+                fi
+                check replay-inconclusive \
+                    "all(.replays[]; (.sometimes // []) | index(${evidence}) != null)"
+                check replay-inconclusive \
+                    'all(.replays[]; .bug == false and ((.violations // []) | length) == 0)'
+                if [[ "${mode}" == sample ]]; then
+                    check replay-mismatch '[.replays[].state_hash] | unique | length == 1'
+                fi
+                ;;
+            *)
+                fail "infra-failure (discovery requires the control arm)"
+                ;;
+        esac
+        echo pass
         ;;
     *)
-        echo "fail: unknown mode ${mode}"
-        exit 2
+        fail "infra-failure (unknown mode ${mode})"
         ;;
 esac
-
-for rule in "${rules[@]}"; do
-    reason=${rule%%$'\n'*}
-    filter=${rule#*$'\n'}
-    if ! jq -e "${filter}" "${report}" >/dev/null; then
-        echo "fail: ${reason}"
-        exit 1
-    fi
-done
-
-echo pass

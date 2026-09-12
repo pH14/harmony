@@ -33,6 +33,7 @@ const SNAPSHOT_CACHE_LIMIT: usize = 96;
 const SETTLE_STEP_NANOS: u64 = 100_000;
 const SETTLE_ALLOWANCE_NANOS: u64 = 16 * SETTLE_STEP_NANOS;
 const CONSOLE_TAIL: usize = 1_500;
+const WATCHDOG_CUTOFF: &str = "fault-guest-watchdog-cutoff: ";
 
 #[cfg(target_arch = "x86_64")]
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
@@ -200,6 +201,7 @@ pub struct FaultTarget {
     observation: FaultObservations,
     action_observations: Vec<FaultObservations>,
     failed: bool,
+    watchdog_cutoffs: u64,
     horizons_clocked: u64,
     guest_horizons_run: u64,
     root_seal: u64,
@@ -224,6 +226,7 @@ impl FaultTarget {
             action_observations: vec![observation.clone()],
             observation,
             failed: false,
+            watchdog_cutoffs: 0,
             horizons_clocked: 0,
             guest_horizons_run: 0,
             root_seal,
@@ -258,6 +261,11 @@ impl FaultTarget {
     #[must_use]
     pub fn failed(&self) -> bool {
         self.failed
+    }
+
+    #[must_use]
+    pub fn watchdog_cutoffs(&self) -> u64 {
+        self.watchdog_cutoffs
     }
 
     #[must_use]
@@ -307,6 +315,7 @@ impl FaultTarget {
                 self.observation = observation.clone();
                 self.action_observations = vec![observation];
                 self.failed = false;
+                self.watchdog_cutoffs = 0;
             }
             Err(error) => {
                 eprintln!("fault target reset failed: {error}");
@@ -341,6 +350,7 @@ impl FaultTarget {
         };
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
+        self.watchdog_cutoffs = 0;
         Ok(())
     }
 
@@ -381,6 +391,12 @@ impl FaultTarget {
             }
             Err(error) => {
                 eprintln!("fault action {action:?} failed: {error}");
+                if error.starts_with(WATCHDOG_CUTOFF) {
+                    self.watchdog_cutoffs = self.watchdog_cutoffs.saturating_add(1);
+                    let mut observation = self.observation.clone();
+                    observation.watchdog_cutoff = true;
+                    self.action_observations.push(observation);
+                }
                 self.failed = true;
             }
         }
@@ -599,7 +615,18 @@ impl Live {
         self.horizons_run = self.horizons_run.saturating_add(1);
         let stop = match self.session.run_until(deadline) {
             Ok(stop) => stop,
-            Err(error) => return Err(self.abandon("run", &error)),
+            Err(error) => {
+                let watchdog = matches!(
+                    error.downcast_ref::<SessionError>(),
+                    Some(SessionError::Hung(_) | SessionError::Abandoned)
+                );
+                let message = self.abandon("run", &error);
+                return Err(if watchdog {
+                    format!("{WATCHDOG_CUTOFF}{message}")
+                } else {
+                    message
+                });
+            }
         };
         if let StopReason::Crash { vtime, info } = &stop {
             let tail = self.session.console_tail().unwrap_or_default();

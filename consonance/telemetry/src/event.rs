@@ -134,7 +134,7 @@ mod tests {
             42,
             21,
             EventKind::Console {
-                text: "postgres ready\n".to_string(),
+                text: "guest ready\n".to_string(),
             },
         );
         let line = to_ndjson(&ev).expect("encode");

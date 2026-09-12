@@ -85,6 +85,11 @@ Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
 image, kernel and agent hashes, the execution identity, the run bounds, and
 either the bugs found or the replay outcomes.
 
+The search report and `campaign-summary.json` also record
+`watchdog_cutoffs`, the number of guest action runs ended by the session's
+host watchdog. A completed CLI with such cutoffs remains a measured campaign;
+an outer CLI timeout is an infrastructure failure.
+
 Every replay run boots a session no earlier run has touched, so no snapshot
 another run cached can stand in for guest execution: each run reaches the
 sealed setup point and executes the recorded actions itself. Each run records

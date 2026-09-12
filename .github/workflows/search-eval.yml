@@ -35,7 +35,7 @@ defaults:
 jobs:
   portable:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
@@ -48,6 +48,7 @@ jobs:
       - name: Dependency ownership
         run: python3 scripts/check-dependency-boundaries.py
   source-built:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -103,6 +104,7 @@ jobs:
 
   stb-contract:
     name: Source build, probe, search and replay (${{ matrix.ai.name }}, seed ${{ matrix.seed }})
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -128,4 +130,27 @@ jobs:
       HARMONY_QUICKNES_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/stb-evaluation
+
+  pr-stb-smoke:
+    name: STB source build, search and replay smoke
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      STB_BUILD: workloads/nes/build/stb
+      STB_ARTIFACT: workloads/nes/build/stb-pr-artifact
+      STB_EXECUTIONS: "4"
+      STB_REQUIRE_VICTORY: "false"
+      STB_SEED: "1"
+      STB_AI: easy
+      STB_AI_LEVEL: "1"
+      STB_WORKERS: "1"
+      STB_WALL_SECONDS: "180"
+      HARMONY_STB_BUILD_JOBS: "2"
+      HARMONY_QUICKNES_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize smoke artifact directory
+        run: mkdir -p "${STB_ARTIFACT}"
       - uses: ./.github/actions/stb-evaluation

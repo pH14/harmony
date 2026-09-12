@@ -3893,7 +3893,7 @@ mod tests {
         );
     }
 
-    const RECORDED_HEADER: &str = r#"{"format":"smb-campaign-v1","campaign_seed":7,"workers":2,
+    const RECORDED_HEADER: &str = r#"{"format":"campaign-v1","campaign_seed":7,"workers":2,
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"wall_budget_seconds":null,
 "action_limit":64,"archive_entry_limit":128,"controller_vocabulary":"nes_down_ten",

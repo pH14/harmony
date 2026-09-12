@@ -477,17 +477,136 @@ CI_WORKFLOW_NAME_RE = re.compile(r"^name:\s*(.+)$", re.MULTILINE)
 
 PR_JOB_MAX_TIMEOUT_MINUTES = 15
 
-# Event names that indicate a job is manually or schedule triggered.
-NON_PR_EVENTS = {"schedule", "workflow_dispatch"}
+# Event names that cannot be a pull-request run.
+NON_PR_EVENTS = {"push", "schedule", "workflow_dispatch"}
+
+EVENT_NAME_RE = re.compile(r"(?:github\.)?event_name\b")
+EVENT_EQUALITY_RE = re.compile(
+    r"(?:github\.)?event_name\s*==\s*(['\"])([^'\"]+)\1"
+)
+
+
+def _split_condition(expression: str, operator: str) -> list[str]:
+    """Split a boolean expression at top-level operators."""
+    parts = []
+    start = 0
+    depth = 0
+    quote = ""
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if quote:
+            if char == quote and (index == 0 or expression[index - 1] != "\\"):
+                quote = ""
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            index += 1
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0 and expression.startswith(operator, index):
+            parts.append(expression[start:index])
+            index += len(operator)
+            start = index
+            continue
+        index += 1
+    parts.append(expression[start:])
+    return parts
+
+
+def _strip_outer_parentheses(expression: str) -> str:
+    expression = expression.strip()
+    while expression.startswith("(") and expression.endswith(")"):
+        depth = 0
+        closes_at = None
+        quote = ""
+        for index, char in enumerate(expression):
+            if quote:
+                if char == quote and (index == 0 or expression[index - 1] != "\\"):
+                    quote = ""
+                continue
+            if char in "'\"":
+                quote = char
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    closes_at = index
+                    break
+        if closes_at != len(expression) - 1:
+            break
+        expression = expression[1:-1].strip()
+    return expression
+
+
+def _condition_excludes_pr(expression: str) -> bool:
+    """Prove that every true branch names a non-PR event.
+
+    This intentionally accepts only positive equality guards. Expressions with
+    a negative comparison or an unguarded OR branch remain subject to the
+    timeout lint.
+    """
+    expression = _strip_outer_parentheses(expression)
+    disjuncts = _split_condition(expression, "||")
+    if len(disjuncts) > 1:
+        return all(_condition_excludes_pr(part) for part in disjuncts)
+    conjuncts = _split_condition(expression, "&&")
+    if len(conjuncts) > 1:
+        return any(_condition_excludes_pr(part) for part in conjuncts)
+    match = EVENT_EQUALITY_RE.fullmatch(expression)
+    return match is not None and match.group(2) in NON_PR_EVENTS
 
 
 def _job_skips_pr(job_if: str) -> bool:
-    """Heuristic: return True if the job's `if:` guard excludes pull_request."""
+    """Return True only if the `if:` guard proves the job excludes PRs."""
     if not job_if:
         return False
     normalized = job_if.replace("${{", "").replace("}}", "").strip()
-    if "event_name" in normalized and "pull_request" not in normalized:
-        return True
+    if not EVENT_NAME_RE.search(normalized):
+        return False
+    return _condition_excludes_pr(normalized)
+
+
+def _job_has_timeout_exception(content: str, job_name: str) -> bool:
+    """Return True only for a job with an adjacent, named rationale comment.
+
+    This is deliberately scoped to the YAML job block. A workflow-wide or
+    job-name-only allowlist would make it too easy to exempt a new expensive
+    PR job without leaving reviewable context at the timeout site.
+    """
+    job_start = re.compile(rf"^  {re.escape(job_name)}:\s*$")
+    next_job = re.compile(r"^  [A-Za-z0-9_.-]+:\s*$")
+    exception = re.compile(
+        rf"^\s*#\s*ci-pr-job-timeout-exception:\s*{re.escape(job_name)}\s+"
+        r"(?:--|—)\s+\S.*$"
+    )
+    lines = content.splitlines()
+    timeout = re.compile(r"^\s*timeout-minutes:\s*\S")
+    for index, line in enumerate(lines):
+        if not job_start.match(line):
+            continue
+        block = []
+        for block_line in lines[index + 1 :]:
+            if next_job.match(block_line):
+                break
+            block.append(block_line)
+        for timeout_index, block_line in enumerate(block):
+            if not timeout.match(block_line):
+                continue
+            # The rationale must be in the contiguous comment block directly
+            # above this timeout. A marker elsewhere in the job is not enough.
+            for rationale in reversed(block[:timeout_index]):
+                if not rationale.strip():
+                    continue
+                if exception.match(rationale):
+                    return True
+                if not rationale.lstrip().startswith("#"):
+                    break
     return False
 
 
@@ -550,16 +669,28 @@ def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
             if not isinstance(job, dict):
                 continue
             timeout = job.get("timeout-minutes")
-            if not timeout or timeout <= PR_JOB_MAX_TIMEOUT_MINUTES:
+            # Every automatic PR job must declare its bound. Treat a missing
+            # or malformed value as a violation instead of silently allowing
+            # an unbounded runner.
+            if (
+                isinstance(timeout, (int, float))
+                and not isinstance(timeout, bool)
+                and timeout <= PR_JOB_MAX_TIMEOUT_MINUTES
+            ):
                 continue
             job_if = str(job.get("if", ""))
-            if _job_skips_pr(job_if):
+            if _job_skips_pr(job_if) or _job_has_timeout_exception(content, job_name):
                 continue
+            detail = (
+                f"has timeout-minutes={timeout}"
+                if timeout is not None
+                else "has no timeout-minutes"
+            )
             violations.append(Violation(
                 rule="ci-pr-job-timeout",
                 path=rel_path,
                 line=0,
-                text=f"job '{job_name}' has timeout-minutes={timeout} (max {PR_JOB_MAX_TIMEOUT_MINUTES} for PR jobs)",
+                text=f"job '{job_name}' {detail} (must set <= {PR_JOB_MAX_TIMEOUT_MINUTES} for PR jobs)",
             ))
     return violations
 
@@ -945,7 +1076,8 @@ def main(argv: list[str] | None = None) -> int:
             "workloads are acceptance tests that run on an off-hours schedule "
             "(Acceptance category). If the job must run on every PR, split it into "
             "smaller pieces or move the expensive part behind a schedule or "
-            "workflow_dispatch trigger."
+            "workflow_dispatch trigger. The only exception is a named, adjacent "
+            "ci-pr-job-timeout-exception comment with a reviewable rationale."
         ),
         "ci-workflow-prefix": (
             "Every GitHub Actions workflow name must start with one of the "

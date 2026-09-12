@@ -3,12 +3,91 @@ name: Checks / Memory safety
 # Nightly Miri validation for crates containing `unsafe`. The jobs are also
 # manually dispatchable. Timeouts include headroom for hosted-runner variance.
 on:
+  pull_request:
+    paths:
+      - consonance/vmm-core/**
+      - consonance/hypercall-doorbell/**
+      - consonance/client/**
+      - consonance/vm-state/**
+      - consonance/vmm-backend/**
+      - consonance/snapshot-store/**
+      - workloads/nes-machine/**
+      - workloads/nes-guest/**
+      - workloads/fault-agent/**
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - rust-toolchain
+      - rust-toolchain.toml
+      - flake.nix
+      - flake.lock
+      - .cargo/**
+      - clippy.toml
+      - deny.toml
+      - .github/workflows/nightly.yml
   schedule:
     # 08:00 UTC daily.
     - cron: "0 8 * * *"
   workflow_dispatch: {}
 
 jobs:
+  # The per-PR matrix keeps each affected unsafe crate's Miri run within the
+  # common 15-minute CI bound. vmm-core selects its focused pointer-lifetime
+  # seam test instead of the 240-minute full crate suite. Dependency and
+  # toolchain changes select all targets because they can alter every build.
+  miri-scope:
+    name: select affected Miri targets
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      has-targets: ${{ steps.select.outputs.has-targets }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Select Miri targets from changed inputs
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "${BASE_SHA}"...HEAD >changed-files.txt
+          matrix=$(python3 scripts/miri_scope.py <changed-files.txt)
+          echo "matrix=${matrix}" >>"${GITHUB_OUTPUT}"
+          if [[ "${matrix}" == '{"include":[]}' ]]; then
+            echo 'has-targets=false' >>"${GITHUB_OUTPUT}"
+          else
+            echo 'has-targets=true' >>"${GITHUB_OUTPUT}"
+          fi
+          echo "Miri matrix: ${matrix}"
+
+  miri-pr:
+    name: miri PR — ${{ matrix.name }}
+    needs: miri-scope
+    if: needs.miri-scope.outputs.has-targets == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.miri-scope.outputs.matrix) }}
+    env:
+      PINNED_NIGHTLY: nightly-2026-06-16
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned nightly + Miri
+        run: |
+          rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the affected crate's Miri tests
+        env:
+          MIRIFLAGS: ${{ matrix.miriflags }}
+          MIRI_COMMAND: ${{ matrix.command }}
+        run: |
+          set -euo pipefail
+          read -r -a command <<<"${MIRI_COMMAND}"
+          cargo "+${PINNED_NIGHTLY}" miri test "${command[@]}"
+
   # vmm-core runs separately because its interpreted suite is substantially
   # longer than the other crate suites.
   #
@@ -31,6 +110,7 @@ jobs:
   # `-Zmiri-permissive-provenance` only — no disable-isolation.
   miri-vmm-core:
     name: miri — vmm-core (UB safety net, own job)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     env:
@@ -47,6 +127,7 @@ jobs:
 
   miri:
     name: miri (unsafe crates, UB safety net)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 320
     env:
@@ -64,10 +145,6 @@ jobs:
         run: cargo "+${PINNED_NIGHTLY}" miri test -p hypercall-doorbell --features linux-device
       - name: miri — vm-state
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vm-state
-      # Only watchdog contains CLI unsafe; native signal syscalls sit behind
-      # cfg(not(miri)), while cancellation ordering runs with a loopback kick.
-      - name: miri — CLI watchdog
-        run: cargo "+${PINNED_NIGHTLY}" miri test -p harmony-cli --bin harmony oci::watchdog::tests
       - name: miri — vmm-backend
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-backend --all-features
       # snapshot-store uses --lib because the

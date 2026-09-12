@@ -42,6 +42,30 @@ python3 benchmarks/search/eval.py run benchmarks/search/evaluation.json \
   --memory-capacity-mib 40000
 ```
 
+The scheduled/manual [Benchmarks / NES workflow](../../.github/workflows/nova-nightly.yml)
+runs the source-built public capability panel from `nightly.json`. It builds
+Nova, Super Tilt Bro, and the pinned QuickNES core, then sends all cases through
+the same `nes-eval` runner used by the private panels. Its artifact is the
+allowlisted HTML report plus `roster.json`; it contains no ROM or core. The
+workflow is intentionally schedule/manual only, so pull requests use the
+bounded smoke checks in `search-eval.yml`.
+
+Run the licensed panels on the private Linux host with the caller-supplied
+inventory and keep both the matrix and export directories on that host:
+
+```sh
+benchmarks/search/run-private.sh /private/assets.json /private/runs/evaluation-001 \
+  benchmarks/search/evaluation.json
+benchmarks/search/run-private.sh /private/assets.json /private/runs/smb-reference-001 \
+  benchmarks/search/smb-reference.json
+```
+
+The script accepts only the two registered private manifests. It verifies every
+asset hash through `eval.py`, performs the bounded witness replay required by
+those manifests, and leaves the HTML/JSON report in a sibling `-public`
+directory. The report is local evidence; the script does not fetch, upload, or
+publish licensed assets or their private requests.
+
 Repeat the qualified whole-game SMB gate with the same identified build:
 
 ```sh
@@ -95,6 +119,7 @@ as a separate stress condition.
 | --- | --- |
 | `qualification.json` | Six small cases: all five games plus whole-game Nova configuration. Full stream/checkpoint replay and twice-repeated witness replay; 500 executions per case. |
 | `ci.json` | Source-built Nova (level and whole-game origins) and STB through the common runner, with full small-campaign replay and a frame cap. No licensed commercial ROM is used. |
+| `nightly.json` | Scheduled/manual source-built capability panel: the five registered isolated Nova levels, whole-game Nova, and STB Easy/Fair/Hard across seeds 1–3. Long runs use bounded witness replay; isolated levels and STB Hard retain their distinct outcome semantics. |
 | `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
 | `alphabet-control.json`, `alphabet-continuation.json` | The same development pilot origins and budgets, comparing alphabet-only mutation with separately accounted quarter-share continuation replay. These exploratory panels do not require every case to solve. |
 | `continuation-accounting-control.json`, `continuation-accounting-isolated.json` | The same development sample comparing original energy-splice continuation accounting with v2, which keeps triggered outcomes separate from ordinary exploration and mutation energy. |

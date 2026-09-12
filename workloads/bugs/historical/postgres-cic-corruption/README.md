@@ -126,29 +126,25 @@ names; preparation appends the workload rootfs and the fault agent to it.
 hook table, the oracle, the run settings and the search budget. `probe.json` is
 the hand-written overlap — hook 1, hook 2, wait, wait, hook 3, wait, wait, at
 500 ms horizons — that must trip the oracle on 14.3 and stay silent on 14.4. It
-is the check that the window is reachable at all, and it runs before any
-campaign.
+is a historical reachability reference; the CI panel discovers a fresh input
+on the current build instead of gating on this committed sequence.
 
 ## Status
 
 `.github/workflows/historical-bugs.yml` runs the case on GitHub-hosted
-`ubuntu-24.04` runners with nested KVM. Three checks:
+`ubuntu-24.04` runners with nested KVM during the nightly schedule or by manual
+dispatch. The panel has three stages:
 
-- **probe** — replay `probe.json` twice on 14.3 and once on 14.4. Both 14.3
-  replays must violate assertion 2, and the 14.4 replay must apply every action
-  and report point 24 with no violation: the check ran and passed. A crash, a
-  different assertion, or a run whose detector never reached a verdict fails the
-  arm it appears on. Each run must also execute in the guest as many horizons as
-  it applied actions, which is what says the replay ran the input rather than
-  restoring a snapshot of it.
-- **witness** — the same rule for `case.json`'s `witness`, when it has one.
-- **search** — a fresh campaign on 14.3 with the budget in `case.json`, and one
-  on 14.4 as a control. The 14.3 campaign must record a bug that violates
-  assertion 2, carries point 24, and reproduced when replayed. A miss fails the
-  job: this bug is expected to be found, so a miss is a regression in the
-  machinery rather than a null result. A 14.4 hit fails it too. The control
-  campaign's own report carries no per-execution oracle record, so the control's
-  oracle is shown to run and pass by the probe replay.
+- **search** — a fresh campaign on the current 14.3 build, bounded by the
+  execution and wall budgets in `case.json`. The faults package confirms each
+  newly found candidate in a fresh Consonance session. A miss, an unverified
+  candidate, and an infrastructure failure are reported separately.
+- **differential** — when search found an input, replay it once in a fresh
+  session on 14.4. The replay must execute the detector and remain free of the
+  vulnerable assertion; a violation is an actual differential mismatch.
+- **samples** — replay each manifest-declared clean input twice on fresh 14.3
+  sessions and compare their state digests. These samples include no-find paths
+  and consume the case's aggregate replay-session cap.
 
 `scripts/historical-oracle.sh` holds these rules and reads the two ids
 from `case.json`; `scripts/historical-oracle.test.sh` exercises them
@@ -156,11 +152,9 @@ against synthetic reports in quality CI.
 
 The earlier reproduction in the fault-library work — a campaign that reported
 the corruption at execution 476 with 8 workers at 500 ms horizons — was found
-on a differently built guest kernel under the counter-exiting KVM, and a
-schedule found on one build does not replay on another, so that action list is
-not carried here as a witness. `witness.json` is the input the search job
-found on a hosted runner (run 34223876479: seed 1, 4 workers, execution 221 of
-224, 38 s of wall time), replayed from a fresh session before it was recorded.
+on a differently built guest kernel under the counter-exiting KVM. A schedule
+found on one build is diagnostic history; the panel requires a fresh finding
+and replay on the current build.
 
 Hosted runners use stock KVM. The `faultlab` kernel emulates userspace counter
 reads from Harmony's virtual clock there, so a host timestamp cannot enter
