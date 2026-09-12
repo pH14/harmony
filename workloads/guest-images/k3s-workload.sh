@@ -65,6 +65,39 @@ finish() {
     exit "$rc"
 }
 
+startup_failure() {
+    log "FAIL: $*"
+    finish 125
+}
+
+require_delegated_cgroup() {
+    root=/sys/fs/cgroup
+    [ -f "$root/cgroup.controllers" ] || startup_failure "platform did not mount cgroup v2"
+    [ -f "$root/cgroup.subtree_control" ] || startup_failure "platform cgroup delegation is missing"
+    [ -w "$root/cgroup.subtree_control" ] || startup_failure "platform cgroup delegation is read-only"
+    [ -d "$root/runtime" ] || startup_failure "platform runtime cgroup is missing"
+
+    self_cgroup=$($BB sed -n 's/^0:://p' /proc/self/cgroup) || \
+        startup_failure "cannot read the application cgroup"
+    [ "$self_cgroup" = /runtime ] || \
+        startup_failure "application is outside the delegated /runtime cgroup: $self_cgroup"
+    root_procs=$($BB cat "$root/cgroup.procs") || startup_failure "cannot read delegated cgroup"
+    [ -z "$root_procs" ] || startup_failure "delegated cgroup root contains a process"
+
+    controllers=$($BB cat "$root/cgroup.controllers") || \
+        startup_failure "cannot read cgroup controllers"
+    enabled=$($BB cat "$root/cgroup.subtree_control") || \
+        startup_failure "cannot read enabled cgroup controllers"
+    # K3s validates cpu/cpuset/memory before starting and requires pids while
+    # configuring the agent. The platform supervisor must delegate all four.
+    for controller in cpu cpuset memory pids; do
+        echo "$controllers" | $BB grep -qw "$controller" || \
+            startup_failure "platform cgroup controller is unavailable: $controller"
+        echo "$enabled" | $BB grep -qw "$controller" || \
+            startup_failure "platform cgroup controller is not delegated: $controller"
+    done
+}
+
 # --- kubelet/containerd data dirs on tmpfs (cAdvisor cannot stat the ramfs root) ---
 # The OCI rootfs is a ramfs-like root at runtime, which cAdvisor (embedded in
 # kubelet) cannot get filesystem stats for -> "failed to get rootfs info" aborts
@@ -77,19 +110,11 @@ $BB mkdir -p /var/lib/kubelet /var/lib/rancher/k3s/agent/containerd
 $BB mount -t tmpfs tmpfs /var/lib/kubelet
 $BB mount -t tmpfs tmpfs /var/lib/rancher/k3s/agent/containerd
 
-# --- cgroup-v2 (unified) — kubelet/containerd manage their own subtrees -------
-# Mount the unified hierarchy, move init out of the root cgroup into a leaf (so
-# the root has no member procs and can delegate controllers), and enable the
-# controllers in the root subtree. cpuset is absent (depends on SMP, off per the
-# capability audit — single-vCPU has no affinity to partition); cpu/io/memory/pids
-# give kubelet the controllers it needs for pod cgroups.
-$BB mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
-$BB mkdir -p /sys/fs/cgroup/init
-$BB echo $$ > /sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true
-for c in cpu cpuset io memory pids; do
-    $BB echo "+$c" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
-done
-$BB mount --make-rprivate / 2>/dev/null || true
+# --- delegated cgroup-v2 — kubelet/containerd manage their own subtrees -------
+# The platform supervisor already mounted cgroup v2, moved itself to /runtime,
+# and enabled the fixed controller set. K3s creates its pod/container leaves
+# below that delegated root; this workload must not remount or reparent it.
+require_delegated_cgroup
 
 # --- networking + resource prerequisites k8s expects -------------------------
 $BB ip link set lo up 2>/dev/null || true

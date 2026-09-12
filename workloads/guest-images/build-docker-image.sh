@@ -296,7 +296,12 @@ jq --argjson env "$IMG_ENV" '
   | .process.noNewPrivileges = false
   | .root.path = "rootfs"
   | .root.readonly = false
-  | .linux.cgroupsPath = "pg-container"
+  | if any(.linux.namespaces[]?; .type == "cgroup") then .
+    else .linux.namespaces += [{"type": "cgroup"}]
+    end
+  # Absolute path is rooted at the platform private cgroup namespace; a
+  # relative path would resolve from the application /runtime parent.
+  | .linux.cgroupsPath = "/pg-container"
   | .linux.resources.devices = [{"allow": true, "access": "rwm"}]
 ' "$BUNDLE/config.json" >"$BUNDLE/config.json.new"
 mv "$BUNDLE/config.json.new" "$BUNDLE/config.json"

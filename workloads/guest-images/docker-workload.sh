@@ -4,7 +4,7 @@
 # The platform runtime already owns the guest mounts and terminal; this script
 # retains only the workload's nested container setup and deterministic oracle.
 
-set -u
+set -eu
 
 BB=/bin/busybox
 BUNDLE=/oci
@@ -14,22 +14,42 @@ export PATH=/usr/local/bin:/bin:/sbin
 
 log() { $BB echo "DK38: $*"; }
 
+fail() {
+    log "FAIL: $*"
+    exit 125
+}
+
+require_delegated_cgroup() {
+    root=/sys/fs/cgroup
+    [ -f "$root/cgroup.controllers" ] || fail "platform did not mount cgroup v2"
+    [ -f "$root/cgroup.subtree_control" ] || fail "platform cgroup delegation is missing"
+    [ -w "$root/cgroup.subtree_control" ] || fail "platform cgroup delegation is read-only"
+    [ -d "$root/runtime" ] || fail "platform runtime cgroup is missing"
+
+    self_cgroup=$($BB sed -n 's/^0:://p' /proc/self/cgroup) || \
+        fail "cannot read the application cgroup"
+    [ "$self_cgroup" = /runtime ] || \
+        fail "application is outside the delegated /runtime cgroup: $self_cgroup"
+    root_procs=$($BB cat "$root/cgroup.procs") || fail "cannot read delegated cgroup"
+    [ -z "$root_procs" ] || fail "delegated cgroup root contains a process"
+
+    controllers=$($BB cat "$root/cgroup.controllers") || fail "cannot read cgroup controllers"
+    enabled=$($BB cat "$root/cgroup.subtree_control") || \
+        fail "cannot read enabled cgroup controllers"
+    for controller in cpu cpuset memory pids; do
+        echo "$controllers" | $BB grep -qw "$controller" || \
+            fail "platform cgroup controller is unavailable: $controller"
+        echo "$enabled" | $BB grep -qw "$controller" || \
+            fail "platform cgroup controller is not delegated: $controller"
+    done
+}
+
 if [ ! -x /usr/local/bin/runc ]; then
     log "FAIL: nested runc is missing"
     exit 127
 fi
 
-# The outer platform mount namespace is already established. Nested runc may
-# still need a cgroup hierarchy for its child container; this is an optional
-# kernel facility for this workload and its absence is reported by runc.
-$BB mkdir -p /sys/fs/cgroup
-$BB mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true
-$BB mkdir -p /sys/fs/cgroup/init
-$BB echo $$ > /sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true
-for controller in cpu io memory pids; do
-    $BB echo "+$controller" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
-done
-$BB mount --make-rprivate / 2>/dev/null || true
+require_delegated_cgroup
 
 log "OCI workload: nested runc $(runc --version 2>/dev/null | $BB head -1)"
 log "launching official postgres OCI container via nested runc"
