@@ -501,8 +501,8 @@ pub(crate) fn cap_unrestorable_events(e: &vmm_backend::VcpuEvents) -> Option<&'s
 /// injection (an interrupt/exception KVM has injected but not yet delivered, the
 /// `#PF`/`#DB` payload, a `SIPI`, SMM, or a queued triple fault) **and** on KVM's inert
 /// *modifier residuals* — a stale `interrupt.nr`/`exception.nr`/`has_error_code` KVM
-/// leaves set after an injection completes (box evidence: the post-readiness Postgres
-/// boundaries it flagged carried such residuals, the active bits all clear). The prior
+/// leaves set after an injection completes (post-readiness boundaries have
+/// carried such residuals while the active bits were all clear). The prior
 /// codec refused both; the current one makes both snapshottable — the residuals collapse to the
 /// clean record under [`canonical_events`], a true injection round-trips. Excluded
 /// (never a refusal trigger): `exception_pending`/`exception_nr`/`exception_error_code`/

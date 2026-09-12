@@ -34,7 +34,7 @@ pub const PARAVIRTUAL_EXIT_VNS: u64 = 10_000;
 ///
 /// The guest emits one tick on every syscall entry, context switch, and
 /// idle-poll iteration. 100 µs is the calibrated median wall gap around a
-/// tick on the PostgreSQL M3 reference run. The value must remain strictly
+/// tick on the reference run. The value must remain strictly
 /// below Linux's 100 Hz clockevent period: a timer interrupt can itself
 /// cause a context switch, and advancing by a full period there would
 /// immediately mature its successor and create a self-sustaining interrupt

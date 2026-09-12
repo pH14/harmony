@@ -10,8 +10,8 @@
 //! - `stdin` (default) — read NDJSON from stdin, e.g. `vmm … --events - | console`.
 //! - `unix:<path>` — bind a Unix socket; the VMM connects and writes NDJSON.
 //! - `file:<path>` — **replay** a captured recording (the page scrubs it
-//!   client-side). This is how a box-only Postgres run, captured to a file with
-//!   `NdjsonRecorder`, re-renders identically on a Mac.
+//!   client-side). A live run captured to a file with `NdjsonRecorder`
+//!   re-renders identically on another host.
 
 use std::io::{self, BufRead, BufReader};
 use std::net::SocketAddr;

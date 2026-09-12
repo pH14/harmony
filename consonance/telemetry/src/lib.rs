@@ -32,11 +32,10 @@
 //!
 //! ## Record → replay
 //!
-//! Postgres/Docker workloads are box-only (stock KVM). The path is built so a
-//! **box** run attaches an [`NdjsonRecorder`] (captured to a file) and/or a
+//! A live run can attach an [`NdjsonRecorder`] (captured to a file) and/or a
 //! [`LiveSink`] (live view where the VMM runs), and the captured file replays in
-//! the **Mac** console identically: the console keys every render on `vns`, a
-//! pure function of the run, so live and replay use the same renderer.
+//! the console identically on another host: the console keys every render on
+//! `vns`, a pure function of the run, so live and replay use the same renderer.
 
 mod event;
 mod observer;

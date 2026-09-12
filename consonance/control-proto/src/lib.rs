@@ -106,11 +106,11 @@ pub const APP_PROTOCOL_VERSION: u16 = 11;
 /// The maximum bytes one [`Read`](Request::Read) may request. A larger `len` is a
 /// loud [`ReadTooLarge`](ControlError::ReadTooLarge), rejected **before any
 /// allocation**, so an untrusted count can never force an unbounded buffer
-/// (conventions rule 4). 256 KiB covers Nova's fixed 120-frame work-RAM ring
-/// plus its header and save RAM in one coherent observation. It remains far
-/// below [`MAX_FRAME_LEN`], so a full `Bytes` reply always frames. Both peers
-/// agree on this number; a server picking a smaller effective cap still rejects
-/// loudly, never truncates.
+/// (conventions rule 4). 256 KiB covers the largest supported fixed-size
+/// working-state observation plus its header and auxiliary state in one
+/// coherent read. It remains far below [`MAX_FRAME_LEN`], so a full `Bytes`
+/// reply always frames. Both peers agree on this number; a server picking a
+/// smaller effective cap still rejects loudly, never truncates.
 pub const READ_CAP: u32 = 1 << 18;
 
 /// Maximum on-wire frame *body* length. Generous for [`Reproducer`] blobs and

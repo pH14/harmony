@@ -55,9 +55,9 @@
 //!   → [`StopReason::Crash`] (kind `Panic`, detail = the code byte);
 //!   backend `Shutdown` (triple fault / guest-initiated shutdown) →
 //!   [`StopReason::Crash`] (kind `Shutdown`). A workload that *terminates by
-//!   convention* through a forced reboot (the Postgres image's `reboot -f`)
-//!   reads as a `Crash{Shutdown}` here — interpreting that convention is the
-//!   caller's (workload-aware) job, never this server's. `resolve` is accepted
+//!   convention* through a forced reboot reads as a `Crash{Shutdown}` here —
+//!   interpreting that convention is the caller's (workload-aware) job, never
+//!   this server's. `resolve` is accepted
 //!   on the wire but there is never an outstanding decision on the seed-driven
 //!   substrate, so any resolve answers [`ControlError::ResolveWithoutDecision`].
 //!   The [`StopMask`](control_proto::StopMask) gates no *decision* class yet (none
@@ -2019,8 +2019,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
 /// `DebugExit{0}` are quiescence; a non-zero debug-exit code is a
 /// guest-reported failure (`Crash{Panic}`, detail = the code byte); a backend
 /// `Shutdown` (triple fault / guest-initiated shutdown) is `Crash{Shutdown}` —
-/// a workload whose *clean terminal is a forced reboot* (the Postgres image)
-/// reads as `Crash{Shutdown}` here, and interpreting that convention is the
+/// a workload whose *clean terminal is a forced reboot* reads as
+/// `Crash{Shutdown}` here, and interpreting that convention is the
 /// workload-aware caller's job.
 /// Map an [`SdkStop`] to the wire [`StopReason`], stamped with the
 /// effective V-time. An assertion violation carries its point id + detail as the
@@ -6076,7 +6076,7 @@ mod tests {
     /// observation verbs. Materializing the same address **twice from genesis**
     /// yields byte-identical `regs` (including `rip` and `moment`), `read`, and
     /// `hash(Whole)` — the address is a stable coordinate. (The box gate proves the
-    /// same against the live Postgres workload, where the state actually differs
+    /// same against a live workload, where the state actually differs
     /// Moment-to-Moment; the mock's static image makes this a determinism/mechanism
     /// proof, not a state-evolution one.)
     #[test]
