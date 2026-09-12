@@ -98,6 +98,7 @@ mod tests {
     #[test]
     fn fr_reports_tx_empty_and_rx_state() {
         let mut u = Pl011::new();
+        assert_eq!(u.read(reg::FR), 0x90, "PL011 FR: TXFE is bit 7, RXFE bit 4");
         assert_eq!(u.read(reg::FR), FR_TXFE | FR_RXFE);
         u.inject_input(b"x");
         assert_eq!(u.read(reg::FR), FR_TXFE, "input queued clears RXFE");

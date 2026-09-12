@@ -741,6 +741,7 @@ mod tests {
         let typer = g.mmio_read(GicFrame::Redist, GICR_TYPER_LO, 0).unwrap();
         let planted_typer = GICR_TYPER_LAST | (1 << 3);
         assert_eq!(ctlr, GICR_CTLR_IR);
+        assert_eq!(typer, 0x10, "GICR_TYPER.Last is bit 4");
         assert_eq!(typer, GICR_TYPER_LAST);
         assert_ne!(typer, planted_typer);
         assert!(ctlr & GICR_CTLR_IR != 0 || typer & (1 << 3) != 0);

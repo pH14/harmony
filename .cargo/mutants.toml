@@ -102,7 +102,7 @@ exclude_re = [
     # getrusage path and its testable seam; macOS exercises this fallback in the
     # ordinary all-features gates. Pin the exact fallback line so the live Linux
     # accessor remains mutation-gated.
-    "consonance/vmm-core/src/control\\.rs:162:5: replace host_minor_faults -> Option<u64> with Some\\([01]\\)",
+    "consonance/vmm-core/src/control\\.rs:57:5: replace host_minor_faults -> Option<u64> with Some\\([01]\\)",
     # (b) Provably-equivalent disjoint-bit OR mutants in vmm-core: `a | b` ≡ `a ^ b`
     #     whenever a,b share no set bits — true of every bitwise-flag combine here
     #     (USER_SPACE_MSR_MASK = FILTER|UNKNOWN|INVAL; resolve_cpuid's clear-then-set
@@ -110,10 +110,14 @@ exclude_re = [
     #     disjoint operands. Scoped to vmm-core so sibling crates' `|` stays gated.
     "consonance/vmm-core/src/.*replace \\| with \\^",
     # KVM's ARM64 one-register IDs and vGIC sysreg IDs are concatenations of
-    # non-overlapping ABI bitfields. For these exact expressions `|` and `^`
-    # are mathematically identical; the neighboring `|`→`&`, shift, class,
-    # index, and return-value mutants remain gated by the exact-value tests.
-    "consonance/vmm-backend/src/arm64_kvm\\.rs:(110|434|446|448|450|452|466|501|751):.*replace \\| with \\^",
+    # non-overlapping ABI bitfields, so `|` and `^` are mathematically
+    # identical there. The first entry covers the module-level ID constants
+    # (matched by the absence of an `in <fn>` suffix), the second the four
+    # compose helpers. `restore_vgic` and `set_irq_line` set a bit into a value
+    # that may already hold it, so their `|` stays gated, as do the
+    # neighboring `|`→`&`, shift, index, and return-value mutants.
+    "consonance/vmm-backend/src/arm64_kvm\\.rs:[0-9]+:[0-9]+: replace \\| with \\^$",
+    "consonance/vmm-backend/src/arm64_kvm\\.rs:.*replace \\| with \\^ in (vgic_sysreg|core_reg|core_reg_sized|sysreg_id|<impl Backend for Arm64KvmBackend<K>>::set_policy)$",
     # GICD_CTLR's retained Group-1 bit and the fixed ARE/DS bits occupy
     # disjoint positions, so OR and XOR return the same register value for all
     # reachable states. The writable-bit and exact-value mutants stay gated.
@@ -157,8 +161,10 @@ exclude_re = [
     # itself is exercised by the exact HVF hardware lanes.
     "hvf_exit_handle",
     # The two frozen pvclock ABI flags are distinct single bits (1 and 2), so
-    # OR and XOR are identical for this compile-time constant expression.
-    "consonance/vtime/src/pvclock\\.rs:85:61: replace \\| with \\^",
+    # OR and XOR are identical for this compile-time constant expression. The
+    # `|` inside `stamp` sets a sequence bit that may already be set and stays
+    # gated, which the absence of an `in <fn>` suffix distinguishes.
+    "consonance/vtime/src/pvclock\\.rs:[0-9]+:[0-9]+: replace \\| with \\^$",
     # (g) `impl Backend for Box<B>`'s `inject` forward: `inject` returns
     #     `Result<()>` with no trait-observable effect (no getter on the trait) and
     #     no triggerable error in the mock, so a dropped forward (`Ok(())`) cannot
@@ -234,10 +240,10 @@ exclude_re = [
     # nodes, which an unprivileged test cannot create (mknod needs root); the
     # fifo/socket halves of the guard ARE killed by the tree test's fifo and
     # socket entries.
-    "workloads/guest-image/src/lib\\.rs:96:75: replace != with ==",
+    "workloads/guest-image/src/lib\\.rs:.*replace != with == in Writer::walk$",
     # newc type bits (0o040000/0o100000/0o120000) and the 0o7777-masked
     # permission bits are disjoint, so OR and XOR build identical headers —
     # the same provably-equivalent class as (b). The `|`→`&` and `&`→`^`/`|`
     # siblings ARE killed by the exact-mode header parse test.
-    "workloads/guest-image/src/lib\\.rs:(60|64|70):36: replace \\| with \\^",
+    "workloads/guest-image/src/lib\\.rs:.*replace \\| with \\^ in Writer::(dir|file|symlink)_owned$",
 ]
