@@ -19,6 +19,10 @@ deterministic execution.
 - Record follow-up work in GitHub issues and preserve implementation history in
   commits and pull requests.
 - For code-review work, use the applicable lenses in `REVIEWING.md`.
+- Backwards compatibility is not a goal. Do not preserve old code paths to
+  avoid breaking changes.
+- Keep code comments to a minimum. Add one only when necessary to explain why
+  the code exists, never how it works.
 
 ## Maintaining these instructions
 
