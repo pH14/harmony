@@ -61,13 +61,13 @@ harmony oci run alpine:3 --seed 7 --timeout 60 --out run-7 -- /bin/echo hello
 On timeout it preserves the partial serial log and returns an error without a
 successful run digest.
 
-On Linux x86, the timeout watchdog sets a host cancellation latch and interrupts
-the owning KVM thread with reserved SIGUSR1. It repeats the interrupt after expiry
-until the driver returns, covering a signal arriving just before KVM_RUN. It sends
-no signals before expiry; canceled executions are abandoned. The timeout is a host
-resource limit, not guest virtual time or replay state. The mechanism itself lives
-in [`consonance-client`](../consonance/client/README.md), which the neutral session
-also uses for its own host bound.
+On Linux x86 and arm64, the timeout watchdog sets a host cancellation latch and
+interrupts the owning KVM thread with reserved SIGUSR1. It repeats the interrupt
+after expiry until the driver returns, covering a signal arriving just before
+KVM_RUN. It sends no signals before expiry; canceled executions are abandoned.
+The timeout is a host resource limit, not guest virtual time or replay state. The
+mechanism itself lives in [`consonance-client`](../consonance/client/README.md),
+which the neutral session also uses for its own host bound.
 
 The CLI enables `harmony_pvclock` so the kernel uses virtual timing for entropy
 mixing as well as timekeeping. The stock x86 virtual-time boot supplies Linux's `SETUP_RNG_SEED` record from the

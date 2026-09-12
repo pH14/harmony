@@ -131,6 +131,7 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
         Err(error) => {
             #[cfg(any(
                 all(target_os = "linux", target_arch = "x86_64"),
+                all(target_os = "linux", target_arch = "aarch64"),
                 all(target_os = "macos", target_arch = "aarch64")
             ))]
             if let runner::RunError::WallBudget { serial, .. } = &error {

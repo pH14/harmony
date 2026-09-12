@@ -3,6 +3,7 @@
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     test,
 ))]
 use std::io::Write;
@@ -10,15 +11,17 @@ use std::time::Duration;
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
 ))]
 use std::time::Instant;
 
 pub const HOST_SUPPORTED: bool = cfg!(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
 ));
 
-pub const SUPPORTED_HOSTS: &str = "macOS/arm64 (HVF), Linux/x86-64 (KVM)";
+pub const SUPPORTED_HOSTS: &str = "macOS/arm64 (HVF), Linux/x86-64 (KVM), Linux/arm64 (KVM)";
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -27,22 +30,30 @@ pub enum RunError {
         not(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
         ))
     ))]
-    #[error("this host is not wired yet ({0}); supported: macOS/arm64 (HVF), Linux/x86-64 (KVM)")]
+    #[error(
+        "this host is not wired yet ({0}); supported: macOS/arm64 (HVF), Linux/x86-64 (KVM), Linux/arm64 (KVM)"
+    )]
     UnsupportedHost(&'static str),
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    #[error("--seed is only wired on Linux/x86-64 today; use --seed 0 on macOS")]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+    ))]
+    #[error("--seed is only wired on Linux/x86-64; use --seed 0 on this host")]
     SeedNotWired,
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
     ))]
     #[error("vmm: {0}")]
     Vmm(String),
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
     ))]
     #[error(
         "wall budget of {budget_s}s exhausted before the guest reached a terminal state \
@@ -65,6 +76,7 @@ pub struct Outcome {
     not(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
     )),
     allow(dead_code)
 )]
@@ -87,6 +99,7 @@ pub enum StreamMode {
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     test,
 ))]
 struct StreamFilter {
@@ -100,12 +113,14 @@ struct StreamFilter {
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     test,
 ))]
 const MARKER_START: &[u8] = b"HARMONY_OCI: startup";
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     test,
 ))]
 const MARKER_PREFIX: &[u8] = b"HARMONY_OCI";
@@ -113,6 +128,7 @@ const MARKER_PREFIX: &[u8] = b"HARMONY_OCI";
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     test,
 ))]
 impl StreamFilter {
@@ -230,11 +246,38 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
     outcome
 }
 
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
+    if spec.seed != 0 {
+        return Err(RunError::SeedNotWired);
+    }
+    let mut vmm = vmm_core::vendor::arm64::bringup::boot_selected_control(
+        spec.kernel,
+        spec.initramfs,
+        spec.cmdline,
+        spec.guest_ram_len,
+    )
+    .map_err(|e| RunError::Vmm(e.to_string()))?;
+    vmm.defer_virtual_time_checkpoint_hashes()
+        .map_err(|e| RunError::Vmm(e.to_string()))?;
+    #[allow(clippy::disallowed_methods)]
+    let start = Instant::now();
+    let cancel = vmm
+        .cancellation_flag()
+        .ok_or_else(|| RunError::Vmm("backend cannot be interrupted mid-run".into()))?;
+    let watchdog = consonance_client::watchdog::Watchdog::start(spec.wall_budget, cancel)
+        .map_err(|e| RunError::Vmm(format!("cannot arm KVM timeout: {e}")))?;
+    let outcome = drive(vmm, spec, start);
+    drop(watchdog);
+    outcome
+}
+
 #[cfg(any(
     miri,
     not(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
     ))
 ))]
 pub fn execute(_spec: &RunSpec) -> Result<Outcome, RunError> {
@@ -244,6 +287,7 @@ pub fn execute(_spec: &RunSpec) -> Result<Outcome, RunError> {
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
 ))]
 fn drive<B: vmm_backend::Backend>(
     mut vmm: vmm_core::vmm::Vmm<B>,
@@ -352,9 +396,11 @@ mod tests {
         let wired = cfg!(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
         ));
         assert_eq!(super::HOST_SUPPORTED, wired);
         assert!(super::SUPPORTED_HOSTS.contains("Linux/x86-64"));
+        assert!(super::SUPPORTED_HOSTS.contains("Linux/arm64"));
     }
 
     #[test]
