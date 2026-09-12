@@ -1,12 +1,4 @@
 {
-  "ci-pr-job-timeout": [
-    ".github/workflows/historical-bugs.yml:0",
-    ".github/workflows/nova-consonance-experiment.yml:0",
-    ".github/workflows/oci-smoke.yml:0",
-    ".github/workflows/quality.yml:0",
-    ".github/workflows/search-eval.yml:0",
-    ".github/workflows/x86-virtual-time.yml:0"
-  ],
   "guest-linux-no-workload-names": [
     "consonance/harmony-linux/linux/README.md:68",
     "consonance/harmony-linux/linux/bridge-probe.c:21",
