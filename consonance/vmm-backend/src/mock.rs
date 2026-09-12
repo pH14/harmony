@@ -146,6 +146,10 @@ pub struct MockBackend {
     /// that can be interrupted mid-run is testable without KVM. The mock never
     /// reads it; `None` models a backend that cannot be interrupted.
     cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// A scripted host progress counter, so a caller's handling of a backend
+    /// that reports forward progress is testable without KVM. The mock never
+    /// records exits on it; `None` models a backend that reports no progress.
+    progress: Option<std::sync::Arc<crate::RunProgress>>,
 }
 
 impl Default for MockBackend {
@@ -174,6 +178,7 @@ impl MockBackend {
             completions: Vec::new(),
             dirty_pending: None,
             cancellation: None,
+            progress: None,
         }
     }
 
@@ -183,6 +188,12 @@ impl MockBackend {
         latch: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         self.cancellation = Some(latch);
+        self
+    }
+
+    /// Report `progress` from [`Backend::run_progress`].
+    pub fn with_run_progress(mut self, progress: std::sync::Arc<crate::RunProgress>) -> Self {
+        self.progress = Some(progress);
         self
     }
 
@@ -506,6 +517,10 @@ impl Backend for MockBackend {
 
     fn reset_exit_counts(&mut self) {
         self.counts = ExitCounts::default();
+    }
+
+    fn run_progress(&self) -> Option<std::sync::Arc<crate::RunProgress>> {
+        self.progress.clone()
     }
 
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {

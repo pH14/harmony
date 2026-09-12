@@ -477,4 +477,23 @@ mod tests {
         let forwarded = boxed.cancellation_flag().expect("latch forwarded");
         assert!(Arc::ptr_eq(&forwarded, &latch));
     }
+
+    #[test]
+    fn a_backend_without_progress_reports_none_through_a_box_too() {
+        assert!(DefaultRetireBackend.run_progress().is_none());
+        let without: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend);
+        assert!(without.run_progress().is_none());
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn box_forwards_the_backend_progress_unchanged() {
+        let progress = Arc::new(crate::RunProgress::default());
+        let boxed: Box<dyn Backend<A = X86>> =
+            Box::new(crate::MockBackend::new().with_run_progress(Arc::clone(&progress)));
+        let forwarded = boxed.run_progress().expect("progress forwarded");
+        assert!(Arc::ptr_eq(&forwarded, &progress));
+        progress.record_exit();
+        assert_eq!(forwarded.sequence(), 1);
+    }
 }

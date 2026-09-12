@@ -730,6 +730,7 @@ pub fn vmm_backend::MockBackend::regions(&self) -> &[(vmm_backend::Gpa, usize)]
 pub fn vmm_backend::MockBackend::set_defer_accept(&mut self, bool) -> &mut Self
 pub fn vmm_backend::MockBackend::set_state(&mut self, vmm_backend::VcpuState) -> &mut Self
 pub fn vmm_backend::MockBackend::with_cancellation_flag(self, alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> Self
+pub fn vmm_backend::MockBackend::with_run_progress(self, alloc::sync::Arc<vmm_backend::RunProgress>) -> Self
 pub fn vmm_backend::MockBackend::with_capabilities(vmm_backend::MockCaps) -> Self
 pub fn vmm_backend::MockBackend::with_exits(impl core::iter::traits::collect::IntoIterator<Item = vmm_backend::Exit<vmm_backend::arch::x86::X86>>) -> Self
 impl core::default::Default for vmm_backend::MockBackend

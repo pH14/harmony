@@ -4191,6 +4191,20 @@ mod tests {
         assert!(unbounded.cancellation_flag().is_none());
     }
 
+    #[test]
+    fn run_progress_is_the_backend_counter() {
+        let progress = std::sync::Arc::new(vmm_backend::RunProgress::default());
+        let backend = configured_mock(Vec::new()).with_run_progress(progress.clone());
+        let vmm = Vmm::new(backend, GuestRam::new(0x1000).unwrap());
+        let reported = vmm.run_progress().expect("mock reports its counter");
+        assert!(std::sync::Arc::ptr_eq(&reported, &progress));
+        progress.record_exit();
+        assert_eq!(reported.sequence(), 1);
+
+        let silent = Vmm::new(configured_mock(Vec::new()), GuestRam::new(0x1000).unwrap());
+        assert!(silent.run_progress().is_none());
+    }
+
     fn configured_mock(exits: Vec<Exit<X86>>) -> MockBackend {
         let mut m = MockBackend::with_exits(exits);
         m.set_policy(&X86Policy {
