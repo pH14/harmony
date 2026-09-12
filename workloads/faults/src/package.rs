@@ -258,7 +258,7 @@ mod live {
             selector: SelectorPolicy::EnergyFrontierCheapest(retire_thresholds()),
             suffix: SuffixShape::OneToSix,
             mixture: DrawMixture::AlphabetOnly,
-            victory_input_path: Some(options.output.join("first-bug-input.json")),
+            objective_witness_path: Some(options.output.join("first-bug-input.json")),
         };
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();

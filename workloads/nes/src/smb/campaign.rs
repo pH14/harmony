@@ -29,6 +29,7 @@ use crate::{
         EmpiricalStepCheckpoint, EmpiricalStepParameters, EmpiricalStepTableRef,
         EmpiricalStepTables,
     },
+    search::rollout::{ExecutionDisposition, Outcome},
     smb::archive::{
         DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER, REPLACEMENT_IDENTIFIER, SmbArchiveKey,
         SmbArchiveReport, admission_is_viable, archive_key, chord_time, merge_action_milestones,
@@ -342,7 +343,8 @@ impl SmbCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
-            continue_after_victory: self.continue_after_victory,
+            stop_rollout_on_objective: !self.continue_after_victory,
+            stop_campaign_on_objective: !self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker: self.reservations_per_worker,
             memory_budget_mib: self.memory_budget_mib,
@@ -354,7 +356,7 @@ impl SmbCampaignConfig {
             },
             retention: self.retention,
             selector: self.selector.clone(),
-            victory_input_path: self.victory_input_path.clone(),
+            objective_witness_path: self.victory_input_path.clone(),
         }
     }
 }
@@ -835,7 +837,9 @@ where
             progress_curve: state.progress_curve,
             retained: state.retained,
             rejected: state.rejected,
-            deaths: state.deaths,
+            deaths: state
+                .terminal_endpoints
+                .saturating_sub(state.terminal_objectives),
             selector: state.selector,
         }
     }
@@ -1040,7 +1044,11 @@ where
         merge_action_milestones(milestones, target)
     }
     fn rollout_observations(&self, target: &SmbTarget<M, P>) -> Vec<SmbObservations> {
-        target.last_action_observations().to_vec()
+        if target.exit_kind() != ExitKind::Ok {
+            Vec::new()
+        } else {
+            target.last_action_observations().to_vec()
+        }
     }
     fn rollout_probe(
         &self,
@@ -1157,17 +1165,23 @@ where
         select_frontier_resume_input(source)
     }
 
-    fn is_terminal(&self, target: &SmbTarget<M, P>) -> bool {
-        target.is_dead() || target.exit_kind() != ExitKind::Ok
+    fn execution_disposition(&self, target: &SmbTarget<M, P>) -> ExecutionDisposition {
+        if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_dead() {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        }
     }
 
-    fn is_run_terminal(
+    fn objective_reached(
         &self,
         run: &SmbCampaignRun,
         target: &SmbTarget<M, P>,
     ) -> Result<bool, Box<dyn Error>> {
-        if self.is_terminal(target) {
-            return Ok(true);
+        if target.exit_kind() != ExitKind::Ok {
+            return Ok(false);
         }
         run.terminal.unwrap_or_default().reached(target)
     }
@@ -1176,11 +1190,17 @@ where
         &self,
         run: &SmbCampaignRun,
         target: &SmbTarget<M, P>,
-    ) -> Result<crate::search::rollout::Outcome, Box<dyn Error>> {
-        Ok(crate::search::rollout::Outcome {
-            dead: target.is_dead(),
-            victory: run.terminal.unwrap_or_default().reached(target)?,
-            failed: target.exit_kind() != ExitKind::Ok,
+    ) -> Result<Outcome, Box<dyn Error>> {
+        let objective_reached = self.objective_reached(run, target)?;
+        Ok(Outcome {
+            objective_reached,
+            disposition: if target.exit_kind() != ExitKind::Ok {
+                ExecutionDisposition::Failed
+            } else if target.is_dead() || objective_reached {
+                ExecutionDisposition::Terminal
+            } else {
+                ExecutionDisposition::Runnable
+            },
         })
     }
 
@@ -1270,6 +1290,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::search::rollout::Outcome;
     use std::{
         cell::Cell,
         collections::{BTreeMap, BTreeSet},
@@ -1583,9 +1604,7 @@ mod tests {
                 log_line: String::new(),
             }],
             milestones,
-            dead: false,
-            victory: false,
-            failed: false,
+            outcome: Outcome::default(),
             candidate: None,
         }
     }
@@ -1753,6 +1772,7 @@ mod tests {
                 &[ButtonChord::new(0x01, 1)],
                 96,
                 crate::search::archive::RetentionPolicy::Unprobed,
+                true,
             )
             .expect("execute room action");
         let candidate = result.actions[0]
@@ -1814,6 +1834,7 @@ mod tests {
                 &suffix,
                 96,
                 crate::search::archive::RetentionPolicy::ProbeAtAdmission,
+                false,
             )
             .expect("execute job on first instance");
         let on_second = game
@@ -1827,6 +1848,7 @@ mod tests {
                 &suffix,
                 96,
                 crate::search::archive::RetentionPolicy::ProbeAtAdmission,
+                false,
             )
             .expect("execute job on second instance");
         assert_eq!(on_first, on_second);
@@ -1856,6 +1878,7 @@ mod tests {
                 &[ButtonChord::new(0x01, 4)],
                 96,
                 crate::search::archive::RetentionPolicy::ProbeAtAdmission,
+                true,
             )
             .expect("execute job");
         assert!(result.actions.is_empty());
@@ -1935,7 +1958,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_root_rejects_the_recorded_terminal_predicate() {
+    fn snapshot_root_accepts_a_terminal_objective_checkpoint() {
         use sha2::{Digest, Sha256};
 
         let rom = synthetic_nrom();
@@ -1960,9 +1983,12 @@ mod tests {
             ..genesis_config(0x5eed_ca21, 1, 1)
         };
         let origin = SmbCampaignOrigin::SnapshotRoot { checkpoint };
-        assert!(
-            run_smb_campaign_checkpointed(&rom, &config, &origin, &mut Vec::new(), None).is_err()
-        );
+        let mut stream = Vec::new();
+        let (report, _) = run_smb_campaign_checkpointed(&rom, &config, &origin, &mut stream, None)
+            .expect("terminal objective checkpoint is a valid zero-job campaign");
+        assert_eq!(report.objectives_reached, 1);
+        assert_eq!(report.terminal_objectives, 1);
+        assert_eq!(report.executions_completed, 0);
     }
 
     #[test]
@@ -2011,9 +2037,9 @@ mod tests {
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect("live campaign without a victory");
-        assert_eq!(live.victories, 0);
-        assert_eq!(live.work_to_first_victory, None);
-        assert_eq!(live.executions_to_first_victory, None);
+        assert_eq!(live.objectives_reached, 0);
+        assert_eq!(live.work_to_first_objective, None);
+        assert_eq!(live.executions_to_first_objective, None);
         assert!(live.executions_completed > 0);
         let json = serde_json::to_string(&live).expect("serialize report");
         for field in ["frames_to_first_victory", "executions_to_first_victory"] {
@@ -2232,8 +2258,8 @@ mod tests {
             .expect("live campaign");
         assert_eq!(live.executions_completed, 32);
         assert_eq!(live.jobs_per_worker.iter().sum::<u64>(), 32);
-        assert_eq!(live.victories, 0);
-        assert_eq!(live.victory_input, None);
+        assert_eq!(live.objectives_reached, 0);
+        assert_eq!(live.objective_witness, None);
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
         for identifier in [

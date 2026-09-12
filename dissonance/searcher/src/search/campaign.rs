@@ -279,6 +279,7 @@ pub trait TargetExecution: CampaignTypes {
         suffix: &[Self::Action],
         max_actions: usize,
         retention: RetentionPolicy,
+        stop_rollout_on_objective: bool,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>>
     where
         Self: Workload + Sized,
@@ -294,13 +295,17 @@ pub trait TargetExecution: CampaignTypes {
             suffix,
             max_actions,
             retention,
+            stop_rollout_on_objective,
         )
     }
 }
 
 pub trait Evaluation: CampaignTypes {
-    fn is_terminal(&self, target: &Self::Target) -> bool;
-    fn is_run_terminal(
+    fn execution_disposition(
+        &self,
+        target: &Self::Target,
+    ) -> crate::search::rollout::ExecutionDisposition;
+    fn objective_reached(
         &self,
         run: &Self::Run,
         target: &Self::Target,
@@ -310,11 +315,9 @@ pub trait Evaluation: CampaignTypes {
         run: &Self::Run,
         target: &Self::Target,
     ) -> Result<crate::search::rollout::Outcome, Box<dyn Error>> {
-        let terminal = self.is_terminal(target);
         Ok(crate::search::rollout::Outcome {
-            dead: terminal,
-            victory: !terminal && self.is_run_terminal(run, target)?,
-            failed: false,
+            objective_reached: self.objective_reached(run, target)?,
+            disposition: self.execution_disposition(target),
         })
     }
     fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>>;
@@ -374,7 +377,9 @@ pub struct ArchiveReportState<G: CampaignTypes + ?Sized> {
     pub progress_curve: Vec<ProgressPoint<G::Milestones, G::Progress>>,
     pub retained: u64,
     pub rejected: u64,
-    pub deaths: u64,
+    pub terminal_endpoints: u64,
+    pub terminal_objectives: u64,
+    pub execution_failures: u64,
     pub selector: SelectorAccounting,
 }
 
@@ -433,7 +438,8 @@ pub struct CampaignConfig<G: Workload + ?Sized> {
     pub action_limit: usize,
     pub host: String,
     pub wall_budget: Option<Duration>,
-    pub continue_after_victory: bool,
+    pub stop_rollout_on_objective: bool,
+    pub stop_campaign_on_objective: bool,
     pub archive_entry_limit: usize,
     pub reservations_per_worker: usize,
     pub memory_budget_mib: Option<usize>,
@@ -443,7 +449,7 @@ pub struct CampaignConfig<G: Workload + ?Sized> {
     pub mixture: DrawMixture,
     pub retention: RetentionPolicy,
     pub selector: SelectorPolicy,
-    pub victory_input_path: Option<PathBuf>,
+    pub objective_witness_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -466,6 +472,8 @@ pub struct CampaignStreamHeader<T> {
     pub resume_input_sha256: String,
     pub resume_actions: usize,
     pub execution_budget: u64,
+    pub stop_rollout_on_objective: bool,
+    pub stop_campaign_on_objective: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_budget: Option<u64>,
     pub wall_budget_seconds: Option<u64>,
@@ -507,7 +515,7 @@ pub enum CampaignAdmissionDecision {
     Duplicate { id: u64 },
     Rejected,
     ProbeRefused,
-    Victory,
+    Objective,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -581,11 +589,13 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub schedule_identity: String,
     pub origin: CampaignOriginRecord,
     pub execution_budget: u64,
+    pub stop_rollout_on_objective: bool,
+    pub stop_campaign_on_objective: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_budget: Option<u64>,
     pub executions_completed: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub executions_to_first_victory: Option<u64>,
+    pub executions_to_first_objective: Option<u64>,
     pub wall_budget_seconds: Option<u64>,
     pub action_limit: usize,
     pub archive_entry_limit: usize,
@@ -608,12 +618,15 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub tree_import: Option<TreeImportCounts>,
     pub execution_work: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub work_to_first_victory: Option<u64>,
+    pub work_to_first_objective: Option<u64>,
     pub duplicates_skipped: u64,
     pub probe_refused: u64,
-    pub victories: u64,
+    pub terminal_endpoints: u64,
+    pub terminal_objectives: u64,
+    pub execution_failures: u64,
+    pub objectives_reached: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub victory_input: Option<Input<A>>,
+    pub objective_witness: Option<Input<A>>,
     pub replacement_cost_displaced: u64,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub snapshot_evictions: u64,
@@ -724,8 +737,11 @@ fn record_mixture_outcome(
     Ok(())
 }
 
-fn stop_reservations_after_victory(continue_after_victory: bool, victory_found: bool) -> bool {
-    victory_found && !continue_after_victory
+fn stop_reservations_after_objective(
+    stop_campaign_on_objective: bool,
+    objective_found: bool,
+) -> bool {
+    stop_campaign_on_objective && objective_found
 }
 
 #[derive(Serialize)]
@@ -770,9 +786,7 @@ pub struct CampaignActionResult<G: CampaignTypes + ?Sized> {
     pub action: G::Action,
     pub observations: Vec<G::Observations>,
     pub milestones: G::Milestones,
-    pub dead: bool,
-    pub victory: bool,
-    pub failed: bool,
+    pub outcome: crate::search::rollout::Outcome,
     pub candidate: Option<CampaignCandidate<G>>,
 }
 
@@ -781,9 +795,7 @@ impl<G: CampaignTypes + ?Sized> PartialEq for CampaignActionResult<G> {
         self.action == other.action
             && self.observations == other.observations
             && self.milestones == other.milestones
-            && self.dead == other.dead
-            && self.victory == other.victory
-            && self.failed == other.failed
+            && self.outcome == other.outcome
             && self.candidate == other.candidate
     }
 }
@@ -795,9 +807,7 @@ impl<G: CampaignTypes + ?Sized> Clone for CampaignActionResult<G> {
             action: self.action,
             observations: self.observations.clone(),
             milestones: self.milestones,
-            dead: self.dead,
-            victory: self.victory,
-            failed: self.failed,
+            outcome: self.outcome,
             candidate: self.candidate.clone(),
         }
     }
@@ -810,9 +820,7 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
             .field("action", &self.action)
             .field("observations", &self.observations)
             .field("milestones", &self.milestones)
-            .field("dead", &self.dead)
-            .field("victory", &self.victory)
-            .field("failed", &self.failed)
+            .field("outcome", &self.outcome)
             .field("candidate", &self.candidate)
             .finish()
     }
@@ -878,9 +886,11 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     curve_interval: u64,
     bounded_progress_curve: bool,
     record_progress: bool,
-    deaths: u64,
-    pub(crate) victories: u64,
-    pub(crate) victory_input: Option<Input<G::Action>>,
+    terminal_endpoints: u64,
+    terminal_objectives: u64,
+    execution_failures: u64,
+    pub(crate) objectives_reached: u64,
+    pub(crate) objective_witness: Option<Input<G::Action>>,
     sequence: u64,
     probe_refused: u64,
     max_actions: usize,
@@ -912,9 +922,11 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             curve_interval: CURVE_INTERVAL,
             bounded_progress_curve: true,
             record_progress: true,
-            deaths: 0,
-            victories: 0,
-            victory_input: None,
+            terminal_endpoints: 0,
+            terminal_objectives: 0,
+            execution_failures: 0,
+            objectives_reached: 0,
+            objective_witness: None,
             sequence: 0,
             probe_refused: 0,
             max_actions,
@@ -925,9 +937,27 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     pub(crate) fn bootstrap(
         &mut self,
         workload: &G,
+        run: &G::Run,
         target: &mut G::Target,
     ) -> Result<(), Box<dyn Error>> {
         workload.reset(target);
+        let outcome = workload.rollout_outcome(run, target)?;
+        if outcome.disposition.is_failed() {
+            return Err("campaign genesis target failed before execution".into());
+        }
+        if matches!(
+            outcome.disposition,
+            crate::search::rollout::ExecutionDisposition::Terminal
+        ) {
+            self.terminal_endpoints = self.terminal_endpoints.saturating_add(1);
+            if outcome.objective_reached {
+                self.terminal_objectives = self.terminal_objectives.saturating_add(1);
+            }
+        }
+        if outcome.objective_reached {
+            self.objectives_reached = self.objectives_reached.saturating_add(1);
+            self.objective_witness = Some(Input::default());
+        }
         let genesis_key = workload.current_key(target)?;
         let genesis_snapshot = workload.snapshot(target)?;
         self.archive
@@ -954,8 +984,25 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     ) -> Result<(), Box<dyn Error>> {
         let snapshot = validate_snapshot_root_checkpoint(workload, checkpoint)?;
         workload.restore(target, snapshot)?;
-        if workload.is_run_terminal(run, target)? {
+        let outcome = workload.rollout_outcome(run, target)?;
+        if outcome.disposition.is_failed() {
+            return Err("snapshot-root checkpoint restores a failed target".into());
+        }
+        if matches!(
+            outcome.disposition,
+            crate::search::rollout::ExecutionDisposition::Terminal
+        ) {
+            self.terminal_endpoints = self.terminal_endpoints.saturating_add(1);
+            if outcome.objective_reached {
+                self.terminal_objectives = self.terminal_objectives.saturating_add(1);
+            }
+        }
+        if outcome.disposition.is_terminal() && !outcome.objective_reached {
             return Err("snapshot-root checkpoint restores a terminal target".into());
+        }
+        if outcome.objective_reached {
+            self.objectives_reached = self.objectives_reached.saturating_add(1);
+            self.objective_witness = Some(Input::default());
         }
         workload.merge_snapshot_root_evidence(&mut self.evidence, target)?;
         let key = workload.current_key(target)?;
@@ -978,6 +1025,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     pub(crate) fn import_tree(
         &mut self,
         workload: &G,
+        run: &G::Run,
         target: &mut G::Target,
         source: &G::ArchiveReport,
         checkpoint: Option<&SnapshotCheckpoint<G::Snapshot>>,
@@ -994,7 +1042,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         workload.merge_origin_evidence(&mut self.evidence, source);
         let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
         self.archive.preserve_inactive_snapshots(true)?;
-        self.bootstrap(workload, target)?;
+        self.bootstrap(workload, run, target)?;
         let genesis_id = 0;
         let mut counts = TreeImportCounts::default();
         let mut index_of: BTreeMap<u64, usize> = BTreeMap::new();
@@ -1048,7 +1096,11 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 workload.restore(target, snapshot)?;
                 milestones = merge_max(workload, milestones, entry.milestones);
                 counts.checkpointed = counts.checkpointed.saturating_add(1);
-                if workload.is_terminal(target) {
+                if workload
+                    .rollout_outcome(run, target)?
+                    .disposition
+                    .is_terminal()
+                {
                     None
                 } else {
                     Some((*snapshot).clone())
@@ -1064,7 +1116,11 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 let mut terminal = false;
                 for action in &entry.input.actions[parent_input_len..] {
                     workload.apply_action(target, action, &mut milestones)?;
-                    if workload.is_terminal(target) {
+                    if workload
+                        .rollout_outcome(run, target)?
+                        .disposition
+                        .is_terminal()
+                    {
                         terminal = true;
                         break;
                     }
@@ -1146,20 +1202,29 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 input.actions.extend_from_slice(&pending_suffix);
                 Ok(input)
             })?;
-            if action.dead {
-                self.deaths = self.deaths.saturating_add(1);
+            match action.outcome.disposition {
+                crate::search::rollout::ExecutionDisposition::Terminal => {
+                    self.terminal_endpoints = self.terminal_endpoints.saturating_add(1);
+                    if action.outcome.objective_reached {
+                        self.terminal_objectives = self.terminal_objectives.saturating_add(1);
+                    }
+                }
+                crate::search::rollout::ExecutionDisposition::Failed => {
+                    self.execution_failures = self.execution_failures.saturating_add(1);
+                }
+                crate::search::rollout::ExecutionDisposition::Runnable => {}
             }
-            if action.victory {
-                self.victories = self.victories.saturating_add(1);
-                if self.victory_input.is_none() {
+            if action.outcome.objective_reached {
+                self.objectives_reached = self.objectives_reached.saturating_add(1);
+                if self.objective_witness.is_none() {
                     let mut input = self
                         .archive
                         .materialize_input(current_parent)
                         .map_err(|error| -> Box<dyn Error> { error.into() })?;
                     input.actions.extend_from_slice(&pending_suffix);
-                    self.victory_input = Some(input);
+                    self.objective_witness = Some(input);
                 }
-                decisions.push(CampaignAdmissionDecision::Victory);
+                decisions.push(CampaignAdmissionDecision::Objective);
             }
             if let Some(candidate) = action.candidate {
                 if !candidate.viable {
@@ -1225,7 +1290,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 .then(|| G::aggregate_progress(&self.evidence)),
             active_entries: self.archive.active_count(),
             occupied_cells: self.archive.slots.len(),
-            deaths: self.deaths,
+            terminal_endpoints: self.terminal_endpoints,
+            execution_failures: self.execution_failures,
         });
     }
 
@@ -1280,7 +1346,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 progress_curve: self.curve,
                 retained: self.archive.retained,
                 rejected: self.archive.rejected,
-                deaths: self.deaths,
+                terminal_endpoints: self.terminal_endpoints,
+                terminal_objectives: self.terminal_objectives,
+                execution_failures: self.execution_failures,
                 selector: self.archive.selector_report(),
             },
         );
@@ -1363,6 +1431,8 @@ fn stream_header<G: Workload>(
         resume_input_sha256: origin.resume_input_sha256.clone(),
         resume_actions: origin.resume_actions,
         execution_budget: config.execution_budget,
+        stop_rollout_on_objective: config.stop_rollout_on_objective,
+        stop_campaign_on_objective: config.stop_campaign_on_objective,
         work_budget: None,
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
         action_limit: config.action_limit,
@@ -1419,8 +1489,8 @@ struct CampaignCounters {
     bootstrap_execution_work: u64,
     tree_import: Option<TreeImportCounts>,
     job_execution_work: u64,
-    work_to_first_victory: Option<u64>,
-    executions_to_first_victory: Option<u64>,
+    work_to_first_objective: Option<u64>,
+    executions_to_first_objective: Option<u64>,
     duplicates_skipped: u64,
     draw_state_memory_bytes: usize,
     jobs_per_worker: Vec<u64>,
@@ -1504,13 +1574,13 @@ fn profile_elapsed(started: Option<Instant>) -> u128 {
 }
 
 impl CampaignCounters {
-    fn note_first_victory(&mut self, sequence: u64) {
-        if self.work_to_first_victory.is_none() {
-            self.work_to_first_victory = Some(
+    fn note_first_objective(&mut self, sequence: u64) {
+        if self.work_to_first_objective.is_none() {
+            self.work_to_first_objective = Some(
                 self.bootstrap_execution_work
                     .saturating_add(self.job_execution_work),
             );
-            self.executions_to_first_victory = Some(sequence);
+            self.executions_to_first_objective = Some(sequence);
         }
     }
 
@@ -1519,8 +1589,8 @@ impl CampaignCounters {
             bootstrap_execution_work: 0,
             tree_import: None,
             job_execution_work: 0,
-            work_to_first_victory: None,
-            executions_to_first_victory: None,
+            work_to_first_objective: None,
+            executions_to_first_objective: None,
             duplicates_skipped: 0,
             draw_state_memory_bytes: 0,
             jobs_per_worker: vec![0; workers as usize],
@@ -1540,8 +1610,11 @@ fn build_report<G: Workload>(
 ) -> CampaignOutcome<G> {
     let executions_completed = core.sequence;
     let probe_refused = core.probe_refused;
-    let victories = core.victories;
-    let victory_input = core.victory_input.clone();
+    let terminal_endpoints = core.terminal_endpoints;
+    let terminal_objectives = core.terminal_objectives;
+    let execution_failures = core.execution_failures;
+    let objectives_reached = core.objectives_reached;
+    let objective_witness = core.objective_witness.clone();
     let replacement_cost_displaced = core.archive.replacement_cost_displaced();
     let snapshot_evictions = core.archive.snapshot_evictions();
     let resident_snapshot_bytes = core.archive.resident_snapshot_bytes();
@@ -1580,9 +1653,11 @@ fn build_report<G: Workload>(
         schedule_identity: CAMPAIGN_SCHEDULE_IDENTITY.to_owned(),
         origin,
         execution_budget: header.execution_budget,
+        stop_rollout_on_objective: header.stop_rollout_on_objective,
+        stop_campaign_on_objective: header.stop_campaign_on_objective,
         work_budget: header.work_budget,
         executions_completed,
-        executions_to_first_victory: counters.executions_to_first_victory,
+        executions_to_first_objective: counters.executions_to_first_objective,
         wall_budget_seconds: header.wall_budget_seconds,
         action_limit: header.action_limit,
         archive_entry_limit: header.archive_entry_limit,
@@ -1603,11 +1678,14 @@ fn build_report<G: Workload>(
         execution_work: counters
             .bootstrap_execution_work
             .saturating_add(counters.job_execution_work),
-        work_to_first_victory: counters.work_to_first_victory,
+        work_to_first_objective: counters.work_to_first_objective,
         duplicates_skipped: counters.duplicates_skipped,
         probe_refused,
-        victories,
-        victory_input,
+        terminal_endpoints,
+        terminal_objectives,
+        execution_failures,
+        objectives_reached,
+        objective_witness,
         replacement_cost_displaced,
         snapshot_evictions,
         resident_snapshot_bytes,
@@ -1733,9 +1811,13 @@ pub struct CampaignProgressRecord<K> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub milestones: Option<serde_json::Value>,
     #[serde(default)]
-    pub victories: u64,
+    pub objectives_reached: u64,
     #[serde(default)]
-    pub deaths: u64,
+    pub terminal_endpoints: u64,
+    #[serde(default)]
+    pub terminal_objectives: u64,
+    #[serde(default)]
+    pub execution_failures: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_elapsed_millis: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1814,8 +1896,10 @@ fn write_live_progress<G: Workload>(
             .transpose()?,
         progress: Some(serde_json::to_value(G::aggregate_progress(&core.evidence))?),
         milestones: Some(serde_json::to_value(core.aggregate_milestones())?),
-        victories: core.victories,
-        deaths: core.deaths,
+        objectives_reached: core.objectives_reached,
+        terminal_endpoints: core.terminal_endpoints,
+        terminal_objectives: core.terminal_objectives,
+        execution_failures: core.execution_failures,
         search_elapsed_millis: Some(telemetry_started)
             .map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX)),
         unix_time,
@@ -1867,12 +1951,13 @@ fn bootstrap_core<G: Workload>(
             report, checkpoint, ..
         } => Ok(Some(core.import_tree(
             workload,
+            run,
             target,
             report,
             checkpoint.as_ref().map(|checkpoint| &checkpoint.snapshots),
         )?)),
         CampaignOrigin::Genesis => {
-            core.bootstrap(workload, target)?;
+            core.bootstrap(workload, run, target)?;
             Ok(None)
         }
         CampaignOrigin::SnapshotRoot { checkpoint } => {
@@ -2020,6 +2105,12 @@ where
         workload.execution_work(&bootstrap_target),
         "bootstrap",
     )?;
+    if core.objectives_reached > 0 {
+        counters.note_first_objective(0);
+    }
+    if let (Some(path), Some(input)) = (&config.objective_witness_path, &core.objective_witness) {
+        std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
+    }
     drop(bootstrap_target);
     let bootstrap_memory_bytes = core
         .archive
@@ -2067,6 +2158,7 @@ where
                     &spec.suffix,
                     max_actions,
                     retention,
+                    config.stop_rollout_on_objective,
                 )
                 .and_then(|result| {
                     let result_sha256 = workload
@@ -2097,9 +2189,9 @@ where
                             .saturating_add(counters.job_execution_work)
                             >= budget
                     })
-                    || stop_reservations_after_victory(
-                        config.continue_after_victory,
-                        core.victory_input.is_some(),
+                    || stop_reservations_after_objective(
+                        config.stop_campaign_on_objective,
+                        core.objective_witness.is_some(),
                     )
                 {
                     return Ok(None);
@@ -2409,7 +2501,7 @@ where
                     let execution_work = completed_job.execution_work;
                     let result_sha256 = completed_job.result_sha256;
                     let physical_worker = completed_job.physical_worker;
-                    let victories_before = core.victories;
+                    let objectives_before = core.objectives_reached;
                     let admission_started = profile_now(coordinator_profile.enabled);
                     let (sequence, decisions) =
                         core.admit_job(workload, pending_job.parent_id, result)?;
@@ -2455,9 +2547,9 @@ where
                         pending_job.splice_weight,
                         new_slot_descendant,
                     )?;
-                    if victories_before == 0
+                    if objectives_before == 0
                         && let (Some(path), Some(input)) =
-                            (&config.victory_input_path, &core.victory_input)
+                            (&config.objective_witness_path, &core.objective_witness)
                     {
                         std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
                     }
@@ -2509,8 +2601,8 @@ where
                         counters.jobs_per_worker[worker_index].saturating_add(1);
                     counters.job_execution_work =
                         counters.job_execution_work.saturating_add(execution_work);
-                    if victories_before == 0 && core.victories > 0 {
-                        counters.note_first_victory(sequence);
+                    if objectives_before == 0 && core.objectives_reached > 0 {
+                        counters.note_first_objective(sequence);
                     }
                     result_slots.admit(physical_worker)?;
                     if let Some(sink) = progress.as_deref_mut()
@@ -2880,7 +2972,7 @@ where
     let work_before = workload.execution_work(&target);
     counters.tree_import = match header.origin_kind.as_str() {
         ORIGIN_GENESIS => {
-            core.bootstrap(workload, &mut target)?;
+            core.bootstrap(workload, &replay_run, &mut target)?;
             None
         }
         ORIGIN_SNAPSHOT_ROOT => {
@@ -2894,6 +2986,7 @@ where
         }
         ORIGIN_ARCHIVE => Some(core.import_tree(
             workload,
+            &replay_run,
             &mut target,
             origin_report.ok_or("archive campaign replay requires the source archive")?,
             origin_checkpoint.map(|checkpoint| &checkpoint.snapshots),
@@ -2905,6 +2998,9 @@ where
         workload.execution_work(&target),
         "replay bootstrap",
     )?;
+    if core.objectives_reached > 0 {
+        counters.note_first_objective(0);
+    }
     let bootstrap_memory_bytes = core
         .archive
         .resident_memory_bytes()
@@ -3061,6 +3157,7 @@ where
                     &suffix,
                     header.action_limit,
                     replay_retention,
+                    header.stop_rollout_on_objective,
                 )?;
                 let execution_work = execution_work_delta(
                     job_execution_work_before,
@@ -3083,7 +3180,7 @@ where
                     .into());
                 }
                 drop(snapshot);
-                let victories_before = core.victories;
+                let objectives_before = core.objectives_reached;
                 let (sequence, decisions) = core.admit_job(workload, job.parent_id, result)?;
                 if sequence != job.sequence {
                     return Err(format!(
@@ -3166,8 +3263,8 @@ where
                     counters.jobs_per_worker[worker].saturating_add(1);
                 counters.job_execution_work =
                     counters.job_execution_work.saturating_add(execution_work);
-                if victories_before == 0 && core.victories > 0 {
-                    counters.note_first_victory(sequence);
+                if objectives_before == 0 && core.objectives_reached > 0 {
+                    counters.note_first_objective(sequence);
                 }
             }
         }
@@ -3201,26 +3298,26 @@ where
 mod tests {
     use super::{
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
-        CampaignCounters, CampaignJobRecord, CampaignJobResult, CampaignSpliceRecord,
-        CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, CoordinatorCore,
-        DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, EnergyStrategy, Evaluation, InitialDrawState,
-        InputPolicy, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS, Reporting,
-        SPLICE_ACTION_CAP, TargetExecution, WorkloadPolicies, admission_window_depth,
+        CampaignConfig, CampaignCounters, CampaignJobRecord, CampaignJobResult, CampaignOrigin,
+        CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes,
+        CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, EnergyStrategy, Evaluation,
+        InitialDrawState, InputPolicy, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
+        Reporting, SPLICE_ACTION_CAP, TargetExecution, WorkloadPolicies, admission_window_depth,
         archive_entry_limit_is_valid, compact_progress_curve, completed_results_within_bound,
         draw_state_memory_is_within_reserve, execution_work_delta, finish_record, is_zero_usize,
         live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
         progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
         replay_campaign_checkpointed, replay_splice, resident_memory_is_within_budget,
-        retained_archive_indexes, schedule_policy_identifier, schedule_policy_is_supported,
-        schedule_policy_window, stop_reservations_after_victory,
+        retained_archive_indexes, run_campaign_checkpointed, schedule_policy_identifier,
+        schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
-        SelectorPath, entries_by_suffix,
+        SelectorPath, SelectorPolicy, entries_by_suffix,
     };
-    use crate::search::draw::{MixtureDraw, SuffixShape};
+    use crate::search::draw::{DrawMixture, MixtureDraw, SuffixShape};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
-    use crate::search::rollout::{Outcome, Rollout, execute_suffix};
+    use crate::search::rollout::{ExecutionDisposition, Outcome, Rollout, execute_suffix};
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
     use std::{
@@ -3296,7 +3393,9 @@ mod tests {
         entries: Vec<ArchiveEntryReport<TestAction, TestKey, ()>>,
     }
 
-    struct TestWorkload;
+    struct TestWorkload {
+        bootstrap_objective: bool,
+    }
     impl CampaignTypes for TestWorkload {
         type Target = TestTarget;
         type Action = TestAction;
@@ -3420,21 +3519,6 @@ mod tests {
         fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
             target.snapshot()
         }
-        fn execute_job(
-            &self,
-            _run: &Self::Run,
-            _target: &mut Self::Target,
-            _origin_snapshot: &Self::Snapshot,
-            _replay: &[Self::Action],
-            _parent_actions: usize,
-            _parent_milestones: Self::Milestones,
-            _suffix: &[Self::Action],
-            _max_actions: usize,
-            _retention: RetentionPolicy,
-        ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
-            Err("test fixture does not execute worker jobs".into())
-        }
-
         fn action_cost_fn(&self) -> fn(&Self::Action) -> u64 {
             test_action_cost
         }
@@ -3445,16 +3529,16 @@ mod tests {
     }
 
     impl Evaluation for TestWorkload {
-        fn is_terminal(&self, _target: &Self::Target) -> bool {
-            false
+        fn execution_disposition(&self, _target: &Self::Target) -> ExecutionDisposition {
+            ExecutionDisposition::Runnable
         }
 
-        fn is_run_terminal(
+        fn objective_reached(
             &self,
             _run: &Self::Run,
-            _target: &Self::Target,
+            target: &Self::Target,
         ) -> Result<bool, Box<dyn Error>> {
-            Ok(false)
+            Ok(self.bootstrap_objective && target.execution_work == 0)
         }
 
         fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
@@ -3527,6 +3611,8 @@ mod tests {
         target: &'a mut TestTarget,
         initial_terminal: bool,
         terminal_after: Option<u8>,
+        objective_after: Option<u8>,
+        failed_after: Option<u8>,
         fail_apply: bool,
         fail_probe: bool,
         probe_calls: Vec<u8>,
@@ -3538,6 +3624,8 @@ mod tests {
                 target,
                 initial_terminal: false,
                 terminal_after: None,
+                objective_after: None,
+                failed_after: None,
                 fail_apply: false,
                 fail_probe: false,
                 probe_calls: Vec::new(),
@@ -3565,17 +3653,34 @@ mod tests {
         fn outcome(&self) -> Result<Outcome, Box<dyn Error>> {
             if self.initial_terminal && self.target.execution_work == 0 {
                 return Ok(Outcome {
-                    dead: true,
+                    disposition: ExecutionDisposition::Terminal,
                     ..Outcome::default()
                 });
             }
-            Ok(self
-                .terminal_after
-                .filter(|limit| self.target.value >= *limit)
-                .map_or_else(Outcome::default, |value| Outcome {
-                    victory: value > 0,
+            if self
+                .failed_after
+                .is_some_and(|limit| self.target.value >= limit)
+            {
+                return Ok(Outcome {
+                    disposition: ExecutionDisposition::Failed,
                     ..Outcome::default()
-                }))
+                });
+            }
+            let objective_reached = self
+                .objective_after
+                .is_some_and(|limit| self.target.value >= limit);
+            let disposition = if self
+                .terminal_after
+                .is_some_and(|limit| self.target.value >= limit)
+            {
+                ExecutionDisposition::Terminal
+            } else {
+                ExecutionDisposition::default()
+            };
+            Ok(Outcome {
+                objective_reached,
+                disposition,
+            })
         }
 
         fn snapshot(&mut self) -> Result<u8, Box<dyn Error>> {
@@ -3598,11 +3703,13 @@ mod tests {
     }
 
     fn test_core() -> (TestWorkload, (), CoordinatorCore<TestWorkload>, TestTarget) {
-        let workload = TestWorkload;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+        };
         let run = ();
         let mut core = CoordinatorCore::new(&workload, &run, 16, 1_024, None);
         let mut target = TestTarget::default();
-        core.bootstrap(&workload, &mut target)
+        core.bootstrap(&workload, &run, &mut target)
             .expect("bootstrap generic core");
         (workload, run, core, target)
     }
@@ -3619,6 +3726,7 @@ mod tests {
             &[TestAction::new(1, 1)],
             8,
             RetentionPolicy::Unprobed,
+            false,
         )
         .expect("terminal parent is a valid no-op rollout");
         assert!(result.actions.is_empty());
@@ -3640,6 +3748,7 @@ mod tests {
             ],
             3,
             RetentionPolicy::ProbeAtAdmission,
+            false,
         )
         .expect("bounded rollout");
         assert_eq!(result.actions.len(), 2);
@@ -3660,6 +3769,7 @@ mod tests {
         let mut target = TestTarget::default();
         let mut rollout = TestRollout::new(&mut target);
         rollout.terminal_after = Some(2);
+        rollout.objective_after = Some(2);
         let result = execute_suffix(
             &mut rollout,
             0,
@@ -3671,10 +3781,11 @@ mod tests {
             ],
             8,
             RetentionPolicy::Unprobed,
+            false,
         )
         .expect("terminal action rollout");
         assert_eq!(result.actions.len(), 2);
-        assert!(result.actions[1].victory);
+        assert!(result.actions[1].outcome.objective_reached);
         assert!(result.actions[1].candidate.is_none());
 
         let mut target = TestTarget::default();
@@ -3688,6 +3799,7 @@ mod tests {
                 &[TestAction::new(1, 1)],
                 8,
                 RetentionPolicy::Unprobed,
+                false,
             )
             .is_err()
         );
@@ -3703,15 +3815,238 @@ mod tests {
                 &[TestAction::new(1, 1)],
                 8,
                 RetentionPolicy::ProbeAtAdmission,
+                false,
             )
             .is_err()
         );
     }
 
+    #[test]
+    fn runnable_objectives_keep_candidates_and_stop_only_the_current_suffix() {
+        let mut target = TestTarget::default();
+        let mut rollout = TestRollout::new(&mut target);
+        rollout.objective_after = Some(1);
+        let result = execute_suffix(
+            &mut rollout,
+            0,
+            (),
+            &[TestAction::new(1, 1), TestAction::new(1, 1)],
+            8,
+            RetentionPolicy::Unprobed,
+            true,
+        )
+        .expect("runnable objective rollout");
+        assert_eq!(result.actions.len(), 1);
+        assert!(result.actions[0].outcome.objective_reached);
+        assert_eq!(
+            result.actions[0].outcome.disposition,
+            ExecutionDisposition::Runnable
+        );
+        assert_eq!(
+            result.actions[0].candidate.as_ref().map(|c| c.key),
+            Some(TestKey(1))
+        );
+
+        let mut target = TestTarget {
+            value: 1,
+            ..TestTarget::default()
+        };
+        let mut continuation = TestRollout::new(&mut target);
+        continuation.objective_after = Some(1);
+        let result = execute_suffix(
+            &mut continuation,
+            1,
+            (),
+            &[TestAction::new(1, 1)],
+            8,
+            RetentionPolicy::Unprobed,
+            true,
+        )
+        .expect("continuation after a latched objective");
+        assert_eq!(result.actions.len(), 1);
+        assert!(!result.actions[0].outcome.objective_reached);
+        assert_eq!(
+            result.actions[0].candidate.as_ref().map(|c| c.key),
+            Some(TestKey(2))
+        );
+    }
+
+    #[test]
+    fn terminal_and_failed_outcomes_are_distinct_and_have_no_candidates() {
+        let mut target = TestTarget::default();
+        let mut terminal = TestRollout::new(&mut target);
+        terminal.terminal_after = Some(1);
+        let result = execute_suffix(
+            &mut terminal,
+            0,
+            (),
+            &[TestAction::new(1, 1), TestAction::new(1, 1)],
+            8,
+            RetentionPolicy::Unprobed,
+            false,
+        )
+        .expect("terminal outcome");
+        assert_eq!(result.actions.len(), 1);
+        assert!(!result.actions[0].outcome.objective_reached);
+        assert_eq!(
+            result.actions[0].outcome.disposition,
+            ExecutionDisposition::Terminal
+        );
+        assert!(result.actions[0].candidate.is_none());
+
+        let mut target = TestTarget::default();
+        let mut failed = TestRollout::new(&mut target);
+        failed.failed_after = Some(1);
+        let result = execute_suffix(
+            &mut failed,
+            0,
+            (),
+            &[TestAction::new(1, 1), TestAction::new(1, 1)],
+            8,
+            RetentionPolicy::Unprobed,
+            false,
+        )
+        .expect("failed outcome");
+        assert_eq!(result.actions.len(), 1);
+        assert_eq!(
+            result.actions[0].outcome.disposition,
+            ExecutionDisposition::Failed
+        );
+        assert_eq!(result.actions[0].observations, vec![()]);
+        assert!(result.actions[0].candidate.is_none());
+    }
+
+    #[test]
+    fn coordinator_counts_terminal_objectives_and_execution_failures_separately() {
+        let (workload, _run, mut core, _target) = test_core();
+        let terminal_objective = TestAction::new(1, 1);
+        core.admit_job(
+            &workload,
+            0,
+            CampaignJobResult {
+                actions: vec![CampaignActionResult {
+                    action: terminal_objective,
+                    observations: Vec::new(),
+                    milestones: (),
+                    outcome: Outcome {
+                        objective_reached: true,
+                        disposition: ExecutionDisposition::Terminal,
+                    },
+                    candidate: None,
+                }],
+            },
+        )
+        .expect("admit terminal objective");
+        assert_eq!(core.terminal_endpoints, 1);
+        assert_eq!(core.terminal_objectives, 1);
+        assert_eq!(core.execution_failures, 0);
+
+        let failed = TestAction::new(2, 1);
+        core.admit_job(
+            &workload,
+            0,
+            CampaignJobResult {
+                actions: vec![CampaignActionResult {
+                    action: failed,
+                    observations: vec![()],
+                    milestones: (),
+                    outcome: Outcome {
+                        objective_reached: false,
+                        disposition: ExecutionDisposition::Failed,
+                    },
+                    candidate: None,
+                }],
+            },
+        )
+        .expect("admit failed execution");
+        assert_eq!(core.terminal_endpoints, 1);
+        assert_eq!(core.terminal_objectives, 1);
+        assert_eq!(core.execution_failures, 1);
+    }
+
+    #[test]
+    fn bootstrap_records_an_objective_at_the_empty_input() {
+        let workload = TestWorkload {
+            bootstrap_objective: true,
+        };
+        let run = ();
+        let mut core = CoordinatorCore::new(&workload, &run, 16, 1_024, None);
+        let mut target = TestTarget::default();
+        core.bootstrap(&workload, &run, &mut target)
+            .expect("bootstrap root");
+        assert_eq!(core.objectives_reached, 1);
+        assert_eq!(core.objective_witness, Some(Input::default()));
+    }
+
+    #[test]
+    fn bootstrap_objective_stops_reservation_and_replays_with_both_stop_policies() {
+        for (stop_rollout_on_objective, stop_campaign_on_objective) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let witness_path = std::env::temp_dir().join(format!(
+                "harmony-bootstrap-objective-{}-{stop_rollout_on_objective}-{stop_campaign_on_objective}.json",
+                std::process::id()
+            ));
+            let config = CampaignConfig {
+                campaign_seed: 7,
+                workers: 1,
+                execution_budget: 1,
+                action_limit: 8,
+                host: "test".to_owned(),
+                wall_budget: None,
+                stop_rollout_on_objective,
+                stop_campaign_on_objective,
+                archive_entry_limit: 16,
+                reservations_per_worker: 1,
+                memory_budget_mib: None,
+                materialize_final_artifacts: true,
+                run: (),
+                suffix: SuffixShape::OneOrTwo,
+                mixture: DrawMixture::AlphabetOnly,
+                retention: RetentionPolicy::Unprobed,
+                selector: SelectorPolicy::GroupUniform,
+                objective_witness_path: Some(witness_path.clone()),
+            };
+            let workload = TestWorkload {
+                bootstrap_objective: true,
+            };
+            let mut stream = Vec::new();
+            let live = run_campaign_checkpointed(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+            )
+            .expect("bootstrap objective campaign");
+            assert_eq!(live.0.objectives_reached, 1);
+            assert_eq!(live.0.objective_witness, Some(Input::default()));
+            assert_eq!(
+                live.0.executions_completed,
+                if stop_campaign_on_objective { 0 } else { 1 }
+            );
+            assert_eq!(live.0.stop_rollout_on_objective, stop_rollout_on_objective);
+            assert_eq!(
+                live.0.stop_campaign_on_objective,
+                stop_campaign_on_objective
+            );
+            assert_eq!(
+                std::fs::read(&witness_path).expect("bootstrap witness file"),
+                serde_json::to_vec_pretty(&Input::<TestAction>::default())
+                    .expect("empty witness encodes")
+            );
+
+            let replayed = replay_campaign_checkpointed(&workload, &stream, None, None)
+                .expect("bootstrap objective replay");
+            assert_eq!(replayed, live);
+            std::fs::remove_file(witness_path).expect("remove bootstrap witness file");
+        }
+    }
+
     const RECORDED_HEADER: &str = r#"{"schema_version":2,"format":"campaign-v1","campaign_seed":7,"workers":2,
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
-"resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"wall_budget_seconds":null,
+"resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
 "action_limit":64,"archive_entry_limit":128,"controller_vocabulary":"nes_down_ten",
 "key_policy":"frozen_area_span","duration_policy":"stratified","suffix_policy":"one_or_two",
 "chord_policy":"chord_uniform","replacement_policy":"fewest_frames_in_level",
@@ -3740,7 +4075,8 @@ mod tests {
                 progress: None,
                 active_entries: sample,
                 occupied_cells: sample,
-                deaths: 0,
+                terminal_endpoints: 0,
+                execution_failures: 0,
             })
             .collect();
 
@@ -3769,7 +4105,8 @@ mod tests {
                 progress: None,
                 active_entries: sample,
                 occupied_cells: sample,
-                deaths: 0,
+                terminal_endpoints: 0,
+                execution_failures: 0,
             })
             .collect();
         let unchanged = below.clone();
@@ -3800,7 +4137,8 @@ mod tests {
                 progress: Some(()),
                 active_entries: sample,
                 occupied_cells: sample,
-                deaths: 0,
+                terminal_endpoints: 0,
+                execution_failures: 0,
             })
             .collect();
         core.curve_interval = 100;
@@ -3817,7 +4155,8 @@ mod tests {
             progress: Some(()),
             active_entries: MAX_PROGRESS_CURVE_POINTS,
             occupied_cells: MAX_PROGRESS_CURVE_POINTS,
-            deaths: 0,
+            terminal_endpoints: 0,
+            execution_failures: 0,
         });
         core.bounded_progress_curve = true;
         core.compact_progress_curve_if_needed();
@@ -3837,10 +4176,10 @@ mod tests {
     }
 
     #[test]
-    fn reservations_continue_after_victory_only_when_requested() {
-        assert!(stop_reservations_after_victory(false, true));
-        assert!(!stop_reservations_after_victory(true, true));
-        assert!(!stop_reservations_after_victory(false, false));
+    fn reservations_continue_after_objective_only_when_requested() {
+        assert!(stop_reservations_after_objective(true, true));
+        assert!(!stop_reservations_after_objective(false, true));
+        assert!(!stop_reservations_after_objective(true, false));
     }
 
     #[test]
@@ -3854,9 +4193,7 @@ mod tests {
                 action,
                 observations: Vec::new(),
                 milestones: (),
-                dead: false,
-                victory: false,
-                failed: false,
+                outcome: Outcome::default(),
                 candidate: Some(CampaignCandidate {
                     key: TestKey(target.value),
                     viable: true,
@@ -3882,7 +4219,7 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_counts_victories_and_keeps_the_first_winning_input() {
+    fn coordinator_counts_objectives_and_keeps_the_first_witness() {
         let (workload, _run, mut core, _target) = test_core();
         let winning = TestAction::new(0x81, 7);
         let result = CampaignJobResult::<TestWorkload> {
@@ -3890,19 +4227,32 @@ mod tests {
                 action: winning,
                 observations: Vec::new(),
                 milestones: (),
-                dead: false,
-                victory: true,
-                failed: false,
-                candidate: None,
+                outcome: Outcome {
+                    objective_reached: true,
+                    disposition: ExecutionDisposition::Runnable,
+                },
+                candidate: Some(CampaignCandidate {
+                    key: TestKey(winning.input),
+                    viable: true,
+                    snapshot: winning.input,
+                }),
             }],
         };
         let winning_action = result.actions[0].clone();
-        let (sequence, decisions) = core.admit_job(&workload, 0, result).expect("admit victory");
+        let (sequence, decisions) = core
+            .admit_job(&workload, 0, result)
+            .expect("admit objective");
         assert_eq!(sequence, 1);
-        assert_eq!(decisions, vec![CampaignAdmissionDecision::Victory]);
-        assert_eq!(core.victories, 1);
         assert_eq!(
-            core.victory_input,
+            decisions,
+            vec![
+                CampaignAdmissionDecision::Objective,
+                CampaignAdmissionDecision::Retained { id: 1 },
+            ]
+        );
+        assert_eq!(core.objectives_reached, 1);
+        assert_eq!(
+            core.objective_witness,
             Some(Input {
                 actions: vec![winning]
             })
@@ -3915,10 +4265,10 @@ mod tests {
             }],
         };
         core.admit_job(&workload, 0, later)
-            .expect("admit a second victory");
-        assert_eq!(core.victories, 2);
+            .expect("admit a second objective");
+        assert_eq!(core.objectives_reached, 2);
         assert_eq!(
-            core.victory_input,
+            core.objective_witness,
             Some(Input {
                 actions: vec![winning]
             })
@@ -3926,14 +4276,16 @@ mod tests {
         let (report, _) = core.into_archive_report_and_snapshots(&workload, 0, true);
         assert_eq!(
             report.entries.len(),
-            1,
-            "victory does not extend the archive"
+            3,
+            "objective retains its runnable candidates"
         );
     }
 
     #[test]
     fn whole_tree_import_rebuilds_inputs_and_reroots_sparse_parents() {
-        let workload = TestWorkload;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+        };
         let run = ();
         let mut target = TestTarget::default();
         let action = |input: u8| TestAction::new(input, 1);
@@ -3964,7 +4316,7 @@ mod tests {
             serde_json::from_str(&suffix_json).expect("load suffix archive");
         assert_eq!(rebuilt, source);
         let counts = core
-            .import_tree(&workload, &mut target, &source, None)
+            .import_tree(&workload, &run, &mut target, &source, None)
             .expect("import source archive");
         assert_eq!(counts.over_limit, 1);
         assert_eq!(counts.rerooted, 1);
@@ -4072,9 +4424,7 @@ mod tests {
                 action,
                 observations: Vec::new(),
                 milestones: (),
-                dead: false,
-                victory: false,
-                failed: false,
+                outcome: Outcome::default(),
                 candidate: Some(CampaignCandidate {
                     key: TestKey(target.value),
                     viable: true,
@@ -4153,20 +4503,20 @@ mod tests {
     }
 
     #[test]
-    fn the_first_victory_counters_exclude_jobs_that_drain_after_the_win() {
+    fn the_first_objective_counters_exclude_jobs_that_drain_after_the_objective() {
         let mut counters = CampaignCounters::new(4);
         counters.bootstrap_execution_work = 1_000;
         counters.job_execution_work = 250;
-        counters.note_first_victory(11);
-        assert_eq!(counters.work_to_first_victory, Some(1_250));
-        assert_eq!(counters.executions_to_first_victory, Some(11));
+        counters.note_first_objective(11);
+        assert_eq!(counters.work_to_first_objective, Some(1_250));
+        assert_eq!(counters.executions_to_first_objective, Some(11));
 
         for (sequence, drained) in [(12, 90), (13, 140), (14, 70)] {
             counters.job_execution_work = counters.job_execution_work.saturating_add(drained);
-            counters.note_first_victory(sequence);
+            counters.note_first_objective(sequence);
         }
-        assert_eq!(counters.work_to_first_victory, Some(1_250));
-        assert_eq!(counters.executions_to_first_victory, Some(11));
+        assert_eq!(counters.work_to_first_objective, Some(1_250));
+        assert_eq!(counters.executions_to_first_objective, Some(11));
         assert_eq!(
             counters
                 .bootstrap_execution_work
@@ -4176,12 +4526,12 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_never_wins_has_no_first_victory_counters() {
+    fn a_run_that_never_reaches_its_objective_has_no_first_objective_counters() {
         let mut counters = CampaignCounters::new(1);
         counters.bootstrap_execution_work = 10;
         counters.job_execution_work = 20;
-        assert_eq!(counters.work_to_first_victory, None);
-        assert_eq!(counters.executions_to_first_victory, None);
+        assert_eq!(counters.work_to_first_objective, None);
+        assert_eq!(counters.executions_to_first_objective, None);
     }
 
     #[test]
@@ -4314,7 +4664,9 @@ mod tests {
             .remove("schema_version");
         assert!(
             replay_campaign_checkpointed::<TestWorkload>(
-                &TestWorkload,
+                &TestWorkload {
+                    bootstrap_objective: false
+                },
                 serde_json::to_string(&missing)
                     .expect("header re-encodes")
                     .as_bytes(),
@@ -4329,7 +4681,9 @@ mod tests {
         unknown["schema_version"] = serde_json::json!(1);
         assert!(
             replay_campaign_checkpointed::<TestWorkload>(
-                &TestWorkload,
+                &TestWorkload {
+                    bootstrap_objective: false
+                },
                 serde_json::to_string(&unknown)
                     .expect("header re-encodes")
                     .as_bytes(),

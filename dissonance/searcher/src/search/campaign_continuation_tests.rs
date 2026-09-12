@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
 use crate::search::archive::{RetireThresholds, SelectorAccounting, entries_by_suffix};
+use crate::search::rollout::ExecutionDisposition;
 use std::collections::{BTreeSet, VecDeque};
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 struct TestAction {
@@ -304,11 +305,11 @@ impl TargetExecution for TestWorkload {
 }
 
 impl Evaluation for TestWorkload {
-    fn is_terminal(&self, _target: &Self::Target) -> bool {
-        false
+    fn execution_disposition(&self, _target: &Self::Target) -> ExecutionDisposition {
+        ExecutionDisposition::Runnable
     }
 
-    fn is_run_terminal(
+    fn objective_reached(
         &self,
         _run: &Self::Run,
         _target: &Self::Target,
@@ -452,7 +453,8 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             action_limit: 64,
             host: "test".into(),
             wall_budget: None,
-            continue_after_victory: false,
+            stop_rollout_on_objective: true,
+            stop_campaign_on_objective: true,
             archive_entry_limit: 128,
             reservations_per_worker: 2,
             memory_budget_mib: Some(if persistent { 18 } else { 12 }),
@@ -481,7 +483,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
                     groups: vec![],
                 })
             },
-            victory_input_path: None,
+            objective_witness_path: None,
         };
         let mut bytes = Vec::new();
         let (live, checkpoint) = run_campaign_checkpointed(

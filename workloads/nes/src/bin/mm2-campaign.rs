@@ -211,11 +211,11 @@ fn run_marketing_soak(
     drop(checkpoint);
 
     let best_input = live
-        .victory_input
+        .objective_witness
         .as_ref()
         .unwrap_or(&live.archive.champion_input)
         .clone();
-    if let Some(victory) = live.victory_input.as_ref() {
+    if let Some(victory) = live.objective_witness.as_ref() {
         let genesis_prefix = game.new_target()?.genesis_prefix().to_vec();
         let mut next = genesis_prefix.clone();
         next.extend(victory.actions.iter().copied());
@@ -254,7 +254,7 @@ fn run_marketing_soak(
         "rejected": live.archive.rejected,
         "deaths": live.archive.deaths,
         "duplicates_skipped": live.duplicates_skipped,
-        "victories": live.victories,
+        "victories": live.objectives_reached,
         "jobs_per_worker": &live.jobs_per_worker,
         "progress": live.archive.progress_watermark,
         "milestones": live.archive.milestones,
@@ -334,7 +334,7 @@ fn run_qualified_campaign(
     fs::write(output.join("snapshots.bin"), &checkpoint_bytes)?;
 
     let best_input = live
-        .victory_input
+        .objective_witness
         .as_ref()
         .unwrap_or(&live.archive.champion_input);
     let best_endpoint = write_best_observation(game, best_input, output)?;
@@ -360,7 +360,7 @@ fn run_qualified_campaign(
         "retained_representatives": live.archive.entries.len(),
         "progress": live.archive.progress_watermark,
         "milestones": live.archive.milestones,
-        "victories": live.victories,
+        "victories": live.objectives_reached,
         "video": media.video,
         "audio_pcm_sha256": media.audio_pcm_sha256,
         "mp4_sha256": media.mp4_sha256,

@@ -165,11 +165,25 @@ improvements, which may reduce their ordinary draw share; the companion workload
 panels must check that tradeoff. No default change is implied by the mechanism.
 
 Progress sidecars carry objective workload evidence, actual admitted execution
-work, final totals, logical memory categories, and monotonic host time. With
+work, terminal endpoint and execution-failure totals, final totals, logical
+memory categories, and monotonic host time. With
 `HARMONY_COORDINATOR_PROFILE=1`, they also contain coordinator phase durations
 and dispatched replay/suffix action costs. Those costs are declared path cost,
 not measured execution work. Profiling values and clocks never enter
 search decisions or the deterministic campaign stream.
+
+Each recorded action carries an objective event and an execution disposition.
+`Runnable` states can produce retained candidates even when the rollout stops
+after observing an objective; `Terminal` and `Failed` states cannot. The rollout
+stop flag controls that suffix, while the campaign stop flag controls new
+reservations. A latched objective inherited from a retained parent is not
+reported again, so continued suffixes can still be evaluated without duplicate
+objective counts.
+Archive-origin campaigns preserve workload evidence while objective totals and
+witnesses count objectives evaluated during the new campaign.
+Genesis and snapshot-root bootstrap still require a current key and retained
+snapshot; a terminal target without a snapshot is reported as an execution
+error.
 
 `hierarchy_uniform_128_energy_progress_cheapest_count_v1:<thresholds>` is a
 separate experiment that uses `ArchiveKey::progress_cmp` for class preference

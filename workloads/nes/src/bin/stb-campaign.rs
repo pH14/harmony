@@ -226,7 +226,7 @@ fn run_qualified_campaign(
     fs::write(output.join("snapshots.bin"), &checkpoint_bytes)?;
 
     let champion = live
-        .victory_input
+        .objective_witness
         .clone()
         .unwrap_or_else(|| live.archive.champion_input.clone());
     let champion_endpoint = write_headless_observation(game, &champion, output, "champion")?;
@@ -265,7 +265,7 @@ fn run_qualified_campaign(
         "deaths": live.archive.deaths,
         "duplicates_skipped": live.duplicates_skipped,
         "probe_refused": live.probe_refused,
-        "victories": live.victories,
+        "victories": live.objectives_reached,
         "progress": live.archive.progress_watermark,
         "milestones": live.archive.milestones,
         "first_reached": live.archive.first_reached,

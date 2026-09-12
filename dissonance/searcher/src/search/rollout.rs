@@ -2,21 +2,41 @@
 
 use std::error::Error;
 
+use serde::{Deserialize, Serialize};
+
 use super::{
     archive::RetentionPolicy,
     campaign::{CampaignActionResult, CampaignCandidate, CampaignJobResult, Workload},
 };
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionDisposition {
+    #[default]
+    Runnable,
+    Terminal,
+    Failed,
+}
+
+impl ExecutionDisposition {
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Terminal | Self::Failed)
+    }
+
+    pub const fn is_failed(self) -> bool {
+        matches!(self, Self::Failed)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Outcome {
-    pub dead: bool,
-    pub victory: bool,
-    pub failed: bool,
+    pub objective_reached: bool,
+    pub disposition: ExecutionDisposition,
 }
 
 impl Outcome {
-    pub fn terminal(self) -> bool {
-        self.dead || self.victory || self.failed
+    pub const fn should_stop(self, stop_rollout_on_objective: bool) -> bool {
+        self.disposition.is_terminal() || (stop_rollout_on_objective && self.objective_reached)
     }
 }
 
@@ -33,7 +53,7 @@ pub trait Rollout<G: Workload + ?Sized> {
     fn probe(&mut self, snapshot: &G::Snapshot) -> Result<bool, Box<dyn Error>>;
 }
 
-pub struct WorkloadRollout<'a, G: Workload + ?Sized> {
+struct WorkloadRollout<'a, G: Workload + ?Sized> {
     workload: &'a G,
     run: &'a G::Run,
     target: &'a mut G::Target,
@@ -91,13 +111,18 @@ pub fn execute_job<G: Workload + ?Sized>(
     suffix: &[G::Action],
     max_actions: usize,
     retention: RetentionPolicy,
+    stop_rollout_on_objective: bool,
 ) -> Result<CampaignJobResult<G>, Box<dyn Error>> {
     workload.reset(target);
     workload.restore(target, origin_snapshot)?;
     let mut replay_milestones = parent_milestones;
     for action in replay {
         workload.apply_action(target, action, &mut replay_milestones)?;
-        if workload.is_terminal(target) {
+        if workload
+            .rollout_outcome(run, target)?
+            .disposition
+            .is_terminal()
+        {
             break;
         }
     }
@@ -108,6 +133,7 @@ pub fn execute_job<G: Workload + ?Sized>(
         suffix,
         max_actions,
         retention,
+        stop_rollout_on_objective,
     )
 }
 
@@ -118,11 +144,14 @@ pub fn execute_suffix<G: Workload + ?Sized>(
     suffix: &[G::Action],
     max_actions: usize,
     retention: RetentionPolicy,
+    stop_rollout_on_objective: bool,
 ) -> Result<CampaignJobResult<G>, Box<dyn Error>> {
     let mut milestones = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
-    if target.outcome()?.terminal() {
+    let parent_outcome = target.outcome()?;
+    let mut objective_seen = parent_outcome.objective_reached;
+    if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult { actions });
     }
     for action in suffix {
@@ -131,11 +160,15 @@ pub fn execute_suffix<G: Workload + ?Sized>(
         }
         length = length.saturating_add(1);
         target.apply(action, &mut milestones)?;
+        let raw_outcome = target.outcome()?;
+        let objective_reached = raw_outcome.objective_reached && !objective_seen;
+        objective_seen |= raw_outcome.objective_reached;
+        let outcome = Outcome {
+            objective_reached,
+            disposition: raw_outcome.disposition,
+        };
         let observations = target.observations();
-        let outcome = target.outcome()?;
-        let candidate = if outcome.terminal() {
-            None
-        } else {
+        let candidate = if matches!(outcome.disposition, ExecutionDisposition::Runnable) {
             let snapshot = target.snapshot()?;
             let key = target.key()?;
             let viable = match retention {
@@ -147,17 +180,17 @@ pub fn execute_suffix<G: Workload + ?Sized>(
                 viable,
                 snapshot,
             })
+        } else {
+            None
         };
         actions.push(CampaignActionResult {
             action: *action,
             observations,
             milestones,
-            dead: outcome.dead,
-            victory: outcome.victory,
-            failed: outcome.failed,
+            outcome,
             candidate,
         });
-        if outcome.terminal() {
+        if outcome.should_stop(stop_rollout_on_objective) {
             break;
         }
     }

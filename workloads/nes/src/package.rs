@@ -135,7 +135,8 @@ where
         action_limit: options.actions,
         host: "harmony-search".into(),
         wall_budget: None,
-        continue_after_victory: false,
+        stop_rollout_on_objective: true,
+        stop_campaign_on_objective: true,
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         reservations_per_worker: DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
         memory_budget_mib: None,
@@ -145,7 +146,7 @@ where
         mixture: DrawMixture::default(),
         retention: RetentionPolicy::Unprobed,
         selector: SelectorPolicy::GroupUniform,
-        victory_input_path: Some(options.output.join("victory.json")),
+        objective_witness_path: Some(options.output.join("victory.json")),
     };
     let (report, checkpoint) =
         run_campaign_checkpointed(&game, &config, &CampaignOrigin::Genesis, &mut stream, None)?;

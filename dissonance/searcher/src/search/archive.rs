@@ -356,7 +356,8 @@ pub struct ProgressPoint<M, P = ()> {
     pub progress: Option<P>,
     pub active_entries: usize,
     pub occupied_cells: usize,
-    pub deaths: u64,
+    pub terminal_endpoints: u64,
+    pub execution_failures: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

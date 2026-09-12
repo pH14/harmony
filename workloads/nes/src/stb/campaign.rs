@@ -22,6 +22,7 @@ use crate::{
             replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        rollout::{ExecutionDisposition, Outcome},
     },
     stb::{
         archive::{
@@ -139,9 +140,7 @@ struct StbResultAction<'a> {
     action: ButtonChord,
     observations: &'a [StbObservations],
     milestones: StbMilestones,
-    dead: bool,
-    victory: bool,
-    failed: bool,
+    outcome: Outcome,
     candidate: Option<StbResultCandidate<'a>>,
 }
 
@@ -158,9 +157,7 @@ fn stb_result_sha256(result: &StbCampaignJobResult) -> Result<String, Box<dyn Er
             action: action.action,
             observations: &action.observations,
             milestones: action.milestones,
-            dead: action.dead,
-            victory: action.victory,
-            failed: action.failed,
+            outcome: action.outcome,
             candidate: action
                 .candidate
                 .as_ref()
@@ -200,7 +197,8 @@ impl StbCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
-            continue_after_victory: self.continue_after_victory,
+            stop_rollout_on_objective: !self.continue_after_victory,
+            stop_campaign_on_objective: !self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker:
                 crate::search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
@@ -211,7 +209,7 @@ impl StbCampaignConfig {
             mixture: self.mixture,
             retention: self.retention,
             selector: self.selector.clone(),
-            victory_input_path: self.victory_input_path.clone(),
+            objective_witness_path: self.victory_input_path.clone(),
         }
     }
 }
@@ -243,11 +241,23 @@ fn execute_suffix(
     suffix: &[ButtonChord],
     max_actions: usize,
     retention: RetentionPolicy,
+    stop_rollout_on_objective: bool,
 ) -> Result<StbCampaignJobResult, Box<dyn Error>> {
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
-    if target.is_match_over() || target.exit_kind() != ExitKind::Ok {
+    let parent_outcome = Outcome {
+        objective_reached: target.exit_kind() == ExitKind::Ok && target.player_a_won(),
+        disposition: if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_match_over() {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        },
+    };
+    let mut objective_seen = parent_outcome.objective_reached;
+    if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult { actions });
     }
     for action in suffix {
@@ -258,12 +268,27 @@ fn execute_suffix(
         let action_start_frame = target.observe().frame_count;
         target.apply(action);
         merge_action_milestones(&mut aggregate, target)?;
-        let observations = target.last_action_observations().to_vec();
-        let victory = target.player_a_won();
-        let dead = target.is_match_over() && !victory;
-        let failed = target.exit_kind() != ExitKind::Ok;
+        let observations = if target.exit_kind() != ExitKind::Ok {
+            Vec::new()
+        } else {
+            target.last_action_observations().to_vec()
+        };
+        let raw_objective = target.exit_kind() == ExitKind::Ok && target.player_a_won();
+        let objective_reached = raw_objective && !objective_seen;
+        objective_seen |= raw_objective;
+        let disposition = if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_match_over() || target.mechanical_state().gameplay.is_none() {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        };
+        let outcome = Outcome {
+            objective_reached,
+            disposition,
+        };
         let gameplay_valid = target.mechanical_state().gameplay.is_some();
-        let recorded_action = if dead || victory {
+        let recorded_action = if matches!(outcome.disposition, ExecutionDisposition::Terminal) {
             let elapsed = target
                 .observe()
                 .frame_count
@@ -273,7 +298,9 @@ fn execute_suffix(
         } else {
             *action
         };
-        let candidate = if dead || victory || failed || !gameplay_valid {
+        let candidate = if !matches!(outcome.disposition, ExecutionDisposition::Runnable)
+            || !gameplay_valid
+        {
             None
         } else {
             let snapshot = target.snapshot().ok_or("failed to snapshot Stb suffix")?;
@@ -296,12 +323,10 @@ fn execute_suffix(
             action: recorded_action,
             observations,
             milestones: aggregate,
-            dead,
-            victory,
-            failed,
+            outcome,
             candidate,
         });
-        if dead || victory || failed {
+        if outcome.should_stop(stop_rollout_on_objective) {
             break;
         }
     }
@@ -391,7 +416,9 @@ impl Reporting for StbGame {
             progress_curve: state.progress_curve,
             retained: state.retained,
             rejected: state.rejected,
-            deaths: state.deaths,
+            deaths: state
+                .terminal_endpoints
+                .saturating_sub(state.terminal_objectives),
             selector: state.selector,
         }
     }
@@ -583,6 +610,7 @@ impl TargetExecution for StbGame {
         suffix: &[ButtonChord],
         max_actions: usize,
         retention: RetentionPolicy,
+        stop_rollout_on_objective: bool,
     ) -> Result<StbCampaignJobResult, Box<dyn Error>> {
         target.restore(origin_snapshot)?;
         for action in replay {
@@ -595,24 +623,28 @@ impl TargetExecution for StbGame {
             suffix,
             max_actions,
             retention,
+            stop_rollout_on_objective,
         )
     }
 }
 
 impl Evaluation for StbGame {
-    fn is_terminal(&self, target: &StbTarget) -> bool {
-        target.is_match_over() || target.exit_kind() != ExitKind::Ok
+    fn execution_disposition(&self, target: &StbTarget) -> ExecutionDisposition {
+        if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_match_over() {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        }
     }
 
-    fn is_run_terminal(
+    fn objective_reached(
         &self,
         _run: &StbCampaignRun,
         target: &StbTarget,
     ) -> Result<bool, Box<dyn Error>> {
-        if target.exit_kind() != ExitKind::Ok {
-            return Err("Stb terminal predicate cannot inspect a failed emulator".into());
-        }
-        Ok(target.player_a_won())
+        Ok(target.exit_kind() == ExitKind::Ok && target.player_a_won())
     }
 
     fn current_key(&self, target: &StbTarget) -> Result<StbArchiveKey, Box<dyn Error>> {
@@ -789,9 +821,7 @@ mod tests {
                 action: ButtonChord::new(0x81, 3),
                 observations: vec![observation.clone()],
                 milestones: StbMilestones::default(),
-                dead: false,
-                victory: false,
-                failed: false,
+                outcome: Outcome::default(),
                 candidate: Some(CampaignCandidate {
                     key: archive_key(state).expect("synthetic live archive key"),
                     viable: true,

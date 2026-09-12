@@ -13,6 +13,7 @@ use searcher::{
             TargetExecution, WorkloadPolicies, postcard_result_sha256, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        rollout::{ExecutionDisposition, Outcome},
     },
     target::ExitKind,
 };
@@ -141,7 +142,7 @@ pub struct FaultCampaignConfig {
     pub selector: SelectorPolicy,
     pub suffix: SuffixShape,
     pub mixture: DrawMixture,
-    pub victory_input_path: Option<PathBuf>,
+    pub objective_witness_path: Option<PathBuf>,
 }
 
 impl FaultCampaignConfig {
@@ -153,7 +154,8 @@ impl FaultCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
-            continue_after_victory: false,
+            stop_rollout_on_objective: true,
+            stop_campaign_on_objective: true,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker: DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
             memory_budget_mib: self.memory_budget_mib,
@@ -165,7 +167,7 @@ impl FaultCampaignConfig {
             mixture: self.mixture,
             retention: self.retention,
             selector: self.selector.clone(),
-            victory_input_path: self.victory_input_path.clone(),
+            objective_witness_path: self.objective_witness_path.clone(),
         }
     }
 }
@@ -186,6 +188,19 @@ fn merge_action_milestones(aggregate: &mut FaultMilestones, target: &FaultTarget
     }
 }
 
+fn outcome(target: &FaultTarget) -> Outcome {
+    Outcome {
+        objective_reached: !target.failed() && target.found_bug(),
+        disposition: if target.failed() {
+            ExecutionDisposition::Failed
+        } else if target.observation().stop.is_continuable() {
+            ExecutionDisposition::Runnable
+        } else {
+            ExecutionDisposition::Terminal
+        },
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_job(
     target: &mut FaultTarget,
@@ -195,15 +210,21 @@ fn execute_job(
     parent_milestones: FaultMilestones,
     suffix: &[FaultAction],
     max_actions: usize,
+    stop_rollout_on_objective: bool,
 ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
     target.restore(origin_snapshot)?;
     for action in replay {
         target.apply(*action);
+        if outcome(target).disposition.is_terminal() {
+            break;
+        }
     }
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
-    if target.found_bug() {
+    let parent_outcome = outcome(target);
+    let mut objective_seen = parent_outcome.objective_reached;
+    if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult { actions });
     }
     for action in suffix {
@@ -214,27 +235,31 @@ fn execute_job(
         target.apply(*action);
         merge_action_milestones(&mut aggregate, target);
         let observations = target.last_action_observations().to_vec();
-        let failed = target.exit_kind() != ExitKind::Ok;
-        let victory = !failed && target.found_bug();
+        let raw_outcome = outcome(target);
+        let objective_reached = raw_outcome.objective_reached && !objective_seen;
+        objective_seen |= raw_outcome.objective_reached;
+        let outcome = Outcome {
+            objective_reached,
+            disposition: raw_outcome.disposition,
+        };
         let candidate = match target.snapshot() {
-            Some(snapshot) if !victory && !failed => Some(CampaignCandidate {
-                key: archive_key(target.observation()),
-                viable: true,
-                snapshot,
-            }),
+            Some(snapshot) if matches!(outcome.disposition, ExecutionDisposition::Runnable) => {
+                Some(CampaignCandidate {
+                    key: archive_key(target.observation()),
+                    viable: true,
+                    snapshot,
+                })
+            }
             _ => None,
         };
-        let dead = candidate.is_none() && !victory && !failed;
         actions.push(CampaignActionResult {
             action: *action,
             observations,
             milestones: aggregate,
-            dead,
-            victory,
-            failed,
+            outcome,
             candidate,
         });
-        if dead || victory || failed {
+        if outcome.should_stop(stop_rollout_on_objective) {
             break;
         }
     }
@@ -302,7 +327,9 @@ impl Reporting for FaultWorkload {
             progress_curve: state.progress_curve,
             retained: state.retained,
             rejected: state.rejected,
-            deaths: state.deaths,
+            deaths: state
+                .terminal_endpoints
+                .saturating_sub(state.terminal_objectives),
             watchdog_cutoffs: evidence.watchdog_cutoffs,
             bugs: evidence.bugs.clone(),
             selector: state.selector,
@@ -464,6 +491,7 @@ impl TargetExecution for FaultWorkload {
         suffix: &[FaultAction],
         max_actions: usize,
         _retention: RetentionPolicy,
+        stop_rollout_on_objective: bool,
     ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
         execute_job(
             target,
@@ -473,24 +501,22 @@ impl TargetExecution for FaultWorkload {
             parent_milestones,
             suffix,
             max_actions,
+            stop_rollout_on_objective,
         )
     }
 }
 
 impl Evaluation for FaultWorkload {
-    fn is_terminal(&self, target: &FaultTarget) -> bool {
-        target.exit_kind() != ExitKind::Ok || target.snapshot().is_none()
+    fn execution_disposition(&self, target: &FaultTarget) -> ExecutionDisposition {
+        outcome(target).disposition
     }
 
-    fn is_run_terminal(
+    fn objective_reached(
         &self,
         _run: &FaultCampaignRun,
         target: &FaultTarget,
     ) -> Result<bool, Box<dyn Error>> {
-        if target.exit_kind() != ExitKind::Ok && !target.found_bug() {
-            return Err("the fault terminal predicate cannot inspect a failed VM".into());
-        }
-        Ok(target.found_bug())
+        Ok(outcome(target).objective_reached)
     }
 
     fn current_key(&self, target: &FaultTarget) -> Result<FaultArchiveKey, Box<dyn Error>> {

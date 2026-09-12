@@ -277,7 +277,7 @@ mod real {
         drop(progress);
         drop(checkpoint);
         let best_input = report
-            .victory_input
+            .objective_witness
             .as_ref()
             .unwrap_or(&report.archive.champion_input);
         fs::write(
@@ -312,7 +312,7 @@ mod real {
             "retained": report.archive.retained,
             "rejected": report.archive.rejected,
             "deaths": report.archive.deaths,
-            "victories": report.victories,
+            "victories": report.objectives_reached,
             "progress": report.archive.progress_watermark,
             "milestones": report.archive.milestones,
             "first_reached": report.archive.first_reached,

@@ -33,6 +33,7 @@ use crate::{
             replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
 };
@@ -253,9 +254,7 @@ struct NovaResultAction<'a> {
     action: ButtonChord,
     observations: &'a [NovaObservations],
     milestones: NovaMilestones,
-    dead: bool,
-    victory: bool,
-    failed: bool,
+    outcome: Outcome,
     candidate: Option<NovaResultCandidate<'a>>,
 }
 
@@ -274,9 +273,7 @@ fn nova_result_sha256<M: NovaMachineKind>(
             action: action.action,
             observations: &action.observations,
             milestones: action.milestones,
-            dead: action.dead,
-            victory: action.victory,
-            failed: action.failed,
+            outcome: action.outcome,
             candidate: action
                 .candidate
                 .as_ref()
@@ -316,7 +313,8 @@ impl NovaCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
-            continue_after_victory: self.continue_after_victory,
+            stop_rollout_on_objective: !self.continue_after_victory,
+            stop_campaign_on_objective: !self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker:
                 crate::search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
@@ -327,7 +325,7 @@ impl NovaCampaignConfig {
             mixture: self.mixture,
             retention: self.retention,
             selector: self.selector.clone(),
-            victory_input_path: self.victory_input_path.clone(),
+            objective_witness_path: self.victory_input_path.clone(),
         }
     }
 }
@@ -459,7 +457,9 @@ impl<M: NovaMachineKind> Reporting for NovaGame<M> {
             progress_curve: state.progress_curve,
             retained: state.retained,
             rejected: state.rejected,
-            deaths: state.deaths,
+            deaths: state
+                .terminal_endpoints
+                .saturating_sub(state.terminal_objectives),
             selector: state.selector,
         }
     }
@@ -585,7 +585,11 @@ impl<M: NovaMachineKind> TargetExecution for NovaGame<M> {
         merge_action_milestones(aggregate, target)
     }
     fn rollout_observations(&self, target: &NovaTarget<M>) -> Vec<NovaObservations> {
-        target.last_action_observations().to_vec()
+        if target.exit_kind() != ExitKind::Ok {
+            Vec::new()
+        } else {
+            target.last_action_observations().to_vec()
+        }
     }
     fn rollout_probe(
         &self,
@@ -722,30 +726,39 @@ impl<M: NovaMachineKind> Evaluation for NovaGame<M> {
             .ok_or_else(|| "Nova source archive has no retained entries".into())
     }
 
-    fn is_terminal(&self, target: &NovaTarget<M>) -> bool {
-        target.is_dead() || target.exit_kind() != ExitKind::Ok
+    fn execution_disposition(&self, target: &NovaTarget<M>) -> ExecutionDisposition {
+        if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_dead() || (!self.whole_game && target.cleared_a_level()) {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        }
     }
 
-    fn is_run_terminal(
+    fn objective_reached(
         &self,
         _run: &NovaCampaignRun,
         target: &NovaTarget<M>,
     ) -> Result<bool, Box<dyn Error>> {
-        if target.exit_kind() != ExitKind::Ok {
-            return Err("Nova terminal predicate cannot inspect a failed emulator".into());
-        }
-        Ok(target.is_dead() || self.terminal_reached(target))
+        Ok(target.exit_kind() == ExitKind::Ok && self.terminal_reached(target))
     }
 
     fn rollout_outcome(
         &self,
         _run: &NovaCampaignRun,
         target: &NovaTarget<M>,
-    ) -> Result<crate::search::rollout::Outcome, Box<dyn Error>> {
-        Ok(crate::search::rollout::Outcome {
-            dead: target.is_dead(),
-            victory: self.terminal_reached(target),
-            failed: target.exit_kind() != ExitKind::Ok,
+    ) -> Result<Outcome, Box<dyn Error>> {
+        let objective_reached = self.objective_reached(&NovaCampaignRun, target)?;
+        Ok(Outcome {
+            objective_reached,
+            disposition: if target.exit_kind() != ExitKind::Ok {
+                ExecutionDisposition::Failed
+            } else if target.is_dead() || (!self.whole_game && objective_reached) {
+                ExecutionDisposition::Terminal
+            } else {
+                ExecutionDisposition::Runnable
+            },
         })
     }
 
@@ -802,9 +815,7 @@ mod tests {
                 action: ButtonChord::new(0x81, 3),
                 observations: vec![observation.clone()],
                 milestones: NovaMilestones::default(),
-                dead: false,
-                victory: false,
-                failed: false,
+                outcome: Outcome::default(),
                 candidate: Some(CampaignCandidate {
                     key: archive_key(state),
                     viable: true,
