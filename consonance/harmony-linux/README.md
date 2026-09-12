@@ -16,7 +16,9 @@ make -C consonance/harmony-linux test-linux
 make -C consonance/harmony-linux test
 ```
 
-`fetch` downloads and verifies the pinned kernel and userland sources.
+`fetch` downloads and verifies the pinned platform kernel, generic userland,
+and static OCI runtime sources. Workload packages own their separate fetch
+entrypoints.
 `test-libvoidstar` runs the portable ABI and device-transaction checks.
 `test-linux` builds the Linux artifacts twice and runs the image gate; it
 requires Linux, or a Linux/amd64 build container on macOS. Build output lives
@@ -30,9 +32,11 @@ Linux:
 nix run .#guest-images -- --output "$PWD/guest-output"
 ```
 
-On Linux/x86_64 that produces `x86_64/bzImage`, `x86_64/bzImage-faultlab`, the
-minimal initramfs, and `x86_64/initramfs-go-runtime.cpio.gz`; the emitted
-`MANIFEST.sha256` covers every staged artifact.
+On Linux/x86_64 that produces the standard platform kernel, direct fixture
+initramfs, and (when the platform runtime inputs are supplied) the canonical
+`x86_64/initramfs-oci.cpio.gz`; the emitted `MANIFEST.sha256` covers every
+staged artifact. Native Linux/aarch64 produces the corresponding `aarch64`
+directory.
 
 The pinned BusyBox source is also available as a standalone flake package for
 reproducible image preparation and CI reuse:
@@ -42,31 +46,31 @@ nix build .#busybox-source --no-link --print-out-paths
 ```
 
 The resulting store path is the hash-verified `busybox-1.38.0.tar.bz2` source
-from the same pin used by the guest image builder. NES acceptance fetches that
-archive from Buildroot's mirror, with the Nix package as a fallback, and checks
-the same lock-file SHA-256 before building. An upstream download outage therefore
-does not change the accepted source bytes.
+from the same pin used by the guest image builder. Workload acceptance fetches
+that archive from Buildroot's mirror, with the Nix package as a fallback, and
+checks the same lock-file SHA-256 before building. An upstream download outage
+therefore does not change the accepted source bytes.
 
 ## Components
 
-- `linux/` builds the pinned kernel, its x86 profiles, and workload-specific
-  initramfs images. Kernel patches provide the guest device, paravirtual clock,
-  and task-park interfaces; build scripts verify source and artifact hashes.
+- `linux/` builds the pinned kernels, direct platform fixtures, and the
+  workload-free OCI runtime. Kernel patches provide the guest device,
+  paravirtual clock, observation, and task-park interfaces; build scripts
+  verify source and artifact hashes.
 - `libvoidstar/` implements the SDK-facing dynamic ABI and communicates with
   `/dev/harmony`.
 - `sdk/` provides the no-std event, state, assertion, lifecycle, and entropy
   hooks used by guest payloads.
-- `workloads/nes-guest/` builds the headless NES workload and publishes its
-  state through the SDK. The historical `linux/build-*-game-image.sh` entry
-  points remain as compatibility launchers for the package-owned recipes.
+- Workload packages under `workloads/` build their own images and fetch their
+  own application inputs after the platform artifacts are prepared.
 
 The guest transport is synchronous and serialized by the kernel driver. Guest
 entropy comes from the host-provided seeded service; the compatibility library
 does not provide a host-randomness fallback.
 
-The x86 Nova image requires GNU cpio 2.14 or newer. Its `--reproducible`
-mode normalizes inode, device, and directory-link metadata before the
-initramfs hash is recorded in deterministic campaign streams.
+Workload image recipes that use GNU cpio require version 2.14 or newer so
+`--reproducible` normalizes inode, device, and directory-link metadata before
+an image hash is recorded.
 
 Cold Nix guest builds fetch the pinned BusyBox archive from the Buildroot mirror
 with the upstream URL as fallback. Both locations use the same locked SHA-256;

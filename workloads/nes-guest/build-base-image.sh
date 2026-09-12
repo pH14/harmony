@@ -88,7 +88,7 @@ build_arm64_busybox() {
     require_linux_aarch64
     extract_busybox
     prepare_busybox_build_source
-    build_arm64_game_musl
+    build_arm64_musl
     rm -rf "$NES_BUSYBOX_OBJ"
     mkdir -p "$NES_BUSYBOX_OBJ"
     make -C "$BBSRC" O="$NES_BUSYBOX_OBJ" allnoconfig >/dev/null
@@ -106,7 +106,7 @@ build_arm64_busybox() {
     set +o pipefail
     yes '' | make -C "$BBSRC" O="$NES_BUSYBOX_OBJ" oldconfig >/dev/null
     set -o pipefail
-    make -C "$BBSRC" O="$NES_BUSYBOX_OBJ" CC="$ARM64_GAME_MUSL_PREFIX/bin/musl-gcc" \
+    make -C "$BBSRC" O="$NES_BUSYBOX_OBJ" CC="$ARM64_MUSL_PREFIX/bin/musl-gcc" \
         -j"$(nproc)" busybox >/dev/null
 }
 
@@ -140,7 +140,7 @@ build_agent_arm64() {
         exit 1
     }
     agent_rustflags=${RUSTFLAGS:-}
-    agent_rustflags="${agent_rustflags:+$agent_rustflags }-C target-feature=+lse,-outline-atomics -C panic=abort -C link-self-contained=no -C link-arg=-Wl,--build-id=none -C link-arg=-L$ARM64_GAME_MUSL_PREFIX/lib -C link-arg=-L$rust_unwind_dir"
+    agent_rustflags="${agent_rustflags:+$agent_rustflags }-C target-feature=+lse,-outline-atomics -C panic=abort -C link-self-contained=no -C link-arg=-Wl,--build-id=none -C link-arg=-L$ARM64_MUSL_PREFIX/lib -C link-arg=-L$rust_unwind_dir"
     if [ -n "${HARMONY_BUILD_PATH_PREFIX:-}" ]; then
         agent_rustflags="$agent_rustflags --remap-path-prefix=$HARMONY_BUILD_PATH_PREFIX=/build"
     fi
@@ -149,7 +149,7 @@ build_agent_arm64() {
         cd "$REPO_ROOT/workloads/nes-guest"
         RUSTC_BOOTSTRAP=1 \
             RUSTFLAGS="$agent_rustflags" \
-            CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$ARM64_GAME_MUSL_PREFIX/bin/musl-gcc" \
+            CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$ARM64_MUSL_PREFIX/bin/musl-gcc" \
             CARGO_TARGET_DIR="$agent_target" \
             HARMONY_QUICKNES_STATIC_LIB="$quicknes_archive" \
             cargo build --locked --release --target "$play_target" \

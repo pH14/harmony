@@ -38,6 +38,8 @@ cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
 
 # shellcheck source=../../consonance/harmony-linux/linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
+# shellcheck source=versions.lock disable=SC1091
+. "$workload_dir/versions.lock"
 
 require_linux_amd64
 require_tools cc make gzip bzip2 cpio gunzip jq tar chroot mount umount
@@ -59,7 +61,7 @@ WORKLOAD_N=20                                   # fixed insert/select iterations
 # --- 0. verify the pinned inputs ---------------------------------------------
 echo "== docker image: verifying pinned inputs"
 if [ ! -f "$DOCKER_TGZ" ]; then
-    echo "FAIL: $DOCKER_TGZ missing — run 'make -C consonance/harmony-linux fetch' first" >&2
+    echo "FAIL: $DOCKER_TGZ missing — run 'make -C workloads/guest-images fetch' first" >&2
     exit 1
 fi
 got=$(sha256_of "$DOCKER_TGZ")
@@ -68,7 +70,7 @@ if [ "$got" != "$DOCKER_TGZ_SHA256" ]; then
     exit 1
 fi
 if [ ! -f "$PG_IMAGE_TAR" ] || [ ! -s "$PG_IMAGE_TAR" ]; then
-    echo "FAIL: $PG_IMAGE_TAR missing/empty — run 'make -C consonance/harmony-linux fetch' on the box" >&2
+    echo "FAIL: $PG_IMAGE_TAR missing/empty — run 'make -C workloads/guest-images fetch' on the box" >&2
     echo "      (needs ctr+network; integrity is anchored by the pinned digest in" >&2
     echo "      versions.lock: $POSTGRES_IMAGE_INDEX_DIGEST)." >&2
     exit 1
@@ -215,7 +217,7 @@ done
 # The in-container flow script (the container's PID 1): starts postgres, drives
 # the cooperative psql loop + workload, stops it — the whole bare-Postgres flow, run
 # *inside* the container so it advances V-time under the VMM. See its header.
-install -m 0755 "$LINUX_DIR/pg-container-run.sh" "$BUNDLE/rootfs/run-workload.sh"
+install -m 0755 "$workload_dir/pg-container-run.sh" "$BUNDLE/rootfs/run-workload.sh"
 
 # Pre-bake PGDATA: run the image's own `initdb` ONCE at build time (as the
 # postgres user, uid 999), exactly like the bare-Postgres image pre-baked its cluster — and
@@ -303,7 +305,7 @@ echo "   container runs /run-workload.sh as uid 999 on pre-baked PGDATA; rootfs=
 # The guest /init and the in-namespace container-setup helper (the latter runs
 # as the unshared container PID 1, before chroot; see docker-init.sh).
 install -m 0755 "$workload_dir/docker-init.sh" "$DKROOT/init"
-install -m 0755 "$LINUX_DIR/container-setup.sh" "$DKROOT/container-setup.sh"
+install -m 0755 "$workload_dir/container-setup.sh" "$DKROOT/container-setup.sh"
 # The REAL-runc /init, baked alongside as /runc-init and selected via the
 # kernel `rdinit=/runc-init` cmdline param (the unshare path above stays the
 # default /init for comparison). It `runc run`s the SAME /oci bundle generated above
@@ -311,7 +313,7 @@ install -m 0755 "$LINUX_DIR/container-setup.sh" "$DKROOT/container-setup.sh"
 # terminal=false, runs /run-workload.sh). Compared to the unshare path, the Go runtime is
 # now preempted at the V-time LAPIC deadline (run_with_deadline), so runc's
 # container-init no longer deadlocks. See runc-init.sh + consonance/harmony-linux/linux/README.md.
-install -m 0755 "$LINUX_DIR/runc-init.sh" "$DKROOT/runc-init"
+install -m 0755 "$workload_dir/runc-init.sh" "$DKROOT/runc-init"
 
 # --- 5. pack the initramfs (sorted, fixed mtime, gzip -n) ---------------------
 # DEVTMPFS_MOUNT gives the guest /dev (incl. /dev/console) before init runs.

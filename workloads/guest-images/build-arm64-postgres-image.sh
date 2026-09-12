@@ -6,10 +6,13 @@
 set -euo pipefail
 
 workload_dir=$(cd "$(dirname "$0")" && pwd)
-cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
+repo_root=$(cd "$workload_dir/../.." && pwd)
+cd "$repo_root/consonance/harmony-linux/linux"
 
 # shellcheck source=../../consonance/harmony-linux/linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
+# shellcheck source=versions.lock disable=SC1091
+. "$workload_dir/versions.lock"
 
 require_linux_aarch64
 require_tools cc make gzip cpio python3 readelf patch perl flex bison chroot
@@ -38,7 +41,7 @@ echo "== arm64 postgres image: pristine PostgreSQL $PG_SOURCE_VERSION source"
 rm -rf "$pg_source" "$pg_object"
 cp -a "$pg_pristine" "$pg_source"
 patch -d "$pg_source" --batch -p1 \
-    <"$LINUX_DIR/patches/postgresql/0001-static-bootstrap-without-plpgsql.patch"
+    <"$workload_dir/patches/postgresql/0001-static-bootstrap-without-plpgsql.patch"
 [ "$(grep -c '/bin/pwd' "$pg_source/configure")" -eq 2 ] || {
     echo "FAIL: PostgreSQL configure /bin/pwd anchors changed" >&2
     exit 1
@@ -48,8 +51,8 @@ mv "$pg_source/configure.tmp" "$pg_source/configure"
 chmod +x "$pg_source/configure"
 
 echo "== arm64 postgres image: building LSE-only static musl ($MUSL_VERSION)"
-build_arm64_game_musl
-musl_cc=$ARM64_GAME_MUSL_PREFIX/bin/musl-gcc
+build_arm64_musl
+musl_cc=$ARM64_MUSL_PREFIX/bin/musl-gcc
 
 # PostgreSQL embeds CC and CFLAGS in the server binary.  Keep those recorded
 # values independent of the randomized outer build directory while applying

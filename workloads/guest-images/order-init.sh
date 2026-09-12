@@ -1,14 +1,14 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # /init of the **bug-2 (ordering/interrupt-timing) benchmark image**.
-# It is the bare-Postgres init (consonance/harmony-linux/linux/pg-init.sh) plus the
+# It is the bare-Postgres init (workloads/guest-images/pg-init.sh) plus the
 # planted-bug supervisor `order-super`: bring up the kernel filesystems, run the
 # deterministic Postgres insert/select workload to completion (the image's
 # determinism pedigree), stop postgres, then run the supervised process whose
 # ordering invariant is only violable when an injected interrupt preempts it
 # mid-update. A verbatim clone of campaign-init.sh (bug 1) with the
-# supervisor/markers swapped. See consonance/harmony-linux/linux/order-super.c and
-# consonance/harmony-linux/linux/README.md.
+# supervisor/markers swapped. See workloads/guest-images/order-super.c and the
+# workload image README.
 #
 # The base snapshot is sealed at the `ORDER_READY` marker `order-super` prints
 # right before its ordering-sensitive loop (mid-workload, post-readiness). When an

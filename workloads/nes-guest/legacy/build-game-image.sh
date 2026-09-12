@@ -27,6 +27,8 @@ cd "$repo_root/consonance/harmony-linux/linux"
 
 # shellcheck source=lib-build.sh disable=SC1091
 . ./lib-build.sh
+# shellcheck source=../versions.lock disable=SC1091
+. "$repo_root/workloads/nes-guest/versions.lock"
 
 require_linux_amd64
 require_tools cc c++ make gzip cpio ldd cargo

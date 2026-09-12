@@ -47,13 +47,12 @@ require_tools() {
 GUEST_DIR=$(cd .. && pwd)
 LINUX_DIR=$GUEST_DIR/linux
 DL_DIR=${HARMONY_DOWNLOAD_DIR:-$GUEST_DIR/dl}
-# Final artifacts (bzImage, initramfs.cpio.gz) live on the repo side so they
-# survive the container session.
+# Final artifacts live on the repo side so they survive the container session.
 ART_DIR=${HARMONY_ARTIFACT_DIR:-$GUEST_DIR/build}
-# AA-5(c) artifacts are isolated from the x86 image. In particular, an ARM
-# build must never overwrite the canonical bzImage/initramfs pair consumed by
-# the established x86 gates.
-ARM64_ART_DIR=$ART_DIR/arm64
+# Architecture-qualified production artifacts never overwrite one another.
+X86_64_ART_DIR=$ART_DIR/x86_64
+AARCH64_ART_DIR=$ART_DIR/aarch64
+ARM64_ART_DIR=$AARCH64_ART_DIR
 
 # Build trees live at a fixed absolute path on a native filesystem:
 # - fixed, so absolute paths are identical between the two reproducibility
@@ -69,8 +68,8 @@ BBSRC=$BUILD_ROOT/busybox-$BUSYBOX_VERSION
 BBOBJ=$BUILD_ROOT/busybox-build
 ARM64_KOBJ=$BUILD_ROOT/kernel-build-arm64
 MUSLSRC=$BUILD_ROOT/musl-$MUSL_VERSION
-ARM64_GAME_MUSL_SRC=$BUILD_ROOT/musl-arm64-game-src
-ARM64_GAME_MUSL_PREFIX=$BUILD_ROOT/musl-arm64-game-prefix
+ARM64_MUSL_SRC=$BUILD_ROOT/musl-arm64-src
+ARM64_MUSL_PREFIX=$BUILD_ROOT/musl-arm64-prefix
 
 # Reproducibility levers (task spec): fixed timestamp/user/host/version, fixed
 # SOURCE_DATE_EPOCH, no kconfig header timestamps. LOCALVERSION is fixed in
@@ -127,6 +126,59 @@ extract_busybox() {
     verify_and_extract "$DL_DIR/$(basename "$BUSYBOX_URL")" "$BUSYBOX_SHA256" "$BBSRC"
 }
 
+extract_runc() {
+    local arch=$1
+    local url sha path got
+    case "$arch" in
+        x86_64)
+            url=$RUNC_X86_64_URL
+            sha=$RUNC_X86_64_SHA256
+            ;;
+        aarch64)
+            url=$RUNC_AARCH64_URL
+            sha=$RUNC_AARCH64_SHA256
+            ;;
+        *)
+            echo "FAIL: unsupported runc architecture: $arch" >&2
+            exit 1
+            ;;
+    esac
+    path=$DL_DIR/$(basename "$url")
+    if [ ! -f "$path" ]; then
+        echo "FAIL: $path missing — run 'make -C consonance/harmony-linux fetch' first" >&2
+        exit 1
+    fi
+    got=$(sha256_of "$path")
+    if [ "$got" != "$sha" ]; then
+        echo "FAIL: $path sha256 mismatch (want $sha, got $got)" >&2
+        exit 1
+    fi
+    printf '%s\n' "$path"
+}
+
+verify_static_runc() {
+    local binary=$1
+    local arch=$2
+    local machine
+    [ -f "$binary" ] || {
+        echo "FAIL: pinned runc asset is not a regular file: $binary" >&2
+        exit 1
+    }
+    machine=$(readelf -h "$binary" | sed -n 's/^  Machine: *//p')
+    case "$arch:$machine" in
+        x86_64:*'Advanced Micro Devices X86-64'*) ;;
+        aarch64:*'AArch64'*) ;;
+        *)
+            echo "FAIL: pinned runc architecture mismatch: $binary ($machine)" >&2
+            exit 1
+            ;;
+    esac
+    if readelf -l "$binary" | grep -q ' INTERP '; then
+        echo "FAIL: pinned runc is dynamically linked: $binary" >&2
+        exit 1
+    fi
+}
+
 # BusyBox invokes `/bin/pwd` while computing its source/output roots. Pure Nix
 # builders deliberately have no ambient /bin, so make the hash-verified source
 # use the pinned `pwd` from PATH. The operation is idempotent because several
@@ -157,28 +209,28 @@ extract_musl() {
     verify_and_extract "$DL_DIR/$(basename "$MUSL_URL")" "$MUSL_SHA256" "$MUSLSRC"
 }
 
-# Build the M2 userspace C runtime from pristine pinned source on every run.
+# Build the arm64 userspace C runtime from pristine pinned source on every run.
 # The upstream aarch64 atomics use LL/SC directly, so the Harmony-only patch
 # replaces their public CAS primitives with acquire-release LSE CAS.
-build_arm64_game_musl() {
+build_arm64_musl() {
     extract_musl
-    rm -rf "$ARM64_GAME_MUSL_SRC" "$ARM64_GAME_MUSL_PREFIX"
-    cp -a "$MUSLSRC" "$ARM64_GAME_MUSL_SRC"
-    patch -d "$ARM64_GAME_MUSL_SRC" --batch -p1 \
+    rm -rf "$ARM64_MUSL_SRC" "$ARM64_MUSL_PREFIX"
+    cp -a "$MUSLSRC" "$ARM64_MUSL_SRC"
+    patch -d "$ARM64_MUSL_SRC" --batch -p1 \
         <"$LINUX_DIR/patches/musl/0001-aarch64-harmony-lse-only-atomics.patch"
     (
-        cd "$ARM64_GAME_MUSL_SRC" || exit
+        cd "$ARM64_MUSL_SRC" || exit
         CC=cc CFLAGS='-O2 -march=armv8.1-a+lse -mno-outline-atomics' \
-            ./configure --prefix="$ARM64_GAME_MUSL_PREFIX" --disable-shared >/dev/null
+            ./configure --prefix="$ARM64_MUSL_PREFIX" --disable-shared >/dev/null
         make -j"$(nproc)" >/dev/null
         make install >/dev/null
     )
-    [ -x "$ARM64_GAME_MUSL_PREFIX/bin/musl-gcc" ] || {
-        echo "FAIL: arm64 game musl compiler wrapper was not installed" >&2
+    [ -x "$ARM64_MUSL_PREFIX/bin/musl-gcc" ] || {
+        echo "FAIL: arm64 musl compiler wrapper was not installed" >&2
         exit 1
     }
-    [ -f "$ARM64_GAME_MUSL_PREFIX/lib/libc.a" ] || {
-        echo "FAIL: arm64 game static musl runtime was not installed" >&2
+    [ -f "$ARM64_MUSL_PREFIX/lib/libc.a" ] || {
+        echo "FAIL: arm64 static musl runtime was not installed" >&2
         exit 1
     }
 }

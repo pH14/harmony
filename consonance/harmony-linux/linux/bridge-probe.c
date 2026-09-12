@@ -18,7 +18,7 @@
 //      loud: it prints the errno.
 //   2. **libvoidstar leg** — `dlopen`s `/usr/lib/libvoidstar.so` (the path and
 //      loading pattern real Antithesis SDKs use, and the one `play-agent`
-//      already follows for its libretro core) and drives the same device
+//      already follows for its platform payload) and drives the same device
 //      through the shipped library, proving the artifact guests actually link
 //      is live, not just the ABI underneath it.
 //

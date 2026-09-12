@@ -25,14 +25,12 @@ fi
 
 extract_kernel
 
-# Apply every numbered harmony guest-kernel diff in lexical order. These are
-# Linux GPL-2.0 patches under the repository's kernel-patch exception. The patch
-# directory is arch-scoped (patches/x86/, patches/arm64/) so each vendor's series
-# applies independently and the two arches never collide on patch numbers — the
-# x86 build consumes patches/x86/ only; the arm64 build (build-arm64-kernel.sh)
-# consumes patches/arm64/ (hm-0dst, tribunal F7).
-# Record the complete series: later patches can change earlier patch context.
-bash "$LINUX_DIR/apply-patch-series.sh" "$KSRC" "$LINUX_DIR/patches/x86"
+# Apply the architecture-independent transport first, then the x86 overlay.
+# Each directory is ordered lexically by apply-patch-series.sh and the stamp
+# records both directory and file names, so a changed common or arch patch
+# cannot be mistaken for an already prepared source tree.
+bash "$LINUX_DIR/apply-patch-series.sh" "$KSRC" \
+    "$LINUX_DIR/patches/common" "$LINUX_DIR/patches/x86"
 
 mkdir -p "$KOBJ" "$ART_DIR"
 
@@ -81,8 +79,10 @@ assert_off() {
 assert_y 64BIT PRINTK TTY SERIAL_8250 SERIAL_8250_CONSOLE BINFMT_ELF \
     BINFMT_SCRIPT BLK_DEV_INITRD RD_GZIP PROC_FS SYSFS DEVTMPFS ACPI PCI \
     HZ_PERIODIC HZ_100 FUTEX POSIX_TIMERS KERNEL_GZIP X86_IOPL_IOPERM DEVMEM \
-    HARMONY_PVCLOCK HARMONY_DEVICE NAMESPACES NET_NS NET UNIX INET SYSCTL \
-    NETDEVICES VETH NET_SCHED NET_SCH_NETEM
+    HARMONY_PVCLOCK HARMONY_DEVICE HARMONY_PARK NAMESPACES UTS_NS IPC_NS PID_NS \
+    NET_NS NET UNIX INET SYSCTL NETDEVICES VETH NET_SCHED NET_SCH_NETEM \
+    CGROUPS CGROUP_SCHED CGROUP_PIDS CGROUP_DEVICE TMPFS DEVPTS SECCOMP \
+    SECCOMP_FILTER
 if [ -n "${N6_TRAPS_OFF:-}" ]; then
     assert_off HARMONY_USER_COUNTER_TRAPS
 else
@@ -127,7 +127,7 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 # The scan runs on `$KOBJ/vmlinux` (built above) and MUST pass BEFORE the image
 # is published to the canonical `$ART_DIR/bzImage` (cross-model r21 P2): with
 # `set -e`, a failed scan aborts here, so a REJECTED kernel never reaches the
-# path campaign-runner consumes. (Publishing first, then scanning, would leave
+# path used by the guest runner. (Publishing first, then scanning, would leave
 # the rejected artifact at the canonical path on failure.) Proven locally by
 # `test-publish-gate.sh` with a planted rejection.
 # Site offsets are toolchain-dependent, so each build toolchain carries its
@@ -157,5 +157,7 @@ if [ -n "${N6_TRAPS_OFF:-}" ]; then
 elif [ -n "${FAULTLAB:-}" ]; then
     kernel_output=bzImage-faultlab
 fi
+mkdir -p "$ART_DIR/x86_64"
 install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/$kernel_output"
+install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/x86_64/$kernel_output"
 echo "ok: $ART_DIR/$kernel_output"

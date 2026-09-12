@@ -2,20 +2,23 @@
 
 # guest-images
 
-Image recipes for the PostgreSQL, Docker, and k3s guest workloads. Each
-`build-*.sh` assembles one initramfs; the `*-init.sh` scripts and the kernel
-config fragment are the payloads it installs into the guest root.
+This package owns application guest image recipes, their pins, and their
+downloads. Each `build-*.sh` assembles one initramfs; the init scripts,
+supervisors, and workload kernel fragments are the payloads it installs into
+the guest root. The platform package owns the kernel and the workload-free OCI
+runtime separately.
 
-They run on Linux and reuse the guest platform's shared build library, kernel
-patches, and pinned versions under `consonance/harmony-linux/linux/`. Build them
-through the platform Makefile:
+The recipes run on Linux and reuse the guest platform's shared build library.
+Fetch platform and package inputs, then invoke this package's Makefile:
 
 ```
-make -C consonance/harmony-linux/linux postgres-image
-make -C consonance/harmony-linux/linux docker-image
-make -C consonance/harmony-linux/linux k3s-image
-make -C consonance/harmony-linux/linux arm64-postgres-image
+make -C workloads/guest-images fetch
+make -C workloads/guest-images postgres-image
+make -C workloads/guest-images docker-image
+make -C workloads/guest-images k3s-image
+make -C workloads/guest-images arm64-postgres-image
 ```
 
-`arm64-postgres-config-fragment` is read by the platform kernel builder when
-`ARM64_KERNEL_PROFILE=postgres` selects the container-capable arm64 kernel.
+`arm64-postgres-config-fragment` is consumed by the arm64 workload image
+recipe. The platform kernel is built through its standard runtime profile;
+workload packages do not select a named platform kernel profile.

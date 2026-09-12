@@ -16,10 +16,14 @@
 # linux/amd64 container as root — see CONTRIBUTING.md.
 set -euo pipefail
 
-cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
+workload_dir=$(cd "$(dirname "$0")" && pwd)
+repo_root=$(cd "$workload_dir/../.." && pwd)
+cd "$repo_root/consonance/harmony-linux/linux"
 
 # shellcheck source=../../consonance/harmony-linux/linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
+# shellcheck source=versions.lock disable=SC1091
+. "$workload_dir/versions.lock"
 
 require_linux_amd64
 require_tools cc make gzip bzip2 cpio dpkg-deb mke2fs setpriv ldd ldconfig
@@ -47,7 +51,7 @@ extract_deb() {
     url=$1 sha=$2
     tarball="$DL_DIR/$(basename "$url")"
     if [ ! -f "$tarball" ]; then
-        echo "FAIL: $tarball missing — run 'make -C consonance/harmony-linux fetch' first" >&2
+        echo "FAIL: $tarball missing — run 'make -C workloads/guest-images fetch' first" >&2
         exit 1
     fi
     got=$(sha256_of "$tarball")
@@ -190,7 +194,7 @@ mke2fs -q -t ext4 -U "$FIXED_UUID" \
     done
 } >"$PGROOT/workload.sql"
 
-install -m 0755 "$LINUX_DIR/pg-init.sh" "$PGROOT/init"
+install -m 0755 "$workload_dir/pg-init.sh" "$PGROOT/init"
 
 # --- 5. pack the initramfs (sorted, fixed mtime, owner 0:0, gzip -n) ----------
 # DEVTMPFS_MOUNT gives the guest /dev (incl. /dev/console) before init runs, so no

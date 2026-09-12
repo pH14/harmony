@@ -1,13 +1,13 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # /init of the **bug-3 (rare-entropy-value) benchmark image**. It is
-# the bare-Postgres init (consonance/harmony-linux/linux/pg-init.sh) plus the planted-bug
+# the bare-Postgres init (workloads/guest-images/pg-init.sh) plus the planted-bug
 # supervisor `uuid-super`: bring up the kernel filesystems, run the deterministic
 # Postgres insert/select workload to completion (the image's determinism
 # pedigree), stop postgres, then run the supervised process whose rare branch
 # fires only on a matching seeded-entropy draw. A verbatim clone of
 # campaign-init.sh (bug 1) with the supervisor/markers swapped. See
-# consonance/harmony-linux/linux/uuid-super.c and consonance/harmony-linux/linux/README.md.
+# workloads/guest-images/uuid-super.c and the workload image README.
 #
 # The base snapshot is sealed at the `UUID_READY` marker `uuid-super` prints
 # right before it draws the (post-seal, per-branch) seeded entropy. When the

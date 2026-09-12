@@ -1,0 +1,35 @@
+# Workload package inputs. Platform runtime sources and pins live in
+# consonance/harmony-linux/linux/versions.lock; this file is loaded only by
+# workload image builders.
+
+# PostgreSQL source for the native arm64 payload.
+PG_SOURCE_VERSION=17.10
+PG_SOURCE_URL=https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.bz2
+PG_SOURCE_SHA256=078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c90
+
+# Debian PostgreSQL packages for the x86 workload image.
+PG_MAJOR=17
+PG_VERSION=17.11-0+deb13u1
+PG_DEB_BASE=https://deb.debian.org/debian-security/pool/updates/main/p/postgresql-17
+PG_SERVER_DEB_URL=$PG_DEB_BASE/postgresql-17_17.11-0+deb13u1_amd64.deb
+PG_SERVER_DEB_SHA256=d2ce1ddffafa783f9acda4c92c86fc21e8288bff3782d739294f14fa797d7886
+PG_CLIENT_DEB_URL=$PG_DEB_BASE/postgresql-client-17_17.11-0+deb13u1_amd64.deb
+PG_CLIENT_DEB_SHA256=9d8558f8dd57c8e92e218a20698383575d53742ca3f9e7c2b7fe5f246d5216ae
+PG_LIBPQ_DEB_URL=$PG_DEB_BASE/libpq5_17.11-0+deb13u1_amd64.deb
+PG_LIBPQ_DEB_SHA256=20a4c9ef58b4baf90deda67cfb2cc062871c062830dddc234d28f5ac7931b86b
+
+# The Docker static bundle and the digest-pinned base image used by the
+# container-stack fixture.
+DOCKER_VERSION=29.6.0
+DOCKER_TGZ_URL=https://download.docker.com/linux/static/stable/x86_64/docker-29.6.0.tgz
+DOCKER_TGZ_SHA256=4d2f6782406b56eb43a519ad5078a6a79abe4d663328acb69136aceff5e05224
+POSTGRES_IMAGE_NAME=postgres:17
+POSTGRES_IMAGE_INDEX_DIGEST=sha256:5f050f770b427fbd477edee6c3968a72e5c6be97e050a7e368b2b74a9494a285
+POSTGRES_IMAGE_AMD64_DIGEST=sha256:9c1534cbf839ec70409508a874f4c02bf4739de2f32f77efe080eef1cfd34bf4
+
+# The lightweight Kubernetes fixture's static binary and air-gap image set.
+K3S_VERSION=v1.36.2+k3s1
+K3S_BIN_URL=https://github.com/k3s-io/k3s/releases/download/v1.36.2+k3s1/k3s
+K3S_BIN_SHA256=65a55ec56c24eab44383086166ec620a491952b7e23941a49ddca6e8a4c4b4de
+K3S_AIRGAP_URL=https://github.com/k3s-io/k3s/releases/download/v1.36.2+k3s1/k3s-airgap-images-amd64.tar
+K3S_AIRGAP_SHA256=6f8acd19735479234692f17b51889f60aa32059ce818f1fa5621a9b6511d2cb6

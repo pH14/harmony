@@ -42,8 +42,8 @@ nova_root=$BUILD_ROOT/arm64-nova-root
 busybox_obj=$BUILD_ROOT/busybox-build-arm64-nova
 
 echo "== arm64 Nova image: building LSE-only static musl ($MUSL_VERSION)"
-build_arm64_game_musl
-musl_cc=$ARM64_GAME_MUSL_PREFIX/bin/musl-gcc
+build_arm64_musl
+musl_cc=$ARM64_MUSL_PREFIX/bin/musl-gcc
 
 if [ -z "$nova_core_static" ] && [ -z "${PLAY_AGENT_BIN:-}" ]; then
     echo "== arm64 Nova image: building pinned static QuickNES with patched musl"
@@ -168,7 +168,7 @@ else
     # mode lets musl-gcc supply its absolute CRT paths; the version-matched Rust
     # static unwind archive below fills the one target runtime the wrapper does
     # not provide. build-std still rebuilds Rust code with the LSE-only flags.
-    agent_rustflags="${agent_rustflags:+$agent_rustflags }-C target-feature=+lse,-outline-atomics -C panic=abort -C link-self-contained=no -C link-arg=-Wl,--build-id=none -C link-arg=-L$ARM64_GAME_MUSL_PREFIX/lib -C link-arg=-L$rust_unwind_dir"
+    agent_rustflags="${agent_rustflags:+$agent_rustflags }-C target-feature=+lse,-outline-atomics -C panic=abort -C link-self-contained=no -C link-arg=-Wl,--build-id=none -C link-arg=-L$ARM64_MUSL_PREFIX/lib -C link-arg=-L$rust_unwind_dir"
     if [ -n "${HARMONY_BUILD_PATH_PREFIX:-}" ]; then
         agent_rustflags="$agent_rustflags --remap-path-prefix=$HARMONY_BUILD_PATH_PREFIX=/build"
     fi

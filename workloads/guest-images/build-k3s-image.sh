@@ -46,6 +46,8 @@ cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
 
 # shellcheck source=../../consonance/harmony-linux/linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
+# shellcheck source=versions.lock disable=SC1091
+. "$workload_dir/versions.lock"
 
 require_linux_amd64
 require_tools cc make gzip bzip2 cpio gunzip jq tar chroot mount umount
@@ -72,14 +74,14 @@ verify_pin() {  # <file> <sha> <hint>
     got=$(sha256_of "$1")
     [ "$got" = "$2" ] || { echo "FAIL: $1 sha256 mismatch (want $2, got $got)" >&2; exit 1; }
 }
-verify_pin "$K3S_BIN" "$K3S_BIN_SHA256" "run 'make -C consonance/harmony-linux fetch' first"
+verify_pin "$K3S_BIN" "$K3S_BIN_SHA256" "run 'make -C workloads/guest-images fetch' first"
 if [ ! -f "$PG_IMAGE_TAR" ] || [ ! -s "$PG_IMAGE_TAR" ]; then
-    echo "FAIL: $PG_IMAGE_TAR missing/empty — run 'make -C consonance/harmony-linux fetch' on the box" >&2
+    echo "FAIL: $PG_IMAGE_TAR missing/empty — run 'make -C workloads/guest-images fetch' on the box" >&2
     echo "      (ctr+network; integrity anchored by $POSTGRES_IMAGE_INDEX_DIGEST)." >&2
     exit 1
 fi
 if [ ! -f "$PAUSE_IMAGE_TAR" ] || [ ! -s "$PAUSE_IMAGE_TAR" ]; then
-    echo "FAIL: $PAUSE_IMAGE_TAR missing/empty — run 'make -C consonance/harmony-linux fetch' on the box" >&2
+    echo "FAIL: $PAUSE_IMAGE_TAR missing/empty — run 'make -C workloads/guest-images fetch' on the box" >&2
     echo "      (ctr; extracted from the pinned k3s air-gap tarball)." >&2
     exit 1
 fi

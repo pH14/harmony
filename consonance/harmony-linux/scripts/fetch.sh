@@ -1,37 +1,34 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Download pinned upstream sources into consonance/harmony-linux/dl/ and verify their
-# sha256 against consonance/harmony-linux/linux/versions.lock. Runs on macOS and Linux;
-# after a successful fetch no further network access is needed.
+# Download and verify the platform sources and the pinned static OCI runtime.
+# Workload package inputs are fetched by their package-owned entrypoints.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 # shellcheck source=lib.sh disable=SC1091
 . scripts/lib.sh
-
 # shellcheck source=../linux/versions.lock disable=SC1091
 . linux/versions.lock
 
 mkdir -p dl
 
 fetch_one() {
-    url=$1
-    sha=$2
+    local url=$1
+    local sha=$2
+    local file
     file="dl/$(basename "$url")"
     if [ -f "$file" ] && [ "$(sha256_of "$file")" = "$sha" ]; then
         echo "ok: $file (cached, hash verified)"
         return
     fi
     echo "fetching $url"
-    # Every download is sha256-verified below, so retrying on transient
-    # transport errors (kernel.org intermittently resets HTTP/2 streams) is
-    # safe and keeps CI guest builds off the flake.
-    # Mirrors provide exactly the same pinned archive, never a replacement
-    # version. Bound connection retries before trying the optional mirror.
-    sources=("$url")
-    if [ -n "${3:-}" ]; then sources+=("$3"); fi
-    downloaded=false
+    local sources=("$url")
+    if [ -n "${3:-}" ]; then
+        sources+=("$3")
+    fi
+    local downloaded=false
+    local source_url
     for source_url in "${sources[@]}"; do
         if command -v curl >/dev/null 2>&1; then
             if curl -fsSL --connect-timeout 20 --retry 2 --retry-all-errors --retry-delay 5 \
@@ -40,7 +37,8 @@ fetch_one() {
                 break
             fi
         elif command -v wget >/dev/null 2>&1; then
-            if wget -q --connect-timeout=20 --tries=3 --waitretry=5 -O "$file.part" "$source_url"; then
+            if wget -q --connect-timeout=20 --tries=3 --waitretry=5 \
+                -O "$file.part" "$source_url"; then
                 downloaded=true
                 break
             fi
@@ -54,6 +52,7 @@ fetch_one() {
         echo "FAIL: could not download $url from any configured source" >&2
         exit 1
     fi
+    local got
     got=$(sha256_of "$file.part")
     if [ "$got" != "$sha" ]; then
         echo "FAIL: $file sha256 mismatch" >&2
@@ -70,99 +69,7 @@ fetch_one "$KERNEL_URL" "$KERNEL_SHA256"
 fetch_one "$BUSYBOX_URL" "$BUSYBOX_SHA256" \
     "https://ftp.gwdg.de/pub/linux/gentoo/distfiles/e3/busybox-1.38.0.tar.bz2"
 fetch_one "$MUSL_URL" "$MUSL_SHA256"
-# PostgreSQL source for M3's native arm64 static container payload.
-fetch_one "$PG_SOURCE_URL" "$PG_SOURCE_SHA256"
-# PostgreSQL .debs for the bare-Postgres workload image.
-fetch_one "$PG_SERVER_DEB_URL" "$PG_SERVER_DEB_SHA256"
-fetch_one "$PG_CLIENT_DEB_URL" "$PG_CLIENT_DEB_SHA256"
-fetch_one "$PG_LIBPQ_DEB_URL" "$PG_LIBPQ_DEB_SHA256"
-# Docker's static binary bundle for the Postgres-in-Docker image
-# (sha256-pinned, curl-able anywhere).
-fetch_one "$DOCKER_TGZ_URL" "$DOCKER_TGZ_SHA256"
+fetch_one "$RUNC_X86_64_URL" "$RUNC_X86_64_SHA256"
+fetch_one "$RUNC_AARCH64_URL" "$RUNC_AARCH64_SHA256"
 
-# The official postgres image — pulled by registry digest with the
-# box's `ctr` (containerd) and exported to a `docker load`-able tar. This step
-# needs a running containerd + network, so it is Linux/box-only and skipped
-# (with a clear note) elsewhere; the docker image build is Linux-root-only
-# anyway, and build-docker-image.sh fails loudly if the tar is missing.
-fetch_postgres_image() {
-    out="dl/postgres-image.tar"
-    if [ -f "$out" ] && [ -s "$out" ]; then
-        echo "ok: $out (cached; integrity anchored by the pinned registry digest)"
-        return
-    fi
-    # `ctr version` also proves the containerd socket is reachable — CI
-    # runners ship a ctr binary the runner user cannot talk to.
-    if ! ctr version >/dev/null 2>&1; then
-        echo "skip: $out — needs 'ctr' (containerd). Run 'make -C consonance/harmony-linux fetch' on the" >&2
-        echo "      Linux box where the docker image is built; the digest is pinned in" >&2
-        echo "      versions.lock so the pull is content-verified there." >&2
-        return
-    fi
-    ns="ht38-fetch"   # isolated containerd namespace; pruned after export
-    ref="docker.io/library/${POSTGRES_IMAGE_NAME%%:*}@${POSTGRES_IMAGE_INDEX_DIGEST}"
-    echo "fetching $ref via ctr (-> $out)"
-    ctr -n "$ns" image pull --platform linux/amd64 "$ref"
-    # Tag with the human ref so the exported tar carries RepoTags and the guest's
-    # `docker load` imports it as ${POSTGRES_IMAGE_NAME} (so `docker run` resolves).
-    ctr -n "$ns" image tag "$ref" "docker.io/library/$POSTGRES_IMAGE_NAME" 2>/dev/null || true
-    ctr -n "$ns" image export --platform linux/amd64 "$out.part" "docker.io/library/$POSTGRES_IMAGE_NAME"
-    mv "$out.part" "$out"
-    # Leave the isolated namespace clean (don't perturb the box's default ns).
-    ctr -n "$ns" image rm "docker.io/library/$POSTGRES_IMAGE_NAME" "$ref" >/dev/null 2>&1 || true
-    ctr -n "$ns" content prune references >/dev/null 2>&1 || true
-    echo "ok: $out ($(sha256_of "$out") — derived from the digest-pinned pull)"
-}
-fetch_postgres_image
-
-# --- the commit-pinned libretro NES core (SMB game workload) --------
-# The SMB ROM itself is NEVER fetched by any script in this repo (a
-# hard requirement) — only the open-source emulator core (FCEUmm,
-# GPL-2.0-or-later — see versions.lock for the per-file audit) is pinned
-# here; the ROM enters the image build via the user-supplied HARMONY_SMB_ROM
-# path.
-fetch_one "$FCEUMM_URL" "$FCEUMM_SHA256"
-
-# --- k3s (lightweight Kubernetes) -----------------------------------
-# The k3s binary + the air-gap images tarball, both URL+sha256-pinned in
-# versions.lock (verified against the release's own sha256sum-amd64.txt).
-fetch_one "$K3S_BIN_URL" "$K3S_BIN_SHA256"
-fetch_one "$K3S_AIRGAP_URL" "$K3S_AIRGAP_SHA256"
-
-# Extract ONLY the pause/sandbox image from the air-gap tarball into a clean
-# single-image tar (consonance/harmony-linux/dl/k3s-pause-image.tar). Every pod needs the sandbox
-# container; we --disable coredns/traefik/servicelb/metrics/local-path, so pause
-# is the only air-gap image the guest actually runs. Importing just it (a few
-# hundred KB) instead of the whole multi-hundred-MB tarball keeps the guest light
-# — boot throughput under the VMM is the bottleneck. Needs `ctr`
-# (containerd), so it is box/Linux-only, like fetch_postgres_image above;
-# build-k3s-image.sh fails loudly if the tar is missing.
-fetch_k3s_pause_image() {
-    out="dl/k3s-pause-image.tar"
-    air="dl/$(basename "$K3S_AIRGAP_URL")"
-    if [ -f "$out" ] && [ -s "$out" ]; then
-        echo "ok: $out (cached; extracted from the digest-pinned air-gap tarball)"
-        return
-    fi
-    if ! ctr version >/dev/null 2>&1; then
-        echo "skip: $out — needs 'ctr' (containerd). Run 'make -C consonance/harmony-linux fetch' on the" >&2
-        echo "      Linux box; the air-gap tarball is sha256-pinned so the pause image" >&2
-        echo "      is content-verified there." >&2
-        return
-    fi
-    ns="ht49-fetch"   # isolated containerd namespace; pruned after export
-    echo "importing $air via ctr to extract the pause image (-> $out)"
-    ctr -n "$ns" image import "$air" >/dev/null
-    # The pause/sandbox image is the only one we keep; find its ref by name (k3s
-    # ships it as docker.io/rancher/mirrored-pause:<tag>).
-    pause_ref=$(ctr -n "$ns" image ls -q | grep -E 'mirrored-pause|/pause:' | head -1)
-    [ -n "$pause_ref" ] || { echo "FAIL: no pause image in $air" >&2; exit 1; }
-    echo "   pause image: $pause_ref"
-    ctr -n "$ns" image export --platform linux/amd64 "$out.part" "$pause_ref"
-    mv "$out.part" "$out"
-    # Leave the isolated namespace clean (don't perturb the box's default ns).
-    for r in $(ctr -n "$ns" image ls -q); do ctr -n "$ns" image rm "$r" >/dev/null 2>&1 || true; done
-    ctr -n "$ns" content prune references >/dev/null 2>&1 || true
-    echo "ok: $out ($(sha256_of "$out") — pause image from the digest-pinned air-gap tarball)"
-}
-fetch_k3s_pause_image
+echo "PASS: platform sources and static OCI runtime inputs are ready in $PWD/dl"
