@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time;
-use vmm_core::virtual_time::{NormalizedLog, check_delivery_placement, compare_normalized_logs};
+use vmm_core::virtual_time::{
+    NormalizedEvent, NormalizedLog, check_delivery_placement, compare_normalized_logs,
+};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
 const GUEST_RAM_LEN: usize = 256 << 20;
@@ -19,6 +22,7 @@ const PVCLOCK_REGISTERED: &[u8] = b"harmony_pvclock: exit-count clock page regis
 const GUEST_READY: &[u8] = b"GUEST_READY";
 const DEFAULT_MAX_STEPS: u64 = 50_000_000;
 const DEFAULT_WALL_SECS: u64 = 300;
+const DEFAULT_SELECTED_MAX_EXTRA_STEPS: u64 = 4_096;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -58,6 +62,10 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+fn report_root(variable: &str) -> Option<PathBuf> {
+    std::env::var_os(variable).map(PathBuf::from)
 }
 
 struct BootRun {
@@ -658,6 +666,163 @@ fn first_checkpoint_hash(run: &BootRun) -> [u8; 32] {
         .expect("the bounded boot must cross the first state-hash checkpoint")
 }
 
+struct SelectedCheckpoint {
+    event: NormalizedEvent,
+    steps: u64,
+    log: NormalizedLog,
+    memory: Vec<u8>,
+    vm_state: Vec<u8>,
+    state_blob: Vec<u8>,
+    state_hash: [u8; 32],
+    components: Vec<(&'static str, [u8; 32])>,
+    serial: Vec<u8>,
+}
+
+fn selected_checkpoint_event() -> u64 {
+    std::env::var("X2_CKPT_EVENT")
+        .expect("X2_CKPT_EVENT is required for selected-checkpoint diagnostics")
+        .parse()
+        .expect("X2_CKPT_EVENT must be an unsigned event index")
+}
+
+fn run_to_selected_checkpoint(vmm: &mut StockVmm, target: u64) -> SelectedCheckpoint {
+    let max_steps = env_u64(
+        "X2_CKPT_MAX_STEPS",
+        target.saturating_add(DEFAULT_SELECTED_MAX_EXTRA_STEPS),
+    );
+    assert!(
+        max_steps > target,
+        "X2_CKPT_MAX_STEPS must exceed the selected event index"
+    );
+    for steps in 1..=max_steps {
+        let result = vmm.step().unwrap_or_else(|error| {
+            panic!("selected-checkpoint replay failed before event {target}: {error}")
+        });
+        let last_index = vmm
+            .virtual_time_trace()
+            .expect("boot_linux_stock_virtual_time wires the virtual_time trace")
+            .normalized_log()
+            .events
+            .last()
+            .map(|event| event.event_index);
+        match last_index {
+            Some(index) if index == target => {
+                return capture_selected_checkpoint(vmm, target, steps);
+            }
+            Some(index) if index > target => {
+                panic!("selected-checkpoint replay passed event {target} at event {index}");
+            }
+            _ => {}
+        }
+        assert!(
+            matches!(result, Step::Continued),
+            "selected-checkpoint replay stopped before event {target}: {result:?}"
+        );
+    }
+    panic!("selected-checkpoint replay did not reach event {target} within {max_steps} steps");
+}
+
+fn capture_selected_checkpoint(vmm: &StockVmm, target: u64, steps: u64) -> SelectedCheckpoint {
+    let trace = vmm
+        .virtual_time_trace()
+        .expect("boot_linux_stock_virtual_time wires the virtual_time trace");
+    let event = trace
+        .normalized_log()
+        .events
+        .last()
+        .cloned()
+        .expect("selected-checkpoint replay has a normalized event");
+    assert_eq!(event.event_index, target);
+    assert!(
+        event.state_hash.is_some(),
+        "selected event {target} is not a state-hash checkpoint"
+    );
+    let state = vmm
+        .save_vm_state()
+        .expect("capture selected checkpoint VM state");
+    let vm_state = state.encode().expect("encode selected checkpoint VM state");
+    let decoded =
+        vm_state::VmState::decode(&vm_state).expect("decode selected checkpoint VM state");
+    assert_eq!(decoded, state, "selected checkpoint VMST must round-trip");
+    SelectedCheckpoint {
+        event,
+        steps,
+        log: trace.normalized_log().clone(),
+        memory: vmm.guest_memory().to_vec(),
+        vm_state,
+        state_blob: vmm
+            .state_blob()
+            .expect("encode selected checkpoint state blob"),
+        state_hash: vmm.state_hash().expect("hash selected checkpoint VM state"),
+        components: vmm.state_components(),
+        serial: vmm.serial().to_vec(),
+    }
+}
+
+fn retain_selected_checkpoint(
+    root: Option<&std::path::Path>,
+    label: &str,
+    capture: &SelectedCheckpoint,
+) {
+    let Some(root) = root else { return };
+    let directory = root.join(label);
+    std::fs::create_dir_all(&directory).expect("create selected checkpoint report directory");
+    std::fs::write(directory.join("memory.bin"), &capture.memory)
+        .expect("write selected checkpoint memory");
+    std::fs::write(directory.join("vm-state.bin"), &capture.vm_state)
+        .expect("write selected checkpoint VMST");
+    std::fs::write(directory.join("state-blob.bin"), &capture.state_blob)
+        .expect("write selected checkpoint state blob");
+    std::fs::write(directory.join("serial.bin"), &capture.serial)
+        .expect("write selected checkpoint serial");
+    let mut trace = String::new();
+    for event in &capture.log.events {
+        writeln!(
+            trace,
+            "EVENT {} {:?} {} {} {:?} {}",
+            event.event_index,
+            event.class,
+            hex(&event.payload_digest),
+            event.vns_after,
+            event.interrupts,
+            event
+                .state_hash
+                .map(|hash| hex(&hash))
+                .unwrap_or_else(|| "-".into()),
+        )
+        .expect("write selected checkpoint trace");
+    }
+    std::fs::write(directory.join("normalized-log.txt"), trace)
+        .expect("write selected checkpoint trace");
+    let mut components = String::new();
+    for (name, digest) in &capture.components {
+        writeln!(components, "{name} {}", hex(digest)).expect("write selected components");
+    }
+    std::fs::write(directory.join("components.txt"), components)
+        .expect("write selected checkpoint components");
+    let summary = format!(
+        "label={label}\nsteps={}\nevent_index={}\nclass={:?}\nvns_after={}\nreported_state_hash={}\ncaptured_state_hash={}\n",
+        capture.steps,
+        capture.event.event_index,
+        capture.event.class,
+        capture.event.vns_after,
+        hex(&capture.event.state_hash.expect("reported checkpoint hash")),
+        hex(&capture.state_hash),
+    );
+    std::fs::write(directory.join("summary.txt"), summary)
+        .expect("write selected checkpoint summary");
+}
+
+fn report_selected_checkpoint(label: &str, capture: &SelectedCheckpoint) {
+    eprintln!(
+        "[x2] checkpoint diagnostic {label} replay: event={} steps={} reported_hash={} captured_hash={}",
+        capture.event.event_index,
+        capture.steps,
+        hex(&capture.event.state_hash.expect("reported checkpoint hash")),
+        hex(&capture.state_hash),
+    );
+}
+
 #[test]
 #[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
 fn x2_component_diff_first_checkpoint() {
@@ -692,4 +857,57 @@ fn x2_component_diff_first_checkpoint() {
         }
     }
     println!("X2_CKPT_NO_DIVERGENT_PAIR attempts={attempts}");
+}
+
+#[test]
+#[ignore = "failure-only selected-checkpoint diagnostic; requires real KVM + built guest image"]
+fn x2_component_diff_selected_checkpoint() {
+    require_kvm();
+    let kernel = require_artifact("bzImage");
+    let initramfs = require_artifact("initramfs.cpio.gz");
+    let target = selected_checkpoint_event();
+    let attempts = env_u64("X2_CKPT_ATTEMPTS", 4);
+    assert!(attempts > 0, "X2_CKPT_ATTEMPTS must be positive");
+    let report = report_root("X2_REPORT_DIR");
+
+    let mut vmm_ref =
+        boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+            .expect("boot_linux_stock_virtual_time");
+    let reference = run_to_selected_checkpoint(&mut vmm_ref, target);
+    report_selected_checkpoint("reference", &reference);
+    retain_selected_checkpoint(report.as_deref(), "reference", &reference);
+
+    for attempt in 0..attempts {
+        let mut vmm =
+            boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+                .expect("boot_linux_stock_virtual_time");
+        let candidate = run_to_selected_checkpoint(&mut vmm, target);
+        report_selected_checkpoint(&format!("candidate {attempt}"), &candidate);
+        if candidate.event.state_hash != reference.event.state_hash {
+            eprintln!(
+                "[x2] checkpoint diagnostic first divergent candidate replay: attempt={attempt}"
+            );
+            println!(
+                "X2_CKPT_DIAGNOSTIC_DIVERGENCE event={target} attempt={attempt} reference={} candidate={}",
+                hex(&reference
+                    .event
+                    .state_hash
+                    .expect("reported reference checkpoint hash")),
+                hex(&candidate
+                    .event
+                    .state_hash
+                    .expect("reported candidate checkpoint hash")),
+            );
+            retain_selected_checkpoint(report.as_deref(), "candidate-first-divergent", &candidate);
+            dump_state_diff(&vmm_ref, &vmm);
+            return;
+        }
+    }
+    println!(
+        "X2_CKPT_DIAGNOSTIC_NO_DIVERGENCE event={target} attempts={attempts} reference={} qualification=not-established",
+        hex(&reference
+            .event
+            .state_hash
+            .expect("reported reference checkpoint hash")),
+    );
 }

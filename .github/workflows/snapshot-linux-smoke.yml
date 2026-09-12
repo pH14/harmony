@@ -118,7 +118,7 @@ jobs:
       - name: Compare two complete same-seed Linux execution logs
         env:
           X2_BOOTS: "2"
-          X2_WALL_SECS: "90"
+          X2_WALL_SECS: "55"
         run: |
           set -euo pipefail
           timeout -k 10 240 cargo test --locked --release -p vmm-core \
@@ -129,6 +129,28 @@ jobs:
           grep -Eq '^X2_EVENTS=[1-9][0-9]*$' linux-consistency-report/test.txt
           grep -Fqx 'X2_DIVERGENCES=0' linux-consistency-report/test.txt
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' linux-consistency-report/test.txt
+      - name: Failure-only selected-checkpoint diagnostic
+        if: failure()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          event=""
+          if [[ -f linux-consistency-report/test.txt ]]; then
+            event="$(sed -nE 's/.*event_index: ([0-9]+), field: StateHash.*/\1/p' linux-consistency-report/test.txt | sed -n '1p')"
+          fi
+          if [[ -z "${event}" ]]; then
+            cat >linux-consistency-report/selected-checkpoint-diagnostic-unavailable.txt <<'EOF'
+          X2_CKPT_DIAGNOSTIC_UNAVAILABLE no StateHash divergence index was found in test.txt
+          EOF
+            exit 0
+          fi
+          mkdir -p linux-consistency-report/x2-selected-checkpoint
+          X2_CKPT_EVENT="${event}" X2_CKPT_ATTEMPTS=4 \
+          X2_REPORT_DIR="$PWD/linux-consistency-report/x2-selected-checkpoint" \
+            timeout -k 10 180 cargo test --locked --release -p vmm-core \
+              --test x86_kvm_linux_virtual_time x2_component_diff_selected_checkpoint \
+              -- --ignored --exact --test-threads=1 --nocapture \
+              2>&1 | tee linux-consistency-report/selected-checkpoint-diagnostic.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

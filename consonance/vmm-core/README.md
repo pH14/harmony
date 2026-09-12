@@ -114,6 +114,11 @@ FPU state was changed by another continuation. `snapshot-linux-smoke.yml`
 compares two complete same-seed Linux execution logs; its success requires
 nonzero events and zero differences. Workload acceptance smokes exercise
 continuations through their restore oracles.
+After a failed smoke gate reports a `StateHash` event index, the ignored
+`x2_component_diff_selected_checkpoint` diagnostic replays that boundary with
+`X2_CKPT_EVENT` and retains its reference or first-divergent raw captures under
+`X2_REPORT_DIR`; a no-divergence replay remains diagnostic evidence rather than
+qualification.
 
 Linux smoke fixtures come from main's durable guest cache. Each run verifies
 the manifest and records the exact or last-known-good cache provenance. A
