@@ -9,10 +9,11 @@ use searcher::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignConfig,
             CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
             CampaignStreamHeader, CampaignTypes, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
-            Evaluation, GamePolicies, InitialDrawState, InputPolicy, Reporting, SnapshotCheckpoint,
-            TargetExecution, postcard_result_sha256, run_campaign_checkpointed,
+            Evaluation, InitialDrawState, InputPolicy, Reporting, SnapshotCheckpoint,
+            TargetExecution, WorkloadPolicies, postcard_result_sha256, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        rollout::{ExecutionDisposition, Outcome},
     },
     target::ExitKind,
 };
@@ -23,7 +24,7 @@ use crate::{
     archive::{
         DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord, FaultInput,
         FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS,
-        REPLACEMENT_IDENTIFIER, action_time, archive_key, bug_outcome, merge_milestones,
+        REPLACEMENT_IDENTIFIER, action_cost, archive_key, bug_outcome, merge_milestones,
         merge_progress_watermark, milestone_key, milestones, sample_action,
     },
     bundle::FaultVocabulary,
@@ -51,7 +52,7 @@ pub struct FaultCampaignRun {
     pub vocabulary: FaultVocabulary,
 }
 
-pub struct FaultGame {
+pub struct FaultWorkload {
     kernel: Vec<u8>,
     initramfs: Vec<u8>,
     config: FaultConfig,
@@ -59,7 +60,7 @@ pub struct FaultGame {
     root_seal: OnceLock<u64>,
 }
 
-impl FaultGame {
+impl FaultWorkload {
     #[must_use]
     pub fn new(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Self {
         Self {
@@ -97,13 +98,13 @@ pub struct FaultCampaignEvidence {
     bugs: Vec<FaultBugRecord>,
 }
 
-pub type FaultCampaignOrigin = CampaignOrigin<FaultGame>;
+pub type FaultCampaignOrigin = CampaignOrigin<FaultWorkload>;
 pub type FaultSnapshotCheckpoint = SnapshotCheckpoint<FaultSnapshot>;
 pub type FaultCampaignStreamHeader = CampaignStreamHeader<FaultNoTableHeader>;
 pub type FaultCampaignModeReport = CampaignModeReport<FaultAction, FaultArchiveReport>;
 pub type FaultCampaignProgressRecord = CampaignProgressRecord<FaultArchiveKey>;
-type FaultCampaignActionResult = CampaignActionResult<FaultGame>;
-type FaultCampaignJobResult = CampaignJobResult<FaultGame>;
+type FaultCampaignActionResult = CampaignActionResult<FaultWorkload>;
+type FaultCampaignJobResult = CampaignJobResult<FaultWorkload>;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultCampaignReport {
@@ -141,11 +142,11 @@ pub struct FaultCampaignConfig {
     pub selector: SelectorPolicy,
     pub suffix: SuffixShape,
     pub mixture: DrawMixture,
-    pub victory_input_path: Option<PathBuf>,
+    pub objective_witness_path: Option<PathBuf>,
 }
 
 impl FaultCampaignConfig {
-    fn generic(&self) -> CampaignConfig<FaultGame> {
+    fn generic(&self) -> CampaignConfig<FaultWorkload> {
         CampaignConfig {
             campaign_seed: self.campaign_seed,
             workers: self.workers,
@@ -153,7 +154,8 @@ impl FaultCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
-            continue_after_victory: false,
+            stop_rollout_on_objective: true,
+            stop_campaign_on_objective: true,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker: DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
             memory_budget_mib: self.memory_budget_mib,
@@ -165,12 +167,12 @@ impl FaultCampaignConfig {
             mixture: self.mixture,
             retention: self.retention,
             selector: self.selector.clone(),
-            victory_input_path: self.victory_input_path.clone(),
+            objective_witness_path: self.objective_witness_path.clone(),
         }
     }
 }
 
-fn recorded<'a>(policies: &'a GamePolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
+fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
     policies
         .get(field)
         .map(String::as_str)
@@ -186,6 +188,19 @@ fn merge_action_milestones(aggregate: &mut FaultMilestones, target: &FaultTarget
     }
 }
 
+fn outcome(target: &FaultTarget) -> Outcome {
+    Outcome {
+        objective_reached: !target.failed() && target.found_bug(),
+        disposition: if target.failed() {
+            ExecutionDisposition::Failed
+        } else if target.observation().stop.is_continuable() {
+            ExecutionDisposition::Runnable
+        } else {
+            ExecutionDisposition::Terminal
+        },
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_job(
     target: &mut FaultTarget,
@@ -195,15 +210,21 @@ fn execute_job(
     parent_milestones: FaultMilestones,
     suffix: &[FaultAction],
     max_actions: usize,
+    stop_rollout_on_objective: bool,
 ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
     target.restore(origin_snapshot)?;
     for action in replay {
         target.apply(*action);
+        if outcome(target).disposition.is_terminal() {
+            break;
+        }
     }
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
-    if target.found_bug() {
+    let parent_outcome = outcome(target);
+    let mut objective_seen = parent_outcome.objective_reached;
+    if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult { actions });
     }
     for action in suffix {
@@ -214,34 +235,38 @@ fn execute_job(
         target.apply(*action);
         merge_action_milestones(&mut aggregate, target);
         let observations = target.last_action_observations().to_vec();
-        let failed = target.exit_kind() != ExitKind::Ok;
-        let victory = !failed && target.found_bug();
+        let raw_outcome = outcome(target);
+        let objective_reached = raw_outcome.objective_reached && !objective_seen;
+        objective_seen |= raw_outcome.objective_reached;
+        let outcome = Outcome {
+            objective_reached,
+            disposition: raw_outcome.disposition,
+        };
         let candidate = match target.snapshot() {
-            Some(snapshot) if !victory && !failed => Some(CampaignCandidate {
-                key: archive_key(target.observation()),
-                viable: true,
-                snapshot,
-            }),
+            Some(snapshot) if matches!(outcome.disposition, ExecutionDisposition::Runnable) => {
+                Some(CampaignCandidate {
+                    key: archive_key(target.observation()),
+                    viable: true,
+                    snapshot,
+                })
+            }
             _ => None,
         };
-        let dead = candidate.is_none() && !victory && !failed;
         actions.push(CampaignActionResult {
             action: *action,
             observations,
             milestones: aggregate,
-            dead,
-            victory,
-            failed,
+            outcome,
             candidate,
         });
-        if dead || victory || failed {
+        if outcome.should_stop(stop_rollout_on_objective) {
             break;
         }
     }
     Ok(CampaignJobResult { actions })
 }
 
-impl CampaignTypes for FaultGame {
+impl CampaignTypes for FaultWorkload {
     type Target = FaultTarget;
     type Action = FaultAction;
     type Key = FaultArchiveKey;
@@ -254,10 +279,10 @@ impl CampaignTypes for FaultGame {
     type Run = FaultCampaignRun;
     type DrawState = ();
     type DrawCheckpoint = ();
-    type TableHeader = FaultNoTableHeader;
+    type DrawHeader = FaultNoTableHeader;
 }
 
-impl Reporting for FaultGame {
+impl Reporting for FaultWorkload {
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -266,11 +291,19 @@ impl Reporting for FaultGame {
         SNAPSHOT_CHECKPOINT_FORMAT
     }
 
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         let mut digest = Sha256::new();
         digest.update(&self.kernel);
         digest.update(&self.initramfs);
         format!("{:x}", digest.finalize())
+    }
+
+    fn action_cost_unit(&self) -> &'static str {
+        "logical_actions"
+    }
+
+    fn execution_work_unit(&self) -> &'static str {
+        "horizons"
     }
 
     fn result_sha256(&self, result: &FaultCampaignJobResult) -> Result<String, Box<dyn Error>> {
@@ -294,7 +327,9 @@ impl Reporting for FaultGame {
             progress_curve: state.progress_curve,
             retained: state.retained,
             rejected: state.rejected,
-            deaths: state.deaths,
+            deaths: state
+                .terminal_endpoints
+                .saturating_sub(state.terminal_objectives),
             watchdog_cutoffs: evidence.watchdog_cutoffs,
             bugs: evidence.bugs.clone(),
             selector: state.selector,
@@ -302,16 +337,16 @@ impl Reporting for FaultGame {
     }
 }
 
-impl InputPolicy for FaultGame {
+impl InputPolicy for FaultWorkload {
     fn max_action_limit(&self) -> usize {
         MAX_FAULT_ACTIONS
     }
 
-    fn longest_action_time(&self) -> u64 {
+    fn max_action_cost(&self) -> u64 {
         1
     }
 
-    fn policies(&self, run: &FaultCampaignRun) -> GamePolicies {
+    fn policies(&self, run: &FaultCampaignRun) -> WorkloadPolicies {
         [
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
@@ -333,7 +368,7 @@ impl InputPolicy for FaultGame {
 
     fn resolve_recorded(
         &self,
-        policies: &GamePolicies,
+        policies: &WorkloadPolicies,
     ) -> Result<FaultCampaignRun, Box<dyn Error>> {
         let run = FaultCampaignRun {
             vocabulary: FaultVocabulary::from_identifier(recorded(policies, VOCABULARY_FIELD)?)?,
@@ -391,7 +426,7 @@ impl InputPolicy for FaultGame {
     }
 }
 
-impl TargetExecution for FaultGame {
+impl TargetExecution for FaultWorkload {
     fn new_target(&self) -> Result<FaultTarget, String> {
         let target = FaultTarget::new(&self.kernel, &self.initramfs, &self.config)?;
         let seal = *self.root_seal.get_or_init(|| target.root_seal());
@@ -416,12 +451,12 @@ impl TargetExecution for FaultGame {
         target.restore(snapshot)
     }
 
-    fn frames_clocked(&self, target: &FaultTarget) -> u64 {
+    fn execution_work(&self, target: &FaultTarget) -> u64 {
         target.horizons_clocked()
     }
 
-    fn action_time_fn(&self) -> fn(&FaultAction) -> u64 {
-        action_time
+    fn action_cost_fn(&self) -> fn(&FaultAction) -> u64 {
+        action_cost
     }
 
     fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
@@ -456,6 +491,7 @@ impl TargetExecution for FaultGame {
         suffix: &[FaultAction],
         max_actions: usize,
         _retention: RetentionPolicy,
+        stop_rollout_on_objective: bool,
     ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
         execute_job(
             target,
@@ -465,24 +501,22 @@ impl TargetExecution for FaultGame {
             parent_milestones,
             suffix,
             max_actions,
+            stop_rollout_on_objective,
         )
     }
 }
 
-impl Evaluation for FaultGame {
-    fn is_terminal(&self, target: &FaultTarget) -> bool {
-        target.exit_kind() != ExitKind::Ok || target.snapshot().is_none()
+impl Evaluation for FaultWorkload {
+    fn execution_disposition(&self, target: &FaultTarget) -> ExecutionDisposition {
+        outcome(target).disposition
     }
 
-    fn is_run_terminal(
+    fn objective_reached(
         &self,
         _run: &FaultCampaignRun,
         target: &FaultTarget,
     ) -> Result<bool, Box<dyn Error>> {
-        if target.exit_kind() != ExitKind::Ok && !target.found_bug() {
-            return Err("the fault terminal predicate cannot inspect a failed VM".into());
-        }
-        Ok(target.found_bug())
+        Ok(outcome(target).objective_reached)
     }
 
     fn current_key(&self, target: &FaultTarget) -> Result<FaultArchiveKey, Box<dyn Error>> {
@@ -610,7 +644,7 @@ impl Evaluation for FaultGame {
 }
 
 pub fn run_fault_campaign_checkpointed(
-    game: &FaultGame,
+    game: &FaultWorkload,
     config: &FaultCampaignConfig,
     origin: &FaultCampaignOrigin,
     stream: &mut dyn Write,
@@ -634,8 +668,8 @@ mod tests {
         }
     }
 
-    fn game() -> FaultGame {
-        FaultGame::new(b"kernel", b"initramfs", &config(&[]))
+    fn game() -> FaultWorkload {
+        FaultWorkload::new(b"kernel", b"initramfs", &config(&[]))
     }
 
     fn run(nodes: u16, hooks: Vec<u32>) -> FaultCampaignRun {
@@ -678,18 +712,21 @@ mod tests {
     #[test]
     fn the_image_identity_covers_the_workload_image_bytes() {
         let etcd = game();
-        let postgres = FaultGame::new(b"kernel", b"postgres-initramfs", &config(&[]));
+        let postgres = FaultWorkload::new(b"kernel", b"postgres-initramfs", &config(&[]));
         assert_ne!(etcd.image_identity(), postgres.image_identity());
-        assert_ne!(etcd.image_sha256(), postgres.image_sha256());
+        assert_ne!(
+            etcd.workload_identity_sha256(),
+            postgres.workload_identity_sha256()
+        );
     }
 
     #[test]
     fn the_recorded_policies_pin_the_knobs_and_the_horizon() {
         let game = game();
         let policies = game.policies(&run(1, vec![1, 2]));
-        let tuned = FaultGame::new(b"kernel", b"initramfs", &config(&["faultlab.puts=20"]));
+        let tuned = FaultWorkload::new(b"kernel", b"initramfs", &config(&["faultlab.puts=20"]));
         assert!(tuned.resolve_recorded(&policies).is_err());
-        let short = FaultGame::new(
+        let short = FaultWorkload::new(
             b"kernel",
             b"initramfs",
             &FaultConfig {
@@ -698,7 +735,10 @@ mod tests {
             },
         );
         assert!(short.resolve_recorded(&policies).is_err());
-        assert_eq!(game.image_sha256(), short.image_sha256());
+        assert_eq!(
+            game.workload_identity_sha256(),
+            short.workload_identity_sha256()
+        );
         assert_eq!(
             policies.get(HORIZON_FIELD).map(String::as_str),
             Some("2000000000")

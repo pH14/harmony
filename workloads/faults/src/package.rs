@@ -207,7 +207,7 @@ mod live {
     };
     use crate::{
         bundle::FaultVocabulary,
-        campaign::{FaultCampaignConfig, FaultGame, run_fault_campaign_checkpointed},
+        campaign::{FaultCampaignConfig, FaultWorkload, run_fault_campaign_checkpointed},
         consonance::{FaultConfig, FaultTarget, identity},
         report::{BugReport, write_bug_reports},
         target::{ActionWindows, FaultAction},
@@ -240,7 +240,7 @@ mod live {
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
         let mut report = Report::new("search", artifacts, identity, options);
         std::fs::create_dir_all(&options.output)?;
-        let game = FaultGame::new(&artifacts.kernel, &artifacts.initramfs, &config);
+        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config);
         let campaign = FaultCampaignConfig {
             campaign_seed: options.seed,
             vocabulary: vocabulary.clone(),
@@ -254,11 +254,11 @@ mod live {
             archive_entry_limit: MAX_ARCHIVE_ENTRIES,
             memory_budget_mib: Some(MEMORY_BUDGET_MIB),
             materialize_final_artifacts: true,
-            retention: RetentionPolicy::AdmitAlive,
+            retention: RetentionPolicy::Unprobed,
             selector: SelectorPolicy::EnergyFrontierCheapest(retire_thresholds()),
             suffix: SuffixShape::OneToSix,
             mixture: DrawMixture::AlphabetOnly,
-            victory_input_path: Some(options.output.join("first-bug-input.json")),
+            objective_witness_path: Some(options.output.join("first-bug-input.json")),
         };
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
@@ -288,7 +288,7 @@ mod live {
             "workers": campaign_report.campaign.workers,
             "execution_budget": campaign_report.campaign.execution_budget,
             "executions": campaign_report.campaign.executions_completed,
-            "horizons": campaign_report.campaign.frames_emulated,
+            "horizons": campaign_report.campaign.execution_work,
             "stream_sha256": campaign_report.campaign.stream_sha256,
             "archive_entries": archive.entries.len(),
             "progress": archive.progress_watermark,
@@ -303,7 +303,7 @@ mod live {
             serde_json::to_vec_pretty(&summary)?,
         )?;
         report.executions = campaign_report.campaign.executions_completed;
-        report.horizons_clocked = campaign_report.campaign.frames_emulated;
+        report.horizons_clocked = campaign_report.campaign.execution_work;
         for bug in &written {
             let violations: Vec<u32> = bug.observations.violations.iter().copied().collect();
             let witness = match replay_once(artifacts, &config, &bug.actions) {

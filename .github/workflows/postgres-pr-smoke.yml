@@ -12,7 +12,12 @@ on:
       - .github/workflows/historical-bugs.yml
       - workloads/bugs/historical/postgres-cic-corruption/**
       - cli/**
-      - consonance/harmony-linux/**
+      - dissonance/**
+      - consonance/**
+      - Cargo.toml
+      - Cargo.lock
+      - workloads/guest-image/**
+      - workloads/oci/**
       - scripts/render-historical-bugs.py
       - workloads/fault-agent/**
       - workloads/fault-policy/**

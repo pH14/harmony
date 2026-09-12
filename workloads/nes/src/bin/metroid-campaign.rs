@@ -148,7 +148,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
-        retention: RetentionPolicy::AdmitAlive,
+        retention: RetentionPolicy::Unprobed,
         selector: args.selector.clone(),
         suffix: SuffixShape::OneToSix,
         mixture: args.mixture,

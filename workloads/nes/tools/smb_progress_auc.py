@@ -81,7 +81,7 @@ def reduce_report(path: Path) -> dict[str, Any]:
         "source_sha256": hashlib.sha256(raw).hexdigest(),
         "campaign_seed": require_int(report, "campaign_seed"),
         "executions_completed": completed,
-        "victories": require_int(report, "victories"),
+        "victories": require_int(report, "objectives_reached"),
         "origin_ordinal": origin_ordinal,
         "final_normalized_progress": samples[-1]["normalized_progress"],
         "progress_auc": auc,

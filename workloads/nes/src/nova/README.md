@@ -92,3 +92,7 @@ cargo run --locked --release --manifest-path workloads/nes/Cargo.toml \
   --output /tmp/nova-artifact \
   --seed 1 --executions 500000 --workers 4 --action-limit 512
 ```
+
+Execution work counts frames emitted by logical actions, including frames from
+an action whose later save-RAM read or state decoding fails. Snapshot restore
+and reset do not rewind this counter; setup and probes are excluded.

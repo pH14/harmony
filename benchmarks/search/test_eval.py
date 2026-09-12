@@ -149,11 +149,11 @@ class EvaluationTests(unittest.TestCase):
         path = self.root / 'progress.jsonl'
         tail = eval.Tail(path)
         self.assertEqual(tail.read(), {})
-        path.write_text('{"frames_emulated":12')
+        path.write_text('{"execution_work":12')
         self.assertEqual(tail.read(), {})
-        with path.open('a') as stream: stream.write('}\n{"frames_emulated":24}\n')
-        self.assertEqual(tail.read(), {'frames_emulated': 24})
-        self.assertEqual(tail.read(), {'frames_emulated': 24})
+        with path.open('a') as stream: stream.write('}\n{"execution_work":24}\n')
+        self.assertEqual(tail.read(), {'execution_work': 24})
+        self.assertEqual(tail.read(), {'execution_work': 24})
 
     def fake_run(self, body, require_solved=False, finish=30, disk=1):
         # Ordinary fixtures test exit semantics, not interpreter startup latency.
@@ -172,10 +172,10 @@ class EvaluationTests(unittest.TestCase):
         return eval.run_one(job, job['request'], args, [], {}, {'hostname': 'test'})
 
     def test_failure_keeps_observed_progress(self):
-        result = self.fake_run('(p/"progress.jsonl").write_text(\'{"executions":7,"frames_emulated":123}\\n\')\nsys.exit(9)\n')
+        result = self.fake_run('(p/"progress.jsonl").write_text(\'{"executions":7,"execution_work":123}\\n\')\nsys.exit(9)\n')
         self.assertEqual(result['status'], 'error')
         self.assertEqual(result['exit_code'], 9)
-        self.assertEqual(result['last_progress']['frames_emulated'], 123)
+        self.assertEqual(result['last_progress']['execution_work'], 123)
         self.assertIsNone(result['result'])
         self.assertTrue(result['runner']['coordinator_profile'])
 

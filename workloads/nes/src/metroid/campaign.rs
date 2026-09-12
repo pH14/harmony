@@ -30,11 +30,12 @@ use crate::{
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, GamePolicies,
-            InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, postcard_value_sha256,
-            replay_campaign_checkpointed, run_campaign_checkpointed,
+            CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
+            Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
+            postcard_value_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
 };
@@ -214,9 +215,7 @@ struct MetroidResultAction<'a> {
     action: ButtonChord,
     observations: &'a [MetroidObservations],
     milestones: MetroidMilestones,
-    dead: bool,
-    victory: bool,
-    failed: bool,
+    outcome: Outcome,
     candidate: Option<MetroidResultCandidate<'a>>,
 }
 
@@ -233,9 +232,7 @@ fn metroid_result_sha256(result: &MetroidCampaignJobResult) -> Result<String, Bo
             action: action.action,
             observations: &action.observations,
             milestones: action.milestones,
-            dead: action.dead,
-            victory: action.victory,
-            failed: action.failed,
+            outcome: action.outcome,
             candidate: action
                 .candidate
                 .as_ref()
@@ -275,7 +272,8 @@ impl MetroidCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
-            continue_after_victory: self.continue_after_victory,
+            stop_rollout_on_objective: !self.continue_after_victory,
+            stop_campaign_on_objective: !self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker:
                 crate::search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
@@ -286,12 +284,12 @@ impl MetroidCampaignConfig {
             mixture: self.mixture,
             retention: self.retention,
             selector: self.selector.clone(),
-            victory_input_path: self.victory_input_path.clone(),
+            objective_witness_path: self.victory_input_path.clone(),
         }
     }
 }
 
-fn recorded<'a>(policies: &'a GamePolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
+fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
     policies
         .get(field)
         .map(String::as_str)
@@ -315,6 +313,7 @@ fn merge_action_milestones(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_suffix(
     target: &mut MetroidTarget,
     genesis: (u8, u8),
@@ -323,15 +322,27 @@ fn execute_suffix(
     suffix: &[ButtonChord],
     max_actions: usize,
     retention: RetentionPolicy,
+    stop_rollout_on_objective: bool,
 ) -> Result<MetroidCampaignJobResult, Box<dyn Error>> {
-    if retention != RetentionPolicy::AdmitAlive {
+    if retention != RetentionPolicy::Unprobed {
         return Err("Metroid campaigns admit every live candidate".into());
     }
     let (genesis_items, genesis_tanks) = genesis;
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
-    if target.is_dead() {
+    let parent_outcome = Outcome {
+        objective_reached: target.exit_kind() == ExitKind::Ok && target.is_victory(),
+        disposition: if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_dead() {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        },
+    };
+    let mut objective_seen = parent_outcome.objective_reached;
+    if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult { actions });
     }
     for action in suffix {
@@ -341,13 +352,27 @@ fn execute_suffix(
         length = length.saturating_add(1);
         target.apply(action);
         merge_action_milestones(&mut aggregate, target, genesis_items, genesis_tanks);
-        let observations = target.last_action_observations().to_vec();
-        let dead = target.is_dead();
-        let victory = target.is_victory();
         let failed = target.exit_kind() != ExitKind::Ok;
-        let candidate = if dead || failed {
-            None
+        let raw_objective = !failed && target.is_victory();
+        let objective_reached = raw_objective && !objective_seen;
+        objective_seen |= raw_objective;
+        let disposition = if failed {
+            ExecutionDisposition::Failed
+        } else if target.is_dead() {
+            ExecutionDisposition::Terminal
         } else {
+            ExecutionDisposition::Runnable
+        };
+        let outcome = Outcome {
+            objective_reached,
+            disposition,
+        };
+        let observations = if failed {
+            Vec::new()
+        } else {
+            target.last_action_observations().to_vec()
+        };
+        let candidate = if matches!(outcome.disposition, ExecutionDisposition::Runnable) {
             let snapshot = target
                 .snapshot()
                 .ok_or("failed to snapshot Metroid suffix")?;
@@ -356,17 +381,17 @@ fn execute_suffix(
                 viable: true,
                 snapshot,
             })
+        } else {
+            None
         };
         actions.push(CampaignActionResult {
             action: *action,
             observations,
             milestones: aggregate,
-            dead,
-            victory,
-            failed,
+            outcome,
             candidate,
         });
-        if dead || victory || failed {
+        if outcome.should_stop(stop_rollout_on_objective) {
             break;
         }
     }
@@ -414,7 +439,7 @@ impl CampaignTypes for MetroidGame {
     type ArchiveReport = MetroidArchiveReport;
     type Run = MetroidCampaignRun;
     type DrawState = ();
-    type TableHeader = MetroidNoTableHeader;
+    type DrawHeader = MetroidNoTableHeader;
     type DrawCheckpoint = ();
 }
 
@@ -453,8 +478,14 @@ impl Reporting for MetroidGame {
         SNAPSHOT_CHECKPOINT_FORMAT
     }
 
-    fn image_sha256(&self) -> String {
+    fn workload_identity_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(&self.rom))
+    }
+    fn action_cost_unit(&self) -> &'static str {
+        "frames"
+    }
+    fn execution_work_unit(&self) -> &'static str {
+        "frames"
     }
 
     fn result_sha256(&self, result: &MetroidCampaignJobResult) -> Result<String, Box<dyn Error>> {
@@ -478,7 +509,9 @@ impl Reporting for MetroidGame {
             progress_curve: state.progress_curve,
             retained: state.retained,
             rejected: state.rejected,
-            deaths: state.deaths,
+            deaths: state
+                .terminal_endpoints
+                .saturating_sub(state.terminal_objectives),
             selector: state.selector,
         }
     }
@@ -489,7 +522,7 @@ impl InputPolicy for MetroidGame {
         MAX_METROID_ACTIONS
     }
 
-    fn longest_action_time(&self) -> u64 {
+    fn max_action_cost(&self) -> u64 {
         u64::from(crate::metroid::archive::LONGEST_HOLD_FRAMES)
     }
 
@@ -505,7 +538,7 @@ impl InputPolicy for MetroidGame {
         0
     }
 
-    fn policies(&self, _run: &MetroidCampaignRun) -> GamePolicies {
+    fn policies(&self, _run: &MetroidCampaignRun) -> WorkloadPolicies {
         [
             (
                 CONTROLLER_VOCABULARY_FIELD,
@@ -527,7 +560,7 @@ impl InputPolicy for MetroidGame {
 
     fn resolve_recorded(
         &self,
-        policies: &GamePolicies,
+        policies: &WorkloadPolicies,
     ) -> Result<MetroidCampaignRun, Box<dyn Error>> {
         let expected = self.policies(&MetroidCampaignRun);
         if policies != &expected {
@@ -613,7 +646,7 @@ impl InputPolicy for MetroidGame {
 }
 
 impl TargetExecution for MetroidGame {
-    fn action_time_fn(&self) -> fn(&ButtonChord) -> u64 {
+    fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
 
@@ -643,8 +676,8 @@ impl TargetExecution for MetroidGame {
         target.restore(snapshot)
     }
 
-    fn frames_clocked(&self, target: &MetroidTarget) -> u64 {
-        target.frames_clocked()
+    fn execution_work(&self, target: &MetroidTarget) -> u64 {
+        target.execution_work()
     }
 
     fn apply_action(
@@ -676,10 +709,14 @@ impl TargetExecution for MetroidGame {
         suffix: &[ButtonChord],
         max_actions: usize,
         retention: RetentionPolicy,
+        stop_rollout_on_objective: bool,
     ) -> Result<MetroidCampaignJobResult, Box<dyn Error>> {
         target.restore(origin_snapshot)?;
         for action in replay {
             target.apply(action);
+            if self.execution_disposition(target).is_terminal() {
+                break;
+            }
         }
         execute_suffix(
             target,
@@ -689,24 +726,28 @@ impl TargetExecution for MetroidGame {
             suffix,
             max_actions,
             retention,
+            stop_rollout_on_objective,
         )
     }
 }
 
 impl Evaluation for MetroidGame {
-    fn is_terminal(&self, target: &MetroidTarget) -> bool {
-        target.is_dead() || target.is_victory() || target.exit_kind() != ExitKind::Ok
+    fn execution_disposition(&self, target: &MetroidTarget) -> ExecutionDisposition {
+        if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if target.is_dead() {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        }
     }
 
-    fn is_run_terminal(
+    fn objective_reached(
         &self,
         _run: &MetroidCampaignRun,
         target: &MetroidTarget,
     ) -> Result<bool, Box<dyn Error>> {
-        if target.exit_kind() != ExitKind::Ok {
-            return Err("Metroid terminal predicate cannot inspect a failed emulator".into());
-        }
-        Ok(target.is_dead() || target.is_victory())
+        Ok(target.exit_kind() == ExitKind::Ok && target.is_victory())
     }
 
     fn current_key(&self, target: &MetroidTarget) -> Result<MetroidArchiveKey, Box<dyn Error>> {
@@ -908,9 +949,7 @@ mod tests {
             action: ButtonChord::new(0, 1),
             observations: vec![observation],
             milestones: MetroidMilestones::default(),
-            dead: false,
-            victory: false,
-            failed: false,
+            outcome: Outcome::default(),
             candidate: None,
         };
         for publish in [false, true] {

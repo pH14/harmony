@@ -167,11 +167,11 @@ fn run_correctness_probes(
     let continuation = ButtonChord::new(0x80, 12);
     target.apply(&continuation);
     let first = (target.observe(), target.fingerprint());
-    let first_lifetime_frame = target.frames_clocked();
+    let first_lifetime_frame = target.execution_work();
     target.restore(&branch)?;
     target.apply(&continuation);
     let second = (target.observe(), target.fingerprint());
-    let second_lifetime_frame = target.frames_clocked();
+    let second_lifetime_frame = target.execution_work();
     if first != second {
         return Err("STB same-continuation snapshot replay diverged".into());
     }
@@ -199,10 +199,10 @@ fn run_correctness_probes(
 
     target.restore(&genesis)?;
     let before_probe = (target.observe(), target.fingerprint());
-    let before_probe_lifetime_frame = target.frames_clocked();
+    let before_probe_lifetime_frame = target.execution_work();
     let probe_survived = target.survives_probe(0, 45);
     let after_probe = (target.observe(), target.fingerprint());
-    let after_probe_lifetime_frame = target.frames_clocked();
+    let after_probe_lifetime_frame = target.execution_work();
     if before_probe != after_probe || target.exit_kind() != nes_workload::target::ExitKind::Ok {
         return Err(
             "STB admission probe failed its live-RAM and cached-state restoration checks".into(),

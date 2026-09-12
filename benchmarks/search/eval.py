@@ -191,7 +191,7 @@ def run_one(job,request,args,cpus,build,host):
                 elapsed=time.monotonic()-started
                 current=metrics.sample();disk=disk_usage(root);progress=tail.read()
                 stage=read_json(campaign/'phase.json',{}).get('phase','preparation')
-                frames=progress.get('frames_emulated',0)
+                frames=progress.get('execution_work',0)
                 delta=elapsed-last_time
                 sample={'elapsed_seconds':elapsed,'phase':stage,**current,'disk':disk,'executions':progress.get('executions',0),'frames_emulated':frames,'interval_frames_per_second':max(0,frames-last_frames)/delta if delta>0 and stage=='search' and last_phase=='search' else None,'search':progress}
                 telemetry.write(json.dumps(sample,separators=(',',':'),allow_nan=False)+'\n');telemetry.flush()
@@ -383,7 +383,7 @@ def compare(base, candidate):
             row[label] = {'solved': r.get('solved'), 'frames_to_victory': r.get('frames_to_first_victory'),
                           'result_slots': value['search_request'].get('result_slots', 1),
                           'stream_sha256': r.get('stream_sha256'),
-                          'frames': r.get('frames_emulated', progress.get('frames_emulated')),
+                          'frames': r.get('frames_emulated', progress.get('execution_work')),
                           'search_seconds': r.get('search_seconds'), 'frames_per_second': r.get('frames_per_second'),
                           'peak_rss': value.get('max_process_rss_bytes'), 'peak_disk': value.get('peak_disk_logical_bytes_sampled'),
                           'progress': r.get('progress', progress.get('progress')),

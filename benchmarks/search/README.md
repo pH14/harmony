@@ -188,12 +188,13 @@ limit, then drains admitted work and verifies evidence.
   novelty ledger is compacted under memory pressure and is not cumulative world
   coverage. Aggregate evidence
   can combine explored branches; it is not a claimed single trajectory.
-- **Throughput:** actual admitted emulator frames / search wall time and
-  executions / search wall time. Frames include snapshot-to-parent replay,
-  suffix execution and admission probes. Power-on worker construction is inside
-  the timed search call but excluded from its admitted frame counter. Final
-  internal campaign compaction is also inside this timer. External report
-  export and witness/campaign verification have separate durations.
+- **Throughput:** actual admitted NES execution work in frames / search wall
+  time and executions / search wall time. Work includes snapshot-to-parent
+  replay and suffix execution, while admission probes and power-on setup stay
+  outside the logical counter. Power-on worker construction is inside the timed
+  search call but excluded from its admitted work counter. Final internal
+  campaign compaction is also inside this timer. External report export and
+  witness/campaign verification have separate durations.
 - **Memory:** sampled process-group RSS by phase, OS maximum process RSS, logical
   archive/snapshot/index/history/draw-state charges, evictions and compactions.
   OS RSS and logical charges answer different questions and are both retained.
@@ -210,8 +211,9 @@ limit, then drains admitted work and verifies evidence.
 - **I/O and CPU:** sampled `/proc` read/write bytes, CPU seconds and OS block
   operation/context-switch counts. The final sampled byte totals are lower bounds
   if a process exits between samples; block operations are not byte counts.
-- **Coordinator:** optional phase timing and dispatched action budgets. Requested
-  replay/suffix time is labelled separately from actual emulator frame work.
+- **Coordinator:** optional phase timing and dispatched action costs. Declared
+  replay/suffix cost is labelled separately from actual execution work; this
+  NES adapter reports that work in frames.
 
 The HTML run table and Metroid milestone table show peak process RSS, the last
 reported logical archive charge, and peak sampled output disk in MiB. In the
@@ -292,13 +294,13 @@ sources and exercises the common binary, runner, full campaign replay and compac
 export; its short qualification budgets do not claim whole-game completion.
 
 For comparisons across different suffix lengths, set `search.frames` to a
-positive admitted-frame budget as well as an execution ceiling and wall limit.
-Selection stops at the frame threshold and drains the existing reservation
-window. Total work can therefore exceed the threshold; the overshoot is logged.
-A victory first observed beyond the frame budget is preserved and verified as
-evidence but does **not** pass the suite's success gate. The optional frame
-budget is recorded in the deterministic header/report. Omitting it preserves
-historical campaign behavior and byte format.
+positive NES-frame work budget as well as an execution ceiling and wall limit.
+Selection stops when measured work reaches the threshold and drains the
+existing reservation window. Total work can therefore exceed the threshold;
+the overshoot is logged. A victory first observed beyond the frame budget is
+preserved and verified as evidence but does **not** pass the suite's success
+gate. The optional work budget is recorded in the deterministic header/report.
+Omitting it leaves the campaign without a work-budget cutoff.
 
 ## Deep progress and historical comparisons
 

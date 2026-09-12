@@ -159,7 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut lines = reader.split(b'\n');
     let header_line = lines.next().ok_or("stream is empty")??;
     let header: SmbCampaignStreamHeader = serde_json::from_slice(&header_line)?;
-    if header.parent_scheduler != "room_cell_uniform_128" {
+    if header.parent_scheduler != "hierarchy_uniform_128" {
         return Err(format!("unexpected parent scheduler {}", header.parent_scheduler).into());
     }
     for line in lines {

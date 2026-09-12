@@ -150,9 +150,9 @@ the ROM. Search chords combine nine non-conflicting direction states with the
 four A/B states. Select is excluded because it has no gameplay action in this
 mode; Start is excluded because it pauses the match. Durations are sampled as
 short holds of 2--12 frames or long holds of 48--120 frames. The primary
-campaign uses ordinary `AdmitAlive` admission, `OneToSix` suffixes, and the
+campaign uses ordinary `Unprobed` admission, `OneToSix` suffixes, and the
 game-neutral `AlphabetOnly` draw mixture. The repaired survival helper is
-standalone probe code; `ProbeAtAdmission45` is explicitly rejected because
+standalone probe code; `ProbeAtAdmission` is explicitly rejected because
 the primary mode has no demonstrated admission problem.
 
 ## Evidence and compatibility
@@ -175,10 +175,13 @@ schema also changed. Recordings from the earlier v2 policy require the previous
 implementation; the PR preserves that history and its qualification evidence.
 Compare searcher changes only with the same recorded adapter policy.
 
-`frames_emulated` measures actual emulator work, including the short terminal
-prefix re-execution needed to align the saved endpoint. It is not the number
-of unique game frames explored. The champion tape and observation carry the
-separate logical frame count.
+The NES adapter's `frames_emulated` report field is its translation of the
+generic `execution_work` counter into frames. It measures frames emitted by
+logical gameplay actions, including frames produced before a later observation
+read or decode fails. Setup, backend snapshot replay,
+endpoint alignment, and standalone probes stay outside the counter. It is not
+the number of unique game frames explored. The champion tape and observation
+carry the separate logical frame count.
 
 ## Continuous evaluation
 
