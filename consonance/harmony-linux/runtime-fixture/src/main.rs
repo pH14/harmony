@@ -42,6 +42,16 @@ fn run_verify() -> Result<(), Box<dyn std::error::Error>> {
     if groups.split_whitespace().nth(1).is_some() {
         return Err("application inherited supplementary groups".into());
     }
+    if fs::read_to_string("/proc/self/cgroup")?.trim() != "0::/runtime"
+        || !fs::read_to_string("/sys/fs/cgroup/cgroup.procs")?
+            .trim()
+            .is_empty()
+        || !fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")?
+            .split_whitespace()
+            .any(|controller| controller == "pids")
+    {
+        return Err("container cgroup delegation mismatch".into());
+    }
     let mut sdk = Sdk::init(
         DeviceTransport::open()?,
         &[

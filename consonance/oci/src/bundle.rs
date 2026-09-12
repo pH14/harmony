@@ -139,6 +139,7 @@ pub fn prepare(
         "/dev/pts",
         "/dev/shm",
         "/sys",
+        "/sys/fs/cgroup",
         "/run",
         "/tmp",
         SUPERVISOR_PATH,
@@ -313,6 +314,12 @@ fn runc_spec(external_inputs: &[ValidatedExternalInput]) -> serde_json::Value {
             "options": ["nosuid", "noexec", "nodev", "ro"]
         }),
         json!({
+            "destination": "/sys/fs/cgroup",
+            "type": "cgroup",
+            "source": "cgroup",
+            "options": ["nosuid", "noexec", "nodev", "rw"]
+        }),
+        json!({
             "destination": "/run",
             "type": "tmpfs",
             "source": "tmpfs",
@@ -386,6 +393,7 @@ fn runc_spec(external_inputs: &[ValidatedExternalInput]) -> serde_json::Value {
                 { "type": "ipc" },
                 { "type": "uts" },
                 { "type": "mount" },
+                { "type": "cgroup" },
                 { "type": "network" }
             ]
         }

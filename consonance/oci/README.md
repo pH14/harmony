@@ -37,6 +37,13 @@ guest root is made recursively private before launch; the container uses
 The generated device policy contains four numeric placeholders. Platform PID 1
 resolves them from the two kernel-created character devices before invoking
 `runc`, allowing read/write access to their exact major/minor pairs.
+Each container has a private cgroup namespace with a writable cgroup v2 mount.
+The supervisor first creates a delegated child below the cgroup holding the
+device policy, then enters a new cgroup namespace rooted at that child and
+remounts the view. It moves itself and its future children into a `runtime`
+leaf, leaving the delegated root empty and enabling its available controllers.
+Nested runtimes can manage sibling subtrees without accessing the guest's
+outer cgroup hierarchy or widening the parent device policy.
 
 Rootfs and control-segment assembly are internal to `bundle::prepare`, which
 validates their combined mount layout before producing executable bytes.

@@ -7,6 +7,13 @@ does not accept command-line policy: a missing bundle runs the document's
 command once, while a bundle path selects the same binary's structured node,
 hook, readiness, and standing-window path.
 
+Before starting children, the supervisor creates a delegated child below the
+device-policy cgroup, enters a cgroup namespace rooted there, and replaces the
+mounted view. It moves into the delegated cgroup's `runtime` leaf and enables
+available controllers at its empty namespace root.
+The writable cgroup mount exposes only this container's subtree, so nested
+runtimes can create sibling cgroups without managing the outer guest hierarchy.
+
 The supervisor owns its child process groups and reaps descendants in the PID
 namespace. Every child receives the resolved uid, gid, and supplemental groups
 from the execution document. The supervisor retains its own privilege for

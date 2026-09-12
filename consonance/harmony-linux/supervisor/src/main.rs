@@ -13,16 +13,16 @@ enum RunOutcome {
 fn main() {
     match run() {
         Ok(RunOutcome::Application(code)) => {
-            println!("HARMONY_OCI_APP_EXIT rc={code}");
+            println!("\nHARMONY_OCI_APP_EXIT rc={code}");
             std::process::exit(i32::from(code));
         }
         Ok(RunOutcome::SupervisorFailure { code, error }) => {
-            println!("HARMONY_OCI_SUPERVISOR_FAILURE rc={code}");
+            println!("\nHARMONY_OCI_SUPERVISOR_FAILURE rc={code}");
             eprintln!("harmony-supervisor: {error}");
             std::process::exit(i32::from(code));
         }
         Err(error) => {
-            println!("HARMONY_OCI_SUPERVISOR_FAILURE rc=1");
+            println!("\nHARMONY_OCI_SUPERVISOR_FAILURE rc=1");
             eprintln!("harmony-supervisor: {error}");
             std::process::exit(1);
         }
@@ -32,6 +32,8 @@ fn main() {
 fn run() -> Result<RunOutcome, String> {
     let spec = ExecutionSpec::read(Path::new(EXECUTION_PATH))
         .map_err(|error| format!("{EXECUTION_PATH}: {error}"))?;
+    #[cfg(target_os = "linux")]
+    prepare_cgroup().map_err(|error| format!("delegated cgroup: {error}"))?;
     match spec.bundle.as_deref() {
         None => Ok(run_application(&spec)),
         Some(bundle) => {
@@ -41,6 +43,52 @@ fn run() -> Result<RunOutcome, String> {
             })
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_cgroup() -> std::io::Result<()> {
+    let root = Path::new("/sys/fs/cgroup");
+    std::fs::create_dir(root.join("delegated"))?;
+    std::fs::write(root.join("delegated/cgroup.procs"), "0")?;
+    enable_controllers(root)?;
+    // SAFETY: This single-threaded startup stage has no application children;
+    // the fixed flag creates a namespace rooted at the current cgroup.
+    if unsafe { libc::unshare(libc::CLONE_NEWCGROUP) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: The path is a static NUL-terminated string and all handles into
+    // the old mount have been closed before it is removed.
+    if unsafe { libc::umount2(c"/sys/fs/cgroup".as_ptr(), 0) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: All strings are static and NUL-terminated; no mount data is
+    // passed. The new view excludes the ancestor holding the device policy.
+    if unsafe {
+        libc::mount(
+            c"none".as_ptr(),
+            c"/sys/fs/cgroup".as_ptr(),
+            c"cgroup2".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+            std::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    std::fs::create_dir(root.join("runtime"))?;
+    std::fs::write(root.join("runtime/cgroup.procs"), "0")?;
+    enable_controllers(root)
+}
+
+#[cfg(target_os = "linux")]
+fn enable_controllers(root: &Path) -> std::io::Result<()> {
+    let controllers = std::fs::read_to_string(root.join("cgroup.controllers"))?;
+    let enable = controllers
+        .split_whitespace()
+        .map(|controller| format!("+{controller}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    std::fs::write(root.join("cgroup.subtree_control"), enable)
 }
 
 fn run_application(spec: &ExecutionSpec) -> RunOutcome {

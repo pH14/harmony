@@ -9,7 +9,7 @@ BUNDLE=/harmony-oci
 CONTAINER_ID=harmony
 
 log() {
-    printf '%s\n' "$*"
+    printf '\n%s\n' "$*"
 }
 
 finish() {

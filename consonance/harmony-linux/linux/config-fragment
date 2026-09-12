@@ -125,6 +125,7 @@ CONFIG_PCI=y
 ## Kernel/userspace surface the image actually needs
 # Everything is built in; no module loader, no runtime code variability.
 # CONFIG_MODULES is not set
+# CONFIG_FHANDLE is not set
 # printk + 8250 serial console: the only output channel (console=ttyS0).
 CONFIG_PRINTK=y
 CONFIG_TTY=y

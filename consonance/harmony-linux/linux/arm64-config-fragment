@@ -123,6 +123,7 @@ CONFIG_STRICT_KERNEL_RWX=y
 
 ## Determinism exclusions
 # CONFIG_MODULES is not set
+# CONFIG_FHANDLE is not set
 # CONFIG_BPF_JIT is not set
 # CONFIG_KPROBES is not set
 # CONFIG_FUNCTION_TRACER is not set

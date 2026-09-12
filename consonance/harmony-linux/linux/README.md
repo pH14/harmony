@@ -17,6 +17,10 @@ lifecycle.
 Cgroup v2 device enforcement requires `BPF_SYSCALL` and `CGROUP_BPF` for
 `runc`. Both architectures use the BPF interpreter with `BPF_JIT` disabled,
 so cgroup policy does not introduce dynamically generated kernel instructions.
+`FHANDLE` is disabled: `name_to_handle_at` and `open_by_handle_at` are outside
+the supported execution contract. This keeps privileged payloads inside the
+delegated cgroup view rather than exposing its device-policy ancestor through
+filesystem or namespace handles.
 
 ## Canonical artifacts
 
