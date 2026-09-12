@@ -55,6 +55,15 @@ pub struct SparsePortableSnapshotReceipt {
     pub tainted: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortableExecutionComparison {
+    pub equal: bool,
+    pub left_trace_events: u64,
+    pub right_trace_events: u64,
+    pub left_trace_schedules: u64,
+    pub right_trace_schedules: u64,
+}
+
 pub(crate) struct SparsePortableSidecar {
     pub(crate) vm_state: Vec<u8>,
     pub(crate) sdk: Option<SdkSnapshot>,
@@ -285,6 +294,50 @@ impl PortableSnapshot {
             control_state,
         })
     }
+}
+
+pub fn compare_portable_execution_state(
+    left: &[u8],
+    right: &[u8],
+    expected_memory_len: usize,
+) -> Result<PortableExecutionComparison, PortableSnapshotError> {
+    let (left_version, left_trace_events, left_trace_schedules) = {
+        let decoded = PortableSnapshot::read_from(left, expected_memory_len)?;
+        let values = (
+            u16::from_le_bytes([left[8], left[9]]),
+            decoded.trace_events,
+            decoded.trace_schedules,
+        );
+        drop(decoded);
+        values
+    };
+    let (right_version, right_trace_events, right_trace_schedules) = {
+        let decoded = PortableSnapshot::read_from(right, expected_memory_len)?;
+        let values = (
+            u16::from_le_bytes([right[8], right[9]]),
+            decoded.trace_events,
+            decoded.trace_schedules,
+        );
+        drop(decoded);
+        values
+    };
+    let trace_start = |version| match version {
+        V3_VERSION | LEGACY_VERSION => 60,
+        V5_VERSION | VERSION => 68,
+        _ => unreachable!(),
+    };
+    let left_trace_start = trace_start(left_version);
+    let right_trace_start = trace_start(right_version);
+    let equal = left[..left_trace_start] == right[..right_trace_start]
+        && left[left_trace_start + 16..left.len() - 32]
+            == right[right_trace_start + 16..right.len() - 32];
+    Ok(PortableExecutionComparison {
+        equal,
+        left_trace_events,
+        right_trace_events,
+        left_trace_schedules,
+        right_trace_schedules,
+    })
 }
 
 pub(crate) fn encode_sparse_sidecar(
@@ -1213,6 +1266,90 @@ mod tests {
         .write_to(&mut bytes)
         .unwrap();
         bytes
+    }
+
+    #[test]
+    fn compare_portable_execution_ignores_trace_metadata_for_each_version() {
+        let mut version_six = encoded_with_control_state(b"control");
+        version_six[8..10].copy_from_slice(&VERSION.to_le_bytes());
+        refresh_digest(&mut version_six);
+        let artifacts = [
+            include_bytes!("../tests/fixtures/sdk-v3-full.bin").to_vec(),
+            include_bytes!("../tests/fixtures/sdk-v4-full-pending.bin").to_vec(),
+            encoded_with_control_state(b"control"),
+            version_six,
+        ];
+        for original in artifacts {
+            let version = u16::from_le_bytes(original[8..10].try_into().unwrap());
+            let trace_start = match version {
+                V3_VERSION | LEGACY_VERSION => 60,
+                V5_VERSION | VERSION => 68,
+                _ => unreachable!(),
+            };
+            let mut changed = original.clone();
+            changed[trace_start..trace_start + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+            changed[trace_start + 8..trace_start + 16]
+                .copy_from_slice(&(u64::MAX - 1).to_le_bytes());
+            refresh_digest(&mut changed);
+            let comparison = compare_portable_execution_state(&original, &changed, 8192).unwrap();
+            assert!(comparison.equal);
+            assert_eq!(comparison.left_trace_events, 17);
+            assert_eq!(comparison.right_trace_events, u64::MAX);
+            assert_eq!(comparison.left_trace_schedules, 5);
+            assert_eq!(comparison.right_trace_schedules, u64::MAX - 1);
+        }
+    }
+
+    #[test]
+    fn compare_portable_execution_rejects_execution_and_version_differences() {
+        let left = encoded_with_control_state(b"control");
+        let vm_state_start = 116 + 8192;
+        let vm_state_len = u64::from_le_bytes(left[20..28].try_into().unwrap()) as usize;
+        let sdk_len = u64::from_le_bytes(left[28..36].try_into().unwrap()) as usize;
+        let sdk_last_threshold = vm_state_start + vm_state_len + sdk_len - 8;
+        for index in [
+            52,
+            60,
+            84,
+            116,
+            vm_state_start,
+            sdk_last_threshold,
+            left.len() - 33,
+        ] {
+            let mut right = left.clone();
+            right[index] ^= 1;
+            refresh_digest(&mut right);
+            let comparison = compare_portable_execution_state(&left, &right, 8192).unwrap();
+            assert!(!comparison.equal, "byte index {index}");
+        }
+
+        let version_four = include_bytes!("../tests/fixtures/sdk-v4-full-pending.bin");
+        let comparison = compare_portable_execution_state(&version_four[..], &left, 8192).unwrap();
+        assert!(!comparison.equal);
+    }
+
+    #[test]
+    fn compare_portable_execution_rejects_invalid_digest_in_trace_metadata() {
+        let left = encoded_with_control_state(b"control");
+        let mut right = left.clone();
+        right[68] ^= 1;
+        for (expected, actual) in [(&left, &right), (&right, &left)] {
+            assert!(matches!(
+                compare_portable_execution_state(expected, actual, 8192),
+                Err(PortableSnapshotError::DigestMismatch)
+            ));
+        }
+    }
+
+    #[test]
+    fn compare_portable_execution_rejects_trailing_bytes() {
+        let left = encoded_with_control_state(b"control");
+        let mut right = left.clone();
+        right.push(0);
+        assert!(matches!(
+            compare_portable_execution_state(&left, &right, 8192),
+            Err(PortableSnapshotError::Malformed("trailing bytes"))
+        ));
     }
 
     fn sparse_sidecar_fixture() -> Vec<u8> {

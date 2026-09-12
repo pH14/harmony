@@ -42,6 +42,12 @@ lengths are bounded by the supplied input. Readers retain v3–v5 compatibility.
 Whole-VM capture preserves pending SDK stops and is side-effect-free for a
 pending pvclock registration, carrying its GPA, `armed = false` state, and page
 bytes so the next handshake resumes from the same state.
+`compare_portable_execution_state` strictly validates two complete artifacts,
+then compares their persisted bytes while ignoring only the stored
+`trace_events` and `trace_schedules` counters and independently checked envelope
+digests. It reports those counters for diagnostics; they are not restore inputs,
+and the helper does not change live trace scheduling or establish backend
+admissibility or future execution equivalence.
 Pvclock-bearing device records explicitly preserve the registered page GPA,
 registration capability, and pending-versus-armed handshake state. Pending
 registrations use x86 v5 and arm64 v9–12; already-representable states retain

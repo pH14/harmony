@@ -80,6 +80,12 @@ pub vmm_core::portable_snapshot::PortableSnapshotError::Length::section: &'stati
 pub vmm_core::portable_snapshot::PortableSnapshotError::Malformed(&'static str)
 pub vmm_core::portable_snapshot::PortableSnapshotError::Snapshot(vmm_core::snapshot::SnapshotError)
 pub vmm_core::portable_snapshot::PortableSnapshotError::UnknownSnapshot(u64)
+pub struct vmm_core::portable_snapshot::PortableExecutionComparison
+pub vmm_core::portable_snapshot::PortableExecutionComparison::equal: bool
+pub vmm_core::portable_snapshot::PortableExecutionComparison::left_trace_events: u64
+pub vmm_core::portable_snapshot::PortableExecutionComparison::left_trace_schedules: u64
+pub vmm_core::portable_snapshot::PortableExecutionComparison::right_trace_events: u64
+pub vmm_core::portable_snapshot::PortableExecutionComparison::right_trace_schedules: u64
 pub struct vmm_core::portable_snapshot::SparsePortableSnapshot
 pub vmm_core::portable_snapshot::SparsePortableSnapshot::pages: alloc::vec::Vec<(u64, alloc::sync::Arc<[u8; 4096]>)>
 pub vmm_core::portable_snapshot::SparsePortableSnapshot::sidecar: alloc::vec::Vec<u8>
@@ -90,6 +96,7 @@ pub vmm_core::portable_snapshot::SparsePortableSnapshotReceipt::sdk_events: u64
 pub vmm_core::portable_snapshot::SparsePortableSnapshotReceipt::tainted: bool
 pub vmm_core::portable_snapshot::SparsePortableSnapshotReceipt::trace_events: u64
 pub vmm_core::portable_snapshot::SparsePortableSnapshotReceipt::trace_schedules: u64
+pub fn vmm_core::portable_snapshot::compare_portable_execution_state(&[u8], &[u8], usize) -> core::result::Result<vmm_core::portable_snapshot::PortableExecutionComparison, vmm_core::portable_snapshot::PortableSnapshotError>
 pub mod vmm_core::session_trace
 pub enum vmm_core::session_trace::ContinuationDivergence
 pub vmm_core::session_trace::ContinuationDivergence::BoundaryHashCount
