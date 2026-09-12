@@ -1,0 +1,9 @@
+[package]
+name = "process-proto"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Generic process action and standing-window wire types"
+
+[lints]
+workspace = true

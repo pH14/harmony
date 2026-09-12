@@ -289,6 +289,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution-proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -299,6 +308,7 @@ name = "fault-policy"
 version = "0.1.0"
 dependencies = [
  "environment",
+ "process-proto",
  "thiserror",
 ]
 
@@ -582,6 +592,10 @@ checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "process-proto"
+version = "0.1.0"
 
 [[package]]
 name = "proptest"
