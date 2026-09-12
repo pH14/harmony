@@ -90,6 +90,10 @@ exclude_globs = [
 
 # Equivalent mutations in portable logic.
 exclude_re = [
+    # Linux PROT_READ (1) and PROT_WRITE (2) are disjoint ABI bits, so OR
+    # and XOR select the identical protection flags. The AND mutation remains
+    # gated by observation mapping tests that assert the syscall arguments.
+    "consonance/hypercall-doorbell/src/observation\\.rs:[0-9]+:[0-9]+: replace \\| with \\^ in Observation::create_with$",
     "consonance/vmm-backend/src/arch/x86/mod\\.rs:.*replace <impl ArchExit for X86Exit>::stages_completion -> bool with true",
     # The nominal handler has empty configuration and no dynamic state.
     # Empty borrowed/owned slices have the same byte contract; Vec::new() and
