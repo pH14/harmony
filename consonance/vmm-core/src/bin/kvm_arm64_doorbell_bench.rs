@@ -91,12 +91,7 @@ fn arguments() -> Result<(u64, u64, String), String> {
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 fn guest_image() -> Vec<u8> {
-    const CODE: [u32; 4] = [
-        0xd2a1_4000,
-        0x5280_0001,
-        0xb900_0001,
-        0x17ff_ffff,
-    ];
+    const CODE: [u32; 4] = [0xd2a1_4000, 0x5280_0001, 0xb900_0001, 0x17ff_ffff];
     let mut code = Vec::with_capacity(CODE.len() * 4);
     for word in CODE {
         code.extend_from_slice(&word.to_le_bytes());

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The mock-core seam: the agent's decision and decode logic runs against this
 //! trait, so the portable tests never cross the libretro FFI, need a ROM, or
-//! need an emulator (task 86 §Environment). The binary's `LibretroCore`
+//! need an emulator (§Environment). The binary's `LibretroCore`
 //! (Linux-only, dlopen'd) is the only other implementor.
 
 use crate::ram::{WORK_RAM_LEN, addr};

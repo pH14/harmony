@@ -2,7 +2,7 @@
 //! The SMB RAM-map decode: console work RAM → the game-progress registers.
 //!
 //! Every address below is verified against the doppelganger SMB disassembly
-//! (SMBDIS.ASM — the RAM-map ground truth task 86 names), quoting the exact
+//! (SMBDIS.ASM — the RAM-map ground truth the play-agent names), quoting the exact
 //! label lines:
 //!
 //! ```text
@@ -132,7 +132,7 @@ impl SmbState {
 
     /// The `(world, level)` depth ordinal: `world * 4 + level` — the furthest-
     /// progress metric (`REG_DEPTH`). Warp zones make it jump, which is
-    /// legitimate discovered progress (task 86 §play-agent). Monotone tracking
+    /// legitimate discovered progress (§play-agent). Monotone tracking
     /// is the host's (`state_max`) — this is the instantaneous ordinal.
     pub fn depth_ordinal(&self) -> u64 {
         u64::from(self.world) * LEVELS_PER_WORLD + u64::from(self.level)

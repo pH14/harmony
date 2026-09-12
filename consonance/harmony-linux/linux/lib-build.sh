@@ -61,8 +61,6 @@ ARM64_ART_DIR=$ART_DIR/arm64
 # - native (not the bind-mounted repo), because the repo may sit on a
 #   case-insensitive macOS filesystem, and a kernel tree cannot be extracted
 #   onto one (case-colliding header names).
-# Task 43 necessarily rebaselines the kernel for /dev/harmony, so task 90's
-# stale-string cleanup is folded into that same reproducibility event.
 BUILD_ROOT=${GUEST_BUILD_ROOT:-/tmp/harmony-linux-build}
 
 KSRC=$BUILD_ROOT/linux-$KERNEL_VERSION

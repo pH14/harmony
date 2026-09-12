@@ -4,7 +4,7 @@
 //! The PL011 carries the 8250's *pattern* (`docs/ARCHITECTURE.md`: "the
 //! 8250 UART pattern itself carries"), not its registers: a serial-output
 //! capture the engine's `SERL` hash chunk and the scrape stream read, an
-//! injected-input queue for the task-81 `exec` verb (off-record, live-only —
+//! injected-input queue for the `exec` verb (off-record, live-only —
 //! never hashed, never snapshotted), and a small register-shadow file. The
 //! GICv3 + generic-timer fabric is the `gicv3` crate's, not this module's.
 
@@ -48,7 +48,7 @@ pub(crate) struct Pl011 {
     /// Every byte the guest transmitted (`UARTDR` writes), in order — the
     /// guest-observable serial stream (`SERL` chunk, run result, scrape).
     capture: Vec<u8>,
-    /// Injected serial input (task-81 `exec`): popped by guest `UARTDR` reads.
+    /// Injected serial input (`exec`): popped by guest `UARTDR` reads.
     /// **Off-record by ruling**: live-only, never hashed, never snapshotted,
     /// cleared on restore.
     rx: VecDeque<u8>,
@@ -109,7 +109,7 @@ impl Pl011 {
         &self.capture
     }
 
-    /// Queue bytes on the guest's serial input (task-81 `exec`; off-record).
+    /// Queue bytes on the guest's serial input (`exec`; off-record).
     pub(crate) fn inject_input(&mut self, bytes: &[u8]) {
         self.rx.extend(bytes.iter().copied());
     }

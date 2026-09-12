@@ -17,7 +17,7 @@ pub const APIC_MMIO_SIZE: usize = 0x1000;
 /// numbered from 0 — **CMCI is not modeled**), giving `(5 << 16) | 0x14`.
 pub const APIC_VERSION_VALUE: u32 = 0x0005_0014;
 
-/// Format version of [`LapicState`]. Task 09 (`vm-state`) keys its
+/// Format version of [`LapicState`]. `vm-state` keys its
 /// device-section decoding on this; bump it on any layout change. Version 2
 /// added `timer_pending` (distinguishing a still-loaded count from a consumed
 /// one-shot); version 3 added `count_at_arm` (the count remaining at the anchor,
@@ -77,7 +77,7 @@ pub const APIC_MAX_OFFSET: u32 = 0xFF0;
 /// Plain-data, versioned image of a [`Lapic`](crate::Lapic): the full register
 /// file plus the timer bookkeeping needed to reproduce it observationally.
 ///
-/// This is the struct task 09 (`vm-state`) embeds verbatim in the `vm_state`
+/// This is the struct `vm-state` embeds verbatim in the `vm_state`
 /// blob. Every field is public so it can be serialized field-by-field; with the
 /// `serde` feature it additionally derives `Serialize`/`Deserialize`. It holds
 /// no `HashMap`/`HashSet` and no floats, so equal [`Lapic`](crate::Lapic) states

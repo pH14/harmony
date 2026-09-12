@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The harmony in-guest play-agent (task 86) — the executable.
+//! The harmony in-guest play-agent — the executable.
 //!
 //! Started by the game image's init (`workloads/nes-guest/legacy/game-init.sh`) as the single
 //! supervised workload process: a minimal headless libretro frontend linking
@@ -48,7 +48,7 @@ struct Args {
     #[arg(long)]
     core: Option<String>,
     /// Path to the SMB ROM (falls back to `HARMONY_SMB_ROM`, then the in-image
-    /// default). Never committed or fetched — user-supplied (task 86 §ROM).
+    /// default). Never committed or fetched — user-supplied (§ROM).
     #[arg(long)]
     rom: Option<String>,
     /// The input window `W` in frames (one chord per window).

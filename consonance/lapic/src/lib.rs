@@ -18,7 +18,7 @@
 //! ([`Lapic::has_deliverable`] / [`Lapic::take_interrupt`] / [`Lapic::eoi`]),
 //! and the initial-count→deadline timer model ([`Lapic::advance_to`] /
 //! [`Lapic::next_timer_deadline`]). Its snapshot struct ([`LapicState`]) is
-//! consumed verbatim by task 09 (`vm-state`).
+//! consumed verbatim by `vm-state`.
 //!
 //! ## What stays in `vmm-core`
 //!

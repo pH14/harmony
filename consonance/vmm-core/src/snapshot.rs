@@ -25,7 +25,7 @@
 //!
 //! The KVM-specific mechanics this builds on — the dirty-log drain that yields the
 //! per-snapshot dirty set, and the memslot remap that makes restore O(dirty) rather
-//! than O(image) — live **below the `Backend` trait** in `vmm-backend` (task 08's
+//! than O(image) — live **below the `Backend` trait** in `vmm-backend` (the
 //! measured mechanism). The engine here is portable and
 //! Mac/Miri-testable against plain memory, exactly as `snapshot-store` is.
 
@@ -114,7 +114,7 @@ pub struct SnapshotEngine {
 }
 
 /// Default [`SnapshotEngine::max_chain_len`]: `materialize` is O(chain), so a
-/// dirty-log derive chain (task 95 M2.1) is bounded — at this depth a seal
+/// dirty-log derive chain is bounded — at this depth a seal
 /// flattens through the chain's page sets and dirty window instead of deriving
 /// deeper. 32 sits well below the flat region of the M1 depth-sweep (materialize
 /// was depth-flat at 1/8/32 on the bench machine).
@@ -138,7 +138,7 @@ impl SnapshotEngine {
         self.mem_pages
     }
 
-    /// The configured derive-chain bound (task 95 M2.1): a capture whose parent
+    /// The configured derive-chain bound: a capture whose parent
     /// already has `chain_len >= max_chain_len` must seal as a fresh base using
     /// the chain-flattening page-set walk instead of deriving deeper — keeping
     /// `materialize` O(bounded chain). Default [`DEFAULT_MAX_CHAIN_LEN`].
@@ -295,7 +295,7 @@ impl SnapshotEngine {
 
     /// Materialize `snap`'s full logical image as a private copy-on-write
     /// [`Mapping`] — the host backing the restore points the KVM memslot at (the
-    /// remap mechanism task 08 chose; below the trait). Resolving the chain is
+    /// remap mechanism `vmm-backend` chose; below the trait). Resolving the chain is
     /// O(chain) per gfn, memoized; only non-zero pages touch the sparse tempfile.
     pub fn materialize(&self, snap: SnapshotId) -> Result<Mapping, SnapshotError> {
         Ok(self.store.materialize(snap)?)

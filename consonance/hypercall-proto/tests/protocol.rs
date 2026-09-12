@@ -700,7 +700,7 @@ fn retired_fault_service_id_has_no_package_decoder() {
     assert_eq!(ServiceId::Sdk as u16, 6);
 }
 
-/// The task-110 pvclock registration round-trip: the guest
+/// The pvclock registration round-trip: the guest
 /// `pvclock_register(gpa)` reaches the [`PvclockRegistrar`] service (id 7,
 /// op 1), which validates the page-aligned in-RAM GPA, records it, and answers
 /// the ABI version; a bad GPA is a clean status, never a silent accept.

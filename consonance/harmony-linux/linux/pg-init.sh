@@ -1,10 +1,10 @@
 #!/bin/sh
-# /init of the **bare-Postgres workload image** (task 37). Brings up the kernel
+# /init of the **bare-Postgres workload image**. Brings up the kernel
 # filesystems, loop-mounts the RAM-backed ext4 holding the pre-`initdb`'d PGDATA,
 # starts a real PostgreSQL server, drives a fixed insert/select workload loop, and
 # reaches a clean deterministic terminal. Every byte it prints to ttyS0 (postgres'
 # own stdout/stderr plus the per-iteration query results) is part of the
-# deterministic-twice golden. The workload (task 42) deliberately populates each row
+# deterministic-twice golden. The workload deliberately populates each row
 # with values that *look* nondeterministic — a gen_random_uuid() id and a
 # clock_timestamp() wall-clock column — to prove they come out bit-identical anyway:
 # gen_random_uuid() rides pg_strong_random -> the seeded CRNG, and the clock is

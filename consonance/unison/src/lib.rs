@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 /// Errors surfaced by machines and by the harness itself.
 ///
-/// (The spec sketches this as `struct SubjectError(/* String or enum */)`;
+/// (The spec sketches this as `struct SubjectError(String or enum)`;
 /// the enum form is used so callers can distinguish failure classes.)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SubjectError {

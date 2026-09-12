@@ -1,23 +1,23 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# /init of the **Postgres-on-k3s workload image** (task 49). Selected by the kernel
+# /init of the **Postgres-on-k3s workload image**. Selected by the kernel
 # `rdinit=/k3s-init` cmdline param. Brings up a single-node lightweight Kubernetes
 # cluster (k3s) inside the deterministic guest, then runs a CLIENT pod that makes
 # calls to a POSTGRES server pod over the in-guest CNI (pod -> ClusterIP ->
-# kube-proxy DNAT -> the server pod, all intra-guest), runs the task-42
+# kube-proxy DNAT -> the server pod, all intra-guest), runs the
 # gen_random_uuid()/clock_timestamp() workload, and streams it to ttyS0.
 #
-# **Why this works under the deterministic VMM (the unlock — tasks 47/52/54).**
+# **Why this works under the deterministic VMM.**
 # kubelet + containerd + apiserver + scheduler + controller-manager + kube-proxy +
 # flannel are all Go/multi-goroutine services that busy-spin and depend on
 # preemption. The V-time LAPIC timer PREEMPTS a busy-spinning thread at the
 # seed-deterministic V-time deadline (run_with_deadline), the idle-HLT resume warps to the
-# next deadline (task 52), and the xAPIC MMIO is routed to the deterministic LAPIC
-# model (task 54). So the Go schedulers run, timers/watches/leases fire, and the
+# next deadline, and the xAPIC MMIO is routed to the deterministic LAPIC
+# model. So the Go schedulers run, timers/watches/leases fire, and the
 # cluster converges — deterministically, because every preemption instant is a
 # pure function of the seed. We therefore use NORMAL blocking waits (`sleep`-paced
 # readiness polls): the timer now advances even while this init blocks, so a
-# `sleep` actually wakes (task 52) — this is legitimate sequencing, NOT a
+# `sleep` actually wakes — this is legitimate sequencing, NOT a
 # preemption-dodging cooperative shim (that is banned; the k8s services run for
 # real, driven by the real preemption primitive).
 #
@@ -25,7 +25,7 @@
 # /run/k3s.log (NOT streamed to ttyS0): k8s logs are full of durations/goroutine
 # ordering that need not be bit-identical. ttyS0 carries only curated, deterministic
 # markers (K8S49: ...) + the client pod's workload output (the row|... lines, the
-# seed-derived UUIDs/timestamps) — exactly the task-38 pattern (stream the workload,
+# seed-derived UUIDs/timestamps) — exactly the docker image's pattern (stream the workload,
 # not the debug log). `state_hash` still captures the full deterministic machine.
 
 BB=/bin/busybox
@@ -47,7 +47,7 @@ tail_k3s() {
 # Terminal: print the seeded-CRNG witness (boot_id, identical across same-seed
 # runs), GUEST_READY only on a clean success, then a forced triple-fault reboot
 # (reboot=t,force on the cmdline) — the device_shutdown stall a plain poweroff
-# hits once block I/O has run is bypassed (task 37/38).
+# hits once block I/O has run is bypassed.
 finish() {
     rc=$1
     log "boot_id=$($BB cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
@@ -89,7 +89,7 @@ $BB mount -t tmpfs tmpfs /var/lib/rancher/k3s/agent/containerd
 # Mount the unified hierarchy, move init out of the root cgroup into a leaf (so
 # the root has no member procs and can delegate controllers), and enable the
 # controllers in the root subtree. cpuset is absent (depends on SMP, off per the
-# task-36 audit — single-vCPU has no affinity to partition); cpu/io/memory/pids
+# capability audit — single-vCPU has no affinity to partition); cpu/io/memory/pids
 # give kubelet the controllers it needs for pod cgroups.
 $BB mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
 $BB mkdir -p /sys/fs/cgroup/init
@@ -134,7 +134,7 @@ log "starting k3s server ($(k3s --version 2>/dev/null | $BB head -1)) — log ->
 # controllers, kube-proxy, flannel) are now driven by V-time preemption. Its
 # verbose log stays in a file; only our deterministic markers reach ttyS0.
 # runc on the initramfs ramdisk: the default pivot_root EINVALs ("rootfs on a
-# ramdisk whose root mount has no parent" — task 48). Make containerd's runc-v2
+# ramdisk whose root mount has no parent"). Make containerd's runc-v2
 # shim pass --no-pivot (MS_MOVE+chroot) via a drop-in that the k3s-generated
 # config-v3.toml imports from config-v3.toml.d/ (merged into runc.options).
 $BB mkdir -p /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d
@@ -147,7 +147,7 @@ k3s server --config /etc/rancher/k3s/config.yaml --node-ip="$NODE_IP" >"$K3SLOG"
 K3SPID=$!
 
 # wait_for <max_polls> <desc> <test-cmd...>: poll cooperatively (sleep-paced;
-# the timer wakes us — task 52) until <test-cmd> succeeds. Prints only the
+# the timer wakes us) until <test-cmd> succeeds. Prints only the
 # transition (deterministic), not per-iteration noise. Returns 1 on timeout.
 wait_for() {
     max=$1; desc=$2; shift 2
@@ -184,7 +184,7 @@ wait_for 600 "pod/postgres Ready" \
     || { kc describe pod postgres 2>/dev/null | $BB tail -30; tail_k3s; finish 1; }
 log "POSTGRES_READY the postgres pod is Running and accepting connections"
 
-# 3b. (task 61) start the in-guest flow agent for the client->postgres flow,
+# 3b. Start the in-guest flow agent for the client->postgres flow,
 # BEFORE the client pod exists, while the CNI is up. The agent asks the host
 # `net_decide` once for this flow and enforces the answer on the intra-guest CNI
 # (cni0), targeting the postgres pod IP:5432. The nominal path installs nothing

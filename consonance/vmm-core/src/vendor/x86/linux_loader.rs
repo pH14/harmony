@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Direct 64-bit Linux boot loader (the Firecracker / cloud-hypervisor model) —
 //! hands control to the kernel's **64-bit entry point** directly, with **no**
-//! 16-bit real-mode / bzImage setup-code emulation (integrator ruling,
-//! 2026-06-25).
+//! 16-bit real-mode / bzImage setup-code emulation.
 //!
 //! Given a `bzImage`, an `initramfs.cpio.gz`, the guest RAM size, and a kernel
 //! command line, [`load`] writes everything the kernel needs into guest RAM and
@@ -101,7 +100,7 @@ const TYPE_OF_LOADER_UNDEFINED: u8 = 0xFF;
 /// Top of the low-memory usable E820 region (640 KiB); the `0xA0000..0x100000`
 /// hole (legacy VGA/BIOS) is left unmapped so the kernel never uses it.
 const LOW_RAM_TOP: u64 = 0x000A_0000;
-/// The hypercall-doorbell REQ/RESP pages (task 73): `hypercall-doorbell`'s
+/// The hypercall-doorbell REQ/RESP pages: `hypercall-doorbell`'s
 /// `REQ_GPA` = `0xE000` and `RESP_GPA` = `0xF000` — two 4 KiB pages the guest SDK
 /// stages its request/response frames in. They fall inside the usable low-RAM
 /// span, so the E820 map **reserves** `[0xE000, 0x10000)` (splitting entry 0):
@@ -262,7 +261,7 @@ pub struct BootParams {
     /// `0x070`), little-endian. Pointing the SMP kernel at our MADT (whose
     /// Local-APIC entry sets `acpi_lapic`) flips `apic_intr_mode` from
     /// `APIC_VIRTUAL_WIRE_NO_CONFIG` to `APIC_VIRTUAL_WIRE`, which is what makes
-    /// `native_smp_prepare_cpus` register the LAPIC-timer clockevent (task 56).
+    /// `native_smp_prepare_cpus` register the LAPIC-timer clockevent.
     pub acpi_rsdp_addr: [u8; 8],
     /// Bytes `0x078..0x1e8` (rest of the pre-`e820_entries` header) — zeroed.
     _head2: [u8; 0x1e8 - 0x078],
@@ -744,7 +743,7 @@ fn acpi_checksum(bytes: &[u8]) -> u8 {
 /// `acpi_lapic` (=> `apic_intr_mode == APIC_VIRTUAL_WIRE`) without enabling the
 /// IO-APIC routing the VMM does not model. With `CONFIG_SMP=y` that is exactly what
 /// makes `native_smp_prepare_cpus` set up the LAPIC-timer clockevent so the periodic
-/// tick fires and the tree-RCU idle `HLT` resumes (task 56). All bytes are static
+/// tick fires and the tree-RCU idle `HLT` resumes. All bytes are static
 /// (no timestamps) => byte-identical every boot, so the tables are part of the
 /// deterministic guest input.
 fn write_acpi_tables(mem: &mut [u8]) -> Result<(), LinuxLoadError> {
@@ -844,7 +843,7 @@ mod tests {
     use super::*;
     use core::mem::{offset_of, size_of};
 
-    /// The minimal ACPI tables (RSDP → XSDT → MADT, task 56 MADT+ARAT keystone) are
+    /// The minimal ACPI tables (RSDP → XSDT → MADT, the MADT+ARAT keystone) are
     /// fully static, so their exact bytes are pinned here. This is both a determinism
     /// guard on the ACPI guest input and a mutation guard: it fixes the computed 1-byte
     /// checksums (`madt[9]`, `xsdt[9]`, `rsdp[8]`, `rsdp[32]`), the RSDP→XSDT→MADT GPA
@@ -1337,8 +1336,8 @@ mod tests {
         ));
     }
 
-    /// E820 reservation splits: the 4 KiB xAPIC LAPIC MMIO page (task 54, gate 1)
-    /// and the two hypercall-doorbell pages `[0xE000, 0x10000)` (task 73). Each is
+    /// E820 reservation splits: the 4 KiB xAPIC LAPIC MMIO page
+    /// and the two hypercall-doorbell pages `[0xE000, 0x10000)`. Each is
     /// carved out of usable RAM and marked `E820_RESERVED`, so the kernel never
     /// zeroes it — the LAPIC page routes to the userspace xAPIC model, and the
     /// doorbell pages stay intact for the guest SDK transport. The doorbell split
@@ -1365,7 +1364,7 @@ mod tests {
             (e.addr, e.size, e.type_)
         }
 
-        /// The three low-RAM entries every guest has (task 73): `[0, 0xE000) RAM`,
+        /// The three low-RAM entries every guest has: `[0, 0xE000) RAM`,
         /// the reserved doorbell pages `[0xE000, 0x10000)`, and `[0x10000, 640K)
         /// RAM`. High RAM begins at index 3.
         fn assert_low_split(bp: &BootParams) {
@@ -1464,7 +1463,7 @@ mod tests {
             assert_eq!(entry(&bp, 5), (0, 0, 0));
         }
 
-        /// THE task-73 property: for ANY guest RAM size, the doorbell pages
+        /// The property: for ANY guest RAM size, the doorbell pages
         /// `[0xE000, 0x10000)` are reserved and NEVER inside a usable-RAM E820
         /// entry — so a Linux SDK guest cannot allocate over REQ_GPA/RESP_GPA.
         #[test]
@@ -1526,8 +1525,8 @@ mod tests {
         }
     }
 
-    /// Kernel + initramfs placement must avoid the reserved xAPIC MMIO hole (task 54
-    /// review): a guest-visible image placed in the unmapped page would be written to
+    /// Kernel + initramfs placement must avoid the reserved xAPIC MMIO hole: a
+    /// guest-visible image placed in the unmapped page would be written to
     /// host backing the guest cannot read back.
     mod lapic_hole_placement {
         use super::super::*;

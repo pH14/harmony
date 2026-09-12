@@ -36,7 +36,7 @@ impl SeededEnv {
     }
 
     /// Serialize the **dynamic stream state** — both PRNG positions — so a
-    /// snapshot can resume the exact same supply and fault streams (task 73's
+    /// snapshot can resume the exact same supply and fault streams (the
     /// SDK-channel snapshot). 16 bytes: the supply state, then the fault state,
     /// little-endian. The [`FaultPolicy`] is static (carried by the reproducer),
     /// so it is deliberately **not** part of this.

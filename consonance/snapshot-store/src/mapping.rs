@@ -64,7 +64,7 @@ impl Mapping {
     /// flushed and unmapped before returning, so the caller may then map the same file
     /// copy-on-write via [`Mapping::new`].
     ///
-    /// This replaces a `seek` + `write_all` pair of syscalls per page (task 95 M1.2b).
+    /// This replaces a `seek` + `write_all` pair of syscalls per page.
     pub(crate) fn populate<'a>(
         file: &File,
         len: u64,
@@ -288,5 +288,4 @@ mod tests {
         let err = Mapping::populate(&file, len, std::iter::once((2u64, &p[..]))).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
-
 }

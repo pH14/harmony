@@ -231,7 +231,7 @@ pub(crate) fn split_around_hole(
 /// Decode one KVM dirty bitmap (`KVM_GET_DIRTY_LOG`: one bit per page of the
 /// memslot, bit `n` of word `w` = page `w * 64 + n` of the slot, LSB-first —
 /// i.e. `test_bit` order) into **absolute guest frame numbers**, appended to
-/// `out` in ascending order (task 95 M2.1's portable decode half).
+/// `out` in ascending order (the portable decode half of dirty-page tracking).
 ///
 /// `slot_gpa`/`slot_size` are the memslot's guest-physical base and byte length
 /// (page-aligned, as every registered slot is); bits at or beyond the slot's

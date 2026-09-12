@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Portable integration + property gates for the play-agent brain (task 86
-//! gate 1): chord decode from a fixed entropy stream reproduces a fixed input
+//! Portable integration + property gates for the play-agent brain: chord
+//! decode from a fixed entropy stream reproduces a fixed input
 //! tape; the RAM-map decode is exercised for every register; the billboard
 //! header/layout round-trips; all against the mock core — no ROM, no emulator,
 //! no FFI anywhere.

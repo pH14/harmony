@@ -31,7 +31,7 @@ fn io_out(port: u16, value: u8) -> Exit<X86> {
     })
 }
 
-/// The task-04 UART init writes (none captured): IER, LCR DLAB=1, divisor low/high,
+/// The UART init writes (none captured): IER, LCR DLAB=1, divisor low/high,
 /// LCR 8N1, FCR, MCR.
 fn uart_init() -> Vec<Exit<X86>> {
     vec![

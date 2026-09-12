@@ -18,7 +18,8 @@
 //!   explicit at every call site.
 //! - **Schema-blind to `Reproducer`.** R2 ferries the rollout unit as an
 //!   opaque, versioned blob ([`Reproducer`]) and a per-decision answer as opaque
-//!   [`Answer`]. It never parses them — their structure is task 24's contract.
+//!   [`Answer`]. It never parses them — their structure belongs to a separate
+//!   contract.
 //!   This is what lets R2 be coded ahead of the fault model.
 //!
 //! Two result categories are kept strictly apart (fail-loud): a guest-observable
@@ -68,25 +69,25 @@ pub const PROTO_VERSION: u16 = 1;
 /// `hello` and then hit a mid-session `ProtocolError::ShortFrame` on the first new
 /// tag; bumping the negotiated version makes such a peer reject **at `hello`**
 /// instead (the `caps.protocol_version` mismatch is detectable there — see the
-/// negotiation gate). Bumped to **2** by PR #51 (task 59): the host-plane
+/// negotiation gate). Bumped to **2** by PR #51: the host-plane
 /// enforcement path added the `PerturbOutOfRange` / `PerturbPastMoment` /
 /// `PerturbMomentTaken` / `ScheduleUnsatisfiable` /
-/// `PerturbReservedVector` reply tags. Bumped to **3** by task 73: the
+/// `PerturbReservedVector` reply tags. Bumped to **3**: the
 /// `SdkEvents` verb + `SdkEvents` reply carry the link-tier event capture. Bumped
-/// to **4** by task 73 round-7: the SDK stops (`Assertion` / `SnapshotPoint`) are
+/// to **4**: the SDK stops (`Assertion` / `SnapshotPoint`) are
 /// now gated on their new `StopMask` class bits (8 / 9) rather than surfacing
-/// unconditionally — a semantic change to the `Run` stop set. Bumped to **5** by
-/// task 80: the observation verbs `read` / `regs` add the `Read` / `Regs`
+/// unconditionally — a semantic change to the `Run` stop set. Bumped to **5**:
+/// the observation verbs `read` / `regs` add the `Read` / `Regs`
 /// requests, the `Bytes` / `Regs` reply tags, and the `ReadOutOfRange` /
 /// `ReadTooLarge` error tags — additive, but a peer that negotiated an older
 /// version must reject at `hello` rather than hit a mid-session `ShortFrame` on a
-/// tag it does not know. Bumped to **6** by task 81: the improvisation surface —
+/// tag it does not know. Bumped to **6**: the improvisation surface —
 /// the `Exec` + `RecordedEnv` verbs, the `ExecResult` / `Snapshot` (taint-carrying)
 /// / `Recorded` reply tags, and the `ControlError::Tainted` reply tag. Bumped to
-/// **7** by task 69 M2: the `Console` scrape verb (`Request::Console` /
+/// **7**: the `Console` scrape verb (`Request::Console` /
 /// `Reply::Console`, the socket console-capture tier) extends the wire vocabulary,
 /// so a v≤6 peer must reject at `Hello` rather than fail mid-session on an unknown
-/// tag. Bumped to **8** by task 127 (seal evidence cuts, bead `hm-bbx.6`): the
+/// tag. Bumped to **8** (seal evidence cuts, bead `hm-bbx.6`): the
 /// snapshot reply is now the ONE seal-bound [`Reply::Snapshot`] — handle,
 /// synchronized seal [`Moment`], included SDK-event count, and taint from the same
 /// stopped server state — and the bare-handle `SnapId` reply (wire tag 2) is

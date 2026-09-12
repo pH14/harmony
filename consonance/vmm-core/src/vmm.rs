@@ -43,7 +43,7 @@ pub enum TerminalReason {
     Idle,
     /// Backend `Shutdown` (triple fault / explicit shutdown).
     Shutdown,
-    /// The run stopped at a cooperating-SDK stop (task 73) — an assertion — rather
+    /// The run stopped at a cooperating-SDK stop — an assertion — rather
     /// than swallowing it (round-6): NOT a substrate terminal (the run could
     /// resume), and never latched as [`Vmm`]'s terminal. The stop's details are in
     /// [`RunResult::sdk_stop`].
@@ -75,7 +75,7 @@ const SDK_NS_ASSERT: u8 = 1;
 const SDK_NS_LIFECYCLE: u8 = 4;
 const SDK_DISP_VIOLATION: u8 = 1;
 
-/// A cooperating-SDK stop surfaced by the doorbell (task 73). The detail lives
+/// A cooperating-SDK stop surfaced by the doorbell. The detail lives
 /// here rather than in [`Step`] so `Step` stays `Copy`; the control server drains
 /// it with [`Vmm::take_sdk_stop`] and maps it to the wire `StopReason`.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,7 +104,7 @@ pub enum SdkStop {
 }
 
 /// The host-side action a captured SDK Event emission drives, after
-/// [`Vmm::classify_sdk_event`] validates its payload (task 73 seam 3, round-14).
+/// [`Vmm::classify_sdk_event`] validates its payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum SdkEventAction {
     /// Surface a cooperating-SDK stop (an assert violation) as a bug.
@@ -176,7 +176,7 @@ pub enum Step {
     Continued,
     /// The run reached a terminal state.
     Terminal(TerminalReason),
-    /// A cooperating-SDK stop surfaced (task 73): an `assert` violation stops the
+    /// A cooperating-SDK stop surfaced: an `assert` violation stops the
     /// run as a bug; a `setup_complete` stops it at a snapshot-fork point. The
     /// stop detail lives in the Vmm's SDK channel — drain it with
     /// [`Vmm::take_sdk_stop`]. Only ever produced when an SDK channel is wired.
@@ -187,7 +187,7 @@ pub enum Step {
 pub struct RunResult {
     /// Why the run stopped.
     pub reason: TerminalReason,
-    /// The cooperating-SDK stop the run halted at (task 73), if `reason` is
+    /// The cooperating-SDK stop the run halted at, if `reason` is
     /// [`TerminalReason::SdkStop`] — else `None`. `run` no longer swallows it.
     pub sdk_stop: Option<SdkStop>,
     /// The serial capture buffer, in order.
@@ -197,7 +197,7 @@ pub struct RunResult {
 }
 
 /// The guest-RAM backing a [`Vmm`] owns — either a fresh allocation
-/// ([`GuestRam`]) or, on the task-95 M2.2 **remap restore** path, the private
+/// ([`GuestRam`]) or, on the **remap restore** path, the private
 /// copy-on-write [`snapshot_store::Mapping`] a snapshot materialized into: the
 /// mapping's buffer *is* the memory the backend's memslots register, so a
 /// restore never memcpys the image into a second allocation — untouched pages
@@ -313,7 +313,7 @@ impl GuestRam {
 ///
 /// The seeded stream is the **same** one the `Entropy` hypercall service uses
 /// (`hypercall-proto`), so a guest's `RDRAND` and its hypercall RNG cannot
-/// diverge (task-21 P4). All of this lives **above** the `Backend` trait
+/// diverge. All of this lives **above** the `Backend` trait
 /// (R-Backend): the backend only surfaces/completes the exits; the deterministic
 /// values are computed here.
 pub struct VtimeWiring {
@@ -434,7 +434,7 @@ fn synchronous_checkpoint_due(checkpoint: bool, deferred: bool) -> bool {
     checkpoint && !deferred
 }
 
-/// What an `CommonExit::Idle` should do, decided by [`Vmm::idle_action`] (task 52).
+/// What an `CommonExit::Idle` should do, decided by [`Vmm::idle_action`].
 enum IdleAction {
     /// Terminal halt — `IF == 0`, off the determinism path, or no deliverable wake.
     Terminal,
@@ -448,7 +448,7 @@ enum IdleAction {
 
 /// The deterministic VMM, generic over `B: Backend`. **No method here mentions a
 /// concrete backend.**
-/// The task-73 SDK channel: the host-side state a cooperating guest's hypercall
+/// The SDK channel: the host-side state a cooperating guest's hypercall
 /// doorbell drives. Wired per run by [`Vmm::enable_sdk`]; a guest that never
 /// rings the doorbell leaves its dynamic state untouched. A wired channel's
 /// deterministic state is folded into the state hash; an SDK-less run remains
@@ -558,7 +558,7 @@ impl SdkSnapshot {
     }
 }
 
-/// The task-110 pvclock channel's **replay-relevant** state, captured with a
+/// The pvclock channel's **replay-relevant** state, captured with a
 /// snapshot ([`Vmm::pvclock_snapshot`], `Some` iff the page is offered): the
 /// guest's registration and availability. A restore carries and
 /// cross-validates them; the page bytes themselves ride the RAM
@@ -605,8 +605,8 @@ where
     /// compiler-provably arch-blind (`docs/ARCHITECTURE.md`).
     pub(crate) devices: <B::A as Vendor>::Devices,
     /// Guest frame numbers written **host-side** since the last
-    /// [`Vmm::reset_dirty_tracking`] / [`Vmm::drain_dirty_pages`] drain (task 95
-    /// M2.1). The backend's dirty log sees only *guest* writes (KVM tracks sptes,
+    /// [`Vmm::reset_dirty_tracking`] / [`Vmm::drain_dirty_pages`] drain. The
+    /// backend's dirty log sees only *guest* writes (KVM tracks sptes,
     /// not the userspace mapping), so every place vmm-core itself writes guest
     /// RAM — the doorbell response page, a `CorruptMemory` host fault — records
     /// the touched gfns here, and the drain unions them in. A `BTreeSet` so no
@@ -629,12 +629,12 @@ where
     /// so a stock / M1/M2 run that never touches the port leaves it empty and its
     /// `state_hash` is byte-for-byte unchanged from before this channel existed.
     pub(crate) report_stream: Vec<u32>,
-    /// Diagnostic trace of the idle-resume landings (task 52): the **V-time** (ns) the
+    /// Diagnostic trace of the idle-resume landings: the **V-time** (ns) the
     /// clock was warped to when the guest went idle (`CommonExit::Idle` with `RFLAGS.IF == 1`
     /// and an armed timer) and [`Self::resume_idle`] jumped to the timer deadline. The
     /// dual of [`Self::virtual_time_trace`] — *jumped to* the next event instead of
     /// *executed to* it. It records the **landed V-time** (the deadline), **not** a work
-    /// count: a `HLT` live work read is host-noisy (task-27 O1), so the idle path never
+    /// count: a `HLT` live work read is host-noisy, so the idle path never
     /// reads it; the landing is derived deterministic from the last-intercept anchor + the
     /// timer deadline. **Not** hashed (observability only); deterministic across same-seed
     /// runs and seed-dependent for a seed-consuming guest, so it witnesses the idle path
@@ -688,11 +688,11 @@ where
     /// consulted after an `Idle` exit; normal execution always runs to the next
     /// VM exit and never asks the backend to stop at this value.
     pub(crate) idle_wake_vns: Option<u64>,
-    /// The task-73 SDK channel, wired per run by [`Vmm::enable_sdk`]. `None` for
+    /// The SDK channel, wired per run by [`Vmm::enable_sdk`]. `None` for
     /// every non-SDK path (M1/M2/corpus/Linux-boot) — the doorbell then stays the
     /// default-deny contract violation and this field never touches the hash.
     pub(crate) sdk: Option<SdkChannel>,
-    /// The task-110 paravirt clock channel, offered per composition by
+    /// The paravirt clock channel, offered per composition by
     /// [`Vmm::enable_pvclock`]. `None` (the default) keeps every existing path
     /// byte-for-byte unchanged — the doorbell stays default-deny for the
     /// pvclock service and no page is ever stamped.
@@ -728,7 +728,7 @@ where
     }
 
     /// Construct over an already-configured backend and **either** RAM backing —
-    /// the [`RamBacking::Snapshot`] arm is the task-95 M2.2 remap-restore target
+    /// the [`RamBacking::Snapshot`] arm is the remap-restore target
     /// (see [`crate::bringup::compose_restore_target`]). Same contract as
     /// [`Vmm::new`]: the backend's memslots must already point into `ram`'s
     /// buffer, which this `Vmm` now owns for the backend's lifetime.
@@ -992,7 +992,7 @@ where
     /// [`Vmm::state_hash`] (a `VMST` chunk). Default off, so M1/M2/corpus/Linux-boot
     /// hashes are byte-for-byte unchanged; the snapshot/branch path calls this so a
     /// snapshot's `vm_state` integrity (not just the ad-hoc register layout) drives
-    /// the determinism hash (task 39 Phase 1 / BRINGUP).
+    /// the determinism hash.
     pub fn wire_snapshot_hashing(&mut self) -> &mut Self {
         self.snapshot_hashing = true;
         self
@@ -1028,7 +1028,7 @@ where
     }
 
     /// `true` when this VM's guest RAM is a materialized snapshot's private CoW
-    /// mapping ([`RamBacking::Snapshot`], the task-95 M2.2 remap restore) rather
+    /// mapping ([`RamBacking::Snapshot`], the remap restore) rather
     /// than an owned allocation — the gate evidence that a remap restore
     /// actually engaged (no full-image memcpy happened).
     pub fn ram_backing_is_snapshot(&self) -> bool {
@@ -1137,7 +1137,7 @@ where
     }
 
     /// Inject bytes on the guest's serial input (the 8250 RBR) — the crude,
-    /// off-record transport of task 81's `exec` improvisation. The bytes are
+    /// off-record transport of the `exec` improvisation. The bytes are
     /// consumed FIFO by the guest's serial shell as it reads the RBR; while any are
     /// queued, the COM1 receive line asserts (so an interrupt-driven console picks
     /// them up). **No determinism guarantee**: `exec` taints its timeline by ruling
@@ -1148,14 +1148,14 @@ where
     }
 
     /// The serial output captured so far (the 8250 THR transmit stream) — the same
-    /// buffer the snapshot adapter reads. Task 81's `exec` loop diffs this across
+    /// buffer the snapshot adapter reads. The `exec` loop diffs this across
     /// steps to feed the completion-sentinel scanner.
     pub fn serial_output(&self) -> &[u8] {
         <B::A as Vendor>::serial_capture(&self.devices)
     }
 
     /// The current guest-visible vCPU register file, read **best-effort** and
-    /// **without mutating** the VM — the substrate half of the task-80 `regs`
+    /// **without mutating** the VM — the substrate half of the `regs`
     /// observation verb. Returns the terminal-captured state if the VM is stopped
     /// at one, else a swallowing live `Backend::save` (default on a backend that
     /// cannot save). Identical to the vCPU state the hash folds in
@@ -1171,8 +1171,8 @@ where
     /// `true` iff the live vCPU is at a **non-quiescent** point — its `kvm_vcpu_events`
     /// carries an interrupt or exception KVM has injected but not yet delivered (or the
     /// `#PF`/`#DB` payload / `SIPI` / SMM / a queued triple fault) **in flight**. This is
-    /// exactly the state task 39's quiescent-only snapshot codec **fail-closed-rejected**
-    /// and task 41 now captures, so such a point is snapshottable. Exposed so a control
+    /// exactly the state the original quiescent-only snapshot codec **fail-closed-rejected**
+    /// and non-quiescent capture now captures, so such a point is snapshottable. Exposed so a control
     /// plane or a box gate can quote a run's quiescent-vs-non-quiescent split (gate 1 —
     /// the before/after snapshottable counts) without reaching below the `Backend` trait.
     ///
@@ -1188,7 +1188,7 @@ where
     /// exception/NMI/SMI, a queued triple fault, or a valid SIPI), the *active* subset of
     /// [`Vmm::has_inflight_event_injection`].
     ///
-    /// [`Vmm::has_inflight_event_injection`] reports the full task-39-would-reject set,
+    /// [`Vmm::has_inflight_event_injection`] reports the full would-reject set,
     /// which **also** fires on KVM's inert modifier residuals (a stale `interrupt.nr` /
     /// `exception.has_error_code` left set with every active bit clear). This reports only
     /// a *genuine* injection — an event KVM has committed to that the guest has not yet
@@ -1202,7 +1202,7 @@ where
     /// Overwrite the full guest-memory image on restore. `image` must be exactly the
     /// guest RAM size. On the box, KVM reads the guest through this same backing, so
     /// the restored memory is live on the next `KVM_RUN` — the host-side restore the
-    /// memslot-remap optimization (task 08, below the trait) supersedes for O(dirty)
+    /// memslot-remap optimization (below the trait) supersedes for O(dirty)
     /// latency; correctness is identical either way.
     ///
     /// # Errors
@@ -1300,9 +1300,9 @@ where
     /// (docs/ARCHITECTURE.md) — pair with [`Vmm::guest_memory`] +
     /// [`crate::snapshot::SnapshotEngine`] for the memory half. The vmm-core adapter
     /// that fills `vm-state`'s plain-data structs from the live machine and
-    /// `VmState::encode`s them (task 39 Phase 1).
+    /// `VmState::encode`s them.
     ///
-    /// **Non-quiescent capture (task 41).** A snapshot no longer requires a *quiescent*
+    /// **Non-quiescent capture.** A snapshot no longer requires a *quiescent*
     /// machine: the **full** `kvm_vcpu_events` — an interrupt or exception KVM has
     /// injected but not yet delivered, the `#PF`/`#DB` payload, SMM, triple-fault — is
     /// captured verbatim (device blob) and re-established on restore, so a point with
@@ -1314,11 +1314,11 @@ where
     /// Capture requires no pending SDK stop. Assigned virtual time is exact at
     /// every serviced exit; backend completions are retired before restoring.
     ///
-    /// **The pvclock page is sealed VERBATIM (task 110 §1.1, amended at r4).** A
+    /// **The pvclock page is sealed VERBATIM.** A
     /// seal does not touch guest RAM at all: the clock page rides the memory
     /// image exactly as the guest sees it. Canonicalizing it here — the design
     /// doc's original ruling — would reset a *live* seqlock epoch to a value the
-    /// page has held before, and since task 41 a seal is taken at any
+    /// page has held before, and because a seal is taken at any
     /// V-time-synchronized intercept (not only at an HLT quiescent point) a guest
     /// reader can be straddling one: it would re-read the restored epoch, match,
     /// and accept the values it loaded before the last refresh. Taking a snapshot
@@ -1785,7 +1785,7 @@ where
         &self.report_stream
     }
 
-    /// The idle-resume landings (task 52): the **V-time** (ns) the clock was warped to
+    /// The idle-resume landings: the **V-time** (ns) the clock was warped to
     /// each time the guest went idle (`HLT` with `RFLAGS.IF == 1` and an armed timer) and
     /// [`Self::resume_idle`] jumped to the timer deadline. The dual of
     /// [`Self::virtual_time_trace`] (jumped-to vs executed-to the next event); empty when
@@ -2177,7 +2177,7 @@ where
     /// composition answers `UnknownService` ("not offered"), so a probing
     /// guest cleanly keeps its trap-backstopped time paths.
     ///
-    /// **One-shot** (the PR #110 r2 GPA ruling, flagged for integrator veto): the first
+    /// **One-shot**: the first
     /// accepted registration pins the page for the machine's life;
     /// re-registration — same GPA or not — is a guest fault, rejected with
     /// `BadRequest` and touching nothing. The stamping target never moves.
@@ -2186,7 +2186,7 @@ where
     /// handshake ruling).** It does **not** stamp the page — a doorbell `OUT`
     /// is a plain PIO exit, not a V-time
     /// intercept, so the counter read there is host-noisy on the real backend
-    /// (task-27 O1) and the pre-`OUT` anchor may be stale. The first stamp happens
+    /// and the pre-`OUT` anchor may be stale. The first stamp happens
     /// only at the **handshake intercept**: the guest's required
     /// post-doorbell V-time intercept (the reference kernel's RDTSC, now
     /// protocol), whose anchor is deterministic and fresh. See
@@ -2360,7 +2360,7 @@ where
         }
     }
 
-    /// The `Moment`-stamped SDK event stream captured this run (task 73), for the
+    /// The `Moment`-stamped SDK event stream captured this run, for the
     /// link tier to decode. Empty when no SDK channel is wired or nothing was
     /// emitted.
     pub fn sdk_events(&self) -> &[(u64, u32, Vec<u8>)] {
@@ -2443,7 +2443,7 @@ where
             .unwrap_or(&[])
     }
 
-    /// Service one hypercall-doorbell `OUT` (task 73 seam 1): copy the request
+    /// Service one hypercall-doorbell `OUT`: copy the request
     /// frame the guest staged at [`REQ_GPA`], route the Event / SDK service,
     /// write the response frame to [`RESP_GPA`], and — for an assertion violation
     /// or a `setup_complete` — arm a [`SdkStop`]. One exit ⇒ the whole exchange
@@ -2948,8 +2948,7 @@ where
     }
 
     /// Classify a captured SDK Event emission (`id` + `data`) at the doorbell,
-    /// **validating** the payload for the namespaces the host acts on (task 73 seam
-    /// 3, round-14). The host inspects exactly two:
+    /// **validating** the payload for the namespaces the host acts on. The host inspects exactly two:
     ///
     /// - **assert VIOLATION** (`SDK_NS_ASSERT`, disposition `1`): surfaces a bug
     ///   ([`SdkStop::Assertion`]). Payload `[disposition u8][detail_len u16][detail]`;
@@ -3178,7 +3177,7 @@ where
     /// Drain the **complete dirty-gfn set since the last drain** — the
     /// backend's guest-write log unioned with the host-side writes this `Vmm`
     /// performed — sorted ascending, deduplicated; and re-arm both for the next
-    /// window (task 95 M2.1).
+    /// window.
     ///
     /// Returns `None` on **any doubt**: the backend cannot drain (no dirty
     /// tracking, an ioctl error) or an untrackable full-image host write
@@ -3206,8 +3205,8 @@ where
     }
 
     /// Drain-and-discard: reset the dirty tracking so the **current** state is
-    /// the baseline the next [`Vmm::drain_dirty_pages`] measures from (task 95
-    /// M2.1's arm point — right after a seal or a branch restore). Clears the
+    /// the baseline the next [`Vmm::drain_dirty_pages`] measures from (the
+    /// arm point — right after a seal or a branch restore). Clears the
     /// host-side set and the wholesale latch, and drains the backend log.
     /// Returns `true` iff the backend log was actually reset — `false` means
     /// tracking is not armed and the next capture must full-scan.
@@ -3222,8 +3221,8 @@ where
     /// that will come* or *dead*. A resumable idle either delivers an already-pending
     /// interrupt (zero V-time advance) or jumps V-time to a future deliverable timer
     /// ([`Self::resume_idle`]); everything else (the kernel's final `cli; hlt` after
-    /// poweroff, or any wait nothing will satisfy) terminates exactly as before — the
-    /// strictly-additive change of task 52.
+    /// poweroff, or any wait nothing will satisfy) terminates exactly as before — a
+    /// strictly-additive change.
     pub(crate) fn on_idle(&mut self) -> Result<Step, VmmError> {
         match self.idle_action()? {
             IdleAction::DeliverPending => Ok(Step::Continued),
@@ -3285,11 +3284,11 @@ where
     /// deadline `deadline_vns` — reaching the next scheduled event without executing a
     /// single instruction.
     ///
-    /// **Exit-boundary variability-free + work-axis epoch rebase (task-52 review fixes).** Two intertwined
+    /// **Exit-boundary variability-free + work-axis epoch rebase.** Two intertwined
     /// determinism requirements drive this:
     ///
-    /// 1. *No host-noisy read.* A live `work()` read at a `HLT` is host-noisy (the
-    ///    task-27 box O1 evidence shows a non-V-time-intercept live read **diverges**
+    /// 1. *No host-noisy read.* A live `work()` read at a `HLT` is host-noisy (box
+    ///    evidence shows a non-V-time-intercept live read **diverges**
     ///    across same-seed runs). So the landing V-time is derived from the **deterministic**
     ///    anchor [`assigned_clock`](VtimeWiring) + the (seed-deterministic) timer
     ///    deadline — never the live counter at the halt.
@@ -3376,7 +3375,7 @@ pub(crate) fn put_chunk(out: &mut Vec<u8>, tag: &[u8; 4], bytes: &[u8]) {
 /// [`VtimeWiring::new`] enforces it `== 1`, so it is an invariant constant (hashing
 /// it would add nothing and be unkillable).
 ///
-/// Two task-27 (item 2) properties this layout guarantees:
+/// Two properties this layout guarantees:
 ///
 /// - **Restore-transparency.** `vns_base` and the virtual-time clock are **not** hashed
 ///   separately; they are folded into one effective-V-time field,
@@ -3394,7 +3393,7 @@ pub(crate) fn put_chunk(out: &mut Vec<u8>, tag: &[u8; 4], bytes: &[u8]) {
 ///   encoding is now **total and infallible** (no counter read, no poison sentinel).
 ///
 /// **Deliberate property — `state_blob` is V-time replay-equivalence up to the last
-/// synchronized intercept (integrator ruling).** The effective V-time is the V-time at
+/// synchronized intercept.** The effective V-time is the V-time at
 /// the **last V-time intercept** — the synchronized, deterministic point — **not** the
 /// live counter at the hashing exit. So **two states are equal iff identical at that
 /// last intercept**; post-intercept work — distinguishable only by re-synchronizing at
@@ -3422,8 +3421,8 @@ fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
     v
 }
 
-/// Deterministic, fixed-layout encoding of the task-73 SDK channel's
-/// **replay-relevant** state for the `SDK\0` hash chunk (round-7): the generic
+/// Deterministic, fixed-layout encoding of the SDK channel's
+/// **replay-relevant** state for the `SDK\0` hash chunk: the generic
 /// service stream/handler state and the pending stop. The event log is deliberately
 /// excluded (host-side observation, like the report stream). A diverged service
 /// stream moves that state, so it hashes differently.
@@ -3502,7 +3501,7 @@ mod tests {
     /// (`REQ_GPA` `0xE000` / reply `0xF000`, production constants). These tests'
     /// dominant interpreted cost is the sha256 `state_hash` over the `MEM` chunk
     /// (plus full-image copies), which scales with this size, so halving it under
-    /// `cfg(miri)` halves the vmm-core Miri job's long tail (task 98 / hm-d8o).
+    /// `cfg(miri)` halves the vmm-core Miri job's long tail.
     /// Native runs are byte-for-byte unchanged.
     const TEST_RAM: usize = if cfg!(miri) { 0x1_0000 } else { 0x2_0000 };
 
@@ -4716,7 +4715,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings"
     )]
     fn sdk_snapshot_round_trips_the_pending_deferred_point_hash() {
         let mk = || {
@@ -4827,7 +4826,7 @@ mod tests {
         assert_ne!(vmm.current_vcpu(), stop_state, "not the stop-time vCPU");
     }
 
-    /// Round-5 P1 (semantics, SETTLED): a task-78 reseed marker reseeds ONLY the
+    /// Round-5 P1 (semantics, SETTLED): a reseed marker reseeds ONLY the
     /// entropy stream (`reseed_entropy` → `vt.entropy`), never the generic service
     /// handler stream (`SdkChannel.env`, a separate `RecordedEnv`). So a mid-run
     /// reseed cannot perturb service answers — the fold (which reseeds entropy only)
@@ -4936,7 +4935,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings"
     )]
     fn state_hash_folds_the_sdk_stream_and_is_absent_when_unwired() {
         let unwired = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
@@ -4991,7 +4990,7 @@ mod tests {
         assert!(!v.vtime_wired());
     }
 
-    /// Task-27 (box-verification cross-model finding): `save_vtime` anchors `vns` to
+    /// `save_vtime` anchors `vns` to
     /// the deterministic `assigned_clock`, **not** a live counter read. A fresh VM
     /// is a synchronized point (work 0, V-time = `vns_base`), so the save succeeds; the
     /// source reads `777` but the anchor is `0`, so `vns` must be `0` — a live read
@@ -5050,7 +5049,7 @@ mod tests {
         assert_eq!(v.effective_vns(), Some(snap.vns));
     }
 
-    /// Task-27 item 1: a guest reading `IA32_TSC` via `RDMSR(0x10)` gets the **same**
+    /// A guest reading `IA32_TSC` via `RDMSR(0x10)` gets the **same**
     /// V-time value the RDTSC instruction would at the same work — both flow through
     /// `guest_clock` (`VClock::guest_ticks` + the default-0 `IA32_TSC_ADJUST`) — and it is
     /// deterministic-twice. (Previously this aborted with a stale "V-time is not
@@ -5087,11 +5086,11 @@ mod tests {
         assert_eq!(msr.state_hash().unwrap(), run_msr().state_hash().unwrap());
     }
 
-    /// Task-27 item 1, write side: `WRMSR(IA32_TSC_ADJUST, Y)` sets the adjust (and
+    /// Write side: `WRMSR(IA32_TSC_ADJUST, Y)` sets the adjust (and
     /// shifts the visible TSC by `Y`); `WRMSR(IA32_TSC, X)` sets the visible TSC to
     /// `X` (and the adjust to `X − base`). `RDMSR` of both reflects it. Both writes
     /// are honored (`Completion::Ok`).
-    /// Task-27 item 1: the written `IA32_TSC_ADJUST` state is in the hash (it governs
+    /// The written `IA32_TSC_ADJUST` state is in the hash (it governs
     /// future TSC output) — two VMs identical but for the adjust hash differently.
     #[test]
     fn tsc_adjust_state_is_in_the_hash() {
@@ -5113,7 +5112,7 @@ mod tests {
         );
     }
 
-    /// Task-27 item 1 (cross-model review finding 1): an `IA32_TSC_ADJUST` access is a
+    /// An `IA32_TSC_ADJUST` access is a
     /// V-time intercept too, so it records its deterministic work and the hashed
     /// effective V-time stays current — two VMs accessing 0x3b at different work hash
     /// differently (without the fix both would keep the stale anchor `0` and collide).
@@ -5132,7 +5131,6 @@ mod tests {
         );
     }
 
-    /// Task-27 item 1 (revised per box-verification cross-model finding 3):
     /// `IA32_TSC_ADJUST` round-trips through a V-time snapshot — `save_vtime` captures
     /// it (the contract carries TSC/TSC_ADJUST in `vm_state`) and `restore_vtime`
     /// re-applies it, so a guest that wrote the MSR is snapshottable and restores
@@ -5172,7 +5170,7 @@ mod tests {
         );
     }
 
-    /// Task-27 item 1: with V-time **unwired** (stock KVM / M1/M2), an `emulate-vtime`
+    /// With V-time **unwired** (stock KVM / M1/M2), an `emulate-vtime`
     /// TSC-MSR access still fails closed in both directions — never a laundered host
     /// value. (Mirrors `event_loop::emulate_vtime_msr_fails_closed_both_directions`
     /// for the wiring boundary inside `vmm.rs`.)
@@ -5480,18 +5478,20 @@ mod tests {
         assert_eq!(v.state_components(), v3.state_components());
     }
 
-    /// Task-27 item 2, the fix itself: `state_hash`/`state_blob` must **not** take a
+    /// `state_hash`/`state_blob` must **not** take a
     /// live read of the virtual-time clock. The OLD `encode_vtime` did, at hash time — and
     /// that terminal read carries the non-deterministic post-last-intercept exit-path
     /// exit-boundary variability, which made the `VTIM` chunk diverge across two same-seed box runs (corpus
     /// O1, PR #51). A `TestAxis` that counts its reads proves hashing takes none.
-    /// Task-27 item 2, test (i) — **deterministic-twice despite terminal exit-boundary variability**. Two
+    ///
+    /// Test (i) — **deterministic-twice despite terminal exit-boundary variability**. Two
     /// same-seed runs read the same deterministic work at the RDTSC intercept, but a
     /// read taken *after* the run (what the OLD `encode_vtime` did at hash time) would
     /// advance by a per-run, non-deterministic exit-boundary variability. The fix anchors the `VTIM` hash
     /// to the recorded last-intercept work, so the chunk (hence `state_hash`) is
     /// byte-identical regardless of exit-boundary variability — the property the box O1 gate checks.
-    /// Task-27 item 2, test (ii) — **restore-transparency**. A fresh VM that advanced
+    ///
+    /// Test (ii) — **restore-transparency**. A fresh VM that advanced
     /// to effective V-time `E` (RDTSC at work `E`; ratio 1:1 ⇒ vns == work) and a VM
     /// restored to a snapshot at that same effective V-time (`vns_base = E`, counter
     /// reset to 0) must hash **identically**: `encode_vtime` folds `vns_base` + work
@@ -6383,7 +6383,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings"
     )]
     fn restore_vm_state_reproduces_the_blob_byte_for_byte() {
         let mut a = full_vmm(nonzero_state(), mutate_exits(), 500, 0xABCD);
@@ -6399,7 +6399,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings"
     )]
     fn restore_vm_state_rejects_a_different_contract_atomically() {
         let mut a = full_vmm(nonzero_state(), mutate_exits(), 500, 0xABCD);
@@ -6546,7 +6546,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings"
     )]
     fn restore_vm_state_rejects_a_clock_rate_mismatch() {
         let mut a = full_vmm(VcpuState::default(), mutate_exits(), 500, 1);
@@ -6570,7 +6570,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings"
     )]
     fn restore_into_unwired_vm_rejects_a_vtime_bearing_blob() {
         let mut a = vtime_vmm(vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 })], 1);
@@ -6802,7 +6802,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings"
     )]
     fn save_vm_state_captures_in_flight_events_at_a_non_quiescent_point() {
         let in_flight = |events: vmm_backend::VcpuEvents, name: &str| {
@@ -6923,7 +6923,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings"
     )]
     fn restore_vm_state_rejects_a_cap_gated_event_blob_before_mutation() {
         let reject = |bad: vmm_backend::VcpuEvents, needle: &str| {
@@ -6998,7 +6998,7 @@ mod tests {
         let residual_vmm = full_vmm(residual, vec![], 0, 1);
         assert!(
             residual_vmm.has_inflight_event_injection(),
-            "an inert residual is still a task-39-reject point"
+            "an inert residual is still a would-reject point"
         );
         assert!(
             !residual_vmm.has_active_event_injection(),
@@ -7136,7 +7136,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings"
     )]
     fn wiring_snapshot_hashing_folds_the_canonical_blob_into_the_hash() {
         let base = full_vmm(VcpuState::default(), vec![], 0, 1);

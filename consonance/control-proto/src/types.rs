@@ -79,7 +79,7 @@ pub mod class_bit {
     /// `DecisionClass::Scheduler` — a schedulable yield point.
     pub const SCHEDULER: u16 = 3;
     /// `DecisionClass::NetFlow` — a per-flow network decision (the host decides a
-    /// flow policy the guest enforces in-guest; task 50 reshaped this from the
+    /// flow policy the guest enforces in-guest; this was reshaped from the
     /// per-frame `NetSend` and retired `pv-net`). The `NET_SEND` const name is
     /// retained for wire stability — the discriminant `4` (and thus the `StopMask`
     /// bit) is unchanged.
@@ -88,17 +88,17 @@ pub mod class_bit {
     pub const BLOCK_IO: u16 = 5;
     /// `DecisionClass::Process` — a node lifecycle point.
     pub const PROCESS: u16 = 6;
-    /// `DecisionClass::Buggify` — a buggify decision (task 73). Per-**point**, not
+    /// `DecisionClass::Buggify` — a buggify decision. Per-**point**, not
     /// per-class, so it is never armed via [`StopMask::arm`] to auto-service a
     /// whole class; the mirror exists so the discriminant is pinned against the
     /// enum and reserved (bit `7`) alongside the standalone SDK-stop bits.
     pub const BUGGIFY: u16 = 7;
-    /// The SDK lifecycle **snapshot point** stop (task 73, `setup_complete`) — a
+    /// The SDK lifecycle **snapshot point** stop (`setup_complete`) — a
     /// **standalone** stop class, NOT a `DecisionClass` (so it starts at 8, past
     /// the decision discriminants + the reserved buggify bit 7). A deferred
     /// snapshot point surfaces from a `Run` only when this bit is armed (round-7).
     pub const SNAPSHOT_POINT: u16 = 8;
-    /// The SDK **assertion** stop (task 73) — a standalone stop class; an
+    /// The SDK **assertion** stop — a standalone stop class; an
     /// `assert_always` violation surfaces only when this bit is armed. `StopMask::
     /// NONE` runs a cooperating-SDK guest straight through to the terminal.
     pub const ASSERTION: u16 = 9;
@@ -113,7 +113,7 @@ pub mod class_bit {
 /// ([`class_bit::ASSERTION`] / [`class_bit::SNAPSHOT_POINT`], round-7), so
 /// `StopMask::NONE` runs an SDK guest straight through to the terminal.
 ///
-/// Bit layout is the integrator-pinned mapping: `bit N == (1 << class_bit)` where
+/// Bit layout is a pinned mapping: `bit N == (1 << class_bit)` where
 /// `class_bit` is one of the frozen [`class_bit`] constants. The control server
 /// and its clients use this mapping for service decisions and SDK stops.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
@@ -176,7 +176,7 @@ pub enum Request {
     /// Negotiate protocol/blob versions and coverage geometry. Must be first.
     Hello(Caps),
     /// Capture state at a quiescent point → [`Snapshot`](Reply::Snapshot), the
-    /// seal-bound reply carrying the handle **and** its evidence cut (task 127).
+    /// seal-bound reply carrying the handle **and** its evidence cut.
     /// A failed or non-quiescent seal is an error reply carrying neither.
     Snapshot,
     /// Release a snapshot (pool GC) → [`Unit`](Reply::Unit).
@@ -219,7 +219,7 @@ pub enum Request {
         at: Moment,
     },
     /// Fetch a **page** of the link-tier SDK event capture of the current run
-    /// (task 73), starting at event index `offset` → [`SdkEvents`](Reply::SdkEvents).
+    /// starting at event index `offset` → [`SdkEvents`](Reply::SdkEvents).
     /// The `Moment`-stamped `(moment, event_id, bytes)` stream a cooperating guest
     /// SDK emitted, so a remote client (the campaign's `SocketMachine`) can decode
     /// it into `RunTrace.events` — the server-side capture a socket client cannot
@@ -232,8 +232,8 @@ pub enum Request {
     },
     /// Fetch a **page** of the guest **console** (serial) capture, starting at
     /// byte `offset` → [`Console`](Reply::Console). The scrape tier reads this to
-    /// fill `RunTrace.records`, the input the log-template sensor (task 67
-    /// `logtmpl`) clusters into the primary signal — the server-side serial
+    /// fill `RunTrace.records`, the input the log-template sensor (`logtmpl`)
+    /// clusters into the primary signal — the server-side serial
     /// capture a socket client (the campaign's `SocketMachine`) cannot otherwise
     /// see. Like [`SdkEvents`](Self::SdkEvents) it is a **pure read** (it never
     /// advances the VM or touches hashable state, so it is determinism-neutral)
@@ -246,7 +246,7 @@ pub enum Request {
         /// The byte offset into the serial capture to start the page at.
         offset: u32,
     },
-    /// **Observation** (task 80): read `len` bytes of guest **physical** memory at
+    /// **Observation**: read `len` bytes of guest **physical** memory at
     /// `gpa` → [`Bytes`](Reply::Bytes). A pure observation — it never mutates guest
     /// state, V-time, or any hash, and is never recorded into an
     /// [`Reproducer`] (the `docs/PROTOCOL.md` search-surface criterion:
@@ -261,13 +261,13 @@ pub enum Request {
         /// The number of bytes to read (bounded by [`READ_CAP`](crate::READ_CAP)).
         len: u32,
     },
-    /// **Observation** (task 80): the current [`RegsView`] → [`Regs`](Reply::Regs).
+    /// **Observation**: the current [`RegsView`] → [`Regs`](Reply::Regs).
     /// Like [`Read`](Request::Read) it is a pure observation (no state/V-time/hash
     /// mutation, never recorded into an [`Reproducer`]). Returns a **versioned**
     /// register *view*, not the save/restore format — additive evolution, no
     /// round-trip obligation.
     Regs,
-    /// **Improvisation** (task 81): inject `cmd` on the guest's serial input (as if
+    /// **Improvisation**: inject `cmd` on the guest's serial input (as if
     /// typed at the serial shell), run until a completion sentinel or the V-time
     /// `deadline`, and capture the serial output → [`ExecResult`](Reply::ExecResult).
     ///
@@ -291,7 +291,7 @@ pub enum Request {
         /// whichever is first.
         deadline: Moment,
     },
-    /// **Reproducer mint** (task 81): return the **recorded reproducer** — the
+    /// **Reproducer mint**: return the **recorded reproducer** — the
     /// genesis-complete [`Reproducer`] that replays the current point — →
     /// [`Recorded`](Reply::Recorded), **or** a loud
     /// [`Tainted`](crate::ControlError::Tainted) when the current timeline has been
@@ -335,7 +335,7 @@ pub enum Reply {
     Bytes(Vec<u8>),
     /// The current register view (reply to [`Regs`](Request::Regs)).
     Regs(RegsView),
-    /// The result of an [`Exec`](Request::Exec) improvisation (task 81): the serial
+    /// The result of an [`Exec`](Request::Exec) improvisation: the serial
     /// output captured while the command ran and whether it reached its completion
     /// sentinel before the deadline. There is **no** determinism guarantee on this
     /// payload — it is off the record by ruling; the taint bit (surfaced on
@@ -351,10 +351,10 @@ pub enum Reply {
         /// so far).
         ok: bool,
     },
-    /// The **seal-bound** snapshot reply (task 127) — the ONE reply to
+    /// The **seal-bound** snapshot reply — the ONE reply to
     /// [`Snapshot`](Request::Snapshot), tainted or not. It binds, atomically
     /// from the **same stopped server state**: the pool-wide handle, the
-    /// synchronized seal [`Moment`], the timeline taint (task 81), and the
+    /// synchronized seal [`Moment`], the timeline taint, and the
     /// seal's **evidence cut** over the ordered SDK capture — the included
     /// SDK-event count. The stamp is the **sole authority** for the cut: a
     /// client never reconstructs it from a second read
@@ -388,7 +388,7 @@ pub enum Reply {
         /// at/after excluded. `0` for a guest with no SDK.
         sdk_events: u64,
         /// Whether the captured timeline is tainted by an
-        /// [`Exec`](Request::Exec) improvisation (task 81), so an
+        /// [`Exec`](Request::Exec) improvisation, so an
         /// Archive/donation path can refuse admission without asking.
         tainted: bool,
     },
@@ -399,7 +399,7 @@ pub enum Reply {
     Recorded(Reproducer),
 }
 
-/// A **versioned** register view (task 80) — the observation surface for
+/// A **versioned** register view — the observation surface for
 /// `docs/PROTOCOL.md`. It is a *view*, not the save/restore format
 /// ([`VcpuState`]-equivalent): additive evolution only, no round-trip obligation,
 /// so [`version`](RegsView::VERSION) may gain fields without breaking a reader
@@ -414,7 +414,7 @@ pub enum Reply {
 /// [`VcpuState`]: the backend's full save/restore vCPU record — not this view.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RegsView {
-    /// The view schema version (task-80 additive-evolution contract). See
+    /// The view schema version (additive-evolution contract). See
     /// [`RegsView::VERSION`].
     pub version: u16,
     /// The 16 general-purpose registers in canonical order:
@@ -550,12 +550,12 @@ pub struct Caps {
 }
 
 /// The shape of the coverage shmem map. Only geometry crosses the socket; the map
-/// bytes live in shared memory the integrator maps out of band.
+/// bytes live in shared memory mapped out of band.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct CoverageGeometry {
     /// The map size in bytes.
     pub map_bytes: u32,
-    /// The coverage-producer kind (an opaque tag the integrator interprets).
+    /// The coverage-producer kind (an opaque tag interpreted out of band).
     pub producer: u8,
 }
 

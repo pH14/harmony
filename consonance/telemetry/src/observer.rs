@@ -39,8 +39,7 @@ pub struct NullObserver;
 
 impl Observer for NullObserver {
     #[inline]
-    fn emit(&mut self, _ev: &Event) {
-    }
+    fn emit(&mut self, _ev: &Event) {}
 }
 
 /// A **lossless** sink: writes one `serde_json` NDJSON line per event to an

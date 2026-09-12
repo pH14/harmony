@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **SDK event wire convention** (task 73) — the byte-deterministic,
+//! The **SDK event wire convention** — the byte-deterministic,
 //! versioned payload format every SDK emission rides on the hypercall Event
 //! service (`ServiceId::Event`, op 1). This module is the **canonical source of
 //! truth**; the host-side decoder and the vmm-core
@@ -16,7 +16,7 @@
 //! catalog lookup, so an assertion point `5`, a state register `5`, and a
 //! buggify point `5` never collide, and the host can decide stop-surfacing from
 //! the namespace alone. The SDK owns the namespace allocation so channel plugins
-//! (e.g. task 74's OTel bridge) claim ranges without collision.
+//! (e.g. the OTel bridge) claim ranges without collision.
 //!
 //! | ns | name        | local id             | payload |
 //! |----|-------------|----------------------|---------|
@@ -26,7 +26,7 @@
 //! | 3  | buggify     | buggify point id     | `[fired u8]` |
 //! | 4  | lifecycle   | `0` = setup_complete | (empty) |
 //! | 4  | lifecycle   | `1` = frame_complete | `[frame_count u64]` |
-//! | 8..=255 | plugins | plugin-defined       | plugin-defined (OTel is task 74) |
+//! | 8..=255 | plugins | plugin-defined       | plugin-defined (OTel is one example) |
 //!
 //! All integers are little-endian. Payload builders here are total and never
 //! panic; a payload that would exceed one Event frame is reported as an error by

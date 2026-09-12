@@ -180,7 +180,7 @@ pub(crate) fn normalize_virtual_time_exit_arm64(
 /// (always present — the serial console) and the optional GICv3 +
 /// generic-timer fabric, mirroring x86's `lapic: Option<_>` wiring pattern.
 pub struct Arm64Devices {
-    /// The PL011 UART (serial console + the task-81 `exec` input queue).
+    /// The PL011 UART (serial console + the `exec` input queue).
     pub(crate) uart: Pl011,
     /// The userspace GICv3 + generic-timer model — the pure arbitration/
     /// deadline half of the fabric. **Its output is not delivered into a real
@@ -925,9 +925,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 s.hypercall = vt.entropy.save_state();
                 vt.guest_clock_offset
             }
-            None => {
-                0
-            }
+            None => 0,
         };
         debug_assert!(vcpu.gic.is_none() || self.devices.gic.is_none());
         let backend_gic = vcpu.gic.as_ref().map(records::gic_from_backend);

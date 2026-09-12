@@ -26,7 +26,7 @@ timeout_multiplier = 3.0
 # mutation. Exclude the binary so mutation effort concentrates on library logic.
 # The Kani proof harnesses (quality-f) live in their own `#[cfg(kani)]` files
 # (`consonance/vtime/src/clock_proofs.rs`, `consonance/lapic/src/device_proofs.rs`,
-# `consonance/vmm-backend/src/region_proofs.rs` (task 54, the memslot splitter),
+# `consonance/vmm-backend/src/region_proofs.rs` (the memslot splitter),
 # `workloads/fault-policy/src/envcodec_proofs.rs` — each a `#[path]` child module of
 # its parent). They are not compiled by the normal
 # (non-kani) test suite cargo-mutants uses as its oracle, so every mutant in them
@@ -130,7 +130,7 @@ exclude_re = [
     #     (`guest_rip`) have no architectural effect and no test-observable return —
     #     their content is verified by review. `GuestRam::is_empty` is always
     #     `false` by construction (`GuestRam::new` rejects a zero length).
-    #     `current_work` (task 21) is the V-time count fed only to the `loud_msr`
+    #     `current_work` is the V-time count fed only to the `loud_msr`
     #     log — same observability-only category (no test-observable return).
     "consonance/vmm-core/src/vmm\\.rs.*(loud_msr|guest_rip|GuestRam::is_empty|current_work)",
     # The x86 vendor split moved the same mandated host-only loud MSR event out
@@ -159,7 +159,7 @@ exclude_re = [
     # The two frozen pvclock ABI flags are distinct single bits (1 and 2), so
     # OR and XOR are identical for this compile-time constant expression.
     "consonance/vtime/src/pvclock\\.rs:85:61: replace \\| with \\^",
-    # (g) `impl Backend for Box<B>`'s `inject` forward (task 21): `inject` returns
+    # (g) `impl Backend for Box<B>`'s `inject` forward: `inject` returns
     #     `Result<()>` with no trait-observable effect (no getter on the trait) and
     #     no triggerable error in the mock, so a dropped forward (`Ok(())`) cannot
     #     be distinguished through a `Box<dyn Backend>`. Every *other* `Box<B>`
@@ -168,9 +168,9 @@ exclude_re = [
     #     →observable return). Scoped to backend.rs's blanket impl.
     "consonance/vmm-backend/src/backend\\.rs.*inject",
     # (h) [retired] `pv_net::Switch::route_one` skip — `dissonance/pv-net` was
-    #     removed by task 50 (the net-fault boundary), so its mutant no longer
+    #     removed as part of the net-fault boundary work, so its mutant no longer
     #     exists and needs no skip entry.
-    # (i) `telemetry::RunningServer::shutdown -> ()` (task 29): provably equivalent.
+    # (i) `telemetry::RunningServer::shutdown -> ()`: provably equivalent.
     #     `shutdown(mut self)` takes the server *by value*; its only act is
     #     `self.stop()`, and when `self` is dropped at the end of the function
     #     `<impl Drop for RunningServer>::drop` *also* calls `self.stop()` (which is
@@ -183,7 +183,7 @@ exclude_re = [
     #     mutant is excluded.
     "consonance/telemetry/src/server\\.rs.*replace RunningServer::shutdown with \\(\\)",
     # (j) `Vmm::resume_idle`'s diagnostic-trace cap `self.idle_landings.len() <
-    #     PREEMPTION_TRACE_CAP` → `<=` (task 52): the idle-resume dual of (j), identical
+    #     PREEMPTION_TRACE_CAP` → `<=`: the idle-resume dual of (j), identical
     #     rationale. The two differ ONLY at `len == PREEMPTION_TRACE_CAP` (4096), where `<=`
     #     records ONE extra idle landing before stopping — a harmless off-by-one on the
     #     OBSERVABILITY-ONLY `idle_landings` trace (not hashed, not determinism-affecting).

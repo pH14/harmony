@@ -39,7 +39,7 @@ hittable when `zfs_dmu_offset_next_sync=1` became the default in **2.1.4**.
   several concurrent instances and hits in seconds-to-minutes under load.
 - **Fault surface**: **none** — this is the marquee pure-timing entry. The race is between a
   writer/copier thread and txg sync. dissonance searches schedules (vtime/preemption
-  perturbation, SMP interleaving from task 56) to land `SEEK_DATA` inside the mid-sync window.
+  perturbation, SMP interleaving) to land `SEEK_DATA` inside the mid-sync window.
   No injected fault, no crash: if Harmony finds this, schedule search works on real software.
 - **Oracle**: per-copy checksum mismatch against source; corrupted regions are zero-filled
   block-aligned runs (check both, the zero-run signature distinguishes this bug from generic
@@ -58,7 +58,7 @@ hittable when `zfs_dmu_offset_next_sync=1` became the default in **2.1.4**.
 
 ## Kernel note
 
-OpenZFS is an **out-of-tree module**, so the canonical determinism kernel (task 57) can serve
+OpenZFS is an **out-of-tree module**, so the canonical determinism kernel can serve
 as-is with zfs-2.2.0 built against it — no kernel pin or revert needed, provided 2.2.0 builds
 against 6.18 (it may need minor compat patches; if so, prefer pinning module-side compat fixes
 over touching the buggy code paths, and document them here). This is exactly the

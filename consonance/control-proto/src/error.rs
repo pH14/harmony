@@ -115,7 +115,7 @@ pub enum ControlError {
     Unsupported,
     /// A `perturb`-staged [`CorruptMemory`] host fault names a guest-physical
     /// address whose 8-byte word falls outside guest RAM (`gpa + 8 > ram_len`).
-    /// The frontier (task 59) rejects it **loudly at stage time** rather than
+    /// The frontier rejects it **loudly at stage time** rather than
     /// silently clipping or wrapping the write — a corruption at an
     /// unrepresentable address would mint a reproducer that does not reproduce.
     ///
@@ -132,7 +132,7 @@ pub enum ControlError {
     },
     /// A `perturb` (or a `branch` env host fault) names a `Moment` **behind the
     /// current point** (`at < effective_vns`, or, for a branch env, behind the
-    /// restored snapshot's V-time). Rejected loud at stage time (task 59): the
+    /// restored snapshot's V-time). Rejected loud at stage time: the
     /// fault could only apply *later* than its recorded `Moment`, so the emitted
     /// reproducer would replay it at the wrong count — a reproducer that does not
     /// reproduce. `at == effective_vns` is fine (it applies immediately and
@@ -145,11 +145,11 @@ pub enum ControlError {
         floor: u64,
     },
     /// A `perturb` stages a fault at a `Moment` that **already carries one**.
-    /// Task 45's `EnvSpec` override map is `BTreeMap<Moment, Action>` — **one
+    /// The `EnvSpec` override map is `BTreeMap<Moment, Action>` — **one
     /// action per `Moment`** — so a second same-`Moment` stage cannot be recorded
     /// without losing the first; rather than emit a non-reproducing reproducer, the
-    /// frontier **loudly rejects** it. (The one-fault-per-`Moment` rule is the
-    /// integrator's final ruling — spec amendment PR #54.)
+    /// frontier **loudly rejects** it. (The one-fault-per-`Moment` rule is
+    /// spec amendment PR #54.)
     #[error("perturb Moment {at} already carries a staged fault (one fault per Moment)")]
     PerturbMomentTaken {
         /// The already-occupied `Moment`.
@@ -159,7 +159,7 @@ pub enum ControlError {
     /// without applying it (`moment <= vtime`, but the deadline was below it so it
     /// was never armed). The guest has now executed past that `Moment`, so the
     /// fault can never be applied at its recorded count — the schedule is
-    /// unsatisfiable. Failed loud (task 59) rather than let a later `run` apply it
+    /// unsatisfiable. Failed loud rather than let a later `run` apply it
     /// from the past while recording the earlier `Moment` (a reproducer that does
     /// not reproduce). The caller must rewind (`branch`/`replay`, which clears the
     /// schedule) before continuing.
@@ -174,15 +174,15 @@ pub enum ControlError {
     /// **architecturally reserved vector** (`0..=15`), which the LAPIC cannot raise.
     /// A stage-time-decidable property of the request, rejected loudly here (like
     /// [`PerturbOutOfRange`](Self::PerturbOutOfRange) for a gpa) rather than exploding
-    /// as a session-fatal apply-time failure (task 59; PR #51 round-8).
+    /// as a session-fatal apply-time failure (PR #51 round-8).
     #[error("perturb InjectInterrupt vector {vector} is architecturally reserved (< 16)")]
     PerturbReservedVector {
         /// The reserved vector.
         vector: u8,
     },
     /// A [`Read`](crate::Request::Read) named a `[gpa, gpa+len)` range that runs
-    /// past guest RAM. Rejected **loudly** at the observation boundary (task 80:
-    /// "out-of-range → error, never a truncated success"): a short read would
+    /// past guest RAM. Rejected **loudly** at the observation boundary
+    /// ("out-of-range → error, never a truncated success"): a short read would
     /// hand the client bytes it did not ask for (or zero-fill), silently corrupting
     /// whatever it decodes from them.
     #[error("read [{gpa:#x}, {gpa:#x}+{len}) is out of range (guest RAM is {ram_len} bytes)")]
@@ -205,7 +205,7 @@ pub enum ControlError {
         /// The per-call cap ([`READ_CAP`](crate::READ_CAP)).
         cap: u32,
     },
-    /// The **taint guard** fired (task 81): the current timeline was tainted by an
+    /// The **taint guard** fired: the current timeline was tainted by an
     /// [`Exec`](crate::Request::Exec) improvisation, and the request would have
     /// minted a reproducer from it ([`RecordedEnv`](crate::Request::RecordedEnv) or
     /// equivalent). An improvised timeline is off the record by ruling

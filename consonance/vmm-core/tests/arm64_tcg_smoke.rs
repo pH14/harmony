@@ -164,7 +164,7 @@ fn image_and_dtb_boot_on_qemu_tcg() {
     );
     let body = std::fs::read(&body_path).expect("read payload body");
 
-    let image = image_loader::wrap_image(&body, 0, 0xA /* 4K page bits */);
+    let image = image_loader::wrap_image(&body, 0, 0xA);
     std::fs::write(&image_path, &image).expect("write wrapped Image");
 
     let hdr = image_loader::parse_header(&image)

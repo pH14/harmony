@@ -19,30 +19,11 @@
 use std::collections::BTreeMap;
 
 use kvm_bindings::{
-    KVM_CPUID_FLAG_SIGNIFCANT_INDEX,
-    KVM_EXIT_FAIL_ENTRY,
-    KVM_EXIT_HLT,
-    KVM_EXIT_INTERNAL_ERROR,
-    KVM_EXIT_IO,
-    KVM_EXIT_IO_IN,
-    KVM_EXIT_IRQ_WINDOW_OPEN,
-    KVM_EXIT_MMIO,
-    KVM_EXIT_SHUTDOWN,
-    KVM_EXIT_X86_RDMSR,
-    KVM_EXIT_X86_WRMSR,
-    KVM_MP_STATE_HALTED,
-    KVM_MP_STATE_RUNNABLE,
-    kvm_cpuid_entry2,
-    kvm_debugregs,
-    kvm_dtable,
-    kvm_msr_entry,
-    kvm_regs,
-    kvm_run,
-    kvm_segment,
-    kvm_sregs2,
-    kvm_vcpu_events,
-    kvm_xcrs,
-    kvm_xsave,
+    KVM_CPUID_FLAG_SIGNIFCANT_INDEX, KVM_EXIT_FAIL_ENTRY, KVM_EXIT_HLT, KVM_EXIT_INTERNAL_ERROR,
+    KVM_EXIT_IO, KVM_EXIT_IO_IN, KVM_EXIT_IRQ_WINDOW_OPEN, KVM_EXIT_MMIO, KVM_EXIT_SHUTDOWN,
+    KVM_EXIT_X86_RDMSR, KVM_EXIT_X86_WRMSR, KVM_MP_STATE_HALTED, KVM_MP_STATE_RUNNABLE,
+    kvm_cpuid_entry2, kvm_debugregs, kvm_dtable, kvm_msr_entry, kvm_regs, kvm_run, kvm_segment,
+    kvm_sregs2, kvm_vcpu_events, kvm_xcrs, kvm_xsave,
 };
 
 use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Exit};

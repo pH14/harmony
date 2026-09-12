@@ -106,7 +106,7 @@ pub struct KvmBackend {
     /// fully-successful map.
     mem_slot_count: u32,
     /// Whether guest-RAM memslots are registered with `KVM_MEM_LOG_DIRTY_PAGES`
-    /// (task 95 M2.1). Default **on**: dirty logging is guest-inert (write-protect
+    /// Default **on**: dirty logging is guest-inert (write-protect
     /// faults are host-side; gate a0 proves bit-identical `state_hash`), and it is
     /// what makes [`Backend::drain_dirty_pages`] answer. [`Self::set_dirty_log_enabled`]
     /// exists as the A/B arm of that gate and the emergency revert; it affects
@@ -206,7 +206,7 @@ impl KvmBackend {
     }
 
     /// Enable/disable `KVM_MEM_LOG_DIRTY_PAGES` on memslots registered by
-    /// **subsequent** [`Backend::map_memory`] calls (task 95 M2.1). Default
+    /// **subsequent** [`Backend::map_memory`] calls. Default
     /// **enabled**. Call before mapping guest RAM; already-registered slots are
     /// unaffected. Disabling is the `flags: 0` A/B arm of the tracking-is-inert
     /// box gate (a0) — with it disabled, [`Backend::drain_dirty_pages`] answers

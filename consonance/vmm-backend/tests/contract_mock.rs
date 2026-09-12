@@ -237,7 +237,6 @@ impl BackendFixture for LimitedFixture {
             msr_filter: MsrFilter::default(),
         }
     }
-
 }
 
 #[test]

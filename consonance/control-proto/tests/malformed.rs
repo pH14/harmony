@@ -176,7 +176,7 @@ fn retired_snapid_tag_is_rejected() {
     assert_eq!(decode_reply(&buf), Err(ProtocolError::ShortFrame));
 }
 
-/// Malformed decodes of the seal-bound `Snapshot` reply (task 127): a body
+/// Malformed decodes of the seal-bound `Snapshot` reply: a body
 /// truncated at **every** field boundary of `id · at · sdk_events · tainted` is
 /// `ShortFrame`; a non-canonical taint byte is rejected (the encoding stays
 /// one-to-one); trailing bytes inside the declared body are rejected. No

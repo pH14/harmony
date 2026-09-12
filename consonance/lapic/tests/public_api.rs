@@ -5,7 +5,7 @@
 //! pinned nightly toolchain and asserts it byte-matches the committed
 //! `tests/public-api.txt`. Any drift in the frozen public contract becomes a
 //! failing test and a reviewable diff. `lapic`'s public surface (the
-//! `LapicState` snapshot seam task 09 consumes, plus the register-offset
+//! `LapicState` snapshot seam `vm-state` consumes, plus the register-offset
 //! constants `vmm-core` addresses the device by) is a contract.
 //!
 //! Refresh after an intentional, reviewed API change:

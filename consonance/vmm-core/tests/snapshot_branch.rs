@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Portable (Mac + Linux) integration test for the live snapshot/branch glue
-//! (task 39): the `SnapshotEngine` (layered CoW store) wired to a `Vmm`'s memory
+//! Portable (Mac + Linux) integration test for the live snapshot/branch glue:
+//! the `SnapshotEngine` (layered CoW store) wired to a `Vmm`'s memory
 //! and `vm_state` adapter, driven against a scripted `MockBackend`. It exercises
 //! the full path — `save_vm_state` + `snapshot_base`/`snapshot_derive` →
 //! `materialize` → `restore_snapshot` → `reseed_entropy` — with no `/dev/kvm`.
@@ -157,7 +157,7 @@ fn rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
 
     assert!(
         a.has_inflight_event_injection(),
-        "task 39's predicate fail-closed-rejected this point"
+        "the prior codec's predicate fail-closed-rejected this point"
     );
     assert!(
         a.has_active_event_injection(),
@@ -177,7 +177,7 @@ fn rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
     let mut eng = SnapshotEngine::new(RAM);
     let vm_state = a
         .save_vm_state()
-        .expect("a genuine in-flight (task-39-rejected) point is now snapshottable");
+        .expect("a genuine in-flight (previously-rejected) point is now snapshottable");
     let snap = eng
         .snapshot_base(a.guest_memory(), &vm_state.encode().unwrap())
         .unwrap();

@@ -94,10 +94,10 @@ fn set_class_rejects_misuse() {
     );
 }
 
-/// `is_enforceable_only` (task 61) accepts a policy whose faults are limited to the
+/// `is_enforceable_only` accepts a policy whose faults are limited to the
 /// classes that have a live decide-seam enforcer — buggify (SDK) and/or net (the
 /// flow agent) — and rejects one that faults the still-unenforced block/process
-/// classes. It is the task-73 `is_buggify_only` predicate widened for the net
+/// classes. It is the `is_buggify_only` predicate widened for the net
 /// vertical.
 #[test]
 fn is_enforceable_only_admits_buggify_and_net_but_not_block_or_process() {

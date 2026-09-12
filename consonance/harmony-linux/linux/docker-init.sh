@@ -1,9 +1,9 @@
 #!/bin/sh
-# /init of the **Postgres-as-an-OCI-container workload image** (task 38). Brings
+# /init of the **Postgres-as-an-OCI-container workload image**. Brings
 # up the kernel filesystems + cgroup-v2, then runs the **official postgres OCI
 # image** as a real container — `unshare`d mount/uts/ipc/net/pid namespaces +
 # chroot into the image rootfs + a per-container cgroup — and waits while the
-# container drives the SAME fixed insert/select workload as task 37 over its
+# container drives the SAME fixed insert/select workload as the bare-Postgres image over its
 # local unix socket, streaming its stdout/stderr to ttyS0, to a clean terminal.
 #
 # **Why unshare, not runc/dockerd (the load-bearing finding — see
@@ -15,12 +15,12 @@
 # container reaches "created" but its Go init never execs the command (verified
 # with a trivial `/bin/sh -c echo`). So we build the container with `unshare` +
 # `chroot` + `setpriv` (plain syscalls, no Go init, no exec-fifo) and run the
-# task-37 cooperative flow INSIDE it; that flow advances V-time the way task 37
+# bare-Postgres cooperative flow INSIDE it; that flow advances V-time the way the bare-Postgres image
 # did (a blocking `psql` connect yields the vCPU to the starting postmaster,
 # whose RDTSCs trap → V-time advances → the tick fires → postgres is scheduled).
 # The full Docker/runc stack stays baked — present, but it can't run here.
 #
-# Two VMM realities (from task 37) shape the control flow:
+# Two VMM realities (from the bare-Postgres image) shape the control flow:
 #   * Never go idle and never busy-spin without RDTSC: V-time freezes both ways.
 #     The container is the only runnable work and is busy throughout (postgres +
 #     the psql loop), so the init just `wait`s — no host-side poll to freeze on.
@@ -49,8 +49,8 @@ $BB chmod 0666 /dev/console      # let the container reopen the console
 # Mount the unified hierarchy, move init out of the root cgroup (so the root can
 # delegate controllers), enable the controllers in the root subtree, then create
 # the container's own cgroup and move init into it — the container the init forks
-# (via unshare) inherits it. cpuset is absent (depends on SMP, off per the task-36
-# audit); the others give real cgroup isolation.
+# (via unshare) inherits it. cpuset is absent (depends on SMP, off per the
+# capability audit); the others give real cgroup isolation.
 $BB mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
 $BB mkdir -p /sys/fs/cgroup/init
 $BB echo $$ > /sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true
@@ -70,9 +70,9 @@ log "OCI runtime baked: runc $(runc --version 2>/dev/null | $BB head -1) (unused
 # even a trivial `/bin/sh -c echo`; the Go create→exec/exec-fifo handshake needs a
 # free-running clock the work-driven V-time model doesn't provide). `unshare`/
 # `mount`/`chroot`/`setpriv` are plain syscalls, and the container then runs the
-# cooperative task-37 flow (container-setup.sh → chroot → /run-workload.sh:
-# postgres + the psql loop), which advances V-time exactly as task 37's bare
-# Postgres did. The full Docker/runc stack stays baked (the OCI runtime is
+# cooperative bare-Postgres flow (container-setup.sh → chroot → /run-workload.sh:
+# postgres + the psql loop), which advances V-time exactly as the bare-Postgres image
+# did. The full Docker/runc stack stays baked (the OCI runtime is
 # present, it just can't run here) — see consonance/harmony-linux/linux/README.md.
 #
 # Namespaces: --mount (isolated mounts + chroot to the image rootfs), --pid (own

@@ -1,7 +1,7 @@
-# cargo-fuzz harness for control-proto (task 25, acceptance gate 3 — the decoder
+# cargo-fuzz harness for control-proto (acceptance gate 3 — the decoder
 # has a dedicated fuzz target). Kept inside the crate directory
 # (conventions rule 1 — touch only `dissonance/control-proto/`) rather than the
-# repo-root `fuzz/` that task 19 owns. The empty `[workspace]` table makes this
+# repo-root `fuzz/`. The empty `[workspace]` table makes this
 # its own workspace root, so the parent workspace's `dissonance/*` glob never
 # pulls it in and the standard `-p control-proto` gates ignore it.
 #

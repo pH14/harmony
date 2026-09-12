@@ -51,8 +51,8 @@ reports and uploads the result, so the committed table lags the last CI run.
 ## Notes
 
 - Filesystem entries may need a per-bug guest kernel (or kernel module version), which cuts
-  against the canonical-kernel discipline (task 57). Each such entry must state its kernel
+  against the canonical-kernel discipline. Each such entry must state its kernel
   requirement explicitly and justify why the canonical kernel can't serve; prefer bugs living
   in userspace or in out-of-tree modules (ZFS) when equivalent.
 - Multi-node replication entries (Redpanda/Bufstream/streaming-replication anomalies from the
-  2022–2024 Jepsen record) are deliberately deferred until the net-fault vertical (task 61).
+  2022–2024 Jepsen record) are deliberately deferred until the net-fault vertical lands.

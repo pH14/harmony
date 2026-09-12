@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the **Postgres-in-Docker workload initramfs** (task 38, consonance
+# Build the **Postgres-in-Docker workload initramfs** (consonance
 # workload stream step 3 of 3 — the credibility money-shot: the off-the-shelf
 # **official `postgres` image** runs deterministically in the guest as a real
 # OCI container).
@@ -21,12 +21,12 @@
 #
 # The rootfs is a static busybox + the static Docker bundle + an **OCI bundle**
 # (the official postgres image's rootfs, extracted from the registry export, +
-# a generated `config.json`). The companion kernel is the *unchanged* task-36
+# a generated `config.json`). The companion kernel is the *unchanged*
 # container-class bzImage (the §capability audit in consonance/harmony-linux/linux/README.md
 # confirmed cgroup-v2, the namespace set, TMPFS, EPOLL/FUTEX/… are all built in —
 # no kernel change). The container rootfs lives in the initramfs tmpfs (RAM), so
 # PGDATA is RAM-backed (fsync is a noop — no durability-fault surface, deferred
-# to D1, as in task 37).
+# to D1, as with the bare-Postgres image).
 #
 # Linux + root only (mounts, cgroup, the static-bin layout assume a Linux build
 # host; the box is the pinned build environment). On macOS run it in a
@@ -53,7 +53,7 @@ DKROOT=$BUILD_ROOT/dk-root                      # the assembled guest rootfs
 DK_STAGE=$BUILD_ROOT/dk-stage                   # extracted docker bundle
 DOCKER_TGZ=$DL_DIR/$(basename "$DOCKER_TGZ_URL")
 PG_IMAGE_TAR=$DL_DIR/postgres-image.tar         # the baked official postgres image
-WORKLOAD_N=20                                   # fixed insert/select iterations (== task 37)
+WORKLOAD_N=20                                   # fixed insert/select iterations (matches the bare-Postgres image)
 
 # --- 0. verify the pinned inputs ---------------------------------------------
 echo "== docker image: verifying pinned inputs"
@@ -191,7 +191,7 @@ done
 [ -x "$BUNDLE/rootfs/usr/lib/postgresql/$PG_MAJOR/bin/postgres" ] \
     || { echo "FAIL: postgres binary not in the extracted image rootfs" >&2; exit 1; }
 
-# The SAME workload v2 as task 37 (task 42), baked INTO the container rootfs so the
+# The SAME workload v2 as the bare-Postgres image, baked INTO the container rootfs so the
 # in-container `psql -f /workload.sql` drives the live DB over its local unix socket:
 # each row carries a gen_random_uuid() id (column DEFAULT) + a clock_timestamp()
 # wall-clock column. They LOOK nondeterministic but come out BIT-IDENTICAL twice —
@@ -212,19 +212,19 @@ done
 } >"$BUNDLE/rootfs/workload.sql"
 
 # The in-container flow script (the container's PID 1): starts postgres, drives
-# the cooperative psql loop + workload, stops it — the whole task-37 flow, run
+# the cooperative psql loop + workload, stops it — the whole bare-Postgres flow, run
 # *inside* the container so it advances V-time under the VMM. See its header.
 install -m 0755 "$LINUX_DIR/pg-container-run.sh" "$BUNDLE/rootfs/run-workload.sh"
 
 # Pre-bake PGDATA: run the image's own `initdb` ONCE at build time (as the
-# postgres user, uid 999), exactly like task 37 pre-baked its bare cluster — and
+# postgres user, uid 999), exactly like the bare-Postgres image pre-baked its cluster — and
 # for the SAME reason, now load-bearing for the container path. Running the
 # official image's *entrypoint* would `initdb` at container START, which is both
 # crushingly slow under the exit-driven VMM AND re-execs through `gosu` (a Go
 # program whose runtime busy-spins with no VM-exit → it FREEZES V-time, the same
 # failure mode as dockerd). Pre-baking lets us run the `postgres` binary directly
 # as PID 1 (no entrypoint, no gosu, no runtime initdb) — a cooperative C workload
-# identical to task 37's, now inside an OCI container. `initdb` runs in a `chroot`
+# identical to the bare-Postgres image's, now inside an OCI container. `initdb` runs in a `chroot`
 # (the image's own binary + libs) with /dev,/proc bind-mounted; the cluster
 # system identifier it mints is snapshotted here, so there is no initdb-time
 # nondeterminism at runtime.
@@ -253,11 +253,11 @@ chroot --userspec=999:999 "$BUNDLE/rootfs" /bin/sh -c "
 umount "$BUNDLE/rootfs/proc" 2>/dev/null || true
 umount "$BUNDLE/rootfs/dev" 2>/dev/null || true
 trap - EXIT
-# Determinism overlay on the baked cluster's postgresql.conf (mirrors task 37):
+# Determinism overlay on the baked cluster's postgresql.conf (mirrors the bare-Postgres image):
 # socket-only, pinned TZ/locale, deterministic pid log prefix, autovacuum off.
 cat >>"$BUNDLE/rootfs$PGDATA_REL/postgresql.conf" <<EOF
 
-# --- task 38 determinism overlay (see consonance/harmony-linux/linux/README.md) ---
+# --- determinism overlay (see consonance/harmony-linux/linux/README.md) ---
 listen_addresses = ''            # unix socket only — no networking nondeterminism
 unix_socket_directories = '/run/postgresql'
 fsync = on                       # instant + deterministic on RAM-backed rootfs
@@ -303,12 +303,12 @@ echo "   container runs /run-workload.sh as uid 999 on pre-baked PGDATA; rootfs=
 # as the unshared container PID 1, before chroot; see docker-init.sh).
 install -m 0755 "$LINUX_DIR/docker-init.sh" "$DKROOT/init"
 install -m 0755 "$LINUX_DIR/container-setup.sh" "$DKROOT/container-setup.sh"
-# Task 48: the REAL-runc /init, baked alongside as /runc-init and selected via the
-# kernel `rdinit=/runc-init` cmdline param (the task-38 unshare path above stays the
+# The REAL-runc /init, baked alongside as /runc-init and selected via the
+# kernel `rdinit=/runc-init` cmdline param (the unshare path above stays the
 # default /init for comparison). It `runc run`s the SAME /oci bundle generated above
 # — the config.json `runc spec` already wrote is runc-ready (allow-all devices,
-# terminal=false, runs /run-workload.sh). The unlock vs task 38: the Go runtime is
-# now preempted at the V-time LAPIC deadline (task 47 run_with_deadline), so runc's
+# terminal=false, runs /run-workload.sh). Compared to the unshare path, the Go runtime is
+# now preempted at the V-time LAPIC deadline (run_with_deadline), so runc's
 # container-init no longer deadlocks. See runc-init.sh + consonance/harmony-linux/linux/README.md.
 install -m 0755 "$LINUX_DIR/runc-init.sh" "$DKROOT/runc-init"
 

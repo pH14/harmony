@@ -3,8 +3,8 @@
 //! `SeededEnv::new(seed, policy)` answer an identical `DecisionPoint` sequence
 //! identically; a `RecordedEnv` materialized from a spec reproduces its answers
 //! exactly; and a **mixed host+guest** `Environment` replays bit-identically
-//! through a `record`→`replay` (encode→decode) round-trip — the task-45
-//! acceptance gate `replay(record(env)) == env`'s run, with host overrides
+//! through a `record`→`replay` (encode→decode) round-trip — the
+//! acceptance check `replay(record(env)) == env`'s run, with host overrides
 //! present.
 
 mod common;

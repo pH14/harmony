@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Linux-loader trust-boundary property test (task 30 gate 2; conventions rule 4
+//! Linux-loader trust-boundary property test (conventions rule 4
 //! / no-panic-on-untrusted-input): arbitrary, truncated, and valid-magic-prefixed
 //! bzImage bytes — with an arbitrary initramfs and guest-RAM size — must always
 //! yield `Ok | Err(LinuxLoadError)` from `parse_setup_header` / `load`, **never** a

@@ -60,7 +60,7 @@ impl VmState {
     ///
     /// # Errors
     ///
-    /// - [`VmStateError::InvalidField`] if `timers` violates a task-05
+    /// - [`VmStateError::InvalidField`] if `timers` violates a
     ///   `TimerQueue` invariant: entries not strictly ascending/unique by
     ///   `(deadline_vns, seq)`, a duplicate `token`, or any `seq >= next_seq`
     ///   (see `validate_timers`). `encode` does **not** silently fix these —
@@ -303,13 +303,13 @@ fn decode_msrs(payload: &[u8]) -> Result<MsrBlock, VmStateError> {
     Ok(MsrBlock(map))
 }
 
-/// Validate the task-05 `TimerQueue` invariants a queue must satisfy to restore
+/// Validate the `TimerQueue` invariants a queue must satisfy to restore
 /// faithfully. Any violation is [`VmStateError::InvalidField`]:
 ///
 /// 1. **Canonical firing order** — entries strictly ascending and unique by
-///    `(deadline_vns, seq)` (task-05 fires same-deadline timers in `seq`/FIFO
+///    `(deadline_vns, seq)` (the queue fires same-deadline timers in `seq`/FIFO
 ///    order, so this is the order they must be stored and replayed in).
-/// 2. **Unique tokens** — task-05's queue keys a `token -> entry` index, so a
+/// 2. **Unique tokens** — the queue keys a `token -> entry` index, so a
 ///    duplicate `token` would make a later cancel/reschedule hit the wrong entry.
 /// 3. **`seq < next_seq`** — `next_seq` is the queue's next insertion counter; a
 ///    stored `seq >= next_seq` would collide with the seq the restored queue

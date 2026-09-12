@@ -17,7 +17,7 @@ immutable; later commits are not retroactively attributed to that measured build
 ## Complete-session design audit
 
 [`transcript-remine-012.json`](transcript-remine-012.json) identifies the complete
-SMB worker/integrator, Metroid, and Mega Man 2 transcripts used in the second
+SMB worker and integration, Metroid, and Mega Man 2 transcripts used in the second
 design audit. The source sessions remain private. The mechanism-by-mechanism
 decisions, including rejected and canceled experiments, are recorded in
 [`SYNTHESIS.md`](../SYNTHESIS.md#second-transcript-audit).

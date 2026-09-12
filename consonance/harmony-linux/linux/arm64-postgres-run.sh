@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# The task-38 acceptance flow, rebuilt as an LSE-only static arm64 payload.
+# The acceptance flow, rebuilt as an LSE-only static arm64 payload.
 # This runs inside the namespace/chroot container and deliberately preserves
 # the existing PGC38 markers and twenty-row SQL oracle.
 

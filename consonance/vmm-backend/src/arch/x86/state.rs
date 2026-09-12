@@ -2,10 +2,10 @@
 //! The live, in-memory vCPU snapshot the backend produces (`save`) and consumes
 //! (`restore`).
 //!
-//! `VcpuState` is the counterpart to task 09's *serialized* `vm_state` blob:
+//! `VcpuState` is the counterpart to `vm-state`'s *serialized* `vm_state` blob:
 //! vmm-core marshals a `VcpuState` into a `vm_state::VmState` for the codec. Per
 //! rule #2 this crate **does not depend on `vm-state`**; the field set
-//! deliberately parallels task 09's records and is kept consistent by review.
+//! deliberately parallels its records and is kept consistent by review.
 //!
 //! Determinism (rule #4): the MSR set is a [`BTreeMap`] (never a `HashMap`), so
 //! equal guest state ⇒ equal `VcpuState`; no floating point; no host-derived

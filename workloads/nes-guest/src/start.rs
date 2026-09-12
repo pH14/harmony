@@ -37,7 +37,7 @@ pub struct StartScript {
     /// [`max_frames`](Self::max_frames) budget as the press cadence.
     pub settle_frames: u32,
     /// The loud-failure bound on the whole script — presses **and** settle.
-    /// The script never runs a frame past it (task 103 finding 3): a settle
+    /// The script never runs a frame past it: a settle
     /// that cannot fit under the bound is a loud error, never a silent
     /// overrun.
     pub max_frames: u32,
@@ -83,7 +83,7 @@ pub enum StartError {
         frames: u32,
     },
     /// Gameplay was observed so late that settling it would run past
-    /// `max_frames` (task 103 finding 3). The bound covers the whole script,
+    /// `max_frames`. The bound covers the whole script,
     /// so an overrun is a loud failure, not a few extra frames taken quietly:
     /// the frames a rollout spends are the budget the box gate paid for.
     SettleExceedsBudget {
@@ -142,8 +142,7 @@ impl std::error::Error for StartError {}
 /// observation run the settle frames (neutral input) and re-verify. Draws no
 /// entropy — a pure function of the core's power-on state.
 ///
-/// `max_frames` bounds the **whole** script, settle included (task 103
-/// finding 3): a script whose settle cannot fit under the bound is rejected
+/// `max_frames` bounds the **whole** script, settle included: a script whose settle cannot fit under the bound is rejected
 /// before the first frame, and gameplay observed too late to settle inside it
 /// fails with [`StartError::SettleExceedsBudget`]. `frames` therefore never
 /// exceeds `max_frames` — it cannot overrun the bound and cannot overflow.
@@ -278,7 +277,7 @@ mod tests {
         ));
     }
 
-    /// Task 103 finding 3: gameplay observed too late to settle inside
+    /// Gameplay observed too late to settle inside
     /// `max_frames` is a loud refusal — the settle must never run the script
     /// past its own bound. Fixture: a budget that fits the presses and one
     /// observation frame, but not the settle behind it.

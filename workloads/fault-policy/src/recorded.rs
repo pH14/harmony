@@ -22,7 +22,7 @@ use crate::policy::FaultPolicy;
 use crate::seeded::SeededEnv;
 use crate::{Environment, Outcome};
 
-/// Container magic, `"DEV2"` read little-endian. Bumped from `DEV1` (task 24)
+/// Container magic, `"DEV2"` read little-endian. Bumped from `DEV1`
 /// because the recorded value type widened from a guest `Answer` to an
 /// [`Action`] keyed by [`Moment`] — a blob from the old layout no longer
 /// decodes, and the magic makes that an explicit, loud rejection.
@@ -34,7 +34,7 @@ const MAGIC: u32 = u32::from_le_bytes(*b"DEV2");
 /// re-applies it deterministically: the frontier hands each entry to the guest
 /// utility, which **enforces** it on the intra-guest CNI for the window (e.g. an
 /// nftables rule), exactly as it enforces a per-flow [`NetFlow`](DecisionClass::NetFlow)
-/// answer — there is no host switch to consult (task 50 retired `pv-net`). It is
+/// answer — there is no host switch to consult (`pv-net` was retired). It is
 /// applied imperatively by the frontier, never through
 /// [`decide`](Environment::decide) and never armed out-of-band where it would
 /// escape replay. `target` is service-interpreted (it encodes, e.g., the
@@ -59,7 +59,7 @@ pub struct StandingFault {
 ///
 /// > **Naming.** The ruling overloads `Environment` for *both* the
 /// > [`decide`](Environment::decide) seam (a trait) and this reproducer (a
-/// > struct). Task 24 resolved the clash by keeping the trait as `Environment`
+/// > struct). This resolved the clash by keeping the trait as `Environment`
 /// > and naming the reproducer `EnvSpec`; this amendment keeps that resolution
 /// > and only widens the recorded value type (`Answer` → [`Action`]) and re-keys
 /// > the map (decision index → [`Moment`]).
@@ -89,13 +89,13 @@ pub enum EnvSpec {
         /// **Merged-plane seam.** The value type is [`Action`] = [`Host`](Action::Host)
         /// ∪ [`Guest`](Action::Guest), keyed by [`Moment`]: a host perturbation and
         /// a guest [`Answer`] share one ordered timeline. This widened from the
-        /// task-24 guest-only `Answer` value when the host control plane landed
-        /// (task 45) — so the widening task 46's clarifying pass anticipated as a
+        /// guest-only `Answer` value when the host control plane landed
+        /// — so the widening a later clarifying pass anticipated as a
         /// forward-compat note is already realized here, not pending.
         overrides: BTreeMap<Moment, Action>,
         /// Correlated, V-time-windowed faults.
         standing: Vec<StandingFault>,
-        /// The **reseed-marker table** (task 78): the sequential-entropy
+        /// The **reseed-marker table**: the sequential-entropy
         /// reseeds this reproducer's timeline carries, keyed by the [`Moment`]
         /// each took effect (a branch origin), valued by the seed
         /// (`SeededEntropy::new(seed)`). A compose-folded env re-executes each
@@ -117,19 +117,19 @@ impl EnvSpec {
     /// The reproducer blob format version. Bumps when the blob layout changes
     /// **or** when an inner byte vocabulary changes incompatibly;
     /// [`decode`](EnvSpec::decode) rejects any other version with
-    /// [`EnvError::BadVersion`]. Bumped to `3` by task 50: the container layout
+    /// [`EnvError::BadVersion`]. Bumped to `3`: the container layout
     /// (magic, [`Action`] map, standing faults) is unchanged, but the network
     /// [`Fault`](crate::Fault) byte vocabulary was reshaped (per-frame → per-flow),
-    /// so a task-45 `v2` blob carrying an old net fault must reject rather than
-    /// silently reinterpret it as a new flow policy. Bumped to `4` by task 78: the
+    /// so a `v2` blob carrying an old net fault must reject rather than
+    /// silently reinterpret it as a new flow policy. Bumped to `4`: the
     /// [`Recorded`](EnvSpec::Recorded) layout gained a trailing **reseed-marker
     /// table**, so a v3 blob (no table) rejects rather than mis-parse. Bumped to
-    /// `5` by task 73: the embedded [`FaultPolicy`](crate::FaultPolicy) gained a
-    /// trailing **buggify section** (its own version moved `2 → 3`). Task 78's `v4`
-    /// embeds `FaultPolicy` v2 and task 73's embeds v3 — two **incompatible** inner
+    /// `5`: the embedded [`FaultPolicy`](crate::FaultPolicy) gained a
+    /// trailing **buggify section** (its own version moved `2 → 3`). The `v4`
+    /// embeds `FaultPolicy` v2 and `v5` embeds v3 — two **incompatible** inner
     /// encodings of the same logical policy (v3 is longer), so they must NOT share
     /// an outer version. A `v4` blob is therefore rejected outright at the version
-    /// gate in [`decode`](EnvSpec::decode), never parsed with the v5 policy reader.
+    /// check in [`decode`](EnvSpec::decode), never parsed with the v5 policy reader.
     /// Bumped to `6` by the architecture boundary interrupt-identity widening:
     /// [`HostFault::InjectInterrupt`](crate::HostFault::InjectInterrupt)'s
     /// `vector` payload widened `u8 → u32` (GIC INTIDs exceed 8 bits), so a v5
@@ -335,7 +335,7 @@ impl EnvSpec {
     }
 
     /// Decode a blob from [`encode`](EnvSpec::encode). Never panics on arbitrary
-    /// or mutated bytes; off-version (including a task-24 `DEV1` blob, whose
+    /// or mutated bytes; off-version (including the old `DEV1` blob, whose
     /// magic differs) is [`EnvError::BadVersion`] or [`EnvError::Malformed`],
     /// and every other defect (bad magic, truncation, trailing bytes, an unknown
     /// variant/plane/class tag, non-ascending/duplicate `Moment`s or standing

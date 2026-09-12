@@ -140,7 +140,7 @@ pub enum Action {
     Host(HostFault),
     /// A guest control-plane decision answer, resolved at the
     /// [`decide`](crate::Environment::decide) seam when its `Moment` surfaces
-    /// (the task-24 [`Answer`]).
+    /// (the guest-plane [`Answer`]).
     Guest(Answer),
 }
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Task 35 — kill the `lib.rs:521` `BuilderCore::seal` mutant
+//! Kill the `lib.rs:521` `BuilderCore::seal` mutant
 //! (`self.store.next_id += 1` → `*= 1`) by assertion rather than by hang.
 //!
 //! With `*= 1` the id counter freezes at 0, so every `seal` hands out id 0. That

@@ -151,7 +151,7 @@ pub struct VtimeState {
 }
 
 /// One scheduled timer: an absolute V-time deadline (survives restore unchanged),
-/// tagged with its task-05 insertion sequence `seq` so same-deadline firing order
+/// tagged with its insertion sequence `seq` so same-deadline firing order
 /// is reproducible.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct TimerEntry {
@@ -169,12 +169,12 @@ pub struct TimerEntry {
 /// Timer-queue contents.
 ///
 /// `entries` are kept sorted by `(deadline_vns, seq)` — the queue's firing
-/// order, **not** token order: task-05's `TimerQueue` fires same-deadline timers
+/// order, **not** token order: the `TimerQueue` fires same-deadline timers
 /// in FIFO insertion order, so the snapshot carries `seq` to reproduce it.
 /// `next_seq` is the queue's monotonic counter, snapshotted so a restored queue
 /// keeps issuing non-colliding sequence numbers.
 ///
-/// A faithful queue obeys three task-05 invariants, all enforced as **value
+/// A faithful queue obeys three invariants, all enforced as **value
 /// invariants** by [`VmState::encode`](crate::VmState::encode) (and re-checked by
 /// [`VmState::decode`](crate::VmState::decode)) — a violation is
 /// [`VmStateError::InvalidField`](crate::VmStateError), never a silent fix-up, so
@@ -201,7 +201,7 @@ pub struct TimerQueueState {
 /// **Placeholder** for the device-emulation state (LAPIC + PIC stub + PIT stub).
 ///
 /// Carried now as opaque, length-prefixed bytes so the container format and
-/// version lock without waiting on task 13's `lapic::LapicState`. The vmm-core
+/// version lock without waiting on `lapic::LapicState`. The vmm-core
 /// adapter passes through whatever the device models emit; this crate does not
 /// interpret it. The format stays forward-compatible because this is one tag
 /// whose internal layout can gain a typed encoding under a bumped

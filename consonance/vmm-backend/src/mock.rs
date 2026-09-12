@@ -131,7 +131,7 @@ pub struct MockBackend {
     /// before acceptance.
     defer_accept: bool,
     completions: Vec<Completion>,
-    /// Scripted dirty-page tracking (task 95 M2.1): `None` = no dirty tracking
+    /// Scripted dirty-page tracking: `None` = no dirty tracking
     /// (`drain_dirty_pages` answers `Unsupported`, like a `flags: 0` live
     /// backend); `Some(pending)` = tracking enabled — [`Self::push_dirty_gfns`]
     /// **accumulates** gfns exactly as guest writes accumulate in KVM's log,
@@ -263,7 +263,7 @@ impl MockBackend {
         self
     }
 
-    /// Turn on dirty tracking (task 95 M2.1): after this, `drain_dirty_pages`
+    /// Turn on dirty tracking: after this, `drain_dirty_pages`
     /// answers `Ok` — whatever [`Self::push_dirty_gfns`] has accumulated since
     /// the last drain (empty if nothing). Off (`Unsupported`, the trait
     /// default's shape) until called.

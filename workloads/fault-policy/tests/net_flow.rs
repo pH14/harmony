@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Task 50 — the `NetFlow` seam: per-flow network decisions, host-decided and
-//! guest-enforced. Covers the two task-specific gates beyond the standard suite:
+//! The `NetFlow` seam: per-flow network decisions, host-decided and
+//! guest-enforced. Covers two checks beyond the standard suite:
 //!
 //! 1. **Catalog replay + codec.** A recorded `NetFlow` answer sequence replays
 //!    bit-identically through a `RecordedEnv`; the reshaped net-flow catalog
 //!    (points, policy, every flow-policy `Fault`) round-trips through
 //!    `EnvSpec::encode`/`decode`; per-variant golden wire bytes pin the codec; a
-//!    stale task-45 (`v2`) blob is rejected, never reinterpreted.
+//!    stale (`v2`) blob is rejected, never reinterpreted.
 //! 2. **Discriminant stability.** `DecisionClass::NetFlow as u16 == 4`, so
 //!    `control-proto`'s `StopMask` bit (`1 << class_bit`) is unchanged across the
 //!    `NetSend` → `NetFlow` rename; a round-trip through a `StopMask` arming the
@@ -44,7 +44,7 @@ fn net_faults() -> Vec<Fault> {
 }
 
 /// `control-proto`'s `StopMask` is a `u32` bitset where the bit for a class is
-/// `1 << class_bit` (the integrator-pinned mapping, mirrored locally per
+/// `1 << class_bit` (the control-plane-pinned mapping, mirrored locally per
 /// conventions rule 2 — no sibling dependency). A `class_bit >= 32` is a
 /// panic-free no-op, exactly as `StopMask::arm`/`armed` do.
 fn arm(mask: u32, class_bit: u16) -> u32 {
@@ -152,8 +152,8 @@ fn stale_v2_blob_is_rejected_not_reinterpreted() {
     );
 }
 
-/// A `v4` blob is rejected at the version GATE, not mid-parse. Task 78 shipped
-/// `v4` (reseed table + `FaultPolicy` v2); task 73 embeds `FaultPolicy` v3, a
+/// A `v4` blob is rejected at the version GATE, not mid-parse. `v4` shipped
+/// the reseed table + `FaultPolicy` v2; `v5` embeds `FaultPolicy` v3, a
 /// longer, incompatible policy sub-blob, so the merged format is `v5`. Two
 /// incompatible encodings must never share an outer version — a v4 blob must fail
 /// loud at the version check, before any field is parsed.

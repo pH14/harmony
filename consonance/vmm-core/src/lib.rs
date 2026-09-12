@@ -44,7 +44,7 @@ pub mod portable_snapshot;
 /// Restore-aware accumulation and comparison of control-session traces.
 pub mod session_trace;
 pub mod snapshot;
+pub mod vendor;
 /// Architecture-neutral assigned-at-exit virtual time and its independent oracles.
 pub mod virtual_time;
-pub mod vendor;
 pub mod vmm;

@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# /init of the **Postgres-campaign workload image** (task 60). It is the task-37
-# bare-Postgres init (consonance/harmony-linux/linux/pg-init.sh) plus the planted-bug supervisor
+# /init of the **Postgres-campaign workload image**. It is the bare-Postgres init
+# (consonance/harmony-linux/linux/pg-init.sh) plus the planted-bug supervisor
 # `campaign-super`: bring up the kernel filesystems, run the deterministic
 # Postgres insert/select workload to completion (the image's determinism
 # pedigree), stop postgres, then run the supervised process whose bookkeeping

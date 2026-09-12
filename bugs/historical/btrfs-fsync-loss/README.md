@@ -67,7 +67,7 @@ bug cannot fire.
 ## Kernel note
 
 This bug is **in-kernel**, so the guest must run a pre-fix kernel — it cannot use the canonical
-determinism kernel (task 57, 6.18.x). Options, to be decided at implementation: (a) port the
+determinism kernel (6.18.x). Options, to be decided at implementation: (a) port the
 determinism patches to a 5.13-era kernel (costly), or (b) *revert* `ecc64fab7d49` on the
 canonical kernel — the revert is small and reintroduces the bug faithfully. (b) is the default
 plan; note it deviates from "pinned pre-fix version" purity and must be stated in results.

@@ -30,7 +30,7 @@ use crate::vmm::{Step, TerminalReason, Vmm, VmmError};
 /// neither the APIC page nor the legacy ports, so their `state_hash` carries no
 /// device chunks).
 pub struct X86Devices {
-    /// The 8250 UART (serial console + the task-81 `exec` input queue).
+    /// The 8250 UART (serial console + the `exec` input queue).
     pub(crate) uart: Uart8250,
     /// The userspace xAPIC (ruling R1) — Linux boot path only.
     pub(crate) lapic: Option<lapic::Lapic>,
@@ -84,10 +84,10 @@ pub(crate) const IA32_TSC: u32 = 0x10;
 /// Also `emulate-vtime`; backs [`VtimeWiring::tsc_adjust`].
 pub(crate) const IA32_TSC_ADJUST: u32 = 0x3b;
 
-/// The hypercall **doorbell** port (task 73 / docs/ARCHITECTURE.md): an `OUT` here
+/// The hypercall **doorbell** port (`docs/ARCHITECTURE.md`): an `OUT` here
 /// is a cooperating guest SDK ringing a hypercall. Mirrors
 /// `hypercall_doorbell::DOORBELL_PORT` (conventions rule 2 — the guest/host
-/// protocol pattern; deliberately distinct from the task-04 report channel at
+/// protocol pattern; deliberately distinct from the report channel at
 /// `0x0CA2`). Serviced only when an SDK channel is wired ([`Vmm::enable_sdk`]);
 /// otherwise an `OUT 0x0CA1` stays the default-deny contract violation, so every
 /// non-SDK path is byte-for-byte unchanged.
@@ -442,7 +442,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
         let Some(lapic) = self.devices.lapic.as_mut() else {
             return Err(VmmError::ContractViolation(format!(
                 "InjectInterrupt vector {vector:#x} but the userspace LAPIC is unwired — no IRQ \
-                 arbitration path to assert the vector through (task 59 enforces host interrupts \
+                 arbitration path to assert the vector through (host interrupts are enforced \
                  through the Linux-boot xAPIC)"
             )));
         };
@@ -618,9 +618,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
             };
             match index {
                 IA32_TSC => vt.guest_clock(),
-                IA32_TSC_ADJUST => {
-                    vt.guest_clock_offset
-                }
+                IA32_TSC_ADJUST => vt.guest_clock_offset,
                 other => {
                     return Err(VmmError::ContractViolation(format!(
                         "emulate-vtime RDMSR {other:#x} is not a V-time MSR (only IA32_TSC 0x10 and \
@@ -747,9 +745,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 s.hypercall = vt.entropy.save_state();
                 vt.guest_clock_offset
             }
-            None => {
-                0
-            }
+            None => 0,
         };
         let dev = DeviceState {
             tsc_adjust,
@@ -834,7 +830,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
 
     /// The x86 half of the restore **commit** (all infallible): install the prepared
     /// xAPIC, the legacy-platform latches, the UART residual state, the restored
-    /// guest-observable report stream, and the task-110 pvclock channel state
+    /// guest-observable report stream, and the pvclock channel state
     /// (the sealed registration resumes stamping into the restored RAM's page;
     /// a sealed-unregistered record clears any stale-timeline registration).
     pub(crate) fn commit_restore_x86(&mut self, prep: X86RestorePrep) {

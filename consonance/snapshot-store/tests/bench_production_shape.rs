@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Task 95 M1.1 — the production-shape bench (informational, not pass/fail).
+//! The production-shape bench (informational, not pass/fail).
 //!
 //! `tests/bench.rs` measures the store at a 32 MiB toy shape. This file measures it at
 //! the shape production actually runs: a 2 GiB guest, i.e. 524,288 frames, on a

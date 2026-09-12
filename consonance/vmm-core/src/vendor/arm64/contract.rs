@@ -97,9 +97,7 @@ pub const IDENTITY_BASELINE: [(u32, u64); 21] = [
 /// Both live instruction probes read this exact value. It is bound into the
 /// contract hash even though it cannot be installed through either substrate's
 /// configuration API; a host with a different value is not M5-qualified.
-pub const READ_ONLY_IDENTITY_BASELINE: [(u32, u64); 1] = [
-    (0xd807, 0x0000_0000_0000_0004),
-];
+pub const READ_ONLY_IDENTITY_BASELINE: [(u32, u64); 1] = [(0xd807, 0x0000_0000_0000_0004)];
 
 /// The installable arm64 policy: the frozen cross-host identity and the empty
 /// stock-substrate trap table.

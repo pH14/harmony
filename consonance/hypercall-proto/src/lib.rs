@@ -18,9 +18,9 @@
 //! | [`Pvclock`](ServiceId::Pvclock) | 7 | `1` = `pvclock_register` (publishes the guest clock-page GPA) |
 //! | [`Payload`](ServiceId::Payload) | 8 | `1` = consume one exact-length staged payload entry |
 //!
-//! Id **5** is the task-61 `Net` vertical (the first guest-plane fault path); the
-//! task-73 SDK control service ([`Sdk`](ServiceId::Sdk)) takes id **6**; the
-//! task-110 paravirt virtual-time clock registration ([`Pvclock`](ServiceId::Pvclock))
+//! Id **5** is the `Net` vertical (the first guest-plane fault path); the
+//! SDK control service ([`Sdk`](ServiceId::Sdk)) takes id **6**; the
+//! paravirt virtual-time clock registration ([`Pvclock`](ServiceId::Pvclock))
 //! takes id **7**; the ordered cooperating-workload payload service takes id
 //! **8**. An
 //! unregistered service id or an opcode a service does not implement is a
@@ -82,11 +82,11 @@ pub enum ServiceId {
     /// Reserved legacy network service id. Fault packages use the generic SDK
     /// opcode-3 channel and own their request encoding in an optional adapter.
     Net = 5,
-    /// SDK control service (task 73): opcode 2 reaches an instrumented coverage
+    /// SDK control service: opcode 2 reaches an instrumented coverage
     /// threshold and opcode 3 carries an opaque package-defined request.
     Sdk = 6,
-    /// Paravirt virtual-time clock registration (task 110,
-    /// `consonance/vtime/README.md`): the guest publishes the guest-physical
+    /// Paravirt virtual-time clock registration
+    /// (`consonance/vtime/README.md`): the guest publishes the guest-physical
     /// address of its 4 KiB clock page (op 1, `pvclock_register` — an 8-byte
     /// little-endian GPA). The host validates the GPA (page-aligned, inside
     /// guest RAM, clear of the doorbell frame pages and of any device-MMIO
@@ -671,8 +671,8 @@ mod guest {
             }
         }
 
-        /// Publish the guest's paravirt clock-page GPA to the host (task 110's
-        /// [`ServiceId::Pvclock`], op 1) and return the host's page-layout ABI
+        /// Publish the guest's paravirt clock-page GPA to the host
+        /// ([`ServiceId::Pvclock`], op 1) and return the host's page-layout ABI
         /// version (`HARMONY_PVCLOCK_ABI`). One request carries the 8-byte
         /// little-endian page-aligned `gpa`; the response is exactly the 4-byte
         /// little-endian ABI version — any other length is a protocol error,
@@ -1367,7 +1367,7 @@ mod host {
     }
 
     /// Deterministic **reference** paravirt-clock registrar for loopback tests
-    /// (task 110, [`ServiceId::Pvclock`]): validates the 8-byte little-endian
+    /// ([`ServiceId::Pvclock`]): validates the 8-byte little-endian
     /// GPA payload of a `pvclock_register` (op 1) against a fixed guest-RAM
     /// size and page alignment, records it, and answers the 4-byte ABI
     /// version. The production host is `vmm-core`'s doorbell dispatch, which

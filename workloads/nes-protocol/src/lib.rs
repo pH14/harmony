@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The billboard writer — the guest-side producer of task 86's always-on,
+//! The billboard writer — the guest-side producer of the play-agent's always-on,
 //! per-frame core-state export.
 //!
 //! Shared guest writer and host reader for the versioned NES publication.

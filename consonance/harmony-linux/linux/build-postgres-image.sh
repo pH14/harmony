@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the **bare-Postgres workload initramfs** (task 37): a static busybox + a
+# Build the **bare-Postgres workload initramfs**: a static busybox + a
 # real PostgreSQL 17 install (from the pinned Debian .debs) + a RAM-backed ext4
 # image holding a pre-`initdb`'d cluster + the `pg-init.sh` /init that drives a
 # fixed insert/select workload loop. The companion kernel is the *unchanged*
-# task-36 container-class bzImage (this task needs no kernel change — ext4, loop,
+# container-class bzImage (this needs no kernel change — ext4, loop,
 # brd, tmpfs, AF_UNIX, SysV-IPC are all already built in; see the §capability
 # audit in consonance/harmony-linux/linux/README.md). See that file for the determinism
 # closure (locale/TZ pinning, pre-baked PGDATA, pg_strong_random → seeded CRNG).
@@ -141,7 +141,7 @@ setpriv --reuid="$BUILD_UID" --regid="$BUILD_UID" --clear-groups env LC_ALL=C.UT
     || { cat "$BUILD_ROOT/initdb.log"; exit 1; }
 cat >>"$STAGEFS/pgdata/postgresql.conf" <<EOF
 
-# --- task 37 determinism overlay (see consonance/harmony-linux/linux/README.md) ---
+# --- determinism overlay (see consonance/harmony-linux/linux/README.md) ---
 listen_addresses = ''            # unix socket only — no networking nondeterminism
 unix_socket_directories = '/tmp'
 fsync = on                       # exercised; instant + deterministic on RAM storage
@@ -166,12 +166,12 @@ mke2fs -q -t ext4 -U "$FIXED_UUID" \
     -E lazy_itable_init=0,lazy_journal_init=0 \
     -d "$STAGEFS" -F "$EXT4" "$EXT4_SIZE"
 
-# --- 4. the baked workload v2 (task 42): UUID + wall-clock, still deterministic -
+# --- 4. the baked workload v2: UUID + wall-clock, still deterministic -
 # Each row carries a gen_random_uuid() id (column DEFAULT) and a clock_timestamp()
 # wall-clock column. These LOOK nondeterministic — a random UUID, a per-call
 # wall-clock time — but must come out BIT-IDENTICAL across two same-seed runs:
 # gen_random_uuid() draws from pg_strong_random → the seeded CRNG (the same path
-# task 37 verified), and clock_timestamp() reads the system clock, which is
+# verified above), and clock_timestamp() reads the system clock, which is
 # V-time-driven. Each iteration INSERTs (i, clock_timestamp()) and SELECTs the row
 # back with the running count(*)/sum(i) aggregate plus its id + t, streamed as
 # `row|i|count|sum|uuid|t`. The count/sum prefix stays a pure function of the loop

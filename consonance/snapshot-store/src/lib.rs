@@ -19,9 +19,9 @@ mod mapping;
 pub use mapping::Mapping;
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
 #[allow(clippy::disallowed_types)]
 use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Size in bytes of one guest page.
 pub const PAGE_SIZE: usize = 4096;
@@ -215,7 +215,7 @@ pub struct Store {
     /// here: no output, hash, or encoded byte can observe its layout. Any future code
     /// that iterates it must collect-and-sort first, or it is a determinism bug.
     ///
-    /// Hash-keyed rather than tree-keyed (task 95 M1.2c): the keys are uniformly-random
+    /// Hash-keyed rather than tree-keyed: the keys are uniformly-random
     /// BLAKE3 digests, so a `BTreeMap` made every seal/intern/release lookup a
     /// cache-unfriendly pointer-chasing descent.
     #[allow(clippy::disallowed_types)]
@@ -926,7 +926,7 @@ mod tests {
         StoreConfig { mem_pages }
     }
 
-    /// Task 95 M1.2c: the XOR-folding hasher must behave as a hasher — equal keys hash
+    /// The XOR-folding hasher must behave as a hasher — equal keys hash
     /// equal, the fold spreads distinct keys, and a `HashMap` under it round-trips.
     #[test]
     fn page_hash_hasher_backs_a_working_map() {
@@ -1118,7 +1118,7 @@ mod tests {
         assert_eq!(out, [7u8; PAGE_SIZE]);
     }
 
-    /// Task 95 M1.2a: the byte-scan short-circuit must agree with the old
+    /// The byte-scan short-circuit must agree with the old
     /// `blake3(data) == zero_hash` test on every shape of "nearly zero" page — a
     /// single non-zero byte anywhere still interns exactly one content.
     #[test]
@@ -1151,7 +1151,7 @@ mod tests {
         assert_eq!(store.store_stats().stored_unique_pages, 0);
     }
 
-    /// Task 95 M1.2a: a zero write that *overwrites* a buffered non-zero write in the
+    /// A zero write that *overwrites* a buffered non-zero write in the
     /// same builder must release the interned content it displaced.
     #[test]
     fn zero_write_over_buffered_data_releases_the_content() {

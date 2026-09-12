@@ -3,7 +3,7 @@
 //! each vblank the agent (1) draws chord inputs (one entropy byte per input
 //! window), (2) publishes the billboard *before* the frame's `retro_run`,
 //! (3) emits state registers once per window and the frame clock every vblank,
-//! and (4) marks legibility events — task 86 §play-agent, in that order.
+//! and (4) marks legibility events — §play-agent, in that order.
 //!
 //! The loop is generic over the [`Core`] seam (mock in tests, libretro in the
 //! guest) and the [`Harness`] seam (the SDK in the guest, a recording fake in
@@ -18,7 +18,7 @@ use crate::core_seam::Core;
 use crate::ram::{self, RamError, SmbState};
 use crate::regs;
 
-/// The SDK-facing seam: exactly the verbs task 86 permits (`state_set`/
+/// The SDK-facing seam: exactly the verbs the play-agent permits (`state_set`/
 /// `state_max`/`assert_reachable`/`entropy_fill` — nothing else, R-L2). The
 /// binary implements it over `harmony_sdk::Sdk`; tests implement it over a
 /// recording fake with a scripted entropy stream.
@@ -38,7 +38,7 @@ pub trait Harness {
     fn reachable(&mut self, point: u32) -> Result<(), Self::Error>;
 }
 
-/// The agent's manifest parameters (task 86: alphabet, weights, and `W` are
+/// The agent's manifest parameters (alphabet, weights, and `W` are
 /// manifest parameters — tuning *them* is legitimate input shaping; tuning the
 /// game is impossible).
 #[derive(Clone, Debug)]

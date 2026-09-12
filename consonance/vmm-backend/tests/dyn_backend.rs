@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Gate 4 — object-safety / dyn-compatibility **and** the `impl Backend for
-//! Box<B>` blanket-forward (task 21). The composition root holds a
+//! Box<B>` blanket-forward. The composition root holds a
 //! `Box<dyn Backend<A = X86>>` and injects the concrete backend at `fn main`; this test
 //! constructs one and drives **every** trait method through it, so each blanket
 //! forward is exercised with a trait-observable assertion (a mutant that drops a

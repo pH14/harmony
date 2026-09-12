@@ -190,8 +190,8 @@ pub(crate) fn from_vm_debugregs(d: &DebugRegs) -> vmm_backend::DebugRegs {
 
 /// `VcpuState.events` → `vm_state::VcpuEvents` (the reduced 6-field typed subset:
 /// pending exception vector/code, NMI/SMI pending, interrupt shadow). The **full**
-/// `kvm_vcpu_events` rides the device blob (task 41) and is authoritative on the full
-/// restore path; this typed record is kept for task-39 `vm-state` codec compatibility.
+/// `kvm_vcpu_events` rides the device blob and is authoritative on the full
+/// restore path; this typed record is kept for `vm-state` codec compatibility.
 pub(crate) fn to_vm_events(e: &vmm_backend::VcpuEvents) -> VcpuEvents {
     VcpuEvents {
         exception_pending: e.exception_pending != 0,
@@ -273,7 +273,7 @@ const KVM_VCPUEVENT_VALID_SMM: u32 = 0x0000_0008;
 const KVM_VCPUEVENT_VALID_PAYLOAD: u32 = 0x0000_0010;
 const KVM_VCPUEVENT_VALID_TRIPLE_FAULT: u32 = 0x0000_0020;
 
-/// Reduce a live `kvm_vcpu_events` to its **canonical, restorable** form (task 41).
+/// Reduce a live `kvm_vcpu_events` to its **canonical, restorable** form.
 ///
 /// KVM leaves *stale modifier residuals* in `kvm_vcpu_events` even at a fully quiescent
 /// point: `interrupt.nr` keeps the **last-delivered** vector after delivery completes,
@@ -283,7 +283,7 @@ const KVM_VCPUEVENT_VALID_TRIPLE_FAULT: u32 = 0x0000_0020;
 /// in-flight state** — they are inert (no `injected`/`pending` bit is set). Replaying
 /// them verbatim into `KVM_SET_VCPU_EVENTS` on restore corrupts the resumed guest (the
 /// box symptom was an immediate kernel `Oops` / `Attempted to kill the idle task`). The
-/// reduced subset task 39 carried happened to drop the worst of them; the full-events
+/// reduced subset the prior codec carried happened to drop the worst of them; the full-events
 /// capture re-introduced them, so we must canonicalize.
 ///
 /// Canonical form: each modifier is kept **only when its active bit is set**, and
@@ -407,15 +407,15 @@ pub(crate) fn events_for_restore(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vc
 /// **provably lossless-or-rejected**:
 /// - *Captured:* `regs` (all), `sregs` segments + descriptor tables + CRs + EFER +
 ///   APIC_BASE, `xcr0`, `debugregs.db`/`dr6`/`dr7`, **the full `events` record**
-///   (every `kvm_vcpu_events` field — task 41, captured verbatim in the device blob,
+///   (every `kvm_vcpu_events` field, captured verbatim in the device blob,
 ///   no longer a reduced subset), `mp_state`, `msrs`, `xsave`.
 /// - *Asserted zero here (not carried):* `sregs.flags`/`sregs.pdptrs` (PAE-only;
 ///   64-bit guest), `debugregs.flags` (KVM "currently always 0").
 ///
-/// **Events are no longer rejected wholesale.** Task 41 captures the *entire* `kvm_vcpu_events`
-/// (in-flight interrupt/exception injection, SMM, etc.) in the device blob and re-establishes it
+/// **Events are no longer rejected wholesale.** The device blob captures the *entire* `kvm_vcpu_events`
+/// (in-flight interrupt/exception injection, SMM, etc.) and re-establishes it
 /// on restore via `KVM_SET_VCPU_EVENTS`, so a **non-quiescent** point — an interrupt in flight —
-/// is now snapshottable rather than fail-closed-rejected. That is the whole point of this task.
+/// is now snapshottable rather than fail-closed-rejected.
 /// **Two cap-gated event fields are the exception** (PR #12 round 7): `triple_fault_pending` and
 /// `exception_has_payload` are rejected here, because their `KVM_SET_VCPU_EVENTS` validity bits
 /// need per-VM capabilities (`KVM_CAP_X86_TRIPLE_FAULT_EVENT` / `KVM_CAP_EXCEPTION_PAYLOAD`) this
@@ -495,20 +495,20 @@ pub(crate) fn cap_unrestorable_events(e: &vmm_backend::VcpuEvents) -> Option<&'s
     None
 }
 
-/// `true` iff `e` carries `kvm_vcpu_events` state **the quiescent-only task-39 codec
+/// `true` iff `e` carries `kvm_vcpu_events` state **the quiescent-only prior codec
 /// fail-closed-rejected** (`unrepresentable_state`'s old 14-field check) — the exact
 /// predicate that decided "non-quiescent, refuse." It fires on a *genuine* in-flight
 /// injection (an interrupt/exception KVM has injected but not yet delivered, the
 /// `#PF`/`#DB` payload, a `SIPI`, SMM, or a queued triple fault) **and** on KVM's inert
 /// *modifier residuals* — a stale `interrupt.nr`/`exception.nr`/`has_error_code` KVM
 /// leaves set after an injection completes (box evidence: the post-readiness Postgres
-/// boundaries it flagged carried such residuals, the active bits all clear). Both made
-/// task 39 refuse; task 41 makes both snapshottable — the residuals collapse to the
+/// boundaries it flagged carried such residuals, the active bits all clear). The prior
+/// codec refused both; the current one makes both snapshottable — the residuals collapse to the
 /// clean record under [`canonical_events`], a true injection round-trips. Excluded
 /// (never a refusal trigger): `exception_pending`/`exception_nr`/`exception_error_code`/
 /// `nmi_pending`/`smi_pending`/`interrupt_shadow` and the validity-mask `flags`. Pure;
 /// exposed via [`crate::vmm::Vmm::has_inflight_event_injection`] so a gate can quote a
-/// run's task-39-would-reject split.
+/// run's would-have-been-rejected split.
 pub(crate) fn has_inflight_injection(e: &vmm_backend::VcpuEvents) -> bool {
     let fields: [u64; 14] = [
         u64::from(e.exception_injected),
@@ -559,13 +559,13 @@ pub(crate) fn has_active_event_injection(e: &vmm_backend::VcpuEvents) -> bool {
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4544;
 /// Device-blob layout version for a VM with **no pvclock channel** — the shape
 /// every composition that never called `enable_pvclock` encodes, byte-for-byte
-/// as before task 110. v2 added the ordered conformance `report_stream`; v3
-/// added the **full `kvm_vcpu_events`** record (task 41 — non-quiescent capture,
+/// as before the pvclock channel existed. v2 added the ordered conformance `report_stream`; v3
+/// added the **full `kvm_vcpu_events`** record (non-quiescent capture,
 /// so an in-flight interrupt/exception injection round-trips instead of being
 /// fail-closed-rejected).
 const DEVICE_BLOB_VERSION_BASE: u16 = 3;
 
-/// Device-blob layout version for a VM that **offers the task-110 pvclock
+/// Device-blob layout version for a VM that **offers the pvclock
 /// channel**: v3 plus a trailing channel record (Δ + the one-shot registration),
 /// so the direct `save_vm_state`/`restore_snapshot` path carries the stamping
 /// obligation with the state it governs — a restored guest whose RAM contains an
@@ -616,14 +616,14 @@ pub(crate) struct DeviceState {
     pub legacy: Option<LegacyState>,
     /// The **full** `kvm_vcpu_events` (`KVM_GET_VCPU_EVENTS`) — every in-flight
     /// injection / interrupt-shadow / NMI / SMI / triple-fault field, not the reduced
-    /// `vm_state::VcpuEvents` subset (task 41). This is what makes a **non-quiescent**
+    /// `vm_state::VcpuEvents` subset. This is what makes a **non-quiescent**
     /// V-time point snapshottable: an interrupt or exception KVM has injected but not
     /// yet delivered (`interrupt.injected` / `exception.injected` / the `#PF`/`#DB`
     /// payload) is captured here and re-established on restore via `KVM_SET_VCPU_EVENTS`,
     /// so the guest resumes mid-delivery identically. Zero at a quiescent point (so
     /// M1/M2/corpus blobs carry an all-zero record and their hashes do not move). The
     /// authoritative events on restore — it supersedes the reduced typed record, which
-    /// `vm-state` still carries unchanged for task-39 codec compatibility.
+    /// `vm-state` still carries unchanged for codec compatibility.
     pub events: vmm_backend::VcpuEvents,
     /// The pvclock channel configuration (v4): `None` = the page was
     /// not offered on the sealing VM; `Some((gpa, registrable))` = offered
@@ -1156,7 +1156,7 @@ mod tests {
 
     /// A full `kvm_vcpu_events` with **every** field set to a distinct non-zero value,
     /// so any encode/decode field that is dropped, reordered, or width-truncated fails
-    /// the round-trip (task 41 — the non-quiescent capture).
+    /// the round-trip (the non-quiescent capture).
     fn full_events() -> vmm_backend::VcpuEvents {
         vmm_backend::VcpuEvents {
             exception_injected: 1,
@@ -1469,7 +1469,6 @@ mod tests {
 
     #[test]
     fn events_for_restore_clears_stale_target_state_regardless_of_freshness() {
-
         fn kvm_set(
             prev: &vmm_backend::VcpuEvents,
             set: &vmm_backend::VcpuEvents,
@@ -1653,7 +1652,6 @@ mod tests {
 
     #[test]
     fn canonical_events_zeroes_value_fields_when_their_validity_bit_is_clear() {
-
         let stale_ec = canonical_events(&vmm_backend::VcpuEvents {
             exception_injected: 1,
             exception_nr: 13,

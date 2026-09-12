@@ -402,7 +402,7 @@ impl Lapic {
     }
 
     /// Plain-data snapshot of the entire register file plus timer state, for
-    /// task 09 (`vm-state`). Deterministic: equal `Lapic` states produce equal
+    /// `vm-state`. Deterministic: equal `Lapic` states produce equal
     /// [`LapicState`].
     pub fn snapshot(&self) -> LapicState {
         LapicState {

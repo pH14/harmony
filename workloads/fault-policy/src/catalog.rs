@@ -50,14 +50,14 @@ pub enum DecisionClass {
     /// flow/connection, not per frame. The host *decides* a flow policy
     /// ([`Fault::NetLatency`]/[`NetLoss`](Fault::NetLoss)/[`NetThrottle`](Fault::NetThrottle)/[`NetReset`](Fault::NetReset)
     /// or [`Answer::Nominal`]); the guest *enforces* it on the intra-guest CNI.
-    /// Discriminant **4** is preserved across the task-50 rename from `NetSend`
+    /// Discriminant **4** is preserved across the rename from `NetSend`
     /// (per-frame) so `control-proto`'s `StopMask` bit is unchanged.
     NetFlow = 4,
     /// A block read/write/flush.
     BlockIo = 5,
     /// A node lifecycle point (pause/kill/restart).
     Process = 6,
-    /// A named SDK **buggify** site (task 73): the guest asks the host whether
+    /// A named SDK **buggify** site: the guest asks the host whether
     /// to fire a deliberate perturbation at this catalog-registered point. A
     /// **fault** class — answered [`Answer::Nominal`] (don't fire) or
     /// [`Answer::Fault`]`(`[`Fault::BuggifyFire`]`)` from the domain-separated
@@ -199,7 +199,7 @@ pub enum DecisionPoint {
         /// The node whose lifecycle is in question.
         node: NodeId,
     },
-    /// A named SDK **buggify** site (task 73). The guest asks whether to fire a
+    /// A named SDK **buggify** site. The guest asks whether to fire a
     /// deliberate perturbation at `point`; the host answers [`Answer::Nominal`]
     /// (don't fire) or [`Answer::Fault`]`(`[`Fault::BuggifyFire`]`)` from the
     /// fault stream, per-point biased by the [`FaultPolicy`](crate::FaultPolicy).
@@ -285,7 +285,7 @@ impl DecisionPoint {
 /// virtual-time units. The byte form (see [`Answer::encode`]) uses stable
 /// discriminants that a recorded [`EnvSpec`](crate::EnvSpec) replay depends on.
 ///
-/// **Network faults are per-flow policies (task 50).** The host *decides* a
+/// **Network faults are per-flow policies.** The host *decides* a
 /// flow-level policy ([`NetLatency`](Self::NetLatency) / [`NetLoss`](Self::NetLoss)
 /// / [`NetThrottle`](Self::NetThrottle) / [`NetReset`](Self::NetReset)), recorded
 /// into the [`Moment`](crate::Moment)-keyed reproducer; the guest *enforces* it on
@@ -294,7 +294,7 @@ impl DecisionPoint {
 /// from a seeded PRNG). The host is in the **control** path, never the **data**
 /// path. The retired per-*frame* faults (`NetDrop`/`NetDelay`/`NetReorder`/
 /// `NetDup`/`NetCorrupt`, with `CorruptSpec`) needed a host-side switch on the
-/// frame stream, which task 50 removed with `dissonance/pv-net`.
+/// frame stream, which was removed with `dissonance/pv-net`.
 ///
 /// **Per-message faults moved up, not away.** Reordering, duplicating, or
 /// corrupting a *specific* message needs message boundaries the network layer
@@ -346,7 +346,7 @@ pub enum Fault {
     ProcKill,
     /// Restart a node.
     ProcRestart,
-    /// Fire a named SDK **buggify** site (task 73) — the guest-plane
+    /// Fire a named SDK **buggify** site — the guest-plane
     /// perturbation a [`DecisionClass::Buggify`] point resolves to when the host
     /// decides to fire. Parameterless: the site identity lives in the
     /// [`DecisionPoint::Buggify`]'s `point`, not in the fault. The byte tag

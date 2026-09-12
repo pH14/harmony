@@ -42,7 +42,7 @@ fn conds() -> StopConditions {
 struct StubServer {
     next_snap: u64,
     armed: bool,
-    /// Task 81: whether an `exec` improvisation has tainted the timeline. Drives
+    /// Whether an `exec` improvisation has tainted the timeline. Drives
     /// the taint-carrying `Snapshot` reply and the `RecordedEnv` guard so the
     /// loopback crosses those wire shapes too.
     tainted: bool,

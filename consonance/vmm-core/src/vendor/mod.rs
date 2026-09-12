@@ -92,7 +92,7 @@ pub trait Vendor: Arch + Sized {
     /// accesses fault out to the device model instead of hitting RAM).
     ///
     /// The engine needs this to validate **guest-published GPAs**: a page the
-    /// guest hands the host (the task-110 pvclock page) must be real, host-
+    /// guest hands the host (the pvclock page) must be real, host-
     /// writable RAM. Inside a hole, the host would stamp backing the guest cannot
     /// see while the guest's own reads went to a device — a silently-wrong clock
     /// (cross-model r5 P2). Naming which addresses those are is vendor knowledge,
@@ -217,7 +217,7 @@ pub trait Vendor: Arch + Sized {
     /// result, and the scrape stream all read this).
     fn serial_capture(devices: &Self::Devices) -> &[u8];
 
-    /// Queue bytes on the guest's serial input (task 81 `exec`; off-record by
+    /// Queue bytes on the guest's serial input (`exec`; off-record by
     /// ruling).
     fn inject_serial_input(devices: &mut Self::Devices, bytes: &[u8]);
 
@@ -234,7 +234,7 @@ pub trait Vendor: Arch + Sized {
     /// vendor's fixed order, at the engine's fixed position in the blob.
     fn hash_device_chunks(vcpu: &Self::VcpuState, devices: &Self::Devices, out: &mut Vec<u8>);
 
-    /// The wire register view for the `regs` observation verb (task 80): which
+    /// The wire register view for the `regs` observation verb: which
     /// registers a machine *has* is per-arch, so the vendor fills the view. The
     /// engine supplies the `Moment`/V-time half (the one deterministic axis).
     fn regs_view(vcpu: &Self::VcpuState) -> RegsView;
@@ -261,7 +261,7 @@ pub trait Vendor: Arch + Sized {
     }
 
     /// Whether the vCPU carries an event-injection record a quiescent-only codec
-    /// would reject (the full task-39 set, inert residuals included).
+    /// would reject (the full set, inert residuals included).
     fn vcpu_has_inflight_injection(vcpu: &Self::VcpuState) -> bool;
 
     /// Whether the vCPU carries a **genuine** in-flight event (the active subset

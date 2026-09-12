@@ -6,8 +6,8 @@
 //! from the doorbell — an `OUT` carries no pointer), runs a real `hypercall_proto::Dispatcher` over
 //! the request bytes the guest staged, and writes the response **frame** into the response page.
 //! There is no return value: the response length is folded into the frame header, which is the
-//! single-`OUT`, atomic doorbell the crate ships. The round-trip tests drive the unmodified task-01
-//! `Client` through all five service calls; the bad-length and decode-boundary tests prove the
+//! single-`OUT`, atomic doorbell the crate ships. The round-trip tests drive the unmodified
+//! `hypercall_proto::Client` through all five service calls; the bad-length and decode-boundary tests prove the
 //! load-bearing bound check holds for *any* host-written response page.
 
 use core::ptr;
@@ -426,11 +426,7 @@ fn malformed_response_is_rejected_without_panic_or_overcopy() {
     );
 
     let max_payload = (PAGE_SIZE - HEADER_LEN) as u32;
-    for &plen in &[
-        max_payload + 1,
-        u32::MAX,
-        0xFFFF_FFFF,
-    ] {
+    for &plen in &[max_payload + 1, u32::MAX, 0xFFFF_FFFF] {
         assert_eq!(
             run_scripted(forged_resp_page(plen, &[0xAB; 8]), PAGE_SIZE).unwrap_err(),
             TransportError::BadResponseLength,
@@ -563,7 +559,7 @@ proptest! {
     #![proptest_config(config(512))]
 
     /// Decode-boundary fuzz: a misbehaving host writes an arbitrary response page (optionally with a
-    /// valid magic + forged length); every task-01 `Client` call must yield `Ok` or a clean
+    /// valid magic + forged length); every `Client` call must yield `Ok` or a clean
     /// `ClientError` — never a panic/UB.
     #[test]
     fn client_survives_garbage_host(

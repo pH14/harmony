@@ -3,7 +3,7 @@
 //!
 //! A **read-only telemetry lane** for the deterministic VMM. The guest→host data
 //! lanes that already exist — the serial console (hashed into M2), the `Event`
-//! hypercall service (id 4), and task 28's report channel (`0x0CA2`, folded into
+//! hypercall service (id 4), and the report channel (`0x0CA2`, folded into
 //! `observable_digest`) — are all **in-band and deterministic**. This crate adds
 //! **none** of them. It adds a host-side tap that *watches* the exit stream
 //! `vmm-core` already services and copies it out for a human:
@@ -26,11 +26,11 @@
 //! Nothing here is ever hashed, folded into `observable_digest`/`state_hash`, or
 //! fed back to the guest. Telemetry is for the operator; the hashes remain the
 //! source of truth. The per-exit wiring inside `vmm-core` is **frontier**
-//! (integrator-owned) and is documented, not built, here — see
+//! work and is documented, not built, here — see
 //! `docs/ARCHITECTURE.md` This crate is driven in tests by a scripted
 //! `Vec<Event>` with no KVM.
 //!
-//! ## Record → replay (the integrator's use case)
+//! ## Record → replay
 //!
 //! Postgres/Docker workloads are box-only (stock KVM). The path is built so a
 //! **box** run attaches an [`NdjsonRecorder`] (captured to a file) and/or a

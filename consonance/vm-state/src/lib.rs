@@ -41,7 +41,7 @@
 //!   rejecting a mismatch) is vmm-core's job — this crate only guarantees the
 //!   value is present in every blob.
 //! - **The device section is a placeholder.** [`DeviceBlob`] is opaque, length-
-//!   delimited bytes until task 13's typed `LapicState` is folded in under a
+//!   delimited bytes until the typed `LapicState` is folded in under a
 //!   bumped [`VM_STATE_VERSION`]; see its docs.
 //!
 //! This crate writes **no hand-written `unsafe`**; the only `unsafe` is what

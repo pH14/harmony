@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the **exec-capable** initramfs (task 81): static busybox + `exec-init.sh`
+# Build the **exec-capable** initramfs: static busybox + `exec-init.sh`
 # as /init (an interactive root shell on ttyS0), packed reproducibly with the
 # kernel's own gen_init_cpio exactly like `build-initramfs.sh`. Produces
 # consonance/harmony-linux/build/initramfs-exec.cpio.gz — the image the `exec` improvisation box gate
@@ -61,5 +61,5 @@ EOF
 
 "$BUILD_ROOT/gen_init_cpio" -t 0 "$spec" | gzip -n -9 >"$ART_DIR/initramfs-exec.cpio.gz"
 echo "ok: $ART_DIR/initramfs-exec.cpio.gz"
-echo "note: record its sha256 in MANIFEST.sha256 per the task-90 hashed-input ruling if this"
+echo "note: record its sha256 in MANIFEST.sha256 under the hashed-input ruling if this"
 echo "      image becomes a gated artifact (it is off-record test scaffolding for now)."

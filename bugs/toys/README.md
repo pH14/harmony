@@ -16,7 +16,7 @@ clean — the baseline is the nominal control at protocol scale.
   `votedFor` not persisted before replying (double-vote after restart), commit-by-count of
   prior-term entries (§5.4.2 violation), election timer reset on invalid AppendEntries.
   Oracle: single-leader-per-term + committed-log-prefix invariants checked by a monitor
-  process. Runs as N processes in one guest now; moves to the net-fault boundary when task 61
+  process. Runs as N processes in one guest now; moves to the net-fault boundary once it
   lands.
 - `two-phase-commit/` — coordinator with a crash window between deciding commit and logging
   it; participants diverge. A showcase for Moment-addressed kill search.
@@ -24,13 +24,13 @@ clean — the baseline is the nominal control at protocol scale.
   writes with a stale lease. Trigger is a long preemption gap — a fault surface unique to a
   deterministic hypervisor.
 - `mvcc-kv/` — claims serializable, permits write skew. Oracle: isolation checker (drives
-  task 75's oracle work).
+  the shared oracle work below).
 
 ## Requirements per entry
 
 - A correct baseline and ≥1 buggy variant; the campaign must find the variant's bug and pass
   the baseline clean.
 - Invariant checkers live with the toy but are written to be reusable (they graduate into the
-  shared oracle library, task 75).
+  shared oracle library).
 - Each variant's spec documents the planted mistake, the triggering condition, and expected
   branches-to-find.

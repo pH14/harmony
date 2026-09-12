@@ -7,12 +7,12 @@
 //! The SDK is **hooks + transport only** (ruled): it contributes
 //! *identity and observation* — named points, their firings, numeric state — and
 //! the **host owns every interpretation**. There are no checkers and no policy in
-//! the guest; Elle/history checkers live at the evaluator layer (task 75). So:
+//! the guest; Elle/history checkers live at the evaluator layer. So:
 //!
 //! - **`assert_always`** emits only on **violation**; the host turns the
 //!   violation into `StopReason::Assertion`.
 //! - **`assert_sometimes`** emits on **every hit** — features are a timestamped
-//!   stream (task 64), not a terminal set.
+//!   stream, not a terminal set.
 //! - **`assert_reachable`** / **`assert_unreachable`** are the reached/must-not-
 //!   reach duals: a reached `unreachable` is a violation.
 //! - **`state_set` / `state_max`** are the IJON numeric registers (S&P 2020): the
@@ -38,7 +38,7 @@
 //! versioned payload convention in [`wire`]; package-defined requests ride SDK
 //! opcode 3; the M6 threshold handshake uses op 2 on that same service.
 //! A package that defines its own request namespace owns the codec for it, as
-//! `workloads/fault-policy` does for standing faults. Task 74's OTel bridge
+//! `workloads/fault-policy` does for standing faults. The OTel bridge
 //! reuses these same transport conventions (a reserved event-id namespace).
 //!
 pub mod wire;
@@ -323,7 +323,7 @@ impl<T: Transport> Sdk<T> {
     }
 
     /// `assert_sometimes(cond, point)`: emit a **hit on every satisfied pass**
-    /// (`cond`). Each hit is a timestamped feature (task 64); the never-fired
+    /// (`cond`). Each hit is a timestamped feature; the never-fired
     /// report flags a `sometimes` point that never hit.
     pub fn assert_sometimes(&mut self, cond: bool, point: u32) -> Result<(), SdkError<T::Error>> {
         if !cond {

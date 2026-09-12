@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The harmony in-guest play-agent (task 86) — the portable brain.
+//! The harmony in-guest play-agent — the portable brain.
 //!
 //! This library is the target-agnostic half of the play-agent: the weighted
 //! chord input policy ([`chord`]), the SMB RAM-map decode ([`ram`]), the

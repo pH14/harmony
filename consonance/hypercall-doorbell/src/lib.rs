@@ -2,16 +2,16 @@
 #![no_std]
 //! Guest-side hypercall-doorbell transport for the Harmony hypercall channel.
 //!
-//! Task 01 (`hypercall-proto`) defined the wire protocol and a `Client<T: Transport>` but left
+//! `hypercall-proto` defined the wire protocol and a `Client<T: Transport>` but left
 //! the `Transport` abstract. This crate implements that `Transport` over the **docs/ARCHITECTURE.md
 //! hypercall-doorbell ABI**: it marshals a request frame into a shared, page-aligned
 //! guest-physical request page, rings the architecture's one-exit doorbell (x86 port I/O or
 //! arm64 MMIO) through [`IoDoorbell`], and reads the host's response frame back out of the response page — its length
 //! taken from the frame header and bounded so a misbehaving host can never make the shim read past a
 //! page, write past the caller's buffer, or panic. A `Client<VmcallTransport>` is then a complete
-//! guest hypercall client that composes with the task-01 `Client` unchanged.
+//! guest hypercall client that composes with the `hypercall-proto` `Client` unchanged.
 //!
-//! ## Why a port-I/O doorbell, not `VMCALL` (integrator ruling, 2026-06-23)
+//! ## Why a port-I/O doorbell, not `VMCALL`
 //!
 //! Stock KVM surfaces port OUT as KVM_EXIT_IO, so this channel needs no
 //! hypervisor patch.
@@ -25,7 +25,7 @@
 //! 1. The guest writes its request frame into the [`REQ_GPA`] page.
 //! 2. `OUT DOORBELL_PORT, EAX` with `EAX` = the request length → the host gets
 //!    `Exit::Io { port, size, write: Some(len) }`, reads [`REQ_GPA`], services it through the
-//!    task-01 `Dispatcher`, writes the response **frame** into [`RESP_GPA`], and resumes the guest
+//!    `Dispatcher`, writes the response **frame** into [`RESP_GPA`], and resumes the guest
 //!    at the next instruction. The response is synchronously ready before the
 //!    guest resumes; the x86 backend still retires the write-exit completion
 //!    callback at the next guest entry.
@@ -46,10 +46,10 @@
 //! window.
 //!
 //! The privileged `OUT` doorbell is abstracted behind the [`IoDoorbell`] seam so the whole
-//! marshalling path — plus the real task-01 `Client` and `Dispatcher` — can be exercised
+//! marshalling path — plus the real `hypercall-proto` `Client` and `Dispatcher` — can be exercised
 //! in-process under `cargo test` with no hypervisor (see the loopback tests).
 //!
-//! > **Name note.** The package and the [`VmcallTransport`] type keep their task-10 names to
+//! > **Name note.** The package and the [`VmcallTransport`] type keep their original names to
 //! > avoid churn (the spec defers the `io-transport` rename); despite the name, the mechanism is
 //! > now the port-I/O doorbell described above, **not** `VMCALL`.
 
@@ -304,7 +304,7 @@ pub const DOORBELL_PORT: u16 = 0x0CA1;
 /// Guest-physical address of the fixed **request page** (4 KiB). The doorbell carries no pointer
 /// (an `OUT` cannot pass two 64-bit GPAs), so the request frame lives at this fixed GPA the
 /// contract reserves and the VMM maps. Page-aligned; distinct from [`RESP_GPA`]. (Exact placement
-/// is the loader/vmm-core's to finalize and reserve in the guest e820 / task-04 payload map; what
+/// is the loader/vmm-core's to finalize and reserve in the guest e820 / payload map; what
 /// this ABI pins is that the pages are two fixed, page-aligned, VMM-reserved guest-RAM pages.)
 pub const REQ_GPA: u64 = 0x0000_E000;
 
@@ -512,7 +512,7 @@ impl IoDoorbell for RealIoDoorbell {
     unsafe fn ring(&mut self, _port: u16, _req_len: u32) {}
 }
 
-/// Errors surfaced by the transport. Becomes `ClientError::Transport(..)` in the task-01 client.
+/// Errors surfaced by the transport. Becomes `ClientError::Transport(..)` in the `hypercall-proto` client.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransportError {
     /// The request frame is larger than the request page (`req.len() > PAGE_SIZE`).
@@ -581,7 +581,7 @@ impl VmcallTransport<RealIoDoorbell> {
     /// page-aligned and hardware-mapped, is not a valid Rust pointer). Because the transport
     /// dereferences these values directly (it accesses the pages by address), **each GPA must also
     /// equal the page's linear/virtual address** — i.e. the pages are identity-mapped, as under
-    /// the task-04 payload map; a GPA that is not a valid linear address is UB. The pages must be
+    /// the payload map; a GPA that is not a valid linear address is UB. The pages must be
     /// **initialized byte storage** (real memory or a device-typed `/dev/mem`
     /// mapping, not `MaybeUninit` — e.g. zeroed at reservation: the host may
     /// write a response shorter than the page, and step 3 zeroes the page so

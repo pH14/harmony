@@ -37,9 +37,9 @@ pub enum EnvError {
     #[error("environment composition offset overflowed the Moment axis")]
     Overflow,
     /// A [`compose`](crate::EnvCodec::compose) was asked for a composition outside
-    /// its task-45 scope (one-axis `Moment` override re-keying) and therefore
+    /// its scope (one-axis `Moment` override re-keying) and therefore
     /// **fails closed** rather than emit a wrong reproducer. The cases deferred to
-    /// task 93 (the compose-model revisit): either input carries a
+    /// a future compose-model revisit: either input carries a
     /// [`StandingFault`] (its V-time window is a *different axis* than the `Moment`
     /// offset — no one-axis re-key is correct); either input is a pure
     /// [`Seeded`](crate::EnvSpec::Seeded) environment (every decision is
@@ -49,6 +49,6 @@ pub enum EnvError {
     /// same-seed/same-policy case at any `at`.
     ///
     /// [`StandingFault`]: crate::StandingFault
-    #[error("unsupported environment composition (deferred to task 93)")]
+    #[error("unsupported environment composition")]
     UnsupportedComposition,
 }

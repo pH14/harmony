@@ -207,7 +207,7 @@ pub fn arb_overrides() -> impl Strategy<Value = BTreeMap<Moment, Action>> {
     prop::collection::btree_map(any::<u64>(), arb_action(), 0..12)
 }
 
-/// An arbitrary `Moment`-keyed reseed-marker table (task 78).
+/// An arbitrary `Moment`-keyed reseed-marker table.
 pub fn arb_reseeds() -> impl Strategy<Value = BTreeMap<Moment, u64>> {
     prop::collection::btree_map(any::<u64>(), any::<u64>(), 0..6)
 }

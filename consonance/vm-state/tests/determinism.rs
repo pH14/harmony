@@ -187,7 +187,7 @@ fn arb_timer_entry() -> impl Strategy<Value = TimerEntry> {
     })
 }
 
-/// Whether `entries` + `next_seq` satisfy all three task-05 TimerQueue
+/// Whether `entries` + `next_seq` satisfy all three TimerQueue
 /// invariants `encode` enforces (mirror of `validate_timers`).
 fn timers_valid(entries: &[TimerEntry], next_seq: u64) -> bool {
     let ascending_unique_keys = entries
@@ -208,7 +208,7 @@ proptest! {
         prop_assert_eq!(s.encode().unwrap(), s.encode().unwrap());
     }
 
-    /// `encode` accepts a timer queue iff it satisfies every task-05 invariant
+    /// `encode` accepts a timer queue iff it satisfies every invariant
     /// (canonical (deadline, seq) order, unique tokens, seq < next_seq) — never
     /// silently fixing one — and every accepted queue round-trips exactly.
     #[test]
@@ -237,7 +237,7 @@ proptest! {
 
     /// Starting from a valid queue, injecting EITHER a duplicate token OR a
     /// `seq == next_seq` makes `encode` reject it with InvalidField — covering
-    /// both task-05 invariants beyond canonical ordering.
+    /// both invariants beyond canonical ordering.
     #[test]
     fn encode_rejects_duplicate_token_or_high_seq(
         base in arb_timers(),

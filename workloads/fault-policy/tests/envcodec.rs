@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 7 — `EnvCodec`, the proposal seam. `compose` performs one-axis `Moment`
-//! override re-keying (the task-45 acceptance gate) for an override-only,
+//! `EnvCodec`, the proposal seam. `compose` performs one-axis `Moment`
+//! override re-keying for an override-only,
 //! same-seed/same-policy composition at any offset, and **fails closed** for the
 //! cases outside that one-axis scope (a standing fault, a pure `Seeded` input, or
-//! a seed/policy mismatch — all deferred to task 93). `seeded` is a pure seeded
+//! a seed/policy mismatch — all deferred to a future compose-model revisit). `seeded` is a pure seeded
 //! env; `mutate` is deterministic, host-only, and never relocates a guest override
 //! out of context.
 
@@ -112,9 +112,9 @@ proptest! {
 
     /// **Bit-identical replay at `at > 0`** for an override-only composition: a
     /// branch-local delta of admissible (always-firing) overrides, composed onto a
-    /// base, reproduces its own run at the re-keyed Moments — the task-93 property
+    /// base, reproduces its own run at the re-keyed Moments — the property
     /// `branch(genesis, compose(base, delta))` reproduces delta, for the
-    /// override-covered (no seed draw) case the task-45 gate covers.
+    /// override-covered (no seed draw) case `compose` covers.
     #[test]
     fn compose_override_only_replays_bit_identical(
         moments in prop::collection::btree_set(0u64..BOUND, 0..10),

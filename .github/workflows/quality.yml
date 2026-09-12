@@ -84,7 +84,7 @@ jobs:
       # The root `cargo deny check` only sees the root workspace. License-check the
       # out-of-workspace manifests too (the cargo-fuzz harnesses), so
       # their deps — e.g. libfuzzer-sys's NCSA-licensed LLVM runtime — are asserted
-      # AGPL-compatible against the same allow-list (task 91).
+      # AGPL-compatible against the same allow-list.
       - name: cargo deny (guest + fuzz manifests)
         run: |
           cargo deny --manifest-path consonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
@@ -135,7 +135,7 @@ jobs:
           # std leak). Fails the gate if anything pulls in std.
           rustup target add x86_64-unknown-none
           cargo build --manifest-path consonance/harmony-linux/sdk/Cargo.toml --lib --target x86_64-unknown-none
-      # workloads/nes-guest (task 86) is out-of-workspace (its own manifest).
+      # workloads/nes-guest is out-of-workspace (its own manifest).
       # Gate it explicitly or it rots green. The portable brain
       # (chord decode, RAM map, billboard, mock-core agent loop) tests everywhere;
       # the native bin build compiles the cfg(linux) libretro-FFI + hugetlb +
@@ -274,7 +274,7 @@ jobs:
   #                   this runner up to the bound, then fail with that code.
   # Host preemption tears down the whole runner VM, so no in-job retry can
   # survive it; that residual is covered by the sharding above plus the
-  # self-hosted option in the task-139 write-up.
+  # self-hosted option in the runner-preemption write-up.
   mutants:
     name: mutants (${{ matrix.shard }}/16)
     runs-on: ubuntu-latest

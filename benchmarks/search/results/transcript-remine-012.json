@@ -17,7 +17,7 @@
       "source_sha256": "e9d8a18c92828b3bd56283da9ff322409753991cd9eee18c3096623a665a8c34",
       "text_blocks": 1032
     },
-    "smb-integrator": {
+    "smb-integration": {
       "last_timestamp": "2026-09-03T00:17:08.519Z",
       "session": "f5ae3504-1ce6-498c-91e7-e10e85ee30ed",
       "source_lines": 3746,

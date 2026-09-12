@@ -117,7 +117,7 @@ source hashes, replay evidence, and the exact limits of the comparison.
 
 The complete source sessions were re-read through their latest saved entries,
 including the SMB worker session `3b9ddf2e-f77d-42ba-a6ff-f9f339c05bfd` and its
-integrator session `f5ae3504-1ce6-498c-91e7-e10e85ee30ed`. Earlier extracts of the
+integration session `f5ae3504-1ce6-498c-91e7-e10e85ee30ed`. Earlier extracts of the
 MM2 and Metroid sessions omitted their final outcomes.
 
 | Mechanism | Source outcome | Current treatment |

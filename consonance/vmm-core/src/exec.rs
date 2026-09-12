@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The `exec` improvisation's **sentinel state machine** — the pure, portable
 //! logic that turns "run a command at the serial shell" into an injected byte
-//! stream plus a completion detector. Task 81.
+//! stream plus a completion detector.
 //!
 //! `exec` is an **improvisation** (`docs/PROTOCOL.md`): a
 //! one-off command run inside a *forked* guest, **never recorded into any
 //! `Environment`** and carrying **no determinism guarantee**. The transport is
 //! deliberately crude — raw bytes on the guest's 8250 serial input, as if typed
-//! at a root shell — so this module owns none of task 61's deterministic
+//! at a root shell — so this module owns none of the deterministic
 //! guest-plane machinery. What it owns is the small, testable protocol on top of
 //! the shell: *what bytes to type*, and *how to know the command finished and with
-//! what status*. The airtight part of the task is the **taint guard**
+//! what status*. The airtight part is the **taint guard**
 //! ([`crate::control`]), not this channel; this stays simple on purpose.
 //!
 //! ## The sentinel scheme
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "feeds >MAX_CAPTURE (1 MiB): the sentinel rescan over the capped buffer is a byte-wise interpreted scan (~9 min); pure safe code — the cap arithmetic is covered natively and the scan path stays Miri-run via the small-buffer exec tests (task 98 / hm-d8o)"
+        ignore = "feeds >MAX_CAPTURE (1 MiB): the sentinel rescan over the capped buffer is a byte-wise interpreted scan (~9 min); pure safe code — the cap arithmetic is covered natively and the scan path stays Miri-run via the small-buffer exec tests"
     )]
     fn capture_is_bounded() {
         let mut s = ExecSession::new("yes", 8);

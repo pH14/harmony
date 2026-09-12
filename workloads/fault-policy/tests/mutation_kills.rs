@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Task 35 — exact-value tests that kill the mutants the first full-tree
+//! Exact-value tests that kill the mutants the first full-tree
 //! `cargo mutants` run left surviving (or only timeout-caught) in this crate.
 //!
 //! These are *test-tightness* gaps: the production logic is correct, but the
@@ -65,8 +65,8 @@ fn scheduler_selection_bound_is_strict() {
 /// `catalog.rs` `DecisionPoint::admits` → `fault_bounds_ok` — the *only*
 /// point-relative fault bound. A `BlockTorn(n)` torn-write fault is admissible on
 /// a `BlockIo { len }` point **iff `n <= len`** (you cannot tear off more than the
-/// request asked for). Task 50 reshaped the fault catalog and added this arm, so
-/// it is *newer* than the original task-35 run; pin the `<=` boundary exactly.
+/// request asked for). The fault catalog was reshaped to add this arm after
+/// the original mutation-kill run; pin the `<=` boundary exactly.
 /// This kills all three bound mutants: `<=`→`<` (would reject `n == len`),
 /// `<=`→`==` (would reject `n < len`), and `<=`→`>` (would admit `n > len`).
 #[test]

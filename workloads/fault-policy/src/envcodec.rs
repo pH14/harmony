@@ -100,8 +100,8 @@ impl EnvCodec {
     }
 
     /// **Compose** a `base` prefix with a `tail` continuation on the single
-    /// [`Moment`] axis — the task-45 acceptance gate: *one-axis `Moment` override
-    /// re-keying*. It keeps `base`'s genesis prefix `[0, at)` and splices `tail` in
+    /// [`Moment`] axis — *one-axis `Moment` override re-keying*. It keeps
+    /// `base`'s genesis prefix `[0, at)` and splices `tail` in
     /// at `at`, re-keying every `tail` override's `Moment` by `+ at`. Because
     /// `Moment` is one axis for both planes, this is plain integer arithmetic; the
     /// result is genesis-complete and collision-free (`base` contributes only
@@ -110,19 +110,19 @@ impl EnvCodec {
     /// explorer rebases a branch-local delta onto a base below a snapshot this way.
     ///
     /// It **fails closed** ([`EnvError::UnsupportedComposition`]) for the cases
-    /// outside this one-axis scope, which belong to **task 93** (the compose-model
-    /// revisit — "see task 93"):
+    /// outside this one-axis scope, which belong to a future compose-model
+    /// revisit:
     ///
     /// - **Either input carries a [`StandingFault`].** Its window bounds are
     ///   parameterized in raw retired-*branch* counts, while the override keys
     ///   `compose` shifts are `Moment` (retired-*instruction*) offsets; a correct
     ///   re-key of the window across the splice needs the runtime branch ↔
-    ///   instruction mapping `compose` lacks (task 93's).
+    ///   instruction mapping `compose` lacks.
     /// - **Either input is a pure [`Seeded`](EnvSpec::Seeded) environment.** Every
     ///   one of its decisions is seed-serviced, so splicing it at `at > 0` would
     ///   desync the tail's fresh PRNG stream (the composed prefix advances the
     ///   shared seed before the tail starts). Seeded/PRNG-state composition needs
-    ///   the snapshot's captured PRNG state — task 93.
+    ///   the snapshot's captured PRNG state.
     /// - **`tail`'s seed or policy differs from `base`'s.** A single `EnvSpec`
     ///   carries one seed/policy, so it cannot hold a piecewise stream.
     ///
@@ -132,7 +132,7 @@ impl EnvCodec {
     /// **Scope note.** This is one-axis `Moment` *override* re-keying only. A
     /// `Recorded` input is treated as override-driven; if the composed run draws
     /// the seed for an unoverridden decision across a non-genesis splice, that is
-    /// the seeded composition deferred to task 93 — the caller composes
+    /// the seeded composition deferred to a future compose-model revisit — the caller composes
     /// override-covered reproducers. `compose` re-keys the override map (the gate)
     /// and rejects the statically-detectable seeded inputs (the `Seeded` variant).
     pub fn compose(base: &EnvSpec, tail: &EnvSpec, at: Moment) -> Result<EnvSpec, EnvError> {

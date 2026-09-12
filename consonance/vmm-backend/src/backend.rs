@@ -62,8 +62,8 @@ pub trait Backend {
     /// every later `run`.
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()>;
 
-    /// Drain-and-reset the backend's **guest-write dirty-page log** (task 95
-    /// M2.1): return the guest frame numbers dirtied *by guest execution* since
+    /// Drain-and-reset the backend's **guest-write dirty-page log**:
+    /// return the guest frame numbers dirtied *by guest execution* since
     /// the previous drain (or since the region was mapped), **sorted ascending
     /// and deduplicated**, and atomically reset the log so the next drain
     /// covers exactly the span from this call. On KVM this is `KVM_GET_DIRTY_LOG`
@@ -239,7 +239,7 @@ pub trait Backend {
 }
 
 /// Blanket forward so the composition root can inject a concrete backend as a
-/// `Box<dyn Backend<A = …>>` and run a `Vmm` over it (R-Backend / task-21 P5:
+/// `Box<dyn Backend<A = …>>` and run a `Vmm` over it (R-Backend:
 /// the one place a concrete backend is named is `fn main`; everything above the
 /// trait is backend-agnostic). `Backend` is dyn-compatible (no generic methods,
 /// no `Self`-by-value returns), so `Box<dyn Backend<A = …>>` is a `Backend` too.

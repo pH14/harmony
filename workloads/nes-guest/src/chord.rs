@@ -3,7 +3,7 @@
 //! window, decoded against a weighted alphabet of NES button chords.
 //!
 //! Per-frame uniform buttons is a known-bad policy (a random walk); the chord
-//! window is what makes the entropy stream mean something (task 86 §play-agent).
+//! window is what makes the entropy stream mean something (§play-agent).
 //! One entropy byte selects a chord by cumulative weight; the chord is then held
 //! for the whole `W`-frame window (A held across a window = full jump height).
 //! Weights **must sum to exactly 256** so a single byte maps onto the alphabet
@@ -115,7 +115,7 @@ impl ChordAlphabet {
         Ok(ChordAlphabet { entries })
     }
 
-    /// The default SMB alphabet (task 86 §play-agent): rightward-biased chords
+    /// The default SMB alphabet (§play-agent): rightward-biased chords
     /// — `RIGHT`, `RIGHT+B` (run), `RIGHT+A` (jump), `RIGHT+A+B` (run-jump),
     /// neutral `A`, `LEFT`, `DOWN` (duck / pipe entry), neutral. `START` and
     /// `SELECT` are excluded (pausing burns budget). Weights are a manifest

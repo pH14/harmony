@@ -2,8 +2,8 @@
 
 Workloads with **known bugs** that Harmony's finder (dissonance) is expected to catch. This is
 the finder-validation corpus: prove the finder against
-seeded bugs with known ground truth before investing in search cleverness. Task 60 is the first
-consumer (a single planted bug); this directory generalizes it into a permanent regression
+seeded bugs with known ground truth before investing in search cleverness. A single planted bug is
+the first consumer; this directory generalizes it into a permanent regression
 suite for the *finder* — when consonance/dissonance improve, the collection measures whether
 finding actually got better.
 
@@ -22,10 +22,10 @@ A bug that cannot be expressed this way does not belong in the collection:
 1. **Workload** — what runs in the guest (payload, container image, or init script; reuse the
    `consonance/harmony-linux/linux/` conventions).
 2. **Fault surface** — which Harmony dimension triggers it: timing/interrupt perturbation
-   (vtime), entropy values, host-plane faults (task 59), kill/restart at a Moment
-   (snapshot/branch), block-layer faults (future), net faults (task 61, future).
-3. **Oracle** — how a hit is detected: crash marker on serial (the task-60 path), integrity
-   check after restart, invariant-checker process, isolation checker (task 75). No
+   (vtime), entropy values, host-plane faults, kill/restart at a Moment
+   (snapshot/branch), block-layer faults (future), net faults (future).
+3. **Oracle** — how a hit is detected: crash marker on serial, integrity
+   check after restart, invariant-checker process, isolation checker. No
    human-in-the-loop oracles.
 
 ## Entry conventions
@@ -33,7 +33,7 @@ A bug that cannot be expressed this way does not belong in the collection:
 Each entry is a directory containing:
 
 - `README.md` — the spec: the bug (mechanism-level), the triple above, trigger conditions,
-  **expected difficulty** (order-of-magnitude branches-to-find, per the task-60 gate), the
+  **expected difficulty** (order-of-magnitude branches-to-find), the
   **tunable knob** if difficulty is adjustable, and provenance links for `historical/` entries.
 - The workload source / image recipe, once implemented.
 - A **nominal control**: every entry must define a no-fault configuration under which the bug

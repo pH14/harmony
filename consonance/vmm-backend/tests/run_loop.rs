@@ -436,10 +436,10 @@ fn mock_map_memory_validation_errors() {
     ));
 }
 
-/// Task 95 M2.1: the trait default declines (`Unsupported` — callers full-scan),
+/// The trait default declines (`Unsupported` — callers full-scan),
 /// and `Box<dyn Backend<A = X86>>` **forwards** the drain to the inner impl instead of
-/// re-answering the default — the shadowing landmine the explicit blanket
-/// forward exists to disarm. The scripted set comes back sorted + deduplicated.
+/// re-answering the default — the shadowing problem the explicit blanket
+/// forward exists to prevent. The scripted set comes back sorted + deduplicated.
 #[test]
 fn drain_default_declines_and_box_forwards_to_the_inner_impl() {
     let mut plain = MockBackend::new();

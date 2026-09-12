@@ -74,13 +74,13 @@ pub use standing::{
 /// control plane (which names classes in its `StopMask`) and every service agree
 /// on. Stable [`DecisionClass`] / [`HostFault`] discriminants mean a recorded
 /// [`EnvSpec`] keeps replaying across a version bump *when the byte forms are
-/// compatible*. Bumped to `2` by task 45 (the host control plane: [`HostFault`],
-/// [`Action`]); bumped to `3` by task 50, which reshaped the network class from
+/// compatible*. Bumped to `2` for the host control plane ([`HostFault`],
+/// [`Action`]); bumped to `3` when the network class was reshaped from
 /// per-frame `NetSend` to per-flow [`NetFlow`](DecisionClass::NetFlow) — the
 /// [`DecisionClass`] discriminant `4` is preserved, but the net [`Fault`] byte
 /// vocabulary changed incompatibly, so [`EnvSpec::BLOB_VERSION`] bumped in step to
 /// reject a stale blob rather than silently reinterpret an old net fault. Bumped
-/// to `4` by task 73, which **added** the [`DecisionClass::Buggify`] class
+/// to `4` when the [`DecisionClass::Buggify`] class was **added**
 /// (discriminant `7`) and the [`Fault::BuggifyFire`] fault (byte tag `16`) — both
 /// additive with stable discriminants, so a recorded blob whose bytes predate
 /// them still replays, while a blob that names them fails loudly on an older
@@ -134,7 +134,7 @@ pub trait Environment {
 }
 
 /// An in-guest node (a container/process). Mirrors the integration type
-/// (conventions rule 2); the integrator unifies it with the routing layer's
+/// (conventions rule 2); unified with the routing layer's
 /// `NodeId`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct NodeId(pub u32);

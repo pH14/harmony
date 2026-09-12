@@ -86,8 +86,8 @@ fn compose_linux_seeded<B: Backend<A = X86>>(
     Ok(vmm)
 }
 
-/// Compose a **restore target around a materialized snapshot** (task 95 M2.2,
-/// the memslot-remap restore): install the contract policy, then `unsafe`-map
+/// Compose a **restore target around a materialized snapshot** (the
+/// memslot-remap restore): install the contract policy, then `unsafe`-map
 /// the [`snapshot_store::Mapping`]'s buffer as the guest RAM itself — no
 /// [`GuestRam`] allocation, no image load, no entry state, and **no memcpy**.
 /// The returned [`Vmm`] owns the mapping ([`RamBacking::Snapshot`]); the caller
@@ -378,7 +378,7 @@ mod tests {
         }
     }
 
-    /// Task 95 M2.2: [`compose_restore_target`] maps the materialized snapshot
+    /// [`compose_restore_target`] maps the materialized snapshot
     /// AS the guest RAM — the marker page reads through, no loader ran (the
     /// image is exactly the snapshot, zeros where the snapshot is zero), the
     /// xAPIC is wired on request, and the backing is the mapping itself.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Task 73 — the buggify decision class on the **fault** stream.
+//! The buggify decision class on the **fault** stream.
 //!
-//! Two properties the task-73 spec (gate 3) pins:
+//! Two properties the buggify spec pins:
 //!
 //! 1. **Stream separation.** A [`DecisionClass::Buggify`] draw comes from the
 //!    domain-separated *fault* PRNG, never the *supply* PRNG. So interleaving

@@ -2,7 +2,7 @@
 //! Bring-up device shims (pure logic, Mac-testable): a minimal polled 8250 UART
 //! and the isa-debug-exit port constant.
 //!
-//! The UART models exactly enough of COM1 for the task-04 payloads' polled-write
+//! The UART models exactly enough of COM1 for a payload's polled-write
 //! console: it accepts the init writes (IER/FCR/LCR/MCR/divisor) without modeling
 //! baud, reports THR-empty on every LSR read so the guest's spin-loop always makes
 //! progress, and — critically — **tracks `LCR.DLAB`** so the `0x01` divisor byte
@@ -52,17 +52,17 @@ const OFF_IER: u16 = 1;
 const OFF_IIR: u16 = 2;
 
 /// `LSR` bit 0 — **data ready** (a received byte is waiting in the RBR). Set by
-/// the model **only while [`Uart8250::rx`] has an injected byte** (task 81's `exec`
+/// the model **only while [`Uart8250::rx`] has an injected byte** (the `exec`
 /// serial-input channel); clear otherwise, so every non-`exec` run reads the same
 /// `LSR` as before (the input path is inert when no bytes are queued).
 const UART_LSR_DATA_READY: u8 = 0x01;
 /// `IER` bit 0 — **received-data-available interrupt enable**. A serial-console
 /// guest sets it so the COM1 IRQ fires when input arrives; the model raises the
-/// receive interrupt only when this is set **and** a byte is queued (task 81).
+/// receive interrupt only when this is set **and** a byte is queued.
 const UART_IER_RDI: u8 = 0x01;
 /// `IIR` value reported when the **received-data-available** interrupt is pending:
 /// bit 0 (`NO_INT`) clear, interrupt-id `0b010` (`0x04`). Takes priority over THRE
-/// so a serial-console guest's IRQ handler reads a queued input byte (task 81).
+/// so a serial-console guest's IRQ handler reads a queued input byte.
 const UART_IIR_RDI: u8 = 0x04;
 /// `IER` bit 1 — **THRE interrupt enable** (transmitter-holding-register empty).
 /// When the guest sets it (with `DLAB` clear) the kernel's interrupt-driven 8250
@@ -84,7 +84,7 @@ const UART_IIR_THRI: u8 = 0x02;
 /// baud; LSR reads return [`UART_LSR_THR_EMPTY`]. It **tracks `LCR.DLAB`**: a
 /// write to [`UART_PORT_BASE`] is appended to [`Self::capture`] **only when DLAB
 /// is clear** (a real THR transmit). With DLAB set, that port is the
-/// divisor-latch-low byte — shadowed, not captured — so task-04's `0x01` baud
+/// divisor-latch-low byte — shadowed, not captured — so the init sequence's `0x01` baud
 /// divisor never becomes a stray `\x01` in the serial output. Pure; no I/O.
 ///
 /// **Interrupt-driven TX (the Linux userspace console path).** The kernel's tty
@@ -115,7 +115,7 @@ pub struct Uart8250 {
     /// on the polled M1/M2/corpus paths (divisor `0x0001`), so omitting it keeps
     /// those `DEV`-chunk hashes byte-identical.
     dlm: u8,
-    /// **Injected serial-input queue** (task 81's `exec` channel): bytes the host
+    /// **Injected serial-input queue** (the `exec` channel): bytes the host
     /// has typed at the guest's serial console, consumed FIFO by guest RBR reads.
     /// **Empty on every non-`exec` run** — the whole input path is inert until
     /// [`Self::inject_input`] is called, so an existing capture/hash is byte-
@@ -192,7 +192,7 @@ impl Uart8250 {
 
     /// Service a guest port read on the **I/O path** (`&mut`): identical to
     /// [`Self::read`] except a byte read of the RBR (offset 0, `DLAB` clear)
-    /// **consumes** the next queued input byte (task 81's `exec` channel), the way
+    /// **consumes** the next queued input byte (the `exec` channel), the way
     /// real 8250 hardware pops the receive FIFO. Every other register is delegated
     /// to the non-consuming [`Self::read`]. Returns `None` for a port this device
     /// does not own.
@@ -207,14 +207,14 @@ impl Uart8250 {
         self.read(port)
     }
 
-    /// Queue host-typed bytes on the guest's serial input (task 81's `exec`
+    /// Queue host-typed bytes on the guest's serial input (the `exec`
     /// channel), consumed FIFO by guest RBR reads. Off-record and live-only: the
     /// queue is never snapshotted or hashed.
     pub(crate) fn inject_input(&mut self, bytes: &[u8]) {
         self.rx.extend(bytes.iter().copied());
     }
 
-    /// Whether an injected input byte is waiting to be read (task 81).
+    /// Whether an injected input byte is waiting to be read.
     pub(crate) fn rx_has_input(&self) -> bool {
         !self.rx.is_empty()
     }
@@ -230,7 +230,7 @@ impl Uart8250 {
         }
     }
 
-    /// Whether the COM1 **received-data-available interrupt** is asserted (task 81):
+    /// Whether the COM1 **received-data-available interrupt** is asserted:
     /// a byte is queued, `DLAB` is clear, and the guest enabled `IER.RDI`. This is
     /// the receive half of the COM1 line the VMM routes to IRQ 4 so an
     /// interrupt-driven serial console picks up injected input; inert (always
@@ -240,7 +240,7 @@ impl Uart8250 {
     }
 
     /// Whether **any** COM1 interrupt is asserted — the received-data-available
-    /// (task 81) or the THRE (transmitter-empty) line. The VMM routes this to IRQ 4.
+    /// or the THRE (transmitter-empty) line. The VMM routes this to IRQ 4.
     /// Equal to [`Self::thre_irq_asserted`] whenever no input is queued, so a
     /// non-`exec` run's interrupt behavior is unchanged (gate 4).
     pub(crate) fn serial_irq_asserted(&self) -> bool {
@@ -261,9 +261,9 @@ impl Uart8250 {
 
     /// The value a read of the IIR (offset 2) returns: the **received-data-
     /// available** interrupt ([`UART_IIR_RDI`]) takes priority when it is asserted
-    /// (task 81's `exec` input), else [`UART_IIR_THRI`] while the THRE interrupt is
+    /// (`exec` input), else [`UART_IIR_THRI`] while the THRE interrupt is
     /// asserted, else [`UART_IIR_NONE`]. With no input queued this is exactly the
-    /// pre-task-81 THRE-or-none result (the receive path is inert).
+    /// THRE-or-none result from before the input queue existed (the receive path is inert).
     fn iir_value(&self) -> u8 {
         if self.rx_irq_asserted() {
             UART_IIR_RDI

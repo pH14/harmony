@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the **Postgres-on-k3s workload initramfs** (task 49 — the determinism
+# Build the **Postgres-on-k3s workload initramfs** — the determinism
 # stress test at full stack height: a single-node lightweight Kubernetes cluster
 # inside the deterministic guest, with a CLIENT pod making calls to a POSTGRES
 # server pod over the in-guest CNI, deterministic-twice).
 #
-# **What runs (see consonance/harmony-linux/linux/README.md + tasks/49-*).** One single-vCPU
+# **What runs (see consonance/harmony-linux/linux/README.md).** One single-vCPU
 # guest boots `k3s` (a lightweight Kubernetes distro: ONE static Go binary that
 # bundles containerd + runc + the flannel/bridge/host-local CNI + kube-proxy +
 # kubectl, with a sqlite datastore). `k3s-init.sh` brings the cluster up, then:
@@ -15,26 +15,26 @@
 #   * a `client` Pod (the same postgres:17 image, for its `psql`) connects to that
 #     Service **over the cluster CNI** (pod -> ClusterIP -> kube-proxy DNAT -> the
 #     server pod, all intra-guest — NO host networking, pv-net unused) and runs the
-#     task-42 gen_random_uuid()/clock_timestamp() workload, streaming
+#     gen_random_uuid()/clock_timestamp() workload, streaming
 #     `row|i|count|sum|uuid|t` to its pod log -> ttyS0.
 #
-# **Why k3s makes progress (the determinism is preemption-driven — task 47/54).**
+# **Why k3s makes progress (the determinism is preemption-driven).**
 # kubelet + containerd + apiserver + scheduler + controller-manager + kube-proxy +
 # flannel are all Go/multi-goroutine services that busy-spin and depend on
 # preemption. Under the V-time VMM the LAPIC timer **preempts** a busy-spinning
 # thread at the seed-deterministic V-time deadline (run_with_deadline) and the idle-HLT
-# resume warps to the next deadline (task 52), so the Go schedulers run and the
+# resume warps to the next deadline, so the Go schedulers run and the
 # cluster converges — deterministically, because every preemption instant is a
 # pure function of the seed. k3s mints its certs/tokens/SA-keys/object-UIDs from
 # getrandom -> the seeded CRNG and stamps every resource/lease/event from the
 # V-time clock, so two same-seed boots are bit-identical (incl. the workload's
 # "random" UUIDs + wall-clock timestamps).
 #
-# **No kernel change.** The task-36 Kata container-host bzImage already builds in
+# **No kernel change.** The Kata container-host bzImage already builds in
 # the full k8s surface (BRIDGE/VETH/VXLAN/NF_CONNTRACK/NF_NAT/NF_TABLES/IP_VS/
 # OVERLAY_FS/the iptables + netfilter_xt set + cgroup-v2/namespaces); the
 # determinism overlay disables none of it. The companion kernel is the *unchanged*
-# task-36 bzImage. The k3s data dir, sqlite, container rootfs layers and PGDATA all
+# bzImage. The k3s data dir, sqlite, container rootfs layers and PGDATA all
 # live in the initramfs tmpfs (RAM) -> deterministic VM-memory writes.
 #
 # Linux + root only (mounts, cgroup, chroot, the static layout assume a Linux
@@ -58,10 +58,10 @@ fi
 
 # --- tunables ----------------------------------------------------------------
 K3SROOT=$BUILD_ROOT/k3s-root                    # the assembled guest rootfs
-PG_IMAGE_TAR=$DL_DIR/postgres-image.tar         # the official postgres image (task 38)
+PG_IMAGE_TAR=$DL_DIR/postgres-image.tar         # the official postgres image
 PAUSE_IMAGE_TAR=$DL_DIR/k3s-pause-image.tar     # the pause/sandbox image (fetch.sh)
 K3S_BIN=$DL_DIR/k3s                             # the pinned k3s binary
-WORKLOAD_N=20                                   # fixed insert/select iterations (== task 37/42)
+WORKLOAD_N=20                                   # fixed insert/select iterations (matches the other Postgres images)
 PG_CLUSTERIP=10.43.0.100                        # fixed Service ClusterIP (svc CIDR 10.43.0.0/16)
 
 # --- 0. verify the pinned inputs ---------------------------------------------
@@ -127,7 +127,7 @@ done
 install -m 0755 "$K3S_BIN" "$K3SROOT/usr/local/bin/k3s"
 for t in kubectl crictl ctr; do ln -sf k3s "$K3SROOT/usr/local/bin/$t"; done
 
-# The task-61 in-guest flow agent (optional). Built as a static musl binary by
+# The in-guest flow agent (optional). Built as a static musl binary by
 # a caller-supplied static musl `flow-agent` binary; bake it in when its path is
 # passed via FLOW_AGENT_BIN. `k3s-init.sh` starts it before the client pod (see there). The
 # nominal path installs no rules; the FAULT path (gate B) additionally needs `nft`
@@ -155,7 +155,7 @@ cp "$PAUSE_IMAGE_TAR" "$K3SROOT/var/lib/rancher/k3s/agent/images/k3s-pause.tar"
 cp "$PG_IMAGE_TAR"    "$K3SROOT/var/lib/rancher/k3s/agent/images/postgres.tar"
 
 # --- 4. pre-bake PGDATA (build-time initdb as uid 999) -----------------------
-# Exactly task 37/38's pattern, and load-bearing the same way: running the
+# Exactly the pattern the other Postgres images use, and just as important: running the
 # official image's *entrypoint* would initdb at pod start (crushingly slow under
 # the exit-driven VMM) AND re-exec through `gosu` (a Go program whose runtime
 # busy-spins). So we initdb ONCE here into a hostPath the server pod mounts, and
@@ -200,14 +200,14 @@ umount "$PGSTAGE/proc" 2>/dev/null || true
 umount "$PGSTAGE/dev" 2>/dev/null || true
 trap - EXIT
 
-# Determinism overlay on the baked cluster's postgresql.conf. UNLIKE task 38
+# Determinism overlay on the baked cluster's postgresql.conf. UNLIKE the docker image
 # (unix-socket-only), the server pod must accept the client pod's connection over
 # TCP across the CNI — so it listens on `*` and pg_hba trusts the cluster CIDRs.
 # `log_connections=on` + `%h` in the prefix logs the client's source IP — which is
 # a POD IP (10.42.x.x), the witness that the path stayed INTRA-GUEST over the CNI.
 cat >>"$PGSTAGE$PGDATA_REL/postgresql.conf" <<EOF
 
-# --- task 49 determinism overlay (see consonance/harmony-linux/linux/README.md) ---
+# --- determinism overlay (see consonance/harmony-linux/linux/README.md) ---
 listen_addresses = '*'           # TCP: the client pod connects across the CNI
 port = 5432
 unix_socket_directories = '/tmp' # writable in the container (no /run/postgresql)
@@ -238,7 +238,7 @@ chmod 0700 "$K3SROOT/k8s/pgdata"
 rm -rf "$PGSTAGE" "$IMG"        # only PGDATA is baked; the staging rootfs is thrown away
 
 # --- 5. the workload + the client wrapper (baked as hostPaths) ----------------
-# The SAME workload v2 as task 37/42: each row carries a gen_random_uuid() id
+# The SAME workload v2 as the other Postgres images: each row carries a gen_random_uuid() id
 # (column DEFAULT) + a clock_timestamp() column, streamed as `row|i|count|sum|
 # uuid|t`. The count/sum prefix is a pure function of the loop index (the
 # deterministic anchor, `row|20|20|210|`); the uuid + t are seed-derived.

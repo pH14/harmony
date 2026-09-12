@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn parses_and_loads_a_valid_image() {
-        let img = synth(0, 0, 0xA /* 4K page bits */, 128);
+        let img = synth(0, 0, 0xA, 128);
         let mut ram = vec![0u8; 0x10_0000];
         let loaded = load(&img, &mut ram).unwrap();
         assert_eq!(loaded.entry_gpa, RAM_BASE);

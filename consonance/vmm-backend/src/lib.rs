@@ -42,10 +42,10 @@ mod mock;
 mod mock_arm64;
 
 mod arm64_kvm;
-#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
-mod hvf;
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 mod arm64_kvm_sys;
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
+mod hvf;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm;

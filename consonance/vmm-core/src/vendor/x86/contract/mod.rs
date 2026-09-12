@@ -480,8 +480,8 @@ mod tests {
     /// registry pins in `contracts/x86/guest.toml` `[contract] contract_hash`.
     /// The computed hash must equal the committed guest-policy identity.
     /// Miri-ignored on the same grounds as its §6 siblings above (a ~97 s
-    /// interpreted sha256 over the 48 KiB canonical form, pure unsafe-free code;
-    /// task 98 / hm-d8o); the anti-drift gate itself runs on every native suite.
+    /// interpreted sha256 over the 48 KiB canonical form, pure unsafe-free code);
+    /// the anti-drift gate itself runs on every native suite.
     #[test]
     #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
     fn contract_hash_matches_committed_registry() {
