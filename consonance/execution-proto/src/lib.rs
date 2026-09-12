@@ -316,4 +316,14 @@ mod tests {
             value
         );
     }
+
+    #[test]
+    fn empty_environment_keys_are_invalid_with_their_index() {
+        let mut value = spec();
+        value.env = vec!["FIRST=1".into(), "=value".into()];
+        assert!(matches!(
+            value.validate(),
+            Err(SpecError::InvalidEnvironment { index: 1 })
+        ));
+    }
 }

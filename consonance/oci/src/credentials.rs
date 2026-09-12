@@ -105,14 +105,6 @@ pub(crate) fn validate_user_spec(user: Option<&str>) -> Result<(), CredentialsEr
     if parts.next().is_some() || user_part.is_empty() || group_part == Some("") {
         return Err(CredentialsError::InvalidUser(user.to_string()));
     }
-    for part in [Some(user_part), group_part].into_iter().flatten() {
-        if part
-            .bytes()
-            .any(|byte| byte == 0 || byte == b'\n' || byte == b'\r')
-        {
-            return Err(CredentialsError::InvalidUser(user.to_string()));
-        }
-    }
     Ok(())
 }
 
@@ -241,11 +233,13 @@ fn read_account_file(
     let path = resolve_deepest(rootfs, Path::new(relative))?;
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
-        Err(source) if source.kind() == io::ErrorKind::NotFound && !required => return Ok(None),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => {
-            return Err(CredentialsError::MissingAccountFile(path));
-        }
         Err(source) => {
+            if source.kind() == io::ErrorKind::NotFound {
+                if required {
+                    return Err(CredentialsError::MissingAccountFile(path));
+                }
+                return Ok(None);
+            }
             return Err(CredentialsError::AccountFile { path, source });
         }
     };
@@ -364,7 +358,7 @@ fn valid_name(value: &str) -> bool {
 }
 
 fn parse_id(value: &str) -> Option<u32> {
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+    if !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
     value.parse().ok()
@@ -461,7 +455,14 @@ mod tests {
     fn explicit_group_suppresses_supplementary_groups() {
         let dir = rootfs();
         let got = resolve(Some("worker:shared"), dir.path()).unwrap();
-        assert!(got.additional_gids.is_empty());
+        assert!(got.supplementary_gids().is_empty());
+    }
+
+    #[test]
+    fn supplementary_gids_accessor_exposes_resolved_memberships() {
+        let dir = rootfs();
+        let got = resolve(Some("worker"), dir.path()).unwrap();
+        assert_eq!(got.supplementary_gids(), &[99]);
     }
 
     #[test]
@@ -494,7 +495,19 @@ mod tests {
     #[test]
     fn malformed_user_forms_are_errors() {
         let dir = rootfs();
-        for value in [":group", "user:", "user:group:extra", "user\n"] {
+        for value in [
+            ":group",
+            "user:",
+            "user:group:extra",
+            "user\0",
+            "user\n",
+            "user\r",
+            "worker:group\n",
+        ] {
+            assert!(matches!(
+                validate_user_spec(Some(value)),
+                Err(CredentialsError::InvalidUser(_))
+            ));
             assert!(matches!(
                 resolve(Some(value), dir.path()),
                 Err(CredentialsError::InvalidUser(_))
@@ -523,7 +536,81 @@ mod tests {
         let got = resolve(Some("worker"), dir.path()).unwrap();
         assert_eq!(got.uid, 42);
         assert_eq!(got.gid, 84);
-        assert!(got.additional_gids.is_empty());
+        assert!(got.supplementary_gids().is_empty());
+    }
+
+    #[test]
+    fn required_group_file_missing_is_distinguished_from_optional_group_file() {
+        let dir = rootfs();
+        std::fs::remove_file(dir.path().join(GROUP)).unwrap();
+        assert!(matches!(
+            resolve(Some("worker:shared"), dir.path()),
+            Err(CredentialsError::MissingAccountFile(_))
+        ));
+    }
+
+    #[test]
+    fn optional_account_path_errors_are_not_treated_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("etc"), b"not a directory").unwrap();
+        assert!(matches!(
+            resolve(Some("777"), dir.path()),
+            Err(CredentialsError::AccountFile { .. })
+        ));
+    }
+
+    #[test]
+    fn account_path_symlink_loops_are_reported_as_account_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("etc")).unwrap();
+        std::os::unix::fs::symlink("passwd", dir.path().join(PASSWD)).unwrap();
+        assert!(matches!(
+            resolve(Some("777"), dir.path()),
+            Err(CredentialsError::AccountFile { .. })
+        ));
+    }
+
+    fn passwd_bytes(size: usize) -> Vec<u8> {
+        let mut bytes = b"worker:x:42:84:Worker:/home/worker:/bin/sh\n".to_vec();
+        bytes.resize(size, b'\n');
+        bytes
+    }
+
+    #[test]
+    fn account_file_at_the_byte_limit_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("etc")).unwrap();
+        std::fs::write(
+            dir.path().join(PASSWD),
+            passwd_bytes(MAX_ACCOUNT_FILE_BYTES as usize),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve(Some("worker"), dir.path()).unwrap(),
+            ProcessCredentials {
+                uid: 42,
+                gid: 84,
+                additional_gids: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn account_file_over_the_byte_limit_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("etc")).unwrap();
+        std::fs::write(
+            dir.path().join(PASSWD),
+            passwd_bytes(MAX_ACCOUNT_FILE_BYTES as usize + 1),
+        )
+        .unwrap();
+        assert!(matches!(
+            resolve(Some("worker"), dir.path()),
+            Err(CredentialsError::AccountFileTooLarge {
+                limit: MAX_ACCOUNT_FILE_BYTES,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -556,6 +643,82 @@ mod tests {
         assert!(matches!(
             resolve(Some("worker:shared"), dir.path()),
             Err(CredentialsError::MalformedAccount { .. })
+        ));
+    }
+
+    #[test]
+    fn passwd_blank_and_comment_records_are_ignored() {
+        let dir = rootfs();
+        std::fs::write(
+            dir.path().join(PASSWD),
+            b"# generated account file\n\nworker:x:42:84:Worker:/home/worker:/bin/sh\n",
+        )
+        .unwrap();
+        assert_eq!(resolve(Some("worker"), dir.path()).unwrap().uid, 42);
+    }
+
+    #[test]
+    fn group_blank_and_comment_records_are_ignored() {
+        let dir = rootfs();
+        std::fs::write(
+            dir.path().join(GROUP),
+            b"# generated group file\n\nshared:x:99:worker\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve(Some("worker"), dir.path())
+                .unwrap()
+                .supplementary_gids(),
+            &[99]
+        );
+    }
+
+    #[test]
+    fn malformed_passwd_reports_the_one_based_line_number() {
+        let dir = rootfs();
+        std::fs::write(
+            dir.path().join(PASSWD),
+            b"worker:x:42:84:Worker:/home/worker:/bin/sh\nbroken\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            resolve(Some("worker"), dir.path()),
+            Err(CredentialsError::MalformedAccount { line: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn malformed_group_reports_the_one_based_line_number() {
+        let dir = rootfs();
+        std::fs::write(dir.path().join(GROUP), b"primary:x:84:worker\nbroken\n").unwrap();
+        assert!(matches!(
+            resolve(Some("worker"), dir.path()),
+            Err(CredentialsError::MalformedAccount { line: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn empty_account_names_are_malformed() {
+        let dir = rootfs();
+        std::fs::write(dir.path().join(PASSWD), b":x:42:84\n").unwrap();
+        assert!(matches!(
+            resolve(Some("worker"), dir.path()),
+            Err(CredentialsError::MalformedAccount { line: 1, .. })
+        ));
+        std::fs::write(dir.path().join(PASSWD), b"bad\rname:x:42:84\n").unwrap();
+        assert!(matches!(
+            resolve(Some("worker"), dir.path()),
+            Err(CredentialsError::MalformedAccount { line: 1, .. })
+        ));
+        std::fs::write(
+            dir.path().join(PASSWD),
+            b"worker:x:42:84:Worker:/home/worker:/bin/sh\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(GROUP), b":x:99:worker\n").unwrap();
+        assert!(matches!(
+            resolve(Some("worker"), dir.path()),
+            Err(CredentialsError::MalformedAccount { line: 1, .. })
         ));
     }
 }
