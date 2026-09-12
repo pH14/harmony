@@ -16,6 +16,10 @@ The Consonance backend uses the `consonance` feature and requires Linux/KVM
 and matching guest artifacts; `harmony search --package nes --backend
 consonance ROM` selects it through the shared CLI.
 
+Campaign recordings use the current Dissonance schedule policy version 3 and
+bounded progress policy. Replay rejects recordings from superseded policy
+namespaces before constructing a replay target.
+
 ## Backend acceptance matrix
 
 The native/Consonance backend oracle covers SMB and Nova, but the available

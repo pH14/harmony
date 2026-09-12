@@ -19,8 +19,8 @@ use crate::search::archive::{
     retention_policy_from_identifier, retention_policy_identifier, selector_policy_identifier,
 };
 use crate::search::draw::{
-    DrawMixture, EnergyStrategy, MIXTURE_BIASED_HALF_IDENTIFIER, MixtureDraw, MixtureEnergy,
-    SuffixShape, draw_mixture_from_identifier, draw_mixture_identifier, energy_strategy,
+    DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
+    draw_mixture_from_identifier, draw_mixture_identifier, energy_strategy,
     suffix_shape_from_identifier, suffix_shape_identifier,
 };
 
@@ -44,12 +44,7 @@ pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a determini
      but host completion order cannot reach campaign state; the same seed, configuration, \
      origin, and game bytes produce the same recorded stream";
 
-const LEGACY_CAMPAIGN_SCHEDULE_IDENTITY: &str = "the live schedule is not derivable from the seed \
-     alone; the recorded stream is this campaign's identity; two live runs at one seed may \
-     differ, and each replays exactly";
-const LEGACY_CAMPAIGN_SCHEDULE_POLICY: &str = "deterministic_window_64_per_worker_v1";
 const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_bounded_1024_v2";
-const LEGACY_CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_v1";
 const ORIGIN_GENESIS: &str = "genesis";
 const ORIGIN_SNAPSHOT_ROOT: &str = "snapshot_root";
 const ORIGIN_ARCHIVE: &str = "archive";
@@ -83,9 +78,8 @@ const fn admission_window_depth(workers: usize, reservations_per_worker: usize) 
 }
 
 const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v3";
-const HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v1";
-const UNCHARGED_SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v2";
 const SCHEDULE_POLICY_WINDOW_PREFIX: &str = "deterministic_window_";
+const DEFAULT_MIXTURE_WEIGHT: u8 = 128;
 
 fn schedule_policy_identifier(reservations_per_worker: usize) -> String {
     format!(
@@ -93,32 +87,14 @@ fn schedule_policy_identifier(reservations_per_worker: usize) -> String {
     )
 }
 
-fn schedule_policy_window(policy: Option<&str>) -> Option<usize> {
-    let policy = policy?;
-    if policy == LEGACY_CAMPAIGN_SCHEDULE_POLICY {
-        return None;
-    }
+fn schedule_policy_window(policy: &str) -> Option<usize> {
     let window = policy.strip_prefix(SCHEDULE_POLICY_WINDOW_PREFIX)?;
-    let window = window
-        .strip_suffix(SCHEDULE_POLICY_WINDOW_SUFFIX)
-        .or_else(|| window.strip_suffix(UNCHARGED_SCHEDULE_POLICY_WINDOW_SUFFIX))
-        .or_else(|| window.strip_suffix(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX))?;
+    let window = window.strip_suffix(SCHEDULE_POLICY_WINDOW_SUFFIX)?;
     window.parse().ok().filter(|window| *window >= 1)
 }
 
-fn schedule_policy_is_supported(policy: Option<&str>) -> bool {
-    schedule_policy_is_legacy(policy) || schedule_policy_window(policy).is_some()
-}
-
-fn schedule_policy_is_legacy(policy: Option<&str>) -> bool {
-    matches!(policy, None | Some(LEGACY_CAMPAIGN_SCHEDULE_POLICY))
-}
-
-fn schedule_policy_predates_budget_maintenance(policy: Option<&str>) -> bool {
-    policy.is_none_or(|policy| {
-        policy.ends_with(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX)
-            || policy.ends_with(UNCHARGED_SCHEDULE_POLICY_WINDOW_SUFFIX)
-    })
+fn schedule_policy_is_supported(policy: &str) -> bool {
+    schedule_policy_window(policy).is_some()
 }
 
 const CONSECUTIVE_SKIP_LIMIT: u64 = 1_024;
@@ -487,10 +463,8 @@ pub struct CampaignStreamHeader<T> {
     pub format: String,
     pub campaign_seed: u64,
     pub workers: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schedule_policy: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub progress_policy: Option<String>,
+    pub schedule_policy: String,
+    pub progress_policy: String,
     pub host: String,
     pub origin_kind: String,
     pub origin_path: Option<String>,
@@ -511,7 +485,6 @@ pub struct CampaignStreamHeader<T> {
     pub memory_budget_mib: Option<usize>,
     pub resume_policy: String,
     pub suffix_policy: String,
-    #[serde(default = "default_mixture_policy")]
     pub mixture_policy: String,
     #[serde(flatten)]
     pub game_policies: GamePolicies,
@@ -528,14 +501,6 @@ pub struct CampaignStreamHeader<T> {
     pub rom_sha256: String,
 }
 
-fn default_mixture_policy() -> String {
-    MIXTURE_BIASED_HALF_IDENTIFIER.to_owned()
-}
-
-fn default_mixture_weight() -> u8 {
-    128
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum CampaignSpliceRecord {
@@ -543,8 +508,7 @@ pub enum CampaignSpliceRecord {
     Tail {
         donor_id: u64,
         leaf_id: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tail_postcard: Option<Vec<u8>>,
+        tail_postcard: Vec<u8>,
     },
 }
 
@@ -567,9 +531,7 @@ pub struct CampaignJobRecord {
     pub frames: u64,
     pub result_sha256: String,
     pub decisions: Vec<CampaignAdmissionDecision>,
-    #[serde(default = "default_mixture_weight")]
     pub mixture_weight: u8,
-    #[serde(default)]
     pub splice_weight: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub splice: Option<CampaignSpliceRecord>,
@@ -594,9 +556,7 @@ pub struct CampaignSkipRecord {
     pub worker: u32,
     pub parent_id: u64,
     pub mutation_seed: u64,
-    #[serde(default = "default_mixture_weight")]
     pub mixture_weight: u8,
-    #[serde(default)]
     pub splice_weight: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub splice: Option<CampaignSpliceRecord>,
@@ -658,7 +618,6 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub memory_budget_mib: Option<usize>,
     pub resume_policy: String,
     pub suffix_policy: String,
-    #[serde(default = "default_mixture_policy")]
     pub mixture_policy: String,
     #[serde(flatten)]
     pub game_policies: GamePolicies,
@@ -757,14 +716,8 @@ fn retained_archive_indexes<G: Game>(
         .collect()
 }
 
-fn progress_policy_is_supported(policy: Option<&str>) -> bool {
-    policy.is_none_or(|policy| {
-        policy == CAMPAIGN_PROGRESS_POLICY || policy == LEGACY_CAMPAIGN_PROGRESS_POLICY
-    })
-}
-
-fn uses_bounded_progress_curve(policy: Option<&str>) -> bool {
-    policy == Some(CAMPAIGN_PROGRESS_POLICY)
+fn progress_policy_is_supported(policy: &str) -> bool {
+    policy == CAMPAIGN_PROGRESS_POLICY
 }
 
 fn record_mixture_outcome(
@@ -1421,8 +1374,8 @@ fn stream_header<G: Game>(
         format: game.stream_format().to_owned(),
         campaign_seed: config.campaign_seed,
         workers: config.workers,
-        schedule_policy: Some(schedule_policy_identifier(config.reservations_per_worker)),
-        progress_policy: Some(CAMPAIGN_PROGRESS_POLICY.to_owned()),
+        schedule_policy: schedule_policy_identifier(config.reservations_per_worker),
+        progress_policy: CAMPAIGN_PROGRESS_POLICY.to_owned(),
         host: config.host.clone(),
         origin_kind: origin.kind.clone(),
         origin_path: origin.path.clone(),
@@ -1627,16 +1580,12 @@ fn build_report<G: Game>(
             .map(|(id, snapshot)| SnapshotCheckpointEntry { id, snapshot })
             .collect(),
     };
-    let schedule_identity = match header.schedule_policy.as_deref() {
-        None => LEGACY_CAMPAIGN_SCHEDULE_IDENTITY,
-        Some(_) => CAMPAIGN_SCHEDULE_IDENTITY,
-    };
     let report = CampaignModeReport {
         mode: "campaign".to_owned(),
         campaign_seed: header.campaign_seed,
         workers: header.workers,
         host: header.host.clone(),
-        schedule_identity: schedule_identity.to_owned(),
+        schedule_identity: CAMPAIGN_SCHEDULE_IDENTITY.to_owned(),
         origin,
         execution_budget: header.execution_budget,
         frame_budget: header.frame_budget,
@@ -1757,10 +1706,7 @@ fn completed_results_within_bound(completed: usize, workers: usize, per_worker: 
     completed <= workers.saturating_mul(per_worker)
 }
 
-fn replay_splice<G: Game>(
-    core: &mut CoordinatorCore<G>,
-    parent: usize,
-    max_actions: usize,
+fn replay_splice<G: CampaignTypes>(
     strategy: EnergyStrategy,
     recorded: Option<CampaignSpliceRecord>,
 ) -> Result<Option<Vec<G::Action>>, Box<dyn Error>> {
@@ -1772,37 +1718,14 @@ fn replay_splice<G: Game>(
     }
     match recorded {
         Some(CampaignSpliceRecord::Unavailable) => Ok(None),
-        Some(CampaignSpliceRecord::Tail {
-            donor_id,
-            leaf_id,
-            tail_postcard,
-        }) => {
-            if let Some(bytes) = tail_postcard {
-                let tail: Vec<G::Action> = postcard::from_bytes(&bytes)?;
-                if tail.is_empty() || tail.len() > SPLICE_ACTION_CAP {
-                    return Err("recorded splice tail length is outside the bound".into());
-                }
-                return Ok(Some(tail));
+        Some(CampaignSpliceRecord::Tail { tail_postcard, .. }) => {
+            let tail: Vec<G::Action> = postcard::from_bytes(&tail_postcard)?;
+            if tail.is_empty() || tail.len() > SPLICE_ACTION_CAP {
+                return Err("recorded splice tail length is outside the bound".into());
             }
-            let donor = core
-                .archive
-                .index_of_id(donor_id)
-                .ok_or("recorded splice donor is no longer resident")?;
-            let leaf = core
-                .archive
-                .index_of_id(leaf_id)
-                .ok_or("recorded splice leaf is no longer resident")?;
-            Ok(Some(core.archive.recorded_splice_tail(
-                parent,
-                donor,
-                leaf,
-                SPLICE_ACTION_CAP,
-            )?))
+            Ok(Some(tail))
         }
-        None => Ok(core
-            .archive
-            .splice_tail_for_campaign(parent, max_actions, SPLICE_ACTION_CAP)
-            .map(|splice| splice.actions)),
+        None => Err("splice draw lacks resolution evidence".into()),
     }
 }
 
@@ -2242,7 +2165,7 @@ where
                         let splice = Some(CampaignSpliceRecord::Tail {
                             donor_id: continuation.donor,
                             leaf_id: continuation.leaf,
-                            tail_postcard: Some(postcard::to_allocvec(&suffix)?),
+                            tail_postcard: postcard::to_allocvec(&suffix)?,
                         });
                         *reserved = reserved.saturating_add(1);
                         core.archive.pin_metadata(parent_id)?;
@@ -2288,7 +2211,7 @@ where
                         | DrawMixture::EnergySpliceContinuationIsolated { scale } => {
                             core.mixture_energy.splice_weights(scale)
                         }
-                        _ => (default_mixture_weight(), 0),
+                        _ => (DEFAULT_MIXTURE_WEIGHT, 0),
                     };
                     let draw_checkpoint_before = game.draw_checkpoint(draw_state)?;
                     let draw_table_before =
@@ -2319,7 +2242,7 @@ where
                                                 .archive
                                                 .stable_id(leaf_id)
                                                 .ok_or("splice leaf slot is missing")?,
-                                            tail_postcard: Some(tail_postcard),
+                                            tail_postcard,
                                         }),
                                     )
                                 }
@@ -2373,15 +2296,6 @@ where
                     }
                     *reserved = reserved.saturating_add(1);
                     core.archive.pin_metadata(parent_id)?;
-                    if let Some(CampaignSpliceRecord::Tail {
-                        donor_id,
-                        leaf_id,
-                        tail_postcard: None,
-                    }) = &splice
-                    {
-                        core.archive.pin_metadata(*donor_id)?;
-                        core.archive.pin_metadata(*leaf_id)?;
-                    }
                     let (snapshot, replay, snapshot_id) =
                         core.archive.pin_job_origin(parent_index)?;
                     let entry = &core.archive.entries[parent_index];
@@ -2580,15 +2494,6 @@ where
                     }
                     core.archive.unpin_job_origin(pending_job.snapshot_id);
                     core.archive.unpin_metadata(pending_job.parent_id);
-                    if let Some(CampaignSpliceRecord::Tail {
-                        donor_id,
-                        leaf_id,
-                        tail_postcard: None,
-                    }) = &pending_job.splice
-                    {
-                        core.archive.unpin_metadata(*donor_id);
-                        core.archive.unpin_metadata(*leaf_id);
-                    }
                     let compaction_started = profile_now(coordinator_profile.enabled);
                     let compactions_before = core.archive.history_compactions();
                     core.archive.maintain_memory_budget()?;
@@ -2858,41 +2763,28 @@ where
     if header.frame_budget == Some(0) {
         return Err("recorded frame budget must be nonzero".into());
     }
+    if header.format != game.stream_format() {
+        return Err("campaign stream format is not recognized".into());
+    }
+    if !schedule_policy_is_supported(&header.schedule_policy) {
+        return Err("campaign stream schedule policy is not recognized".into());
+    }
+    if !progress_policy_is_supported(&header.progress_policy) {
+        return Err("campaign stream progress policy is not recognized".into());
+    }
+    if header.rom_sha256 != game.image_sha256() {
+        return Err("campaign replay ROM does not match the recorded stream".into());
+    }
     let record_lines = lines.collect::<Vec<_>>();
     let mut required_draw_versions = BTreeSet::new();
-    let mut recorded_snapshot_uses = BTreeMap::<u64, u32>::new();
-    let mut recorded_metadata_uses = BTreeMap::<u64, u32>::new();
     let mut replay_job_parents = Vec::<u64>::new();
     let mut replay_job_metadata = Vec::<Vec<u64>>::new();
     for line in &record_lines {
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
         let before = match record {
             CampaignStreamRecord::Job(job) => {
-                let uses = recorded_snapshot_uses.entry(job.parent_id).or_default();
-                *uses = uses
-                    .checked_add(1)
-                    .ok_or("recorded parent use count overflow")?;
                 replay_job_parents.push(job.parent_id);
-                let mut metadata_ids = vec![job.parent_id];
-                let metadata = recorded_metadata_uses.entry(job.parent_id).or_default();
-                *metadata = metadata
-                    .checked_add(1)
-                    .ok_or("recorded metadata use count overflow")?;
-                if let Some(CampaignSpliceRecord::Tail {
-                    donor_id,
-                    leaf_id,
-                    tail_postcard: None,
-                }) = job.splice.as_ref()
-                {
-                    for id in [*donor_id, *leaf_id] {
-                        metadata_ids.push(id);
-                        let metadata = recorded_metadata_uses.entry(id).or_default();
-                        *metadata = metadata
-                            .checked_add(1)
-                            .ok_or("recorded splice metadata use count overflow")?;
-                    }
-                }
-                replay_job_metadata.push(metadata_ids);
+                replay_job_metadata.push(vec![job.parent_id]);
                 job.draw_table_before
             }
             CampaignStreamRecord::Skip(skip) => skip.draw_table_before,
@@ -2900,28 +2792,6 @@ where
         if let Some(before) = before {
             required_draw_versions.insert(before.records);
         }
-    }
-    if header.format != game.stream_format() {
-        return Err("campaign stream format is not recognized".into());
-    }
-    let legacy_schedule = schedule_policy_is_legacy(header.schedule_policy.as_deref());
-    if !schedule_policy_is_supported(header.schedule_policy.as_deref()) {
-        return Err("campaign stream schedule policy is not recognized".into());
-    }
-    if !progress_policy_is_supported(header.progress_policy.as_deref()) {
-        return Err("campaign stream progress policy is not recognized".into());
-    }
-    if header.memory_budget_mib.is_some()
-        && schedule_policy_predates_budget_maintenance(header.schedule_policy.as_deref())
-    {
-        return Err(
-            "campaign stream recorded a memory budget under superseded maintenance and cannot be \
-             replayed"
-                .into(),
-        );
-    }
-    if header.rom_sha256 != game.image_sha256() {
-        return Err("campaign replay ROM does not match the recorded stream".into());
     }
     let resume_input = match header.origin_kind.as_str() {
         ORIGIN_GENESIS => {
@@ -3015,8 +2885,8 @@ where
         header.archive_entry_limit,
         header.memory_budget_mib,
     );
-    core.record_progress = header.progress_policy.is_some();
-    core.bounded_progress_curve = uses_bounded_progress_curve(header.progress_policy.as_deref());
+    core.record_progress = true;
+    core.bounded_progress_curve = true;
     core.archive.selector_policy = replay_selector.clone();
     core.archive
         .enable_continuations(replay_mixture.uses_continuations());
@@ -3058,47 +2928,36 @@ where
         );
     }
 
-    if !legacy_schedule {
-        core.archive.establish_liveness_anchor(header.action_limit);
-    }
+    core.archive.establish_liveness_anchor(header.action_limit);
 
     let replay_window_depth = admission_window_depth(
         usize::try_from(header.workers)?,
-        schedule_policy_window(header.schedule_policy.as_deref())
-            .unwrap_or(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER),
+        schedule_policy_window(&header.schedule_policy)
+            .ok_or("campaign stream schedule policy is not recognized")?,
     );
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
     let mut replay_job_snapshots =
         BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, u64)>::new();
-    if legacy_schedule {
-        core.archive
-            .preserve_recorded_snapshot_uses(recorded_snapshot_uses);
-        core.archive
-            .preserve_recorded_metadata_uses(recorded_metadata_uses);
-    } else {
-        core.archive
-            .preserve_recorded_snapshot_uses(BTreeMap::new());
-        core.archive.preserve_inactive_snapshots(false)?;
-        for (job_slot, parent_id) in replay_job_parents
-            .iter()
-            .take(replay_window_depth)
-            .enumerate()
-        {
-            let parent_index = core
-                .archive
-                .index_of_id(*parent_id)
-                .ok_or("initial replay job names a parent the archive does not hold")?;
-            replay_job_snapshots.insert(job_slot, core.archive.pin_job_origin(parent_index)?);
-            for metadata_id in &replay_job_metadata[job_slot] {
-                let uses = replay_metadata_uses.entry(*metadata_id).or_default();
-                *uses = uses
-                    .checked_add(1)
-                    .ok_or("recorded metadata use count overflow")?;
-            }
+    core.archive.preserve_inactive_snapshots(false)?;
+    for (job_slot, parent_id) in replay_job_parents
+        .iter()
+        .take(replay_window_depth)
+        .enumerate()
+    {
+        let parent_index = core
+            .archive
+            .index_of_id(*parent_id)
+            .ok_or("initial replay job names a parent the archive does not hold")?;
+        replay_job_snapshots.insert(job_slot, core.archive.pin_job_origin(parent_index)?);
+        for metadata_id in &replay_job_metadata[job_slot] {
+            let uses = replay_metadata_uses.entry(*metadata_id).or_default();
+            *uses = uses
+                .checked_add(1)
+                .ok_or("recorded metadata use count overflow")?;
         }
-        core.archive
-            .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
     }
+    core.archive
+        .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
 
     let mut replay_job_index = 0_usize;
     for line in record_lines {
@@ -3111,13 +2970,7 @@ where
                     .ok_or("recorded skip names a parent the archive does not hold")?;
                 let strategy =
                     energy_strategy(skip.mutation_seed, skip.mixture_weight, skip.splice_weight)?;
-                let spliced = replay_splice(
-                    &mut core,
-                    parent_index,
-                    header.action_limit,
-                    strategy,
-                    skip.splice,
-                )?;
+                let spliced = replay_splice::<G>(strategy, skip.splice)?;
                 let draw_checkpoint_before =
                     game.draw_checkpoint_from_wire(skip.draw_table_before.as_ref())?;
                 let mut suffix = match spliced {
@@ -3167,13 +3020,7 @@ where
                         || !job.sequence.is_multiple_of(4)
                         || job.mixture_weight != 0
                         || job.splice_weight != u8::MAX
-                        || !matches!(
-                            &job.splice,
-                            Some(CampaignSpliceRecord::Tail {
-                                tail_postcard: Some(_),
-                                ..
-                            })
-                        ))
+                        || !matches!(&job.splice, Some(CampaignSpliceRecord::Tail { .. })))
                 {
                     return Err(
                         "continuation job lacks its registered schedule or complete tail".into(),
@@ -3192,30 +3039,16 @@ where
                         .get(parent_index)
                         .ok_or("recorded job names a parent the archive does not hold")?;
                     (
-                        if legacy_schedule {
-                            let (snapshot, replay) = core.archive.job_origin(parent_index)?;
-                            (snapshot, replay, job.parent_id)
-                        } else {
-                            replay_job_snapshots
-                                .remove(&replay_job_slot)
-                                .ok_or("recorded job has no replayed in-flight snapshot")?
-                        },
+                        replay_job_snapshots
+                            .remove(&replay_job_slot)
+                            .ok_or("recorded job has no replayed in-flight snapshot")?,
                         entry.input_len,
                         entry.milestones,
                     )
                 };
-                if legacy_schedule {
-                    core.archive.consume_recorded_snapshot_use(job.parent_id);
-                }
                 let strategy =
                     energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?;
-                let spliced = replay_splice(
-                    &mut core,
-                    parent_index,
-                    header.action_limit,
-                    strategy,
-                    job.splice.clone(),
-                )?;
+                let spliced = replay_splice::<G>(strategy, job.splice.clone())?;
                 let draw_checkpoint_before =
                     game.draw_checkpoint_from_wire(job.draw_table_before.as_ref())?;
                 let mut suffix = match spliced {
@@ -3310,49 +3143,36 @@ where
                             .any(|id| core.archive.opened_new_cell(*id)),
                     );
                 }
-                if !legacy_schedule {
-                    core.archive.unpin_job_origin(snapshot_id);
-                }
+                core.archive.unpin_job_origin(snapshot_id);
                 core.archive.unpin_metadata(job.parent_id);
-                if let Some(CampaignSpliceRecord::Tail {
-                    donor_id,
-                    leaf_id,
-                    tail_postcard: None,
-                }) = job.splice
-                {
-                    core.archive.unpin_metadata(donor_id);
-                    core.archive.unpin_metadata(leaf_id);
-                }
                 core.archive.maintain_memory_budget()?;
-                if !legacy_schedule {
-                    for metadata_id in &replay_job_metadata[replay_job_slot] {
-                        if let Some(uses) = replay_metadata_uses.get_mut(metadata_id) {
-                            *uses = uses.saturating_sub(1);
-                            if *uses == 0 {
-                                replay_metadata_uses.remove(metadata_id);
-                            }
+                for metadata_id in &replay_job_metadata[replay_job_slot] {
+                    if let Some(uses) = replay_metadata_uses.get_mut(metadata_id) {
+                        *uses = uses.saturating_sub(1);
+                        if *uses == 0 {
+                            replay_metadata_uses.remove(metadata_id);
                         }
                     }
-                    if let Some(parent_id) =
-                        replay_job_parents.get(replay_job_slot.saturating_add(replay_window_depth))
-                    {
-                        let next_slot = replay_job_slot.saturating_add(replay_window_depth);
-                        let parent_index = core
-                            .archive
-                            .index_of_id(*parent_id)
-                            .ok_or("next replay job names a parent the archive does not hold")?;
-                        replay_job_snapshots
-                            .insert(next_slot, core.archive.pin_job_origin(parent_index)?);
-                        for metadata_id in &replay_job_metadata[next_slot] {
-                            let uses = replay_metadata_uses.entry(*metadata_id).or_default();
-                            *uses = uses
-                                .checked_add(1)
-                                .ok_or("recorded metadata use count overflow")?;
-                        }
-                    }
-                    core.archive
-                        .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
                 }
+                if let Some(parent_id) =
+                    replay_job_parents.get(replay_job_slot.saturating_add(replay_window_depth))
+                {
+                    let next_slot = replay_job_slot.saturating_add(replay_window_depth);
+                    let parent_index = core
+                        .archive
+                        .index_of_id(*parent_id)
+                        .ok_or("next replay job names a parent the archive does not hold")?;
+                    replay_job_snapshots
+                        .insert(next_slot, core.archive.pin_job_origin(parent_index)?);
+                    for metadata_id in &replay_job_metadata[next_slot] {
+                        let uses = replay_metadata_uses.entry(*metadata_id).or_default();
+                        *uses = uses
+                            .checked_add(1)
+                            .ok_or("recorded metadata use count overflow")?;
+                    }
+                }
+                core.archive
+                    .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
                 let worker = usize::try_from(job.worker)?;
                 if worker >= counters.jobs_per_worker.len() {
                     return Err("recorded job names an unknown worker".into());
@@ -3405,9 +3225,8 @@ mod tests {
         live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
         progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
         replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
-        schedule_policy_identifier, schedule_policy_is_legacy, schedule_policy_is_supported,
-        schedule_policy_predates_budget_maintenance, schedule_policy_window,
-        stop_reservations_after_victory, uses_bounded_progress_curve,
+        schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
+        stop_reservations_after_victory,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -3894,6 +3713,7 @@ mod tests {
     }
 
     const RECORDED_HEADER: &str = r#"{"format":"campaign-v1","campaign_seed":7,"workers":2,
+"schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"wall_budget_seconds":null,
 "action_limit":64,"archive_entry_limit":128,"controller_vocabulary":"nes_down_ten",
@@ -3901,7 +3721,7 @@ mod tests {
 "chord_policy":"chord_uniform","replacement_policy":"fewest_frames_in_level",
 "resume_policy":"whole_tree","retention_policy":"admit_alive",
 "parent_scheduler":"room_cell_uniform_128","executor_mode":"snapshot_resume_archive",
-"worker_seed_derivation":"x","rom_sha256":"cd"}"#;
+"worker_seed_derivation":"x","mixture_policy":"biased_half","rom_sha256":"cd"}"#;
 
     #[test]
     fn incremental_postcard_digest_matches_encoded_bytes() {
@@ -4172,80 +3992,54 @@ mod tests {
 
     #[test]
     fn recorded_splice_tail_validates_strategy_and_bounds() {
-        let (_game, _run, mut core, _target) = test_core();
+        let (_game, _run, _core, _target) = test_core();
         let action = TestAction::new(0x01, 4);
-        let encoded = |actions: Vec<TestAction>| {
-            Some(CampaignSpliceRecord::Tail {
-                donor_id: 90,
-                leaf_id: 91,
-                tail_postcard: Some(postcard::to_allocvec(&actions).expect("encode splice tail")),
-            })
+        let encoded = |actions: Vec<TestAction>| CampaignSpliceRecord::Tail {
+            donor_id: 90,
+            leaf_id: 91,
+            tail_postcard: postcard::to_allocvec(&actions).expect("encode splice tail"),
         };
 
         assert_eq!(
-            replay_splice(
-                &mut core,
-                0,
-                16,
-                EnergyStrategy::Splice,
-                encoded(vec![action])
-            )
-            .expect("replay explicit tail"),
+            replay_splice::<TestGame>(EnergyStrategy::Splice, Some(encoded(vec![action])))
+                .expect("replay explicit tail"),
             Some(vec![action])
         );
         assert_eq!(
-            replay_splice(
-                &mut core,
-                0,
-                16,
+            replay_splice::<TestGame>(
                 EnergyStrategy::Splice,
-                Some(CampaignSpliceRecord::Unavailable)
+                Some(CampaignSpliceRecord::Unavailable),
             )
             .expect("replay unavailable tail"),
             None
         );
         assert!(
-            replay_splice(
-                &mut core,
-                0,
-                16,
-                EnergyStrategy::Splice,
-                encoded(Vec::new())
-            )
-            .is_err()
+            replay_splice::<TestGame>(EnergyStrategy::Splice, Some(encoded(Vec::new()))).is_err()
         );
         assert!(
-            replay_splice(
-                &mut core,
-                0,
-                16,
+            replay_splice::<TestGame>(
                 EnergyStrategy::Splice,
-                encoded(vec![action; SPLICE_ACTION_CAP + 1])
+                Some(encoded(vec![action; SPLICE_ACTION_CAP + 1])),
             )
             .is_err()
         );
         assert_eq!(
-            replay_splice(
-                &mut core,
-                0,
-                16,
+            replay_splice::<TestGame>(
                 EnergyStrategy::Splice,
-                encoded(vec![action; SPLICE_ACTION_CAP])
+                Some(encoded(vec![action; SPLICE_ACTION_CAP])),
             )
             .expect("tail at cap is valid")
             .map(|tail| tail.len()),
             Some(SPLICE_ACTION_CAP)
         );
         assert!(
-            replay_splice(
-                &mut core,
-                0,
-                16,
+            replay_splice::<TestGame>(
                 EnergyStrategy::Alphabet,
-                Some(CampaignSpliceRecord::Unavailable)
+                Some(CampaignSpliceRecord::Unavailable),
             )
             .is_err()
         );
+        assert!(replay_splice::<TestGame>(EnergyStrategy::Splice, None).is_err());
     }
 
     #[test]
@@ -4393,79 +4187,36 @@ mod tests {
     }
 
     #[test]
-    fn the_historical_namespaces_predate_the_corrected_budget_maintenance() {
-        let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
-        assert!(!schedule_policy_predates_budget_maintenance(Some(&current)));
-        assert!(!schedule_policy_predates_budget_maintenance(Some(
-            "deterministic_window_64_per_worker_v3"
-        )));
-        assert!(schedule_policy_predates_budget_maintenance(None));
-        assert!(schedule_policy_predates_budget_maintenance(Some(
-            super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
-        )));
-        assert!(schedule_policy_predates_budget_maintenance(Some(
-            "deterministic_window_4_per_worker_v1"
-        )));
-    }
-
-    #[test]
-    fn schedule_policy_dispatch_accepts_windowed_and_legacy_only() {
+    fn schedule_policy_dispatch_accepts_only_current_windows() {
         let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
         assert_eq!(current, "deterministic_window_1_per_worker_v3");
         assert_eq!(
-            schedule_policy_window(Some("deterministic_window_4_per_worker_v2")),
-            Some(4)
+            schedule_policy_window(&current),
+            Some(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER)
         );
-        assert!(schedule_policy_predates_budget_maintenance(Some(
-            "deterministic_window_4_per_worker_v2"
-        )));
-        assert!(schedule_policy_is_supported(None));
-        assert!(schedule_policy_is_supported(Some(&current)));
-        assert!(schedule_policy_is_supported(Some(
+        assert!(schedule_policy_is_supported(&current));
+        assert!(schedule_policy_is_supported(
             "deterministic_window_4_per_worker_v3"
-        )));
-        assert!(schedule_policy_is_supported(Some(
+        ));
+        assert!(!schedule_policy_is_supported(
+            "deterministic_window_4_per_worker_v2"
+        ));
+        assert!(!schedule_policy_is_supported(
             "deterministic_window_4_per_worker_v1"
-        )));
-        assert!(schedule_policy_is_supported(Some(
-            super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
-        )));
-        assert!(!schedule_policy_is_supported(Some("unknown-schedule")));
-        assert!(!schedule_policy_is_supported(Some(
-            "deterministic_window_0_per_worker_v3"
-        )));
-        assert_eq!(schedule_policy_window(Some(&current)), Some(1));
-        assert_eq!(
-            schedule_policy_window(Some("deterministic_window_4_per_worker_v3")),
-            Some(4)
-        );
-        assert_eq!(
-            schedule_policy_window(Some("deterministic_window_4_per_worker_v1")),
-            Some(4)
-        );
-        assert_eq!(
-            schedule_policy_window(Some(super::LEGACY_CAMPAIGN_SCHEDULE_POLICY)),
-            None
-        );
-        assert!(!schedule_policy_is_legacy(Some(&current)));
-        assert!(schedule_policy_is_legacy(Some(
-            super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
-        )));
-        assert!(schedule_policy_is_legacy(None));
-    }
-
-    #[test]
-    fn a_live_window_of_sixty_four_is_not_recorded_as_the_legacy_policy() {
-        let live = schedule_policy_identifier(64);
-        assert_ne!(live, super::LEGACY_CAMPAIGN_SCHEDULE_POLICY);
-        assert!(!schedule_policy_is_legacy(Some(&live)));
-        assert_eq!(schedule_policy_window(Some(&live)), Some(64));
-
-        assert!(schedule_policy_is_legacy(Some(
+        ));
+        assert!(!schedule_policy_is_supported(
             "deterministic_window_64_per_worker_v1"
-        )));
+        ));
+        assert!(!schedule_policy_is_supported("unknown-schedule"));
+        assert!(!schedule_policy_is_supported(
+            "deterministic_window_0_per_worker_v3"
+        ));
         assert_eq!(
-            schedule_policy_window(Some("deterministic_window_64_per_worker_v1")),
+            schedule_policy_window("deterministic_window_4_per_worker_v3"),
+            Some(4)
+        );
+        assert_eq!(
+            schedule_policy_window("deterministic_window_4_per_worker_v1"),
             None
         );
     }
@@ -4499,21 +4250,11 @@ mod tests {
             Some(64)
         ));
 
-        assert!(progress_policy_is_supported(None));
-        assert!(progress_policy_is_supported(Some(
+        assert!(progress_policy_is_supported(
             super::CAMPAIGN_PROGRESS_POLICY
-        )));
-        assert!(progress_policy_is_supported(Some(
-            super::LEGACY_CAMPAIGN_PROGRESS_POLICY
-        )));
-        assert!(!progress_policy_is_supported(Some("unknown-progress")));
-        assert!(!uses_bounded_progress_curve(None));
-        assert!(uses_bounded_progress_curve(Some(
-            super::CAMPAIGN_PROGRESS_POLICY
-        )));
-        assert!(!uses_bounded_progress_curve(Some(
-            super::LEGACY_CAMPAIGN_PROGRESS_POLICY
-        )));
+        ));
+        assert!(!progress_policy_is_supported("mechanical_watermark_v1"));
+        assert!(!progress_policy_is_supported("unknown-progress"));
     }
 
     #[test]
@@ -4521,6 +4262,15 @@ mod tests {
         let compact = RECORDED_HEADER.replace('\n', "");
         let header: CampaignStreamHeader<()> =
             serde_json::from_str(&compact).expect("recorded header parses");
+        assert_eq!(
+            header.schedule_policy,
+            "deterministic_window_1_per_worker_v3"
+        );
+        assert_eq!(
+            header.progress_policy,
+            "mechanical_watermark_bounded_1024_v2"
+        );
+        assert_eq!(header.mixture_policy, "biased_half");
         assert_eq!(header.suffix_policy, "one_or_two");
         assert_eq!(header.resume_policy, "whole_tree");
         assert_eq!(header.draw_table, None);
@@ -4550,7 +4300,7 @@ mod tests {
     #[test]
     fn a_recorded_job_keeps_its_draw_table_field_names() {
         let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":0,"mutation_seed":9,
-"frames":12,"result_sha256":"ef","decisions":[],
+"frames":12,"result_sha256":"ef","decisions":[],"mixture_weight":128,"splice_weight":128,
 "selector":{"path":"room_cell_uniform","classes_skipped":0,"counter_reset":false},
 "chord_table_before":{"records":3,"retained_successes":1,"table_sha256":"aa"},
 "chord_table_after":{"records":4,"retained_successes":2,"table_sha256":"bb"}}"#
@@ -4559,7 +4309,10 @@ mod tests {
         let CampaignStreamRecord::Job(job) = record else {
             panic!("expected a job record");
         };
-        assert_eq!(job.splice, None, "historical jobs carry no splice evidence");
+        assert_eq!(
+            job.splice, None,
+            "jobs without a splice carry no splice evidence"
+        );
         assert_eq!(job.selector.path, SelectorPath::GroupWalk);
         assert_eq!(
             job.draw_table_before,
@@ -4589,7 +4342,7 @@ mod tests {
     fn a_job_records_its_dispatch_time_splice_resolution() {
         let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":3,"mutation_seed":9,
 "frames":12,"result_sha256":"ef","decisions":[],"mixture_weight":85,"splice_weight":85,
-"splice":{"outcome":"tail","donor_id":4,"leaf_id":9},
+"splice":{"outcome":"tail","donor_id":4,"leaf_id":9,"tail_postcard":[1,2]},
 "selector":{"path":"uniform","classes_skipped":0,"counter_reset":false}}"#
             .replace('\n', "");
         let record: CampaignStreamRecord = serde_json::from_str(&line).expect("record parses");
@@ -4601,7 +4354,7 @@ mod tests {
             Some(super::CampaignSpliceRecord::Tail {
                 donor_id: 4,
                 leaf_id: 9,
-                tail_postcard: None,
+                tail_postcard: vec![1, 2],
             })
         );
         let written = serde_json::to_vec(&job).expect("job serializes");

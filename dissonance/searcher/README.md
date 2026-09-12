@@ -18,8 +18,9 @@ for replay. Reserved jobs pin the snapshot they actually restore, including a
 parent's keyframe. If retention removes that snapshot from the active population,
 its memory stays charged until the last reservation is admitted. Live execution
 and serial replay release these pins at the same recorded boundary, independent
-of worker completion timing. Budgeted streams before schedule version 3 are
-rejected because they used different snapshot accounting.
+of worker completion timing. Campaign streams require schedule policy version 3
+and the current bounded progress policy; recordings from superseded policy
+namespaces are rejected before replay because their snapshot accounting differs.
 
 Physical executors default to at most one running or completed-but-unadmitted
 job each. `run_campaign_checkpointed_with_options` can explicitly allow two

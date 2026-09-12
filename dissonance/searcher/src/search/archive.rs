@@ -288,7 +288,6 @@ pub struct SelectorAccounting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_selections: Option<u64>,
     pub uniform_selections: u64,
-    #[serde(default, alias = "tie_class_selections")]
     pub cell_selections: u64,
     pub productive_selections: u64,
     pub classes_skipped: u64,
@@ -595,7 +594,6 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     active_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
     live_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
     preserve_inactive_snapshots: bool,
-    preserved_snapshot_uses: Option<BTreeMap<u64, u32>>,
     metadata_pins: BTreeMap<u64, u32>,
     inflight_snapshot_pins: BTreeMap<u64, u32>,
     inflight_snapshot_charges: BTreeMap<u64, usize>,
@@ -1094,7 +1092,6 @@ where
             active_skip_groups: BTreeMap::new(),
             live_skip_groups: BTreeMap::new(),
             preserve_inactive_snapshots: false,
-            preserved_snapshot_uses: None,
             metadata_pins: BTreeMap::new(),
             inflight_snapshot_pins: BTreeMap::new(),
             inflight_snapshot_charges: BTreeMap::new(),
@@ -1193,15 +1190,11 @@ where
         {
             return;
         }
-        let has_future_use = self
-            .preserved_snapshot_uses
-            .as_ref()
-            .is_none_or(|uses| uses.contains_key(&self.entries[id].id));
         let worker_holds_snapshot = self.entries[id]
             .snapshot
             .as_ref()
             .is_some_and(|snapshot| Arc::strong_count(snapshot) > 1);
-        if (!self.preserve_inactive_snapshots || !has_future_use) && !worker_holds_snapshot {
+        if !self.preserve_inactive_snapshots && !worker_holds_snapshot {
             self.entries[id].snapshot.take();
         }
     }
@@ -1585,7 +1578,6 @@ where
     ) -> Result<(), &'static str> {
         self.preserve_inactive_snapshots = preserve;
         if !preserve {
-            self.preserved_snapshot_uses = None;
             for id in 0..self.entries.len() {
                 if !self.snapshot_selectable[id] {
                     self.entries[id].snapshot.take();
@@ -1636,38 +1628,6 @@ where
 
     pub(crate) fn preserve_recorded_metadata_uses(&mut self, uses: BTreeMap<u64, u32>) {
         self.metadata_pins = uses;
-    }
-
-    pub(crate) fn preserve_recorded_snapshot_uses(&mut self, uses: BTreeMap<u64, u32>) {
-        self.preserve_inactive_snapshots = true;
-        self.preserved_snapshot_uses = Some(uses);
-    }
-
-    pub(crate) fn consume_recorded_snapshot_use(&mut self, id: u64) {
-        let exhausted = if let Some(uses) = self.preserved_snapshot_uses.as_mut() {
-            let Some(remaining) = uses.get_mut(&id) else {
-                return;
-            };
-            *remaining = remaining.saturating_sub(1);
-            if *remaining == 0 {
-                uses.remove(&id);
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-        if exhausted
-            && let Some(index) = self.index_of_id(id)
-            && !self
-                .snapshot_selectable
-                .get(index)
-                .copied()
-                .unwrap_or(false)
-        {
-            self.entries[index].snapshot.take();
-        }
     }
 
     fn input_index_start(&self, parent_id: Option<usize>) -> usize {
@@ -3757,16 +3717,26 @@ mod tests {
     }
 
     #[test]
-    fn historical_tie_class_counter_loads_as_cell_selections() {
-        let accounting: SelectorAccounting = serde_json::from_str(
-            r#"{"uniform_selections":1,"tie_class_selections":2,
+    fn selector_accounting_requires_the_current_cell_counter_name() {
+        let current: SelectorAccounting = serde_json::from_str(
+            r#"{"uniform_selections":1,"cell_selections":2,
                 "productive_selections":3,"classes_skipped":4,"counter_resets":5,
                 "concentration":{"window_cap":128,"final_window_size":6,
                 "window_draws":7,"distinct_window_parents":8,
                 "draws_per_parent_milli":9}}"#,
         )
-        .expect("historical selector accounting parses");
-        assert_eq!(accounting.cell_selections, 2);
+        .expect("current selector accounting parses");
+        assert_eq!(current.cell_selections, 2);
+        assert!(
+            serde_json::from_str::<SelectorAccounting>(
+                r#"{"uniform_selections":1,"tie_class_selections":2,
+                "productive_selections":3,"classes_skipped":4,"counter_resets":5,
+                "concentration":{"window_cap":128,"final_window_size":6,
+                "window_draws":7,"distinct_window_parents":8,
+                "draws_per_parent_milli":9}}"#,
+            )
+            .is_err()
+        );
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]

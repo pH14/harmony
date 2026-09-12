@@ -1383,8 +1383,7 @@ mod tests {
         derive_worker_seed, remember_chord_version, source_batch_ready,
     };
     use crate::search::campaign::{
-        CAMPAIGN_SCHEDULE_IDENTITY, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Evaluation,
-        InputPolicy, TargetExecution,
+        DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Evaluation, InputPolicy, TargetExecution,
     };
     use crate::search::empirical_steps::{EmpiricalStepHashRule, EmpiricalStepTables};
     use crate::{
@@ -2195,7 +2194,7 @@ mod tests {
     }
 
     #[test]
-    fn a_budgeted_stream_in_a_historical_namespace_is_refused_rather_than_replayed() {
+    fn obsolete_campaign_policies_are_rejected_before_replay() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca44, 2, 128);
         config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
@@ -2211,101 +2210,42 @@ mod tests {
         let recorded = String::from_utf8(stream).expect("stream is utf-8");
         replay_smb_campaign(&rom, recorded.as_bytes(), None).expect("its own namespace replays");
 
-        let refused = "campaign stream recorded a memory budget under superseded maintenance \
-                       and cannot be replayed";
         for historical in [
             recorded.replacen("_per_worker_v3", "_per_worker_v1", 1),
+            recorded.replacen("_per_worker_v3", "_per_worker_v2", 1),
             recorded.replacen(
-                "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\"",
-                "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"",
-                1,
-            ),
-            recorded.replacen(
-                "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\",",
-                "",
+                "mechanical_watermark_bounded_1024_v2",
+                "mechanical_watermark_v1",
                 1,
             ),
         ] {
             let error = replay_smb_campaign(&rom, historical.as_bytes(), None)
-                .expect_err("a budgeted historical stream is refused");
-            assert_eq!(error.to_string(), refused);
+                .expect_err("an obsolete campaign policy is refused");
+            let message = error.to_string();
+            assert!(
+                message.contains("schedule policy") || message.contains("progress policy"),
+                "unexpected obsolete policy error: {message}"
+            );
         }
 
-        let unbudgeted = genesis_config(0x5eed_ca45, 2, 32);
-        let mut stream = Vec::new();
-        run_smb_campaign(&rom, &unbudgeted, &SmbCampaignOrigin::Genesis, &mut stream)
-            .expect("unbudgeted live campaign");
-        let recorded = String::from_utf8(stream).expect("stream is utf-8");
-        replay_smb_campaign(
-            &rom,
-            recorded
-                .replacen("_per_worker_v3", "_per_worker_v1", 1)
-                .as_bytes(),
-            None,
-        )
-        .expect("an unbudgeted historical stream still replays");
-    }
-
-    #[test]
-    fn legacy_stream_omits_new_evaluator_payloads_on_replay() {
-        let rom = synthetic_nrom();
-        let config = genesis_config(0x5eed_ca22, 1, 4);
-        let mut stream = Vec::new();
-        let (live, live_checkpoint) = run_smb_campaign_checkpointed(
-            &rom,
-            &config,
-            &SmbCampaignOrigin::Genesis,
-            &mut stream,
-            None,
-        )
-        .expect("new campaign");
-        let recorded = String::from_utf8(stream).expect("stream is utf-8");
-        let historical = recorded.replacen(
-            "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\"",
-            "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"",
+        let without_schedule = recorded.replacen(
+            "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\",",
+            "",
             1,
         );
-        let (historical_replay, historical_checkpoint) =
-            replay_smb_campaign_checkpointed(&rom, historical.as_bytes(), None, None)
-                .expect("deterministic legacy policy replays");
-        let (historical_replay_again, historical_checkpoint_again) =
-            replay_smb_campaign_checkpointed(&rom, historical.as_bytes(), None, None)
-                .expect("legacy policy replays deterministically");
-        assert_eq!(historical_replay, historical_replay_again);
-        assert_eq!(historical_checkpoint, historical_checkpoint_again);
-        assert_eq!(historical_replay.archive, live.archive);
-        assert_eq!(historical_checkpoint, live_checkpoint);
-        assert_eq!(
-            historical_replay.schedule_identity,
-            CAMPAIGN_SCHEDULE_IDENTITY
-        );
-        let legacy = recorded
-            .replacen(
-                "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\",",
-                "",
-                1,
-            )
-            .replacen(
-                "\"progress_policy\":\"mechanical_watermark_bounded_1024_v2\",",
-                "",
-                1,
-            )
-            .replacen("\"terminal_policy\":\"game_victory\",", "", 1);
-        let replay = replay_smb_campaign(&rom, legacy.as_bytes(), None)
-            .expect("legacy evaluator stream replays");
         assert!(
-            replay
-                .schedule_identity
-                .starts_with("the live schedule is not derivable")
+            replay_smb_campaign(&rom, without_schedule.as_bytes(), None).is_err(),
+            "a recording without the current schedule policy is refused"
+        );
+        let without_progress = recorded.replacen(
+            "\"progress_policy\":\"mechanical_watermark_bounded_1024_v2\",",
+            "",
+            1,
         );
         assert!(
-            !replay
-                .game_policies
-                .contains_key(super::TERMINAL_POLICY_FIELD)
+            replay_smb_campaign(&rom, without_progress.as_bytes(), None).is_err(),
+            "a recording without the current progress policy is refused"
         );
-        let curve = serde_json::to_string(&replay.archive.progress_curve)
-            .expect("serialize legacy progress curve");
-        assert!(!curve.contains("\"progress\""));
     }
 
     #[test]
