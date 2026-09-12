@@ -45,6 +45,31 @@ mount_required() {
     mounted "$target" || startup_failure 125 "mount $filesystem at $target failed"
 }
 
+resolve_device_policy() {
+    device=$1
+    token=$2
+    [ -c "$device" ] && [ ! -L "$device" ] || startup_failure 125 "invalid device: $device"
+    numbers=$("$BUSYBOX" stat -c '%t %T' "$device") || startup_failure 125 "stat failed: $device"
+    major=${numbers% *}
+    minor=${numbers#* }
+    for number in "$major" "$minor"; do
+        case "$number" in
+            ''|*[!0-9a-fA-F]*) startup_failure 125 "invalid device number: $device" ;;
+        esac
+        [ "${#number}" -le 8 ] || startup_failure 125 "device number overflow: $device"
+    done
+    major=$((0x$major))
+    minor=$((0x$minor))
+    for field in MAJOR MINOR; do
+        "$BUSYBOX" grep -qF "\"${token}_${field}\"" "$BUNDLE/config.json" || \
+            startup_failure 125 "missing device policy: $device"
+    done
+    "$BUSYBOX" sed -e "s/\"${token}_MAJOR\"/$major/g" \
+        -e "s/\"${token}_MINOR\"/$minor/g" "$BUNDLE/config.json" > "$BUNDLE/config.tmp" || \
+        startup_failure 125 "device policy resolution failed: $device"
+    "$BUSYBOX" mv "$BUNDLE/config.tmp" "$BUNDLE/config.json" || startup_failure 125
+}
+
 log "HARMONY_OCI: startup"
 
 [ -x "$BUSYBOX" ] || finish 127
@@ -67,6 +92,8 @@ mount_required cgroup2 none /sys/fs/cgroup
 "$BUSYBOX" mount --make-rprivate / 2>/dev/null || startup_failure 125 "private root mount failed"
 [ -e /dev/harmony ] || startup_failure 125 "missing SDK device"
 [ -e /dev/harmony-park ] || startup_failure 125 "missing park device"
+resolve_device_policy /dev/harmony HARMONY_SDK
+resolve_device_policy /dev/harmony-park HARMONY_PARK
 
 runc_pid=
 # shellcheck disable=SC2329

@@ -34,6 +34,9 @@ are the only Harmony device mounts. Guest startup invokes the pinned
 `/usr/bin/runc` once with the initramfs `--no-pivot` arrangement. The outer
 guest root is made recursively private before launch; the container uses
 `rslave` propagation, as required by this runtime mode.
+The generated device policy contains four numeric placeholders. Platform PID 1
+resolves them from the two kernel-created character devices before invoking
+`runc`, allowing read/write access to their exact major/minor pairs.
 
 Rootfs and control-segment assembly are internal to `bundle::prepare`, which
 validates their combined mount layout before producing executable bytes.

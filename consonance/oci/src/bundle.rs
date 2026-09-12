@@ -375,6 +375,12 @@ fn runc_spec(external_inputs: &[ValidatedExternalInput]) -> serde_json::Value {
         "linux": {
             "rootfsPropagation": "rslave",
             "cgroupsPath": "harmony",
+            "resources": {
+                "devices": [
+                    { "allow": true, "type": "c", "major": "HARMONY_SDK_MAJOR", "minor": "HARMONY_SDK_MINOR", "access": "rw" },
+                    { "allow": true, "type": "c", "major": "HARMONY_PARK_MAJOR", "minor": "HARMONY_PARK_MINOR", "access": "rw" }
+                ]
+            },
             "namespaces": [
                 { "type": "pid" },
                 { "type": "ipc" },
