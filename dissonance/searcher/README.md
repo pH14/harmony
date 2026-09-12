@@ -101,6 +101,53 @@ cargo test --manifest-path dissonance/searcher/Cargo.toml
 cargo clippy --manifest-path dissonance/searcher/Cargo.toml --all-targets -- -D warnings
 ```
 
+## Duration exploration experiment
+
+`search::duration::DurationPolicy` is a standalone duration exploration policy
+exercised with synthetic targets. It is not enabled in campaign defaults or
+workload adapters. Its inputs are a seeded generator, the maximum duration
+allowed by the caller's current execution budget, and ordered observations of
+usefulness and logical execution cost. Durations and cost units belong to the
+caller; the policy has no process, oracle, fault, or wall-clock vocabulary.
+
+Choices span powers of two from one through the greatest power of two that
+fits the supplied bound. Half of draws explore that range uniformly in scale.
+The other half sample the scales with the greatest observed useful-outcome
+count per unit of logical work, breaking ties with the seeded generator. With
+no useful observations, both halves explore. A longer duration can therefore
+reach a delayed outcome without first demonstrating intermediate progress.
+The exploration share also means that long, expensive choices remain possible;
+the caller must supply an execution budget it can actually afford.
+
+Only the most recent 128 observations contribute to the score. This bounds
+memory and lets earlier preferences expire when useful durations change.
+The history length and exploration share are algorithm constants, not workload
+tuning parameters. This is a baseline to evaluate, not a claim that those
+constants are optimal. Scores use integer cross-products and logical work,
+never host timings. Non-power-of-two observations are rejected without changing
+state. A maximum of one admits only a duration of one.
+
+Checkpoints contain the policy identity and complete ordered recent history.
+Restoration validates the identity, history bound, and duration alphabet.
+The history bound is also enforced during decoding; callers accepting external
+checkpoint bytes must separately bound the complete input, including strings.
+Reproducible continuation also requires the caller to reproduce its random
+draws and observe results in the same logical order; worker completion order
+must not feed the policy. Snapshot history alone does not capture a target or
+the generator state.
+
+The synthetic tests cover short transitions, delayed outcomes, changing phases,
+continued exploration, logical work comparisons, and checkpoint continuation.
+They do not establish whole-campaign replay or a production speedup. Campaign
+integration still needs explicit attribution of feedback to draw context,
+ordered admission and checkpoint integration, bounded memory accounting, and
+comparisons across workloads before this becomes a default. In particular,
+one history shared across unrelated branches can average together incompatible
+preferences; the current standalone policy does not solve context partitioning.
+Changing duration or cost units also requires a new history. Feedback requires
+positive execution work; callers must not invent work to score an execution
+that did none.
+
 ## Search evaluation policies
 
 Selector identifiers describe the generic hierarchy and retain their exact
