@@ -73,7 +73,6 @@ mod tests {
         let mut counts = KeyCounts::<u8, 2>::default();
         counts.record(10, 1);
         counts.record(20, 1);
-        // A new archive entry for key 10 has a fresh local count of one.
         counts.record(10, 1);
         assert_eq!(counts.get(10), 2);
         counts.record(30, 1);

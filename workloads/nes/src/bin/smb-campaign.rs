@@ -59,7 +59,7 @@ struct LiveThroughput {
     frames_per_second: f64,
 }
 
-#[allow(clippy::disallowed_methods)] // not order-observable: wall time is live throughput evidence only.
+#[allow(clippy::disallowed_methods)]
 fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box<dyn Error>> {
     let origin_arg = args
         .next()
@@ -89,16 +89,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         .into_owned();
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
     let mut wall_budget = None;
-    // Defaults are the current behavior; the older policies stay selectable
-    // so historical recordings keep replaying under their own identifiers.
-    // The chord draw takes its button sequences from only the most recent
-    // retained window, so the visible table tracks the current level's
-    // successful presses and old regimes age out on their own.
-    // Every run uses it: replaced draw policies survive only as stream
-    // identifiers, never as run options.
-    // Retire thresholds are measured search statistics (99th-percentile
-    // picks-before-first-keeper per class) and should be re-measured for a
-    // new game rather than treated as universal constants.
     let chord = chord_policy_from_identifier("chord_draw_recorded_53:all,0,128,3,1,64,1024")?;
     let mut retention = RetentionPolicy::AdmitAlive;
     let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
@@ -236,8 +226,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let stream_path = output.join("stream.jsonl");
     let stream_file = fs::File::create(&stream_path)?;
     let mut stream = BufWriter::new(stream_file);
-    // Sidecar for live observation; separate file so the recorded stream is
-    // untouched by it.
     let mut progress = BufWriter::new(fs::File::create(output.join("progress-live.jsonl"))?);
     let started = std::time::Instant::now();
     let (report, checkpoint) =
@@ -500,7 +488,7 @@ fn read_rom() -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(fs::read(rom_path)?)
 }
 
-#[allow(clippy::cast_precision_loss)] // Throughput display only; counts stay far below 2^52.
+#[allow(clippy::cast_precision_loss)]
 fn rate(count: u64, wall_seconds: f64) -> f64 {
     if wall_seconds > 0.0 {
         count as f64 / wall_seconds

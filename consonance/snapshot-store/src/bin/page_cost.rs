@@ -5,7 +5,6 @@
 //! deliberately measures wall-clock time only around the hot loops; none of the values
 //! participate in snapshot state or deterministic execution.
 
-// not order-observable: wall time is printed as benchmark evidence only.
 #![allow(clippy::disallowed_methods)]
 
 use std::hint::black_box;

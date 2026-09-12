@@ -18,10 +18,6 @@
 
 use std::collections::BTreeMap;
 
-// ---------------------------------------------------------------------------
-// Guest-visible vendor identity validation.
-// ---------------------------------------------------------------------------
-
 /// Vendor string advertised by a guest model. This is not the physical host's
 /// vendor and is never used to select host-specific policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -164,7 +160,6 @@ fn parse_value(s: &str) -> TomlValue {
     } else if s == "true" || s == "false" {
         TomlValue::Bool(s == "true")
     } else {
-        // Decimal integer (the only bare-number values in the contract).
         TomlValue::Int(s.parse().unwrap_or(0))
     }
 }
@@ -217,10 +212,6 @@ fn parse_raw(toml: &str) -> Raw {
     raw
 }
 
-// ---------------------------------------------------------------------------
-// Typed rows.
-// ---------------------------------------------------------------------------
-
 /// A CPUID leaf token: a single leaf or an inclusive `lo-hi` range.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LeafSpec {
@@ -252,9 +243,7 @@ impl RegField {
     pub(crate) fn base(self) -> u32 {
         match self {
             RegField::Const(v) | RegField::DynOsxsave(v) => v,
-            // Level-echo base: `type << 8` with input subleaf 0.
             RegField::DynLevelEcho(t) => t << 8,
-            // XSAVE-area size for the model's enabled XCR0 (0x7 → 0x340).
             RegField::DynXcr0Xsavesize => 0x340,
         }
     }
@@ -475,22 +464,17 @@ fn dispositions(
 /// valid UTF-8. EAX (the max-basic-leaf) must be constant too — a dynamic EAX is not
 /// a valid frozen leaf 0.
 fn canonical_leaf0_vendor_string(covering: &[&CpuidRow]) -> Option<String> {
-    // Exactly one covering row (multiple covering rows are ambiguous → refuse).
     let [row] = covering else {
         return None;
     };
-    // A single `leaf = 0, subleaf = 0` row — no range/`*`/`N+`/`a-b` form.
     if !(row.leaf.lo == 0 && row.leaf.hi == 0 && matches!(row.subleaf, Subleaf::Single(0))) {
         return None;
     }
-    // All four registers must be frozen constants (a dynamic register anywhere,
-    // including EAX, disqualifies the row).
     let (RegField::Const(_eax), RegField::Const(ebx), RegField::Const(ecx), RegField::Const(edx)) =
         (row.eax, row.ebx, row.ecx, row.edx)
     else {
         return None;
     };
-    // The vendor string is EBX‖EDX‖ECX; it must be valid UTF-8.
     let mut bytes = Vec::with_capacity(12);
     for reg in [ebx, edx, ecx] {
         bytes.extend_from_slice(&reg.to_le_bytes());
@@ -604,10 +588,6 @@ impl Contract {
             })
             .unwrap_or_default();
 
-        // The vendor axis (Deliverable 1). Keep the raw declared token so `load` can
-        // distinguish absent (legacy fixtures — allowed) from present-but-invalid
-        // (fail-closed refusal). The resolved `vendor` defaults to GenuineIntel for an
-        // absent OR invalid token; `load` refuses an invalid token before it is trusted.
         let vendor_declared = c.get("vendor").map(|v| v.as_str().to_string());
         let vendor = vendor_declared
             .as_deref()
@@ -758,8 +738,6 @@ impl Contract {
     /// underlying [`Contract::parse`] stays infallible for the direct-token unit tests.
     pub(crate) fn load(toml: &str, expected: VendorId) -> Result<Contract, ContractError> {
         let c = Self::parse(toml);
-        // A **present-but-invalid** vendor token is refused, never defaulted
-        // (fail-closed); a genuinely absent header resolves `c.vendor` to GenuineIntel.
         if let Some(tok) = c.vendor_declared.as_deref()
             && VendorId::from_token(tok).is_none()
         {
@@ -767,22 +745,12 @@ impl Contract {
                 token: tok.to_string(),
             });
         }
-        // Axis check on the **resolved** vendor (a valid declared token, or the
-        // absent-default GenuineIntel — so an absent header loads only under Intel).
         if c.vendor != expected {
             return Err(ContractError::VendorMismatch {
                 expected: expected.as_token(),
                 found: c.vendor.as_token().to_string(),
             });
         }
-        // Mixed-vendor guard, by **positive** validation of the one good leaf-0 shape.
-        // If any CPUID row covers (leaf 0, subleaf 0), the frozen vendor string must
-        // come from exactly one all-constant single `leaf = 0, subleaf = 0` row (see
-        // `canonical_leaf0_vendor_string`); every other shape — range/`*`/`N+` form,
-        // a dynamic register anywhere, non-UTF-8 bytes, or more than one covering row —
-        // is a `MalformedLeaf0` refusal. Only a genuinely absent leaf 0 (no covering
-        // row at all) is exempt (the synthetic fixtures omit it). A structurally good
-        // row spelling the wrong vendor is a `MixedVendor` refusal.
         let covering: Vec<&CpuidRow> = c
             .cpuid
             .iter()
@@ -822,8 +790,6 @@ mod tests {
 
     use super::*;
 
-    // --- TomlValue accessors (incl. the type-mismatch fallback arms) ----------
-
     #[test]
     fn toml_value_accessors_and_fallbacks() {
         assert_eq!(TomlValue::Str("x".into()).as_str(), "x");
@@ -834,39 +800,29 @@ mod tests {
             TomlValue::Arr(vec!["a".into(), "b".into()]).as_arr(),
             ["a", "b"]
         );
-        // Type-mismatch fallbacks: an accessor on the wrong variant returns the
-        // documented default (never a panic), so a malformed cell degrades safely.
         assert_eq!(TomlValue::Int(1).as_str(), "");
         assert_eq!(TomlValue::Str("x".into()).as_int(), 0);
         assert!(!TomlValue::Int(1).as_bool());
-        // `as_bool` is true ONLY for `Bool(true)` — a `Str("true")` is not a bool.
         assert!(!TomlValue::Str("true".into()).as_bool());
         assert_eq!(TomlValue::Int(1).as_arr(), &[] as &[String]);
     }
-
-    // --- strip_comment --------------------------------------------------------
 
     #[test]
     fn strip_comment_respects_quoted_hashes() {
         assert_eq!(strip_comment("key = 1 # trailing"), "key = 1 ");
         assert_eq!(strip_comment("# whole line"), "");
         assert_eq!(strip_comment("no comment here"), "no comment here");
-        // A '#' inside a quoted string is NOT a comment start.
         assert_eq!(strip_comment("k = \"a#b\""), "k = \"a#b\"");
-        // …but a '#' after the closing quote IS.
         assert_eq!(strip_comment("k = \"v\" # c"), "k = \"v\" ");
     }
-
-    // --- parse_value (every token form + reject/empty paths) ------------------
 
     #[test]
     fn parse_value_classifies_every_token() {
         assert_eq!(parse_value("true"), TomlValue::Bool(true));
         assert_eq!(parse_value("false"), TomlValue::Bool(false));
-        assert_eq!(parse_value("  true  "), TomlValue::Bool(true)); // trims first
+        assert_eq!(parse_value("  true  "), TomlValue::Bool(true));
         assert_eq!(parse_value("46"), TomlValue::Int(46));
         assert_eq!(parse_value("0"), TomlValue::Int(0));
-        // A non-numeric bare token degrades to Int(0) (unwrap_or), never panics.
         assert_eq!(parse_value("not_a_number"), TomlValue::Int(0));
         assert_eq!(parse_value("\"hello\""), TomlValue::Str("hello".into()));
         assert_eq!(parse_value("\"\""), TomlValue::Str(String::new()));
@@ -875,15 +831,11 @@ mod tests {
             TomlValue::Arr(vec!["a".into(), "b".into()])
         );
         assert_eq!(parse_value("[]"), TomlValue::Arr(vec![]));
-        // Empty elements (and a trailing comma) are filtered out — so a stray
-        // separator never injects a phantom "" into a hashed array row.
         assert_eq!(
             parse_value("[\"a\", \"\", \"b\", ]"),
             TomlValue::Arr(vec!["a".into(), "b".into()])
         );
     }
-
-    // --- parse_raw (sections, arrays, and the no-target drop) -----------------
 
     #[test]
     fn parse_raw_sections_arrays_and_stray_keys() {
@@ -897,24 +849,20 @@ mod tests {
              [[cpuid.entry]]\n\
              leaf = \"0x2\"\n",
         );
-        // A key before any [section] header (Target::None) is dropped.
         assert!(!raw.singletons.values().any(|m| m.contains_key("stray")));
         assert_eq!(
             raw.singletons.get("contract").unwrap().get("version"),
             Some(&TomlValue::Int(2))
         );
-        // Two [[cpuid.entry]] blocks accumulate into the array.
         assert_eq!(raw.arrays.get("cpuid.entry").unwrap().len(), 2);
     }
-
-    // --- hex32 / reg_field / subleaf ------------------------------------------
 
     #[test]
     fn hex32_parses_hex_and_decimal() {
         assert_eq!(hex32("0x100000"), 0x10_0000);
         assert_eq!(hex32("0x0"), 0);
         assert_eq!(hex32("46"), 46);
-        assert_eq!(hex32("  0x1b  "), 0x1b); // trims
+        assert_eq!(hex32("  0x1b  "), 0x1b);
     }
 
     #[test]
@@ -946,20 +894,14 @@ mod tests {
         assert!(matches!(subleaf("0x1-0x3"), Subleaf::Range(1, 3)));
     }
 
-    // --- RegField::base bit-packing (kills <<→>> and return-0 mutants) ---------
-
     #[test]
     fn reg_field_base_is_exact() {
         assert_eq!(RegField::Const(0xDEAD_BEEF).base(), 0xDEAD_BEEF);
         assert_eq!(RegField::DynOsxsave(0x76da_3203).base(), 0x76da_3203);
-        // level-echo base = `type << 8` — NOT `>> 8`, NOT 0.
         assert_eq!(RegField::DynLevelEcho(0x01).base(), 0x0100);
         assert_eq!(RegField::DynLevelEcho(0x12).base(), 0x1200);
-        // XSAVE-area size for the frozen XCR0 (0x7) is the fixed 0x340.
         assert_eq!(RegField::DynXcr0Xsavesize.base(), 0x340);
     }
-
-    // --- IndexSpec::indices (single / range / sorted members) -----------------
 
     #[test]
     fn index_spec_indices_expands_and_sorts() {
@@ -968,14 +910,11 @@ mod tests {
             IndexSpec::Range(0x800, 0x803).indices(),
             vec![0x800, 0x801, 0x802, 0x803]
         );
-        // Members are returned in ascending order regardless of input order.
         assert_eq!(
             IndexSpec::Members(vec![0x30, 0x10, 0x20]).indices(),
             vec![0x10, 0x20, 0x30]
         );
     }
-
-    // --- dispositions ---------------------------------------------------------
 
     #[test]
     fn dispositions_reads_tokens_and_optional_params() {
@@ -989,12 +928,9 @@ mod tests {
             ("allow-fixed", Some("0x10"), "deny-gp", None)
         );
 
-        // Absent read/write default to the empty token; absent params to None.
         let (r2, rp2, w2, wp2) = dispositions(&BTreeMap::new());
         assert_eq!((r2.as_str(), rp2, w2.as_str(), wp2), ("", None, "", None));
     }
-
-    // --- cpuid_row / msr_row (every leaf and index form) ----------------------
 
     fn entry(pairs: &[(&str, TomlValue)]) -> BTreeMap<String, TomlValue> {
         pairs
@@ -1059,8 +995,6 @@ mod tests {
         assert_eq!(members.index.indices(), vec![0x10, 0x20]);
     }
 
-    // --- Full synthetic parse + leaf_entry_count (exact counts) ---------------
-
     const SYNTH: &str = "\
 # leading comment\n\
 [contract]\n\
@@ -1122,15 +1056,10 @@ cr4-force-reserved = [\"PKE\", \"PKS\"]\n";
         assert_eq!(c.msr[0].read_param.as_deref(), Some("vclock.tsc"));
         assert_eq!(c.msr[0].write_param.as_deref(), Some("vclock.tsc.write"));
 
-        // leaf_entry_count: EXACT per-leaf counts (kills the `==→!=` filter and the
-        // return-value mutants — `!=` would count the *other* leaves, `0` would
-        // count none).
         assert_eq!(c.leaf_entry_count(0x1), 2);
         assert_eq!(c.leaf_entry_count(0x4), 1);
         assert_eq!(c.leaf_entry_count(0x99), 0);
     }
-
-    // --- Property: parse is total + classification is stable ------------------
 
     /// Proptest config that is Miri-safe: fewer cases, and **no failure
     /// persistence** — proptest's regression file resolves a relative path via
@@ -1156,7 +1085,6 @@ cr4-force-reserved = [\"PKE\", \"PKS\"]\n";
         /// Any quoted simple string round-trips through the string branch.
         #[test]
         fn prop_quoted_string_roundtrips(s in "[A-Za-z0-9_.:/ -]{0,24}") {
-            // The inner text has no embedded quotes, so trim_matches('"') recovers it.
             prop_assert_eq!(parse_value(&format!("\"{s}\"")), TomlValue::Str(s));
         }
 

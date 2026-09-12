@@ -51,7 +51,6 @@ proptest! {
         encode_request(seq, &req, &mut buf).unwrap();
         let i = idx.index(buf.len());
         buf[i] = val;
-        // Must not panic; whatever it returns is acceptable.
         let _ = decode_request(&buf);
         let _ = decode_reply(&buf);
     }
@@ -72,7 +71,6 @@ proptest! {
         encode_reply(seq, &reply, &mut buf).unwrap();
         let i = idx.index(buf.len());
         buf[i] = val;
-        // Must not panic; feed the mutated reply frame to both decoders.
         let _ = decode_reply(&buf);
         let _ = decode_request(&buf);
     }
@@ -141,13 +139,11 @@ fn len_exactly_at_cap_is_need_more_not_bad_length() {
 /// Bad magic and bad wire-version are reported cleanly and distinctly.
 #[test]
 fn bad_magic_and_version_are_distinct_errors() {
-    // Wrong magic, otherwise a well-formed empty-body header.
     let mut bad_magic = header_only(PROTO_VERSION, 1, 0);
     bad_magic[0] ^= 0xFF;
     assert_eq!(decode_request(&bad_magic), Err(ProtocolError::BadMagic));
     assert_eq!(decode_reply(&bad_magic), Err(ProtocolError::BadMagic));
 
-    // Right magic, unsupported wire-format version.
     let bad_version = header_only(PROTO_VERSION + 1, 1, 0);
     assert_eq!(decode_request(&bad_version), Err(ProtocolError::BadVersion));
     assert_eq!(decode_reply(&bad_version), Err(ProtocolError::BadVersion));
@@ -157,15 +153,13 @@ fn bad_magic_and_version_are_distinct_errors() {
 /// bytes inside the declared length, is `ShortFrame` — not a panic, not need-more.
 #[test]
 fn malformed_complete_body_is_short_frame() {
-    // Declared len = 1, body = an unknown request tag (0xFF).
     let mut buf = header_only(PROTO_VERSION, 1, 1);
     buf.push(0xFF);
     assert_eq!(decode_request(&buf), Err(ProtocolError::ShortFrame));
 
-    // A valid Snapshot (tag 2) but with one trailing byte inside the body.
     let mut buf = header_only(PROTO_VERSION, 1, 2);
-    buf.push(0x02); // REQ_SNAPSHOT
-    buf.push(0x00); // trailing byte — body must be exactly the tag
+    buf.push(0x02);
+    buf.push(0x00);
     assert_eq!(decode_request(&buf), Err(ProtocolError::ShortFrame));
 }
 
@@ -175,7 +169,6 @@ fn malformed_complete_body_is_short_frame() {
 /// reused.
 #[test]
 fn retired_snapid_tag_is_rejected() {
-    // RESULT_OK (0x00) · retired tag 0x02 · a plausible u64 handle.
     let mut body = vec![0x00u8, 0x02];
     body.extend_from_slice(&9u64.to_le_bytes());
     let mut buf = header_only(PROTO_VERSION, 1, body.len() as u32);
@@ -190,13 +183,11 @@ fn retired_snapid_tag_is_rejected() {
 /// partial cut can ever decode.
 #[test]
 fn snapshot_reply_malformed_bodies_are_rejected() {
-    // The full well-formed body: RESULT_OK · REPLY_SNAPSHOT (0x0A) · id ·
-    // at · sdk_events · tainted.
     let mut body = vec![0x00u8, 0x0A];
-    body.extend_from_slice(&9u64.to_le_bytes()); // id
-    body.extend_from_slice(&0x1234u64.to_le_bytes()); // at
-    body.extend_from_slice(&3u64.to_le_bytes()); // sdk_events
-    body.push(0x00); // tainted = false
+    body.extend_from_slice(&9u64.to_le_bytes());
+    body.extend_from_slice(&0x1234u64.to_le_bytes());
+    body.extend_from_slice(&3u64.to_le_bytes());
+    body.push(0x00);
     let frame = |body: &[u8]| {
         let mut buf = header_only(PROTO_VERSION, 1, body.len() as u32);
         buf.extend_from_slice(body);
@@ -206,8 +197,6 @@ fn snapshot_reply_malformed_bodies_are_rejected() {
         decode_reply(&frame(&body)).unwrap().is_some(),
         "the intact body decodes"
     );
-    // Every proper truncation of the body (declared len shrunk with it) fails
-    // loudly — a handle can never arrive without its complete cut and taint.
     for n in 2..body.len() {
         assert_eq!(
             decode_reply(&frame(&body[..n])),
@@ -215,14 +204,12 @@ fn snapshot_reply_malformed_bodies_are_rejected() {
             "snapshot body truncated to {n} bytes must be rejected"
         );
     }
-    // A non-canonical taint byte (2) is rejected — no spurious `true`.
     let mut bad_taint = body.clone();
     *bad_taint.last_mut().unwrap() = 0x02;
     assert_eq!(
         decode_reply(&frame(&bad_taint)),
         Err(ProtocolError::ShortFrame)
     );
-    // Trailing bytes inside the declared body are rejected (canonical encoding).
     let mut trailing = body.clone();
     trailing.push(0x00);
     assert_eq!(
@@ -236,12 +223,10 @@ fn snapshot_reply_malformed_bodies_are_rejected() {
 /// inner blob is sliced against the (bounded) body, not the wire.
 #[test]
 fn inner_length_overrun_is_short_frame_not_overread() {
-    // Branch body: tag(4) + snap u64(8) + blob_version u16(2) + env_len u32.
-    // Declare env_len = u32::MAX with no env bytes present in the body.
-    let mut body = vec![0x04u8]; // REQ_BRANCH
-    body.extend_from_slice(&7u64.to_le_bytes()); // snap
-    body.extend_from_slice(&2u16.to_le_bytes()); // blob_version
-    body.extend_from_slice(&u32::MAX.to_le_bytes()); // env_len lies
+    let mut body = vec![0x04u8];
+    body.extend_from_slice(&7u64.to_le_bytes());
+    body.extend_from_slice(&2u16.to_le_bytes());
+    body.extend_from_slice(&u32::MAX.to_le_bytes());
     let mut buf = header_only(PROTO_VERSION, 1, body.len() as u32);
     buf.extend_from_slice(&body);
     assert_eq!(decode_request(&buf), Err(ProtocolError::ShortFrame));

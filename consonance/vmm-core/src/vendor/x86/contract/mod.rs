@@ -43,10 +43,6 @@ fn contract() -> &'static Contract {
     })
 }
 
-// ---------------------------------------------------------------------------
-// MSR user-space exit mask (x86 CPU contract).
-// ---------------------------------------------------------------------------
-
 /// `KVM_MSR_EXIT_REASON_FILTER` bit value (bit 0). Written `1` rather than `1 << 0`
 /// so the shift operator carries no equivalent (`1 << 0` ≡ `1 >> 0`) mutant.
 pub const MSR_EXIT_REASON_FILTER: u64 = 1;
@@ -62,10 +58,6 @@ pub const MSR_EXIT_REASON_INVAL: u64 = 1 << 2;
 /// `KVM_EXIT_X86_RDMSR/WRMSR`.
 pub const USER_SPACE_MSR_MASK: u64 =
     MSR_EXIT_REASON_FILTER | MSR_EXIT_REASON_UNKNOWN | MSR_EXIT_REASON_INVAL;
-
-// ---------------------------------------------------------------------------
-// MSR disposition vocabulary (x86 CPU contract).
-// ---------------------------------------------------------------------------
 
 /// Per-direction disposition of an MSR access (the §3 vocabulary the skeleton
 /// needs).
@@ -97,7 +89,6 @@ fn disposition_of(token: &str, param: Option<&str>) -> MsrDisposition {
         "allow-fixed" => MsrDisposition::AllowFixed(param.map(hex64).unwrap_or(0)),
         "emulate-vtime" => MsrDisposition::EmulateVtime,
         "deny-ignore-write" => MsrDisposition::DenyIgnoreWrite,
-        // `deny-gp` and any unexpected token fail closed to deny-gp.
         _ => MsrDisposition::DenyGp,
     }
 }
@@ -143,11 +134,6 @@ pub fn wrmsr_disposition(index: u32, value: u64) -> MsrDisposition {
         .map_or(MsrDisposition::DenyGp, |(_, w)| *w)
 }
 
-// ---------------------------------------------------------------------------
-// VirtualTime (assigned-at-exit) V-time durations (the `vtime-*` §6 header
-// records).
-// ---------------------------------------------------------------------------
-
 /// The normative x86 virtual_time timing row set, read from the ratified
 /// contract's `vtime-*` header records and covered by `contract_hash`.
 /// Production composition never uses `VirtualTimeTiming::default()`'s M0
@@ -175,8 +161,6 @@ pub fn virtual_time_timing() -> VirtualTimeTiming {
         architectural_control_vns: vns(c.vtime_arch_control_vns, "vtime-arch-control-vns"),
         execution_tick_vns: vns(c.vtime_execution_tick_vns, "vtime-execution-tick-vns"),
     };
-    // A tick at or above the guest's clockevent period matures the next timer
-    // at the tick itself and creates a self-sustaining interrupt loop.
     assert!(
         timing.execution_tick_vns < clockevent_period_vns(),
         "vtime-execution-tick-vns must stay strictly below vtime-clockevent-period-vns"
@@ -192,10 +176,6 @@ pub(crate) fn clockevent_period_vns() -> u64 {
     u64::try_from(contract().vtime_clockevent_period_vns)
         .unwrap_or_else(|_| panic!("contract vtime-clockevent-period-vns must be non-negative"))
 }
-
-// ---------------------------------------------------------------------------
-// CPUID model (x86 CPU contract).
-// ---------------------------------------------------------------------------
 
 /// The frozen CPUID model from §2 of the contract, in canonical (leaf, subleaf)
 /// order, as [`vmm_backend::CpuidModel`] so it feeds straight into
@@ -213,8 +193,6 @@ pub fn cpuid_model() -> CpuidModel {
     let c = contract();
     let mut entries = Vec::with_capacity(c.cpuid.len());
     for row in &c.cpuid {
-        // Leaf ranges (the one PV/hypervisor zero block) install a single
-        // representative entry at `lo`; KVM zero-fills the rest, hiding the range.
         let leaf = row.leaf.lo;
         let (subleaf, significant) = match row.subleaf {
             Subleaf::Single(s) => (s, c.leaf_entry_count(leaf) > 1),
@@ -243,19 +221,13 @@ pub fn cpuid_model() -> CpuidModel {
 pub fn resolve_cpuid(base: CpuidEntry, cr4: u64, xcr0: u64) -> CpuidEntry {
     let mut e = base;
     match (base.leaf, base.subleaf) {
-        // CPUID.1:ECX[27] (OSXSAVE) mirrors CR4.OSXSAVE (CR4 bit 18).
         (0x1, 0) => {
             let osxsave = ((cr4 >> 18) & 1) as u32;
             e.ecx = (e.ecx & !(1 << 27)) | (osxsave << 27);
         }
-        // Leaf 0xB/0x1F: ECX[7:0] echoes the input subleaf, ECX[15:8] the level
-        // type. The concrete in-table subleaves already encode this, so applying
-        // it is idempotent there and correct for the past-the-end (dynamic) rows.
         (0xB | 0x1F, _) => {
             e.ecx = (base.subleaf & 0xFF) | (e.ecx & 0xFF00);
         }
-        // Leaf 0xD.0:EBX is the XSAVE-area size for the live XCR0 (0x240 for
-        // XCR0 ∈ {0x1, 0x3}; 0x340 once AVX (XCR0 bit 2) is enabled).
         (0xD, 0) => {
             e.ebx = if xcr0 & 0x4 != 0 { 0x340 } else { 0x240 };
         }
@@ -263,10 +235,6 @@ pub fn resolve_cpuid(base: CpuidEntry, cr4: u64, xcr0: u64) -> CpuidEntry {
     }
     e
 }
-
-// ---------------------------------------------------------------------------
-// MSR filter allow set (x86 CPU contract — the allow-stateful rows).
-// ---------------------------------------------------------------------------
 
 /// The MSR-filter allow set: exactly the `allow-stateful` rows — the only MSRs
 /// KVM keeps servicing in-kernel — as [`vmm_backend::MsrFilter`] so it feeds
@@ -276,7 +244,6 @@ pub fn resolve_cpuid(base: CpuidEntry, cr4: u64, xcr0: u64) -> CpuidEntry {
 /// `KVM_MSR_FILTER_DEFAULT_DENY` with both READ and WRITE flags (well within
 /// KVM's 16-ranges-per-direction limit).
 pub fn msr_filter_allow() -> MsrFilter {
-    // Collect every bidirectional allow-stateful index.
     let mut indices: Vec<u32> = Vec::new();
     for row in &contract().msr {
         if row.read == "allow-stateful" && row.write == "allow-stateful" {
@@ -286,7 +253,6 @@ pub fn msr_filter_allow() -> MsrFilter {
     indices.sort_unstable();
     indices.dedup();
 
-    // Coalesce consecutive indices into [base, base+count) ranges.
     let mut ranges: Vec<MsrRange> = Vec::new();
     for idx in indices {
         match ranges.last_mut() {
@@ -301,10 +267,6 @@ pub fn msr_filter_allow() -> MsrFilter {
         allow_inkernel: ranges,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Contract hash (x86 CPU contract).
-// ---------------------------------------------------------------------------
 
 /// SHA-256 of the canonical serialized contract this policy was built from (§6
 /// `contract_hash`). The bytes are the §6 canonical form emitted by
@@ -352,7 +314,6 @@ mod tests {
     #[test]
     fn msr_filter_allow_is_the_stateful_set() {
         let f = msr_filter_allow();
-        // Sorted, non-overlapping, within KVM's 16-range limit.
         assert!(f.allow_inkernel.len() <= 16);
         for w in f.allow_inkernel.windows(2) {
             assert!(
@@ -360,8 +321,6 @@ mod tests {
                 "ranges sorted/disjoint"
             );
         }
-        // EFER (0xc0000080) and CR_PAT (0x277) are allow-stateful; PLATFORM_ID
-        // (0x17, allow-fixed) and IA32_TSC (0x10, emulate-vtime) are NOT.
         let covered = |idx: u32| f.allow_indices().any(|i| i == idx);
         assert!(covered(0xC000_0080), "EFER in-kernel");
         assert!(covered(0x277), "CR_PAT in-kernel");
@@ -371,23 +330,18 @@ mod tests {
 
     #[test]
     fn msr_dispositions_match_contract() {
-        // Default deny-gp for an unlisted index.
         assert_eq!(rdmsr_disposition(0xDEAD_BEEF), MsrDisposition::DenyGp);
-        // allow-fixed returns its constant; write denied.
         assert_eq!(rdmsr_disposition(0x17), MsrDisposition::AllowFixed(0));
         assert_eq!(wrmsr_disposition(0x17, 0), MsrDisposition::DenyGp);
-        // IA32_APICBASE (0x1b): read allow-fixed, write deny-ignore-write.
         assert_eq!(
             rdmsr_disposition(0x1B),
             MsrDisposition::AllowFixed(0xFEE0_0900)
         );
         assert_eq!(wrmsr_disposition(0x1B, 0), MsrDisposition::DenyIgnoreWrite);
-        // 0x10 / 0x3b are emulate-vtime for BOTH directions (not allow/deny).
         for idx in [0x10u32, 0x3b] {
             assert_eq!(rdmsr_disposition(idx), MsrDisposition::EmulateVtime);
             assert_eq!(wrmsr_disposition(idx, 0), MsrDisposition::EmulateVtime);
         }
-        // EFER is allow-stateful both ways.
         assert_eq!(
             rdmsr_disposition(0xC000_0080),
             MsrDisposition::AllowStateful
@@ -406,16 +360,13 @@ mod tests {
             .iter()
             .find(|e| e.leaf == 1 && e.subleaf == 0)
             .expect("leaf 1");
-        // X2APIC (bit 21) and TSC-deadline (bit 24) masked off.
         assert_eq!(leaf1.ecx & (1 << 21), 0, "X2APIC masked");
         assert_eq!(leaf1.ecx & (1 << 24), 0, "TSC-deadline masked");
-        // vPMU hidden: leaf 0xA all-zero.
         let leaf_a = m.entries.iter().find(|e| e.leaf == 0xA).expect("leaf 0xA");
         assert_eq!(
             (leaf_a.eax, leaf_a.ebx, leaf_a.ecx, leaf_a.edx),
             (0, 0, 0, 0)
         );
-        // PV leaves hidden: the 0x4000_0000 block installs an all-zero entry.
         let pv = m
             .entries
             .iter()
@@ -445,7 +396,6 @@ mod tests {
 
     #[test]
     fn resolve_cpuid_overlays_dynamic_cells() {
-        // OSXSAVE follows CR4.OSXSAVE (bit 18).
         let base = CpuidEntry {
             leaf: 1,
             subleaf: 0,
@@ -454,7 +404,6 @@ mod tests {
         };
         assert_eq!(resolve_cpuid(base, 0, 0).ecx & (1 << 27), 0);
         assert_ne!(resolve_cpuid(base, 1 << 18, 0).ecx & (1 << 27), 0);
-        // Level-echo: ECX[7:0] echoes the subleaf.
         let lvl = CpuidEntry {
             leaf: 0xB,
             subleaf: 5,
@@ -462,7 +411,6 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_cpuid(lvl, 0, 0).ecx & 0xFF, 5);
-        // XSAVE size follows XCR0 (AVX bit).
         let d0 = CpuidEntry {
             leaf: 0xD,
             subleaf: 0,
@@ -474,25 +422,15 @@ mod tests {
 
     #[test]
     fn resolve_cpuid_bit_math_is_exact() {
-        // Leaf 1 OSXSAVE overlay: `ecx = (ecx & !(1<<27)) | (CR4.OSXSAVE << 27)`.
-        // A base with bits 27..31 set pins the *exact* clear-then-set bit math
-        // (kills the `&`→`|`/`^`, the `!` deletion, and the `<<`→`>>` mutants —
-        // the disjoint `|`/`^` cannot differ because the cleared field never holds
-        // bit 27).
         let base = CpuidEntry {
             leaf: 1,
             subleaf: 0,
             ecx: 0xF800_0000,
             ..Default::default()
         };
-        // CR4.OSXSAVE clear ⇒ bit 27 cleared, bits 28..31 preserved.
         assert_eq!(resolve_cpuid(base, 0, 0).ecx, 0xF000_0000);
-        // CR4.OSXSAVE set (CR4 bit 18) ⇒ bit 27 set again.
         assert_eq!(resolve_cpuid(base, 1 << 18, 0).ecx, 0xF800_0000);
 
-        // Leaf 0xB level-echo: `ecx = (subleaf & 0xFF) | (ecx & 0xFF00)` — the
-        // low byte is the subleaf, byte 1 is preserved, the rest cleared. Exact
-        // value kills the `&`→`|`/`^` mutants on both masks.
         let lvl = CpuidEntry {
             leaf: 0xB,
             subleaf: 5,
@@ -501,8 +439,6 @@ mod tests {
         };
         assert_eq!(resolve_cpuid(lvl, 0, 0).ecx, 0x0000_1205);
 
-        // Leaf 0xD.0 XSAVE-area size: exactly 0x240 below AVX, 0x340 once XCR0
-        // bit 2 (AVX) is enabled.
         let d0 = CpuidEntry {
             leaf: 0xD,
             subleaf: 0,
@@ -515,9 +451,6 @@ mod tests {
 
     #[test]
     fn cpuid_model_subleaf_significance_is_exact() {
-        // `subleaf_significant` for a `Subleaf::Single` row is `leaf_entry_count
-        // > 1` — a single-subleaf leaf is insignificant, a multi-subleaf leaf is
-        // significant. Pinning both kills the `>`→`==`/`<`/`>=` mutants.
         let m = cpuid_model();
         let leaf1 = m
             .entries
@@ -536,15 +469,9 @@ mod tests {
         );
     }
 
-    // The §6 serialization tests build a 48 KiB canonical string from 1355 records
-    // of pure, unsafe-free code — Miri would spend minutes on them with zero
-    // UB-detection value, so they are `ignore`d there. The parse + per-index
-    // dispatch map (the logic worth exercising) still run under Miri via the other
-    // contract tests, which call `contract()` / `disp_map()`.
     #[test]
     #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
     fn contract_hash_is_stable() {
-        // Pure: two calls agree, and the hash is non-trivial.
         assert_eq!(contract_hash(), contract_hash());
         assert_ne!(contract_hash(), [0u8; 32]);
     }
@@ -572,14 +499,10 @@ mod tests {
     #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
     fn canonical_form_well_formed() {
         let form = canonical::serialize(contract());
-        // Header anchors (literal §6 spelling).
         assert!(form.starts_with("contract-version=6\n"));
         assert!(form.contains("\nkernel-tag=v6.18.35\n"));
         assert!(form.contains("\ncpuid-baseline=harmony-x86-v1\n"));
         assert!(form.contains("\nmxcsr-mask=0x0000ffff\n"));
-        // The seven vtime header records, in their normative order and with their
-        // ratified values: the calibrated per-exit-class durations plus the
-        // clockevent period that bounds the execution tick.
         assert!(form.contains(concat!(
             "\nvtime-interrupt-controller-vns=10000\n",
             "vtime-serial-vns=10000\n",
@@ -589,7 +512,6 @@ mod tests {
             "vtime-execution-tick-vns=100000\n",
             "vtime-clockevent-period-vns=10000000\n",
         )));
-        // Section anchors.
         assert!(form.contains(
             "\ncpuid 00000001.00000000 000906ec 00010800 dyn:osxsave:36da3203 0f8bbb7f\n"
         ));
@@ -602,11 +524,9 @@ mod tests {
         assert!(form.contains("\nmsr c0000080 allow-stateful allow-stateful\n"));
         assert!(form.contains("\nmmio-default allow-fixed:0000000000000000 deny-ignore-write\n"));
         assert!(!form.contains("host-assert"));
-        // §6 spelling: bracketed array, `, ` separator (not a bare `PKE,PKS`).
         assert!(form.contains("\nguest cr4-force-reserved [PKE, PKS]\n"));
         assert!(form.contains("\nguest ucode-rev 0x0000000100000000\n"));
         assert!(!form.contains("fault-absent"));
-        // No trailing whitespace on any record line.
         for l in form.lines() {
             assert_eq!(l, l.trim_end(), "no trailing whitespace");
         }
@@ -636,7 +556,6 @@ mod tests {
              (src/vendor/x86/contract/testdata/canonical-v6.txt). If this is an intended, reviewed §6 \
              change, bump contract-version and regenerate the golden file (contract::tests::regen_golden)."
         );
-        // The committed v6 hash is sha256 of exactly the golden bytes.
         let hex: String = contract_hash().iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             hex, "e2cf2a502d598e042684a3bd5807aec0095f4fc9f7ee3d4eb538d3372c4a141d",
@@ -689,14 +608,14 @@ ucode-rev = \"0x0000000100000000\"\n";
     fn inject_formatting_noise(toml: &str, comment_each: &[bool], leading_blanks: usize) -> String {
         let mut out = "\n".repeat(leading_blanks);
         for (i, line) in toml.lines().enumerate() {
-            out.push_str("   "); // leading whitespace (the parser trims)
+            out.push_str("   ");
             out.push_str(line);
             if comment_each.get(i).copied().unwrap_or(false) {
                 out.push_str("   # incidental comment");
             }
             out.push('\n');
             if comment_each.get(i).copied().unwrap_or(false) {
-                out.push('\n'); // an extra blank line
+                out.push('\n');
             }
         }
         out
@@ -736,7 +655,6 @@ ucode-rev = \"0x0000000100000000\"\n";
 
     #[test]
     fn msr_index_set_is_disjoint_and_complete() {
-        // The TOML header pins the union at 1043 indices, pairwise disjoint.
         let mut total = 0usize;
         for row in &contract().msr {
             total += row.index.indices().len();
@@ -749,10 +667,6 @@ ucode-rev = \"0x0000000100000000\"\n";
         assert_eq!(total, 1043, "total MSR indices match the contract header");
     }
 
-    // =======================================================================
-    // Validate the guest-visible vendor identity independently of host identity.
-    // =======================================================================
-
     use super::parse::{ContractError, VendorId};
 
     /// Mixed-vendor refusal (Deliverable 8): the loader rejects a file whose `vendor`
@@ -760,7 +674,6 @@ ucode-rev = \"0x0000000100000000\"\n";
     /// declared vendor disagrees with its own CPUID leaf-0 vendor string.
     #[test]
     fn loader_refuses_vendor_axis_disagreement() {
-        // Guest model loaded under a mismatched vendor. → VendorMismatch.
         assert_eq!(
             Contract::load(CONTRACT_TOML, VendorId::AuthenticAMD).unwrap_err(),
             ContractError::VendorMismatch {
@@ -768,7 +681,6 @@ ucode-rev = \"0x0000000100000000\"\n";
                 found: "GenuineIntel".to_string(),
             }
         );
-        // Correct axes load cleanly.
         assert!(Contract::load(CONTRACT_TOML, VendorId::GenuineIntel).is_ok());
     }
 
@@ -809,7 +721,6 @@ edx = \"0x49656e69\"\n\
 version = 1\n\
 vendor = \"NotARealVendor\"\n\
 cpuid-baseline = \"whatever\"\n";
-        // Refused under either axis — the token is invalid regardless of `expected`.
         for axis in [VendorId::GenuineIntel, VendorId::AuthenticAMD] {
             assert_eq!(
                 Contract::load(BOGUS, axis).unwrap_err(),
@@ -818,7 +729,6 @@ cpuid-baseline = \"whatever\"\n";
                 }
             );
         }
-        // A genuinely absent vendor key still loads (legacy Intel fixtures).
         const NO_VENDOR: &str = "[contract]\nversion = 1\ncpuid-baseline = \"x\"\n";
         assert!(Contract::load(NO_VENDOR, VendorId::GenuineIntel).is_ok());
     }
@@ -828,7 +738,6 @@ cpuid-baseline = \"whatever\"\n";
     /// guard by masquerading as an absent leaf 0 — it is refused (`MalformedLeaf0`).
     #[test]
     fn loader_refuses_malformed_leaf0() {
-        // (a) leaf 0 with a dynamic register — not three frozen constants.
         const DYN_LEAF0: &str = "\
 [contract]\n\
 version = 1\n\
@@ -848,7 +757,6 @@ edx = \"0x69746e65\"\n\
             }
         );
 
-        // (b) leaf 0 whose constant bytes are not UTF-8 (0xffffffff registers).
         const NON_UTF8_LEAF0: &str = "\
 [contract]\n\
 version = 1\n\
@@ -868,7 +776,6 @@ edx = \"0xffffffff\"\n\
             }
         );
 
-        // A contract with NO leaf-0 row is still exempt (the guard is skipped).
         const NO_LEAF0: &str = "\
 [contract]\n\
 version = 1\n\
@@ -893,8 +800,6 @@ edx = \"0x00000000\"\n\
     /// slip through by spelling the right one.
     #[test]
     fn loader_refuses_noncanonical_leaf0_shapes() {
-        // A range row `0x0..=0x5` covering leaf 0 — refused as MalformedLeaf0 whether
-        // it spells the Intel string...
         const RANGE_INTEL: &str = "\
 [contract]\n\
 version = 1\n\
@@ -915,8 +820,6 @@ edx = \"0x49656e69\"\n\
             }
         );
 
-        // ...or the CORRECT AMD string: the range form itself is not the canonical
-        // shape, so it is refused even when the vendor bytes agree.
         const RANGE_AMD: &str = "\
 [contract]\n\
 version = 1\n\
@@ -937,8 +840,6 @@ edx = \"0x69746e65\"\n\
             }
         );
 
-        // A dynamic EAX at leaf 0 (EBX/EDX/ECX correct) — the third historical bypass:
-        // positive validation requires ALL FOUR registers constant, so it is refused.
         const DYN_EAX: &str = "\
 [contract]\n\
 version = 1\n\
@@ -958,7 +859,6 @@ edx = \"0x69746e65\"\n\
             }
         );
 
-        // Two rows both covering leaf 0 subleaf 0 (ambiguous) — refused.
         const TWO_COVERING: &str = "\
 [contract]\n\
 version = 1\n\
@@ -985,7 +885,6 @@ edx = \"0x69746e65\"\n\
             }
         );
 
-        // The one good shape (single (0,0), all constants, correct vendor) loads.
         const GOOD: &str = "\
 [contract]\n\
 version = 1\n\
@@ -1000,7 +899,6 @@ edx = \"0x69746e65\"\n\
 ";
         assert!(Contract::load(GOOD, VendorId::AuthenticAMD).is_ok());
 
-        // The good shape but the wrong vendor string → MixedVendor (not MalformedLeaf0).
         const GOOD_WRONG_VENDOR: &str = "\
 [contract]\n\
 version = 1\n\
@@ -1021,8 +919,6 @@ edx = \"0x49656e69\"\n\
             }
         );
 
-        // A row covering leaf 0 only at a non-zero subleaf does NOT freeze the vendor
-        // string, so it is not a leaf-0 row and is exempt (no covering row).
         const NONZERO_SUBLEAF: &str = "\
 [contract]\n\
 version = 1\n\

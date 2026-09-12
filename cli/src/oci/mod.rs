@@ -115,7 +115,6 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
     if !host.hypervisor.available() {
         return Err("hypervisor unavailable: run `harmony preflight`".into());
     }
-    // Refuse before staging: acquiring the image costs a registry pull.
     if !HOST_SUPPORTED {
         return Err(format!(
             "no run loop for this host in this build; wired hosts are {SUPPORTED_HOSTS}"

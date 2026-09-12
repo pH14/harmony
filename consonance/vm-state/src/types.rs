@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 /// `KVM_GET_REGS` (`struct kvm_regs`). Field order mirrors that ABI; the wire
 /// encoding is this crate's own little-endian layout, not KVM's struct.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[allow(missing_docs)] // the register names are self-documenting
+#[allow(missing_docs)]
 pub struct VcpuRegs {
     pub rax: u64,
     pub rbx: u64,
@@ -53,7 +53,7 @@ pub struct Segment {
 /// Segment and system registers, control registers, `EFER`, and the APIC base —
 /// the contents of `KVM_GET_SREGS2`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[allow(missing_docs)] // the register/segment names are self-documenting
+#[allow(missing_docs)]
 pub struct VcpuSregs {
     pub cs: Segment,
     pub ds: Segment,
@@ -207,6 +207,5 @@ pub struct TimerQueueState {
 /// whose internal layout can gain a typed encoding under a bumped
 /// [`VM_STATE_VERSION`](crate::VM_STATE_VERSION) without disturbing any other
 /// section.
-// TODO(task-13): replace with a typed { lapic, pic, pit } record.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct DeviceBlob(pub Vec<u8>);

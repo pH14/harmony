@@ -18,7 +18,7 @@ use crate::recorded::{EnvSpec, StandingFault};
 
 /// Domain separation for `mutate`'s PRNG, so a mutation salt and a base seed that
 /// happen to coincide do not draw the same stream.
-const MUTATE_DOMAIN: u64 = 0x4D75_7461_7465_2121; // "Mutate!!"
+const MUTATE_DOMAIN: u64 = 0x4D75_7461_7465_2121;
 
 /// The proposal seam the search loop calls. A unit type: every operation is a pure
 /// function of its inputs, holding no state of its own.
@@ -57,16 +57,10 @@ impl EnvCodec {
             EnvSpec::Recorded { standing, .. } => standing.clone(),
             EnvSpec::Seeded { .. } => Vec::new(),
         };
-        // Reseed markers are timeline facts, not proposals: preserved verbatim
-        // (like guest overrides — removing or moving one would desync every
-        // draw after it, minting a reproducer that does not reproduce).
         let reseeds = env.reseeds().clone();
         let payloads = env.payloads().map(<[Vec<u8>]>::to_vec);
         let mut rng = Prng::new(salt ^ MUTATE_DOMAIN);
 
-        // Only host actions are legal move/remove victims. With none present, the
-        // only available op is "insert"; otherwise pick insert (0)/remove
-        // (1)/move (2).
         let host_keys: Vec<Moment> = overrides
             .iter()
             .filter(|(_, a)| matches!(a, Action::Host(_)))
@@ -79,13 +73,10 @@ impl EnvCodec {
         };
         match op {
             1 => {
-                // Remove a host victim (guest actions are never removed).
                 let k = host_keys[(rng.next_u64() % host_keys.len() as u64) as usize];
                 overrides.remove(&k);
             }
             2 => {
-                // Move a host victim to a fresh slot that does not clobber a guest
-                // action (it may overwrite another host action, or land free).
                 let k = host_keys[(rng.next_u64() % host_keys.len() as u64) as usize];
                 if let Some(action) = overrides.remove(&k) {
                     let dst = free_non_guest_slot(&overrides, &mut rng);
@@ -93,7 +84,6 @@ impl EnvCodec {
                 }
             }
             _ => {
-                // Insert a fresh host fault, again never clobbering a guest action.
                 let dst = free_non_guest_slot(&overrides, &mut rng);
                 overrides.insert(dst, Action::Host(host_fault_from(&mut rng)));
             }
@@ -146,7 +136,6 @@ impl EnvCodec {
     /// override-covered reproducers. `compose` re-keys the override map (the gate)
     /// and rejects the statically-detectable seeded inputs (the `Seeded` variant).
     pub fn compose(base: &EnvSpec, tail: &EnvSpec, at: Moment) -> Result<EnvSpec, EnvError> {
-        // Fail closed on the multi-axis / seeded cases deferred to task 93.
         if !standing_of(base).is_empty()
             || !standing_of(tail).is_empty()
             || base.payloads().is_some()
@@ -161,8 +150,6 @@ impl EnvCodec {
             return Err(EnvError::UnsupportedComposition);
         }
 
-        // One-axis Moment override re-key (the spec gate): base keeps its prefix
-        // [0, at), tail shifts into [at, ∞). Collision-free; overflow rejects.
         let mut overrides: BTreeMap<Moment, Action> = base
             .overrides()
             .iter()
@@ -173,11 +160,6 @@ impl EnvCodec {
             overrides.insert(rekey_moment(*m, at)?, a.clone());
         }
 
-        // Reseed markers splice positionally exactly like overrides (task 78):
-        // base keeps its prefix [0, at), tail re-keys by + at — so a folded env
-        // carries every collapsed hop's reseed at its recorded position and the
-        // frontier re-executes each on `branch` (bit-identical folds under
-        // entropy draws, the ruled fix for the sequential-entropy splice).
         let mut reseeds: BTreeMap<Moment, u64> = base
             .reseeds()
             .iter()
@@ -258,9 +240,7 @@ fn host_fault_from(rng: &mut Prng) -> HostFault {
         0 => HostFault::SkewTime(Span(rng.next_u64())),
         1 => {
             let num = rng.next_u64();
-            // den in 1..=2^32, never zero.
             let den = (rng.next_u64() % (1u64 << 32)) + 1;
-            // den != 0 by construction, so `new` is infallible here.
             HostFault::SetClockRate(Ratio::new(num, den).expect("den >= 1 by construction"))
         }
         2 => HostFault::CorruptMemory {
@@ -309,13 +289,10 @@ mod tests {
             .expect("an op-selecting salt exists in range")
     }
 
-    // ---- host_fault_from arms (kills delete-arm-0 / delete-arm-1) -----------
-
     #[test]
     fn host_fault_from_arm0_is_exact_skewtime() {
         let seed = seed_for_arm(0);
         let got = host_fault_from(&mut Prng::new(seed));
-        // Independent restatement: word0 selects the arm, word1 is the Span.
         let mut e = Prng::new(seed);
         let _arm = e.next_u64();
         let expected = HostFault::SkewTime(Span(e.next_u64()));
@@ -357,9 +334,6 @@ mod tests {
 
     #[test]
     fn host_fault_from_arm3_is_exact_inject_interrupt() {
-        // Pick an arm-3 seed whose vector byte is neither 0xFF nor 0x00, so the
-        // exact assertion distinguishes `& 0xFF` from both `| 0xFF` (→ always 0xFF)
-        // and `^ 0xFF` (→ byte ^ 0xFF).
         let seed = (0u64..10_000)
             .find(|&s| {
                 let mut p = Prng::new(s);
@@ -403,8 +377,6 @@ mod tests {
         }
     }
 
-    // ---- free_non_guest_slot (kills body -> Default::default()) -------------
-
     #[test]
     fn free_non_guest_slot_returns_the_drawn_word_not_default() {
         let map: BTreeMap<Moment, Action> = BTreeMap::new();
@@ -423,7 +395,6 @@ mod tests {
     fn free_non_guest_slot_skips_a_guest_occupied_slot_exactly() {
         let seed = 0x55u64;
         let first = Prng::new(seed).next_u64();
-        // Park a guest action exactly where the first draw lands.
         let map = BTreeMap::from([(first, Action::Guest(Answer::Nominal))]);
         let got = free_non_guest_slot(&map, &mut Prng::new(seed));
         assert_eq!(
@@ -434,8 +405,6 @@ mod tests {
         assert!(!matches!(map.get(&got), Some(Action::Guest(_))));
         assert_ne!(got, Moment::default());
     }
-
-    // ---- mutate arms (kills delete-arm-1 remove / delete-arm-2 move) --------
 
     fn one_host_spec(k: Moment, action: Action) -> EnvSpec {
         EnvSpec::Recorded {
@@ -480,7 +449,6 @@ mod tests {
 
     #[test]
     fn mutate_insert_branch_adds_a_second_host_override() {
-        // The default arm (op 0): a fresh host action is added, count grows by one.
         let k = 100u64;
         let action = Action::Host(HostFault::InjectInterrupt { vector: 42 });
         let spec = one_host_spec(k, action.clone());

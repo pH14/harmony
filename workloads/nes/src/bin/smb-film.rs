@@ -60,14 +60,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut target = SmbTarget::from_smb_rom_bytes_capturing(&rom, &core_path, &core_sha256)?;
     target.reset();
 
-    // The boot walk to gameplay genesis has already been emulated, so the film
-    // opens on the title screen exactly as the machine saw it.
     let opening = target.drain_frames();
     let first = opening.first().ok_or("the boot walk captured no video")?;
     let (width, height) = (first.width, first.height);
 
-    // FFmpeg refuses an in-place mux, so the streaming pass writes a silent
-    // video and a second pass folds the audio track into the final file.
     let video_only = video.with_extension("silent.mp4");
     let audio_raw = video.with_extension("s16le");
     let mut encoder = spawn_encoder(width, height, &video_only)?;

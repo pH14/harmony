@@ -284,8 +284,6 @@ impl<C: Core> NovaAgent<C> {
                 need: self.layout.total_len(),
             }));
         }
-        // No action frames exist at setup, so slot zero carries the endpoint
-        // work RAM that lets the host decode the sealed genesis uniformly.
         if !self
             .core
             .read_work_ram(self.layout.work_ram_slot_mut(billboard, 0))
@@ -326,12 +324,7 @@ impl<C: Core> NovaAgent<C> {
             }
             frames_run = frames_run.saturating_add(1);
         }
-        // A chord is an exact held-input interval. Decode only its endpoint;
-        // death and clear are host-adapter meanings, not guest-side stops.
         let state = read_state(&mut self.core).map_err(widen_error)?;
-        // The host sees a coherent endpoint only after the raw ring, save RAM,
-        // and savestate are all complete. This is the sole billboard write
-        // after the per-frame ring copies.
         self.publish_final(billboard, payload[0], frames_run, state)
             .map_err(widen_error)?;
         channel
@@ -355,9 +348,6 @@ impl<C: Core> NovaAgent<C> {
         }
         let frame = u32::try_from(self.frame_count).map_err(|_| NovaError::FrameOverflow)?;
         if usize::from(frames_run) > usize::from(MAX_HOLD_FRAMES) {
-            // `frames_run` is produced by the bounded loop above. Keeping this
-            // check at the serialization boundary makes the wire invariant
-            // explicit if another caller is added later.
             return Err(NovaError::FrameOverflow);
         }
         let mut save_ram = [0_u8; NOVA_SAVE_RAM_LEN];
@@ -693,9 +683,6 @@ mod tests {
             &[0xA5]
         );
         assert_eq!(agent.core.serializes, 1);
-        // The state decoder reads the core's save RAM at setup and once at the
-        // action endpoint; the billboard window itself is populated only by
-        // the single endpoint copy above.
         assert_eq!(agent.core.save_reads, 3);
     }
 

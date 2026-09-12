@@ -371,9 +371,6 @@ impl MetroidTarget {
         core_sha256: &str,
         prefix: &[ButtonChord],
     ) -> Result<Self, MachineError> {
-        // The game keeps equipment, missiles, and collected tanks in
-        // cartridge work RAM, which a backend publishes only for an image
-        // that declares the region.
         let image = nes::with_cartridge_ram(rom)?;
         Self::from_machine(
             QuickNesMachine::from_rom_bytes(&image, core_path, core_sha256)?,
@@ -562,8 +559,6 @@ impl Target for MetroidTarget {
             self.failed = true;
             return;
         };
-        // Cartridge RAM is sampled at the action endpoint. Its values describe
-        // that endpoint, not the exact pickup frame within a held chord.
         let Ok(cartridge) = self.cartridge() else {
             self.failed = true;
             return;
@@ -757,7 +752,6 @@ mod observation_tests {
                 decode_action_observations(&frames, &cartridge, &initial, wram).unwrap();
             let mut progress = NamedProgress::default();
             if expected {
-                // The old event filter produces just the endpoint, at state 0.
                 assert_eq!(observations.len(), 1);
                 assert_eq!(observations[0].mother_brain_status, 0);
                 assert_eq!(observations[0].frame_count, 403);

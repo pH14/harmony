@@ -139,16 +139,12 @@ fn run_boot_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(
     max_steps: u64,
 ) -> BootRun {
     let wall_budget = Duration::from_secs(env_u64("X2_WALL_SECS", DEFAULT_WALL_SECS));
-    // not order-observable: a test-only wall-clock watchdog; it bounds this
-    // `#[ignore]`d live gate and never reaches guest state or any hash.
     #[allow(clippy::disallowed_methods)]
     let start = Instant::now();
     let mut printed = 0usize;
     let mut steps = 0u64;
     let mut reason = None;
     let mut step_error = None;
-    // One calibration row per portable event, on the same wall clock as the
-    // watchdog. Diagnostic output only; nothing reads it back into the run.
     let mut calibration = std::env::var_os("X2_CALIBRATION_LOG").map(|path| {
         std::io::BufWriter::new(std::fs::File::create(path).expect("create X2_CALIBRATION_LOG"))
     });
@@ -332,8 +328,6 @@ fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
             writeln!(out, "XSAVE_HDR {bv:#x} {comp:#x} MXCSR_MASK {mask:#x}")
                 .expect("write to string");
         }
-        // The full image as hex rows, so a cross-host diff names the exact
-        // differing image bytes (extended components included).
         for (row, bytes) in vcpu.xsave.chunks(64).enumerate() {
             let hex_row: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
             writeln!(out, "XSAVEHEX {:#05x} {hex_row}", row * 64).expect("write to string");
@@ -368,8 +362,6 @@ fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
         )
         .expect("write to string");
     }
-    // Per-page RAM fingerprints (FNV-1a; zero pages elided with a count), so
-    // two hosts' dumps name the exact differing guest pages by address.
     let ram = vmm.guest_memory();
     let mut zero_pages = 0u64;
     for (i, page) in ram.chunks(4096).enumerate() {
@@ -384,9 +376,6 @@ fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
         writeln!(out, "PAGE {:#x} {h:016x}", i * 4096).expect("write to string");
     }
     writeln!(out, "ZERO_PAGES {zero_pages}").expect("write to string");
-    // With `X2_PAGE_HEX` set to a comma-separated guest-physical page list, the
-    // named pages' bytes go into the dump, so a cross-host diff names the exact
-    // differing offsets and values inside pages the fingerprints flagged.
     if let Ok(list) = std::env::var("X2_PAGE_HEX") {
         for gpa in list.split(',').filter(|s| !s.is_empty()) {
             let gpa = usize::from_str_radix(gpa.trim().trim_start_matches("0x"), 16)
@@ -418,9 +407,6 @@ fn x2_virtual_time_stock_boot_smoke() {
 
     let mut vmm = boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
         .expect("boot_linux_stock_virtual_time");
-    // With `X2_DUMP_AT_STEPS` set, stop the boot at that step count and dump
-    // the full state record there: a mid-boot measurement point for a
-    // divergence that has converged again by the terminal.
     if let Ok(bound) = std::env::var("X2_DUMP_AT_STEPS") {
         let bound: u64 = bound.parse().expect("X2_DUMP_AT_STEPS is a step count");
         let run = run_boot_bounded(&mut vmm, false, bound);
@@ -633,7 +619,6 @@ fn dump_state_diff(vmm_a: &StockVmm, vmm_b: &StockVmm) {
         }
     }
     println!("X2_RAM_DIFF_PAGES={}", diff_pages.len());
-    // Merged runs of differing pages: the address map of the divergence.
     let mut run_start = None;
     let mut prev = None;
     for &page in diff_pages.iter().chain(std::iter::once(&usize::MAX)) {
@@ -652,8 +637,6 @@ fn dump_state_diff(vmm_a: &StockVmm, vmm_b: &StockVmm) {
         }
         prev = Some(page);
     }
-    // Content of the first differing bytes, to identify what the pages hold
-    // (printk records, RNG pool words, page-table entries).
     for page in diff_pages.iter().take(8) {
         let base = page * 4096;
         let off = (0..4096)
@@ -710,8 +693,6 @@ fn dump_state_diff(vmm_a: &StockVmm, vmm_b: &StockVmm) {
         }
     }
 
-    // The XSAVE image in the words the architecture names: XSTATE_BV at
-    // byte 512, XCOMP_BV at 520, then any differing 64-byte windows.
     let (xs_a, xs_b) = (&vcpu_a.xsave, &vcpu_b.xsave);
     if xs_a != xs_b {
         println!("X2_XSAVE_LEN A={} B={}", xs_a.len(), xs_b.len());

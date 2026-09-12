@@ -176,8 +176,6 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
             perturb: None,
         },
         FaultAction::Pause(node, ticks) => {
-            // The pause must lift inside its own horizon, so the search always
-            // observes the resumed node rather than inheriting a stopped one.
             let held = u64::from(ticks)
                 .saturating_mul(AGENT_TICK_NANOS)
                 .min(horizon.saturating_sub(AGENT_TICK_NANOS))

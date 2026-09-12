@@ -180,9 +180,6 @@ pub struct FrameHeader {
     pub reserved: u32,
 }
 
-// Host-only (a dispatcher concern): the guest is a client, never routes frames,
-// so gating this keeps the `no_std` guest build — hence the SDK-demo binary and
-// its hashed memory image — byte-identical.
 #[cfg(feature = "host")]
 impl FrameHeader {
     /// Whether this header is a **structurally valid request** — every
@@ -754,7 +751,6 @@ mod guest {
                 .transport
                 .exchange(&req[..req_len], &mut resp)
                 .map_err(ClientError::Transport)?;
-            // `len` ultimately comes from the host (RAX); never trust it to be in bounds.
             let frame = resp
                 .get(..len)
                 .ok_or(ClientError::Protocol(ProtoError::Truncated))?;
@@ -846,9 +842,6 @@ mod host {
                 Err(ProtoError::BadMagic) => {
                     return encode_error(0, 0, 0, Status::BadRequest, resp_buf);
                 }
-                // Any other failure (truncated payload, bad reserved/len/kind) means the
-                // 24-byte header itself was readable, so its raw fields must be echoed;
-                // only a header shorter than 24 bytes (None) takes the all-zeros path.
                 Err(_) => {
                     let (service, opcode, seq) = raw_header_fields(req_buf).unwrap_or((0, 0, 0));
                     return encode_error(service, opcode, seq, Status::BadRequest, resp_buf);
@@ -887,8 +880,6 @@ mod host {
                     resp_buf,
                 );
             }
-            // The service already wrote its payload at resp_buf[HEADER_LEN..]; finish
-            // the frame by writing the header in front of it.
             write_header(
                 resp_buf,
                 KIND_RESPONSE,
@@ -920,8 +911,6 @@ mod host {
         pub fn restore_state(&mut self, state: &[u8]) -> Result<(), ProtoError> {
             let backup = self.save_state();
             self.try_restore(state).inspect_err(|_| {
-                // Rolling back replays each service's own save_state output, which
-                // the Service contract obliges restore_state to accept.
                 let _ = self.try_restore(&backup);
             })
         }
@@ -1067,8 +1056,6 @@ mod host {
                 return Err(ProtoError::BadState);
             }
             let value = read_u64(state, 0)?;
-            // save_state can never produce 0 (seed 0 is remapped and xorshift64 is a
-            // bijection on nonzero states); accepting it would pin the stream at zero.
             if value == 0 {
                 return Err(ProtoError::BadState);
             }
@@ -1436,15 +1423,9 @@ mod host {
             if payload.len() != 8 {
                 return (Status::BadRequest, 0);
             }
-            // One-shot (the frozen ABI, mirroring the production host): the
-            // first accepted registration pins the target for the machine's
-            // life; ANY second register — same GPA or not — is a guest fault,
-            // rejected before the range check exactly as production orders it,
-            // so loopback tests exercise the semantics real guests will hit.
             if self.registered.is_some() {
                 return (Status::BadRequest, 0);
             }
-            // Page-aligned and wholly inside guest RAM, else OutOfRange.
             if !Self::gpa_fits(gpa, self.ram_len) {
                 return (Status::OutOfRange, 0);
             }
@@ -1479,13 +1460,6 @@ mod host {
                 0 => None,
                 1 => {
                     let gpa = take_u64(state, &mut offset)?;
-                    // Re-validate the decoded registration with the SAME
-                    // alignment + RAM-containment rule `handle` enforces,
-                    // against the blob's own `ram_len` (the size the source
-                    // validated against). A malformed state blob
-                    // therefore cannot restore a registration `handle` would
-                    // have rejected — an unaligned or out-of-RAM GPA that would
-                    // later stamp outside the page window (cross-model r12 P2).
                     if !Self::gpa_fits(gpa, ram_len) {
                         return Err(ProtoError::BadState);
                     }

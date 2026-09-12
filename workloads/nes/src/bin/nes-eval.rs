@@ -41,7 +41,6 @@ use std::{
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-// Host telemetry never enters the campaign stream or adapter state.
 #[allow(clippy::disallowed_methods)]
 fn telemetry_now() -> Instant {
     Instant::now()
@@ -270,7 +269,6 @@ where
     if full {
         write_json(&out.join("checkpoint.json"), &checkpoint)?;
     }
-    // Large archives are verification-only intermediates. Keep bounded campaign evidence.
     if let Some(archive) = value.get_mut("archive").and_then(Value::as_object_mut) {
         archive.remove("entries");
     }

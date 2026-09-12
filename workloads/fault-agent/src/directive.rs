@@ -60,7 +60,6 @@ pub fn parse_directive(line: &str) -> Result<Option<Directive>, DirectiveError> 
         return Ok(None);
     }
     let mut words = trimmed.split_whitespace();
-    // The line is non-empty and starts with `@`, so there is a first word.
     let verb = words.next().unwrap_or_default();
     let directive = match verb {
         "@sometimes" => Directive::Sometimes(one_id(words, "@sometimes")?),
@@ -129,7 +128,6 @@ impl LineReader {
                 self.buf.clear();
                 self.dropping = false;
             } else if self.dropping {
-                // The rest of an oversized line is discarded up to its newline.
             } else if self.buf.len() < MAX_LINE {
                 self.buf.push(byte);
             } else {
@@ -248,7 +246,6 @@ mod tests {
     #[test]
     fn carriage_returns_and_invalid_utf8_survive() {
         let mut reader = LineReader::new();
-        // A CR is trimmed by the parser, so a CRLF hook still reports.
         let lines = reader.push(b"@sometimes 1\r\n\xff\xfe raw\n");
         assert_eq!(
             parse_directive(&lines[0]),
@@ -263,8 +260,6 @@ mod tests {
         for _ in 0..40 {
             assert!(reader.push(&vec![b'x'; 4096]).is_empty());
         }
-        // The tail of the oversized line is discarded with it, and the reader
-        // recovers at the next newline.
         assert_eq!(reader.push(b"junk\n@reachable 5\n"), ["@reachable 5"]);
         assert!(reader.flush().is_none());
     }

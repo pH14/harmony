@@ -31,11 +31,6 @@ fn public_api_matches_snapshot() {
             "public-api",
             "-p",
             CRATE,
-            // Freeze the FULL surface, not just default features. `hypercall-proto`
-            // gates its guest seam (`Transport`, `Client`, …) behind `feature =
-            // "guest"`, which is absent from `default = ["host"]`; without this the
-            // snapshot would silently ignore drift in the guest contract that
-            // `hypercall-doorbell` (task 10) builds against.
             "--all-features",
             "-sss",
             "--color",
@@ -52,7 +47,6 @@ fn public_api_matches_snapshot() {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Missing tool / toolchain -> skip; a real build error -> fail.
         let absent = stderr.contains("no such command")
             || stderr.contains("is not installed")
             || stderr.contains("toolchain may not be installed")

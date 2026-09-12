@@ -52,9 +52,6 @@ fn policy() -> FaultPolicy {
         ],
     )
     .unwrap();
-    // A buggify point that always fires (per-point, not per-class), so the golden
-    // pins the `Fault::BuggifyFire` wire tag (16) byte-exactly — a round-trip test
-    // would not catch a tag renumbering.
     p.set_buggify_point(99, 1, 1).unwrap();
     p
 }
@@ -87,8 +84,6 @@ fn sequence() -> Vec<P> {
         P::Process { node: NodeId(2) },
         P::Process { node: NodeId(3) },
         P::Process { node: NodeId(4) },
-        // A buggify decision — the always-firing point declared in `policy()`, so
-        // the golden covers `Fault::BuggifyFire` (the one class the sequence missed).
         P::Buggify { point: 99 },
     ]
 }
@@ -115,24 +110,24 @@ fn answers() -> Vec<String> {
 /// Frozen expectations — `Answer::encode` hex per decision, captured once and
 /// reviewed. Regenerate with `GOLDEN_CAPTURE=1 cargo test -p environment --test golden`.
 const EXPECTED: &[&str] = &[
-    "01080000008c70b62c4782947c", // Entropy{8}    → Supply(8)
-    "0110000000de281fbf925670d5c005e0a53b1eb788", // Entropy{16}   → Supply(16)
-    "0104000000e6cbc0f0",         // Payload{4}    → Supply(4)
-    "0100000000",                 // Payload{0}    → Supply(0)
-    "010400000004000000",         // Scheduler{5}  → Supply(idx=4)
-    "010400000000000000",         // Scheduler{1}  → Supply(idx=0)
-    "020d01000200",               // NetFlow       → Fault(NetLoss{num:1,den:2}) (tag 13)
-    "00",                         // NetFlow       → Nominal
-    "00",                         // NetFlow       → Nominal
-    "020c6400000000000000",       // NetFlow       → Fault(NetLatency(100)) (tag 12)
-    "020708000000",               // BlockIo Read  → Fault(BlockTorn(8))
-    "00",                         // BlockIo Write → Nominal
-    "00",                         // BlockIo Flush → Nominal
-    "00",                         // BlockIo Read  → Nominal
-    "020a",                       // Process       → Fault(ProcKill)
-    "02090a00000000000000",       // Process       → Fault(ProcPause(10))
-    "020a",                       // Process       → Fault(ProcKill)
-    "0210",                       // Buggify       → Fault(BuggifyFire) (tag 16)
+    "01080000008c70b62c4782947c",
+    "0110000000de281fbf925670d5c005e0a53b1eb788",
+    "0104000000e6cbc0f0",
+    "0100000000",
+    "010400000004000000",
+    "010400000000000000",
+    "020d01000200",
+    "00",
+    "00",
+    "020c6400000000000000",
+    "020708000000",
+    "00",
+    "00",
+    "00",
+    "020a",
+    "02090a00000000000000",
+    "020a",
+    "0210",
 ];
 
 #[test]
@@ -184,24 +179,19 @@ fn golden_covers_every_class_with_faults() {
     );
 }
 
-// ---- host-plane wire format -----------------------------------------------
-
 /// One host fault of every variant, with their frozen `HostFault::encode` hex.
 /// These tag/field layouts are a stable contract a recorded reproducer's replay
 /// (and the `perturb` transport) depends on. Regenerate with `GOLDEN_CAPTURE=1`.
 fn host_faults() -> Vec<(HostFault, &'static str)> {
     vec![
-        // tag 00 + Span u64 (0x0102030405060708, little-endian).
         (
             HostFault::SkewTime(Span(0x0102_0304_0506_0708)),
             "000807060504030201",
         ),
-        // tag 01 + num u64 (3) + den u64 (2).
         (
             HostFault::SetClockRate(Ratio::new(3, 2).unwrap()),
             "0103000000000000000200000000000000",
         ),
-        // tag 02 + gpa u64 (0x4000) + mask u64 (0b1000 = 8).
         (
             HostFault::CorruptMemory {
                 gpa: 0x4000,
@@ -209,7 +199,6 @@ fn host_faults() -> Vec<(HostFault, &'static str)> {
             },
             "0200400000000000000800000000000000",
         ),
-        // tag 03 + vector u32 LE (0x80).
         (HostFault::InjectInterrupt { vector: 0x80 }, "0380000000"),
     ]
 }
@@ -228,7 +217,6 @@ fn golden_host_fault_wire_format() {
             "HostFault wire format drifted for {f:?}. If intentional and reviewed, \
              regenerate with GOLDEN_CAPTURE=1."
         );
-        // Round-trips.
         assert_eq!(HostFault::decode(&f.encode()).unwrap(), f);
     }
 }
@@ -240,9 +228,7 @@ fn golden_host_fault_wire_format() {
 fn golden_process_fault_wire_format() {
     let capture = std::env::var_os("GOLDEN_CAPTURE").is_some();
     for (fault, expected) in [
-        // 02 (Answer::Fault) + 11 (tag 17) + id u32 LE (7).
         (Fault::RunHook(7), "021107000000"),
-        // 02 + 13 (tag 19) + addr u64 LE + hits u32 LE + hold u64 LE.
         (
             Fault::ProcPark {
                 addr: 0x4b_0e86,
@@ -275,7 +261,6 @@ fn the_unassigned_process_fault_tag_is_refused() {
 
 #[test]
 fn golden_action_wire_format() {
-    // Action = one plane-tag byte (00 host / 01 guest) then the plane's encoding.
     let host = Action::Host(HostFault::InjectInterrupt { vector: 0x80 });
     assert_eq!(
         to_hex(&host.encode()),
@@ -284,7 +269,6 @@ fn golden_action_wire_format() {
     );
 
     let guest = Action::Guest(Answer::Fault(Fault::NetReset));
-    // 01 (guest) + 02 (Answer::Fault) + 0f (Fault::NetReset, tag 15).
     assert_eq!(
         to_hex(&guest.encode()),
         "01020f",
@@ -294,9 +278,6 @@ fn golden_action_wire_format() {
 
 #[test]
 fn golden_recorded_blob_with_host_overrides() {
-    // A small mixed reproducer, frozen, so the whole `EnvSpec` layout (magic +
-    // version + Moment-keyed Action map + reseed-marker table) is pinned
-    // against silent drift.
     let spec = EnvSpec::Recorded {
         seed: 0,
         policy: FaultPolicy::none(),
@@ -314,19 +295,6 @@ fn golden_recorded_blob_with_host_overrides() {
     } else {
         assert_eq!(
             hex,
-            // "DEV2"(44455632) + version(0700, the payload-tape extension over
-            // the architecture boundary v6) +
-            // variant(01) + seed(00 x8) +
-            // length-prefixed policy(FPL1 magic + version 0300, baseline, len 0x36=54:
-            //   three empty classes 0x2a=42 + trailing buggify section
-            //   [default_num 0, default_den 1, per_point count 0] = 12, task 73) +
-            // overrides count(02000000) +
-            //   Moment 1 + len-prefixed Action::Host(InjectInterrupt 0x80)
-            //     = [00 03 80 00 00 00] (the vector is a u32 LE) +
-            //   Moment 2 + len-prefixed Action::Guest(Nominal) = [01 00] +
-            // standing count(00000000) +
-            // reseed count(01000000) + Moment 3 + seed 0xD1CE (both u64 LE,
-            // task 78) + payload-tape absent tag(00).
             "4445563207000100000000000000003600000046504c31030000000000010000000000000000000000010000000000000000000000010000000000000000000000010000000000000002000000010000000000000006000000000380000000020000000000000002000000010000000000010000000300000000000000ced100000000000000",
             "recorded blob wire format drifted; regenerate with GOLDEN_CAPTURE=1"
         );

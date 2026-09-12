@@ -24,11 +24,11 @@ fn task_register() -> Segment {
         base: 0,
         limit: 0xFFFF,
         selector: 0,
-        type_: 0xB, // 32-bit busy TSS
+        type_: 0xB,
         present: 1,
         dpl: 0,
         db: 0,
-        s: 0, // system
+        s: 0,
         l: 0,
         g: 0,
         avl: 0,
@@ -58,12 +58,12 @@ fn long_code_segment() -> Segment {
         base: 0,
         limit: FLAT_LIMIT,
         selector: BOOT_CS_SELECTOR,
-        type_: 0xB, // code, execute/read, accessed
+        type_: 0xB,
         present: 1,
         dpl: 0,
-        db: 0, // must be 0 when L=1
-        s: 1,  // code/data
-        l: 1,  // 64-bit
+        db: 0,
+        s: 1,
+        l: 1,
         g: 1,
         avl: 0,
         unusable: 0,
@@ -78,7 +78,7 @@ fn long_data_segment() -> Segment {
         base: 0,
         limit: FLAT_LIMIT,
         selector: BOOT_DS_SELECTOR,
-        type_: 0x3, // data, read/write, accessed
+        type_: 0x3,
         present: 1,
         dpl: 0,
         db: 1,
@@ -120,7 +120,6 @@ pub fn long_mode_entry(
             unusable: 1,
             ..Segment::default()
         },
-        // The GDT lives in guest RAM at `gdt_gpa`; 4 entries × 8 bytes − 1.
         gdt: vmm_backend::DescriptorTable {
             base: gdt_gpa,
             limit: 0x1F,
@@ -140,14 +139,14 @@ pub fn long_mode_entry(
     let regs = VcpuRegs {
         rsi: boot_params_gpa,
         rip: entry_rip,
-        rflags: 0x0000_0002, // reserved bit 1 set, IF=0
+        rflags: 0x0000_0002,
         ..VcpuRegs::default()
     };
 
     VcpuState {
         regs,
         sregs,
-        xcr0: 1, // x87 enabled (XCR0[0] must be 1 for KVM_SET_XCRS)
+        xcr0: 1,
         debugregs: vmm_backend::DebugRegs {
             db: [0; 4],
             dr6: 0xFFFF_0FF0,
@@ -168,26 +167,21 @@ mod tests {
     #[test]
     fn long_mode_entry_matches_64bit_boot_protocol() {
         let st = long_mode_entry(0x10_0200, 0x7000, 0x1000, 0x6000);
-        // RIP = 64-bit entry, RSI = boot_params, other GPRs zero.
         assert_eq!(st.regs.rip, 0x10_0200);
         assert_eq!(st.regs.rsi, 0x7000);
         assert_eq!(st.regs.rax, 0);
         assert_eq!(st.regs.rbx, 0);
-        // IF cleared.
         assert_eq!(st.regs.rflags, 0x2);
-        // Long mode: CR0.PG|PE, CR4.PAE, EFER.LME|LMA, CR3 = page table root.
         assert_ne!(st.sregs.cr0 & (1 << 31), 0, "PG set");
         assert_ne!(st.sregs.cr0 & 1, 0, "PE set");
         assert_ne!(st.sregs.cr4 & (1 << 5), 0, "PAE set");
         assert_ne!(st.sregs.efer & (1 << 8), 0, "LME set");
         assert_ne!(st.sregs.efer & (1 << 10), 0, "LMA set");
         assert_eq!(st.sregs.cr3, 0x1000);
-        // __BOOT_CS: selector 0x10, 64-bit (L=1, D=0).
         assert_eq!(st.sregs.cs.selector, 0x10);
         assert_eq!(st.sregs.cs.l, 1);
         assert_eq!(st.sregs.cs.db, 0);
         assert_eq!(st.sregs.cs.type_ & 0x8, 0x8, "code segment");
-        // __BOOT_DS: selector 0x18 on every data segment.
         for seg in [
             st.sregs.ds,
             st.sregs.es,
@@ -198,10 +192,8 @@ mod tests {
             assert_eq!(seg.selector, 0x18);
             assert_eq!(seg.type_ & 0x8, 0, "data segment");
         }
-        // GDTR points at the loader's boot GDT.
         assert_eq!(st.sregs.gdt.base, 0x6000);
         assert_eq!(st.sregs.gdt.limit, 0x1F);
-        // TR usable (VMX entry requirement); LDT unusable.
         assert_eq!(st.sregs.tr.present, 1);
         assert_eq!(st.sregs.ldt.unusable, 1);
     }

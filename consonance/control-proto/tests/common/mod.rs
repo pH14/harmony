@@ -4,7 +4,7 @@
 //! frame body never approaches `MAX_FRAME_LEN`). Used by the round-trip,
 //! streaming, and malformed-input property tests.
 
-#![allow(dead_code)] // each test binary uses a subset of these helpers.
+#![allow(dead_code)]
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, DecisionId,
@@ -206,8 +206,6 @@ fn arb_reply() -> impl Strategy<Value = Reply> {
         arb_bytes().prop_map(Reply::Bytes),
         arb_regs_view().prop_map(Reply::Regs),
         (arb_bytes(), any::<bool>()).prop_map(|(output, ok)| Reply::ExecResult { output, ok }),
-        // The seal-bound snapshot reply (task 127): handle + cut (Moment,
-        // included SDK-event count) + taint — one shape for both taint states.
         (any::<u64>(), any::<u64>(), any::<u64>(), any::<bool>()).prop_map(
             |(id, at, sdk_events, tainted)| Reply::Snapshot {
                 id: SnapId(id),

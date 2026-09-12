@@ -23,10 +23,6 @@ use crate::exit::Exit;
 use crate::types::Gpa;
 use crate::types::MpState;
 
-// ---------------------------------------------------------------------------
-// decode_* / apply_* over a synthetic kvm_run buffer.
-// ---------------------------------------------------------------------------
-
 /// A page-aligned, zeroed buffer large enough to hold a `kvm_run` plus a PIO data
 /// area, reached only through its raw pointer (the production shape).
 struct SynRun {
@@ -86,7 +82,7 @@ fn decode_io_out_reads_value_via_run_buf() {
     // SAFETY: writing union sub-fields of an owned, zeroed kvm_run.
     unsafe {
         let io = &mut (*s.run()).__bindgen_anon_1.io;
-        io.direction = 1; // OUT
+        io.direction = 1;
         io.size = 1;
         io.port = 0x3F8;
         io.count = 1;
@@ -114,7 +110,7 @@ fn decode_io_in_arms_pending() {
     // SAFETY: union sub-field writes.
     unsafe {
         let io = &mut (*s.run()).__bindgen_anon_1.io;
-        io.direction = 0; // IN
+        io.direction = 0;
         io.size = 2;
         io.port = 0x60;
         io.count = 1;
@@ -149,7 +145,7 @@ fn decode_io_rep_string_fails_closed() {
         io.direction = 1;
         io.size = 1;
         io.port = 0x3F8;
-        io.count = 7; // string/REP PIO
+        io.count = 7;
         io.data_offset = PIO_OFF as u64;
     }
     assert!(matches!(
@@ -171,9 +167,8 @@ fn decode_io_out_offset_past_page_is_error_not_ub() {
         io.size = 4;
         io.port = 0x3F8;
         io.count = 1;
-        io.data_offset = (s.len as u64) - 2; // 4-byte read would cross the end
+        io.data_offset = (s.len as u64) - 2;
     }
-    // The bounded run_buf seam rejects it (Miri would flag a missed check).
     assert!(matches!(
         decode_exit(s.page()),
         Err(BackendError::Memory(_))
@@ -182,7 +177,6 @@ fn decode_io_out_offset_past_page_is_error_not_ub() {
 
 #[test]
 fn decode_mmio_store_and_load() {
-    // store
     let s = SynRun::new();
     set_reason(&s, KVM_EXIT_MMIO);
     // SAFETY: union sub-field writes.
@@ -205,7 +199,6 @@ fn decode_mmio_store_and_load() {
     assert_eq!(pending, Pending::None);
     assert!(decoded_exit_stages_completion(&exit, pending));
 
-    // load
     let s = SynRun::new();
     set_reason(&s, KVM_EXIT_MMIO);
     // SAFETY: union sub-field writes.
@@ -269,7 +262,6 @@ fn decode_terminal_and_control_exits() {
         assert_eq!(exit, want);
         assert_eq!(pending, Pending::None);
     }
-    // IRQ-window is a control exit consumed internally (None, re-enter).
     let s = SynRun::new();
     set_reason(&s, KVM_EXIT_IRQ_WINDOW_OPEN);
     assert_eq!(decode_exit(s.page()).unwrap(), None);
@@ -277,8 +269,6 @@ fn decode_terminal_and_control_exits() {
 
 #[test]
 fn decode_error_and_unknown_exits_fail_closed() {
-    // Each fail-closed reason carries its own distinct message (so each match arm
-    // is load-bearing, not collapsible into the `_` arm).
     for (reason, msg) in [
         (KVM_EXIT_INTERNAL_ERROR, "KVM_EXIT_INTERNAL_ERROR"),
         (KVM_EXIT_FAIL_ENTRY, "KVM_EXIT_FAIL_ENTRY"),
@@ -295,7 +285,6 @@ fn decode_error_and_unknown_exits_fail_closed() {
 
 #[test]
 fn apply_complete_read_routes_by_pending() {
-    // IoIn → writes the value into the PIO data buffer.
     let s = SynRun::new();
     apply_complete_read(
         s.page(),
@@ -308,14 +297,12 @@ fn apply_complete_read_routes_by_pending() {
     .unwrap();
     assert_eq!(s.byte(PIO_OFF), 0x55);
 
-    // MmioLoad → writes mmio.data.
     let s = SynRun::new();
     apply_complete_read(s.page(), Pending::MmioLoad { len: 4 }, 0xAABB_CCDD).unwrap();
     // SAFETY: read back the union member just written.
     let data = unsafe { (*s.run()).__bindgen_anon_1.mmio.data };
     assert_eq!(&data[..4], &0xAABB_CCDDu32.to_le_bytes());
 
-    // Rdmsr → sets msr.data and clears error.
     let s = SynRun::new();
     apply_complete_read(s.page(), Pending::Rdmsr, 0x1234).unwrap();
     // SAFETY: read back the union member just written.
@@ -323,7 +310,6 @@ fn apply_complete_read_routes_by_pending() {
     assert_eq!(msr.data, 0x1234);
     assert_eq!(msr.error, 0);
 
-    // Wrong pending → NoPendingRead, nothing written.
     let s = SynRun::new();
     assert!(matches!(
         apply_complete_read(s.page(), Pending::Wrmsr, 1),
@@ -337,21 +323,18 @@ fn apply_complete_read_routes_by_pending() {
 
 #[test]
 fn apply_complete_fault_and_ok_set_msr_error() {
-    // fault on RDMSR/WRMSR → error = 1.
     for p in [Pending::Rdmsr, Pending::Wrmsr] {
         let s = SynRun::new();
         apply_complete_fault(s.page(), p).unwrap();
         // SAFETY: read back the union member.
         assert_eq!(unsafe { (*s.run()).__bindgen_anon_1.msr.error }, 1);
     }
-    // ok on WRMSR → error = 0 (pre-set to prove it is cleared).
     let s = SynRun::new();
     // SAFETY: union sub-field write.
     unsafe { (*s.run()).__bindgen_anon_1.msr.error = 9 };
     apply_complete_ok(s.page(), Pending::Wrmsr).unwrap();
     assert_eq!(unsafe { (*s.run()).__bindgen_anon_1.msr.error }, 0);
 
-    // Mismatched pending → BadCompletion.
     let s = SynRun::new();
     assert!(matches!(
         apply_complete_fault(
@@ -447,10 +430,6 @@ fn retire_staged_write_completion_without_pending_uses_immediate_entry() {
     assert_eq!(s.page().immediate_exit(), 0);
 }
 
-// ---------------------------------------------------------------------------
-// Config / snapshot helpers.
-// ---------------------------------------------------------------------------
-
 #[test]
 fn cpuid_entries_maps_fields_and_significant_flag() {
     let model = CpuidModel {
@@ -534,7 +513,6 @@ fn validate_restore_shape_keys_and_xsave_len() {
     };
     assert!(validate_restore_shape(&good, Some(&filter), 4096).is_ok());
 
-    // missing key
     good.msrs.remove(&0x175);
     assert!(matches!(
         validate_restore_shape(&good, Some(&filter), 4096),
@@ -542,18 +520,15 @@ fn validate_restore_shape_keys_and_xsave_len() {
     ));
     good.msrs.insert(0x175, 0);
 
-    // extra key
     good.msrs.insert(0x200, 0);
     assert!(validate_restore_shape(&good, Some(&filter), 4096).is_err());
     good.msrs.remove(&0x200);
 
-    // wrong xsave length
     assert!(matches!(
         validate_restore_shape(&good, Some(&filter), 8192),
         Err(BackendError::InvalidState)
     ));
 
-    // no filter ⇒ empty MSR set required
     let empty = VcpuState {
         xsave: vec![0u8; 4096],
         ..Default::default()
@@ -572,16 +547,11 @@ fn kvm_capabilities_report_the_stock_backend_name() {
 fn mp_state_round_trips() {
     assert_eq!(mp_from_kvm(KVM_MP_STATE_HALTED), MpState::Halted);
     assert_eq!(mp_from_kvm(KVM_MP_STATE_RUNNABLE), MpState::Runnable);
-    assert_eq!(mp_from_kvm(0x1234), MpState::Runnable); // anything but HALTED
+    assert_eq!(mp_from_kvm(0x1234), MpState::Runnable);
     assert_eq!(mp_to_kvm(MpState::Halted), KVM_MP_STATE_HALTED);
     assert_eq!(mp_to_kvm(MpState::Runnable), KVM_MP_STATE_RUNNABLE);
     assert_eq!(mp_from_kvm(mp_to_kvm(MpState::Halted)), MpState::Halted);
 }
-
-// ---------------------------------------------------------------------------
-// kvm_bindings <-> VcpuState conversion round-trips (kill field-routing mutants
-// in both directions: `from(to(x)) == x` over distinct field values).
-// ---------------------------------------------------------------------------
 
 fn distinct_regs() -> VcpuRegs {
     VcpuRegs {
@@ -702,7 +672,6 @@ fn regs_sregs_events_round_trip() {
 #[test]
 fn xcr0_round_trips_and_defaults_to_zero() {
     assert_eq!(xcr0_of(&xcrs_of(0x7)), 0x7);
-    // A kvm_xcrs with no xcr==0 entry within nr_xcrs reads as 0.
     let empty = kvm_bindings::kvm_xcrs::default();
     assert_eq!(xcr0_of(&empty), 0);
 }
@@ -718,21 +687,11 @@ fn xsave_bytes_round_trip_and_length_check() {
     assert_eq!(back.region[0], 0xDEAD_BEEF);
     assert_eq!(back.region[1023], 0x0BAD_F00D);
 
-    // wrong-sized image → InvalidState, never a panic.
     assert!(matches!(
         xsave_from_bytes(&[0u8; 100]),
         Err(BackendError::InvalidState)
     ));
 }
-
-// ---------------------------------------------------------------------------
-// Interrupt-injection planning (the userspace-irqchip handshake, task 32),
-// driven by a synthetic `kvm_run` whose `ready_for_interrupt_injection` /
-// `request_interrupt_window` are plain top-level fields written/read directly —
-// so the box CI (`nextest`) and Miri exercise the ready/not-ready branch, the
-// KVM_INTERRUPT queue decision, and the interrupt-window arm/clear with no
-// `/dev/kvm`.
-// ---------------------------------------------------------------------------
 
 impl SynRun {
     /// Set `kvm_run.ready_for_interrupt_injection` (kernel → user).
@@ -755,10 +714,9 @@ impl SynRun {
 
 #[test]
 fn plan_irq_entry_queues_when_ready() {
-    // A pending vector + the guest ready ⇒ queue it now, with no window request.
     let s = SynRun::new();
     s.set_ready(true);
-    s.set_request_window(true); // a stale request that must be cleared
+    s.set_request_window(true);
     assert_eq!(
         plan_irq_entry(s.page(), Some(0x40), true),
         IrqEntry::Queue(0x40)
@@ -768,8 +726,6 @@ fn plan_irq_entry_queues_when_ready() {
 
 #[test]
 fn plan_irq_entry_requests_window_when_readiness_is_stale() {
-    // A restore rewrites RFLAGS and the interrupt shadow without KVM refreshing
-    // the ready byte, so a byte from before it cannot justify queuing.
     let s = SynRun::new();
     s.set_ready(true);
     assert_eq!(plan_irq_entry(s.page(), Some(0x40), false), IrqEntry::Run);
@@ -780,8 +736,6 @@ fn plan_irq_entry_requests_window_when_readiness_is_stale() {
 
 #[test]
 fn plan_irq_entry_requests_window_when_not_ready() {
-    // A pending vector + the guest NOT ready ⇒ arm the interrupt window and run
-    // (the vector stays pending; the caller retries on KVM_EXIT_IRQ_WINDOW_OPEN).
     let s = SynRun::new();
     s.set_ready(false);
     assert_eq!(plan_irq_entry(s.page(), Some(0x40), true), IrqEntry::Run);
@@ -790,15 +744,12 @@ fn plan_irq_entry_requests_window_when_not_ready() {
 
 #[test]
 fn plan_irq_entry_clears_window_when_nothing_pending() {
-    // No pending vector ⇒ run directly, and any stale window request is cleared
-    // (so a one-shot window from a prior delivery never lingers).
     let s = SynRun::new();
     s.set_ready(true);
     s.set_request_window(true);
     assert_eq!(plan_irq_entry(s.page(), None, true), IrqEntry::Run);
     assert_eq!(s.request_window(), 0, "stale window request cleared");
 
-    // Even when the guest is not ready, no pending vector ⇒ no window request.
     let s = SynRun::new();
     s.set_ready(false);
     s.set_request_window(true);
@@ -808,11 +759,6 @@ fn plan_irq_entry_clears_window_when_nothing_pending() {
 
 #[test]
 fn interrupt_fields_round_trip_through_vcpu_events() {
-    // The injection state KVM threads across a save/restore (the entry-interrupt
-    // vector + the STI/MOV-SS shadow) must survive `to_kvm_events(from_kvm_events)`
-    // so snapshot/replay re-injects an in-flight vector exactly. Pin the interrupt
-    // fields specifically (the broader round-trip is covered by
-    // `regs_sregs_events_round_trip`).
     let e = VcpuEvents {
         interrupt_injected: 1,
         interrupt_nr: 0x40,

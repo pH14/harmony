@@ -113,9 +113,6 @@ impl Core for MockCore {
     }
 
     fn serialize(&mut self, out: &mut [u8]) -> bool {
-        // Deterministic fake savestate: a function of the frame counter and
-        // the player position, so distinct moments serialize distinct bytes
-        // (the render-determinism tests key on this).
         let frame = self.frame.to_le_bytes();
         for (i, b) in out.iter_mut().enumerate() {
             *b = frame[i % 4]
@@ -128,10 +125,6 @@ impl Core for MockCore {
     fn run_frame(&mut self, joypad: u8) {
         use crate::chord::joypad::{LEFT, RIGHT, START};
         self.frame = self.frame.wrapping_add(1);
-        // The title→gameplay model (the start-script seam): a `START` *edge*
-        // on the title screen latches a short "load", after which the mock
-        // enters gameplay at 1-1 — mirroring SMB's edge-latched per-frame
-        // poll. Directional input on the title stays ignored.
         if self.ram[addr::OPER_MODE] == crate::ram::OPER_MODE_TITLE {
             if joypad & START != 0
                 && self.prev_joypad & START == 0
@@ -151,8 +144,6 @@ impl Core for MockCore {
             }
         }
         self.prev_joypad = joypad;
-        // The toy movement model, only during gameplay: RIGHT advances 2 px
-        // per frame with page carry; LEFT retreats 1 px within the page.
         if self.ram[addr::OPER_MODE] == crate::ram::OPER_MODE_GAMEPLAY {
             if joypad & RIGHT != 0 {
                 let x = u16::from(self.ram[addr::PLAYER_X_POSITION]) + 2;
@@ -215,7 +206,7 @@ mod tests {
         use crate::chord::joypad::START;
         let mut core = MockCore::new();
         for _ in 0..MOCK_START_LOAD_FRAMES {
-            core.run_frame(START); // held: one edge, then the countdown
+            core.run_frame(START);
             assert_eq!(core.ram[addr::OPER_MODE], crate::ram::OPER_MODE_TITLE);
         }
         core.run_frame(START);

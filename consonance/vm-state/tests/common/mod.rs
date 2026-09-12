@@ -182,17 +182,13 @@ pub fn arb_vtime() -> impl Strategy<Value = VtimeState> {
 }
 
 pub fn arb_timers() -> impl Strategy<Value = TimerQueueState> {
-    // A faithful restored TimerQueue: distinct seqs (assigned 0..n), distinct
-    // tokens, arbitrary deadlines/periods, `next_seq` strictly above every seq,
-    // entries in canonical (deadline_vns, seq) order — all the invariants the
-    // codec enforces (see `validate_timers`).
     (0usize..16)
         .prop_flat_map(|n| {
             (
-                proptest::collection::vec(any::<u64>(), n), // deadlines
-                proptest::collection::vec(any::<u64>(), n), // periods
-                proptest::collection::btree_set(any::<u64>(), n..=n), // distinct tokens
-                any::<u64>(),                               // next_seq slack
+                proptest::collection::vec(any::<u64>(), n),
+                proptest::collection::vec(any::<u64>(), n),
+                proptest::collection::btree_set(any::<u64>(), n..=n),
+                any::<u64>(),
             )
         })
         .prop_map(|(deadlines, periods, tokens, slack)| {
@@ -207,7 +203,6 @@ pub fn arb_timers() -> impl Strategy<Value = TimerQueueState> {
                 })
                 .collect();
             entries.sort_by_key(|e| (e.deadline_vns, e.seq));
-            // next_seq strictly above every seq (max seq is n-1), with slack.
             let next_seq = (n as u64).saturating_add(slack % 4096);
             TimerQueueState { entries, next_seq }
         })
@@ -278,9 +273,9 @@ pub fn fully_populated() -> VmState {
         flags: 0x20,
     };
     let mut msrs = std::collections::BTreeMap::new();
-    msrs.insert(0x0000_0010u32, 0x1122_3344_5566_7788u64); // IA32_TSC
-    msrs.insert(0x0000_0174u32, 0x0000_0000_0000_0008u64); // IA32_SYSENTER_CS
-    msrs.insert(0xC000_0080u32, 0x0000_0000_0000_0501u64); // IA32_EFER
+    msrs.insert(0x0000_0010u32, 0x1122_3344_5566_7788u64);
+    msrs.insert(0x0000_0174u32, 0x0000_0000_0000_0008u64);
+    msrs.insert(0xC000_0080u32, 0x0000_0000_0000_0501u64);
 
     VmState {
         regs: VcpuRegs {
@@ -346,7 +341,7 @@ pub fn fully_populated() -> VmState {
         vtime: VtimeState {
             guest_hz: 2_000_000_000,
             guest_base: 0,
-            snapshot_vns: 0x0000_0000_075b_cd15, // 123_456_789
+            snapshot_vns: 0x0000_0000_075b_cd15,
         },
         timers: TimerQueueState {
             entries: vec![

@@ -263,8 +263,6 @@ impl DecisionPoint {
                 | Self::Buggify { .. },
                 Answer::Fault(f),
             ) => f.class() == self.class() && self.fault_bounds_ok(f),
-            // Every remaining pairing is a class mismatch (a supply class with a
-            // non-Supply, a fault class with a Supply).
             _ => false,
         }
     }

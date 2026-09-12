@@ -58,9 +58,6 @@ pub struct IdleAdvance {
 /// See the module docs for the deterministic clock mechanism and policy seam.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IdlePlanner {
-    // A zero-sized seam: the planner is stateless today (the only policy is
-    // "land exactly at D"), but constructing it through `new()` keeps a future
-    // fault-overlay policy a private, non-breaking field addition.
     _seam: (),
 }
 
@@ -127,7 +124,6 @@ mod tests {
                 already_due: false,
             }
         );
-        // landed == now + advance, and the clock lands at D when applied.
         let mut clk = clock(100);
         clk.advance(advance.advance_vns);
         assert_eq!(clk.vns(), 250, "the jump lands the clock exactly at D");
@@ -135,13 +131,12 @@ mod tests {
 
     #[test]
     fn overdue_deadline_is_zero_jump() {
-        // Deadline strictly in the past: no jump, fire immediately.
         let advance = IdlePlanner::new().plan(500, 200);
         assert_eq!(
             advance,
             IdleAdvance {
                 advance_vns: 0,
-                landed_vns: 500, // unchanged: clock never moves backward
+                landed_vns: 500,
                 already_due: true,
             }
         );
@@ -149,7 +144,6 @@ mod tests {
 
     #[test]
     fn at_deadline_is_zero_jump() {
-        // Deadline exactly current: still a zero jump (already due).
         let advance = IdlePlanner::new().plan(300, 300);
         assert_eq!(
             advance,
@@ -163,8 +157,6 @@ mod tests {
 
     #[test]
     fn far_future_deadline_saturates_without_wrap() {
-        // A deadline near u64::MAX from a small `now`: advance is huge but the
-        // arithmetic saturates (never wraps), and applying it clamps the clock.
         let advance = IdlePlanner::new().plan(10, u64::MAX);
         assert_eq!(advance.advance_vns, u64::MAX - 10);
         assert_eq!(advance.landed_vns, u64::MAX);
@@ -194,7 +186,6 @@ mod tests {
             (u64::MAX, u64::MAX),
         ] {
             let a = p.plan(now, deadline);
-            // landed == now + advance (saturating), and never below `now`.
             assert_eq!(a.landed_vns, now.saturating_add(a.advance_vns));
             assert!(a.landed_vns >= now, "clock never moves backward");
             assert_eq!(a.landed_vns, now.max(deadline));

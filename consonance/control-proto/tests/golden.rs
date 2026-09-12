@@ -68,37 +68,33 @@ fn sample_caps() -> Caps {
 
 /// The exact `Caps` body bytes (15 bytes) shared by the Hello request/reply.
 const CAPS_BYTES: [u8; 15] = [
-    0x01, 0x00, // protocol_version = 1
-    0x01, 0x00, // env_version_min = 1
-    0x03, 0x00, // env_version_max = 3
-    0x00, 0x10, 0x00, 0x00, // map_bytes = 0x1000
-    0x02, // producer = 2
-    0x01, 0x00, 0x00, 0x00, // flags = 1 (GUEST_HAS_SDK)
+    0x01, 0x00,
+    0x01, 0x00,
+    0x03, 0x00,
+    0x00, 0x10, 0x00, 0x00,
+    0x02,
+    0x01, 0x00, 0x00, 0x00,
 ];
 
 #[test]
 fn snapshot_full_frame_is_byte_exact() {
-    // The one fully-literal frame: pins the complete header envelope (magic,
-    // version, seq byte order, length) independently of the `framed` helper.
     let mut buf = Vec::new();
     encode_request(0x0102_0304, &Request::Snapshot, &mut buf).expect("encode");
     assert_eq!(
         buf,
         vec![
-            0x43, 0x54, 0x4C, 0x31, // magic "CTL1"
-            0x01, 0x00, // version = 1
-            0x04, 0x03, 0x02, 0x01, // seq = 0x01020304 (little-endian)
-            0x01, 0x00, 0x00, 0x00, // len = 1
-            0x02, // body: REQ_SNAPSHOT
+            0x43, 0x54, 0x4C, 0x31,
+            0x01, 0x00,
+            0x04, 0x03, 0x02, 0x01,
+            0x01, 0x00, 0x00, 0x00,
+            0x02,
         ]
     );
 }
 
-// ------------------------------- requests ----------------------------------
-
 #[test]
 fn req_hello() {
-    let mut body = vec![0x01]; // REQ_HELLO
+    let mut body = vec![0x01];
     body.extend_from_slice(&CAPS_BYTES);
     check_req(1, Request::Hello(sample_caps()), &body);
 }
@@ -129,11 +125,11 @@ fn req_branch() {
             },
         },
         &[
-            0x04, // REQ_BRANCH
-            0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // snap = 7
-            0x02, 0x00, // blob_version = 2
-            0x02, 0x00, 0x00, 0x00, // env bytes len = 2
-            0xDE, 0xAD, // env bytes
+            0x04,
+            0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x02, 0x00,
+            0x02, 0x00, 0x00, 0x00,
+            0xDE, 0xAD,
         ],
     );
 }
@@ -164,16 +160,16 @@ fn req_run_with_deadline_and_resolve() {
             }),
         },
         &[
-            0x06, // REQ_RUN
-            0x01, // deadline present
-            0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // deadline = 0x100
-            0x20, 0x00, 0x00, 0x00, // on = 1<<5 = 0x20 (BlockIo armed)
-            0x01, // resolve present
-            0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // resolution vtime = 0x200
-            0x34, 0x12, // service = 0x1234
-            0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // decision id = 7
-            0x02, 0x00, 0x00, 0x00, // answer len = 2
-            0x01, 0x02, // answer bytes
+            0x06,
+            0x01,
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x20, 0x00, 0x00, 0x00,
+            0x01,
+            0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x34, 0x12,
+            0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0x00,
+            0x01, 0x02,
         ],
     );
 }
@@ -190,10 +186,10 @@ fn req_run_without_deadline_or_resolve() {
             resolve: None,
         },
         &[
-            0x06, // REQ_RUN
-            0x00, // deadline absent
-            0x00, 0x00, 0x00, 0x00, // on = 0
-            0x00, // resolve absent
+            0x06,
+            0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00,
         ],
     );
 }
@@ -209,10 +205,10 @@ fn req_hash_region() {
             },
         },
         &[
-            0x07, // REQ_HASH
-            0x02, // HS_REGION
-            0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // base = 0x1000
-            0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // len = 0x40
+            0x07,
+            0x02,
+            0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ],
     );
 }
@@ -244,10 +240,10 @@ fn req_perturb() {
             at: Moment(0x42),
         },
         &[
-            0x08, // REQ_PERTURB
-            0x02, 0x00, 0x00, 0x00, // fault bytes len = 2
-            0xAB, 0xCD, // fault bytes
-            0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // at = 0x42
+            0x08,
+            0x02, 0x00, 0x00, 0x00,
+            0xAB, 0xCD,
+            0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ],
     );
 }
@@ -261,9 +257,9 @@ fn req_read() {
             len: 0x40,
         },
         &[
-            0x0A, // REQ_READ
-            0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // gpa = 0x1000
-            0x40, 0x00, 0x00, 0x00, // len = 0x40
+            0x0A,
+            0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x40, 0x00, 0x00, 0x00,
         ],
     );
 }
@@ -279,8 +275,8 @@ fn req_sdk_events() {
         15,
         Request::SdkEvents { offset: 0x2A },
         &[
-            0x09, // REQ_SDK_EVENTS
-            0x2A, 0x00, 0x00, 0x00, // offset = 0x2A
+            0x09,
+            0x2A, 0x00, 0x00, 0x00,
         ],
     );
 }
@@ -291,17 +287,15 @@ fn req_console() {
         16,
         Request::Console { offset: 0x0100 },
         &[
-            0x0E, // REQ_CONSOLE
-            0x00, 0x01, 0x00, 0x00, // offset = 0x100
+            0x0E,
+            0x00, 0x01, 0x00, 0x00,
         ],
     );
 }
 
-// -------------------------------- replies ----------------------------------
-
 #[test]
 fn reply_hello() {
-    let mut body = vec![0x00, 0x01]; // RESULT_OK, REPLY_HELLO
+    let mut body = vec![0x00, 0x01];
     body.extend_from_slice(&CAPS_BYTES);
     check_reply(10, Ok(Reply::Hello(sample_caps())), &body);
 }
@@ -322,11 +316,11 @@ fn reply_snapshot_untainted_carries_the_cut() {
             tainted: false,
         }),
         &[
-            0x00, 0x0A, // RESULT_OK, REPLY_SNAPSHOT
-            0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // id = 9
-            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // at = 0x1234
-            0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // sdk_events = 3
-            0x00, // tainted = false
+            0x00, 0x0A,
+            0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00,
         ],
     );
 }
@@ -342,7 +336,7 @@ fn reply_hash() {
     for (i, b) in digest.iter_mut().enumerate() {
         *b = i as u8;
     }
-    let mut body = vec![0x00, 0x05]; // RESULT_OK, REPLY_HASH
+    let mut body = vec![0x00, 0x05];
     body.extend_from_slice(&digest);
     check_reply(13, Ok(Reply::Hash(digest)), &body);
 }
@@ -353,18 +347,15 @@ fn reply_bytes() {
         14,
         Ok(Reply::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])),
         &[
-            0x00, 0x07, // RESULT_OK, REPLY_BYTES
-            0x04, 0x00, 0x00, 0x00, // bytes len = 4
-            0xDE, 0xAD, 0xBE, 0xEF, // bytes
+            0x00, 0x07,
+            0x04, 0x00, 0x00, 0x00,
+            0xDE, 0xAD, 0xBE, 0xEF,
         ],
     );
 }
 
 #[test]
 fn reply_sdk_events() {
-    // A two-event page: the count, then each `(moment, event_id, bytes)` in
-    // capture order. Order-preserving by construction — a reordering here is a
-    // reordering of the evidence a reproducer is judged against.
     check_reply(
         64,
         Ok(Reply::SdkEvents(vec![
@@ -372,22 +363,21 @@ fn reply_sdk_events() {
             (0x33, 0x44, vec![]),
         ])),
         &[
-            0x00, 0x06, // RESULT_OK, REPLY_SDK_EVENTS
-            0x02, 0x00, 0x00, 0x00, // event count = 2
-            0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // [0] moment = 0x11
-            0x22, 0x00, 0x00, 0x00, // [0] event_id = 0x22
-            0x01, 0x00, 0x00, 0x00, // [0] bytes len = 1
-            0xAA, // [0] bytes
-            0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // [1] moment = 0x33
-            0x44, 0x00, 0x00, 0x00, // [1] event_id = 0x44
-            0x00, 0x00, 0x00, 0x00, // [1] bytes len = 0 (an empty payload is legal)
+            0x00, 0x06,
+            0x02, 0x00, 0x00, 0x00,
+            0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x22, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x00, 0x00,
+            0xAA,
+            0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x44, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
         ],
     );
 }
 
 #[test]
 fn reply_console() {
-    // `total` is the capture's full length (the paging bound), `chunk` the page.
     check_reply(
         65,
         Ok(Reply::Console {
@@ -395,10 +385,10 @@ fn reply_console() {
             chunk: vec![b'h', b'i'],
         }),
         &[
-            0x00, 0x0C, // RESULT_OK, REPLY_CONSOLE
-            0x34, 0x12, 0x00, 0x00, // total = 0x1234
-            0x02, 0x00, 0x00, 0x00, // chunk len = 2
-            0x68, 0x69, // chunk = "hi"
+            0x00, 0x0C,
+            0x34, 0x12, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0x00,
+            0x68, 0x69,
         ],
     );
 }
@@ -415,9 +405,9 @@ fn reply_console_empty_page() {
             chunk: vec![],
         }),
         &[
-            0x00, 0x0C, // RESULT_OK, REPLY_CONSOLE
-            0x00, 0x00, 0x00, 0x00, // total = 0
-            0x00, 0x00, 0x00, 0x00, // chunk len = 0
+            0x00, 0x0C,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
         ],
     );
 }
@@ -425,8 +415,6 @@ fn reply_console_empty_page() {
 #[test]
 fn reply_regs() {
     use control_proto::{Moment, RegsView};
-    // Distinctive per-field values so any layout drift (field order, width, or a
-    // dropped/added field) fails against the hand-written bytes.
     let view = RegsView {
         version: RegsView::VERSION,
         gpr: [
@@ -442,10 +430,8 @@ fn reply_regs() {
         moment: Moment(0x64),
         vtime: 0x64,
     };
-    // Build the expected body field-by-field (fixed order, little-endian) — the
-    // wire layout pinned independently of the codec.
-    let mut body = vec![0x00, 0x08]; // RESULT_OK, REPLY_REGS
-    body.extend_from_slice(&1u16.to_le_bytes()); // version = 1
+    let mut body = vec![0x00, 0x08];
+    body.extend_from_slice(&1u16.to_le_bytes());
     for g in view.gpr {
         body.extend_from_slice(&g.to_le_bytes());
     }
@@ -459,12 +445,9 @@ fn reply_regs() {
     body.extend_from_slice(&view.cr4.to_le_bytes());
     body.extend_from_slice(&view.moment.0.to_le_bytes());
     body.extend_from_slice(&view.vtime.to_le_bytes());
-    // 2 tag + 2 version + 16*8 gpr + 8 rip + 8 rflags + 6*2 seg + 3*8 cr + 8 moment + 8 vtime.
     assert_eq!(body.len(), 2 + 2 + 128 + 8 + 8 + 12 + 24 + 8 + 8);
     check_reply(15, Ok(Reply::Regs(view)), &body);
 }
-
-// --------------------------- StopReason variants ---------------------------
 
 #[test]
 fn reply_stop_deadline() {
@@ -474,9 +457,9 @@ fn reply_stop_deadline() {
             vtime: Moment(0x2A),
         })),
         &[
-            0x00, 0x04, // RESULT_OK, REPLY_STOP
-            0x01, // SR_DEADLINE
-            0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // vtime = 0x2A
+            0x00, 0x04,
+            0x01,
+            0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ],
     );
 }
@@ -506,12 +489,12 @@ fn reply_stop_crash() {
             },
         })),
         &[
-            0x00, 0x04, // RESULT_OK, REPLY_STOP
-            0x03, // SR_CRASH
-            0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // vtime = 5
-            0x01, // CK_UNRECOVERABLE_FAULT
-            0x01, 0x00, 0x00, 0x00, // detail len = 1
-            0xEE, // detail
+            0x00, 0x04,
+            0x03,
+            0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x01,
+            0x01, 0x00, 0x00, 0x00,
+            0xEE,
         ],
     );
 }
@@ -526,12 +509,12 @@ fn reply_stop_decision() {
             ctx: vec![0xAB, 0xCD],
         })),
         &[
-            0x00, 0x04, // RESULT_OK, REPLY_STOP
-            0x04, // SR_DECISION
-            0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // vtime = 0x10
-            0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // id = 3
-            0x02, 0x00, 0x00, 0x00, // ctx len = 2
-            0xAB, 0xCD, // ctx
+            0x00, 0x04,
+            0x04,
+            0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0x00,
+            0xAB, 0xCD,
         ],
     );
 }
@@ -561,17 +544,15 @@ fn reply_stop_assertion() {
             },
         })),
         &[
-            0x00, 0x04, // RESULT_OK, REPLY_STOP
-            0x06, // SR_ASSERTION
-            0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // vtime = 0x10
-            0x99, 0x00, 0x00, 0x00, // ev.id = 0x99
-            0x01, 0x00, 0x00, 0x00, // ev.data len = 1
-            0x01, // ev.data
+            0x00, 0x04,
+            0x06,
+            0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x99, 0x00, 0x00, 0x00,
+            0x01, 0x00, 0x00, 0x00,
+            0x01,
         ],
     );
 }
-
-// -------------------------- ControlError variants --------------------------
 
 #[test]
 fn err_unknown_snapshot() {
@@ -595,7 +576,6 @@ fn err_simple_unit_variants() {
 
 #[test]
 fn err_perturb_out_of_range() {
-    // RESULT_ERR (0x01), CE_PERTURB_OUT_OF_RANGE (0x0B), gpa (u64 LE), ram_len (u64 LE).
     check_reply(
         43,
         Err(ControlError::PerturbOutOfRange {
@@ -611,7 +591,6 @@ fn err_perturb_out_of_range() {
 
 #[test]
 fn err_perturb_past_moment() {
-    // RESULT_ERR (0x01), CE_PERTURB_PAST_MOMENT (0x0C), at (u64 LE), floor (u64 LE).
     check_reply(
         44,
         Err(ControlError::PerturbPastMoment {
@@ -627,7 +606,6 @@ fn err_perturb_past_moment() {
 
 #[test]
 fn err_perturb_moment_taken() {
-    // RESULT_ERR (0x01), CE_PERTURB_MOMENT_TAKEN (0x0D), at (u64 LE).
     check_reply(
         45,
         Err(ControlError::PerturbMomentTaken { at: 0x1F4 }),
@@ -637,7 +615,6 @@ fn err_perturb_moment_taken() {
 
 #[test]
 fn err_schedule_unsatisfiable() {
-    // RESULT_ERR (0x01), CE_SCHEDULE_UNSATISFIABLE (0x0E), moment (u64 LE), vtime (u64 LE).
     check_reply(
         46,
         Err(ControlError::ScheduleUnsatisfiable {
@@ -653,7 +630,6 @@ fn err_schedule_unsatisfiable() {
 
 #[test]
 fn err_perturb_reserved_vector() {
-    // RESULT_ERR (0x01), CE_PERTURB_RESERVED_VECTOR (0x10), vector (u8).
     check_reply(
         48,
         Err(ControlError::PerturbReservedVector { vector: 7 }),
@@ -663,7 +639,6 @@ fn err_perturb_reserved_vector() {
 
 #[test]
 fn err_read_out_of_range() {
-    // RESULT_ERR (0x01), CE_READ_OUT_OF_RANGE (0x11), gpa (u64 LE), len (u32 LE), ram_len (u64 LE).
     check_reply(
         49,
         Err(ControlError::ReadOutOfRange {
@@ -672,17 +647,16 @@ fn err_read_out_of_range() {
             ram_len: 0x4000,
         }),
         &[
-            0x01, 0x11, // RESULT_ERR, CE_READ_OUT_OF_RANGE
-            0xF0, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // gpa = 0x3FF0
-            0x40, 0x00, 0x00, 0x00, // len = 0x40
-            0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ram_len = 0x4000
+            0x01, 0x11,
+            0xF0, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x40, 0x00, 0x00, 0x00,
+            0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ],
     );
 }
 
 #[test]
 fn err_read_too_large() {
-    // RESULT_ERR (0x01), CE_READ_TOO_LARGE (0x12), len (u32 LE), cap (u32 LE).
     check_reply(
         50,
         Err(ControlError::ReadTooLarge {
@@ -690,9 +664,9 @@ fn err_read_too_large() {
             cap: control_proto::READ_CAP,
         }),
         &[
-            0x01, 0x12, // RESULT_ERR, CE_READ_TOO_LARGE
-            0x00, 0x00, 0x08, 0x00, // len = 0x80000
-            0x00, 0x00, 0x04, 0x00, // cap = 0x40000 (READ_CAP = 256 KiB)
+            0x01, 0x12,
+            0x00, 0x00, 0x08, 0x00,
+            0x00, 0x00, 0x04, 0x00,
         ],
     );
 }
@@ -730,11 +704,8 @@ fn err_protocol() {
     );
 }
 
-// ------------------------- task 81: improvisations -------------------------
-
 #[test]
 fn req_exec() {
-    // REQ_EXEC (0x0C), cmd (u32-len-prefixed UTF-8), deadline (u64 LE).
     check_req(
         13,
         Request::Exec {
@@ -742,10 +713,10 @@ fn req_exec() {
             deadline: Moment(0x64),
         },
         &[
-            0x0C, // REQ_EXEC
-            0x04, 0x00, 0x00, 0x00, // cmd len = 4
-            b'l', b's', b' ', b'/', // "ls /"
-            0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // deadline = 0x64
+            0x0C,
+            0x04, 0x00, 0x00, 0x00,
+            b'l', b's', b' ', b'/',
+            0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ],
     );
 }
@@ -757,18 +728,17 @@ fn req_recorded_env() {
 
 #[test]
 fn reply_exec_result() {
-    // RESULT_OK (0x00), REPLY_EXEC_RESULT (0x09), output (u32-len blob), ok (u8).
     check_reply(
         60,
         Ok(Reply::ExecResult {
-            output: vec![0x6F, 0x6B], // "ok"
+            output: vec![0x6F, 0x6B],
             ok: true,
         }),
         &[
-            0x00, 0x09, // RESULT_OK, REPLY_EXEC_RESULT
-            0x02, 0x00, 0x00, 0x00, // output len = 2
-            0x6F, 0x6B, // "ok"
-            0x01, // ok = true
+            0x00, 0x09,
+            0x02, 0x00, 0x00, 0x00,
+            0x6F, 0x6B,
+            0x01,
         ],
     );
 }
@@ -778,8 +748,6 @@ fn reply_exec_result() {
 /// exact evidence cut.
 #[test]
 fn reply_snapshot_tainted_carries_the_cut() {
-    // RESULT_OK (0x00), REPLY_SNAPSHOT (0x0A), id (u64 LE), at (u64 LE),
-    // sdk_events (u64 LE), tainted (u8).
     check_reply(
         61,
         Ok(Reply::Snapshot {
@@ -789,18 +757,17 @@ fn reply_snapshot_tainted_carries_the_cut() {
             tainted: true,
         }),
         &[
-            0x00, 0x0A, // RESULT_OK, REPLY_SNAPSHOT
-            0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // id = 9
-            0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // at = 0x64
-            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // sdk_events = 2
-            0x01, // tainted = true
+            0x00, 0x0A,
+            0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x01,
         ],
     );
 }
 
 #[test]
 fn reply_recorded() {
-    // RESULT_OK (0x00), REPLY_RECORDED (0x0B), Reproducer (blob_version u16, bytes).
     check_reply(
         62,
         Ok(Reply::Recorded(Reproducer {
@@ -808,17 +775,16 @@ fn reply_recorded() {
             bytes: vec![0xCA, 0xFE],
         })),
         &[
-            0x00, 0x0B, // RESULT_OK, REPLY_RECORDED
-            0x03, 0x00, // blob_version = 3
-            0x02, 0x00, 0x00, 0x00, // bytes len = 2
-            0xCA, 0xFE, // bytes
+            0x00, 0x0B,
+            0x03, 0x00,
+            0x02, 0x00, 0x00, 0x00,
+            0xCA, 0xFE,
         ],
     );
 }
 
 #[test]
 fn err_tainted() {
-    // RESULT_ERR (0x01), CE_TAINTED (0x13), no payload.
     check_reply(63, Err(ControlError::Tainted), &[0x01, 0x13]);
 }
 
@@ -839,23 +805,6 @@ fn class_bit_values_are_pinned() {
     assert_eq!(class_bit::SNAPSHOT_POINT, 8);
     assert_eq!(class_bit::ASSERTION, 9);
 }
-
-// ---------------------------------------------------------------------------
-// Exhaustiveness — a new verb cannot land without a golden.
-// ---------------------------------------------------------------------------
-//
-// Reproducers are **persisted evidence**: a reproducer recorded today is
-// expected to replay months from now, from an archive, to justify a bug report.
-// Codec drift therefore does not merely break a client, it silently invalidates
-// the archive — and it does so without any test failing unless the *bytes* are
-// pinned. That is why the provenance obligation (`docs/PROTOCOL.md`) is stated
-// as an encoding property rather than a round-trip property: a codec that
-// round-trips its own drift is exactly the failure mode.
-//
-// The two tests below are the tripwire that keeps the golden set complete. Each
-// matches its enum **exhaustively, with no wildcard arm**, so adding a verb or a
-// reply is a compile error here; the fix is to add the sample below *and* a
-// byte-exact golden above.
 
 /// The body tag of an encoded frame: the first byte after the fixed 14-byte
 /// header (`magic·version·seq·len`).
@@ -904,8 +853,6 @@ fn every_request_variant_has_a_pinned_tag() {
 
     let mut tags = Vec::new();
     for req in &samples {
-        // No wildcard arm: a new verb fails to compile here until it is given a
-        // tag, a sample above, and a byte-exact golden earlier in this file.
         let expected: u8 = match req {
             Request::Hello(_) => 0x01,
             Request::Snapshot => 0x02,
@@ -982,12 +929,8 @@ fn every_reply_variant_has_a_pinned_tag() {
 
     let mut tags = Vec::new();
     for reply in &samples {
-        // No wildcard arm — same tripwire as the request side.
         let expected: u8 = match reply {
             Reply::Hello(_) => 0x01,
-            // 0x02 was the pre-cut bare-handle snapshot reply. Retired, never
-            // reused: an old client must not decode a new reply as the shape it
-            // remembers.
             Reply::Unit => 0x03,
             Reply::Stop(_) => 0x04,
             Reply::Hash(_) => 0x05,
@@ -1001,7 +944,6 @@ fn every_reply_variant_has_a_pinned_tag() {
         };
         let mut buf = Vec::new();
         encode_reply(1, &Ok(reply.clone()), &mut buf).expect("encode");
-        // A successful reply body is `RESULT_OK` then the variant tag.
         assert_eq!(body_tag(&buf), 0x00, "{reply:?}: RESULT_OK byte drifted");
         assert_eq!(buf[15], expected, "{reply:?}: reply tag drifted");
         tags.push(expected);
@@ -1010,7 +952,7 @@ fn every_reply_variant_has_a_pinned_tag() {
     tags.sort_unstable();
     tags.dedup();
     let mut expected_tags: Vec<u8> = (0x01u8..=0x0C).collect();
-    expected_tags.retain(|t| *t != 0x02); // retired, never reused
+    expected_tags.retain(|t| *t != 0x02);
     assert_eq!(
         tags, expected_tags,
         "every reply must occupy its own tag, and 0x02 must stay retired"

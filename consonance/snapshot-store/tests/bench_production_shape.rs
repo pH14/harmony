@@ -15,9 +15,6 @@
 //! `full_image_vec_copy` floor allocates two full images), so the benches take a process-
 //! wide lock and run one at a time.
 
-// not order-observable: this is an informational wall-clock benchmark, not library
-// state — `Instant::now` measures elapsed time and never reaches any output that
-// affects determinism. The determinism lint targets production state, not bench timing.
 #![allow(clippy::disallowed_methods)]
 
 use std::hint::black_box;
@@ -40,7 +37,6 @@ const DEDUP_GROUP: u64 = 8;
 static BENCH_LOCK: Mutex<()> = Mutex::new(());
 
 fn serialize() -> std::sync::MutexGuard<'static, ()> {
-    // A panicking bench must not poison the rest of the run.
     BENCH_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -68,10 +64,6 @@ fn shape(mem_pages: u64) -> String {
     format!("mem_pages={mem_pages} image_mib={mib}")
 }
 
-// ---------------------------------------------------------------------------
-// Deterministic synthetic image (no `rand`, seeded like `bench.rs::page`).
-// ---------------------------------------------------------------------------
-
 fn splitmix64(seed: u64) -> u64 {
     let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -85,7 +77,6 @@ fn fill_page(buf: &mut [u8], seed: u64) {
     let (chunks, remainder) = buf.as_chunks_mut::<8>();
     debug_assert!(remainder.is_empty());
     for (i, chunk) in chunks.iter_mut().enumerate() {
-        // (seed, i) -> a single u64; injective for seed < 2^32 and i < 2^32.
         let v = splitmix64(seed.wrapping_mul(0x1_0000_0001).wrapping_add(i as u64));
         *chunk = v.to_le_bytes();
     }
@@ -153,10 +144,6 @@ fn seal_full_base(store: &mut Store, img: &[u8], mem_pages: u64) -> SnapshotId {
     b.seal(vec![0u8; 64])
 }
 
-// ---------------------------------------------------------------------------
-// Timing helpers
-// ---------------------------------------------------------------------------
-
 fn median(mut v: Vec<Duration>) -> Duration {
     v.sort_unstable();
     v[v.len() / 2]
@@ -166,10 +153,6 @@ fn us_per(d: Duration, n: u64) -> f64 {
     d.as_secs_f64() * 1e6 / n as f64
 }
 
-// ---------------------------------------------------------------------------
-// 1. base_seal — what `SnapshotEngine::snapshot_base` costs at production shape.
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "informational bench; run with --release --ignored --nocapture"]
 fn base_seal() {
@@ -178,8 +161,6 @@ fn base_seal() {
     let img = synthetic_image(mem_pages);
     warm(&img);
 
-    // Same-shape baseline: just BLAKE3 over every frame, no store at all. The gap
-    // between this and `total` is intern/alloc/BTreeMap cost.
     let t = Instant::now();
     let mut sink = 0u8;
     for gfn in 0..mem_pages {
@@ -188,7 +169,6 @@ fn base_seal() {
     let hash_only = t.elapsed();
     black_box(sink);
 
-    // The floor the *post-M1.2a* store can reach: it hashes only the non-zero frames.
     let t = Instant::now();
     let mut sink = 0u8;
     for gfn in 0..mem_pages {
@@ -199,9 +179,6 @@ fn base_seal() {
     let hash_nonzero = t.elapsed();
     black_box(sink);
 
-    // Split the write loop (hash + zero-test + intern) from `seal` (the redundancy pass
-    // over every buffered write) — they point at different optimizations, and M1.2d's
-    // go/no-go turns on which one holds the residual over the hash-only baseline.
     let mut store = Store::new(StoreConfig { mem_pages });
     let t = Instant::now();
     let mut b = store.begin_base();
@@ -231,10 +208,6 @@ fn base_seal() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 2. dirty_delta_seal — the M2.1 payoff curve: seal cost vs dirty-set size.
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "informational bench; run with --release --ignored --nocapture"]
 fn dirty_delta_seal() {
@@ -243,7 +216,7 @@ fn dirty_delta_seal() {
     let img = synthetic_image(mem_pages);
     let mut store = Store::new(StoreConfig { mem_pages });
     let base = seal_full_base(&mut store, &img, mem_pages);
-    drop(img); // the base owns its own copies; free 2 GiB before the deltas
+    drop(img);
 
     for n in [512u64, 4_096, 32_768, 262_144] {
         if n * 2 > mem_pages {
@@ -253,11 +226,9 @@ fn dirty_delta_seal() {
             );
             continue;
         }
-        // Seconds-scale iterations get one run; cheap ones get the median of three.
         let iters = if n <= 32_768 { 3 } else { 1 };
         let mut samples = Vec::with_capacity(iters);
         for it in 0..iters as u64 {
-            // Fresh contents per iteration: no cross-iteration intern hits.
             let mut dirty = vec![0u8; n as usize * PAGE_SIZE];
             for i in 0..n {
                 let off = i as usize * PAGE_SIZE;
@@ -289,11 +260,6 @@ fn dirty_delta_seal() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 3. full_rescan_delta_seal — what a derive *without* a dirty set costs
-//    (the `dirty: None` fallback path). Pairs with bench 2: scan domination.
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "informational bench; run with --release --ignored --nocapture"]
 fn full_rescan_delta_seal() {
@@ -304,7 +270,6 @@ fn full_rescan_delta_seal() {
     let mut store = Store::new(StoreConfig { mem_pages });
     let base = seal_full_base(&mut store, &img, mem_pages);
 
-    // Exactly `changed` frames actually differ from the base.
     let changed = std::cmp::min(4_096, mem_pages / NONZERO_STRIDE);
     for k in 0..changed {
         let off = (k * NONZERO_STRIDE) as usize * PAGE_SIZE;
@@ -329,10 +294,6 @@ fn full_rescan_delta_seal() {
         us_per(total, mem_pages),
     );
 }
-
-// ---------------------------------------------------------------------------
-// 4. materialize_sweep — restore-side cost, plus the two floors it is judged against.
-// ---------------------------------------------------------------------------
 
 /// Floor (a): the ideal write path — one write-mapping of the sized tempfile, one
 /// memcpy per resolved page, flush. This is exactly what M1.2b makes `materialize` do.
@@ -364,8 +325,8 @@ fn mmap_memcpy_floor(mem_pages: u64, pages: &[(u64, Vec<u8>)]) -> Duration {
 fn full_image_vec_copy(mem_pages: u64) -> Duration {
     let len = mem_pages as usize * PAGE_SIZE;
     let src = vec![1u8; len];
-    let mut dst = vec![2u8; len]; // pre-touched: measure memcpy, not first-touch faults
-    dst.copy_from_slice(&src); // warm
+    let mut dst = vec![2u8; len];
+    dst.copy_from_slice(&src);
     let t = Instant::now();
     dst.copy_from_slice(&src);
     let d = t.elapsed();
@@ -393,7 +354,6 @@ fn materialize_sweep() {
         }
         let mut store = Store::new(StoreConfig { mem_pages });
 
-        // Base holds the resident set at gfn ≡ 0 (mod 4).
         let mut b = store.begin_base();
         let mut base_pages: Vec<(u64, Vec<u8>)> = Vec::with_capacity(resident as usize);
         for i in 0..resident {
@@ -404,8 +364,6 @@ fn materialize_sweep() {
         }
         let base = b.seal(vec![0u8; 64]);
 
-        // One 32-deep chain; the depth-1/8/32 snapshots are prefixes of it. Interior
-        // layers dirty small disjoint sets at gfn ≡ 1 (mod 4).
         let mut at_depth: Vec<SnapshotId> = vec![base];
         let mut tip = base;
         for layer in 1..MAX_DEPTH {
@@ -461,10 +419,6 @@ fn materialize_sweep() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 5. gc_reap — 64 layers, release all but the tip, time `gc()`.
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "informational bench; run with --release --ignored --nocapture"]
 fn gc_reap() {
@@ -473,7 +427,6 @@ fn gc_reap() {
     const LAYERS: u64 = 64;
     const PER_LAYER: u64 = 1_024;
 
-    // (i) 64 siblings off one base: releasing all but the tip actually reaps 63 layers.
     let mut store = Store::new(StoreConfig { mem_pages });
     let base = store.begin_base().seal(vec![0u8; 64]);
     let mut sibs = Vec::with_capacity(LAYERS as usize);
@@ -492,8 +445,6 @@ fn gc_reap() {
     let freed = store.gc();
     let reap = t.elapsed();
 
-    // (ii) A 64-deep chain: the tip needs every ancestor, so `gc` reaps nothing and the
-    // number is the pure reachability walk.
     let mut store = Store::new(StoreConfig { mem_pages });
     let mut tip = store.begin_base().seal(vec![0u8; 64]);
     let mut chain = vec![tip];

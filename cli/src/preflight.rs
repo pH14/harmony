@@ -41,7 +41,6 @@ impl GuestArtifacts {
                     .join(isa.guest_dir_name()),
             );
         }
-        // Dev fallback: running from a repo checkout.
         candidates.push(PathBuf::from("consonance/harmony-linux/build").join(isa.guest_dir_name()));
 
         for dir in candidates {
@@ -58,8 +57,6 @@ impl GuestArtifacts {
     }
 
     fn scan(dir: &Path) -> Self {
-        // arm64 uses the container-capable postgres-profile kernel; the
-        // minimal Image lacks BINFMT_SCRIPT and namespaces.
         let kernel = ["Image-postgres", "bzImage"]
             .iter()
             .map(|n| dir.join(n))
@@ -267,7 +264,6 @@ mod tests {
         assert_eq!(found.kernel, Some(dir.path().join("bzImage")));
         assert_eq!(found.initramfs, [dir.path().join("initramfs-oci.cpio.gz")]);
 
-        // Image-postgres outranks bzImage (the arm64 container kernel).
         std::fs::write(dir.path().join("Image-postgres"), b"x").unwrap();
         let found = GuestArtifacts::scan(dir.path());
         assert_eq!(found.kernel, Some(dir.path().join("Image-postgres")));

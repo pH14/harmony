@@ -84,8 +84,6 @@ impl Args {
                 continue;
             }
             if flag == "--fixed-execution-soak" {
-                // Throughput acceptance runs must reach their exact budget
-                // even when ordinary search finds a victory first.
                 fixed_execution_soak = true;
                 continue;
             }
@@ -219,15 +217,10 @@ fn run_marketing_soak(
         .as_ref()
         .unwrap_or(&live.archive.champion_input)
         .clone();
-    // A victory leaves the game on the weapon award screen; the next stage's
-    // campaign replays everything from power-on through the menu walk back
-    // to stage select, so chained runs stay exact without a saved state.
     if let Some(victory) = live.victory_input.as_ref() {
         let genesis_prefix = game.new_target()?.genesis_prefix().to_vec();
         let mut next = genesis_prefix.clone();
         next.extend(victory.actions.iter().copied());
-        // A castle boss hands straight into the next castle stage, so only
-        // a robot master's award needs the walk back to stage select.
         if !game.stage().is_wily() {
             next.extend(game.walk_to_stage_select(&next)?);
         }

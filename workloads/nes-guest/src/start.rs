@@ -48,11 +48,7 @@ impl Default for StartScript {
         StartScript {
             press_frames: 4,
             release_frames: 4,
-            // SMB loads 1-1 well inside a second; 16 frames settles the
-            // level-load transition the first gameplay observation sits in.
             settle_frames: 16,
-            // 30 s at 60 fps — far past any title/menu path SMB has, so a
-            // failure here is a broken core/ROM, not a slow menu.
             max_frames: 1800,
         }
     }
@@ -158,15 +154,10 @@ pub fn run_start_script<C: Core>(
     if script.press_frames == 0 {
         return Err(StartError::BadScript);
     }
-    // Public library input (rule 4): an overflowing press+release cycle must
-    // reject, not wrap (a wrap to 0 would panic at `frames % cycle`).
     let cycle = script
         .press_frames
         .checked_add(script.release_frames)
         .ok_or(StartError::BadScript)?;
-    // The cheapest possible success is one observation frame plus the settle;
-    // a budget that cannot hold even that can never succeed, so say so before
-    // burning a single frame rather than running to an overrun.
     let least = script
         .settle_frames
         .checked_add(1)
@@ -186,10 +177,6 @@ pub fn run_start_script<C: Core>(
         frames += 1;
         let state = observe(core, &mut ram)?;
         if state.in_gameplay() {
-            // The settle is spent from the same budget. `frames <= max_frames`
-            // holds here (the loop only entered below the bound and added one),
-            // so this subtraction cannot wrap — and refusing when the settle
-            // does not fit keeps the whole script inside `max_frames`.
             if script.settle_frames > script.max_frames - frames {
                 return Err(StartError::SettleExceedsBudget {
                     observed_at: frames,
@@ -257,10 +244,7 @@ mod tests {
     fn never_reaching_gameplay_is_loud() {
         let mut core = MockCore::new();
         let script = StartScript {
-            max_frames: 2, // less than the mock's press+load latency
-            // The settle is spent from `max_frames` too, so a 2-frame budget
-            // only admits a 1-frame settle; the bound under test is the one
-            // gameplay is never reached within.
+            max_frames: 2,
             settle_frames: 1,
             ..StartScript::default()
         };
@@ -303,9 +287,6 @@ mod tests {
         let mut core = MockCore::new();
         let script = StartScript {
             settle_frames: 16,
-            // The mock reaches gameplay at frame 4; 4 + 16 = 20 > 17, so the
-            // settle cannot fit — but the script still passes the up-front
-            // "could this ever succeed?" check (17 >= 16 + 1).
             max_frames: 17,
             ..StartScript::default()
         };
@@ -323,8 +304,6 @@ mod tests {
             core.frames_run()
         );
 
-        // Widen the budget by the three frames the settle was short and the
-        // identical script succeeds — the bound is what refused it, nothing else.
         let mut core = MockCore::new();
         let ok = StartScript {
             max_frames: 20,
@@ -342,7 +321,7 @@ mod tests {
         let mut core = MockCore::new();
         let script = StartScript {
             settle_frames: 16,
-            max_frames: 16, // needs 17: the observation frame + the settle
+            max_frames: 16,
             ..StartScript::default()
         };
         assert!(matches!(
@@ -351,7 +330,6 @@ mod tests {
         ));
         assert_eq!(core.frames_run(), 0, "rejected before the first frame");
 
-        // The overflow edge of the same check: settle_frames + 1 wraps.
         let overflowing = StartScript {
             settle_frames: u32::MAX,
             ..StartScript::default()

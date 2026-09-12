@@ -44,8 +44,6 @@ fn build_schedule(
         sched.push((*m, points[i % points.len()]));
     }
     for (i, p) in points.iter().enumerate() {
-        // An arbitrary, deterministic spread of Moments; collisions with the
-        // override Moments are harmless (both runs see the same schedule).
         let m = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xABCD;
         sched.push((m, *p));
     }
@@ -66,7 +64,6 @@ proptest! {
         let a = run(&mut SeededEnv::new(seed, policy.clone()), &seq);
         let b = run(&mut SeededEnv::new(seed, policy), &seq);
         prop_assert_eq!(&a, &b);
-        // A pure backing never suspends.
         for o in &a {
             prop_assert!(matches!(o, Outcome::Resolved(_)));
         }
@@ -103,16 +100,13 @@ proptest! {
         let spec = EnvSpec::Recorded { seed, policy, overrides, standing: vec![], reseeds: Default::default(), payloads: None };
         let sched = build_schedule(spec.overrides(), &points);
 
-        // record: serialize. replay: decode it back.
         let replayed = EnvSpec::decode(&spec.encode()).expect("our own blob decodes");
         prop_assert_eq!(&spec, &replayed, "encode/decode round-trips");
 
-        // The guest plane: same Moment-stamped trace from both.
         let trace_a = run_guest_schedule(&mut spec.materialize(), &sched);
         let trace_b = run_guest_schedule(&mut replayed.materialize(), &sched);
         prop_assert_eq!(trace_a, trace_b, "guest replay is bit-identical");
 
-        // The host plane: same imperative timeline from both, in Moment order.
         let host_a: Vec<(Moment, HostFault)> = spec.host_faults().collect();
         let host_b: Vec<(Moment, HostFault)> = replayed.host_faults().collect();
         prop_assert_eq!(host_a, host_b, "host timeline is bit-identical");
@@ -121,9 +115,6 @@ proptest! {
 
 #[test]
 fn seeded_and_seeded_recorded_baseline_agree() {
-    // With no overrides, an `EnvSpec::Seeded` materializes to a `RecordedEnv`
-    // whose answers match a bare `SeededEnv` decision-for-decision (the override
-    // map is empty, so the base answers everything).
     use fault_policy::{DecisionPoint as P, FaultPolicy, NodeId, Span};
     let seed = 0x1234_5678_9abc_def0;
     let mut policy = FaultPolicy::none();
@@ -161,10 +152,6 @@ fn seeded_and_seeded_recorded_baseline_agree() {
 
 #[test]
 fn host_overrides_never_leak_into_guest_answers() {
-    // A host-plane action at a Moment where a guest decision surfaces is NOT
-    // applied as a guest answer — it is filtered out of `materialize`, so the
-    // seeded base answers (exactly as if no override were there). The host fault
-    // remains available to the frontier via `host_faults`.
     use fault_policy::{DecisionPoint as P, FaultPolicy};
     let seed = 0xFEED_FACE;
     let host_moment = 7u64;

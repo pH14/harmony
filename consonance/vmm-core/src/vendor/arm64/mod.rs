@@ -447,10 +447,6 @@ impl Vendor for Arm64 {
     }
 
     fn mmio_holes() -> &'static [(u64, u64)] {
-        // No machine memory map exists yet — the arm64 board layout (GIC
-        // frames, PL011, the reserved doorbell GPA) lands with the M3 boot
-        // path, and until then the skeleton punches no holes: every MMIO
-        // access fails closed in `dispatch_mmio` regardless.
         &[]
     }
 
@@ -458,8 +454,6 @@ impl Vendor for Arm64 {
         vmm: &mut Vmm<B>,
         exit: Arm64Exit,
     ) -> Result<Step, VmmError> {
-        // Exhaustive over `Arm64Exit` — no wildcard arm (default-deny stays
-        // structural; `docs/ARCHITECTURE.md`).
         match exit {
             Arm64Exit::Sysreg { sysreg, write } => vmm.dispatch_sysreg(sysreg, write),
         }
@@ -505,9 +499,6 @@ impl Vendor for Arm64 {
     }
 
     fn guest_interruptible<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Result<bool, VmmError> {
-        // `PSTATE.I` clear — the guest's own "I can take an IRQ" signal (the
-        // arm64 mirror of x86's `RFLAGS.IF`; `PSTATE.F`/FIQ is not modeled by
-        // the skeleton — TODO(AA-6): the contract's group model).
         Ok(vmm.backend().save()?.core.pstate & dispatch::PSTATE_I == 0)
     }
 
@@ -562,10 +553,6 @@ impl Vendor for Arm64 {
     }
 
     fn encode_device_state(devices: &Self::Devices) -> Vec<u8> {
-        // The PL011 configuration-register shadows — the device's residual
-        // state, so two runs that program the UART differently hash
-        // differently even with byte-identical serial output. (The engine
-        // appends its terminal-reason bytes after this.)
         let mut v = Vec::new();
         for r in devices.uart.shadow_regs() {
             v.extend_from_slice(&r.to_le_bytes());
@@ -574,10 +561,6 @@ impl Vendor for Arm64 {
     }
 
     fn hash_device_chunks(vcpu: &Arm64VcpuState, devices: &Self::Devices, out: &mut Vec<u8>) {
-        // The GICv3 chunk is present **only** when the fabric is wired;
-        // unwired compositions emit none, so their hash is byte-for-byte
-        // unchanged (the x86 LAPC discipline). It captures the register files
-        // + timer bookkeeping that govern future interrupt delivery.
         let backend_gic = vcpu.gic.as_ref().map(records::gic_from_backend);
         let userspace_gic = devices.gic.as_ref().map(gicv3::Gicv3::snapshot);
         let gic = backend_gic.as_ref().or(userspace_gic.as_ref());
@@ -594,12 +577,6 @@ impl Vendor for Arm64 {
     }
 
     fn regs_view(vcpu: &Arm64VcpuState) -> RegsView {
-        // The task-80 wire view is x86-shaped (v1); fill the arm64 core subset
-        // into its canonical slots — `x0..x15` in the GPR array, `PC` as the
-        // instruction pointer, `PSTATE` as the flags word — and leave the
-        // segment/control-register slots zero (arm64 has none of them; a full
-        // arm64 view is an additive schema bump, port work — the view's
-        // `version` field exists for exactly that evolution).
         let mut gpr = [0u64; 16];
         gpr.copy_from_slice(&vcpu.core.x[..16]);
         RegsView {
@@ -625,12 +602,6 @@ impl Vendor for Arm64 {
         devices: &Self::Devices,
         out: &mut Vec<(&'static str, [u8; 32])>,
     ) {
-        // Expose the GICv3 to the diagnostic breakdown when the fabric is wired,
-        // digesting **exactly the bytes the `GICV` hash chunk hashes** (see
-        // [`hash_device_chunks`]) — so a `state_hash` divergence that lives only
-        // in the GIC (register files / pending-active / the virtual timer)
-        // localizes to the `gic` component instead of "diverged but every
-        // component matched". A new label (never a rename); unwired ⇒ nothing.
         dispatch::device_components(vcpu, devices, out);
     }
 
@@ -644,11 +615,6 @@ impl Vendor for Arm64 {
     }
 
     fn check_sealable_vcpu(vcpu: &Arm64VcpuState) -> Result<(), VmmError> {
-        // Every field of the skeleton vCPU record is representable in the
-        // skeleton record set by construction (they mirror one another
-        // field-for-field). The real unrepresentability check — which live
-        // machine state the sealed subset would silently drop — arrives with
-        // the AA-6 record set, alongside the state itself.
         let _ = vcpu;
         Ok(())
     }

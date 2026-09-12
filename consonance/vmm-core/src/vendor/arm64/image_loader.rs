@@ -159,9 +159,6 @@ pub fn load(image: &[u8], ram: &mut [u8]) -> Result<LoadedImage, ImageLoadError>
     let hdr = parse_header(image)?;
     let ram_len = ram.len() as u64;
     let file_len = image.len() as u64;
-    // The reserved extent is text_offset + the larger of the file length and
-    // the header's effective image_size (which includes BSS the kernel needs
-    // zeroed and reserved past the file bytes).
     let span = file_len.max(hdr.image_size);
     let end = hdr
         .text_offset
@@ -173,8 +170,6 @@ pub fn load(image: &[u8], ram: &mut [u8]) -> Result<LoadedImage, ImageLoadError>
     if end > ram_len {
         return Err(ImageLoadError::DoesNotFit { end, ram: ram_len });
     }
-    // Copy the file bytes; `text_offset + file_len <= end <= ram_len`, so the
-    // destination slice is always fully in range (no panic).
     let start = hdr.text_offset as usize;
     let stop = start + image.len();
     ram[start..stop].copy_from_slice(image);
@@ -216,7 +211,6 @@ mod tests {
         img[IMAGE_SIZE_OFF..IMAGE_SIZE_OFF + 8].copy_from_slice(&image_size.to_le_bytes());
         img[FLAGS_OFF..FLAGS_OFF + 8].copy_from_slice(&flags.to_le_bytes());
         img[MAGIC_OFFSET..MAGIC_OFFSET + 4].copy_from_slice(&IMAGE_MAGIC.to_le_bytes());
-        // Distinctive body so the load placement is checkable.
         for (i, b) in img[HEADER_LEN..].iter_mut().enumerate() {
             *b = (i as u8).wrapping_add(1);
         }
@@ -230,9 +224,7 @@ mod tests {
         let loaded = load(&img, &mut ram).unwrap();
         assert_eq!(loaded.entry_gpa, RAM_BASE);
         assert_eq!(loaded.load_gpa, RAM_BASE);
-        // The image bytes landed at offset 0; the body is right after the header.
         assert_eq!(&ram[..img.len()], &img[..]);
-        // end_off is page-aligned past the image.
         assert_eq!(loaded.end_off, align_up(img.len() as u64, PAGE));
     }
 
@@ -243,14 +235,11 @@ mod tests {
         let loaded = load(&img, &mut ram).unwrap();
         assert_eq!(loaded.entry_gpa, RAM_BASE + 0x8_0000);
         assert_eq!(&ram[0x8_0000..0x8_0000 + img.len()], &img[..]);
-        // RAM before the load offset is untouched (zero).
         assert!(ram[..0x8_0000].iter().all(|&b| b == 0));
     }
 
     #[test]
     fn image_size_reserves_bss_past_the_file() {
-        // file is 64+64=128 bytes but image_size claims 4096: the extent must
-        // reflect the larger, so a too-small RAM is rejected.
         let img = synth(0, 4096, 0, 64);
         let mut small = vec![0u8; 2048];
         assert!(matches!(
@@ -259,24 +248,20 @@ mod tests {
         ));
         let mut ok = vec![0u8; 8192];
         let loaded = load(&img, &mut ok).unwrap();
-        assert_eq!(loaded.end_off, 4096); // already page-aligned
+        assert_eq!(loaded.end_off, 4096);
     }
 
     #[test]
     fn rejects_garbage_and_truncation() {
-        // Too short.
         assert_eq!(parse_header(&[0u8; 10]), Err(ImageLoadError::TooShort));
-        // Right size, bad magic.
         let mut bad = vec![0u8; HEADER_LEN];
         assert!(matches!(
             parse_header(&bad),
             Err(ImageLoadError::BadMagic { .. })
         ));
-        // Good magic, big-endian flag.
         bad[MAGIC_OFFSET..MAGIC_OFFSET + 4].copy_from_slice(&IMAGE_MAGIC.to_le_bytes());
         bad[FLAGS_OFF] = 1;
         assert_eq!(parse_header(&bad), Err(ImageLoadError::BigEndian));
-        // Unaligned text_offset.
         bad[FLAGS_OFF] = 0;
         bad[TEXT_OFFSET_OFF] = 1;
         assert!(matches!(
@@ -290,7 +275,6 @@ mod tests {
         let img = synth(0, 0, 0, 200);
         let mut ram = vec![0u8; 0x1_0000];
         for n in 0..img.len() {
-            // Truncated images must error, never panic (rule #4).
             let _ = load(&img[..n], &mut ram);
         }
     }
@@ -326,25 +310,19 @@ mod tests {
     /// boots the same artifact on real silicon/QEMU).
     #[test]
     fn wrap_image_entry_branches_over_the_header_onto_the_payload() {
-        // A distinctive payload so we can tell code from header/zero bytes.
         let code: Vec<u8> = (0..48u8).map(|i| i.wrapping_add(0x40)).collect();
         let wrapped = wrap_image(&code, 0, 0xA);
 
         let mut ram = vec![0u8; 0x1000];
         let loaded = load(&wrapped, &mut ram).unwrap();
-        // The entry is the image's first byte (code0) — what the CPU fetches.
         assert_eq!(loaded.entry_gpa, RAM_BASE);
         assert_eq!(loaded.entry_gpa, loaded.load_gpa);
-        let entry_off = (loaded.entry_gpa - RAM_BASE) as usize; // 0
+        let entry_off = (loaded.entry_gpa - RAM_BASE) as usize;
 
-        // code0 must be an executable branch, not the zero/header word.
         let code0 = u32::from_le_bytes(ram[entry_off..entry_off + 4].try_into().unwrap());
         assert_ne!(code0, 0, "code0 must not be the zero word (the r7 bug)");
         let dist = decode_b_offset(code0).expect("code0 must be an AArch64 `B`");
 
-        // Follow the fetch-then-branch: control must land exactly on the payload
-        // (offset HEADER_LEN) — over the entire header — and the landing byte is
-        // the payload's first byte, not a header byte.
         let target = entry_off as i64 + dist;
         assert_eq!(
             target, HEADER_LEN as i64,

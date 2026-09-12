@@ -19,8 +19,6 @@
 use std::collections::BTreeMap;
 
 use kvm_bindings::{
-    // NB: `SIGNIFCANT` (missing the 'I') is an upstream typo in kvm-bindings /
-    // the kernel uapi, faithfully preserved here.
     KVM_CPUID_FLAG_SIGNIFCANT_INDEX,
     KVM_EXIT_FAIL_ENTRY,
     KVM_EXIT_HLT,
@@ -83,15 +81,6 @@ pub(crate) enum Pending {
     /// `error != 0`.
     Wrmsr,
 }
-
-// ---------------------------------------------------------------------------
-// The pure KVM exit-mapping seam.
-//
-// `RunPage` is a raw view over the `mmap`-ed `kvm_run` (or, in the unit tests, a
-// synthetic buffer). The `decode_*` / `apply_*` functions are the entire
-// `kvm_run` ⇄ `Exit<X86>`/completion translation, written against `RunPage` and
-// issuing **no syscall**.
-// ---------------------------------------------------------------------------
 
 /// A raw view over the `kvm_run` page. All access goes through the single raw
 /// pointer — no long-lived `&`/`&mut kvm_run` is created — so the typed-field
@@ -270,17 +259,14 @@ pub(crate) fn plan_irq_entry(
     readiness_current: bool,
 ) -> IrqEntry {
     match pending_irq {
-        // Injectable now: clear any window request and queue the vector.
         Some(vector) if readiness_current && page.ready_for_interrupt_injection() != 0 => {
             page.set_request_interrupt_window(false);
             IrqEntry::Queue(vector)
         }
-        // Pending but not injectable yet: ask KVM to exit when the window opens.
         Some(_) => {
             page.set_request_interrupt_window(true);
             IrqEntry::Run
         }
-        // Nothing pending: ensure no stale window request is left armed.
         None => {
             page.set_request_interrupt_window(false);
             IrqEntry::Run
@@ -310,7 +296,6 @@ pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit<X86>, Pending)>>
         KVM_EXIT_SHUTDOWN => Ok(Some((Exit::Common(CommonExit::Shutdown), Pending::None))),
         KVM_EXIT_INTERNAL_ERROR => Err(BackendError::Internal("KVM_EXIT_INTERNAL_ERROR")),
         KVM_EXIT_FAIL_ENTRY => Err(BackendError::Internal("KVM_EXIT_FAIL_ENTRY")),
-        // Run-loop control exits — consumed internally, never surfaced.
         KVM_EXIT_IRQ_WINDOW_OPEN => Ok(None),
         _ => Err(BackendError::Internal("unhandled KVM exit reason")),
     }
@@ -457,8 +442,6 @@ where
 
     page.set_immediate_exit(true);
     let result = enter();
-    // The completion-only arm is a one-shot control bit. It must not leak into
-    // a later normal entry, including after an ioctl failure.
     page.set_immediate_exit(false);
 
     match result {
@@ -473,10 +456,6 @@ where
         )),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Configuration / snapshot helpers (pure — gated by the unit tests below).
-// ---------------------------------------------------------------------------
 
 /// Build the `KVM_SET_CPUID2` entry table from the frozen model. The
 /// `SIGNIFCANT_INDEX` flag mapping is the part worth gating.
@@ -544,7 +523,7 @@ where
 {
     let target = to_kvm_sregs2(state);
     let mut transient = target;
-    transient.cr0 ^= 1 << 16; // Architectural CR0.WP.
+    transient.cr0 ^= 1 << 16;
     set(&transient)?;
     set(&target)
 }
@@ -568,7 +547,6 @@ pub(crate) fn validate_restore_shape(
         .unwrap_or_default();
     expected.sort_unstable();
     expected.dedup();
-    // `BTreeMap` keys are already ascending and unique.
     let actual: Vec<u32> = state.msrs.keys().copied().collect();
     if actual != expected {
         return Err(BackendError::InvalidState);
@@ -587,11 +565,6 @@ pub(crate) fn kvm_capabilities() -> Capabilities<X86Caps> {
         arch: X86Caps,
     }
 }
-
-// ---------------------------------------------------------------------------
-// kvm_bindings <-> VcpuState conversions (flat field copies, no host-derived
-// values laundered in).
-// ---------------------------------------------------------------------------
 
 pub(crate) fn from_kvm_regs(r: &kvm_regs) -> VcpuRegs {
     VcpuRegs {
@@ -708,8 +681,6 @@ pub(crate) fn from_kvm_sregs2(s: &kvm_sregs2) -> VcpuSregs {
         cr8: s.cr8,
         efer: s.efer,
         apic_base: s.apic_base,
-        // Preserved so `restore(save())` round-trips PAE paging state (the
-        // PDPTRS_VALID flag + the four PDPTRs).
         flags: s.flags,
         pdptrs: s.pdptrs,
     }
@@ -787,8 +758,6 @@ pub(crate) fn from_kvm_events(e: &kvm_vcpu_events) -> VcpuEvents {
 pub(crate) fn to_kvm_events(e: &VcpuEvents) -> kvm_vcpu_events {
     let mut k = kvm_vcpu_events {
         sipi_vector: e.sipi_vector,
-        // `flags` carries the VALID_PAYLOAD / VALID_TRIPLE_FAULT bits, preserved
-        // from `save`, so the payload + triple-fault fields below round-trip.
         flags: e.flags,
         exception_has_payload: e.exception_has_payload,
         exception_payload: e.exception_payload,

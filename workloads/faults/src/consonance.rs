@@ -108,9 +108,6 @@ impl FaultConfig {
         let ram = usize::try_from(self.ram_mib)
             .unwrap_or(usize::MAX / (1024 * 1024))
             .saturating_mul(1024 * 1024);
-        // A campaign never encodes the virtual-time trace, so the sparse
-        // checkpoint hash over all of a gigabyte-class guest's RAM would only
-        // slow every run, starting with the boot that reaches setup.
         SessionConfig::new(ram, SEED, SETUP_BUDGET, self.cmdline())
             .with_identity_tag(IDENTITY_TAG)
             .with_wall_limit(WALL_LIMIT)
@@ -170,8 +167,6 @@ impl ServiceHandler for StandingHandler {
         Ok(ServiceResponse::Answered(ChannelAnswer::data(bytes)?))
     }
 
-    // The answer is a pure function of the configuration and the polling
-    // moment, so there is no dynamic state to carry across a snapshot.
     fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
         Ok(Vec::new())
     }
@@ -438,10 +433,6 @@ impl FaultTarget {
         self.actions.clone_from(&snapshot.actions);
         self.observation = match rebuilt {
             None => snapshot.observation.clone(),
-            // The prefix ended at its horizon when first run and somewhere
-            // else now, so the two runs of one input differed. The endpoint
-            // is recorded as having no successor rather than as a bug or a
-            // dead worker, and the mismatch goes to the campaign log.
             Some(observation) => {
                 eprintln!(
                     "fault prefix {:?} first stopped at {:?} and stopped at {:?} when rebuilt",
@@ -531,8 +522,6 @@ fn with_live<T>(
         }
         let live = slot.as_mut().ok_or("the session was not initialized")?;
         let result = operation(live);
-        // A guest the session gave up on must not be resumed, so the next
-        // operation on this thread boots a fresh one.
         if live.abandoned {
             *slot = None;
         }
@@ -550,9 +539,6 @@ impl Live {
         )
         .map_err(|error| format!("fault guest boot failed: {error}"))?;
         session.set_service_factory(service_factory());
-        // The client boots to the fault agent's `setup_complete`, which the
-        // agent publishes once every node is up and the readiness command has
-        // passed, and seals it.
         let (setup, root_seal) = session.setup_handle();
         let mut snapshots = BTreeMap::new();
         snapshots.insert(
@@ -659,12 +645,6 @@ impl Live {
             .cached(&actions[..start])
             .ok_or("the fault setup snapshot is missing")?;
         for index in start..actions.len() {
-            // Each endpoint is reached the way its first run reached it:
-            // branched from its parent's snapshot under the standing list of
-            // that shorter input. Running the actions back to back under the
-            // whole input's list gives the guest agent a longer list to
-            // reconcile, and that shifts the guest's timing enough for a
-            // rebuilt endpoint to differ from the one first observed.
             self.branch(last, &actions[..=index])?;
             let (observation, sealed) = self.run_action(index)?;
             let Some((snap, moment)) = sealed else {
@@ -773,9 +753,6 @@ impl Live {
         let mut snap = None;
         if stop.is_continuable() {
             match self.session.seal(SETTLE_STEP_NANOS, SETTLE_ALLOWANCE_NANOS) {
-                // A point that sealed without settling keeps the stop the run
-                // reported; settling ran the guest further, so where it left
-                // the guest is what the endpoint is judged on.
                 Ok((sealed, at, settled)) => {
                     if let Some(settled) = &settled {
                         stop = FaultStop::from_stop_reason(settled);
@@ -785,12 +762,7 @@ impl Live {
                     }
                 }
                 Err(error) => match error.downcast_ref::<SessionError>() {
-                    // The guest stopped for good while settling and the point
-                    // it stopped at is unsealable. That stop is the endpoint's
-                    // evidence, and the session is still usable.
                     Some(SessionError::Stop(reason)) => stop = FaultStop::from_stop_reason(reason),
-                    // The allowance ran out with the guest still off any
-                    // sealable point, so the endpoint has no successor.
                     Some(SessionError::Settle { allowance }) => {
                         eprintln!("fault endpoint never sealed within {allowance} ns of settling");
                     }

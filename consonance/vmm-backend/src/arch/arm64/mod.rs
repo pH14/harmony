@@ -80,9 +80,6 @@ impl ArchExit for Arm64Exit {
     }
 
     fn stages_completion(&self) -> bool {
-        // Both directions stage one: a read stages the destination-register
-        // write, a write stages the fault-or-acknowledge resolution (the x86
-        // Rdmsr/Wrmsr discipline).
         match self {
             Arm64Exit::Sysreg { .. } => true,
         }
@@ -221,7 +218,6 @@ mod tests {
 
     #[test]
     fn gic_intid_classes_are_the_gicv3_identity_space() {
-        // SGIs deliver on arm64 (never x86's `< 16` reserved rule).
         assert!(GicIntId(0).is_sgi());
         assert!(GicIntId(15).is_sgi());
         assert!(!GicIntId(16).is_sgi());
@@ -230,7 +226,6 @@ mod tests {
         assert!(!GicIntId(32).is_ppi());
         assert!(GicIntId(32).is_spi());
         assert!(GicIntId(1019).is_spi());
-        // 1020..1024 are special INTIDs, not SPIs.
         assert!(!GicIntId(1020).is_spi());
         assert_eq!(GicIntId::SPURIOUS, GicIntId(1023));
     }

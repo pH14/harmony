@@ -16,6 +16,13 @@
 # Skip in a pinch with `git push --no-verify`.
 set -euo pipefail
 
+echo "== pre-push: stripping disallowed comments"
+python3 scripts/strip-comments.py
+if ! git diff --quiet; then
+    echo "   comments were stripped — staging the changes"
+    git add -u
+fi
+
 echo "== pre-push: cargo fmt --check"
 cargo fmt --all -- --check
 

@@ -248,8 +248,6 @@ mod tests {
                 for job in [(Some(blocked), 0), (None, 1), (None, 2), (None, 3)] {
                     pool.send(slots.reserve().expect("bounded prefill"), job)?;
                 }
-                // Both replies must come from worker 1, before worker 0 is
-                // released and before any result credit is returned.
                 for value in [1, 3] {
                     let reply = pool.receive()?;
                     assert_eq!(reply.worker, 1);

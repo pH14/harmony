@@ -20,23 +20,6 @@ use vm_state::{
 
 use crate::snapshot::SnapshotError;
 
-// ===========================================================================
-// vm_state adapter — pure, bidirectional conversions between the live machine's
-// `vmm_backend` value types and `vm-state`'s plain-data records.
-//
-// The live `VcpuState` carries a superset of `vm-state`'s `VcpuEvents` /
-// `VcpuSregs` (KVM exposes more pending-event and SREGS2 detail than the
-// determinism model's typed records carry). The typed `vm-state::VcpuEvents` is a
-// reduced 6-field subset; task 41 captures the **full** `kvm_vcpu_events` in the
-// vmm-core-owned device blob (see `DeviceState::events`) and makes it authoritative
-// on restore, so an **in-flight interrupt/exception injection** — a non-quiescent
-// point — now round-trips bit-identically rather than being fail-closed-rejected.
-// The still-dropped `kvm_sregs2` `flags`/`pdptrs` (PAE-only; the long-mode /
-// paging-off determinism guest never uses the PAE PDPTRs) and `debugregs.flags` are
-// zero at any V-time point, so refusing a (non-existent) non-zero value there only
-// guards misuse.
-// ===========================================================================
-
 /// `VcpuState.regs` → `vm_state::VcpuRegs` (identical field set, flat copy).
 pub(crate) fn to_vm_regs(r: &vmm_backend::VcpuRegs) -> VcpuRegs {
     VcpuRegs {
@@ -96,14 +79,6 @@ fn pack_segment(s: &vmm_backend::Segment) -> Segment {
         | ((s.g & 1) << 2)
         | ((s.avl & 1) << 3)
         | ((s.unusable & 1) << 4);
-    // Canonicalize an **unusable** segment's `type` to 0 — mirror `vmm::encode_segment` (the
-    // VCPU hash chunk). An unusable segment's hidden type is architecturally don't-care (SDM
-    // Vol. 3 §24.4.1), and KVM normalizes it `0 → 1` across `KVM_SET_SREGS` → `KVM_GET_SREGS`.
-    // This typed `vm_state::Segment` rides the **VMST** hash chunk (`wire_snapshot_hashing`),
-    // so without masking here a `save → restore → save` would perturb this don't-care field
-    // and the VMST chunk's `state_hash` would diverge from the source even though the VCPU
-    // chunk is canonical (PR #12 round 4). Golden-safe: a live `KVM_GET_SREGS` already reports
-    // `type = 0` for an unusable segment, so masking is a no-op for every real capture.
     let type_ = if s.unusable != 0 { 0 } else { s.type_ };
     Segment {
         base: s.base,
@@ -284,30 +259,13 @@ pub(crate) fn fill_vcpu_state(out: &mut VmState, s: &vmm_backend::VcpuState) {
     out.sregs = to_vm_sregs(&s.sregs);
     out.xcrs = Xcrs { xcr0: s.xcr0 };
     out.debugregs = to_vm_debugregs(&s.debugregs);
-    // Project the **canonical** events into the reduced typed record — mirroring the
-    // device blob (`DeviceState.events = canonical_events(...)`). A raw residual (a stale
-    // `exception.nr`/`error_code` with neither `injected` nor `pending`) must NOT survive
-    // here either: with `wire_snapshot_hashing()` ON, the typed record rides the `VMST`
-    // hash chunk, so a raw residual would make a save→restore→save round-trip's
-    // `state_hash` differ from the source (the restore re-establishes the *canonical*
-    // events). Canonicalizing both records keeps the full hash restore-transparent.
     out.events = to_vm_events(&canonical_events(&s.events));
     out.mp_state = to_vm_mp_state(s.mp_state);
     out.msrs = MsrBlock(s.msrs.clone());
     out.xsave = XsaveImage(s.xsave.clone());
-    // vmm-core holds no `vtime::TimerQueue`: the only timer is the userspace xAPIC
-    // timer, whose state rides in the device blob. So the typed timer queue is
-    // empty (trivially satisfies the codec's ordering invariants).
     out.timers = TimerQueueState::default();
 }
 
-// `kvm_vcpu_events.flags` validity-mask bits (KVM uapi, stable ABI). On a
-// `KVM_GET_VCPU_EVENTS` KVM reports several of these set unconditionally (they mark a
-// sub-record as *present in the GET*, not *active*); on a `KVM_SET_VCPU_EVENTS` the bit
-// instead means "apply this sub-record." vmm-core carries the `flags` field through the
-// device blob, so it owns rebuilding it for the SET — see [`canonical_events`]. (The
-// backend's `to_kvm_events` passes `flags` through verbatim; vmm-core must hand it the
-// SET-meaning mask, not the GET-meaning one.)
 const KVM_VCPUEVENT_VALID_NMI_PENDING: u32 = 0x0000_0001;
 const KVM_VCPUEVENT_VALID_SIPI_VECTOR: u32 = 0x0000_0002;
 const KVM_VCPUEVENT_VALID_SHADOW: u32 = 0x0000_0004;
@@ -339,17 +297,11 @@ const KVM_VCPUEVENT_VALID_TRIPLE_FAULT: u32 = 0x0000_0020;
 /// re-derives the actual injection on the first post-restore service either way.
 pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::VcpuEvents {
     let mut c = vmm_backend::VcpuEvents::default();
-    // Maskable interrupt: keep nr/soft only while an injection is genuinely in flight.
     if e.interrupt_injected != 0 {
         c.interrupt_injected = e.interrupt_injected;
         c.interrupt_nr = e.interrupt_nr;
         c.interrupt_soft = e.interrupt_soft;
     }
-    // Exception: keep the sub-record only while one is injected or pending; and within it,
-    // gate each VALUE field on its own validity bit (mirror the SIPI gating) so a stale
-    // `error_code` / `payload` whose `has_*` bit is clear never reaches the canonical blob or
-    // the `state_hash` — KVM would not apply it, and replaying untrusted residual bytes would
-    // diverge a save → restore → save (PR #12 round 8 audit).
     if e.exception_injected != 0 || e.exception_pending != 0 {
         c.exception_injected = e.exception_injected;
         c.exception_pending = e.exception_pending;
@@ -367,19 +319,10 @@ pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vcpu
             0
         };
     }
-    // NMI / interrupt-shadow / SMM / SIPI / triple-fault are genuine state, carried
-    // verbatim (each defaults to 0 at a quiescent point). `nmi_masked` rides the NMI
-    // sub-record's validity bit.
     c.nmi_injected = e.nmi_injected;
     c.nmi_pending = e.nmi_pending;
     c.nmi_masked = e.nmi_masked;
     c.interrupt_shadow = e.interrupt_shadow;
-    // SIPI: gate strictly on the *original* validity bit, never on `sipi_vector != 0`.
-    // Vector 0 is a legal SIPI (a value test would drop a genuine one), and a nonzero
-    // vector with `VALID_SIPI_VECTOR` clear is a stale residual (a value test would
-    // replay it). KVM zeroes the vector and clears the bit on every `KVM_GET_VCPU_EVENTS`
-    // (it is SET-only — for injecting into a wait-for-SIPI vCPU), so a captured snapshot
-    // carries no SIPI; gating on the bit keeps a synthetic/relayed record faithful.
     let sipi_valid = e.flags & KVM_VCPUEVENT_VALID_SIPI_VECTOR != 0;
     if sipi_valid {
         c.sipi_vector = e.sipi_vector;
@@ -389,15 +332,6 @@ pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vcpu
     c.smi_inside_nmi = e.smi_inside_nmi;
     c.smi_latched_init = e.smi_latched_init;
     c.triple_fault_pending = e.triple_fault_pending;
-    // Rebuild the SET-meaning validity mask: set a bit iff its sub-record is active, so
-    // the GET-side metadata bits (set unconditionally, with all-zero fields) are never
-    // replayed. This is the form used for the **`state_hash`** (active-only, so two
-    // same-seed runs and a quiescent record both hash to `flags = 0` — no golden moves).
-    // NOTE: the **restore** path does NOT use these flags directly — see
-    // [`events_for_restore`]. KVM treats a *clear* validity bit on `KVM_SET_VCPU_EVENTS` as
-    // "leave that sub-record UNCHANGED", not "clear it", so restoring this active-only mask
-    // onto a non-fresh vCPU would retain the prior occupant's stale state. `events_for_restore`
-    // forces the gated clear-on-restore bits on; this function stays active-only for the hash.
     let smm_active =
         c.smi_smm != 0 || c.smi_pending != 0 || c.smi_inside_nmi != 0 || c.smi_latched_init != 0;
     c.flags = if c.nmi_injected != 0 || c.nmi_pending != 0 || c.nmi_masked != 0 {
@@ -517,9 +451,6 @@ pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'s
              not the flags field (KVM defines it as currently always 0)",
         );
     }
-    // The full `kvm_vcpu_events` record IS captured now (device blob, task 41), so an in-flight
-    // injection round-trips — except the two cap-gated fields KVM cannot restore here; see
-    // [`cap_unrestorable_events`] (applied symmetrically at save and at restore-before-mutation).
     if let Some(reason) = cap_unrestorable_events(&vcpu.events) {
         return Some(reason);
     }
@@ -623,18 +554,6 @@ pub(crate) fn has_active_event_injection(e: &vmm_backend::VcpuEvents) -> bool {
         || e.triple_fault_pending != 0
         || e.flags & KVM_VCPUEVENT_VALID_SIPI_VECTOR != 0
 }
-
-// ---------------------------------------------------------------------------
-// The vmm-core device blob: the bytes carried in `vm_state::DeviceBlob`.
-//
-// `vm-state`'s typed records have no home for the userspace xAPIC, the 8259 IMRs,
-// the PCI CONFIG_ADDRESS latch, the 8250 UART (registers + serial capture), or
-// `IA32_TSC_ADJUST`. docs/ARCHITECTURE.md places all of those in the snapshot, and
-// task 09 carries the device section as an opaque, length-delimited placeholder
-// "the vmm-core adapter passes through whatever the device models emit". This is
-// that emission: a small, versioned, little-endian TLV that vmm-core owns end to
-// end (the codec never interprets it). Total decode, no panic (rule #4).
-// ---------------------------------------------------------------------------
 
 /// Device-blob magic: `"DEV1"` read little-endian.
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4544;
@@ -795,8 +714,6 @@ fn put_lapic(out: &mut Vec<u8>, s: &LapicState) {
 pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     let mut out = Vec::new();
     put_u32(&mut out, DEVICE_BLOB_MAGIC);
-    // The version records whether a pvclock channel follows — an unoffered VM
-    // encodes the v3 shape exactly as before task 110.
     put_u16(
         &mut out,
         match d.pvclock {
@@ -830,12 +747,7 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
         }
         None => out.push(0),
     }
-    // The full kvm_vcpu_events (task 41) — a fixed-width record so the
-    // earlier field offsets are unchanged from v2.
     put_events(&mut out, &d.events);
-    // The pvclock channel record (task 110, v4 only) — trailing, so every
-    // earlier offset is unchanged from v3, and ABSENT entirely at v3, so an
-    // unoffered VM's bytes are identical to main's.
     if let Some((gpa, registrable)) = &d.pvclock {
         match gpa {
             Some(g) => {
@@ -964,9 +876,6 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
     if r.u32().ok_or(bad("truncated header"))? != DEVICE_BLOB_MAGIC {
         return Err(bad("bad magic"));
     }
-    // v3 (no pvclock channel) and v4 (channel record trailing) are both current
-    // shapes — the version is the offer flag, so a page-off blob from main
-    // decodes unchanged and a page-on one carries its channel.
     let version = r.u16().ok_or(bad("truncated version"))?;
     if version != DEVICE_BLOB_VERSION_BASE && version != DEVICE_BLOB_VERSION_PVCLOCK {
         return Err(bad("unsupported version"));
@@ -1008,14 +917,6 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
             _ => return Err(bad("bad pvclock gpa flag")),
         };
         let registrable = r.bool().ok_or(bad("bad pvclock registrable flag"))?;
-        // INTERNAL INVARIANT (cross-model r6 P1): a registered page (`Some(gpa)`)
-        // can only exist on a VM that could register — a real source always
-        // stamps `registrable = true` alongside a GPA. The crafted tuple
-        // `(Some(gpa), false)` cannot come from any valid seal; accepting
-        // it would let a blob commit an *active* registration onto a target the
-        // capability check would otherwise refuse (no V-time ⇒ the next refresh
-        // errors; no deterministic backend ⇒ no Δ deadline arms and the page can
-        // freeze). Reject it at the wire, before it reaches the validator.
         if gpa.is_some() && !registrable {
             return Err(bad(
                 "pvclock record marks a registered page non-registrable (impossible tuple)",
@@ -1073,13 +974,8 @@ mod tests {
         }
     }
 
-    // --- segment pack/unpack -------------------------------------------------
-
     #[test]
     fn segment_pack_unpack_round_trips_every_bit() {
-        // Each present/dpl/s/db/l/g/avl bit set, on a **usable** segment (`unusable = 0`) so
-        // its `type_` is carried verbatim — flipping any one pack/unpack shift moves a set
-        // bit and fails the round-trip (no bit can be 0-and-invisible).
         let seg = vmm_backend::Segment {
             base: 0xDEAD_BEEF_0000_1000,
             limit: 0xFFFF_FFFF,
@@ -1095,20 +991,13 @@ mod tests {
             unusable: 0,
         };
         let packed = pack_segment(&seg);
-        // present(1) | dpl(3)<<1 | s(1)<<3 = 1 | 6 | 8 = 0xF.
         assert_eq!(packed.present_dpl_s, 0x0F);
-        // db(1) | l(1)<<1 | g(1)<<2 | avl(1)<<3 = 1|2|4|8 = 0xF (unusable = 0).
         assert_eq!(packed.flags, 0x0F);
         assert_eq!(
             packed.type_, 0xB,
             "a usable segment carries its type verbatim"
         );
         assert_eq!(unpack_segment(&packed), seg);
-        // The `unusable` flag bit (`flags << 4`) exercised, AND its `type` canonicalized to
-        // 0 (PR #12 round 4 — mirror `encode_segment`): an unusable segment with a non-zero
-        // raw `type_` packs to `type 0`, so the VMST hash chunk matches a live `KVM_GET_SREGS`
-        // (which reports `type 0`) and a `save → restore → save` does not diverge. The
-        // round-trip is therefore to the **canonical** form, not the raw input.
         let unusable_raw = vmm_backend::Segment {
             type_: 5,
             unusable: 1,
@@ -1130,7 +1019,6 @@ mod tests {
             unusable_canonical,
             "pack canonicalizes the unusable type; the round-trip is to the canonical form"
         );
-        // A zero segment also round-trips (the all-1 case alone could mask a stuck-high bug).
         let zero = vmm_backend::Segment::default();
         assert_eq!(unpack_segment(&pack_segment(&zero)), zero);
     }
@@ -1145,8 +1033,6 @@ mod tests {
             assert_eq!(unpack_segment(&pack_segment(&seg)).dpl, dpl);
         }
     }
-
-    // --- vcpu-state round-trip ----------------------------------------------
 
     fn sample_vcpu() -> vmm_backend::VcpuState {
         let mut msrs = std::collections::BTreeMap::new();
@@ -1207,13 +1093,6 @@ mod tests {
                 dr7: 0x400,
                 flags: 0,
             },
-            // A CANONICAL, typed-representable events record: the reduced `vm_state::VcpuEvents`
-            // carries `{exception_pending, exception_vector, exception_error_code, nmi_pending,
-            // smi_pending, interrupt_shadow}` only — it does NOT carry `exception_has_error_code`,
-            // and `canonical_events` zeroes a value field whose validity bit is clear (round-8
-            // audit). So a faithful round-trip uses `has_error_code = 0` ⇒ `error_code = 0`. (The
-            // device blob — not this reduced record — carries a genuine error-coded exception on
-            // restore; see `from_vm_events`.)
             events: vmm_backend::VcpuEvents {
                 exception_pending: 1,
                 exception_nr: 14,
@@ -1252,26 +1131,18 @@ mod tests {
 
     #[test]
     fn fill_vcpu_state_canonicalizes_the_typed_events_record() {
-        // P2 (PR #12): the reduced typed `vm_state::VcpuEvents` must carry the CANONICAL
-        // events — an inert residual (a stale exception vector/error-code with neither
-        // `injected` nor `pending`) must collapse, mirroring the device blob. Otherwise,
-        // with `wire_snapshot_hashing()` ON, the raw residual rides the VMST hash chunk and
-        // a save→restore→save round-trip's `state_hash` diverges from the source.
         let mut vcpu = sample_vcpu();
         vcpu.events = vmm_backend::VcpuEvents {
-            exception_nr: 13, // residual: set, but...
+            exception_nr: 13,
             exception_error_code: 0xABCD,
             exception_has_error_code: 1,
-            interrupt_nr: 0x34,   // residual: last-delivered vector, not injected
-            flags: 0x0D,          // GET-only validity bits
-            ..Default::default()  // injected / pending all 0 ⇒ all inert
+            interrupt_nr: 0x34,
+            flags: 0x0D,
+            ..Default::default()
         };
         let mut s = VmState::default();
         fill_vcpu_state(&mut s, &vcpu);
-        // The typed record == the projection of the CANONICAL events (which zero the
-        // inert residual), NOT the raw events.
         assert_eq!(s.events, to_vm_events(&canonical_events(&vcpu.events)));
-        // Concretely: the residual exception vector / error-code collapsed.
         assert_eq!(
             s.events.exception_vector, 0,
             "inert exception vector collapsed"
@@ -1282,8 +1153,6 @@ mod tests {
         );
         assert!(!s.events.exception_pending);
     }
-
-    // --- device blob ---------------------------------------------------------
 
     /// A full `kvm_vcpu_events` with **every** field set to a distinct non-zero value,
     /// so any encode/decode field that is dropped, reordered, or width-truncated fails
@@ -1332,22 +1201,16 @@ mod tests {
                 slave_imr: 0xFF,
             }),
             events: full_events(),
-            // A registered pvclock channel (task 110, v4).
             pvclock: Some((Some(0x4000), true)),
         };
         let blob = encode_device_blob(&d);
         let decoded = decode_device_blob(&blob.0).unwrap();
         assert_eq!(decoded, d);
-        // The report stream survives in execution order (not reordered/dropped).
         assert_eq!(decoded.report_stream, vec![0x1111_1111, 0, 0xDEAD_BEEF]);
     }
 
     #[test]
     fn device_blob_round_trips_a_full_in_flight_events_record() {
-        // Task 41: the *whole* kvm_vcpu_events — every in-flight injection field, the
-        // #PF/#DB payload, SMM, triple-fault — round-trips through the device blob,
-        // field for field. (Quiescent capture would have zeroed all but a 6-field
-        // subset.) Each field is distinct + non-zero, so a dropped/aliased field fails.
         let d = DeviceState {
             events: full_events(),
             ..Default::default()
@@ -1358,7 +1221,6 @@ mod tests {
             full_events(),
             "the full in-flight kvm_vcpu_events must round-trip every field"
         );
-        // A default (quiescent, all-zero) events record is the M1/M2/corpus case.
         let zero = DeviceState::default();
         assert_eq!(
             decode_device_blob(&encode_device_blob(&zero).0)
@@ -1370,12 +1232,7 @@ mod tests {
 
     #[test]
     fn has_inflight_injection_flags_exactly_the_non_quiescent_fields() {
-        // A quiescent record (default, plus the always-representable subset) is NOT
-        // in-flight; each in-flight field alone IS. Pins the exact field set so a mutant
-        // dropping any single field (the gate-1 before/after measurement depends on it)
-        // is caught.
         assert!(!has_inflight_injection(&vmm_backend::VcpuEvents::default()));
-        // The captured/excluded subset must NOT count as in-flight.
         for excluded in [
             vmm_backend::VcpuEvents {
                 exception_pending: 1,
@@ -1411,7 +1268,6 @@ mod tests {
                 "an always-representable field must not mark a non-quiescent point: {excluded:?}"
             );
         }
-        // Each of the 14 in-flight fields alone marks a non-quiescent point.
         let mut probes: Vec<vmm_backend::VcpuEvents> = Vec::new();
         for set in [
             |e: &mut vmm_backend::VcpuEvents| e.exception_injected = 1,
@@ -1443,15 +1299,9 @@ mod tests {
 
     #[test]
     fn has_active_event_injection_flags_only_genuine_injections_not_residuals() {
-        // The *active* subset of has_inflight_injection: only a real injected/pending bit
-        // counts, never an inert modifier residual. The live gate seals on THIS, so the
-        // active/residual split must be exact — a `|| → &&` on any operand (which would
-        // stop a single genuine event from sealing) and a stray residual term (which would
-        // let a quiescent-dressed residual seal a non-headline point) are both caught.
         assert!(!has_active_event_injection(
             &vmm_backend::VcpuEvents::default()
         ));
-        // Each GENUINE active bit alone marks an in-flight event (one operand of the chain).
         for set in [
             |e: &mut vmm_backend::VcpuEvents| e.interrupt_injected = 1,
             |e: &mut vmm_backend::VcpuEvents| e.exception_injected = 1,
@@ -1469,10 +1319,6 @@ mod tests {
                 "a genuine injected/pending bit must mark an active event: {e:?}"
             );
         }
-        // Every inert modifier residual alone must NOT (each collapses under
-        // canonical_events). This is the whole point of the active/residual distinction:
-        // a residual is snapshottable but does not prove a non-quiescent point. A nonzero
-        // `sipi_vector` with VALID_SIPI_VECTOR clear is a residual (the SIPI edge fix).
         for set in [
             |e: &mut vmm_backend::VcpuEvents| e.interrupt_nr = 0x34,
             |e: &mut vmm_backend::VcpuEvents| e.interrupt_soft = 1,
@@ -1483,7 +1329,7 @@ mod tests {
             |e: &mut vmm_backend::VcpuEvents| e.exception_payload = 0xCAFE,
             |e: &mut vmm_backend::VcpuEvents| e.nmi_masked = 1,
             |e: &mut vmm_backend::VcpuEvents| e.interrupt_shadow = 1,
-            |e: &mut vmm_backend::VcpuEvents| e.sipi_vector = 0xAB, // bit clear → residual
+            |e: &mut vmm_backend::VcpuEvents| e.sipi_vector = 0xAB,
             |e: &mut vmm_backend::VcpuEvents| e.smi_smm = 1,
             |e: &mut vmm_backend::VcpuEvents| e.smi_inside_nmi = 1,
             |e: &mut vmm_backend::VcpuEvents| e.smi_latched_init = 1,
@@ -1499,15 +1345,11 @@ mod tests {
 
     #[test]
     fn canonical_events_collapses_residuals_and_reconstructs_flags() {
-        // The box bug: KVM leaves inert modifier residuals (a stale interrupt.nr /
-        // exception.nr/has_error_code, the GET-only validity bits) set even at a
-        // quiescent point; replaying them raw into KVM_SET_VCPU_EVENTS corrupts the
-        // resumed guest. They must collapse to the clean record.
         let residual = vmm_backend::VcpuEvents {
             exception_nr: 13,
             exception_has_error_code: 1,
             interrupt_nr: 52,
-            flags: 0x0D, // VALID_NMI_PENDING|SHADOW|SMM with all-zero fields (GET-side)
+            flags: 0x0D,
             ..Default::default()
         };
         assert_eq!(
@@ -1516,8 +1358,6 @@ mod tests {
             "inert modifier residuals must collapse to the clean quiescent record"
         );
 
-        // A genuine in-flight injection round-trips, with the SET-meaning flags rebuilt
-        // from the surviving fields.
         let injected = vmm_backend::VcpuEvents {
             interrupt_injected: 1,
             interrupt_nr: 0x34,
@@ -1531,9 +1371,6 @@ mod tests {
             interrupt_shadow: 1,
             nmi_masked: 1,
             triple_fault_pending: 1,
-            // Every GET-side flag bit set EXCEPT VALID_SIPI_VECTOR (whose validity is now
-            // preserved from this bit, not inferred — tested separately). The rest are
-            // ignored and rebuilt from the surviving fields below.
             flags: !KVM_VCPUEVENT_VALID_SIPI_VECTOR,
             ..Default::default()
         };
@@ -1544,7 +1381,6 @@ mod tests {
         assert_eq!(c.exception_injected, 1);
         assert_eq!(c.exception_payload, 0xCAFE);
         assert_eq!(c.triple_fault_pending, 1);
-        // flags rebuilt: NMI_PENDING(nmi_masked) | SHADOW | PAYLOAD | TRIPLE_FAULT.
         assert_eq!(
             c.flags,
             KVM_VCPUEVENT_VALID_NMI_PENDING
@@ -1552,26 +1388,19 @@ mod tests {
                 | KVM_VCPUEVENT_VALID_PAYLOAD
                 | KVM_VCPUEVENT_VALID_TRIPLE_FAULT
         );
-        // Idempotent — canonicalizing twice is a no-op (a re-saved restore reproduces).
         assert_eq!(
             canonical_events(&c),
             c,
             "canonical_events must be idempotent"
         );
 
-        // Interrupt/exception modifiers drop when no injection is active; SIPI/SMM bits
-        // appear only with their fields.
         let no_int = vmm_backend::VcpuEvents {
             interrupt_nr: 9,
             ..Default::default()
         };
         assert_eq!(canonical_events(&no_int).interrupt_nr, 0);
-        // SIPI is gated on the *original* validity bit, never on `sipi_vector != 0`. KVM
-        // zeroes the vector and clears the bit on every GET (it is SET-only), so this is
-        // the general-correctness path, not the captured-snapshot path.
-        //   * a nonzero vector with the bit CLEAR is a stale residual → drop vector + bit;
         let sipi_residual = vmm_backend::VcpuEvents {
-            sipi_vector: 0xAB, // Default flags = 0 → VALID_SIPI_VECTOR clear
+            sipi_vector: 0xAB,
             ..Default::default()
         };
         let cr = canonical_events(&sipi_residual);
@@ -1584,7 +1413,6 @@ mod tests {
             0,
             "a SIPI residual (bit clear) clears the validity bit"
         );
-        //   * a vector with the bit SET is genuine → carry vector + keep bit;
         let sipi_genuine = vmm_backend::VcpuEvents {
             sipi_vector: 0xAB,
             flags: KVM_VCPUEVENT_VALID_SIPI_VECTOR,
@@ -1597,8 +1425,6 @@ mod tests {
             KVM_VCPUEVENT_VALID_SIPI_VECTOR,
             "a valid SIPI keeps the validity bit"
         );
-        //   * vector 0 with the bit SET is a LEGAL SIPI (not a residual) → bit survives
-        //     (a `sipi_vector != 0` test would have wrongly dropped it).
         let sipi_zero = vmm_backend::VcpuEvents {
             sipi_vector: 0,
             flags: KVM_VCPUEVENT_VALID_SIPI_VECTOR,
@@ -1609,9 +1435,6 @@ mod tests {
             KVM_VCPUEVENT_VALID_SIPI_VECTOR,
             "vector 0 with the validity bit set is a legal SIPI, not a residual"
         );
-        // VALID_SMM is set by ANY of the four SMI sub-fields; VALID_NMI_PENDING by ANY
-        // of the three NMI sub-fields. Exercise EACH operand alone so the OR-chains in
-        // `canonical_events` are pinned (a `|| → &&` mutation on any operand is caught).
         for set_smm in [
             |e: &mut vmm_backend::VcpuEvents| e.smi_smm = 1,
             |e: &mut vmm_backend::VcpuEvents| e.smi_pending = 1,
@@ -1639,7 +1462,6 @@ mod tests {
                 "each NMI sub-field alone sets VALID_NMI_PENDING: {e:?}"
             );
         }
-        // The all-quiescent record sets neither bit (the `&&`-degenerate baseline).
         let q = canonical_events(&vmm_backend::VcpuEvents::default());
         assert_eq!(q.flags & KVM_VCPUEVENT_VALID_SMM, 0);
         assert_eq!(q.flags & KVM_VCPUEVENT_VALID_NMI_PENDING, 0);
@@ -1647,21 +1469,12 @@ mod tests {
 
     #[test]
     fn events_for_restore_clears_stale_target_state_regardless_of_freshness() {
-        // PR #12 round 6 (codex/GPT-5.5) — restore must be independent of the prior occupant.
-        // KVM treats a CLEAR validity bit on `KVM_SET_VCPU_EVENTS` as "leave that sub-record
-        // UNCHANGED", so restoring a quiescent snapshot onto a NON-fresh vCPU (the branch /
-        // restore-in-place case) would RETAIN its stale NMI-pending / interrupt-shadow / SMM /
-        // triple-fault — a determinism leak. `events_for_restore` forces those validity bits ON
-        // so restore explicitly clears that state.
 
-        // Model `KVM_SET_VCPU_EVENTS`: a clear validity bit leaves the sub-record unchanged; the
-        // always-applied fields (interrupt/exception/NMI injected + nmi.masked) overwrite.
         fn kvm_set(
             prev: &vmm_backend::VcpuEvents,
             set: &vmm_backend::VcpuEvents,
         ) -> vmm_backend::VcpuEvents {
             let mut out = *prev;
-            // Unconditionally applied by KVM:
             out.interrupt_injected = set.interrupt_injected;
             out.interrupt_nr = set.interrupt_nr;
             out.interrupt_soft = set.interrupt_soft;
@@ -1672,7 +1485,6 @@ mod tests {
             out.exception_error_code = set.exception_error_code;
             out.nmi_injected = set.nmi_injected;
             out.nmi_masked = set.nmi_masked;
-            // Validity-gated (a clear bit leaves the sub-record UNCHANGED):
             if set.flags & KVM_VCPUEVENT_VALID_NMI_PENDING != 0 {
                 out.nmi_pending = set.nmi_pending;
             }
@@ -1698,9 +1510,6 @@ mod tests {
             out
         }
 
-        // A vCPU left dirty by a previous occupant; a clean snapshot has NONE of those. (No
-        // stale triple-fault: KVM_CAP_X86_TRIPLE_FAULT_EVENT is not enabled by this backend, so
-        // no triple-fault sub-record exists to leak — and its bit cannot be forced; see below.)
         let stale = vmm_backend::VcpuEvents {
             nmi_pending: 1,
             smi_smm: 1,
@@ -1710,8 +1519,6 @@ mod tests {
         };
         let clean = vmm_backend::VcpuEvents::default();
 
-        // `events_for_restore` forces the CAP-FREE clear-on-restore bits ON (NMI_PENDING |
-        // SHADOW | SMM), and ONLY those.
         let setv = events_for_restore(&clean);
         let force =
             KVM_VCPUEVENT_VALID_NMI_PENDING | KVM_VCPUEVENT_VALID_SHADOW | KVM_VCPUEVENT_VALID_SMM;
@@ -1720,8 +1527,6 @@ mod tests {
             force,
             "events_for_restore sets NMI_PENDING|SHADOW|SMM unconditionally"
         );
-        // TRIPLE_FAULT / PAYLOAD / SIPI stay gated — forcing TRIPLE_FAULT/PAYLOAD is -EINVAL
-        // without their caps, SIPI is SET-only. For a quiescent snapshot all three are clear.
         assert_eq!(
             setv.flags & KVM_VCPUEVENT_VALID_TRIPLE_FAULT,
             0,
@@ -1738,9 +1543,6 @@ mod tests {
             "PAYLOAD stays gated on exception_has_payload"
         );
 
-        // Restoring the clean snapshot onto the STALE vCPU clears every (cap-free) stale
-        // sub-record, and yields the SAME result as restoring onto a fresh vCPU — restore is
-        // target-independent for the bits this KVM lets us force.
         let restored_stale = kvm_set(&stale, &setv);
         let restored_fresh = kvm_set(&vmm_backend::VcpuEvents::default(), &setv);
         assert_eq!(restored_stale.nmi_pending, 0, "stale NMI-pending cleared");
@@ -1755,9 +1557,6 @@ mod tests {
             "restore is independent of the prior occupant (stale target == fresh target)"
         );
 
-        // Contrast — the active-only `canonical_events` would LEAK the stale state (the exact
-        // bug): its NMI_PENDING/SHADOW/SMM bits are clear for a quiescent record, so KVM leaves
-        // the prior occupant's sub-records untouched.
         let leaked = kvm_set(&stale, &canonical_events(&clean));
         assert_ne!(
             leaked, restored_fresh,
@@ -1768,8 +1567,6 @@ mod tests {
             "the leak: stale NMI-pending survives the active-only mask"
         );
 
-        // A genuine active injection still round-trips: events_for_restore preserves real state,
-        // it only forces the validity bits + canonical (zero-when-inactive) payloads.
         let active = vmm_backend::VcpuEvents {
             nmi_injected: 1,
             nmi_pending: 1,
@@ -1794,16 +1591,10 @@ mod tests {
 
     #[test]
     fn unrepresentable_state_fails_closed_on_cap_gated_event_fields() {
-        // PR #12 round 7 — save/restore symmetry. `triple_fault_pending` and
-        // `exception_has_payload` are the two `kvm_vcpu_events` fields whose
-        // `KVM_SET_VCPU_EVENTS` validity bit needs a per-VM capability this backend does not
-        // enable, so a captured value could NOT be restored (restore would be `-EINVAL`). Save
-        // must fail closed on them — but NOT over-reject any restorable in-flight state.
         let representable = |events: vmm_backend::VcpuEvents| vmm_backend::VcpuState {
             events,
             ..Default::default()
         };
-        // A quiescent point, and every restorable in-flight class, are representable (None).
         assert!(
             unrepresentable_state(&representable(vmm_backend::VcpuEvents::default())).is_none()
         );
@@ -1839,7 +1630,6 @@ mod tests {
                 "a restorable in-flight field must NOT be rejected: {ok:?}"
             );
         }
-        // The two cap-gated fields fail closed, each naming the offending field.
         let tf = unrepresentable_state(&representable(vmm_backend::VcpuEvents {
             triple_fault_pending: 1,
             ..Default::default()
@@ -1863,19 +1653,12 @@ mod tests {
 
     #[test]
     fn canonical_events_zeroes_value_fields_when_their_validity_bit_is_clear() {
-        // PR #12 round 8 — the class-closing audit. A VALUE field whose own validity bit is clear
-        // is architecturally don't-care; it must be **zeroed** in the canonical form (mirror the
-        // SIPI-vector gating), so a stale `error_code` / `payload` never reaches the canonical
-        // blob or the `state_hash` (KVM would not apply it; replaying untrusted residual bytes
-        // would diverge a save → restore → save). Exact-value, per the audit table in
-        // README.md.
 
-        // exception_error_code is gated on exception_has_error_code:
         let stale_ec = canonical_events(&vmm_backend::VcpuEvents {
             exception_injected: 1,
             exception_nr: 13,
-            exception_has_error_code: 0, // clear → error_code is don't-care
-            exception_error_code: 0xDEAD_BEEF, // stale residual
+            exception_has_error_code: 0,
+            exception_error_code: 0xDEAD_BEEF,
             ..Default::default()
         });
         assert_eq!(
@@ -1894,13 +1677,11 @@ mod tests {
             "a VALID error_code (has_error_code=1) is preserved"
         );
 
-        // exception_payload is gated on exception_has_payload (a payload-bearing exception is
-        // ALSO fail-closed-rejected at save/restore — this gates the canonical form / hash):
         let stale_pl = canonical_events(&vmm_backend::VcpuEvents {
             exception_injected: 1,
             exception_nr: 14,
-            exception_has_payload: 0,       // clear → payload is don't-care
-            exception_payload: 0xCAFE_F00D, // stale residual
+            exception_has_payload: 0,
+            exception_payload: 0xCAFE_F00D,
             ..Default::default()
         });
         assert_eq!(
@@ -1919,14 +1700,12 @@ mod tests {
             "a VALID payload (has_payload=1) is preserved in the canonical form"
         );
 
-        // And both value fields are zero when no exception is injected/pending at all (the outer
-        // gate), regardless of stale bytes.
         let no_exc = canonical_events(&vmm_backend::VcpuEvents {
             exception_error_code: 0xFF,
             exception_payload: 0xFF,
             exception_has_error_code: 1,
             exception_has_payload: 1,
-            ..Default::default() // exception_injected = pending = 0
+            ..Default::default()
         });
         assert_eq!(
             no_exc.exception_error_code, 0,
@@ -1940,7 +1719,6 @@ mod tests {
 
     #[test]
     fn device_blob_round_trips_without_optional_devices() {
-        // M1/M2-style: no xAPIC, no legacy platform, no reports — just tsc_adjust + UART.
         let d = DeviceState {
             tsc_adjust: 0,
             report_stream: Vec::new(),
@@ -1961,11 +1739,6 @@ mod tests {
 
     #[test]
     fn unoffered_pvclock_encodes_the_v3_shape_byte_for_byte() {
-        // The task-110 "page off = byte-identical" claim, pinned at the wire
-        // (cross-model r4 P1). A VM that never called `enable_pvclock` must
-        // encode EXACTLY what main encodes: version word 3, and not one trailing
-        // byte of pvclock record. Anything else changes every existing snapshot's
-        // bytes — and the `VMST` hash over them — for an opt-in feature.
         let d = DeviceState {
             tsc_adjust: 0x1234,
             report_stream: vec![7],
@@ -1981,8 +1754,6 @@ mod tests {
             DEVICE_BLOB_VERSION_BASE,
             "an unoffered VM must still encode the v3 version word"
         );
-        // Offering the channel is the ONLY thing that appends bytes, and it
-        // bumps the version — so the v3 prefix is untouched.
         let on = encode_device_blob(&DeviceState {
             pvclock: Some((Some(0x4000), true)),
             ..d.clone()
@@ -2002,16 +1773,11 @@ mod tests {
             off.len() + 1 + 8 + 1,
             "v4 appends exactly the GPA-present flag + the GPA (u64) + the registrable flag"
         );
-        // Both decode back to what they encoded, and the v3 blob (what main
-        // writes) decodes here as "no channel" rather than being rejected.
         assert_eq!(decode_device_blob(&off).unwrap(), d);
         assert_eq!(
             decode_device_blob(&on).unwrap().pvclock,
             Some((Some(0x4000), true))
         );
-        // The registrable bit round-trips independently of the GPA — it is the
-        // whole point of carrying it (a snapshot with NO registration still
-        // records whether the source COULD register). r5 P1.
         let unreg = encode_device_blob(&DeviceState {
             pvclock: Some((None, false)),
             ..d.clone()
@@ -2025,8 +1791,6 @@ mod tests {
 
     #[test]
     fn device_blob_decode_is_total_on_garbage() {
-        // Truncations, a bad magic, and trailing bytes all yield a DeviceBlob error
-        // (never a panic) — the rule-#4 fuzz-robustness discipline.
         assert!(matches!(
             decode_device_blob(&[]),
             Err(SnapshotError::DeviceBlob(_))
@@ -2055,8 +1819,6 @@ mod tests {
 
     #[test]
     fn device_blob_lapic_restores_through_lapic_crate() {
-        // A decoded LapicState must be accepted by `lapic::Lapic::restore` — i.e. the
-        // blob carries a *coherent* LapicState, not just round-trip bytes.
         let d = DeviceState {
             lapic: Some(lapic_state(0x10)),
             ..Default::default()

@@ -148,11 +148,11 @@ mod tests {
     fn fixture() -> Vec<u8> {
         let mut ram = vec![0u8; WORK_RAM_LEN];
         ram[addr::OPER_MODE] = OPER_MODE_GAMEPLAY;
-        ram[addr::WORLD_NUMBER] = 3; // World 4
-        ram[addr::LEVEL_NUMBER] = 2; // x-3
+        ram[addr::WORLD_NUMBER] = 3;
+        ram[addr::LEVEL_NUMBER] = 2;
         ram[addr::PLAYER_PAGE_LOC] = 5;
         ram[addr::PLAYER_X_POSITION] = 0x42;
-        ram[addr::PLAYER_STATUS] = 2; // fiery
+        ram[addr::PLAYER_STATUS] = 2;
         ram[addr::NUMBER_OF_LIVES] = 4;
         ram[addr::COIN_TALLY] = 37;
         ram
@@ -192,7 +192,7 @@ mod tests {
         ram[addr::PLAYER_PAGE_LOC] = 0xFF;
         ram[addr::PLAYER_X_POSITION] = 0xFF;
         let s = decode(&ram).unwrap();
-        assert_eq!(s.x_abs, 0xFF * 256 + 0xFF); // max fits u32 comfortably
+        assert_eq!(s.x_abs, 0xFF * 256 + 0xFF);
     }
 
     #[test]
@@ -204,8 +204,6 @@ mod tests {
 
     #[test]
     fn depth_ordinal_is_monotone_in_world_then_level() {
-        // 1-1 < 1-2 < ... < 2-1 < ... < 8-4: the ordinal orders (world, level)
-        // lexicographically, the property the depth metric relies on.
         let mut prev = None;
         for world in 0..8u8 {
             for level in 0..4u8 {

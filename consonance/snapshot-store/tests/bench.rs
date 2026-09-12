@@ -3,9 +3,6 @@
 //! Run with:
 //!   cargo test -p snapshot-store --release --test bench -- --ignored --nocapture
 
-// not order-observable: this is an informational wall-clock benchmark, not library
-// state — `Instant::now` measures elapsed time and never reaches any output that
-// affects determinism. The determinism lint targets production state, not bench timing.
 #![allow(clippy::disallowed_methods)]
 
 use std::time::Instant;
@@ -34,7 +31,6 @@ fn bench_seal_1000_dirty_page_delta() {
     let t_total = Instant::now();
     let mut d = store.derive(base).unwrap();
     for i in 0..DIRTY {
-        // distinct contents, spread over the gfn space
         d.write_page(u64::from(i) * 7 % 8192, &page(100_000 + i))
             .unwrap();
     }
@@ -76,7 +72,6 @@ fn bench_read_page_at_chain_depth_64() {
     let mut out = [0u8; PAGE_SIZE];
     let mut sink = 0u64;
 
-    // Cold: first read of each gfn walks the chain (then memoizes along the path).
     let t = Instant::now();
     for gfn in 0..MEM_PAGES {
         store.read_page(snap, gfn, &mut out).unwrap();
@@ -84,7 +79,6 @@ fn bench_read_page_at_chain_depth_64() {
     }
     let cold = t.elapsed();
 
-    // Warm: repeated reads hit the per-layer memo index.
     const WARM_PASSES: u64 = 200;
     let t = Instant::now();
     for _ in 0..WARM_PASSES {

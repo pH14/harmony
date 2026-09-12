@@ -206,8 +206,6 @@ where
     /// state machine and so never reports the play operating mode.
     fn boot(mut machine: M, require_play: bool) -> Result<Self, MachineError> {
         machine::nes::run_actions(&mut machine, &BOOT_WALK)?;
-        // Genesis is the first frame of play, found by stepping one frame at
-        // a time after Start, so the searcher starts before the game moves.
         let idle = [ButtonChord {
             buttons: 0,
             hold_frames: 1,
@@ -810,8 +808,6 @@ mod tests {
 
     #[test]
     fn a_core_that_never_reaches_play_is_an_error_rather_than_a_sealed_genesis() {
-        // The loopback core has no SMB state machine, so it stands in for a
-        // production core whose operating mode never reaches play.
         let core = QuickNesMachine::loopback_for_tests(&[0]).expect("loopback core");
         let error = SmbTarget::boot(core, true).expect_err("non-play genesis is refused");
         assert!(

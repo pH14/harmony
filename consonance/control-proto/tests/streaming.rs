@@ -29,7 +29,6 @@ fn stream_decode_requests(bytes: &[u8]) -> Vec<(u32, Request)> {
     let mut acc: Vec<u8> = Vec::new();
     for &b in bytes {
         acc.push(b);
-        // A single byte can complete at most one frame, but loop to be safe.
         while let Some((seq, req, consumed)) = decode_request(&acc).expect("clean decode") {
             out.push((seq, req));
             acc.drain(..consumed);

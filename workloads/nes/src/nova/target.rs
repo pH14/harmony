@@ -346,11 +346,6 @@ impl NovaTarget<QuickNesMachine> {
         machine.run(StopConditions::default(), None)?;
         machine.drop_snapshot(power_on)?;
 
-        // Nova initializes and validates its save file before the main menu.
-        // Construct the state a normal sequential playthrough would have at
-        // this boundary: prior levels are cleared and the requested level is
-        // the highest available one. The game's own level-select code then
-        // chooses and launches that level through ordinary controller input.
         let cleared = level_prefix_bitmap(selected_level.index());
         let available = level_prefix_bitmap(selected_level.number());
         machine.write_save_ram(LEVEL_CLEARED, &cleared)?;
@@ -484,8 +479,6 @@ impl<M: Machine> NovaTarget<M> {
         while observed_frames < requested_frames {
             let stop = self.machine.run(StopConditions::default(), None);
             if matches!(stop, Ok(machine::StopReason::Deadline { .. })) {
-                // The Consonance deadline is a host-side per-run safety budget,
-                // not a game death or a successful partial action.
                 self.failed = true;
                 survived = false;
                 break;
@@ -753,8 +746,6 @@ impl<M: Machine> Target for NovaTarget<M> {
         }
         let run = self.machine.run(StopConditions::default(), None);
         if matches!(run, Ok(machine::StopReason::Deadline { .. })) {
-            // Exhausting the Consonance safety budget is infrastructure
-            // failure. Do not decode cached RAM and report it as a game death.
             self.failed = true;
             return;
         }

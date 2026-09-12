@@ -174,8 +174,6 @@ fn campaign_config(args: &Args) -> StbCampaignConfig {
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
-        // The control probe found no setup or admission failure. Keep the
-        // primary run on ordinary live admission with no hidden lookahead.
         retention: RetentionPolicy::AdmitAlive,
         selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 3,
@@ -232,9 +230,6 @@ fn run_qualified_campaign(
     )?;
     fs::write(output.join("snapshots.bin"), &checkpoint_bytes)?;
 
-    // Use the actual champion (or the first verified victory input) for
-    // qualification. Render every recorded action, including the ending when
-    // reached; an unsolved champion remains explicitly an unfinished match.
     let champion = live
         .victory_input
         .clone()
@@ -350,9 +345,6 @@ fn render_video(
     output: &Path,
     tail_frames: u32,
 ) -> Result<RenderedMedia, Box<dyn Error>> {
-    // Encode frames as they arrive: full matches must not accumulate raw RGB
-    // in RAM or on disk. The pinned QuickNES configuration crops vertical
-    // overscan and emits 256x224 RGB24.
     let encoded_path = output.join("witness-video.mp4");
     let audio_path = output.join("witness.s16le");
     let mut target = game
@@ -391,7 +383,7 @@ fn render_video(
     let mut video_output = BufWriter::new(encoder.stdin.take().ok_or("missing encoder input")?);
     let rendered = target.render_input(input, tail_frames, &mut video_output, &mut audio_output);
     let flushed = video_output.flush();
-    drop(video_output); // Close stdin even on a rendering error so ffmpeg exits.
+    drop(video_output);
     let status = encoder.wait()?;
     let video = rendered?;
     flushed?;

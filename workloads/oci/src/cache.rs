@@ -82,7 +82,6 @@ mod tests {
         let (segment, loaded) = load(&cache, "k-v2").unwrap();
         assert_eq!(segment, b"segment-bytes");
         assert_eq!(loaded.cmd, ["postgres"]);
-        // No stray temp files left behind.
         let stray: Vec<_> = std::fs::read_dir(&cache)
             .unwrap()
             .filter(|e| {

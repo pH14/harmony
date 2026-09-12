@@ -272,8 +272,6 @@ impl Library {
     fn symbol(&self, name: &'static [u8]) -> Result<*mut c_void, MachineError> {
         debug_assert_eq!(name.last(), Some(&0));
         // SAFETY: the handle remains live in `self`, and `name` is a static
-        // NUL-terminated symbol name. The typed conversion happens at each
-        // call site where the expected libretro signature is explicit.
         let symbol =
             unsafe { libc::dlsym(self.handle as *mut c_void, name.as_ptr().cast::<c_char>()) };
         if symbol.is_null() {
@@ -577,10 +575,6 @@ impl QuickNesMachine {
                 "QuickNES ABI mismatch: state={state_len} bytes, system RAM={memory_len} bytes"
             )));
         }
-        // The core leaves cartridge work RAM uninitialized for an image that
-        // declares it, so power-on state would otherwise vary between
-        // processes. Fill it with the value the core itself writes for an
-        // image that declares none.
         // SAFETY: the region is the one the core just reported for this
         // loaded game; the length is validated before the write.
         unsafe {
@@ -1056,9 +1050,6 @@ impl Machine for QuickNesMachine {
         let length = usize::try_from(len).map_err(|_| MachineError::ReadOutOfBounds)?;
         self.api.activate();
         // SAFETY: the construction-time memory checks establish the system
-        // RAM contract, and the save-RAM length is checked again below before
-        // any pointer arithmetic. The selected range is bounded to one NES
-        // memory window above and the copy completes synchronously.
         unsafe {
             let memory = (self.api.get_memory_data)(memory_id).cast::<u8>();
             let available = (self.api.get_memory_size)(memory_id);
@@ -1166,8 +1157,6 @@ extern "C" fn environment_callback(command: u32, data: *mut c_void) -> bool {
             true
         }
         RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE if !data.is_null() => {
-            // Search requests hard-disabled audio (bit 3) and no video.
-            // Replay explicitly enables video (bit 0) and audio (bit 1).
             // SAFETY: libretro supplies a writable int for this command.
             unsafe {
                 let video = CAPTURE_VIDEO.with(Cell::get);
@@ -1184,7 +1173,6 @@ extern "C" fn environment_callback(command: u32, data: *mut c_void) -> bool {
         }
         RETRO_ENVIRONMENT_GET_VARIABLE if !data.is_null() => {
             // SAFETY: libretro supplies a live retro_variable whose key is a
-            // NUL-terminated string and whose value field is writable.
             let variable = unsafe { &mut *data.cast::<RetroVariable>() };
             if variable.key.is_null() {
                 return false;
@@ -1563,7 +1551,6 @@ mod loopback {
             output[PPU_BLOCK_START + 4..PPU_PAYLOAD_START]
                 .copy_from_slice(&(QUICKNES_PPU_STATE_LEN as u32).to_le_bytes());
             output[PPU_PAYLOAD_START] = state.byte;
-            // Reproduce the upstream padding defect so canonicalization is exercised.
             output[PPU_PAYLOAD_START + 49..PPU_PAYLOAD_START + 52]
                 .copy_from_slice(&[0xa5, 0x5a, 0xff]);
             output[WRAM_BLOCK_START..WRAM_BLOCK_START + 4].copy_from_slice(b"WRAM");
@@ -1763,8 +1750,6 @@ mod tests {
 
     #[test]
     fn malformed_video_dimensions_are_rejected_before_any_pointer_use() {
-        // Each case would overflow or read out of bounds if the callback
-        // multiplied the core's reported geometry before checking it.
         let dangling = std::ptr::dangling::<u8>().cast();
         for (width, height, pitch, format) in [
             (u32::MAX, 1, usize::MAX, PIXEL_FORMAT_XRGB8888),
@@ -1796,8 +1781,6 @@ mod tests {
 
     #[test]
     fn a_short_source_row_is_refused_rather_than_read_past_its_end() {
-        // `pitch * height` bytes are promised; a source shorter than that
-        // must not be indexed past its end.
         let source = [0_u8; 8];
         assert!(convert_pixels(&source, 2, 4, 4, PIXEL_FORMAT_RGB565).is_err());
         assert!(convert_pixels(&source, 2, 2, 4, PIXEL_FORMAT_RGB565).is_ok());
@@ -1829,7 +1812,6 @@ mod tests {
     fn oversized_audio_batches_are_refused_before_the_slice_is_formed() {
         reset_capture_state();
         CAPTURE_AUDIO.with(|capture| capture.set(true));
-        // `frames * 2` overflows usize here, and half of usize::MAX does not.
         assert!(copy_audio_batch(std::ptr::dangling(), usize::MAX).is_err());
         assert!(copy_audio_batch(std::ptr::dangling(), usize::MAX / 2).is_err());
         assert_eq!(audio_batch_callback(std::ptr::dangling(), usize::MAX), 0);
@@ -1847,7 +1829,6 @@ mod tests {
             1,
             MAX_BUFFERED_VIDEO_FRAMES
         ));
-        // An overflowing total is refused even against the widest capacity.
         assert!(!capture_buffer_fits(usize::MAX, 1, usize::MAX));
         assert!(!capture_buffer_fits(usize::MAX, usize::MAX, usize::MAX));
         assert!(capture_buffer_fits(usize::MAX, 0, usize::MAX));
@@ -1867,8 +1848,6 @@ mod tests {
             MAX_BUFFERED_AUDIO_SAMPLES
         ));
 
-        // A full buffer refuses the callback's frame and records the error
-        // the next emulated frame reports.
         reset_capture_state();
         CAPTURE_VIDEO.with(|capture| capture.set(true));
         CAPTURED_VIDEO.with(|frames| {

@@ -29,8 +29,6 @@ fn plan_matches_saturating_spec() {
 
     assert_eq!(a.advance_vns, deadline.saturating_sub(now));
     assert_eq!(a.landed_vns, now.max(deadline));
-    // landed == now + advance, computed as a checked add: proving this never
-    // overflows is the "far-future D clamps, no wrap" guarantee.
     assert_eq!(Some(a.landed_vns), now.checked_add(a.advance_vns));
     assert_eq!(a.already_due, a.advance_vns == 0);
     assert_eq!(a.already_due, deadline <= now);
@@ -48,7 +46,6 @@ fn plan_matches_saturating_spec() {
 fn advance_lands_clock_at_deadline_or_clamps() {
     let vns_base: u64 = kani::any();
     let deadline: u64 = kani::any();
-    // The pre-jump virtual time is exactly `vns_base`.
     let now = vns_base;
 
     let a = IdlePlanner::new().plan(now, deadline);
@@ -61,9 +58,6 @@ fn advance_lands_clock_at_deadline_or_clamps() {
     clk.advance(a.advance_vns);
     let landed = clk.vns();
 
-    // The clock lands at the planner's reported `landed_vns` (== max(now,
-    // deadline)); never below `now`; equals `deadline` exactly whenever the
-    // deadline is in the future and representable.
     assert_eq!(landed, a.landed_vns);
     assert!(landed >= now);
     if deadline >= now {

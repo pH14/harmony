@@ -69,27 +69,27 @@ pub fn virtual_time_timing() -> VirtualTimeTiming {
 /// `arm64_kvm_id_probe`. The latter also writes and reads back each selected
 /// value before first entry, proving that stock KVM accepts the complete set.
 pub const IDENTITY_BASELINE: [(u32, u64); 21] = [
-    (0xc000, 0x0000_0000_410f_d811), // MIDR_EL1
-    (0xc005, 0x0000_0000_8000_0000), // MPIDR_EL1
-    (0xc020, 0x1101_0000_1111_0011), // ID_AA64PFR0_EL1
-    (0xc021, 0x0000_0000_0000_0000), // ID_AA64PFR1_EL1
-    (0xc022, 0x0000_0000_0000_0000), // ID_AA64PFR2_EL1
-    (0xc024, 0x0000_0000_0000_0000), // ID_AA64ZFR0_EL1
-    (0xc025, 0x0000_0000_0000_0000), // ID_AA64SMFR0_EL1
-    (0xc027, 0x0000_0000_0000_0000), // ID_AA64FPFR0_EL1
-    (0xc028, 0x0000_00f0_1030_5006), // ID_AA64DFR0_EL1
-    (0xc029, 0x0000_0000_0000_0000), // ID_AA64DFR1_EL1
-    (0xc02a, 0x0000_0000_0000_0000), // ID_AA64DFR2_EL1
-    (0xc030, 0x0221_1001_1021_2120), // ID_AA64ISAR0_EL1
-    (0xc031, 0x0000_0111_0021_1002), // ID_AA64ISAR1_EL1
-    (0xc032, 0x0000_0000_0000_0000), // ID_AA64ISAR2_EL1
-    (0xc033, 0x0000_0000_0000_0000), // ID_AA64ISAR3_EL1
-    (0xc038, 0x0000_0111_0f10_0022), // ID_AA64MMFR0_EL1
-    (0xc039, 0x0000_0000_1121_2120), // ID_AA64MMFR1_EL1
-    (0xc03a, 0x1201_0111_0000_1011), // ID_AA64MMFR2_EL1
-    (0xc03b, 0x0000_0000_0000_0000), // ID_AA64MMFR3_EL1
-    (0xc03c, 0x0000_0000_0000_0000), // ID_AA64MMFR4_EL1
-    (0xd801, 0x0000_0000_8444_c004), // CTR_EL0
+    (0xc000, 0x0000_0000_410f_d811),
+    (0xc005, 0x0000_0000_8000_0000),
+    (0xc020, 0x1101_0000_1111_0011),
+    (0xc021, 0x0000_0000_0000_0000),
+    (0xc022, 0x0000_0000_0000_0000),
+    (0xc024, 0x0000_0000_0000_0000),
+    (0xc025, 0x0000_0000_0000_0000),
+    (0xc027, 0x0000_0000_0000_0000),
+    (0xc028, 0x0000_00f0_1030_5006),
+    (0xc029, 0x0000_0000_0000_0000),
+    (0xc02a, 0x0000_0000_0000_0000),
+    (0xc030, 0x0221_1001_1021_2120),
+    (0xc031, 0x0000_0111_0021_1002),
+    (0xc032, 0x0000_0000_0000_0000),
+    (0xc033, 0x0000_0000_0000_0000),
+    (0xc038, 0x0000_0111_0f10_0022),
+    (0xc039, 0x0000_0000_1121_2120),
+    (0xc03a, 0x1201_0111_0000_1011),
+    (0xc03b, 0x0000_0000_0000_0000),
+    (0xc03c, 0x0000_0000_0000_0000),
+    (0xd801, 0x0000_0000_8444_c004),
 ];
 
 /// Guest-visible identity that neither substrate exposes as writable state.
@@ -98,7 +98,7 @@ pub const IDENTITY_BASELINE: [(u32, u64); 21] = [
 /// contract hash even though it cannot be installed through either substrate's
 /// configuration API; a host with a different value is not M5-qualified.
 pub const READ_ONLY_IDENTITY_BASELINE: [(u32, u64); 1] = [
-    (0xd807, 0x0000_0000_0000_0004), // DCZID_EL0
+    (0xd807, 0x0000_0000_0000_0004),
 ];
 
 /// The installable arm64 policy: the frozen cross-host identity and the empty
@@ -123,8 +123,6 @@ pub fn contract_hash() -> [u8; 32] {
     let p = policy();
     let mut h = Sha256::new();
     h.update(b"harmony-arm64-cross-host-baseline-v3\0");
-    // Canonical encoding: sorted (BTreeMap/BTreeSet) rows, little-endian
-    // fixed-width fields, length-prefixed sections — deterministic (rule #4).
     h.update((p.id_regs.regs.len() as u64).to_le_bytes());
     for (enc, val) in &p.id_regs.regs {
         h.update(enc.to_le_bytes());
@@ -180,13 +178,10 @@ mod tests {
         assert_eq!(frozen, contract_hash());
         assert_ne!(frozen, [0; 32]);
         assert_ne!(frozen, [1; 32]);
-        // One changed row must hash differently — the anti-drift property the
-        // snapshot check relies on.
         let mut p = policy();
         p.id_regs.regs.insert(0xc020, 0x1122);
         let with_row = recompute(&p, virtual_time_timing());
         assert_ne!(contract_hash(), with_row);
-        // A changed timing row must hash differently too.
         let mut timing = virtual_time_timing();
         timing.serial_mmio_vns += 1;
         let with_timing = recompute(&policy(), timing);

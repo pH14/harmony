@@ -32,25 +32,21 @@ use proptest::strategy::Union;
 use proptest::test_runner::Config;
 use proptest_state_machine::{ReferenceStateMachine, StateMachineTest, prop_state_machine};
 
-// Wire/protocol constants mirrored from the library (private there).
 const MAGIC: u32 = 0x3150_4348;
 const HEADER_LEN: usize = 24;
 const KIND_REQUEST: u16 = 1;
 const KIND_RESPONSE: u16 = 2;
 const SECTOR_SIZE: usize = 512;
 
-// Status codes.
 const ST_OK: u16 = 0;
 const ST_BAD_REQUEST: u16 = 1;
 const ST_UNKNOWN_SERVICE: u16 = 2;
 const ST_UNKNOWN_OPCODE: u16 = 3;
 const ST_OUT_OF_RANGE: u16 = 4;
 
-// Entropy stream constants (mirrored from the library).
 const ENTROPY_FALLBACK_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 const ENTROPY_MUL: u64 = 0x2545_F491_4F6C_DD1D;
 
-// Canonical service ids.
 const ID_CONSOLE: u16 = 1;
 const ID_ENTROPY: u16 = 2;
 const ID_BLOCK: u16 = 3;
@@ -70,10 +66,6 @@ fn block_data(sectors: u8) -> Vec<u8> {
         .map(|i| i as u8)
         .collect()
 }
-
-// ---------------------------------------------------------------------------
-// Reference service models
-// ---------------------------------------------------------------------------
 
 /// Independent reference model of one registered service.
 #[derive(Clone, Debug)]
@@ -240,17 +232,13 @@ fn model_save(registered: &BTreeMap<u16, SvcModel>) -> Vec<u8> {
 fn model_restore(registered: &mut BTreeMap<u16, SvcModel>, blob: &[u8]) {
     let mut offset = 0;
     for svc in registered.values_mut() {
-        offset += 2; // id (already known to match)
+        offset += 2;
         let len = rd_u32(blob, offset) as usize;
         offset += 4;
         svc.restore(&blob[offset..offset + len]);
         offset += len;
     }
 }
-
-// ---------------------------------------------------------------------------
-// Frame helpers
-// ---------------------------------------------------------------------------
 
 fn make_frame(
     magic: u32,
@@ -269,7 +257,7 @@ fn make_frame(
     buf.extend_from_slice(&status.to_le_bytes());
     buf.extend_from_slice(&seq.to_le_bytes());
     buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    buf.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    buf.extend_from_slice(&0u32.to_le_bytes());
     buf.extend_from_slice(payload);
     buf
 }
@@ -277,10 +265,6 @@ fn make_frame(
 fn make_response(service: u16, opcode: u16, seq: u32, status: u16, payload: &[u8]) -> Vec<u8> {
     make_frame(MAGIC, KIND_RESPONSE, service, opcode, status, seq, payload)
 }
-
-// ---------------------------------------------------------------------------
-// State machine
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug)]
 enum Malform {
@@ -376,28 +360,24 @@ impl ReferenceStateMachine for ProtoRef {
         };
 
         let well_formed = prop_oneof![
-            // console write
             disp(
                 Just(ID_CONSOLE).boxed(),
                 Just(1u16).boxed(),
                 prop::collection::vec(any::<u8>(), 0..40).boxed(),
                 Just(Malform::None).boxed()
             ),
-            // entropy read (valid n)
             disp(
                 Just(ID_ENTROPY).boxed(),
                 Just(1u16).boxed(),
                 (1u32..=64).prop_map(|n| n.to_le_bytes().to_vec()).boxed(),
                 Just(Malform::None).boxed()
             ),
-            // block capacity
             disp(
                 Just(ID_BLOCK).boxed(),
                 Just(1u16).boxed(),
                 Just(Vec::new()).boxed(),
                 Just(Malform::None).boxed()
             ),
-            // block read
             disp(
                 Just(ID_BLOCK).boxed(),
                 Just(2u16).boxed(),
@@ -411,7 +391,6 @@ impl ReferenceStateMachine for ProtoRef {
                     .boxed(),
                 Just(Malform::None).boxed()
             ),
-            // event emit
             disp(
                 Just(ID_EVENT).boxed(),
                 Just(1u16).boxed(),
@@ -596,8 +575,6 @@ impl StateMachineTest for ProtoMachine {
     }
 
     fn check_invariants(sut: &ProtoSut, ref_state: &RefState) {
-        // The strongest standing invariant: the dispatcher's serialized state must
-        // equal the model's after every transition.
         assert_eq!(
             sut.dispatcher.save_state(),
             model_save(&ref_state.registered),

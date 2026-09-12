@@ -108,9 +108,6 @@ impl ChordAlphabet {
         if let Some(index) = entries.iter().position(|c| c.weight == 0) {
             return Err(ChordError::ZeroWeight { index });
         }
-        // u64 accumulation: user-controlled u16 weights (an `--alphabet` can
-        // carry tens of thousands of entries) must not wrap a u32 into a
-        // spurious 256 — or panic in debug (round-8 P2).
         let sum: u64 = entries.iter().map(|c| u64::from(c.weight)).sum();
         if sum != 256 {
             return Err(ChordError::BadWeightSum { sum });
@@ -159,7 +156,6 @@ impl ChordAlphabet {
                 weight: 8,
             },
         ];
-        // Statically-valid construction: the literal weights above sum to 256.
         ChordAlphabet::new(entries).expect("default alphabet weights sum to 256")
     }
 
@@ -175,8 +171,6 @@ impl ChordAlphabet {
             }
             cursor -= w;
         }
-        // Unreachable by the 256-sum invariant; return neutral rather than
-        // panicking on library input (rule 4: never panic on untrusted input).
         0
     }
 
@@ -241,7 +235,6 @@ mod tests {
     #[test]
     fn decode_is_total_and_matches_cumulative_thresholds() {
         let a = ChordAlphabet::smb_default();
-        // Walk all 256 byte values and recompute the expected chord by hand.
         let mut expected = Vec::new();
         for chord in a.entries() {
             for _ in 0..chord.weight {
@@ -260,7 +253,7 @@ mod tests {
         assert_eq!(a.decode(0), joypad::RIGHT);
         assert_eq!(a.decode(55), joypad::RIGHT);
         assert_eq!(a.decode(56), joypad::RIGHT | joypad::B);
-        assert_eq!(a.decode(255), 0); // the last (neutral) chord
+        assert_eq!(a.decode(255), 0);
     }
 
     /// Round-8 P2: a weight set big enough to wrap a u32 accumulator is a
@@ -268,7 +261,6 @@ mod tests {
     /// could alias 256.
     #[test]
     fn weight_overflow_is_rejected_not_wrapped() {
-        // 65537 × 65535 = 2^32 − 1: the u32-wrapping shape.
         let entries = vec![
             Chord {
                 buttons: 0,

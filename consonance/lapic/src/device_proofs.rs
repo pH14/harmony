@@ -71,7 +71,7 @@ fn timer_lapic(timer_hz: u64, divide_config: u32, initial_count: u32, arm_vns: u
         irr: [0; 8],
         lvt: [LVT_RESET; 6],
         initial_count,
-        count_at_arm: initial_count, // fresh-armed: anchor count == initial count
+        count_at_arm: initial_count,
         timer_arm_vns: arm_vns,
         timer_running: true,
         timer_pending: true,
@@ -101,7 +101,7 @@ fn period_never_panics_any_count() {
     let n: u32 = kani::any();
     let divide_config: u32 = kani::any();
     let l = timer_lapic(1, divide_config, n, 0);
-    let _ = l.period_for(l.count_at_arm); // must not panic / overflow for any input
+    let _ = l.period_for(l.count_at_arm);
 }
 
 /// A timer whose period exceeds `u64` reports **no deadline** (PR #38 fix #3):
@@ -113,7 +113,6 @@ fn period_never_panics_any_count() {
 #[kani::unwind(4)]
 fn huge_period_reports_no_deadline() {
     for n in [2_000_000_000u32, 3_000_000_000, u32::MAX] {
-        // ÷128 (config 0b1010), timer_hz = 1: period = N·128·1e9 > u64::MAX.
         let l = running_periodic_lapic(1, 0b1010, n, 0);
         assert!(l.period_for(l.count_at_arm) > u128::from(u64::MAX));
         assert_eq!(l.next_timer_deadline(), None);
@@ -145,7 +144,6 @@ fn period_exact_ceil() {
     let divide = divide_value(REP_DIVIDE_CONFIG);
     let numer = u128::from(n) * u128::from(divide) * NS_PER_SEC;
     assert_eq!(got, numer.div_ceil(u128::from(PROOF_TIMER_HZ)));
-    // Ceiling: a full period covers at least N whole ticks.
     assert!(got * u128::from(PROOF_TIMER_HZ) >= numer);
 }
 
@@ -177,7 +175,7 @@ fn current_count_exact_decay() {
     kani::assume(delta <= EXACT_BOUND);
     let arm: u64 = kani::any();
     kani::assume(arm <= EXACT_BOUND);
-    let now = arm + delta; // both bounded, no overflow
+    let now = arm + delta;
 
     let l = timer_lapic(PROOF_TIMER_HZ, REP_DIVIDE_CONFIG, n, arm);
     let got = l.current_count(now);
@@ -200,7 +198,7 @@ fn current_count_monotone() {
     let d2: u64 = kani::any();
     kani::assume(d1 <= d2);
     kani::assume(arm <= EXACT_BOUND && d2 <= EXACT_BOUND);
-    let l = timer_lapic(PROOF_TIMER_HZ, 0b0000, n, arm); // ÷2
+    let l = timer_lapic(PROOF_TIMER_HZ, 0b0000, n, arm);
 
     assert!(l.current_count(arm + d1) >= l.current_count(arm + d2));
 }
@@ -236,7 +234,6 @@ fn highest_vec_correct() {
             assert!(!any_set);
         }
         Some(v) => {
-            // v is genuinely set.
             assert!(bits[(v >> 5) as usize] & (1u32 << (v & 31)) != 0);
             assert!(priority_class(v) <= 15);
         }
@@ -253,16 +250,13 @@ fn ppr_and_delivery_total() {
     let isr: [u32; 8] = kani::any();
     let irr: [u32; 8] = kani::any();
     let mut l = timer_lapic(PROOF_TIMER_HZ, 0, 0, 0);
-    l.svr = SVR_ENABLE_BIT; // software-enabled, so the comparison path runs
+    l.svr = SVR_ENABLE_BIT;
     l.tpr = tpr;
     l.isr = isr;
     l.irr = irr;
 
-    // PPR's class is a total 4-bit quantity.
     assert!((l.ppr() >> 4) <= 15);
 
-    // Delivery decisions never panic and are mutually consistent: if a vector
-    // is deliverable, taking it yields exactly that vector.
     let deliverable = l.has_deliverable();
     let taken = l.take_interrupt();
     assert_eq!(deliverable, taken.is_some());
@@ -278,7 +272,7 @@ fn running_periodic_lapic(
     arm_vns: u64,
 ) -> Lapic {
     let mut lvt = [LVT_RESET; 6];
-    lvt[LVT_TIMER] = 0x40 | (TIMER_PERIODIC << 17); // periodic, unmasked, vector 0x40
+    lvt[LVT_TIMER] = 0x40 | (TIMER_PERIODIC << 17);
     Lapic {
         id: 0,
         timer_hz,
@@ -295,7 +289,7 @@ fn running_periodic_lapic(
         irr: [0; 8],
         lvt,
         initial_count,
-        count_at_arm: initial_count, // fresh-armed
+        count_at_arm: initial_count,
         timer_arm_vns: arm_vns,
         timer_running: true,
         timer_pending: true,
@@ -313,7 +307,6 @@ fn running_periodic_lapic(
 /// divide stays small for CBMC.)
 #[kani::proof]
 fn advance_to_idempotent_at_saturation_boundary() {
-    // period = ceil(1_000_000 · 2 · 1e9 / 25e6) = 80_000_000 ns; three periods.
     let arm: u64 = kani::any();
     kani::assume(arm >= u64::MAX - 240_000_000);
     let now = u64::MAX;
@@ -340,9 +333,8 @@ fn advance_to_idempotent_at_saturation_boundary() {
 /// period so the remaining is non-zero.
 #[kani::proof]
 fn tdcr_change_no_retroactive_fire() {
-    // ÷2, 25 MHz, N=1000 -> first-period span 80_000 ns.
     let mut lvt = [LVT_RESET; 6];
-    lvt[LVT_TIMER] = 0x40; // one-shot, unmasked, vector 0x40
+    lvt[LVT_TIMER] = 0x40;
     let mut l = Lapic {
         id: 0,
         timer_hz: PROOF_TIMER_HZ,
@@ -353,7 +345,7 @@ fn tdcr_change_no_retroactive_fire() {
         esr: 0,
         icr_low: 0,
         icr_high: 0,
-        divide_config: 0b0000, // ÷2
+        divide_config: 0b0000,
         isr: [0; 8],
         tmr: [0; 8],
         irr: [0; 8],
@@ -365,14 +357,12 @@ fn tdcr_change_no_retroactive_fire() {
         timer_pending: true,
     };
     let now: u64 = kani::any();
-    kani::assume(now < 80_000); // within the first period -> remaining > 0
+    kani::assume(now < 80_000);
     let remaining_before = l.current_count(now);
     kani::assume(remaining_before > 0);
 
-    // A TDCR write to ÷128 goes through the unified re-arm path.
     l.mmio_write(APIC_TDCR, 0b1010, now).unwrap();
 
-    // Remaining preserved (not recomputed retroactively), rescheduled forward.
     assert_eq!(l.current_count(now), remaining_before);
     assert!(!l.advance_to(now));
     if let Some(d) = l.next_timer_deadline() {
@@ -389,16 +379,16 @@ fn tdcr_change_no_retroactive_fire() {
 #[kani::proof]
 fn fired_oneshot_not_resurrected() {
     let n: u32 = kani::any();
-    kani::assume(n != 0); // the count register retains its value after firing
+    kani::assume(n != 0);
     let now: u64 = kani::any();
 
     let mut lvt = [LVT_RESET; 6];
-    lvt[LVT_TIMER] = 0x40; // one-shot (mode 0), unmasked, vector 0x40
+    lvt[LVT_TIMER] = 0x40;
     let mut l = Lapic {
         id: 0,
         timer_hz: PROOF_TIMER_HZ,
         tpr: 0,
-        svr: SVR_ENABLE_BIT, // software-enabled
+        svr: SVR_ENABLE_BIT,
         ldr: 0,
         dfr: 0,
         esr: 0,
@@ -409,15 +399,13 @@ fn fired_oneshot_not_resurrected() {
         tmr: [0; 8],
         irr: [0; 8],
         lvt,
-        initial_count: n, // count register still reads N after firing
-        count_at_arm: n,  // (irrelevant while stopped)
+        initial_count: n,
+        count_at_arm: n,
         timer_arm_vns: 0,
-        timer_running: false, // already fired
-        timer_pending: false, // ...and the count was consumed
+        timer_running: false,
+        timer_pending: false,
     };
 
-    // A gating re-evaluation (the unified re-arm path, run on any LVT-timer / SVR
-    // write) must not re-arm a consumed one-shot.
     let prior = l.running_remaining(now);
     l.retime(now, prior, divide_value(l.divide_config));
     assert!(!l.timer_running);
@@ -435,9 +423,9 @@ fn fired_oneshot_not_resurrected() {
 fn tdcr_write_mask_drops_ignored_bit() {
     let value: u32 = kani::any();
     let stored = value & TDCR_WRITE_MASK;
-    assert_eq!(stored & 0b100, 0); // bit 2 is never stored
-    assert_eq!(stored & !0b1011, 0); // only bits 0,1,3 survive
-    assert_eq!(divide_value(stored), divide_value(value)); // divisor unchanged
+    assert_eq!(stored & 0b100, 0);
+    assert_eq!(stored & !0b1011, 0);
+    assert_eq!(divide_value(stored), divide_value(value));
 }
 
 /// The LVT write masks **exclude reserved bits** for **any** written value and
@@ -449,12 +437,11 @@ fn tdcr_write_mask_drops_ignored_bit() {
 #[kani::unwind(7)]
 fn lvt_write_masks_exclude_reserved() {
     let value: u32 = kani::any();
-    // Error LVT has no delivery-mode field.
     assert_eq!(value & lvt_write_mask(5) & 0x0000_0700, 0);
     for i in 0..6 {
         let stored = value & lvt_write_mask(i);
-        assert_eq!(stored & (1 << 12), 0); // delivery-status is read-only
-        assert_eq!(stored & (1 << 14), 0); // remote-IRR is read-only
-        assert_eq!(stored & !lvt_write_mask(i), 0); // no bit outside the mask
+        assert_eq!(stored & (1 << 12), 0);
+        assert_eq!(stored & (1 << 14), 0);
+        assert_eq!(stored & !lvt_write_mask(i), 0);
     }
 }

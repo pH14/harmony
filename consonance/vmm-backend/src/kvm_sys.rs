@@ -84,11 +84,9 @@ const KVM_SET_XSAVE: u64 = ioc(1, 0xAE, 0xA5, size_of::<kvm_xsave>() as u64);
 /// `kvm_run`, the memslot table, the retained MSR filter (for `save`/`restore`),
 /// the exit counters, and the pending-completion state.
 pub struct KvmBackend {
-    // Field order matters for drop: the `mmap` is released in `Drop`, the fds
-    // close after. `kvm` is kept alive so the VM/vCPU fds stay valid.
     vcpu: VcpuFd,
     vm: VmFd,
-    #[allow(dead_code)] // retained so its fd outlives `vm`/`vcpu`
+    #[allow(dead_code)]
     kvm: Kvm,
     run: *mut kvm_run,
     mmap_size: usize,
@@ -169,34 +167,19 @@ impl KvmBackend {
     /// before the first run. Stock KVM (no determinism intercepts).
     pub fn new() -> Result<KvmBackend> {
         let kvm = Kvm::new().map_err(kvm_err)?;
-        // A staged I/O/MMIO/MSR completion is retired by setting
-        // `kvm_run.immediate_exit` and issuing exactly one `KVM_RUN`.  Without
-        // this capability KVM ignores that field, so the vCPU could execute
-        // guest instructions before returning and make an in-place restore
-        // depend on host signal timing.  Refuse such a host at construction.
         if !kvm.check_extension(Cap::ImmediateExit) {
             return Err(BackendError::Capability {
                 cap: "KVM_CAP_IMMEDIATE_EXIT",
             });
         }
         let vm = kvm.create_vm().map_err(kvm_err)?;
-        // KVM_IRQCHIP_NONE: we deliberately do NOT call create_irq_chip / split
-        // irqchip. The guest LAPIC is the userspace xAPIC (R1).
         let vcpu = vm.create_vcpu(0).map_err(kvm_err)?;
         let mmap_size = kvm.get_vcpu_mmap_size().map_err(kvm_err)?;
         if mmap_size < size_of::<kvm_run>() {
             return Err(BackendError::Internal("kvm_run mmap size too small"));
         }
-        // The host-sized XSAVE image (KVM_CAP_XSAVE2, 5.17+). A positive value is
-        // the full image size (≥ 4 KiB); 0 means the cap is absent → use the
-        // fixed 4 KiB `kvm_xsave`.
         let xsave2 = vm.check_extension_int(Cap::Xsave2);
         let xsave2_size = (xsave2 > 0).then_some(xsave2 as usize);
-        // SAFETY (granted purpose 2): map the per-vCPU shared `kvm_run` structure.
-        // `vcpu`'s fd is valid for `mmap`; offset 0 is the `kvm_run`. The
-        // resulting pointer is owned by this backend and unmapped exactly once in
-        // `Drop`. `mmap_kvm_run` returns an error (never a null/`MAP_FAILED`
-        // pointer) on failure.
         let run = unsafe { mmap_kvm_run(vcpu.as_raw_fd(), mmap_size)? };
         Ok(KvmBackend {
             vcpu,
@@ -267,8 +250,6 @@ impl KvmBackend {
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
         retire_staged_completion(page, &mut self.pending, &mut self.completion_staged, || {
-            // SAFETY (raw ioctl seam): this is the one completion-only
-            // `KVM_RUN` on the owned vCPU; `page` is its mapped run page.
             let rc = unsafe { raw_kvm_run(fd) };
             if rc < 0 {
                 Err(std::io::Error::last_os_error())
@@ -287,53 +268,32 @@ impl KvmBackend {
             if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
                 return Err(BackendError::Internal("KVM run canceled by host"));
             }
-            // Userspace-irqchip injection handshake (KVM_IRQCHIP_NONE): if a
-            // maskable IRQ is queued, deliver it now when the guest can take it,
-            // else arm the interrupt window so KVM exits the instant it can. That
-            // `KVM_EXIT_IRQ_WINDOW_OPEN` is consumed below (`decode_exit` → `None`)
-            // and we re-enter here, now injectable. The decision + window-flag
-            // write is the pure [`plan_irq_entry`]; only the KVM_INTERRUPT ioctl is
-            // the box-only syscall.
             match plan_irq_entry(self.run_page(), self.pending_irq, self.readiness_current) {
                 IrqEntry::Queue(vector) => {
-                    // SAFETY (raw ioctl seam): `KVM_INTERRUPT` queues `vector` on
-                    // the owned vCPU; `kvm_interrupt` is valid for the call.
-                    // Excluded under Miri.
                     unsafe { raw_interrupt(self.vcpu.as_raw_fd(), u32::from(vector))? };
-                    // Accepted: clear the slot and record it for the VMM to complete
-                    // its LAPIC IRR→ISR transition (confirmed acceptance).
                     self.pending_irq = None;
                     self.accepted_irq.push_back(vector);
                 }
                 IrqEntry::Run => {}
             }
-            // SAFETY (raw ioctl seam): `KVM_RUN` takes no argument; the kernel
-            // reads/writes the `mmap`-ed `kvm_run` we own. Excluded under Miri.
             let rc = unsafe { raw_kvm_run(self.vcpu.as_raw_fd()) };
             if rc < 0 {
                 let err = std::io::Error::last_os_error();
                 if err.raw_os_error() == Some(libc::EINTR) {
-                    continue; // signal interrupted the entry; re-enter
+                    continue;
                 }
                 return Err(BackendError::Io(err));
             }
-            // A successful entry consumed the previous userspace completion.
-            // This happens before decoding the newly returned exit, including
-            // control exits that this loop consumes internally.
             self.completion_staged = false;
             self.readiness_current = true;
             match decode_exit(self.run_page())? {
                 Some((exit, pending)) => {
                     self.counts.bump(exit.reason());
                     self.pending = pending;
-                    // Read exits become staged when complete_* writes their
-                    // result. Write exits have no trait-level pending value,
-                    // but KVM retains their fast-PIO/MMIO callback until the
-                    // next entry, so mark them here for restore retirement.
                     self.completion_staged = decoded_exit_stages_completion(&exit, pending);
                     return Ok(exit);
                 }
-                None => continue, // run-loop control exit; re-enter
+                None => continue,
             }
         }
     }
@@ -413,10 +373,6 @@ impl KvmBackend {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// The raw syscall seams (the genuinely un-CI-testable / un-Miri-able lines).
-// ---------------------------------------------------------------------------
 
 /// `mmap` the per-vCPU `kvm_run` page. Returns `Err` (never `MAP_FAILED`) on
 /// failure.
@@ -654,7 +610,6 @@ impl KvmBackend {
         if filter.allow_inkernel.len() > KVM_MSR_FILTER_MAX_RANGES as usize {
             return Err(BackendError::Memory("too many MSR filter ranges"));
         }
-        // 1) Route filtered / unknown / invalid MSR accesses to userspace.
         let mut cap = kvm_enable_cap {
             cap: KVM_CAP_X86_USER_SPACE_MSR,
             ..Default::default()
@@ -664,10 +619,6 @@ impl KvmBackend {
         );
         self.vm.enable_cap(&cap).map_err(kvm_err)?;
 
-        // 2) Build the default-deny filter. Each named range gets an all-ones
-        //    bitmap (allow in-kernel for every index in the range); everything
-        //    else is denied → userspace exit. The bitmaps stay alive until the
-        //    ioctl returns (KVM copies them in).
         let mut bitmaps: Vec<Vec<u8>> = Vec::with_capacity(filter.allow_inkernel.len());
         let mut ranges = [kvm_msr_filter_range::default(); KVM_MSR_FILTER_MAX_RANGES as usize];
         for (i, r) in filter.allow_inkernel.iter().enumerate() {
@@ -677,7 +628,6 @@ impl KvmBackend {
                 flags: KVM_MSR_FILTER_READ | KVM_MSR_FILTER_WRITE,
                 nmsrs: r.count,
                 base: r.base,
-                // KVM only reads the bitmap, but the field is typed `*mut u8`.
                 bitmap: bitmaps[i].as_mut_ptr(),
             };
         }
@@ -699,45 +649,18 @@ impl Backend for KvmBackend {
     type A = X86;
 
     fn set_policy(&mut self, policy: &X86Policy) -> Result<()> {
-        // CPUID first, then the MSR filter (the bringup order: both before the
-        // first run).
         self.install_cpuid(&policy.cpuid)?;
         self.install_msr_filter(&policy.msr_filter)
     }
 
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
-        // Validate + record the FULL region via the portable seam (alignment /
-        // overlap / size). `read_guest`/`write_guest` translate through this record,
-        // so it spans the whole contiguous host backing — including the 4 KiB LAPIC
-        // MMIO page, which stays real host memory (only its KVM *mapping* is omitted
-        // below). The slot index is the table's next index; a failed registration
-        // rolls the record back, so a failed map never leaves a stale host pointer
-        // for a later translate to dereference.
         self.regions
             .insert(gpa.0, host.as_mut_ptr(), host.len() as u64)?;
-        // Register the backing as KVM memslots that leave the LAPIC MMIO page
-        // (`0xFEE00000`, 4 KiB) UNMAPPED, so the guest's xAPIC accesses fault to
-        // `KVM_EXIT_MMIO` → `dispatch_mmio` → the userspace deterministic `Lapic`
-        // rather than being serviced from RAM by a covering memslot. (A RAM-backed
-        // LAPIC page was the root cause of the runc/Postgres deadlock: the model
-        // stayed at reset and its V-time timer never fired.) The region-splitting
-        // LOGIC is the pure, covered + Kani-verified `split_around_hole`; here we
-        // only iterate it and issue one ioctl per part. The KVM slot ids come from
-        // the backend's `mem_slot_count` (NOT the logical-region count), so a split
-        // map consumes a contiguous block and a later map cannot collide with this
-        // split's high half. For RAM below the page there is one part, nothing holed.
         const LAPIC_MMIO_PAGE: u64 = 0xFEE0_0000;
         let host_base = host.as_ptr() as u64;
         let base_slot = self.mem_slot_count;
         let mut registered = 0u32;
-        // For the error-path rollback: entries are pushed only when `dirty_log`
-        // is on, so the truncate target is the length at entry — NOT
-        // `len - registered`, which would underflow (or eat earlier slots'
-        // entries) on a partial failure of an unlogged map.
         let dirty_slots_before = self.dirty_slots.len();
-        // Task 95 M2.1: register guest RAM with dirty logging on (both split
-        // parts), so `drain_dirty_pages` can feed the O(dirty) snapshot derive.
-        // Guest-inert (gate a0); `set_dirty_log_enabled(false)` is the A/B arm.
         let flags = if self.dirty_log {
             kvm_bindings::KVM_MEM_LOG_DIRTY_PAGES
         } else {
@@ -753,18 +676,7 @@ impl Backend for KvmBackend {
                 memory_size: part.size,
                 userspace_addr: host_base + part.host_off,
             };
-            // SAFETY (granted purpose 1): register a sub-range of the host backing
-            // with KVM. The caller's `map_memory` contract guarantees `host` stays
-            // live, pinned, page-aligned, and unaliased for the backend's lifetime;
-            // `split_around_hole` keeps every part within `[host_base, host_base +
-            // host.len())` and page-aligned (proven), so `userspace_addr` /
-            // `memory_size` address only that backing. KVM retains the address and
-            // the guest writes through it on every run.
             if let Err(e) = unsafe { self.vm.set_user_memory_region(region) }.map_err(kvm_err) {
-                // Roll back the logical-region record AND every part already mapped
-                // in THIS call (a partial split leaves no stale KVM mapping). The
-                // counter is not advanced, so a retry reuses these slot ids cleanly.
-                // The drain slot table shrinks with it (no stale drain target).
                 self.regions.rollback_last();
                 self.dirty_slots.truncate(dirty_slots_before);
                 for j in 0..registered {
@@ -772,12 +684,9 @@ impl Backend for KvmBackend {
                         slot: base_slot + j,
                         flags: 0,
                         guest_phys_addr: 0,
-                        memory_size: 0, // a 0-size region deletes the slot
+                        memory_size: 0,
                         userspace_addr: 0,
                     };
-                    // SAFETY (granted purpose 1): `memory_size == 0` deletes a slot
-                    // we just registered; it references no host memory. Best-effort
-                    // cleanup on the error path.
                     let _ = unsafe { self.vm.set_user_memory_region(undo) };
                 }
                 return Err(e);
@@ -790,27 +699,17 @@ impl Backend for KvmBackend {
         }
         self.mem_slot_count += registered;
         if !self.dirty_log {
-            // A RAM slot now exists whose guest writes KVM will never log —
-            // latch the drain closed for this backend's whole lifetime (the
-            // safety rule: never vouch for a set that cannot be complete, even
-            // if the knob is flipped back on later).
             self.unlogged_slot = true;
         }
         Ok(())
     }
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
-        // Without the log flag the ioctl would fail per-slot anyway; answer the
-        // honest capability error so callers take the full-scan path up front.
         if !self.dirty_log {
             return Err(BackendError::Unsupported {
                 what: "drain_dirty_pages (dirty logging disabled)",
             });
         }
-        // Completeness is a property of the SLOTS, not the current knob: if any
-        // RAM slot was ever registered without `KVM_MEM_LOG_DIRTY_PAGES`, its
-        // guest writes are permanently invisible to the log, so no drain from
-        // this backend can be vouched complete — decline forever.
         if self.unlogged_slot {
             return Err(BackendError::Unsupported {
                 what: "drain_dirty_pages (a RAM slot was mapped without dirty logging)",
@@ -818,19 +717,12 @@ impl Backend for KvmBackend {
         }
         let mut gfns = Vec::new();
         for &(slot, gpa, size) in &self.dirty_slots {
-            // `KVM_GET_DIRTY_LOG` retrieves-and-resets the slot's bitmap. A failure
-            // mid-walk leaves earlier slots already reset — safe under the drain
-            // contract: on `Err` the caller MUST full-scan (never trust a partial
-            // set), and the *next* drain window is re-armed by the caller's own
-            // drain-and-discard at its next parent point.
             let bitmap = self
                 .vm
                 .get_dirty_log(slot, size as usize)
                 .map_err(kvm_err)?;
             crate::region::decode_dirty_bitmap(gpa, size, &bitmap, &mut gfns);
         }
-        // Ascending per slot and disjoint across slots, but the slot table's order
-        // is registration order — sort + dedup is the stated contract, cheap here.
         gfns.sort_unstable();
         gfns.dedup();
         Ok(gfns)
@@ -848,25 +740,15 @@ impl Backend for KvmBackend {
 
     fn inject(&mut self, event: Injection) -> Result<()> {
         match event {
-            // Set the pending maskable vector (overwrite); same as set_pending_irq.
             Injection::Interrupt { vector } => {
                 self.pending_irq = Some(vector);
                 Ok(())
             }
-            // NMIs are non-maskable; queue immediately via the KVM_NMI ioctl. (Not
-            // needed by the Linux boot — timer IRQ only — but honoured so the trait
-            // method is complete.)
             Injection::Nmi => self.vcpu.nmi().map_err(kvm_err),
         }
     }
 
     fn set_pending_irq(&mut self, vector: Option<u8>) -> Result<()> {
-        // Overwrite the single pending-IRQ slot with the VMM's freshly re-arbitrated
-        // vector. `None` clears it; the next `enter_guest` then disarms the window
-        // (via `plan_irq_entry(None)`), so a previously-armed vector that is no
-        // longer the highest deliverable (TPR raised / EOI'd / preempted) is not
-        // injected stale. The actual KVM_INTERRUPT / window handshake runs in
-        // `enter_guest` against the current `ready_for_interrupt_injection`.
         self.pending_irq = vector;
         Ok(())
     }
@@ -897,14 +779,10 @@ impl Backend for KvmBackend {
     }
 
     fn complete_hypercall(&mut self, _ret: u64) -> Result<()> {
-        // Stock KVM services VMCALL in-kernel; it never surfaces CommonExit::Hypercall,
-        // so there is never a hypercall pending to complete.
         Err(BackendError::NoPendingRead)
     }
 
     fn complete_arch(&mut self, _completion: X86Completion) -> Result<()> {
-        // Stock KVM answers CPUID in-kernel from the installed table; it never
-        // surfaces X86Exit::Cpuid, so there is never an arch completion to apply.
         Err(BackendError::BadCompletion)
     }
 
@@ -941,15 +819,9 @@ impl Backend for KvmBackend {
     }
 
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
-        // `KVM_SET_*` does not disarm completion state held in `kvm_run`.
-        // Reject before validation or mutation so an old IO/MMIO/MSR result can
-        // never commit over the restored registers on the next KVM_RUN.
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }
-        // Fail closed *before any `SET_*` ioctl* (no half-mutation of the live
-        // vCPU): the snapshot's MSR key set must equal the configured allow-stateful
-        // indices, and the XSAVE image must be the host image size.
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
         validate_restore_shape(state, self.msr_filter.as_ref(), xsave_len)?;
 
@@ -977,10 +849,6 @@ impl Backend for KvmBackend {
         self.restore_xsave(&state.xsave)?;
         self.restore_msrs(state)?;
 
-        // The architectural interrupt/event state above is authoritative for
-        // the restored timeline.  These host-side queues belong to the used
-        // timeline and are not part of `VcpuState`; keeping one would inject an
-        // interrupt after restore that a freshly composed target would not.
         self.pending_irq = None;
         self.accepted_irq.clear();
         self.readiness_current = false;

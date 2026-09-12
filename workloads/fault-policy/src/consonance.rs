@@ -14,9 +14,6 @@ use environment::{
 };
 
 const IDENTITY: &[u8] = b"harmony-fault-policy-v1";
-// These are package namespaces carried by generic SDK opcode 3. The generic
-// protocol never decodes the payload; this adapter owns both namespaces and
-// their request shapes.
 const BUGGIFY_NAMESPACE: u16 = 7;
 const NET_FLOW_NAMESPACE: u16 = 4;
 #[derive(Clone)]

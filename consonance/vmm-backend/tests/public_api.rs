@@ -30,8 +30,6 @@ const CRATE: &str = "vmm-backend";
 #[test]
 #[ignore = "needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`"]
 fn public_api_matches_snapshot() {
-    // The frozen contract is the x86-64 Linux surface (includes KvmBackend and
-    // KvmBackend). Other targets expose different concrete backends.
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         eprintln!("SKIP: {CRATE} public-api test — frozen on x86-64 Linux");
         return;
@@ -44,8 +42,6 @@ fn public_api_matches_snapshot() {
             "public-api",
             "-p",
             CRATE,
-            // Freeze the full surface (all features), so a public item gated
-            // behind a non-default feature (`mock`) can never drift unnoticed.
             "--all-features",
             "-sss",
             "--color",
@@ -62,7 +58,6 @@ fn public_api_matches_snapshot() {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Missing tool / toolchain -> skip; a real build error -> fail.
         let absent = stderr.contains("no such command")
             || stderr.contains("is not installed")
             || stderr.contains("toolchain may not be installed")

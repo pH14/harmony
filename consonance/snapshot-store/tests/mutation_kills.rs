@@ -20,9 +20,6 @@ fn store(mem_pages: u64) -> Store {
 fn seal_assigns_a_fresh_id_each_time() {
     let mut s = store(8);
 
-    // Three independent base layers (parent = None, so no chain to walk). A
-    // correct `+= 1` yields ids 0, 1, 2 — all distinct. A `*= 1` freezes the
-    // counter, so all three collide on id 0 and the first `assert_ne!` fires.
     let a = s.begin_base().seal(vec![]);
     let b = s.begin_base().seal(vec![]);
     let c = s.begin_base().seal(vec![]);
@@ -30,10 +27,6 @@ fn seal_assigns_a_fresh_id_each_time() {
     assert_ne!(b, c, "the third seal must advance next_id again");
     assert_ne!(a, c, "no two seals share an id");
 
-    // A derived child must also get an id distinct from its parent — otherwise the
-    // child's `parent` link points at the child itself (the resolve-loop source).
-    // The child writes no pages, so `seal` performs no parent resolution here:
-    // the distinctness is observed without ever walking a chain (no hang).
     let parent = s.begin_base().seal(vec![]);
     let child = s.derive(parent).unwrap().seal(vec![]);
     assert_ne!(parent, child, "a child's id differs from its parent's id");

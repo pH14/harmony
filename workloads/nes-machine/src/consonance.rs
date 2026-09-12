@@ -163,8 +163,6 @@ impl ConsonanceProfile {
             return;
         };
         self.dirty_available_seals = self.dirty_available_seals.saturating_add(1);
-        // A one-layer seal with a complete dirty drain is the bounded-chain
-        // flatten path. The initial full base has no drained parent window.
         if chain_len == Some(1) {
             self.flatten_wall_samples_ns
                 .push(self.last_snapshot_wall_ns);
@@ -375,8 +373,6 @@ impl ConsonanceMachine {
             ConsonanceProfile::new(std::env::var_os("HARMONY_CONSONANCE_PROFILE").is_some());
         let (setup_handle, setup_vtime) = session.setup_handle();
         let setup = machine_snap(setup_handle);
-        // Setup is a retained server snapshot. Replay it before discovering the
-        // guest publication so the setup observation always starts clean.
         drive_profiled(
             &mut session,
             &mut profile,

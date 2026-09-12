@@ -81,7 +81,7 @@ repository checks live in [CONTRIBUTING.md](CONTRIBUTING.md).
 - `scripts/` contains repository-level development and validation helpers.
 
 Consonance and Dissonance build independently. Standalone workload crates consume
-their interfaces; the CLI composes them. The [Cargo dependency policy](docs/dependency-boundaries.toml)
+their interfaces; the CLI composes them. The [Cargo dependency policy](scripts/dependency-boundaries.toml)
 and its required CI check enforce the direction of dependencies, including
 optional, target-specific, build, and development dependencies. Consonance owns
 opaque input transport and deterministic state. Fault definitions and policies

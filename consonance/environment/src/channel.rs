@@ -424,8 +424,6 @@ impl RecordedState {
             payloads: environment.remaining_payloads(),
             handler: HandlerSnapshot::capture(&environment.handler)?,
         };
-        // Capture and decode admit the same aggregate envelope. Fields are
-        // private, so every encodable state has passed one of these checks.
         if state.encoded_len() > MAX_RECORDED_STATE_BYTES {
             return Err(ChannelError::TooLarge);
         }
@@ -433,10 +431,9 @@ impl RecordedState {
     }
 
     fn encoded_len(&self) -> usize {
-        // Fixed header, override count, payload tag, and three handler lengths.
         let mut size = 39usize;
         for answer in self.overrides.values() {
-            size = size.saturating_add(19); // complete key and answer tag
+            size = size.saturating_add(19);
             if let Answer::Data(bytes) = answer {
                 size = size.saturating_add(4).saturating_add(bytes.len());
             }
@@ -499,8 +496,6 @@ impl RecordedState {
         }
         let stream_state = reader.u64()?;
         let moment = reader.u64()?;
-        // Each entry has moment (8), service (2), request id (8), and at least
-        // one answer tag byte. Bound the count before allocating the map.
         let override_count = reader.count(19)?;
         let mut overrides = BTreeMap::new();
         let mut previous = None;

@@ -67,8 +67,6 @@ fn prepare_rootfs(
     overlay.file("harmony-oci/rootfs/opt/harmony/fault-agent", 0o755, agent);
     overlay.file("init", 0o755, INIT);
     let control = overlay.finish();
-    // Linux accepts the next raw cpio header only at a four-byte boundary
-    // after decompressing the preceding initramfs member.
     let padding = (4 - image.len() % 4) % 4;
     image.resize(image.len() + padding, 0);
     image.extend(control);

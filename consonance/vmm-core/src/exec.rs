@@ -150,8 +150,6 @@ impl ExecSession {
     /// commands work. The crude channel does no quoting or escaping — the caller
     /// owns what it injects.
     pub fn new(cmd: &str, nonce: u64) -> ExecSession {
-        // Plain-printable marker `HXEC-<nonce>-` — NO control bytes (an interactive
-        // line-editing shell would eat them; see the module docs).
         let mut marker = Vec::with_capacity(MARKER_TAG.len() + 20);
         marker.extend_from_slice(MARKER_TAG);
         marker.extend_from_slice(nonce.to_string().as_bytes());
@@ -202,9 +200,6 @@ impl ExecSession {
             self.done = Some(Done::Sentinel { status, cut });
             return;
         }
-        // No match this round: next scan may skip everything that is now more than a
-        // full sentinel-width behind the buffer end (it was wholly present and
-        // rejected here). Keep the overlap so a sentinel split across feeds is found.
         self.scan_from = self.capture.len().saturating_sub(self.sentinel_max_len());
     }
 
@@ -265,19 +260,15 @@ impl ExecSession {
     fn scan(&self, start: usize) -> Option<(u64, usize)> {
         let m = &self.marker;
         let buf = &self.capture;
-        // Every candidate start is an occurrence of the marker. Walk them in order
-        // (from `start`) and return the first that is followed by `:<digits>:<M>`.
         let mut from = start.min(buf.len());
         while let Some(rel) = find(&buf[from..], m) {
             let start = from + rel;
             let mut i = start + m.len();
-            // Expect ':'
             if buf.get(i) != Some(&b':') {
                 from = start + 1;
                 continue;
             }
             i += 1;
-            // Expect one or more ASCII digits, parsed as the status.
             let digit_start = i;
             let mut status: u64 = 0;
             while let Some(&c) = buf.get(i) {
@@ -291,17 +282,14 @@ impl ExecSession {
                 }
             }
             if i == digit_start {
-                // No digits (this is the literal `$?` echo, or a partial) — skip.
                 from = start + 1;
                 continue;
             }
-            // Expect ':'
             if buf.get(i) != Some(&b':') {
                 from = start + 1;
                 continue;
             }
             i += 1;
-            // Expect the closing marker.
             if buf[i..].starts_with(m) {
                 return Some((status, start));
             }
@@ -339,8 +327,6 @@ mod tests {
         assert!(text.ends_with('\n'));
         assert!(text.contains("HXEC-7-"));
         assert!(text.contains(":$?:"), "literal $? in the injected echo");
-        // Every injected byte is printable ASCII or a newline — NO control bytes,
-        // so an interactive line-editing shell relays the line intact.
         assert!(
             input
                 .iter()
@@ -356,22 +342,18 @@ mod tests {
     fn sentinel_with_digits_completes_and_the_literal_echo_does_not() {
         let mut s = ExecSession::new("true", 42);
         let marker = String::from_utf8(s.marker.clone()).unwrap();
-        // The shell echoes the typed command line verbatim (literal `$?`)...
         let echo = format!("true\necho {marker}:$?:{marker}\n");
         s.feed(echo.as_bytes());
         assert!(
             !s.is_done(),
             "the literal $? echo must NOT complete the session"
         );
-        // ...then the command's own output, then the executed echo with a real 0.
         let result = format!("some output\n{marker}:0:{marker}\n");
         s.feed(result.as_bytes());
         assert!(s.is_done());
         let out = s.into_outcome();
         assert!(out.ok);
         assert_eq!(out.status, Some(0));
-        // Output is everything before the sentinel line — includes the echo and the
-        // command output (crude), but NOT the sentinel itself.
         let text = String::from_utf8_lossy(&out.output);
         assert!(text.contains("some output"));
         assert!(
@@ -399,15 +381,12 @@ mod tests {
     fn resume_scan_finds_the_sentinel_after_lots_of_chatty_output() {
         let mut s = ExecSession::new("busy", 5);
         let marker = String::from_utf8(s.marker.clone()).unwrap();
-        // The shell's echo of the typed line (literal `$?`) — must NOT complete.
         s.feed(format!("busy\necho {marker}:$?:{marker}\n").as_bytes());
         assert!(!s.is_done());
-        // A long run of chatty output, one byte per feed (many V-time steps).
         for _ in 0..4096 {
             s.feed(b"x");
         }
         assert!(!s.is_done());
-        // The real executed echo, dribbled in byte-by-byte across the boundary.
         for b in format!("{marker}:42:{marker}\n").into_bytes() {
             s.feed(&[b]);
         }
@@ -415,8 +394,6 @@ mod tests {
         let out = s.into_outcome();
         assert!(out.ok);
         assert_eq!(out.status, Some(42));
-        // Output is everything before the sentinel (the echo + the 4096 x's), never
-        // the sentinel itself.
         assert!(out.output.ends_with(b"x"));
         assert!(!String::from_utf8_lossy(&out.output).contains(":42:"));
     }
@@ -431,7 +408,6 @@ mod tests {
         let full = format!("hi\n{marker}:0:{marker}\n");
         let (a, b) = full.split_at(full.len() / 2);
         s.feed(a.as_bytes());
-        // May or may not be done depending on the split; feed the rest.
         s.feed(b.as_bytes());
         assert!(s.is_done());
         assert_eq!(s.into_outcome().status, Some(0));
@@ -460,7 +436,7 @@ mod tests {
         let mut s = ExecSession::new("true", 3);
         let marker = String::from_utf8(s.marker.clone()).unwrap();
         s.feed(format!("{marker}:0:{marker}\n").as_bytes());
-        s.finish_timeout(); // no-op: already completed cleanly
+        s.finish_timeout();
         assert!(s.into_outcome().ok);
     }
 
@@ -473,12 +449,10 @@ mod tests {
     )]
     fn capture_is_bounded() {
         let mut s = ExecSession::new("yes", 8);
-        // Feed more than the cap in one shot.
         let big = vec![b'x'; MAX_CAPTURE + 4096];
         s.feed(&big);
         assert!(s.truncated());
         assert!(!s.is_done());
-        // The buffer never exceeds the cap.
         assert!(s.capture.len() <= MAX_CAPTURE);
     }
 
@@ -488,9 +462,9 @@ mod tests {
     fn marker_without_digits_never_completes() {
         let mut s = ExecSession::new("x", 11);
         let marker = String::from_utf8(s.marker.clone()).unwrap();
-        s.feed(format!("{marker}::{marker}").as_bytes()); // empty status field
+        s.feed(format!("{marker}::{marker}").as_bytes());
         assert!(!s.is_done());
-        s.feed(format!("{marker}:$?:{marker}").as_bytes()); // literal $?
+        s.feed(format!("{marker}:$?:{marker}").as_bytes());
         assert!(!s.is_done());
     }
 

@@ -69,8 +69,6 @@ impl MemRegions {
             .checked_add(len)
             .ok_or(BackendError::Memory("region wraps the address space"))?;
         for r in &self.slots {
-            // Each stored region is non-wrapping (this check ran at its insert),
-            // so `r.gpa + r.len` cannot overflow.
             let r_end = r.gpa + r.len;
             let overlaps = gpa < r_end && r.gpa < end;
             if overlaps {
@@ -98,9 +96,9 @@ impl MemRegions {
             .checked_add(len)
             .ok_or(BackendError::Memory("guest access wraps the address space"))?;
         for r in &self.slots {
-            let r_end = r.gpa + r.len; // non-wrapping (see `insert`)
+            let r_end = r.gpa + r.len;
             if gpa >= r.gpa && end <= r_end {
-                let off = gpa - r.gpa; // <= r.len, fits an isize within the region
+                let off = gpa - r.gpa;
                 // SAFETY: `off <= r.len` and the region is `r.len` contiguous
                 // bytes from `r.host`, so the resulting pointer is in-bounds (or
                 // one-past-the-end only when `len == 0`, which callers never pass
@@ -181,14 +179,11 @@ fn split_parts(base: u64, len: u64, hole_base: u64, hole_len: u64) -> [Option<Me
         base.checked_add(len).is_some() && hole_base.checked_add(hole_len).is_some(),
         "split_parts: caller must pass non-wrapping intervals (MemRegions::insert enforces base+len)"
     );
-    let end = base.saturating_add(len); // region [base, end)
-    let hole_end = hole_base.saturating_add(hole_len); // hole [hole_base, hole_end)
-    // Intersection of the hole with the region: [ov_lo, ov_hi).
+    let end = base.saturating_add(len);
+    let hole_end = hole_base.saturating_add(hole_len);
     let ov_lo = hole_base.max(base);
     let ov_hi = hole_end.min(end);
     if len == 0 || ov_lo >= ov_hi {
-        // The hole does not overlap the region: a single slot covering the whole
-        // region (none at all for an empty region — never registered by KVM).
         return [
             (len != 0).then_some(MemSlotPart {
                 gpa: base,
@@ -198,11 +193,6 @@ fn split_parts(base: u64, len: u64, hole_base: u64, hole_len: u64) -> [Option<Me
             None,
         ];
     }
-    // The hole carves [ov_lo, ov_hi) out of the region; emit the non-empty
-    // remainders before ([base, ov_lo)) and after ([ov_hi, end)) it. At least one
-    // is non-empty whenever the hole does not cover the whole region (the bring-up
-    // case: a 4 KiB hole inside multi-GiB RAM). A hole ⊇ region yields no slot —
-    // arithmetically correct (the region is fully holed), never reached in practice.
     let left = (ov_lo > base).then_some(MemSlotPart {
         gpa: base,
         size: ov_lo - base,
@@ -262,7 +252,7 @@ pub(crate) fn decode_dirty_bitmap(
         let mut w = word;
         while w != 0 {
             let bit = u64::from(w.trailing_zeros());
-            w &= w - 1; // clear the bit just decoded
+            w &= w - 1;
             let page = (word_idx as u64) * 64 + bit;
             if page < slot_pages {
                 out.push(base_gfn + page);
@@ -313,15 +303,12 @@ mod tests {
         let b = Backing::new(PAGE as usize);
         let mut regions = MemRegions::new();
 
-        // insert returns sequential slot indices.
         assert_eq!(regions.insert(0, a.ptr, 2 * PAGE).unwrap(), 0);
         assert_eq!(regions.insert(0x4000, b.ptr, PAGE).unwrap(), 1);
 
-        // zero length / mis-aligned gpa / mis-aligned length all reject.
         assert!(regions.insert(0x8000, b.ptr, 0).is_err());
         assert!(regions.insert(0x8001, b.ptr, PAGE).is_err());
         assert!(regions.insert(0x8000, b.ptr, 0x801).is_err());
-        // overlap with slot 0 ([0, 0x2000)) rejects.
         assert!(regions.insert(0x1000, b.ptr, PAGE).is_err());
     }
 
@@ -333,7 +320,7 @@ mod tests {
     fn insert_rejects_a_wrapping_region() {
         let a = Backing::new(PAGE as usize);
         let mut regions = MemRegions::new();
-        let gpa = u64::MAX - PAGE + 1; // 0xFFFF_FFFF_FFFF_F000, page-aligned
+        let gpa = u64::MAX - PAGE + 1;
         assert!(
             regions.insert(gpa, a.ptr, 2 * PAGE).is_err(),
             "gpa + len wrapping u64 must be rejected before any split"
@@ -348,12 +335,9 @@ mod tests {
         regions.insert(0, a.ptr, PAGE).unwrap();
         assert_eq!(regions.insert(0x4000, b.ptr, PAGE).unwrap(), 1);
 
-        // Roll back slot 1: its range/pointer is gone, so it no longer translates
-        // and its slot index frees up for re-use.
         regions.rollback_last();
         assert!(regions.read(0x4000, &mut [0u8; 1]).is_err());
         assert_eq!(regions.insert(0x4000, b.ptr, PAGE).unwrap(), 1);
-        // Slot 0 is untouched.
         regions.read(0, &mut [0u8; 1]).unwrap();
     }
 
@@ -362,18 +346,14 @@ mod tests {
         let backing = Backing::new(8 * PAGE as usize);
         let p = backing.ptr;
 
-        // Adjacent regions (touching exactly at a boundary) are NOT overlaps.
         let mut r = MemRegions::new();
-        r.insert(0x1000, p, 2 * PAGE).unwrap(); // [0x1000, 0x3000)
-        r.insert(0x3000, p, PAGE).unwrap(); // adjacent above: gpa == existing end
-        r.insert(0, p, PAGE).unwrap(); // adjacent below: new end == existing start
+        r.insert(0x1000, p, 2 * PAGE).unwrap();
+        r.insert(0x3000, p, PAGE).unwrap();
+        r.insert(0, p, PAGE).unwrap();
 
-        // Genuine overlaps reject, exercising both terms of the overlap test.
         let mut r2 = MemRegions::new();
-        r2.insert(0x2000, p, 2 * PAGE).unwrap(); // [0x2000, 0x4000)
-        // straddles the existing start (the `r.gpa < end` term is the live one).
+        r2.insert(0x2000, p, 2 * PAGE).unwrap();
         assert!(r2.insert(0x1000, p, 2 * PAGE).is_err());
-        // straddles the existing end (the `gpa < r_end` term is the live one).
         assert!(r2.insert(0x3000, p, 2 * PAGE).is_err());
     }
 
@@ -392,7 +372,6 @@ mod tests {
         regions.read(0x1_0FF0, &mut tail).unwrap();
         assert_eq!(tail, [0xCD; 16]);
 
-        // empty copy is a no-op success regardless of address.
         regions.read(0x9999_9999, &mut []).unwrap();
         regions.write(0x9999_9999, &[]).unwrap();
     }
@@ -403,19 +382,14 @@ mod tests {
         let mut regions = MemRegions::new();
         regions.insert(0x2000, backing.ptr, PAGE).unwrap();
 
-        // Below the region, above it, and straddling the end — all rejected.
-        // Under Miri a missed bound check here would surface as an OOB access.
         assert!(regions.read(0x1FFF, &mut [0u8; 1]).is_err());
         assert!(regions.read(0x3000, &mut [0u8; 1]).is_err());
         let mut straddle = [0u8; 16];
-        assert!(regions.read(0x2FF8, &mut straddle).is_err()); // ends past 0x3000
-        assert!(regions.write(u64::MAX, &[0u8; 8]).is_err()); // wrap path
+        assert!(regions.read(0x2FF8, &mut straddle).is_err());
+        assert!(regions.write(u64::MAX, &[0u8; 8]).is_err());
 
-        // Exact-fit at the upper boundary succeeds.
         assert!(regions.read(0x2FF8, &mut [0u8; 8]).is_ok());
     }
-
-    // ---- the portable memslot splitter (gate 2) -------------------------------
 
     use proptest::prelude::*;
 
@@ -465,7 +439,7 @@ mod tests {
     /// covering all of it (the no-overlap case the spec calls out).
     #[test]
     fn no_overlap_returns_the_single_full_region() {
-        let ram = 8u64 << 20; // 8 MiB, well below 0xFEE00000
+        let ram = 8u64 << 20;
         assert_eq!(
             parts(0, ram, LAPIC_PAGE, 0x1000),
             vec![MemSlotPart {
@@ -474,8 +448,6 @@ mod tests {
                 host_off: 0,
             }],
         );
-        // A hole entirely above the region, and one entirely below it, both yield
-        // the single full region (exercising each side of the no-overlap test).
         assert_eq!(parts(0x10_0000, 0x10_0000, 0x100_0000, 0x1000).len(), 1);
         assert_eq!(parts(0x100_0000, 0x10_0000, 0, 0x1000).len(), 1);
     }
@@ -484,7 +456,6 @@ mod tests {
     /// empty remainder and returns the single non-empty slot.
     #[test]
     fn hole_at_an_edge_drops_the_empty_remainder() {
-        // Hole at the very start → only the tail remains.
         assert_eq!(
             parts(0x1000, 0x4000, 0x1000, 0x1000),
             vec![MemSlotPart {
@@ -493,7 +464,6 @@ mod tests {
                 host_off: 0x1000,
             }],
         );
-        // Hole at the very end → only the head remains.
         assert_eq!(
             parts(0x1000, 0x4000, 0x4000, 0x1000),
             vec![MemSlotPart {
@@ -512,8 +482,6 @@ mod tests {
         assert!(parts(0x1000, 0x1000, 0, 0x1_0000).is_empty());
     }
 
-    // ---- the portable dirty-bitmap decode (task 95 M2.1) ----------------------
-
     fn decoded(slot_gpa: u64, slot_size: u64, bitmap: &[u64]) -> Vec<u64> {
         let mut out = Vec::new();
         decode_dirty_bitmap(slot_gpa, slot_size, bitmap, &mut out);
@@ -524,12 +492,9 @@ mod tests {
     /// by the slot's base gfn — the `KVM_GET_DIRTY_LOG` layout, LSB-first.
     #[test]
     fn dirty_bitmap_decodes_bit_positions_to_absolute_gfns() {
-        // Slot at gpa 0: bits 0, 3, 63 of word 0 and bit 1 of word 1.
         let bm = [(1u64 << 0) | (1 << 3) | (1 << 63), 1u64 << 1];
         assert_eq!(decoded(0, 128 * PAGE, &bm), vec![0, 3, 63, 65]);
-        // Same bitmap for a slot based at gpa 0x1_0000 (gfn 16): every gfn shifts.
         assert_eq!(decoded(0x1_0000, 128 * PAGE, &bm), vec![16, 19, 79, 81]);
-        // An all-zero bitmap decodes to nothing.
         assert_eq!(decoded(0, 128 * PAGE, &[0, 0]), Vec::<u64>::new());
     }
 
@@ -537,8 +502,6 @@ mod tests {
     /// count) are ignored: KVM rounds the bitmap up to whole u64 words.
     #[test]
     fn dirty_bitmap_ignores_padding_bits_past_the_slot() {
-        // A 3-page slot whose (single-word) bitmap has bits 0, 2, 3, and 63 set:
-        // pages 3 and 63 do not exist in the slot.
         let bm = [(1u64 << 0) | (1 << 2) | (1 << 3) | (1 << 63)];
         assert_eq!(decoded(0x2000, 3 * PAGE, &bm), vec![2, 4]);
     }
@@ -548,16 +511,14 @@ mod tests {
     /// the dirty pages — and never the hole page.
     #[test]
     fn dirty_bitmap_two_split_slots_translate_back_disjointly() {
-        let hole = LAPIC_PAGE; // 4 KiB at 0xFEE00000
+        let hole = LAPIC_PAGE;
         let ram = 8u64 << 30;
         let ps: Vec<MemSlotPart> = parts(0, ram, hole, 0x1000);
         assert_eq!(ps.len(), 2);
         let mut out = Vec::new();
-        // Low slot: first page dirty; high slot: its first page dirty too.
         decode_dirty_bitmap(ps[0].gpa, ps[0].size, &[1u64], &mut out);
         decode_dirty_bitmap(ps[1].gpa, ps[1].size, &[1u64], &mut out);
         let hole_gfn = hole / PAGE;
-        // The high slot's page 0 is the first page AFTER the hole.
         assert_eq!(out, vec![0, hole_gfn + 1]);
         assert!(
             !out.contains(&hole_gfn),
@@ -622,11 +583,8 @@ mod tests {
                 prop_assert_eq!(p.host_off % PAGE, 0);
                 prop_assert_eq!(p.host_off, p.gpa - base, "host offset tracks the gpa");
                 prop_assert!(p.gpa >= base && p.gpa + p.size <= end, "within the region");
-                // ordered + non-overlapping with the previous part.
                 prop_assert!(p.gpa >= prev_end, "ordered, non-overlapping");
                 prev_end = p.gpa + p.size;
-                // never intersects the hole (an empty hole `hole_len == 0` carves
-                // nothing, so the single full region trivially does not "overlap" it).
                 prop_assert!(
                     hole_len == 0 || p.gpa + p.size <= hole || p.gpa >= hole + hole_len,
                     "a part never overlaps the hole"
@@ -634,8 +592,6 @@ mod tests {
                 covered += p.size;
             }
 
-            // When the hole lies fully inside the region the union is exactly the
-            // region minus the hole.
             if hole >= base && hole + hole_len <= end {
                 prop_assert_eq!(covered, len - hole_len);
             }

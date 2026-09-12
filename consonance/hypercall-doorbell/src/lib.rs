@@ -74,11 +74,6 @@ pub mod linux {
 
     const DEVICE: &str = "/dev/harmony";
     const MAX_FRAME: usize = hypercall_proto::MAX_FRAME;
-    // _IOWR('H', 1, struct harmony_ioc_exchange), whose fixed-width UAPI
-    // structure is 32 bytes on both 32- and 64-bit Linux.
-    // Keep the command as its ABI bit pattern. libc's ioctl request argument
-    // is `c_ulong` on glibc and `c_int` on musl; the call-site cast below lets
-    // each libc binding use its declared type without changing these bits.
     const HARMONY_IOC_EXCHANGE: u64 = 0xc020_4801;
 
     #[repr(C)]
@@ -166,8 +161,6 @@ pub mod linux {
         };
         ioctl(&mut exchange)?;
         let response_len = exchange.response_len as usize;
-        // The caller capacity was checked against `MAX_FRAME` above, so this
-        // single comparison also enforces the one-page response bound.
         if response_len > resp.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -327,15 +320,10 @@ pub const PAGE_SIZE: usize = 4096;
 /// rejected (unwritten → zeroed) page; it is **not** the public doorbell magic (that is the port).
 const FRAME_MAGIC: u32 = 0x3150_4348;
 
-// One frame must fit in exactly one page; if the wire format's cap ever diverges from the page
-// size this stops compiling rather than silently truncating frames.
 const _: () = assert!(PAGE_SIZE == hypercall_proto::MAX_FRAME);
 
-// The header (read in full to extract magic + payload_len) must fit within a page.
 const _: () = assert!(HEADER_LEN <= PAGE_SIZE);
 
-// The request/response pages are distinct, page-aligned, and one page apart — a static guard on
-// the ABI constants so a typo can never alias them or mis-align them.
 const _: () = assert!(REQ_GPA.is_multiple_of(PAGE_SIZE as u64));
 const _: () = assert!(RESP_GPA.is_multiple_of(PAGE_SIZE as u64));
 const _: () = assert!(REQ_GPA != RESP_GPA);
@@ -469,9 +457,6 @@ impl MmioDoorbell {
 
 impl IoDoorbell for MmioDoorbell {
     unsafe fn ring(&mut self, port: u16, req_len: u32) {
-        // `VmcallTransport` names the abstract doorbell with the frozen x86
-        // port constant on every architecture. Refuse a mismatched identity
-        // consistently instead of writing an unrelated device register.
         if port != DOORBELL_PORT {
             return;
         }
@@ -501,7 +486,6 @@ impl IoDoorbell for RealIoDoorbell {
         // `preserves_flags` is deliberately omitted — the host owns guest state across an exit
         // except as specified, so we do not assume RFLAGS survives. `nostack` is accurate (`out`
         // touches no guest stack). The port (`> 0xFF`) is carried in DX; the request length in EAX.
-        // Caller (`exchange`) upholds the fixed-page invariants in `IoDoorbell::ring`'s contract.
         unsafe {
             core::arch::asm!(
                 "out dx, eax",
@@ -621,7 +605,6 @@ impl<D: IoDoorbell> VmcallTransport<D> {
     /// Same page requirements as [`VmcallTransport::from_gpas`]; `doorbell` must be consistent
     /// with those GPAs (it services the same fixed pages out-of-band).
     pub unsafe fn with_doorbell(req_gpa: u64, resp_gpa: u64, doorbell: D) -> Self {
-        // GPA == linear address (see safety contract), so the numeric GPA *is* the page pointer.
         Self {
             req_page: req_gpa as *mut u8,
             resp_page: resp_gpa as *mut u8,
@@ -641,24 +624,10 @@ impl<D: IoDoorbell> hypercall_proto::Transport for VmcallTransport<D> {
     /// load-bearing safety property — no header value can make this read past the response page,
     /// write past `resp`, or panic.
     fn exchange(&mut self, req: &[u8], resp: &mut [u8]) -> Result<usize, Self::Error> {
-        // Step 1: never write past the request page.
         if req.len() > PAGE_SIZE {
             return Err(TransportError::RequestTooLarge);
         }
 
-        // Steps 2 & 3: clear both pages and stage the request. Raw-pointer ops
-        // only — no `&`/`&mut` to either page is created here, and none is live
-        // across the doorbell below. The volatile scalar helpers are required
-        // for arm64, where `/dev/mem` gives the reserved low-GPA slot device
-        // attributes and an ordinary optimized `memcpy` can SIGBUS.
-        //
-        // Step 2 clears the request-page tail (`req.len()..PAGE_SIZE`) so a direct `exchange`
-        // caller passing a `req` shorter than its header-encoded length exposes only zeros to the
-        // host, never stale bytes from a previous call (the host reads by the length we ring). Step
-        // 3 zeroes the response page so its untouched tail reads as zeros and — critically — a host
-        // that writes nothing (a rejection) leaves the magic field zero, which step 5 maps to
-        // `HostRejected` instead of decoding a stale prior frame.
-        //
         // SAFETY: `req_page`/`resp_page` name distinct, page-aligned,
         // `PAGE_SIZE`, exclusively owned pages (constructor contract); `req`
         // does not overlap them (same contract), so the copy is
@@ -669,54 +638,30 @@ impl<D: IoDoorbell> hypercall_proto::Transport for VmcallTransport<D> {
             copy_to_shared_page(self.req_page, req.as_ptr(), req.len());
         }
 
-        // Step 4: ring the doorbell (single `OUT`). No reference to either page is live across this
-        // call; the host reads the request page and writes the response page out-of-band here, then
-        // resumes — atomically, holding no pending state. `req.len() <= PAGE_SIZE` (step 1), so the
-        // `as u32` length cast is lossless.
-        //
         // SAFETY: the pages are distinct, page-aligned, `PAGE_SIZE`, guest-owned, and valid for the
         // duration of the call (constructor contract); the doorbell services exactly those pages.
         unsafe {
             self.doorbell.ring(DOORBELL_PORT, req.len() as u32);
         }
 
-        // Step 5: read the response-frame header straight out of the response page. `HEADER_LEN <=
-        // PAGE_SIZE` (static assert), so this fixed-size read is always in-page; the bytes are
-        // host-controlled, so the magic gate and the `u64` length bound below are load-bearing. No
-        // host write is in flight after `ring` returns (the host resumed before this point), so the
-        // raw read aliases nothing.
-        //
         // SAFETY: `resp_page` is a `PAGE_SIZE` page (constructor contract) and `HEADER_LEN <=
-        // PAGE_SIZE`, so the read stays in-page; no `&`/`&mut` to the page outlives this block.
         let mut header = [0_u8; HEADER_LEN];
         unsafe {
             copy_from_shared_page(header.as_mut_ptr(), self.resp_page, HEADER_LEN);
         }
 
-        // Step 6: transport-level rejection. A response page that does not begin with the frame
-        // magic carries no frame — e.g. the host wrote nothing, so step 3's zeros remain. (Wire
-        // format is little-endian.)
         let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
         if magic != FRAME_MAGIC {
             return Err(TransportError::HostRejected);
         }
 
-        // Step 7: derive the response length from the self-describing header (`payload_len` lives
-        // at wire offset 16) and bound-check it in `u64` BEFORE any cast. `payload_len` is
-        // host-controlled (up to `u32::MAX`), so `HEADER_LEN + payload_len` can exceed `u32::MAX`;
-        // computing and checking in `u64` is load-bearing — a bare `as usize` could truncate (a
-        // 16-bit `usize` truncates even a 32-bit length) and slip an out-of-range value past the
-        // check. Nothing is copied on failure.
         let payload_len = u32::from_le_bytes([header[16], header[17], header[18], header[19]]);
         let total = HEADER_LEN as u64 + payload_len as u64;
         if total > PAGE_SIZE as u64 || total > resp.len() as u64 {
             return Err(TransportError::BadResponseLength);
         }
-        // Bound check passed: `total <= PAGE_SIZE` and `total <= resp.len()`, both `usize`-bounded.
         let len = total as usize;
 
-        // Step 8: copy exactly `len` validated bytes out of the response page.
-        //
         // SAFETY: `len <= PAGE_SIZE`, so the read stays within the response page; `len <=
         // resp.len()`, so the write stays within `resp`. `resp` does not overlap the response page
         // (constructor contract), so the copy is non-overlapping. No `&`/`&mut` to the page

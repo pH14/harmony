@@ -71,9 +71,6 @@ impl Mapping {
         pages: impl Iterator<Item = (u64, &'a [u8])>,
     ) -> io::Result<()> {
         let Some(len) = usize::try_from(len).ok().filter(|&l| l != 0) else {
-            // A zero-length image has no pages to write, and `mmap` rejects a
-            // zero-length map. (`usize::try_from` can only fail on a 32-bit host with a
-            // >4 GiB image, which `Mapping::new` rejects for the same reason.)
             return Ok(());
         };
         // SAFETY: `file` is an anonymous unlinked tempfile created, sized, and written
@@ -151,7 +148,6 @@ impl Mapping {
             // `pages.len() * PAGE_SIZE` initialized bytes (`AlignedPage` is a
             // `repr(C)` byte array with `size == align`, so no padding), and
             // `len <= pages.len() * PAGE_SIZE` by construction in `anonymous`.
-            // The borrow is tied to `&self`, matching the Vec's own.
             Backing::Anonymous { pages, len } => unsafe {
                 std::slice::from_raw_parts(pages.as_ptr().cast::<u8>(), *len)
             },
@@ -184,8 +180,6 @@ impl Mapping {
     }
 }
 
-// The `anonymous` seam is `mmap`-free, so unlike the rest of this module it runs under
-// Miri — its whole point is to give the interpreter a `Mapping` to exercise.
 #[cfg(test)]
 mod anon_tests {
     use super::*;
@@ -233,10 +227,6 @@ mod anon_tests {
     }
 }
 
-// `mmap` is a real syscall: Miri cannot execute it, so this module's tests — every one
-// of which must map something to observe anything — are excluded under the interpreter.
-// The crate's unsafe lives entirely here and is exercised by these tests plus the
-// `materialize` paths in `tests/{gates,oracle,stateful}.rs` on a real kernel.
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
@@ -260,18 +250,14 @@ mod tests {
         let m = Mapping::new(file, len).unwrap();
         let img = m.as_slice();
         assert_eq!(&img[0..PAGE_SIZE], &a[..]);
-        assert_eq!(&img[PAGE_SIZE..2 * PAGE_SIZE], &[0u8; PAGE_SIZE][..]); // hole
-        assert_eq!(&img[2 * PAGE_SIZE..3 * PAGE_SIZE], &[0u8; PAGE_SIZE][..]); // hole
+        assert_eq!(&img[PAGE_SIZE..2 * PAGE_SIZE], &[0u8; PAGE_SIZE][..]);
+        assert_eq!(&img[2 * PAGE_SIZE..3 * PAGE_SIZE], &[0u8; PAGE_SIZE][..]);
         assert_eq!(&img[3 * PAGE_SIZE..], &b[..]);
     }
 
-    // `st_blocks` is the only portable-across-macOS-and-Linux way to see a hole; both
-    // gate targets are unix, and this is a test, not a logic fork in library code.
     #[cfg(unix)]
     #[test]
     fn populate_leaves_untouched_pages_as_holes() {
-        // A large sparse image must not be materialized byte-by-byte: writing one page
-        // of a 256 MiB image must leave the file's allocated size near one page.
         const PAGES: u64 = 65_536;
         let (file, len) = sized(PAGES);
         let p = [1u8; PAGE_SIZE];
@@ -303,8 +289,4 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
-    // `Mapping::new`'s copy-on-write semantics are covered end-to-end by
-    // `tests/gates.rs::mapping_writes_are_private` through `Store::materialize`; cloning
-    // the `File` here to re-map it would contradict the sole-handle precondition the
-    // `SAFETY` comment above rests on.
 }

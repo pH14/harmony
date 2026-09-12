@@ -73,8 +73,6 @@ pub struct Outcome {
     pub reason: String,
 }
 
-// On hosts with no drive loop the unsupported-host stub never reads the
-// spec; the fields still document the run contract there.
 #[cfg_attr(
     not(any(
         all(target_os = "macos", target_arch = "aarch64"),
@@ -212,25 +210,16 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
         spec.guest_ram_len,
     )
     .map_err(|e| RunError::Vmm(e.to_string()))?;
-    // The run digest is the serial stream; checkpoint hashes are unused
-    // evidence here and cost a full-RAM hash per interval on the step path.
     vmm.defer_virtual_time_checkpoint_hashes()
         .map_err(|e| RunError::Vmm(e.to_string()))?;
 
-    // `hv_vcpu_run` blocks indefinitely on a quiescent guest, so the drive
-    // loop's between-steps budget check cannot fire on its own. A watchdog
-    // thread requests a vCPU exit once the budget expires; the loop then sees
-    // the elapsed time and reports the budget, not the forced-exit error.
     let exit_handle = vmm.hvf_exit_handle();
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let watchdog_done = std::sync::Arc::clone(&done);
     let budget = spec.wall_budget;
-    // Host deadline only; never used as guest time.
     #[allow(clippy::disallowed_methods)]
     let start = Instant::now();
     let watchdog = std::thread::spawn(move || {
-        // Wall clock bounds only how long the host waits; nothing here feeds
-        // guest state.
         while !watchdog_done.load(std::sync::atomic::Ordering::Acquire) {
             if start.elapsed() > budget {
                 let _ = exit_handle.request_exit();
@@ -256,7 +245,6 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
     .map_err(|e| RunError::Vmm(e.to_string()))?;
     vmm.defer_virtual_time_checkpoint_hashes()
         .map_err(|e| RunError::Vmm(e.to_string()))?;
-    // Host deadline only; never used as guest time.
     #[allow(clippy::disallowed_methods)]
     let start = Instant::now();
     let cancel = vmm
@@ -310,8 +298,6 @@ where
             Ok(step) => step,
             Err(e) => {
                 filter.push(vmm.serial_output(), &mut stdout);
-                // A forced exit from the budget watchdog surfaces as a step
-                // error; report it as the budget, not a backend fault.
                 if start.elapsed() > spec.wall_budget {
                     return Err(RunError::WallBudget {
                         budget_s: spec.wall_budget.as_secs(),

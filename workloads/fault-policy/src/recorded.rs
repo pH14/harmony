@@ -158,8 +158,6 @@ impl EnvSpec {
         match self {
             Self::Recorded { overrides, .. } => overrides,
             Self::Seeded { .. } => {
-                // A process-wide empty map; `Seeded` has no overrides, so a
-                // shared empty borrow is correct and allocation-free.
                 static EMPTY: BTreeMap<Moment, Action> = BTreeMap::new();
                 &EMPTY
             }
@@ -175,8 +173,6 @@ impl EnvSpec {
         match self {
             Self::Recorded { reseeds, .. } => reseeds,
             Self::Seeded { .. } => {
-                // A process-wide empty map; `Seeded` has no reseed markers, so
-                // a shared empty borrow is correct and allocation-free.
                 static EMPTY: BTreeMap<Moment, u64> = BTreeMap::new();
                 &EMPTY
             }
@@ -216,7 +212,6 @@ impl EnvSpec {
             Self::Recorded { reseeds, .. } => {
                 reseeds.insert(at, seed);
             }
-            // Unreachable: `promote` converted any `Seeded` to `Recorded`.
             Self::Seeded { .. } => unreachable!("Seeded was just promoted to Recorded"),
         }
     }
@@ -271,7 +266,6 @@ impl EnvSpec {
         self.promote();
         match self {
             Self::Recorded { overrides, .. } => overrides,
-            // Unreachable: the block above converted any `Seeded` to `Recorded`.
             Self::Seeded { .. } => unreachable!("Seeded was just promoted to Recorded"),
         }
     }
@@ -302,18 +296,12 @@ impl EnvSpec {
                 codec::put_u64(&mut w, *seed);
                 codec::put_bytes(&mut w, &policy.to_bytes());
 
-                // The map is inherently canonical (sorted, unique keys), so a
-                // plain iteration emits ascending `Moment`s and the
-                // strictly-ascending round-trip on decode holds.
                 codec::put_len(&mut w, overrides.len());
                 for (m, action) in overrides {
                     codec::put_u64(&mut w, *m);
                     codec::put_bytes(&mut w, &action.encode());
                 }
 
-                // Deduplicate standing faults by their full canonical key
-                // (identical entries collapse) and emit them in ascending-key
-                // order, so input order cannot reach the bytes.
                 let mut st: Vec<&StandingFault> = standing.iter().collect();
                 st.sort_by(|a, b| standing_key(a).cmp(&standing_key(b)));
                 st.dedup_by(|a, b| standing_key(a) == standing_key(b));
@@ -325,8 +313,6 @@ impl EnvSpec {
                     codec::put_u64(&mut w, s.window.1);
                 }
 
-                // The reseed-marker table (task 78), ascending `Moment`s — the
-                // map is inherently canonical, like the override map above.
                 codec::put_len(&mut w, reseeds.len());
                 for (m, seed) in reseeds {
                     codec::put_u64(&mut w, *m);
@@ -625,8 +611,6 @@ impl Environment for RecordedEnv {
         {
             return Outcome::Resolved(ans.clone());
         }
-        // An absent or inadmissible override falls through to the seeded base
-        // (which advances its stream).
         Outcome::Resolved(self.base.answer(point))
     }
 }

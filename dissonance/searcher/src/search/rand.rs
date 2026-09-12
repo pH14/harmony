@@ -59,8 +59,6 @@ mod tests {
 
     use super::RomuDuoJrRand;
 
-    // Reference draws captured from libafl_bolts 0.15.4 StdRand; recorded
-    // streams depend on this exact sequence.
     #[test]
     fn sequence_matches_the_recorded_generator() {
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_0903);

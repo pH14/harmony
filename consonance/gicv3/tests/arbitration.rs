@@ -6,7 +6,7 @@
 use gicv3::{GicConfig, GicFrame, Gicv3};
 use proptest::prelude::*;
 
-const IMPL_SPIS: u32 = 64; // INTIDs 0..96
+const IMPL_SPIS: u32 = 64;
 const LIMIT: u32 = 32 + IMPL_SPIS;
 
 const SGI_FRAME: u64 = 0x1_0000;
@@ -66,10 +66,6 @@ fn program(lines: &[Line], pmr: u8, grp1_enabled: bool) -> Gicv3 {
     .unwrap();
     g.set_group1_enabled(grp1_enabled);
     g.set_pmr(pmr);
-    // Replace the reset register files word-for-word. The GICv3 reset state
-    // intentionally starts all implemented INTIDs in Group 1 and all SGIs
-    // enabled, so a generated `false` must actively clear that bit rather
-    // than rely on zero initialization.
     for w in 0..(LIMIT / 32) {
         let (frame, base) = if w == 0 {
             (GicFrame::Redist, SGI_FRAME)
@@ -117,9 +113,6 @@ fn program(lines: &[Line], pmr: u8, grp1_enabled: bool) -> Gicv3 {
             g.raise(intid).unwrap();
         }
     }
-    // Actives last, through the acknowledge path where the reference agrees a
-    // take is legal; otherwise via the ISACTIVER bank (a snapshot-shaped
-    // state, still architecturally reachable).
     for (i, l) in lines.iter().enumerate() {
         if l.active {
             let intid = i as u32;
@@ -178,7 +171,6 @@ proptest! {
         let mut g = program(&lines, pmr, true);
         let mut model = lines.clone();
         let mut last_prio: Option<u8> = None;
-        // Bounded: each take clears one pending bit, so LIMIT is a hard cap.
         for _ in 0..LIMIT {
             let expect = reference_peek(&model, pmr, true);
             let got = g.take_interrupt();
@@ -186,7 +178,7 @@ proptest! {
             let Some(intid) = got else { break };
             let l = &mut model[intid as usize];
             l.pending = false;
-            l.active = false; // model take + immediate EOI
+            l.active = false;
             g.eoi(intid).unwrap();
             if let Some(p) = last_prio {
                 prop_assert!(l.priority >= p, "priority order violated");
@@ -203,7 +195,6 @@ proptest! {
         grp1 in any::<bool>(),
     ) {
         let g = program(&lines, pmr, grp1);
-        // The timer is not exercised here (no latch), so any V-time restores.
         let restored = Gicv3::restore(&g.snapshot(), u64::MAX).unwrap();
         prop_assert_eq!(restored.peek_interrupt(), g.peek_interrupt());
         prop_assert_eq!(restored.snapshot(), g.snapshot());

@@ -56,9 +56,6 @@ impl NesBackend<Vec<u8>> for machine::quicknes::QuickNesMachine {
         snapshot: SnapId,
         _base: Option<&Vec<u8>>,
     ) -> Result<Vec<u8>, MachineError> {
-        // `take_snapshot` preserves the pre-extraction QuickNES snapshot
-        // bytes exactly; using Machine::export here would replace them with
-        // the SharedState serde representation.
         self.take_snapshot(snapshot)
     }
 
@@ -67,7 +64,6 @@ impl NesBackend<Vec<u8>> for machine::quicknes::QuickNesMachine {
     }
 
     fn release_exported(&mut self, _snapshot: SnapId) -> Result<(), MachineError> {
-        // `take_snapshot` consumed the handle as part of export.
         Ok(())
     }
 }

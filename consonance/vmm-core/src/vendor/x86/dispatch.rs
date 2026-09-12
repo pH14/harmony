@@ -118,12 +118,8 @@ pub(crate) fn port_event_class(port: u16) -> NormalizedEventClass {
     } else if Uart8250::owns(port) {
         NormalizedEventClass::DeviceMmio(DeviceClass::Serial)
     } else if matches!(port, 0x0020 | 0x0021 | 0x00A0 | 0x00A1 | 0x04D0 | 0x04D1) {
-        // The 8259 PIC command/data ports and the ELCR pair.
         NormalizedEventClass::DeviceMmio(DeviceClass::InterruptController)
     } else {
-        // The report channel, the accepted legacy ISA/PCI ports, and any
-        // unmodeled port (whose dispatch fails closed). Retain a stable class
-        // in the raw failure trace without pretending it was a modeled device.
         NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual)
     }
 }
@@ -158,8 +154,6 @@ pub(crate) fn normalize_virtual_time_exit_x86(exit: &Exit<X86>) -> (NormalizedEv
             let class = if (APIC_MMIO_BASE..APIC_MMIO_END).contains(&gpa.0) {
                 NormalizedEventClass::DeviceMmio(DeviceClass::InterruptController)
             } else {
-                // Dispatch will fail closed. Retain a stable class in the raw
-                // failure trace without pretending it was a modeled device.
                 NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual)
             };
             (class, payload)
@@ -258,9 +252,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
         value: u32,
     ) -> Result<Step, VmmError> {
         if port == VIRTUAL_TIME_TICK_PORT {
-            // The exact tuple is the protocol, so it is validated **before** the
-            // tick is charged: an off-protocol width or value must leave V-time
-            // untouched on its way to the error, never half-advance the clock.
             require_dword_io("OUT", port, size)?;
             if value != 1 {
                 return Err(VmmError::ContractViolation(format!(
@@ -268,7 +259,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 )));
             }
             self.advance_virtual_time_for_port(port)?;
-            // The write itself carries no data.
             return Ok(Step::Continued);
         }
         self.advance_virtual_time_for_port(port)?;
@@ -282,33 +272,14 @@ impl<B: Backend<A = X86>> Vmm<B> {
             return Ok(Step::Continued);
         }
         if port == REPORT_PORT {
-            // The conformance report channel: a 32-bit `OUT REPORT_PORT, EAX`
-            // appends `EAX` to the ordered report stream (corpus box-integration).
-            // It is a write (no completion); the value is already deterministic
-            // (a V-time TSC / seeded-PRNG word / exit-count the guest computed),
-            // and the stream is ordered by execution, so it is a pure function of
-            // the run. The 4-byte width is the ABI — a non-dword access is unmodeled
-            // and fails closed (never a truncated/extended report value).
             require_dword_io("OUT", port, size)?;
             self.report_stream.push(value);
             return Ok(Step::Continued);
         }
-        // Task 73: the hypercall doorbell. The port is a **modeled** device, so a
-        // write to it is always serviced — reaching the default-deny doorbell
-        // DISPATCHER, which answers `UnknownService` for a service this
-        // composition does not offer (cross-model r10 P1). A clock-aware guest
-        // probing service 7 on a VM with no channels must get that clean
-        // `UnknownService` (the protocol's own promise, hypercall-proto §1), not a
-        // fatal "unmodeled port" ContractViolation. This is byte-for-byte
-        // unchanged for every non-cooperating path (M1/M2/corpus/stock never write
-        // this port), and the per-service availability gates inside the dispatcher
-        // still keep an unoffered service from fabricating a success or an
-        // `SdkStop` (the PR-68 lesson). One `OUT` = one atomic exchange.
         if port == DOORBELL_PORT {
             require_dword_io("OUT", DOORBELL_PORT, size)?;
             return self.service_doorbell(value);
         }
-        // Linux path: the curated legacy ISA/PCI ports accept-and-drop.
         if let Some(legacy) = self.devices.legacy.as_mut()
             && LegacyPlatform::owns(port)
         {
@@ -322,8 +293,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
 
     pub(crate) fn dispatch_in(&mut self, port: u16, size: u8) -> Result<Step, VmmError> {
         if port == VIRTUAL_TIME_TICK_PORT {
-            // The tick port is store-only. A read is not an execution tick, so it
-            // fails closed without charging one.
             return Err(VmmError::ContractViolation(format!(
                 "execution-tick protocol fault: IN {port:#06x} (size {size}); the tick port is \
                  write-only"
@@ -332,15 +301,11 @@ impl<B: Backend<A = X86>> Vmm<B> {
         self.advance_virtual_time_for_port(port)?;
         if Uart8250::owns(port) {
             require_byte_io("IN", port, size)?;
-            // `read_in` (not `read`): a byte read of the RBR consumes the next
-            // injected `exec` input byte (task 81), the way real hardware pops the
-            // receive FIFO. Inert on every non-`exec` run (the queue is empty).
             if let Some(byte) = self.devices.uart.read_in(port) {
                 self.backend.complete_read(u64::from(byte))?;
                 return Ok(Step::Continued);
             }
         }
-        // Linux path: the curated legacy ISA/PCI ports read back "no device".
         if let Some(legacy) = self.devices.legacy.as_ref()
             && LegacyPlatform::owns(port)
         {
@@ -384,7 +349,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
         let offset = (gpa.0 - APIC_MMIO_BASE) as u32;
         match write {
             None => {
-                // xAPIC register load (32-bit). `complete_read` masks to `size`.
                 let lapic = self
                     .devices
                     .lapic
@@ -397,10 +361,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 Ok(Step::Continued)
             }
             Some(v) => {
-                // xAPIC register store (32-bit); no completion. A store may arm,
-                // re-arm, or disarm the LVT timer; mirror any deadline change
-                // into the independent virtual_time schedule (a no-op without a
-                // wired trace).
                 let (deadline_before, deadline_after, timer_id) = {
                     let lapic = self
                         .devices
@@ -457,8 +417,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
         };
         if fired {
             self.trace_clockevent_delivery()?;
-            // A periodic timer reloaded inside `advance_to`; that reload is
-            // the next scheduled deadline.
             if let Some(deadline_vns) = next_deadline {
                 self.trace_clockevent_schedule_vns(deadline_vns, timer_id)?;
             }
@@ -529,13 +487,11 @@ impl<B: Backend<A = X86>> Vmm<B> {
             return Ok(());
         }
         let now_vns = self.now_vns()?;
-        // Scope the `&mut lapic` borrow so it ends before `self.backend`.
         let lapic_vector = {
             let lapic = self.devices.lapic.as_mut().expect("is_some checked above");
             lapic.advance_to(now_vns);
-            lapic.peek_interrupt() // re-arbitrate; do NOT move IRR→ISR
+            lapic.peek_interrupt()
         };
-        // Local-APIC interrupts outrank the legacy ExtINT serial line.
         let vector = lapic_vector.or_else(|| self.pending_serial_vector());
         self.backend.set_pending_irq(vector)?;
         Ok(())
@@ -548,9 +504,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
     /// xAPIC), so M1/M2/corpus never see a serial vector.
     pub(crate) fn pending_serial_vector(&self) -> Option<u8> {
         let legacy = self.devices.legacy.as_ref()?;
-        // THRE (transmitter-empty) OR received-data-available (task 81's `exec`
-        // input): `serial_irq_asserted` folds both. Equal to `thre_irq_asserted`
-        // whenever no `exec` input is queued, so a non-`exec` run is unchanged.
         (self.devices.uart.serial_irq_asserted() && !legacy.irq_masked(COM1_IRQ))
             .then_some(COM1_IRQ_VECTOR)
     }
@@ -600,8 +553,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 Ok(Step::Continued)
             }
             MsrDisposition::EmulateVtime => self.rdmsr_vtime(index),
-            // allow-stateful is in-kernel and should never surface; a read-side
-            // deny-ignore-write does not exist in the contract.
             MsrDisposition::AllowStateful | MsrDisposition::DenyIgnoreWrite => {
                 Err(VmmError::ContractViolation(format!(
                     "RDMSR {index:#x} surfaced with a non-userspace disposition {disp:?}"
@@ -623,11 +574,9 @@ impl<B: Backend<A = X86>> Vmm<B> {
         );
         match disp {
             MsrDisposition::DenyIgnoreWrite => {
-                // Drop the write (already logged), then resume.
                 self.backend.complete_ok()?;
                 Ok(Step::Continued)
             }
-            // A write to a read-only allow-fixed row, or any deny-gp row, faults.
             MsrDisposition::DenyGp | MsrDisposition::AllowFixed(_) => {
                 self.backend.complete_fault()?;
                 Ok(Step::Continued)
@@ -645,8 +594,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 contract::virtual_time_timing().architectural_control_vns,
             )?;
         }
-        // Stock KVM answers CPUID in-kernel and never reaches here; a backend that
-        // surfaces it gets the frozen model overlaid with the live dynamic cells.
         let state = self.backend.save()?;
         let base = lookup_cpuid(leaf, subleaf);
         let resolved = contract::resolve_cpuid(base, state.sregs.cr4, state.xcr0);
@@ -672,9 +619,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
             match index {
                 IA32_TSC => vt.guest_clock(),
                 IA32_TSC_ADJUST => {
-                    // A TSC_ADJUST access is a V-time MSR intercept too: sample its
-                    // deterministic work so the hashed effective V-time stays current
-                    // (the returned value — the adjust — does not depend on work).
                     vt.guest_clock_offset
                 }
                 other => {
@@ -686,7 +630,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
             }
         };
         self.backend.complete_read(value)?;
-        // A V-time MSR intercept: `assigned_clock` is the exact current work.
         Ok(Step::Continued)
     }
 
@@ -710,8 +653,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
                     vt.guest_clock_offset = value.wrapping_sub(vt.clock.guest_ticks());
                 }
                 IA32_TSC_ADJUST => {
-                    // V-time MSR intercept — sample work to keep the hashed effective
-                    // V-time current (see the RDMSR side).
                     vt.guest_clock_offset = value;
                 }
                 other => {
@@ -723,7 +664,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
             }
         }
         self.backend.complete_ok()?;
-        // A V-time MSR intercept: `assigned_clock` is the exact current work.
         Ok(Step::Continued)
     }
 
@@ -776,7 +716,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
             return Ok(self.pending_serial_vector().is_some());
         }
         let now = self.now_vns()?;
-        // Scope the `&mut lapic` borrow so it ends before `self.pending_serial_vector()`.
         let lapic_pending = {
             let lapic = self.devices.lapic.as_mut().expect("is_some checked above");
             lapic.advance_to(now);
@@ -805,26 +744,15 @@ impl<B: Backend<A = X86>> Vmm<B> {
                     guest_base: vt.cfg.guest_base,
                     snapshot_vns: vt.clock.vns(),
                 };
-                // The entropy PRNG position rides the `hypercall` section
-                // (`Dispatcher::save_state()`, notably the
-                // entropy PRNG position") — vmm-core's hypercall RNG and RDRAND draw
-                // from this one stream.
                 s.hypercall = vt.entropy.save_state();
                 vt.guest_clock_offset
             }
             None => {
-                // Unwired (M1/M2): a sentinel encodable V-time block, no entropy.
                 0
             }
         };
         let dev = DeviceState {
             tsc_adjust,
-            // The ordered conformance report stream is guest-observable output (it
-            // feeds `observable_digest` / the O2 oracle), captured here so a restore
-            // resumes it — else a branch taken after `REPORT_PORT` writes would lose
-            // them and its `observable_digest` would diverge from the reference. It is
-            // NOT in the default `state_hash` (O1): that path never emits a `VMST`
-            // chunk (snapshot-hashing is opt-in), so O1/O2 stay separate.
             report_stream: self.report_stream.clone(),
             uart: UartState {
                 capture: self.devices.uart.capture().to_vec(),
@@ -841,16 +769,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
                     slave_imr: imr[1],
                 }
             }),
-            // The full `kvm_vcpu_events` (task 41), **canonicalized** so an in-flight
-            // interrupt/exception injection round-trips while KVM's inert modifier
-            // residuals (a stale `interrupt.nr`/`exception.nr`, the GET-only validity
-            // bits) collapse to the clean record — replaying those raw into
-            // `KVM_SET_VCPU_EVENTS` corrupts the resumed guest. All-zero at a quiescent
-            // point, so M1/M2/corpus blobs are unchanged.
             events: records::canonical_events(&vcpu.events),
-            // The task-110 pvclock channel (v4): offer + one-shot registration,
-            // so the direct restore path carries the stamping
-            // obligation with the state it governs (same-state ⇒ same-future).
             pvclock: self.pvclock_snapshot().map(|s| (s.gpa, s.registrable)),
         };
         s.devices = records::encode_device_blob(&dev);
@@ -869,26 +788,15 @@ impl<B: Backend<A = X86>> Vmm<B> {
         &self,
         s: &vm_state::VmState,
     ) -> Result<(VcpuState, u64, X86RestorePrep), VmmError> {
-        // Contract: a blob taken under a different CPUID/MSR contract would silently
-        // diverge on restore (docs/ARCHITECTURE.md `contract_hash`).
         if s.contract_hash != contract::contract_hash() {
             return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
         }
-        // Decode the vmm-core device blob (total, never panics).
         let dev = records::decode_device_blob(&s.devices.0)?;
-        // Reject an UNRESTORABLE `kvm_vcpu_events` blob up front — a foreign /
-        // malformed v3 blob that sets a cap-disabled validity bit
-        // (`VALID_TRIPLE_FAULT`/`VALID_PAYLOAD`) would make `KVM_SET_VCPU_EVENTS`
-        // return `-EINVAL` only AFTER earlier `KVM_SET_*` ioctls inside
-        // `Backend::restore` already mutated the target vCPU. Validate here, while
-        // committing nothing, to preserve restore's reject-before-mutation (atomic)
-        // contract — symmetric with the `save_vm_state` guard (PR #12 round 8).
         if let Some(reason) = records::cap_unrestorable_events(&dev.events) {
             return Err(VmmError::ContractViolation(format!(
                 "restore_vm_state: {reason}"
             )));
         }
-        // The blob's LAPIC must be coherent AND match this VM's wiring.
         let new_lapic = match (&dev.lapic, self.devices.lapic.is_some()) {
             (Some(ls), true) => Some(lapic::Lapic::restore(ls).map_err(|_| {
                 SnapshotError::DeviceRestore("incoherent LapicState in device blob")
@@ -902,12 +810,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
             }
             (None, false) => None,
         };
-        // The legacy platform must match this VM's wiring too — a blob whose legacy
-        // subrecord is absent (or present) where the VM's is not is a malformed
-        // snapshot, **rejected** rather than silently skipped (which would leave the
-        // 8259 IMRs / PCI latch stale). (LAPIC + legacy are wired together by
-        // `wire_lapic`, so a well-formed blob always agrees; this fails closed on one
-        // that does not.)
         if dev.legacy.is_some() != self.devices.legacy.is_some() {
             return Err(VmmError::ContractViolation(
                 "restore_vm_state: snapshot/VM legacy-platform wiring mismatch (one has the \
@@ -916,33 +818,8 @@ impl<B: Backend<A = X86>> Vmm<B> {
                     .to_string(),
             ));
         }
-        // The task-110 pvclock channel record must validate symmetrically
-        // against this VM's composition (offer/Δ/GPA/deterministic backend) —
-        // still committing nothing (reject-before-mutation).
         self.pvclock_validate_restore(dev.pvclock.as_ref())?;
-        // Build the vCPU state (pure). The typed records yield the reduced `vm_state`
-        // event subset; overwrite `events` with the device blob's **full**
-        // `kvm_vcpu_events` (task 41) so an in-flight interrupt/exception injection is
-        // re-established exactly (`KVM_SET_VCPU_EVENTS`), not silently zeroed — the
-        // device-blob record is a strict superset of the typed one and is
-        // authoritative. (The inject-seam `set_pending_irq` slot is NOT serialized: it
-        // is re-derived from the restored LAPIC IRR / UART THRE on the restored VM's
-        // first `service_pending_irqs`, so there is no separate plan to carry.)
         let mut vcpu = records::vcpu_state_from(s);
-        // Canonicalize on restore too — mirror the save side (`build_vm_state`, which
-        // stores `canonical_events` in the device blob). This VM's own save path
-        // already strips KVM's inert modifier residuals, but an **external or older
-        // v3 blob** (hand-built, or from a different/buggy encoder) may carry RAW
-        // residuals; forwarding them verbatim to `KVM_SET_VCPU_EVENTS` would
-        // reintroduce the exact corruption canonicalization exists to prevent. Use
-        // `events_for_restore` (not `canonical_events`): it additionally forces the
-        // cap-free NMI_PENDING/SHADOW/SMM validity bits ON, so KVM **clears** any
-        // stale NMI-pending / interrupt-shadow / SMM left on a NON-fresh target vCPU
-        // (a clear bit means "leave unchanged" to `KVM_SET_VCPU_EVENTS`) — restore is
-        // then independent of the prior occupant (the branch / restore-in-place case;
-        // PR #12 round 6). The cap-gated TRIPLE_FAULT/PAYLOAD were already rejected
-        // above. Idempotent for a self-produced blob; the `state_hash` still uses
-        // `canonical_events`.
         vcpu.events = records::events_for_restore(&dev.events);
         let clock_offset = dev.tsc_adjust;
         Ok((
@@ -1146,7 +1023,6 @@ pub(crate) fn encode_vcpu_state(s: &VcpuState) -> Vec<u8> {
         vmm_backend::MpState::Runnable => 0,
         vmm_backend::MpState::Halted => 1,
     });
-    // MSRs: BTreeMap iterates in ascending key order (deterministic).
     v.extend_from_slice(&(s.msrs.len() as u64).to_le_bytes());
     for (idx, val) in &s.msrs {
         v.extend_from_slice(&idx.to_le_bytes());
@@ -1161,17 +1037,6 @@ fn encode_segment(v: &mut Vec<u8>, seg: &vmm_backend::Segment) {
     v.extend_from_slice(&seg.base.to_le_bytes());
     v.extend_from_slice(&seg.limit.to_le_bytes());
     v.extend_from_slice(&seg.selector.to_le_bytes());
-    // An **unusable** segment's `type` (and the rest of its access-rights byte) is
-    // architecturally **don't-care**: the CPU never consults the descriptor cache of a
-    // segment whose unusable bit is set (SDM Vol. 3 §24.4.1 — the VMX "unusable"
-    // attribute means the segment is treated as absent; the hidden type/attr bits are
-    // ignored on every use). KVM **normalizes** it (a `KVM_GET` of an unusable segment
-    // reports `type = 0`, but after `KVM_SET_SREGS` a `KVM_GET` reports `type = 1`), so
-    // a snapshot/restore round-trip otherwise perturbs this don't-care field and breaks
-    // restore-transparency on `state_hash`. Canonicalize it to `0` so the hash reflects
-    // only architecturally-meaningful state. Golden-safe: every live-`KVM_GET` value
-    // already reports `type = 0` for unusable segments, so no existing (relative) golden
-    // moves; the only effect is making a restored unusable segment hash like a live one.
     let type_ = if seg.unusable != 0 { 0 } else { seg.type_ };
     v.extend_from_slice(&[
         type_,

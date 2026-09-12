@@ -211,7 +211,6 @@ fn one_run() -> RunResult {
         .set_policy(&X86Policy {
             cpuid: CpuidModel::default(),
             msr_filter: MsrFilter {
-                // SYSENTER MSRs (0x174..0x177) — present, harmless, in-kernel.
                 allow_inkernel: vec![MsrRange {
                     base: 0x174,
                     count: 3,
@@ -220,7 +219,6 @@ fn one_run() -> RunResult {
         })
         .expect("set_policy");
 
-    // Real-mode IVT entry: handler offset then segment 0.
     let handler_offset = u16::try_from(HANDLER_GPA).unwrap();
     let mut ivt_entry = handler_offset.to_le_bytes().to_vec();
     ivt_entry.extend_from_slice(&[0x00, 0x00]);
@@ -280,8 +278,6 @@ fn x1_ten_same_seed_runs_produce_one_normalized_log() {
         u8::try_from(DEADLINES.len()).unwrap(),
         "every scheduled interrupt must land in-guest through the IVT handler"
     );
-    // Exact placement: deadline 5 becomes due after event 1 (vns 7), deadline
-    // 15 after event 3 (vns 18).
     assert_eq!(first.log.events[1].interrupts.len(), 1);
     assert_eq!(first.log.events[3].interrupts.len(), 1);
 

@@ -573,13 +573,11 @@ mod tests {
         let back = insert(&mut archive, Some(water), 4, key(260, [3, 5])).expect("back");
         assert_eq!(archive.entry_key(back).expect("back key").room, [3, 5, 16]);
         let tip = insert(&mut archive, Some(back), 5, key(304, [3, 5])).expect("tip");
-        // The page-19 loop returns to page 16: the after-water room covers it.
         let looped = insert(&mut archive, Some(tip), 6, key(258, [3, 5])).expect("loop");
         assert_eq!(
             archive.entry_key(looped).expect("loop key").room,
             [3, 5, 16]
         );
-        // A pipe back to page 1 lands in the start room, which covers page 1.
         let restart = insert(&mut archive, Some(looped), 7, key(20, [3, 5])).expect("restart");
         assert_eq!(
             archive.entry_key(restart).expect("restart key").room,
@@ -613,14 +611,11 @@ mod tests {
         };
         let (land, _) = insert(&mut archive, None, None, 1, key(10, [3, 5]));
         let land = land.expect("land");
-        // Two entries fill the water page-0 slot.
         let (first, _) = insert(&mut archive, Some(land), None, 1, key(3, [0, 2]));
         let first = first.expect("first");
         let (second, _) = insert(&mut archive, Some(land), None, 2, key(3, [0, 2]));
         second.expect("second");
         assert_eq!(archive.entry_key(first).expect("first key").room, [0, 2, 0]);
-        // A third boundary at page 0 is rejected; the boundary after it,
-        // at page 3, stays in the page-0 room instead of opening a room.
         let (rejected, at_page_0) = insert(&mut archive, Some(land), None, 3, key(3, [0, 2]));
         assert!(rejected.is_none());
         assert_eq!(at_page_0.room, [0, 2, 0]);
@@ -634,7 +629,6 @@ mod tests {
         let deep = deep.expect("deep");
         assert_eq!(key_deep.room, [0, 2, 0]);
         assert_eq!(archive.entry_key(deep).expect("deep key").room, [0, 2, 0]);
-        // Without the carried boundary the same candidate opens a page-3 room.
         let (fresh, _) = insert(&mut archive, Some(land), None, 5, key(50, [0, 2]));
         assert_eq!(
             archive

@@ -272,10 +272,6 @@ fn assert_exit_matches(kind: PendingKind, exit: &Exit<X86>) {
     );
 }
 
-// ---------------------------------------------------------------------------
-// ordering
-// ---------------------------------------------------------------------------
-
 /// **ordering** — the fail-closed configuration and completion discipline.
 ///
 /// Three obligations:
@@ -295,7 +291,6 @@ fn assert_exit_matches(kind: PendingKind, exit: &Exit<X86>) {
 ///    requires an error and accepts either — a divergence the suite surfaces
 ///    rather than papers over.
 pub fn ordering_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport) {
-    // (1) fail closed before set_policy.
     match fx.spawn(Scenario::Idle) {
         None => report.decline(
             "ordering/not_configured",
@@ -310,7 +305,6 @@ pub fn ordering_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport)
         }
     }
 
-    // (2) + (3) the pending/completion grid.
     let mut grid_ran = false;
     for kind in [
         PendingKind::Read,
@@ -331,14 +325,11 @@ pub fn ordering_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport)
         let exit = b.run().expect("run to the armed exit");
         assert_exit_matches(kind, &exit);
 
-        // (2) resuming with the exit unserviced is PendingCompletion.
         assert!(
             matches!(b.run(), Err(BackendError::PendingCompletion)),
             "{kind:?}: resuming with an unserviced exit must be PendingCompletion"
         );
 
-        // (3) every wrong completion method errors, with the pinned error where
-        //     the trait pins one.
         for method in ALL_COMPLETIONS {
             if method.resolves(kind) {
                 continue;
@@ -354,8 +345,6 @@ pub fn ordering_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport)
                     "{kind:?} × {} must be BadCompletion, got {got:?}",
                     method.name()
                 ),
-                // The trait leaves this one's error unpinned; require only that
-                // it is loud.
                 Completion::Hypercall => assert!(
                     matches!(
                         got,
@@ -364,8 +353,6 @@ pub fn ordering_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport)
                     "{kind:?} × complete_hypercall must error, got {got:?}"
                 ),
             }
-            // A rejected completion must NOT have cleared the pending exit — the
-            // guest is still unserviced, so a resume must still fail closed.
             assert!(
                 matches!(b.run(), Err(BackendError::PendingCompletion)),
                 "{kind:?}: a rejected {} must leave the exit pending",
@@ -373,7 +360,6 @@ pub fn ordering_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport)
             );
         }
 
-        // A correct completion resolves it, and the backend runs again.
         let correct = ALL_COMPLETIONS
             .into_iter()
             .find(|m| m.resolves(kind))
@@ -407,12 +393,6 @@ pub fn dirty_log_exactness_exam<F: BackendFixture>(fx: &mut F, report: &mut Cont
     };
     b.set_policy(&fx.policy()).expect("set_policy");
     let Some(expected) = fx.dirty_pages(&mut b) else {
-        // The decline is itself under test: a
-        // backend without dirty tracking must answer the documented
-        // `Unsupported` so every caller takes the always-correct full-scan
-        // path. Answering `Ok` with *any* set — even an empty one — would be a
-        // backend claiming to have vouched for a window it never tracked, and
-        // a caller that trusted it would silently corrupt a snapshot.
         assert!(
             matches!(b.drain_dirty_pages(), Err(BackendError::Unsupported { .. })),
             "a backend with no dirty log must answer Unsupported, never an Ok set it cannot \
@@ -439,8 +419,6 @@ pub fn dirty_log_exactness_exam<F: BackendFixture>(fx: &mut F, report: &mut Cont
         );
     }
 
-    // Retrieve-and-reset: the next drain covers exactly the span from the last
-    // one, so a second drain with no writes in between is empty.
     let again = b.drain_dirty_pages().expect("second drain");
     assert!(
         again.is_empty(),
@@ -448,10 +426,6 @@ pub fn dirty_log_exactness_exam<F: BackendFixture>(fx: &mut F, report: &mut Cont
     );
     report.ran("exactness/dirty_log");
 }
-
-// ---------------------------------------------------------------------------
-// fixpoint
-// ---------------------------------------------------------------------------
 
 /// **fixpoint** — `save → restore → save` is the identity, and a malformed blob
 /// is an error rather than a panic.
@@ -480,9 +454,6 @@ pub fn fixpoint_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport)
          field a snapshot silently loses"
     );
 
-    // A malformed blob is `InvalidState`, never a panic. Corrupt a state the
-    // backend itself produced so the blob is well-typed but internally
-    // inconsistent; either arm is contract-conformant, a panic is not.
     let mut malformed = first.clone();
     malformed.sregs.cs.limit = u32::MAX;
     malformed.sregs.cs.selector = u16::MAX;
@@ -492,10 +463,6 @@ pub fn fixpoint_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport)
     }
     report.ran("fixpoint/save_restore_save");
 }
-
-// ---------------------------------------------------------------------------
-// the interrupt delivery contract
-// ---------------------------------------------------------------------------
 
 /// The **interrupt delivery contract** — `set_pending_irq` is one overwritable
 /// slot, never a queue, and `take_accepted_interrupt` reports only interrupts
@@ -507,8 +474,6 @@ pub fn fixpoint_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport)
 /// and it re-arbitrates at every entry. A backend that queued identities would
 /// deliver a stale one.
 pub fn interrupt_delivery_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport) {
-    // Staged is not accepted: an identity set but not yet entered on must not be
-    // reported as delivered.
     let Some(mut b) = fx.spawn(Scenario::Idle) else {
         report.decline(
             "interrupts/one_overwritable_slot",
@@ -518,8 +483,6 @@ pub fn interrupt_delivery_exam<F: BackendFixture>(fx: &mut F, report: &mut Contr
     };
     b.set_policy(&fx.policy()).expect("set_policy");
     if let Err(BackendError::Unsupported { .. }) = b.set_pending_irq(Some(0x30)) {
-        // A backend with no delivery fabric (the ruled arm64 skeleton) declines
-        // the whole contract; record that rather than pretending to test it.
         report.decline(
             "interrupts/one_overwritable_slot",
             DeclineReason::CapabilityAbsent("maskable interrupt delivery"),
@@ -532,8 +495,6 @@ pub fn interrupt_delivery_exam<F: BackendFixture>(fx: &mut F, report: &mut Contr
     );
     drop(b);
 
-    // One slot, not a queue: a second set overwrites the first, and exactly one
-    // identity is ever accepted.
     let mut b = fx.spawn(Scenario::Idle).expect("idle");
     b.set_policy(&fx.policy()).expect("set_policy");
     b.set_pending_irq(Some(0x30)).expect("set_pending_irq");
@@ -550,7 +511,6 @@ pub fn interrupt_delivery_exam<F: BackendFixture>(fx: &mut F, report: &mut Contr
     );
     drop(b);
 
-    // `None` clears the slot (and disarms the interrupt window).
     let mut b = fx.spawn(Scenario::Idle).expect("idle");
     b.set_policy(&fx.policy()).expect("set_policy");
     b.set_pending_irq(Some(0x30)).expect("set_pending_irq");
@@ -562,10 +522,6 @@ pub fn interrupt_delivery_exam<F: BackendFixture>(fx: &mut F, report: &mut Contr
     );
     report.ran("interrupts/one_overwritable_slot");
 }
-
-// ---------------------------------------------------------------------------
-// the whole exam
-// ---------------------------------------------------------------------------
 
 /// Run every exam against `fx` and return what it covered.
 ///

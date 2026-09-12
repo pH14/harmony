@@ -310,10 +310,6 @@ pub fn server_caps() -> Caps {
             map_bytes: 0,
             producer: 0,
         },
-        // Task 73: the server now services the hypercall doorbell for a
-        // cooperating guest SDK — assertions surface `StopReason::Assertion`,
-        // `setup_complete` surfaces `StopReason::SnapshotPoint`, and generic
-        // service requests are answered — so `GUEST_HAS_SDK` is advertised.
         flags: control_proto::CapFlags::GUEST_HAS_SDK,
     }
 }
@@ -516,17 +512,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// by [`Vmm::restore_vm_state`] at the first restore).
     pub fn new(mut vmm: Vmm<B>, factory: VmmFactory<B>) -> Self {
         let engine = SnapshotEngine::new(vmm.guest_memory().len());
-        // Seed the recorded reproducer from the **live VM's actual entropy stream**
-        // (not a bare `0`), so `recorded_env()` reproduces even for a session that
-        // runs before its first `branch`/`replay` — a reproducer branched from the
-        // starting snapshot then reseeds to this same stream.
         let seed = vmm.entropy_state().unwrap_or(0);
         let recorded = EnvSpec::seeded(seed);
-        // Task 73: wire the SDK channel on the **live VM too** (not only restore
-        // targets), so an SDK guest that rings the hypercall doorbell BEFORE its
-        // first `branch`/`replay` is serviced — we advertise `GUEST_HAS_SDK`
-        // unconditionally, so the capability must be honored from construction.
-        // Inert (and unhashed) for a non-SDK guest.
         vmm.enable_sdk(
             RecordedEnv::new(seed, Box::new(NominalHandler) as Box<dyn ServiceHandler>),
             recorded.config(),
@@ -536,11 +523,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             factory,
             service_factory: nominal_factory(),
             remap_factory: None,
-            // Truthful default: with no remap factory, memcpy is the only
-            // path this server can take; `set_remap_factory` flips to `Remap`.
             restore_mode: RestoreMode::Memcpy,
             engine,
-            // A fresh boot is no snapshot's continuation: the first seal is a base.
             derive_parent: None,
             current_image: None,
             in_place_fallbacks: 0,
@@ -553,7 +537,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             recorded: EnvSpec::seeded(seed),
             schedule_poisoned: None,
             sdk_snaps: BTreeMap::new(),
-            // A fresh session's live timeline is untainted; no snapshots exist yet.
             timeline_tainted: false,
             tainted_snaps: BTreeSet::new(),
             snapshot_meta: BTreeMap::new(),
@@ -753,10 +736,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .snapshot_meta
             .get(&target.0)
             .ok_or(PortableSnapshotError::UnknownSnapshot(target.0))?;
-        // A complete portable import authenticates its whole-state hash but
-        // does not retain the source's canonical post-MEM state-blob suffix.
-        // Re-exporting it sparsely would discard that hash and leave a later
-        // importer unable to reconstruct the correct whole-state preimage.
         if meta.state_blob_suffix.is_empty() {
             return Err(PortableSnapshotError::Malformed(
                 "sparse export target lacks a canonical state-blob suffix",
@@ -765,10 +744,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let candidates = self.engine.diff_pages(Some(base_id), target_id)?;
         let mut pages = Vec::with_capacity(candidates.len());
         for (gfn, page) in candidates {
-            // Item 2 returns the target-resolved union of potentially
-            // changed keys. Compare each candidate with the live base so
-            // a base-to-base export remains genuinely sparse even when
-            // both layers independently recorded the same non-zero page.
             if self.engine.read_page(base_id, gfn)? != page {
                 pages.push((gfn, Arc::new(page)));
             }
@@ -1043,7 +1018,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let mut chunk = [0u8; 4096];
         let mut outbuf: Vec<u8> = Vec::new();
         loop {
-            // Drain every complete frame currently buffered.
             while let Some((seq, req, consumed)) = decode_request(&inbuf)? {
                 inbuf.drain(..consumed);
                 let reply = self.handle(&req)?;
@@ -1054,7 +1028,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             }
             let n = stream.read(&mut chunk)?;
             if n == 0 {
-                // Clean end iff the peer closed between frames.
                 return if inbuf.is_empty() {
                     Ok(())
                 } else {
@@ -1070,19 +1043,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// `Result<Reply, ControlError>` is what goes on the wire (both arms are
     /// encoded as reply frames). Public so composition roots and tests can
     /// drive the dispatch directly, without a socket.
-    #[allow(clippy::result_large_err)] // ServeError's size is irrelevant on this cold path
+    #[allow(clippy::result_large_err)]
     pub fn handle(&mut self, req: &Request) -> Result<Result<Reply, ControlError>, ServeError> {
-        // `hello` must be the first verb of a session (task 25): before it, no
-        // capability has been negotiated, so nothing is supported.
         if !self.hello_done && !matches!(req, Request::Hello(_)) {
             return Ok(Err(ControlError::Unsupported));
         }
         match req {
             Request::Hello(client_caps) => {
-                // Application semantics are not backward compatible across
-                // protocol versions. Reject during the handshake and do not
-                // open the session; discovering (for example) a READ_CAP
-                // disagreement on a later Read would be too late.
                 if client_caps.protocol_version != control_proto::APP_PROTOCOL_VERSION {
                     return Ok(Err(ControlError::Unsupported));
                 }
@@ -1110,9 +1077,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     {
                         return Ok(Err(ControlError::ResolveWithoutDecision));
                     }
-                    // Reject the hypercall wire limit before decoding, so an
-                    // untrusted control frame cannot first allocate the larger
-                    // environment-channel bound and only then be rejected.
                     if resolution.answer.0.len() > hypercall_proto::MAX_PAYLOAD {
                         return Ok(Err(ControlError::MalformedEnvironment));
                     }
@@ -1131,9 +1095,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     if recorded.try_encode().is_err() {
                         return Ok(Err(ControlError::MalformedEnvironment));
                     }
-                    // A response-page write is a substrate failure. Poison the
-                    // live VM before returning so a direct caller cannot retry
-                    // against state whose guest re-entry contract is unknown.
                     if let Err(error) = self
                         .vmm
                         .as_mut()
@@ -1152,21 +1113,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
                     Ok(Ok(Reply::Hash(vmm.state_hash()?)))
                 }
-                // No disk device exists and region hashing has no consumer;
-                // unsupported is loud and distinct from a malformed frame.
                 HashScope::Disk | HashScope::Region { .. } => Ok(Err(ControlError::Unsupported)),
             },
-            // Host-plane enforcement (task 59): decode + validate the fault,
-            // stage it at its `Moment`. `run` applies it there and stamps it into
-            // the recorded env.
             Request::Perturb { fault, at } => Ok(self.perturb(fault, *at)),
-            // Task 73: surface the link-tier SDK event capture over the wire, so a
-            // remote `SocketMachine` client can fill `RunTrace.events` (a socket
-            // client cannot see the server-side `Vmm::sdk_events` capture directly).
-            // **Paged** (round-5 P4): a page starts at `offset` and is bounded to the
-            // control frame limit, so an arbitrarily long capture never overflows a
-            // single reply — the client pages until an empty reply. Empty for a guest
-            // with no SDK, or once `offset` reaches the end.
             Request::SdkEvents { offset } => {
                 let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
                 Ok(Ok(Reply::SdkEvents(page_sdk_events(
@@ -1174,44 +1123,17 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     *offset as usize,
                 ))))
             }
-            // Task 69: surface the guest **console** (serial) capture over the wire,
-            // so a remote `SocketMachine` client can fill `RunTrace.records` — the
-            // scrape channel the task-67 log-template signal reads (a socket client
-            // cannot see the server-side `Vmm::serial` capture directly, exactly as
-            // `SdkEvents` surfaces the SDK capture). This is a **pure read**: it
-            // reads the uart capture buffer and never advances the VM or touches any
-            // hashable state, so a run's `state_hash` is identical whether or not a
-            // client drains the console — the determinism-neutrality the signal
-            // channel requires. **Paged** like `SdkEvents`: `total` is the full
-            // capture length and `chunk` is `serial[offset..]` bounded to the frame
-            // limit, so the client pages `offset..total` until drained. Unlike
-            // `SdkEvents` it returns an empty capture (not `Poisoned`) when there is
-            // no live VM — a drained console off a torn-down VM is defined as empty.
             Request::Console { offset } => {
                 let serial = self.vmm.as_ref().map(|v| v.serial()).unwrap_or(&[]);
                 let (total, chunk) = page_console(serial, *offset as usize);
                 Ok(Ok(Reply::Console { total, chunk }))
             }
-            // Observation verbs (task 80): `read`/`regs` look at guest state without
-            // moving it. Both borrow `self.vmm` immutably and touch nothing else —
-            // not the schedule, not `recorded`, not V-time — so `hash(Whole)` before
-            // and after any sequence of them is bit-identical, and neither is ever
-            // recorded into an `Reproducer` (the docs/PROTOCOL.md search-surface
-            // criterion: observation, not a move). Serviceable at any point (no
-            // synchronization gate): a `regs` view is honest even at a terminal.
             Request::Read { gpa, len } => self.read(*gpa, *len),
             Request::Regs => {
                 let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
                 Ok(Ok(Reply::Regs(regs_view(vmm))))
             }
-            // Improvisation (task 81): inject `cmd` on the serial input, run to a
-            // completion sentinel or the deadline, capture output. The FIRST thing
-            // it does is set the timeline's taint bit — conservatively, before any
-            // fallible work — so no failure mode can leave an improvised timeline
-            // looking clean (the taint guard's authoritative half).
             Request::Exec { cmd, deadline } => self.exec(cmd, *deadline),
-            // Reproducer mint (task 81) — the taint guard's fail-loud site: a
-            // tainted timeline is a loud `Tainted`, never a lying reproducer.
             Request::RecordedEnv => Ok(self.recorded_env_reply()),
         }
     }
@@ -1237,19 +1159,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// - `[gpa, gpa+len)` past guest RAM (or a `gpa + len` overflow) →
     ///   [`ControlError::ReadOutOfRange`]. A short read would hand the caller bytes
     ///   it never asked for; the loud error makes the caller widen or re-address.
-    #[allow(clippy::result_large_err)] // ServeError's size is irrelevant on this cold path
+    #[allow(clippy::result_large_err)]
     fn read(&self, gpa: u64, len: u32) -> Result<Result<Reply, ControlError>, ServeError> {
         if len > READ_CAP {
             return Ok(Err(ControlError::ReadTooLarge { len, cap: READ_CAP }));
         }
-        // A `None` VM is a torn session, session-fatal like every sibling verb —
-        // never an empty-RAM fallback that fakes a range error.
         let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
-        // Resolve the ABSOLUTE guest-physical `gpa` through the engine's region
-        // resolver, so an arm64 address (over `RAM_BASE`) reads the right bytes
-        // and a low unmapped GPA is out-of-range rather than a wrong main-RAM
-        // offset (review r11). x86 (RAM at base 0) is unchanged: a low GPA is its
-        // own offset, and the same range fails closed.
         match vmm.guest_slice(gpa, len as usize) {
             Some(bytes) => Ok(Ok(Reply::Bytes(bytes.to_vec()))),
             None => Ok(Err(ControlError::ReadOutOfRange {
@@ -1268,19 +1183,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         fault: &control_proto::HostFault,
         at: control_proto::Moment,
     ) -> Result<Reply, ControlError> {
-        // A poisoned schedule must be rewound (branch/replay) before it accepts any
-        // new fault — staging onto an unsatisfiable schedule is itself unsatisfiable.
-        // Re-emit the latched error verbatim (its own typed variant + coordinates).
         if let Some(err) = &self.schedule_poisoned {
             return Err(err.clone());
         }
         let decoded = Effect::decode(&fault.0).map_err(|_| ControlError::MalformedEnvironment)?;
-        // Capability first: a VM without virtual time cannot schedule host faults.
         if !self.vmm.as_ref().is_some_and(|v| v.vtime_wired()) {
             return Err(ControlError::Unsupported);
         }
-        // Floor = the live VM's current (now exact) V-time: a `Moment` behind it could
-        // only apply *later* than recorded.
         let floor = self
             .vmm
             .as_ref()
@@ -1295,12 +1204,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// unoccupied, memory ranges must be mapped in full, and interrupt identities
     /// must be supported by the selected machine. The operation is read-only.
     fn validate_host_fault(&self, fault: &Effect, at: u64, floor: u64) -> Result<(), ControlError> {
-        // One fault per `Moment` — reject a duplicate against **both** the still-
-        // staged schedule **and** the already-applied faults recorded in the
-        // reproducer (PR #51 round-2 finding): once a fault at `at` has applied it is
-        // gone from the schedule but present in `recorded`, and re-staging it would
-        // overwrite it in `recorded_env()` (an applied fault silently vanishing). The
-        // remaining, occupancy-free checks are shared with the branch-env path.
         if self.schedule.contains_key(&at) || self.recorded.effects().contains_key(&at) {
             return Err(ControlError::PerturbMomentTaken { at });
         }
@@ -1323,12 +1226,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         floor: u64,
     ) -> Result<(), ControlError> {
         let vmm = self.vmm.as_ref().ok_or(ControlError::Unsupported)?;
-        // **Capability check, up front (PR #51 round-2 finding).** Host-plane
-        // enforcement needs the exact-count arrival seam ([`Vmm::set_idle_wake_vns`]); on a
-        // backend that cannot arm it (stock KVM / M1 / M2 — no deterministic
-        // VM-exit counter) a staged fault could only be applied at a natural
-        // exit *past* its `Moment`, recording a count the run never truly stopped at.
-        // Reject rather than silently apply late.
         if !vmm.vtime_wired() {
             return Err(ControlError::Unsupported);
         }
@@ -1337,13 +1234,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
         match fault {
             Effect::WriteMemory { gpa, bytes } | Effect::XorMemory { gpa, bytes } => {
-                // Stage-time validation must use the SAME region resolver
-                // `corrupt_memory` applies at arrival (review r13 — the last of the
-                // r11 GPA family). Otherwise, on arm64 (RAM over `RAM_BASE`) a valid
-                // high GPA would be rejected here while a low unmapped GPA would
-                // stage cleanly and then explode session-fatally at `apply_host_fault`.
-                // x86 (RAM at base 0) resolves a low GPA to its own offset, so the
-                // range decision is byte-identical.
                 if vmm.guest_slice(*gpa, bytes.len()).is_none() {
                     return Err(ControlError::PerturbOutOfRange {
                         gpa: *gpa,
@@ -1352,23 +1242,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 }
             }
             Effect::InjectInterrupt { vector } => {
-                // Every `InjectInterrupt` failure mode is a stage-time-decidable
-                // property of the request and the machine (PR #51 round-8) — reject
-                // it here as a recoverable reply, mirroring the `CorruptMemory`
-                // bounds check, rather than letting it explode as a session-fatal
-                // `ServeError::Vmm` at `apply_host_fault`.
-                //
-                // WHICH identities are legal is the **vendor's** question, not the
-                // engine's: x86's xAPIC has 8-bit vectors with `0..16` reserved,
-                // while a GIC's INTIDs run past 255 and its `0..16` are deliverable
-                // SGIs. So ask the vendor and map its verdict onto the wire.
                 if let Err(reject) = <B::A as Vendor>::check_wire_interrupt(vmm, *vector) {
                     return Err(match reject {
-                        // A perturbation this machine's fabric simply cannot deliver.
                         InterruptReject::NoFabric | InterruptReject::OutOfRange => {
                             ControlError::Unsupported
                         }
-                        // A request error the client can fix by picking another id.
                         InterruptReject::Reserved { vector } => {
                             ControlError::PerturbReservedVector { vector }
                         }
@@ -1400,16 +1278,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         blob: &[u8],
     ) -> Result<(SnapshotId, bool, Option<Vec<u64>>), SnapshotError> {
         if let Some(parent) = parent {
-            // Still live (a `drop` verb may have released it since) and bounded:
-            // at the chain cap the seal flattens via a fresh base instead.
             let chain_ok = engine
                 .stats(parent)
                 .is_ok_and(|s| s.chain_len < engine.max_chain_len());
             if chain_ok && let Some(gfns) = vmm.drain_dirty_pages() {
-                // From here the window is consumed either way. A derive error
-                // (unreachable in practice: liveness and image size were just
-                // checked, and a dropped builder releases its interned pages)
-                // still falls back to the full scan rather than failing the seal.
                 return match engine.snapshot_derive(parent, vmm.guest_memory(), Some(&gfns), blob) {
                     Ok(id) => Ok((id, true, Some(gfns))),
                     Err(_) => engine
@@ -1461,8 +1333,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// than silently dropping the future (persisting the schedule inside the
     /// snapshot is a semantics change that would need its own ruling).
     fn snapshot(&mut self) -> Result<Result<Reply, ControlError>, ServeError> {
-        // Do not let a previous seal's profiling evidence leak into a failed
-        // or base capture.
         self.last_seal_dirty_gfns = None;
         if let Some(err) = &self.schedule_poisoned {
             return Ok(Err(err.clone()));
@@ -1473,12 +1343,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
         let vm_state = match vmm.save_vm_state() {
             Ok(s) => s,
-            // The remaining fail-closed boundaries (RNG mid-exit completion,
-            // non-V-time-synchronized point, unrepresentable in-flight state)
-            // all surface as ContractViolation: "not a snapshottable point" —
-            // the caller runs a little further and retries.
             Err(VmmError::ContractViolation(_)) => return Ok(Err(ControlError::NotQuiescent)),
-            // A backend save failure is substrate breakage, not a caller error.
             Err(e) => return Err(e.into()),
         };
         let sdk_channel = match vmm.sdk_snapshot() {
@@ -1490,11 +1355,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         };
         let state_blob_suffix = vmm.state_blob_suffix()?;
         let blob = vm_state.encode().map_err(SnapshotError::from)?;
-        // Task 127: stamp the seal's evidence cut from the SAME stopped state
-        // the seal captures — the sealed record's own synchronized V-time (not
-        // a second `effective_vns` read) and the SDK capture vector's current
-        // prefix length. Nothing advances the VM between here and the reply,
-        // so handle, Moment, count, and taint are one atomic observation.
         let at = vm_state.vtime().snapshot_vns;
         let sdk_events = vmm.sdk_events().len() as u64;
         let (trace_events, trace_schedules) = vmm.virtual_time_trace().map_or((0, 0), |trace| {
@@ -1504,48 +1364,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             )
         });
         let policy = self.recorded.config().clone();
-        // Task 95 M2.1: capture O(dirty) when the tracked window allows it,
-        // full-scan otherwise — then re-arm the window with the new snapshot as
-        // the next seal's parent (the arm fails ⇒ the next seal full-scans too).
-        //
-        // `take()` the parent across the fallible seal: if the seal errors
-        // AFTER the drain emptied the window, a caller that treats the error
-        // as retryable (the pub `handle` API permits it) must NOT find the old
-        // parent still armed — a retried seal would then derive over a window
-        // missing everything dirtied before the failure. A failed seal always
-        // leaves `derive_parent = None` (the retry full-scans).
         let parent = self.derive_parent.take();
         let (store_id, window_consumed, dirty_gfns) =
             Self::seal_into_store(&mut self.engine, vmm, parent, &blob)?;
         self.last_seal_dirty_gfns = dirty_gfns;
-        // A consumed window was already reset by the drain itself (nothing
-        // ran since — the VM is stopped between verbs), so arm directly and
-        // skip the redundant per-slot drain; otherwise drain-and-discard now.
         let tracked = window_consumed || vmm.reset_dirty_tracking();
         self.derive_parent = tracked.then_some(store_id);
         self.current_image = tracked.then_some(store_id);
-        // Task 73: capture the SDK channel's replay-relevant state (seeded stream
-        // position + event log) alongside the guest snapshot — owned, so `vmm`'s
-        // borrow ends before we touch `self.sdk_snaps`.
 
-        // (Task 110: the pvclock channel — offer + registration — rides the
-        // sealed vm_state's device blob itself (v4), so there is no side
-        // table to capture here; the restore path validates and commits it
-        // with the blob.)
         let id = self.next_snap;
         self.next_snap += 1;
         self.snaps.insert(id, store_id);
         if let Some(channel) = sdk_channel {
-            // Capture the active service configuration too, so a replay restores
-            // the same handler setup.
             let policy = self.recorded.config().clone();
             self.sdk_snaps.insert(id, SdkSnap { channel, policy });
         }
-        // Task 81: a snapshot inherits the live timeline's taint. If the timeline
-        // was tainted by an `exec` improvisation, record the handle (so any
-        // `branch`/`replay` of it yields a tainted timeline). Either way the
-        // reply is the ONE seal-bound shape (task 127): handle + cut + taint —
-        // a tainted seal still binds its exact evidence cut.
         if self.timeline_tainted {
             self.tainted_snaps.insert(id);
         }
@@ -1575,22 +1408,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let Some(store_id) = self.snaps.remove(&snap.0) else {
             return Err(ControlError::UnknownSnapshot(snap));
         };
-        // Task 73: drop the SDK channel snapshot with its handle (ephemeral pool
-        // state, released alongside the guest snapshot).
         self.sdk_snaps.remove(&snap.0);
-        // Task 81: drop its taint record with the handle. (The `SnapId` is
-        // monotonic — [`next_snap`] never reuses a number — so a later snapshot can
-        // never inherit this one's taint by handle reuse.)
         self.tainted_snaps.remove(&snap.0);
         self.snapshot_meta.remove(&snap.0);
         if self.current_image == Some(store_id) {
             self.current_image = None;
             self.derive_parent = None;
         }
-        // The handle was minted by `snapshot`, which retains exactly one ref;
-        // releasing it can only fail if the store lost the layer — an
-        // invariant failure we still answer on the wire (the handle is gone
-        // either way) rather than tearing the session down.
         if self.engine.release(store_id).is_err() {
             return Err(ControlError::UnknownSnapshot(snap));
         }
@@ -1629,8 +1453,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     }
                 }
             }
-            // With no known source image the store diff is the complete target
-            // image, so an unavailable dirty log cannot hide a live difference.
             None if from.is_none() => {}
             None => return Err(()),
         }
@@ -1672,16 +1494,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         snap: SnapId,
         env: Option<&control_proto::Reproducer>,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
-        // 1. Validate everything non-destructively first: the env blob …
-        //    `seed` is the branch seed (`None` for a verbatim replay); `host` is
-        //    the env's host-plane schedule to stage after a successful restore.
         let mut host: Vec<(u64, Effect)> = Vec::new();
         let mut reseeds: BTreeMap<u64, u64> = BTreeMap::new();
         let mut payloads: Option<Vec<Vec<u8>>> = None;
         let mut answers = BTreeMap::new();
-        // Task 73: the branch env's service configuration, preserved into the
-        // recorded reproducer below so a replay rebuilds the same handler.
-        // `None` for a verbatim replay.
         let mut env_policy: Option<ServiceConfig> = None;
         let seed = match env {
             None => None,
@@ -1693,8 +1509,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     Ok(spec) => spec,
                     Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
                 };
-                // The core validates framing and machine operations; the installed
-                // service factory validates extension identity and configuration.
                 host = spec
                     .effects()
                     .iter()
@@ -1707,8 +1521,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 Some(spec.seed())
             }
         };
-        // Construct the extension before changing the live VM. Unknown or
-        // incompatible implementations leave the active session untouched.
         let restore_config = env_policy
             .clone()
             .or_else(|| self.sdk_snaps.get(&snap.0).map(|s| s.policy.clone()))
@@ -1738,17 +1550,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         for (&(at, service, request), answer) in &answers {
             prepared_env.record_service_request(at, service, request, answer.clone());
         }
-        // … then the handle and the sealed snapshot pieces.
         let Some(&store_id) = self.snaps.get(&snap.0) else {
             return Ok(Err(ControlError::UnknownSnapshot(snap)));
         };
         let Ok(vm_state) = self.engine.vm_state::<<B::A as Vendor>::Snapshot>(store_id) else {
             return Ok(Err(ControlError::RestoreFailed));
         };
-        // The fresh restore paths need the complete image before they replace
-        // the live VM. In-place restore deliberately defers materialization: a
-        // successful patch must perform work proportional only to changed and
-        // live-dirty pages.
         let mut mapping = if restore_defers_materialization(self.restore_mode) {
             None
         } else {
@@ -1757,18 +1564,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             };
             Some(mapping)
         };
-        // 1b. **Validate the branch env's host schedule BEFORE any swap (PR #51
-        //     round-5, blocking item 1).** A rejected branch must be side-effect-free
-        //     — so validate against the STILL-LIVE VM (its capability + RAM size,
-        //     which the factory mirrors) with the `floor` derived from the snapshot's
-        //     own V-time (`vm_state.vtime.snapshot_vns`) — no restore needed. If any
-        //     fault is inadmissible (unarmable backend, out-of-range gpa, out-of-scope
-        //     clock fault, a `Moment` behind the snapshot, or an intra-env duplicate
-        //     `Moment` — ruling B), reply the recoverable `ControlError` with the old
-        //     VM untouched. (The `RestoreFailed` path below still mutates — a genuine
-        //     restore failure cannot be pre-validated — and is documented there.)
-        // (`vtime()` is the arch-neutral `SnapshotRecords` accessor — the one
-        // engine read of the decoded snapshot; the record set stays opaque.)
         let restored_floor = vm_state.vtime().snapshot_vns;
         let mut seen: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
         for (m, fault) in &host {
@@ -1779,13 +1574,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 return Ok(Err(ControlError::PerturbMomentTaken { at: *m }));
             }
         }
-        // 1c. **Validate the reseed markers the same way (task 78).** A marker
-        //     behind the snapshot floor could only apply later than recorded —
-        //     the same non-reproducing class as a past host fault; a marker
-        //     strictly beyond the floor needs the exact-count arrival seam
-        //     (like a staged fault), so an unarmable backend rejects up front
-        //     rather than reseeding late. A marker AT the floor is the branch
-        //     reseed itself (applied below, no arrival needed).
         for &m in reseeds.keys() {
             if m < restored_floor {
                 return Ok(Err(ControlError::PerturbPastMoment {
@@ -1799,20 +1587,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 return Ok(Err(ControlError::Unsupported));
             }
         }
-        // 2. In-place mode first patches the existing VM. Any missing
-        //    prerequisite or restore error is an optimization miss: count it and
-        //    take the proven fresh-VM path for this operation. Other modes drop
-        //    the live VM immediately (freeing its virtual-time clock — the box
-        //    allows one open at a time) and boot a fresh restore target. A factory
-        //    failure is fatal once the old VM has been mutated or dropped.
-        //
-        //    Task 95 M2.2: with a remap factory installed (and the Remap mode
-        //    active, the default), the fresh VM is composed **around** the
-        //    materialized mapping — its buffer is the guest RAM the memslots
-        //    register — and only the non-memory half is restored
-        //    (`restore_vm_state`): no full-image memcpy, untouched pages fault
-        //    lazily, guest writes stay CoW-private. Otherwise the pre-task-95
-        //    memcpy path runs byte-for-byte (`restore_snapshot`).
         self.finish_session_trace_segment();
         let in_place = self.restore_mode == RestoreMode::InPlace;
         let in_place_result = in_place.then(|| self.restore_in_place(store_id, &vm_state));
@@ -1825,8 +1599,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             self.current_image = None;
         }
 
-        // In-place fallback uses the remap factory when one is installed; an
-        // explicit Memcpy selection remains the only mode that forbids it.
         let use_remap = self.restore_mode != RestoreMode::Memcpy && self.remap_factory.is_some();
         let (mut fresh, restore_result) = if used_in_place {
             let fresh = self.vmm.take().ok_or(ServeError::Poisoned)?;
@@ -1836,10 +1608,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 mapping = match self.engine.materialize(store_id) {
                     Ok(mapping) => Some(mapping),
                     Err(_) => {
-                        // The in-place attempt may already have consumed a
-                        // completion or dirtied the live VM. Replace it with a
-                        // genuine fresh boot before returning a recoverable
-                        // restore error.
                         self.vmm = None;
                         let recovery = (self.factory)()?;
                         self.install_recovery_boot(recovery);
@@ -1865,27 +1633,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 (fresh, result)
             }
         };
-        // 3. Split the two result categories (mirrors `snapshot`).
-        //    `restore_vm_state` validates the untrusted blob **before** mutating
-        //    any live state, so a *validation-class* rejection leaves the fresh
-        //    VM intact at its boot point — keep it (the session stays usable) and
-        //    answer the recoverable `RestoreFailed`. A failure *after* validation
-        //    (a `Backend::restore` fault, a virtual-time-clock reset failure) is
-        //    substrate breakage: the fresh VM's state can no longer be vouched
-        //    for, so the VM is dropped (stays `None` → poisoned) and the session
-        //    is torn down (`ServeError`) rather than let a client run from
-        //    unvouched state.
         match restore_result {
             Ok(()) => {}
-            // Pre-commit rejection (a bad/foreign blob, mismatched wiring, or an
-            // invalid clock config) — the fresh VM never mutated, so keep it.
             Err(error) if restore_error_is_precommit(&error) => {
-                // Task 95 M2.2: on the remap path `fresh` is a restore-target
-                // shell (its RAM is the rejected snapshot's mapping; no booted
-                // guest, no entry state) — not a usable session VM. Replace it
-                // with a genuine fresh boot so a `RestoreFailed` leaves the
-                // session on exactly what the memcpy path leaves it on. A
-                // factory failure here is fatal, as in step 2.
                 if use_remap {
                     drop(fresh);
                     fresh = (self.factory)()?;
@@ -1893,20 +1643,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 self.install_recovery_boot(fresh);
                 return Ok(Err(ControlError::RestoreFailed));
             }
-            // Post-validation substrate breakage — the VM is unvouched; tear down.
             Err(error) => return Err(error.into()),
         }
-        // 4. Branch ⇒ fork the entropy stream. On this substrate `reseed_entropy`
-        //    fails only if V-time is unwired — a composition bug (the factory must
-        //    mirror the live VM), fatal.
-        //
-        //    **No markers** (the pre-task-78 shape): reseed from the env's seed —
-        //    byte-for-byte the task-58/59 behavior. **Markers present**: the table
-        //    is authoritative (task 78) — a marker at the restore floor is the
-        //    (collapsed) branch reseed and applies now; markers beyond the floor
-        //    are staged for `run`'s exit-boundary drain; and with no marker at the
-        //    floor the stream deliberately continues from the snapshot (a fold
-        //    whose first hop carried no reseed).
         if let Some(seed) = seed {
             if reseeds.is_empty() {
                 fresh.reseed_entropy(seed)?;
@@ -1920,42 +1658,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         } else {
             SessionTraceStart::Replay { snapshot: snap.0 }
         };
-        // Task 81: the restored timeline **inherits the snapshot's taint** — a
-        // `branch`/`replay` from a tainted snapshot is tainted; from an untainted
-        // one, untainted. This is the propagation rule that makes taint follow
-        // snapshot ancestry exactly (and lets a rewind to an untainted ancestor
-        // legitimately reach untainted state). Both `branch` and `replay` land here.
         self.timeline_tainted = self.tainted_snaps.contains(&snap.0);
-        // 5. A restore rewinds the VM, so **re-arm the host-plane schedule** from
-        //    scratch (task 59): drop any stale staged faults and reset the recorded
-        //    reproducer to a bare `Seeded` at the **restored stream's** seed
-        //    ([`reset_schedule_to_fresh_vm`]), then stage the branch env's own host
-        //    overrides. The overrides were already validated (admissible, in-`Moment`
-        //    order, no duplicates) at step 1b against the live VM — side-effect-free —
-        //    so this only stages them; `run` applies + records them.
         self.reset_schedule_to_fresh_vm();
-        // Task 73: preserve the branch env's service configuration in the recorded
-        // reproducer, then wire the SDK channel from the now-final reproducer so a
-        // seeded run and a replay use the same generic handler setup. Wired
-        // on every restore; inert (and unhashed) for a guest that never rings the
-        // doorbell, so non-SDK paths are unchanged.
-        // Task 73: choose the service configuration the SDK environment materializes
-        // with. A **branch** uses the branch env's configuration; a **replay**
-        // restores the configuration active when the snapshot was sealed.
-        // `env_policy`
-        // is `Some` iff branching, so `or_else` picks the snapshot's policy only on
-        // a replay.
         let sdk_snap = self.sdk_snaps.get(&snap.0).cloned();
-        // On a replay, restore the seal-time configuration from the SDK channel
-        // snapshot; a branch uses its own `env_policy`.
         let restore_policy = env_policy.or_else(|| sdk_snap.as_ref().map(|s| s.policy.clone()));
         if let Some(policy) = restore_policy {
             self.set_recorded_policy(policy);
         }
-        // A branch stages its newly supplied ordered tape. A verbatim replay
-        // restores the snapshot's canonical remaining suffix. Set this before
-        // materializing the SDK environment so the payload service's
-        // availability and state are correct immediately.
         let active_payloads = if seed.is_some() {
             payloads
         } else {
@@ -1988,13 +1697,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .as_mut()
             .ok_or(ServeError::Poisoned)?
             .enable_sdk(sdk_env, &sdk_policy);
-        // Restore the SDK channel snapshot for this handle, if any. A verbatim
-        // **replay** (`seed` is `None`) continues the seeded streams from the
-        // snapshot's position AND keeps the event prefix — so a fork from a mid-run
-        // SDK snapshot reproduces. A **branch** reseeds (`enable_sdk` just set fresh
-        // streams from the new seed), so it takes only the shared prefix events —
-        // the declared catalog the never-fired report needs — and lets the new seed
-        // drive the fork's future.
         if let Some(s) = sdk_snap {
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
             if seed.is_some() {
@@ -2006,20 +1708,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 }
             }
         }
-        // (Task 110: the pvclock channel state rode the restored vm_state's
-        // device blob — `restore_vm_state`/`restore_snapshot` validated it
-        // symmetrically against the fresh VM's composition and committed it;
-        // a mismatched factory surfaces as the recoverable `RestoreFailed`
-        // above, exactly like a LAPIC wiring mismatch.)
         for (m, fault) in host {
             self.schedule.insert(m, fault);
         }
-        // Stage the future reseeds (strictly beyond the floor), and — iff the
-        // env carried markers — stamp the branch-point reseed into the recorded
-        // reproducer as a marker at the floor, so `recorded_env()` replays
-        // through the marker path (its mid-run reseeds, stamped by `run`, only
-        // reproduce if the floor reseed re-executes too). A no-marker branch
-        // records the plain `Seeded` shape, byte-for-byte the task-59 behavior.
         if !reseeds.is_empty() {
             use std::ops::Bound;
             for (&m, &s) in reseeds.range((Bound::Excluded(restored_floor), Bound::Unbounded)) {
@@ -2032,12 +1723,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 .unwrap_or(0);
             self.recorded.record_reseed(restored_floor, stream);
         }
-        // Task 95 M2.1: the restored VM's memory IS `store_id`'s image (memcpy
-        // wrote exactly it; remap maps exactly it), so arm the dirty window with
-        // the branch/replay source as the next seal's derive parent. The
-        // drain-and-discard resets the backend log (dropping any stale
-        // pre-restore guest-write bits) and clears the memcpy path's wholesale
-        // latch; if it cannot arm, the next seal simply full-scans.
         {
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
             let tracked = vmm.reset_dirty_tracking();
@@ -2066,8 +1751,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     fn reset_schedule_to_fresh_vm(&mut self) {
         self.schedule.clear();
         self.reseed_schedule.clear();
-        // A rewind is the recovery from a poisoned schedule (round-3): clear the
-        // latch so `run`/`perturb`/`snapshot` work again on the fresh timeline.
         self.schedule_poisoned = None;
         let seed = self
             .vmm
@@ -2106,9 +1789,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         &mut self,
         until: &control_proto::StopConditions,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
-        // A poisoned schedule keeps rejecting `run` (with the latched error's own
-        // variant + coordinates) until a `branch`/`replay` rewinds it — never applying
-        // the crossed fault from the past on a re-sent `run` (PR #51 round-3).
         if let Some(err) = &self.schedule_poisoned {
             return Ok(Err(err.clone()));
         }
@@ -2132,23 +1812,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 vmm.effective_vns().unwrap_or(0)
             };
 
-            // 1. Drain: apply an **exit-boundary delivery** — `m == vns` at a **synchronized**
-            //    point (`effective_vns` is exact there). A `Moment` at-or-below a vns
-            //    that is *not* provably exact must NOT be applied as an exit-boundary delivery:
-            //    `m < vns` is crossed (the guest is past `m`), and `m == vns` at an
-            //    *unsynchronized* point rests on a lower-bound vns so the guest may
-            //    have run past `m` too — either way poison (the recorded apply point
-            //    can't be trusted). This is the drain half of the round-7 family fix;
-            //    the `perturb` gate ensures nothing is *staged* at an unsynchronized
-            //    point in the first place, so this is the in-run belt-and-suspenders.
-            //    Reseeds drain through the identical classification (task 78) and
-            //    apply BEFORE a same-`Moment` fault (the schedule-field doc's
-            //    fixed order): the loop below always services the reseed map
-            //    first at any given reached `Moment`.
             loop {
                 let next_reseed = self.reseed_schedule.range(..=vns).next().map(|(&m, _)| m);
                 let next_fault = self.schedule.range(..=vns).next().map(|(&m, _)| m);
-                // Reseed-first at a shared Moment: pick the reseed on ties.
                 let (m, is_reseed) = match (next_reseed, next_fault) {
                     (Some(r), Some(f)) if r <= f => (r, true),
                     (Some(_) | None, Some(f)) => (f, false),
@@ -2157,48 +1823,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 };
                 let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
                 if is_reseed {
-                    // A mid-trajectory reseed marker (a collapsed hop's branch
-                    // reseed): re-execute it here, between instructions, and stamp
-                    // it into the recorded reproducer so `recorded_env()` replays
-                    // it at the identical count. A failure is substrate breakage
-                    // (V-time unwired on a marker-validated backend): fail loud.
                     let seed = self.reseed_schedule.remove(&m).expect("range key exists");
                     vmm.reseed_entropy(seed).map_err(ServeError::Vmm)?;
                     self.recorded.record_reseed(m, seed);
                 } else {
                     let fault = self.schedule.remove(&m).expect("range key exists");
-                    // An apply failure (out-of-range gpa — pre-validated at stage
-                    // time; a reserved vector; an unwired LAPIC) is substrate-level
-                    // breakage of a vouched run: fail loud (session-fatal), never a
-                    // silent skip that would desync the recorded env from the run.
                     vmm.apply_effect(&fault).map_err(ServeError::Vmm)?;
                     self.recorded.record_effect(m, fault);
                 }
             }
 
-            // 1b. Surface a DEFERRED `setup_complete` snapshot point (task 73 P1) —
-            //     only HERE, **after the drain** (round-5 P1), and only when the
-            //     schedule is **EMPTY** (round-6 P2): `snapshot` rejects *any*
-            //     non-empty schedule (`SnapshotWhileArmed`), so a still-staged
-            //     FUTURE fault (`m > vns`) would make the advertised seal fail. The
-            //     drain applied every fault at-or-below this synchronized vns; if a
-            //     future fault remains, keep deferring — the run applies each fault
-            //     at its `Moment`, shrinking the schedule, and the point surfaces at
-            //     the first synchronized boundary where the schedule has drained to
-            //     empty (`clear_arrival` then disarms the next arrival, so the seal
-            //     is clean). (`take_snapshot_point` is a no-op unless the VM is
-            //     at a sealable boundary.)
-            //     Gated on the client `StopMask` (round-7): only surface when the
-            //     `SNAPSHOT_POINT` class is armed. The whole block is gated (not
-            //     just the return), so an unarmed run does NOT consume the pending
-            //     point — it stays deferred and the run continues to the terminal
-            //     (`StopMask::NONE` runs straight through setup_complete).
-            //     Gate on BOTH staged structures being empty (task 78): `snapshot`
-            //     (control.rs:604) rejects a seal while EITHER `schedule` OR
-            //     `reseed_schedule` is non-empty, so surfacing the point with a
-            //     future reseed still staged would advertise a seal the explorer's
-            //     eager `snapshot()` then fails on — or seal a point missing its
-            //     pending reseeds (replay diverges). Keep deferring until both drain.
             if until.on.armed(control_proto::class_bit::SNAPSHOT_POINT)
                 && self.schedule.is_empty()
                 && self.reseed_schedule.is_empty()
@@ -2212,11 +1846,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 }
             }
 
-            // 2. Opportunistic V-time deadline (task-58 semantics, unchanged): stop
-            //    at the first boundary at-or-past the deadline. The drain above has
-            //    already applied every `m == vns` and poisoned any `m < vns`, so the
-            //    schedule now carries only future faults (`m > vns`) — left staged
-            //    for a later `run`.
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
             let vns = vmm.effective_vns().unwrap_or(0);
             if let Some(deadline) = until.deadline
@@ -2225,8 +1854,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 return Ok(Ok(Reply::Stop(StopReason::Deadline { vtime: Moment(vns) })));
             }
 
-            // 3. Publish the next host event for idle-wakeup planning only. Normal execution
-            //    still runs to the next VM exit.
             let next_host_event = [
                 self.schedule.keys().next().copied(),
                 self.reseed_schedule.keys().next().copied(),
@@ -2236,11 +1863,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .min();
             vmm.set_idle_wake_vns(next_host_event);
 
-            // 4. Step. A terminal stop ends the run; a cooperating-SDK stop
-            //    (task 73) surfaces the assertion / snapshot point.
             match vmm.step()? {
-                // A deferred `setup_complete` snapshot point is surfaced at the top
-                // of the NEXT iteration, after the drain (round-5 P1) — not here.
                 Step::Continued => {}
                 Step::SdkStop => {
                     let vns = vmm.effective_vns().unwrap_or(0);
@@ -2251,20 +1874,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                             vns,
                         ))));
                     }
-                    // **Poison loud on ANY staged host effect (P2, task 59's crossed-
-                    // effect rule).** An SDK stop surfaces at a hypercall-doorbell
-                    // `OUT` — NOT a V-time intercept — so `effective_vns` here is
-                    // only a lower bound; a still-staged effect at-or-just-above it
-                    // may already be crossed (the guest ran past `m` within the
-                    // exit-boundary variability window). Exactly like the terminal arm below, poison
-                    // rather than silently returning a stop past a crossed fault;
-                    // the client rewinds via `branch`/`replay`. Generic service
-                    // answers are recorded by the channel itself. Any staged host
-                    // effect OR staged reseed (task 78) poisons — a
-                    // crossed reseed marker (guest ran past its `Moment` in the exit-boundary variability
-                    // window) is the same non-reproducing class as a crossed effect:
-                    // a later replay from the reseed re-derives a different stream.
-                    // Mirror the terminal arm below (both staged structures).
                     let staged = [
                         self.schedule.keys().next().copied(),
                         self.reseed_schedule.keys().next().copied(),
@@ -2282,13 +1891,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     }
                     let reason = match stop {
                         Some(sdk_stop) => sdk_stop_to_reason(sdk_stop, vns),
-                        // `SdkStop` is armed (an assertion) before the step returns
-                        // `SdkStop`, so this is statically unreachable; be total
-                        // anyway with a benign quiescent stop.
                         None => StopReason::Quiescent { vtime: Moment(vns) },
                     };
-                    // Only assertions are mask-gated. Payload exhaustion is a
-                    // terminal Quiescent stop and always surfaces.
                     if matches!(reason, StopReason::Assertion { .. })
                         && !until.on.armed(control_proto::class_bit::ASSERTION)
                     {
@@ -2298,22 +1902,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 }
                 Step::Terminal(reason) => {
                     let vns = vmm.effective_vns().unwrap_or(0);
-                    // **Poison loud on ANY staged fault at a terminal (PR #51
-                    // round-6, supersedes round-5 item 2).** A natural terminal exit
-                    // (HLT / debug) is *not* a V-time intercept, so `effective_vns`
-                    // here is only the last-intercept **lower bound** — nothing still
-                    // staged is provably uncrossed (with `deadline < m` the arrival is
-                    // never armed and the guest can run past `m` to the terminal). The
-                    // round-5 silent `clear()` could therefore drop an accepted perturb
-                    // that *was* crossed — breaking exit-boundary-or-loud. The safe
-                    // semantic is LOUD: poison whenever any fault remains staged, and
-                    // let the client rewind (`branch`/`replay` clears the schedule —
-                    // which campaign flows do anyway, so the task-60 crash path stays
-                    // viable and the round-5 `SnapshotWhileArmed` trap stays fixed: a
-                    // named, rewindable error instead of a silent stuck state).
-                    // Any staged host fault OR staged reseed (task 78) poisons:
-                    // a reseed beyond the trajectory is the same non-reproducing
-                    // class as a crossed fault.
                     let staged = [
                         self.schedule.keys().next().copied(),
                         self.reseed_schedule.keys().next().copied(),
@@ -2357,23 +1945,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         cmd: &str,
         deadline: Moment,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
-        // 1. Conservative taint: set BEFORE touching the guest, covering every
-        //    failure point below.
         self.timeline_tainted = true;
         let nonce = self.exec_nonce;
         self.exec_nonce = self.exec_nonce.wrapping_add(1);
 
         let mut session = ExecSession::new(cmd, nonce);
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-        // 2. Inject the command line on the serial RX and note the current capture
-        //    length, so only NEW output is fed to the completion scanner.
         vmm.inject_serial_input(session.input());
         let mut cursor = vmm.serial_output().len();
 
-        // 3. Step toward the sentinel / deadline / terminal. The deadline is
-        //    observed opportunistically at each V-time boundary (like `run`): a hung
-        //    or shell-less guest ends here `ok = false`. No fault-schedule
-        //    interaction — `exec` is off the record.
         loop {
             let out = vmm.serial_output();
             if out.len() > cursor {
@@ -2390,16 +1970,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             }
             match vmm.step()? {
                 Step::Continued => {}
-                // A cooperating-SDK doorbell during an improvisation is consumed and
-                // ignored (exec is not an SDK-driven run); keep stepping.
                 Step::SdkStop => {
                     if vmm.pending_service_question().is_some() {
                         return Ok(Err(ControlError::Unsupported));
                     }
                     let _ = vmm.take_sdk_stop();
                 }
-                // The guest halted / crashed / rebooted before the sentinel: drain
-                // any final output and close as an (unsuccessful) timeout.
                 Step::Terminal(_) => {
                     let out = vmm.serial_output();
                     if out.len() > cursor {
@@ -2429,10 +2005,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             return Err(ControlError::Tainted);
         }
         let mut recorded = self.recorded.clone();
-        // The stored spec names the tape originally staged at branch time;
-        // the live VMM owns consumption. Re-emit only the canonical remaining
-        // suffix so branching this reproducer from the current cut recreates
-        // the same future input state.
         recorded.set_payloads(self.vmm.as_ref().and_then(Vmm::sdk_remaining_payloads));
         Ok(Reply::Recorded(Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
@@ -2460,7 +2032,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
 /// any remain — a single event's bytes are `<= MAX_PAYLOAD`, far under the frame
 /// limit — so paging strictly progresses (the client fetches until an empty page).
 fn page_sdk_events(all: &[(u64, u32, Vec<u8>)], offset: usize) -> Vec<(u64, u32, Vec<u8>)> {
-    // result tag + reply tag + u32 count; each event: moment(8) + id(4) + len(4) + bytes.
     const REPLY_OVERHEAD: usize = 6;
     let start = offset.min(all.len());
     let mut page = Vec::new();
@@ -2482,12 +2053,7 @@ fn page_sdk_events(all: &[(u64, u32, Vec<u8>)], offset: usize) -> Vec<(u64, u32,
 /// overflows a single reply. Pure over `serial` — no VM state is read or touched,
 /// so it cannot perturb a subsequent `state_hash`.
 fn page_console(serial: &[u8], offset: usize) -> (u32, Vec<u8>) {
-    // result tag + reply tag + total(u32) + chunk-len(u32) — the reply's fixed
-    // overhead, kept off the frame budget the chunk may fill.
     const REPLY_OVERHEAD: usize = 2 + 4 + 4;
-    // The uart capture is bounded to well under u32 in every real run; a capture
-    // that somehow exceeded u32 would only under-report `total`, never mis-slice
-    // (the client pages by the returned chunk lengths, not `total`).
     let total = serial.len().min(u32::MAX as usize) as u32;
     let start = offset.min(serial.len());
     let cap = control_proto::MAX_FRAME_LEN.saturating_sub(REPLY_OVERHEAD);
@@ -2506,11 +2072,6 @@ fn page_console(serial: &[u8], offset: usize) -> (u32, Vec<u8>) {
 /// nanoseconds (ratio 1), which is exactly the [`Moment`] the perturb/run plane
 /// addresses, so both fields carry it (a fresh / V-time-unwired VM reads `0`).
 fn regs_view<B: Backend<A: Vendor>>(vmm: &Vmm<B>) -> RegsView {
-    // The register half is per-arch (which registers a machine *has*), so the
-    // vendor fills it; the `Moment`/`vtime` half is the engine's one deterministic
-    // axis — the effective V-time is a VM-exit count in whole nanoseconds
-    // (ratio 1), which is exactly the `Moment` the perturb/run plane addresses, so
-    // both fields carry it (a fresh / V-time-unwired VM reads `0`).
     let vns = vmm.effective_vns().unwrap_or(0);
     let mut view = <B::A as Vendor>::regs_view(&vmm.inspect_vcpu());
     view.moment = Moment(vns);
@@ -2533,9 +2094,6 @@ fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
                 ctx,
             }
         }
-        // `setup_complete`'s snapshot point is deferred to a synchronized boundary
-        // (surfaced directly in the run loop), so the only immediate SDK stop is an
-        // assertion.
         SdkStop::Assertion { id, data } => StopReason::Assertion {
             vtime,
             ev: EventRef { id, data },
@@ -2564,10 +2122,6 @@ fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
                     .to_vec(),
             },
         },
-        // The control loop surfaces `Step::SdkStop` via its own arm (mapping it to
-        // `StopReason::Assertion` / the deferred snapshot point), so an SDK stop is
-        // never routed through `map_terminal` — which only ever sees the substrate
-        // terminals from `Step::Terminal`.
         TerminalReason::SdkStop => {
             unreachable!(
                 "SdkStop is surfaced by the run loop's Step::SdkStop arm, not map_terminal"
@@ -2687,10 +2241,6 @@ mod tests {
     #[cfg(all(target_os = "linux", not(miri)))]
     #[test]
     fn host_minor_fault_counter_reports_the_live_process_counter() {
-        // The process has faulted in substantially more than one page by the
-        // time this test runs. Exact counts are host profiling data, but the
-        // public accessor must not collapse a successful getrusage call to a
-        // sentinel (`None`, `Some(0)`, or `Some(1)`).
         assert!(host_minor_faults().is_some_and(|faults| faults > 1));
     }
 
@@ -2702,7 +2252,7 @@ mod tests {
     /// Native runs are byte-for-byte unchanged.
     const BIG_RAM: usize = if cfg!(miri) { 0x1_0000 } else { 0x2_0000 };
 
-    const RAM: usize = 0x4000; // 16 KiB = 4 pages
+    const RAM: usize = 0x4000;
 
     /// A configured, V-time-wired `Vmm<MockBackend>` with a distinctive memory
     /// image loaded and the canonical-blob hash wired (as the box composition
@@ -2734,10 +2284,6 @@ mod tests {
         cfg.vns_base = work.saturating_sub(1);
         v.wire_vtime(VtimeWiring::new_virtual_time(cfg, seed).unwrap());
         v.wire_snapshot_hashing();
-        // Wire the userspace xAPIC so `InjectInterrupt` host faults are enforceable
-        // on this generic test server (round-8 rejects a LAPIC-less InjectInterrupt).
-        // IF stays 0, so a HLT is still terminal (no idle-resume) — the base hash
-        // gains a LAPC chunk but every eq/ne relationship the tests assert holds.
         v.wire_lapic(
             lapic::Lapic::new(lapic::LapicConfig {
                 apic_id: 0,
@@ -2748,7 +2294,7 @@ mod tests {
         let mut image = vec![0u8; RAM];
         image[..12].copy_from_slice(b"SERVER_BOOT\n");
         v.restore_guest_memory(&image).unwrap();
-        assert_eq!(v.step().unwrap(), crate::vmm::Step::Continued); // RDTSC → synchronized
+        assert_eq!(v.step().unwrap(), crate::vmm::Step::Continued);
         v
     }
 
@@ -2767,8 +2313,6 @@ mod tests {
             let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
             v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 0).unwrap());
             v.wire_snapshot_hashing();
-            // Mirror the live VM's LAPIC wiring so a `branch`/`replay` restore
-            // matches (and InjectInterrupt is enforceable on the fork too).
             v.wire_lapic(
                 lapic::Lapic::new(lapic::LapicConfig {
                     apic_id: 0,
@@ -2843,8 +2387,6 @@ mod tests {
         let mut m = MockBackend::new();
         m.enable_dirty_tracking();
         let live = vmm_at_sync_from(m, vec![Exit::Common(CommonExit::Idle)], 500, 0xBA5E);
-        // Mirror `server`'s factory (unused by the seal-path tests, present so
-        // the composition invariant holds if one branches).
         let factory = Box::new(move || {
             let mut m = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
             m.set_policy(&X86Policy {
@@ -2997,7 +2539,7 @@ mod tests {
             _: &environment::channel::Question,
         ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
         {
-            self.0 += 1; // External responses must roll this tentative mutation back.
+            self.0 += 1;
             Ok(environment::channel::ServiceResponse::External)
         }
         fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
@@ -3129,7 +2671,6 @@ mod tests {
             Err(ControlError::MalformedEnvironment)
         );
         assert_eq!(s.vmm().unwrap().state_hash().unwrap(), stopped_hash);
-        // The full valid response frame includes one byte of answer framing.
         let answer = ServiceAnswer::Data(vec![0x5a; hypercall_proto::MAX_PAYLOAD - 1]);
         assert!(matches!(
             s.handle(&Request::Run {
@@ -3174,8 +2715,6 @@ mod tests {
         hello(&mut s);
         let origin = snap(&mut s);
         let before = s.vmm().unwrap().state_hash().unwrap();
-        // A resolver must independently honor both pieces of the requested
-        // contract, even when it returns an otherwise usable implementation.
         for config in [
             ServiceConfig {
                 identity: b"different-service".to_vec(),
@@ -3298,7 +2837,6 @@ mod tests {
             }))
         ));
 
-        // A retry of the first resolution must not be accepted for request 88.
         assert_eq!(
             s.handle(&Request::Run {
                 until,
@@ -3558,8 +3096,6 @@ mod tests {
         assert_eq!(taken, viewed);
         assert_eq!(taken.segments().len(), 3);
 
-        // Taking drains only the completed host-side buffer. The live final
-        // segment remains available and is captured again without mutation.
         let live_only = server.take_session_virtual_time_trace().unwrap();
         assert_eq!(live_only.segments().len(), 1);
         assert_eq!(live_only.segments()[0], taken.segments()[2]);
@@ -3569,8 +3105,6 @@ mod tests {
             assert_eq!(server.vmm().unwrap().state_hash().unwrap(), before);
         }
     }
-
-    // ---- task 95 M2: O(dirty) capture + remap restore -------------------------
 
     /// The store-side chain length of a wire handle (1 = a base layer; >1 = a
     /// derived capture) — through the same public accessor the box gate uses,
@@ -3592,8 +3126,6 @@ mod tests {
         let mut s = server_tracked();
         hello(&mut s);
         let first = snap(&mut s);
-        // Mutate guest state host-side between the seals (the CorruptMemory
-        // apply path — a write KVM's log could never see).
         s.vmm
             .as_mut()
             .unwrap()
@@ -3605,10 +3137,8 @@ mod tests {
         let second = snap(&mut s);
         assert_eq!(chain_len(&s, first), 1, "first seal is the base");
         assert_eq!(chain_len(&s, second), 2, "second seal derived (O(dirty))");
-        // Full closure: the derived capture resolves to exactly the live image.
         let map = s.engine.materialize(s.snaps[&second.0]).unwrap();
         assert_eq!(map.as_slice(), s.vmm().unwrap().guest_memory());
-        // And a base seal of the same state stores the same bytes.
         let base_twin = {
             let vmm = s.vmm.as_ref().unwrap();
             s.engine.snapshot_base(vmm.guest_memory(), b"twin").unwrap()
@@ -3968,7 +3498,7 @@ mod tests {
         ignore = "materialize uses mmap, which Miri cannot execute; the mode plumbing is covered by the non-mmap tests"
     )]
     fn remap_restore_failure_keeps_a_usable_session() {
-        let mut s = server_with_remap(vec![Exit::Common(CommonExit::Idle)], true); // sabotaged target
+        let mut s = server_with_remap(vec![Exit::Common(CommonExit::Idle)], true);
         hello(&mut s);
         let sp = snap(&mut s);
         assert_eq!(
@@ -3979,8 +3509,6 @@ mod tests {
             .unwrap(),
             Err(ControlError::RestoreFailed)
         );
-        // The kept VM is a fresh boot from the NORMAL factory (owned RAM, not a
-        // half-restored shell), and the session still answers verbs.
         assert!(!s.vmm().unwrap().ram_backing_is_snapshot());
         assert!(matches!(
             s.handle(&Request::Hash {
@@ -4084,8 +3612,6 @@ mod tests {
         }
     }
 
-    // ------------------------- task 80: observation verbs ----------------------
-
     fn read(
         server: &mut ControlServer<MockBackend>,
         gpa: u64,
@@ -4111,8 +3637,6 @@ mod tests {
             Ok(Reply::Bytes(b)) => assert_eq!(&b, b"SERVER_BOOT\n"),
             other => panic!("read reply: {other:?}"),
         }
-        // A zero-length read at the exact RAM end is a valid empty read (the
-        // boundary is inclusive: `gpa + len == ram_len` is in range).
         assert_eq!(read(&mut s, RAM as u64, 0), Ok(Reply::Bytes(Vec::new())));
         assert_eq!(
             read(&mut s, RAM as u64 - 4, 4),
@@ -4209,8 +3733,6 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn read_and_regs_on_a_poisoned_server_are_session_fatal() {
-        // A factory that cannot boot poisons the session on the first branch: the
-        // live VM is dropped, the factory fails, and `vmm` stays `None`.
         let live = vmm_at_sync(vec![Exit::Common(CommonExit::Idle)], 500, 0xBA5E);
         let mut s = ControlServer::new(
             live,
@@ -4228,8 +3750,6 @@ mod tests {
             ),
             "the failing factory tears the session down"
         );
-        // Now poisoned. Both observation verbs are session-fatal, exactly like the
-        // sibling verbs — not a recoverable ControlError.
         assert!(matches!(
             s.handle(&Request::Read { gpa: 0, len: 4 }),
             Err(ServeError::Poisoned)
@@ -4238,7 +3758,6 @@ mod tests {
             s.handle(&Request::Regs),
             Err(ServeError::Poisoned)
         ));
-        // A cross-check that a sibling agrees (hash Whole is the canonical one).
         assert!(matches!(
             s.handle(&Request::Hash {
                 scope: HashScope::Whole,
@@ -4268,12 +3787,10 @@ mod tests {
         .unwrap();
         let h_before = hash(&mut s);
         let env_before = s.recorded_env().clone();
-        // A whole inspection pass — reads across the image, the register view, and
-        // an out-of-range read (a loud error is still a pure observation).
         let _ = read(&mut s, 0, 16);
         let _ = read(&mut s, RAM as u64 - 8, 8);
         let _ = regs(&mut s);
-        let _ = read(&mut s, RAM as u64, 64); // out of range → error, no effect
+        let _ = read(&mut s, RAM as u64, 64);
         let _ = regs(&mut s);
         assert_eq!(hash(&mut s), h_before, "observation did not move the hash");
         assert_eq!(
@@ -4301,8 +3818,6 @@ mod tests {
             Just(ObsOp::Hash),
             (1u64..=8).prop_map(ObsOp::Branch),
             Just(ObsOp::Replay),
-            // Reads span in-range and (deliberately) out-of-range addresses/lengths,
-            // so even a rejected observation is proven inert.
             (0u64..=(RAM as u64 + 64), 0u32..=(RAM as u32 + 64))
                 .prop_map(|(gpa, len)| ObsOp::Read(gpa, len)),
             Just(ObsOp::Regs),
@@ -4383,12 +3898,8 @@ mod tests {
 
     #[test]
     fn sdk_events_pages_bound_to_the_frame_limit() {
-        // Round-5 P4: a capture larger than one control frame is fetched by paging
-        // (`page_sdk_events` at ascending offsets) — each page's encoded body stays
-        // under MAX_FRAME_LEN, it splits into >1 page, and the pages reassemble to
-        // the full capture with no overlap or gap.
-        let per_event = 4_000usize; // bytes per event
-        let count = control_proto::MAX_FRAME_LEN / (16 + per_event) + 5; // just over one frame
+        let per_event = 4_000usize;
+        let count = control_proto::MAX_FRAME_LEN / (16 + per_event) + 5;
         let all: Vec<(u64, u32, Vec<u8>)> = (0..count)
             .map(|i| (i as u64, i as u32, vec![0xAB_u8; per_event]))
             .collect();
@@ -4544,14 +4055,12 @@ mod tests {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let base = snap(&mut s);
-        // Wrong wire version.
         let mut env = seeded_env(7);
         env.blob_version = 99;
         assert_eq!(
             s.handle(&Request::Branch { snap: base, env }).unwrap(),
             Err(ControlError::BadEnvVersion(99))
         );
-        // Malformed bytes.
         let env = Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: vec![0xFF; 8],
@@ -4560,7 +4069,6 @@ mod tests {
             s.handle(&Request::Branch { snap: base, env }).unwrap(),
             Err(ControlError::MalformedEnvironment)
         );
-        // Unknown snapshot (env valid).
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: SnapId(999),
@@ -4569,8 +4077,6 @@ mod tests {
             .unwrap(),
             Err(ControlError::UnknownSnapshot(SnapId(999)))
         );
-        // The live VM was never replaced by any of the rejected branches: it
-        // still hashes (and can still snapshot).
         let _ = hash(&mut s);
         let _ = snap(&mut s);
     }
@@ -4659,15 +4165,12 @@ mod tests {
 
     #[test]
     fn perturb_stages_faults_and_rejects_the_unenforceable() {
-        // The `server()` live VM is advanced past its RDTSC to effective V-time 500
-        // (`vmm_at_sync(..., 500, ...)`), so the stage-time floor is 500.
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let perturb = |fault: environment::channel::Effect, at: u64| Request::Perturb {
             fault: HostFault(fault.encode()),
             at: Moment(at),
         };
-        // An InjectInterrupt at a future Moment stages cleanly (Reply::Unit).
         assert_eq!(
             s.handle(&perturb(
                 environment::channel::Effect::InjectInterrupt { vector: 32 },
@@ -4676,8 +4179,6 @@ mod tests {
             .unwrap(),
             Ok(Reply::Unit)
         );
-        // A second fault at the SAME Moment is a loud rejection (task-45
-        // one-action-per-Moment; the recorded env never silently drops a fault).
         assert_eq!(
             s.handle(&perturb(
                 environment::channel::Effect::InjectInterrupt { vector: 33 },
@@ -4686,8 +4187,6 @@ mod tests {
             .unwrap(),
             Err(ControlError::PerturbMomentTaken { at: 1000 })
         );
-        // A Moment BEHIND the current V-time (500) is rejected loud — it could only
-        // apply later than recorded.
         assert_eq!(
             s.handle(&perturb(
                 environment::channel::Effect::InjectInterrupt { vector: 34 },
@@ -4699,7 +4198,6 @@ mod tests {
                 floor: 500
             })
         );
-        // `at == floor` is fine (applies immediately and truthfully).
         assert_eq!(
             s.handle(&perturb(
                 environment::channel::Effect::InjectInterrupt { vector: 35 },
@@ -4708,12 +4206,10 @@ mod tests {
             .unwrap(),
             Ok(Reply::Unit)
         );
-        // A CorruptMemory whose word falls outside the 16 KiB guest RAM is rejected
-        // loudly at stage time (never clipped/wrapped).
         assert_eq!(
             s.handle(&perturb(
                 environment::channel::Effect::XorMemory {
-                    gpa: RAM as u64 - 4, // gpa + 8 > ram
+                    gpa: RAM as u64 - 4,
                     bytes: (0xFF_u64).to_le_bytes().to_vec(),
                 },
                 2000
@@ -4724,7 +4220,6 @@ mod tests {
                 ram_len: RAM as u64,
             })
         );
-        // An in-range CorruptMemory stages cleanly.
         assert_eq!(
             s.handle(&perturb(
                 environment::channel::Effect::XorMemory {
@@ -4736,7 +4231,6 @@ mod tests {
             .unwrap(),
             Ok(Reply::Unit)
         );
-        // A malformed fault blob is a loud MalformedEnvironment.
         assert_eq!(
             s.handle(&Request::Perturb {
                 fault: HostFault(vec![0xFF; 3]),
@@ -4762,12 +4256,8 @@ mod tests {
             fault: HostFault(fault.encode()),
             at: Moment(at),
         };
-        // Simulate arm64: RAM based high, so absolute GPAs are over RAM_BASE.
         s.vmm.as_mut().unwrap().ram_base_gpa = 0x4000_0000;
 
-        // A valid HIGH arm64 GPA (inside `[RAM_BASE, RAM_BASE + RAM)`) is
-        // admissible at stage time — the pre-r13 raw-GPA check would have rejected
-        // it (`gpa + 8 > ram_len`).
         assert_eq!(
             s.handle(&perturb(
                 environment::channel::Effect::XorMemory {
@@ -4781,9 +4271,6 @@ mod tests {
             "a valid high arm64 GPA must be admissible at stage time"
         );
 
-        // A low unmapped GPA (below RAM_BASE) is rejected at STAGE time — the
-        // pre-r13 check would have admitted it (`0 + 8 <= ram_len`) and let it
-        // explode fatally at arrival.
         assert_eq!(
             s.handle(&perturb(
                 environment::channel::Effect::XorMemory {
@@ -4807,12 +4294,10 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn run_maps_terminals_workload_blind() {
-        // Hlt → Quiescent.
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         assert!(matches!(run_all(&mut s), StopReason::Quiescent { .. }));
 
-        // Shutdown → Crash{Shutdown}.
         let mut s = server(vec![Exit::Common(CommonExit::Shutdown)]);
         hello(&mut s);
         let base = snap(&mut s);
@@ -4829,7 +4314,6 @@ mod tests {
             other => panic!("expected Crash{{Shutdown}}, got {other:?}"),
         }
 
-        // DebugExit{0} → Quiescent; DebugExit{1} → Crash{Panic, [1]}.
         let dbg = |code: u32| {
             Exit::Arch(X86Exit::Io {
                 port: 0xF4,
@@ -4868,8 +4352,6 @@ mod tests {
 
     #[test]
     fn run_stops_at_a_vtime_deadline_without_entering_when_already_past() {
-        // The live VM is at work 500 ⇒ effective V-time 500 ns (1 ns/branch).
-        // A deadline at-or-below that stops immediately with Deadline{500}.
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let req = Request::Run {
@@ -4883,8 +4365,6 @@ mod tests {
             Ok(Reply::Stop(StopReason::Deadline { vtime })) => assert_eq!(vtime, Moment(500)),
             other => panic!("expected Deadline{{500}}, got {other:?}"),
         }
-        // And the pending scripted exit was NOT consumed: a deadline-free run
-        // still reaches its Hlt terminal.
         assert!(matches!(run_all(&mut s), StopReason::Quiescent { .. }));
     }
 
@@ -5099,9 +4579,6 @@ mod tests {
         corrupted.sidecar[0] ^= 1;
         assert_rejected(corrupted);
 
-        // A sidecar with no SDK channel cannot claim an SDK-event prefix. This
-        // exercises the explicit absent-channel contradiction rather than the
-        // present-channel length check above.
         let decoded = super::decode_sparse_sidecar(&exported.sidecar).unwrap();
         let malformed_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
             vm_state: &decoded.vm_state,
@@ -5119,8 +4596,6 @@ mod tests {
         sdk_count_without_channel.sidecar = malformed_sidecar;
         assert_rejected(sdk_count_without_channel);
 
-        // An x86 vm_state blob must not be accepted by an arm64 destination;
-        // the vendor SnapshotRecords codec rejects it before the layer/handle.
         let mut arm = accumulated_session_server();
         let arm_base = arm.latest_snapshot().unwrap();
         let before = arm.snapshot_store_stats();
@@ -5142,7 +4617,6 @@ mod tests {
         source
             .export_portable_snapshot(snap, &mut artifact)
             .unwrap();
-        // Fixed header is 116 bytes; the first byte after it is RAM.
         artifact[116] ^= 1;
 
         let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -5162,7 +4636,6 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn branch_reseeds_and_replay_does_not() {
-        // Fork VMs take one RDTSC (to a synchronized point) then halt.
         let mut s = server(vec![
             Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
             Exit::Common(CommonExit::Idle),
@@ -5171,13 +4644,9 @@ mod tests {
         let base = snap(&mut s);
         let h_base = hash(&mut s);
 
-        // replay(base) reproduces the captured state bit-for-bit.
         assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
         assert_eq!(hash(&mut s), h_base, "replay is verbatim (same state hash)");
 
-        // branch(base, seed) forks the entropy stream: distinct seeds hash
-        // distinctly (the entropy seed/position is in the VTIM chunk), and the
-        // same seed twice hashes identically.
         let mut branch_hash = |seed: u64| -> [u8; 32] {
             s.handle(&Request::Branch {
                 snap: base,
@@ -5204,8 +4673,6 @@ mod tests {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let base = snap(&mut s);
-        // Swap in a failing factory by rebuilding the server around the same
-        // live VM shape: simplest is a dedicated server.
         let live = vmm_at_sync(vec![Exit::Common(CommonExit::Idle)], 500, 0xBA5E);
         let mut s = ControlServer::new(
             live,
@@ -5215,12 +4682,11 @@ mod tests {
         let base2 = snap(&mut s);
         let err = s.handle(&Request::Replay(base2)).unwrap_err();
         assert!(matches!(err, ServeError::Vmm(_)));
-        // Poisoned: the VM is gone; verbs that need it are fatal, not replies.
         assert!(matches!(
             s.handle(&Request::Snapshot).unwrap_err(),
             ServeError::Poisoned
         ));
-        let _ = base; // silence: the first server was only used for setup
+        let _ = base;
     }
 
     #[test]
@@ -5229,16 +4695,8 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn restore_validation_rejection_is_recoverable_and_keeps_the_fresh_vm() {
-        // The recoverable half of restore's error split (round 4): a
-        // **validation-class** rejection — here a V-time wiring mismatch (the
-        // live VM is V-time-wired, so the snapshot carries a V-time block, but
-        // the factory boots forks WITHOUT V-time) — is caught *before* the fresh
-        // VM mutates, so it answers the recoverable `RestoreFailed` and KEEPS the
-        // intact fresh VM (the session stays usable).
-        let live = vmm_at_sync(vec![Exit::Common(CommonExit::Idle)], 500, 0xBA5E); // V-time wired
+        let live = vmm_at_sync(vec![Exit::Common(CommonExit::Idle)], 500, 0xBA5E);
         let factory = Box::new(|| {
-            // A fork with NO V-time wired → restoring a V-time-bearing blob into
-            // it is a ContractViolation (wiring must match the snapshot source).
             let mut m = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
             m.set_policy(&X86Policy {
                 cpuid: vmm_backend::CpuidModel::default(),
@@ -5259,18 +4717,15 @@ mod tests {
             Err(ControlError::RestoreFailed),
             "a validation-class restore rejection is the recoverable RestoreFailed"
         );
-        // The session is NOT poisoned: the intact fresh fork VM is still there.
         assert!(
             s.vmm().is_some(),
             "the fresh VM was kept after the rejection"
         );
-        // Round-4 P3: the kept fresh VM must still carry an SDK channel, or a
-        // doorbell on it would be a contract violation despite GUEST_HAS_SDK.
         assert!(
             s.vmm().unwrap().sdk_is_enabled(),
             "the kept fresh VM stays SDK-capable after a recoverable RestoreFailed"
         );
-        let _ = hash(&mut s); // still usable
+        let _ = hash(&mut s);
     }
 
     /// A backend that forwards to an inner mock but **fails `restore`** — to
@@ -5341,11 +4796,6 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn restore_substrate_failure_is_session_fatal_and_poisons_the_server() {
-        // The fatal half of restore's error split (round 4): a failure AFTER
-        // validation — here `Backend::restore` itself faults — is substrate
-        // breakage (the fresh VM's state can no longer be vouched for), so it
-        // tears the session down (ServeError) rather than answering the
-        // recoverable RestoreFailed and letting a client run from unvouched state.
         let build = || -> Vmm<RestoreFailBackend> {
             let mut m = MockBackend::with_exits(vec![
                 Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
@@ -5363,17 +4813,13 @@ mod tests {
             v
         };
         let mut live = build();
-        live.step().unwrap(); // Rdtsc → synchronized (snapshottable)
+        live.step().unwrap();
         let mut s = ControlServer::new(live, Box::new(move || Ok(build())));
-        // hello + snapshot inline (the typed `hello`/`snap` helpers are
-        // MockBackend-only; this server is over RestoreFailBackend).
         assert!(s.handle(&Request::Hello(server_caps())).unwrap().is_ok());
         let base = match s.handle(&Request::Snapshot).unwrap() {
             Ok(Reply::Snapshot { id, .. }) => id,
             other => panic!("snapshot: {other:?}"),
         };
-        // branch restores into a fresh fork whose Backend::restore faults AFTER
-        // validation → fatal ServeError, not a RestoreFailed reply.
         let err = s
             .handle(&Request::Branch {
                 snap: base,
@@ -5384,7 +4830,6 @@ mod tests {
             matches!(err, ServeError::Vmm(_)),
             "a post-validation restore fault is session-fatal, got {err:?}"
         );
-        // Poisoned: the unvouched VM was dropped, not kept.
         assert!(s.vmm().is_none(), "the unvouched VM was dropped");
         assert!(matches!(
             s.handle(&Request::Snapshot).unwrap_err(),
@@ -5398,12 +4843,6 @@ mod tests {
         ignore = "drives a real UnixStream socketpair across threads; Miri can't execute the socket syscalls (task 98)"
     )]
     fn serve_speaks_frames_over_an_in_memory_stream() {
-        // A tiny wire-level session over a socketpair: hello → snapshot →
-        // hash → EOF. The server stays on this thread (a `Vmm` is not `Send` —
-        // its work source is a thread-affine counter on the box); the client
-        // runs on a spawned thread, exactly the composition the demo bin uses.
-        // The full loopback (socket Machine end-to-end) lives in the acceptance
-        // suite.
         use std::io::{Read, Write};
         use std::os::unix::net::UnixStream;
         let (mut client, server_end) = UnixStream::pair().unwrap();
@@ -5445,22 +4884,11 @@ mod tests {
                 ),
                 Ok(Reply::Hash(_))
             ));
-            // Dropping the client closes the stream: EOF between frames.
         });
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         s.serve(server_end).unwrap();
         client_thread.join().unwrap();
     }
-
-    // -----------------------------------------------------------------------
-    // Task 59 — host-plane enforcement (apply a HostFault at a Moment).
-    //
-    // Portable proof over the scripted `MockBackend`: each staged `Moment`
-    // arrives at a deterministic scripted exit boundary whose assigned V-time
-    // is the Moment itself. The end-to-end record→replay-on-real-KVM closure is the
-    // box gate; here we prove the apply-at-Moment seam, its determinism, and
-    // that the emitted recorded env re-applies to the identical hash.
-    // -----------------------------------------------------------------------
 
     /// A live VM for enforcement: V-time + userspace-LAPIC + snapshot-hashing
     /// wired, a distinctive RAM image loaded, and a script of `exit_count`
@@ -5545,8 +4973,6 @@ mod tests {
         ignore = "enforce_run boots + runs + state-hashes VMs several times (~2 s/KiB sha256 under Miri); it never restores, and its boot-path map_memory seam is Miri-run via bringup::tests::compose_drives_guestram_and_unsafe_map_memory — the same grounds as its proptest sibling arbitrary_schedule_applied_twice_is_identical; covered natively (task 98 / hm-d8o)"
     )]
     fn same_schedule_run_twice_is_bit_identical_and_control_differs() {
-        // Gate 1: an arbitrary schedule applied twice is bit-identical; and an
-        // ABSENT schedule (the control) differs — the faults are actually landing.
         let schedule = vec![
             (
                 1,
@@ -5571,8 +4997,6 @@ mod tests {
 
     #[test]
     fn corrupt_memory_lands_the_exact_xor_at_the_gpa() {
-        // The upset is the pure function `word ^ mask` at the gpa — verify the
-        // exact bytes land, and that a mask that flips no bit (0) is a no-op.
         let gpa = 0x80usize;
         let mask = 0xA5A5_0000_1234_5678u64;
         let fault = EnvHostEffect::XorMemory {
@@ -5592,24 +5016,14 @@ mod tests {
         let _ = run_all(&mut s);
         let ram = s.vmm().unwrap().guest_memory();
         let word = u64::from_le_bytes(ram[gpa..gpa + 8].try_into().unwrap());
-        // The pristine image is zero from 0x80 on, so the corrupted word is
-        // exactly the mask.
         assert_eq!(word, mask, "CorruptMemory XORs the mask into the gpa word");
     }
 
     #[test]
     fn a_fault_at_the_deferred_snapshot_boundary_drains_before_the_seal() {
-        // Round-5 P1: a host fault scheduled EXACTLY at the deferred `setup_complete`
-        // boundary must be drained (applied + removed from the schedule) BEFORE the
-        // snapshot point surfaces — else the explorer's eager seal there hits
-        // `SnapshotWhileArmed` (a non-empty schedule). A guest rings `setup_complete`
-        // (unsealable OUT) then lands an arrival at Moment M; a `CorruptMemory` is
-        // staged at M; the run surfaces `SnapshotPoint` with the schedule drained, so
-        // a `snapshot()` there SUCCEEDS.
         const REQ_GPA: usize = 0xE000;
         let m: u64 = 1;
 
-        // A `setup_complete` Event frame staged at REQ_GPA.
         let setup_id: u32 = 4 << 24;
         let mut frame = [0u8; 4096];
         let n = hypercall_proto::encode_request(
@@ -5621,7 +5035,6 @@ mod tests {
         )
         .unwrap();
 
-        // Live guest: ring the doorbell, then land an arrival (rewritten to M).
         let mut mb = MockBackend::with_exits(vec![
             Exit::Arch(X86Exit::Io {
                 port: 0x0CA1,
@@ -5647,7 +5060,6 @@ mod tests {
         let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
 
-        // Stage a CorruptMemory fault EXACTLY at the deferred boundary Moment M.
         let fault = EnvHostEffect::XorMemory {
             gpa: 0x1000,
             bytes: (0xDEAD_BEEF_u64).to_le_bytes().to_vec(),
@@ -5659,22 +5071,18 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        // The run surfaces the deferred snapshot point at M, the fault drained first
-        // (arm the SNAPSHOT_POINT class — round-7 gates it on the mask).
         let stop = run_seeking_snapshot(&mut s);
         assert!(
             matches!(stop, StopReason::SnapshotPoint { .. }),
             "the deferred point surfaced, got {stop:?}"
         );
 
-        // The schedule was drained, so the eager seal SUCCEEDS (not SnapshotWhileArmed).
         match s.handle(&Request::Snapshot).unwrap() {
             Ok(Reply::Snapshot { .. }) => {}
             other => {
                 panic!("seal at the deferred boundary failed (SnapshotWhileArmed?): {other:?}")
             }
         }
-        // And the boundary fault DID land — the drain applied it before the seal.
         let ram = s.vmm().unwrap().guest_memory();
         let word = u64::from_le_bytes(ram[0x1000..0x1008].try_into().unwrap());
         assert_eq!(
@@ -5685,13 +5093,6 @@ mod tests {
 
     #[test]
     fn a_future_fault_keeps_deferring_the_snapshot_point_until_the_schedule_drains() {
-        // Round-6 P2(1): the deferred `setup_complete` point must NOT surface while a
-        // FUTURE fault (m > vns) is still staged — `snapshot()` rejects any non-empty
-        // schedule (`SnapshotWhileArmed`), so the advertised seal would fail. Ring
-        // `setup_complete`, then hit a synchronized RDTSC boundary (vns 0, the fault
-        // still future) where round-5 would surface early, then land the fault's
-        // arrival at M. The point surfaces ONLY at M, once the schedule has drained to
-        // empty — and a `snapshot()` there SUCCEEDS.
         const REQ_GPA: usize = 0xE000;
         let m: u64 = 2;
 
@@ -5706,8 +5107,6 @@ mod tests {
         )
         .unwrap();
 
-        // setup_complete → an RDTSC (a synchronized boundary at vns 0, the fault
-        // still future) → the fault's arrival at M.
         let mut mb = MockBackend::with_exits(vec![
             Exit::Arch(X86Exit::Io {
                 port: 0x0CA1,
@@ -5734,7 +5133,6 @@ mod tests {
         let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
 
-        // A FUTURE fault at M (> the RDTSC boundary's vns of 0).
         let fault = EnvHostEffect::XorMemory {
             gpa: 0x1000,
             bytes: (0x00C0_FFEE_u64).to_le_bytes().to_vec(),
@@ -5746,8 +5144,6 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        // The point surfaces only after the schedule drains (at M), NOT at the RDTSC
-        // (arm the SNAPSHOT_POINT class — round-7 gates it on the mask).
         match run_seeking_snapshot(&mut s) {
             StopReason::SnapshotPoint { vtime } => assert_eq!(
                 vtime.0, m,
@@ -5755,7 +5151,6 @@ mod tests {
             ),
             other => panic!("expected a deferred SnapshotPoint, got {other:?}"),
         }
-        // The schedule is empty, so the eager seal SUCCEEDS (not SnapshotWhileArmed).
         match s.handle(&Request::Snapshot).unwrap() {
             Ok(Reply::Snapshot { .. }) => {}
             other => panic!("seal failed with a future fault mishandled: {other:?}"),
@@ -5764,15 +5159,6 @@ mod tests {
 
     #[test]
     fn a_future_reseed_keeps_deferring_the_snapshot_point_until_it_drains() {
-        // Round-9 P1 (task 78 seam): the deferred `setup_complete` point must NOT
-        // surface while a FUTURE reseed (m > vns) is still staged — `snapshot()`
-        // rejects a non-empty `reseed_schedule` too (`SnapshotWhileArmed`, mirrored
-        // at control.rs:604), so surfacing early would advertise a seal that fails,
-        // or seal a point missing its pending reseeds (replay diverges). The reseed
-        // is the exact analogue of the future-fault case above. Ring
-        // `setup_complete`, hit a synchronized RDTSC boundary (vns 0, the reseed
-        // still future) where the old gate would surface early, then land the
-        // reseed's arrival at M — the point surfaces ONLY at M, and a seal SUCCEEDS.
         const REQ_GPA: usize = 0xE000;
         let m: u64 = 2;
 
@@ -5787,8 +5173,6 @@ mod tests {
         )
         .unwrap();
 
-        // setup_complete → an RDTSC (synchronized boundary at vns 0, reseed still
-        // future) → the reseed's arrival at M.
         let mut mb = MockBackend::with_exits(vec![
             Exit::Arch(X86Exit::Io {
                 port: 0x0CA1,
@@ -5815,12 +5199,8 @@ mod tests {
         let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
 
-        // Stage a FUTURE reseed at M. No public verb stages a reseed without a
-        // branch env, so insert directly — the test module shares the crate.
         s.reseed_schedule.insert(m, 9);
 
-        // The point surfaces only after the reseed drains (at M), NOT at the RDTSC
-        // (vns 0), proving the gate honors `reseed_schedule` (arm SNAPSHOT_POINT).
         match run_seeking_snapshot(&mut s) {
             StopReason::SnapshotPoint { vtime } => assert_eq!(
                 vtime.0, m,
@@ -5828,7 +5208,6 @@ mod tests {
             ),
             other => panic!("expected a deferred SnapshotPoint, got {other:?}"),
         }
-        // The reseed drained, so the eager seal SUCCEEDS (not SnapshotWhileArmed).
         match s.handle(&Request::Snapshot).unwrap() {
             Ok(Reply::Snapshot { .. }) => {}
             other => panic!("seal failed with a staged reseed mishandled: {other:?}"),
@@ -5837,18 +5216,11 @@ mod tests {
 
     #[test]
     fn an_sdk_stop_with_a_staged_reseed_poisons_loud() {
-        // Round-9 P1 (task 78 seam): an SDK stop (an assert violation at a doorbell
-        // OUT) is NOT a V-time intercept, so `effective_vns` there is only a lower
-        // bound — a staged reseed at-or-above it may already be crossed (the guest
-        // ran past its Moment in the exit-boundary variability window). Poison loud — the same
-        // ScheduleUnsatisfiable class as a crossed fault, mirroring the terminal
-        // arm — else a later replay from the reseed re-derives a different stream.
         const REQ_GPA: usize = 0xE000;
 
-        // An assert *violation* Event frame (point 20) → Step::SdkStop.
         let viol_id: u32 = (1 << 24) | 20;
         let mut payload = viol_id.to_le_bytes().to_vec();
-        payload.extend_from_slice(&[1, 0, 0]); // [DISP_VIOLATION, detail_len = 0]
+        payload.extend_from_slice(&[1, 0, 0]);
         let mut frame = [0u8; 4096];
         let n = hypercall_proto::encode_request(
             hypercall_proto::ServiceId::Event,
@@ -5883,12 +5255,9 @@ mod tests {
         let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
 
-        // Stage a reseed beyond the trajectory (direct, as above).
         let reseed_moment: u64 = 1_000_000;
         s.reseed_schedule.insert(reseed_moment, 9);
 
-        // The SDK stop surfaces with the reseed staged → poison loud. (ASSERTION is
-        // armed so the stop is a real surfaced stop; the poison precedes that gate.)
         let req = Request::Run {
             until: StopConditions {
                 deadline: None,
@@ -5903,7 +5272,6 @@ mod tests {
             ),
             "an SDK stop with a staged reseed must poison loud"
         );
-        // Latched until a rewind (a subsequent run keeps failing loud).
         assert!(matches!(
             s.handle(&req).unwrap(),
             Err(ControlError::ScheduleUnsatisfiable { .. })
@@ -5912,9 +5280,6 @@ mod tests {
 
     #[test]
     fn stop_mask_gates_the_sdk_snapshot_point_and_assertion() {
-        // Round-7: the deferred SnapshotPoint AND an Assertion honor the client
-        // StopMask. `StopMask::NONE` runs a cooperating-SDK guest straight through
-        // to the terminal; arming the class bit surfaces the stop.
         const REQ_GPA: usize = 0xE000;
 
         let frame_for = |payload: &[u8]| -> Vec<u8> {
@@ -5929,8 +5294,6 @@ mod tests {
             .unwrap();
             buf[..n].to_vec()
         };
-        // Run a guest that rings the doorbell (first exit, req_len = `frame.len()`)
-        // then `rest`, under mask `on`; return the stop.
         let run_with = |rest: Vec<Exit<X86>>, frame: &[u8], on: StopMask| -> StopReason {
             let mut script = vec![Exit::Arch(X86Exit::Io {
                 port: 0x0CA1,
@@ -5965,7 +5328,6 @@ mod tests {
             }
         };
 
-        // (a) setup_complete → an RDTSC (a synchronized, sealable boundary).
         let setup = frame_for(&(4u32 << 24).to_le_bytes());
         assert!(
             matches!(
@@ -5996,9 +5358,8 @@ mod tests {
             "arming SNAPSHOT_POINT surfaces the deferred point at the RDTSC"
         );
 
-        // (b) an always-violation assertion.
         let mut viol = ((1u32 << 24) | 20).to_le_bytes().to_vec();
-        viol.extend_from_slice(&[1, 0, 0]); // [DISP_VIOLATION, detail_len = 0]
+        viol.extend_from_slice(&[1, 0, 0]);
         let viol = frame_for(&viol);
         assert!(
             matches!(
@@ -6022,8 +5383,6 @@ mod tests {
 
     #[test]
     fn host_events_apply_at_the_first_covering_exit_boundary_in_order() {
-        // With one V-ns assigned to each RDTSC exit, events at moments 1 and 2
-        // apply after the corresponding exits and preserve schedule order.
         let schedule = vec![
             (
                 1,
@@ -6053,13 +5412,11 @@ mod tests {
             .unwrap();
         }
         let _ = run_all(&mut s);
-        // The last exit advanced effective V-time to the final event moment.
         assert_eq!(
             s.vmm().unwrap().effective_vns(),
             Some(2),
             "the run reached the last staged Moment"
         );
-        // Both upsets landed (words at both gpas are non-zero).
         let ram = s.vmm().unwrap().guest_memory();
         assert_ne!(&ram[0x40..0x48], &[0u8; 8], "first upset landed");
         assert_ne!(&ram[0x48..0x50], &[0u8; 8], "second upset landed");
@@ -6067,10 +5424,6 @@ mod tests {
 
     #[test]
     fn second_fault_at_one_moment_is_loudly_rejected() {
-        // Task 45 is one-action-per-Moment (integrator ruling, spec amendment PR
-        // #54): a second stage at an occupied Moment is loudly rejected, so
-        // `recorded_env()` never silently drops a fault. The first stage stands and
-        // still applies.
         let live = enforce_vmm(1, enforce_image(), 0xAB);
         let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
         let mut s = with_test_service(ControlServer::new(live, factory));
@@ -6096,8 +5449,6 @@ mod tests {
             Err(ControlError::PerturbMomentTaken { at: 1 }),
             "a second fault at Moment 1 is rejected (not silently dropped)"
         );
-        // The first (accepted) fault still applies, and the recorded env carries
-        // exactly it.
         let _ = run_all(&mut s);
         assert_ne!(
             &s.vmm().unwrap().guest_memory()[0x40..0x48],
@@ -6117,9 +5468,6 @@ mod tests {
         ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
     )]
     fn recorded_env_replays_to_the_same_hash() {
-        // Task 59 requirement 3 (portable form of the box gate's record→replay
-        // closure): every applied fault is stamped into the recorded env, and
-        // re-applying that env's host faults reproduces the run's state_hash.
         let schedule = vec![
             (
                 1,
@@ -6133,8 +5481,6 @@ mod tests {
         let seed = 0xC105u64;
         let (h1, recorded) = enforce_run(&schedule, seed);
 
-        // The recorded env carries both host faults on the Moment axis, and it
-        // round-trips through its own byte codec (a real reproducer blob).
         let host: Vec<_> = recorded
             .effects()
             .iter()
@@ -6148,7 +5494,6 @@ mod tests {
             .map(|(&at, effect)| (at, effect.clone()))
             .collect();
 
-        // Re-applying the emitted schedule reproduces the hash bit-for-bit.
         let h2 = enforce_hash(&replay_schedule, seed);
         assert_eq!(
             h1, h2,
@@ -6218,9 +5563,6 @@ mod tests {
 
     #[test]
     fn a_beyond_deadline_fault_not_yet_crossed_stays_staged() {
-        // A fault beyond `until.deadline` that the run does NOT execute past stays
-        // staged (satisfiable by a later run): RDTSC lands at exactly the deadline
-        // 1000, the fault is at 1500 > 1000, so it is neither applied nor crossed.
         let mut s = rdtsc_then_hlt_server(1000);
         hello(&mut s);
         stage_corrupt(&mut s, 1500);
@@ -6246,22 +5588,14 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn snapshot_while_a_fault_is_staged_is_rejected() {
-        // PR #51 round-3 item 2: a snapshot seals only VM state; a staged future
-        // fault would be silently dropped by any restore of it — reject loudly with
-        // `SnapshotWhileArmed` while the schedule is non-empty.
         let mut s = rdtsc_then_hlt_server(2000);
         hello(&mut s);
-        // A snapshot at a clean (empty-schedule) point is fine.
         let base = snap(&mut s);
-        // Stage a fault, then a snapshot is refused loudly.
         stage_corrupt(&mut s, 3000);
         assert_eq!(
             s.handle(&Request::Snapshot).unwrap(),
             Err(ControlError::SnapshotWhileArmed)
         );
-        // A rewind clears the schedule; snapshot works again — and the refused
-        // seal minted NEITHER a handle nor a cut (task 127: no partial cut on
-        // failure): the next successful handle is contiguous with `base`.
         assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
         match s.handle(&Request::Snapshot).unwrap() {
             Ok(Reply::Snapshot { id, .. }) => assert_eq!(
@@ -6279,11 +5613,6 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn branch_env_host_faults_go_through_the_same_validation_as_perturb() {
-        // Blocking item 1c: an env host fault that is out-of-range / out-of-scope /
-        // behind the snapshot is a recoverable ControlError at branch time (the same
-        // reply `perturb` gives), NOT a later session-fatal ServeError at apply time.
-        // The `server()` live VM is at effective V-time 500, so the snapshot — and
-        // the restored floor — is 500.
         let host_env = |m: u64, fault: EnvHostEffect| {
             let mut spec = EnvSpec::seeded(7);
             spec.record_effect(m, fault);
@@ -6293,8 +5622,6 @@ mod tests {
             }
         };
 
-        // (i) out-of-range gpa → recoverable PerturbOutOfRange (was a fatal
-        // ServeError::Vmm before this fix).
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let base = snap(&mut s);
@@ -6315,10 +5642,8 @@ mod tests {
                 ram_len: RAM as u64,
             })
         );
-        // The session stays usable (fresh VM kept) and nothing was staged.
         assert!(s.vmm().is_some());
 
-        // (ii) a Moment behind the restored snapshot's V-time (500) → PerturbPastMoment.
         let base = snap(&mut s);
         assert_eq!(
             s.handle(&Request::Branch {
@@ -6332,7 +5657,6 @@ mod tests {
             })
         );
 
-        // (iii) an out-of-scope SkewTime → Unsupported.
         let base = snap(&mut s);
         assert_eq!(
             s.handle(&Request::Branch {
@@ -6353,7 +5677,6 @@ mod tests {
             Err(ControlError::Unsupported)
         );
 
-        // (iv) a valid future host fault is accepted and staged (Reply::Unit).
         let base = snap(&mut s);
         assert_eq!(
             s.handle(&Request::Branch {
@@ -6381,16 +5704,11 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn a_rejected_branch_env_fault_is_side_effect_free() {
-        // PR #51 round-5 item 1: a branch whose env carries an inadmissible host
-        // fault must reject WITHOUT swapping the VM — the old timeline is untouched,
-        // so the client's state is exactly what it was before the (failed) branch.
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let base = snap(&mut s);
         let before = s.vmm().unwrap().state_hash().unwrap();
 
-        // An out-of-range gpa is rejected — validated against the LIVE VM before any
-        // drop/restore/reseed.
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
@@ -6408,14 +5726,11 @@ mod tests {
                 ram_len: RAM as u64,
             })
         );
-        // The live VM is BYTE-IDENTICAL to before: not dropped, not restored, not
-        // reseeded — the rejected branch had no side effect.
         assert_eq!(
             s.vmm().unwrap().state_hash().unwrap(),
             before,
             "a rejected branch env fault must leave the old VM untouched"
         );
-        // And the session is fully usable: it can still snapshot + branch cleanly.
         let base2 = snap(&mut s);
         assert_eq!(
             s.handle(&Request::Branch {
@@ -6433,33 +5748,18 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn a_terminal_stop_with_a_staged_fault_poisons_loud() {
-        // PR #51 round-6 item 1 (supersedes round-5 item 2): a natural terminal exit
-        // is NOT a V-time intercept, so `effective_vns` is only a lower bound —
-        // nothing staged is provably uncrossed. So a terminal stop with ANY fault
-        // still staged **poisons loud** (a named, rewindable error) rather than
-        // silently dropping a possibly-crossed accepted perturb. The round-5
-        // `SnapshotWhileArmed` trap stays fixed: poison is rewindable, not a stuck
-        // state. Task-60 crash campaigns rewind (`branch`/`replay`) anyway.
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let base = snap(&mut s);
-        // The live VM is at V-time 500 and HLTs (terminal) on the next step. Stage a
-        // fault beyond that terminal point.
         stage_corrupt(&mut s, 100_000);
-        // Running to the terminal HLT poisons (the fault is still staged).
         let poisoned = Err(ControlError::ScheduleUnsatisfiable {
             moment: 100_000,
             vtime: 500,
         });
         assert_eq!(run_all_res(&mut s), poisoned);
-        // The fault never applied (recorded stays empty).
         assert_eq!(s.recorded_env().effects().len(), 0);
-        // Poisoned: re-run + snapshot both reject with the named, rewindable error
-        // (not a silent stuck `SnapshotWhileArmed`).
         assert_eq!(run_all_res(&mut s), poisoned);
         assert_eq!(s.handle(&Request::Snapshot).unwrap(), poisoned);
-        // A rewind (replay of the pristine base) clears the poison — the session runs
-        // and snapshots cleanly again.
         assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
         assert!(matches!(
             run_all_res(&mut s),
@@ -6473,10 +5773,6 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn perturb_after_a_synchronized_deadline_stop_reproduces() {
-        // The positive half of the sync gate + a recorded-env replay-equivalence
-        // check: a `perturb` after a **deadline stop that landed on an arrival**
-        // (synchronized) is accepted, and the recorded env — branched from base and
-        // re-run — reproduces the live `state_hash` across the multi-run session.
         let run_to = |s: &mut ControlServer<ExitBoundaryBackend>, d: u64| {
             s.handle(&Request::Run {
                 until: StopConditions {
@@ -6504,23 +5800,17 @@ mod tests {
         let mut s = exit_boundary_server();
         arr_hello(&mut s);
         let base = arr_snap(&mut s);
-        // Stage + apply the first fault at Moment 100, stopping AT it (a synchronized
-        // arrival deadline stop).
         assert_eq!(perturb(&mut s, 0x40, 100), Ok(Reply::Unit));
         assert!(matches!(
             run_to(&mut s, 100),
             Ok(Reply::Stop(StopReason::Deadline { .. }))
         ));
-        // The deadline stop landed on the arrival → synchronized → a second perturb is
-        // accepted at the exact exit boundary.
         assert_eq!(perturb(&mut s, 0x80, 300), Ok(Reply::Unit));
         assert!(matches!(arr_run(&mut s), Ok(Reply::Stop(_))));
         let h_live = arr_hash(&s);
         let recorded = s.recorded_env().clone();
         assert_eq!(recorded.effects().len(), 2, "both faults recorded");
 
-        // Replay-equivalence: branch the recorded env from base and re-run → the same
-        // live hash.
         let mut r = exit_boundary_server();
         arr_hello(&mut r);
         let base_r = arr_snap(&mut r);
@@ -6544,10 +5834,6 @@ mod tests {
 
     #[test]
     fn a_fault_at_current_vtime_with_an_expired_deadline_is_not_poisoned() {
-        // PR #51 round-5 item 3: a fault at exactly the current V-time (m == vns) is
-        // EXIT-BOUNDARY delivery, not late — even when the run's deadline is already expired
-        // (d < vns). It must apply and stop with `Deadline`, never poison. Live VM
-        // RDTSCs to V-time 500; the fault and deadline are both 500.
         let mut s = rdtsc_then_hlt_server(500);
         hello(&mut s);
         stage_corrupt(&mut s, 500);
@@ -6555,8 +5841,6 @@ mod tests {
             Ok(Reply::Stop(StopReason::Deadline { vtime })) => assert_eq!(vtime, Moment(500)),
             other => panic!("expected Deadline{{500}}, got {other:?}"),
         }
-        // The exit-boundary fault APPLIED (recorded), and the schedule is NOT poisoned
-        // — a later run works.
         assert_eq!(
             s.recorded_env().effects().len(),
             1,
@@ -6579,11 +5863,6 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn a_branch_env_moment_occupies_the_schedule_for_ruling_b() {
-        // Ruling B across the branch→perturb boundary (PR #51 round-5 suggestion): a
-        // branch env stages a fault at Moment M; a later `perturb` at M is then the
-        // loud `PerturbMomentTaken` (one fault per Moment holds after a branch, not
-        // just within a fresh session). Pins the invariant so a future batch-validate
-        // refactor can't silently regress it.
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let base = snap(&mut s);
@@ -6616,13 +5895,6 @@ mod tests {
         /// one one-nanosecond exit per moment); faults are in-range CorruptMemory (any gpa whose word
         /// fits the 16 KiB RAM, any mask) or InjectInterrupt (any non-reserved vector).
         #[test]
-        // Each case boots + runs + state-hashes (sha256) a VM twice via `enforce_run`;
-        // under Miri that is ~40 s per `enforce_run`, so even a handful of cases costs
-        // minutes. `enforce_run` boots (it never restores), so its map_memory site is
-        // the boot-path seam exercised under Miri by
-        // bringup::tests::compose_drives_guestram_and_unsafe_map_memory; the property
-        // itself is covered by the native 384-case run — so it is ignored under Miri
-        // like the restore-driving proptests (task 98), not merely case-reduced.
         #[cfg_attr(miri, ignore = "VM-running property test, too slow under Miri; covered natively (task 98)")]
         fn arbitrary_schedule_applied_twice_is_identical(
             schedule in proptest::collection::btree_map(
@@ -6643,11 +5915,6 @@ mod tests {
             prop_assert_eq!(h1, h2, "same schedule ⇒ identical state evolution");
         }
     }
-
-    // -----------------------------------------------------------------------
-    // PR #51 round-2 — the recorded-env-reproduces invariant across the full verb
-    // space, plus the four corners the fresh cross-model pass found.
-    // -----------------------------------------------------------------------
 
     /// A mock-wrapping backend that makes each scripted exit boundary land at
     /// the next armed arrival, while an unarmed `run()` is a terminal `Hlt`.
@@ -6794,7 +6061,7 @@ mod tests {
             fault: HostFault(
                 EnvHostEffect::XorMemory {
                     gpa: 0,
-                    bytes: (0_u64).to_le_bytes().to_vec(), // XOR 0 — the state is untouched
+                    bytes: (0_u64).to_le_bytes().to_vec(),
                 }
                 .encode(),
             ),
@@ -6821,13 +6088,12 @@ mod tests {
     fn moment_address_materializes_identically_twice() {
         let mut s = exit_boundary_server();
         arr_hello(&mut s);
-        let genesis = arr_snap(&mut s); // the genesis snapshot (V-time 0)
-        let env = seeded_env_arr(0x0080_0080); // a genesis-complete Seeded env
+        let genesis = arr_snap(&mut s);
+        let env = seeded_env_arr(0x0080_0080);
 
         let materialize = |s: &mut ControlServer<ExitBoundaryBackend>,
                            moment: u64|
          -> (control_proto::RegsView, Vec<u8>, [u8; 32]) {
-            // branch(genesis, env) — restore genesis + reseed from env's seed.
             assert_eq!(
                 s.handle(&Request::Branch {
                     snap: genesis,
@@ -6836,7 +6102,6 @@ mod tests {
                 .unwrap(),
                 Ok(Reply::Unit)
             );
-            // Advance to the exact-`Moment` stop.
             s.handle(&schedule_marker(moment)).unwrap().unwrap();
             let stop = match s
                 .handle(&Request::Run {
@@ -6858,7 +6123,6 @@ mod tests {
                 },
                 "materialization lands exactly at the addressed Moment"
             );
-            // Observe: regs, a probe read, and the whole-state hash.
             let view = match s.handle(&Request::Regs).unwrap() {
                 Ok(Reply::Regs(v)) => v,
                 other => panic!("regs answered {other:?}"),
@@ -6907,9 +6171,6 @@ mod tests {
         let env = seeded_env_arr(0x0B5E_0BED);
         let (mid, late) = (10u64, 90u64);
 
-        // One materialization to `mid`→`late` through two arrival markers, with an
-        // optional inspection pass at `mid`. `exit_boundary_server`s are freshly and
-        // identically composed, so the two runs differ only in the inspection.
         let run_to_late = |inspect: bool| -> [u8; 32] {
             let mut s = exit_boundary_server();
             arr_hello(&mut s);
@@ -6920,7 +6181,6 @@ mod tests {
             })
             .unwrap()
             .unwrap();
-            // Advance to `mid`.
             s.handle(&schedule_marker(mid)).unwrap().unwrap();
             assert!(matches!(
                 s.handle(&Request::Run {
@@ -6934,7 +6194,6 @@ mod tests {
                 Ok(Reply::Stop(StopReason::Deadline { .. }))
             ));
             if inspect {
-                // A full inspection pass at the intermediate Moment.
                 let _ = s.handle(&Request::Regs).unwrap();
                 let _ = s.handle(&Request::Read { gpa: 0, len: 64 }).unwrap();
                 let _ = s
@@ -6945,7 +6204,6 @@ mod tests {
                     .unwrap();
                 let _ = s.handle(&Request::Regs).unwrap();
             }
-            // Continue to `late`.
             s.handle(&schedule_marker(late)).unwrap().unwrap();
             assert!(matches!(
                 s.handle(&Request::Run {
@@ -6970,22 +6228,14 @@ mod tests {
 
     #[test]
     fn reperturb_at_an_applied_moment_is_rejected() {
-        // Finding 2: once a fault at `m` has APPLIED it is gone from the schedule
-        // but present in `recorded`; a second perturb at `m` must still be rejected
-        // (else `EnvSpec::perturb` overwrites the first and it vanishes from
-        // `recorded_env()`). Run to a deadline of exactly `m` so the live V-time is
-        // `m` (== floor), the one case that passes the past-Moment check.
         let mut s = exit_boundary_server();
         arr_hello(&mut s);
-        // Stage + apply a fault at Moment 100 by running to deadline 100.
         s.handle(&Request::Perturb {
             fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 0x40 }.encode()),
             at: Moment(100),
         })
         .unwrap()
         .unwrap();
-        // Run with deadline 100: arrival lands at 100, applies, then the deadline
-        // stops the run at V-time 100.
         let stop = s
             .handle(&Request::Run {
                 until: StopConditions {
@@ -6998,8 +6248,6 @@ mod tests {
         assert!(matches!(stop, Ok(Reply::Stop(StopReason::Deadline { .. }))));
         assert_eq!(s.recorded_env().effects().len(), 1, "the fault applied");
         assert_eq!(s.vmm().unwrap().effective_vns(), Some(100));
-        // A second perturb at the already-APPLIED Moment 100 (== floor, so it clears
-        // the past-Moment check) is rejected — it does not overwrite the recorded fault.
         assert_eq!(
             s.handle(&Request::Perturb {
                 fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 0x41 }.encode()),
@@ -7017,16 +6265,13 @@ mod tests {
 
     #[test]
     fn perturb_on_an_unarmable_backend_is_unsupported() {
-        // Finding 3: a backend that cannot arm the exit-boundary seam (V-time
-        // unwired, or deterministic_tsc=false) would apply a staged fault late.
-        // Reject perturb up front with Unsupported. Here: a mock with NO V-time wired.
         let mut m = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
         m.set_policy(&X86Policy {
             cpuid: vmm_backend::CpuidModel::default(),
             msr_filter: vmm_backend::MsrFilter::default(),
         })
         .unwrap();
-        let v = Vmm::new(m, GuestRam::new(RAM).unwrap()); // V-time NOT wired
+        let v = Vmm::new(m, GuestRam::new(RAM).unwrap());
         let mut s = ControlServer::new(
             v,
             Box::new(|| Err(VmmError::ContractViolation("unused".into()))),
@@ -7045,10 +6290,7 @@ mod tests {
 
     #[test]
     fn perturb_inject_interrupt_reserved_vector_is_rejected_at_stage_time() {
-        // PR #51 round-8 item 1: an InjectInterrupt with an architecturally reserved
-        // vector (0..=15) is a stage-time-decidable request error — a recoverable
-        // `PerturbReservedVector`, not a session-fatal apply-time `ServeError`.
-        let mut s = exit_boundary_server(); // LAPIC wired, synchronized
+        let mut s = exit_boundary_server();
         arr_hello(&mut s);
         for vector in [0u32, 1, 15] {
             assert_eq!(
@@ -7062,7 +6304,6 @@ mod tests {
                 })
             );
         }
-        // A non-reserved vector still stages cleanly.
         assert_eq!(
             s.handle(&Request::Perturb {
                 fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 16 }.encode()),
@@ -7075,11 +6316,7 @@ mod tests {
 
     #[test]
     fn perturb_inject_interrupt_on_a_no_lapic_vm_is_unsupported() {
-        // PR #51 round-8 item 1: an InjectInterrupt on a VM with no userspace LAPIC
-        // has no interrupt controller to raise into — reject at stage time with the
-        // recoverable `Unsupported`, not a session-fatal apply-time failure. (The VM
-        // is V-time-wired + deterministic, so `CorruptMemory` would still be armable.)
-        let mut s = rdtsc_then_hlt_server(500); // V-time wired, NO LAPIC
+        let mut s = rdtsc_then_hlt_server(500);
         hello(&mut s);
         assert_eq!(
             s.handle(&Request::Perturb {
@@ -7090,7 +6327,6 @@ mod tests {
             Err(ControlError::Unsupported),
             "no LAPIC ⇒ InjectInterrupt cannot be delivered — rejected at stage time"
         );
-        // CorruptMemory on the same no-LAPIC VM is still accepted (round-6 idle wake).
         assert_eq!(
             s.handle(&Request::Perturb {
                 fault: HostFault(
@@ -7113,13 +6349,8 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn recoverable_restore_failure_clears_the_stale_schedule() {
-        // Finding 4a: a recoverable RestoreFailed still REPLACES the VM with a fresh
-        // boot, so the old timeline's staged faults must not survive attached to it.
-        // The live VM is V-time-wired; the factory boots forks WITHOUT V-time, so the
-        // restore is a validation-class rejection (RestoreFailed, fresh VM kept).
         let live = exit_boundary_vmm(0x59);
         let factory = Box::new(|| {
-            // A fork with NO V-time → restoring a V-time blob is a ContractViolation.
             let mut m = MockBackend::with_exits(vec![]);
             m.set_policy(&X86Policy {
                 cpuid: vmm_backend::CpuidModel::default(),
@@ -7137,14 +6368,12 @@ mod tests {
         let mut s = with_test_service(ControlServer::new(live, factory));
         arr_hello(&mut s);
         let base = arr_snap(&mut s);
-        // Stage a fault on the current (soon-to-be-replaced) timeline.
         s.handle(&Request::Perturb {
             fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 0x40 }.encode()),
             at: Moment(50),
         })
         .unwrap()
         .unwrap();
-        // Branch fails recoverably (RestoreFailed), keeping the fresh (unwired) VM.
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
@@ -7156,9 +6385,6 @@ mod tests {
             .unwrap(),
             Err(ControlError::RestoreFailed)
         );
-        // The stale fault is gone: recorded reset, schedule cleared. A run applies
-        // nothing (and the unwired fork can't even enforce — but the point is the
-        // schedule did not carry forward).
         assert_eq!(
             s.recorded_env().effects().len(),
             0,
@@ -7172,15 +6398,9 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn replay_derives_recorded_seed_from_the_restored_stream() {
-        // Finding 4b: `replay` must derive the recorded seed from the RESTORED
-        // stream, not the prior session. Drive the recorded seed to a wrong value
-        // via a branch, then replay the pristine base and confirm the recorded env —
-        // re-applied from base — reproduces the live post-replay+perturb+run hash.
         let mut s = exit_boundary_server();
         arr_hello(&mut s);
         let base = arr_snap(&mut s);
-        // Poison the session seed: branch to a distinct seed 0xDEAD (recorded.seed
-        // becomes that stream). If replay carried this forward, reproduction breaks.
         s.handle(&Request::Branch {
             snap: base,
             env: Reproducer {
@@ -7190,9 +6410,7 @@ mod tests {
         })
         .unwrap()
         .unwrap();
-        // Now replay the pristine base (its stream is seed 0x59, not 0xDEAD).
         assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
-        // Perturb + run on the replayed timeline.
         s.handle(&Request::Perturb {
             fault: HostFault(
                 EnvHostEffect::XorMemory {
@@ -7209,7 +6427,6 @@ mod tests {
         let h_live = arr_hash(&s);
         let e = s.recorded_env().clone();
 
-        // Re-apply the recorded env from base on a fresh server → must reproduce.
         let mut r = exit_boundary_server();
         arr_hello(&mut r);
         let base_r = arr_snap(&mut r);
@@ -7282,20 +6499,15 @@ mod tests {
                 match op {
                     VerbOp::Perturb(fault, off) => {
                         let floor = s.vmm().unwrap().effective_vns().unwrap_or(0);
-                        // Absolute Moment strictly in the future of the current point.
                         let at = floor.saturating_add(off);
-                        // A rejection (dup / past / etc.) is a loud, expected outcome — ignore.
                         let _ = s.handle(&Request::Perturb {
                             fault: HostFault(fault.encode()),
                             at: Moment(at),
                         }).unwrap();
                     }
                     VerbOp::Run => {
-                        // Continue-after-error: a loud rejection (e.g. a poisoned
-                        // schedule) just skips the invariant check for this op.
                         match arr_run(&mut s) {
                             Ok(Reply::Stop(_)) => {
-                                // Invariant: replay recorded_env() from base reproduces live.
                                 let e = s.recorded_env().clone();
                                 let h_live = arr_hash(&s);
                                 let mut r = exit_boundary_server();
@@ -7313,16 +6525,12 @@ mod tests {
                         }
                     }
                     VerbOp::Branch(seed) => {
-                        // From `base` only (so the recorded reproducer's origin is fixed).
                         let _ = s.handle(&Request::Branch { snap: base, env: seeded_env_arr(seed) }).unwrap();
                     }
                     VerbOp::Replay => {
                         let _ = s.handle(&Request::Replay(base)).unwrap();
                     }
                     VerbOp::Snapshot => {
-                        // Clean → Ok(SnapId); with a fault staged → SnapshotWhileArmed
-                        // (loud). Either way the session stays consistent; the minted
-                        // handle is unused (branches/replays use `base` only).
                         let _ = s.handle(&Request::Snapshot).unwrap();
                     }
                 }
@@ -7336,11 +6544,6 @@ mod tests {
             bytes: EnvSpec::seeded(seed).encode(),
         }
     }
-
-    // -----------------------------------------------------------------------
-    // PR #51 round-4 — the idle-HLT-before-fault path: a staged arrival must wake
-    // the idle jump (jump to min(timer, arrival)) rather than sail past the Moment.
-    // -----------------------------------------------------------------------
 
     /// A mock-wrapping backend whose guest is a **resumable idle**: `run` always
     /// returns a natural `Hlt` and the vCPU has `RFLAGS.IF` set, so every
@@ -7415,7 +6618,6 @@ mod tests {
             msr_filter: vmm_backend::MsrFilter::default(),
         })
         .unwrap();
-        // RFLAGS.IF set → a resumable idle HLT (0x2 is the always-1 reserved bit).
         m.set_state(vmm_backend::VcpuState {
             regs: vmm_backend::VcpuRegs {
                 rflags: (1 << 9) | 0x2,
@@ -7450,7 +6652,7 @@ mod tests {
 
     #[derive(Clone, Debug)]
     enum IdleOp {
-        Perturb(u64, u64), // gpa, moment-offset
+        Perturb(u64, u64),
         Run,
         Branch(u64),
         Replay,
@@ -7519,14 +6721,6 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Task 78 — reseed-aware branch: a marker-carrying env re-executes each
-    // collapsed hop's entropy reseed at its recorded Moment (exit-boundary
-    // discipline), instead of reseeding once at the fold's root. The fold ==
-    // hop-by-hop equality (the flipped task-68 pin) is the campaign runner's socket
-    // gate; here we pin the server-side mechanics.
-    // -----------------------------------------------------------------------
-
     /// A branch env carrying only reseed markers (no overrides/standing).
     fn marker_env(seed: u64, markers: &[(u64, u64)]) -> Reproducer {
         let mut spec = EnvSpec::seeded(seed);
@@ -7552,8 +6746,6 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn branch_with_a_floor_marker_reseeds_from_the_marker_not_the_env_seed() {
-        // Markers are authoritative: a marker at the restore floor IS the branch
-        // reseed, and the env's own seed is not consulted for reseeding.
         let mut s = exit_boundary_server();
         arr_hello(&mut s);
         let base = arr_snap(&mut s);
@@ -7582,10 +6774,6 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn mid_run_reseed_marker_applies_at_its_moment_and_recorded_env_reproduces() {
-        // A mid-trajectory marker (a collapsed hop's branch reseed) is applied at
-        // its exact Moment, the run is deterministic, the marker value reaches the
-        // state (control differs), and the emitted recorded env replays to the
-        // identical hash (the record → replay closure).
         let run_leg = |mid_seed: u64| -> ([u8; 32], EnvSpec) {
             let mut s = exit_boundary_server();
             arr_hello(&mut s);
@@ -7605,7 +6793,6 @@ mod tests {
         let (h2, _) = run_leg(0x3333);
         assert_ne!(h2, h1, "the mid-run reseed value reaches the state");
 
-        // The recorded env carries both markers and reproduces from the base.
         assert_eq!(rec1.reseeds().len(), 2, "floor + mid-run markers recorded");
         let mut r = exit_boundary_server();
         arr_hello(&mut r);
@@ -7629,8 +6816,6 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn reseed_marker_behind_the_restore_floor_is_rejected() {
-        // Advance the live V-time to 100 (a perturb-armed deadline run lands
-        // exactly there), seal, then try to branch with a marker behind it.
         let mut s = exit_boundary_server();
         arr_hello(&mut s);
         s.handle(&Request::Perturb {
@@ -7695,8 +6880,6 @@ mod tests {
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
     fn terminal_with_a_staged_reseed_poisons_and_rewind_recovers() {
-        // A reseed staged beyond the trajectory is the same loud
-        // ScheduleUnsatisfiable class as a crossed fault (the task spec's gate).
         let mut s = server(vec![
             Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
             Exit::Common(CommonExit::Idle),
@@ -7709,7 +6892,6 @@ mod tests {
         })
         .unwrap()
         .unwrap();
-        // The fork halts long before Moment 1_000_000: poison, loud.
         assert!(matches!(
             run_all_res(&mut s),
             Err(ControlError::ScheduleUnsatisfiable {
@@ -7717,12 +6899,10 @@ mod tests {
                 ..
             })
         ));
-        // Latched until a rewind.
         assert!(matches!(
             run_all_res(&mut s),
             Err(ControlError::ScheduleUnsatisfiable { .. })
         ));
-        // A replay rewinds and clears the latch.
         assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
         assert!(run_all_res(&mut s).is_ok());
     }
@@ -7761,14 +6941,11 @@ mod tests {
         let (total, chunk) = page_console(serial, 0);
         assert_eq!(total as usize, serial.len());
         assert_eq!(chunk, serial);
-        // A mid-offset returns the suffix, same total.
         let (total2, chunk2) = page_console(serial, 12);
         assert_eq!(total2 as usize, serial.len());
         assert_eq!(chunk2, &serial[12..]);
-        // At/past the end ⇒ empty chunk (the client stops paging).
         assert!(page_console(serial, serial.len()).1.is_empty());
         assert!(page_console(serial, serial.len() + 99).1.is_empty());
-        // No live VM ⇒ empty capture, total 0.
         assert_eq!(page_console(&[], 0), (0u32, Vec::new()));
     }
 
@@ -7787,7 +6964,6 @@ mod tests {
         hello(&mut s);
         let base = snap(&mut s);
 
-        // Trajectory A: branch + run, hash without draining.
         s.handle(&Request::Branch {
             snap: base,
             env: seeded_env(7),
@@ -7797,7 +6973,6 @@ mod tests {
         run_all(&mut s);
         let without_drain = hash(&mut s);
 
-        // Trajectory B: the identical branch + run, but drain the console first.
         s.handle(&Request::Branch {
             snap: base,
             env: seeded_env(7),
@@ -7814,14 +6989,6 @@ mod tests {
         );
     }
 
-    // ============== task 127: the seal-bound evidence cut ==================
-    //
-    // The snapshot reply binds (handle, synchronized seal Moment, included
-    // SDK-event count, taint) atomically from one stopped server state (bead
-    // hm-bbx.6). Each setup-complete doorbell is followed by the clean guest
-    // re-entry boundary its completion protocol requires. The cuts therefore
-    // bind both the exact exit-count Moment and the SDK capture-vector prefix.
-
     /// The fixture server emits a serial byte, rings the `setup_complete`
     /// doorbell, rings it again, emits another serial byte, then goes idle.
     /// Exit-count virtual time makes each successfully serviced exit an exact
@@ -7829,9 +6996,6 @@ mod tests {
     /// The factory mirrors the live composition so branch/replay restores validate.
     fn seal_cut_server() -> ControlServer<MockBackend> {
         const REQ_GPA: usize = 0xE000;
-        // A `setup_complete` Event frame staged at REQ_GPA; every doorbell
-        // ring reads the same staged frame, so both captured events carry the
-        // identical id and payload — position is the only discriminator.
         let setup_id: u32 = 4 << 24;
         let mut frame = [0u8; 4096];
         let n = hypercall_proto::encode_request(
@@ -7855,12 +7019,12 @@ mod tests {
             write: Some(n as u32),
         });
         let mut mb = MockBackend::with_exits(vec![
-            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }), // pre-stepped clock boundary
-            serial(b'a'),                               // console bytes — never in the SDK count
-            ring.clone(),                               // SDK event, position 0 → sealable stop #1
-            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }), // commits ring #1 before its deferred seal
-            ring,                                       // SDK event, position 1 → sealable stop #2
-            serial(b'b'),                               // console bytes after both seals
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+            serial(b'a'),
+            ring.clone(),
+            Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+            ring,
+            serial(b'b'),
             Exit::Common(CommonExit::Idle),
         ]);
         mb.set_policy(&X86Policy {
@@ -7922,7 +7086,6 @@ mod tests {
         let mut s = seal_cut_server();
         hello(&mut s);
 
-        // Sealable stop #1: one SDK event emitted so far.
         let stop = run_seeking_snapshot(&mut s);
         assert!(
             matches!(stop, StopReason::SnapshotPoint { .. }),
@@ -7933,8 +7096,6 @@ mod tests {
         assert_eq!(n1, 1, "the event emitted before the seal is included");
         assert!(!t1);
 
-        // Sealable stop #2: a second event — emitted AFTER the first seal but
-        // stamped after the first seal.
         let stop = run_seeking_snapshot(&mut s);
         assert!(
             matches!(stop, StopReason::SnapshotPoint { .. }),
@@ -7948,8 +7109,6 @@ mod tests {
             "later exit-count boundary, strictly larger prefix"
         );
 
-        // The capture has identical ids and payloads; its ordered position is
-        // what the prefix counts cut.
         let events = drain_sdk(&mut s);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].0, 10001);
@@ -7957,15 +7116,11 @@ mod tests {
         assert_eq!(events[0].1, events[1].1, "identical event ids");
         assert_eq!(events[0].2, events[1].2, "identical payloads");
 
-        // Finish the fixture so its post-seal console byte is observed.
         assert!(matches!(
             run_all_res(&mut s),
             Ok(Reply::Stop(StopReason::Quiescent { .. }))
         ));
 
-        // Console bytes crossed the fixture (before and after the seals)
-        // and are structurally outside the count: the serial capture is its
-        // own stream, and neither seal's count moved for it.
         let console = drain_console(&mut s);
         assert_eq!(console, b"ab", "the serial capture saw both bytes");
         assert_eq!(
@@ -8001,22 +7156,16 @@ mod tests {
         let (snap2, at2, n2, _) = snap_cut(&mut s);
         assert_eq!(n2, 2);
 
-        // Verbatim replay of seal 1: the capture returns to its cut, and a
-        // re-seal stamps the identical (Moment, prefix) pair.
         assert_eq!(replay(&mut s, snap1), Ok(Reply::Unit));
         assert_eq!(drain_sdk(&mut s).len(), 1, "replay restored the prefix");
         let (_, at, n, _) = snap_cut(&mut s);
         assert_eq!((at, n), (at1, n1), "the re-sealed cut is identical");
 
-        // Verbatim replay of seal 2: same, at the longer prefix.
         assert_eq!(replay(&mut s, snap2), Ok(Reply::Unit));
         assert_eq!(drain_sdk(&mut s).len(), 2);
         let (_, at, n, _) = snap_cut(&mut s);
         assert_eq!((at, n), (at2, n2));
 
-        // A reseeding branch off seal 1 carries the ancestor's event prefix
-        // (the declared catalog) — the captured prefix length is preserved
-        // through the fork too.
         assert_eq!(branch(&mut s, snap1, 0xD1CE), Ok(Reply::Unit));
         assert_eq!(drain_sdk(&mut s).len(), 1, "branch kept the event prefix");
         let (_, at, n, _) = snap_cut(&mut s);
@@ -8058,8 +7207,6 @@ mod tests {
         };
         assert_eq!(session(), session(), "same seed ⇒ bit-identical cuts");
     }
-
-    // ===================== task 81: the taint guard =======================
 
     /// Take a snapshot, returning its handle and the taint bit its reply carries
     /// (task 127: the one seal-bound `Reply::Snapshot` carries the flag both ways).
@@ -8117,13 +7264,10 @@ mod tests {
     fn exec_taints_and_recorded_env_then_fails_loud() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
-        // Untainted: the reproducer mints.
         assert!(matches!(recorded_env_res(&mut s), Ok(Reply::Recorded(_))));
-        // Improvise.
         let (output, ok) = exec(&mut s, "ps aux");
         assert!(!ok, "deadline-0 exec on a non-shell mock does not complete");
         assert!(output.is_empty());
-        // Tainted: the mint is refused, loud.
         assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
     }
 
@@ -8145,8 +7289,6 @@ mod tests {
         exec(&mut s, "ls /");
         let (_dirty, dirty_at, dirty_sdk, dirty_taint) = snap_cut(&mut s);
         assert!(dirty_taint, "a post-exec snapshot is tainted");
-        // Task 127: taint changes only the taint bit — the tainted seal still
-        // binds its exact cut, identical here because the guest never advanced.
         assert_eq!(
             (dirty_at, dirty_sdk),
             (clean_at, clean_sdk),
@@ -8168,14 +7310,12 @@ mod tests {
         exec(&mut s, "ls /");
         let (tainted_snap, t) = snap_tainted(&mut s);
         assert!(t);
-        // Branch: tainted → mint refused, and a snapshot here is tainted.
         assert_eq!(branch(&mut s, tainted_snap, 0x1111), Ok(Reply::Unit));
         assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
         assert!(
             snap_tainted(&mut s).1,
             "branch-of-tainted snapshots tainted"
         );
-        // Replay: same.
         assert_eq!(replay(&mut s, tainted_snap), Ok(Reply::Unit));
         assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
     }
@@ -8193,16 +7333,14 @@ mod tests {
     fn rewind_to_an_untainted_ancestor_clears_the_live_taint() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
-        let (clean_snap, _) = snap_tainted(&mut s); // taken before any exec
-        exec(&mut s, "rm -rf /"); // sacrifice the live timeline
+        let (clean_snap, _) = snap_tainted(&mut s);
+        exec(&mut s, "rm -rf /");
         assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
-        // Rewind to the clean ancestor via replay: untainted again.
         assert_eq!(replay(&mut s, clean_snap), Ok(Reply::Unit));
         assert!(
             matches!(recorded_env_res(&mut s), Ok(Reply::Recorded(_))),
             "an untainted ancestor restores an untainted, recordable timeline"
         );
-        // And a branch off the clean snapshot is likewise untainted.
         assert_eq!(branch(&mut s, clean_snap, 0x2222), Ok(Reply::Unit));
         assert!(matches!(recorded_env_res(&mut s), Ok(Reply::Recorded(_))));
         assert!(!snap_tainted(&mut s).1);
@@ -8229,19 +7367,12 @@ mod tests {
     }
 
     proptest! {
-        // Gate 1: over an arbitrary DAG of snapshot/branch/replay/exec, taint
-        // propagates EXACTLY along ancestry — never across, never cleared — a
-        // `recorded_env` on a tainted timeline ALWAYS errors, and an untainted
-        // lineage is NEVER blocked. The real `ControlServer<MockBackend>` is driven
-        // through `handle()` and checked against an independent oracle at every step.
         #![proptest_config(ProptestConfig::with_cases(300))]
         #[test]
         #[cfg_attr(miri, ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)")]
         fn taint_propagates_exactly_along_ancestry(ops in arb_taint_ops()) {
             let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
             hello(&mut s);
-            // Oracle: taint of each snapshot (by creation order; SnapId is monotonic
-            // from 1), and the live timeline's taint. Genesis is untainted.
             let mut snap_taint: Vec<bool> = Vec::new();
             let mut snap_ids: Vec<SnapId> = Vec::new();
             let mut current = false;
@@ -8250,14 +7381,13 @@ mod tests {
                 match op {
                     TaintOp::Snapshot => {
                         let (id, reported) = snap_tainted(&mut s);
-                        // The reply's taint bit must match the live timeline exactly.
                         prop_assert_eq!(reported, current, "snapshot taint mismatch");
                         snap_ids.push(id);
                         snap_taint.push(current);
                     }
                     TaintOp::Exec => {
                         exec(&mut s, "echo hi");
-                        current = true; // conservative taint: set unconditionally
+                        current = true;
                     }
                     TaintOp::Branch(i) => {
                         if snap_ids.is_empty() {
@@ -8265,7 +7395,6 @@ mod tests {
                         }
                         let k = i % snap_ids.len();
                         prop_assert_eq!(branch(&mut s, snap_ids[k], 0x99), Ok(Reply::Unit));
-                        // A branch inherits the snapshot's taint (never across).
                         current = snap_taint[k];
                     }
                     TaintOp::Replay(i) => {
@@ -8277,9 +7406,6 @@ mod tests {
                         current = snap_taint[k];
                     }
                 }
-                // The load-bearing invariant, checked after EVERY op: the reproducer
-                // mint errors `Tainted` iff the live timeline is tainted — untainted
-                // lineage is never blocked, tainted lineage always is.
                 match recorded_env_res(&mut s) {
                     Ok(Reply::Recorded(_)) => prop_assert!(!current, "clean mint on a tainted timeline"),
                     Err(ControlError::Tainted) => prop_assert!(current, "Tainted on an untainted timeline"),
@@ -8288,11 +7414,6 @@ mod tests {
             }
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Task 110: the pvclock registration rides snapshot/branch like the SDK
-    // channel — captured at seal, re-established on the restored fork.
-    // -----------------------------------------------------------------------
 
     /// The registered clock-page GPA survives a `snapshot` → `branch`: the
     /// fork's VM keeps stamping the page the restored guest already published
@@ -8318,8 +7439,6 @@ mod tests {
             v.enable_pvclock();
             v
         };
-        // Live VM: sync at an RDTSC, register the clock page, then perform the
-        // handshake (a second RDTSC) — which is what stamps the page (r8 ruling).
         let mut live = compose(
             vec![
                 Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
@@ -8340,12 +7459,9 @@ mod tests {
         let mut ram = vec![0u8; BIG_RAM];
         ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
         live.restore_guest_memory(&ram).unwrap();
-        assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued); // RDTSC → synchronized
+        assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
         live.service_doorbell(n as u32).unwrap();
         assert_eq!(live.pvclock_registration(), Some(PV_GPA));
-        // The handshake: the next RDTSC intercept arms the channel and lays down
-        // the first (canonical) stamp, so the sealed image carries an oracle-true
-        // page (r8 — registration alone no longer stamps).
         assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
 
         let factory = Box::new(move || {
@@ -8370,8 +7486,6 @@ mod tests {
             Ok(Reply::Unit) => {}
             other => panic!("branch failed: {other:?}"),
         }
-        // The fork's VM carries the registration and a canonical, oracle-true
-        // page (the sealed image restored it; the carry re-armed the stamping).
         let vmm = s.vmm().unwrap();
         assert_eq!(vmm.pvclock_registration(), Some(PV_GPA));
         vmm.pvclock_check_oracle()
@@ -8416,13 +7530,8 @@ mod tests {
         ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
         live.restore_guest_memory(&ram).unwrap();
         live.service_doorbell(n as u32).unwrap();
-        // Complete the registration HANDSHAKE (the guest's post-doorbell RDTSC) so
-        // the page is ARMED before the seal: a pending (un-armed) registration is
-        // unsealable (r13 P1), and this branch test only needs an armed snapshot
-        // carrying a pvclock record to drive the cross-composition validation.
         assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
 
-        // The factory forgets enable_pvclock — a composition mismatch.
         let factory = Box::new(|| {
             let mut mb = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
             mb.set_policy(&X86Policy {
@@ -8438,10 +7547,6 @@ mod tests {
         let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
         let base = snap(&mut s);
-        // The blob's v4 pvclock record fails the fresh VM's validate phase
-        // BEFORE any mutation, so the branch answers the recoverable
-        // `RestoreFailed` (the LAPIC-wiring-mismatch class) and the session
-        // stays alive on a fresh boot — loud, never a silently frozen clock.
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
@@ -8451,7 +7556,6 @@ mod tests {
             Err(ControlError::RestoreFailed),
             "a pvclock composition mismatch rejects the restore loudly"
         );
-        // The session survived (fresh boot) — still hashable.
         let _ = hash(&mut s);
     }
 }

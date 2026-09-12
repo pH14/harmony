@@ -20,9 +20,6 @@ pub use mapping::Mapping;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-// not order-observable: the per-layer resolve cache (`Layer::resolve_cache`) is a
-// lookup-only memo keyed by gfn; it is never iterated, so its unordered layout
-// cannot reach any output, hash, or encoded byte. See the field doc below.
 #[allow(clippy::disallowed_types)]
 use std::collections::HashMap;
 
@@ -200,7 +197,6 @@ struct Layer {
     /// layer is itself resident (gc preserves ancestors), so a cached `PageRef::Data`
     /// can never dangle. Lookup-only — never iterated, so the unordered map cannot
     /// leak nondeterminism into any output.
-    // not order-observable: lookup-only memo, never iterated (see doc above).
     #[allow(clippy::disallowed_types)]
     resolve_cache: RefCell<HashMap<u64, PageRef>>,
 }
@@ -222,7 +218,6 @@ pub struct Store {
     /// Hash-keyed rather than tree-keyed (task 95 M1.2c): the keys are uniformly-random
     /// BLAKE3 digests, so a `BTreeMap` made every seal/intern/release lookup a
     /// cache-unfriendly pointer-chasing descent.
-    // not order-observable: lookup-only, never iterated (see doc above).
     #[allow(clippy::disallowed_types)]
     pages: HashMap<PageHash, PageEntry, BuildPageHashHasher>,
     /// Hash of the all-zero page. `write_page` detects zero writes by scanning the
@@ -238,8 +233,6 @@ impl Store {
             cfg,
             next_id: 0,
             layers: BTreeMap::new(),
-            // not order-observable: `pages` is lookup-only and never iterated; see its
-            // field doc. `HashMap` is the point of M1.2c.
             #[allow(clippy::disallowed_types)]
             pages: HashMap::default(),
             zero_hash: *blake3::hash(&[0u8; PAGE_SIZE]).as_bytes(),
@@ -310,13 +303,7 @@ impl Store {
             });
         }
 
-        // Validate the parent before collecting its chain. Every ancestor of a live
-        // layer is resident, so the walk is total once this check succeeds.
         self.live_layer(parent)?;
-        // Resolve the parent's logical image only over the keys the chain ever
-        // wrote. Keeping the resolved PageRef lets the new base retain existing
-        // page-address entries directly; unchanged root pages therefore avoid both
-        // a RAM read and a second BLAKE3 hash.
         let mut inherited: BTreeMap<u64, PageRef> = BTreeMap::new();
         let mut cur = Some(parent.0);
         while let Some(id) = cur {
@@ -345,14 +332,8 @@ impl Store {
         let mem_pages = self.cfg.mem_pages;
         let mut builder = self.begin_base();
         for gfn in candidates {
-            // The image length and gfn bound above make this checked offset
-            // arithmetic infallible, while retaining a total error path if the
-            // representation is ever changed independently.
             let inherited = inherited.get(&gfn).copied().unwrap_or(PageRef::Zero);
             if !dirty_set.contains(&gfn) {
-                // No write has occurred since `parent`, so the parent's resolved
-                // content is already the current content. Reuse the content address
-                // without touching the (potentially very large) RAM image.
                 builder.core.insert_page_ref(gfn, inherited)?;
                 continue;
             }
@@ -423,16 +404,10 @@ impl Store {
 
         self.live_layer(from)?;
 
-        // Find the nearest common ancestor by recording `from`'s complete chain
-        // and walking `to` toward its root. BTreeSet keeps the traversal's
-        // membership checks deterministic; the set is not part of the output.
         let mut from_ancestors = BTreeSet::new();
         let mut cur = Some(from.0);
         while let Some(id) = cur {
             if !from_ancestors.insert(id) {
-                // A cycle cannot be produced by the sealed-builder API. Treat
-                // corrupted internal topology as an unknown snapshot rather
-                // than risking an unbounded walk.
                 return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
             }
             let Some(layer) = self.layers.get(&id) else {
@@ -458,8 +433,6 @@ impl Store {
             cur = layer.parent;
         }
 
-        // Collect page keys from each side, excluding the common ancestor. A
-        // cycle guard makes this total even if an internal link is corrupted.
         let mut changed_gfns = BTreeSet::new();
         for start in [from.0, to.0] {
             let mut side_visited = BTreeSet::new();
@@ -517,12 +490,10 @@ impl Store {
                 ))
             })?;
 
-        // First writer in the chain wins for each gfn; deeper layers fill only gaps.
         let mut resolved: BTreeMap<u64, PageRef> = BTreeMap::new();
         let mut cur = Some(snap.0);
         while let Some(id) = cur {
             let Some(layer) = self.layers.get(&id) else {
-                // Unreachable: ancestors of resident layers are resident.
                 debug_assert!(false, "dangling parent link");
                 break;
             };
@@ -548,9 +519,6 @@ impl Store {
 
         let file = tempfile::tempfile()?;
         file.set_len(len)?;
-        // One write mapping, one memcpy per resolved non-zero page — not a `seek` +
-        // `write_all` pair of syscalls each. Zero/absent pages are skipped entirely, so
-        // the file stays sparse.
         Mapping::populate(&file, len, verified_pages.into_iter())?;
         Ok(Mapping::new(file, len)?)
     }
@@ -585,7 +553,7 @@ impl Store {
             let mut cur = Some(id);
             while let Some(c) = cur {
                 if !reachable.insert(c) {
-                    break; // already walked from here up
+                    break;
                 }
                 cur = self.layers.get(&c).and_then(|l| l.parent);
             }
@@ -710,7 +678,6 @@ impl Store {
         let mut result = PageRef::Zero;
         while let Some(id) = cur {
             let Some(layer) = self.layers.get(&id) else {
-                // Unreachable: ancestors of resident layers are resident.
                 debug_assert!(false, "dangling parent link");
                 break;
             };
@@ -725,8 +692,6 @@ impl Store {
             visited.push(id);
             cur = layer.parent;
         }
-        // A hit found below `visited[i]` is, by construction, also the resolution for
-        // every visited layer (none of them wrote the gfn), so memoize it on the path.
         for id in visited {
             if let Some(layer) = self.layers.get(&id) {
                 layer.resolve_cache.borrow_mut().insert(gfn, result);
@@ -765,7 +730,6 @@ impl Store {
                 PAGE_SIZE as u64
             }
             None => {
-                // Unreachable: refs are only handed out by intern_page.
                 debug_assert!(false, "release of untracked page");
                 0
             }
@@ -792,17 +756,6 @@ impl BuilderCore<'_> {
                 mem_pages: self.store.cfg.mem_pages,
             });
         }
-        // A booted guest image is mostly zeros, and `blake3(data) == zero_hash` iff
-        // `data` is the zero page (to the collision bound `intern_page` documents), so
-        // testing the bytes directly is semantically identical to hashing and comparing
-        // — and skips the hash for the majority of frames.
-        //
-        // `data` is exactly PAGE_SIZE bytes (checked above), so this slice compare
-        // lowers to one `bcmp` over two 4 KiB buffers. Measured on the bench machine
-        // (Apple M1 Max, release): 0.12 us/page, against 1.35 us/page for the
-        // `data.iter().all(|&b| b == 0)` form the task spec suggests — that one does
-        // *not* vectorize on aarch64, and over the 393,216 zero frames of a 2 GiB guest
-        // the difference is ~0.5 s on every seal. Same semantics, no new dependency.
         let pref = if data == &ZERO_PAGE[..] {
             PageRef::Zero
         } else {
@@ -814,7 +767,6 @@ impl BuilderCore<'_> {
             self.store.intern_page(hash, data);
             PageRef::Data(hash)
         };
-        // Last write to a gfn wins; drop the reference the overwritten one held.
         if let Some(PageRef::Data(old)) = self.pages.insert(gfn, pref) {
             self.store.release_page_ref(old);
         }
@@ -870,16 +822,12 @@ impl BuilderCore<'_> {
 
     fn seal(mut self, vm_state: Vec<u8>) -> SnapshotId {
         let vm_state_hash = *blake3::hash(&vm_state).as_bytes();
-        let pages = std::mem::take(&mut self.pages); // leaves Drop nothing to undo
+        let pages = std::mem::take(&mut self.pages);
         let mut kept: BTreeMap<u64, PageRef> = BTreeMap::new();
         for (gfn, pref) in pages {
-            // A write whose content equals what the chain already resolves to is
-            // redundant: resolution yields identical bytes either way, and ancestors
-            // are sealed so that can never change. Dropping it keeps `owned_pages`
-            // honest ("pages no ancestor provides identically") and snapshots cheap.
             let inherited = match self.parent {
                 Some(p) => self.store.resolve(p, gfn),
-                None => PageRef::Zero, // base inherits the implicit zero image
+                None => PageRef::Zero,
             };
             if pref == inherited {
                 if let PageRef::Data(hash) = pref {
@@ -908,7 +856,6 @@ impl BuilderCore<'_> {
                 vm_state_hash,
                 refcount: 1,
                 chain_len,
-                // not order-observable: lookup-only memo, never iterated.
                 #[allow(clippy::disallowed_types)]
                 resolve_cache: RefCell::new(HashMap::new()),
             },
@@ -991,43 +938,29 @@ mod tests {
             h.finish()
         }
 
-        // Equal keys fold equally; distinct keys (here: known BLAKE3 digests) do not.
         let a: PageHash = *blake3::hash(b"a").as_bytes();
         let b: PageHash = *blake3::hash(b"b").as_bytes();
         let zero: PageHash = [0u8; 32];
         assert_eq!(fold(&a), fold(&a));
         assert_ne!(fold(&a), fold(&b));
 
-        // `write` alone folds only the bytes; `Hash for [u8; 32]` prepends a
-        // `write_usize(32)` length prefix, so `fold` carries that constant term for
-        // every key — a constant cannot cluster keys.
         let mut raw = PageHashHasher::default();
         raw.write(&zero);
         assert_eq!(raw.finish(), 0);
         assert_ne!(fold(&zero), 0);
 
-        // A non-word-sized write must fold its padded tail. Full 32-byte page
-        // hashes never take this branch, so pin it independently.
         let mut tail = PageHashHasher::default();
         tail.write(&[0x12, 0x34, 0x56]);
         assert_eq!(tail.finish(), 0x56_3412);
 
-        // The `Hasher` contract permits partial writes even though PageHash keys
-        // use only complete words. Pin the zero-padded tail and its XOR behavior.
         let mut partial = PageHashHasher::default();
         partial.write(&[1]);
         assert_eq!(partial.finish(), 1);
         partial.write(&[1]);
         assert_eq!(partial.finish(), 0);
 
-        // XOR-folding is not a mixer: two keys whose four 8-byte words cancel to the
-        // same value fold identically — [0xFF; 32] and [0; 32] both cancel to 0. That
-        // is sound *here* only because these keys are BLAKE3 digests of page content,
-        // never untrusted inputs — the same premise `intern_page` documents.
-        // Pinned, so that keying this map on anything else trips a failing test.
         assert_eq!(fold(&[0xFFu8; 32]), fold(&zero));
 
-        // A difference in any single byte moves the fold.
         for probe in [0usize, 7, 8, 31] {
             let mut k = zero;
             k[probe] = 1;
@@ -1038,7 +971,6 @@ mod tests {
             );
         }
 
-        // Over real digests the fold disperses: 512 distinct keys, 512 distinct folds.
         let keys: Vec<PageHash> = (0..512u32)
             .map(|i| *blake3::hash(&i.to_le_bytes()).as_bytes())
             .collect();
@@ -1049,8 +981,7 @@ mod tests {
             "XOR-fold collided on BLAKE3 digests"
         );
 
-        // Insert / lookup / remove round-trip through the real BuildHasher.
-        #[allow(clippy::disallowed_types)] // not order-observable: test-local, never iterated
+        #[allow(clippy::disallowed_types)]
         let mut map: HashMap<PageHash, u32, BuildPageHashHasher> = HashMap::default();
         for (i, k) in keys.iter().enumerate() {
             assert!(map.insert(*k, i as u32).is_none());
@@ -1078,7 +1009,6 @@ mod tests {
         }
         let base = builder.seal(Vec::new());
 
-        // Page 0 changes to zero and page 2 changes from implicit zero to 3.
         let mut child_image = base_image.clone();
         child_image[..PAGE_SIZE].fill(0);
         child_image[2 * PAGE_SIZE..3 * PAGE_SIZE].fill(3);
@@ -1089,7 +1019,6 @@ mod tests {
             .unwrap();
         let child = builder.seal(Vec::new());
 
-        // Page 1 changes to zero, then the current image dirties page 5 to 9.
         let mut grand_image = child_image.clone();
         grand_image[PAGE_SIZE..2 * PAGE_SIZE].fill(0);
         let mut builder = store.derive(child).unwrap();
@@ -1104,8 +1033,6 @@ mod tests {
             .flatten_base(grand, &current, &[5], Vec::new())
             .unwrap();
         assert_eq!(store.stats(flat).unwrap().chain_len, 1);
-        // Only page 2 and the newly dirty page 5 are non-zero in the candidate
-        // union. Pages 0 and 1 are explicitly zero and remain implicit in a base.
         assert_eq!(store.stats(flat).unwrap().owned_pages, 2);
         let mut page = [0u8; PAGE_SIZE];
         for gfn in 0..8 {
@@ -1154,7 +1081,7 @@ mod tests {
         let mut store = Store::new(cfg(8));
         let mut b = store.begin_base();
         b.write_page(0, &[1u8; PAGE_SIZE]).unwrap();
-        b.write_page(0, &[2u8; PAGE_SIZE]).unwrap(); // replaces, must drop [1; ..]
+        b.write_page(0, &[2u8; PAGE_SIZE]).unwrap();
         let id = b.seal(vec![]);
         let s = store.store_stats();
         assert_eq!(s.stored_unique_pages, 1);
@@ -1167,7 +1094,7 @@ mod tests {
     fn zero_writes_are_never_stored() {
         let mut store = Store::new(cfg(8));
         let mut b = store.begin_base();
-        b.write_page(3, &[0u8; PAGE_SIZE]).unwrap(); // explicit zeros == implicit zeros
+        b.write_page(3, &[0u8; PAGE_SIZE]).unwrap();
         let base = b.seal(vec![]);
         assert_eq!(store.store_stats().stored_unique_pages, 0);
         assert_eq!(store.stats(base).unwrap().owned_pages, 0);
@@ -1180,10 +1107,10 @@ mod tests {
         b.write_page(0, &[7u8; PAGE_SIZE]).unwrap();
         let base = b.seal(vec![]);
         let mut d = store.derive(base).unwrap();
-        d.write_page(0, &[0u8; PAGE_SIZE]).unwrap(); // masks parent data with zeros
+        d.write_page(0, &[0u8; PAGE_SIZE]).unwrap();
         let child = d.seal(vec![]);
         assert_eq!(store.stats(child).unwrap().owned_pages, 1);
-        assert_eq!(store.store_stats().stored_unique_pages, 1); // only [7; ..]
+        assert_eq!(store.store_stats().stored_unique_pages, 1);
         let mut out = [1u8; PAGE_SIZE];
         store.read_page(child, 0, &mut out).unwrap();
         assert_eq!(out, [0u8; PAGE_SIZE]);
@@ -1197,8 +1124,6 @@ mod tests {
     #[test]
     fn zero_shortcut_matches_hash_comparison() {
         let mut store = Store::new(cfg(8));
-        // A page that is zero everywhere except one byte is *not* the zero page, at
-        // either end of the buffer or in the middle.
         for probe in [0usize, 1, PAGE_SIZE / 2, PAGE_SIZE - 2, PAGE_SIZE - 1] {
             let mut data = [0u8; PAGE_SIZE];
             data[probe] = 1;
@@ -1219,7 +1144,6 @@ mod tests {
         }
         assert_eq!(store.store_stats().stored_unique_pages, 0);
 
-        // ...and the all-zero page is still never interned, whichever path wrote it.
         let mut b = store.begin_base();
         b.write_page(0, &[0u8; PAGE_SIZE]).unwrap();
         let snap = b.seal(vec![]);
@@ -1235,10 +1159,10 @@ mod tests {
         let mut b = store.begin_base();
         b.write_page(0, &[7u8; PAGE_SIZE]).unwrap();
         assert_eq!(b.core.store.store_stats().stored_unique_pages, 1);
-        b.write_page(0, &[0u8; PAGE_SIZE]).unwrap(); // zero short-circuit, still frees
+        b.write_page(0, &[0u8; PAGE_SIZE]).unwrap();
         assert_eq!(b.core.store.store_stats().stored_unique_pages, 0);
         let snap = b.seal(vec![]);
-        assert_eq!(store.stats(snap).unwrap().owned_pages, 0); // == the implicit zero base
+        assert_eq!(store.stats(snap).unwrap().owned_pages, 0);
         assert_eq!(store.store_stats().stored_unique_pages, 0);
     }
 
@@ -1252,12 +1176,10 @@ mod tests {
         let leaf = store.derive(mid).unwrap().seal(vec![]);
         let mut out = [0u8; PAGE_SIZE];
         store.read_page(leaf, 0, &mut out).unwrap();
-        // leaf missed its own pages and memoized the answer found at `mid`.
         assert_eq!(
             store.layers[&leaf.0].resolve_cache.borrow().get(&0),
             Some(&PageRef::Data(*blake3::hash(&[9u8; PAGE_SIZE]).as_bytes()))
         );
-        // a second read hits the memo (observable only as identical results)
         store.read_page(leaf, 0, &mut out).unwrap();
         assert_eq!(out, [9u8; PAGE_SIZE]);
     }
@@ -1275,9 +1197,6 @@ mod tests {
         right_builder.write_page(2, &[0x22; PAGE_SIZE]).unwrap();
         let right = right_builder.seal(vec![]);
 
-        // Page 1 is present only on the source side, so the target's implicit
-        // zero is returned. Page 2 is present on the target side. The common
-        // ancestor's (empty) page set is not included.
         assert_eq!(
             store.diff_pages(Some(left), right).unwrap(),
             vec![(1, [0u8; PAGE_SIZE]), (2, [0x22u8; PAGE_SIZE])]
@@ -1405,8 +1324,6 @@ mod tests {
         builder.write_page(1, &[0x5a; PAGE_SIZE]).unwrap();
         let snap = builder.seal(b"vcpu-device-state".to_vec());
 
-        // The mask equals the source byte: XOR clears it while OR and AND both
-        // leave it untouched, making the integrity negative mutation-sensitive.
         store.corrupt_page_for_test(snap, 1, 7, 0x5a).unwrap();
         let mut out = [0_u8; PAGE_SIZE];
         assert!(matches!(

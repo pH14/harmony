@@ -201,7 +201,6 @@ impl ToyMachine {
             }
             Instr::Xor { rd, rs } => self.regs[reg(rd)] ^= self.regs[reg(rs)],
             Instr::Load { rd, rs } => {
-                // Always < ADDR_MOD, so the cast and the 8-byte slice are in range.
                 let addr = (self.regs[reg(rs)] % ADDR_MOD) as usize;
                 let mut buf = [0u8; 8];
                 buf.copy_from_slice(&self.mem[addr..addr + 8]);
@@ -249,15 +248,6 @@ impl Subject for ToyMachine {
     }
 
     fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
-        // Canonical layout, all integers little-endian:
-        //   "unison-toy-v1"    17-byte domain tag
-        //   r0..r7                 8 × 8 bytes
-        //   pc                     8 bytes
-        //   memory                 65 536 bytes
-        //   output log length      8 bytes (u64)
-        //   output log             <length> bytes
-        //   PRNG state             8 bytes
-        //   halted flag            1 byte (0x00 or 0x01)
         let mut h = Sha256::new();
         h.update(b"unison-toy-v1");
         for r in &self.regs {
@@ -273,11 +263,6 @@ impl Subject for ToyMachine {
     }
 
     fn observable_digest(&self) -> [u8; 32] {
-        // Only the guest-emitted output log — NOT registers, memory, the PRNG
-        // state, or the halted flag. A domain tag distinct from `state_hash`'s
-        // so the two digests can never collide for the same underlying bytes.
-        // This is the seed-INDEPENDENT view a pure payload must keep stable and
-        // an RNG-consuming payload must vary (seed sensitivity).
         let mut h = Sha256::new();
         h.update(b"unison-toy-observable-v1");
         h.update((self.out_log.len() as u64).to_le_bytes());
@@ -338,11 +323,10 @@ pub fn generate_program(gen_seed: u64, min_work: u64) -> GeneratedProgram {
     } else {
         gen_seed
     };
-    let body_len = 4 + xorshift64star(&mut s) % 21; // 4..=24
+    let body_len = 4 + xorshift64star(&mut s) % 21;
     let mut body = Vec::with_capacity(body_len as usize);
     for _ in 0..body_len {
         let op = xorshift64star(&mut s) % 8;
-        // Cast is exact: % 6 < 256.
         let rd = (xorshift64star(&mut s) % 6) as u8;
         let rs = (xorshift64star(&mut s) % 6) as u8;
         body.push(match op {
@@ -359,8 +343,6 @@ pub fn generate_program(gen_seed: u64, min_work: u64) -> GeneratedProgram {
             _ => Instr::Out { rs },
         });
     }
-    // Each loop iteration retires body_len + 3 instructions (body, LOADI r6,
-    // SUB r7, JNZ); one LOADI before the loop and one HALT after it.
     let per_iter = body_len + 3;
     let iters = min_work / per_iter + 1;
     let mut instrs = Vec::with_capacity(body.len() + 5);
@@ -391,9 +373,9 @@ mod tests {
         let prog = vec![
             asm::loadi(0, 10),
             asm::loadi(1, 3),
-            asm::add(0, 1), // r0 = 13
-            asm::sub(0, 1), // r0 = 10
-            asm::xor(0, 1), // r0 = 9
+            asm::add(0, 1),
+            asm::sub(0, 1),
+            asm::xor(0, 1),
             asm::halt(),
         ];
         let m = run(prog, 1, 100);
@@ -407,10 +389,10 @@ mod tests {
         let prog = vec![
             asm::loadi(0, u64::MAX),
             asm::loadi(1, 2),
-            asm::add(0, 1), // wraps to 1
-            asm::sub(1, 0), // 2 - 1 = 1
-            asm::sub(0, 1), // 0
-            asm::sub(0, 1), // wraps to MAX
+            asm::add(0, 1),
+            asm::sub(1, 0),
+            asm::sub(0, 1),
+            asm::sub(0, 1),
             asm::halt(),
         ];
         let m = run(prog, 1, 100);
@@ -420,10 +402,10 @@ mod tests {
     #[test]
     fn load_store_round_trip_with_address_wrap() {
         let prog = vec![
-            asm::loadi(0, 65_530),           // address, wraps to 65_530 % 65_528 = 2
-            asm::loadi(1, 0xDEAD_BEEF_CAFE), // value
+            asm::loadi(0, 65_530),
+            asm::loadi(1, 0xDEAD_BEEF_CAFE),
             asm::store(0, 1),
-            asm::loadi(2, 2), // same effective address, directly
+            asm::loadi(2, 2),
             asm::load(3, 2),
             asm::halt(),
         ];
@@ -434,7 +416,6 @@ mod tests {
 
     #[test]
     fn jnz_taken_and_not_taken() {
-        // r0 = 2; loop: r0 -= 1; jnz r0, loop; halt
         let prog = vec![
             asm::loadi(0, 2),
             asm::loadi(1, 1),
@@ -443,7 +424,6 @@ mod tests {
             asm::halt(),
         ];
         let m = run(prog, 1, 100);
-        // loadi, loadi, sub, jnz(taken), sub, jnz(not taken), halt = 7
         assert_eq!(m.work(), 7);
         assert_eq!(m.regs[0], 0);
     }
@@ -453,8 +433,7 @@ mod tests {
         let prog = vec![asm::loadi(0, 1)];
         let mut m = ToyMachine::new(prog, 1);
         assert_eq!(m.run_to(10).unwrap(), RunOutcome::Halted);
-        assert_eq!(m.work(), 1); // only the LOADI retired
-        // Same for a JNZ jumping past the end.
+        assert_eq!(m.work(), 1);
         let prog = vec![asm::loadi(0, 1), asm::jnz(0, 99)];
         let mut m = ToyMachine::new(prog, 1);
         assert_eq!(m.run_to(10).unwrap(), RunOutcome::Halted);
@@ -485,7 +464,7 @@ mod tests {
 
     #[test]
     fn register_indices_wrap_modulo_8() {
-        let prog = vec![asm::loadi(8, 5), asm::halt()]; // 8 & 7 == 0
+        let prog = vec![asm::loadi(8, 5), asm::halt()];
         let m = run(prog, 1, 100);
         assert_eq!(m.regs[0], 5);
     }
@@ -510,7 +489,6 @@ mod tests {
         let mut m = ToyMachine::new(prog, 1);
         assert_eq!(m.run_to(2).unwrap(), RunOutcome::Halted);
         assert_eq!(m.work(), 2);
-        // Halted machine: forward run_to is a no-op returning Halted.
         assert_eq!(m.run_to(50).unwrap(), RunOutcome::Halted);
         assert_eq!(m.work(), 2);
     }
@@ -536,7 +514,6 @@ mod tests {
                 assert!(p.work_to_halt > min_work);
                 let mut m = ToyMachine::new(p.instrs.clone(), 42);
                 assert_eq!(m.run_to(min_work).unwrap(), RunOutcome::ReachedTarget);
-                // Halts at exactly work_to_halt, for any machine seed.
                 assert_eq!(m.run_to(p.work_to_halt + 10).unwrap(), RunOutcome::Halted);
                 assert_eq!(m.work(), p.work_to_halt);
             }
@@ -550,9 +527,6 @@ mod tests {
 
     #[test]
     fn observable_digest_excludes_latent_prng_state() {
-        // A pure program (no RAND): its observable output is seed-independent,
-        // yet state_hash differs because the latent PRNG is seeded from `seed`.
-        // This is exactly why O3 must use observable_digest, not state_hash.
         let pure = vec![asm::loadi(0, 0xABCD), asm::out(0), asm::halt()];
         let a = run(pure.clone(), 7, 100);
         let b = run(pure, 8, 100);
@@ -566,14 +540,11 @@ mod tests {
             b.state_hash().unwrap(),
             "state_hash still differs via the latent seeded PRNG"
         );
-        // And the observable digest is genuinely distinct from state_hash.
         assert_ne!(a.observable_digest(), a.state_hash().unwrap());
     }
 
     #[test]
     fn observable_digest_tracks_rng_output() {
-        // A RAND-consuming, control-flow-stable program: observable output
-        // varies with the seed (the seed reached emitted bytes).
         let rng = vec![asm::rand(0), asm::out(0), asm::halt()];
         let a = run(rng.clone(), 7, 100);
         let b = run(rng, 8, 100);
@@ -582,7 +553,6 @@ mod tests {
             b.observable_digest(),
             "RNG output must depend on the seed"
         );
-        // Same seed ⇒ identical observable output (purity of the accessor).
         let rng2 = vec![asm::rand(0), asm::out(0), asm::halt()];
         let c = run(rng2, 7, 100);
         assert_eq!(a.observable_digest(), c.observable_digest());
@@ -594,7 +564,7 @@ mod tests {
         let mut m = ToyMachine::new(prog, 3);
         let d0 = m.observable_digest();
         assert_eq!(d0, m.observable_digest(), "hashing must not change state");
-        m.run_to(2).unwrap(); // executes the OUT
+        m.run_to(2).unwrap();
         assert_ne!(d0, m.observable_digest(), "output changed the digest");
     }
 }

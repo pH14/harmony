@@ -160,7 +160,6 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
         let mut words = tokenize(trimmed)
             .ok_or(BundleError::UnterminatedQuote { line })?
             .into_iter();
-        // `trimmed` is non-empty, so the tokenizer yields at least one word.
         let Some(item) = words.next() else {
             continue;
         };
@@ -332,7 +331,6 @@ ready /usr/bin/etcdctl endpoint health
             bundle.nodes[0].argv,
             ["/usr/bin/etcd", "--data-dir", "/run/etcd"]
         );
-        // Hooks are keyed by declared id, and sorted so lookup is a binary search.
         assert_eq!(
             bundle.hooks.iter().map(|hook| hook.id).collect::<Vec<_>>(),
             [1, 2]

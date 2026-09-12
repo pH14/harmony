@@ -700,9 +700,6 @@ mod tests {
             })
         );
 
-        // Rows beyond the fixed workload are counted but deliberately not
-        // parsed: their content is outside the SQL oracle. This pins the
-        // boundary independently from the final row-count rejection.
         let mut malformed_extra = serial();
         let position = malformed_extra
             .windows(marker.len())

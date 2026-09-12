@@ -26,13 +26,9 @@ pub fn config(cases: u32) -> ProptestConfig {
     cfg
 }
 
-// ---- guest faults, by class -----------------------------------------------
-
 pub fn arb_net_fault() -> impl Strategy<Value = Fault> {
     prop_oneof![
         any::<u64>().prop_map(|d| Fault::NetLatency(Span(d))),
-        // `den >= 1` so the fault round-trips through `set_class` and the codec
-        // and never asks the enforcer to divide by zero.
         (any::<u16>(), 1u16..=u16::MAX).prop_map(|(num, den)| Fault::NetLoss { num, den }),
         any::<u32>().prop_map(|bps| Fault::NetThrottle { bps }),
         Just(Fault::NetReset),
@@ -69,13 +65,9 @@ pub fn arb_fault() -> impl Strategy<Value = Fault> {
         arb_net_fault(),
         arb_block_fault(),
         arb_proc_fault(),
-        // Task 73: the parameterless buggify fault — exercises tag 16 through the
-        // answer/action/codec round-trips.
         Just(Fault::BuggifyFire),
     ]
 }
-
-// ---- host plane -----------------------------------------------------------
 
 /// A non-zero-denominator [`Ratio`] (every constructed ratio is valid).
 pub fn arb_ratio() -> impl Strategy<Value = Ratio> {
@@ -103,8 +95,6 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
         arb_answer().prop_map(Action::Guest),
     ]
 }
-
-// ---- answers, policies, points --------------------------------------------
 
 /// An arbitrary (possibly inadmissible) answer — for override/codec fuzzing.
 pub fn arb_answer() -> impl Strategy<Value = Answer> {
@@ -134,9 +124,6 @@ pub fn arb_policy() -> impl Strategy<Value = FaultPolicy> {
             1u32..=u32::MAX,
             prop::collection::vec(arb_proc_fault(), 0..4),
         ),
-        // Task 73 buggify biasing: a default `num/den` plus a few per-point
-        // `(point, num, den)` overrides (`den >= 1`), so the buggify section of
-        // the policy codec round-trips under the same proptests.
         (
             any::<u32>(),
             1u32..=u32::MAX,
@@ -287,8 +274,6 @@ fn standing_key(s: &StandingFault) -> (u16, &[u8], u64, u64) {
     (s.class as u16, s.target.as_slice(), s.window.0, s.window.1)
 }
 
-// ---- a frontier-simulating runner -----------------------------------------
-
 /// Drive a `RecordedEnv` over a `Moment`-stamped guest schedule the way the
 /// frontier would: set the `Moment` for each decision, then `decide`. Returns the
 /// answer sequence. This is the pure-crate stand-in for a real reactive run — the
@@ -305,8 +290,6 @@ pub fn run_guest_schedule(
         })
         .collect()
 }
-
-// ---- a reference admissibility check, independent of the crate's own -------
 
 /// Re-derives the spec's admissibility prose so the override-semantics gate
 /// checks the implementation against an independent statement of the rule, not

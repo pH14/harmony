@@ -98,8 +98,6 @@ mod tests {
         impl hypercall_proto::Transport for NoTransport {
             type Error = ();
             fn exchange(&mut self, _req: &[u8], _resp: &mut [u8]) -> Result<usize, ()> {
-                // Reached only after catalog validation passed; the declare
-                // emission itself fails here, which the assertion tells apart.
                 Err(())
             }
         }

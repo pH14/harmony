@@ -139,7 +139,6 @@ mod real {
         fn wait(&mut self) -> Result<(), String> {
             let request = libc::timespec {
                 tv_sec: 0,
-                // `TICK_NANOS` is a compile-time constant below one second.
                 tv_nsec: TICK_NANOS as i64,
             };
             let mut remaining = request;
@@ -327,13 +326,9 @@ mod real {
             let Some(child) = node.child.as_mut() else {
                 continue;
             };
-            // A stopped child is not reported here: `try_wait` does not ask for
-            // stop notifications, so a paused node stays alive.
             let exited = match child.try_wait() {
                 Ok(Some(_)) => true,
                 Ok(None) => false,
-                // The child cannot be waited on at all; treat it as gone rather
-                // than retrying a broken handle forever.
                 Err(_) => true,
             };
             if exited {
@@ -355,8 +350,6 @@ mod real {
     ) -> Result<(), String> {
         match action {
             Action::Kill(node) => {
-                // The park's tasks die with the group; the kernel keeps the
-                // breakpoints harmlessly until the handle drops.
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
                     entry.park = None;
                 }
@@ -465,8 +458,6 @@ mod real {
         let Some(child) = nodes.get(usize::from(node)).and_then(|n| n.child.as_ref()) else {
             return;
         };
-        // Each node is spawned into a fresh process group whose id is its own
-        // pid, so the negated pid names the group.
         let Ok(pid) = libc::pid_t::try_from(child.id()) else {
             return;
         };
@@ -480,8 +471,6 @@ mod real {
 
     fn spawn_node(spec: &NodeSpec) -> Result<Child, String> {
         command(&spec.argv)
-            // Its own group, so one fault reaches the node's whole process
-            // tree and never the agent.
             .process_group(0)
             .spawn()
             .map_err(|error| format!("node {:?}: {error}", spec.name))
@@ -491,8 +480,6 @@ mod real {
     /// launches across the run, so two launches of one hook in a single tick
     /// never share a file.
     fn spawn_hook(spec: &HookSpec, hook_dir: &Path, launch: u64) -> Result<Hook, String> {
-        // A workload's setup command may mount a fresh filesystem over the
-        // directory's parent, so it is made again at every spawn.
         std::fs::create_dir_all(hook_dir)
             .map_err(|error| format!("{}: {error}", hook_dir.display()))?;
         let path = hook_dir.join(format!("hook-{}-{launch}.out", spec.id));
@@ -530,7 +517,6 @@ mod real {
                 Ok(None) => continue,
                 Err(error) => return Err(format!("hook {}: {error}", hook.id)),
             };
-            // Anything written between the last read and the exit.
             for line in read_lines(&mut hook.output, &mut hook.reader) {
                 forward(&line, hook.id, supervisor, sdk, tick)?;
             }
@@ -578,8 +564,6 @@ mod real {
             Ok(Some(directive)) => directive,
             Ok(None) => return Ok(()),
             Err(error) => {
-                // A malformed directive is the workload's bug, not the agent's;
-                // it is surfaced on serial and the run continues.
                 log(tick, &format!("hook {hook}: {error}"));
                 return Ok(());
             }
@@ -601,7 +585,6 @@ mod real {
     }
 
     fn command(argv: &[String]) -> Command {
-        // `parse_bundle` rejects an empty argv, so the first word exists.
         let mut command = Command::new(&argv[0]);
         command.args(&argv[1..]);
         command
@@ -610,8 +593,6 @@ mod real {
     /// One serial line per applied fault, the agent's human-readable trace.
     fn log(tick: u64, what: &str) {
         let mut out = std::io::stdout().lock();
-        // Serial logging must never take the agent down, so a closed console is
-        // simply not logged to.
         let _ = writeln!(out, "FA: {tick} {what}");
         let _ = out.flush();
     }
@@ -623,9 +604,6 @@ mod real {
         use std::os::fd::AsRawFd;
 
         const DEVICE: &str = "/dev/harmony-park";
-        // _IOW('P', 1, struct harmony_park_arm) and
-        // _IOR('P', 2, struct harmony_park_status); the structures are
-        // fixed-width so the numbers are the same on every Linux target.
         const IOC_ARM: libc::Ioctl = 0x4020_5001_u32 as libc::Ioctl;
         const IOC_STATUS: libc::Ioctl = 0x8030_5002_u32 as libc::Ioctl;
 
@@ -725,10 +703,6 @@ mod real {
 
         const DEVICE: &str = "/dev/harmony";
         const MAX_FRAME: usize = hypercall_proto::MAX_FRAME;
-        // _IOWR('H', 1, struct harmony_ioc_exchange), whose fixed-width UAPI
-        // structure is 32 bytes on both 32- and 64-bit Linux. The request is
-        // written as a `u32` bit pattern and cast, because `libc::Ioctl` is a
-        // signed `c_int` against musl and an unsigned `c_ulong` against glibc.
         const HARMONY_IOC_EXCHANGE: libc::Ioctl = 0xc020_4801_u32 as libc::Ioctl;
 
         #[repr(C)]

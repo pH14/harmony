@@ -163,9 +163,6 @@ fn run_correctness_probes(
         );
     }
 
-    // The same continuation from one snapshot must produce equivalent
-    // decoded observations after a repeated restore. A different branch is
-    // taken between the two runs to exercise cache and handle restoration.
     target.restore(&genesis)?;
     target.apply(&ButtonChord::new(0x01, 6));
     let branch = target.snapshot().ok_or("could not snapshot the A branch")?;
@@ -202,8 +199,6 @@ fn run_correctness_probes(
         }))?
     );
 
-    // ProbeAtAdmission45, when explicitly selected, must inspect this future
-    // continuation and leave all live adapter state at the admission point.
     target.restore(&genesis)?;
     let before_probe = (target.observe(), target.fingerprint());
     let before_probe_lifetime_frame = target.frames_clocked();
@@ -215,8 +210,6 @@ fn run_correctness_probes(
             "STB admission probe failed its live-RAM and cached-state restoration checks".into(),
         );
     }
-    // survives_probe verifies live RAM immediately after restoration. Compare
-    // a subsequent continuation too; cached observations alone prove nothing.
     let continuation = ButtonChord::new(0x80, 12);
     target.apply(&continuation);
     let after_probed_continuation = (target.observe(), target.fingerprint());

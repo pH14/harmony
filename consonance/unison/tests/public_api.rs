@@ -31,8 +31,6 @@ fn public_api_matches_snapshot() {
             "public-api",
             "-p",
             CRATE,
-            // Freeze the full surface (all features), so a public item gated
-            // behind a non-default feature can never drift unnoticed.
             "--all-features",
             "-sss",
             "--color",
@@ -49,7 +47,6 @@ fn public_api_matches_snapshot() {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Missing tool / toolchain -> skip; a real build error -> fail.
         let absent = stderr.contains("no such command")
             || stderr.contains("is not installed")
             || stderr.contains("toolchain may not be installed")

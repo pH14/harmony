@@ -42,8 +42,6 @@ fn scheduler_selection_bound_is_strict() {
     );
     assert!(!p.admits(&supply(6)), "6 > 5 is inadmissible");
 
-    // The same boundary observed through `RecordedEnv`: a `ready`-valued override
-    // is ignored, so the seeded base answers; a `ready-1` override wins.
     let at_bound = supply(5);
     let mut env = recorded_with_override(7, 0, at_bound);
     env.set_moment(0);
@@ -95,9 +93,6 @@ fn block_torn_bound_is_inclusive_at_len() {
         "n = len+1 (> len) tears off more than the request: inadmissible"
     );
 
-    // The bound is BlockTorn-specific: a same-class fault with no point-relative
-    // bound is admitted regardless of `len`, so the `<=` check is not a blanket
-    // length gate (guards the `fault_bounds_ok` match arm, not just its operator).
     assert!(io.admits(&Answer::Fault(Fault::BlockEio)));
     assert!(io.admits(&Answer::Fault(Fault::BlockNospc)));
 }
@@ -151,9 +146,6 @@ fn supply_length_bound_is_exclusive_at_max() {
 #[test]
 fn entropy_supply_is_exactly_the_requested_length() {
     let mut env = SeededEnv::new(0xC0FF_EE12_3456_789A, FaultPolicy::none());
-    // Includes non-multiples of 8 greater than 8 (12, 20, 31, 100, 255), which
-    // the `-`→`+` accumulator mutant overshoots, and small `n > 0` values that
-    // the `<`→`==` bound mutant empties.
     for n in [1u32, 4, 7, 8, 9, 12, 16, 20, 31, 33, 64, 100, 255, 257] {
         let v = entropy_supply(&mut env, n);
         assert_eq!(

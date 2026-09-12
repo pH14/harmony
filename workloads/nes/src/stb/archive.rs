@@ -370,8 +370,6 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
 /// Longest hold sampled by [`sample_chord`].
 pub const LONGEST_HOLD_FRAMES: u8 = 120;
 
-// ButtonChord follows the NES serial/input layout used by QuickNES. STB's
-// source constants are the reverse bit order after controller polling.
 const DIRECTIONS: [u8; 9] = [0, 0x10, 0x20, 0x40, 0x80, 0x90, 0x50, 0xa0, 0x60];
 const AB: [u8; 4] = [0, 0x02, 0x01, 0x03];
 

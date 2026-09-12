@@ -45,7 +45,7 @@ const MARKER: &str = "HARMONY-ARM64-BOOT";
 /// field layout. The board PL011 address is spliced in as a literal so the
 /// payload and [`board::PL011`] can never disagree.
 fn payload_body_source() -> String {
-    let uart_hi = (board::PL011.0 >> 16) as u16; // 0x0900 for 0x0900_0000
+    let uart_hi = (board::PL011.0 >> 16) as u16;
     assert_eq!(
         u64::from(uart_hi) << 16,
         board::PL011.0,
@@ -116,7 +116,6 @@ fn timeout_cmd() -> Option<&'static str> {
 #[test]
 #[ignore = "needs clang + llvm-objcopy + qemu-system-aarch64; runs via `cargo test -- --ignored`"]
 fn image_and_dtb_boot_on_qemu_tcg() {
-    // --- skip loudly if the local oracle's toolchain is absent -------------
     if !tool_present("clang") {
         eprintln!("SKIP: arm64 TCG smoke — clang not found");
         return;
@@ -139,7 +138,6 @@ fn image_and_dtb_boot_on_qemu_tcg() {
     let image_path = dir.path().join("harmony.Image");
     let dtb_path = dir.path().join("harmony.dtb");
 
-    // --- assemble the payload BODY (no header) -----------------------------
     std::fs::write(&s_path, payload_body_source()).expect("write payload.s");
     let asm = Command::new("clang")
         .args(["--target=aarch64-linux-gnu", "-c"])
@@ -166,24 +164,14 @@ fn image_and_dtb_boot_on_qemu_tcg() {
     );
     let body = std::fs::read(&body_path).expect("read payload body");
 
-    // --- prepend the PRODUCTION Image header with the vendor's own helper ---
-    // wrap_image builds the 64-byte header (magic, sizes) and the `code0` branch
-    // over the header onto the body — so QEMU boots the *exact* artifact the M4
-    // KVM path will produce, code0 branch included (review r7: the branch is the
-    // whole point — without it the entry executes the header word, not the body).
     let image = image_loader::wrap_image(&body, 0, 0xA /* 4K page bits */);
     std::fs::write(&image_path, &image).expect("write wrapped Image");
 
-    // --- cross-check: OUR loader accepts the exact artifact QEMU will boot --
     let hdr = image_loader::parse_header(&image)
         .expect("the vendor's own Image loader must accept the boot artifact");
     assert_eq!(hdr.text_offset, 0);
     assert_eq!(hdr.image_size, image.len() as u64);
 
-    // --- build the DTB this vendor emits, and cross-check it round-trips ----
-    // (QEMU virt places RAM at RAM_BASE with 512 MiB; the reserved pvclock page
-    // GPA is nominal for the smoke — the payload does not read the DTB, it
-    // proves the DTB is a valid FDT QEMU accepts.)
     let dtb_bytes = dtb::build(
         512 * 1024 * 1024,
         board::RAM_BASE + 0x0100_0000,
@@ -194,7 +182,6 @@ fn image_and_dtb_boot_on_qemu_tcg() {
     f.write_all(&dtb_bytes).expect("write dtb");
     drop(f);
 
-    // --- boot on QEMU's own machine (NOT our backend) ----------------------
     let mut cmd;
     if let Some(t) = timeout_cmd() {
         cmd = Command::new(t);
@@ -220,7 +207,6 @@ fn image_and_dtb_boot_on_qemu_tcg() {
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
 
-    // --- the success condition: marker present AND clean PSCI poweroff -----
     assert!(
         stdout.contains(MARKER),
         "the guest never reached the console marker {MARKER:?} — the Image+DTB did not boot.\n\

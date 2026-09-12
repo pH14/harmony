@@ -61,7 +61,6 @@ pub(crate) fn serialize(c: &Contract) -> String {
         out.push('\n');
     };
 
-    // 1. Header records.
     line(format!("contract-version={}", c.version));
     line(format!("kernel-tag={}", c.kernel_tag));
     line(format!("cpuid-baseline={}", c.cpuid_baseline));
@@ -91,7 +90,6 @@ pub(crate) fn serialize(c: &Contract) -> String {
         c.vtime_clockevent_period_vns
     ));
 
-    // 2. CPUID records, sorted ascending by (leaf, subleaf).
     let mut cpuid: Vec<_> = c.cpuid.clone();
     cpuid.sort_by_key(|r| (r.leaf.lo, subleaf_sort_key(r.subleaf)));
     for r in &cpuid {
@@ -123,7 +121,6 @@ pub(crate) fn serialize(c: &Contract) -> String {
         line(format!("msr {idx:08x} {read} {write}"));
     }
 
-    // 4. Instruction records, sorted lexicographically by mnemonic.
     let mut insn: Vec<_> = c.insn.clone();
     insn.sort_by(|a, b| a.mnemonic.cmp(&b.mnemonic));
     for r in &insn {
@@ -133,7 +130,6 @@ pub(crate) fn serialize(c: &Contract) -> String {
         ));
     }
 
-    // 5. Timer-device records, fixed device order (as committed in the TOML).
     for r in &c.timer {
         line(format!(
             "timer {} {} {}",
@@ -143,7 +139,6 @@ pub(crate) fn serialize(c: &Contract) -> String {
         ));
     }
 
-    // 6. xAPIC MMIO records, sorted ascending by offset, then mmio-default.
     let mut mmio: Vec<_> = c.mmio.clone();
     mmio.sort_by_key(|r| u32::from_str_radix(&r.offset, 16).unwrap_or(0));
     for r in &mmio {
@@ -160,7 +155,6 @@ pub(crate) fn serialize(c: &Contract) -> String {
         cell(&c.mmio_default_write, c.mmio_default_write_param.as_deref()),
     ));
 
-    // 7. CMOS/RTC records: ports before indices, each ascending, ranges expanded.
     let mut cmos: Vec<(u8, u32, String, String, String)> = Vec::new();
     for r in &c.cmos {
         let read = cell(&r.read, r.read_param.as_deref());
@@ -211,12 +205,10 @@ mod tests {
 
     #[test]
     fn cell_renders_each_disposition_shape() {
-        // allow-fixed → 16-hex constant.
         assert_eq!(
             cell("allow-fixed", Some("0xfee00900")),
             "allow-fixed:00000000fee00900"
         );
-        // emulate-* → bare formula id (the match guard `starts_with("emulate")`).
         assert_eq!(
             cell("emulate-vtime", Some("vclock.tsc")),
             "emulate-vtime:vclock.tsc"
@@ -225,12 +217,8 @@ mod tests {
             cell("emulate-device", Some("pit.ch0")),
             "emulate-device:pit.ch0"
         );
-        // A NON-emulate token with a param must drop the param (bare token) — this
-        // pins the `starts_with("emulate")` guard (a `true` guard would wrongly emit
-        // `deny-gp:foo`).
         assert_eq!(cell("deny-gp", Some("foo")), "deny-gp");
         assert_eq!(cell("allow-stateful", Some("bar")), "allow-stateful");
-        // Bare tokens (no param) stay bare.
         assert_eq!(cell("deny-ignore-write", None), "deny-ignore-write");
     }
 

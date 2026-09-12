@@ -281,11 +281,6 @@ impl<T: Transport> Sdk<T> {
 
     /// Marshal and emit the catalog-declaration Event.
     fn declare(&mut self, catalog: &[Point]) -> Result<(), SdkError<T::Error>> {
-        // Reject a catalog that declares two points colliding on either key the
-        // host indexes by: the `(namespace, id)` coordinate (they fire at one
-        // `event_id`, so the host cannot tell them apart) or the `name` (the
-        // never-fired report is keyed by name, so a duplicate silently aliases the
-        // report). O(n²) over the small declared set (no alloc — `no_std` guest).
         for (i, p) in catalog.iter().enumerate() {
             for q in &catalog[i + 1..] {
                 if p.id == q.id && p.kind.namespace() == q.kind.namespace() {
@@ -411,8 +406,6 @@ impl<T: Transport> Sdk<T> {
         if point > wire::LOCAL_MAX {
             return Err(SdkError::PointIdTooLarge);
         }
-        // `[disposition u8][detail_len u16 = 0]` — detail is reserved for a future
-        // message-carrying variant; the point id is the assertion identity today.
         let buf = [disposition, 0, 0];
         self.emit(wire::event_id(wire::NS_ASSERT, point), &buf)
     }

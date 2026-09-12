@@ -115,8 +115,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let archive: SmbArchiveReport = serde_json::from_slice(&archive_bytes)?;
     drop(archive_bytes);
 
-    // Reconstruct frames-in-level and the active set by replaying the
-    // displacement rule over entries in insertion order.
     let index_of: BTreeMap<u64, usize> = archive
         .entries
         .iter()
@@ -169,9 +167,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         cell.push(index);
     }
 
-    // Classify every entry by its recorded selections, and track each
-    // pooling level's trailing barren streak — consecutive picks since the
-    // last retained child — which is the counter retirement would run.
     let mut picked = vec![false; archive.entries.len()];
     let mut kept = vec![false; archive.entries.len()];
     let mut saw_decision = vec![false; archive.entries.len()];
@@ -244,7 +239,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
 
-    // Class counts, total and per (world, level, band).
     let mut classes = ClassCounts {
         keepers: 0,
         all_rejected: 0,
@@ -278,10 +272,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Exact draw shares per (room, band). `live` marks the entries the cell
-    // path may sample: all active ones at baseline, the non-barren ones in
-    // the skip variant. The uniform quarter of draws ignores exhaustion, so
-    // it is identical in both variants.
     let share_by_band = |live: &dyn Fn(usize) -> bool| -> BTreeMap<(RoomClass, u16), f64> {
         let mut shares = BTreeMap::<(RoomClass, u16), f64>::new();
         let total_active = active.iter().filter(|a| **a).count() as f64;
@@ -293,8 +283,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     (1.0 - CELL_PATH_SHARE) / total_active;
             }
         }
-        // The cell path: deepest pair with a live entry, room uniform, band
-        // uniform within the room.
         let mut pairs = BTreeMap::<(u8, u8), BTreeMap<SmbRoomIdentity, Vec<usize>>>::new();
         for (index, entry) in archive.entries.iter().enumerate() {
             if active[index] && live(index) {
@@ -327,9 +315,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let skip_barren = share_by_band(&|index| {
         matches!(class_of(index), EntryClass::Keepers | EntryClass::Unpicked)
     });
-    // Retirement as built: an entry is skipped when its own trailing barren
-    // streak, or any enclosing class's pooled streak, is at or over that
-    // level's measured threshold.
     let retired = |index: usize| -> bool {
         let key = archive.entries[index].key;
         let room = (key.world, key.level, key.room);
@@ -341,7 +326,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let retire_streak = share_by_band(&|index| !retired(index));
 
-    // Per-(room, band) statistics over active entries.
     let mut band_stats = BTreeMap::<(RoomClass, u16), (u64, u64, u16, u16)>::new();
     for (index, entry) in archive.entries.iter().enumerate() {
         if !active[index] {

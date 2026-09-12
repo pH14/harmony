@@ -236,8 +236,6 @@ impl SnapshotEngine {
                             pages: self.mem_pages,
                         });
                     }
-                    // gfn < mem_pages and the image length was checked == mem_pages *
-                    // PAGE_SIZE, so this frame is always fully in range (no panic).
                     let off = gfn as usize * PAGE_SIZE;
                     builder.write_page(gfn, &memory[off..off + PAGE_SIZE])?;
                 }
@@ -403,8 +401,6 @@ mod tests {
 
     use super::*;
 
-    // --- engine: base / derive / sharing ------------------------------------
-
     const PG: usize = PAGE_SIZE;
 
     fn img(pages: &[(usize, u8)], total_pages: usize) -> Vec<u8> {
@@ -423,8 +419,6 @@ mod tests {
         assert_eq!(eng.stats(base).unwrap().owned_pages, 3);
         assert_eq!(eng.store_stats().stored_unique_pages, 3);
 
-        // Dirty only page 1; the derive (full image, no dirty hint) must store ONE
-        // owned page (the store's seal-time dedup drops the unchanged frames).
         let mut child_mem = base_mem.clone();
         child_mem[PG..2 * PG].fill(0xFF);
         let child = eng
@@ -435,8 +429,6 @@ mod tests {
             1,
             "derive is dirty-set-proportional even without a drained dirty set"
         );
-        // Store-wide: the 3 base contents + the 1 new content = 4 (page 1's old
-        // 0xB is still referenced by the base).
         assert_eq!(eng.store_stats().stored_unique_pages, 4);
     }
 
@@ -546,13 +538,10 @@ mod tests {
         let mut mem = base_mem.clone();
         mem[3 * PG..4 * PG].fill(0x99);
         mem[7 * PG..8 * PG].fill(0x77);
-        // Drained dirty set {3, 7}: capture only those frames.
         let child = eng
             .snapshot_derive(base, &mem, Some(&[3, 7]), b"c")
             .unwrap();
         assert_eq!(eng.stats(child).unwrap().owned_pages, 2);
-        // Materialize and confirm the dirtied frames read back the new content and
-        // an untouched frame reads the base.
         let map = eng.materialize(child).unwrap();
         assert_eq!(map.as_slice()[3 * PG], 0x99);
         assert_eq!(map.as_slice()[7 * PG], 0x77);
@@ -565,17 +554,12 @@ mod tests {
         ignore = "materialize uses mmap, which Miri cannot execute; the parse/convert logic is covered by the non-mmap tests"
     )]
     fn n_views_share_one_read_only_base() {
-        // Gate 3: materialize N independent CoW views from one base; the base's
-        // distinct contents are stored ONCE store-wide, not N×.
         let mut eng = SnapshotEngine::new(64 * PG);
-        // 40 pages with DISTINCT non-zero content (byte i+1), so each is a distinct
-        // store-wide content address (no incidental dedup masking the sharing claim).
         let base_mem = img(&(0..40).map(|i| (i, (i as u8) + 1)).collect::<Vec<_>>(), 64);
         let base = eng.snapshot_base(&base_mem, b"boot").unwrap();
         let unique_after_base = eng.store_stats().stored_unique_pages;
         assert_eq!(unique_after_base, 40);
 
-        // Eight branches that each touch nothing: pure shared base.
         let mut views = Vec::new();
         for _ in 0..8 {
             let v = eng
@@ -588,7 +572,6 @@ mod tests {
             unique_after_base,
             "N branches that touched nothing add NO unique pages — the base is shared"
         );
-        // Every view sees the same base image.
         for v in &views {
             assert_eq!(v.as_slice()[0], base_mem[0]);
             assert_eq!(v.as_slice()[39 * PG], base_mem[39 * PG]);
@@ -610,7 +593,6 @@ mod tests {
 
     #[test]
     fn vm_state_blob_seals_and_decodes() {
-        // The engine seals the canonical vm_state bytes and hands them back to decode.
         let mut eng = SnapshotEngine::new(4 * PG);
         let s = VmState {
             contract_hash: [7u8; 32],
@@ -633,15 +615,13 @@ mod tests {
     #[test]
     fn engine_mem_pages_retain_release_gc() {
         let mut eng = SnapshotEngine::new(8 * PG);
-        assert_eq!(eng.mem_pages(), 8); // exact: kills mem_pages -> 0 / 1
+        assert_eq!(eng.mem_pages(), 8);
 
-        // One non-zero page + a non-empty blob, so gc has bytes to free.
         let mut mem = vec![0u8; 8 * PG];
         mem[..PG].fill(0xAB);
-        let base = eng.snapshot_base(&mem, b"blob").unwrap(); // refcount 1
+        let base = eng.snapshot_base(&mem, b"blob").unwrap();
         assert_eq!(eng.store_stats().snapshots, 1);
 
-        // retain → refcount 2; one release → still live (kills retain -> Ok(())).
         eng.retain(base).unwrap();
         eng.release(base).unwrap();
         assert_eq!(
@@ -649,12 +629,9 @@ mod tests {
             1,
             "retain must have taken effect: one release of two refs leaves it live"
         );
-        // Second release → refcount 0 (kills release -> Ok(())).
         eng.release(base).unwrap();
         assert_eq!(eng.store_stats().snapshots, 0, "released after both refs");
 
-        // gc reaps the dead layer, freeing the one stored page + the 4-byte blob.
-        // The exact value kills gc -> 0 and gc -> 1.
         assert_eq!(eng.gc(), PAGE_SIZE as u64 + 4);
     }
 
@@ -663,12 +640,10 @@ mod tests {
         let mut eng = SnapshotEngine::new(4 * PG);
         let mem = vec![0u8; 4 * PG];
         let base = eng.snapshot_base(&mem, b"").unwrap();
-        // gfn 4 is one past the 4-page (gfns 0..=3) image.
         assert!(matches!(
             eng.snapshot_derive(base, &mem, Some(&[4]), b""),
             Err(SnapshotError::DirtyGfnOutOfRange { gfn: 4, pages: 4 })
         ));
-        // The in-range boundary gfn 3 is accepted.
         assert!(eng.snapshot_derive(base, &mem, Some(&[3]), b"").is_ok());
     }
 

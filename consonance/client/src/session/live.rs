@@ -111,9 +111,6 @@ impl Session {
             let mut vmm = boot_selected_control(kernel, initramfs, &cmdline, ram)
                 .map_err(|error| format!("Consonance boot compose failed: {error:?}"))?;
             vmm.wire_snapshot_hashing();
-            // Before the guest runs, so the boot's own checkpoints are deferred
-            // too, and on every VM this closure builds, which includes the ones
-            // a restore boots from the session factory.
             if defer_checkpoint_hashes {
                 vmm.defer_virtual_time_checkpoint_hashes()
                     .map_err(|error| format!("defer virtual-time hashes: {error}"))?;
@@ -135,8 +132,6 @@ impl Session {
 
         let genesis = snapshot_handle(&mut client, "genesis snapshot")?;
         branch_payload(&mut client, genesis.id, setup_payloads, config.seed)?;
-        // A setup run that exceeds the bound fails construction outright, so
-        // the session this returns has never been abandoned.
         let mut abandoned = false;
         let setup_stop = run_to_snapshot(
             &mut client,
@@ -349,7 +344,6 @@ impl Session {
             Ok(Ok(Reply::Snapshot {
                 id, tainted: true, ..
             })) => {
-                // A tainted seal is still minted; release it before reporting.
                 let _ = drop_control_handle(&mut self.client, id);
                 Err(SessionError::Control("seal was tainted".into()).into())
             }
@@ -523,8 +517,6 @@ impl Session {
                 )
                 .into());
             }
-            // Keep cleanup after export: the sparse target may still depend on
-            // its imported base until the store has resolved the page set.
             self.export_snapshot(target.id, target.at)
         })();
         self.cleanup_handles(temporary_handles, result)
@@ -704,9 +696,6 @@ fn snapshot_handle(
         } => {
             let error: Box<dyn Error> =
                 SessionError::Control(format!("{operation} was tainted")).into();
-            // A tainted snapshot is still minted by the control server. The
-            // session rejects it, so release the handle before returning the
-            // caller-facing error.
             let _ = drop_control_handle(client, id);
             Err(error)
         }
@@ -774,10 +763,6 @@ fn drive_guarded(
     reply.map_err(|error| SessionError::Control(error.to_string()).into())
 }
 
-// A session exposes observations and snapshots; it does not archive the control
-// server's normalized exit trace. Each restore closes the previous segment.
-// Release that host-only evidence at the same boundary so long campaigns retain
-// only the active segment. This leaves guest state and snapshot hashes untouched.
 fn retire_restore_trace(client: &mut Server) {
     drop(client.transport_mut().take_session_virtual_time_trace());
 }

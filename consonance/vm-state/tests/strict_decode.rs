@@ -72,7 +72,6 @@ fn wrong_version() {
 #[test]
 fn foreign_arch_tag_is_rejected_not_reinterpreted() {
     let mut blob = valid();
-    // Sanity: it decodes under its own tag.
     assert!(VmState::decode(&blob).is_ok());
     let foreign = ARCH_X86_64 + 1;
     blob[6..8].copy_from_slice(&foreign.to_le_bytes());
@@ -94,7 +93,6 @@ fn truncated_header() {
 #[test]
 fn truncated_body() {
     let blob = valid();
-    // Drop the final byte: the last section's len now claims more than remains.
     assert_eq!(
         VmState::decode(&blob[..blob.len() - 1]),
         Err(VmStateError::Truncated)
@@ -111,7 +109,6 @@ fn trailing_bytes() {
 #[test]
 fn duplicate_tag() {
     let (count, secs) = split(&valid());
-    // Insert a second copy of the first section right after it: tags 1,1,2,...
     let mut dup = secs.clone();
     dup.insert(1, secs[0].clone());
     let blob = pack(count + 1, &dup);
@@ -125,7 +122,7 @@ fn duplicate_tag() {
 fn out_of_order_tags() {
     let (count, secs) = split(&valid());
     let mut swapped = secs.clone();
-    swapped.swap(0, 1); // tags 2,1,3,... — the 1 is now out of order
+    swapped.swap(0, 1);
     let blob = pack(count, &swapped);
     assert_eq!(
         VmState::decode(&blob),
@@ -135,16 +132,8 @@ fn out_of_order_tags() {
 
 #[test]
 fn tag_ordering_boundary() {
-    // Pin the exact `tag <= prev` boundary in decode's section-ordering check so
-    // neither the `<=` guard nor the `==` split has an untested (equivalent)
-    // mutant — `< vs <=` is only observable right AT equality:
-    //   tag == prev → DuplicateTag  (the boundary; `<=` accepts it, a `<` mutant
-    //                                would let the duplicate through)
-    //   tag <  prev → SectionOrder  (distinguishes the inner `==`)
-    //   tag >  prev → accepted      (strictly ascending)
     let (count, secs) = split(&valid());
 
-    // tag == prev: duplicate the first section adjacently (tags 1,1,2,...).
     let mut equal = secs.clone();
     equal.insert(1, secs[0].clone());
     assert_eq!(
@@ -152,7 +141,6 @@ fn tag_ordering_boundary() {
         Err(VmStateError::DuplicateTag(secs[0].0)),
     );
 
-    // tag < prev: swap the first two sections (tags 2,1,3,...).
     let mut less = secs.clone();
     less.swap(0, 1);
     assert_eq!(
@@ -160,15 +148,12 @@ fn tag_ordering_boundary() {
         Err(VmStateError::SectionOrder(secs[0].0)),
     );
 
-    // tag > prev (strictly ascending): the untouched valid blob decodes.
     assert!(VmState::decode(&valid()).is_ok());
 }
 
 #[test]
 fn dropped_required_section() {
     let (count, secs) = split(&valid());
-    // Drop the V-time section (tag 9) and decrement the count so the loop reads
-    // a clean, in-order set that is simply missing one required tag.
     let dropped_tag = 9;
     let kept: Vec<(u16, Vec<u8>)> = secs
         .iter()
@@ -185,7 +170,6 @@ fn dropped_required_section() {
 
 #[test]
 fn section_count_zero_is_missing_section() {
-    // A header-only blob: count 0, no sections. The first required tag is absent.
     let blob = pack(0, &[]);
     assert_eq!(VmState::decode(&blob), Err(VmStateError::MissingSection(1)));
 }
@@ -193,7 +177,6 @@ fn section_count_zero_is_missing_section() {
 #[test]
 fn oversized_section_len() {
     let mut blob = valid();
-    // The first section's len field lives at offset 8+2..8+6. Make it enormous.
     blob[10..14].copy_from_slice(&u32::MAX.to_le_bytes());
     assert_eq!(VmState::decode(&blob), Err(VmStateError::Truncated));
 }
@@ -201,7 +184,6 @@ fn oversized_section_len() {
 #[test]
 fn unknown_tag() {
     let (count, mut secs) = split(&valid());
-    // Append a section with a tag past the v1 set; bump count so it is read.
     secs.push((9999, vec![0xde, 0xad]));
     let blob = pack(count + 1, &secs);
     assert_eq!(VmState::decode(&blob), Err(VmStateError::UnknownTag(9999)));
@@ -210,7 +192,6 @@ fn unknown_tag() {
 #[test]
 fn bad_mp_state_byte() {
     let (count, mut secs) = split(&valid());
-    // MP-state is tag 6; force an out-of-range byte.
     for (tag, payload) in &mut secs {
         if *tag == 6 {
             *payload = vec![0x07];
