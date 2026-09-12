@@ -41,7 +41,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         ],
     )
     .map_err(|e| e.to_string())?;
-    let mut observation = Observation::create(4096)?;
+    let mut held = Vec::new();
+    for _ in 0..16 {
+        let mut region = Observation::create(4096)?;
+        if region.bytes().iter().any(|byte| *byte != 0) {
+            return Err("observation allocation was not zero initialized".into());
+        }
+        region.bytes().fill(0xa5);
+        held.push(region);
+    }
+    if Observation::create(4096).is_ok() {
+        return Err("observation allocation limit was not enforced".into());
+    }
+    drop(held);
+    let mut observation = Observation::create(2 * 1024 * 1024)?;
+    if observation.bytes().iter().any(|byte| *byte != 0) {
+        return Err("reused observation allocation leaked contents".into());
+    }
     sdk.state_set(1, u64::from(observation.handle()))
         .map_err(|e| e.to_string())?;
     sdk.entropy_fill(&mut observation.bytes()[..8])

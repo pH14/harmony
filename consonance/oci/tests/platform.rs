@@ -13,6 +13,8 @@ mod platform {
     };
     use std::{error::Error, fs, time::Duration};
 
+    const OBSERVATION_LEN: u32 = 2 * 1024 * 1024;
+
     type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
     #[derive(Debug, Eq, PartialEq)]
@@ -30,7 +32,7 @@ mod platform {
         }
         assert_eq!(catalog.get("fixture.progress")?, progress);
         let handle = u32::try_from(catalog.get("fixture.observation")?)?;
-        let observation = session.read_observation(handle, 0, 4096)?;
+        let observation = session.read_observation(handle, 0, OBSERVATION_LEN)?;
         assert_eq!(
             u64::from_le_bytes(observation[16..24].try_into()?),
             progress
@@ -40,7 +42,11 @@ mod platform {
                 .iter()
                 .all(|byte| *byte == 0x31 + progress as u8)
         );
-        assert!(session.read_observation(handle, 4095, 2).is_err());
+        assert!(
+            session
+                .read_observation(handle, OBSERVATION_LEN - 1, 2)
+                .is_err()
+        );
         Ok(Evidence {
             hash: session.state_hash()?,
             events,
