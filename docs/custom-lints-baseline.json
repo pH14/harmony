@@ -393,9 +393,5 @@
     "dissonance/searcher/src/search/rollout.rs:95",
     "dissonance/searcher/src/search/rollout.rs:96"
   ],
-  "searcher-no-workload-names": [
-    "dissonance/searcher/README.md:116",
-    "dissonance/searcher/README.md:168",
-    "dissonance/searcher/src/search/campaign.rs:3896"
-  ]
+  "searcher-no-workload-names": []
 }
