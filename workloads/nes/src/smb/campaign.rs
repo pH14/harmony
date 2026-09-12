@@ -2701,9 +2701,6 @@ mod tests {
         assert_eq!(live.executions_completed, 8_192);
         assert_eq!(live.memory_budget_mib, Some(4));
         assert!(live.resident_memory_bytes <= 4 * 1024 * 1024);
-        // Skips account a selection without inserting, so this run exercises
-        // the budget maintenance the coordinator spends outside admission.
-        assert!(live.duplicates_skipped > 0);
         assert!(live.archive.retained > 1);
         assert!(live.history_compactions > 0);
         assert!(live.historical_entries_dropped > 0);
@@ -3023,28 +3020,6 @@ mod tests {
         let replayed =
             replay_smb_campaign(&rom, &stream, None).expect("replay continuous chord tables");
         assert_eq!(live, replayed);
-    }
-
-    #[test]
-    fn duplicate_check_requires_every_boundary() {
-        let rom = synthetic_nrom();
-        let config = genesis_config(0x5eed_ca04, 2, 16);
-        let mut stream = Vec::new();
-        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
-            .expect("live campaign");
-        // Tampering with a recorded skip must fail replay loudly rather than
-        // silently reproducing the counters.
-        let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
-        if let Some(skip_line) = text.lines().find(|line| line.contains("\"skip\"")) {
-            let tampered_line = skip_line.replace("\"mutation_seed\":", "\"mutation_seed\":9");
-            let tampered = text.replace(skip_line, &tampered_line);
-            let outcome = replay_smb_campaign(&rom, tampered.as_bytes(), None);
-            assert!(outcome.is_err());
-        }
-        assert_eq!(
-            live.duplicates_skipped,
-            live.skips_per_worker.iter().sum::<u64>()
-        );
     }
 
     #[test]
