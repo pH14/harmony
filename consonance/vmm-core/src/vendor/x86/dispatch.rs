@@ -1103,9 +1103,9 @@ pub(crate) fn encode_lapic_state(s: &lapic::LapicState) -> Vec<u8> {
 }
 
 /// Deterministic, fixed-layout encoding of a `VcpuState` (no map iteration into
-/// bytes beyond the already-sorted `BTreeMap`; no float; no host clock). The
-/// restore-only XSAVE provenance is retained in the persisted `VmState` record,
-/// but is deliberately outside this canonical fingerprint chunk.
+/// bytes beyond the already-sorted `BTreeMap`; no float; no host clock). A
+/// present XSAVE restore bitmap is part of the vCPU identity because it affects
+/// the state KVM reconstructs for a future guest XSAVE instruction.
 pub(crate) fn encode_vcpu_state(s: &VcpuState) -> Vec<u8> {
     let mut v = Vec::new();
     let r = &s.regs;
@@ -1166,6 +1166,13 @@ pub(crate) fn encode_vcpu_state(s: &VcpuState) -> Vec<u8> {
     }
     v.extend_from_slice(&(s.xsave.len() as u64).to_le_bytes());
     v.extend_from_slice(&s.xsave);
+    // `None` is deliberately omitted so legacy VCPU chunks remain byte-for-byte
+    // stable. A present value is guest-visible restore provenance, so append a
+    // domain tag and fixed-width value even when VMST snapshot hashing is off.
+    if let Some(restore_bv) = s.xsave_restore_bv {
+        v.extend_from_slice(b"XSRB");
+        v.extend_from_slice(&restore_bv.to_le_bytes());
+    }
     v
 }
 
@@ -1419,12 +1426,21 @@ mod tests {
     }
 
     #[test]
-    fn xsave_restore_provenance_is_omitted_from_canonical_vcpu_chunk() {
+    fn xsave_restore_provenance_is_an_optional_identity_suffix() {
+        let legacy = encode_vcpu_state(&xsave_state(None));
+        let with_zero = encode_vcpu_state(&xsave_state(Some(0)));
         let with_three = encode_vcpu_state(&xsave_state(Some(3)));
         let with_two = encode_vcpu_state(&xsave_state(Some(2)));
 
-        // The raw init-state spelling is persisted separately in the v6 VM-state
-        // record. It is intentionally absent from the canonical VCPU hash chunk.
-        assert_eq!(with_three, with_two);
+        // The absent field retains the legacy bytes exactly; a present value is
+        // appended as a domain-tagged, fixed-width record.
+        assert!(with_zero.starts_with(&legacy));
+        assert!(with_three.starts_with(&legacy));
+        assert_eq!(with_zero.len(), legacy.len() + 12);
+        assert_eq!(with_three.len(), legacy.len() + 12);
+        assert_eq!(with_two.len(), legacy.len() + 12);
+        assert_ne!(with_zero, with_two);
+        assert_ne!(with_zero, with_three);
+        assert_ne!(with_three, with_two);
     }
 }

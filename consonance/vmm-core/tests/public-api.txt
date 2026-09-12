@@ -556,7 +556,6 @@ pub fn vmm_core::vendor::Vendor::device_components(&Self::VcpuState, &Self::Devi
 pub fn vmm_core::vendor::Vendor::dispatch_arch<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::Exit) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::Vendor::dispatch_mmio<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::types::Gpa, u8, core::option::Option<u64>) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::Vendor::encode_device_state(&Self::Devices) -> alloc::vec::Vec<u8>
-pub fn vmm_core::vendor::Vendor::encode_snapshot_for_hash(&Self::Snapshot) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::error::VmStateError>
 pub fn vmm_core::vendor::Vendor::encode_vcpu_chunk(&Self::VcpuState) -> alloc::vec::Vec<u8>
 pub fn vmm_core::vendor::Vendor::finish_exit<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>) -> core::result::Result<core::option::Option<vmm_backend::exit::Exit<Self>>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::Vendor::guest_interruptible<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
@@ -593,7 +592,6 @@ pub fn vmm_backend::arch::arm64::Arm64::device_components(&vmm_backend::arch::ar
 pub fn vmm_backend::arch::arm64::Arm64::dispatch_arch<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::arch::arm64::Arm64Exit) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::arm64::Arm64::dispatch_mmio<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::types::Gpa, u8, core::option::Option<u64>) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::arm64::Arm64::encode_device_state(&Self::Devices) -> alloc::vec::Vec<u8>
-pub fn vmm_backend::arch::arm64::Arm64::encode_snapshot_for_hash(&Self::Snapshot) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::error::VmStateError>
 pub fn vmm_backend::arch::arm64::Arm64::encode_vcpu_chunk(&vmm_backend::arch::arm64::state::Arm64VcpuState) -> alloc::vec::Vec<u8>
 pub fn vmm_backend::arch::arm64::Arm64::finish_exit<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>) -> core::result::Result<core::option::Option<vmm_backend::exit::Exit<Self>>, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::arm64::Arm64::guest_interruptible<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
@@ -630,7 +628,6 @@ pub fn vmm_backend::arch::x86::X86::device_components(&Self::VcpuState, &Self::D
 pub fn vmm_backend::arch::x86::X86::dispatch_arch<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::arch::x86::X86Exit) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::x86::X86::dispatch_mmio<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::types::Gpa, u8, core::option::Option<u64>) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::x86::X86::encode_device_state(&Self::Devices) -> alloc::vec::Vec<u8>
-pub fn vmm_backend::arch::x86::X86::encode_snapshot_for_hash(&Self::Snapshot) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::error::VmStateError>
 pub fn vmm_backend::arch::x86::X86::encode_vcpu_chunk(&vmm_backend::arch::x86::state::VcpuState) -> alloc::vec::Vec<u8>
 pub fn vmm_backend::arch::x86::X86::finish_exit<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>) -> core::result::Result<core::option::Option<vmm_backend::exit::Exit<Self>>, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::x86::X86::guest_interruptible<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
