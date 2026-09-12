@@ -1,82 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The weighted chord input policy: one byte of decision entropy per input
-//! window, decoded against a weighted alphabet of NES button chords.
-//!
-//! Per-frame uniform buttons is a known-bad policy (a random walk); the chord
-//! window is what makes the entropy stream mean something (§play-agent).
-//! One entropy byte selects a chord by cumulative weight; the chord is then held
-//! for the whole `W`-frame window (A held across a window = full jump height).
-//! Weights **must sum to exactly 256** so a single byte maps onto the alphabet
-//! with no bias and no rejection loop — the decode is a total function of the
-//! byte, and the number of entropy bytes drawn per run is a pure function of
-//! the frame count (determinism rule 4).
-//!
-//! The joypad byte's bit layout is the NES hardware controller shift order —
-//! the exact layout expected by the replay decoder:
-//! bit 0 = A, 1 = B, 2 = Select, 3 = Start, 4 = Up, 5 = Down, 6 = Left,
-//! 7 = Right.
 
 use std::fmt;
 
-/// NES joypad button masks in hardware controller shift order — the billboard's
-/// joypad-byte contract used by the replay decoder.
 pub mod joypad {
-    /// A (jump).
     pub const A: u8 = 1 << 0;
-    /// B (run / fireball).
     pub const B: u8 = 1 << 1;
-    /// Select — excluded from the default alphabet (menu navigation).
     pub const SELECT: u8 = 1 << 2;
-    /// Start — excluded from the default alphabet (pausing burns budget).
     pub const START: u8 = 1 << 3;
-    /// D-pad up.
     pub const UP: u8 = 1 << 4;
-    /// D-pad down (duck / pipe entry).
     pub const DOWN: u8 = 1 << 5;
-    /// D-pad left.
     pub const LEFT: u8 = 1 << 6;
-    /// D-pad right (the way SMB scrolls).
     pub const RIGHT: u8 = 1 << 7;
 }
 
-/// One weighted chord: a joypad byte and its selection weight.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Chord {
-    /// The joypad byte (NES shift order, see [`joypad`]).
     pub buttons: u8,
-    /// Selection weight; the alphabet's weights sum to exactly 256.
     pub weight: u16,
 }
 
-/// The weighted chord alphabet: decodes one entropy byte into a joypad byte by
-/// cumulative weight. Weights sum to exactly 256 (checked at construction), so
-/// `decode` is total and unbiased over a uniform byte.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChordAlphabet {
     entries: Vec<Chord>,
 }
 
-/// Why a chord alphabet failed to construct or parse.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ChordError {
-    /// The alphabet has no entries.
     Empty,
-    /// A chord has weight zero (it could never be selected — a config typo).
-    ZeroWeight {
-        /// Index of the zero-weight entry.
-        index: usize,
-    },
-    /// The weights do not sum to exactly 256.
-    BadWeightSum {
-        /// The actual sum (u64: an oversized `--alphabet` can carry enough
-        /// max-weight entries to wrap a u32 accumulator — round-8 P2).
-        sum: u64,
-    },
-    /// A textual chord spec failed to parse.
-    Parse {
-        /// The offending fragment.
-        what: String,
-    },
+    ZeroWeight { index: usize },
+    BadWeightSum { sum: u64 },
+    Parse { what: String },
 }
 
 impl fmt::Display for ChordError {
@@ -100,7 +53,6 @@ impl fmt::Display for ChordError {
 impl std::error::Error for ChordError {}
 
 impl ChordAlphabet {
-    /// Build an alphabet, validating the exact-256 weight-sum invariant.
     pub fn new(entries: Vec<Chord>) -> Result<Self, ChordError> {
         if entries.is_empty() {
             return Err(ChordError::Empty);
@@ -115,11 +67,6 @@ impl ChordAlphabet {
         Ok(ChordAlphabet { entries })
     }
 
-    /// The default SMB alphabet (§play-agent): rightward-biased chords
-    /// — `RIGHT`, `RIGHT+B` (run), `RIGHT+A` (jump), `RIGHT+A+B` (run-jump),
-    /// neutral `A`, `LEFT`, `DOWN` (duck / pipe entry), neutral. `START` and
-    /// `SELECT` are excluded (pausing burns budget). Weights are a manifest
-    /// parameter; these defaults bias rightward because SMB only scrolls right.
     pub fn smb_default() -> Self {
         use joypad::{A, B, DOWN, LEFT, RIGHT};
         let entries = vec![
@@ -159,9 +106,6 @@ impl ChordAlphabet {
         ChordAlphabet::new(entries).expect("default alphabet weights sum to 256")
     }
 
-    /// Decode one entropy byte into a joypad byte by cumulative weight. Total:
-    /// because the weights sum to exactly 256, every byte value selects exactly
-    /// one chord.
     pub fn decode(&self, byte: u8) -> u8 {
         let mut cursor = u32::from(byte);
         for chord in &self.entries {
@@ -174,15 +118,10 @@ impl ChordAlphabet {
         0
     }
 
-    /// The alphabet entries (for reports and manifests).
     pub fn entries(&self) -> &[Chord] {
         &self.entries
     }
 
-    /// Parse an alphabet from a manifest string:
-    /// `"RIGHT:56,RIGHT+B:56,RIGHT+A:48,RIGHT+A+B:48,A:16,LEFT:12,DOWN:12,NEUTRAL:8"`.
-    /// Button names are the [`joypad`] constants plus `NEUTRAL` (no buttons);
-    /// chords join names with `+`; weights follow `:` and must sum to 256.
     pub fn parse(spec: &str) -> Result<Self, ChordError> {
         let mut entries = Vec::new();
         for part in spec.split(',') {
@@ -256,9 +195,6 @@ mod tests {
         assert_eq!(a.decode(255), 0);
     }
 
-    /// Round-8 P2: a weight set big enough to wrap a u32 accumulator is a
-    /// clean BadWeightSum with the true u64 sum — never a panic/wrap that
-    /// could alias 256.
     #[test]
     fn weight_overflow_is_rejected_not_wrapped() {
         let entries = vec![

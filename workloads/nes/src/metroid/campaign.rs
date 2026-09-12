@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Metroid implementation of the game-neutral campaign interface.
-
 use std::{
     collections::BTreeSet,
     error::Error,
@@ -41,9 +39,7 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-/// Stream format written by Metroid campaigns.
 pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
-/// Snapshot checkpoint format written by Metroid campaigns.
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v4";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
@@ -58,11 +54,9 @@ const TERMINAL_POLICY_IDENTIFIER: &str = "death_or_ending_v2";
 type MetroidPreference = (u8, u8, u16, u8);
 type MetroidChampionKey = (MetroidProgressWatermark, MetroidPreference);
 
-/// Header placeholder for a game with no adaptive draw table.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MetroidNoTableHeader;
 
-/// ROM and emulator identity shared by Metroid workers.
 pub struct MetroidGame {
     rom: Vec<u8>,
     core_path: PathBuf,
@@ -74,15 +68,11 @@ pub struct MetroidGame {
 }
 
 impl MetroidGame {
-    /// Build a game context whose sealed genesis is a new game from
-    /// power-on.
     #[must_use]
     pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
         Self::new_after(rom, core_path, core_sha256, power_on_walk())
     }
 
-    /// Build a game context whose sealed genesis follows `prefix` from
-    /// power-on.
     #[must_use]
     pub fn new_after(
         rom: &[u8],
@@ -115,16 +105,12 @@ impl MetroidGame {
         }
     }
 
-    /// Write the champion input to `path` each time it improves, so a long
-    /// run can be filmed at its deepest point before it ends.
     #[must_use]
     pub fn with_champion_input_path(mut self, path: PathBuf) -> Self {
         self.champion_input_path = Some(path);
         self
     }
 
-    /// Export one searched witness per named discovery. This reporting path
-    /// never supplies inputs back to the searcher.
     #[must_use]
     pub fn with_milestone_input_dir(mut self, directory: PathBuf) -> Self {
         self.milestone_input_dir = Some(directory);
@@ -158,24 +144,20 @@ impl MetroidGame {
         Ok(())
     }
 
-    /// Inputs run from power-on before genesis is sealed.
     #[must_use]
     pub fn prefix(&self) -> &[ButtonChord] {
         &self.prefix
     }
 
-    /// Pinned emulator identity recorded in streams.
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
         &self.identity
     }
 }
 
-/// Fixed recorded run policy.
 #[derive(Clone, Copy, Debug)]
 pub struct MetroidCampaignRun;
 
-/// Game-owned campaign evidence.
 #[derive(Clone, Default)]
 pub struct MetroidCampaignEvidence {
     observed_map: MapCoverage,
@@ -190,9 +172,6 @@ pub struct MetroidCampaignEvidence {
     genesis_area: Option<u8>,
 }
 
-/// Observation-only bitmap over raw area bytes and the engine's 32x32 map.
-/// Its fixed 32 KiB allocation cannot grow with campaign history. It has no
-/// route semantics and is never exposed to archive keys or input selection.
 #[derive(Clone)]
 struct MapCoverage(Box<[u64; 4096]>);
 
@@ -215,17 +194,11 @@ impl MapCoverage {
     }
 }
 
-/// Campaign origin.
 pub type MetroidCampaignOrigin = CampaignOrigin<MetroidGame>;
-/// Resume checkpoint.
 pub type MetroidCampaignCheckpoint = CampaignCheckpoint<MetroidSnapshot>;
-/// Whole-tree snapshot checkpoint.
 pub type MetroidSnapshotCheckpoint = SnapshotCheckpoint<MetroidSnapshot>;
-/// Stream header.
 pub type MetroidCampaignStreamHeader = CampaignStreamHeader<MetroidNoTableHeader>;
-/// Campaign report.
 pub type MetroidCampaignModeReport = CampaignModeReport<ButtonChord, MetroidArchiveReport>;
-/// Progress sidecar record.
 pub type MetroidCampaignProgressRecord = CampaignProgressRecord<MetroidArchiveKey>;
 type MetroidCampaignActionResult = CampaignActionResult<MetroidGame>;
 type MetroidCampaignJobResult = CampaignJobResult<MetroidGame>;
@@ -275,37 +248,21 @@ fn metroid_result_sha256(result: &MetroidCampaignJobResult) -> Result<String, Bo
     postcard_value_sha256(&MetroidResult { actions })
 }
 
-/// Fixed configuration for one live campaign.
 pub struct MetroidCampaignConfig {
-    /// Campaign seed.
     pub campaign_seed: u64,
-    /// Worker thread count.
     pub workers: u32,
-    /// Admitted execution budget.
     pub execution_budget: u64,
-    /// Maximum actions in one clean-reset input.
     pub action_limit: usize,
-    /// Operator-supplied host label.
     pub host: String,
-    /// Optional live-only wall cutoff.
     pub wall_budget: Option<std::time::Duration>,
-    /// Live-only: continue issuing reservations after the first victory.
     pub continue_after_victory: bool,
-    /// Maximum retained archive entries.
     pub archive_entry_limit: usize,
-    /// Deterministic logical-memory budget for live search structures.
     pub memory_budget_mib: Option<usize>,
-    /// Live-only: materialize full archive inputs and snapshots at completion.
     pub materialize_final_artifacts: bool,
-    /// Admission policy.
     pub retention: RetentionPolicy,
-    /// Generic parent selector.
     pub selector: crate::search::archive::SelectorPolicy,
-    /// Generic suffix-length shape.
     pub suffix: SuffixShape,
-    /// Generic draw mixture.
     pub mixture: DrawMixture,
-    /// Live-only path receiving the first item-gaining input.
     pub victory_input_path: Option<PathBuf>,
 }
 
@@ -435,9 +392,6 @@ fn update_first_inputs(
     }
 }
 
-/// The action's endpoint as a champion key, or nothing when the endpoint is
-/// a death: a dying Samus can reach keys no live input extends, and the
-/// champion input exists to be replayed and extended.
 fn action_champion_key(observations: &[MetroidObservations]) -> Option<MetroidChampionKey> {
     observations
         .last()
@@ -905,7 +859,6 @@ impl Evaluation for MetroidGame {
     }
 }
 
-/// Run a campaign and return its report plus whole-tree checkpoint.
 pub fn run_metroid_campaign_checkpointed(
     game: &MetroidGame,
     config: &MetroidCampaignConfig,
@@ -916,7 +869,6 @@ pub fn run_metroid_campaign_checkpointed(
     run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
 }
 
-/// Replay a recorded stream exactly.
 pub fn replay_metroid_campaign_checkpointed(
     game: &MetroidGame,
     stream_bytes: &[u8],

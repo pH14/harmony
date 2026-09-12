@@ -1,20 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! CPUID model and MSR-filter policy built from the checked-in x86 contract in
-//! `consonance/vmm-core/contracts/x86/guest.toml`.
-//!
-//! `vmm-core` owns the policy; the install *mechanism* (`KVM_SET_CPUID2`,
-//! `KVM_X86_SET_MSR_FILTER`, `KVM_CAP_X86_USER_SPACE_MSR`) is KVM-specific and
-//! lives **below the trait** in `vmm-backend`. These functions produce
-//! backend-agnostic values ([`vmm_backend::CpuidModel`] / [`vmm_backend::MsrFilter`]
-//! / [`MsrDisposition`]) that the Linux composition root hands to the backend
-//! through the trait. [`contract_hash`] is the SHA-256 of the §6 canonical
-//! serialization of these same tables, so the policy can never drift from the
-//! ratified contract.
-//!
-//! The contract is ingested as a **checked-in TOML embedded with `include_str!`**
-//! and parsed once at first use (no `toml` runtime dependency, no `build.rs`
-//! codegen, no second hand-maintained copy — the parser that loads the tables is
-//! the same code the canonical serializer emits from). See `parse` / `canonical`.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -29,12 +13,8 @@ mod parse;
 
 use parse::{Contract, Subleaf, VendorId};
 
-/// The shared x86 guest policy, embedded at compile time.
 const CONTRACT_TOML: &str = include_str!("../../../../contracts/x86/guest.toml");
 
-/// The shared guest policy, built once on first use.
-/// The declared guest vendor must agree with the CPUID leaf-0 string. This
-/// validates embedded policy bytes; it does not inspect the physical host.
 fn contract() -> &'static Contract {
     static CACHE: OnceLock<Contract> = OnceLock::new();
     CACHE.get_or_init(|| {
@@ -43,46 +23,22 @@ fn contract() -> &'static Contract {
     })
 }
 
-/// `KVM_MSR_EXIT_REASON_FILTER` bit value (bit 0). Written `1` rather than `1 << 0`
-/// so the shift operator carries no equivalent (`1 << 0` ≡ `1 >> 0`) mutant.
 pub const MSR_EXIT_REASON_FILTER: u64 = 1;
-/// `KVM_MSR_EXIT_REASON_UNKNOWN` bit value.
 pub const MSR_EXIT_REASON_UNKNOWN: u64 = 1 << 1;
-/// `KVM_MSR_EXIT_REASON_INVAL` bit value.
 pub const MSR_EXIT_REASON_INVAL: u64 = 1 << 2;
 
-/// The mask `vmm-backend` must enable on `KVM_CAP_X86_USER_SPACE_MSR` **before
-/// installing the MSR filter** (x86 CPU contract; api.rst §4.97 ordering):
-/// `FILTER | UNKNOWN | INVAL`. Enabling the cap first is load-bearing — otherwise
-/// a denied/unknown/invalid MSR becomes a silent in-kernel `#GP` instead of a loud
-/// `KVM_EXIT_X86_RDMSR/WRMSR`.
 pub const USER_SPACE_MSR_MASK: u64 =
     MSR_EXIT_REASON_FILTER | MSR_EXIT_REASON_UNKNOWN | MSR_EXIT_REASON_INVAL;
 
-/// Per-direction disposition of an MSR access (the §3 vocabulary the skeleton
-/// needs).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MsrDisposition {
-    /// Architecturally guest-writable; KVM virtualizes it — placed in the filter
-    /// **allow** set, so it is serviced in-kernel and never reaches a userspace
-    /// exit.
     AllowStateful,
-    /// Read returns this constant (read-only rows); write is denied.
     AllowFixed(u64),
-    /// `emulate-vtime` rows (x86 CPU contract): `MSR_IA32_TSC` (0x10) and
-    /// `MSR_IA32_TSC_ADJUST` (0x3b), read **and** write — serviced from V-time.
-    /// V-time is not wired in this skeleton, so an actual `0x10`/`0x3b` access is
-    /// a loud `ContractViolation` until V-time lands; the audited M1/M2 payloads
-    /// touch neither. Kept an explicit variant so folding it into
-    /// `AllowFixed`/`DenyGp` cannot silently break the contract.
     EmulateVtime,
-    /// Trapped, logged loudly, then `#GP` injected.
     DenyGp,
-    /// Write dropped after a loud log (never silent); the read side is never this.
     DenyIgnoreWrite,
 }
 
-/// Map a `(token, param)` pair from the contract to an [`MsrDisposition`].
 fn disposition_of(token: &str, param: Option<&str>) -> MsrDisposition {
     match token {
         "allow-stateful" => MsrDisposition::AllowStateful,
@@ -93,12 +49,10 @@ fn disposition_of(token: &str, param: Option<&str>) -> MsrDisposition {
     }
 }
 
-/// Parse a `"0x...."`/bare-hex 64-bit param.
 fn hex64(s: &str) -> u64 {
     u64::from_str_radix(s.trim().trim_start_matches("0x"), 16).unwrap_or(0)
 }
 
-/// The per-index disposition table, built once: `index → (read, write)`.
 type DispMap = BTreeMap<u32, (MsrDisposition, MsrDisposition)>;
 
 fn disp_map() -> &'static DispMap {
@@ -116,17 +70,12 @@ fn disp_map() -> &'static DispMap {
     })
 }
 
-/// Compute the contractual disposition of a guest read of `index` (default
-/// [`MsrDisposition::DenyGp`]).
 pub fn rdmsr_disposition(index: u32) -> MsrDisposition {
     disp_map()
         .get(&index)
         .map_or(MsrDisposition::DenyGp, |(r, _)| *r)
 }
 
-/// Compute the contractual disposition of a guest write of `value` to `index`
-/// (default [`MsrDisposition::DenyGp`]). `value` is carried for logging / future
-/// value-dependent rows; no in-scope row branches on it.
 pub fn wrmsr_disposition(index: u32, value: u64) -> MsrDisposition {
     let _ = value;
     disp_map()
@@ -134,17 +83,6 @@ pub fn wrmsr_disposition(index: u32, value: u64) -> MsrDisposition {
         .map_or(MsrDisposition::DenyGp, |(_, w)| *w)
 }
 
-/// The normative x86 virtual_time timing row set, read from the ratified
-/// contract's `vtime-*` header records and covered by `contract_hash`.
-/// Production composition never uses `VirtualTimeTiming::default()`'s M0
-/// placeholders.
-///
-/// Classes: interrupt-controller = the xAPIC MMIO page, the 8259 PIC data
-/// ports, and the ELCR ports; serial = the 8250 UART ports; paravirtual = any
-/// other modeled platform device (the report channel, the accepted legacy
-/// ISA/PCI ports); time read = the `emulate-vtime` TSC MSRs and RDTSC/RDTSCP;
-/// architectural control = every other surfaced MSR/CPUID/RDRAND/RDSEED trap;
-/// execution tick = the guest kernel's ring on `VIRTUAL_TIME_TICK_PORT`.
 pub fn virtual_time_timing() -> VirtualTimeTiming {
     let c = contract();
     let vns = |value: i64, record: &str| {
@@ -168,27 +106,11 @@ pub fn virtual_time_timing() -> VirtualTimeTiming {
     timing
 }
 
-/// The guest's clockevent period from the contract's `vtime-clockevent-period-vns`
-/// header record. It is the seventh shared timing row: no exit is charged with it,
-/// so it is not a [`VirtualTimeTiming`] field, but it bounds the execution tick and
-/// both architectures must carry the same value.
 pub(crate) fn clockevent_period_vns() -> u64 {
     u64::try_from(contract().vtime_clockevent_period_vns)
         .unwrap_or_else(|_| panic!("contract vtime-clockevent-period-vns must be non-negative"))
 }
 
-/// The frozen CPUID model from §2 of the contract, in canonical (leaf, subleaf)
-/// order, as [`vmm_backend::CpuidModel`] so it feeds straight into
-/// [`vmm_backend::Backend::set_cpuid`]. Installed once via `KVM_SET_CPUID2` so
-/// CPUID is answered **in-kernel** from this model (no host leaves inherited).
-/// Masks `X2APIC` (CPUID.1:ECX[21]) and the TSC-deadline bit (CPUID.1:ECX[24])
-/// and hides all PV leaves (`0x4000_00xx`) and the vPMU (leaf `0xA`), per R1.
-///
-/// This is the **frozen base only** — the three dynamic cells (OSXSAVE, the
-/// `0xB`/`0x1F` level echo, the `0xD.0` XSAVE size) are recomputed in-kernel by
-/// stock KVM (`kvm_update_cpuid_runtime`), so the base table is correct and no
-/// CPUID exit fires; a backend surfacing a userspace `X86Exit::Cpuid` must overlay
-/// them via [`resolve_cpuid`].
 pub fn cpuid_model() -> CpuidModel {
     let c = contract();
     let mut entries = Vec::with_capacity(c.cpuid.len());
@@ -213,11 +135,6 @@ pub fn cpuid_model() -> CpuidModel {
     CpuidModel { entries }
 }
 
-/// Overlay the three dynamic CPUID cells (see [`cpuid_model`]) onto the frozen
-/// `base` entry when servicing a userspace `X86Exit::Cpuid`, from the guest's live
-/// `CR4`/`XCR0` (`base.leaf`/`base.subleaf` select which rule applies). Never
-/// called for stock `KvmBackend` (CPUID is in-kernel); it exists so the
-/// userspace CPUID emulation stays contract-correct. Pure.
 pub fn resolve_cpuid(base: CpuidEntry, cr4: u64, xcr0: u64) -> CpuidEntry {
     let mut e = base;
     match (base.leaf, base.subleaf) {
@@ -236,13 +153,6 @@ pub fn resolve_cpuid(base: CpuidEntry, cr4: u64, xcr0: u64) -> CpuidEntry {
     e
 }
 
-/// The MSR-filter allow set: exactly the `allow-stateful` rows — the only MSRs
-/// KVM keeps servicing in-kernel — as [`vmm_backend::MsrFilter`] so it feeds
-/// straight into [`vmm_backend::Backend::set_msr_filter`]. Every other disposition
-/// is left out on purpose so the access surfaces to a userspace exit. Ranges are
-/// canonical, sorted, and non-overlapping; the backend installs them under
-/// `KVM_MSR_FILTER_DEFAULT_DENY` with both READ and WRITE flags (well within
-/// KVM's 16-ranges-per-direction limit).
 pub fn msr_filter_allow() -> MsrFilter {
     let mut indices: Vec<u32> = Vec::new();
     for row in &contract().msr {
@@ -268,15 +178,6 @@ pub fn msr_filter_allow() -> MsrFilter {
     }
 }
 
-/// SHA-256 of the canonical serialized contract this policy was built from (§6
-/// `contract_hash`). The bytes are the §6 canonical form emitted by
-/// [`canonical::serialize`] from the same parsed tables the runtime policy uses,
-/// so policy can never drift from the ratified contract.
-///
-/// The guest-policy hash is committed in `consonance/vmm-core/contracts/x86/guest.toml`
-/// `[contract] contract_hash` carries the hash of exactly these bytes, and the
-/// `contract_hash() == toml field` gate ([`tests::contract_hash_matches_committed_registry`])
-/// is live and green.
 pub fn contract_hash() -> [u8; 32] {
     let canonical = canonical::serialize(contract());
     let mut hasher = Sha256::new();
@@ -476,12 +377,6 @@ mod tests {
         assert_ne!(contract_hash(), [0u8; 32]);
     }
 
-    /// Gate-6 anti-drift assertion: `contract_hash()` must equal the hash the §6
-    /// registry pins in `contracts/x86/guest.toml` `[contract] contract_hash`.
-    /// The computed hash must equal the committed guest-policy identity.
-    /// Miri-ignored on the same grounds as its §6 siblings above (a ~97 s
-    /// interpreted sha256 over the 48 KiB canonical form, pure unsafe-free code);
-    /// the anti-drift gate itself runs on every native suite.
     #[test]
     #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
     fn contract_hash_matches_committed_registry() {
@@ -532,19 +427,6 @@ mod tests {
         }
     }
 
-    /// **GOLDEN** §6 canonical form — the exact byte string the serializer must
-    /// emit for the version 6 guest policy, committed at
-    /// `src/vendor/x86/contract/testdata/canonical-v6.txt`. This locks **every** §6 spelling
-    /// and ordering decision (header scalars, CPUID `dyn:` tokens, MSR formula ids,
-    /// the timer device order, the 3-hex `xapic.<offset>` form, the 2-hex `cmos`
-    /// tokens, and the bracketed `guest cr4-force-reserved [PKE, PKS]`), so
-    /// **any** drift — including a parser change that alters a hashed value — is a
-    /// failing byte diff. This is the gate that would have caught the
-    /// `cr4-force-reserved` spelling bug; `contract_hash` is `sha256` of exactly
-    /// these bytes, so a green golden ⇒ a correct hash.
-    ///
-    /// Regenerate **only** on a reviewed §6 change (and bump `contract-version`):
-    /// write `canonical::serialize(contract())` to the golden file.
     #[test]
     #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
     fn canonical_form_matches_golden() {
@@ -563,8 +445,6 @@ mod tests {
         );
     }
 
-    /// A small but multi-section synthetic contract for the formatting-invariance
-    /// property below.
     const STABILITY_TOML: &str = "\
 [contract]\n\
 version = 3\n\
@@ -602,9 +482,6 @@ write = \"deny-gp\"\n\
 cr4-force-reserved = [\"PKE\", \"PKS\"]\n\
 ucode-rev = \"0x0000000100000000\"\n";
 
-    /// Reconstruct `toml` with incidental, non-semantic formatting noise: leading
-    /// indentation on every line, optional trailing `# comment`s, and extra blank
-    /// lines — none of which the §6 form may depend on.
     fn inject_formatting_noise(toml: &str, comment_each: &[bool], leading_blanks: usize) -> String {
         let mut out = "\n".repeat(leading_blanks);
         for (i, line) in toml.lines().enumerate() {
@@ -621,9 +498,6 @@ ucode-rev = \"0x0000000100000000\"\n";
         out
     }
 
-    /// Miri-safe proptest config: fewer cases, and no failure persistence (its
-    /// regression file needs `getcwd`, blocked by Miri isolation — see
-    /// `tests/loader_proptest.rs`).
     fn pcfg(cases: u32) -> ProptestConfig {
         let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 4 } else { cases });
         if cfg!(miri) {
@@ -635,11 +509,6 @@ ucode-rev = \"0x0000000100000000\"\n";
     proptest! {
         #![proptest_config(pcfg(48))]
 
-        /// The canonical form is invariant to incidental input formatting — extra
-        /// blank lines, trailing inline comments, surrounding whitespace — because
-        /// the serializer derives only from the normative tables (sorted, fixed
-        /// layout). This is the order/format independence the §6 `contract_hash`
-        /// relies on: two artifacts that differ only in formatting hash identically.
         #[test]
         #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
         fn prop_canonical_form_invariant_to_formatting(
@@ -669,9 +538,6 @@ ucode-rev = \"0x0000000100000000\"\n";
 
     use super::parse::{ContractError, VendorId};
 
-    /// Mixed-vendor refusal (Deliverable 8): the loader rejects a file whose `vendor`
-    /// field disagrees with the axis it was loaded under, and an artifact whose
-    /// declared vendor disagrees with its own CPUID leaf-0 vendor string.
     #[test]
     fn loader_refuses_vendor_axis_disagreement() {
         assert_eq!(
@@ -684,8 +550,6 @@ ucode-rev = \"0x0000000100000000\"\n";
         assert!(Contract::load(CONTRACT_TOML, VendorId::GenuineIntel).is_ok());
     }
 
-    /// A mixed-vendor artifact: the `[contract] vendor` header claims AuthenticAMD,
-    /// but CPUID leaf 0 spells the Intel vendor string — the structural guard fires.
     #[test]
     fn loader_refuses_mixed_vendor_artifact() {
         const MIXED: &str = "\
@@ -711,9 +575,6 @@ edx = \"0x49656e69\"\n\
         );
     }
 
-    /// Fail-closed on a **present-but-invalid** vendor token: an unrecognized
-    /// `[contract] vendor` string is refused (`UnknownVendor`), never silently
-    /// defaulted to GenuineIntel. Only a genuinely *absent* key defaults.
     #[test]
     fn loader_refuses_present_but_invalid_vendor_token() {
         const BOGUS: &str = "\
@@ -733,9 +594,6 @@ cpuid-baseline = \"whatever\"\n";
         assert!(Contract::load(NO_VENDOR, VendorId::GenuineIntel).is_ok());
     }
 
-    /// Fail-closed on a **present-but-malformed** leaf 0: a leaf-0 row using dynamic
-    /// register rules, or non-UTF-8 constant bytes, cannot bypass the mixed-vendor
-    /// guard by masquerading as an absent leaf 0 — it is refused (`MalformedLeaf0`).
     #[test]
     fn loader_refuses_malformed_leaf0() {
         const DYN_LEAF0: &str = "\
@@ -791,13 +649,6 @@ edx = \"0x00000000\"\n\
         assert!(Contract::load(NO_LEAF0, VendorId::AuthenticAMD).is_ok());
     }
 
-    /// Positive validation of the leaf-0 shape (round-4 REDESIGN): the guard no longer
-    /// enumerates malformed shapes (which lost three rounds) — it accepts **only** the
-    /// one canonical shape (exactly one all-constant single `(0,0)` row spelling the
-    /// declared vendor) and refuses everything else. A range-form covering row is now
-    /// `MalformedLeaf0` **regardless of the vendor bytes** — a range is not the
-    /// canonical single-leaf shape, so it can neither smuggle a foreign vendor nor
-    /// slip through by spelling the right one.
     #[test]
     fn loader_refuses_noncanonical_leaf0_shapes() {
         const RANGE_INTEL: &str = "\
@@ -934,9 +785,6 @@ edx = \"0x49656e69\"\n\
         assert!(Contract::load(NONZERO_SUBLEAF, VendorId::AuthenticAMD).is_ok());
     }
 
-    /// Prints the computed §6 canonical form size + the current `contract_hash` so the
-    /// maintainer can commit it to `contracts/x86/guest.toml`. Run with:
-    /// `cargo test -p vmm-core contract::tests::report_contract_hash -- --nocapture`.
     #[test]
     #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
     fn report_contract_hash() {
@@ -949,11 +797,6 @@ edx = \"0x49656e69\"\n\
         eprintln!("contract_hash = {hex}");
     }
 
-    /// Regenerate the committed golden canonical form. **Ignored** so it never runs
-    /// in the normal suite (it writes a source file); run deliberately on a reviewed
-    /// §6 change after bumping `contract-version`:
-    /// `cargo test -p vmm-core contract::tests::regen_golden -- --ignored`.
-    /// Then update `canonical_form_matches_golden`'s expected hash to the new value.
     #[test]
     #[ignore = "writes src/vendor/x86/contract/testdata/canonical-v6.txt; run manually on a reviewed §6 bump"]
     fn regen_golden() {

@@ -1,14 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Native headless QuickNES implementation of the machine boundary.
-//!
-//! QuickNES's libretro wrapper stores the emulator and callbacks in globals.
-//! To keep workers independent without a lock, every machine loads a private
-//! copy of the same pinned shared object. Search keeps video and audio
-//! hard-disabled; an explicit replay-only mode copies frames and PCM samples.
-//! Execution reads the core's 2 KiB system RAM directly and snapshots through
-//! libretro's fixed-buffer serialize API.
-
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, VecDeque},
@@ -35,10 +26,8 @@ use sha2::{Digest, Sha256};
 
 pub use crate::SharedState;
 
-/// Exact QuickNES revision supported by this adapter.
 pub const QUICKNES_REVISION: &str = "26bb785c9deddb66a17717b21bb4e328f03ade32";
 
-/// Exact libretro version string emitted by the pinned QuickNES build.
 const QUICKNES_LIBRARY_VERSION: &str = "1.0-WIP26bb785c9deddb66a17717b21bb4e328f03ade32";
 
 macro_rules! define_quicknes_options {
@@ -47,7 +36,6 @@ macro_rules! define_quicknes_options {
             $(($key, $value)),+
         ];
 
-        /// Stable identifier for every libretro option fixed by this adapter.
         pub const QUICKNES_OPTIONS: &str = concat!(
             "headless-hard-audio-video-off",
             $(";", $identity),+
@@ -92,7 +80,6 @@ define_quicknes_options!(
         "up_down_allowed=disabled"
     ),
 );
-/// Build flags used by the pinned core build script.
 pub const QUICKNES_BUILD: &str =
     "DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32";
 
@@ -131,16 +118,10 @@ const PIXEL_FORMAT_RGB565: u32 = 2;
 const MAX_VIDEO_WIDTH: usize = 4_096;
 const MAX_VIDEO_HEIGHT: usize = 4_096;
 const MAX_VIDEO_PITCH: usize = MAX_VIDEO_WIDTH * 4;
-/// Sample rate fixed by [`QUICKNES_OPTIONS`].
 pub const QUICKNES_AUDIO_SAMPLE_RATE: u32 = 48_000;
-/// Libretro audio is interleaved stereo.
 pub const QUICKNES_AUDIO_CHANNELS: u8 = 2;
 const MAX_AUDIO_FRAMES_PER_BATCH: usize = 1_048_576;
-/// Frames a capturing machine buffers before the callback reports overflow.
-/// A caller that drains per emulated frame never approaches it; one that
-/// drains per action gets a bounded backlog instead of unbounded growth.
 const MAX_BUFFERED_VIDEO_FRAMES: usize = 4_096;
-/// Interleaved samples a capturing machine buffers before reporting overflow.
 const MAX_BUFFERED_AUDIO_SAMPLES: usize = 16_777_216;
 
 thread_local! {
@@ -153,14 +134,10 @@ thread_local! {
     static CALLBACK_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
-/// One tightly packed RGB24 frame copied from the libretro video callback.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VideoFrame {
-    /// Frame width in pixels.
     pub width: u32,
-    /// Frame height in pixels.
     pub height: u32,
-    /// Row-major RGB bytes.
     pub rgb24: Vec<u8>,
 }
 
@@ -466,8 +443,6 @@ fn validate_core_revision(api: CoreApi) -> Result<(), MachineError> {
     Ok(())
 }
 
-/// Deterministic QuickNES-backed machine whose readable address windows are
-/// the core's 2 KiB work RAM and 8 KiB save RAM.
 pub struct QuickNesMachine {
     api: CoreApi,
     #[cfg(not(miri))]
@@ -498,15 +473,6 @@ impl std::fmt::Debug for QuickNesMachine {
 }
 
 impl QuickNesMachine {
-    /// Load a ROM in a private image of the pinned QuickNES libretro core.
-    ///
-    /// `core_sha256` must be the lowercase SHA-256 of `core_path`; it is
-    /// embedded in every snapshot so persisted states cannot cross builds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid identity, loader/ABI failure, ROM
-    /// rejection, or a core whose system RAM is not exactly 2 KiB.
     #[cfg(not(miri))]
     pub fn from_rom_bytes(
         rom: &[u8],
@@ -603,20 +569,16 @@ impl QuickNesMachine {
         })
     }
 
-    /// Total frames emulated by this instance; restores do not change it.
     #[must_use]
     pub fn now(&self) -> Moment {
         Moment(self.vtime)
     }
 
-    /// Work RAM copied after each frame of the most recent run.
     #[must_use]
     pub fn frames(&self) -> &[[u8; WRAM_SIZE]] {
         &self.frames
     }
 
-    /// Copy the core's complete 2 KiB system RAM into a fixed buffer without
-    /// allocating an intermediate vector.
     pub fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError> {
         self.api.activate();
         let mut wram = [0_u8; WRAM_SIZE];
@@ -635,11 +597,6 @@ impl QuickNesMachine {
         Ok(wram)
     }
 
-    /// Copy the cartridge-backed save RAM exposed by the core.
-    ///
-    /// The returned length is mapper-owned, so it is validated before the
-    /// core pointer is made into a slice. Nova uses this region for durable
-    /// completion, unlock, collectible, and carried-ability observations.
     pub fn read_save_ram(&self) -> Result<Vec<u8>, MachineError> {
         self.api.activate();
         // SAFETY: both calls are synchronous libretro memory queries on this
@@ -661,11 +618,6 @@ impl QuickNesMachine {
         Ok(unsafe { std::slice::from_raw_parts(memory, length) }.to_vec())
     }
 
-    /// Replace one bounded range of the cartridge-backed save RAM.
-    ///
-    /// This is a workload-setup seam, not a search action. Game adapters use
-    /// it before sealing genesis to construct a source-grounded save-file
-    /// fixture such as an independently selectable campaign level.
     pub fn write_save_ram(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MachineError> {
         self.api.activate();
         // SAFETY: both calls are synchronous libretro memory queries on this
@@ -692,7 +644,6 @@ impl QuickNesMachine {
         Ok(())
     }
 
-    /// Enable or disable bounded frame copying for replay-only rendering.
     pub fn set_video_capture(&mut self, enabled: bool) {
         self.capture_video = enabled;
         self.api.activate();
@@ -703,23 +654,16 @@ impl QuickNesMachine {
         });
     }
 
-    /// Take the oldest copied video frame, if one is buffered.
-    ///
-    /// The core emits one frame per emulated frame, so a caller that runs a
-    /// frame and takes one here reads that frame.
     pub fn take_video_frame(&mut self) -> Option<VideoFrame> {
         self.api.activate();
         CAPTURED_VIDEO.with(|frames| frames.borrow_mut().pop_front())
     }
 
-    /// Take every video frame copied since the previous call, in emulation
-    /// order.
     pub fn take_video_frames(&mut self) -> Vec<VideoFrame> {
         self.api.activate();
         CAPTURED_VIDEO.with(|frames| std::mem::take(&mut *frames.borrow_mut()).into())
     }
 
-    /// Enable or disable replay-only copying of native stereo PCM samples.
     pub fn set_audio_capture(&mut self, enabled: bool) {
         self.capture_audio = enabled;
         self.api.activate();
@@ -730,22 +674,17 @@ impl QuickNesMachine {
         });
     }
 
-    /// Take every interleaved stereo sample copied since the previous call.
     pub fn take_audio_samples(&mut self) -> Vec<i16> {
         self.api.activate();
         AUDIO_SAMPLES.with(|samples| std::mem::take(&mut *samples.borrow_mut()))
     }
 
-    /// Move a held snapshot out of the machine without cloning its fixed
-    /// state buffer.
     pub fn take_snapshot(&mut self, snap: SnapId) -> Result<Vec<u8>, MachineError> {
         self.snapshots
             .remove(&snap.0)
             .ok_or(MachineError::UnknownSnapshot)
     }
 
-    /// Hold persisted snapshot bytes behind a fresh handle. Compatibility is
-    /// checked on restore, keeping import side-effect-free.
     pub fn import_snapshot(&mut self, bytes: &[u8]) -> SnapId {
         let id = self.next_snap;
         self.next_snap = self.next_snap.wrapping_add(1);
@@ -753,8 +692,6 @@ impl QuickNesMachine {
         SnapId(id)
     }
 
-    /// Restore persisted snapshot bytes without first copying them into the
-    /// machine's temporary handle table.
     pub fn restore_bytes(&mut self, bytes: &[u8]) -> Result<(), MachineError> {
         self.restore_core(bytes)?;
         self.staged.clear();
@@ -763,7 +700,6 @@ impl QuickNesMachine {
         Ok(())
     }
 
-    /// Overwrite one system-RAM byte. Test support only.
     #[doc(hidden)]
     pub fn poke_wram(&mut self, addr: usize, byte: u8) {
         if addr >= WRAM_SIZE {
@@ -873,11 +809,6 @@ impl QuickNesMachine {
         Ok(())
     }
 
-    /// Construct a deterministic in-process loopback core for downstream unit
-    /// tests that exercise the real QuickNES adapter without a shared object.
-    ///
-    /// This boundary exists so the unsafe fixed-buffer and direct-RAM paths remain
-    /// Miri-exercisable. Production builds do not select it.
     #[doc(hidden)]
     #[cfg(any(test, feature = "test-loopback"))]
     pub fn loopback_for_tests(rom: &[u8]) -> Result<Self, MachineError> {
@@ -1203,15 +1134,11 @@ fn reset_capture_state() {
     });
 }
 
-/// Whether `added` more items fit a capture buffer holding `len` of
-/// `capacity`. A total that overflows never fits, including at the widest
-/// capacity, where a saturating sum would compare equal and report a fit.
 fn capture_buffer_fits(len: usize, added: usize, capacity: usize) -> bool {
     len.checked_add(added)
         .is_some_and(|total| total <= capacity)
 }
 
-/// Record the first callback failure of a run; `run_frame` reports it.
 fn note_callback_error(error: String) {
     CALLBACK_ERROR.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -1368,8 +1295,6 @@ fn convert_pixels(
     }
     Ok(output)
 }
-/// Append copied samples, reporting overflow instead of growing without
-/// bound when a caller never drains.
 fn buffer_audio_samples(batch: &[i16]) {
     AUDIO_SAMPLES.with(|samples| {
         let mut samples = samples.borrow_mut();

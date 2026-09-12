@@ -1,27 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Live X2 gates for **assigned-at-exit (virtual_time) V-time on the stock x86
-//! backend** (`docs/DETERMINISM.md`, status in
-//! `docs/DETERMINISM.md`): boot the committed
-//! `harmony-linux` bzImage + initramfs through
-//! [`boot_linux_stock_virtual_time`] on real `/dev/kvm` and measure whether the
-//! production [`LiveVirtualTimeTrace`](vmm_core::virtual_time) is identical
-//! across same-seed boots.
-//!
-//! Two tiers, cheapest-decisive-first:
-//!
-//! 1. [`x2_virtual_time_stock_boot_smoke`] — ONE boot. Proves the virtual_time
-//!    composition can run Linux to userspace and a clean terminal at all, and
-//!    reports the trace size / wall cost that dictates the fleet shape.
-//! 2. [`x2_same_seed_boots_one_normalized_log`] — N same-seed boots (default
-//!    10, `X2_BOOTS` overrides) must produce ONE normalized log. On divergence
-//!    it prints the first divergent event with a surrounding window from both
-//!    runs — the measurement that tells us which exit class to close next.
-//!
-//! These need real KVM and the built guest image, so they are `#[ignore]`d;
-//! the x86-virtual-time workflow runs them on GitHub-hosted runners with the
-//! cache-restored image. No physical CPU identity is required: the
-//! virtual_time determinism claim is defined over the exit stream plus the
-//! frozen contract, not host homogeneity — heterogeneous runners are the point.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::io::Write;
@@ -32,30 +9,15 @@ use vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time;
 use vmm_core::virtual_time::{NormalizedLog, check_delivery_placement, compare_normalized_logs};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
-/// 256 MiB of guest RAM — the same size the established live boot gates use.
 const GUEST_RAM_LEN: usize = 256 << 20;
-/// The pinned seed (same shape as the live boot gates' seed).
 const SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
-/// The established live-boot kernel command line (`live_linux_boot.rs`) plus
-/// `harmony_pvclock`: printk on the modeled 8250, panic = immediate terminal,
-/// the timer/entropy neutralization params the determinism overlay expects,
-/// and the clock-page opt-in — on the virtual_time composition the guest's
-/// sched_clock, timekeeping, and entropy timing all route through the
-/// host-stamped page instead of the uninterceptable raw TSC.
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
      no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
      nox2apic hpet=disable harmony_pvclock";
-/// The kernel message that proves Linux reached the userspace init process.
 const REACHED_USERSPACE: &[u8] = b"Run /init as init process";
-/// The guest driver's proof that the clock page registered (patch 0001); a
-/// boot that silently fell back to raw-TSC time must fail the gate, not pass
-/// nondeterministically.
 const PVCLOCK_REGISTERED: &[u8] = b"harmony_pvclock: exit-count clock page registered";
-/// `consonance/harmony-linux/linux/init.sh`'s userspace readiness announcement.
 const GUEST_READY: &[u8] = b"GUEST_READY";
-/// Step budget per boot (`X2_MAX_STEPS` overrides).
 const DEFAULT_MAX_STEPS: u64 = 50_000_000;
-/// Wall-clock budget per boot in seconds (`X2_WALL_SECS` overrides).
 const DEFAULT_WALL_SECS: u64 = 300;
 
 fn repo_root() -> PathBuf {
@@ -64,9 +26,6 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
-/// Read a built guest artifact from `consonance/harmony-linux/build/<name>` or
-/// `consonance/harmony-linux/linux/<name>`. Panics loudly with the build command if
-/// absent — the workflow's guest-image job populates the cache first.
 fn require_artifact(name: &str) -> Vec<u8> {
     let candidates = [
         repo_root()
@@ -101,7 +60,6 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-/// One bounded boot's observations plus its extracted trace.
 struct BootRun {
     reason: Option<TerminalReason>,
     steps: u64,
@@ -109,9 +67,6 @@ struct BootRun {
     guest_ready: bool,
     pvclock_registered: bool,
     step_error: Option<String>,
-    /// The §2.1 placement oracle's verdict over this boot's schedule + log
-    /// (`None` = every LAPIC-timer delivery sat at the first event whose
-    /// post-advance V-time covered its deadline).
     placement_error: Option<String>,
     wall: Duration,
     log: NormalizedLog,
@@ -124,8 +79,6 @@ impl BootRun {
     }
 }
 
-/// Drive `vmm` to a terminal (or the step/wall budget), streaming serial to
-/// stderr when `stream` is set, then extract the normalized trace.
 fn run_boot<B: vmm_backend::Backend<A = vmm_backend::X86>>(
     vmm: &mut Vmm<B>,
     stream: bool,
@@ -267,7 +220,6 @@ fn report_run(tag: &str, run: &BootRun) {
     );
 }
 
-/// Print the events surrounding `idx` from one log — the divergence window.
 fn print_window(tag: &str, log: &NormalizedLog, idx: u64) {
     let lo = idx.saturating_sub(3);
     let hi = idx.saturating_add(3);
@@ -293,10 +245,6 @@ fn print_window(tag: &str, log: &NormalizedLog, idx: u64) {
     }
 }
 
-/// Serialize the boot's full normalized log and terminal state breakdown to
-/// `path`, one line per record. Uploaded as a per-replica artifact, two of
-/// these are the X3 cross-vendor comparison: an Intel draw's file and an AMD
-/// draw's file must be byte-identical.
 fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -393,10 +341,6 @@ fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
     println!("X2_LOG_DUMP {path}");
 }
 
-/// **X2 tier 1 — the smoke measurement.** One virtual_time stock boot must run
-/// Linux to userspace and a clean terminal, with the trace recording every
-/// exit. Reports the trace size and wall cost that size the tier-2 fleet.
-/// With `X2_LOG_DUMP` set, writes the [`dump_normalized_log`] artifact there.
 #[test]
 #[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
 fn x2_virtual_time_stock_boot_smoke() {
@@ -462,11 +406,6 @@ fn x2_virtual_time_stock_boot_smoke() {
     );
 }
 
-/// **X2 tier 2 — the determinism criterion.** N same-seed virtual_time stock
-/// boots must produce ONE normalized log (class, payload, assigned V-time,
-/// checkpoint state hashes). On divergence, the first divergent event and its
-/// window from both runs are printed — the per-site measurement the closure
-/// work keys on.
 #[test]
 #[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
 fn x2_same_seed_boots_one_normalized_log() {
@@ -534,11 +473,6 @@ fn x2_same_seed_boots_one_normalized_log() {
     );
 }
 
-/// **X2 divergence localizer.** Two same-seed boots compared at terminal by
-/// the labeled state-component digests ([`Vmm::state_components`]). The tier-2
-/// measurement shows the exit stream identical with only the checkpoint state
-/// hash divergent (from the first checkpoint on); this names the component(s)
-/// carrying that divergence, so closure work targets the right state class.
 #[test]
 #[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
 fn x2_component_diff_two_boots() {
@@ -569,12 +503,8 @@ fn x2_component_diff_two_boots() {
     dump_state_diff(&vmm_a, &vmm_b);
 }
 
-/// One VMM type all the live tests share: the stock-KVM composition root's.
 type StockVmm = Vmm<Box<dyn vmm_backend::Backend<A = vmm_backend::X86>>>;
 
-/// Print the labeled component verdicts and exact byte/register diffs between
-/// two same-seed VMMs, so closure work targets specific state rather than a
-/// digest.
 fn dump_state_diff(vmm_a: &StockVmm, vmm_b: &StockVmm) {
     let comps_a = vmm_a.state_components();
     let comps_b = vmm_b.state_components();
@@ -719,7 +649,6 @@ fn dump_state_diff(vmm_a: &StockVmm, vmm_b: &StockVmm) {
     }
 }
 
-/// The first recorded checkpoint state hash in a bounded boot's log.
 fn first_checkpoint_hash(run: &BootRun) -> [u8; 32] {
     run.log
         .events
@@ -728,14 +657,6 @@ fn first_checkpoint_hash(run: &BootRun) -> [u8; 32] {
         .expect("the bounded boot must cross the first state-hash checkpoint")
 }
 
-/// **X2 intermittent-divergence localizer.** The Intel tier-2 measurement
-/// shows a state-hash divergence at the first checkpoint on some boots of a
-/// pool whose exit streams stay identical. Boots here stop just past that
-/// checkpoint (sub-second each) and re-run until one checkpoint hash differs
-/// from the reference boot's; the divergent pair then gets the component and
-/// byte diff close to the divergence origin. Finding no divergent pair within
-/// the attempt budget is reported, never asserted: the divergence is
-/// intermittent, so absence in a finite draw proves nothing.
 #[test]
 #[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
 fn x2_component_diff_first_checkpoint() {

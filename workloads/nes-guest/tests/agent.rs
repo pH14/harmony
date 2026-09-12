@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Portable integration + property gates for the play-agent brain: chord
-//! decode from a fixed entropy stream reproduces a fixed input
-//! tape; the RAM-map decode is exercised for every register; the billboard
-//! header/layout round-trips; all against the mock core — no ROM, no emulator,
-//! no FFI anywhere.
 
 use harmony_play_agent::agent::{Agent, AgentConfig, Harness};
 use harmony_play_agent::billboard::{BILLBOARD_LAYOUT_VERSION, BILLBOARD_MAGIC, HEADER_LEN};
@@ -13,8 +8,6 @@ use harmony_play_agent::ram::{self, WORK_RAM_LEN, addr};
 use harmony_play_agent::regs;
 use proptest::prelude::*;
 
-/// A recording harness with a scripted entropy stream (the portable stand-in
-/// for the SDK).
 #[derive(Default)]
 struct FakeHarness {
     entropy: Vec<u8>,
@@ -54,9 +47,6 @@ impl Harness for FakeHarness {
     }
 }
 
-/// The fixed-tape gate: a fixed entropy stream must reproduce a fixed,
-/// hand-checked input tape — the portable proof that the decision path is a
-/// pure function of the entropy bytes.
 #[test]
 fn fixed_entropy_stream_reproduces_the_fixed_input_tape() {
     use harmony_play_agent::chord::joypad::{A, DOWN, RIGHT};
@@ -91,8 +81,6 @@ fn fixed_entropy_stream_reproduces_the_fixed_input_tape() {
     assert_eq!(tape, expected);
 }
 
-/// Two agents fed the same entropy stream must agree on every emission — the
-/// portable determinism gate.
 #[test]
 fn identical_entropy_streams_agree_on_every_emission() {
     let run = || {
@@ -109,8 +97,6 @@ fn identical_entropy_streams_agree_on_every_emission() {
     assert_eq!(run(), run());
 }
 
-/// The register emissions carry the planted RAM fixture values through the
-/// billboard's work-RAM region (every register, end to end).
 #[test]
 fn registers_flow_from_planted_ram_to_emissions() {
     let cfg = AgentConfig {
@@ -146,8 +132,6 @@ fn registers_flow_from_planted_ram_to_emissions() {
     assert_eq!(h.maxes, vec![(regs::REG_DEPTH, 2 * 4 + 3)]);
 }
 
-/// The billboard round-trips through a parse that mirrors film's validations
-/// (magic, version, frame, joypad, region table, bounds) on every frame.
 #[test]
 fn billboard_round_trips_films_validations_every_frame() {
     let mut agent = Agent::new(MockCore::in_gameplay(), AgentConfig::default()).unwrap();
@@ -165,11 +149,8 @@ fn billboard_round_trips_films_validations_every_frame() {
     }
 }
 
-/// The parsed fields the mirror checks return: the frame, the joypad byte,
-/// and the `(savestate_off, savestate_len, workram_len)` region triple.
 type ParsedBillboard = (u32, u8, (usize, usize, usize));
 
-/// A mirror of film's `BillboardHeader::parse` checks.
 fn parse_billboard(buf: &[u8]) -> Result<ParsedBillboard, String> {
     if buf.len() < HEADER_LEN {
         return Err("too short".into());
@@ -206,8 +187,6 @@ proptest! {
         ProptestConfig::with_cases(256)
     })]
 
-    /// Any entropy stream: every held chord is a member of the alphabet, one
-    /// draw happens per window, and the billboard stays valid on every frame.
     #[test]
     fn chords_come_from_the_alphabet_and_billboards_stay_valid(
         entropy in prop::collection::vec(any::<u8>(), 16..64),
@@ -229,8 +208,6 @@ proptest! {
         prop_assert_eq!(h.cursor as u64, stepped.div_ceil(u64::from(window)));
     }
 
-    /// The x-bucket register divides absolute X by the configured bucket for
-    /// any planted position.
     #[test]
     fn x_bucket_divides_absolute_x(page in 0u8..=255, x in 0u8..=255, bucket in 1u32..512) {
         let cfg = AgentConfig { window: 1, x_bucket_px: bucket, alphabet: ChordAlphabet::smb_default() };
@@ -247,8 +224,6 @@ proptest! {
         prop_assert_eq!(got, expected);
     }
 
-    /// Alphabet parse/round-trip: any valid weighted alphabet decodes every
-    /// byte to one of its own chords, at the frequency its weights dictate.
     #[test]
     fn alphabet_decode_frequencies_match_weights(
         weights in prop::collection::vec(1u16..=64, 2..8),

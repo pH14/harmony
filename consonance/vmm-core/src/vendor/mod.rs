@@ -1,27 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The engine/vendor seam (`docs/ARCHITECTURE.md`): everything in this crate
-//! **outside** this module is the arch-neutral **engine** — the run-loop
-//! skeleton, guest RAM, the snapshot engine, the state-hash *framework*
-//! (canonical chunk list → hash), the control server, and the V-time/idle wiring — and speaks only
-//! `(Gpa, Moment, bytes, hashes)` plus the common exit vocabulary. Everything
-//! **inside** a vendor submodule is that architecture's own: the CPU contract
-//! and its installed policy, the exit dispatch and dispositions, the boot
-//! loaders and entry state, the interrupt fabric and platform device models,
-//! the exit-count-clock event, and the state records.
-//!
-//! [`Vendor`] is how the engine reaches the vendor half without naming it: the
-//! engine's [`Vmm`] holds `<B::A as Vendor>::Devices` and dispatches arch exits
-//! through [`Vendor::dispatch_arch`], so it can neither match a vendor's exit
-//! enum nor touch a vendor's devices — arch-blindness is compiler-checked, and
-//! each vendor's dispatch matches its own exit enum exhaustively (no wildcard
-//! arms; default-deny stays structural).
-//!
-//! **Module split, not crate split**: the reserved engine/vendor *crate* names
-//! activate with the ARM window (`docs/ARCHITECTURE.md` "Reserved — consonance");
-//! until then the boundary is this trait and these module lines.
-//!
-//! Like [`Backend`], this trait is **designed, not frozen** — the AA-3
-//! trait-freeze memo (the ARM spike) owns the freeze decision.
 
 use control_proto::RegsView;
 use vmm_backend::{Arch, Backend, Exit, Gpa};
@@ -32,84 +9,29 @@ use crate::vmm::{Step, Vmm, VmmError};
 pub mod arm64;
 pub mod x86;
 
-/// Why a vendor refuses a wire-format interrupt identity at **stage time** — a
-/// recoverable rejection the control plane turns into a reply, rather than letting
-/// it explode later as a session-fatal apply-time error.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InterruptReject {
-    /// This machine has no interrupt fabric wired to deliver into — a permanent
-    /// limitation of its composition (x86: no userspace LAPIC).
     NoFabric,
-    /// The identity lies outside this vendor's identity space entirely (x86: past
-    /// the xAPIC's 8 bits). The wire field is a `u32` precisely because identities
-    /// are per-arch and a GIC INTID exceeds 8 bits (`docs/ARCHITECTURE.md`).
     OutOfRange,
-    /// The identity is architecturally **reserved** on this vendor and cannot be
-    /// raised (x86: vectors `< 16`) — a request error the client can fix. The
-    /// **vendor** narrows it to the wire error's width, which it can do safely
-    /// because it knows its own reserved range; the engine assumes nothing.
-    Reserved {
-        /// The reserved identity, as the control wire carries it.
-        vector: u8,
-    },
+    Reserved { vector: u8 },
 }
 
-/// One vendor's half of the deterministic VMM. Implemented on the vendor's
-/// [`Arch`] zero-sized type; the hooks take the engine's [`Vmm`] so the vendor
-/// half reads and writes engine state through its `pub(crate)` surface (one
-/// crate, one boundary — the trait *is* the line).
 pub trait Vendor: Arch + Sized {
-    /// The per-VM vendor device state: the interrupt fabric, the platform shims,
-    /// and the serial device (x86: xAPIC + 8259/PCI latches + 8250).
     type Devices;
 
-    /// The vendor half of a validated-but-uncommitted `vm_state` restore
-    /// ([`validate_restore`](Vendor::validate_restore) →
-    /// [`commit_restore`](Vendor::commit_restore)).
     type RestorePrep;
 
-    /// The vendor's canonical snapshot record set (x86:
-    /// [`vm_state::VmState`]; arm64: `vm_state`'s arm64 record set under its
-    /// own arch tag). The engine holds and seals it only through the
-    /// arch-neutral [`vm_state::SnapshotRecords`] surface — encode on seal,
-    /// `decode` + arch-tag gate on restore, and the neutral V-time / timer /
-    /// entropy blocks — and never names a register record
-    /// (`docs/ARCHITECTURE.md`, the one ruled spine exception, landed
-    /// with `hm-cbt`).
-    ///
-    /// designed-not-frozen (AA-6 owns the arm64 record set; this seam is the
-    /// extension point, and AA-3's trait-freeze memo owns the freeze).
     type Snapshot: vm_state::SnapshotRecords;
 
-    /// Fresh (reset) device state for a new VM. Which fabric pieces are wired is
-    /// the vendor composition root's job (e.g. `wire_lapic` on x86).
     fn new_devices() -> Self::Devices;
 
-    /// The arch's **device-MMIO holes** as `(base, len)` — GPA ranges that are
-    /// *not* guest RAM even when the RAM image spans them, because the backend
-    /// deliberately leaves them out of its memslots (x86: the 4 KiB xAPIC page at
-    /// `0xFEE00000`, which `KvmBackend::map_memory` splits around so guest
-    /// accesses fault out to the device model instead of hitting RAM).
-    ///
-    /// The engine needs this to validate **guest-published GPAs**: a page the
-    /// guest hands the host (the pvclock page) must be real, host-
-    /// writable RAM. Inside a hole, the host would stamp backing the guest cannot
-    /// see while the guest's own reads went to a device — a silently-wrong clock
-    /// (cross-model r5 P2). Naming which addresses those are is vendor knowledge,
-    /// so it lives behind this seam rather than in the engine
-    /// (`docs/ARCHITECTURE.md`).
     fn mmio_holes() -> &'static [(u64, u64)];
 
-    /// Dispatch one vendor exit against the contract dispositions and the device
-    /// models. Matches the vendor's exit enum **exhaustively**.
     fn dispatch_arch<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,
         exit: Self::Exit,
     ) -> Result<Step, VmmError>;
 
-    /// Route a [`CommonExit::Mmio`](vmm_backend::CommonExit::Mmio) access — which
-    /// physical addresses hold device models is vendor knowledge (x86: the xAPIC
-    /// page). An unmodeled address fails closed.
     fn dispatch_mmio<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,
         gpa: Gpa,
@@ -117,142 +39,60 @@ pub trait Vendor: Arch + Sized {
         write: Option<u64>,
     ) -> Result<Step, VmmError>;
 
-    /// Whether this complete backend exit is the vendor's hypercall-doorbell
-    /// ring. This is an observability seam for the opt-in Consonance profile;
-    /// it is deliberately separate from the backend's broad I/O/MMIO counters
-    /// and is not part of VM state, hashes, or snapshots. The vendor owns the
-    /// exact port/GPA and access direction (x86: dword `OUT` to `0x0CA1`, ARM:
-    /// dword store to the reserved doorbell frame).
     fn is_doorbell_exit(exit: &Exit<Self>) -> bool;
 
-    /// Vendor-specific work after the engine has published the exit's pvclock
-    /// frame and before the next entry. ARM uses this to compare the published
-    /// guest clock with its paravirtual clockevent deadline.
     fn post_exit<B: Backend<A = Self>>(_vmm: &mut Vmm<B>) -> Result<(), VmmError> {
         Ok(())
     }
 
-    /// Normalize one backend exit for the production virtual_time trace. A
-    /// descriptive-only vendor may return `None`; a virtual_time composition
-    /// that returns `Some` records the complete payload before dispatch mutates
-    /// device state.
     fn normalize_virtual_time_exit(_exit: &Exit<Self>) -> Option<(NormalizedEventClass, Vec<u8>)> {
         None
     }
 
-    /// Advance the fabric to the current V-time and hand the backend the one
-    /// arbitrated deliverable interrupt identity (or `None`) for the next entry.
-    /// Runs once before every entry; a no-op when the fabric is unwired.
     fn service_pending_irqs<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<(), VmmError>;
 
-    /// Complete delivery of every identity the backend accepted during the last
-    /// entry (the fabric's pending → in-service transition).
     fn complete_irq_delivery<B: Backend<A = Self>>(vmm: &mut Vmm<B>);
 
-    /// Whether the guest can currently take a maskable interrupt (x86:
-    /// `RFLAGS.IF`) — the idle path's "a wake can reach the guest" gate. Reads
-    /// the vCPU (a pure `Backend::save`, running no guest code); fails closed.
     fn guest_interruptible<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Result<bool, VmmError>;
 
-    /// Whether a deliverable interrupt is **already pending** in the fabric (x86:
-    /// a vector in the LAPIC IRR that arbitration would deliver).
-    ///
-    /// Peeks **without advancing** the fabric: the run loop advances it before
-    /// every entry ([`service_pending_irqs`](Vendor::service_pending_irqs)), so at
-    /// an idle exit it is already current, and advancing again here would be a
-    /// second (V-time-identical, but gratuitous) tick on the snapshot path.
     fn pending_deliverable_interrupt<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,
     ) -> Result<bool, VmmError>;
 
-    /// The next armed fabric-timer deadline in V-time ns, or `None` when no timer
-    /// is armed (or no fabric is wired). Does not check deliverability.
     fn next_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64>;
 
-    /// Restored timer deadline and interrupt identity for the host-only
-    /// placement trace. This does not alter guest state or the timer fabric.
     fn clockevent_trace_schedule<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<(u64, u32)>;
 
-    /// [`next_timer_deadline_vns`](Vendor::next_timer_deadline_vns), filtered to
-    /// timers whose fire would actually deliver — an armed-but-undeliverable
-    /// timer is no wake.
     fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64>;
 
-    /// **Stage-time** validation of a wire-format
-    /// [`InjectInterrupt`](environment::HostFault::InjectInterrupt) identity: can
-    /// this machine deliver it at all, and is it a legal identity *for this
-    /// vendor*?
-    ///
-    /// Which identities exist, which are reserved, and how wide the space is are
-    /// all per-arch facts — x86's xAPIC has 8-bit vectors with `0..16` reserved,
-    /// while a GIC's INTIDs run far past 255 and its `0..16` are perfectly
-    /// deliverable SGIs. So the engine asks and the vendor answers; it must never
-    /// bake one vendor's ranges into the control plane.
     fn check_wire_interrupt<B: Backend<A = Self>>(
         vmm: &Vmm<B>,
         vector: u32,
     ) -> Result<(), InterruptReject>;
 
-    /// Raise the wire-format interrupt `vector` (a `u32` — identities are
-    /// per-arch, architecture boundary) into the fabric so normal arbitration delivers
-    /// it. Fails loud on an identity outside this vendor's range, or with no
-    /// fabric wired.
     fn inject_wire_interrupt<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,
         vector: u32,
     ) -> Result<(), VmmError>;
 
-    /// Whether a genuine guest interrupt is pending delivery but not yet accepted
-    /// (the architecturally in-flight event a synchronized snapshot may capture).
-    /// Unlike [`pending_deliverable_interrupt`](Vendor::pending_deliverable_interrupt)
-    /// this **advances** the fabric first (it is called from outside the run loop,
-    /// where the fabric may be stale) and folds in the vendor's legacy lines. The
-    /// advance is idempotent with the run loop's per-entry service, so it does not
-    /// perturb a snapshot.
     fn has_pending_guest_interrupt<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,
     ) -> Result<bool, VmmError>;
 
-    /// The serial output captured so far (the engine's `SERL` hash chunk, the run
-    /// result, and the scrape stream all read this).
     fn serial_capture(devices: &Self::Devices) -> &[u8];
 
-    /// Queue bytes on the guest's serial input (`exec`; off-record by
-    /// ruling).
     fn inject_serial_input(devices: &mut Self::Devices, bytes: &[u8]);
 
-    /// The canonical byte encoding of the vCPU record set for the engine's `VCPU`
-    /// hash chunk. Deterministic; canonicalizes exactly what the snapshot records
-    /// canonicalize, so a restored VM hashes like a never-restored one.
     fn encode_vcpu_chunk(vcpu: &Self::VcpuState) -> Vec<u8>;
 
-    /// The device residual-register bytes of the engine's `DEV\0` hash chunk (the
-    /// engine appends its own terminal-reason bytes after them).
     fn encode_device_state(devices: &Self::Devices) -> Vec<u8>;
 
-    /// Append the vendor's own device hash chunks (x86: `LAPC` + `LEGY`), in the
-    /// vendor's fixed order, at the engine's fixed position in the blob.
     fn hash_device_chunks(vcpu: &Self::VcpuState, devices: &Self::Devices, out: &mut Vec<u8>);
 
-    /// The wire register view for the `regs` observation verb: which
-    /// registers a machine *has* is per-arch, so the vendor fills the view. The
-    /// engine supplies the `Moment`/V-time half (the one deterministic axis).
     fn regs_view(vcpu: &Self::VcpuState) -> RegsView;
 
-    /// Append the vendor's per-component vCPU digests to the **diagnostic**
-    /// [`Vmm::state_components`] breakdown (never part of `state_hash`), so a
-    /// determinism bisector can localize which register file diverged.
     fn vcpu_components(vcpu: &Self::VcpuState, out: &mut Vec<(&'static str, [u8; 32])>);
 
-    /// Append the vendor's per-**device** digests to the diagnostic
-    /// [`Vmm::state_components`] breakdown (never part of `state_hash`), so a
-    /// determinism bisector can localize a divergence that lives only in a
-    /// device hash chunk (arm64: the `GICV` chunk — the GICv3 register files /
-    /// pending-active / timer state; x86: LAPIC/legacy). Without this, two runs
-    /// differing only in device state hash differently while every other
-    /// diagnostic component matches, defeating localization. **Additive only**:
-    /// a vendor appends *new* labels; it never renames an existing one (the O1
-    /// box localizer pins `regs`/`desc-tables`). The default appends nothing.
     fn device_components(
         _vcpu: &Self::VcpuState,
         _devices: &Self::Devices,
@@ -260,39 +100,19 @@ pub trait Vendor: Arch + Sized {
     ) {
     }
 
-    /// Whether the vCPU carries an event-injection record a quiescent-only codec
-    /// would reject (the full set, inert residuals included).
     fn vcpu_has_inflight_injection(vcpu: &Self::VcpuState) -> bool;
 
-    /// Whether the vCPU carries a **genuine** in-flight event (the active subset
-    /// of [`vcpu_has_inflight_injection`](Vendor::vcpu_has_inflight_injection)).
     fn vcpu_has_active_injection(vcpu: &Self::VcpuState) -> bool;
 
-    /// Fail if `vcpu` carries state the vendor's `vm_state` record subset cannot
-    /// represent (sealing a lossy blob is worse than refusing it).
     fn check_sealable_vcpu(vcpu: &Self::VcpuState) -> Result<(), VmmError>;
 
-    /// Build the canonical [`Snapshot`](Vendor::Snapshot) from `vcpu` + the
-    /// current machine (the memory-less half of a snapshot): the vendor record
-    /// set, the device blob, and the contract hash; the engine's V-time/entropy
-    /// block is read through the engine's `pub(crate)` surface. Infallible and
-    /// byte-deterministic.
     fn build_vm_state<B: Backend<A = Self>>(vmm: &Vmm<B>, vcpu: &Self::VcpuState)
     -> Self::Snapshot;
 
-    /// Validate the vendor half of a [`Snapshot`](Vendor::Snapshot) restore
-    /// **without mutating anything**: the contract hash, the device blob, the
-    /// event records, and the fabric/platform wiring coherence. Returns the
-    /// decoded vCPU record set (with the restore-canonicalized events already
-    /// applied), the guest clock-offset register the engine re-applies with its
-    /// V-time commit, and the prepared device state for
-    /// [`commit_restore`](Vendor::commit_restore).
     fn validate_restore<B: Backend<A = Self>>(
         vmm: &Vmm<B>,
         s: &Self::Snapshot,
     ) -> Result<(Self::VcpuState, u64, Self::RestorePrep), VmmError>;
 
-    /// Commit the vendor half of a validated restore (all infallible): install the
-    /// prepared devices and the restored guest-observable output streams.
     fn commit_restore<B: Backend<A = Self>>(vmm: &mut Vmm<B>, prep: Self::RestorePrep);
 }

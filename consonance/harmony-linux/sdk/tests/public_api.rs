@@ -1,25 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Frozen public-API snapshot guard — see `CONTRIBUTING.md`
-//!
-//! Regenerates this crate's public surface with `cargo public-api` on the
-//! pinned nightly toolchain and asserts it byte-matches the committed
-//! `tests/public-api.txt`. Any drift in the frozen public contract becomes a
-//! failing test and a reviewable diff. `harmony-sdk` is an out-of-workspace
-//! crate, so this guard runs under its own manifest (the root public-api job
-//! never sees it otherwise).
-//!
-//! Refresh after an intentional, reviewed API change:
-//!   `UPDATE_PUBLIC_API=1 cargo test --manifest-path consonance/harmony-linux/sdk/Cargo.toml --test public_api -- --ignored`
-//!
-//! Requires the pinned nightly toolchain and `cargo-public-api`
-//! (`scripts/install-quality-tools.sh`). When either is absent the test skips
-//! loudly rather than failing, so a plain `cargo test` on a stable-only box
-//! stays green; CI installs both, so the gate runs for real there.
 
 use std::process::Command;
 
-/// Pinned nightly — `cargo-public-api` needs rustdoc-JSON, which is
-/// nightly-only. Keep in sync with `CONTRIBUTING.md`.
 const PINNED_NIGHTLY: &str = "nightly-2026-06-16";
 const CRATE: &str = "harmony-sdk";
 

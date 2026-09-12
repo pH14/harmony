@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Empirical probe for the Apple Silicon Hypervisor.framework surface used by
-//! the virtual_time V-time bring-up backend.
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
 mod arm64 {

@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Probe Super Tilt Bro's sealed local-AI genesis and replay a short schedule.
-
 use std::{env, error::Error, fs, path::PathBuf};
 
 use machine::nes::ButtonChord;

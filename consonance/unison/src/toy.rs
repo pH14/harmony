@@ -1,146 +1,66 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! A tiny deterministic register VM used to test the harness (and later as a
-//! sanity oracle next to the real VMM).
-//!
-//! Normative state (tests depend on it): 8 × u64 registers `r0..r7`, 65 536
-//! bytes of memory, a program counter, an append-only output log, an
-//! xorshift64* PRNG seeded from `spawn(seed)` (zero seed maps to
-//! [`ZERO_SEED_STATE`]), and a halted flag. `work` = instructions retired;
-//! every instruction costs exactly 1 work unit.
 
 use crate::flaky::{Perturbable, Perturbation};
 use crate::{RunOutcome, Subject, SubjectError, SubjectFactory};
 use sha2::{Digest, Sha256};
 
-/// Bytes of toy-machine memory.
 pub const MEM_SIZE: usize = 65_536;
-/// `LOAD`/`STORE` addresses are reduced modulo this, so an 8-byte
-/// little-endian access always fits in memory.
 pub const ADDR_MOD: u64 = 65_528;
-/// PRNG state substituted for seed 0 (xorshift64* has no zero state).
-/// Note `spawn(0)` and `spawn(ZERO_SEED_STATE)` are therefore identical.
 pub const ZERO_SEED_STATE: u64 = 0x9E37_79B9_7F4A_7C15;
 
-/// One toy-machine instruction. Register indices are taken modulo 8 at
-/// execution time, so every encoding is safe to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Instr {
-    /// `rd = imm`.
-    Loadi {
-        /// Destination register.
-        rd: u8,
-        /// Immediate value.
-        imm: u64,
-    },
-    /// `rd = rd + rs` (wrapping).
-    Add {
-        /// Destination register.
-        rd: u8,
-        /// Source register.
-        rs: u8,
-    },
-    /// `rd = rd - rs` (wrapping).
-    Sub {
-        /// Destination register.
-        rd: u8,
-        /// Source register.
-        rs: u8,
-    },
-    /// `rd = rd ^ rs`.
-    Xor {
-        /// Destination register.
-        rd: u8,
-        /// Source register.
-        rs: u8,
-    },
-    /// `rd = mem[r[rs] % ADDR_MOD]` (u64, little-endian).
-    Load {
-        /// Destination register.
-        rd: u8,
-        /// Register holding the address.
-        rs: u8,
-    },
-    /// `mem[r[rd] % ADDR_MOD] = r[rs]` (u64, little-endian).
-    Store {
-        /// Register holding the address.
-        rd: u8,
-        /// Source register.
-        rs: u8,
-    },
-    /// `if r[rs] != 0 { pc = target }`.
-    Jnz {
-        /// Register tested against zero.
-        rs: u8,
-        /// Program counter to jump to when taken.
-        target: u32,
-    },
-    /// `rd = next xorshift64* value`.
-    Rand {
-        /// Destination register.
-        rd: u8,
-    },
-    /// Append `r[rs]` as 8 little-endian bytes to the output log.
-    Out {
-        /// Source register.
-        rs: u8,
-    },
-    /// Set the halted flag.
+    Loadi { rd: u8, imm: u64 },
+    Add { rd: u8, rs: u8 },
+    Sub { rd: u8, rs: u8 },
+    Xor { rd: u8, rs: u8 },
+    Load { rd: u8, rs: u8 },
+    Store { rd: u8, rs: u8 },
+    Jnz { rs: u8, target: u32 },
+    Rand { rd: u8 },
+    Out { rs: u8 },
     Halt,
 }
 
-/// Tiny assembler helpers for writing test programs by hand.
 pub mod asm {
     use super::Instr;
 
-    /// `LOADI rd, imm`.
     pub fn loadi(rd: u8, imm: u64) -> Instr {
         Instr::Loadi { rd, imm }
     }
-    /// `ADD rd, rs`.
     pub fn add(rd: u8, rs: u8) -> Instr {
         Instr::Add { rd, rs }
     }
-    /// `SUB rd, rs`.
     pub fn sub(rd: u8, rs: u8) -> Instr {
         Instr::Sub { rd, rs }
     }
-    /// `XOR rd, rs`.
     pub fn xor(rd: u8, rs: u8) -> Instr {
         Instr::Xor { rd, rs }
     }
-    /// `LOAD rd, [rs]`.
     pub fn load(rd: u8, rs: u8) -> Instr {
         Instr::Load { rd, rs }
     }
-    /// `STORE [rd], rs`.
     pub fn store(rd: u8, rs: u8) -> Instr {
         Instr::Store { rd, rs }
     }
-    /// `JNZ rs, target_pc`.
     pub fn jnz(rs: u8, target: u32) -> Instr {
         Instr::Jnz { rs, target }
     }
-    /// `RAND rd`.
     pub fn rand(rd: u8) -> Instr {
         Instr::Rand { rd }
     }
-    /// `OUT rs`.
     pub fn out(rs: u8) -> Instr {
         Instr::Out { rs }
     }
-    /// `HALT`.
     pub fn halt() -> Instr {
         Instr::Halt
     }
 }
 
-/// Register index modulo the register count.
 fn reg(i: u8) -> usize {
     usize::from(i & 7)
 }
 
-/// One xorshift64* step: advance `state`, return the next output value.
-/// `state` must be nonzero (a zero state is a fixed point producing zeros).
 pub(crate) fn xorshift64star(state: &mut u64) -> u64 {
     let mut x = *state;
     x ^= x >> 12;
@@ -150,7 +70,6 @@ pub(crate) fn xorshift64star(state: &mut u64) -> u64 {
     x.wrapping_mul(0x2545_F491_4F6C_DD1D)
 }
 
-/// The toy deterministic register VM. See the module docs for the state model.
 #[derive(Debug, Clone)]
 pub struct ToyMachine {
     program: Vec<Instr>,
@@ -164,8 +83,6 @@ pub struct ToyMachine {
 }
 
 impl ToyMachine {
-    /// Create a machine with zeroed registers/memory/pc, an empty output log,
-    /// and PRNG state `seed` (0 is mapped to [`ZERO_SEED_STATE`]).
     pub fn new(program: Vec<Instr>, seed: u64) -> Self {
         Self {
             program,
@@ -179,8 +96,6 @@ impl ToyMachine {
         }
     }
 
-    /// Execute one instruction. Running off the end of the program halts the
-    /// machine without retiring an instruction (no work is counted).
     fn step(&mut self) {
         let Some(&instr) = self
             .program
@@ -281,11 +196,8 @@ impl Perturbable for ToyMachine {
     }
 }
 
-/// Creates [`ToyMachine`]s running a fixed program; the PRNG seed comes from
-/// [`SubjectFactory::spawn`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToyFactory {
-    /// The program every spawned machine runs.
     pub program: Vec<Instr>,
 }
 
@@ -297,26 +209,12 @@ impl SubjectFactory for ToyFactory {
     }
 }
 
-/// A generated test program plus its exact (seed-independent) run length.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedProgram {
-    /// The instructions.
     pub instrs: Vec<Instr>,
-    /// Exact work count at which a fresh machine halts. Independent of the
-    /// machine seed: control flow only depends on r6/r7, which the random
-    /// body never touches.
     pub work_to_halt: u64,
 }
 
-/// Deterministically generate a random program guaranteed to keep running for
-/// at least `min_work` instructions before halting (`work_to_halt > min_work`).
-///
-/// Shape: a bounded loop skeleton with a random straight-line body —
-/// `r7` is the loop counter and `r6` a scratch decrement; the body is 4–24
-/// instructions drawn from {LOADI, ADD, SUB, XOR, LOAD, STORE, RAND, OUT}
-/// over `r0..r5` only, with no jumps and no halts. The same `gen_seed`
-/// always yields the same program (the generator is its own xorshift64*
-/// stream, unrelated to machine seeds).
 pub fn generate_program(gen_seed: u64, min_work: u64) -> GeneratedProgram {
     let mut s = if gen_seed == 0 {
         ZERO_SEED_STATE

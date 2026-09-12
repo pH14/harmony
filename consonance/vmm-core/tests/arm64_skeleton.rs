@@ -1,16 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! **The M1 keystone assertion** (`tasks/112`): the arm64 vendor — the first
-//! real *second* implementor of `Vendor`/`Backend`/`Arch` — instantiates every
-//! method the engine calls, and the engine drives it through exactly the same
-//! generic types it drives x86 through. This is the structural check no
-//! cross-compile gate can perform (`docs/ARCHITECTURE.md`: on the aarch64
-//! CI leg no vendor exists to *instantiate* the trait, so a signature only a
-//! second implementor could refute stays invisible until this vendor exists).
-//!
-//! Portable and Miri-clean: driven by the scripted `MockArm64Backend`, no
-//! `/dev/kvm`, no mmap (the snapshot round-trip seals and decodes through the
-//! in-memory store; the mmap-backed `materialize` path is the x86-shared
-//! engine machinery already covered elsewhere and is not re-tested here).
 
 use environment::channel::Effect;
 use vm_state::{Arm64VmState, SnapshotRecords, VmState, VmStateError};
@@ -23,17 +11,12 @@ use vmm_core::vmm::{GuestRam, Step, TerminalReason, Vmm, VmmError};
 
 const RAM: usize = 0x4000;
 
-/// A configured `Vmm<MockArm64Backend>` over `RAM` bytes of guest memory —
-/// the arm64 twin of the x86 tests' `vmm()` helper. The policy skeleton is
-/// installed before the first run, exactly as a composition root must.
 fn vmm(exits: Vec<Exit<Arm64>>) -> Vmm<MockArm64Backend> {
     let mut b = MockArm64Backend::with_exits(exits);
     b.set_policy(&Arm64Policy::default()).unwrap();
     Vmm::new(b, GuestRam::new(RAM).unwrap())
 }
 
-/// The engine terminates an arm64 VM through the same `CommonExit` vocabulary
-/// as x86 — WFI-idle and shutdown are one concept above the trait.
 #[test]
 fn engine_drives_the_arm64_vendor_through_common_exits() {
     let mut v = vmm(vec![Exit::Common(CommonExit::Idle)]);
@@ -44,8 +27,6 @@ fn engine_drives_the_arm64_vendor_through_common_exits() {
     assert_eq!(v.step().unwrap(), Step::Terminal(TerminalReason::Shutdown));
 }
 
-/// Default-deny is structural on the second vendor too: an unmodeled MMIO
-/// address and a trapped sysreg with no ruled disposition both fail closed.
 #[test]
 fn arm64_dispatch_fails_closed_on_unruled_surface() {
     let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
@@ -66,8 +47,6 @@ fn arm64_dispatch_fails_closed_on_unruled_surface() {
     assert!(msg.contains("no ruled disposition"), "{msg}");
 }
 
-/// HVF traps Linux's OSDLR_EL1 zero write during debug-monitor setup. Only
-/// that deterministic unlock is ruled; nonzero writes and reads stay denied.
 #[test]
 fn arm64_os_debug_lock_accepts_only_the_boot_unlock() {
     const OSDLR_EL1: u32 = 0x0028_0406;
@@ -90,9 +69,6 @@ fn arm64_os_debug_lock_accepts_only_the_boot_unlock() {
     }
 }
 
-/// The interrupt seams answer honestly with no fabric wired: stage-time
-/// validation refuses every identity, injection fails loud, and nothing is
-/// pending — mirroring the x86 unwired-LAPIC posture.
 #[test]
 fn arm64_interrupt_seams_report_no_fabric() {
     let mut v = vmm(vec![]);
@@ -101,9 +77,6 @@ fn arm64_interrupt_seams_report_no_fabric() {
     assert!(err.is_err(), "no fabric wired: injection must fail loud");
 }
 
-/// The keystone round trip: build → seal → decode → restore, entirely through
-/// the engine's generic snapshot path (`Vendor::Snapshot = Arm64VmState`), and
-/// state-hash-transparent: the restored VM hashes identically to the source.
 #[test]
 fn arm64_snapshot_round_trip_is_restore_transparent() {
     let mut vcpu = Arm64VcpuState::default();
@@ -146,9 +119,6 @@ fn arm64_snapshot_round_trip_is_restore_transparent() {
     );
 }
 
-/// A cross-vendor blob is rejected loudly by the arm64 restore path, before
-/// any mutation (the engine decodes through the vendor's own codec, whose
-/// arch-tag gate fails closed).
 #[test]
 fn arm64_restore_rejects_a_foreign_blob() {
     let x86 = VmState::default();
@@ -160,8 +130,6 @@ fn arm64_restore_rejects_a_foreign_blob() {
     );
 }
 
-/// A tampered contract hash is refused before any mutation — the arm64 policy
-/// skeleton participates in the same anti-drift check as the x86 contract.
 #[test]
 fn arm64_restore_rejects_a_contract_mismatch() {
     let v = vmm(vec![]);
@@ -173,13 +141,6 @@ fn arm64_restore_rejects_a_contract_mismatch() {
     assert!(fresh.terminal_reason().is_none());
 }
 
-/// Review r9 (P1): restoring into an UNWIRED VM must require the **complete**
-/// unwired V-time sentinel — every `VtimeState` field at its unwired value AND
-/// no entropy/hypercall bytes. The prior check tested only `guest_hz`/
-/// `snapshot_vns`, so a blob with those zero but a nonzero
-/// `guest_base` or entropy bytes was accepted and its
-/// live V-time/entropy state **silently discarded** — a fail-closed
-/// snapshot-contract violation.
 #[test]
 fn arm64_unwired_restore_requires_the_full_vtime_sentinel() {
     let base = vmm(vec![]).save_vm_state().unwrap();
@@ -214,8 +175,6 @@ fn arm64_unwired_restore_requires_the_full_vtime_sentinel() {
     }
 }
 
-/// The serial path flows through the vendor: PL011 capture feeds the run
-/// result and survives a snapshot/restore; injected input never does.
 #[test]
 fn arm64_serial_capture_rides_the_snapshot() {
     let mut v = vmm(vec![]);
@@ -228,10 +187,6 @@ fn arm64_serial_capture_rides_the_snapshot() {
     assert_eq!(fresh.serial_output(), b"");
 }
 
-/// Every `Backend` method the engine calls is instantiated by the second
-/// vendor — exercised directly against the mock (the compile itself is most
-/// of the keystone; this pins the runtime contract for the seams the engine
-/// reaches).
 #[test]
 fn mock_arm64_backend_enforces_the_run_loop_contract() {
     let mut b = MockArm64Backend::new();
@@ -270,9 +225,6 @@ fn mock_arm64_backend_enforces_the_run_loop_contract() {
     assert_eq!(b.exit_counts().idle, 1);
 }
 
-/// M2 — the wired GICv3 fabric: host injection lands in the pending file,
-/// the per-entry service hands the backend the arbitrated INTID, acceptance
-/// moves it pending→active, and the whole fabric rides the snapshot.
 #[test]
 fn arm64_gic_fabric_arbitrates_and_rides_the_snapshot() {
     use gicv3::GicFrame;
@@ -350,13 +302,6 @@ fn arm64_gic_fabric_arbitrates_and_rides_the_snapshot() {
     assert!(mismatched(base).is_ok());
 }
 
-/// M2 — the generic timer is a pure deadlines-out seam: an armed CVAL is a
-/// V-time deadline, and once the fabric's V-time passes it, the PPI latches
-/// pending and arbitration delivers it.
-/// M3 — the board memory map routes device MMIO: the PL011 console frame is a
-/// modeled device (a store lands in the capture, read-back works), the
-/// reserved doorbell GPA is recognized (default-denied without an SDK, like
-/// x86's port), and the GIC frames fail closed when the fabric is unwired.
 #[test]
 fn arm64_board_mmio_routes_pl011_doorbell_and_gic() {
     use vmm_backend::Gpa;
@@ -573,8 +518,6 @@ fn arm64_virtual_time_pvclock_registration_is_exact_and_stamps_guest_ram() {
     }
 }
 
-/// Build the M1 userspace fabric with the dedicated pvclock PPI configured as
-/// a deliverable Group-1 level interrupt.
 fn clockevent_gic() -> gicv3::Gicv3 {
     use gicv3::GicFrame;
     use vmm_core::vendor::arm64::board::{self, PVCLOCK_PPI};
@@ -591,7 +534,6 @@ fn clockevent_gic() -> gicv3::Gicv3 {
     gic
 }
 
-/// Compose the exact assigned-at-exit clock used by the M1 board tests.
 fn wire_virtual_time_clock(v: &mut Vmm<MockArm64Backend>) {
     use vmm_core::vendor::arm64::board::CNTFRQ_HZ;
     use vmm_core::vmm::VtimeWiring;
@@ -612,9 +554,6 @@ fn wire_virtual_time_clock(v: &mut Vmm<MockArm64Backend>) {
     v.wire_gic(clockevent_gic());
 }
 
-/// The paravirtual clockevent is an absolute-deadline, one-shot, level PPI:
-/// reaching the deadline asserts the clockevent PPI, EOI without device ACK re-pends it,
-/// ACK lowers it, and the complete in-flight state survives a snapshot.
 #[test]
 fn arm64_clockevent_is_level_triggered_and_snapshot_complete() {
     use vmm_backend::Gpa;
@@ -695,10 +634,6 @@ fn arm64_clockevent_is_level_triggered_and_snapshot_complete() {
     assert!(format!("{err}").contains("ACK while its PPI is not asserted"));
 }
 
-/// A due clockevent remains only a deadline while IRQs are masked. The first
-/// explicit post-unmask exit is the sole delivery boundary, so HVF and KVM
-/// cannot choose different instructions from an implementation-defined
-/// pending-IRQ recognition window.
 #[test]
 fn arm64_clockevent_delivery_waits_for_the_irq_unmask_exit() {
     use vmm_backend::Gpa;
@@ -748,8 +683,6 @@ fn arm64_clockevent_delivery_waits_for_the_irq_unmask_exit() {
     );
 }
 
-/// Protocol misuse is rejected rather than silently changing the one-shot
-/// state, while DISARM before expiry cancels both the deadline and delivery.
 #[test]
 fn arm64_clockevent_protocol_faults_and_disarm_are_fail_closed() {
     use vmm_backend::Gpa;
@@ -825,9 +758,6 @@ fn arm64_clockevent_protocol_faults_and_disarm_are_fail_closed() {
     assert!(format!("{err}").contains("deadline write while its PPI is asserted"));
 }
 
-/// VirtualTime WFI uses `IdlePlanner` to land exactly on the paravirtual
-/// clockevent deadline, raises the clockevent PPI at that same normalized event, and never
-/// asks the backend for an unsupported mid-stream `run_with_deadline` stop.
 #[test]
 fn arm64_virtual_time_wfi_jumps_to_the_clockevent_deadline() {
     use vmm_backend::Gpa;
@@ -869,10 +799,6 @@ fn arm64_virtual_time_wfi_jumps_to_the_clockevent_deadline() {
     check_delivery_placement(trace.schedule(), trace.normalized_log()).unwrap();
 }
 
-/// Review r5 P2(b): the GICv3 state feeds `state_hash` (the `GICV` chunk), so
-/// `state_components()` must expose a labeled `gic` component — otherwise two
-/// runs differing **only** in GIC state hash differently while every diagnostic
-/// component matches, defeating divergence localization.
 #[test]
 fn arm64_state_components_localizes_a_gic_only_divergence() {
     use gicv3::GicFrame;
@@ -932,9 +858,6 @@ fn arm64_state_components_localizes_a_gic_only_divergence() {
     assert!(!unwired.state_components().iter().any(|(l, _)| *l == "gic"));
 }
 
-/// Every HVF-retained vCPU class is part of both the canonical VCPU hash and
-/// the diagnostic component roster. A one-field perturbation must therefore
-/// change the full state hash and exactly its named diagnostic component.
 #[test]
 fn arm64_hvf_retained_classes_are_hash_observable() {
     let make = |state: Arm64VcpuState| {
@@ -1003,8 +926,6 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
     }
 }
 
-/// The non-vCPU retained classes named by the M1 state-completeness rule each
-/// change the hash alone and reproduce that exact hash through restore.
 #[test]
 fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
     use vmm_backend::Gpa;
@@ -1079,8 +1000,6 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
     restore(&entropy_changed, &mut timed(0, 7));
 }
 
-/// M3 — the full boot composition: `boot` installs the shared guest policy then
-/// loads an Image + DTB and sets the entry state, all mock-backed.
 #[test]
 fn arm64_boot_composes_a_ready_vmm() {
     use vmm_backend::MockArm64Backend;

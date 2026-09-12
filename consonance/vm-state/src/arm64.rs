@@ -1,22 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **arm64 record set** ([`Arm64VmState`]) — the second implementor of
-//! [`SnapshotRecords`](crate::SnapshotRecords), under
-//! [`ARCH_AARCH64`](crate::ARCH_AARCH64) in the same TLV container.
-//!
-//! **A minimal, skeleton record set** (`tasks/112` M1): the core registers, a
-//! small named EL1 system-register file, and the arch-neutral engine blocks —
-//! enough to encode/decode a trivial vCPU state and round-trip it through the
-//! container. **Which sysregs an arm64 snapshot must carry is M4's measured
-//! decision** (`docs/DETERMINISM.md`); the full record set is
-//! `TODO(AA-6)` and
-//! lands under a bumped section layout, never guessed here.
-//! designed-not-frozen (AA-3).
-//!
-//! The section tags below are the *arm64* record set's own tag space — tags
-//! are meaningful only under this container arch tag, exactly why the v2
-//! header carries one (`docs/ARCHITECTURE.md`). A blob with a foreign
-//! arch tag is rejected loudly ([`VmStateError::UnsupportedArch`]), never
-//! reinterpreted.
 
 use zerocopy::little_endian::U64;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
@@ -44,54 +26,27 @@ const TAG_DEBUG: u16 = 10;
 const TAG_VTIMER: u16 = 11;
 const TAG_INTERRUPTS: u16 = 12;
 
-/// The number of sections every arm64 blob carries.
 const SECTION_COUNT: u16 = 12;
 
-/// Length of the fixed container header (shared with the x86 record set).
 const HEADER_LEN: usize = 10;
 
-/// The complete non-memory arm64 machine snapshot (skeleton record set).
-///
-/// The vmm-core arm64 vendor fills this from the live machine; this crate
-/// encodes it ([`Arm64VmState::encode`]) and decodes it back
-/// ([`Arm64VmState::decode`]). Equal values encode to identical bytes.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Arm64VmState {
-    /// Core registers (`x0..x30`, `SP`, `PC`, `PSTATE`, the EL1 banked
-    /// exception registers).
     pub regs: Arm64Regs,
-    /// The skeleton EL1 system-register file (full set `TODO(AA-6)`).
     pub sysregs: Arm64Sysregs,
-    /// SIMD/FP register file.
     pub simd_fp: Arm64SimdFp,
-    /// Debug register file and trap controls.
     pub debug: Arm64Debug,
-    /// Virtual-timer register and framework offset/mask state.
     pub vtimer: Arm64Vtimer,
-    /// Pending interrupt levels.
     pub interrupts: Arm64Interrupts,
-    /// Runnable vs halted (WFI-halted on arm64).
     pub mp_state: MpState,
-    /// V-time clock snapshot (`snapshot_vns` + ratio config) — the engine's
-    /// arch-neutral block, identical in shape to the x86 record set's.
     pub vtime: VtimeState,
-    /// Absolute-V-time timer-queue contents (a vmm-core snapshot always seals
-    /// it empty; the fabric timer rides the device blob).
     pub timers: TimerQueueState,
-    /// The engine's entropy-stream / hypercall-dispatcher state bytes.
     pub hypercall: Vec<u8>,
-    /// The arm64 vendor's device blob (PL011 + GIC state; opaque here).
     pub devices: DeviceBlob,
-    /// SHA-256 of the ratified ARM CPU contract this snapshot was taken under
-    /// (the contract document is port work / AA-6; the skeleton stamps its
-    /// policy-skeleton hash). Compared by vmm-core, not here.
     pub contract_hash: [u8; 32],
 }
 
-/// The arm64 core register record — mirrors `vmm-backend`'s `Arm64CoreRegs`
-/// as plain data (rule #2: no sibling dependency; consistency by review).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[allow(missing_docs)]
 pub struct Arm64Regs {
     pub x: [u64; 31],
     pub sp: u64,
@@ -102,10 +57,7 @@ pub struct Arm64Regs {
     pub spsr_el1: u64,
 }
 
-/// The skeleton EL1 system-register record — mirrors `vmm-backend`'s
-/// `Arm64SysregFile` (full record set `TODO(AA-6)`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-#[allow(missing_docs)]
 pub struct Arm64Sysregs {
     pub sctlr_el1: u64,
     pub ttbr0_el1: u64,
@@ -121,59 +73,38 @@ pub struct Arm64Sysregs {
     pub cntkctl_el1: u64,
 }
 
-/// SIMD/FP snapshot record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Arm64SimdFp {
-    /// `Q0..Q31` in architectural byte order.
     pub q: [[u8; 16]; 32],
-    /// Floating-point control register.
     pub fpcr: u64,
-    /// Floating-point status register.
     pub fpsr: u64,
 }
 
-/// Debug snapshot record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Arm64Debug {
-    /// `DBGBVR0_EL1..DBGBVR15_EL1`.
     pub breakpoint_value: [u64; 16],
-    /// `DBGBCR0_EL1..DBGBCR15_EL1`.
     pub breakpoint_control: [u64; 16],
-    /// `DBGWVR0_EL1..DBGWVR15_EL1`.
     pub watchpoint_value: [u64; 16],
-    /// `DBGWCR0_EL1..DBGWCR15_EL1`.
     pub watchpoint_control: [u64; 16],
-    /// `MDSCR_EL1`.
     pub mdscr_el1: u64,
-    /// Whether guest debug exceptions trap.
     pub trap_debug_exceptions: bool,
-    /// Whether guest debug-register accesses trap.
     pub trap_debug_reg_accesses: bool,
 }
 
-/// Hypervisor.framework virtual-timer snapshot record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Arm64Vtimer {
-    /// `CNTV_CTL_EL0`.
     pub cntv_ctl_el0: u64,
-    /// `CNTV_CVAL_EL0`.
     pub cntv_cval_el0: u64,
-    /// Framework automatic-timer-exit mask.
     pub masked: bool,
-    /// Framework host-counter offset.
     pub offset: u64,
 }
 
-/// Pending interrupt-level snapshot record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Arm64Interrupts {
-    /// Pending IRQ level.
     pub irq: bool,
-    /// Pending FIQ level.
     pub fiq: bool,
 }
 
-/// `Arm64Regs` on the wire: 37 little-endian `u64`s in declaration order.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 struct Arm64RegsWire {
@@ -214,7 +145,6 @@ impl From<&Arm64RegsWire> for Arm64Regs {
     }
 }
 
-/// `Arm64Sysregs` on the wire: 12 little-endian `u64`s in declaration order.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 struct Arm64SysregsWire {
@@ -412,14 +342,6 @@ fn decode_interrupts(w: &Arm64InterruptsWire) -> Result<Arm64Interrupts, VmState
 }
 
 impl Arm64VmState {
-    /// Encode to the versioned TLV blob under [`ARCH_AARCH64`]. Deterministic:
-    /// equal `Arm64VmState` ⇒ equal bytes.
-    ///
-    /// # Errors
-    ///
-    /// - [`VmStateError::InvalidField`] for a timer queue violating the
-    ///   canonical-order/unique-token/`seq < next_seq` invariants, or a
-    ///   variable-length section exceeding `u32::MAX` bytes.
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
         let mut out = Vec::new();
         out.extend_from_slice(
@@ -472,15 +394,6 @@ impl Arm64VmState {
         Ok(out)
     }
 
-    /// Decode a blob produced by [`Arm64VmState::encode`]. Strict and total:
-    /// validates magic, version, **arch tag**, section count, ordering, and
-    /// every field; never panics on arbitrary input.
-    ///
-    /// # Errors
-    ///
-    /// The matching [`VmStateError`] — notably
-    /// [`VmStateError::UnsupportedArch`] for a blob whose header names another
-    /// record set (e.g. an x86 blob), which must never be reinterpreted.
     pub fn decode(bytes: &[u8]) -> Result<Arm64VmState, VmStateError> {
         let header = HeaderWire::read_from_prefix(bytes)
             .map_err(|_| VmStateError::Truncated)?
@@ -643,7 +556,6 @@ mod tests {
         s
     }
 
-    /// Return the payload start and length for `tag` in a known-valid blob.
     fn section(blob: &[u8], wanted: u16) -> (usize, usize) {
         let mut pos = HEADER_LEN;
         while pos < blob.len() {

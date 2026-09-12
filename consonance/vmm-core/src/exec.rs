@@ -1,154 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The `exec` improvisation's **sentinel state machine** — the pure, portable
-//! logic that turns "run a command at the serial shell" into an injected byte
-//! stream plus a completion detector.
-//!
-//! `exec` is an **improvisation** (`docs/PROTOCOL.md`): a
-//! one-off command run inside a *forked* guest, **never recorded into any
-//! `Environment`** and carrying **no determinism guarantee**. The transport is
-//! deliberately crude — raw bytes on the guest's 8250 serial input, as if typed
-//! at a root shell — so this module owns none of the deterministic
-//! guest-plane machinery. What it owns is the small, testable protocol on top of
-//! the shell: *what bytes to type*, and *how to know the command finished and with
-//! what status*. The airtight part is the **taint guard**
-//! ([`crate::control`]), not this channel; this stays simple on purpose.
-//!
-//! ## The sentinel scheme
-//!
-//! A serial shell echoes what is typed and then runs it, interleaving the echo,
-//! the command's own output, and the next prompt on one byte stream. To detect
-//! completion without a guest agent, [`ExecSession`] injects, after the command,
-//! an `echo` of a **unique marker wrapping the shell's `$?`**:
-//!
-//! ```text
-//! <cmd>\n
-//! echo <M>:$?:<M>\n
-//! ```
-//!
-//! The shell first **echoes the typed line** — so the bytes `<M>:$?:<M>` appear on
-//! the wire with `$?` **literal** (the two ASCII bytes `$` `?`, unexpanded). Then
-//! the command runs, and finally the *executed* `echo` emits `<M>:<digits>:<M>`
-//! with the real exit status. The detector therefore scans for
-//! `<M>` `:` `<one-or-more ASCII digits>` `:` `<M>` — a pattern the literal echo
-//! (`<M>:$?:<M>`) **cannot** match, because `$?` are not digits. **This
-//! digits-vs-literal-`$?` rule is the load-bearing disambiguation** — not the
-//! marker's exact bytes.
-//!
-//! The marker is `HXEC-<nonce>-` — plain printable ASCII (`HXEC` == "harmony
-//! exec"), salted with a per-call `nonce` so two different `exec`s cannot alias.
-//! **It must stay printable.** The exec-capable image (`consonance/harmony-linux/linux/exec-init.sh`)
-//! hands the console to an *interactive* `busybox ash` with line editing
-//! (`CONFIG_FEATURE_EDITING=y`, on by defconfig), and a line editor treats control
-//! bytes as editing keystrokes rather than input — e.g. `^A` (SOH, `0x01`) is
-//! *cursor-to-start*, which rearranges the injected line so the sentinel never
-//! reaches the wire (empirically reproduced against busybox ash 1.37: every `exec`
-//! timed out). A printable marker survives the line editor untouched; the nonce
-//! salt already carries the collision-avoidance the (removed) SOH brackets were
-//! meant to add. The `nonce` is a caller-supplied counter, **not** wall-clock or
-//! `rand` (conventions rule 4); because `exec` is off the record, its exact value
-//! never needs to be reproducible — only unique-enough within a session.
-//!
-//! ## Failure modes (documented, by ruling out of scope to *fix*)
-//!
-//! - **Deadline before the sentinel.** If V-time reaches the run deadline first,
-//!   [`ExecSession::finish_timeout`] closes the session `ok = false`; `output` is
-//!   whatever was captured. A long-running or hung command, or a guest with no
-//!   cooperating shell, ends here.
-//! - **Marker collision.** If the command's *own* output contains the exact
-//!   `<M>:<digits>:<M>` pattern, the detector stops early on it. The distinctive
-//!   `HXEC-` tag plus the per-call `nonce` salt makes this astronomically unlikely
-//!   for textual output but is not impossible for arbitrary binary output —
-//!   acceptable for a crude, off-record channel.
-//! - **Output cap.** Captured output is bounded at [`MAX_CAPTURE`]; past that,
-//!   bytes are dropped (and the session still completes on the sentinel if it
-//!   arrives). This keeps a runaway command from growing an unbounded buffer —
-//!   library code must never OOM on untrusted output (conventions rule 4).
-//! - **Non-echoing / cooked-mode shells.** The scheme assumes the shell echoes the
-//!   executed `echo`'s output onto the same serial line. A shell configured
-//!   otherwise would time out. The box guest image (`consonance/harmony-linux/linux/`) provides a
-//!   root shell on the serial console for exactly this reason.
 
-/// The marker's fixed, **plain-printable** prefix (`HXEC` == "harmony exec"). Kept
-/// printable so an interactive line-editing shell (busybox ash,
-/// `CONFIG_FEATURE_EDITING=y`) does not eat it as editing keystrokes — see the
-/// module docs. The per-call `nonce` (appended, then a trailing `-`) does the
-/// collision-avoidance the marker's bytes must not.
 const MARKER_TAG: &[u8] = b"HXEC-";
 
-/// The upper bound on captured serial output for one `exec` (1 MiB). Past this,
-/// further output bytes are dropped — the sentinel is still detected if it
-/// arrives — so an unbounded or hung command cannot grow the buffer without limit
-/// (conventions rule 4: no OOM on untrusted input).
 pub const MAX_CAPTURE: usize = 1 << 20;
 
-/// The terminal state of an [`ExecSession`]: either the completion sentinel was
-/// seen (with the parsed shell exit status) or the run deadline was reached first.
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum Done {
-    /// The sentinel matched; the shell reported this exit status.
-    Sentinel {
-        /// The parsed `$?` value (the shell exit status).
-        status: u64,
-        /// Byte offset in the capture where the sentinel line began — output is
-        /// reported up to here (the sentinel itself is stripped).
-        cut: usize,
-    },
-    /// The deadline was reached before any sentinel; the command did not complete.
+    Sentinel { status: u64, cut: usize },
     Timeout,
 }
 
-/// The result of a completed [`ExecSession`]: the captured serial output (up to the
-/// sentinel, or all of it on a timeout), whether the command completed cleanly, and
-/// the shell exit status when known.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ExecOutcome {
-    /// The serial output captured while the command ran (crude — may include the
-    /// shell's echo of the injected line and the trailing prompt).
     pub output: Vec<u8>,
-    /// Whether the command reached its completion sentinel before the deadline.
     pub ok: bool,
-    /// The shell exit status (`$?`) parsed from the sentinel, or `None` on a
-    /// timeout (no sentinel was seen).
     pub status: Option<u64>,
 }
 
-/// The pure sentinel state machine driving one `exec` improvisation. Build it with
-/// [`new`](ExecSession::new), inject [`input`](ExecSession::input) on the guest
-/// serial RX, then feed captured serial output with [`feed`](ExecSession::feed)
-/// after each VM step until [`is_done`](ExecSession::is_done); close a run that hits
-/// its deadline with [`finish_timeout`](ExecSession::finish_timeout). Portable and
-/// side-effect-free — the real serial wiring lives in [`crate::vmm`], and this is
-/// unit-tested against a scripted mock serial.
 pub struct ExecSession {
-    /// The full, plain-printable marker: `HXEC-<nonce>-`.
     marker: Vec<u8>,
-    /// The bytes to type on the serial input (the command + the sentinel `echo`).
     input: Vec<u8>,
-    /// Accumulated serial output, scanned for the sentinel.
     capture: Vec<u8>,
-    /// Set once the sentinel matches or the deadline is reached.
     done: Option<Done>,
-    /// `true` once [`MAX_CAPTURE`] was hit and bytes were dropped.
     truncated: bool,
-    /// The offset [`scan`](Self::scan) resumes marker-search from, so a chatty
-    /// guest emitting output across many V-time steps stays linear instead of
-    /// re-walking the whole capture (and every historical non-matching marker) on
-    /// each [`feed`](Self::feed). Any sentinel starting before this offset would
-    /// already have been fully present — and matched-or-rejected — on a prior feed,
-    /// so resuming here never misses one. Held back by [`sentinel_max_len`](Self::sentinel_max_len)
-    /// so a sentinel straddling the previous buffer boundary is still caught.
     scan_from: usize,
 }
 
 impl ExecSession {
-    /// Build a session for `cmd`, salting the marker with `nonce` (a session
-    /// counter — unique-enough, never wall-clock/`rand`). The injected line is
-    /// `"<cmd>\necho <M>:$?:<M>\n"`; see the module docs for the scheme.
-    ///
-    /// A `\n` inside `cmd` is passed through verbatim (the shell runs each line);
-    /// the sentinel `echo` still lands after the whole command, so multi-line
-    /// commands work. The crude channel does no quoting or escaping — the caller
-    /// owns what it injects.
     pub fn new(cmd: &str, nonce: u64) -> ExecSession {
         let mut marker = Vec::with_capacity(MARKER_TAG.len() + 20);
         marker.extend_from_slice(MARKER_TAG);
@@ -176,15 +54,10 @@ impl ExecSession {
         }
     }
 
-    /// The bytes to inject on the guest's serial input (RBR), as if typed at the
-    /// shell. Injected once, up front.
     pub fn input(&self) -> &[u8] {
         &self.input
     }
 
-    /// Feed newly-captured serial output. Appends (bounded by [`MAX_CAPTURE`]) and
-    /// rescans for the completion sentinel; a match closes the session `ok`. A
-    /// no-op once [`is_done`](Self::is_done) (the first terminal state wins).
     pub fn feed(&mut self, bytes: &[u8]) {
         if self.done.is_some() {
             return;
@@ -203,37 +76,24 @@ impl ExecSession {
         self.scan_from = self.capture.len().saturating_sub(self.sentinel_max_len());
     }
 
-    /// The maximum byte length of a complete sentinel `<M>:<digits>:<M>`: two
-    /// markers, the two `:` separators, and up to 20 digits (a `u64`'s widest
-    /// decimal). A sentinel is never longer than this, so resuming a scan this far
-    /// back from the buffer end can never miss one.
     fn sentinel_max_len(&self) -> usize {
         2 * self.marker.len() + 2 + 20
     }
 
-    /// Close the session because the run reached its V-time deadline before any
-    /// sentinel. Idempotent-safe: a no-op if the sentinel already matched (the
-    /// clean completion wins over a same-step deadline).
     pub fn finish_timeout(&mut self) {
         if self.done.is_none() {
             self.done = Some(Done::Timeout);
         }
     }
 
-    /// Whether the session has reached a terminal state (sentinel or timeout).
     pub fn is_done(&self) -> bool {
         self.done.is_some()
     }
 
-    /// Whether captured output hit [`MAX_CAPTURE`] and bytes were dropped.
     pub fn truncated(&self) -> bool {
         self.truncated
     }
 
-    /// Consume the session into its [`ExecOutcome`]. If no terminal state was
-    /// reached (neither [`feed`](Self::feed) matched nor
-    /// [`finish_timeout`](Self::finish_timeout) was called), it is treated as a
-    /// timeout — the caller always gets an honest, non-panicking result.
     pub fn into_outcome(self) -> ExecOutcome {
         match self.done {
             Some(Done::Sentinel { status, cut }) => ExecOutcome {
@@ -249,14 +109,6 @@ impl ExecSession {
         }
     }
 
-    /// Scan the capture from byte offset `start` for the completion sentinel
-    /// `<M>:<digits>:<M>` and return `(status, cut)` — the parsed exit status and
-    /// the byte offset where the sentinel line begins (so output is reported up to
-    /// there). Returns `None` until the *executed* `echo` output appears; the
-    /// shell's literal echo of the typed line (`<M>:$?:<M>`) never matches, because
-    /// `$?` are not digits. `start` only skips a prefix already scanned on a prior
-    /// feed (see [`scan_from`](Self::scan_from)); it never affects `cut`, which is
-    /// the absolute sentinel offset.
     fn scan(&self, start: usize) -> Option<(u64, usize)> {
         let m = &self.marker;
         let buf = &self.capture;
@@ -299,8 +151,6 @@ impl ExecSession {
     }
 }
 
-/// First index of `needle` in `haystack` (naive; needles here are short markers).
-/// `None` if absent or `needle` is empty.
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || needle.len() > haystack.len() {
         return None;
@@ -312,9 +162,6 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// The injected line is `<cmd>\necho <M>:$?:<M>\n`, and the marker is a
-    /// **plain-printable** nonce-salted token (no control bytes — an interactive
-    /// line-editing shell would eat them; see the module docs).
     #[test]
     fn injection_wraps_the_command_with_a_sentinel_echo() {
         let s = ExecSession::new("ls /", 7);
@@ -335,9 +182,6 @@ mod tests {
         );
     }
 
-    /// A cooperating shell echoes the typed line (with literal `$?`) and then the
-    /// executed echo with real digits: the detector ignores the first and fires on
-    /// the second, reporting the status and the output before it.
     #[test]
     fn sentinel_with_digits_completes_and_the_literal_echo_does_not() {
         let mut s = ExecSession::new("true", 42);
@@ -362,7 +206,6 @@ mod tests {
         );
     }
 
-    /// A non-zero exit status is parsed.
     #[test]
     fn nonzero_exit_status_is_parsed() {
         let mut s = ExecSession::new("false", 1);
@@ -373,10 +216,6 @@ mod tests {
         assert_eq!(out.status, Some(137));
     }
 
-    /// The resume-offset optimization (linear scan) does not miss a sentinel after
-    /// many chatty feeds — including an early **literal-`$?` echo** (a historical
-    /// non-matching marker occurrence) that the resume must scan *past* without
-    /// forgetting, then a real sentinel byte-by-byte much later.
     #[test]
     fn resume_scan_finds_the_sentinel_after_lots_of_chatty_output() {
         let mut s = ExecSession::new("busy", 5);
@@ -398,9 +237,6 @@ mod tests {
         assert!(!String::from_utf8_lossy(&out.output).contains(":42:"));
     }
 
-    /// The sentinel can arrive split across two `feed` chunks (V-time steps): the
-    /// scan runs on the whole accumulated buffer, so a marker straddling a chunk
-    /// boundary is still found.
     #[test]
     fn sentinel_split_across_feeds_is_detected() {
         let mut s = ExecSession::new("echo hi", 99);
@@ -413,8 +249,6 @@ mod tests {
         assert_eq!(s.into_outcome().status, Some(0));
     }
 
-    /// Reaching the deadline with no sentinel closes the session `ok = false`,
-    /// surfacing whatever was captured.
     #[test]
     fn timeout_without_sentinel_is_not_ok() {
         let mut s = ExecSession::new("sleep 999", 5);
@@ -428,9 +262,6 @@ mod tests {
         assert_eq!(out.output, b"partial output, no sentinel yet");
     }
 
-    /// A clean sentinel on the same step as a deadline wins over the timeout (feed
-    /// is processed before finish_timeout in the run loop, and the first terminal
-    /// state is sticky).
     #[test]
     fn sentinel_wins_over_a_same_step_timeout() {
         let mut s = ExecSession::new("true", 3);
@@ -440,8 +271,6 @@ mod tests {
         assert!(s.into_outcome().ok);
     }
 
-    /// Output past `MAX_CAPTURE` is dropped rather than growing unbounded, and the
-    /// session still completes if the sentinel arrives within the cap.
     #[test]
     #[cfg_attr(
         miri,
@@ -456,8 +285,6 @@ mod tests {
         assert!(s.capture.len() <= MAX_CAPTURE);
     }
 
-    /// A marker with no digits between the colons (e.g. a corrupted/partial line)
-    /// never falsely completes.
     #[test]
     fn marker_without_digits_never_completes() {
         let mut s = ExecSession::new("x", 11);
@@ -468,8 +295,6 @@ mod tests {
         assert!(!s.is_done());
     }
 
-    /// `into_outcome` on a session that never reached a terminal state is an honest
-    /// timeout, never a panic.
     #[test]
     fn unterminated_session_yields_a_timeout_outcome() {
         let s = ExecSession::new("x", 0);

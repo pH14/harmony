@@ -1,27 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **hardware** leg of the `Backend` contract tests (`docs/TESTING.md`,
-//! rung 2): the *identical* [`vmm_backend::contract`] exam the portable
-//! `contract_mock.rs` runs over `MockBackend`, run here over the live
-//! `KvmBackend`.
-//!
-//! `#[cfg(all(target_os = "linux", target_arch = "x86_64"))]` + `#[ignore]`, so
-//! CI **compiles** it on every push and never runs it. Run it manually per
-//! `docs/HARDWARE-TESTING.md`. On a host
-//! without `/dev/kvm` these panic with what is missing and where to run them —
-//! never a silent pass.
-//!
-//! ```sh
-//! taskset -c 1 cargo test -p vmm-backend --all-features --test contract_kvm \
-//!     -- --ignored --nocapture --test-threads=1
-//! ```
-//!
-//! **Transcribed, pending its first hardware run.** The guest stubs below are
-//! hand-assembled real-mode fragments written from the instruction encodings and
-//! the pattern in `tests/kvm_smoke.rs`; they have not yet executed on the box.
-//! The first hardware run is expected to correct stub details (segment setup,
-//! which scenarios stock KVM can surface). What is *not*
-//! provisional is the exam itself — it is the same code the portable leg
-//! already passes.
 #![cfg(all(
     target_os = "linux",
     target_arch = "x86_64",
@@ -31,22 +8,11 @@
 use vmm_backend::contract::{BackendFixture, ContractReport, Scenario, run_all};
 use vmm_backend::{Backend, CpuidModel, Gpa, KvmBackend, MsrFilter, MsrRange, X86Policy};
 
-/// Guest RAM size. 64 KiB is a whole real-mode segment and covers every guest
-/// frame the stubs touch.
 const RAM_LEN: usize = 0x1_0000;
-/// Where every scenario stub is loaded and where `rip` starts.
 const ENTRY: u64 = 0x1000;
-/// Where the dirty-page stub is loaded (distinct from `ENTRY`, so arming the
-/// dirty log never clobbers a scenario stub).
 const DIRTY_ENTRY: u64 = 0x3000;
-/// The guest frames the dirty-page stub writes.
 const DIRTY_GFNS: [u64; 2] = [2, 5];
 
-/// One identity-mapped guest RAM region, page-aligned (the `map_memory` host
-/// alignment invariant), reached by the backend through a raw pointer. Held by
-/// the fixture so it outlives every backend the exam hands out. Moving the
-/// struct is harmless — the *backing* is a separate `alloc_zeroed` allocation
-/// that never moves, which is exactly the pinning `map_memory` requires.
 struct GuestMem {
     ptr: *mut u8,
     layout: std::alloc::Layout,
@@ -75,12 +41,6 @@ impl Drop for GuestMem {
     }
 }
 
-/// The hand-assembled real-mode stub for each scenario, or `None` when this
-/// backend cannot put the guest in that situation at all.
-///
-/// Every stub ends in `hlt; jmp -3`, so each `run` after the armed exit returns
-/// `Idle` again — the same repeated-halt shape the mock's scripted `Idle` tail
-/// provides.
 fn stub(scenario: Scenario) -> Option<Vec<u8>> {
     const HALT_LOOP: [u8; 3] = [0xF4, 0xEB, 0xFD];
     let head: Vec<u8> = match scenario {
@@ -99,14 +59,10 @@ fn stub(scenario: Scenario) -> Option<Vec<u8>> {
     Some(code)
 }
 
-/// mov byte [0x2000], 1 ; mov byte [0x5000], 1 ; hlt — dirties gfns 2 and 5.
 const DIRTY_STUB: &[u8] = &[
     0xC6, 0x06, 0x00, 0x20, 0x01, 0xC6, 0x06, 0x00, 0x50, 0x01, 0xF4,
 ];
 
-/// Minimal frozen CPUID model and a real, default-deny MSR filter: the SYSENTER
-/// MSRs stay in-kernel, every other index (including the scenario stubs' probe)
-/// traps to userspace.
 fn policy() -> X86Policy {
     X86Policy {
         cpuid: CpuidModel::default(),
@@ -119,8 +75,6 @@ fn policy() -> X86Policy {
     }
 }
 
-/// Fail-fast guard: a missing host baseline panics with where to run this,
-/// rather than reporting a green that means nothing.
 fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
@@ -130,8 +84,6 @@ fn require_kvm() {
     );
 }
 
-/// A backend this fixture can build. The two live backends differ only in their
-/// constructor and their reach, so the fixture is generic over the pair.
 trait LiveBackend: Backend<A = vmm_backend::X86> + Sized {
     fn open() -> Self;
     fn enable_dirty_log(&mut self);
@@ -159,8 +111,6 @@ impl LiveBackend for KvmBackend {
     }
 }
 
-/// Put the vCPU into flat real mode with `rip` at `entry` (linear == GPA, paging
-/// off), through the trait's own save/restore.
 fn enter_real_mode_at<B: LiveBackend>(backend: &mut B, entry: u64) {
     let mut st = backend.save().expect("save for setup");
     st.sregs.cs.base = 0;
@@ -172,8 +122,6 @@ fn enter_real_mode_at<B: LiveBackend>(backend: &mut B, entry: u64) {
     backend.restore(&st).expect("restore setup state");
 }
 
-/// The live fixture. Owns the guest memory of every backend it has handed out,
-/// so a `GuestMem` can never be freed while a backend still maps it.
 struct KvmFixture<B: LiveBackend> {
     name: &'static str,
     mems: Vec<GuestMem>,
@@ -189,8 +137,6 @@ impl<B: LiveBackend> KvmFixture<B> {
         }
     }
 
-    /// A fresh, mapped, stub-loaded, **unconfigured** backend positioned at
-    /// `entry`.
     fn boot(&mut self, code: &[u8], entry: u64) -> B {
         let mut backend = B::open();
         backend.enable_dirty_log();
@@ -227,9 +173,6 @@ impl<B: LiveBackend> BackendFixture for KvmFixture<B> {
     }
 }
 
-/// The exams that must run on **any** live backend. Trapped clock/RNG reads and
-/// the CPUID/hypercall cells are backend-dependent and are
-/// asserted per backend below.
 const REQUIRED_EVERYWHERE: &[&str] = &[
     "ordering/not_configured",
     "ordering/completion_grid",

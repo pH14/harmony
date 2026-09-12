@@ -1,26 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Box-only live `KvmBackend` integration tests (gates 6–9).
-//!
-//! `#[cfg(target_os = "linux")]` + `#[ignore]` so the standard gates (which run
-//! `cargo test … --all-features`) **compile but do not run** them — a Cargo
-//! feature would be flipped on by `--all-features` and trip the fail-fast on a
-//! Mac/CI host. Run explicitly on the determinism box, **CPU-pinned** per
-//! `docs/HARDWARE-TESTING.md`; choose an idle core on the qualified host:
-//!
-//! ```sh
-//! ssh <qualified-host> 'taskset -c 1 cargo test -p vmm-backend --test kvm_smoke -- --ignored --test-threads=1'
-//! ```
-//!
-//! **Fail-fast, never skip:** on a host without `/dev/kvm`/VMX/Intel these panic
-//! with what is missing and where to run them, rather than silently passing.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use vmm_backend::{
     Backend, CommonExit, CpuidModel, Exit, Gpa, KvmBackend, MsrFilter, MsrRange, X86Exit, X86Policy,
 };
 
-/// One identity-mapped guest RAM region, page-aligned (the `map_memory` host
-/// alignment invariant), reached by the backend through a raw pointer.
 struct GuestMem {
     ptr: *mut u8,
     layout: std::alloc::Layout,
@@ -49,7 +33,6 @@ impl Drop for GuestMem {
     }
 }
 
-/// Fail-fast guard: build a `KvmBackend` or panic with where to run this.
 fn new_backend_or_explain() -> KvmBackend {
     if !std::path::Path::new("/dev/kvm").exists() {
         panic!(
@@ -66,9 +49,6 @@ fn new_backend_or_explain() -> KvmBackend {
     })
 }
 
-/// Minimal frozen CPUID model and a permissive-but-real MSR filter for bring-up.
-/// `allow_inkernel` names a couple of harmless MSR ranges KVM keeps servicing;
-/// every other MSR (including the gate-8 probe) traps to userspace.
 fn configure(backend: &mut KvmBackend) {
     backend
         .set_policy(&X86Policy {
@@ -83,8 +63,6 @@ fn configure(backend: &mut KvmBackend) {
         .expect("set_policy");
 }
 
-/// Put the vCPU into flat real mode with `rip` at `entry` (linear == GPA, paging
-/// off), via the trait's save/restore. Returns nothing; mutates the vCPU.
 fn enter_real_mode_at(backend: &mut KvmBackend, entry: u64) {
     let mut st = backend.save().expect("save for setup");
     st.sregs.cs.base = 0;

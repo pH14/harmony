@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Per-operation cost of the SMB target: raw frames, snapshot and restore,
-//! action application with observations, the admission probe, and the
-//! archive key. Numbers are wall-clock and machine-specific; the binary
-//! exists to find which operation bounds campaign throughput.
 
 use std::{env, error::Error, fs, time::Instant};
 

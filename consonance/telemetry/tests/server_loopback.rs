@@ -1,11 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! End-to-end web-server test over an in-process loopback (no KVM).
-//!
-//! Binds `127.0.0.1:0`, drives a scripted event vector through a `LiveSink`, and
-//! drives the replay path off a recorded NDJSON file — asserting the served HTML,
-//! the `data: …\n\n` SSE framing (in order), and the byte-exact `/recording`
-//! body. This is the gate's "tested over an in-process loopback" requirement at
-//! integration scope, using only the public API.
 
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -19,8 +12,6 @@ fn loopback() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 0))
 }
 
-/// Reads from a stream until `needle` appears or attempts run out (bounded, so a
-/// test never hangs).
 fn read_until(stream: &mut TcpStream, needle: &str) -> String {
     stream
         .set_read_timeout(Some(Duration::from_millis(200)))
@@ -188,8 +179,6 @@ fn replay_serves_a_recorded_file_byte_for_byte() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A scratch directory under the system temp dir, unique per test process. Avoids
-/// pulling `tempfile` into the dependency set for a single integration test.
 fn tempdir_like() -> std::path::PathBuf {
     let mut dir = std::env::temp_dir();
     dir.push(format!("telemetry-test-{}", std::process::id()));

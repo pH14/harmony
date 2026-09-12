@@ -1,10 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 5 — reset-state test.
-//!
-//! [`Lapic::new`] must reproduce the SDM power-on/reset values (Vol. 3A
-//! §11.4.7.1): software-disabled APIC, spurious vector `0xFF`, every LVT masked,
-//! all counts and priority registers zero — and **no interrupt is deliverable
-//! until the guest software-enables the APIC**.
 
 use lapic::{
     APIC_DFR, APIC_ID, APIC_IRR, APIC_ISR, APIC_LVT_ERROR, APIC_LVT_LINT0, APIC_LVT_LINT1,

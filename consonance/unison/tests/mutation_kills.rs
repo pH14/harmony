@@ -1,13 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Tests that exist specifically to kill mutants `cargo mutants -p unison`
-//! left surviving — lines the rest of the suite executes but does not actually
-//! constrain. Each test names the mutant(s) it removes (file:line, see
-//! `unison/README.md` "Mutation testing").
-//!
-//! The recurring gap these close: the existing suite asserts *verdicts* and
-//! *upper bounds* (e.g. `runs_executed <= bound`) but rarely an *exact count*,
-//! so a counter mutated to stay at zero (`+= 1` → `*= 1`) sails through. These
-//! pin the counts down.
 
 use unison::flaky::{FlakyFactory, Perturbation};
 use unison::toy::{ToyFactory, asm, generate_program};

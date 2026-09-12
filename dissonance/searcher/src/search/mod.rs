@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Game-neutral search mechanisms shared by target adapters.
-
 pub mod archive;
 pub mod campaign;
 mod continuation;

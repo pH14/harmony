@@ -1,13 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The fault action vocabulary, its environment delta, and the decoding of one
-//! endpoint's guest-published evidence.
-//!
-//! Every function here is pure: an action list maps to standing faults and
-//! staged host perturbations by arithmetic on the root seal `Moment` alone, and
-//! an endpoint's evidence decodes from a captured SDK event page. Neither needs
-//! a live guest, so both are exercised directly by unit tests.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use control_proto::StopReason;
@@ -15,37 +7,19 @@ use fault_policy::{DecisionClass, Fault, HostFault, Span, StandingWindow, proces
 use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
 
-/// Virtual nanoseconds one action runs for before its endpoint is sealed,
-/// unless the campaign sets its own horizon.
 pub const DEFAULT_HORIZON_NANOS: u64 = 2_000_000_000;
-/// Virtual nanoseconds of one guest fault-agent reconcile tick. A `Pause`
-/// duration is expressed in these because the agent can only observe a window
-/// boundary on a tick.
 pub const AGENT_TICK_NANOS: u64 = 10_000_000;
-/// A `Restart` holds a node down for this fraction of the horizon before the
-/// agent sees the window leave and starts it again, so the restarted node is
-/// observable inside the same action.
 const RESTART_DOWN_DIVISOR: u64 = 4;
-/// Largest action count one fault input may carry.
 pub const MAX_FAULT_ACTIONS: usize = 256;
 
-/// Guest fault-agent state registers, namespace 2 of the SDK event stream.
 pub mod reg {
-    /// Agent reconcile ticks completed.
     pub const TICKS: u32 = 1;
-    /// Bitmap of nodes currently running, bit `n` for node `n`.
     pub const ALIVE: u32 = 2;
-    /// Hooks the agent has spawned.
     pub const HOOKS_STARTED: u32 = 3;
-    /// Hooks that ran to completion.
     pub const HOOKS_FINISHED: u32 = 4;
-    /// Bitmap of `sometimes` sites hit, first 48 ids.
     pub const SOMETIMES: u32 = 5;
-    /// Nodes that died with no fault active.
     pub const UNEXPECTED_DEATHS: u32 = 6;
-    /// Nodes the agent restarted.
     pub const RESTARTS: u32 = 7;
-    /// Threads the guest kernel parked at a place.
     pub const PARKED: u32 = 8;
 }
 
@@ -59,85 +33,50 @@ const STATE_MAX: u8 = 1;
 const ASSERT_PAYLOAD_LEN: usize = 3;
 const STATE_PAYLOAD_LEN: usize = 9;
 
-/// Widest `sometimes` site id the archive key can distinguish.
 pub const SOMETIMES_KEY_BITS: u32 = 64;
 
-/// One total action of the fault vocabulary.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum FaultAction {
-    /// Let the workload run through the horizon with no new fault.
     Wait,
-    /// SIGKILL one node for the whole horizon.
     Kill(u16),
-    /// SIGSTOP one node for the given number of agent ticks, then SIGCONT.
     Pause(u16, u32),
-    /// SIGKILL one node and let the agent start it again inside the horizon.
     Restart(u16),
-    /// Spawn one workload hook once.
     Hook(u32),
-    /// Inject one interrupt vector at the start of the horizon.
     Interrupt(u32),
-    /// Hold one thread of a node at an instruction for the horizon: the
-    /// thread that reaches `addr` for the `hits`-th time stops there, before
-    /// the instruction runs, for `hold_us` microseconds. The guest kernel
-    /// counts and holds, so the node sees only time.
     Park {
-        /// The node.
         node: u16,
-        /// User virtual address of the instruction in the node's process.
         addr: u64,
-        /// The hit that parks, counted from 1.
         hits: u32,
-        /// Length of the hold in microseconds.
         hold_us: u32,
     },
 }
 
-/// Portable campaign snapshot: the action prefix that reaches an endpoint plus
-/// the endpoint's decoded evidence. Each evaluator maps the prefix back to its
-/// own real whole-VM snapshot.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultSnapshot {
-    /// The action prefix, in execution order.
     pub actions: Vec<FaultAction>,
-    /// The endpoint's observations.
     pub observation: FaultObservations,
-    /// Whether the evaluator that produced it had already failed.
     pub failed: bool,
 }
 
-/// A staged host-plane perturbation: opaque `HostFault` bytes and the `Moment`
-/// they apply at.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StagedPerturb {
-    /// Encoded [`HostFault`] bytes.
     pub fault: Vec<u8>,
-    /// The `Moment` the backend applies the fault at.
     pub at: u64,
 }
 
-/// One action's environment delta over its own horizon window.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ActionDelta {
-    /// The Process-class standing fault the action installs, if any.
     pub standing: Option<StandingWindow>,
-    /// The host-plane perturbation the action stages, if any.
     pub perturb: Option<StagedPerturb>,
 }
 
-/// The tiling every action window is cut from: equal horizons laid end to end
-/// from the root seal.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ActionWindows {
-    /// The sealed setup `Moment` the first window starts at.
     pub root_seal: u64,
-    /// Virtual nanoseconds each window spans.
     pub horizon_nanos: u64,
 }
 
 impl ActionWindows {
-    /// The half-open window the action at `index` owns. Saturating so a long
-    /// input can never wrap the V-time axis.
     #[must_use]
     pub fn window(self, index: usize) -> (u64, u64) {
         let offset = (index as u64).saturating_mul(self.horizon_nanos);
@@ -145,7 +84,6 @@ impl ActionWindows {
         (start, start.saturating_add(self.horizon_nanos))
     }
 
-    /// The deadline a run must reach for the action at `index` to be complete.
     #[must_use]
     pub fn deadline(self, index: usize) -> u64 {
         self.window(index).1
@@ -161,7 +99,6 @@ fn standing(target: Vec<u8>, window: (u64, u64)) -> StandingWindow {
     }
 }
 
-/// Map one action to its environment delta over `window`.
 #[must_use]
 pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
     let (start, end) = window;
@@ -231,7 +168,6 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
     }
 }
 
-/// Every action's delta in input order.
 #[must_use]
 pub fn action_deltas(windows: ActionWindows, actions: &[FaultAction]) -> Vec<ActionDelta> {
     actions
@@ -241,9 +177,6 @@ pub fn action_deltas(windows: ActionWindows, actions: &[FaultAction]) -> Vec<Act
         .collect()
 }
 
-/// The standing-fault window list an input installs, in input order. These are
-/// the configuration bytes the package's service handler answers guest polls
-/// from.
 #[must_use]
 pub fn standing_windows(windows: ActionWindows, actions: &[FaultAction]) -> Vec<StandingWindow> {
     action_deltas(windows, actions)
@@ -252,27 +185,13 @@ pub fn standing_windows(windows: ActionWindows, actions: &[FaultAction]) -> Vec<
         .collect()
 }
 
-/// Everything one SDK event page says about an endpoint.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SdkCapture {
-    /// State registers, last write wins for `state_set` and the maximum for
-    /// `state_max`.
     pub registers: BTreeMap<u32, u64>,
-    /// `sometimes` sites hit, namespace 1 dispositions of kind hit.
     pub sometimes: BTreeSet<u32>,
-    /// Assertion violations, namespace 1 dispositions of kind violation.
     pub violations: BTreeSet<u32>,
 }
 
-/// Decode one SDK event page.
-///
-/// Namespace-1 hits are the searcher's coverage signal here, so unlike the
-/// register-only decoders they are kept rather than skipped.
-///
-/// # Errors
-///
-/// Returns an error when a state event carries an unknown operation. A payload
-/// of the wrong length for its namespace is ignored, never misread.
 pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, String> {
     let mut capture = SdkCapture::default();
     for (_, event_id, bytes) in events {
@@ -314,27 +233,19 @@ pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, S
     Ok(capture)
 }
 
-/// How one action's run ended.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum FaultStop {
-    /// The run reached its horizon deadline, the nominal outcome.
     #[default]
     Deadline,
-    /// The guest went quiescent before the deadline.
     Quiescent,
-    /// An `assert_always` fired: a bug.
     Assertion {
-        /// The assertion point id.
         point: u32,
     },
-    /// The guest crashed: a bug.
     Crash,
-    /// Any other stop; the endpoint is not usable as a parent.
     Unexpected,
 }
 
 impl FaultStop {
-    /// Classify one control-plane stop.
     #[must_use]
     pub fn from_stop_reason(reason: &StopReason) -> Self {
         match reason {
@@ -346,51 +257,34 @@ impl FaultStop {
         }
     }
 
-    /// Whether this stop is a bug the campaign must report.
     #[must_use]
     pub fn is_bug(self) -> bool {
         matches!(self, Self::Assertion { .. } | Self::Crash)
     }
 
-    /// Whether the endpoint can still be branched from.
     #[must_use]
     pub fn is_continuable(self) -> bool {
         matches!(self, Self::Deadline)
     }
 }
 
-/// One endpoint's observations: the guest's state registers, the `sometimes`
-/// sites hit along the way, node liveness, and how the run ended.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultObservations {
-    /// V-time of the endpoint.
     pub moment: u64,
-    /// Agent reconcile ticks.
     pub ticks: u64,
-    /// Bitmap of live nodes.
     pub alive: u64,
-    /// Hooks spawned.
     pub hooks_started: u64,
-    /// Hooks completed.
     pub hooks_finished: u64,
-    /// Nodes that died with no fault active.
     pub unexpected_deaths: u64,
-    /// Nodes the agent restarted.
     pub restarts: u64,
-    /// Threads the guest kernel parked at a place.
     pub parked: u64,
-    /// The `sometimes` bitmap the agent publishes for the first 48 sites.
     pub sometimes_register: u64,
-    /// Every `sometimes` site hit, decoded from namespace-1 hits.
     pub sometimes: BTreeSet<u32>,
-    /// Assertion violations decoded from namespace-1 violations.
     pub violations: BTreeSet<u32>,
-    /// How the run ended.
     pub stop: FaultStop,
 }
 
 impl FaultObservations {
-    /// Build observations from one endpoint's SDK capture and stop.
     #[must_use]
     pub fn new(moment: u64, capture: &SdkCapture, stop: FaultStop) -> Self {
         let value = |id: u32| capture.registers.get(&id).copied().unwrap_or_default();
@@ -410,9 +304,6 @@ impl FaultObservations {
         }
     }
 
-    /// The `sometimes` set as the fixed-width bitmap the archive key carries.
-    /// A site id at or beyond [`SOMETIMES_KEY_BITS`] cannot widen the key and
-    /// is left out of it; the full set stays in the observation.
     #[must_use]
     pub fn sometimes_bitmap(&self) -> u64 {
         self.sometimes
@@ -421,13 +312,11 @@ impl FaultObservations {
             .fold(0_u64, |bits, id| bits | (1_u64 << id))
     }
 
-    /// Whether this endpoint found a bug.
     #[must_use]
     pub fn is_bug(&self) -> bool {
         self.stop.is_bug() || !self.violations.is_empty()
     }
 
-    /// Generic exit classification: a crashed guest yields no further evidence.
     #[must_use]
     pub fn exit_kind(&self) -> ExitKind {
         if self.stop == FaultStop::Crash {

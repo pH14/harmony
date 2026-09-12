@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Generic sixteen-location resource fixture: no NES or game dependencies.
 use super::*;
 use crate::search::archive::{RetireThresholds, SelectorAccounting, entries_by_suffix};
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]

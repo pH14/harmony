@@ -1,25 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Oracle property test (the core gate): drive the store and a naive model — one full
-//! `Vec<u8>` image per snapshot — with arbitrary operation sequences and assert
-//! byte-equality on every read and materialize. Deep-chain (>= 64) and wide-fan-out
-//! (>= 32) shapes get dedicated oracle-checked tests below the proptest.
 
 use proptest::prelude::*;
 use snapshot_store::{PAGE_SIZE, SnapshotId, Store, StoreConfig, StoreError};
 
-/// Small logical image so full-image models stay cheap across many snapshots.
 const MEM_PAGES: u64 = 24;
 
-/// Page content derived from a one-byte seed. The tiny content space (256 values,
-/// including the all-zero page at seed 0) makes store-wide dedup and zero-page
-/// handling constantly exercised.
 fn page(seed: u8) -> [u8; PAGE_SIZE] {
     [seed; PAGE_SIZE]
 }
 
-/// The naive model: a full image per snapshot plus the refcount bookkeeping needed to
-/// know which ops are valid. A snapshot with refcount 0 is dead: the store must treat
-/// its id as unknown from that point on.
 struct ModelSnap {
     id: SnapshotId,
     image: Vec<u8>,
@@ -38,9 +27,6 @@ impl Model {
             .collect()
     }
 
-    /// Distinct non-zero page contents across all live images. Every one of these is
-    /// returned by some `read_page`, so the store must hold at least this many unique
-    /// pages; and at most the number of distinct non-zero contents ever written.
     fn live_distinct_nonzero_pages(&self) -> usize {
         let zero = [0u8; PAGE_SIZE];
         let mut set = std::collections::BTreeSet::new();
@@ -57,8 +43,6 @@ impl Model {
 
 #[derive(Debug, Clone)]
 enum Op {
-    /// Derive from a live snapshot (selector reduced modulo the live count), write a
-    /// batch of pages, seal with the given vm_state.
     Derive {
         parent_sel: usize,
         writes: Vec<(u64, u8)>,
@@ -68,8 +52,6 @@ enum Op {
         snap_sel: usize,
         gfn_sel: u64,
     },
-    /// Full-image compare, plus a copy-on-write probe: scribble on the mapping and
-    /// confirm the store still reads the original bytes.
     Materialize {
         snap_sel: usize,
     },
@@ -250,8 +232,6 @@ proptest! {
     }
 }
 
-/// Deterministic page content for the shaped tests: a function of (layer, gfn) with
-/// enough repetition to exercise dedup.
 fn shaped_page(layer: usize, gfn: u64) -> [u8; PAGE_SIZE] {
     page((layer as u8).wrapping_mul(31).wrapping_add(gfn as u8) % 13)
 }

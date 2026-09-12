@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Mega Man 2 archive keys, state preferences, and report shapes.
-
 use std::{cmp::Ordering, error::Error, num::NonZeroUsize};
 
 use serde::{Deserialize, Serialize};
@@ -22,17 +20,12 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
-/// Largest bounded input horizon accepted by a Mega Man 2 campaign.
 pub const MAX_MM2_ACTIONS: usize = 8_192;
-/// Recorded archive-key and per-location preference policy.
 pub const KEY_POLICY_IDENTIFIER: &str =
     "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18";
-/// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
-/// Recorded controller hold distribution.
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
-/// The parent selector named by a stream, resolved under this key's depths.
 pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
     crate::search::archive::selector_policy_from_identifier(
         identifier,
@@ -40,10 +33,8 @@ pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolic
     )
 }
 
-/// The Mega Man 2 archive instantiation.
 pub type Mm2Archive = Archive<ButtonChord, Mm2ArchiveKey, Mm2Milestones, Mm2Snapshot>;
 
-/// Opaque pooled identity returned to the generic selector.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ArchiveGroup {
     bosses: u8,
@@ -60,46 +51,21 @@ pub struct Mm2ArchiveGroup {
     menu: u8,
 }
 
-/// Quality-diversity key for one Mega Man 2 endpoint.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ArchiveKey {
-    /// Robot masters defeated.
     pub bosses: u8,
-    /// Stage number.
     pub stage: u8,
-    /// Screen index within the stage.
     pub screen: u8,
-    /// Level room around the player; splits locations that share a screen.
     pub room: u8,
-    /// Damage dealt to the boss being fought, in fight-length buckets.
     pub boss_damage: u8,
-    /// Damage dealt to ordinary enemies on this screen, in buckets.
     pub enemy_damage: u8,
-    /// Player horizontal 16-pixel bucket within the screen.
     pub x: u8,
-    /// Player vertical 16-pixel bucket within the screen.
     pub y: u8,
-    /// Whether the player is grounded, airborne, or on a ladder. A moving
-    /// platform and a ladder can share a column, and a landing shares its
-    /// pixels with the fall that reached it; each is a different route.
     pub posture: u8,
-    /// Equipped weapon; a wall only an item climbs is a different place
-    /// with the item equipped. Splits locations only: the menu makes every
-    /// weapon cheap to reach everywhere, so a selection cell per weapon
-    /// would hand a dozen copies of each position the draws that the few
-    /// states doing something new there, such as riding an item, need.
     pub weapon: u8,
-    /// Summoned platforms alive on screen. Riding one is only possible
-    /// while it lives, so the state with a fresh platform must keep its own
-    /// slot beside the state where it has already faded.
     pub platforms: u8,
-    /// Weapon menu page and row while it is open; each row is a step on the
-    /// only route to another weapon. Rows split locations only: a selection
-    /// cell per row would hand the menu most of the draws at a position.
     pub menu: u8,
-    /// Current health.
     pub health: u8,
-    /// Total weapon and item energy.
     pub energy: u16,
 }
 
@@ -110,14 +76,6 @@ impl ArchiveKey for Mm2ArchiveKey {
         5
     }
 
-    /// Depth 0 is one 16-pixel location, depth 1 one 32-pixel selection cell,
-    /// depth 2 a 128-pixel region of a screen, depth 3 the screen, and depth
-    /// 4 the stage with its defeated-boss count. Posture and live platforms
-    /// split locations and selection cells; the weapon and the menu split
-    /// locations only. Resource fields
-    /// never multiply slots; they decide which one representative remains at
-    /// a location, so a state that spent energy without reaching a new
-    /// location gives way to the state that kept it.
     fn group(self, depth: usize) -> Self::Group {
         let location = Mm2ArchiveGroup {
             stage: self.stage,
@@ -170,9 +128,6 @@ impl ArchiveKey for Mm2ArchiveKey {
         1
     }
 
-    /// Stage and location bytes identify places. Only observed boss clears
-    /// and current boss damage express progress; revisiting more rooms or
-    /// entering a numerically larger screen provides no reward.
     fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
         (left.bosses, left.boss_damage).cmp(&(right.bosses, right.boss_damage))
     }
@@ -194,7 +149,6 @@ impl Mm2ArchiveKey {
     }
 }
 
-/// Build the opaque archive key from a decoded state.
 #[must_use]
 pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
     let (bosses, health, energy) = preference_tuple(state);
@@ -216,99 +170,61 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
     }
 }
 
-/// Strongest rungs observed by a campaign.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Mm2Milestones {
-    /// Greatest screen index reached within the selected stage.
     pub max_screen: u8,
-    /// Whether any input reached a boss with health on screen.
     pub reached_boss: bool,
-    /// Whether any input defeated a robot master.
     pub defeated_boss: bool,
 }
 
-/// First deterministic execution reaching each rung.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Mm2MilestoneTimes {
-    /// First execution that left the first screen.
     pub first_new_screen: Option<u64>,
-    /// First execution that reached a boss.
     pub first_boss: Option<u64>,
-    /// First execution that defeated a boss.
     pub first_clear: Option<u64>,
 }
 
-/// First clean-reset input reaching each rung.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Mm2MilestoneInputs {
-    /// First input that left the first screen.
     pub first_new_screen: Option<Mm2Input>,
-    /// First input that reached a boss.
     pub first_boss: Option<Mm2Input>,
-    /// First input that defeated a boss.
     pub first_clear: Option<Mm2Input>,
 }
 
-/// Strongest lexicographic mechanical position seen at any emulated frame.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ProgressWatermark {
-    /// Robot masters defeated.
     pub bosses: u8,
-    /// Stage number.
     pub stage: u8,
-    /// Screen index within the stage.
     pub screen: u8,
-    /// Level room around the player.
     pub room: u8,
-    /// Damage dealt to the boss being fought.
     pub boss_damage: u8,
-    /// Damage dealt to ordinary enemies on this screen.
     pub enemy_damage: u8,
-    /// Player X within the screen, in pixels.
     pub x: u8,
-    /// Player Y within the screen, in pixels.
     pub y: u8,
 }
 
-/// Progress curve point.
 pub type Mm2ArchiveProgressPoint = ProgressPoint<Mm2Milestones, Mm2ProgressWatermark>;
-/// Archive entry report.
 pub type Mm2ArchiveEntryReport = ArchiveEntryReport<ButtonChord, Mm2ArchiveKey, Mm2Milestones>;
 
-/// Complete deterministic report for one Mega Man 2 campaign.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Mm2ArchiveReport {
-    /// Campaign seed.
     pub seed: u64,
-    /// Admitted executions.
     pub executions: u64,
-    /// Strongest milestones.
     pub milestones: Mm2Milestones,
-    /// Strongest per-frame mechanical progress.
     pub progress_watermark: Mm2ProgressWatermark,
-    /// First execution reaching each rung.
     pub first_reached: Mm2MilestoneTimes,
-    /// First input reaching each rung.
     pub first_inputs: Mm2MilestoneInputs,
-    /// Best input under the adapter's progress/preference order.
     pub champion_input: Mm2Input,
-    /// Retained per-location representatives.
     #[serde(with = "entries_by_suffix")]
     pub entries: Vec<Mm2ArchiveEntryReport>,
-    /// Fixed-interval deterministic progress curve.
     pub progress_curve: Vec<Mm2ArchiveProgressPoint>,
-    /// Candidates admitted.
     pub retained: u64,
-    /// Candidates rejected or superseded.
     pub rejected: u64,
-    /// Terminal deaths observed.
     pub deaths: u64,
-    /// Generic selector accounting.
     #[serde(default)]
     pub selector: SelectorAccounting,
 }
 
-/// Decode milestones from one state relative to the sealed genesis stage.
 #[must_use]
 pub fn milestones(state: Mm2MechanicalState, genesis_weapons: u8) -> Mm2Milestones {
     Mm2Milestones {
@@ -318,20 +234,17 @@ pub fn milestones(state: Mm2MechanicalState, genesis_weapons: u8) -> Mm2Mileston
     }
 }
 
-/// Merge strongest milestone fields.
 pub fn merge_milestones(into: &mut Mm2Milestones, from: Mm2Milestones) {
     into.max_screen = into.max_screen.max(from.max_screen);
     into.reached_boss |= from.reached_boss;
     into.defeated_boss |= from.defeated_boss;
 }
 
-/// Stable champion order owned by the adapter.
 #[must_use]
 pub fn milestone_key(value: Mm2Milestones) -> (bool, bool, u8) {
     (value.defeated_boss, value.reached_boss, value.max_screen)
 }
 
-/// The watermark of one decoded state.
 #[must_use]
 pub fn progress_watermark(state: Mm2MechanicalState) -> Mm2ProgressWatermark {
     Mm2ProgressWatermark {
@@ -346,7 +259,6 @@ pub fn progress_watermark(state: Mm2MechanicalState) -> Mm2ProgressWatermark {
     }
 }
 
-/// Fold every action-interior observation into the progress watermark.
 pub fn merge_progress_watermark(
     watermark: &mut Mm2ProgressWatermark,
     observations: &[Mm2Observations],
@@ -356,24 +268,17 @@ pub fn merge_progress_watermark(
     }
 }
 
-/// Held-frame clock used by same-slot route replacement.
 pub fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
-/// Longest hold [`sample_chord`] can draw; the suffix time bound is a
-/// multiple of it.
 pub const LONGEST_HOLD_FRAMES: u8 = 120;
 
 const DIRECTIONS: [u8; 9] = [0, 0x10, 0x20, 0x40, 0x80, 0x50, 0x90, 0x60, 0xa0];
 const AB: [u8; 4] = [0, 0x01, 0x02, 0x03];
 const START: u8 = 0x08;
-/// One chord in this many is a Start tap; Start opens and closes the weapon
-/// menu, and a menu row selected with it is the only way to equip a weapon.
 const START_ODDS: usize = 12;
 
-/// Draw one game-neutral controller chord: any direction set with any A/B
-/// set, or a short Start tap. Select is excluded because it only pauses.
 pub fn sample_chord(rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Error>> {
     if rand.below(NonZeroUsize::new(START_ODDS).ok_or("invalid start odds")?) == 0 {
         let hold = u8::try_from(2 + rand.below(NonZeroUsize::new(6).ok_or("invalid tap")?))?;

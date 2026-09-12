@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Evaluator-only fixture capture from a controller prefix replayed at NES power-on.
-
 use std::{env, error::Error, fs, path::PathBuf};
 
 use machine::{Machine, StopConditions, nes, quicknes::QuickNesMachine};

@@ -1,16 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The `NetFlow` seam: per-flow network decisions, host-decided and
-//! guest-enforced. Covers two checks beyond the standard suite:
-//!
-//! 1. **Catalog replay + codec.** A recorded `NetFlow` answer sequence replays
-//!    bit-identically through a `RecordedEnv`; the reshaped net-flow catalog
-//!    (points, policy, every flow-policy `Fault`) round-trips through
-//!    `EnvSpec::encode`/`decode`; per-variant golden wire bytes pin the codec; a
-//!    stale (`v2`) blob is rejected, never reinterpreted.
-//! 2. **Discriminant stability.** `DecisionClass::NetFlow as u16 == 4`, so
-//!    `control-proto`'s `StopMask` bit (`1 << class_bit`) is unchanged across the
-//!    `NetSend` → `NetFlow` rename; a round-trip through a `StopMask` arming the
-//!    network class still selects it and nothing else.
 
 mod common;
 
@@ -23,7 +11,6 @@ use fault_policy::{
 };
 use proptest::prelude::*;
 
-/// One `NetFlow` decision point on connection `c`.
 fn flow(c: u64) -> P {
     P::NetFlow {
         src: NodeId(0),
@@ -33,7 +20,6 @@ fn flow(c: u64) -> P {
     }
 }
 
-/// The four flow-level policies, in catalog order.
 fn net_faults() -> Vec<Fault> {
     vec![
         Fault::NetLatency(Span(100)),
@@ -43,10 +29,6 @@ fn net_faults() -> Vec<Fault> {
     ]
 }
 
-/// `control-proto`'s `StopMask` is a `u32` bitset where the bit for a class is
-/// `1 << class_bit` (the control-plane-pinned mapping, mirrored locally per
-/// conventions rule 2 — no sibling dependency). A `class_bit >= 32` is a
-/// panic-free no-op, exactly as `StopMask::arm`/`armed` do.
 fn arm(mask: u32, class_bit: u16) -> u32 {
     match 1u32.checked_shl(u32::from(class_bit)) {
         Some(bit) => mask | bit,
@@ -152,11 +134,6 @@ fn stale_v2_blob_is_rejected_not_reinterpreted() {
     );
 }
 
-/// A `v4` blob is rejected at the version GATE, not mid-parse. `v4` shipped
-/// the reseed table + `FaultPolicy` v2; `v5` embeds `FaultPolicy` v3, a
-/// longer, incompatible policy sub-blob, so the merged format is `v5`. Two
-/// incompatible encodings must never share an outer version — a v4 blob must fail
-/// loud at the version check, before any field is parsed.
 #[test]
 fn a_v4_blob_is_rejected_at_the_version_gate() {
     let spec = EnvSpec::Recorded {
@@ -212,11 +189,6 @@ fn retired_net_tags_reject_on_every_ungated_decode_path() {
 proptest! {
     #![proptest_config(config(256))]
 
-    /// A `NetFlow` decision sequence answered by a `RecordedEnv` reproduces
-    /// bit-identically: two materializations of the same spec over the same
-    /// flow-stamped schedule give the same answer trace. Overrides mix admissible
-    /// net faults (which fire) with arbitrary moments (which fall through to the
-    /// seeded base under a fault-heavy net policy).
     #[test]
     fn netflow_recorded_replays_bit_identically(
         seed in any::<u64>(),
@@ -246,9 +218,6 @@ proptest! {
         }
     }
 
-    /// The reshaped net-flow catalog round-trips through `EnvSpec::encode`/`decode`:
-    /// a spec whose overrides and policy are all net-flow faults re-encodes
-    /// byte-stably and decodes back unchanged.
     #[test]
     fn netflow_catalog_round_trips(
         seed in any::<u64>(),

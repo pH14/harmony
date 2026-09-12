@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Kani proofs for the exit-count virtual clock.
 
 use super::{VClock, VClockConfig};
 
-/// Explicit advancement is monotone for every initial value and delta.
 #[kani::proof]
 fn advance_is_monotone() {
     let initial: u64 = kani::any();
@@ -18,7 +16,6 @@ fn advance_is_monotone() {
     assert!(clock.vns() >= initial);
 }
 
-/// The guest counter conversion never panics for any clock configuration.
 #[kani::proof]
 fn guest_ticks_is_total() {
     let clock = VClock::new(VClockConfig {

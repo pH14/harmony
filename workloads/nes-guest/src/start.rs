@@ -1,22 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The deterministic scripted start (round-4 P1): from power-on SMB sits on
-//! its TITLE screen, and the campaign alphabet deliberately excludes `START`
-//! (branches explore gameplay inputs, not menu resets) — so without a start
-//! sequence every branch would explore the title screen and the exploration
-//! data would be vacuous. This script runs **before** the billboard is
-//! published and `setup_complete` is signalled, pressing `START` in a fixed
-//! press/release cadence (the game latches button *edges* on its per-frame
-//! poll) until the console RAM shows gameplay (`OperMode == 1`), then settling
-//! a few neutral frames — so the base seal lands at **gameplay start**, and
-//! every branch inherits it.
-//!
-//! The script draws **no entropy** and takes **no input** beyond the fixed
-//! cadence: it is a pure function of the core's power-on state, so it runs
-//! the same frames every time (the portable determinism test below pins
-//! that). Failure to reach gameplay within the frame bound is a loud error —
-//! never a silently-vacuous campaign. The box smoke additionally verifies the
-//! billboard shows in-gameplay state at the seal point (the vacuity check,
-//! workloads/nes-guest/README.md).
 
 use std::fmt;
 
@@ -24,22 +6,11 @@ use crate::chord::joypad::START;
 use crate::core_seam::Core;
 use crate::ram::{self, RamError, SmbState, WORK_RAM_LEN};
 
-/// The fixed start cadence. All frame counts; the whole script is bounded by
-/// `max_frames`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StartScript {
-    /// Frames `START` is held per press (the game latches the edge).
     pub press_frames: u32,
-    /// Frames released between presses (so repeated presses stay edges).
     pub release_frames: u32,
-    /// Neutral frames run after gameplay is first observed (level load
-    /// settles; the state is re-verified after). Spent from the **same**
-    /// [`max_frames`](Self::max_frames) budget as the press cadence.
     pub settle_frames: u32,
-    /// The loud-failure bound on the whole script — presses **and** settle.
-    /// The script never runs a frame past it: a settle
-    /// that cannot fit under the bound is a loud error, never a silent
-    /// overrun.
     pub max_frames: u32,
 }
 
@@ -54,50 +25,26 @@ impl Default for StartScript {
     }
 }
 
-/// What the start script did — logged by the binary and asserted by the
-/// portable determinism test.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StartReport {
-    /// Total frames the script ran (presses + settle).
     pub frames_run: u32,
-    /// The decoded state at the end (verified in-gameplay).
     pub state: SmbState,
 }
 
-/// Why the start script failed. Every variant is fatal: sealing a base on the
-/// title screen would make the whole campaign vacuous.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StartError {
-    /// The script is unusable as configured: zero press frames can never
-    /// produce an edge, an overflowing `press + release` cycle would wrap, and
-    /// a `max_frames` that cannot hold one observation frame plus the settle
-    /// can never succeed within its own bound.
     BadScript,
-    /// The core could not expose its work RAM.
     WorkRamFailed,
-    /// The work RAM did not decode.
     Ram(RamError),
-    /// Gameplay was never observed within the frame bound.
     NeverReachedGameplay {
-        /// Frames run before giving up.
         frames: u32,
     },
-    /// Gameplay was observed so late that settling it would run past
-    /// `max_frames`. The bound covers the whole script,
-    /// so an overrun is a loud failure, not a few extra frames taken quietly:
-    /// the frames a rollout spends are the budget the box gate paid for.
     SettleExceedsBudget {
-        /// The frame gameplay was first observed at.
         observed_at: u32,
-        /// The settle the script still owed.
         settle_frames: u32,
-        /// The bound it would have crossed.
         max_frames: u32,
     },
-    /// Gameplay was observed but did not survive the settle frames (a demo /
-    /// transient state, not a real game start).
     GameplayDidNotSettle {
-        /// The mode observed after settling.
         mode: u8,
     },
 }
@@ -137,15 +84,6 @@ impl fmt::Display for StartError {
 
 impl std::error::Error for StartError {}
 
-/// Drive the core from power-on to gameplay start: press `START` on the fixed
-/// cadence, checking the console RAM every frame; on the first gameplay
-/// observation run the settle frames (neutral input) and re-verify. Draws no
-/// entropy — a pure function of the core's power-on state.
-///
-/// `max_frames` bounds the **whole** script, settle included: a script whose settle cannot fit under the bound is rejected
-/// before the first frame, and gameplay observed too late to settle inside it
-/// fails with [`StartError::SettleExceedsBudget`]. `frames` therefore never
-/// exceeds `max_frames` — it cannot overrun the bound and cannot overflow.
 pub fn run_start_script<C: Core>(
     core: &mut C,
     script: &StartScript,
@@ -202,8 +140,6 @@ pub fn run_start_script<C: Core>(
     Err(StartError::NeverReachedGameplay { frames })
 }
 
-/// Read + decode the console RAM (the same fields the billboard carries — the
-/// box smoke re-verifies them host-side at the seal point).
 fn observe<C: Core>(core: &mut C, ram: &mut [u8; WORK_RAM_LEN]) -> Result<SmbState, StartError> {
     if !core.read_work_ram(ram) {
         return Err(StartError::WorkRamFailed);
@@ -216,9 +152,6 @@ mod tests {
     use super::*;
     use crate::core_seam::MockCore;
 
-    /// The vacuity fix itself: from power-on (title screen), the script
-    /// reaches gameplay — and it is deterministic: two fresh runs execute the
-    /// identical number of frames to the identical state.
     #[test]
     fn start_script_reaches_gameplay_deterministically() {
         let run = || {
@@ -238,7 +171,6 @@ mod tests {
         assert_eq!(a.state.depth_ordinal(), 0, "gameplay STARTS at 1-1");
     }
 
-    /// An exhausted frame bound is a loud error, never a title-screen seal.
     #[test]
     fn never_reaching_gameplay_is_loud() {
         let mut core = MockCore::new();
@@ -253,8 +185,6 @@ mod tests {
         ));
     }
 
-    /// A cadence that can never produce an edge — or whose cycle overflows —
-    /// is rejected up front (round-5 P2: no wrap, no `% 0` panic).
     #[test]
     fn unusable_cadences_are_rejected() {
         let mut core = MockCore::new();
@@ -277,10 +207,6 @@ mod tests {
         ));
     }
 
-    /// Gameplay observed too late to settle inside
-    /// `max_frames` is a loud refusal — the settle must never run the script
-    /// past its own bound. Fixture: a budget that fits the presses and one
-    /// observation frame, but not the settle behind it.
     #[test]
     fn a_settle_that_would_overrun_the_budget_is_loud() {
         let mut core = MockCore::new();
@@ -312,9 +238,6 @@ mod tests {
         assert_eq!(report.frames_run, 20);
     }
 
-    /// A budget that cannot hold one observation frame plus the settle can
-    /// never succeed: refuse it before running any frame at all, rather than
-    /// discovering it mid-settle.
     #[test]
     fn a_budget_that_cannot_hold_the_settle_is_rejected_up_front() {
         let mut core = MockCore::new();
@@ -339,8 +262,6 @@ mod tests {
         ));
     }
 
-    /// A core already in gameplay (a branch resumed mid-game) passes through
-    /// after one frame + settle — the script converges, it never resets.
     #[test]
     fn already_in_gameplay_passes_straight_through() {
         let mut core = MockCore::in_gameplay();

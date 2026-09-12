@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Stb implementation of the game-neutral campaign interface.
-
 use std::{
     collections::BTreeSet,
     error::Error,
@@ -39,9 +37,7 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-/// Stream format written by Stb campaigns.
 pub const CAMPAIGN_STREAM_FORMAT: &str = "stb-quicknes-campaign-stream-v3";
-/// Snapshot checkpoint format written by Stb campaigns.
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "stb-quicknes-snapshot-checkpoint-v3";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
@@ -53,11 +49,9 @@ const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_no_start_select_v1";
 const TERMINAL_POLICY_IDENTIFIER: &str = "local_match_gameover_player_a_win_v2";
 
-/// Header placeholder for a game with no adaptive draw table.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbNoTableHeader;
 
-/// ROM and emulator identity shared by STB workers.
 pub struct StbGame {
     rom: Vec<u8>,
     core_path: PathBuf,
@@ -67,13 +61,11 @@ pub struct StbGame {
 }
 
 impl StbGame {
-    /// Build the original Easy-AI context over a pinned QuickNES core.
     #[must_use]
     pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
         Self::with_ai(rom, core_path, core_sha256, StbAi::Easy)
     }
 
-    /// Build a context with an explicitly selected native opponent difficulty.
     #[must_use]
     pub fn with_ai(rom: &[u8], core_path: &Path, core_sha256: &str, ai: StbAi) -> Self {
         let ai_level = ai.level();
@@ -92,7 +84,6 @@ impl StbGame {
         }
     }
 
-    /// Build from the external core named by `HARMONY_QUICKNES_CORE`.
     pub fn from_environment(rom: &[u8]) -> Result<Self, Box<dyn Error>> {
         let core_path = PathBuf::from(
             std::env::var_os("HARMONY_QUICKNES_CORE")
@@ -109,18 +100,15 @@ impl StbGame {
         self.ai
     }
 
-    /// Pinned emulator identity recorded in streams.
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
         &self.identity
     }
 }
 
-/// Stb's fixed recorded run policy.
 #[derive(Clone, Copy, Debug)]
 pub struct StbCampaignRun;
 
-/// Game-owned campaign evidence.
 #[derive(Clone, Default)]
 pub struct StbCampaignEvidence {
     aggregate: StbMilestones,
@@ -132,15 +120,10 @@ pub struct StbCampaignEvidence {
     champion_key: Option<StbChampionKey>,
 }
 
-/// Stb campaign origin.
 pub type StbCampaignOrigin = CampaignOrigin<StbGame>;
-/// Stb resume checkpoint.
 pub type StbCampaignCheckpoint = CampaignCheckpoint<StbSnapshot>;
-/// Stb whole-tree snapshot checkpoint.
 pub type StbSnapshotCheckpoint = SnapshotCheckpoint<StbSnapshot>;
-/// Stb stream header.
 pub type StbCampaignStreamHeader = CampaignStreamHeader<StbNoTableHeader>;
-/// Stb campaign report.
 pub type StbCampaignModeReport = CampaignModeReport<ButtonChord, StbArchiveReport>;
 type StbCampaignActionResult = CampaignActionResult<StbGame>;
 type StbCampaignJobResult = CampaignJobResult<StbGame>;
@@ -190,38 +173,21 @@ fn stb_result_sha256(result: &StbCampaignJobResult) -> Result<String, Box<dyn Er
     postcard_value_sha256(&StbResult { actions })
 }
 
-/// Fixed configuration for one live Stb campaign.
 pub struct StbCampaignConfig {
-    /// Campaign seed.
     pub campaign_seed: u64,
-    /// Worker thread count.
     pub workers: u32,
-    /// Admitted execution budget.
     pub execution_budget: u64,
-    /// Maximum actions in one clean-reset input.
     pub action_limit: usize,
-    /// Operator-supplied host label.
     pub host: String,
-    /// Optional live-only wall cutoff.
     pub wall_budget: Option<std::time::Duration>,
-    /// Live-only: continue issuing reservations after the first victory until
-    /// another live limit stops the run. Never recorded or used by replay.
     pub continue_after_victory: bool,
-    /// Maximum retained archive entries.
     pub archive_entry_limit: usize,
-    /// Deterministic logical-memory budget for live search structures.
     pub memory_budget_mib: Option<usize>,
-    /// Live-only: materialize full archive inputs and snapshots at completion.
     pub materialize_final_artifacts: bool,
-    /// Admission policy.
     pub retention: RetentionPolicy,
-    /// Generic parent selector.
     pub selector: crate::search::archive::SelectorPolicy,
-    /// Generic suffix-length shape.
     pub suffix: SuffixShape,
-    /// Generic draw mixture.
     pub mixture: DrawMixture,
-    /// Live-only path receiving the first winning input.
     pub victory_input_path: Option<PathBuf>,
 }
 
@@ -768,7 +734,6 @@ impl Evaluation for StbGame {
     }
 }
 
-/// Run a Stb campaign and return its report plus whole-tree checkpoint.
 pub fn run_stb_campaign_checkpointed(
     game: &StbGame,
     config: &StbCampaignConfig,
@@ -779,7 +744,6 @@ pub fn run_stb_campaign_checkpointed(
     run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
 }
 
-/// Replay a recorded Stb stream exactly.
 pub fn replay_stb_campaign_checkpointed(
     game: &StbGame,
     stream_bytes: &[u8],

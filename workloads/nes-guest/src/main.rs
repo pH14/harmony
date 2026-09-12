@@ -1,28 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The harmony in-guest play-agent — the executable.
-//!
-//! Started by the game image's init (`workloads/nes-guest/legacy/game-init.sh`) as the single
-//! supervised workload process: a minimal headless libretro frontend linking
-//! a commit-pinned NES core, running Super Mario Bros. or Nova the Squirrel
-//! unthrottled — its own
-//! `retro_run` counter is the frame clock. The decision/decode *logic* lives in
-//! the [`harmony_play_agent`] library (portable, unit-tested on the dev host
-//! against a mock core). This binary is the Linux glue, all of it behind
-//! `cfg(target_os = "linux")` (the guest-resident exemption to the
-//! no-`cfg(target_os)` rule, the flow-agent precedent):
-//!
-//! - the **libretro C-ABI FFI** (the task's named `unsafe` grant): `dlopen` of
-//!   the pinned core for SMB, or direct symbols from the pinned static QuickNES
-//!   archive for Nova; null audio/video callbacks, savestate + RAM reads;
-//! - the **billboard pinning** (the grant's second half): one hugetlb mapping
-//!   (a single contiguous guest-physical range), `mlock`ed, translated once via
-//!   `/proc/self/pagemap`, published via state registers at init;
-//! - the architecture-native **doorbell transport**: kernel-owned
-//!   `/dev/harmony` on x86, board MMIO on arm64.
-//!
-//! `--smoke` runs the frame loop against the in-crate mock core with a seeded
-//! local entropy stream and no hypervisor — the image bring-up check and the
-//! only mode that runs off the box.
 
 use clap::Parser;
 use harmony_play_agent::{Agent, AgentConfig, ChordAlphabet, Harness};
@@ -36,39 +12,24 @@ mod doorbell;
     about = "harmony in-guest play-agent: SMB or Nova workload"
 )]
 struct Args {
-    /// Run Nova's payload-tape protocol: each host payload is exactly one
-    /// `[buttons, hold_frames]` chord ending at a Consonance snapshot point.
     #[arg(long)]
     nova_payload: bool,
-    /// Publish power-on NES memory; the host supplies the game boot walk.
     #[arg(long, conflicts_with = "nova_payload")]
     nes_payload: bool,
-    /// Path to the libretro core `.so` (falls back to `HARMONY_SMB_CORE`, then
-    /// the in-image default).
     #[arg(long)]
     core: Option<String>,
-    /// Path to the SMB ROM (falls back to `HARMONY_SMB_ROM`, then the in-image
-    /// default). Never committed or fetched — user-supplied (§ROM).
     #[arg(long)]
     rom: Option<String>,
-    /// The input window `W` in frames (one chord per window).
     #[arg(long, default_value_t = 12)]
     window: u32,
-    /// The x-bucket width in pixels.
     #[arg(long, default_value_t = 128)]
     bucket_px: u32,
-    /// The weighted chord alphabet, e.g. `RIGHT:56,RIGHT+B:56,...` (weights
-    /// must sum to 256). Defaults to the SMB alphabet.
     #[arg(long)]
     alphabet: Option<String>,
-    /// Stop after this many frames (0 = run until the host stops the VM).
     #[arg(long, default_value_t = 0)]
     frames: u64,
-    /// Run against the in-crate mock core with a locally-seeded entropy stream
-    /// and no hypervisor (the off-box smoke; prints window reports).
     #[arg(long)]
     smoke: bool,
-    /// The smoke mode's local entropy seed.
     #[arg(long, default_value_t = 1)]
     smoke_seed: u64,
 }
@@ -99,9 +60,6 @@ fn agent_config(args: &Args) -> Result<AgentConfig, String> {
     })
 }
 
-/// The `--smoke` mode: the portable frame loop over the mock core, a seeded
-/// xorshift entropy stream (caller-provided seed — rule 4), and a printing
-/// harness. Proves the brain + billboard path with no core, ROM, or host.
 fn smoke(args: &Args) -> Result<(), String> {
     struct SmokeHarness {
         state: u64,
@@ -165,8 +123,6 @@ fn smoke(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// The real path: a dynamic or statically linked libretro core over the pinned
-/// billboard and architecture-native doorbell SDK. Linux only (the guest).
 #[cfg(target_os = "linux")]
 mod real {
     use super::{Args, agent_config};
@@ -177,18 +133,11 @@ mod real {
         regs,
     };
 
-    /// The default in-image location of the pinned libretro core.
     const DEFAULT_CORE: &str = "/opt/harmony/fceumm_libretro.so";
-    /// The default in-image location of the user-supplied ROM.
     const DEFAULT_ROM: &str = "/opt/harmony/smb.nes";
-    /// The default in-image location of the pinned QuickNES core.
     const DEFAULT_NOVA_CORE: &str = "/opt/harmony/quicknes_libretro.so";
-    /// The default in-image location of the FOSS Nova ROM.
     const DEFAULT_NOVA_ROM: &str = "/opt/harmony/nova.nes";
 
-    /// The [`Harness`] over the real guest SDK: every verb maps 1:1, every
-    /// error is surfaced loudly (the sdk-demo discipline — a swallowed
-    /// emission reads as "never happened").
     struct SdkHarness<T: hypercall_proto::Transport> {
         sdk: harmony_sdk::Sdk<T>,
     }
@@ -468,43 +417,6 @@ mod real {
         }
     }
 
-    /// The libretro C-ABI FFI — the task's named `unsafe` grant. The core is
-    /// `dlopen`ed (libc, not `libloading` — the whitelist), its callbacks are
-    /// null/no-op (headless, unthrottled), and the input callback presents the
-    /// held joypad byte in NES shift order (bit 0 = A … bit 7 = Right — the
-    /// exact mapping film's `CoreReplay` replays).
-    ///
-    /// **MIRI (unsafe⇒Miri bar) — the full audit of this binary's `unsafe`**
-    /// (round-8 P2). Every **decision** the edges depend on is hoisted into
-    /// the Miri-covered [`harmony_play_agent::glue`]; what remains below is
-    /// raw FFI Miri cannot execute, cfg-gated off the Miri host (the
-    /// flow-agent exclusion). Block-by-block:
-    ///
-    /// - `env_cb`'s `*data.cast::<bool>() = true` — the ONLY residual unsafe
-    ///   touching a value: one aligned `bool` store through the pointer the
-    ///   libretro contract supplies for `GET_CAN_DUPE`. The command→action
-    ///   decision is `glue::env_response` (Miri-tested); the null check is
-    ///   safe code beside the store; the store itself is irreducibly an FFI
-    ///   pointer write (nothing left to hoist) — and it is **Miri-executed**
-    ///   (round-9 P1) by this module's own unit tests, which drive `env_cb`
-    ///   with a real `bool*` and no FFI (the nightly job's `--bins` run).
-    /// - `sym`'s `dlsym` + `transmute_copy` — raw dynamic symbol resolution;
-    ///   the fn-pointer size equality is `debug_assert`ed, the ABI match is the
-    ///   libretro contract. Nova's `static-quicknes` profile skips this edge.
-    /// - `dlopen`/`dlerror` and dynamic or static `retro_*` calls — raw C calls
-    ///   that Miri cannot enter. Their callback and buffer decisions remain in
-    ///   the Miri-covered `glue` seam.
-    /// - `read_work_ram`'s `from_raw_parts` — borrows the core's RAM block
-    ///   exactly as returned (non-null + non-zero length checked in safe
-    ///   code); ALL copy/clamp/zero-fill logic is `glue::copy_work_ram`
-    ///   (Miri-tested).
-    /// - `pinned`: `mmap`/`write_bytes`/`mlock` (raw syscalls) and
-    ///   `from_raw_parts_mut`, whose length bound is proven by
-    ///   `glue::validate_billboard_len` (Miri-tested) before the slice
-    ///   exists; the pagemap decode/offset math is `glue` (Miri-tested).
-    /// - `doorbell`: one synchronous `/dev/harmony` ioctl. The real syscall is
-    ///   cfg(miri)-excluded with this x86/Linux module; its bounds and UAPI
-    ///   checks are exercised by the ordinary Linux suite.
     mod retro {
         use harmony_play_agent::core_seam::Core;
         use harmony_play_agent::glue::{
@@ -513,7 +425,6 @@ mod real {
         use std::ffi::{CString, c_char, c_uint, c_void};
         use std::sync::atomic::{AtomicU8, Ordering};
 
-        /// Libretro's cartridge-backed save-RAM memory id.
         const RETRO_MEMORY_SAVE_RAM: c_uint = 0;
 
         #[repr(C)]
@@ -524,10 +435,6 @@ mod real {
             meta: *const c_char,
         }
 
-        /// The joypad byte the input callback presents — written by
-        /// `run_frame`, read by the core mid-`retro_run`. Single-threaded
-        /// (libretro cores call back on the `retro_run` thread); atomic only
-        /// so the statics stay safe Rust.
         static JOYPAD: AtomicU8 = AtomicU8::new(0);
 
         extern "C" fn env_cb(cmd: c_uint, data: *mut c_void) -> bool {
@@ -603,25 +510,15 @@ mod real {
             fn retro_get_memory_size(id: c_uint) -> usize;
         }
 
-        /// The pinned dynamic or statically linked core driving [`Core`]. A
-        /// dynamic handle and the loaded game live for the whole supervised
-        /// process, so every function pointer stays valid.
         pub struct LibretroCore {
             run: VoidFn,
             serialize_size: SerializeSizeFn,
             serialize: SerializeFn,
             get_memory_data: GetMemoryDataFn,
             get_memory_size: GetMemorySizeFn,
-            /// The ROM bytes retro_load_game aliases (libretro cores may keep
-            /// pointers into the game data unless they set the need-fullpath
-            /// flag) — kept alive for the process's life.
             _rom: Vec<u8>,
         }
 
-        /// Resolve one symbol out of the dlopen'd core.
-        ///
-        /// SAFETY (caller): `handle` is a live dlopen handle; `T` must be the
-        /// exact C fn-pointer type of the symbol.
         #[cfg(not(feature = "static-quicknes"))]
         unsafe fn sym<T: Copy>(handle: *mut c_void, name: &str) -> Result<T, String> {
             let cname = CString::new(name).map_err(|_| format!("symbol name {name:?}"))?;
@@ -639,17 +536,6 @@ mod real {
         }
 
         impl LibretroCore {
-            /// dlopen the core, wire the null callbacks, init, and load the
-            /// ROM. The `RetroGameInfo` carries BOTH the in-image ROM path and
-            /// the in-memory bytes (first box smoke, 2026-07-09): FCEUmm
-            /// declares `need_fullpath = true` and — absent the
-            /// `GET_GAME_INFO_EXT` env service — rejects a null `path`
-            /// outright (`libretro.c`: `if (!info || string_is_empty(
-            /// info->path)) return false;`), loading from the path instead;
-            /// memory-loading cores read `data`/`size`. Both sources are the
-            /// same baked initramfs file, so either route is deterministic.
-            /// Fails loudly on any missing symbol or a rejected ROM — never a
-            /// silently dead core.
             pub fn load(path: &str, rom_path: &str, rom: &[u8]) -> Result<LibretroCore, String> {
                 #[cfg(feature = "static-quicknes")]
                 let _ = path;
@@ -826,11 +712,6 @@ mod real {
             }
         }
 
-        /// Round-9 P1: the ONE residual value-carrying unsafe in this binary
-        /// (`env_cb`'s `bool` store) is executed under Miri here — no FFI is
-        /// involved in these paths, only the callback contract itself. The
-        /// nightly Miri job runs the bin's unit tests (`--bins`) on its Linux
-        /// host, where this cfg'd module compiles.
         #[cfg(test)]
         mod tests {
             use super::*;
@@ -873,24 +754,10 @@ mod real {
         }
     }
 
-    /// The billboard's pinned backing: one anonymous **hugetlb** mapping
-    /// (2 MiB — a single guest-physical extent, so the published `(gpa, len)`
-    /// window is contiguous by construction), faulted in, `mlock`ed, and
-    /// translated once via `/proc/self/pagemap` (the agent runs as root with
-    /// `CAP_SYS_ADMIN`, the campaign-super precedent). The second half of the
-    /// task's `unsafe` grant.
-    ///
-    /// MIRI: real mmap/mlock FFI + /proc reads — cfg-gated off the Miri host,
-    /// same as the doorbell (see the `retro` module note). The length bound
-    /// the slice construction relies on and the pagemap offset/entry decode
-    /// are hoisted into the Miri-covered [`harmony_play_agent::glue`].
     mod pinned {
         use harmony_play_agent::glue::{self, HUGE_PAGE};
         use std::io::{Read, Seek, SeekFrom};
 
-        /// Allocate the pinned billboard buffer: returns its guest-physical
-        /// address and the (leaked, process-lifetime) byte slice of exactly
-        /// `len` bytes.
         pub fn alloc(len: usize) -> Result<(u64, &'static mut [u8]), String> {
             glue::validate_billboard_len(len)?;
             // SAFETY: anonymous private hugetlb mapping of one huge page; the
@@ -931,10 +798,6 @@ mod real {
             Ok((gpa, slice))
         }
 
-        /// Translate a virtual address to its guest-physical address via
-        /// `/proc/self/pagemap` (needs root/`CAP_SYS_ADMIN`, which the guest
-        /// init provides). Inside the deterministic VM, "physical" *is* the
-        /// guest-physical address the host reads the billboard at.
         fn translate(vaddr: u64) -> Result<u64, String> {
             let mut f = std::fs::File::open("/proc/self/pagemap")
                 .map_err(|e| format!("/proc/self/pagemap: {e}"))?;
@@ -948,7 +811,6 @@ mod real {
     }
 }
 
-/// Off the box target: only `--smoke` works; the real path reports why.
 #[cfg(not(target_os = "linux"))]
 mod real {
     use super::Args;

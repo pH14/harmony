@@ -1,18 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Layered copy-on-write storage for guest-memory snapshots.
-//!
-//! The deterministic hypervisor snapshots a running VM thousands of times per run and
-//! branches from interesting states. [`Store`] is the storage engine behind that: a base
-//! layer holds the booted guest image, and every later snapshot records only the pages
-//! dirtied since its parent plus a small opaque vCPU/device blob. A snapshot's full
-//! memory image is reconstructed by resolving down the layer chain (worst case O(chain
-//! length), with a per-layer memo index making repeated reads O(1)); identical page
-//! contents are stored once store-wide, content-addressed by BLAKE3; and
-//! [`Store::materialize`] hands out a private copy-on-write mapping of the full image
-//! backed by a sparse tempfile. This crate is built and tested standalone against plain
-//! memory — KVM integration (dirty-page harvesting, memslot remapping) lives elsewhere.
-
-#![warn(missing_docs)]
 
 mod mapping;
 
@@ -23,119 +9,55 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Size in bytes of one guest page.
 pub const PAGE_SIZE: usize = 4096;
 
-/// The all-zero page, as the comparand of `write_page`'s zero short-circuit. A `static`
-/// (not a `const`) so the compare is against one fixed buffer rather than a fresh
-/// materialized temporary at each call site.
 static ZERO_PAGE: [u8; PAGE_SIZE] = [0u8; PAGE_SIZE];
 
-/// Opaque identifier of a sealed snapshot.
-///
-/// Ids are assigned monotonically at seal time and are never reused by a given
-/// [`Store`]. Ids from one store are meaningless in another.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct SnapshotId(u64);
 
-/// Configuration for a [`Store`].
 #[derive(Copy, Clone, Debug)]
 pub struct StoreConfig {
-    /// Guest memory size in pages; every snapshot's logical image is this many pages.
     pub mem_pages: u64,
 }
 
-/// Errors returned by [`Store`] operations.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    /// The snapshot id is not known to this store, or the snapshot's refcount has
-    /// dropped to zero (a released snapshot behaves as unknown).
     #[error("unknown (or fully released) snapshot {0:?}")]
     UnknownSnapshot(SnapshotId),
-    /// The guest frame number lies outside configured guest memory.
     #[error("gfn {gfn} out of range: guest memory is {mem_pages} pages")]
-    GfnOutOfRange {
-        /// The offending guest frame number.
-        gfn: u64,
-        /// The configured guest memory size in pages.
-        mem_pages: u64,
-    },
-    /// A page buffer had a length other than [`PAGE_SIZE`].
+    GfnOutOfRange { gfn: u64, mem_pages: u64 },
     #[error("page buffer is {len} bytes, expected {PAGE_SIZE}")]
-    BadPageLength {
-        /// The offending buffer length.
-        len: usize,
-    },
-    /// A full guest-memory image had a length other than the configured image size.
+    BadPageLength { len: usize },
     #[error("memory image is {got} bytes, expected {expected}")]
-    BadMemoryLength {
-        /// The offending image length.
-        got: usize,
-        /// The configured image length.
-        expected: usize,
-    },
-    /// Resident bytes no longer match the content address sealed for a page.
+    BadMemoryLength { got: usize, expected: usize },
     #[error("snapshot page integrity check failed at gfn {gfn}")]
-    PageIntegrity {
-        /// The corrupted guest frame number.
-        gfn: u64,
-    },
-    /// The opaque vCPU/device blob no longer matches its seal-time digest.
+    PageIntegrity { gfn: u64 },
     #[error("snapshot vCPU/device state integrity check failed")]
     VmStateIntegrity,
-    /// A builder was used in an unsupported way.
-    ///
-    /// Single use of builders is enforced at compile time (`seal` consumes the builder
-    /// and builders hold `&mut Store`), so this variant is reserved for future
-    /// runtime-checked misuse; no current operation returns it.
     #[error("builder misuse: {0}")]
     BuilderMisuse(&'static str),
-    /// An underlying I/O operation failed (tempfile creation, sizing, write, or mmap).
     #[error("i/o error")]
     Io(#[from] std::io::Error),
 }
 
-/// Per-snapshot statistics, see [`Store::stats`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct SnapStats {
-    /// Size of the snapshot's logical memory image in pages
-    /// (always [`StoreConfig::mem_pages`]).
     pub logical_pages: u64,
-    /// Pages this layer records that no ancestor layer provides identically.
-    /// Writes whose content equals what the parent chain already resolves to are
-    /// discarded at seal time, so they never count here.
     pub owned_pages: u64,
-    /// Number of layers in this snapshot's chain, itself included (a base is 1).
     pub chain_len: u32,
 }
 
-/// Store-wide statistics, see [`Store::store_stats`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct StoreStats {
-    /// Number of live (refcount > 0) snapshots.
     pub snapshots: u64,
-    /// Number of distinct page contents resident store-wide. The all-zero page is
-    /// implicit and never stored, so it does not count.
     pub stored_unique_pages: u64,
-    /// Sum of logical image sizes over live snapshots, in pages.
     pub logical_pages_total: u64,
-    /// Bytes of payload the store keeps resident: unique page data plus the
-    /// vCPU/device blobs of every resident layer (live or retained as an ancestor).
-    /// Bookkeeping overhead (maps, indexes) is not counted.
     pub bytes_resident: u64,
 }
 
-/// BLAKE3 digest of one page's content; the store-wide content address.
 type PageHash = [u8; 32];
 
-/// Hasher for [`PageHash`] keys in [`Store::pages`].
-///
-/// The key is *already* a 256-bit cryptographic hash, so re-hashing it with SipHash
-/// buys nothing but cycles. This folds the written bytes into a `u64` by XOR over
-/// 8-byte little-endian chunks: uniform because the digest is, and robust to the
-/// standard library's `Hash for [u8; N]` pattern of a length-prefix `write_usize`
-/// followed by one `write` of the bytes (the length is a constant 32 for every key, so
-/// it contributes a constant term and cannot cluster keys).
 #[derive(Default)]
 struct PageHashHasher(u64);
 
@@ -155,79 +77,40 @@ impl std::hash::Hasher for PageHashHasher {
     }
 }
 
-/// [`BuildHasher`](std::hash::BuildHasher) for [`PageHashHasher`].
 type BuildPageHashHasher = std::hash::BuildHasherDefault<PageHashHasher>;
 
-/// What a layer records (or a resolution yields) for one gfn.
-///
-/// The all-zero page is special-cased: it is never interned, so sparse images cost
-/// nothing and `stored_unique_pages` only counts real content.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum PageRef {
-    /// Explicitly (or implicitly) the all-zero page.
     Zero,
-    /// Content stored in `Store::pages` under this hash.
     Data(PageHash),
 }
 
-/// One distinct page content, shared store-wide.
 struct PageEntry {
-    /// Exactly `PAGE_SIZE` bytes.
     data: Box<[u8]>,
-    /// Number of (layer, gfn) slots referencing this content.
     refs: u64,
 }
 
-/// One snapshot layer. Layers stay resident after their snapshot is released for as
-/// long as a live descendant needs them; `gc` reaps the rest.
 struct Layer {
     parent: Option<u64>,
-    /// Pages this layer provides, i.e. dirtied relative to its parent.
     pages: BTreeMap<u64, PageRef>,
-    /// Opaque vCPU/device state recorded at seal time.
     vm_state: Vec<u8>,
-    /// Seal-time digest checked before the opaque state is decoded.
     vm_state_hash: [u8; 32],
-    /// Live references; 0 means released (observable only as an ancestor).
     refcount: u64,
-    /// Layers from here to the root, inclusive.
     chain_len: u32,
-    /// Memoized chain resolutions: gfn -> what this layer's image holds there.
-    /// Sound because sealed images are immutable and every ancestor of a resident
-    /// layer is itself resident (gc preserves ancestors), so a cached `PageRef::Data`
-    /// can never dangle. Lookup-only — never iterated, so the unordered map cannot
-    /// leak nondeterminism into any output.
     #[allow(clippy::disallowed_types)]
     resolve_cache: RefCell<HashMap<u64, PageRef>>,
 }
 
-/// Layered copy-on-write guest-memory snapshot store. See the crate docs.
 pub struct Store {
     cfg: StoreConfig,
     next_id: u64,
-    /// All resident layers, keyed by raw snapshot id (BTreeMap for deterministic
-    /// iteration in `gc` and `store_stats`).
     layers: BTreeMap<u64, Layer>,
-    /// Content-addressed page storage: one entry per distinct page content.
-    ///
-    /// **This map is never iterated.** `store_stats` reads only `.len()`; `gc` iterates
-    /// `layers` (a `BTreeMap`), never this. That is what makes an unordered map sound
-    /// here: no output, hash, or encoded byte can observe its layout. Any future code
-    /// that iterates it must collect-and-sort first, or it is a determinism bug.
-    ///
-    /// Hash-keyed rather than tree-keyed: the keys are uniformly-random
-    /// BLAKE3 digests, so a `BTreeMap` made every seal/intern/release lookup a
-    /// cache-unfriendly pointer-chasing descent.
     #[allow(clippy::disallowed_types)]
     pages: HashMap<PageHash, PageEntry, BuildPageHashHasher>,
-    /// Hash of the all-zero page. `write_page` detects zero writes by scanning the
-    /// bytes rather than hashing them, so this is now only the reference value for the
-    /// debug assertion that the two tests agree.
     zero_hash: PageHash,
 }
 
 impl Store {
-    /// Create an empty store for guest images of `cfg.mem_pages` pages.
     pub fn new(cfg: StoreConfig) -> Store {
         Store {
             cfg,
@@ -239,10 +122,6 @@ impl Store {
         }
     }
 
-    /// Build the base layer. Pages not written before `seal()` are implicitly zero.
-    ///
-    /// Each call starts a new independent root layer; the common case is exactly one
-    /// base per store.
     pub fn begin_base(&mut self) -> BaseBuilder<'_> {
         BaseBuilder {
             core: BuilderCore {
@@ -253,8 +132,6 @@ impl Store {
         }
     }
 
-    /// Begin a child snapshot of `parent`. Errors if `parent` is unknown or no longer
-    /// live. (Unsealed snapshots have no id yet, so they are unnameable here.)
     pub fn derive(&mut self, parent: SnapshotId) -> Result<DeltaBuilder<'_>, StoreError> {
         self.live_layer(parent)?;
         Ok(DeltaBuilder {
@@ -266,20 +143,6 @@ impl Store {
         })
     }
 
-    /// Seal a new flat base containing the logical image of `parent` plus the
-    /// pages in `dirty` that changed after `parent` was sealed.
-    ///
-    /// This is the bounded-chain flattening path. A normal base walk examines every
-    /// page in the configured image. Flattening instead walks the page sets in the
-    /// chain rooted at `parent`, adds the newly dirtied frames, then reads only that
-    /// union from `memory`. The base builder still performs the canonical zero-page
-    /// check, so a page that was changed back to zero is omitted from the flat layer
-    /// and resolves to the implicit zero page. `dirty` must be complete when supplied
-    /// (the vmm-core caller only passes a successful dirty-log drain).
-    ///
-    /// The resulting layer is an independent base (`parent = None`) and therefore
-    /// has `chain_len == 1`. Its capture cost is O(number of page-set entries since
-    /// the chain root + newly dirtied pages), rather than O(logical image size).
     pub fn flatten_base(
         &mut self,
         parent: SnapshotId,
@@ -351,8 +214,6 @@ impl Store {
         Ok(builder.seal(vm_state))
     }
 
-    /// Read one page of `snap`'s logical memory image into `out` (length
-    /// [`PAGE_SIZE`]), resolving through the layer chain; zero page if never written.
     pub fn read_page(&self, snap: SnapshotId, gfn: u64, out: &mut [u8]) -> Result<(), StoreError> {
         self.live_layer(snap)?;
         if out.len() != PAGE_SIZE {
@@ -376,15 +237,6 @@ impl Store {
         Ok(())
     }
 
-    /// Return the target contents for every page that may differ between two
-    /// snapshots.
-    ///
-    /// The result is sorted by guest frame number. For `Some(from)`, it contains
-    /// the union of the page keys recorded on the two chains, stopping at their
-    /// nearest common ancestor; each returned page is resolved from `to`, so a
-    /// page that is absent there is returned as an all-zero page. When `from` is
-    /// `None`, every logical page is returned, including pages resolved to zero.
-    /// Both snapshot ids must still be live.
     pub fn diff_pages(
         &self,
         from: Option<SnapshotId>,
@@ -461,7 +313,6 @@ impl Store {
         Ok(pages)
     }
 
-    /// The opaque vCPU/device blob recorded at seal time.
     pub fn vm_state(&self, snap: SnapshotId) -> Result<&[u8], StoreError> {
         let layer = self.live_layer(snap)?;
         if blake3::hash(&layer.vm_state).as_bytes() != &layer.vm_state_hash {
@@ -470,13 +321,6 @@ impl Store {
         Ok(&layer.vm_state)
     }
 
-    /// Materialize the full logical image as a private copy-on-write mapping.
-    ///
-    /// The image is resolved into a freshly created flat tempfile — sparse, so
-    /// never-written (zero) pages cost neither disk nor memory — which is then mapped
-    /// copy-on-write (`MAP_PRIVATE`; portable across macOS and Linux). The mapping is
-    /// mutable; writes touch only private pages and never reach the file or the store.
-    /// The tempfile is owned by the returned [`Mapping`] and is reclaimed when it drops.
     pub fn materialize(&self, snap: SnapshotId) -> Result<Mapping, StoreError> {
         self.live_layer(snap)?;
         let len = self
@@ -523,27 +367,18 @@ impl Store {
         Ok(Mapping::new(file, len)?)
     }
 
-    /// Increment `snap`'s refcount. Snapshots start with refcount 1, held by the
-    /// creator. Errors once the refcount has reached zero: released snapshots are
-    /// gone for good and cannot be resurrected.
     pub fn retain(&mut self, snap: SnapshotId) -> Result<(), StoreError> {
         let layer = self.live_layer_mut(snap)?;
         layer.refcount = layer.refcount.saturating_add(1);
         Ok(())
     }
 
-    /// Decrement `snap`'s refcount. At zero the snapshot is immediately unobservable
-    /// (every operation on its id errors); its layer data stays resident only while a
-    /// live descendant's chain needs it, and is reclaimed by [`Store::gc`].
     pub fn release(&mut self, snap: SnapshotId) -> Result<(), StoreError> {
         let layer = self.live_layer_mut(snap)?;
         layer.refcount -= 1;
         Ok(())
     }
 
-    /// Drop layers unreachable from any live (refcount > 0) snapshot or its ancestors.
-    /// Returns bytes freed: page data whose last reference went away, plus the
-    /// vCPU/device blobs of dropped layers (bookkeeping overhead is not counted).
     pub fn gc(&mut self) -> u64 {
         let mut reachable: BTreeSet<u64> = BTreeSet::new();
         for (&id, layer) in &self.layers {
@@ -578,7 +413,6 @@ impl Store {
         freed
     }
 
-    /// Statistics for one live snapshot.
     pub fn stats(&self, snap: SnapshotId) -> Result<SnapStats, StoreError> {
         let layer = self.live_layer(snap)?;
         Ok(SnapStats {
@@ -588,7 +422,6 @@ impl Store {
         })
     }
 
-    /// Store-wide statistics.
     pub fn store_stats(&self) -> StoreStats {
         let snapshots = self.layers.values().filter(|l| l.refcount > 0).count() as u64;
         let vm_state_bytes: u64 = self.layers.values().map(|l| l.vm_state.len() as u64).sum();
@@ -601,7 +434,6 @@ impl Store {
         }
     }
 
-    /// Deliberately corrupt one resident page byte for an integrity negative.
     #[cfg(feature = "test-utils")]
     pub fn corrupt_page_for_test(
         &mut self,
@@ -633,7 +465,6 @@ impl Store {
         Ok(())
     }
 
-    /// Deliberately corrupt one opaque state byte for an integrity negative.
     #[cfg(feature = "test-utils")]
     pub fn corrupt_vm_state_for_test(
         &mut self,
@@ -652,8 +483,6 @@ impl Store {
         Ok(())
     }
 
-    /// Look up a snapshot that is still live (refcount > 0). Released snapshots are
-    /// indistinguishable from unknown ones at the public API.
     fn live_layer(&self, snap: SnapshotId) -> Result<&Layer, StoreError> {
         self.layers
             .get(&snap.0)
@@ -668,10 +497,6 @@ impl Store {
             .ok_or(StoreError::UnknownSnapshot(snap))
     }
 
-    /// Resolve what `start`'s logical image holds at `gfn` by walking the chain:
-    /// nearest layer (self included) that wrote the gfn wins, else zero. Worst case
-    /// O(chain length); every layer visited on a miss memoizes the answer, making
-    /// repeated reads of the same gfn O(1) for the whole visited path.
     fn resolve(&self, start: u64, gfn: u64) -> PageRef {
         let mut visited: Vec<u64> = Vec::new();
         let mut cur = Some(start);
@@ -700,13 +525,6 @@ impl Store {
         result
     }
 
-    /// Intern one page's content, bumping its refcount.
-    ///
-    /// Content addressing treats BLAKE3 equality as content equality. BLAKE3 is a
-    /// 256-bit cryptographic hash: the chance of two distinct pages colliding is
-    /// ~2^-128 even after hashing astronomically many pages — far below e.g. the rate
-    /// of undetected RAM corruption — so, like git or any content-addressed store, we
-    /// accept that theoretical risk and never do byte-wise confirmation.
     fn intern_page(&mut self, hash: PageHash, data: &[u8]) {
         self.pages
             .entry(hash)
@@ -717,8 +535,6 @@ impl Store {
             });
     }
 
-    /// Drop one reference to a stored page, removing it at zero.
-    /// Returns the number of payload bytes freed (0 or PAGE_SIZE).
     fn release_page_ref(&mut self, hash: PageHash) -> u64 {
         match self.pages.get_mut(&hash) {
             Some(entry) if entry.refs > 1 => {
@@ -737,8 +553,6 @@ impl Store {
     }
 }
 
-/// Shared guts of [`BaseBuilder`] and [`DeltaBuilder`]: buffered (gfn -> interned
-/// content) writes on top of an optional parent.
 struct BuilderCore<'a> {
     store: &'a mut Store,
     parent: Option<u64>,
@@ -773,9 +587,6 @@ impl BuilderCore<'_> {
         Ok(())
     }
 
-    /// Retain an already-interned page reference in this builder. Used by chain
-    /// flattening for frames that did not change after the parent seal, avoiding a
-    /// RAM copy and a redundant content hash.
     fn insert_page_ref(&mut self, gfn: u64, pref: PageRef) -> Result<(), StoreError> {
         if let PageRef::Data(hash) = pref {
             let Some(entry) = self.store.pages.get_mut(&hash) else {
@@ -789,12 +600,6 @@ impl BuilderCore<'_> {
         Ok(())
     }
 
-    /// Record a page only when its bytes differ from `inherited`.
-    ///
-    /// A dirty log may conservatively report a write that stores the same bytes.
-    /// Comparing against the existing interned page (or the implicit zero page)
-    /// avoids hashing such a false positive and keeps flattening proportional to
-    /// pages whose content actually changed since the chain root.
     fn write_page_against(
         &mut self,
         gfn: u64,
@@ -865,7 +670,6 @@ impl BuilderCore<'_> {
 }
 
 impl Drop for BuilderCore<'_> {
-    /// An abandoned builder must not leak interned pages.
     fn drop(&mut self) {
         let pages = std::mem::take(&mut self.pages);
         for (_gfn, pref) in pages {
@@ -876,43 +680,29 @@ impl Drop for BuilderCore<'_> {
     }
 }
 
-/// Builder for the base layer, from [`Store::begin_base`]. Pages not written before
-/// [`BaseBuilder::seal`] are implicitly zero. `seal` consumes the builder, so writing
-/// after sealing (or sealing twice) is a compile-time error; dropping the builder
-/// without sealing discards all buffered writes.
 pub struct BaseBuilder<'a> {
     core: BuilderCore<'a>,
 }
 
 impl BaseBuilder<'_> {
-    /// Record the content of one page (`data` must be exactly [`PAGE_SIZE`] bytes).
-    /// Writing the same gfn again replaces the earlier content.
     pub fn write_page(&mut self, gfn: u64, data: &[u8]) -> Result<(), StoreError> {
         self.core.write_page(gfn, data)
     }
 
-    /// Seal the base layer with its opaque vCPU/device blob, yielding its id.
-    /// The new snapshot starts with refcount 1, held by the caller.
     pub fn seal(self, vm_state: Vec<u8>) -> SnapshotId {
         self.core.seal(vm_state)
     }
 }
 
-/// Builder for a delta layer, from [`Store::derive`]. Pages not written resolve
-/// through the parent chain. Same single-use discipline as [`BaseBuilder`].
 pub struct DeltaBuilder<'a> {
     core: BuilderCore<'a>,
 }
 
 impl DeltaBuilder<'_> {
-    /// Record the content of one page (`data` must be exactly [`PAGE_SIZE`] bytes).
-    /// Writing the same gfn again replaces the earlier content.
     pub fn write_page(&mut self, gfn: u64, data: &[u8]) -> Result<(), StoreError> {
         self.core.write_page(gfn, data)
     }
 
-    /// Seal the delta with its opaque vCPU/device blob, yielding its id.
-    /// The new snapshot starts with refcount 1, held by the caller.
     pub fn seal(self, vm_state: Vec<u8>) -> SnapshotId {
         self.core.seal(vm_state)
     }
@@ -926,8 +716,6 @@ mod tests {
         StoreConfig { mem_pages }
     }
 
-    /// The XOR-folding hasher must behave as a hasher — equal keys hash
-    /// equal, the fold spreads distinct keys, and a `HashMap` under it round-trips.
     #[test]
     fn page_hash_hasher_backs_a_working_map() {
         use std::hash::{BuildHasher, Hash, Hasher};
@@ -1118,9 +906,6 @@ mod tests {
         assert_eq!(out, [7u8; PAGE_SIZE]);
     }
 
-    /// The byte-scan short-circuit must agree with the old
-    /// `blake3(data) == zero_hash` test on every shape of "nearly zero" page — a
-    /// single non-zero byte anywhere still interns exactly one content.
     #[test]
     fn zero_shortcut_matches_hash_comparison() {
         let mut store = Store::new(cfg(8));
@@ -1151,8 +936,6 @@ mod tests {
         assert_eq!(store.store_stats().stored_unique_pages, 0);
     }
 
-    /// A zero write that *overwrites* a buffered non-zero write in the
-    /// same builder must release the interned content it displaced.
     #[test]
     fn zero_write_over_buffered_data_releases_the_content() {
         let mut store = Store::new(cfg(8));

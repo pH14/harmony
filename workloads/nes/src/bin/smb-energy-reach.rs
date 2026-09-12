@@ -1,18 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Classify every active archive entry of a recorded campaign by what its
-//! selections produced — keepers, only rejected children, only dead
-//! children, or never picked — and compute the selector's exact draw
-//! shares with and without the barren classes skipped.
-//!
-//! Reads recorded artifacts only; no emulation. The active entry set is
-//! reconstructed from the archive report by replaying the cell-displacement
-//! rule in insertion order, which is deterministic. Draw shares are exact
-//! probabilities of the recorded selector structure with fresh exhaustion
-//! counters: one in four draws is uniform over active entries, the rest
-//! walk room, band, and cell uniformly within the deepest (world, level)
-//! pair that has an unexhausted entry.
-
 use std::{
     collections::BTreeMap,
     env,
@@ -29,24 +16,16 @@ use nes_workload::smb::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-/// Progress-band width in buckets, matching the selector's band classes.
 const BAND_WIDTH: u16 = 8;
-/// Cell capacity, matching the archive's per-key entry bound.
 const ENTRIES_PER_KEY: usize = 2;
-/// Odds of the cell path, matching the selector's one-in-four uniform draw.
 const CELL_PATH_SHARE: f64 = 0.75;
 
-/// What an entry's recorded selections produced.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum EntryClass {
-    /// At least one selection retained a child.
     Keepers,
-    /// Selections produced admission decisions but never a retained child.
     AllRejected,
-    /// Every selection ended with no candidate at all: the children died.
     AllDied,
-    /// The entry was never selected.
     Unpicked,
 }
 
@@ -80,13 +59,9 @@ struct Report {
     archive_sha256: String,
     active_entries: u64,
     displaced_entries: u64,
-    /// Streak thresholds simulated, in entry, cell, band, room order.
     thresholds: [u64; 4],
     classes: ClassCounts,
-    /// Class counts per (world, level, band), sorted by the key string.
     classes_by_pair_band: BTreeMap<String, ClassCounts>,
-    /// Draw shares per (room, band) of the deepest pair, baseline and with
-    /// the barren classes skipped.
     rooms: Vec<RoomShare>,
 }
 

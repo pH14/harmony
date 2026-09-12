@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Search package selection and execution backend dispatch.
 use clap::ValueEnum;
 use nes_workload::package::{SearchOptions, search_native};
 use std::{error::Error, path::PathBuf, process::ExitCode};
@@ -16,57 +15,41 @@ pub enum Backend {
 }
 #[derive(clap::Args)]
 pub struct Args {
-    /// ROM or OCI workload input, interpreted by the selected package.
     input: PathBuf,
     #[arg(long, value_enum)]
     package: Package,
-    /// Execution backend; NES defaults to native and faults to Consonance.
     #[arg(long, value_enum)]
     backend: Option<Backend>,
     #[arg(long, default_value_t = 0)]
     seed: u64,
     #[arg(long, default_value_t = 1)]
     workers: u32,
-    /// Number of search executions to admit.
     #[arg(long, default_value_t = 1000)]
     executions: u64,
-    /// Maximum actions in a candidate.
     #[arg(long, default_value_t = 128)]
     actions: usize,
     #[arg(long, default_value = "harmony-search")]
     out: PathBuf,
-    /// Pinned native QuickNES library; defaults to HARMONY_QUICKNES_CORE.
     #[arg(long)]
     core: Option<PathBuf>,
-    /// Controlled guest kernel; defaults to installed guest artifacts.
     #[arg(long)]
     kernel: Option<PathBuf>,
-    /// Package base initramfs; preparation adds the ROM or OCI rootfs.
     #[arg(long)]
     base_initramfs: Option<PathBuf>,
-    /// Static musl fault agent installed in the workload image; defaults to
-    /// HARMONY_FAULT_AGENT.
     #[arg(long)]
     fault_agent: Option<PathBuf>,
-    /// Guest milliseconds one fault action runs for.
     #[arg(long, default_value_t = 500)]
     horizon_ms: u64,
-    /// Guest RAM in MiB.
     #[arg(long, default_value_t = 1024)]
     ram_mib: u32,
-    /// Extra guest command-line words, space separated.
     #[arg(long)]
     knobs: Option<String>,
-    /// File of execution places the park action may hold a node at.
     #[arg(long)]
     places: Option<PathBuf>,
-    /// Wall-clock cutoff on a search, in minutes.
     #[arg(long)]
     wall_minutes: Option<u64>,
-    /// Recorded action list or bug report to run instead of searching.
     #[arg(long)]
     replay: Option<PathBuf>,
-    /// Runs of the recorded action list.
     #[arg(long, default_value_t = 1)]
     repeat: u32,
 }
@@ -125,9 +108,6 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The recorded action list `--replay` names, when it names one. A record that
-/// states its horizon must match the run's, or the replay would time its
-/// faults differently from the recording.
 fn read_replay(
     path: Option<&std::path::Path>,
     horizon_nanos: u64,
@@ -150,8 +130,6 @@ fn read_replay(
     Ok(Some(recorded.actions))
 }
 
-/// The fault package's own run bounds, read from the shared flags plus the
-/// package-specific ones.
 fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error>> {
     let places = match args.places.as_deref() {
         Some(path) => faults_workload::bundle::parse_places(&std::fs::read_to_string(path)?)?,

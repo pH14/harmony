@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Bounded reuse of learned transitions after a same-slot preference improvement.
-//! No map topology or action sequence is supplied by a workload.
-
 use std::{
     collections::{BTreeMap, VecDeque},
     mem::size_of,
@@ -38,9 +35,6 @@ impl<K: Copy + Ord, A: Clone> Default for ContinuationBank<K, A> {
 }
 
 impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
-    /// A fixed conservative reserve covers map nodes, deque slack, and all
-    /// bounded action payloads. Consumption can occur at different moments in
-    /// serial replay; the charge is independent of that host-side timing.
     pub fn reserve_bytes() -> usize {
         let record = size_of::<Continuation<A>>() + ACTION_CAP * size_of::<A>();
         EXIT_CAP

@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Acceptance gate 1: toy determinism property test — for an arbitrary
-//! generated program and seed, two fresh spawns run to the same targets have
-//! equal hashes at every checkpoint and equal final state.
 
 use proptest::prelude::*;
 use unison::toy::{ToyFactory, generate_program};

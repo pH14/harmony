@@ -1,22 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **arm64 vendor** described in `docs/ARCHITECTURE.md`:
-//! everything in the deterministic VMM that names the arm64 ISA — the
-//! CPU-contract policy skeleton ([`contract`]), the exit dispatch and the
-//! device models ([`dispatch`], [`devices`]), and the `vm_state` record set
-//! glue ([`records`]).
-//!
-//! The engine ([`crate::vmm`]) reaches all of it through [`Vendor`] alone —
-//! this module is the **first real second implementor**, the structural check
-//! that the seam is genuinely additive (a signature only a second vendor could
-//! refute stays invisible until one instantiates the trait).
-//!
-//! **A skeleton, deliberately** (the §Pre-build ruling): built against the
-//! unfrozen trait (designed-not-frozen — AA-3's memo owns the freeze), trusted
-//! only after M4's native msr1 validation. The interrupt fabric is unwired until
-//! the `gicv3`
-//! model lands (M2) and **delivery** into a real guest is `TODO(AA-6)` (the
-//! vGICv3 round-trip verdict); the boot path lands with M3; the KVM backend
-//! with M4. Nothing here claims silicon behavior.
 
 use std::io::{self, Write};
 
@@ -30,19 +12,12 @@ pub mod entry;
 pub mod image_loader;
 pub mod records;
 
-/// First field-level disagreement reported by the independent architectural
-/// GIC comparator. This comparator does not consume the snapshot encoding or
-/// its hash; it compares the typed architectural record directly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct GicArchitectureDifference {
-    /// Stable field name.
     pub field: &'static str,
-    /// Element index for an array field.
     pub index: Option<usize>,
 }
 
-/// Compare two canonical GICv3 records field by field, independently of the
-/// state-hash and device-blob codecs.
 pub fn compare_gic_architecture(
     expected: &gicv3::GicState,
     actual: &gicv3::GicState,
@@ -91,28 +66,13 @@ pub fn compare_gic_architecture(
     Ok(())
 }
 
-/// Direct, substrate-neutral architectural capture used by M5's comparator.
-///
-/// The vCPU record comes straight from the backend's live save seam. Any
-/// backend-owned in-kernel GIC is removed from that record and normalized into
-/// `gic`, where it has the same typed form as the userspace HVF model. This is
-/// deliberately separate from `state_blob`, the vendor snapshot codec, and
-/// `state_hash`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Arm64ArchitecturalState {
-    /// Canonical live vCPU state, with `gic == None` by construction.
     pub vcpu: vmm_backend::Arm64VcpuState,
-    /// Canonical GICv3 architectural record, independent of fabric ownership.
     pub gic: Option<gicv3::GicState>,
 }
 
 impl Arm64ArchitecturalState {
-    /// Write a stable, field-explicit architectural evidence record.
-    ///
-    /// This format is deliberately independent of the vendor snapshot codec
-    /// and `state_hash`. Every field consumed by [`compare_arm64_architecture`]
-    /// is emitted in comparator order, so ordinary byte comparison of records
-    /// captured on two hosts is a second implementation of the typed oracle.
     pub fn write_text(&self, mut out: impl Write) -> io::Result<()> {
         if self.vcpu.gic.is_some() {
             return Err(io::Error::new(
@@ -266,27 +226,16 @@ fn write_hex(out: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// First field-level disagreement from the independent ARM comparator.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Arm64ArchitectureDifference {
-    /// A scalar or indexed vCPU register file differs.
     Vcpu {
-        /// Stable architectural field name.
         field: &'static str,
-        /// Array element, when the field is an architectural register bank.
         index: Option<usize>,
     },
-    /// One capture has an architectural GIC and the other does not.
     GicPresence,
-    /// Both captures have a GIC and the independent GIC comparator localized it.
     Gic(GicArchitectureDifference),
 }
 
-/// Compare two direct ARM architectural captures field by field.
-///
-/// This does not consume a state hash, a component digest, or the vendor
-/// snapshot encoding. It is therefore an independent comparator for the M5
-/// portability result rather than a second spelling of the canonical hash.
 pub fn compare_arm64_architecture(
     expected: &Arm64ArchitecturalState,
     actual: &Arm64ArchitecturalState,

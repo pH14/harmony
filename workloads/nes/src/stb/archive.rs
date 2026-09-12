@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Super Tilt Bro archive identity, progress, and input distribution.
-
 use std::{cmp::Ordering, error::Error, num::NonZeroUsize};
 
 use serde::{Deserialize, Serialize};
@@ -19,17 +17,12 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
-/// Largest bounded input horizon accepted by an STB campaign.
 pub const MAX_STB_ACTIONS: usize = 8_192;
-/// Recorded archive identity policy.
 pub const KEY_POLICY_IDENTIFIER: &str = "stb_local_ai_spatial_16_preference_v3";
-/// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
-/// Recorded controller hold distribution.
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 pub use crate::stb::target::INITIAL_STOCKS;
 
-/// Resolve a recorded parent selector under STB's group depths.
 pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
     crate::search::archive::selector_policy_from_identifier(
         identifier,
@@ -37,10 +30,8 @@ pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolic
     )
 }
 
-/// STB archive instantiation.
 pub type StbArchive = Archive<ButtonChord, StbArchiveKey, StbMilestones, StbSnapshot>;
 
-/// Opaque pooled identity returned to the generic selector.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct StbArchiveGroup {
     stage: u8,
@@ -51,24 +42,16 @@ pub struct StbArchiveGroup {
     opponent_kos: u8,
 }
 
-/// Quality-diversity key for one STB endpoint.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbArchiveKey {
-    /// Objective progress prefix. Legacy selectors use `Ord` for identity and
-    /// progress walks, so these fields precede identity-only tie breakers.
-    /// This imported policy retains the default progress relation; adopting
-    /// the new generic hook is a separate versioned adapter experiment.
     pub opponent_kos: u8,
     pub opponent_damage: u8,
     pub player_a_stocks: u8,
-    /// Versus stage index.
     pub stage: u8,
-    /// Paired signed world-coordinate buckets at 16 pixels.
     pub player_a_x: i16,
     pub player_a_y: i16,
     pub player_b_x: i16,
     pub player_b_y: i16,
-    /// Same-location resource values used only by replacement preference.
     pub player_b_stocks: u8,
     pub player_a_damage: u8,
 }
@@ -94,8 +77,6 @@ impl ArchiveKey for StbArchiveKey {
         5
     }
 
-    /// Depth 0 is a 16-pixel paired location; higher depths pool progressively
-    /// wider locations, then the stage, then durable knockout progress.
     fn group(self, depth: usize) -> Self::Group {
         let location = StbArchiveGroup {
             stage: self.stage,
@@ -150,8 +131,6 @@ impl ArchiveKey for StbArchiveKey {
     fn record(_lineage: &mut Self::Lineage, _key: Self) {}
 }
 
-/// Champion quality uses the archive's progress and capability order, without
-/// coordinate, state-ID, hitstun or posture tie breakers.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct StbChampionKey {
     progress: (u8, u8, u8),
@@ -197,12 +176,6 @@ impl StbArchiveKey {
     }
 }
 
-/// Return the validated number of Player-B stock losses in a live state.
-///
-/// The source's terminal underflow is intentionally not inferred from a
-/// terminal state here: game-over RAM no longer carries gameplay fields. Use
-/// [`milestones_from_observation`] for the observation event, which records
-/// the final loss from the preceding live zero-stock frame.
 #[must_use]
 pub fn player_b_kos(state: StbMechanicalState) -> u8 {
     state.gameplay.map_or(0, |gameplay| {
@@ -210,7 +183,6 @@ pub fn player_b_kos(state: StbMechanicalState) -> u8 {
     })
 }
 
-/// Return the validated number of Player-A stock losses in a live state.
 #[must_use]
 pub fn player_a_kos(state: StbMechanicalState) -> u8 {
     state.gameplay.map_or(0, |gameplay| {
@@ -218,7 +190,6 @@ pub fn player_a_kos(state: StbMechanicalState) -> u8 {
     })
 }
 
-/// Build an opaque archive key from a live decoded STB state.
 #[must_use]
 pub fn archive_key(state: StbMechanicalState) -> Option<StbArchiveKey> {
     let gameplay = state.gameplay?;
@@ -236,22 +207,15 @@ pub fn archive_key(state: StbMechanicalState) -> Option<StbArchiveKey> {
     })
 }
 
-/// Strongest match milestones observed by a campaign.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbMilestones {
-    /// Greatest opponent damage percentage observed.
     pub opponent_damage: u8,
-    /// Greatest number of opponent knockouts.
     pub opponent_kos: u8,
-    /// Greatest number of player-A knockouts (a negative rung).
     pub player_a_kos: u8,
-    /// Whether the declared player-A victory occurred.
     pub victory: bool,
-    /// Whether the declared player-A loss occurred.
     pub defeat: bool,
 }
 
-/// First deterministic execution reaching each match rung.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbMilestoneTimes {
     pub first_opponent_ko: Option<u64>,
@@ -259,7 +223,6 @@ pub struct StbMilestoneTimes {
     pub first_defeat: Option<u64>,
 }
 
-/// First clean-reset input reaching each match rung.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbMilestoneInputs {
     pub first_opponent_ko: Option<StbInput>,
@@ -267,7 +230,6 @@ pub struct StbMilestoneInputs {
     pub first_defeat: Option<StbInput>,
 }
 
-/// Strongest route-agnostic progress observed at any emulator frame.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct StbProgressWatermark {
     pub opponent_kos: u8,
@@ -277,7 +239,6 @@ pub struct StbProgressWatermark {
 pub type StbArchiveProgressPoint = ProgressPoint<StbMilestones, StbProgressWatermark>;
 pub type StbArchiveEntryReport = ArchiveEntryReport<ButtonChord, StbArchiveKey, StbMilestones>;
 
-/// Complete deterministic report for one STB campaign.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbArchiveReport {
     pub seed: u64,
@@ -297,7 +258,6 @@ pub struct StbArchiveReport {
     pub selector: SelectorAccounting,
 }
 
-/// Decode milestones from one state.
 #[must_use]
 pub fn milestones(state: StbMechanicalState) -> StbMilestones {
     let Some(gameplay) = state.gameplay else {
@@ -316,8 +276,6 @@ pub fn milestones(state: StbMechanicalState) -> StbMilestones {
     }
 }
 
-/// Decode milestones from an observed event, including terminal stock
-/// underflow evidence recorded before game-over RAM becomes invalid.
 #[must_use]
 pub fn milestones_from_observation(observation: &StbObservations) -> StbMilestones {
     let mut value = milestones(observation.decoded);
@@ -326,7 +284,6 @@ pub fn milestones_from_observation(observation: &StbObservations) -> StbMileston
     value
 }
 
-/// Merge strongest milestone fields.
 pub fn merge_milestones(into: &mut StbMilestones, from: StbMilestones) {
     into.opponent_damage = into.opponent_damage.max(from.opponent_damage);
     into.opponent_kos = into.opponent_kos.max(from.opponent_kos);
@@ -345,7 +302,6 @@ pub fn milestone_key(value: StbMilestones) -> (u8, u8, bool, u8) {
     )
 }
 
-/// Fold action-interior observations into the mechanical progress watermark.
 pub fn merge_progress_watermark(
     watermark: &mut StbProgressWatermark,
     observations: &[StbObservations],
@@ -362,20 +318,15 @@ pub fn merge_progress_watermark(
     }
 }
 
-/// Held-frame clock used by same-slot route replacement.
 pub fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
-/// Longest hold sampled by [`sample_chord`].
 pub const LONGEST_HOLD_FRAMES: u8 = 120;
 
 const DIRECTIONS: [u8; 9] = [0, 0x10, 0x20, 0x40, 0x80, 0x90, 0x50, 0xa0, 0x60];
 const AB: [u8; 4] = [0, 0x02, 0x01, 0x03];
 
-/// Draw one STB controller chord. Select and Start remain available to the
-/// probe vocabulary but are excluded here because Select has no gameplay
-/// action and Start pauses the local match.
 pub fn sample_chord(rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Error>> {
     let direction = DIRECTIONS
         [rand.below(NonZeroUsize::new(DIRECTIONS.len()).ok_or("empty STB direction vocabulary")?)];

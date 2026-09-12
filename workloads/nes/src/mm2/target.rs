@@ -1,11 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Mega Man 2 memory decoder and machine-backed target adapter.
-//!
-//! This module is the game-knowledge boundary. The generic search code sees
-//! controller actions, opaque keys, observations, and snapshots; every Mega
-//! Man 2 address and interpretation stays here.
-
 use std::{error::Error, io::Write, path::Path};
 
 use machine::{
@@ -19,24 +13,13 @@ use crate::target::{ExitKind, Target};
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
 const CAMERA_STATE: usize = 0x1b;
-/// Camera state while a scroll transition plays; the low bits flicker
-/// during ordinary jumps, so only this value means the view is moving.
 const CAMERA_STATE_SCROLLING: u8 = 0x80;
-/// Largest one-frame downward move that play produces; a larger step is
-/// the low position byte moving some other way than falling.
 const FALL_STEP_LIMIT: u8 = 64;
-/// Longest unbroken fall a stage can hold without the view scrolling: a
-/// screen is shorter than this, so a longer fall left the stage.
 const FALL_RUN_LIMIT: u16 = 256;
-/// Health of the ordinary enemies on screen, one byte per object slot.
 const ENEMY_HEALTH_TABLE_START: usize = 0x6d0;
 const ENEMY_HEALTH_TABLE_END: usize = 0x6e0;
-/// Value every empty enemy health slot holds.
 const ENEMY_HEALTH_IDLE: u8 = 0x14;
-/// Most damage one frame credits per enemy slot.
 const ENEMY_HIT_CAP: u8 = 4;
-/// Most enemy damage one screen credits; a screen whose enemies respawn
-/// cannot be farmed past it.
 const ENEMY_DAMAGE_CAP: u8 = 24;
 const STAGE: usize = 0x2a;
 const PLAYER_STATE: usize = 0x2c;
@@ -48,14 +31,9 @@ const GAME_MODE: usize = 0x04;
 const SELECTED_WEAPON: usize = 0xa9;
 const MENU_CURSOR: usize = 0xfd;
 const MENU_PAGE: usize = 0xfe;
-/// Game mode while the weapon menu is open.
 const GAME_MODE_MENU: u8 = 0x03;
-/// Rows per weapon menu page.
 const MENU_ROWS: u8 = 8;
-/// Menu value while the menu is closed.
 pub const MENU_CLOSED: u8 = 0xff;
-/// Frames the engine reports the dying state before it means death; a
-/// weapon switch flashes the same state for a dozen frames.
 const DYING_FRAMES: u32 = 30;
 const PLAYER_X: usize = 0x460;
 const PLAYER_Y: usize = 0x4a0;
@@ -65,51 +43,28 @@ const WEAPON_ENERGY_BYTES: usize = 12;
 const OBJECT_ID_TABLE: usize = 0x400;
 const OBJECT_FLAG_TABLE: usize = 0x420;
 const OBJECT_SLOTS: usize = 0x20;
-/// Object flag bit set while the engine updates the object.
 const OBJECT_ACTIVE: u8 = 0x80;
-/// Object ids of the three summoned items; each is a platform the player
-/// rides for a few seconds after firing it.
 const ITEM_OBJECT_FIRST: u8 = 0x38;
 const ITEM_OBJECT_LAST: u8 = 0x3a;
 const BOSS_HEALTH: usize = 0x6c1;
 const BOSS_PHASE: usize = 0xb1;
 
-/// Lowest boss phase once the entrance and health fill have finished and
-/// the boss takes damage; the fight alternates this with the next value.
 const BOSS_PHASE_FIGHTING: u8 = 0x02;
-/// Boss phase before the entrance; any other value means a boss is on
-/// screen and the room is sealed.
 const BOSS_PHASE_NONE: u8 = 0x00;
-/// Lowest boss phase after the boss dies; the game holds these through the
-/// explosion and the weapon award, which sets the defeated bit only some
-/// 750 frames after the last hit.
 const BOSS_PHASE_DEFEATED: u8 = 0xfe;
-/// Health a boss holds when its fill finishes.
 pub const FULL_BOSS_HEALTH: u8 = 28;
 
-/// Player state the game holds while standing still in play.
 const PLAYER_STATE_STANDING: u8 = 0x03;
-/// Knocked back by a hit; airborne until the landing.
 const PLAYER_STATE_HIT: u8 = 0x02;
-/// Airborne from a jump or a fall.
 const PLAYER_STATE_AIRBORNE: u8 = 0x06;
-/// Climbing.
 const PLAYER_STATE_LADDER: u8 = 0x09;
-/// Stepping off the top of a ladder.
 const PLAYER_STATE_LADDER_TOP: u8 = 0x0a;
-/// Posture classes for the archive key.
 pub const POSTURE_GROUNDED: u8 = 0;
 pub const POSTURE_AIRBORNE: u8 = 1;
 pub const POSTURE_LADDER: u8 = 2;
-/// Player state the game holds while the player falls out of the play area.
 const PLAYER_STATE_FALLEN: u8 = 0x01;
-/// Player state the game holds while the player teleports in or dies to a
-/// pit or spikes; in play it only follows a death, and genesis is sealed
-/// after the teleport ends.
 const PLAYER_STATE_DYING: u8 = 0x00;
-/// Lowest on-screen Y that only occurs below the play area.
 const BELOW_PLAY_AREA_Y: u8 = 0xe0;
-/// Health the game refills to before handing the player control.
 pub const FULL_HEALTH: u8 = 28;
 
 const JOYPAD_START: u8 = 1 << 3;
@@ -118,21 +73,14 @@ const JOYPAD_DOWN: u8 = 1 << 5;
 const JOYPAD_LEFT: u8 = 1 << 6;
 const JOYPAD_RIGHT: u8 = 1 << 7;
 
-/// Number of robot master stages selectable from the stage select screen.
 pub const MM2_STAGE_COUNT: u8 = 8;
-/// Number of the first Wily castle stage; the six castle stages follow the
-/// robot masters in the game's own numbering and chain into each other
-/// without returning to stage select.
 pub const MM2_FIRST_WILY_STAGE: u8 = 8;
 const MM2_LAST_WILY_STAGE: u8 = 13;
 
-/// One of the eight robot master stages or six Wily castle stages, numbered
-/// as the game numbers them.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2Stage(u8);
 
 impl Mm2Stage {
-    /// Validate a stage number from `0` through `13`.
     pub fn from_number(number: u8) -> Result<Self, MachineError> {
         if number <= MM2_LAST_WILY_STAGE {
             Ok(Self(number))
@@ -143,13 +91,11 @@ impl Mm2Stage {
         }
     }
 
-    /// Whether this is a Wily castle stage.
     #[must_use]
     pub fn is_wily(self) -> bool {
         self.0 >= MM2_FIRST_WILY_STAGE
     }
 
-    /// Resolve a stage from its number or its robot master's name.
     pub fn parse(text: &str) -> Result<Self, MachineError> {
         if let Ok(number) = text.parse::<u8>() {
             return Self::from_number(number);
@@ -161,13 +107,11 @@ impl Mm2Stage {
             .ok_or_else(|| MachineError::Backend(format!("unknown Mega Man 2 stage {text:?}")))
     }
 
-    /// The game's stage number.
     #[must_use]
     pub fn number(self) -> u8 {
         self.0
     }
 
-    /// The robot master's name, lower case.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self.0 {
@@ -188,8 +132,6 @@ impl Mm2Stage {
         }
     }
 
-    /// Directional presses that move the stage select cursor from its
-    /// power-on position, the centre of the grid, onto this stage.
     fn select_path(self) -> &'static [u8] {
         match self.0 {
             0 => &[JOYPAD_LEFT],
@@ -211,66 +153,31 @@ impl Default for Mm2Stage {
     }
 }
 
-/// A Mega Man 2 input replayed from the sealed gameplay genesis.
 pub type Mm2Input = crate::search::archive::Input<ButtonChord>;
 
-/// Mechanical state decoded from work RAM at one emulator frame.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2MechanicalState {
-    /// Stage number.
     pub stage: u8,
-    /// Index of the screen the player stands in; the stage lays its screens
-    /// out in path order, so this rises along the intended route through
-    /// both horizontal and vertical transitions.
     pub screen: u8,
-    /// Index of the level room drawn around the player. A vertical scroll
-    /// can move to another room without advancing the path index, so two
-    /// rooms one above the other share a screen number.
     pub room: u8,
-    /// Player X within the screen.
     pub x: u8,
-    /// Player Y within the screen.
     pub y: u8,
-    /// Current health.
     pub health: u8,
-    /// Sum of every weapon and item energy meter plus energy tanks. Items
-    /// spent early leave later obstacles that need them unpassable, so the
-    /// preference keeps the lineage that still holds its energy.
     pub weapon_energy: u16,
-    /// Energy meter of the equipped weapon, zero for the buster. Firing an
-    /// item changes the world without moving the player, so the spent meter
-    /// is the only trace of it.
     pub equipped_energy: u8,
-    /// Summoned item platforms alive on screen. A platform carries the
-    /// player only while it lives, so a state with one under way differs
-    /// from the same position after it has faded.
     pub platforms: u8,
-    /// Lives remaining.
     pub lives: u8,
-    /// Player engine state.
     pub player_state: u8,
-    /// Weapon or item currently equipped.
     pub weapon: u8,
-    /// Weapon menu page and row while the menu is open, else
-    /// [`MENU_CLOSED`]; the menu is the only way to change the weapon.
     pub menu: u8,
-    /// Bitmask of robot masters defeated.
     pub weapons_obtained: u8,
-    /// Health of the boss on screen, zero when none is active.
     pub boss_health: u8,
-    /// Boss phase: zero without a boss, one through its entrance and health
-    /// fill, two while it fights, 0xfe and 0xff once it is dead.
     pub boss_phase: u8,
-    /// Camera state, nonzero while a scroll transition plays.
     pub camera_state: u8,
-    /// Damage dealt to ordinary enemies since the player entered this
-    /// screen, capped; the target accumulates it across frames because no
-    /// work-RAM byte holds it.
     pub enemy_damage: u8,
 }
 
 impl Mm2MechanicalState {
-    /// Number of robot masters defeated.
     #[must_use]
     pub fn bosses_beaten(self) -> u8 {
         self.weapons_obtained
@@ -279,7 +186,6 @@ impl Mm2MechanicalState {
             .unwrap_or(u8::MAX)
     }
 
-    /// Grounded, airborne, or on a ladder.
     #[must_use]
     pub fn posture(self) -> u8 {
         match self.player_state {
@@ -289,9 +195,6 @@ impl Mm2MechanicalState {
         }
     }
 
-    /// Damage dealt to the boss being fought: zero outside a fight so the
-    /// entrance health fill never reads as damage, and full once the boss
-    /// is dead so the wait for the weapon award keeps its progress.
     #[must_use]
     pub fn boss_damage(self) -> u8 {
         if self.boss_phase >= BOSS_PHASE_DEFEATED {
@@ -303,30 +206,23 @@ impl Mm2MechanicalState {
         }
     }
 
-    /// Whether a boss is on screen and still alive, which seals its room.
     #[must_use]
     pub fn boss_fight_underway(self) -> bool {
         self.boss_phase != BOSS_PHASE_NONE && self.boss_phase < BOSS_PHASE_DEFEATED
     }
 
-    /// Whether the player is dead: out of health or fallen below the play
-    /// area, neither of which the health byte alone reports. A pit or spike
-    /// death shows only as a lasting dying state, which the target counts
-    /// across frames.
     #[must_use]
     pub fn is_dead(self) -> bool {
         self.health == 0
             || (self.player_state == PLAYER_STATE_FALLEN && self.y >= BELOW_PLAY_AREA_Y)
     }
 
-    /// Whether the engine reports the dying state this frame.
     #[must_use]
     pub fn is_dying(self) -> bool {
         self.player_state == PLAYER_STATE_DYING
     }
 }
 
-/// Decode the mechanical state from work RAM.
 pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
     Ok(Mm2MechanicalState {
         stage: read_byte(wram, STAGE)?,
@@ -361,10 +257,6 @@ pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
     })
 }
 
-/// Damage to ordinary enemies between two consecutive frames: the enemy
-/// health table holds the idle value in every empty slot, so only a slot
-/// already below it counts, and one hit is capped so a kill that clears a
-/// slot cannot dwarf the shots that led to it.
 fn enemy_damage_between(prior: &[u8], current: &[u8]) -> u8 {
     (ENEMY_HEALTH_TABLE_START..ENEMY_HEALTH_TABLE_END)
         .filter_map(|slot| {
@@ -376,7 +268,6 @@ fn enemy_damage_between(prior: &[u8], current: &[u8]) -> u8 {
         .fold(0_u8, u8::saturating_add)
 }
 
-/// Count of active objects that are summoned item platforms.
 fn live_platforms(wram: &[u8]) -> Result<u8, MachineError> {
     let mut count = 0_u8;
     for slot in 0..OBJECT_SLOTS {
@@ -395,7 +286,6 @@ fn read_byte(bytes: &[u8], address: usize) -> Result<u8, MachineError> {
     })
 }
 
-/// Coarse location used by observation emission.
 #[must_use]
 pub fn spatial_bucket(state: Mm2MechanicalState) -> (u8, u8, u8, u8, u8, u8) {
     (
@@ -408,59 +298,37 @@ pub fn spatial_bucket(state: Mm2MechanicalState) -> (u8, u8, u8, u8, u8, u8) {
     )
 }
 
-/// Enemy damage per key bucket; one buster hit on a sturdy enemy, so every
-/// hit that lands on a blocking enemy opens a new slot.
 pub const ENEMY_DAMAGE_BUCKET: u8 = 2;
 
-/// Boss damage per key bucket; one buster hit deals two.
 pub const BOSS_DAMAGE_BUCKET: u8 = 2;
 
-/// Adapter-owned lexicographic preference between states at one location.
-/// Lives stay out: extra lives farm without bound from respawning enemies,
-/// and a preference on them lets one farming lineage dominate every band.
 #[must_use]
 pub fn preference_tuple(state: Mm2MechanicalState) -> (u8, u8, u16) {
     (state.bosses_beaten(), state.health, state.weapon_energy)
 }
 
-/// Mechanical evidence emitted at a changed spatial or resource boundary.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Mm2Observations {
-    /// Frames emulated since the sealed gameplay genesis.
     pub frame_count: u64,
-    /// Decoded mechanical state.
     pub decoded: Mm2MechanicalState,
-    /// Sorted work-RAM indices changed since the prior emitted event.
     pub changed_indices: Vec<u16>,
-    /// Whether the player is dead at this event.
     pub dead: bool,
-    /// Pixels fallen without a break or a scroll up to this event.
     #[serde(default)]
     pub fall_run: u16,
-    /// Compact game-neutral mechanical log line.
     pub log_line: String,
 }
 
-/// Geometry and frame count of one rendered replay.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Mm2VideoMetadata {
-    /// Tightly packed frame width.
     pub width: u32,
-    /// Tightly packed frame height.
     pub height: u32,
-    /// Frames written.
     pub frames: u64,
-    /// Native signed 16-bit PCM sample rate.
     pub audio_sample_rate: u32,
-    /// Interleaved PCM channel count.
     pub audio_channels: u8,
-    /// Stereo PCM frames written.
     pub audio_frames: u64,
-    /// Decoded game state after the searched input and before the film tail.
     pub input_endpoint: Mm2MechanicalState,
 }
 
-/// Complete state needed to resume a Mega Man 2 prefix exactly.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Mm2Snapshot {
     emulator_state: Vec<u8>,
@@ -469,21 +337,17 @@ pub struct Mm2Snapshot {
 }
 
 impl Mm2Snapshot {
-    /// Decoded endpoint state carried by this snapshot.
     #[must_use]
     pub fn state(&self) -> Mm2MechanicalState {
         self.observation.decoded
     }
 
-    /// Number of persisted emulator-state bytes held by this snapshot.
     #[must_use]
     pub fn emulator_state_bytes_len(&self) -> usize {
         self.emulator_state.len()
     }
 }
 
-/// Start presses from the settled title screen to the stage select screen:
-/// the title, then the start/password menu, then the stage select itself.
 const BOOT_TO_STAGE_SELECT: [ButtonChord; 3] = [
     ButtonChord {
         buttons: JOYPAD_START,
@@ -498,20 +362,12 @@ const BOOT_TO_STAGE_SELECT: [ButtonChord; 3] = [
         hold_frames: 4,
     },
 ];
-/// Frames each menu needs after a Start press before it accepts the next.
 const MENU_SETTLE_FRAMES: u32 = 300;
-/// Frames the title screen needs before it accepts Start.
 const TITLE_SETTLE_FRAMES: u32 = 600;
-/// Frames from the weapon award until the password/stage-select menu
-/// accepts input.
 const AWARD_SETTLE_FRAMES: u32 = 900;
-/// Longest wait, in frames, from the stage select confirmation to the first
-/// frame of play.
 const STAGE_START_WAIT_FRAMES: u32 = 1_200;
-/// Frames allowed for the fortress scene before the first castle stage.
 const WILY_STAGE_START_WAIT_FRAMES: u32 = 8_000;
 
-/// Machine-backed target used by Mega Man 2 campaigns.
 #[derive(Debug)]
 pub struct Mm2Target {
     machine: QuickNesMachine,
@@ -540,8 +396,6 @@ fn idle_chords(frames: u32) -> Vec<ButtonChord> {
     chords
 }
 
-/// Inputs from power-on to the stage select screen with the cursor at its
-/// centre.
 #[must_use]
 pub fn power_on_walk() -> Vec<ButtonChord> {
     let mut chords = idle_chords(TITLE_SETTLE_FRAMES);
@@ -552,25 +406,14 @@ pub fn power_on_walk() -> Vec<ButtonChord> {
     chords
 }
 
-/// Work-RAM byte that marks the stage select screen and the stage intro
-/// that follows it; the award, message, item and password screens all hold
-/// the next value.
 const MENU_MODE: usize = 0xf7;
 const MENU_MODE_STAGE_SELECT: u8 = 0x90;
 const STAGE_SELECT_WALK_ROUNDS: usize = 16;
 
-/// Whether the game rests on the stage select screen, checked before any
-/// Start press so the stage intro that shares the mode byte cannot begin.
 fn at_stage_select(wram: &[u8]) -> bool {
     wram.get(MENU_MODE).copied() == Some(MENU_MODE_STAGE_SELECT)
 }
 
-/// Run `chords` from power-on, then walk from the weapon award back to the
-/// stage select screen and return the chords that walk took. The award is
-/// followed by a varying run of screens (the weapon, a message and an item
-/// for some bosses) and a password/stage-select menu whose cursor rests on
-/// the password entry, so each round moves the cursor down and presses
-/// Start until the stage select screen appears.
 pub fn walk_to_stage_select(
     rom: &[u8],
     core_path: &Path,
@@ -611,8 +454,6 @@ fn run_chords(machine: &mut QuickNesMachine, chords: &[ButtonChord]) -> Result<(
 }
 
 impl Mm2Target {
-    /// Load the ROM, walk the menus to the requested stage, and seal genesis
-    /// at the first frame the player stands in play with full health.
     pub fn from_rom_bytes_headless_at_stage(
         rom: &[u8],
         core_path: &Path,
@@ -622,10 +463,6 @@ impl Mm2Target {
         Self::from_rom_bytes_after(rom, core_path, core_sha256, &power_on_walk(), stage)
     }
 
-    /// Load the ROM, run `prefix` from power-on so the game rests on the
-    /// stage select screen with the cursor at its centre, pick the stage,
-    /// and seal genesis at the first frame the player stands in play with
-    /// full health.
     pub fn from_rom_bytes_after(
         rom: &[u8],
         core_path: &Path,
@@ -712,26 +549,21 @@ impl Mm2Target {
         })
     }
 
-    /// Every input from power-on to sealed genesis; the same chords replay
-    /// the genesis frame exactly.
     #[must_use]
     pub fn genesis_prefix(&self) -> &[ButtonChord] {
         &self.genesis_prefix
     }
 
-    /// Current decoded state.
     #[must_use]
     pub fn mechanical_state(&self) -> Mm2MechanicalState {
         self.observation.decoded
     }
 
-    /// Whether the current state is a death.
     #[must_use]
     pub fn is_dead(&self) -> bool {
         self.observation.dead
     }
 
-    /// Whether this input defeated a robot master beyond sealed genesis.
     #[must_use]
     pub fn defeated_a_boss(&self) -> bool {
         let state = self.observation.decoded;
@@ -739,25 +571,21 @@ impl Mm2Target {
             || state.stage > self.genesis_observation.decoded.stage
     }
 
-    /// Robot masters defeated at sealed genesis.
     #[must_use]
     pub fn genesis_weapons(&self) -> u8 {
         self.genesis_weapons
     }
 
-    /// Total deterministic frames this instance has emulated.
     #[must_use]
     pub fn frames_clocked(&self) -> u64 {
         self.machine.now().0
     }
 
-    /// Observer events emitted by the most recent action.
     #[must_use]
     pub fn last_action_observations(&self) -> &[Mm2Observations] {
         &self.action_observations
     }
 
-    /// Test one fixed continuation and restore the caller's state afterward.
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
         if self.failed || self.is_dead() || self.defeated_a_boss() || frames == 0 {
             return false;
@@ -796,11 +624,6 @@ impl Mm2Target {
         }
     }
 
-    /// Replay an input from gameplay genesis and write RGB24 video and S16LE
-    /// stereo audio.
-    ///
-    /// Video is a replay-only observer. Search workers never enable it, and
-    /// the recorded headless campaign identity is unchanged.
     pub fn render_input(
         &mut self,
         input: &Mm2Input,
@@ -949,8 +772,6 @@ impl Mm2Target {
         }
     }
 
-    /// Run one chord and return every frame's work RAM, or `None` when the
-    /// emulator failed.
     fn run_action(&mut self, action: &ButtonChord) -> Option<Vec<[u8; WRAM_SIZE]>> {
         let start = self.machine.snapshot().ok()?;
         let branched = self

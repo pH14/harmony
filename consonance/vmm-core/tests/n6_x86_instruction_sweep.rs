@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Live N6 x86 table-generated JIT sweep and its traps-off kernel negative.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::io::Write;

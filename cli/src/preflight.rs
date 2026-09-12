@@ -1,21 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `harmony preflight`: report the host's support-matrix cell, hypervisor
-//! availability, and installed guest artifacts, then exit 0 only if
-//! `harmony oci run` would be allowed to start.
-//!
-//! Readiness is the conjunction of every requirement the run path checks,
-//! evaluated from the same predicates the run path uses, and it fails closed:
-//! anything unestablished is a blocker, and every blocker is named.
 
 use crate::host::{Detected, HostReport, Hypervisor, Isa, MatrixCell};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// Where the per-ISA guest artifacts (kernel + initramfs) were found, if
-/// anywhere. Searched in order: `$HARMONY_GUEST_DIR`, `../share/harmony/guest/<isa>`
-/// relative to the executable (the brew layout), then the in-repo dev build
-/// tree.
 #[derive(Serialize)]
 pub struct GuestArtifacts {
     pub dir: Option<PathBuf>,
@@ -89,19 +78,13 @@ struct Report {
     container: Detected,
     hypervisor: Hypervisor,
     matrix_cell: MatrixCell,
-    /// Whether this build carries a drive loop for this host.
     run_loop: bool,
     guest: GuestArtifacts,
-    /// The installed initramfs `harmony oci run` would inject into.
     base_initramfs: Option<PathBuf>,
     ready: bool,
-    /// One entry per unmet requirement, empty when ready.
     blockers: Vec<String>,
 }
 
-/// Every requirement `harmony oci run` checks before it can start, in report
-/// order. Empty means ready. Pure in its inputs, so the readiness contract is
-/// testable without depending on the executing host.
 fn blockers(
     hypervisor: &Hypervisor,
     cell: MatrixCell,
@@ -275,9 +258,6 @@ mod tests {
         assert!(blockers(&hv, cell, run_loop, Some(&kernel), Some(&base)).is_empty());
     }
 
-    /// A proven cell with a kernel and a hypervisor is still not ready
-    /// without an accepted base initramfs: there is nothing to inject the
-    /// container bundle into.
     #[test]
     fn missing_base_initramfs_blocks_readiness() {
         let (hv, cell, run_loop, kernel, _) = ready_inputs();
@@ -286,8 +266,6 @@ mod tests {
         assert!(found[0].contains("initramfs-oci.cpio.gz"), "{found:?}");
     }
 
-    /// Linux/arm64 bare metal is a proven cell with no drive loop compiled
-    /// for it. Readiness follows the run loop, not the matrix cell alone.
     #[test]
     fn missing_run_loop_blocks_a_proven_cell() {
         let (hv, cell, _, kernel, base) = ready_inputs();

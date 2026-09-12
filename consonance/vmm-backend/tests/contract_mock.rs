@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **portable** leg of the `Backend` contract tests (`docs/TESTING.md`,
-//! rung 2): the full [`vmm_backend::contract`] exam over [`MockBackend`], in the
-//! ordinary `cargo nextest` lane on macOS and Linux.
-//!
-//! The box-only leg (`tests/contract_kvm.rs`) runs the **identical** exam over
-//! `KvmBackend`. That is the point of the suite: not
-//! that the mock behaves, but that the mock and the live backends behave the
-//! same, so vmm-core can be written against the trait alone.
 #![cfg(all(feature = "contract-tests", feature = "mock"))]
 
 use vmm_backend::contract::{
@@ -18,17 +10,12 @@ use vmm_backend::{
     X86Exit, X86Policy,
 };
 
-/// How many `Idle` exits every script ends with. The exam resumes a backend
-/// after servicing an exit, and the interrupt exams enter the guest once per
-/// spawn, so a scripted mock needs a few halts in reserve; a live guest gets the
-/// same shape from a `hlt`-loop stub.
 const IDLE_TAIL: usize = 6;
 
 fn idle_tail() -> Vec<Exit<X86>> {
     vec![Exit::Common(CommonExit::Idle); IDLE_TAIL]
 }
 
-/// The scripted exits that put a `MockBackend` in each [`Scenario`].
 fn script(scenario: Scenario) -> Vec<Exit<X86>> {
     let head: Vec<Exit<X86>> = match scenario {
         Scenario::Idle => Vec::new(),
@@ -60,9 +47,6 @@ fn script(scenario: Scenario) -> Vec<Exit<X86>> {
     exits
 }
 
-/// The mock fixture. Owns nothing beyond the scripts: the mock records regions
-/// rather than retaining host pointers, so there is no guest memory to keep
-/// alive around a backend.
 struct MockFixture;
 
 impl BackendFixture for MockFixture {
@@ -89,8 +73,6 @@ impl BackendFixture for MockFixture {
     }
 }
 
-/// The exams the mock must run. Named individually rather than counted: a
-/// renamed or dropped exam has to fail here, not silently shrink the suite.
 const REQUIRED: &[&str] = &[
     "ordering/not_configured",
     "ordering/completion_grid",
@@ -118,10 +100,6 @@ fn mock_backend_passes_the_full_contract_exam() {
     );
 }
 
-/// Non-vacuity guard for the whole exam: a backend that breaks a contract must
-/// fail it. `BrokenFixture` hands out a mock whose policy is installed *before*
-/// the exam gets it, so `run` before `set_policy` no longer fails closed — the
-/// first thing `ordering_exam` checks.
 struct BrokenFixture;
 
 impl BackendFixture for BrokenFixture {
@@ -145,7 +123,6 @@ impl BackendFixture for BrokenFixture {
     }
 }
 
-/// A limited backend that forwards the common surface but has no dirty log.
 struct NoDeadlineBackend(MockBackend);
 
 impl Backend for NoDeadlineBackend {
@@ -203,11 +180,8 @@ impl Backend for NoDeadlineBackend {
     }
 }
 
-/// A fixture shaped like stock KVM: no dirty log or userspace hypercall/CPUID exits.
-/// Unsupported scenarios are recorded as declined in the exam report.
 struct LimitedFixture;
 
-/// Identity and x86 runtime feature payload for the limited fixture.
 const LIMITED_CAPS: MockCaps = Capabilities {
     name: "mock-limited",
     arch: X86Caps,

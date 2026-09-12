@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The bug report one terminal endpoint writes: the action list that produced
-//! it and the standing-fault window list those actions install, which is what
-//! the package stages to replay it.
-
 use std::{error::Error, path::Path};
 
 use serde::{Deserialize, Serialize};
@@ -11,37 +7,20 @@ use serde::{Deserialize, Serialize};
 use crate::archive::FaultBugRecord;
 use crate::target::{ActionWindows, FaultAction, FaultObservations, standing_windows};
 
-/// File-name stem of a bug report, completed with the bug's ordinal.
 pub const BUG_REPORT_STEM: &str = "bug-";
 
-/// One reproducible bug found by a campaign.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BugReport {
-    /// One-based ordinal within the campaign.
     pub bug: u64,
-    /// Ordered admission position of the execution that found it.
     pub execution: u64,
-    /// Root seal `Moment` every action window is measured from.
     pub root_seal: u64,
-    /// Virtual nanoseconds each action window spans.
     pub horizon_nanos: u64,
-    /// The action list, in execution order.
     pub actions: Vec<FaultAction>,
-    /// The encoded standing-fault window list, lowercase hex. These are the
-    /// configuration bytes the package hands its service handler to replay
-    /// this bug.
     pub standing: String,
-    /// The terminal endpoint's observations.
     pub observations: FaultObservations,
 }
 
 impl BugReport {
-    /// Build a report for the `bug`-th bug of a campaign.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the actions install a window list the shared
-    /// codec refuses to encode.
     pub fn new(
         bug: u64,
         execution: u64,
@@ -61,17 +40,11 @@ impl BugReport {
         })
     }
 
-    /// The report's file name, `bug-<n>.json`.
     #[must_use]
     pub fn file_name(&self) -> String {
         format!("{BUG_REPORT_STEM}{}.json", self.bug)
     }
 
-    /// Write the report into `directory`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the report cannot be serialized or written.
     pub fn write(&self, directory: &Path) -> Result<(), Box<dyn Error>> {
         std::fs::write(
             directory.join(self.file_name()),
@@ -80,11 +53,6 @@ impl BugReport {
         Ok(())
     }
 
-    /// The standing-fault window list the report carries.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the hex field is malformed.
     pub fn standing_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
         if !self.standing.len().is_multiple_of(2) {
             return Err("bug report standing list has an odd hex length".into());
@@ -100,12 +68,6 @@ impl BugReport {
     }
 }
 
-/// Write one report per recorded bug into `directory`, numbered from one in
-/// admission order, and return them.
-///
-/// # Errors
-///
-/// Returns an error when a report cannot be serialized or written.
 pub fn write_bug_reports(
     windows: ActionWindows,
     bugs: &[FaultBugRecord],

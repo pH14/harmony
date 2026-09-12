@@ -1,152 +1,45 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Bring-up device shims (pure logic, Mac-testable): a minimal polled 8250 UART
-//! and the isa-debug-exit port constant.
-//!
-//! The UART models exactly enough of COM1 for a payload's polled-write
-//! console: it accepts the init writes (IER/FCR/LCR/MCR/divisor) without modeling
-//! baud, reports THR-empty on every LSR read so the guest's spin-loop always makes
-//! progress, and — critically — **tracks `LCR.DLAB`** so the `0x01` divisor byte
-//! the init writes to `0x3F8` is captured as a divisor latch, **not** prepended to
-//! the serial output (which would fail the M1 golden byte-for-byte).
 
-/// 8250 base: THR/RBR when `LCR.DLAB=0`, DLL when `DLAB=1`.
 pub const UART_PORT_BASE: u16 = 0x3F8;
-/// Line control register (bit 7 = DLAB).
 pub const UART_PORT_LCR: u16 = 0x3FB;
-/// Line status register.
 pub const UART_PORT_LSR: u16 = 0x3FD;
-/// isa-debug-exit port — a `u8` write terminates the run (0 = PASS, 1 = FAIL).
 pub const ISA_DEBUG_EXIT_PORT: u16 = 0x00F4;
-/// Conformance **report channel** port (corpus box-integration). Each
-/// `OUT REPORT_PORT, EAX` (a 32-bit write) appends `EAX` to the VM's ordered
-/// report stream (`report(u64)` is two writes: low dword then high); the host
-/// captures the stream for the O2 conformance oracle. Distinct from #44's
-/// hypercall doorbell at `0x0CA1` (adjacent, but its own dedicated port so a
-/// reported value can never be mistaken for a doorbell ring). Documented in
-/// `docs/ARCHITECTURE.md` and `consonance/vmm-core/contracts/x86/guest.toml`
-/// `[ports]`; it carries no per-host input, so it is **not** a §6-hashed row.
 pub const REPORT_PORT: u16 = 0x0CA2;
-/// `LCR.DLAB` (bit 7). When set, `UART_PORT_BASE` (+1) address the divisor latch
-/// (DLL/DLM), **not** THR/RBR/IER. The model must track it.
 pub const UART_LCR_DLAB: u8 = 0x80;
-/// LSR value reported on read: THR-empty + transmitter-empty (bits 5 and 6) so
-/// the guest's polled-write loop always makes progress. No data-ready bit (we
-/// never feed input).
 pub const UART_LSR_THR_EMPTY: u8 = 0x60;
 
-/// Highest port the COM1 register block occupies (`UART_PORT_BASE + 7`).
 const UART_PORT_TOP: u16 = UART_PORT_BASE + 7;
-/// Register-block offset of the line status register (`0x3FD - 0x3F8`).
 const OFF_LSR: u16 = UART_PORT_LSR - UART_PORT_BASE;
-/// Register-block offset of the line control register (`0x3FB - 0x3F8`).
 const OFF_LCR: u16 = UART_PORT_LCR - UART_PORT_BASE;
-/// Register-block offset of THR/RBR/DLL (`0`).
 const OFF_BASE: u16 = 0;
-/// Register-block offset of IER (`+1`, when `LCR.DLAB == 0`; the divisor-latch
-/// high byte when `DLAB == 1`).
 const OFF_IER: u16 = 1;
-/// Register-block offset of IIR (read) / FCR (write) (`+2`). IIR is read-only and
-/// reports the **interrupt status**; FCR is write-only and selects the FIFO —
-/// they share the port but are distinct registers, so the model computes IIR on
-/// read rather than echoing the shadowed FCR byte.
 const OFF_IIR: u16 = 2;
 
-/// `LSR` bit 0 — **data ready** (a received byte is waiting in the RBR). Set by
-/// the model **only while [`Uart8250::rx`] has an injected byte** (the `exec`
-/// serial-input channel); clear otherwise, so every non-`exec` run reads the same
-/// `LSR` as before (the input path is inert when no bytes are queued).
 const UART_LSR_DATA_READY: u8 = 0x01;
-/// `IER` bit 0 — **received-data-available interrupt enable**. A serial-console
-/// guest sets it so the COM1 IRQ fires when input arrives; the model raises the
-/// receive interrupt only when this is set **and** a byte is queued.
 const UART_IER_RDI: u8 = 0x01;
-/// `IIR` value reported when the **received-data-available** interrupt is pending:
-/// bit 0 (`NO_INT`) clear, interrupt-id `0b010` (`0x04`). Takes priority over THRE
-/// so a serial-console guest's IRQ handler reads a queued input byte.
 const UART_IIR_RDI: u8 = 0x04;
-/// `IER` bit 1 — **THRE interrupt enable** (transmitter-holding-register empty).
-/// When the guest sets it (with `DLAB` clear) the kernel's interrupt-driven 8250
-/// TX path expects the COM1 line (IRQ 4) to fire as soon as THR is empty; that is
-/// the interrupt this model raises (see [`Uart8250::thre_irq_asserted`]).
 const UART_IER_THRI: u8 = 0x02;
-/// `IIR` value reported when **no** interrupt is pending: bit 0 (`NO_INT`) set,
-/// FIFO bits clear. A `16450`-style read (`iir >> 6 == 0`) so the kernel's
-/// autoconfig keeps treating COM1 as a non-FIFO part (matches the live boot's
-/// `is a 16450`).
 const UART_IIR_NONE: u8 = 0x01;
-/// `IIR` value reported when the **THRE** (transmitter-empty) interrupt is
-/// pending: bit 0 (`NO_INT`) clear, interrupt-id `0b001`. The kernel's
-/// THRE/TXEN-bug probes read this to conclude the UART interrupt works (so it
-/// uses the IRQ path), and its IRQ handler reads it to dispatch `tx_chars`.
 const UART_IIR_THRI: u8 = 0x02;
 
-/// Minimal 8250: accepts init writes (IER/FCR/LCR/MCR/divisor) without modeling
-/// baud; LSR reads return [`UART_LSR_THR_EMPTY`]. It **tracks `LCR.DLAB`**: a
-/// write to [`UART_PORT_BASE`] is appended to [`Self::capture`] **only when DLAB
-/// is clear** (a real THR transmit). With DLAB set, that port is the
-/// divisor-latch-low byte — shadowed, not captured — so the init sequence's `0x01` baud
-/// divisor never becomes a stray `\x01` in the serial output. Pure; no I/O.
-///
-/// **Interrupt-driven TX (the Linux userspace console path).** The kernel's tty
-/// write path enables the THRE interrupt (`IER` bit 1) and drains the TX buffer
-/// from the COM1 IRQ-4 handler, not by polling. So the model reports the THRE
-/// interrupt: a read of `IIR` (offset 2) returns [`UART_IIR_THRI`] when `IER.THRI`
-/// is set and THR is empty (always, here — TX drains instantly to [`Self::capture`])
-/// and [`UART_IIR_NONE`] otherwise, and [`Self::thre_irq_asserted`] exposes that
-/// same condition as the COM1 interrupt line for the VMM to route to IRQ 4. (The
-/// polled M1/M2 payloads never touch `IIR` and keep `IER` zeroed, so this is inert
-/// for them — they only ever read `LSR`.)
 #[derive(Clone, Debug, Default)]
 pub struct Uart8250 {
-    /// THR transmit capture buffer (DLAB-clear `0x3F8` writes), in order.
     capture: Vec<u8>,
-    /// `true` when `LCR.DLAB` is set (the divisor-latch window is active).
     dlab: bool,
-    /// Benign register shadows for offsets 0..=7. Offset 1 is the **IER** — the
-    /// divisor-latch-high (DLM) byte is held separately in [`Self::dlm`] so a
-    /// DLAB-window write never clobbers it. Read back so the guest's init reads are
-    /// consistent.
     regs: [u8; 8],
-    /// Divisor-latch **high** byte (DLM), the offset-1 register **when `DLAB` is
-    /// set**. Kept distinct from the IER shadow (`regs[1]`, the offset-1 register
-    /// when `DLAB` is clear): writing the divisor must not overwrite the IER, or a
-    /// later [`Self::thre_irq_asserted`] would read the divisor byte as if it were
-    /// the IER. Not folded into the state hash — it drives no model logic and is 0
-    /// on the polled M1/M2/corpus paths (divisor `0x0001`), so omitting it keeps
-    /// those `DEV`-chunk hashes byte-identical.
     dlm: u8,
-    /// **Injected serial-input queue** (the `exec` channel): bytes the host
-    /// has typed at the guest's serial console, consumed FIFO by guest RBR reads.
-    /// **Empty on every non-`exec` run** — the whole input path is inert until
-    /// [`Self::inject_input`] is called, so an existing capture/hash is byte-
-    /// identical (gate 4). Deliberately **not** part of the state hash or the
-    /// snapshot device blob: `exec` is a live-only, off-record improvisation that
-    /// taints its timeline, so this ephemeral input is never carried across a
-    /// snapshot/restore (a fresh restore target starts with an empty queue). A
-    /// `VecDeque` — pop-front consume order is a deterministic function of guest
-    /// reads, never observed via iteration.
     rx: std::collections::VecDeque<u8>,
 }
 
 impl Uart8250 {
-    /// A fresh, reset UART: empty capture, DLAB clear, zeroed shadows.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Whether `port` is in the COM1 register block this model owns
-    /// (`UART_PORT_BASE ..= UART_PORT_BASE + 7`, i.e. `0x3F8..=0x3FF`). The event
-    /// loop calls this to gate the byte-width check (an 8250 register is
-    /// byte-addressed) **before** servicing an access, so a non-byte access to a
-    /// modeled port fails closed instead of being truncated.
     pub fn owns(port: u16) -> bool {
         (UART_PORT_BASE..=UART_PORT_TOP).contains(&port)
     }
 
-    /// Service a guest port write (incl. `LCR`, which updates DLAB). Returns
-    /// whether the port belonged to this device. A [`UART_PORT_BASE`] write
-    /// appends to [`Self::capture`] **only if `LCR.DLAB == 0`**; with DLAB set it
-    /// is the divisor latch — shadowed, not captured.
     pub fn write(&mut self, port: u16, value: u8) -> bool {
         if !(UART_PORT_BASE..=UART_PORT_TOP).contains(&port) {
             return false;
@@ -170,11 +63,6 @@ impl Uart8250 {
         true
     }
 
-    /// Service a guest port read; `Some(byte)` if this device owns `port`, else
-    /// `None`. LSR → [`UART_LSR_THR_EMPTY`]; IIR → the computed interrupt status
-    /// ([`UART_IIR_THRI`] when the THRE interrupt is asserted, else
-    /// [`UART_IIR_NONE`]); [`UART_PORT_BASE`] with DLAB set → the divisor-latch
-    /// shadow, with DLAB clear → `0` (RBR; we never feed input).
     pub fn read(&self, port: u16) -> Option<u8> {
         if !(UART_PORT_BASE..=UART_PORT_TOP).contains(&port) {
             return None;
@@ -190,12 +78,6 @@ impl Uart8250 {
         Some(value)
     }
 
-    /// Service a guest port read on the **I/O path** (`&mut`): identical to
-    /// [`Self::read`] except a byte read of the RBR (offset 0, `DLAB` clear)
-    /// **consumes** the next queued input byte (the `exec` channel), the way
-    /// real 8250 hardware pops the receive FIFO. Every other register is delegated
-    /// to the non-consuming [`Self::read`]. Returns `None` for a port this device
-    /// does not own.
     pub(crate) fn read_in(&mut self, port: u16) -> Option<u8> {
         if !(UART_PORT_BASE..=UART_PORT_TOP).contains(&port) {
             return None;
@@ -207,21 +89,14 @@ impl Uart8250 {
         self.read(port)
     }
 
-    /// Queue host-typed bytes on the guest's serial input (the `exec`
-    /// channel), consumed FIFO by guest RBR reads. Off-record and live-only: the
-    /// queue is never snapshotted or hashed.
     pub(crate) fn inject_input(&mut self, bytes: &[u8]) {
         self.rx.extend(bytes.iter().copied());
     }
 
-    /// Whether an injected input byte is waiting to be read.
     pub(crate) fn rx_has_input(&self) -> bool {
         !self.rx.is_empty()
     }
 
-    /// The `LSR` status bits contributed by the input queue: [`UART_LSR_DATA_READY`]
-    /// while a byte is queued (and `DLAB` clear — the divisor window does not report
-    /// receive status), else `0`.
     fn rx_status_bits(&self) -> u8 {
         if !self.dlab && self.rx_has_input() {
             UART_LSR_DATA_READY
@@ -230,40 +105,18 @@ impl Uart8250 {
         }
     }
 
-    /// Whether the COM1 **received-data-available interrupt** is asserted:
-    /// a byte is queued, `DLAB` is clear, and the guest enabled `IER.RDI`. This is
-    /// the receive half of the COM1 line the VMM routes to IRQ 4 so an
-    /// interrupt-driven serial console picks up injected input; inert (always
-    /// `false`) whenever the input queue is empty.
     pub(crate) fn rx_irq_asserted(&self) -> bool {
         !self.dlab && self.rx_has_input() && (self.regs[OFF_IER as usize] & UART_IER_RDI != 0)
     }
 
-    /// Whether **any** COM1 interrupt is asserted — the received-data-available
-    /// or the THRE (transmitter-empty) line. The VMM routes this to IRQ 4.
-    /// Equal to [`Self::thre_irq_asserted`] whenever no input is queued, so a
-    /// non-`exec` run's interrupt behavior is unchanged (gate 4).
     pub(crate) fn serial_irq_asserted(&self) -> bool {
         self.rx_irq_asserted() || self.thre_irq_asserted()
     }
 
-    /// Is the COM1 **THRE (transmitter-empty) interrupt** currently asserted? True
-    /// iff the guest has enabled `IER.THRI` (with `DLAB` clear, so the offset-1
-    /// shadow is the IER and not the divisor-latch high byte) — THR is modeled as
-    /// always empty (TX drains instantly into [`Self::capture`]), so an enabled
-    /// THRE interrupt is always pending. This is the COM1 IRQ-4 line the VMM routes
-    /// to the guest; it is **edge-driven by the guest's own `IER` write**, so its
-    /// timing is a deterministic function of guest execution (no V-time, no
-    /// wall-clock).
     pub(crate) fn thre_irq_asserted(&self) -> bool {
         !self.dlab && (self.regs[OFF_IER as usize] & UART_IER_THRI != 0)
     }
 
-    /// The value a read of the IIR (offset 2) returns: the **received-data-
-    /// available** interrupt ([`UART_IIR_RDI`]) takes priority when it is asserted
-    /// (`exec` input), else [`UART_IIR_THRI`] while the THRE interrupt is
-    /// asserted, else [`UART_IIR_NONE`]. With no input queued this is exactly the
-    /// THRE-or-none result from before the input queue existed (the receive path is inert).
     fn iir_value(&self) -> u8 {
         if self.rx_irq_asserted() {
             UART_IIR_RDI
@@ -274,41 +127,22 @@ impl Uart8250 {
         }
     }
 
-    /// The bytes written to THR (DLAB clear) so far — the serial capture buffer,
-    /// in order.
     pub fn capture(&self) -> &[u8] {
         &self.capture
     }
 
-    /// The benign register shadows (offsets 0..=7: divisor latch, IER, FCR/IIR,
-    /// LCR, MCR, MSR, SCR). Folded into the M2 state hash (`Vmm::state_blob`'s
-    /// `DEV` chunk) so two runs that leave the UART in different register state —
-    /// e.g. a different baud divisor or IER — hash differently even when the
-    /// captured serial bytes are identical. (`capture()` is hashed separately.)
     pub fn shadow_regs(&self) -> &[u8; 8] {
         &self.regs
     }
 
-    /// The latched `LCR.DLAB` window state, also folded into the state hash: two
-    /// runs that end with DLAB set vs clear differ in future port-I/O behavior
-    /// (port `0x3F8` addresses the divisor latch vs THR/RBR), so they must hash
-    /// differently.
     pub fn dlab(&self) -> bool {
         self.dlab
     }
 
-    /// The divisor-latch-high (DLM) shadow — captured by the snapshot adapter
-    /// alongside the register shadows so a restored UART reads back an identical
-    /// divisor. (Not in the state hash, like the field itself.)
     pub(crate) fn dlm(&self) -> u8 {
         self.dlm
     }
 
-    /// Overwrite the UART residual state on snapshot restore: the serial capture
-    /// buffer (so a restored continuation reproduces byte-identical console
-    /// output), the register shadows, the latched DLAB window, and the divisor-
-    /// latch-high byte. Mirrors what [`Self::capture`]/[`Self::shadow_regs`]/
-    /// [`Self::dlab`]/[`Self::dlm`] read back.
     pub(crate) fn restore(&mut self, capture: Vec<u8>, regs: [u8; 8], dlab: bool, dlm: u8) {
         self.capture = capture;
         self.regs = regs;
@@ -318,88 +152,23 @@ impl Uart8250 {
     }
 }
 
-/// Minimal **legacy PC platform** I/O for the Linux boot path: enough of the
-/// classic ISA/PCI port space that the kernel's early probing finds **no devices**
-/// (except a functional 8259 PIC) and moves on, rather than tripping the
-/// default-deny `ContractViolation`. It is wired **only** on the Linux path
-/// (alongside the xAPIC); M1/M2/corpus payloads never touch these ports, so it
-/// does not exist for them.
-///
-/// Most of it is a stub: writes are accepted and dropped; reads return the
-/// architectural "absent / idle" value (PCI config-data ⇒ all-ones = no device;
-/// PIT/CMOS/POST ⇒ 0; an unpopulated COM port ⇒ all-ones so the 8250 autoconfig's
-/// scratch test fails and the port is skipped).
-///
-/// The one non-idle read is the **i8042 keyboard-controller status** (`0x64`),
-/// which reports OBF-set ([`I8042_STATUS_FAST_CLEAR`]) so the kernel's controller
-/// probe fails fast ("No controller found") rather than spinning a 10000-iteration
-/// `udelay` wait-for-OBF — a wait that clears in 0.33 s on stock KVM but strands
-/// the **patched** boot for minutes (every `RDTSC` in the delay loop traps to
-/// V-time). The guest has no keyboard/mouse, so aborting the probe loses nothing.
-///
-/// The **8259 PIC interrupt-mask registers** (`0x21` master, `0xA1` slave) are
-/// **modeled as read/write latches**, not stubbed to all-ones. This is
-/// load-bearing for interrupt delivery: the kernel's `probe_8259A` writes a known
-/// value to `0x21` and reads it back — an all-ones read makes it decide there is
-/// **no PIC** ("Using NULL legacy PIC"), which leaves `nr_legacy_irqs() == 0` so
-/// the legacy IRQ lines (incl. COM1's IRQ 4) get **no interrupt controller** and
-/// `request_irq(4)` fails — which is why the userspace console open/write fails.
-/// Latching the IMR makes the probe pass, the kernel installs the real 8259, IRQ 4
-/// gets a chip, and the VMM can deliver the serial interrupt. The IMR also gates
-/// that delivery (a masked line is not injected). Retained state — the PCI
-/// `CONFIG_ADDRESS` latch and both IMRs — is a pure function of guest execution,
-/// folded into the state hash.
 #[derive(Clone, Debug)]
 pub struct LegacyPlatform {
-    /// The PCI mechanism-1 `CONFIG_ADDRESS` (`0xCF8`) latch.
     config_address: u32,
-    /// 8259 **master** PIC interrupt-mask register (port `0x21`); a set bit masks
-    /// that IRQ line (IRQ 0..=7). Reset all-masked (`0xFF`).
     master_imr: u8,
-    /// 8259 **slave** PIC interrupt-mask register (port `0xA1`); IRQ 8..=15.
     slave_imr: u8,
 }
 
-/// PCI `CONFIG_ADDRESS` port (mechanism 1), a 4-byte latch.
 const PCI_CONFIG_ADDRESS: u16 = 0x0CF8;
-/// PCI `CONFIG_DATA` window (`0xCFC..=0xCFF`); a byte/word/dword access reads the
-/// selected register — all-ones here (no device populated).
 const PCI_CONFIG_DATA_LO: u16 = 0x0CFC;
 const PCI_CONFIG_DATA_HI: u16 = 0x0CFF;
-/// 8259 master PIC data port — the interrupt-mask register (IMR), a read/write
-/// latch the kernel probes ([`LegacyPlatform`] doc).
 const PIC_MASTER_DATA: u16 = 0x0021;
-/// 8259 slave PIC data port — the slave IMR.
 const PIC_SLAVE_DATA: u16 = 0x00A1;
-/// i8042 keyboard-controller **status** port (`0x64` read). The status byte we
-/// return ([`I8042_STATUS_FAST_CLEAR`]) makes the kernel's controller-presence
-/// check fail fast instead of spinning a jiffies timeout under patched V-time
-/// ([`LegacyPlatform`] doc).
 const I8042_STATUS_PORT: u16 = 0x0064;
-/// The i8042 status byte returned on every `0x64` read: **OBF set** (bit 0,
-/// output-buffer-full) with **IBF clear** (bit 1, input-buffer-full).
-///
-/// "OBF set, always" makes the kernel's `i8042_controller_check` → `i8042_flush`
-/// drain its bounded `I8042_BUFFER_SIZE` (16) slots and then report **"No
-/// controller found"** (`-ENODEV`) — so the i8042 driver aborts *before* it
-/// creates the platform device and runs `i8042_controller_init`'s read-CTR
-/// command. That read-CTR is the spin: it calls `i8042_wait_read`, which loops
-/// `I8042_CTL_TIMEOUT` (10000) × `udelay(50)` waiting for OBF when our model never
-/// sets it. On stock KVM that timeout clears in ~0.33 s, but on the **patched**
-/// backend every `RDTSC` in the `delay_tsc` loop traps to V-time, so the same
-/// 10000-iteration wait strands the boot for minutes. Reporting OBF-set caps the
-/// i8042 cost at the 16-slot flush (IBF clear keeps any `i8042_wait_write` instant
-/// too), and the guest needs no keyboard/mouse, so "no controller" is the honest
-/// outcome. A constant — no state, so nothing to fold into the state hash.
 const I8042_STATUS_FAST_CLEAR: u8 = 0x01;
 
 impl LegacyPlatform {
     #[allow(clippy::new_without_default)]
-    /// A fresh platform: PCI address latch cleared, both PIC IMRs all-masked.
-    ///
-    /// The IMRs reset to "all masked" (`0xFF`, the quiescent state): no line
-    /// delivers until the guest's 8259 init + per-IRQ unmask clears its bit, so
-    /// nothing is injected before the kernel sets the controller up.
     pub fn new() -> Self {
         Self {
             config_address: 0,
@@ -408,7 +177,6 @@ impl LegacyPlatform {
         }
     }
 
-    /// Whether `port` is one of the curated legacy ports this stub services.
     pub fn owns(port: u16) -> bool {
         matches!(port,
             0x0020 | 0x0021 | 0x00A0 | 0x00A1
@@ -424,8 +192,6 @@ impl LegacyPlatform {
         )
     }
 
-    /// Service a write: latch the PCI `CONFIG_ADDRESS` and the 8259 IMRs, drop
-    /// everything else.
     pub fn write(&mut self, port: u16, size: u8, value: u32) {
         if (PCI_CONFIG_ADDRESS..=0x0CFB).contains(&port) {
             if size == 4 && port == PCI_CONFIG_ADDRESS {
@@ -438,8 +204,6 @@ impl LegacyPlatform {
         }
     }
 
-    /// Service a read: return the architectural absent/idle value for `port`, or
-    /// the live IMR latch for the 8259 data ports.
     pub fn read(&self, port: u16, size: u8) -> u64 {
         let all_ones = match size {
             1 => 0x0000_00FF,
@@ -457,10 +221,6 @@ impl LegacyPlatform {
         }
     }
 
-    /// Whether the 8259 has IRQ `irq` (0..=15) masked in its IMR — master for
-    /// 0..=7, slave for 8..=15. An out-of-range line is treated as masked (no
-    /// delivery). The VMM gates serial-IRQ injection on this so a line the kernel
-    /// masked (e.g. while its handler runs) is not re-injected.
     pub(crate) fn irq_masked(&self, irq: u8) -> bool {
         match irq {
             0..=7 => self.master_imr & (1 << irq) != 0,
@@ -469,24 +229,14 @@ impl LegacyPlatform {
         }
     }
 
-    /// The PCI `CONFIG_ADDRESS` latch — folded into the Linux-path state hash so a
-    /// divergence in PCI probing is observable.
     pub fn config_address(&self) -> u32 {
         self.config_address
     }
 
-    /// The 8259 master/slave IMR latches `[master, slave]` — folded into the
-    /// Linux-path state hash alongside [`Self::config_address`], so two runs that
-    /// leave the PIC masking different (hence future interrupt delivery different)
-    /// hash differently.
     pub(crate) fn pic_imr(&self) -> [u8; 2] {
         [self.master_imr, self.slave_imr]
     }
 
-    /// Overwrite the legacy-platform latches on snapshot restore: the PCI
-    /// CONFIG_ADDRESS register and both 8259 IMRs. Mirrors what
-    /// [`Self::config_address`]/[`Self::pic_imr`] read back, so a restored platform
-    /// is observationally identical (same PCI probing, same IRQ masking).
     pub(crate) fn restore(&mut self, config_address: u32, master_imr: u8, slave_imr: u8) {
         self.config_address = config_address;
         self.master_imr = master_imr;
@@ -569,8 +319,6 @@ mod tests {
         assert_eq!(u.read(ISA_DEBUG_EXIT_PORT), None);
     }
 
-    /// Port +2 read (IIR): no interrupt pending until the guest enables `IER.THRI`,
-    /// then the THRE id — and never the FCR shadow written at the same port.
     #[test]
     fn iir_reports_thre_interrupt_only_when_thri_enabled() {
         let mut u = Uart8250::new();
@@ -595,9 +343,6 @@ mod tests {
         assert!(!u.thre_irq_asserted());
     }
 
-    /// The input path is fully inert until [`Uart8250::inject_input`]: LSR reports
-    /// no data-ready, RBR reads `0`, and no receive interrupt asserts — so every
-    /// non-`exec` run is byte-identical (gate 4).
     #[test]
     fn serial_input_is_inert_until_injected() {
         let u = Uart8250::new();
@@ -608,9 +353,6 @@ mod tests {
         assert!(!u.serial_irq_asserted());
     }
 
-    /// Injected bytes are read FIFO out of the RBR (consuming), the LSR data-ready
-    /// bit tracks the queue, and the read-path `read_in` pops while the peek `read`
-    /// does not.
     #[test]
     fn injected_input_is_consumed_fifo_with_data_ready() {
         let mut u = Uart8250::new();
@@ -629,8 +371,6 @@ mod tests {
         assert_eq!(u.read(UART_PORT_LSR), Some(UART_LSR_THR_EMPTY));
     }
 
-    /// The receive-data-available interrupt asserts only with input queued AND
-    /// `IER.RDI` enabled, and IIR reports it with priority over THRE.
     #[test]
     fn receive_interrupt_asserts_only_when_enabled_and_queued() {
         let mut u = Uart8250::new();
@@ -654,8 +394,6 @@ mod tests {
         );
     }
 
-    /// A restore drops any queued input — `exec` input is live-only, off-record
-    /// state and is never carried across a snapshot/restore.
     #[test]
     fn restore_clears_injected_input() {
         let mut u = Uart8250::new();
@@ -665,9 +403,6 @@ mod tests {
         assert_eq!(u.read(UART_PORT_BASE), Some(0));
     }
 
-    /// With `DLAB` set, port +1 is the divisor-latch high byte (DLM), **not** the
-    /// IER — so a `0x02` written there is the divisor, never `IER.THRI`, and it is a
-    /// *separate* shadow that does not leak into the IER when DLAB is cleared.
     #[test]
     fn thri_ignored_while_dlab_selects_the_divisor_latch() {
         let mut u = Uart8250::new();
@@ -690,11 +425,6 @@ mod tests {
         assert_eq!(u.read(UART_PORT_BASE + 2), Some(0x02));
     }
 
-    /// The codex nit: a divisor-latch (DLM) write in the DLAB window must **preserve
-    /// the IER**. Enable `IER.THRI`, program the divisor (DLAB set → write DLL/DLM →
-    /// DLAB clear), and confirm the THRE interrupt is still asserted afterwards — the
-    /// DLM write to offset +1 did not clobber the IER. Kills the regression where
-    /// offset +1 was a single shadow shared by IER and DLM.
     #[test]
     fn ier_preserved_across_divisor_latch_window() {
         let mut u = Uart8250::new();
@@ -713,8 +443,6 @@ mod tests {
         assert_eq!(u.read(UART_PORT_BASE + 2), Some(UART_IIR_THRI));
     }
 
-    /// The TX capture is unaffected by the interrupt machinery: a THR write still
-    /// lands in `capture` whether or not the THRE interrupt is enabled.
     #[test]
     fn thr_capture_independent_of_thri() {
         let mut u = Uart8250::new();
@@ -789,11 +517,6 @@ mod tests {
         );
     }
 
-    /// The i8042 **status** port (0x64) reports OBF-set / IBF-clear so the kernel's
-    /// controller-presence check fails fast ("No controller found") instead of
-    /// spinning `i8042_wait_read` 10000×`udelay` for an OBF that never comes —
-    /// which strands the patched boot for minutes. The **data** port (0x60) stays
-    /// idle (0). Exact bits are pinned so a flipped/zeroed constant is caught.
     #[test]
     fn i8042_status_reports_obf_set_so_the_probe_fails_fast() {
         let p = LegacyPlatform::new();

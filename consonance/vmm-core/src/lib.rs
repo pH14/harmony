@@ -1,49 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! # vmm-core — the deterministic VMM above the `Backend` trait
-//!
-//! `vmm-core` is the upper half of the `docs/ARCHITECTURE.md` crate split: everything
-//! that sits **above** the [`vmm_backend::Backend`] trait and compiles against
-//! that trait **alone**. It **never issues `KVM_RUN` itself** — that lives below
-//! the trait in `vmm-backend`'s `KvmBackend`. Nothing here branches on which
-//! backend is in use; the one place a concrete `(Backend impl, Arch vendor)`
-//! pair is named is a vendor's own composition root
-//! ([`vendor::x86::bringup`]).
-//!
-//! It is split in two along the ISA seam (`docs/ARCHITECTURE.md`):
-//!
-//! - **The engine** — everything outside [`vendor`]: the **event loop** ([`vmm`])
-//!   that drives the vCPU through [`vmm_backend::Backend::run`] and dispatches the
-//!   returned [`vmm_backend::Exit`], the owned guest RAM, the snapshot/branch
-//!   machinery ([`snapshot`]), the state-hash *framework*, the control transport
-//!   ([`control`]), assigned virtual time, and
-//!   the V-time/idle wiring. It speaks only `(Gpa, Moment, bytes, hashes)` plus the
-//!   common exit vocabulary, and is **compiler-provably arch-blind**: it holds
-//!   `<B::A as Vendor>::Devices` and reaches everything ISA-specific through the
-//!   [`vendor::Vendor`] trait, so it can neither name a vendor's devices nor match a
-//!   vendor's exit enum.
-//! - **The vendor** ([`vendor::x86`], the sole one today) — the CPU/MSR contract and
-//!   its installed policy, the exit dispatch and dispositions, the boot loaders and
-//!   entry state (the direct 64-bit Linux bzImage protocol), the
-//!   interrupt fabric and platform device models (the userspace xAPIC per ruling R1,
-//!   the 8259/PIT/PCI shims, the 8250 UART), the
-//!   VM-exit exit-count-clock event, and the `vm_state` record set.
-//!
-//! An ARM vendor is a sibling module under [`vendor`], not an edit to the engine.
-//!
-//! Portable mock tests exercise the run loop, devices, protocols, and snapshots.
-//! Live Linux tests use stock KVM. Miri checks the owned guest-memory mapping seam.
-//! Assigned virtual time and canonical serialization keep host timing out of
-//! guest state and replay hashes.
 
 pub mod control;
 pub mod exec;
-/// M3's pure real-payload acceptance, V-time-gap, and throughput oracles.
-/// Complete host-neutral snapshot artifacts for cross-host continuation.
 pub mod portable_snapshot;
-/// Restore-aware accumulation and comparison of control-session traces.
 pub mod session_trace;
 pub mod snapshot;
 pub mod vendor;
-/// Architecture-neutral assigned-at-exit virtual time and its independent oracles.
 pub mod virtual_time;
 pub mod vmm;

@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Recorded campaign-mode conquest runs and their exact replays.
-
 use std::{
     env,
     error::Error,
@@ -31,10 +29,6 @@ use nes_workload::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-/// Archive memory budget of a run that names none. The archive keeps its
-/// population under this charge with proportional maintenance; a whole-game
-/// search stays inside it with room for the emulator and the workers on an
-/// ordinary machine.
 const DEFAULT_MEMORY_BUDGET_MIB: usize = 2048;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -49,7 +43,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     Err("unknown smb-campaign mode".into())
 }
 
-/// Live-only wall measurements; never part of the replayable report.
 #[derive(Debug, Serialize)]
 struct LiveThroughput {
     wall_seconds: f64,

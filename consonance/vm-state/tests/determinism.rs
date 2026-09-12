@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 2 — determinism: equal states encode to identical bytes, regardless of
-//! how their MSR map or timer queue was built.
 
 mod common;
 
@@ -49,8 +47,6 @@ fn msr_insertion_order_is_irrelevant() {
     assert_eq!(a.encode().unwrap(), b.encode().unwrap());
 }
 
-/// Build a `VmState` carrying just these timer entries (integer ratio so the
-/// only thing that can make `encode` fail is the timer queue).
 fn with_timers(entries: Vec<TimerEntry>, next_seq: u64) -> VmState {
     VmState {
         timers: TimerQueueState { entries, next_seq },
@@ -174,8 +170,6 @@ fn seq_at_or_above_next_seq_is_rejected() {
     );
 }
 
-/// Small (deadline, seq, token) key space so order violations, duplicate keys,
-/// duplicate tokens, and seq/next_seq collisions all occur frequently.
 fn arb_timer_entry() -> impl Strategy<Value = TimerEntry> {
     (0u64..4, 0u64..4, 0u64..4, any::<u64>()).prop_map(|(deadline_vns, seq, token, period_vns)| {
         TimerEntry {
@@ -187,8 +181,6 @@ fn arb_timer_entry() -> impl Strategy<Value = TimerEntry> {
     })
 }
 
-/// Whether `entries` + `next_seq` satisfy all three TimerQueue
-/// invariants `encode` enforces (mirror of `validate_timers`).
 fn timers_valid(entries: &[TimerEntry], next_seq: u64) -> bool {
     let ascending_unique_keys = entries
         .windows(2)
@@ -202,15 +194,11 @@ fn timers_valid(entries: &[TimerEntry], next_seq: u64) -> bool {
 proptest! {
     #![proptest_config(config(256))]
 
-    /// Encoding any state is a pure function of the state.
     #[test]
     fn encode_is_pure(s in arb_vm_state()) {
         prop_assert_eq!(s.encode().unwrap(), s.encode().unwrap());
     }
 
-    /// `encode` accepts a timer queue iff it satisfies every invariant
-    /// (canonical (deadline, seq) order, unique tokens, seq < next_seq) — never
-    /// silently fixing one — and every accepted queue round-trips exactly.
     #[test]
     fn encode_accepts_iff_timers_valid(
         mut entries in prop::collection::vec(arb_timer_entry(), 0..8),
@@ -235,9 +223,6 @@ proptest! {
         }
     }
 
-    /// Starting from a valid queue, injecting EITHER a duplicate token OR a
-    /// `seq == next_seq` makes `encode` reject it with InvalidField — covering
-    /// both invariants beyond canonical ordering.
     #[test]
     fn encode_rejects_duplicate_token_or_high_seq(
         base in arb_timers(),

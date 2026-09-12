@@ -1,13 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 1 — golden bytes. Hand-written expected frames for every `Request`
-//! variant and every `Reply` / `ControlError` (and nested `StopReason`) variant,
-//! asserting the exact `[u8]` and pinning the wire format.
-//!
-//! Each check asserts the full emitted frame equals `header(seq, body) ++ body`,
-//! where the per-variant `body` bytes are written out by hand (the encoding
-//! contract) and the header is the fixed `magic·version·seq·len` envelope —
-//! itself pinned byte-for-byte by [`snapshot_full_frame_is_byte_exact`]. Every
-//! golden also round-trips back to the original value.
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, DecisionId,
@@ -18,7 +9,6 @@ use control_proto::{
 
 const MAGIC: [u8; 4] = *b"CTL1";
 
-/// Build the expected full frame: `magic · version · seq · len · body`.
 fn framed(seq: u32, body: &[u8]) -> Vec<u8> {
     let mut v = Vec::new();
     v.extend_from_slice(&MAGIC);
@@ -51,8 +41,6 @@ fn check_reply(seq: u32, reply: Result<Reply, ControlError>, body: &[u8]) {
     assert_eq!(consumed, buf.len(), "consumes the whole frame");
 }
 
-/// The capabilities used in the Hello goldens: protocol 1, env range 1..=3, a
-/// 4096-byte coverage map from producer 2, the `guest_has_sdk` flag.
 fn sample_caps() -> Caps {
     Caps {
         protocol_version: 1,
@@ -66,7 +54,6 @@ fn sample_caps() -> Caps {
     }
 }
 
-/// The exact `Caps` body bytes (15 bytes) shared by the Hello request/reply.
 const CAPS_BYTES: [u8; 15] = [
     0x01, 0x00, 0x01, 0x00, 0x03, 0x00, 0x00, 0x10, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00,
 ];
@@ -265,11 +252,6 @@ fn reply_hello() {
     check_reply(10, Ok(Reply::Hello(sample_caps())), &body);
 }
 
-/// The seal-bound snapshot reply, **untainted**: the one reply to
-/// `Request::Snapshot` carries the handle, the synchronized seal `Moment`, the
-/// included SDK-event count (the cut), and the taint byte — all from the same
-/// stopped server state. (The earlier bare-handle `SnapId` reply, wire tag 2,
-/// is retired; see `retired_snapid_tag_is_rejected` in `malformed.rs`.)
 #[test]
 fn reply_snapshot_untainted_carries_the_cut() {
     check_reply(
@@ -342,9 +324,6 @@ fn reply_console() {
     );
 }
 
-/// An empty console page — the drained-capture case a client pages until it
-/// sees. Pinned separately because "no bytes" is the state a truncating codec
-/// bug is most likely to reach by accident.
 #[test]
 fn reply_console_empty_page() {
     check_reply(
@@ -661,9 +640,6 @@ fn reply_exec_result() {
     );
 }
 
-/// The seal-bound snapshot reply, **tainted**: the taint
-/// byte rides the same cut-carrying shape — a tainted seal still binds its
-/// exact evidence cut.
 #[test]
 fn reply_snapshot_tainted_carries_the_cut() {
     check_reply(
@@ -698,11 +674,6 @@ fn err_tainted() {
     check_reply(63, Err(ControlError::Tainted), &[0x01, 0x13]);
 }
 
-/// The `class_bit` values are a persisted protocol contract. The environment
-/// fault catalog used to expose a `DecisionClass` enum that could be mirrored
-/// here, but the generic protocol no longer depends on that workload-specific
-/// catalog. Pinning the wire values still catches accidental renumbering and
-/// keeps armed-class `StopMask` values stable for archived requests.
 #[test]
 fn class_bit_values_are_pinned() {
     assert_eq!(class_bit::ENTROPY, 1);
@@ -716,8 +687,6 @@ fn class_bit_values_are_pinned() {
     assert_eq!(class_bit::ASSERTION, 9);
 }
 
-/// The body tag of an encoded frame: the first byte after the fixed 14-byte
-/// header (`magic·version·seq·len`).
 fn body_tag(frame: &[u8]) -> u8 {
     frame[14]
 }

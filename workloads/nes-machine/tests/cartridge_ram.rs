@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Real-core serialization qualification using the source-built Nova image.
 #![cfg(all(unix, not(miri)))]
 
 use machine::{Machine, nes::with_cartridge_ram, quicknes::QuickNesMachine};

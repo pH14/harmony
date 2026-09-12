@@ -1,13 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Exact-value tests that kill the mutants the first full-tree
-//! `cargo mutants` run left surviving (or only timeout-caught) in this crate.
-//!
-//! These are *test-tightness* gaps: the production logic is correct, but the
-//! existing suite did not pin the exact boundary/length/value a mutated operator
-//! or loop bound would change. Each test below asserts the precise value either
-//! side of a boundary, so flipping the operator (or the loop bound / accumulator)
-//! makes the test fail rather than silently pass — or, for the loop bounds,
-//! fail *fast by assertion* on a small input instead of only by the ~372 s hang.
 
 use std::collections::BTreeMap;
 
@@ -16,8 +7,6 @@ use fault_policy::{
     MAX_SUPPLY_LEN, Moment, Outcome, SeededEnv,
 };
 
-/// Pull the `Supply` bytes a `SeededEnv` gives for an `Entropy { bytes: n }`
-/// decision.
 fn entropy_supply(env: &mut SeededEnv, n: u32) -> Vec<u8> {
     match env.decide(&P::Entropy { bytes: n }) {
         Outcome::Resolved(Answer::Supply(v)) => v,
@@ -25,10 +14,6 @@ fn entropy_supply(env: &mut SeededEnv, n: u32) -> Vec<u8> {
     }
 }
 
-/// `catalog.rs` `DecisionPoint::admits` — the scheduler-selection bound is
-/// `selection < ready` (strict). A `<`→`<=` mutant would wrongly admit a
-/// selection *equal to* `ready` (an out-of-range index `0..ready`). Pin the exact
-/// boundary: `ready-1` admissible, `ready` and `ready+1` not.
 #[test]
 fn scheduler_selection_bound_is_strict() {
     let p = P::Scheduler { ready: 5 };
@@ -62,13 +47,6 @@ fn scheduler_selection_bound_is_strict() {
     );
 }
 
-/// `catalog.rs` `DecisionPoint::admits` → `fault_bounds_ok` — the *only*
-/// point-relative fault bound. A `BlockTorn(n)` torn-write fault is admissible on
-/// a `BlockIo { len }` point **iff `n <= len`** (you cannot tear off more than the
-/// request asked for). The fault catalog was reshaped to add this arm after
-/// the original mutation-kill run; pin the `<=` boundary exactly.
-/// This kills all three bound mutants: `<=`→`<` (would reject `n == len`),
-/// `<=`→`==` (would reject `n < len`), and `<=`→`>` (would admit `n > len`).
 #[test]
 fn block_torn_bound_is_inclusive_at_len() {
     let len = 8u32;
@@ -97,7 +75,6 @@ fn block_torn_bound_is_inclusive_at_len() {
     assert!(io.admits(&Answer::Fault(Fault::BlockNospc)));
 }
 
-/// A `RecordedEnv` whose only override is the guest `ans` at `Moment` `at`.
 fn recorded_with_override(seed: u64, at: Moment, ans: Answer) -> fault_policy::RecordedEnv {
     fault_policy::EnvSpec::Recorded {
         seed,
@@ -110,11 +87,6 @@ fn recorded_with_override(seed: u64, at: Moment, ans: Answer) -> fault_policy::R
     .materialize()
 }
 
-/// `codec.rs` `read_answer` — a decoded `Supply` is rejected only when its
-/// length is `> MAX_SUPPLY_LEN`. A `>`→`==` mutant would reject *only* the exact
-/// max (admitting an oversize one); a `>`→`>=` mutant would reject the exact max
-/// too. Pin both sides: a `MAX_SUPPLY_LEN`-byte supply decodes, a `+1` one is
-/// rejected.
 #[test]
 fn supply_length_bound_is_exclusive_at_max() {
     let max = MAX_SUPPLY_LEN as usize;
@@ -131,18 +103,6 @@ fn supply_length_bound_is_exclusive_at_max() {
     );
 }
 
-/// `seeded.rs` `supply_bytes` (loop bound `out.len() < n` and
-/// `take = (n - out.len()).min(8)`). The supplied vector must be **exactly** the
-/// requested length:
-///
-/// * `<`→`==` makes the loop body never run for `n > 0` → an empty vector
-///   (caught here by an exact-length assertion, *fast*, not by the hang).
-/// * `<`→`<=` is a non-terminating loop (zero-progress final iteration) — it has
-///   no terminating tell, so it is caught by timeout; this test still pins the
-///   length so any *terminating* off-by-one is caught by assertion.
-/// * `-`→`+` makes `take` saturate to 8 every iteration, overshooting the
-///   request to the next multiple of 8 for any `n` that is not already one
-///   (e.g. `n = 12` → 16 bytes).
 #[test]
 fn entropy_supply_is_exactly_the_requested_length() {
     let mut env = SeededEnv::new(0xC0FF_EE12_3456_789A, FaultPolicy::none());
@@ -156,8 +116,6 @@ fn entropy_supply_is_exactly_the_requested_length() {
     }
 }
 
-/// The same exact-length contract for `Payload` (the other branch that calls
-/// `supply_bytes`), so a mutation reachable only via the payload arm is pinned too.
 #[test]
 fn payload_supply_is_exactly_the_requested_length() {
     let mut env = SeededEnv::new(0x1357_9BDF_2468_ACE0, FaultPolicy::none());

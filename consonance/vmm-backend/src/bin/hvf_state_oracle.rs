@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Live retained-state round-trip oracle for the Apple Silicon HVF backend.
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
 fn main() -> std::process::ExitCode {

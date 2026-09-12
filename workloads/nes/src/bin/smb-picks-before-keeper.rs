@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Measure, from a recorded campaign stream, how many selections each
-//! eventually-productive parent received before its first retained child,
-//! pooled per entry, per cell, per progress band, and per room.
-//!
-//! Reads recorded artifacts only; no emulation, no mutation of any input
-//! file. The distributions parameterize retirement thresholds: the report
-//! names, for each pooling level, the smallest draw count at which fewer
-//! than one in a hundred eventually-productive classes would have been
-//! retired before their first keeper.
-
 use std::{
     collections::BTreeMap,
     env,
@@ -26,11 +16,8 @@ use nes_workload::smb::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-/// Progress-band width in buckets, matching the selector's band classes.
 const BAND_WIDTH: u16 = 8;
 
-/// One pooling level's running state: picks seen so far and, once the first
-/// keeper lands, the number of picks that came before it.
 #[derive(Default)]
 struct PoolCounter {
     picks: u64,
@@ -46,19 +33,12 @@ impl PoolCounter {
     }
 }
 
-/// Summary of one pooling level's picks-before-first-keeper distribution.
 #[derive(Serialize)]
 struct PoolSummary {
-    /// Classes that received at least one pick.
     classes_picked: u64,
-    /// Classes whose picks eventually produced a retained child.
     classes_productive: u64,
-    /// Distribution of picks-before-first-keeper over productive classes.
     percentiles: BTreeMap<String, u64>,
-    /// Smallest energy threshold at which fewer than one in a hundred
-    /// productive classes would have been cut off before their first keeper.
     threshold_1_in_100: u64,
-    /// Histogram of picks-before-first-keeper, bucketed by powers of two.
     log2_histogram: BTreeMap<u8, u64>,
 }
 

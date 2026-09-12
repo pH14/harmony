@@ -1,34 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Fault-agnostic service questions, answers, and deterministic extension state.
-//!
-//! This module is the transition boundary for the generic Consonance core. A
-//! question is an opaque, bounded service payload; the core does not classify
-//! it as a network, block, process, or application fault. Workload packages
-//! may decode [`Answer::Data`] and install a handler, while the default
-//! [`NominalHandler`] answers every question nominally.
-
 use std::{collections::BTreeMap, fmt};
 
 use thiserror::Error;
 
 use crate::Moment;
 
-/// Maximum bytes carried by one question, answer, or handler state field.
 pub const MAX_CHANNEL_BYTES: usize = 1 << 20;
 
 const SNAPSHOT_MAGIC: u32 = u32::from_le_bytes(*b"EVC1");
 const SNAPSHOT_VERSION: u16 = 1;
 const MAX_RECORDED_STATE_BYTES: usize = 8 * MAX_CHANNEL_BYTES;
 
-/// Generic service ids reserved for the deterministic core supplies.
-/// Workload handlers may use any other service namespace.
 pub const SERVICE_ENTROPY: u16 = 1;
 pub const SERVICE_PAYLOAD: u16 = 2;
 pub const SERVICE_SCHEDULER: u16 = 3;
 
-/// A bounded, service-owned request. The generic core preserves the service
-/// number and bytes without interpreting either field.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Question {
     request_id: u64,
@@ -37,14 +24,10 @@ pub struct Question {
 }
 
 impl Question {
-    /// Construct a question, rejecting an unbounded guest payload.
     pub fn new(service: u16, payload: Vec<u8>) -> Result<Self, ChannelError> {
         Self::with_request_id(0, service, payload)
     }
 
-    /// Construct a question with an explicit request identity. The identity
-    /// disambiguates two decisions that surface at the same deterministic
-    /// moment.
     pub fn with_request_id(
         request_id: u64,
         service: u16,
@@ -58,54 +41,42 @@ impl Question {
         })
     }
 
-    /// Construct an entropy supply request for the deterministic core.
     pub fn entropy(bytes: u32) -> Result<Self, ChannelError> {
         Self::new(SERVICE_ENTROPY, bytes.to_le_bytes().to_vec())
     }
 
-    /// Construct a scheduler request for the deterministic core.
     pub fn scheduler(ready: u32) -> Result<Self, ChannelError> {
         Self::new(SERVICE_SCHEDULER, ready.to_le_bytes().to_vec())
     }
 
-    /// The stable request identity used with a recorded override.
     #[must_use]
     pub fn request_id(&self) -> u64 {
         self.request_id
     }
 
-    /// The service namespace chosen by the workload or guest extension.
     #[must_use]
     pub fn service(&self) -> u16 {
         self.service
     }
 
-    /// The service-owned request bytes.
     #[must_use]
     pub fn payload(&self) -> &[u8] {
         &self.payload
     }
 }
 
-/// A generic response. `Data` is intentionally opaque: a fault package can
-/// place its encoded answer there, while an ordinary Consonance run never
-/// needs to link a fault catalog.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Answer {
-    /// The service proceeded without a workload-specific payload.
     Nominal,
-    /// Bounded bytes interpreted by the service that issued the question.
     Data(Vec<u8>),
 }
 
 impl Answer {
-    /// Construct a bounded data response.
     pub fn data(payload: Vec<u8>) -> Result<Self, ChannelError> {
         check_len(payload.len())?;
         Ok(Self::Data(payload))
     }
 
-    /// Framed response bytes: tag zero is nominal, tag one precedes opaque data.
     pub fn encode(&self) -> Vec<u8> {
         match self {
             Self::Nominal => vec![0],
@@ -116,7 +87,6 @@ impl Answer {
             }
         }
     }
-    /// Decode a response whose total length is supplied by its transport frame.
     pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
         match bytes {
             [0] => Ok(Self::Nominal),
@@ -125,7 +95,6 @@ impl Answer {
         }
     }
 
-    /// Borrow the opaque payload, if this is a data response.
     #[must_use]
     pub fn payload(&self) -> Option<&[u8]> {
         match self {
@@ -135,44 +104,30 @@ impl Answer {
     }
 }
 
-/// Whether a question was answered by the local backing or needs an external
-/// service decision. External handling is explicit so an ordinary run cannot
-/// silently invent a fault answer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServiceResponse {
-    /// The handler supplied the complete response.
     Answered(Answer),
-    /// The caller must obtain a response from an external service.
     External,
 }
 
-/// A mechanical operation the execution core can apply without understanding
-/// why a workload requested it. Fault packages translate their own catalog
-/// into these effects outside this module.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Effect {
-    /// Write a bounded byte sequence into guest physical memory.
     WriteMemory { gpa: u64, bytes: Vec<u8> },
-    /// XOR a bounded byte sequence into guest physical memory at execution time.
     XorMemory { gpa: u64, bytes: Vec<u8> },
-    /// Deliver one architecture-defined interrupt identity.
     InjectInterrupt { vector: u32 },
 }
 
 impl Effect {
-    /// Construct a memory write, rejecting an oversized operation.
     pub fn write_memory(gpa: u64, bytes: Vec<u8>) -> Result<Self, ChannelError> {
         check_len(bytes.len())?;
         Ok(Self::WriteMemory { gpa, bytes })
     }
 
-    /// Construct a memory XOR, rejecting an oversized operation.
     pub fn xor_memory(gpa: u64, bytes: Vec<u8>) -> Result<Self, ChannelError> {
         check_len(bytes.len())?;
         Ok(Self::XorMemory { gpa, bytes })
     }
 
-    /// Encode the mechanical effect with stable tags and bounded lengths.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         match self {
@@ -194,8 +149,6 @@ impl Effect {
         out
     }
 
-    /// Decode an effect strictly and without allocation from an unbounded
-    /// length field.
     pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
         let mut reader = Reader::new(bytes);
         let effect = match reader.u8()? {
@@ -211,16 +164,12 @@ impl Effect {
     }
 }
 
-/// A deterministic set of primitive effects. It is separate from
-/// [`RecordedEnv`] because a control-input reproducer owns the static schedule;
-/// the environment snapshot only owns dynamic service state.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EffectSchedule {
     effects: BTreeMap<Moment, Vec<Effect>>,
 }
 
 impl EffectSchedule {
-    /// Add an effect and canonicalize all effects at that moment.
     pub fn insert(&mut self, moment: Moment, effect: Effect) {
         let effects = self.effects.entry(moment).or_default();
         effects.push(effect);
@@ -228,13 +177,11 @@ impl EffectSchedule {
         effects.dedup();
     }
 
-    /// Effects due at one timeline position.
     #[must_use]
     pub fn at(&self, moment: Moment) -> &[Effect] {
         self.effects.get(&moment).map_or(&[], Vec::as_slice)
     }
 
-    /// Canonical schedule entries.
     pub fn iter(&self) -> impl Iterator<Item = (Moment, &[Effect])> {
         self.effects
             .iter()
@@ -242,50 +189,33 @@ impl EffectSchedule {
     }
 }
 
-/// Errors from bounded channel construction or extension-state restoration.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ChannelError {
-    /// A payload or state field exceeds [`MAX_CHANNEL_BYTES`].
     #[error("channel payload exceeds the bounded maximum")]
     TooLarge,
-    /// Bytes do not form the canonical representation of the expected value.
     #[error("malformed channel state")]
     Malformed,
-    /// A handler cannot restore the supplied opaque state.
     #[error("service handler state was rejected: {0}")]
     Handler(String),
 }
 
-/// A deterministic service extension. Identity and configuration are recorded
-/// separately from dynamic state, so restoring a snapshot onto a different
-/// handler or image fails closed.
 pub trait ServiceHandler: Send {
-    /// Stable handler implementation identity, including its protocol version.
     fn identity(&self) -> &[u8];
 
-    /// Stable handler configuration or workload identity bytes.
     fn configuration(&self) -> &[u8];
 
-    /// Answer a question locally or request an external response. The moment is
-    /// the timeline position the question surfaced at, so a handler whose answer
-    /// depends on the guest's position in virtual time does not have to track it.
     fn respond(
         &mut self,
         moment: Moment,
         question: &Question,
     ) -> Result<ServiceResponse, ChannelError>;
 
-    /// Capture dynamic extension state for a machine snapshot.
     fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError>;
 
-    /// Restore dynamic extension state after identity/configuration checks.
     fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError>;
 
-    /// Reset handler-owned deterministic streams for a new branch seed.
-    /// Handlers without seeded state can retain the default no-op behavior.
     fn reseed(&mut self, _seed: u64) {}
 
-    /// Clone the handler for a new worker or replay session.
     fn clone_box(&self) -> Box<dyn ServiceHandler>;
 }
 
@@ -329,16 +259,12 @@ impl Clone for Box<dyn ServiceHandler> {
     }
 }
 
-/// Factory used when a worker reconstructs a handler from a portable snapshot.
 pub trait ServiceHandlerFactory {
-    /// Concrete handler produced by this factory.
     type Handler: ServiceHandler;
 
-    /// Build a handler after checking its recorded implementation and config.
     fn build(&self, identity: &[u8], configuration: &[u8]) -> Result<Self::Handler, ChannelError>;
 }
 
-/// Portable handler identity/configuration/dynamic state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HandlerSnapshot {
     identity: Vec<u8>,
@@ -347,7 +273,6 @@ pub struct HandlerSnapshot {
 }
 
 impl HandlerSnapshot {
-    /// Capture one handler's complete extension state.
     pub fn capture(handler: &dyn ServiceHandler) -> Result<Self, ChannelError> {
         let identity = handler.identity().to_vec();
         let configuration = handler.configuration().to_vec();
@@ -362,8 +287,6 @@ impl HandlerSnapshot {
         })
     }
 
-    /// Rebuild a handler from the recorded identity/configuration and restore
-    /// its dynamic state.
     pub fn restore<F: ServiceHandlerFactory>(
         &self,
         factory: &F,
@@ -373,26 +296,22 @@ impl HandlerSnapshot {
         Ok(handler)
     }
 
-    /// Handler implementation identity.
     #[must_use]
     pub fn identity(&self) -> &[u8] {
         &self.identity
     }
 
-    /// Handler configuration or workload identity.
     #[must_use]
     pub fn configuration(&self) -> &[u8] {
         &self.configuration
     }
 
-    /// Dynamic handler bytes.
     #[must_use]
     pub fn state(&self) -> &[u8] {
         &self.state
     }
 }
 
-/// Snapshot of the generic environment's dynamic state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecordedState {
     stream_state: u64,
@@ -403,14 +322,12 @@ pub struct RecordedState {
 }
 
 impl RecordedState {
-    /// Recorded host responses, including future responses staged at this seal.
     pub fn answers(&self) -> impl Iterator<Item = ((Moment, u16, u64), &Answer)> {
         self.overrides
             .iter()
             .map(|(key, answer)| ((key.moment, key.service, key.request_id), answer))
     }
 
-    /// Capture a generic environment state, including the handler extension.
     pub fn capture<H: ServiceHandler>(environment: &RecordedEnv<H>) -> Result<Self, ChannelError> {
         for answer in environment.overrides.values() {
             if let Answer::Data(bytes) = answer {
@@ -449,7 +366,6 @@ impl RecordedState {
             .saturating_add(self.handler.state.len())
     }
 
-    /// Encode a portable, canonical state blob.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         put_u32(&mut out, SNAPSHOT_MAGIC);
@@ -479,13 +395,11 @@ impl RecordedState {
         out
     }
 
-    /// Remaining ordered payload suffix captured in this state.
     #[must_use]
     pub fn remaining_payloads(&self) -> Option<Vec<Vec<u8>>> {
         self.payloads.clone()
     }
 
-    /// Decode a portable state blob strictly.
     pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
         if bytes.len() > MAX_RECORDED_STATE_BYTES {
             return Err(ChannelError::TooLarge);
@@ -538,7 +452,6 @@ impl RecordedState {
         })
     }
 
-    /// Restore a state onto a matching handler-backed environment.
     pub fn restore_into<H: ServiceHandler + Clone>(
         &self,
         environment: &mut RecordedEnv<H>,
@@ -561,7 +474,6 @@ impl RecordedState {
     }
 }
 
-/// A no-fault handler used by ordinary Consonance execution.
 #[derive(Clone, Debug, Default)]
 pub struct NominalHandler;
 
@@ -603,7 +515,6 @@ impl ServiceHandler for NominalHandler {
     }
 }
 
-/// Deterministic generic backing with opaque service-handler extension state.
 pub struct RecordedEnv<H: ServiceHandler> {
     stream_state: u64,
     overrides: BTreeMap<DecisionKey, Answer>,
@@ -643,7 +554,6 @@ impl<H: ServiceHandler> fmt::Debug for RecordedEnv<H> {
 }
 
 impl<H: ServiceHandler> RecordedEnv<H> {
-    /// Construct a deterministic environment with no overrides or payload tape.
     pub fn new(seed: u64, handler: H) -> Self {
         let mut environment = Self {
             stream_state: normalize_seed(seed),
@@ -657,30 +567,23 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         environment
     }
 
-    /// Set the timeline position used for the next override lookup.
     pub fn set_moment(&mut self, moment: Moment) {
         self.moment = moment;
     }
 
-    /// Reset the deterministic core and handler streams for a new branch seed.
     pub fn reseed(&mut self, seed: u64) {
         self.stream_state = normalize_seed(seed);
         self.handler.reseed(seed);
     }
 
-    /// Add or replace an opaque response at a deterministic timeline position.
     pub fn record(&mut self, moment: Moment, answer: Answer) {
         self.record_service_request(moment, 0, 0, answer);
     }
 
-    /// Add or replace an opaque response for an explicit request identity.
     pub fn record_request(&mut self, moment: Moment, request_id: u64, answer: Answer) {
         self.record_service_request(moment, 0, request_id, answer);
     }
 
-    /// Add or replace an opaque response keyed by timeline, service namespace,
-    /// and request identity. The service component prevents independent
-    /// namespaces from aliasing a response at one deterministic moment.
     pub fn record_service_request(
         &mut self,
         moment: Moment,
@@ -698,12 +601,10 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         );
     }
 
-    /// Record a response for the exact question identity.
     pub fn record_question(&mut self, moment: Moment, question: &Question, answer: Answer) {
         self.record_service_request(moment, question.service(), question.request_id(), answer);
     }
 
-    /// Offer an ordered payload tape. `Some(empty)` remains distinct from no tape.
     pub fn set_payloads(&mut self, payloads: Option<Vec<Vec<u8>>>) -> Result<(), ChannelError> {
         if let Some(entries) = &payloads {
             for entry in entries {
@@ -715,13 +616,11 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         Ok(())
     }
 
-    /// Whether an ordered payload service was offered, including an exhausted tape.
     #[must_use]
     pub fn payload_configured(&self) -> bool {
         self.payloads.is_some()
     }
 
-    /// Consume one exact-length payload entry.
     pub fn pull_payload(&mut self, bytes: usize) -> Result<Option<Vec<u8>>, ChannelError> {
         check_len(bytes)?;
         let Some(entries) = self.payloads.as_ref() else {
@@ -739,7 +638,6 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         Ok(Some(entry.clone()))
     }
 
-    /// Answer from an override first, otherwise delegate to the service handler.
     pub fn decide(&mut self, question: &Question) -> Result<ServiceResponse, ChannelError>
     where
         H: Clone,
@@ -766,17 +664,14 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         Ok(response)
     }
 
-    /// Current handler identity and configuration.
     pub fn handler(&self) -> &H {
         &self.handler
     }
 
-    /// Capture all dynamic state needed to resume this environment.
     pub fn snapshot_state(&self) -> Result<RecordedState, ChannelError> {
         RecordedState::capture(self)
     }
 
-    /// Remaining ordered payload tape, preserving unavailable vs exhausted.
     pub fn remaining_payloads(&self) -> Option<Vec<Vec<u8>>> {
         self.payloads
             .as_ref()
@@ -822,13 +717,11 @@ impl<H: ServiceHandler> RecordedEnv<H> {
 }
 
 impl RecordedEnv<NominalHandler> {
-    /// Construct a no-fault environment with the nominal handler.
     pub fn nominal(seed: u64) -> Self {
         Self::new(seed, NominalHandler)
     }
 }
 
-/// Construct a handler from a portable snapshot through a workload-owned factory.
 pub fn restore_handler<F: ServiceHandlerFactory>(
     snapshot: &HandlerSnapshot,
     factory: &F,

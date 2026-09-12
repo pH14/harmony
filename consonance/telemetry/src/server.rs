@@ -1,24 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The std-only web console server.
-//!
-//! No async runtime, no framework, no npm, no build step: a
-//! [`std::net::TcpListener`] with a thread per connection. Routes:
-//!
-//! - `GET /` — the embedded vanilla-JS UI ([`INDEX_HTML`], `include_str!`'d).
-//! - `GET /events` — **Server-Sent Events**: each event drained from the
-//!   [`LiveSink`] is forwarded as `data: <ndjson>\n\n`. The browser reads it with
-//!   `new EventSource('/events')`.
-//! - `GET /recording` — streams a persisted [`crate::NdjsonRecorder`] file for
-//!   **replay** (the page `fetch`es it and scrubs the V-time timeline entirely
-//!   client-side, same renderer as live).
-//! - `GET /config` — a one-line JSON `{mode, hasRecording}` so the static page
-//!   knows whether to open the live stream or load the recording.
-//!
-//! A single **pump** thread drains the `LiveSink` and fans each event out to the
-//! per-connection SSE queues (an [`EventHub`]); a slow browser drops its own
-//! oldest buffered events rather than stalling the pump. The server uses **no
-//! wall-clock** (V-time stamps come from the events; the wall-clock readout is
-//! drawn browser-side), so it trips none of the determinism lints.
 
 use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -32,36 +12,19 @@ use std::time::Duration;
 use crate::event::{Event, to_ndjson};
 use crate::sink::LiveSink;
 
-/// The embedded UI, compiled in at build time — no CDN, no npm, works offline.
 pub const INDEX_HTML: &str = include_str!("../assets/index.html");
 
-/// Per-connection SSE backlog cap: a browser that falls this far behind drops
-/// its own oldest buffered events (it is tailing a live stream; the newest
-/// matters). The lossless history lives in the recording, not here.
 const SSE_CLIENT_BACKLOG: usize = 16384;
 
-/// Poll cadence for the accept loop, the pump, and idle SSE writers. Small
-/// enough for a live feel, large enough not to busy-spin.
 const POLL: Duration = Duration::from_millis(5);
 
-/// Idle SSE writer iterations between `: keepalive` comments (≈ every 3 s at the
-/// [`POLL`] cadence) — keeps proxies open and surfaces a dead client promptly.
 const KEEPALIVE_EVERY: u32 = 600;
 
-/// Upper bound on the bytes [`parse_request`] reads for the request line plus
-/// headers. A client that never sends the blank-line terminator (or streams
-/// endless headers / one giant unterminated line) is rejected after this many
-/// bytes rather than driving an unbounded read — a real robustness bound, and
-/// the reason the header drain can never loop forever. (Plain literal, not
-/// `64 * 1024`, so no arithmetic operator can be mutated to an equivalent bound.)
 const MAX_REQUEST_BYTES: u64 = 65_536;
 
-/// Which source the page should render: a live stream or a recorded file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// Live: the page opens `EventSource('/events')`.
     Live,
-    /// Replay: the page `fetch`es `/recording` and scrubs it client-side.
     Replay,
 }
 
@@ -74,12 +37,9 @@ impl Mode {
     }
 }
 
-/// Server configuration.
 #[derive(Clone, Debug)]
 pub struct ServerOptions {
-    /// File served at `/recording` (the replay source of truth). `None` ⇒ 404.
     pub recording: Option<PathBuf>,
-    /// The mode advertised at `/config`.
     pub mode: Mode,
 }
 
@@ -92,7 +52,6 @@ impl Default for ServerOptions {
     }
 }
 
-/// A bounded SSE backlog for one connected client.
 #[derive(Debug)]
 struct Subscriber {
     queue: Mutex<VecDeque<Event>>,
@@ -116,7 +75,6 @@ impl Subscriber {
     }
 }
 
-/// Fan-out from the single pump to every connected SSE client.
 #[derive(Debug, Default)]
 struct EventHub {
     subs: Mutex<Vec<Arc<Subscriber>>>,
@@ -149,7 +107,6 @@ impl EventHub {
     }
 }
 
-/// A running console server. Drop or [`RunningServer::shutdown`] to stop it.
 #[derive(Debug)]
 pub struct RunningServer {
     local_addr: SocketAddr,
@@ -159,13 +116,10 @@ pub struct RunningServer {
 }
 
 impl RunningServer {
-    /// The actually-bound address (resolves a `:0` port for tests).
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
-    /// Stops the accept loop and the pump, joining both. Connection threads
-    /// observe the flag and exit on their own within one [`POLL`].
     pub fn shutdown(mut self) {
         self.stop();
     }
@@ -187,12 +141,6 @@ impl Drop for RunningServer {
     }
 }
 
-/// Binds `addr`, starts the pump and accept loops, and returns the running
-/// server (with its resolved [`RunningServer::local_addr`]).
-///
-/// # Errors
-///
-/// Propagates the [`TcpListener::bind`] / non-blocking-mode I/O error.
 pub fn serve(addr: SocketAddr, live: LiveSink, opts: ServerOptions) -> io::Result<RunningServer> {
     let listener = TcpListener::bind(addr)?;
     let local_addr = listener.local_addr()?;
@@ -248,13 +196,11 @@ pub fn serve(addr: SocketAddr, live: LiveSink, opts: ServerOptions) -> io::Resul
     })
 }
 
-/// Parsed first line of an HTTP request — all this server needs.
 struct Request {
     method: String,
     path: String,
 }
 
-/// Reads and parses the request line, then drains the remaining headers.
 fn read_request(stream: &TcpStream) -> io::Result<Request> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -262,18 +208,6 @@ fn read_request(stream: &TcpStream) -> io::Result<Request> {
     parse_request(&mut reader)
 }
 
-/// Parses the request line (method + path, query stripped) and then drains the
-/// remaining headers up to and **including** the blank line, leaving the body
-/// (if any) unconsumed. Split out from [`read_request`] over a generic
-/// [`BufRead`] so the exact stop point — drain through the blank line, no
-/// further — is unit-testable against a `Cursor` with no socket.
-///
-/// The reader is wrapped in [`Read::take`] at [`MAX_REQUEST_BYTES`], so the total
-/// request line + header bytes are bounded: a client that never sends the
-/// blank-line terminator hits the bound (the inner `read_line` returns `0`) and
-/// is rejected, never read unboundedly. EOF or the bound *before* the blank line
-/// is a malformed/oversized request and fails closed — which also means the
-/// drain loop can never spin on a terminator condition that is never satisfied.
 fn parse_request<R: BufRead>(reader: &mut R) -> io::Result<Request> {
     let mut limited = reader.take(MAX_REQUEST_BYTES);
 
@@ -338,7 +272,6 @@ fn handle_conn(
     }
 }
 
-/// Writes a complete, `Content-Length`-framed response.
 fn write_simple(
     stream: &mut TcpStream,
     code: u16,
@@ -360,7 +293,6 @@ fn write_simple(
     stream.flush()
 }
 
-/// Streams the configured recording file for replay, or 404 if none.
 fn serve_recording(stream: &mut TcpStream, opts: &Arc<ServerOptions>) -> io::Result<()> {
     let Some(path) = opts.recording.as_ref() else {
         return write_simple(stream, 404, "Not Found", "text/plain", b"no recording");
@@ -391,21 +323,6 @@ fn serve_recording(stream: &mut TcpStream, opts: &Arc<ServerOptions>) -> io::Res
     stream.flush()
 }
 
-/// The SSE handler: **subscribe before announcing the stream**, then forward
-/// `data: <ndjson>\n\n` frames until the client disconnects or the server stops.
-///
-/// The `hub.subscribe()` **must** precede the response header, not follow it. A
-/// client treats receipt of the header as "the stream is open" and only then
-/// begins emitting events; if the header were flushed first and the subscribe ran
-/// second, the pump could [`EventHub::publish`] an event in that window to a
-/// subscriber list that does not yet contain this connection — dropping it on the
-/// floor (published to nobody) rather than merely delivering it late. Registering
-/// first makes "the client can observe the header" imply "the client is
-/// subscribed": the flush is a release that the client's header read acquires, so
-/// the subscribe happens-before any event the client emits in response. That
-/// happens-before is what closes the `streams_events_as_sse_frames` race (see
-/// `README.md`). The reorder changes no wire bytes — the header and every
-/// frame are byte-identical.
 fn serve_events(
     mut stream: TcpStream,
     running: &Arc<AtomicBool>,
@@ -427,10 +344,6 @@ fn serve_events(
     result
 }
 
-/// Advances the idle-iteration counter and decides whether a keepalive is due.
-/// Returns the next counter value and, when the [`KEEPALIVE_EVERY`] cadence is
-/// reached, the SSE comment bytes to send (resetting the counter to 0). Pure, so
-/// the off-by-one cadence is unit-testable without waiting real time.
 fn advance_idle(idle: u32) -> (u32, Option<&'static [u8]>) {
     let next = idle + 1;
     if next >= KEEPALIVE_EVERY {
@@ -481,8 +394,6 @@ mod tests {
         SocketAddr::from(([127, 0, 0, 1], 0))
     }
 
-    /// Reads from a stream until `needle` appears or it would block, with a
-    /// bounded number of attempts (keeps the unit test from hanging).
     fn read_until(stream: &mut TcpStream, needle: &str) -> String {
         stream
             .set_read_timeout(Some(Duration::from_millis(200)))
@@ -507,16 +418,6 @@ mod tests {
         String::from_utf8_lossy(&acc).into_owned()
     }
 
-    /// Scans `buf` for the first complete SSE **data** frame, transparently
-    /// skipping any number of leading non-`data:` frames (e.g. a `:
-    /// keepalive\n\n` comment) that are already fully terminated. Returns
-    /// `None` when no complete data frame is present yet — either every frame
-    /// seen so far was a comment, or the buffer ends mid-frame (including
-    /// right after the `data: ` marker, with no terminator) — so the caller
-    /// keeps accumulating instead of mistaking a partial frame for a complete
-    /// one (F1c) or losing bytes that arrive after a terminator split across
-    /// reads (F1b): `buf` is never truncated here, only re-scanned from the
-    /// start on each call.
     fn extract_data_frame(buf: &[u8]) -> Option<String> {
         let mut start = 0;
         loop {
@@ -530,20 +431,6 @@ mod tests {
         }
     }
 
-    /// Reads cumulatively from `stream` until a complete `data: …\n\n` SSE
-    /// frame arrives, skipping any `: keepalive\n\n` comment frames along the
-    /// way. One bounded attempt budget covers the whole wait — bytes
-    /// accumulate across attempts rather than being discarded between them —
-    /// so a stalled regression fails fast instead of hanging or hot-spinning
-    /// (F1a), and on exhausting the budget this panics with the accumulated
-    /// bytes so a stuck run is diagnosable (hm-3r2k, hm-38kv).
-    ///
-    /// Generic over [`io::Read`] rather than tied to [`TcpStream`] so the
-    /// cross-read accumulation and the budget-exhaustion panic are directly
-    /// unit-testable against a scripted reader with no socket, no server, and
-    /// no wall-clock wait (hm-b5km) — the timeout is therefore the caller's
-    /// concern (set on the concrete `TcpStream` before calling in), since a
-    /// bare `io::Read` has no read-timeout notion of its own.
     fn read_sse_data_frame<R: Read>(stream: &mut R) -> String {
         let mut acc = Vec::new();
         let mut buf = [0u8; 4096];
@@ -612,11 +499,6 @@ mod tests {
         assert_eq!(extract_data_frame(&acc).as_deref(), Some("data: hello\n\n"));
     }
 
-    /// A scripted `io::Read` that never returns EOF and never produces a
-    /// `data: ` frame — every call hands back the same `: keepalive\n\n`
-    /// comment frame. Drives `read_sse_data_frame`'s retry-budget exhaustion
-    /// path (as opposed to the EOF-break path a `Read::chain`'d pair of slices
-    /// exercises once both are consumed).
     struct NeverDataReader;
 
     impl Read for NeverDataReader {

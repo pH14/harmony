@@ -1,16 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The x86-64 vendor's **state records** (`docs/ARCHITECTURE.md`): the pure,
-//! bidirectional conversions between the live machine's x86 register record set
-//! (`vmm_backend::arch::x86`) and `vm-state`'s plain-data records, plus the
-//! vmm-core-owned **device blob** (the `vm_state::DeviceBlob` payload) carrying
-//! the xAPIC + 8259 IMR + PCI latch + 8250 UART + `IA32_TSC_ADJUST` state the
-//! typed records have no field for.
-//!
-//! The engine ([`crate::snapshot::SnapshotEngine`]) owns the memory half and the
-//! opaque blob container; which *records* a snapshot carries is per-vendor, which
-//! is why they live here. An ARM vendor supplies its own record set against the
-//! same TLV container (`VM_STATE_VERSION` + the header's arch tag distinguish
-//! them — never a silent reinterpretation).
 
 use lapic::LapicState;
 use vm_state::{
@@ -20,7 +8,6 @@ use vm_state::{
 
 use crate::snapshot::SnapshotError;
 
-/// `VcpuState.regs` → `vm_state::VcpuRegs` (identical field set, flat copy).
 pub(crate) fn to_vm_regs(r: &vmm_backend::VcpuRegs) -> VcpuRegs {
     VcpuRegs {
         rax: r.rax,
@@ -44,7 +31,6 @@ pub(crate) fn to_vm_regs(r: &vmm_backend::VcpuRegs) -> VcpuRegs {
     }
 }
 
-/// `vm_state::VcpuRegs` → `VcpuState.regs` (reverse of [`to_vm_regs`]).
 pub(crate) fn from_vm_regs(r: &VcpuRegs) -> vmm_backend::VcpuRegs {
     vmm_backend::VcpuRegs {
         rax: r.rax,
@@ -68,10 +54,6 @@ pub(crate) fn from_vm_regs(r: &VcpuRegs) -> vmm_backend::VcpuRegs {
     }
 }
 
-/// Pack a live segment's separate present/dpl/s/db/l/g/avl/unusable bytes into the
-/// two `vm_state::Segment` bytes (`present_dpl_s`, `flags`). Reversible by
-/// [`unpack_segment`]; every source field is a 0/1 (dpl 0..=3) bit, so the packing
-/// is lossless.
 fn pack_segment(s: &vmm_backend::Segment) -> Segment {
     let present_dpl_s = (s.present & 1) | ((s.dpl & 3) << 1) | ((s.s & 1) << 3);
     let flags = (s.db & 1)
@@ -90,7 +72,6 @@ fn pack_segment(s: &vmm_backend::Segment) -> Segment {
     }
 }
 
-/// Reverse of [`pack_segment`].
 fn unpack_segment(s: &Segment) -> vmm_backend::Segment {
     vmm_backend::Segment {
         base: s.base,
@@ -108,9 +89,6 @@ fn unpack_segment(s: &Segment) -> vmm_backend::Segment {
     }
 }
 
-/// `VcpuState.sregs` → `vm_state::VcpuSregs` (segments packed, descriptor tables
-/// flattened to base/limit pairs; `kvm_sregs2` `flags`/`pdptrs` are not carried —
-/// zero at the quiescent snapshot point, see the module note).
 pub(crate) fn to_vm_sregs(s: &vmm_backend::VcpuSregs) -> VcpuSregs {
     VcpuSregs {
         cs: pack_segment(&s.cs),
@@ -135,9 +113,6 @@ pub(crate) fn to_vm_sregs(s: &vmm_backend::VcpuSregs) -> VcpuSregs {
     }
 }
 
-/// `vm_state::VcpuSregs` → `VcpuState.sregs` (reverse of [`to_vm_sregs`];
-/// `flags`/`pdptrs` restore to zero — valid for the long-mode / paging-off guests
-/// the determinism model snapshots).
 pub(crate) fn from_vm_sregs(s: &VcpuSregs) -> vmm_backend::VcpuSregs {
     vmm_backend::VcpuSregs {
         cs: unpack_segment(&s.cs),
@@ -168,8 +143,6 @@ pub(crate) fn from_vm_sregs(s: &VcpuSregs) -> vmm_backend::VcpuSregs {
     }
 }
 
-/// `VcpuState.debugregs` → `vm_state::DebugRegs` (the always-zero KVM `flags` is
-/// dropped).
 pub(crate) fn to_vm_debugregs(d: &vmm_backend::DebugRegs) -> DebugRegs {
     DebugRegs {
         db: d.db,
@@ -178,7 +151,6 @@ pub(crate) fn to_vm_debugregs(d: &vmm_backend::DebugRegs) -> DebugRegs {
     }
 }
 
-/// `vm_state::DebugRegs` → `VcpuState.debugregs`.
 pub(crate) fn from_vm_debugregs(d: &DebugRegs) -> vmm_backend::DebugRegs {
     vmm_backend::DebugRegs {
         db: d.db,
@@ -188,10 +160,6 @@ pub(crate) fn from_vm_debugregs(d: &DebugRegs) -> vmm_backend::DebugRegs {
     }
 }
 
-/// `VcpuState.events` → `vm_state::VcpuEvents` (the reduced 6-field typed subset:
-/// pending exception vector/code, NMI/SMI pending, interrupt shadow). The **full**
-/// `kvm_vcpu_events` rides the device blob and is authoritative on the full
-/// restore path; this typed record is kept for `vm-state` codec compatibility.
 pub(crate) fn to_vm_events(e: &vmm_backend::VcpuEvents) -> VcpuEvents {
     VcpuEvents {
         exception_pending: e.exception_pending != 0,
@@ -203,11 +171,6 @@ pub(crate) fn to_vm_events(e: &vmm_backend::VcpuEvents) -> VcpuEvents {
     }
 }
 
-/// `vm_state::VcpuEvents` → `VcpuState.events` (only the reduced subset; the full
-/// restore overwrites `events` from the device blob's complete `kvm_vcpu_events`, so
-/// the injection bookkeeping this reduced record cannot express is **not** lost —
-/// see [`crate::vmm::Vmm::restore_vm_state`]). Used directly only where no device
-/// blob is present.
 pub(crate) fn from_vm_events(e: &VcpuEvents) -> vmm_backend::VcpuEvents {
     vmm_backend::VcpuEvents {
         exception_pending: u8::from(e.exception_pending),
@@ -220,7 +183,6 @@ pub(crate) fn from_vm_events(e: &VcpuEvents) -> vmm_backend::VcpuEvents {
     }
 }
 
-/// `VcpuState.mp_state` → `vm_state::MpState`.
 pub(crate) fn to_vm_mp_state(m: vmm_backend::MpState) -> MpState {
     match m {
         vmm_backend::MpState::Runnable => MpState::Runnable,
@@ -228,7 +190,6 @@ pub(crate) fn to_vm_mp_state(m: vmm_backend::MpState) -> MpState {
     }
 }
 
-/// `vm_state::MpState` → `VcpuState.mp_state`.
 pub(crate) fn from_vm_mp_state(m: MpState) -> vmm_backend::MpState {
     match m {
         MpState::Runnable => vmm_backend::MpState::Runnable,
@@ -236,8 +197,6 @@ pub(crate) fn from_vm_mp_state(m: MpState) -> vmm_backend::MpState {
     }
 }
 
-/// Assemble a complete [`VcpuState`](vmm_backend::VcpuState) from the typed
-/// `vm_state` records (the memory-less half of a restore).
 pub(crate) fn vcpu_state_from(s: &VmState) -> vmm_backend::VcpuState {
     vmm_backend::VcpuState {
         regs: from_vm_regs(&s.regs),
@@ -251,9 +210,6 @@ pub(crate) fn vcpu_state_from(s: &VmState) -> vmm_backend::VcpuState {
     }
 }
 
-/// Fill the typed `vm_state` records from a live [`VcpuState`](vmm_backend::VcpuState)
-/// into the given [`VmState`] (memory-less half of a save). Leaves `vtime`,
-/// `timers`, `hypercall`, `devices`, `contract_hash` for the caller.
 pub(crate) fn fill_vcpu_state(out: &mut VmState, s: &vmm_backend::VcpuState) {
     out.regs = to_vm_regs(&s.regs);
     out.sregs = to_vm_sregs(&s.sregs);
@@ -273,28 +229,6 @@ const KVM_VCPUEVENT_VALID_SMM: u32 = 0x0000_0008;
 const KVM_VCPUEVENT_VALID_PAYLOAD: u32 = 0x0000_0010;
 const KVM_VCPUEVENT_VALID_TRIPLE_FAULT: u32 = 0x0000_0020;
 
-/// Reduce a live `kvm_vcpu_events` to its **canonical, restorable** form.
-///
-/// KVM leaves *stale modifier residuals* in `kvm_vcpu_events` even at a fully quiescent
-/// point: `interrupt.nr` keeps the **last-delivered** vector after delivery completes,
-/// `exception.nr`/`has_error_code`/`error_code` persist from a serviced fault, and a
-/// `GET` reports `flags` with `VALID_NMI_PENDING | VALID_SHADOW | VALID_SMM` set
-/// *unconditionally* (they mark presence in the GET, not active state). These are **not
-/// in-flight state** — they are inert (no `injected`/`pending` bit is set). Replaying
-/// them verbatim into `KVM_SET_VCPU_EVENTS` on restore corrupts the resumed guest (the
-/// box symptom was an immediate kernel `Oops` / `Attempted to kill the idle task`). The
-/// reduced subset the prior codec carried happened to drop the worst of them; the full-events
-/// capture re-introduced them, so we must canonicalize.
-///
-/// Canonical form: each modifier is kept **only when its active bit is set**, and
-/// `flags` is **rebuilt from the surviving fields** to the SET-meaning mask the backend
-/// will replay (a bit set iff its sub-record is genuinely active). Restoring into a
-/// fresh vCPU (all-default) then re-establishes exactly the active state — a *true*
-/// in-flight injection (interrupt/exception/NMI/SMI/triple-fault, with its payload)
-/// round-trips faithfully, while an inert residual collapses to the clean quiescent
-/// record. Idempotent (`canonical_events(canonical_events(e)) == canonical_events(e)`).
-/// The maskable-interrupt fields are carried for fidelity, but vmm-core's LAPIC seam
-/// re-derives the actual injection on the first post-restore service either way.
 pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::VcpuEvents {
     let mut c = vmm_backend::VcpuEvents::default();
     if e.interrupt_injected != 0 {
@@ -362,34 +296,6 @@ pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vcpu
     c
 }
 
-/// The canonical events to hand to `KVM_SET_VCPU_EVENTS` on **restore** — like
-/// [`canonical_events`], but with the **cap-free** clear-on-restore validity bits forced **on**.
-///
-/// KVM treats a *clear* validity bit on `KVM_SET_VCPU_EVENTS` as **"leave that sub-record
-/// UNCHANGED"**, not "clear it". So restoring a quiescent snapshot (no NMI-pending /
-/// interrupt-shadow / SMM) with those bits clear onto a **non-fresh** vCPU — a committed /
-/// previously-run vCPU, i.e. the branch or restore-in-place case — would **retain the previous
-/// occupant's stale event state**: the restored VM would depend on its predecessor, a
-/// determinism leak (PR #12 round 6, codex/GPT-5.5). Forcing the bits on, with the canonical
-/// payloads (which are 0 when inactive), makes restore explicitly **clear** that state, so the
-/// restored vCPU is independent of its predecessor (restore is idempotent w.r.t. target state).
-///
-/// **Which bits can be forced is constrained by KVM's SET-side capability gating.** A validity
-/// bit whose capability is not enabled is rejected with `-EINVAL` *even with a zero payload*. We
-/// force exactly the bits this backend's KVM accepts unconditionally:
-/// - `NMI_PENDING`, `SHADOW` — core ABI, always valid.
-/// - `SMM` — supported by default (the box's `KVM_GET_VCPU_EVENTS` reports `flags` with
-///   `VALID_SMM` set: `0x0D = NMI_PENDING|SHADOW|SMM`).
-/// - `TRIPLE_FAULT` — **NOT forced**: it requires `KVM_CAP_X86_TRIPLE_FAULT_EVENT`, which this
-///   backend does not enable, so setting the bit is `-EINVAL` (the round-6 box run proved this).
-///   With the cap off there is **no** triple-fault sub-record to leak, so leaving it gated on
-///   active (via [`canonical_events`]) is both safe and complete here.
-/// - `PAYLOAD` — stays gated on `exception_has_payload` (its cap is likewise not enabled); the
-///   exception sub-record (injected/nr/error_code) is applied by KVM unconditionally anyway.
-/// - `SIPI_VECTOR` — stays gated (SET-only; round-2 handling).
-///
-/// The **`state_hash`** uses [`canonical_events`] (active-only flags), not this — so forcing the
-/// bits here does **not** move any golden (the hashed form is unchanged).
 pub(crate) fn events_for_restore(e: &vmm_backend::VcpuEvents) -> vmm_backend::VcpuEvents {
     let mut c = canonical_events(e);
     c.flags |=
@@ -397,40 +303,6 @@ pub(crate) fn events_for_restore(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vc
     c
 }
 
-/// Return `Some(reason)` if `vcpu` carries machine state the snapshot would
-/// **silently zero** on restore — so [`crate::vmm::Vmm::save_vm_state`] can **fail
-/// closed** instead of sealing a lossy blob (rather than the restore side silently
-/// dropping it).
-///
-/// **This is the class-closing audit of `VcpuState`.** Every field is either captured
-/// by the typed records / device blob, or asserted zero here, so a saved blob is
-/// **provably lossless-or-rejected**:
-/// - *Captured:* `regs` (all), `sregs` segments + descriptor tables + CRs + EFER +
-///   APIC_BASE, `xcr0`, `debugregs.db`/`dr6`/`dr7`, **the full `events` record**
-///   (every `kvm_vcpu_events` field, captured verbatim in the device blob,
-///   no longer a reduced subset), `mp_state`, `msrs`, `xsave`.
-/// - *Asserted zero here (not carried):* `sregs.flags`/`sregs.pdptrs` (PAE-only;
-///   64-bit guest), `debugregs.flags` (KVM "currently always 0").
-///
-/// **Events are no longer rejected wholesale.** The device blob captures the *entire* `kvm_vcpu_events`
-/// (in-flight interrupt/exception injection, SMM, etc.) and re-establishes it
-/// on restore via `KVM_SET_VCPU_EVENTS`, so a **non-quiescent** point — an interrupt in flight —
-/// is now snapshottable rather than fail-closed-rejected.
-/// **Two cap-gated event fields are the exception** (PR #12 round 7): `triple_fault_pending` and
-/// `exception_has_payload` are rejected here, because their `KVM_SET_VCPU_EVENTS` validity bits
-/// need per-VM capabilities (`KVM_CAP_X86_TRIPLE_FAULT_EVENT` / `KVM_CAP_EXCEPTION_PAYLOAD`) this
-/// backend does not enable — so a captured value could not be restored. Rejecting at *save* keeps
-/// the codec **provably lossless-or-rejected** and save/restore symmetric (see below). The other
-/// remaining fail-closed fields are the PAE-only `sregs.flags`/`pdptrs` and `debugregs.flags`,
-/// all zero for the 64-bit / paging-off determinism guest at any V-time point.
-///
-/// (Two further non-`VcpuState` gaps are handled at *restore*, not here: a non-empty
-/// `timers` section is rejected, and a staged backend completion is **defined out** —
-/// a snapshot is taken only at a clean, V-time-synchronized boundary with no staged
-/// RNG completion; see [`crate::vmm::Vmm::save_vm_state`] / [`crate::vmm::Vmm::restore_vm_state`].)
-///
-/// Returns `None` for any representable point (quiescent **or** with an interrupt in
-/// flight). Pure.
 pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'static str> {
     let s = &vcpu.sregs;
     if s.flags != 0 {
@@ -457,26 +329,6 @@ pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'s
     None
 }
 
-/// Reason a `kvm_vcpu_events` record **cannot be restored on this backend** — it would set a
-/// `KVM_SET_VCPU_EVENTS` validity bit gated behind a per-VM capability this backend does not
-/// enable, so the SET ioctl returns `-EINVAL`. `None` if every set bit is restorable.
-///
-/// KVM rejects `VALID_TRIPLE_FAULT` / `VALID_PAYLOAD` on SET unless
-/// `KVM_CAP_X86_TRIPLE_FAULT_EVENT` / `KVM_CAP_EXCEPTION_PAYLOAD` is enabled — **even with a
-/// zero payload**. This backend enables neither (only `DETERMINISTIC_INTERCEPTS` +
-/// `USER_SPACE_MSR`), and vmm-core cannot query per-cap state through the `Backend` trait, so
-/// these fields are unrestorable. The check is on the **fields** that drive the rebuilt mask
-/// (`triple_fault_pending → VALID_TRIPLE_FAULT`, `exception_has_payload → VALID_PAYLOAD`), so it
-/// catches exactly the records whose [`events_for_restore`] would carry a cap-disabled bit.
-///
-/// Applied **symmetrically**: [`unrepresentable_state`] uses it so `save_vm_state` never seals an
-/// unrestorable snapshot (save/restore symmetry, PR #12 round 7), and
-/// [`crate::vmm::Vmm::restore_vm_state`] uses it to reject an untrusted/foreign `dev.events` blob
-/// **before** any `Backend::restore` ioctl mutates the target vCPU — preserving restore's
-/// reject-before-mutation (atomic) contract (PR #12 round 8). A real `KVM_GET` on this backend
-/// never reports either field (a triple fault is a `KVM_EXIT_SHUTDOWN`; with the payload cap off
-/// KVM folds the payload via the legacy path, leaving `has_payload = 0`), so this never rejects a
-/// genuine captured point — it closes the contract for a synthetic / relayed / forward-compat blob.
 pub(crate) fn cap_unrestorable_events(e: &vmm_backend::VcpuEvents) -> Option<&'static str> {
     if e.triple_fault_pending != 0 {
         return Some(
@@ -495,20 +347,6 @@ pub(crate) fn cap_unrestorable_events(e: &vmm_backend::VcpuEvents) -> Option<&'s
     None
 }
 
-/// `true` iff `e` carries `kvm_vcpu_events` state **the quiescent-only prior codec
-/// fail-closed-rejected** (`unrepresentable_state`'s old 14-field check) — the exact
-/// predicate that decided "non-quiescent, refuse." It fires on a *genuine* in-flight
-/// injection (an interrupt/exception KVM has injected but not yet delivered, the
-/// `#PF`/`#DB` payload, a `SIPI`, SMM, or a queued triple fault) **and** on KVM's inert
-/// *modifier residuals* — a stale `interrupt.nr`/`exception.nr`/`has_error_code` KVM
-/// leaves set after an injection completes (box evidence: the post-readiness Postgres
-/// boundaries it flagged carried such residuals, the active bits all clear). The prior
-/// codec refused both; the current one makes both snapshottable — the residuals collapse to the
-/// clean record under [`canonical_events`], a true injection round-trips. Excluded
-/// (never a refusal trigger): `exception_pending`/`exception_nr`/`exception_error_code`/
-/// `nmi_pending`/`smi_pending`/`interrupt_shadow` and the validity-mask `flags`. Pure;
-/// exposed via [`crate::vmm::Vmm::has_inflight_event_injection`] so a gate can quote a
-/// run's would-have-been-rejected split.
 pub(crate) fn has_inflight_injection(e: &vmm_backend::VcpuEvents) -> bool {
     let fields: [u64; 14] = [
         u64::from(e.exception_injected),
@@ -529,21 +367,6 @@ pub(crate) fn has_inflight_injection(e: &vmm_backend::VcpuEvents) -> bool {
     fields.iter().any(|&x| x != 0)
 }
 
-/// `true` iff `e` carries a **genuine in-flight event** — a real injected-or-pending bit,
-/// the *active* subset of [`has_inflight_injection`].
-///
-/// Where [`has_inflight_injection`] fires on KVM's inert **modifier residuals** too (a
-/// stale `interrupt.nr` / `exception.has_error_code` / `sipi_vector` left set with every
-/// active bit clear), this fires **only** when an event is actually mid-flight: an
-/// injected interrupt / exception / NMI, a pending exception / NMI / SMI, a queued triple
-/// fault, or a valid SIPI. A residual is *not* a non-quiescent point — it collapses to the
-/// clean quiescent record under [`canonical_events`] — so a gate that wants to **prove** a
-/// non-quiescent snapshot (an event KVM committed to that the guest has not yet consumed)
-/// must seal on **this**, not on `has_inflight_injection` (which would let an inert
-/// residual seal a quiescent point dressed as non-quiescent). On a real
-/// `KVM_GET_VCPU_EVENTS` the SIPI vector is reported 0 with `VALID_SIPI_VECTOR` clear (it
-/// is SET-only), so the SIPI term never fires for a captured snapshot; it is kept for
-/// completeness and to match [`canonical_events`]'s validity-bit-driven SIPI handling.
 pub(crate) fn has_active_event_injection(e: &vmm_backend::VcpuEvents) -> bool {
     e.interrupt_injected != 0
         || e.exception_injected != 0
@@ -555,33 +378,11 @@ pub(crate) fn has_active_event_injection(e: &vmm_backend::VcpuEvents) -> bool {
         || e.flags & KVM_VCPUEVENT_VALID_SIPI_VECTOR != 0
 }
 
-/// Device-blob magic: `"DEV1"` read little-endian.
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4544;
-/// Device-blob layout version for a VM with **no pvclock channel** — the shape
-/// every composition that never called `enable_pvclock` encodes, byte-for-byte
-/// as before the pvclock channel existed. v2 added the ordered conformance `report_stream`; v3
-/// added the **full `kvm_vcpu_events`** record (non-quiescent capture,
-/// so an in-flight interrupt/exception injection round-trips instead of being
-/// fail-closed-rejected).
 const DEVICE_BLOB_VERSION_BASE: u16 = 3;
 
-/// Device-blob layout version for a VM that **offers the pvclock
-/// channel**: v3 plus a trailing channel record (Δ + the one-shot registration),
-/// so the direct `save_vm_state`/`restore_snapshot` path carries the stamping
-/// obligation with the state it governs — a restored guest whose RAM contains an
-/// active clock page gets a VMM that keeps refreshing it (same-state ⇒
-/// same-future), with no control-server side channel required.
-///
-/// **The version IS the offer flag** (cross-model r4 P1): an unoffered VM
-/// encodes [`DEVICE_BLOB_VERSION_BASE`] with no trailing record at all, so
-/// page-off blobs — and the `VMST` hashes over them — are byte-identical to
-/// main's, and a v3 blob written by main still decodes here. The decoder accepts
-/// exactly these two versions; v4 with no channel is not a representable state.
 const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 4;
 
-/// The 8250 UART residual state a snapshot carries: the serial capture buffer (so a
-/// restored continuation reproduces byte-identical console output), the eight
-/// register shadows, the latched `LCR.DLAB` window, and the divisor-latch-high byte.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub(crate) struct UartState {
     pub capture: Vec<u8>,
@@ -590,8 +391,6 @@ pub(crate) struct UartState {
     pub dlm: u8,
 }
 
-/// The legacy-platform residual state: the PCI CONFIG_ADDRESS latch and the two
-/// 8259 IMRs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) struct LegacyState {
     pub config_address: u32,
@@ -599,43 +398,14 @@ pub(crate) struct LegacyState {
     pub slave_imr: u8,
 }
 
-/// Everything the vmm-core device blob carries.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub(crate) struct DeviceState {
-    /// `IA32_TSC_ADJUST` — the signed V-time TSC offset (no typed `vm_state` field).
     pub tsc_adjust: u64,
-    /// The ordered conformance report stream (`REPORT_PORT` writes) — guest-
-    /// observable output that feeds `observable_digest` (O2), restored so a branch
-    /// resumes it. Empty for runs that never touch the report channel.
     pub report_stream: Vec<u32>,
-    /// The 8250 UART residual state.
     pub uart: UartState,
-    /// The userspace xAPIC register file + timer bookkeeping (Linux path only).
     pub lapic: Option<LapicState>,
-    /// The legacy PC platform latches (Linux path only).
     pub legacy: Option<LegacyState>,
-    /// The **full** `kvm_vcpu_events` (`KVM_GET_VCPU_EVENTS`) — every in-flight
-    /// injection / interrupt-shadow / NMI / SMI / triple-fault field, not the reduced
-    /// `vm_state::VcpuEvents` subset. This is what makes a **non-quiescent**
-    /// V-time point snapshottable: an interrupt or exception KVM has injected but not
-    /// yet delivered (`interrupt.injected` / `exception.injected` / the `#PF`/`#DB`
-    /// payload) is captured here and re-established on restore via `KVM_SET_VCPU_EVENTS`,
-    /// so the guest resumes mid-delivery identically. Zero at a quiescent point (so
-    /// M1/M2/corpus blobs carry an all-zero record and their hashes do not move). The
-    /// authoritative events on restore — it supersedes the reduced typed record, which
-    /// `vm-state` still carries unchanged for codec compatibility.
     pub events: vmm_backend::VcpuEvents,
-    /// The pvclock channel configuration (v4): `None` = the page was
-    /// not offered on the sealing VM; `Some((gpa, registrable))` = offered
-    /// with the guest's one-shot registration when
-    /// `gpa` is `Some`, and whether the sealing VM could register a page at all
-    /// (`Vmm::pvclock_available` — V-time wired and a deterministic work
-    /// counter). `registrable` is carried because a snapshot sealed BEFORE
-    /// registration has no GPA to re-validate yet still promises a future
-    /// registration (cross-model r5 P1). Validated symmetrically against the
-    /// restore target's own composition (offer / capability / GPA) before any
-    /// mutation and committed with the rest of the restore — the engine's
-    /// `pvclock_validate_restore`/`pvclock_commit_restore` pair.
     pub pvclock: Option<(Option<u64>, bool)>,
 }
 
@@ -649,9 +419,6 @@ fn put_u64(out: &mut Vec<u8>, v: u64) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 
-/// Append the full [`vmm_backend::VcpuEvents`] in fixed declaration order (all POD;
-/// reversed by [`Reader::events`]). The byte order matches `vmm::encode_events` (the
-/// `state_hash` event encoding), so the two never disagree on the event field set.
 fn put_events(out: &mut Vec<u8>, e: &vmm_backend::VcpuEvents) {
     out.extend_from_slice(&[
         e.exception_injected,
@@ -682,8 +449,6 @@ fn put_events(out: &mut Vec<u8>, e: &vmm_backend::VcpuEvents) {
     ]);
 }
 
-/// Append a [`LapicState`] in fixed declaration order (all POD; reversed by
-/// [`Reader::lapic`]).
 fn put_lapic(out: &mut Vec<u8>, s: &LapicState) {
     put_u32(out, s.version);
     put_u32(out, s.id);
@@ -710,7 +475,6 @@ fn put_lapic(out: &mut Vec<u8>, s: &LapicState) {
     out.push(u8::from(s.timer_pending));
 }
 
-/// Encode a [`DeviceState`] into the vmm-core device blob (the `DeviceBlob` bytes).
 pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     let mut out = Vec::new();
     put_u32(&mut out, DEVICE_BLOB_MAGIC);
@@ -761,8 +525,6 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     DeviceBlob(out)
 }
 
-/// A total little-endian cursor over the device blob; every read is bounds-checked
-/// and yields `None` past end-of-buffer (mapped to [`SnapshotError::DeviceBlob`]).
 struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
@@ -816,7 +578,6 @@ impl<'a> Reader<'a> {
         }
         Some(a)
     }
-    /// Reverse of [`put_events`]: the full `kvm_vcpu_events` in declaration order.
     fn events(&mut self) -> Option<vmm_backend::VcpuEvents> {
         Some(vmm_backend::VcpuEvents {
             exception_injected: self.u8()?,
@@ -868,8 +629,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Decode the vmm-core device blob. Strict and total: any malformation is a
-/// [`SnapshotError::DeviceBlob`], never a panic.
 pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotError> {
     let mut r = Reader::new(blob);
     let bad = |m: &'static str| SnapshotError::DeviceBlob(m);
@@ -1107,9 +866,6 @@ mod tests {
         }
     }
 
-    /// The representable-subset round-trip the snapshot path relies on: a live
-    /// `VcpuState` whose dropped fields are zero (the quiescent-point invariant)
-    /// survives `fill_vcpu_state` → `vcpu_state_from` byte-for-byte.
     #[test]
     fn vcpu_state_round_trips_through_vm_state() {
         let original = sample_vcpu();
@@ -1154,9 +910,6 @@ mod tests {
         assert!(!s.events.exception_pending);
     }
 
-    /// A full `kvm_vcpu_events` with **every** field set to a distinct non-zero value,
-    /// so any encode/decode field that is dropped, reordered, or width-truncated fails
-    /// the round-trip (the non-quiescent capture).
     fn full_events() -> vmm_backend::VcpuEvents {
         vmm_backend::VcpuEvents {
             exception_injected: 1,

@@ -1,42 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The action alphabet a workload bundle admits.
-//!
-//! The guest fault agent numbers nodes by their order among the bundle's `node`
-//! lines, starting at zero, and runs a hook only for a declared id. An action
-//! naming an absent node or hook is skipped by the agent rather than refused,
-//! so a hardcoded alphabet would spend search budget on actions that cannot
-//! perturb anything. The vocabulary is therefore read from the same bundle the
-//! image is built from, and recorded into the stream so a replay draws the
-//! identical alphabet.
-//!
-//! A park needs a place: a user instruction address in the node's binary. The
-//! list is generated from the binary's line table and given to the search with
-//! `--places`; the stream records its count and a digest, and a resumed
-//! campaign must be given a list with the same digest.
-
 use serde::{Deserialize, Serialize};
 
-/// Prefix of the recorded vocabulary identifier.
 pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v1";
-/// Largest node count the guest fault agent accepts: its alive bitmap is one
-/// `u64`, one bit per node, so a wider vocabulary would name nodes the agent
-/// never runs.
 pub const MAX_NODES: u16 = 64;
 
-/// The nodes and hooks one workload bundle declares, and the places a park
-/// may name.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultVocabulary {
     nodes: u16,
     hooks: Vec<u32>,
     places: Vec<u64>,
-    /// The place list's `(count, digest)` when the vocabulary was resolved
-    /// from a recorded identifier and the addresses themselves are not at hand.
     places_digest: Option<(u64, u64)>,
 }
 
-/// FNV-1a over the sorted place addresses, the digest the identifier carries.
 fn digest_places(places: &[u64]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for addr in places {
@@ -48,12 +24,6 @@ fn digest_places(places: &[u64]) -> u64 {
     hash
 }
 
-/// Parse a place list: one hex address per line, with or without `0x`, blank
-/// lines and `#` comments ignored.
-///
-/// # Errors
-///
-/// Returns an error naming the line that is not a hex address.
 pub fn parse_places(text: &str) -> Result<Vec<u64>, String> {
     let mut places = Vec::new();
     for (number, line) in text.lines().enumerate() {
@@ -74,12 +44,6 @@ pub fn parse_places(text: &str) -> Result<Vec<u64>, String> {
 }
 
 impl FaultVocabulary {
-    /// Build a vocabulary directly.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the bundle declares no node, more nodes than the
-    /// guest agent can supervise, or a duplicate hook.
     pub fn new(nodes: u16, hooks: Vec<u32>) -> Result<Self, String> {
         if nodes == 0 {
             return Err("a fault bundle must declare at least one node".to_owned());
@@ -103,12 +67,6 @@ impl FaultVocabulary {
         })
     }
 
-    /// The vocabulary with `places` a park may name, sorted and deduplicated.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the vocabulary was resolved from a recorded
-    /// identifier whose place digest does not match `places`.
     pub fn with_places(mut self, mut places: Vec<u64>) -> Result<Self, String> {
         places.sort_unstable();
         places.dedup();
@@ -126,12 +84,6 @@ impl FaultVocabulary {
         Ok(self)
     }
 
-    /// Read the vocabulary from a bundle file's text.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on an unknown keyword, a malformed hook id, more nodes
-    /// than a node id can carry, or a bundle with no node.
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut nodes = 0_u16;
         let mut hooks = Vec::new();
@@ -171,27 +123,21 @@ impl FaultVocabulary {
         Self::new(nodes, hooks)
     }
 
-    /// Node ids the alphabet may fault, `0..nodes`.
     #[must_use]
     pub fn nodes(&self) -> u16 {
         self.nodes
     }
 
-    /// Hook ids the alphabet may run, ascending.
     #[must_use]
     pub fn hooks(&self) -> &[u32] {
         &self.hooks
     }
 
-    /// Places a park may name, ascending. Empty when the campaign was given
-    /// no place list, and when the vocabulary was resolved from a recorded
-    /// identifier and the list has not been supplied again.
     #[must_use]
     pub fn places(&self) -> &[u64] {
         &self.places
     }
 
-    /// The identifier recorded in the stream header and report.
     #[must_use]
     pub fn identifier(&self) -> String {
         let hooks = self
@@ -212,11 +158,6 @@ impl FaultVocabulary {
         )
     }
 
-    /// Resolve a recorded identifier back into a vocabulary.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown format or a malformed field.
     pub fn from_identifier(identifier: &str) -> Result<Self, String> {
         let mut fields = identifier.split(';');
         if fields.next() != Some(VOCABULARY_FORMAT) {
@@ -273,7 +214,6 @@ impl FaultVocabulary {
 mod tests {
     use super::*;
 
-    /// A one-node, two-hook bundle.
     const ETCD: &str = "\
 setup /bin/sh -c \"mkdir -p /tmp/etcd\"
 node etcd /usr/bin/etcd --data-dir /tmp/etcd
@@ -282,7 +222,6 @@ hook 2 /hooks/read-back
 ready /usr/bin/etcdctl endpoint health
 ";
 
-    /// A one-node, four-hook bundle.
     const POSTGRES: &str = "\
 # CREATE INDEX CONCURRENTLY workload
 node postgres /usr/local/pgsql/bin/postgres -D /pgdata

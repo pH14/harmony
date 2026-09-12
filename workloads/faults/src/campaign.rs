@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Fault-package implementation of the game-neutral campaign interface.
-
 use std::{error::Error, io::Write, path::PathBuf, sync::OnceLock};
 
 use searcher::{
@@ -33,11 +31,8 @@ use crate::{
     target::{FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS},
 };
 
-/// Stream format written by fault-package campaigns.
 pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v1";
-/// Snapshot checkpoint format written by fault-package campaigns.
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-checkpoint-v1";
-/// Recorded terminal condition: an armed assertion stop or a guest crash.
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 
 const VOCABULARY_FIELD: &str = "action_vocabulary";
@@ -48,31 +43,23 @@ const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const IMAGE_FIELD: &str = "image";
 const HORIZON_FIELD: &str = "horizon_nanos";
 
-/// Header placeholder for a run with no adaptive draw table.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultNoTableHeader;
 
-/// The recorded run policy: the action alphabet the workload bundle admits.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultCampaignRun {
-    /// Nodes and hooks the bundle declares.
     pub vocabulary: FaultVocabulary,
 }
 
-/// Image identity shared by fault-package workers.
 pub struct FaultGame {
     kernel: Vec<u8>,
     initramfs: Vec<u8>,
     config: FaultConfig,
     identity: String,
-    /// The image's sealed setup `Moment`, learned from the first target a
-    /// worker boots. It is a deterministic property of the image, so every
-    /// worker learns the same one.
     root_seal: OnceLock<u64>,
 }
 
 impl FaultGame {
-    /// Build a game context over one workload image.
     #[must_use]
     pub fn new(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Self {
         Self {
@@ -84,26 +71,22 @@ impl FaultGame {
         }
     }
 
-    /// How the image boots and how long each action runs.
     #[must_use]
     pub fn config(&self) -> &FaultConfig {
         &self.config
     }
 
-    /// The sealed setup `Moment`, once a target has booted.
     #[must_use]
     pub fn root_seal(&self) -> Option<u64> {
         self.root_seal.get().copied()
     }
 
-    /// Pinned image identity recorded in streams.
     #[must_use]
     pub fn image_identity(&self) -> &str {
         &self.identity
     }
 }
 
-/// Campaign evidence owned by the adapter.
 #[derive(Clone, Default)]
 pub struct FaultCampaignEvidence {
     aggregate: FaultMilestones,
@@ -113,36 +96,24 @@ pub struct FaultCampaignEvidence {
     bugs: Vec<FaultBugRecord>,
 }
 
-/// Fault-package campaign origin.
 pub type FaultCampaignOrigin = CampaignOrigin<FaultGame>;
-/// Fault-package whole-tree snapshot checkpoint.
 pub type FaultSnapshotCheckpoint = SnapshotCheckpoint<FaultSnapshot>;
-/// Fault-package stream header.
 pub type FaultCampaignStreamHeader = CampaignStreamHeader<FaultNoTableHeader>;
-/// The generic campaign report of a fault-package run.
 pub type FaultCampaignModeReport = CampaignModeReport<FaultAction, FaultArchiveReport>;
-/// Fault-package progress sidecar record.
 pub type FaultCampaignProgressRecord = CampaignProgressRecord<FaultArchiveKey>;
 type FaultCampaignActionResult = CampaignActionResult<FaultGame>;
 type FaultCampaignJobResult = CampaignJobResult<FaultGame>;
 
-/// The campaign report plus the fault-package outcome: how many bugs the run
-/// found and how many executions the first one cost.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultCampaignReport {
-    /// The generic campaign report.
     #[serde(flatten)]
     pub campaign: FaultCampaignModeReport,
-    /// Bugs found, bounded by [`MAX_RECORDED_BUGS`].
     pub bugs_found: u64,
-    /// Ordered admission position of the execution that found the first bug;
-    /// absent when the run found none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executions_to_first_bug: Option<u64>,
 }
 
 impl FaultCampaignReport {
-    /// Wrap one generic campaign report with its bug outcome.
     #[must_use]
     pub fn new(campaign: FaultCampaignModeReport) -> Self {
         let (bugs_found, executions_to_first_bug) = bug_outcome(&campaign.archive.bugs);
@@ -154,37 +125,21 @@ impl FaultCampaignReport {
     }
 }
 
-/// Fixed configuration for one live fault-package campaign.
 pub struct FaultCampaignConfig {
-    /// Campaign seed.
     pub campaign_seed: u64,
-    /// The action alphabet, read from the workload's bundle.
     pub vocabulary: FaultVocabulary,
-    /// Worker thread count.
     pub workers: u32,
-    /// Admitted execution budget.
     pub execution_budget: u64,
-    /// Maximum actions in one clean-reset input.
     pub action_limit: usize,
-    /// Operator-supplied host label.
     pub host: String,
-    /// Optional live-only wall cutoff.
     pub wall_budget: Option<std::time::Duration>,
-    /// Maximum retained archive entries.
     pub archive_entry_limit: usize,
-    /// Deterministic logical-memory budget for live search structures.
     pub memory_budget_mib: Option<usize>,
-    /// Live-only: materialize full archive inputs and snapshots at completion.
     pub materialize_final_artifacts: bool,
-    /// Admission policy.
     pub retention: RetentionPolicy,
-    /// Generic parent selector.
     pub selector: SelectorPolicy,
-    /// Generic suffix-length shape.
     pub suffix: SuffixShape,
-    /// Generic draw mixture.
     pub mixture: DrawMixture,
-    /// Live-only path receiving the first bug-finding input.
     pub victory_input_path: Option<PathBuf>,
 }
 
@@ -645,12 +600,6 @@ impl Evaluation for FaultGame {
     }
 }
 
-/// Run a fault-package campaign and return its report plus whole-tree
-/// checkpoint.
-///
-/// # Errors
-///
-/// Returns an error when the campaign cannot run to completion.
 pub fn run_fault_campaign_checkpointed(
     game: &FaultGame,
     config: &FaultCampaignConfig,

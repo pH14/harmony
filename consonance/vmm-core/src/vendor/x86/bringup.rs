@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Compose the controlled Linux guest and its stock-KVM virtual-time runtime.
 
 use vmm_backend::{Backend, Gpa, X86, X86Policy};
 
@@ -14,22 +13,10 @@ use crate::vmm::{RamBacking, Vmm, VmmError};
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
 use vmm_backend::{CpuidModel, MpState, VcpuState};
 
-/// `IA32_EFER` MSR index. `EFER` is an **allow-stateful** MSR, so the backend's
-/// `restore` rewrites it from the snapshot's MSR map **after** `KVM_SET_SREGS2` —
-/// overwriting the long-mode `EFER` the entry sregs carry. [`apply_linux_entry`]
-/// therefore also sets it in the MSR map (else the guest enters with `LMA` but no
-/// `LME` → VMX "invalid guest state", `KVM_EXIT_FAIL_ENTRY`).
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
 const IA32_EFER: u32 = 0xC000_0080;
 
-/// LAPIC-timer input frequency (Hz) the userspace xAPIC is configured with — the
-/// frozen core-crystal clock (CPUID `0x15`) described by the x86 contract. The
-/// exact value only governs the timer **deadline** arithmetic, which is moot until
-/// interrupt injection lands (the bring-up `KvmBackend::inject` is `Unsupported`);
-/// it is fixed here so the value is deterministic and documented. Non-zero
-/// (required by [`lapic::Lapic::new`]).
 const LAPIC_TIMER_HZ: u64 = 24_000_000;
-/// The single vCPU is the BSP with APIC ID 0.
 const BSP_APIC_ID: u32 = 0;
 
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
@@ -86,23 +73,6 @@ fn compose_linux_seeded<B: Backend<A = X86>>(
     Ok(vmm)
 }
 
-/// Compose a **restore target around a materialized snapshot** (the
-/// memslot-remap restore): install the contract policy, then `unsafe`-map
-/// the [`snapshot_store::Mapping`]'s buffer as the guest RAM itself — no
-/// [`GuestRam`] allocation, no image load, no entry state, and **no memcpy**.
-/// The returned [`Vmm`] owns the mapping ([`RamBacking::Snapshot`]); the caller
-/// completes it exactly like its normal factory target — wire the xAPIC iff the
-/// snapshot source had one (`wire_lapic: true` for the Linux composition),
-/// V-time ([`Vmm::wire_vtime`]) and hash opt-ins as usual — then restores the
-/// non-memory half with [`Vmm::restore_vm_state`] (NOT `restore_snapshot`: the
-/// memory half is already in place).
-///
-/// Boot-time image loading is deliberately skipped: the mapping already holds
-/// the snapshot's memory, and a loader write would clobber it (privately — CoW
-/// keeps the store safe — but wrongly). The vCPU needs no entry state either:
-/// `restore_vm_state` overwrites the complete register file from the snapshot.
-/// `MAP_PRIVATE` does the rest — guest writes stay private to this VM, and
-/// untouched pages fault lazily instead of being copied eagerly.
 pub fn compose_restore_target<B: Backend<A = X86>>(
     backend: B,
     mapping: snapshot_store::Mapping,
@@ -148,12 +118,6 @@ fn compose_restore_target_with_policy<B: Backend<A = X86>>(
     Ok(vmm)
 }
 
-/// Composes a stock-KVM virtual-time restore target around a snapshot mapping.
-///
-/// This mirrors [`boot_linux_stock_virtual_time`] without loading the kernel or
-/// initramfs: it preserves that source's hardware-RNG-hidden CPUID contract,
-/// userspace xAPIC, V-time wiring, and paravirtual clock registration while the
-/// control server restores the remaining VM state from the snapshot.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn compose_stock_virtual_time_restore_target(
     mapping: snapshot_store::Mapping,
@@ -177,10 +141,6 @@ pub fn compose_stock_virtual_time_restore_target(
     Ok(vmm)
 }
 
-/// Overlay the long-mode entry registers/segments/control-regs **and the GDTR**
-/// onto a backend `save()` template, keeping the template's valid
-/// `TR`/`LDT`/`IDT`/`apic_base`/XSAVE/MSR shape. The boot protocol requires
-/// `GDTR` to point at the GDT written by the Linux loader.
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
 fn apply_linux_entry(state: &mut VcpuState, entry: &VcpuState) {
     state.regs = entry.regs;
@@ -200,19 +160,6 @@ fn apply_linux_entry(state: &mut VcpuState, entry: &VcpuState) {
     state.mp_state = MpState::Runnable;
 }
 
-/// The Linux composition for **assigned-at-exit (virtual_time) V-time on the
-/// stock backend** (`docs/DETERMINISM.md`): the stock `KvmBackend` with
-/// [`VtimeWiring::new_virtual_time`](crate::vmm::VtimeWiring::new_virtual_time)
-/// wired, so V-time is a pure function of the serviced exit stream and the
-/// production [`LiveVirtualTimeTrace`](crate::virtual_time::LiveVirtualTimeTrace)
-/// records every normalized exit.
-///
-/// Uses the same guest CPUID/MSR policy on every host. Portability is defined
-/// over the cooperative guest instruction surface and normalized exit stream.
-/// No hardware virtual-time clock is opened; the virtual_time wiring holds the work
-/// axis at zero. The installed CPUID model is
-/// [`contract::cpuid_model`]: stock KVM cannot trap
-/// RDRAND/RDSEED, so their feature bits are hidden instead of exposed-but-trapped.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn boot_linux_stock_virtual_time(
     kernel: &[u8],
@@ -225,8 +172,6 @@ pub fn boot_linux_stock_virtual_time(
     compose_linux_virtual_time(backend, kernel, initramfs, guest_ram_len, cmdline, seed)
 }
 
-/// The stock virtual-time boot with its concrete KVM backend retained so the
-/// caller can obtain `Vmm::kvm_cancellation_flag` for a host timeout watchdog.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn boot_linux_stock_virtual_time_cancellable(
     kernel: &[u8],
@@ -276,11 +221,6 @@ fn compose_linux_virtual_time<B: Backend<A = X86>>(
 
 #[cfg(test)]
 mod tests {
-    //! Mock-backed composition tests. [`compose`] runs on **every** platform (no
-    //! host gate), so this is where the `GuestRam` allocation and the `unsafe`
-    //! `map_memory` pointer seam get exercised under Miri (Vec-backed `GuestRam`,
-    //! like `vmm-backend`'s region seam) and on the Linux box. [`boot`]'s host-gate
-    //! wiring is covered separately.
 
     use std::cell::Cell;
     use std::rc::Rc;
@@ -290,23 +230,11 @@ mod tests {
     use super::*;
     use crate::vmm::TerminalReason;
 
-    /// A `Backend` double that **retains the raw `map_memory` pointer** — as the
-    /// real KVM backend does (`KVM_SET_USER_MEMORY_REGION` keeps the userspace
-    /// address and the guest writes through it on every later `run`) — where
-    /// `MockBackend` only records `(gpa, len)` and drops the pointer. The retained
-    /// pointer is shared out through an `Rc` so the test can dereference it *after*
-    /// the mapping has moved into the returned [`Vmm`]: under Miri that read fails
-    /// if the backing died or moved, instead of the test asserting liveness through
-    /// the `Vmm`'s own (safe, trivially valid) view. Everything else delegates to
-    /// the inner `MockBackend`.
     struct PtrRetainingBackend {
         inner: MockBackend,
-        /// `(base, len)` of the region handed to `map_memory`, once mapped.
         mapped: RetainedRegion,
     }
 
-    /// The `(base, len)` a [`PtrRetainingBackend`] retains from `map_memory`,
-    /// shared with the test that dereferences it after the mapping's move.
     type RetainedRegion = Rc<Cell<Option<(*mut u8, usize)>>>;
 
     impl PtrRetainingBackend {
@@ -378,10 +306,6 @@ mod tests {
         }
     }
 
-    /// [`compose_restore_target`] maps the materialized snapshot
-    /// AS the guest RAM — the marker page reads through, no loader ran (the
-    /// image is exactly the snapshot, zeros where the snapshot is zero), the
-    /// xAPIC is wired on request, and the backing is the mapping itself.
     #[test]
     #[cfg_attr(
         miri,
@@ -406,23 +330,6 @@ mod tests {
         assert!(mem[..4096].iter().all(|&b| b == 0), "no loader ever ran");
     }
 
-    /// The **Miri arm** of the test above (round-1 review, blocking item 1; sharpened
-    /// in round 2). `compose_restore_target` has its OWN `unsafe` `map_memory` —
-    /// mapping a [`snapshot_store::Mapping`]'s buffer as guest RAM, a different
-    /// backing *lifetime* than `compose()`'s owned [`GuestRam`] (the mapping is moved
-    /// into the returned `Vmm` and must stay valid there). `Store::materialize`'s
-    /// real `mmap` can't run under Miri, so drive the identical seam over the
-    /// mmap-free, 4-KiB-aligned [`snapshot_store::Mapping::anonymous`] buffer.
-    ///
-    /// The backend is [`PtrRetainingBackend`], which — like real KVM, and unlike
-    /// `MockBackend` — **retains the raw pointer** `map_memory` receives; the test
-    /// dereferences that retained pointer *after* the mapping has moved into the
-    /// `Vmm`. That read is the point: under Miri it fails on a dangling or moved
-    /// backing (the bug class this site's SAFETY comment claims away), rather than
-    /// asserting liveness through the `Vmm`'s own safe view of the buffer it owns.
-    /// The base-alignment assertion pins contract (c) — `map_memory` requires a
-    /// 4-KiB-aligned host address, which the anonymous backing must honor exactly
-    /// like the production `mmap` backing does.
     #[test]
     fn compose_restore_target_map_memory_over_an_anonymous_mapping() {
         const PAGES: usize = 4;
@@ -469,10 +376,6 @@ mod tests {
         );
     }
 
-    /// Hand-build a minimal valid bzImage via direct byte writes: the gating magics
-    /// (`boot_flag`/`HdrS`/`version ≥ 2.12`/`XLF_KERNEL_64`), `setup_sects = 1`,
-    /// `pref_address`, realistic `cmdline_size`/`initrd_addr_max`, and `pm_len`
-    /// marker bytes after `(setup_sects+1)*512`.
     fn synthetic_bzimage(pref_address: u32, pm_len: usize) -> Vec<u8> {
         let pm_off = (1 + 1) * 512usize;
         let mut img = vec![0u8; pm_off + pm_len];

@@ -1,30 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The x86 CPU contract canonical serializer: emit the deterministic UTF-8 /
-//! LF byte string [`super::contract_hash`] is taken over, from the parsed tables.
-//!
-//! **Rendering decisions (normative §6 + the spelling this implementation fixes;
-//! documented because this serializer *defines* the v3 canonical bytes — the §6
-//! registry is seeded from it).** Header records keep the literal §6 spelling
-//! (decimal scalars; `mxcsr-mask=0x0000ffff` verbatim). Every record-body hex
-//! number is **bare, lowercase, fixed-width** per §6's "N lowercase hex digits":
-//! 8 for CPUID leaf/subleaf/register cells, 8 for an MSR index, 16 for a 64-bit
-//! `allow-fixed` constant; `dyn:`/`emulate-*` formula ids and instruction tokens
-//! are emitted verbatim (their meaning is hashed, not their definition text). The
-//! emission order is the §6 item order: header, CPUID (sorted by leaf,subleaf, +
-//! `cpuid-default zeroed`), MSR (one record per index, sorted), INSN (sorted by
-//! mnemonic), timer (fixed device order), xAPIC MMIO (sorted by offset, +
-//! `mmio-default`), CMOS (ports then indices, ranges expanded), and
-//! guest invariants (fixed key order). Range/member rows
-//! expand to one record per element before serialization. LF after every record.
 
 use std::collections::BTreeMap;
 
 use super::hex64;
 use super::parse::{Contract, RegField, Subleaf};
 
-/// Render an `(token, param)` disposition cell: `allow-fixed` carries a 16-hex
-/// constant, every `emulate-*` token carries its formula id, all other tokens are
-/// bare. (The hashed semantics of §6.)
 fn cell(token: &str, param: Option<&str>) -> String {
     match (token, param) {
         ("allow-fixed", Some(p)) => format!("allow-fixed:{:016x}", hex64(p)),
@@ -33,7 +13,6 @@ fn cell(token: &str, param: Option<&str>) -> String {
     }
 }
 
-/// Render a CPUID register field as its canonical token.
 fn reg(field: RegField) -> String {
     match field {
         RegField::Const(v) => format!("{v:08x}"),
@@ -43,7 +22,6 @@ fn reg(field: RegField) -> String {
     }
 }
 
-/// Render a CPUID subleaf token.
 fn subleaf_tok(s: Subleaf) -> String {
     match s {
         Subleaf::Single(v) => format!("{v:08x}"),
@@ -53,7 +31,6 @@ fn subleaf_tok(s: Subleaf) -> String {
     }
 }
 
-/// Emit the full §6 canonical form for `c`.
 pub(crate) fn serialize(c: &Contract) -> String {
     let mut out = String::new();
     let mut line = |s: String| {
@@ -191,7 +168,6 @@ pub(crate) fn serialize(c: &Contract) -> String {
     out
 }
 
-/// Sort key for a subleaf token (lowest covered subleaf).
 fn subleaf_sort_key(s: Subleaf) -> u32 {
     match s {
         Subleaf::Single(v) | Subleaf::AndUp(v) | Subleaf::Range(v, _) => v,

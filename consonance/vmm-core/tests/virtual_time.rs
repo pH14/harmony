@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! M0 oracles for assigned-at-exit V-time.  Every comparator used by the
-//! positive properties is also driven against a deliberately perturbed twin.
 
 use std::collections::BTreeSet;
 
@@ -147,9 +145,6 @@ fn script_for_deltas(deltas: &[u64]) -> Vec<Exit<X86>> {
     exits
 }
 
-/// Keep the native gate at the required 256 cases. Miri interprets each backend
-/// event and cannot use proptest's cwd-backed failure persistence under isolation,
-/// so it uses the repository's standard reduced/persistence-free configuration.
 fn proptest_config() -> ProptestConfig {
     let mut config = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { 256 });
     if cfg!(miri) {

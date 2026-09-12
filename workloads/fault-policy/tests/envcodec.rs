@@ -1,11 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `EnvCodec`, the proposal seam. `compose` performs one-axis `Moment`
-//! override re-keying for an override-only,
-//! same-seed/same-policy composition at any offset, and **fails closed** for the
-//! cases outside that one-axis scope (a standing fault, a pure `Seeded` input, or
-//! a seed/policy mismatch — all deferred to a future compose-model revisit). `seeded` is a pure seeded
-//! env; `mutate` is deterministic, host-only, and never relocates a guest override
-//! out of context.
 
 mod common;
 
@@ -18,13 +11,8 @@ use fault_policy::{
 };
 use proptest::prelude::*;
 
-/// The disjointness bound: all generated `Moment`s stay below it, and `compose`
-/// is called at exactly this offset, so `base` (`m < BOUND`) and `tail`
-/// (`m + BOUND`) never collide and `+ BOUND` never overflows — making the
-/// re-keying exactly checkable.
 const BOUND: Moment = 1 << 20;
 
-/// A `Moment`-keyed override map with every `Moment` strictly below [`BOUND`].
 fn arb_bounded_overrides() -> impl Strategy<Value = BTreeMap<Moment, Action>> {
     prop::collection::btree_map(0u64..BOUND, arb_action(), 0..12)
 }
@@ -51,7 +39,6 @@ fn standing_of(spec: &EnvSpec) -> &[StandingFault] {
     }
 }
 
-/// A single standing fault literal (for the fail-closed rejection tests).
 fn sf(class: DecisionClass) -> StandingFault {
     StandingFault {
         class,
@@ -63,15 +50,6 @@ fn sf(class: DecisionClass) -> StandingFault {
 proptest! {
     #![proptest_config(config(256))]
 
-    /// **The spec gate (line 67): one-axis `Moment` override re-keying, at any
-    /// offset.** For two override-only (Recorded) envs with the same seed/policy,
-    /// `compose(base, tail, at)` keeps `base`'s prefix `[0, at)` at its `Moment`s
-    /// and re-keys every `tail` entry to `m + at` — collision-free, genesis prefix
-    /// + shifted tail, base seed/policy carried, no standing faults. `at` is
-    /// bounded so `m + at` never overflows. The `base` *suffix* `[at, ∞)` is
-    /// discarded and governed entirely by the tail's re-keyed timeline: at any
-    /// `m >= at`, `out[m]` is the tail's entry at `m - at` (or absent) — never the
-    /// dropped base entry, even when a tail Moment aligns exactly onto it.
     #[test]
     fn compose_rekeys_overrides_at_any_offset(
         base_ov in arb_bounded_overrides(),
@@ -110,11 +88,6 @@ proptest! {
         prop_assert!(standing_of(&composed).is_empty());
     }
 
-    /// **Bit-identical replay at `at > 0`** for an override-only composition: a
-    /// branch-local delta of admissible (always-firing) overrides, composed onto a
-    /// base, reproduces its own run at the re-keyed Moments — the property
-    /// `branch(genesis, compose(base, delta))` reproduces delta, for the
-    /// override-covered (no seed draw) case `compose` covers.
     #[test]
     fn compose_override_only_replays_bit_identical(
         moments in prop::collection::btree_set(0u64..BOUND, 0..10),
@@ -139,8 +112,6 @@ proptest! {
         prop_assert_eq!(a, b, "the re-keyed delta reproduces its run");
     }
 
-    /// `compose` **fails closed** whenever either input carries a standing fault
-    /// (a V-time axis the `Moment` offset cannot re-key), at any offset.
     #[test]
     fn compose_rejects_any_standing_fault(
         ov in arb_bounded_overrides(),
@@ -162,9 +133,6 @@ proptest! {
         );
     }
 
-    /// `mutate` is a pure function of `(env, salt)`: identical inputs give the
-    /// identical proposal, and the proposal is always a well-formed, round-trip
-    /// `Recorded` spec (a legal vocabulary element).
     #[test]
     fn mutate_is_deterministic_and_legal(spec in arb_spec(), salt in any::<u64>()) {
         let a = EnvCodec::mutate(&spec, salt);
@@ -175,10 +143,6 @@ proptest! {
         prop_assert_eq!(decoded.encode(), a.encode(), "byte-stable round-trip");
     }
 
-    /// `mutate` is **host-only**: every guest override in the input survives
-    /// verbatim (same `Moment`, same `Answer`) in the output — it is never
-    /// removed, relocated, or overwritten, so no out-of-context guest answer can
-    /// be fabricated.
     #[test]
     fn mutate_preserves_every_guest_override(spec in arb_spec(), salt in any::<u64>()) {
         let mutated = EnvCodec::mutate(&spec, salt);
@@ -517,7 +481,6 @@ fn set_moment_is_reflected_by_moment_accessor() {
     assert_eq!(env.moment(), 7, "tracks the most recent set_moment");
 }
 
-/// A `Recorded` spec with only a reseed table (no overrides/standing).
 fn reseed_spec(seed: u64, reseeds: &[(Moment, u64)]) -> EnvSpec {
     EnvSpec::Recorded {
         seed,

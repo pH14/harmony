@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The portable path end to end: real standing-poll response bytes in, the
-//! signals and hook launches the agent would apply out.
-//!
-//! The frames here are built by hand against the documented layout rather than
-//! through the shared encoder, so a silent change on either side of the
-//! contract fails this test.
 
 use fault_policy::{DecisionClass, Fault, Span, process_target};
 use harmony_fault_agent::faults::ActiveFaults;
 use harmony_fault_agent::supervisor::{Action, Supervisor};
 
-/// Build a standing-poll response body: `u64 moment`, `u32 count`, then per
-/// entry `u16 class`, `u16 target_len`, target bytes, `u64 start`, `u64 end`.
 fn answer(moment: u64, entries: &[(u16, Vec<u8>, u64, u64)]) -> Vec<u8> {
     let mut body = moment.to_le_bytes().to_vec();
     body.extend((entries.len() as u32).to_le_bytes());

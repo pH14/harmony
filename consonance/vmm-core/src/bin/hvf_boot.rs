@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Event-count-bounded live arm64 Linux boot on Hypervisor.framework.
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64", not(miri))))]
 fn contains_complete_ready_line(serial: &[u8], ready: &[u8]) -> bool {

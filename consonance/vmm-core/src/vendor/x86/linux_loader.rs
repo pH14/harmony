@@ -1,409 +1,172 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Direct 64-bit Linux boot loader (the Firecracker / cloud-hypervisor model) —
-//! hands control to the kernel's **64-bit entry point** directly, with **no**
-//! 16-bit real-mode / bzImage setup-code emulation.
-//!
-//! Given a `bzImage`, an `initramfs.cpio.gz`, the guest RAM size, and a kernel
-//! command line, [`load`] writes everything the kernel needs into guest RAM and
-//! returns a [`LinuxImage`] describing the 64-bit entry, the `boot_params`
-//! ("zero page") GPA, the identity page-table root (`CR3`), the boot GDT, and the
-//! loaded ranges. [`crate::vendor::x86::entry::long_mode_entry`] turns those into the
-//! architectural long-mode entry state; the Linux composition root composes
-//! the two over a backend.
-//!
-//! This is a **trust boundary** (conventions rule 4): the `image` and `initramfs`
-//! are untrusted bytes, so every malformed input yields a [`LinuxLoadError`] —
-//! never a panic, a slice-index out-of-bounds, or an arithmetic overflow. Every
-//! read of the image is bounds-checked and every address computation is
-//! `checked_*`; [`load`] is total over arbitrary `&[u8]`.
-//!
-//! ## What the x86/Linux 64-bit boot protocol requires
-//!
-//! (Documentation/arch/x86/boot.rst, "64-bit BOOT PROTOCOL".) The loader:
-//! 1. parses the bzImage [`SetupHeader`] (at file offset [`SETUP_HEADER_OFFSET`] =
-//!    `0x1f1`), checking `boot_flag == 0xAA55`, `header == "HdrS"`,
-//!    `version >= 0x020c`, and the `XLF_KERNEL_64` bit of `xloadflags`;
-//! 2. loads the **protected-mode kernel** (the bytes after `(setup_sects+1)*512`)
-//!    at `pref_address`, with `init_size` bytes of run room;
-//! 3. loads the **initramfs** high in RAM (page-aligned, below 4 GiB), recording
-//!    its GPA/len in `hdr.ramdisk_image`/`ramdisk_size`;
-//! 4. builds the **`boot_params`** zero page: a minimal E820 map over guest RAM
-//!    ([`e820_entries`](BootParams) / [`e820_table`](BootParams)), the command
-//!    line (`cmd_line_ptr`), the copied/filled `setup_header`, and
-//!    `type_of_loader`;
-//! 5. builds an **identity page table** (2 MiB pages over the first
-//!    [`IDENTITY_MAP_BYTES`]) and a flat 64-bit **GDT** (`__BOOT_CS`=`0x10`,
-//!    `__BOOT_DS`=`0x18`).
-//!
-//! The 64-bit entry is `load_addr + 0x200` ([`ENTRY_64_OFFSET`]); `RSI` must hold
-//! the `boot_params` GPA.
 
 use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 
-/// GPA of the top-level identity page table (PML4) — also the `CR3` value.
 pub const PML4_GPA: u64 = 0x1000;
-/// GPA of the single page-directory-pointer table (PDPT).
 pub const PDPT_GPA: u64 = 0x2000;
-/// GPA of the single page directory (PD) backing the identity map.
 pub const PD_GPA: u64 = 0x3000;
-/// GPA of the boot GDT (`__BOOT_CS` / `__BOOT_DS`).
 pub const GDT_GPA: u64 = 0x6000;
-/// GPA of the `boot_params` "zero page" (a full 4 KiB struct).
 pub const BOOT_PARAMS_GPA: u64 = 0x7000;
-/// GPA of the kernel command-line string.
 pub const CMDLINE_GPA: u64 = 0x8000;
 
-/// Max command-line length (including the NUL terminator). 2 KiB — comfortably
-/// within the page at [`CMDLINE_GPA`] and the kernel's default `cmdline_size`.
 pub const CMDLINE_MAX: usize = 0x800;
 
-/// Bytes of guest physical address space the boot page table identity-maps with
-/// 2 MiB pages (the first 1 GiB). The kernel rebuilds its own page tables very
-/// early, so this only has to cover the load region + zero page + cmdline + the
-/// initramfs; 1 GiB covers any layout this loader produces for a multi-hundred-MiB
-/// guest.
 pub const IDENTITY_MAP_BYTES: u64 = 1 << 30;
-/// 2 MiB large-page size.
 const LARGE_PAGE: u64 = 2 << 20;
-/// Number of 2 MiB entries in the single page directory that backs the identity
-/// map (`IDENTITY_MAP_BYTES / 2 MiB` = 512 for the 1 GiB map — exactly one full
-/// PD, so the map needs only PML4 → PDPT → one PD).
 const PD_ENTRIES: u64 = IDENTITY_MAP_BYTES / LARGE_PAGE;
-/// Page-table entry flags: Present | Writable.
 const PTE_P_RW: u64 = 0b11;
-/// Large-page PDE flags: Present | Writable | Page-Size (2 MiB).
 const PDE_P_RW_PS: u64 = 0b1000_0011;
 
-/// File offset of [`SetupHeader`] within a bzImage (and its offset within
-/// [`BootParams`]).
 pub const SETUP_HEADER_OFFSET: usize = 0x1f1;
-/// `boot_flag` magic at offset `0x1fe`.
 const BOOT_FLAG_MAGIC: u16 = 0xAA55;
-/// `header` magic "HdrS" at offset `0x202`.
 const HDRS_MAGIC: u32 = 0x5372_6448;
-/// Minimum boot-protocol version that defines `xloadflags`/`XLF_KERNEL_64`
-/// (protocol 2.12).
 const MIN_PROTOCOL_VERSION: u16 = 0x020c;
-/// `xloadflags` bit 0: a 64-bit entry point exists at `load_addr + 0x200`. Written
-/// `1` (not `1 << 0`, whose shift carries an equivalent `>>` mutant).
 const XLF_KERNEL_64: u16 = 1;
-/// The 64-bit entry point's offset past the protected-mode load address.
 pub const ENTRY_64_OFFSET: u64 = 0x200;
-/// A sector is 512 bytes; the protected-mode kernel begins at
-/// `(setup_sects + 1) * 512`.
 const SECTOR: usize = 512;
-/// `setup_sects == 0` is historically read as 4.
 const DEFAULT_SETUP_SECTS: u8 = 4;
-/// `type_of_loader` value for an "undefined"/custom loader (high nibble 0xF).
 const TYPE_OF_LOADER_UNDEFINED: u8 = 0xFF;
 
-/// Top of the low-memory usable E820 region (640 KiB); the `0xA0000..0x100000`
-/// hole (legacy VGA/BIOS) is left unmapped so the kernel never uses it.
 const LOW_RAM_TOP: u64 = 0x000A_0000;
-/// The hypercall-doorbell REQ/RESP pages: `hypercall-doorbell`'s
-/// `REQ_GPA` = `0xE000` and `RESP_GPA` = `0xF000` — two 4 KiB pages the guest SDK
-/// stages its request/response frames in. They fall inside the usable low-RAM
-/// span, so the E820 map **reserves** `[0xE000, 0x10000)` (splitting entry 0):
-/// `GUEST_HAS_SDK` is advertised unconditionally, so a Linux guest must never
-/// allocate over the pages the doorbell transport reads/writes.
 const DOORBELL_PAGES_START: u64 = 0x0000_E000;
-/// One past the doorbell pages: `0xE000 + 2 * 4 KiB`.
 const DOORBELL_PAGES_END: u64 = 0x0001_0000;
-/// Start of high memory (1 MiB).
 const HIGH_RAM_START: u64 = 0x0010_0000;
-/// E820 entry type: usable RAM.
 const E820_RAM: u32 = 1;
-/// E820 entry type: reserved (not usable RAM). Used to mark the xAPIC MMIO page so
-/// the kernel does not treat it as RAM (which would zero the page on init).
 const E820_RESERVED: u32 = 2;
-/// The xAPIC (LAPIC) MMIO page: 4 KiB at `0xFEE00000`. Reserved in the E820 map and
-/// left as a memslot hole by the backend, so the guest's LAPIC accesses fault to the
-/// userspace deterministic xAPIC model (`KVM_EXIT_MMIO`) instead of being serviced
-/// from RAM — the seam that lets the V-time LAPIC timer actually tick (see
-/// `consonance/vmm-core/contracts/x86/README.md` / the LAPIC-timer rows). The IOAPIC page
-/// (`0xFEC00000`) is deliberately NOT reserved: Linux runs in virtual-wire mode (no
-/// MADT) and never uses it.
 pub(crate) const LAPIC_MMIO_PAGE: u64 = 0xFEE0_0000;
-/// The size of that hole (one 4 KiB page) — what `map_memory` splits around.
 pub(crate) const LAPIC_MMIO_PAGE_LEN: u64 = 0x1000;
-/// GPA of the minimal ACPI tables (RSDP -> XSDT -> MADT). Placed in the legacy
-/// BIOS region `[0xA0000, 0x100000)`, which the memslot backs but the usable-RAM
-/// E820 map deliberately omits — so the kernel reads the tables via the RSDP
-/// pointer yet never allocates over them, and no E820 split is needed. Static
-/// bytes (no timestamps) => byte-identical every boot.
 pub const ACPI_RSDP_GPA: u64 = 0x000E_0000;
-/// GPA of the XSDT (36-byte header + one 8-byte entry pointing at the MADT).
 const ACPI_XSDT_GPA: u64 = ACPI_RSDP_GPA + 0x40;
-/// GPA of the MADT (APIC) table.
 const ACPI_MADT_GPA: u64 = ACPI_RSDP_GPA + 0x80;
-/// Local-APIC MMIO base advertised in the MADT — must equal the contract's xAPIC
-/// base and the backend memslot hole ([`LAPIC_MMIO_PAGE`]).
 const ACPI_LAPIC_BASE: u32 = LAPIC_MMIO_PAGE as u32;
-/// Boot-CPU local-APIC ID. The VMM models a single vCPU with APIC ID 0.
 const ACPI_BOOT_APIC_ID: u8 = 0;
-/// `boot_params.e820_table` capacity (`E820_MAX_ENTRIES_ZEROPAGE`).
 const E820_MAX_ENTRIES: usize = 128;
 
-/// The bzImage `setup_header` (Documentation/arch/x86/boot.rst, "THE REAL-MODE
-/// KERNEL HEADER"). `#[repr(C, packed)]`: the kernel declares it `packed`, so
-/// several `u32`/`u64` fields sit at offsets that natural alignment would pad —
-/// the packed layout reproduces the on-disk bytes exactly. Read out of the
-/// untrusted image with [`zerocopy::FromBytes`] (bounds-checked, no panic) and
-/// copied verbatim into [`BootParams::hdr`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C, packed)]
 pub struct SetupHeader {
-    /// Number of 512-byte setup sectors (0 ⇒ 4). `0x1f1`.
     pub setup_sects: u8,
-    /// Root filesystem flags. `0x1f2`.
     pub root_flags: u16,
-    /// Size of the protected-mode kernel in 16-byte paragraphs. `0x1f4`.
     pub syssize: u32,
-    /// Obsolete RAM size field. `0x1f8`.
     pub ram_size: u16,
-    /// Video mode. `0x1fa`.
     pub vid_mode: u16,
-    /// Default root device. `0x1fc`.
     pub root_dev: u16,
-    /// Boot-sector signature; must be `0xAA55`. `0x1fe`.
     pub boot_flag: u16,
-    /// Real-mode jump instruction. `0x200`.
     pub jump: u16,
-    /// Magic; must be "HdrS" (`0x5372_6448`). `0x202`.
     pub header: u32,
-    /// Boot-protocol version. `0x206`.
     pub version: u16,
-    /// Real-mode switch hook. `0x208`.
     pub realmode_swtch: u32,
-    /// Load-low segment (obsolete). `0x20c`.
     pub start_sys_seg: u16,
-    /// Pointer to kernel version string. `0x20e`.
     pub kernel_version: u16,
-    /// Bootloader identifier; the loader sets this. `0x210`.
     pub type_of_loader: u8,
-    /// Boot-protocol flags (LOADED_HIGH, CAN_USE_HEAP, …). `0x211`.
     pub loadflags: u8,
-    /// Real-mode setup move size. `0x212`.
     pub setup_move_size: u16,
-    /// 32-bit protected-mode entry/load address. `0x214`.
     pub code32_start: u32,
-    /// Initramfs load GPA (set by the loader). `0x218`.
     pub ramdisk_image: u32,
-    /// Initramfs size in bytes (set by the loader). `0x21c`.
     pub ramdisk_size: u32,
-    /// Obsolete. `0x220`.
     pub bootsect_kludge: u32,
-    /// End of real-mode heap. `0x224`.
     pub heap_end_ptr: u16,
-    /// Extended loader version. `0x226`.
     pub ext_loader_ver: u8,
-    /// Extended loader type. `0x227`.
     pub ext_loader_type: u8,
-    /// Command-line GPA (set by the loader). `0x228`.
     pub cmd_line_ptr: u32,
-    /// Highest legal initramfs address. `0x22c`.
     pub initrd_addr_max: u32,
-    /// Required physical alignment of the kernel. `0x230`.
     pub kernel_alignment: u32,
-    /// Whether the kernel is relocatable. `0x234`.
     pub relocatable_kernel: u8,
-    /// Minimum alignment (log2). `0x235`.
     pub min_alignment: u8,
-    /// 64-bit/load-above-4G capability flags. `0x236`.
     pub xloadflags: u16,
-    /// Maximum command-line length. `0x238`.
     pub cmdline_size: u32,
-    /// Hardware subarchitecture. `0x23c`.
     pub hardware_subarch: u32,
-    /// Subarchitecture-specific data. `0x240`.
     pub hardware_subarch_data: u64,
-    /// Offset of the embedded payload. `0x248`.
     pub payload_offset: u32,
-    /// Length of the embedded payload. `0x24c`.
     pub payload_length: u32,
-    /// Linked list of `setup_data`. `0x250`.
     pub setup_data: u64,
-    /// Preferred load address (relocatable kernels). `0x258`.
     pub pref_address: u64,
-    /// Linear memory the kernel needs from `load_addr` to run. `0x260`.
     pub init_size: u32,
-    /// EFI handover entry offset. `0x264`.
     pub handover_offset: u32,
-    /// Offset of the `kernel_info` structure. `0x268`.
     pub kernel_info_offset: u32,
 }
 
-/// One `boot_params.e820_table` entry (`struct boot_e820_entry`): a flat,
-/// `packed` 20-byte record.
 #[derive(Clone, Copy, Debug, Default, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C, packed)]
 pub struct BootE820Entry {
-    /// Region base GPA.
     pub addr: u64,
-    /// Region size in bytes.
     pub size: u64,
-    /// Region type (`1` = usable RAM).
     pub type_: u32,
 }
 
-/// The Linux `boot_params` "zero page" (`struct boot_params`), trimmed to the
-/// fields this loader writes with byte-exact padding between them. Every member is
-/// 1-byte-aligned ([`SetupHeader`]/[`BootE820Entry`] are `packed`, the rest are
-/// `u8` arrays), so `#[repr(C)]` introduces **no** padding and the offsets match
-/// the kernel's layout — pinned by [`tests::boot_params_field_offsets`].
 #[derive(Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct BootParams {
-    /// Everything before `e820_entries` (screen_info, apm, EDD, setup_data
-    /// pointers, …) — zeroed; the kernel tolerates a zero screen_info.
     _head: [u8; 0x070],
-    /// Physical address of the ACPI RSDP (`boot_params.acpi_rsdp_addr`, offset
-    /// `0x070`), little-endian. Pointing the SMP kernel at our MADT (whose
-    /// Local-APIC entry sets `acpi_lapic`) flips `apic_intr_mode` from
-    /// `APIC_VIRTUAL_WIRE_NO_CONFIG` to `APIC_VIRTUAL_WIRE`, which is what makes
-    /// `native_smp_prepare_cpus` register the LAPIC-timer clockevent.
     pub acpi_rsdp_addr: [u8; 8],
-    /// Bytes `0x078..0x1e8` (rest of the pre-`e820_entries` header) — zeroed.
     _head2: [u8; 0x1e8 - 0x078],
-    /// Number of valid [`Self::e820_table`] entries. Offset `0x1e8`.
     pub e820_entries: u8,
-    /// Padding from `0x1e9` up to the setup header at `0x1f1`.
     _pad_to_hdr: [u8; SETUP_HEADER_OFFSET - 0x1e9],
-    /// The setup header, copied from the bzImage and patched. Offset `0x1f1`.
     pub hdr: SetupHeader,
-    /// Padding from the end of `hdr` up to `e820_table` at `0x2d0`.
     _pad_to_e820: [u8; 0x2d0 - (SETUP_HEADER_OFFSET + core::mem::size_of::<SetupHeader>())],
-    /// The E820 memory map. Offset `0x2d0`.
     pub e820_table: [BootE820Entry; E820_MAX_ENTRIES],
-    /// Trailing padding to a full 4 KiB page.
     _tail: [u8; 0x1000 - (0x2d0 + E820_MAX_ENTRIES * core::mem::size_of::<BootE820Entry>())],
 }
 
-/// A loaded guest-physical byte range `[start, start + len)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GpaRange {
-    /// Range start GPA.
     pub start: u64,
-    /// Range length in bytes.
     pub len: u64,
 }
 
-/// Everything [`crate::vendor::x86::entry::long_mode_entry`] and [`crate::bringup`] need to run
-/// the loaded kernel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LinuxImage {
-    /// The 64-bit entry point GPA (`load_addr + 0x200`); set `RIP` here.
     pub entry_point: u64,
-    /// The `boot_params` zero-page GPA; set `RSI` here.
     pub boot_params_gpa: u64,
-    /// The identity page-table root; set `CR3` here.
     pub page_table_root: u64,
-    /// The boot GDT GPA; set `GDTR.base` here.
     pub gdt_gpa: u64,
-    /// The command-line GPA.
     pub cmdline_gpa: u64,
-    /// Where the protected-mode kernel image was loaded.
     pub kernel: GpaRange,
-    /// Where the initramfs was loaded.
     pub initramfs: GpaRange,
 }
 
-/// Errors [`load`] returns instead of panicking. The image/initramfs are
-/// **untrusted input** (conventions rule 4 / no-panic-on-untrusted-input): every
-/// malformed input is one of these, never a panic, slice-index OOB, or arithmetic
-/// overflow.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum LinuxLoadError {
-    /// The image is too short to contain a setup header, or its `boot_flag`
-    /// signature / `HdrS` magic is absent — not a bzImage.
     #[error("not a bzImage (too short, or boot_flag/HdrS magic absent)")]
     NotBzImage,
-    /// The boot-protocol `version` is older than 2.12 (no `xloadflags`).
     #[error("boot-protocol version {found:#06x} < required {required:#06x} (no xloadflags)")]
-    UnsupportedProtocol {
-        /// The version the header declares.
-        found: u16,
-        /// The minimum version this loader requires.
-        required: u16,
-    },
-    /// `xloadflags` lacks `XLF_KERNEL_64`: no 64-bit entry point to jump to.
+    UnsupportedProtocol { found: u16, required: u16 },
     #[error("kernel has no 64-bit entry point (XLF_KERNEL_64 not set in xloadflags)")]
     No64BitEntry,
-    /// The setup-sector count runs past the end of the image (no protected-mode
-    /// kernel).
     #[error("setup sectors ({setup_bytes} bytes) exceed the {image_len}-byte image")]
     TruncatedImage {
-        /// Bytes the setup region claims.
         setup_bytes: usize,
-        /// The actual image length.
         image_len: usize,
     },
-    /// The protected-mode kernel + its `init_size` run room does not fit in guest
-    /// RAM at the chosen load address.
     #[error("kernel load region [{load:#x}..{end:#x}) does not fit in {ram:#x} bytes of guest RAM")]
-    KernelDoesNotFit {
-        /// The chosen load address.
-        load: u64,
-        /// One past the highest byte the kernel needs.
-        end: u64,
-        /// Guest RAM size.
-        ram: u64,
-    },
-    /// The protected-mode kernel is shorter than the 64-bit entry offset
-    /// ([`ENTRY_64_OFFSET`] `+ 1`), so the entry `load_addr + 0x200` would point at
-    /// RAM no kernel byte was copied to (a jump into stale/zero memory).
+    KernelDoesNotFit { load: u64, end: u64, ram: u64 },
     #[error(
         "protected-mode kernel is {len} bytes — too small for the 64-bit entry at +{:#x}",
         ENTRY_64_OFFSET
     )]
-    KernelTooSmall {
-        /// The protected-mode kernel length in bytes.
-        len: u64,
-    },
-    /// The initramfs does not fit in RAM, would land below 1 MiB / above the
-    /// header's `initrd_addr_max` (or 4 GiB), or would overlap the kernel's run
-    /// region.
+    KernelTooSmall { len: u64 },
     #[error(
         "initramfs ({len} bytes) does not fit below the max load address without overlapping the kernel"
     )]
-    InitramfsDoesNotFit {
-        /// The initramfs length.
-        len: u64,
-    },
-    /// The command line (plus NUL) exceeds the effective limit — the smaller of
-    /// [`CMDLINE_MAX`] `- 1` and the kernel's declared `cmdline_size`.
+    InitramfsDoesNotFit { len: u64 },
     #[error("command line is {len} bytes; this kernel's effective limit is {limit} (excl. NUL)")]
-    CmdlineTooLong {
-        /// The command-line length (excluding NUL).
-        len: usize,
-        /// The effective max accepted (excluding NUL).
-        limit: usize,
-    },
-    /// Guest RAM is too small to hold the fixed low-memory boot structures (page
-    /// tables, GDT, zero page, cmdline) or the minimal high-memory region.
+    CmdlineTooLong { len: usize, limit: usize },
     #[error("guest RAM ({ram:#x} bytes) is too small for the boot structures")]
-    RamTooSmall {
-        /// Guest RAM size.
-        ram: u64,
-    },
+    RamTooSmall { ram: u64 },
 }
 
-/// Read a little-endian `u16` at `off`, or `None` if `image` is too short.
 fn read_u16(image: &[u8], off: usize) -> Option<u16> {
     let end = off.checked_add(2)?;
     let b = image.get(off..end)?;
     Some(u16::from_le_bytes([b[0], b[1]]))
 }
 
-/// Read a little-endian `u32` at `off`, or `None` if `image` is too short.
 fn read_u32(image: &[u8], off: usize) -> Option<u32> {
     let end = off.checked_add(4)?;
     let b = image.get(off..end)?;
     Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
-/// Copy `src` into `mem[gpa .. gpa + src.len())`, bounds-checked. `on_oob` names
-/// the error to return if it does not fit. Never panics, never writes OOB.
 fn write_at(
     mem: &mut [u8],
     gpa: u64,
@@ -417,11 +180,6 @@ fn write_at(
     Ok(())
 }
 
-/// Supply Linux SETUP_RNG_SEED (type 9) before the first run. The 80-byte
-/// record occupies unused low RAM after the command-line page. Linux reserves
-/// setup_data before reusing low RAM, mixes these bytes into its CRNG and credits
-/// them with random.trust_bootloader=on (the pinned kernel's default).
-/// The caller supplies bytes from the VM's seeded entropy stream, never the host.
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
 pub(crate) fn write_rng_seed(mem: &mut [u8], seed: &[u8; 64]) -> Result<(), LinuxLoadError> {
     const RNG_GPA: u64 = 0x9000;
@@ -436,14 +194,6 @@ pub(crate) fn write_rng_seed(mem: &mut [u8], seed: &[u8; 64]) -> Result<(), Linu
     write_at(mem, BOOT_PARAMS_GPA + 0x250, &RNG_GPA.to_le_bytes(), error)
 }
 
-/// Parse and validate the bzImage [`SetupHeader`] out of `image`. Pure; never
-/// panics on arbitrary bytes.
-///
-/// # Errors
-/// [`LinuxLoadError::NotBzImage`] if the image is too short or the
-/// `boot_flag`/`HdrS` magics are absent; [`LinuxLoadError::UnsupportedProtocol`]
-/// for a pre-2.12 kernel; [`LinuxLoadError::No64BitEntry`] if `XLF_KERNEL_64` is
-/// clear.
 pub fn parse_setup_header(image: &[u8]) -> Result<SetupHeader, LinuxLoadError> {
     if read_u16(image, 0x1fe) != Some(BOOT_FLAG_MAGIC) || read_u32(image, 0x202) != Some(HDRS_MAGIC)
     {
@@ -468,14 +218,6 @@ pub fn parse_setup_header(image: &[u8]) -> Result<SetupHeader, LinuxLoadError> {
     Ok(hdr)
 }
 
-/// Flat-load a bzImage `image` + `initramfs` into `mem` (the host backing for GPA
-/// `0`) for a direct 64-bit boot, build the `boot_params`/page-table/GDT, and
-/// return the [`LinuxImage`].
-///
-/// `ram_bytes` is the guest RAM size (must equal `mem.len()`); `cmdline` is the
-/// kernel command line (a NUL is appended). All indexing is bounds-checked
-/// against both inputs and `mem`; any inconsistency is the corresponding
-/// [`LinuxLoadError`] (totality, conventions rule 4).
 pub fn load(
     image: &[u8],
     initramfs: &[u8],
@@ -610,17 +352,6 @@ pub fn load(
     })
 }
 
-/// Choose a page-aligned initramfs GPA: as high as possible, above `kernel_end`
-/// and at or below the lowest of RAM top, 4 GiB, and the header's
-/// `initrd_addr_max` (`0` = unset ⇒ no extra cap). The end `start + len` must not
-/// exceed that ceiling. Returns the range (`start` may equal `kernel_end` for a
-/// tight fit); an empty initramfs gets length 0.
-/// Whether `[start, end)` overlaps the reserved xAPIC MMIO page
-/// `[LAPIC_MMIO_PAGE, LAPIC_MMIO_PAGE + 0x1000)` — an UNMAPPED hole in the guest's
-/// address space (`build_boot_params` marks it `E820_RESERVED`; the backend leaves a
-/// matching memslot hole). A guest-visible image (kernel or initramfs) placed here
-/// would be written to host backing the guest cannot read back. Pure; `end` is
-/// exclusive.
 fn overlaps_lapic_mmio_page(start: u64, end: u64) -> bool {
     start < LAPIC_MMIO_PAGE + 0x1000 && LAPIC_MMIO_PAGE < end
 }
@@ -648,17 +379,10 @@ fn place_initramfs(
     Ok(GpaRange { start, len })
 }
 
-/// The effective max command-line length (excluding NUL) this kernel accepts: the
-/// smaller of our buffer ([`CMDLINE_MAX`] `- 1`) and the header's declared
-/// `cmdline_size`. Honoring `cmdline_size` keeps the loader from advertising or
-/// writing past what the kernel allocated for its command line.
 fn cmdline_max(hdr: &SetupHeader) -> usize {
     (CMDLINE_MAX - 1).min(hdr.cmdline_size as usize)
 }
 
-/// Build the `boot_params` zero page: copy the parsed `hdr`, patch the loader-owned
-/// fields (`type_of_loader`, `cmd_line_ptr`/`cmdline_size`, `ramdisk_*`,
-/// `code32_start`), and write the E820 map. Pure.
 fn build_boot_params(
     hdr: &SetupHeader,
     initramfs: &GpaRange,
@@ -729,7 +453,6 @@ fn build_boot_params(
     bp
 }
 
-/// ACPI 1-byte checksum: the value that makes the sum of `bytes` zero (mod 256).
 fn acpi_checksum(bytes: &[u8]) -> u8 {
     bytes
         .iter()
@@ -737,15 +460,6 @@ fn acpi_checksum(bytes: &[u8]) -> u8 {
         .wrapping_neg()
 }
 
-/// Write a minimal ACPI table set — RSDP -> XSDT -> MADT — into the guest's legacy
-/// BIOS region and return the RSDP GPA (for `boot_params.acpi_rsdp_addr`). The MADT
-/// carries one Processor-Local-APIC entry and **no** IO-APIC entry, so Linux sets
-/// `acpi_lapic` (=> `apic_intr_mode == APIC_VIRTUAL_WIRE`) without enabling the
-/// IO-APIC routing the VMM does not model. With `CONFIG_SMP=y` that is exactly what
-/// makes `native_smp_prepare_cpus` set up the LAPIC-timer clockevent so the periodic
-/// tick fires and the tree-RCU idle `HLT` resumes. All bytes are static
-/// (no timestamps) => byte-identical every boot, so the tables are part of the
-/// deterministic guest input.
 fn write_acpi_tables(mem: &mut [u8]) -> Result<(), LinuxLoadError> {
     let oob = LinuxLoadError::RamTooSmall { ram: ACPI_RSDP_GPA };
     const OEMID: &[u8; 6] = b"HARMNY";
@@ -797,10 +511,6 @@ fn write_acpi_tables(mem: &mut [u8]) -> Result<(), LinuxLoadError> {
     Ok(())
 }
 
-/// Write the identity page table — PML4[0] → PDPT, PDPT[0] → one PD, and that PD's
-/// [`PD_ENTRIES`] 2 MiB large-page entries covering [`IDENTITY_MAP_BYTES`]
-/// (`PD[j]` maps GPA `j · 2 MiB`). Every entry is written through bounds-checked
-/// [`write_at`]; if the tables do not fit, [`LinuxLoadError::RamTooSmall`].
 fn write_page_tables(mem: &mut [u8], ram: u64) -> Result<(), LinuxLoadError> {
     let oob = LinuxLoadError::RamTooSmall { ram };
     write_at(mem, PML4_GPA, &(PDPT_GPA | PTE_P_RW).to_le_bytes(), oob)?;
@@ -817,9 +527,6 @@ fn write_page_tables(mem: &mut [u8], ram: u64) -> Result<(), LinuxLoadError> {
     Ok(())
 }
 
-/// Write the flat 64-bit boot GDT: null, an unused slot, `__BOOT_CS` (selector
-/// `0x10`, 64-bit code), and `__BOOT_DS` (selector `0x18`, data) — the descriptors
-/// the 64-bit boot protocol requires.
 fn write_gdt(mem: &mut [u8]) -> Result<(), LinuxLoadError> {
     let oob = LinuxLoadError::RamTooSmall {
         ram: mem.len() as u64,
@@ -831,11 +538,7 @@ fn write_gdt(mem: &mut [u8]) -> Result<(), LinuxLoadError> {
     Ok(())
 }
 
-/// `__BOOT_CS` (selector `0x10`): base 0, limit `0xFFFFF`, present, DPL 0, code
-/// exec/read/accessed, `L=1` (64-bit), `G=1`. Access `0x9B`, flags `0xA`.
 pub const GDT_CODE64: u64 = 0x00AF_9B00_0000_FFFF;
-/// `__BOOT_DS` (selector `0x18`): base 0, limit `0xFFFFF`, present, DPL 0, data
-/// read/write/accessed, `D/B=1`, `G=1`. Access `0x93`, flags `0xC`.
 pub const GDT_DATA: u64 = 0x00CF_9300_0000_FFFF;
 
 #[cfg(test)]
@@ -843,14 +546,6 @@ mod tests {
     use super::*;
     use core::mem::{offset_of, size_of};
 
-    /// The minimal ACPI tables (RSDP → XSDT → MADT, the MADT+ARAT keystone) are
-    /// fully static, so their exact bytes are pinned here. This is both a determinism
-    /// guard on the ACPI guest input and a mutation guard: it fixes the computed 1-byte
-    /// checksums (`madt[9]`, `xsdt[9]`, `rsdp[8]`, `rsdp[32]`), the RSDP→XSDT→MADT GPA
-    /// pointers (the `ACPI_RSDP_GPA + 0x40 / + 0x80` offset arithmetic), and that
-    /// `write_acpi_tables` actually emits the bytes. Read from the fixed `ACPI_RSDP_GPA`
-    /// base (not the derived offsets) so a wrong offset lands the table outside the
-    /// asserted window.
     #[test]
     fn acpi_tables_are_byte_exact() {
         let base = ACPI_RSDP_GPA as usize;
@@ -879,10 +574,6 @@ mod tests {
         );
     }
 
-    /// A minimal but valid bzImage `SetupHeader` bytes prefix for tests: a buffer
-    /// with the magics, version, xloadflags, setup_sects, pref_address, init_size
-    /// set, padded so the protected-mode kernel begins at `(setup_sects+1)*512`
-    /// and carries `pm_len` marker bytes.
     fn synth_bzimage(
         setup_sects: u8,
         version: u16,
@@ -993,7 +684,6 @@ mod tests {
         assert_eq!(parse_setup_header(&img), Err(LinuxLoadError::No64BitEntry));
     }
 
-    /// Read a little-endian `u32`/`u64` out of guest memory at an absolute offset.
     fn rd32(mem: &[u8], off: usize) -> u32 {
         u32::from_le_bytes(mem[off..off + 4].try_into().unwrap())
     }
@@ -1001,10 +691,6 @@ mod tests {
         u64::from_le_bytes(mem[off..off + 8].try_into().unwrap())
     }
 
-    /// **Exact-value gate** (mutation hardening): for a fully-known synthetic
-    /// bzImage, pin *every* address and `boot_params` field the loader computes, so
-    /// `+`↔`-`, `<`↔`<=`, `*`↔`/`, and dropped-term mutants in `load` /
-    /// `place_initramfs` / `build_boot_params` all change an asserted value and die.
     #[test]
     #[cfg_attr(
         miri,
@@ -1336,18 +1022,10 @@ mod tests {
         ));
     }
 
-    /// E820 reservation splits: the 4 KiB xAPIC LAPIC MMIO page
-    /// and the two hypercall-doorbell pages `[0xE000, 0x10000)`. Each is
-    /// carved out of usable RAM and marked `E820_RESERVED`, so the kernel never
-    /// zeroes it — the LAPIC page routes to the userspace xAPIC model, and the
-    /// doorbell pages stay intact for the guest SDK transport. The doorbell split
-    /// makes low RAM **three** entries (indices 0–2); high RAM starts at index 3.
     mod e820_lapic_reservation {
         use super::super::*;
         use proptest::prelude::*;
 
-        /// E820 table for a guest of `ram` bytes. Only `ram` drives the map, so a
-        /// zeroed header + empty ramdisk suffice.
         fn table_for(ram: u64) -> BootParams {
             build_boot_params(
                 &SetupHeader::new_zeroed(),
@@ -1357,16 +1035,11 @@ mod tests {
             )
         }
 
-        /// `(addr, size, type_)` of entry `i`, copied out by value (the entries are
-        /// `#[repr(packed)]`, so taking a field reference would be unaligned).
         fn entry(bp: &BootParams, i: usize) -> (u64, u64, u32) {
             let e = &bp.e820_table[i];
             (e.addr, e.size, e.type_)
         }
 
-        /// The three low-RAM entries every guest has: `[0, 0xE000) RAM`,
-        /// the reserved doorbell pages `[0xE000, 0x10000)`, and `[0x10000, 640K)
-        /// RAM`. High RAM begins at index 3.
         fn assert_low_split(bp: &BootParams) {
             assert_eq!(entry(bp, 0), (0, DOORBELL_PAGES_START, E820_RAM));
             assert_eq!(
@@ -1388,9 +1061,6 @@ mod tests {
             );
         }
 
-        /// Far fewer cases under Miri (10–100× slower interpreted), and no failure
-        /// persistence there (its regression-file path uses `getcwd`, which Miri's
-        /// fs isolation rejects) — mirrors the loader's other proptest helpers.
         fn cases(native: u32) -> ProptestConfig {
             let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { native });
             if cfg!(miri) {
@@ -1399,8 +1069,6 @@ mod tests {
             cfg
         }
 
-        /// 8 GiB guest: EXACTLY six entries — the 3-entry low split (doorbell pages
-        /// reserved) + the 3-entry high split with the LAPIC page `E820_RESERVED`.
         #[test]
         fn eight_gib_guest_reserves_the_lapic_page() {
             let ram = 8u64 << 30;
@@ -1423,8 +1091,6 @@ mod tests {
             assert_eq!(entry(&bp, 6), (0, 0, 0));
         }
 
-        /// Sub-`0xFEE01000` guest (2 GiB): the 3-entry low split + one high-RAM
-        /// entry, no reserved LAPIC page.
         #[test]
         fn sub_page_guest_is_four_entries() {
             let ram = 2u64 << 30;
@@ -1438,10 +1104,6 @@ mod tests {
             assert_eq!(entry(&bp, 4), (0, 0, 0));
         }
 
-        /// Page-aligned boundaries: RAM ending exactly at the page start stays a
-        /// single high-RAM entry (the page is excluded); ending one page past it
-        /// reserves the page with the empty tail dropped. Both atop the 3-entry
-        /// low split (⇒ 4 and 5 entries).
         #[test]
         fn page_aligned_boundaries() {
             let bp = table_for(LAPIC_MMIO_PAGE);
@@ -1463,9 +1125,6 @@ mod tests {
             assert_eq!(entry(&bp, 5), (0, 0, 0));
         }
 
-        /// The property: for ANY guest RAM size, the doorbell pages
-        /// `[0xE000, 0x10000)` are reserved and NEVER inside a usable-RAM E820
-        /// entry — so a Linux SDK guest cannot allocate over REQ_GPA/RESP_GPA.
         #[test]
         fn doorbell_pages_are_reserved_for_every_ram_size() {
             for ram in [
@@ -1494,9 +1153,6 @@ mod tests {
         proptest! {
             #![proptest_config(cases(512))]
 
-            /// THE gate-1 property: for ANY guest RAM size the LAPIC MMIO page is NEVER
-            /// inside a usable-RAM E820 entry — it is reserved (RAM reaches it) or
-            /// unmapped (RAM stops short). Also pins the per-case shape.
             #[test]
             fn reserved_page_is_never_typed_ram(ram in prop_oneof![
                 (HIGH_RAM_START + 1)..=LAPIC_MMIO_PAGE,
@@ -1525,14 +1181,9 @@ mod tests {
         }
     }
 
-    /// Kernel + initramfs placement must avoid the reserved xAPIC MMIO hole: a
-    /// guest-visible image placed in the unmapped page would be written to
-    /// host backing the guest cannot read back.
     mod lapic_hole_placement {
         use super::super::*;
 
-        /// The overlap predicate the kernel guard and the initramfs relocation share
-        /// (testing it covers the kernel-guard decision without a multi-GiB `load`).
         #[test]
         fn overlaps_lapic_mmio_page_detects_straddle() {
             let p = LAPIC_MMIO_PAGE;
@@ -1545,10 +1196,6 @@ mod tests {
             assert!(overlaps_lapic_mmio_page(0, u64::MAX));
         }
 
-        /// An initramfs whose highest placement would land in the hole is relocated to
-        /// sit ENTIRELY BELOW the page (the ceiling is pushed inside the page via
-        /// `initrd_addr_max`, so a tiny ramdisk reproduces the straddle without a
-        /// multi-GiB allocation).
         #[test]
         fn initramfs_straddling_the_hole_is_relocated_below() {
             let ram = 8u64 << 30;
@@ -1568,8 +1215,6 @@ mod tests {
             assert_eq!(r.start % 0x1000, 0, "page-aligned");
         }
 
-        /// A ramdisk that fits ABOVE the page (between `page+0x1000` and the ceiling)
-        /// is left at its high placement — the hole is only avoided, not a hard cap.
         #[test]
         fn initramfs_above_the_hole_is_kept_high() {
             let ram = 8u64 << 30;
@@ -1582,9 +1227,6 @@ mod tests {
             );
         }
 
-        /// If the ramdisk cannot fit below the hole either (kernel pushed up against
-        /// the relocation target), it is rejected — mirroring the existing
-        /// does-not-fit error.
         #[test]
         fn initramfs_that_cannot_fit_below_the_hole_is_rejected() {
             let ram = 8u64 << 30;

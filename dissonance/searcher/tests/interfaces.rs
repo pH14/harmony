@@ -1,11 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Compile-time coverage for the independently implementable campaign facets.
-//!
-//! This fixture intentionally implements only [`TargetExecution`].  In
-//! particular, it does not implement the input, evaluation, or reporting
-//! facets that make up `Game`; keeping the helper below bounded by
-//! `TargetExecution` protects that separation from regressing into a
-//! monolithic workload contract.
 
 use std::{error::Error, io};
 
@@ -132,8 +125,6 @@ impl TargetExecution for TinyExecution {
     }
 }
 
-/// Exercise the execution contract without requiring any other campaign
-/// facet.  The generic bound is deliberately the narrow architectural seam.
 fn exercise_execution<T: TargetExecution>(
     execution: &T,
     run: &T::Run,

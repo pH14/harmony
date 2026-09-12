@@ -1,15 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! X1 live oracles: the virtual_time run loop drives the stock-KVM x86 backend
-//! through a real-mode guest whose `OUT` stream carries the prescribed
-//! durations, with timer delivery injected at exits through the guest IVT.
-//!
-//! `#[ignore]` so portable suites compile but do not run these; run explicitly
-//! on a Linux x86-64 host with `/dev/kvm` (the `x86-virtual-time` workflow's
-//! GitHub-hosted runners, or any KVM machine):
-//!
-//! ```sh
-//! cargo test -p vmm-core --test x86_kvm_virtual_time -- --ignored --test-threads=1
-//! ```
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use sha2::{Digest, Sha256};
@@ -24,9 +13,6 @@ use vmm_core::virtual_time::{
 };
 use vtime::VClockConfig;
 
-/// Guest physical layout: IVT entry for `TIMER_VECTOR` at `4 * vector`, the
-/// main program, the interrupt handler, and one counter byte the handler
-/// increments — the in-guest witness that delivery really landed.
 const CODE_GPA: u64 = 0x1000;
 const HANDLER_GPA: u64 = 0x2000;
 const COUNTER_GPA: usize = 0x3000;
@@ -34,20 +20,12 @@ const STACK_TOP: u64 = 0x7000;
 const RAM_LEN: usize = 0x10000;
 const TIMER_VECTOR: u32 = 0x20;
 
-/// Doorbell port: each `OUT` value is the prescribed duration for that exit.
 const DOORBELL_PORT: u8 = 0x10;
-/// Terminal port: one `OUT` ends the run.
 const POWEROFF_PORT: u8 = 0xF4;
 
-/// The prescribed durations, one per doorbell round. Cumulative V-time
-/// 3, 7, 12, 18, 25; the deadlines at 5 and 15 become due after events 1 and
-/// 3, so both interrupts land while the guest still has rounds left to run
-/// the handler in.
 const DURATIONS: [u8; 5] = [3, 4, 5, 6, 7];
 const DEADLINES: [u64; 2] = [5, 15];
 
-/// One identity-mapped guest RAM region, page-aligned (the `map_memory` host
-/// alignment invariant), reached by the backend through a raw pointer.
 struct GuestMem {
     ptr: *mut u8,
     layout: std::alloc::Layout,
@@ -95,7 +73,6 @@ fn timing() -> VirtualTimeTiming {
     }
 }
 
-/// `sti`, then one doorbell `OUT` per duration, then the terminal `OUT`.
 fn guest_program() -> Vec<u8> {
     let mut code = vec![0xFB];
     for duration in DURATIONS {
@@ -105,7 +82,6 @@ fn guest_program() -> Vec<u8> {
     code
 }
 
-/// `inc byte [COUNTER_GPA]` then `iret`.
 const HANDLER: [u8; 5] = [0xFE, 0x06, 0x00, 0x30, 0xCF];
 
 fn new_backend_or_explain() -> KvmBackend {
@@ -168,8 +144,6 @@ fn checkpoint_hash(backend: &KvmBackend, checkpoint: VirtualTimeCheckpoint) -> [
     hasher.finalize().into()
 }
 
-/// SHA-256 over every comparator-visible field of the normalized log, in a
-/// fixed little-endian encoding, for cross-job digest comparison in CI logs.
 fn log_digest(log: &NormalizedLog) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(b"x1-normalized-log-v1\0");

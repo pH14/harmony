@@ -1,16 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Systematic register write-mask + restore-validation property tests
-//! (PR #38 final systematic pass). Two directions:
-//!
-//! 1. **Writes never leak reserved bits** — an arbitrary sequence of
-//!    `mmio_write`s can never leave any register holding a bit outside its
-//!    guest-writable set (read back masked).
-//! 2. **`restore` is a real validation boundary** — an arbitrary `LapicState`
-//!    is accepted **iff** it is bit-reachable and timer-coherent, otherwise
-//!    rejected with `InvalidState`; an accepted state round-trips through
-//!    `snapshot` exactly. Cross-checked against an *independent* validator whose
-//!    masks are SDM literals (not imported from the crate), so a divergence in
-//!    the crate's write-mask table is caught.
 
 use lapic::{
     APIC_DFR, APIC_ESR, APIC_ICR_HIGH, APIC_ICR_LOW, APIC_LDR, APIC_LVT_ERROR, APIC_LVT_LINT0,
@@ -32,8 +20,6 @@ const TDCR_BITS: u32 = 0x0000_000B;
 const SVR_ENABLE: u32 = 1 << 8;
 const LVT_MASK_BIT: u32 = 1 << 16;
 
-/// Legal bits per LVT entry (Timer 0, Thermal 1, PerfMon 2, LINT0 3, LINT1 4,
-/// Error 5). Error has NO delivery-mode field — only vector + mask.
 fn lvt_bits(i: usize) -> u32 {
     match i {
         0 => 0x0007_00FF,
@@ -43,7 +29,6 @@ fn lvt_bits(i: usize) -> u32 {
     }
 }
 
-/// Every register holds only its legal bits (no reserved bit set).
 fn reserved_bits_clear(s: &LapicState) -> bool {
     let regs = s.id & !ID_BITS == 0
         && s.tpr & !TPR_BITS == 0
@@ -57,8 +42,6 @@ fn reserved_bits_clear(s: &LapicState) -> bool {
     regs && (0..6).all(|i| s.lvt[i] & !lvt_bits(i) == 0)
 }
 
-/// Independent validator: the full set of invariants a reachable `LapicState`
-/// satisfies.
 fn expected_valid(s: &LapicState) -> bool {
     if s.version != LAPIC_STATE_VERSION || s.timer_hz == 0 {
         return false;
@@ -79,9 +62,6 @@ fn expected_valid(s: &LapicState) -> bool {
     !(s.timer_running && s.count_at_arm > s.initial_count)
 }
 
-/// `restore`'s verdict must match the independent validator, and an accepted
-/// state must round-trip through `snapshot` exactly (restore never silently
-/// normalizes).
 fn check_restore(s: &LapicState) -> Result<(), TestCaseError> {
     let valid = expected_valid(s);
     match Lapic::restore(s) {
@@ -97,7 +77,6 @@ fn check_restore(s: &LapicState) -> Result<(), TestCaseError> {
     Ok(())
 }
 
-/// A `u32` that is either masked to `valid` bits or fully random.
 fn biased(valid: u32) -> impl Strategy<Value = u32> {
     prop_oneof![any::<u32>().prop_map(move |v| v & valid), any::<u32>()]
 }
@@ -121,8 +100,6 @@ fn arb_lvt() -> impl Strategy<Value = [u32; 6]> {
         .prop_map(|(a, b, c, d, e, f)| [a, b, c, d, e, f])
 }
 
-/// An arbitrary `LapicState`, biased so each field is valid ~half the time (so
-/// both the accept and reject paths are exercised), but otherwise unconstrained.
 fn arb_state() -> impl Strategy<Value = LapicState> {
     let head = (
         prop_oneof![Just(LAPIC_STATE_VERSION), any::<u32>()],
@@ -188,8 +165,6 @@ fn arb_state() -> impl Strategy<Value = LapicState> {
     )
 }
 
-/// Offsets that hit every writable register (incl. all six LVTs) plus a random
-/// aligned offset, so writes land on the registers the masks govern.
 fn write_offset() -> impl Strategy<Value = u32> {
     prop_oneof![
         Just(APIC_TPR),
@@ -214,8 +189,6 @@ fn write_offset() -> impl Strategy<Value = u32> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
-    /// Direction 1: no `mmio_write` sequence can leave a reserved bit set in any
-    /// register. (Catches the Error-LVT delivery-mode leak.)
     #[test]
     fn mmio_writes_never_set_reserved_bits(
         timer_hz in 1u64..=4_000_000_000u64,
@@ -234,17 +207,12 @@ proptest! {
         }
     }
 
-    /// Direction 2: `restore` accepts an arbitrary state iff it is valid, and an
-    /// accepted state round-trips exactly. Also a total function (never panics,
-    /// only `InvalidState` on rejection).
     #[test]
     fn restore_matches_validator(s in arb_state()) {
         check_restore(&s)?;
     }
 }
 
-/// Every register's reserved bits, set one at a time on an otherwise-reachable
-/// snapshot, are individually rejected by `restore`.
 #[test]
 fn restore_rejects_each_reserved_bit() {
     let mut l = Lapic::new(LapicConfig {

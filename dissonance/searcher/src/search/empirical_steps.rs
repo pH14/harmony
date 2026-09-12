@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Game-neutral empirical step tables folded deterministically from retained sequences.
-
 use std::{
     collections::{BTreeMap, VecDeque},
     error::Error,
@@ -11,57 +9,27 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Registered rule producing the recorded table hash.
-///
-/// `FullJson` re-serializes both ordered tables on every visible update, so
-/// its cost grows with the never-deleted history and dominates the run once
-/// the source is large. `IncrementalHistory` feeds each appended contribution
-/// into a persistent hasher and re-serializes only the bounded recent window,
-/// keeping every update O(recent). The two rules produce different hashes for
-/// the same tables, so each is bound to its own recorded policy identifier.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum EmpiricalStepHashRule {
-    /// Hash the JSON of both complete ordered tables.
     #[default]
     FullJson,
-    /// Fold appended history into a running hasher; re-serialize only recent.
     IncrementalHistory,
-    /// Fold the exact history into a running hash while retaining only bounded
-    /// deterministic frequency counts for future draws.
     IncrementalCompactHistory,
 }
 
-/// Maximum number of distinct historical steps retained by the compact rule.
-///
-/// The recent-success window remains available when this cap is reached, so a
-/// previously unseen step can still influence draws without growing the live
-/// all-history acceleration structure.
 const MAX_COMPACT_HISTORY_DISTINCT: usize = 4096;
 
-/// Registered parameters for one deterministic empirical-step fold.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EmpiricalStepParameters {
-    /// Ignore this many leading steps in every retained sequence.
     pub prefix_steps: usize,
-    /// Number of most recent retained successes contributing to the recent table.
     pub recent_successes: usize,
-    /// Frequency multiplier for the recent table in biased draws.
     pub recent_weight: usize,
-    /// Frequency multiplier for the never-deleted all-history table.
     pub all_history_weight: usize,
-    /// Recorded-stream interval between visible table updates.
     pub update_every_records: u64,
-    /// Recorded-stream interval between table-hash checkpoints.
     pub hash_every_records: u64,
 }
 
 impl EmpiricalStepParameters {
-    /// Validate the bounded, non-vacuous table configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a zero recent window, zero checkpoint interval, or
-    /// a mixture in which both weights are zero.
     pub fn validate(self) -> Result<(), EmpiricalStepError> {
         if self.recent_successes == 0 {
             return Err(EmpiricalStepError::InvalidParameters(
@@ -82,27 +50,18 @@ impl EmpiricalStepParameters {
     }
 }
 
-/// One reproducible table checkpoint.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EmpiricalStepCheckpoint {
-    /// Recorded stream records folded through this checkpoint.
     pub records: u64,
-    /// Retained success sequences folded through this checkpoint.
     pub retained_successes: u64,
-    /// SHA-256 of the ordered recent and all-history tables.
     pub table_sha256: String,
 }
 
-/// Deterministic empirical-step fold failure.
 #[derive(Debug)]
 pub enum EmpiricalStepError {
-    /// Registered parameters are vacuous or out of bounds.
     InvalidParameters(&'static str),
-    /// Weighted table length overflowed.
     TableLengthOverflow,
-    /// Ordered table serialization failed.
     Serialization(serde_json::Error),
-    /// Internal recent-window accounting diverged.
     RecentWindowDiverged,
 }
 
@@ -137,7 +96,6 @@ impl Error for EmpiricalStepError {
     }
 }
 
-/// Recent and all-history tables derived only from stream-ordered successes.
 #[derive(Clone, Debug)]
 pub struct EmpiricalStepTables<Step> {
     parameters: EmpiricalStepParameters,
@@ -158,20 +116,10 @@ impl<Step> EmpiricalStepTables<Step>
 where
     Step: Clone + Ord + Serialize,
 {
-    /// Start an empty deterministic fold.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the parameters are invalid.
     pub fn new(parameters: EmpiricalStepParameters) -> Result<Self, EmpiricalStepError> {
         Self::with_hash_rule(parameters, EmpiricalStepHashRule::FullJson)
     }
 
-    /// Start an empty deterministic fold under the named table-hash rule.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the parameters are invalid.
     pub fn with_hash_rule(
         parameters: EmpiricalStepParameters,
         hash_rule: EmpiricalStepHashRule,
@@ -212,14 +160,6 @@ where
         }
     }
 
-    /// Fold one retained success sequence in stream order.
-    ///
-    /// A sequence at or before the registered prefix contributes no steps and
-    /// is not counted as a useful retained success.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only if internal recent-window accounting diverges.
     pub fn fold_retained(&mut self, sequence: &[Step]) -> Result<(), EmpiricalStepError> {
         let Some(suffix) = sequence.get(self.parameters.prefix_steps..) else {
             return Ok(());
@@ -278,14 +218,6 @@ where
         Ok(())
     }
 
-    /// Make every buffered success visible immediately.
-    ///
-    /// Archive source loading calls this once after folding the complete source.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if internal recent-window accounting diverges or the
-    /// updated ordered tables cannot be serialized for their cached hash.
     pub fn flush(&mut self) -> Result<(), EmpiricalStepError> {
         let pending = std::mem::take(&mut self.pending);
         if pending.is_empty() {
@@ -298,17 +230,11 @@ where
         Ok(())
     }
 
-    /// Registered table-hash rule.
     #[must_use]
     pub fn hash_rule(&self) -> EmpiricalStepHashRule {
         self.hash_rule
     }
 
-    /// Finish one recorded stream record and emit its periodic hash if due.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when table serialization fails.
     pub fn finish_record(&mut self) -> Result<Option<EmpiricalStepCheckpoint>, EmpiricalStepError> {
         self.records = self.records.saturating_add(1);
         if self
@@ -326,12 +252,6 @@ where
         self.checkpoint().map(Some)
     }
 
-    /// Snapshot the table hash at its current fold position.
-    ///
-    /// # Errors
-    ///
-    /// The result remains fallible for API compatibility. Serialization
-    /// failures are reported when a visible generation is created or updated.
     pub fn checkpoint(&self) -> Result<EmpiricalStepCheckpoint, EmpiricalStepError> {
         Ok(EmpiricalStepCheckpoint {
             records: self.records,
@@ -340,52 +260,40 @@ where
         })
     }
 
-    /// Registered fold parameters.
     #[must_use]
     pub fn parameters(&self) -> EmpiricalStepParameters {
         self.parameters
     }
 
-    /// Recorded stream records folded so far.
     #[must_use]
     pub fn records(&self) -> u64 {
         self.records
     }
 
-    /// Retained success sequences that contributed at least one step.
     #[must_use]
     pub fn retained_successes(&self) -> u64 {
         self.retained_successes
     }
 
-    /// Ordered steps from the registered recent-success window.
     #[must_use]
     pub fn recent(&self) -> &[Step] {
         &self.recent
     }
 
-    /// Ordered steps from every success ever folded.
     #[must_use]
     pub fn all_history(&self) -> &[Step] {
         &self.all_history
     }
 
-    /// Frequency-weighted mixed-table length.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the registered weighted length overflows.
     pub fn mixed_len(&self) -> Result<usize, EmpiricalStepError> {
         self.view().mixed_len()
     }
 
-    /// Resolve one frequency-weighted mixed-table index.
     #[must_use]
     pub fn mixed_step(&self, index: usize) -> Option<&Step> {
         self.view().mixed_step(index)
     }
 
-    /// Borrowed view of the current visible tables.
     #[must_use]
     pub fn view(&self) -> EmpiricalStepTableRef<'_, Step> {
         if self.hash_rule == EmpiricalStepHashRule::IncrementalCompactHistory {
@@ -400,7 +308,6 @@ where
         }
     }
 
-    /// Number of selectable steps represented by the visible all-history table.
     #[must_use]
     pub fn history_len(&self) -> usize {
         if self.hash_rule == EmpiricalStepHashRule::IncrementalCompactHistory {
@@ -410,14 +317,12 @@ where
         }
     }
 
-    /// Bounded historical frequency table used by the compact rule.
     #[must_use]
     pub fn compact_history(&self) -> Option<&BTreeMap<Step, usize>> {
         (self.hash_rule == EmpiricalStepHashRule::IncrementalCompactHistory)
             .then_some(&self.compact_history)
     }
 
-    /// Logical live bytes held by the empirical draw acceleration state.
     #[must_use]
     pub fn memory_bytes(&self) -> usize {
         let step = std::mem::size_of::<Step>();
@@ -437,9 +342,6 @@ where
     }
 }
 
-/// Borrowed visible tables for one draw: the current fold state, or a
-/// historical version rebuilt from the append-only history plus a saved
-/// recent window.
 #[derive(Clone, Copy)]
 pub struct EmpiricalStepTableRef<'a, Step> {
     parameters: EmpiricalStepParameters,
@@ -454,7 +356,6 @@ enum EmpiricalStepHistoryRef<'a, Step> {
 }
 
 impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
-    /// Assemble a view from borrowed table slices.
     #[must_use]
     pub fn from_parts(
         parameters: EmpiricalStepParameters,
@@ -468,7 +369,6 @@ impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
         }
     }
 
-    /// Assemble a view from a bounded deterministic frequency table.
     #[must_use]
     pub fn from_counts(
         parameters: EmpiricalStepParameters,
@@ -490,11 +390,6 @@ impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
         }
     }
 
-    /// Frequency-weighted mixed-table length.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the registered weighted length overflows.
     pub fn mixed_len(&self) -> Result<usize, EmpiricalStepError> {
         self.recent
             .len()
@@ -507,7 +402,6 @@ impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
             .ok_or(EmpiricalStepError::TableLengthOverflow)
     }
 
-    /// Resolve one frequency-weighted mixed-table index.
     #[must_use]
     pub fn mixed_step(&self, index: usize) -> Option<&'a Step> {
         let recent_span = self

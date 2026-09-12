@@ -1,14 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The per-frame agent loop: the `retro_run` counter is the frame clock, and
-//! each vblank the agent (1) draws chord inputs (one entropy byte per input
-//! window), (2) publishes the billboard *before* the frame's `retro_run`,
-//! (3) emits state registers once per window and the frame clock every vblank,
-//! and (4) marks legibility events — §play-agent, in that order.
-//!
-//! The loop is generic over the [`Core`] seam (mock in tests, libretro in the
-//! guest) and the [`Harness`] seam (the SDK in the guest, a recording fake in
-//! tests), so every decision here is portable, deterministic, and a pure
-//! function of the entropy bytes the harness supplies.
 
 use std::fmt;
 
@@ -18,37 +8,19 @@ use crate::core_seam::Core;
 use crate::ram::{self, RamError, SmbState};
 use crate::regs;
 
-/// The SDK-facing seam: exactly the verbs the play-agent permits (`state_set`/
-/// `state_max`/`assert_reachable`/`entropy_fill` — nothing else, R-L2). The
-/// binary implements it over `harmony_sdk::Sdk`; tests implement it over a
-/// recording fake with a scripted entropy stream.
 pub trait Harness {
-    /// The transport-level error the guest surfaces loudly (never swallowed —
-    /// a swallowed emission reads as "never happened" and makes gates pass
-    /// vacuously; the `sdk-demo` discipline).
     type Error: fmt::Debug;
 
-    /// Draw one byte of decision entropy from the seeded stream.
     fn entropy_byte(&mut self) -> Result<u8, Self::Error>;
-    /// Report a state register (IJON assign).
     fn state_set(&mut self, reg: u32, value: u64) -> Result<(), Self::Error>;
-    /// Report a keep-max state register (the host mints novelty on increase).
     fn state_max(&mut self, reg: u32, value: u64) -> Result<(), Self::Error>;
-    /// Fire a reachability legibility marker.
     fn reachable(&mut self, point: u32) -> Result<(), Self::Error>;
 }
 
-/// The agent's manifest parameters (alphabet, weights, and `W` are
-/// manifest parameters — tuning *them* is legitimate input shaping; tuning the
-/// game is impossible).
 #[derive(Clone, Debug)]
 pub struct AgentConfig {
-    /// The input window `W` in frames: one entropy byte (one chord) per `W`
-    /// frames. Suggested 8–24.
     pub window: u32,
-    /// The x-bucket width in pixels (~128–256): `REG_X_BUCKET = x_abs / bucket`.
     pub x_bucket_px: u32,
-    /// The weighted chord alphabet.
     pub alphabet: ChordAlphabet,
 }
 
@@ -62,23 +34,13 @@ impl Default for AgentConfig {
     }
 }
 
-/// Why a frame step failed. Every variant is fatal to the run: a torn
-/// billboard or a swallowed emission would corrupt the record silently, so the
-/// agent stops loudly instead (the guest init maps that to a crash terminal).
 #[derive(Debug)]
 pub enum AgentError<E> {
-    /// A harness (SDK/transport) verb failed.
     Harness(E),
-    /// The core's work RAM did not decode.
     Ram(RamError),
-    /// The billboard buffer did not fit the layout.
     Billboard(BillboardError),
-    /// The core failed to serialize its savestate.
     SerializeFailed,
-    /// The core could not expose its work RAM.
     WorkRamFailed,
-    /// The configured window is zero (a config error caught at construction,
-    /// kept as an error rather than a panic per rule 4).
     ZeroWindow,
 }
 
@@ -97,36 +59,25 @@ impl<E: fmt::Debug> fmt::Display for AgentError<E> {
 
 impl<E: fmt::Debug> std::error::Error for AgentError<E> {}
 
-/// What one frame step did — the smoke mode prints these, and the portable
-/// tests assert the input tape and register emissions against them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StepReport {
-    /// The frame this step published and ran (the billboard's stamped frame).
     pub frame: u32,
-    /// The joypad byte held for this frame.
     pub joypad: u8,
-    /// The decoded state, present on window-boundary frames (when registers
-    /// were emitted).
     pub state: Option<SmbState>,
 }
 
-/// The play-agent's frame-stepped brain over a [`Core`].
 pub struct Agent<C: Core> {
     core: C,
     cfg: AgentConfig,
     layout: BillboardLayout,
     frame: u32,
     chord: u8,
-    /// The `(world, level)` ordinal at the first gameplay observation — the
-    /// baseline the level-cleared marker compares against.
     start_ordinal: Option<u64>,
     level_cleared_fired: bool,
     world_two_fired: bool,
 }
 
 impl<C: Core> Agent<C> {
-    /// Freeze the billboard layout from the core's serialize size and build
-    /// the agent. The first window's chord is drawn on the first step.
     pub fn new(
         mut core: C,
         cfg: AgentConfig,
@@ -147,31 +98,18 @@ impl<C: Core> Agent<C> {
         })
     }
 
-    /// The frozen billboard layout (the binary sizes and publishes the pinned
-    /// buffer from this).
     pub fn layout(&self) -> BillboardLayout {
         self.layout
     }
 
-    /// The frames stepped so far (the next frame to publish).
     pub fn frame(&self) -> u32 {
         self.frame
     }
 
-    /// Immutable access to the core (tests inspect the mock's RAM).
     pub fn core_mut(&mut self) -> &mut C {
         &mut self.core
     }
 
-    /// Fill the billboard **without stepping** (round-8 P1: the seal-point
-    /// billboard must never be zeros): header for the current frame with a
-    /// neutral joypad, the core's real savestate, the real work RAM — proving
-    /// `retro_serialize` and RAM access work *before* `setup_complete` seals
-    /// the base, so every branch inherits a valid, decodable billboard.
-    /// Returns the decoded state so the caller can also verify the seal point
-    /// is in-gameplay (the vacuity check, in-guest). Draws no entropy and
-    /// emits nothing; the first `step` deterministically rewrites the same
-    /// frame with its real chord.
     pub fn prime_billboard(
         &mut self,
         billboard: &mut [u8],
@@ -188,10 +126,6 @@ impl<C: Core> Agent<C> {
         ram::decode(self.layout.work_ram_mut(billboard)).map_err(AgentError::Ram)
     }
 
-    /// Run one frame: draw (on window boundaries), publish the billboard,
-    /// emit registers + the frame clock, mark legibility events, then
-    /// `retro_run`. `billboard` is the pinned buffer (at least
-    /// [`BillboardLayout::total_len`] bytes).
     pub fn step<H: Harness>(
         &mut self,
         harness: &mut H,
@@ -279,7 +213,6 @@ mod tests {
     use crate::core_seam::MockCore;
     use crate::ram::addr;
 
-    /// A recording harness with a scripted entropy stream.
     #[derive(Default)]
     pub struct FakeHarness {
         pub entropy: Vec<u8>,
@@ -443,9 +376,6 @@ mod tests {
         ));
     }
 
-    /// Round-8 P1: the seal-point billboard is primed with a real frame
-    /// (header + savestate + work RAM) without stepping — never zeros — and
-    /// the first step still stamps frame 0.
     #[test]
     fn prime_billboard_fills_a_valid_frame_without_stepping() {
         let mut agent = Agent::new(MockCore::in_gameplay(), small_cfg(4)).unwrap();

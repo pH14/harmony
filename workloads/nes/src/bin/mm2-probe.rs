@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Print selected work-RAM bytes per frame while a chord schedule runs from
-//! power-on. Used to establish a game's boot walk and memory decoders.
-
 use std::{env, error::Error, fs, path::PathBuf};
 
 use machine::nes::ButtonChord;

@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Shared proptest strategies that build arbitrary **in-bounds**
-//! `Request` / `Reply` / `ControlError` values (small payloads, so a generated
-//! frame body never approaches `MAX_FRAME_LEN`). Used by the round-trip,
-//! streaming, and malformed-input property tests.
 
 #![allow(dead_code)]
 
@@ -13,7 +9,6 @@ use control_proto::{
 };
 use proptest::prelude::*;
 
-/// Small byte blobs keep generated frame bodies well under `MAX_FRAME_LEN`.
 const MAX_BLOB: usize = 64;
 
 fn arb_bytes() -> impl Strategy<Value = Vec<u8>> {

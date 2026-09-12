@@ -1,20 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The trap apparatus, decoupled behind the [`Backend`] trait (ruling
-//! R-Backend), generic over the ISA it traps (the [`Arch`] seam,
-//! `docs/ARCHITECTURE.md`). `vmm-backend` is the lower half of the
-//! `docs/ARCHITECTURE.md` crate split: it owns the thing that holds the vCPU and
-//! surfaces VM-exits, while the deterministic VMM above it (vmm-core) — the
-//! CPU/MSR-contract dispositions, V-time, hypercalls, snapshot/restore, the
-//! userspace interrupt-fabric models — compiles against this trait **alone**
-//! and never branches on which backend or which ISA is in use. The portable
-//! surface (the traits, the two-level [`Exit`] and the per-vendor value types
-//! under [`arch`], [`Capabilities`]/[`ExitCounts`]/[`BackendError`], and a
-//! deterministic in-process [`MockBackend`] behind the non-default `mock`
-//! feature) compiles and is fully tested on macOS and Linux; the Linux-only
-//! `KvmBackend` (the bring-up stock-KVM impl, `KVM_IRQCHIP_NONE`, one vCPU)
-//! lives under `#[cfg(target_os = "linux")]` so a Mac build stays green with
-//! the traits + types only. One impl per (substrate, arch) pair; the binary's
-//! composition root is the one place a concrete pair is named.
 
 pub mod arch;
 mod backend;

@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Evaluator-private extraction and replay certification for snapshot-root fixtures.
-
 use std::{
     env,
     error::Error,

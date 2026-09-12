@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Apple Silicon Hypervisor.framework backend for the M1 virtual_time V-time
-//! bring-up path.
-//!
-//! This backend is deliberately honest and narrow. The measured macOS 26.4.1
-//! surface traps WFI, stage-2 MMIO, PMU, and the GICv3 CPU-interface sysregs,
-//! but it does not trap `CNTVCT_EL0` or virtual-timer programming. The audited
-//! guest therefore obtains time from the paravirtual V-time page and the
-//! capability report keeps direct-counter/timer enforcement false.
 
 use core::ffi::c_void;
 use std::ptr::{self, NonNull};
@@ -94,11 +86,6 @@ const PSCI_MIGRATE_INFO_TYPE: u64 = 0x8400_0006;
 const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
 const PSCI_SYSTEM_RESET: u64 = 0x8400_0009;
 const PSCI_FEATURES: u64 = 0x8400_000a;
-/// The portable virtual-firmware contract advertised by the guest DTB.
-///
-/// Reporting a newer host-dependent version is observable: PSCI 1.1 adds
-/// `SYSTEM_RESET2`, and Linux records that capability in guest RAM during
-/// boot. Keep this pinned to 1.0 on both HVF and KVM.
 const PSCI_VERSION_1_0: u64 = 0x0001_0000;
 const SMCCC_VERSION: u64 = 0x8000_0000;
 const SMCCC_VERSION_1_1: u64 = 0x0001_0001;
@@ -112,10 +99,6 @@ const PSCI_NOT_SUPPORTED: u64 = (-1i64) as u64;
 const PSCI_ALREADY_ON: u64 = (-4i64) as u64;
 const PSCI_NOT_PRESENT: u64 = (-7i64) as u64;
 
-/// Identity rows visible to guest `MRS` instructions but absent from the
-/// Hypervisor.framework get/set enum on this validated host. The M5 probe
-/// measured these exact native values. A policy may acknowledge only those
-/// values; any attempted drift fails closed instead of being silently skipped.
 const fn hvf_implicit_identity_value(encoding: u32) -> Option<u64> {
     match encoding {
         0xc022 | 0xc027 | 0xc02a | 0xc032 | 0xc033 | 0xc03b | 0xc03c => Some(0),
@@ -215,9 +198,6 @@ struct UndefinedException {
     esr_el1: u64,
 }
 
-/// Model the AArch64 `TakeException` state transition for an undefined
-/// instruction delivered to EL1. HVF reports a sysreg trap after this backend
-/// has advanced PC, so ELR must point back at the faulting instruction.
 fn undefined_exception(
     next_pc: u64,
     old_pstate: u64,
@@ -304,17 +284,12 @@ fn accepted_irq_for_sysreg(
         .flatten()
 }
 
-/// Cross-thread handle for the liveness monitor's non-guest-visible abort.
-/// Requesting an exit only makes `hv_vcpu_run` return canceled; it never
-/// injects state into the guest.
 #[derive(Clone, Copy, Debug)]
 pub struct HvfExitHandle {
     vcpu: u64,
 }
 
 impl HvfExitHandle {
-    /// Ask Hypervisor.framework to return from the current vCPU entry.
-    /// Calling this while the vCPU is not running is harmless.
     pub fn request_exit(self) -> Result<()> {
         let vcpus = [self.vcpu];
         // SAFETY: the array is live for the call. HVF treats vCPU identifiers
@@ -325,7 +300,6 @@ impl HvfExitHandle {
     }
 }
 
-/// Hypervisor.framework backend for the measured Apple Silicon bring-up host.
 pub struct HvfBackend {
     vcpu: u64,
     exit: NonNull<HvVcpuExit>,
@@ -338,7 +312,6 @@ pub struct HvfBackend {
 }
 
 impl HvfBackend {
-    /// Create the process-global HVF VM and its single vCPU.
     pub fn new() -> Result<Self> {
         // SAFETY: null selects the documented default VM configuration.
         hv("hv_vm_create", unsafe { hv_vm_create(ptr::null_mut()) })?;
@@ -393,8 +366,6 @@ impl HvfBackend {
         })
     }
 
-    /// Obtain the token used by a host-only liveness monitor to abort a stuck
-    /// guest entry without perturbing guest state.
     pub fn exit_handle(&self) -> HvfExitHandle {
         HvfExitHandle { vcpu: self.vcpu }
     }

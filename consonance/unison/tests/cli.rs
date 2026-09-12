@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Acceptance gate 6: CLI smoke test — invoke both subcommands as real
-//! processes, parse the JSON, and check the divergence point round-trips.
 
 use std::process::Command;
 use unison::DivergencePoint;

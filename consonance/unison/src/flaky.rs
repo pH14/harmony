@@ -1,61 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Divergence injection: wrap a [`SubjectFactory`] so spawned machines are
-//! perturbed once, the first time their work counter reaches a chosen
-//! boundary. This simulates "run B has a nondeterminism bug at tick T" with T
-//! known, so the bisector can be tested against ground truth.
 
 use crate::{RunOutcome, Subject, SubjectError, SubjectFactory};
 use serde::{Deserialize, Serialize};
 
-/// A single one-shot state perturbation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Perturbation {
-    /// XOR register `reg` (index mod 8) with `mask`. Note that later writes
-    /// to the register can erase the divergence before a checkpoint observes
-    /// it; prefer [`Perturbation::XorPrng`] when persistence is required.
-    XorReg {
-        /// Register index (taken mod 8 by the toy machine).
-        reg: u8,
-        /// XOR mask; 0 is a no-op.
-        mask: u64,
-    },
-    /// XOR the PRNG state with `mask` (use a nonzero mask). The xorshift64*
-    /// state update is a bijection, so two states that differ once differ at
-    /// every later step — the divergence is permanent, which is what the
-    /// bisector property tests rely on.
-    XorPrng {
-        /// XOR mask; 0 is a no-op.
-        mask: u64,
-    },
-    /// Halt the machine immediately (produces [`crate::Verdict::HaltMismatch`]).
+    XorReg { reg: u8, mask: u64 },
+    XorPrng { mask: u64 },
     ForceHalt,
 }
 
-/// Machines that know how to apply a [`Perturbation`] to their own
-/// architectural state. [`Subject`] itself deliberately exposes no mutation
-/// hooks, so divergence injection needs this extra capability.
 pub trait Perturbable: Subject {
-    /// Apply `p` to the current architectural state.
     fn apply_perturbation(&mut self, p: &Perturbation);
 }
 
-/// Wraps spawned machines so that the first time work reaches ≥ `diverge_at`,
-/// `perturb` is applied exactly once. `diverge_at: u64::MAX` is the "never"
-/// sentinel: the factory behaves identically to `inner`, unconditionally —
-/// even for a machine whose work counter actually reaches `u64::MAX`.
-///
-/// Edge cases: `diverge_at: 0` perturbs at spawn (work starts at 0, which is
-/// already ≥ 0); a machine that halts strictly before `diverge_at` is never
-/// perturbed (the boundary is unreachable), but one that halts exactly *at*
-/// `diverge_at` is.
 #[derive(Debug, Clone)]
 pub struct FlakyFactory<F: SubjectFactory> {
-    /// Factory producing the machines to perturb.
     pub inner: F,
-    /// Work count at which the perturbation fires.
     pub diverge_at: u64,
-    /// What to do to the machine state at the boundary.
     pub perturb: Perturbation,
 }
 
@@ -81,9 +44,6 @@ where
     }
 }
 
-/// A machine wrapper that applies its perturbation once, exactly when work
-/// first reaches `diverge_at` — even when a `run_to` target lands beyond the
-/// boundary (it runs to the boundary internally, perturbs, then continues).
 #[derive(Debug, Clone)]
 pub struct FlakyMachine<M: Perturbable> {
     inner: M,
@@ -285,10 +245,6 @@ mod tests {
         assert_eq!(m.work(), 137);
     }
 
-    /// Mock machine whose `run_to` jumps the work counter straight to the
-    /// target, making `work == u64::MAX` actually reachable — the toy machine
-    /// can't get there, but the trait permits it and the real-VM adapter is a
-    /// foreign impl.
     struct JumpMachine {
         work: u64,
         perturbed: bool,

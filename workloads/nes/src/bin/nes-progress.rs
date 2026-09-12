@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Retrospective evidence replay. Never submits retained tapes to search.
 
 use nes_workload::{
     metroid::{

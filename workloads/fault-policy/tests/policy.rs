@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 5 — `FaultPolicy` byte-determinism. `to_bytes` is identical for equal
-//! policies; `from_bytes` round-trips; malformed input errors cleanly (never a
-//! panic).
 
 mod common;
 
@@ -12,7 +9,6 @@ use proptest::prelude::*;
 proptest! {
     #![proptest_config(config(512))]
 
-    /// `from_bytes(to_bytes(p)) == p` and `to_bytes` is byte-stable.
     #[test]
     fn policy_round_trips(p in arb_policy()) {
         let bytes = p.to_bytes();
@@ -21,7 +17,6 @@ proptest! {
         prop_assert_eq!(bytes, back.to_bytes());
     }
 
-    /// `from_bytes` is total on arbitrary bytes.
     #[test]
     fn from_bytes_never_panics(bytes in prop::collection::vec(any::<u8>(), 0..256)) {
         let _ = FaultPolicy::from_bytes(&bytes);
@@ -94,11 +89,6 @@ fn set_class_rejects_misuse() {
     );
 }
 
-/// `is_enforceable_only` accepts a policy whose faults are limited to the
-/// classes that have a live decide-seam enforcer — buggify (SDK) and/or net (the
-/// flow agent) — and rejects one that faults the still-unenforced block/process
-/// classes. It is the `is_buggify_only` predicate widened for the net
-/// vertical.
 #[test]
 fn is_enforceable_only_admits_buggify_and_net_but_not_block_or_process() {
     let none = FaultPolicy::none();
@@ -138,10 +128,6 @@ fn is_enforceable_only_admits_buggify_and_net_but_not_block_or_process() {
     assert!(!proc.is_enforceable_only());
 }
 
-/// Fractional `NetLoss` (`0 < num < den`) is NOT enforceable by the in-kernel
-/// prototype (it needs the deferred 61b proxy), so a policy whose net class could
-/// sample it is rejected fail-loud — while the binary net faults (full drop,
-/// reset, latency, throttle) stay enforceable.
 #[test]
 fn is_enforceable_only_rejects_fractional_netloss_but_keeps_binary() {
     let mut frac = FaultPolicy::none();

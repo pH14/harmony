@@ -1,11 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 1 — replay determinism, the core invariant. Two
-//! `SeededEnv::new(seed, policy)` answer an identical `DecisionPoint` sequence
-//! identically; a `RecordedEnv` materialized from a spec reproduces its answers
-//! exactly; and a **mixed host+guest** `Environment` replays bit-identically
-//! through a `record`→`replay` (encode→decode) round-trip — the
-//! acceptance check `replay(record(env)) == env`'s run, with host overrides
-//! present.
 
 mod common;
 
@@ -23,8 +16,6 @@ fn run<E: Environment>(env: &mut E, seq: &[DecisionPoint]) -> Vec<Outcome> {
     seq.iter().map(|p| env.decide(p)).collect()
 }
 
-/// An override map guaranteed to carry at least one host-plane action (the gate
-/// requires "host overrides present"), mixed with the arbitrary host+guest map.
 fn arb_overrides_with_host() -> impl Strategy<Value = BTreeMap<Moment, Action>> {
     (arb_overrides(), any::<u64>(), arb_host_fault()).prop_map(|(mut m, hm, hf)| {
         m.insert(hm, Action::Host(hf));
@@ -32,9 +23,6 @@ fn arb_overrides_with_host() -> impl Strategy<Value = BTreeMap<Moment, Action>> 
     })
 }
 
-/// Build a guest schedule that stamps a decision at every override `Moment` (so
-/// guest overrides get a chance to fire and host-action Moments fall through to
-/// the seeded base), plus a spread of extra Moments.
 fn build_schedule(
     overrides: &BTreeMap<Moment, Action>,
     points: &[DecisionPoint],
@@ -53,8 +41,6 @@ fn build_schedule(
 proptest! {
     #![proptest_config(config(256))]
 
-    /// Same seed + same policy + same point sequence ⇒ identical answer sequence.
-    /// A `HashMap` reaching any answer would make this flaky.
     #[test]
     fn two_seeded_envs_agree(
         seed in any::<u64>(),
@@ -69,9 +55,6 @@ proptest! {
         }
     }
 
-    /// A `RecordedEnv` is a pure function of its `EnvSpec`: two materializations
-    /// of the same spec reproduce the same answers over the same Moment-stamped
-    /// schedule.
     #[test]
     fn recorded_env_reproduces_exactly(
         spec in arb_spec(),
@@ -86,10 +69,6 @@ proptest! {
         }
     }
 
-    /// **The acceptance gate.** A mixed host+guest `Environment` replays
-    /// bit-identically across a `record`→`replay` (encode→decode) round-trip:
-    /// the serialized reproducer reconstructs the exact same guest answer trace
-    /// and host-fault timeline as the in-memory one.
     #[test]
     fn mixed_host_guest_replays_bit_identically(
         seed in any::<u64>(),

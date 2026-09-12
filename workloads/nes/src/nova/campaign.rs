@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Nova implementation of the game-neutral campaign interface.
-
 use std::{
     error::Error,
     io::Write,
@@ -47,9 +45,7 @@ use crate::{
 ))]
 use machine::consonance::{ConsonanceMachine, identity as consonance_identity};
 
-/// Stream format written by Nova campaigns.
 pub const CAMPAIGN_STREAM_FORMAT: &str = "nova-quicknes-campaign-stream-v1";
-/// Snapshot checkpoint format written by Nova campaigns.
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "nova-quicknes-snapshot-checkpoint-v1";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
@@ -67,11 +63,9 @@ const VIABILITY_PROBE_FRAMES: u16 = 60;
 type NovaPreference = (u8, u8, u8, bool, u8, u8);
 type NovaChampionKey = (NovaProgressWatermark, NovaPreference);
 
-/// Header placeholder for a game with no adaptive draw table.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NovaNoTableHeader;
 
-/// ROM and emulator identity shared by Nova workers.
 pub struct NovaGame<M: NovaMachineKind = QuickNesMachine> {
     rom: Vec<u8>,
     level: NovaLevel,
@@ -80,16 +74,12 @@ pub struct NovaGame<M: NovaMachineKind = QuickNesMachine> {
     runtime: M::Configuration,
 }
 
-/// Machine construction used by a Nova campaign.
 #[doc(hidden)]
 pub trait NovaMachineKind: Machine + Sized {
-    /// Prepared runtime data for this concrete backend.
     type Configuration: Sync;
-    /// Construct one worker-local machine and seal Nova gameplay genesis.
     fn new_nova_target(game: &NovaGame<Self>) -> Result<NovaTarget<Self>, String>;
 }
 
-/// Native runtime artifacts, validated by the QuickNES driver.
 pub struct NativeConfiguration {
     core_path: PathBuf,
     core_sha256: String,
@@ -113,7 +103,6 @@ impl NovaMachineKind for QuickNesMachine {
     any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
 ))]
-/// Prepared controlled Linux artifacts for the VM backend.
 pub struct ConsonanceConfiguration {
     kernel: Vec<u8>,
     initramfs: Vec<u8>,
@@ -141,14 +130,11 @@ impl NovaMachineKind for ConsonanceMachine {
 }
 
 impl NovaGame<QuickNesMachine> {
-    /// Build a game context over a pinned QuickNES core.
     #[must_use]
     pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
         Self::new_at_level(rom, core_path, core_sha256, NovaLevel::default())
     }
 
-    /// Build a game context whose sealed genesis starts at one independently
-    /// selected Nova campaign level.
     #[must_use]
     pub fn new_at_level(rom: &[u8], core_path: &Path, core_sha256: &str, level: NovaLevel) -> Self {
         let identity = format!(
@@ -170,7 +156,6 @@ impl NovaGame<QuickNesMachine> {
         }
     }
 
-    /// Build from the external core named by `HARMONY_QUICKNES_CORE`.
     pub fn from_environment(rom: &[u8]) -> Result<Self, Box<dyn Error>> {
         let core_path = PathBuf::from(
             std::env::var_os("HARMONY_QUICKNES_CORE")
@@ -188,7 +173,6 @@ impl NovaGame<QuickNesMachine> {
     not(miri)
 ))]
 impl NovaGame<ConsonanceMachine> {
-    /// Build a Nova game whose evaluator runs QuickNES inside Consonance.
     #[must_use]
     pub fn new_consonance(rom: &[u8], kernel: &[u8], initramfs: &[u8]) -> Self {
         Self {
@@ -208,7 +192,6 @@ impl NovaGame<ConsonanceMachine> {
 }
 
 impl<M: NovaMachineKind> NovaGame<M> {
-    /// Continue through level clears and stop only once all levels are cleared.
     #[must_use]
     pub fn with_whole_game(mut self) -> Self {
         self.whole_game = true;
@@ -223,24 +206,20 @@ impl<M: NovaMachineKind> NovaGame<M> {
         }
     }
 
-    /// Pinned emulator identity recorded in streams.
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
         &self.identity
     }
 
-    /// One-based Nova campaign level used to construct target genesis.
     #[must_use]
     pub fn level(&self) -> NovaLevel {
         self.level
     }
 }
 
-/// Nova's fixed recorded run policy.
 #[derive(Clone, Copy, Debug)]
 pub struct NovaCampaignRun;
 
-/// Game-owned campaign evidence.
 #[derive(Clone, Default)]
 pub struct NovaCampaignEvidence {
     aggregate: NovaMilestones,
@@ -252,19 +231,13 @@ pub struct NovaCampaignEvidence {
     champion_key: Option<NovaChampionKey>,
 }
 
-/// Nova campaign origin.
 pub type NovaCampaignOrigin<M = QuickNesMachine> = CampaignOrigin<NovaGame<M>>;
-/// Nova resume checkpoint.
 pub type NovaCampaignCheckpoint<M = QuickNesMachine> =
     CampaignCheckpoint<NovaSnapshot<<M as Machine>::Portable>>;
-/// Nova whole-tree snapshot checkpoint.
 pub type NovaSnapshotCheckpoint<M = QuickNesMachine> =
     SnapshotCheckpoint<NovaSnapshot<<M as Machine>::Portable>>;
-/// Nova stream header.
 pub type NovaCampaignStreamHeader = CampaignStreamHeader<NovaNoTableHeader>;
-/// Nova campaign report.
 pub type NovaCampaignModeReport = CampaignModeReport<ButtonChord, NovaArchiveReport>;
-/// Nova progress sidecar record.
 pub type NovaCampaignProgressRecord = CampaignProgressRecord<NovaArchiveKey>;
 type NovaCampaignActionResult<M> = CampaignActionResult<NovaGame<M>>;
 type NovaCampaignJobResult<M> = CampaignJobResult<NovaGame<M>>;
@@ -316,38 +289,21 @@ fn nova_result_sha256<M: NovaMachineKind>(
     postcard_value_sha256(&NovaResult { actions })
 }
 
-/// Fixed configuration for one live Nova campaign.
 pub struct NovaCampaignConfig {
-    /// Campaign seed.
     pub campaign_seed: u64,
-    /// Worker thread count.
     pub workers: u32,
-    /// Admitted execution budget.
     pub execution_budget: u64,
-    /// Maximum actions in one clean-reset input.
     pub action_limit: usize,
-    /// Operator-supplied host label.
     pub host: String,
-    /// Optional live-only wall cutoff.
     pub wall_budget: Option<std::time::Duration>,
-    /// Live-only: continue issuing reservations after the first victory until
-    /// another live limit stops the run. Never recorded or used by replay.
     pub continue_after_victory: bool,
-    /// Maximum retained archive entries.
     pub archive_entry_limit: usize,
-    /// Deterministic logical-memory budget for live search structures.
     pub memory_budget_mib: Option<usize>,
-    /// Live-only: materialize full archive inputs and snapshots at completion.
     pub materialize_final_artifacts: bool,
-    /// Admission policy.
     pub retention: RetentionPolicy,
-    /// Generic parent selector.
     pub selector: crate::search::archive::SelectorPolicy,
-    /// Generic suffix-length shape.
     pub suffix: SuffixShape,
-    /// Generic draw mixture.
     pub mixture: DrawMixture,
-    /// Live-only path receiving the first level-clearing input.
     pub victory_input_path: Option<PathBuf>,
 }
 
@@ -797,7 +753,6 @@ impl<M: NovaMachineKind> Evaluation for NovaGame<M> {
     }
 }
 
-/// Run a Nova campaign and return its report plus whole-tree checkpoint.
 pub fn run_nova_campaign_checkpointed<M: NovaMachineKind>(
     game: &NovaGame<M>,
     config: &NovaCampaignConfig,
@@ -808,7 +763,6 @@ pub fn run_nova_campaign_checkpointed<M: NovaMachineKind>(
     run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
 }
 
-/// Replay a recorded Nova stream exactly.
 pub fn replay_nova_campaign_checkpointed<M: NovaMachineKind>(
     game: &NovaGame<M>,
     stream_bytes: &[u8],

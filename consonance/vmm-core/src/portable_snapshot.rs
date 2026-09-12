@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Host-neutral control-snapshot artifacts.
-//!
-//! A snapshot-store layer is not portable by itself: the control server keeps
-//! the SDK stream, remaining ordered payloads, generic service configuration,
-//! evidence cut, and lineage taint in handle-keyed side tables.
-//! This module serializes that complete replay state together with materialized
-//! RAM and the canonical vendor VM-state blob. The format is fixed-order,
-//! little-endian, length-bounded, and protected by a trailing SHA-256 digest.
 
 use std::{
     collections::BTreeMap,
@@ -42,36 +34,19 @@ const MAX_SPARSE_SIDECAR_LEN: usize = MAX_VM_STATE_LEN
     .saturating_add(MAX_SUFFIX_LEN)
     .saturating_add(128);
 
-/// In-process sparse portable snapshot data.
-///
-/// pages contains only the target-resolved pages that differ from the
-/// export base, in strictly increasing GFN order. The sidecar is an opaque,
-/// versioned byte vector containing the non-memory replay state; it never
-/// contains guest RAM or a whole-state hash. Keeping pages in Arcs lets a
-/// search worker pass the sparse image between layers without eagerly copying
-/// each 4-KiB frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SparsePortableSnapshot {
-    /// Target-resolved changed pages, sorted by GFN and unique.
     pub pages: Vec<(u64, Arc<[u8; PAGE_SIZE]>)>,
-    /// Versioned sidecar containing vendor and control-plane replay state.
     pub sidecar: Vec<u8>,
 }
 
-/// Metadata returned after importing an in-process sparse snapshot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SparsePortableSnapshotReceipt {
-    /// Newly minted session-local snapshot handle.
     pub id: control_proto::SnapId,
-    /// Exact synchronized V-time at the imported seal.
     pub at: control_proto::Moment,
-    /// SDK event-prefix length included in the snapshot.
     pub sdk_events: u64,
-    /// Portable normalized-event prefix length at the seal.
     pub trace_events: u64,
-    /// Portable deadline-schedule prefix length at the seal.
     pub trace_schedules: u64,
-    /// Whether the sealed lineage was tainted by improvisation.
     pub tainted: bool,
 }
 
@@ -99,7 +74,6 @@ pub(crate) struct SparsePortableSidecarRef<'a> {
     pub(crate) state_blob_suffix: &'a [u8],
 }
 
-/// A complete decoded portable snapshot.
 pub(crate) struct PortableSnapshot {
     pub(crate) memory: Vec<u8>,
     pub(crate) vm_state: Vec<u8>,
@@ -113,7 +87,6 @@ pub(crate) struct PortableSnapshot {
     pub(crate) state_hash: [u8; 32],
 }
 
-/// Borrowed form used while streaming an existing store layer to disk.
 pub(crate) struct PortableSnapshotRef<'a> {
     pub(crate) memory: &'a [u8],
     pub(crate) vm_state: &'a [u8],
@@ -127,44 +100,30 @@ pub(crate) struct PortableSnapshotRef<'a> {
     pub(crate) state_hash: [u8; 32],
 }
 
-/// Strict portable-snapshot encode/decode failure.
 #[derive(Debug, thiserror::Error)]
 pub enum PortableSnapshotError {
-    /// Artifact I/O failed.
     #[error("portable snapshot I/O error")]
     Io(#[from] std::io::Error),
-    /// The container magic is not the portable-snapshot magic.
     #[error("portable snapshot has bad magic")]
     BadMagic,
-    /// The format version is not supported by this build.
     #[error("portable snapshot version {0} is unsupported")]
     BadVersion(u16),
-    /// An unknown flag or a presence/length contradiction was found.
     #[error("portable snapshot flags are malformed")]
     BadFlags,
-    /// A section length is not admissible.
     #[error("portable snapshot {section} length {got} exceeds {max}")]
     Length {
-        /// Stable section name.
         section: &'static str,
-        /// Encoded length.
         got: u64,
-        /// Maximum accepted length.
         max: u64,
     },
-    /// A section has an invalid tag, count, truncation, or trailing byte.
     #[error("portable snapshot section malformed: {0}")]
     Malformed(&'static str),
-    /// The trailing artifact digest does not authenticate the preceding bytes.
     #[error("portable snapshot SHA-256 mismatch")]
     DigestMismatch,
-    /// The embedded generic service configuration or channel answer was malformed.
     #[error("portable snapshot environment state malformed")]
     Environment(#[from] channel::ChannelError),
-    /// The snapshot store or vendor VM-state codec rejected imported bytes.
     #[error("portable snapshot store/VM-state failure")]
     Snapshot(#[from] SnapshotError),
-    /// The requested session-local handle is absent.
     #[error("unknown portable snapshot handle {0}")]
     UnknownSnapshot(u64),
 }
@@ -287,11 +246,6 @@ impl PortableSnapshot {
     }
 }
 
-/// Encode the non-memory half of an in-process sparse snapshot.
-///
-/// This format intentionally has no RAM section and no whole-state digest:
-/// the store already authenticates each page and vm_state blob, while the
-/// sparse seam must not turn an export into an O(total-RAM) operation.
 pub(crate) fn encode_sparse_sidecar(
     sidecar: &SparsePortableSidecarRef<'_>,
 ) -> Result<Vec<u8>, PortableSnapshotError> {
@@ -339,10 +293,6 @@ pub(crate) fn encode_sparse_sidecar(
     Ok(out)
 }
 
-/// Decode and strictly validate an in-process sparse sidecar.
-///
-/// All section lengths are checked before allocation/copying, optional-section
-/// flags must agree with their lengths, and no trailing bytes are accepted.
 pub(crate) fn decode_sparse_sidecar(
     bytes: &[u8],
 ) -> Result<SparsePortableSidecar, PortableSnapshotError> {

@@ -1,18 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Portable (Mac + Linux) integration test for the live snapshot/branch glue:
-//! the `SnapshotEngine` (layered CoW store) wired to a `Vmm`'s memory
-//! and `vm_state` adapter, driven against a scripted `MockBackend`. It exercises
-//! the full path — `save_vm_state` + `snapshot_base`/`snapshot_derive` →
-//! `materialize` → `restore_snapshot` → `reseed_entropy` — with no `/dev/kvm`.
-//!
-//! The box-only gates (bit-identical *execution* after restore, restore latency)
-//! live in `tests/live_snapshot_branch.rs`; this test proves the wiring round-trips
-//! the captured state and that N branches share one base.
-//!
-//! `#![cfg(not(miri))]`: every test here materializes a snapshot, which `mmap`s a
-//! CoW view (`snapshot_store::Store::materialize`) — a syscall Miri cannot execute.
-//! The pure parse/convert/store logic Miri *does* validate lives in the
-//! `src/snapshot.rs` unit tests (device-blob byte parsing, the vCPU conversions).
 #![cfg(not(miri))]
 
 use vm_state::VmState;
@@ -25,7 +11,6 @@ use vmm_core::vmm::{GuestRam, Step, Vmm, VtimeWiring};
 
 const RAM: usize = 0x4000;
 
-/// A configured, V-time-wired `Vmm<MockBackend>` over `RAM` bytes of guest memory.
 fn vmm(exits: Vec<Exit<X86>>, _work_at: u64, seed: u64) -> Vmm<MockBackend> {
     let mut m = MockBackend::with_exits(exits);
     m.set_policy(&X86Policy {
@@ -38,7 +23,6 @@ fn vmm(exits: Vec<Exit<X86>>, _work_at: u64, seed: u64) -> Vmm<MockBackend> {
     v
 }
 
-/// A distinctive guest-memory image: page 0 a banner, page 2 a marker, rest zero.
 fn booted_image() -> Vec<u8> {
     let mut mem = vec![0u8; RAM];
     mem[..13].copy_from_slice(b"GUEST_BOOTED\n");

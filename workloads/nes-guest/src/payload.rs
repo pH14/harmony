@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Game-neutral NES payload driver. Host adapters own boot walks and outcomes.
-
 use crate::{core_seam::Core, nova::NovaChannel};
 use nes_protocol::{MAX_HOLD_FRAMES, NovaBillboardLayout};
 
@@ -12,7 +10,6 @@ pub const CATALOG: &[harmony_sdk::Point] = &[
     harmony_sdk::Point::state(REG_LEN, "nes.publication.len"),
 ];
 
-/// A power-on NES core publishing exact held-controller intervals.
 pub struct NesAgent<C> {
     core: C,
     layout: NovaBillboardLayout,
@@ -32,7 +29,6 @@ impl<C: Core> NesAgent<C> {
         self.layout
     }
 
-    /// Publish power-on memory before the guest setup seal.
     pub fn prime(&mut self, bytes: &mut [u8]) -> Result<(), String> {
         self.validate(bytes)?;
         if !self
