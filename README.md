@@ -72,10 +72,11 @@ repository checks live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Repository map
 
-- `consonance/` contains the deterministic VMM, machine models, snapshots,
-  guest protocols, Linux guest environment, and snapshot/control runtime.
-- `dissonance/` contains the campaign engine, search archive, and target
-  interfaces.
+- [`consonance/`](consonance/README.md) contains the deterministic VMM, machine
+  models, snapshots, guest protocols, Linux guest environment, and
+  snapshot/control runtime.
+- [`dissonance/`](dissonance/README.md) contains the campaign engine, search
+  archive, and target interfaces.
 - `workloads/` contains NES adapters, guest payloads, fault tooling, and package
   preparation.
 - `scripts/` contains repository-level development and validation helpers.
