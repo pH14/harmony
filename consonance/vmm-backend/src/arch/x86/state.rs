@@ -193,6 +193,11 @@ pub fn canonicalize_xsave(image: &mut [u8]) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn rflags_rf_is_bit_16() {
+        assert_eq!(RFLAGS_RF, 0x1_0000);
+    }
+
     fn init_image(xstate_bv: u64) -> Vec<u8> {
         let mut image = vec![0u8; 4096];
         image[0..2].copy_from_slice(&X87_INIT_FCW);

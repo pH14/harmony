@@ -163,6 +163,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn capture_cap_is_one_mebibyte() {
+        assert_eq!(MAX_CAPTURE, 1_048_576);
+    }
+
+    #[test]
     fn injection_wraps_the_command_with_a_sentinel_echo() {
         let s = ExecSession::new("ls /", 7);
         let input = s.input();

@@ -544,6 +544,12 @@ pub const GDT_DATA: u64 = 0x00CF_9300_0000_FFFF;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_map_and_large_page_sizes_are_pinned() {
+        assert_eq!(IDENTITY_MAP_BYTES, 0x4000_0000, "1 GiB");
+        assert_eq!(LARGE_PAGE, 0x20_0000, "2 MiB");
+    }
     use core::mem::{offset_of, size_of};
 
     #[test]

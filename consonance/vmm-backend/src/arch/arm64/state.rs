@@ -149,6 +149,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pstate_tco_is_bit_25() {
+        assert_eq!(PSTATE_TCO, 0x0200_0000);
+    }
+
+    #[test]
     fn absent_mte_and_bti_make_tco_and_btype_canonical_zero() {
         let canonical = Arm64CoreRegs {
             pstate: 0xc5,

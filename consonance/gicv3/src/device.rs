@@ -661,6 +661,15 @@ fn bitmap_contains(bitmap: &[u32; BITMAP_WORDS], intid: u32) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn gicv3_register_bits_match_the_architecture() {
+        assert_eq!(GICD_CTLR_ENABLE_GRP1, 0x2, "GICD_CTLR.EnableGrp1 is bit 1");
+        assert_eq!(GICD_CTLR_ARE, 0x10, "GICD_CTLR.ARE is bit 4");
+        assert_eq!(GICD_CTLR_DS, 0x40, "GICD_CTLR.DS is bit 6");
+        assert_eq!(GICR_CTLR_IR, 0x4, "GICR_CTLR.IR is bit 2");
+        assert_eq!(GIC_PIDR2_ARCH_GICV3, 0x30, "PIDR2.ArchRev 3 in bits 7:4");
+    }
+
     fn gic() -> Gicv3 {
         Gicv3::new(GicConfig {
             impl_spis: 64,

@@ -187,6 +187,12 @@ pub fn contract_hash() -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn msr_exit_reason_bits_are_pinned() {
+        assert_eq!(MSR_EXIT_REASON_UNKNOWN, 0x2);
+        assert_eq!(MSR_EXIT_REASON_INVAL, 0x4);
+    }
     use proptest::prelude::*;
 
     use super::*;

@@ -128,6 +128,12 @@ pub fn read(page: &[u8]) -> Option<PvclockFields> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn pvclock_flag_bits_are_pinned() {
+        assert_eq!(PVCLOCK_FLAG_MATERIALIZED, 0x1);
+        assert_eq!(PVCLOCK_FLAG_EXIT_COUNT_DERIVED, 0x2);
+    }
+
     fn fresh_page() -> Vec<u8> {
         vec![0u8; PVCLOCK_PAGE_LEN]
     }

@@ -37,3 +37,14 @@ pub struct GicState {
     pub cntv_cval: u64,
     pub timer_fired: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cntv_ctl_bits_match_the_architecture() {
+        assert_eq!(CNTV_CTL_ENABLE, 0x1, "CNTV_CTL.ENABLE is bit 0");
+        assert_eq!(CNTV_CTL_IMASK, 0x2, "CNTV_CTL.IMASK is bit 1");
+    }
+}

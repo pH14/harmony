@@ -516,6 +516,16 @@ mod proofs;
 mod tests {
     use super::*;
 
+    #[test]
+    fn lapic_register_bits_match_the_architecture() {
+        assert_eq!(LVT_MASK_BIT, 0x1_0000, "LVT Mask is bit 16");
+        assert_eq!(SVR_ENABLE_BIT, 0x100, "SVR APIC Software Enable is bit 8");
+        assert_eq!(
+            ESR_SEND_ILLEGAL_VECTOR, 0x20,
+            "ESR Send Illegal Vector is bit 5"
+        );
+    }
+
     fn enabled(timer_hz: u64) -> Lapic {
         let mut l = Lapic::new(LapicConfig {
             apic_id: 0,

@@ -876,6 +876,11 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn channel_capacity_is_one_mebibyte() {
+        assert_eq!(MAX_CHANNEL_BYTES, 1_048_576);
+    }
+
     #[derive(Clone, Debug)]
     struct Handler {
         counter: u64,

@@ -130,6 +130,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn control_register_bits_match_the_architecture() {
+        assert_eq!(CR0_NE, 0x20, "CR0.NE is bit 5");
+        assert_eq!(CR0_PG, 0x8000_0000, "CR0.PG is bit 31");
+        assert_eq!(CR4_PAE, 0x20, "CR4.PAE is bit 5");
+        assert_eq!(EFER_LME, 0x100, "EFER.LME is bit 8");
+        assert_eq!(EFER_LMA, 0x400, "EFER.LMA is bit 10");
+    }
+
+    #[test]
     fn long_mode_entry_matches_64bit_boot_protocol() {
         let st = long_mode_entry(0x10_0200, 0x7000, 0x1000, 0x6000);
         assert_eq!(st.regs.rip, 0x10_0200);

@@ -1163,6 +1163,11 @@ pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pstate_i_is_bit_7() {
+        assert_eq!(PSTATE_I, 0x80);
+    }
     use crate::vendor::arm64::board::{
         CNTFRQ_HZ, GICD, GICR, IMPL_SPIS, PL011, PVCLOCK_PPI, new_gic,
     };
