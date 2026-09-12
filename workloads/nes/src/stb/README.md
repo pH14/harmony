@@ -177,7 +177,8 @@ Compare searcher changes only with the same recorded adapter policy.
 
 The NES adapter's `frames_emulated` report field is its translation of the
 generic `execution_work` counter into frames. It measures frames emitted by
-successful logical gameplay actions, while setup, backend snapshot replay,
+logical gameplay actions, including frames produced before a later observation
+read or decode fails. Setup, backend snapshot replay,
 endpoint alignment, and standalone probes stay outside the counter. It is not
 the number of unique game frames explored. The champion tape and observation
 carry the separate logical frame count.

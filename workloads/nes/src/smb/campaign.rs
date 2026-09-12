@@ -1168,7 +1168,7 @@ where
     fn execution_disposition(&self, target: &SmbTarget<M, P>) -> ExecutionDisposition {
         if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
-        } else if target.is_dead() {
+        } else if target.is_dead() || target.is_victory() {
             ExecutionDisposition::Terminal
         } else {
             ExecutionDisposition::Runnable
@@ -1862,14 +1862,25 @@ mod tests {
         target.reset();
         target.poke_wram(0x0770, 2);
         target.poke_wram(0x075f, 7);
+        let run = SmbCampaignRun {
+            chord: SmbCampaignChordPolicy::default(),
+            vocabulary: SmbButtonVocabulary::default(),
+            terminal: Some(SmbTerminalPredicate::GameVictory),
+        };
+        assert_eq!(
+            game.execution_disposition(&target),
+            crate::search::rollout::ExecutionDisposition::Terminal
+        );
+        assert_eq!(
+            game.rollout_outcome(&run, &target)
+                .expect("won outcome")
+                .disposition,
+            game.execution_disposition(&target)
+        );
         let won = target.snapshot().expect("snapshot won state");
         let result = game
             .execute_job(
-                &SmbCampaignRun {
-                    chord: SmbCampaignChordPolicy::default(),
-                    vocabulary: SmbButtonVocabulary::default(),
-                    terminal: Some(SmbTerminalPredicate::GameVictory),
-                },
+                &run,
                 &mut target,
                 &won,
                 &[],

@@ -1145,7 +1145,7 @@ mod tests {
     }
 
     impl Machine for ScriptedMachine {
-        type Portable = FakeState;
+        type Portable = machine::SharedState;
         fn snapshot(&mut self) -> Result<SnapId, MachineError> {
             Ok(self.save(self.state.clone()))
         }
@@ -1209,23 +1209,68 @@ mod tests {
                 .map(ToOwned::to_owned)
                 .ok_or(MachineError::ReadOutOfBounds)
         }
-        fn export(&mut self, id: SnapId, _: Option<&FakeState>) -> Result<FakeState, MachineError> {
-            self.snapshots
+        fn export(
+            &mut self,
+            id: SnapId,
+            _: Option<&Self::Portable>,
+        ) -> Result<Self::Portable, MachineError> {
+            let state = self
+                .snapshots
                 .get(&id.0)
-                .cloned()
-                .ok_or(MachineError::UnknownSnapshot)
+                .ok_or(MachineError::UnknownSnapshot)?;
+            let bytes = serde_json::to_vec(state).unwrap();
+            Ok(serde_json::from_value(serde_json::json!(bytes)).unwrap())
         }
-        fn import(&mut self, state: &FakeState) -> Result<SnapId, MachineError> {
-            Ok(self.save(state.clone()))
+        fn import(&mut self, state: &Self::Portable) -> Result<SnapId, MachineError> {
+            Ok(self.save(decode_portable(state)))
         }
-        fn portable_memory_charge(state: &FakeState) -> usize {
-            state.wram.len() + size_of::<usize>()
+        fn portable_memory_charge(state: &Self::Portable) -> usize {
+            QuickNesMachine::portable_memory_charge(state)
         }
         fn now(&self) -> machine::Moment {
             machine::Moment(self.clock)
         }
         fn frames(&self) -> &[[u8; WRAM_SIZE]] {
             &self.frames
+        }
+    }
+
+    fn decode_portable(state: &machine::SharedState) -> FakeState {
+        let bytes: Vec<u8> = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn campaign_suffix_continues_through_respawn_without_a_terminal_endpoint() {
+        use crate::search::{archive::RetentionPolicy, rollout::ExecutionDisposition};
+        for stop_on_objective in [false, true] {
+            let mut machine = ScriptedMachine::match_timeline();
+            let mut respawn = live_wram();
+            respawn[PLAYER_B_STATE] = PLAYER_STATE_INNEXISTANT;
+            respawn[PLAYER_B_STOCKS] = INITIAL_STOCKS - 1;
+            let mut resumed = live_wram();
+            resumed[PLAYER_B_STOCKS] = INITIAL_STOCKS - 1;
+            machine.timeline = vec![live_wram(), respawn, resumed];
+            let mut target = StbTarget::from_machine(machine).unwrap();
+            let result = crate::stb::campaign::execute_suffix(
+                &mut target,
+                0,
+                crate::stb::archive::StbMilestones::default(),
+                &[ButtonChord::new(1, 1), ButtonChord::new(2, 1)],
+                8,
+                RetentionPolicy::Unprobed,
+                stop_on_objective,
+            )
+            .expect("respawn suffix");
+            assert_eq!(result.actions.len(), 2);
+            assert!(result.actions.iter().all(|action| {
+                action.outcome.disposition == ExecutionDisposition::Runnable
+                    && !action.outcome.objective_reached
+            }));
+            assert!(result.actions[0].candidate.is_none());
+            assert!(result.actions[1].candidate.is_some());
+            assert_eq!(result.actions[1].milestones.opponent_kos, 1);
+            assert_eq!(target.observe().frame_count, 2);
         }
     }
 
@@ -1250,8 +1295,9 @@ mod tests {
                 .any(|o| o.decoded.gameplay.is_none() && !o.terminal)
         );
         let snapshot = target.snapshot().unwrap();
-        assert_eq!(snapshot.emulator_state.cursor, 7);
-        assert_eq!(snapshot.emulator_state.wram, snapshot.wram);
+        let portable = decode_portable(&snapshot.emulator_state);
+        assert_eq!(portable.cursor, 7);
+        assert_eq!(portable.wram, snapshot.wram);
         assert_eq!(snapshot.wram, target.machine.state.wram);
         assert_eq!(snapshot.observation, observed);
         target.apply(&ButtonChord::new(2, 3));

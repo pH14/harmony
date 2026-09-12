@@ -221,9 +221,9 @@ fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, 
         .ok_or_else(|| format!("Stb stream is missing {field}").into())
 }
 
-fn merge_action_milestones(
+fn merge_action_milestones<M: Machine>(
     aggregate: &mut StbMilestones,
-    target: &StbTarget,
+    target: &StbTarget<M>,
 ) -> Result<(), Box<dyn Error>> {
     if target.exit_kind() != ExitKind::Ok {
         return Ok(());
@@ -234,8 +234,8 @@ fn merge_action_milestones(
     Ok(())
 }
 
-fn execute_suffix(
-    target: &mut StbTarget,
+pub(super) fn execute_suffix<M: Machine<Portable = machine::SharedState>>(
+    target: &mut StbTarget<M>,
     parent_actions: usize,
     parent_milestones: StbMilestones,
     suffix: &[ButtonChord],
@@ -278,7 +278,7 @@ fn execute_suffix(
         objective_seen |= raw_objective;
         let disposition = if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
-        } else if target.is_match_over() || target.mechanical_state().gameplay.is_none() {
+        } else if target.is_match_over() {
             ExecutionDisposition::Terminal
         } else {
             ExecutionDisposition::Runnable
