@@ -42,7 +42,7 @@ pub type InitialDrawState<G> = (
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
      but host completion order cannot reach campaign state; the same seed, configuration, \
-     origin, and game bytes produce the same recorded stream";
+     origin, and workload bytes produce the same recorded stream";
 
 const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_bounded_1024_v2";
 const ORIGIN_GENESIS: &str = "genesis";
@@ -128,7 +128,7 @@ pub const RESUME_IDENTIFIER: &str = "whole_tree";
 
 pub const SNAPSHOT_ROOT_RESUME_IDENTIFIER: &str = "snapshot_root";
 
-pub type GamePolicies = BTreeMap<String, String>;
+pub type WorkloadPolicies = BTreeMap<String, String>;
 
 pub trait CampaignTypes: Sync {
     type Target;
@@ -170,8 +170,8 @@ pub trait Reporting: CampaignTypes {
 pub trait InputPolicy: CampaignTypes {
     fn max_action_limit(&self) -> usize;
     fn longest_action_time(&self) -> u64;
-    fn policies(&self, run: &Self::Run) -> GamePolicies;
-    fn resolve_recorded(&self, policies: &GamePolicies) -> Result<Self::Run, Box<dyn Error>>;
+    fn policies(&self, run: &Self::Run) -> WorkloadPolicies;
+    fn resolve_recorded(&self, policies: &WorkloadPolicies) -> Result<Self::Run, Box<dyn Error>>;
     fn draw_state_memory_reserve_bytes(&self, run: &Self::Run, max_actions: usize) -> usize;
     fn draw_state_memory_bytes(&self, state: &Self::DrawState) -> usize;
 
@@ -291,7 +291,7 @@ pub trait TargetExecution: CampaignTypes {
         retention: RetentionPolicy,
     ) -> Result<CampaignJobResult<Self>, Box<dyn Error>>
     where
-        Self: Game + Sized,
+        Self: Workload + Sized,
     {
         crate::search::rollout::execute_job(
             self,
@@ -370,13 +370,12 @@ pub trait Evaluation: CampaignTypes {
     ) -> Result<Input<Self::Action>, Box<dyn Error>>;
 }
 
-pub trait Game: CampaignTypes + TargetExecution + InputPolicy + Evaluation + Reporting {}
+pub trait Workload: CampaignTypes + TargetExecution + InputPolicy + Evaluation + Reporting {}
 
-impl<T> Game for T where T: CampaignTypes + TargetExecution + InputPolicy + Evaluation + Reporting {}
-
-pub trait CampaignInterfaces: Game {}
-
-impl<T: Game + ?Sized> CampaignInterfaces for T {}
+impl<T> Workload for T where
+    T: CampaignTypes + TargetExecution + InputPolicy + Evaluation + Reporting
+{
+}
 
 pub struct ArchiveReportState<G: CampaignTypes + ?Sized> {
     pub seed: u64,
@@ -389,7 +388,7 @@ pub struct ArchiveReportState<G: CampaignTypes + ?Sized> {
     pub selector: SelectorAccounting,
 }
 
-pub enum CampaignOrigin<G: Game + ?Sized> {
+pub enum CampaignOrigin<G: Workload + ?Sized> {
     Genesis,
     SnapshotRoot {
         checkpoint: CampaignCheckpoint<G::Snapshot>,
@@ -437,7 +436,7 @@ impl<S: Serialize + DeserializeOwned> SnapshotCheckpoint<S> {
     }
 }
 
-pub struct CampaignConfig<G: Game + ?Sized> {
+pub struct CampaignConfig<G: Workload + ?Sized> {
     pub campaign_seed: u64,
     pub workers: u32,
     pub execution_budget: u64,
@@ -487,7 +486,7 @@ pub struct CampaignStreamHeader<T> {
     pub suffix_policy: String,
     pub mixture_policy: String,
     #[serde(flatten)]
-    pub game_policies: GamePolicies,
+    pub workload_policies: WorkloadPolicies,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -620,7 +619,7 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub suffix_policy: String,
     pub mixture_policy: String,
     #[serde(flatten)]
-    pub game_policies: GamePolicies,
+    pub workload_policies: WorkloadPolicies,
     pub retention_policy: String,
     pub parent_scheduler: String,
     pub executor_mode: String,
@@ -703,7 +702,7 @@ fn resident_memory_is_within_budget(bytes: usize, memory_budget_mib: Option<usiz
     memory_budget_mib.is_none_or(|budget_mib| bytes <= budget_mib.saturating_mul(1024 * 1024))
 }
 
-fn retained_archive_indexes<G: Game>(
+fn retained_archive_indexes<G: Workload>(
     core: &CoordinatorCore<G>,
     decisions: &[CampaignAdmissionDecision],
 ) -> Vec<usize> {
@@ -894,7 +893,7 @@ pub fn derive_worker_seed(campaign_seed: u64, worker_index: u32) -> Result<u64, 
     Ok(u64::from_le_bytes(bytes))
 }
 
-pub(crate) struct CoordinatorCore<G: Game + ?Sized> {
+pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     pub(crate) archive: Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
     pub(crate) evidence: G::Evidence,
     curve: Vec<ProgressPoint<G::Milestones, G::Progress>>,
@@ -910,19 +909,19 @@ pub(crate) struct CoordinatorCore<G: Game + ?Sized> {
     pub(crate) mixture_energy: MixtureEnergy,
 }
 
-impl<G: Game + ?Sized> CoordinatorCore<G> {
+impl<G: Workload + ?Sized> CoordinatorCore<G> {
     pub(crate) fn new(
-        game: &G,
+        workload: &G,
         run: &G::Run,
         max_actions: usize,
         archive_entry_limit: usize,
         memory_budget_mib: Option<usize>,
     ) -> Self {
-        let mut archive = Archive::new(game.action_time_fn());
+        let mut archive = Archive::new(workload.action_time_fn());
         archive.max_entries = archive_entry_limit;
         if let Some(memory_budget_mib) = memory_budget_mib {
             let total = memory_budget_mib.saturating_mul(1024 * 1024);
-            let draw_reserve = game.draw_state_memory_reserve_bytes(run, max_actions);
+            let draw_reserve = workload.draw_state_memory_reserve_bytes(run, max_actions);
             archive.set_memory_budget(
                 total.saturating_sub(draw_reserve),
                 G::snapshot_memory_charge,
@@ -947,12 +946,12 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
 
     pub(crate) fn bootstrap(
         &mut self,
-        game: &G,
+        workload: &G,
         target: &mut G::Target,
     ) -> Result<(), Box<dyn Error>> {
-        game.reset(target);
-        let genesis_key = game.current_key(target)?;
-        let genesis_snapshot = game.snapshot(target)?;
+        workload.reset(target);
+        let genesis_key = workload.current_key(target)?;
+        let genesis_snapshot = workload.snapshot(target)?;
         self.archive
             .insert(
                 None,
@@ -970,18 +969,18 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
 
     pub(crate) fn bootstrap_snapshot_root(
         &mut self,
-        game: &G,
+        workload: &G,
         run: &G::Run,
         target: &mut G::Target,
         checkpoint: &CampaignCheckpoint<G::Snapshot>,
     ) -> Result<(), Box<dyn Error>> {
-        let snapshot = validate_snapshot_root_checkpoint(game, checkpoint)?;
-        game.restore(target, snapshot)?;
-        if game.is_run_terminal(run, target)? {
+        let snapshot = validate_snapshot_root_checkpoint(workload, checkpoint)?;
+        workload.restore(target, snapshot)?;
+        if workload.is_run_terminal(run, target)? {
             return Err("snapshot-root checkpoint restores a terminal target".into());
         }
-        game.merge_snapshot_root_evidence(&mut self.evidence, target)?;
-        let key = game.current_key(target)?;
+        workload.merge_snapshot_root_evidence(&mut self.evidence, target)?;
+        let key = workload.current_key(target)?;
         let retained = self.archive.insert(
             None,
             0,
@@ -1000,7 +999,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
 
     pub(crate) fn import_tree(
         &mut self,
-        game: &G,
+        workload: &G,
         target: &mut G::Target,
         source: &G::ArchiveReport,
         checkpoint: Option<&SnapshotCheckpoint<G::Snapshot>>,
@@ -1014,14 +1013,14 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                     .collect()
             })
             .unwrap_or_default();
-        game.merge_origin_evidence(&mut self.evidence, source);
+        workload.merge_origin_evidence(&mut self.evidence, source);
         let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
         self.archive.preserve_inactive_snapshots(true)?;
-        self.bootstrap(game, target)?;
+        self.bootstrap(workload, target)?;
         let genesis_id = 0;
         let mut counts = TreeImportCounts::default();
         let mut index_of: BTreeMap<u64, usize> = BTreeMap::new();
-        let source_entries = game.source_entries(source);
+        let source_entries = workload.source_entries(source);
         let mut imported: Vec<Option<usize>> = Vec::with_capacity(source_entries.len());
         for (index, entry) in source_entries.iter().enumerate() {
             index_of.insert(entry.id, index);
@@ -1068,16 +1067,16 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
             let mut milestones = parent_entry.milestones;
             let prefix = entry.input.clone();
             let snapshot = if let Some(snapshot) = checkpointed.get(&entry.id) {
-                game.restore(target, snapshot)?;
-                milestones = merge_max(game, milestones, entry.milestones);
+                workload.restore(target, snapshot)?;
+                milestones = merge_max(workload, milestones, entry.milestones);
                 counts.checkpointed = counts.checkpointed.saturating_add(1);
-                if game.is_terminal(target) {
+                if workload.is_terminal(target) {
                     None
                 } else {
                     Some((*snapshot).clone())
                 }
             } else {
-                game.restore(
+                workload.restore(
                     target,
                     parent_entry
                         .snapshot
@@ -1086,8 +1085,8 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                 )?;
                 let mut terminal = false;
                 for action in &entry.input.actions[parent_input_len..] {
-                    game.apply_action(target, action, &mut milestones)?;
-                    if game.is_terminal(target) {
+                    workload.apply_action(target, action, &mut milestones)?;
+                    if workload.is_terminal(target) {
                         terminal = true;
                         break;
                     }
@@ -1095,7 +1094,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                 if terminal {
                     None
                 } else {
-                    Some(game.snapshot(target)?)
+                    Some(workload.snapshot(target)?)
                 }
             };
             let Some(snapshot) = snapshot else {
@@ -1103,8 +1102,8 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                 imported.push(None);
                 continue;
             };
-            game.merge_import_evidence(&mut self.evidence, milestones, &prefix);
-            let key = game.current_key(target)?;
+            workload.merge_import_evidence(&mut self.evidence, milestones, &prefix);
+            let key = workload.current_key(target)?;
             let suffix = prefix
                 .actions
                 .get(parent_input_len..)
@@ -1145,7 +1144,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
 
     pub(crate) fn admit_job(
         &mut self,
-        game: &G,
+        workload: &G,
         parent_id: u64,
         result: CampaignJobResult<G>,
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>), Box<dyn Error>> {
@@ -1161,7 +1160,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         let mut decisions = Vec::new();
         for action in result.actions {
             pending_suffix.push(action.action);
-            game.merge_action_evidence(&mut self.evidence, &action, sequence, || {
+            workload.merge_action_evidence(&mut self.evidence, &action, sequence, || {
                 let mut input = self
                     .archive
                     .materialize_input(current_parent)
@@ -1197,7 +1196,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                     sequence,
                     ArchiveCandidate {
                         suffix: pending_suffix.clone(),
-                        key: game.complete_candidate_key(candidate.key, &candidate.snapshot)?,
+                        key: workload.complete_candidate_key(candidate.key, &candidate.snapshot)?,
                         milestones: action.milestones,
                     },
                     candidate.snapshot,
@@ -1285,7 +1284,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
 
     pub(crate) fn into_archive_report_and_snapshots(
         mut self,
-        game: &G,
+        workload: &G,
         campaign_seed: u64,
         materialize_final_artifacts: bool,
     ) -> (G::ArchiveReport, Vec<(u64, G::Snapshot)>) {
@@ -1294,7 +1293,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         } else {
             (Vec::new(), Vec::new())
         };
-        let report = game.archive_report(
+        let report = workload.archive_report(
             &self.evidence,
             ArchiveReportState {
                 seed: campaign_seed,
@@ -1311,17 +1310,17 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
     }
 }
 
-fn merge_max<G: Game + ?Sized>(
-    game: &G,
+fn merge_max<G: Workload + ?Sized>(
+    workload: &G,
     mut base: G::Milestones,
     other: G::Milestones,
 ) -> G::Milestones {
-    game.merge_milestones(&mut base, other);
+    workload.merge_milestones(&mut base, other);
     base
 }
 
-fn resolve_origin<G: Game>(
-    game: &G,
+fn resolve_origin<G: Workload>(
+    workload: &G,
     origin: &CampaignOrigin<G>,
 ) -> Result<CampaignOriginRecord, Box<dyn Error>> {
     let (kind, path, archive_sha256, checkpoint, resume_input) = match origin {
@@ -1349,7 +1348,7 @@ fn resolve_origin<G: Game>(
             Some(path.clone()),
             Some(file_sha256.clone()),
             checkpoint.as_ref(),
-            game.resume_input(report)?,
+            workload.resume_input(report)?,
         ),
     };
     let resume_input_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&resume_input)?));
@@ -1364,14 +1363,14 @@ fn resolve_origin<G: Game>(
     })
 }
 
-fn stream_header<G: Game>(
-    game: &G,
+fn stream_header<G: Workload>(
+    workload: &G,
     config: &CampaignConfig<G>,
     origin: &CampaignOriginRecord,
     draw_table: Option<G::TableHeader>,
 ) -> CampaignStreamHeader<G::TableHeader> {
     CampaignStreamHeader {
-        format: game.stream_format().to_owned(),
+        format: workload.stream_format().to_owned(),
         campaign_seed: config.campaign_seed,
         workers: config.workers,
         schedule_policy: schedule_policy_identifier(config.reservations_per_worker),
@@ -1397,14 +1396,14 @@ fn stream_header<G: Game>(
         },
         suffix_policy: suffix_shape_identifier(config.suffix).to_owned(),
         mixture_policy: draw_mixture_identifier(config.mixture),
-        game_policies: game.policies(&config.run),
+        workload_policies: workload.policies(&config.run),
         draw_table,
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
         parent_scheduler: selector_policy_identifier(&config.selector),
         executor_mode: "snapshot_resume_archive".to_owned(),
         worker_seed_derivation: "sha256(campaign_seed_le || worker_index_le)[0..8] as u64 le"
             .to_owned(),
-        rom_sha256: game.image_sha256(),
+        rom_sha256: workload.image_sha256(),
     }
 }
 
@@ -1467,7 +1466,11 @@ struct LiveCoordinatorProfile {
 }
 
 impl LiveCoordinatorProfile {
-    fn note_dispatch<G: Game + ?Sized>(&mut self, spec: &JobSpec<G>, time: fn(&G::Action) -> u64) {
+    fn note_dispatch<G: Workload + ?Sized>(
+        &mut self,
+        spec: &JobSpec<G>,
+        time: fn(&G::Action) -> u64,
+    ) {
         if !self.enabled {
             return;
         }
@@ -1537,8 +1540,8 @@ impl CampaignCounters {
     }
 }
 
-fn build_report<G: Game>(
-    game: &G,
+fn build_report<G: Workload>(
+    workload: &G,
     header: &CampaignStreamHeader<G::TableHeader>,
     origin: CampaignOriginRecord,
     core: CoordinatorCore<G>,
@@ -1569,12 +1572,12 @@ fn build_report<G: Game>(
     let historical_cells = core.archive.historical_cell_count();
     let barren_groups = core.archive.barren_group_count();
     let (archive, snapshots) = core.into_archive_report_and_snapshots(
-        game,
+        workload,
         header.campaign_seed,
         materialize_final_artifacts,
     );
     let checkpoint = SnapshotCheckpoint {
-        format: game.checkpoint_format().to_owned(),
+        format: workload.checkpoint_format().to_owned(),
         entries: snapshots
             .into_iter()
             .map(|(id, snapshot)| SnapshotCheckpointEntry { id, snapshot })
@@ -1598,7 +1601,7 @@ fn build_report<G: Game>(
         resume_policy: header.resume_policy.clone(),
         suffix_policy: header.suffix_policy.clone(),
         mixture_policy: header.mixture_policy.clone(),
-        game_policies: header.game_policies.clone(),
+        workload_policies: header.workload_policies.clone(),
         retention_policy: header.retention_policy.clone(),
         parent_scheduler: header.parent_scheduler.clone(),
         executor_mode: header.executor_mode.clone(),
@@ -1657,7 +1660,7 @@ impl postcard::ser_flavors::Flavor for PostcardSha256 {
     }
 }
 
-pub fn postcard_result_sha256<G: Game + ?Sized>(
+pub fn postcard_result_sha256<G: Workload + ?Sized>(
     result: &CampaignJobResult<G>,
 ) -> Result<String, Box<dyn Error>> {
     postcard_value_sha256(result)
@@ -1671,7 +1674,7 @@ pub fn postcard_value_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String,
     Ok(format!("{digest:x}"))
 }
 
-struct JobSpec<G: Game + ?Sized> {
+struct JobSpec<G: Workload + ?Sized> {
     reservation: usize,
     snapshot: Arc<G::Snapshot>,
     replay: Vec<G::Action>,
@@ -1694,7 +1697,7 @@ struct PendingJob {
     draw_table_before: Option<EmpiricalStepCheckpoint>,
 }
 
-struct CompletedJob<G: Game + ?Sized> {
+struct CompletedJob<G: Workload + ?Sized> {
     physical_worker: u32,
     pending: PendingJob,
     result: CampaignJobResult<G>,
@@ -1794,7 +1797,7 @@ pub struct CampaignProgressRecord<K> {
     pub barren_groups: usize,
 }
 
-fn write_live_progress<G: Game>(
+fn write_live_progress<G: Workload>(
     core: &CoordinatorCore<G>,
     counters: &CampaignCounters,
     coordinator_profile: &LiveCoordinatorProfile,
@@ -1861,8 +1864,8 @@ fn write_live_progress<G: Game>(
     Ok(())
 }
 
-fn bootstrap_core<G: Game>(
-    game: &G,
+fn bootstrap_core<G: Workload>(
+    workload: &G,
     run: &G::Run,
     core: &mut CoordinatorCore<G>,
     target: &mut G::Target,
@@ -1872,24 +1875,24 @@ fn bootstrap_core<G: Game>(
         CampaignOrigin::Archive {
             report, checkpoint, ..
         } => Ok(Some(core.import_tree(
-            game,
+            workload,
             target,
             report,
             checkpoint.as_ref().map(|checkpoint| &checkpoint.snapshots),
         )?)),
         CampaignOrigin::Genesis => {
-            core.bootstrap(game, target)?;
+            core.bootstrap(workload, target)?;
             Ok(None)
         }
         CampaignOrigin::SnapshotRoot { checkpoint } => {
-            core.bootstrap_snapshot_root(game, run, target, checkpoint)?;
+            core.bootstrap_snapshot_root(workload, run, target, checkpoint)?;
             Ok(None)
         }
     }
 }
 
-fn validate_snapshot_root_checkpoint<'a, G: Game + ?Sized>(
-    game: &G,
+fn validate_snapshot_root_checkpoint<'a, G: Workload + ?Sized>(
+    workload: &G,
     checkpoint: &'a CampaignCheckpoint<G::Snapshot>,
 ) -> Result<&'a G::Snapshot, Box<dyn Error>> {
     if checkpoint.path.is_empty() {
@@ -1903,7 +1906,7 @@ fn validate_snapshot_root_checkpoint<'a, G: Game + ?Sized>(
     {
         return Err("snapshot-root checkpoint SHA-256 is malformed".into());
     }
-    if checkpoint.snapshots.format != game.checkpoint_format() {
+    if checkpoint.snapshots.format != workload.checkpoint_format() {
         return Err("snapshot-root checkpoint format is not recognized".into());
     }
     let [entry] = checkpoint.snapshots.entries.as_slice() else {
@@ -1919,8 +1922,8 @@ fn validate_snapshot_root_checkpoint<'a, G: Game + ?Sized>(
     Ok(&entry.snapshot)
 }
 
-pub fn run_campaign_checkpointed<G: CampaignInterfaces>(
-    game: &G,
+pub fn run_campaign_checkpointed<G: Workload>(
+    workload: &G,
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     stream: &mut dyn Write,
@@ -1929,11 +1932,11 @@ pub fn run_campaign_checkpointed<G: CampaignInterfaces>(
 where
     G::ArchiveReport: Serialize,
 {
-    run_campaign_checkpointed_with_frame_budget(game, config, origin, stream, progress, None)
+    run_campaign_checkpointed_with_frame_budget(workload, config, origin, stream, progress, None)
 }
 
-pub fn run_campaign_checkpointed_with_frame_budget<G: CampaignInterfaces>(
-    game: &G,
+pub fn run_campaign_checkpointed_with_frame_budget<G: Workload>(
+    workload: &G,
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     stream: &mut dyn Write,
@@ -1944,7 +1947,7 @@ where
     G::ArchiveReport: Serialize,
 {
     run_campaign_checkpointed_with_options(
-        game,
+        workload,
         config,
         origin,
         stream,
@@ -1957,8 +1960,8 @@ where
 }
 
 #[allow(clippy::too_many_lines)]
-pub fn run_campaign_checkpointed_with_options<G: CampaignInterfaces>(
-    game: &G,
+pub fn run_campaign_checkpointed_with_options<G: Workload>(
+    workload: &G,
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     stream: &mut dyn Write,
@@ -1976,7 +1979,7 @@ where
     if config.workers == 0 {
         return Err("campaign mode requires at least one worker".into());
     }
-    if config.action_limit == 0 || config.action_limit > game.max_action_limit() {
+    if config.action_limit == 0 || config.action_limit > workload.max_action_limit() {
         return Err("campaign action limit is outside its bounded range".into());
     }
     if !archive_entry_limit_is_valid(config.archive_entry_limit) {
@@ -1990,11 +1993,11 @@ where
     }
     if let Some(memory_budget_mib) = config.memory_budget_mib {
         let budget = memory_budget_mib.saturating_mul(1024 * 1024);
-        if budget <= game.draw_state_memory_reserve_bytes(&config.run, config.action_limit) {
+        if budget <= workload.draw_state_memory_reserve_bytes(&config.run, config.action_limit) {
             return Err("campaign memory budget is too small for the bounded draw state".into());
         }
     }
-    let origin_record = resolve_origin(game, origin)?;
+    let origin_record = resolve_origin(workload, origin)?;
     let draw_origin = match origin {
         CampaignOrigin::Genesis => None,
         CampaignOrigin::SnapshotRoot { .. } => None,
@@ -2004,20 +2007,21 @@ where
             ..
         } => Some((file_sha256.as_str(), report.as_ref())),
     };
-    let (mut draw_state, draw_table_header) = game.initial_draw_state(&config.run, draw_origin)?;
+    let (mut draw_state, draw_table_header) =
+        workload.initial_draw_state(&config.run, draw_origin)?;
     if !draw_state_memory_is_within_reserve(
-        game.draw_state_memory_bytes(&draw_state),
-        game.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
+        workload.draw_state_memory_bytes(&draw_state),
+        workload.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
     ) {
         return Err("initial draw state exceeds its deterministic memory reserve".into());
     }
-    let mut header = stream_header(game, config, &origin_record, draw_table_header);
+    let mut header = stream_header(workload, config, &origin_record, draw_table_header);
     header.frame_budget = frame_budget;
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
 
     let mut core = CoordinatorCore::new(
-        game,
+        workload,
         &config.run,
         config.action_limit,
         config.archive_entry_limit,
@@ -2027,20 +2031,25 @@ where
     core.archive
         .enable_continuations(config.mixture.uses_continuations());
     let mut counters = CampaignCounters::new(config.workers);
-    let mut bootstrap_target = game.new_target().map_err(|error| -> Box<dyn Error> {
+    let mut bootstrap_target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the bootstrap target: {error}").into()
     })?;
-    let frames_before = game.frames_clocked(&bootstrap_target);
-    counters.tree_import =
-        bootstrap_core(game, &config.run, &mut core, &mut bootstrap_target, origin)?;
-    counters.bootstrap_frames = game
+    let frames_before = workload.frames_clocked(&bootstrap_target);
+    counters.tree_import = bootstrap_core(
+        workload,
+        &config.run,
+        &mut core,
+        &mut bootstrap_target,
+        origin,
+    )?;
+    counters.bootstrap_frames = workload
         .frames_clocked(&bootstrap_target)
         .saturating_sub(frames_before);
     drop(bootstrap_target);
     let bootstrap_memory_bytes = core
         .archive
         .resident_memory_bytes()
-        .saturating_add(game.draw_state_memory_bytes(&draw_state));
+        .saturating_add(workload.draw_state_memory_bytes(&draw_state));
     if !resident_memory_is_within_budget(bootstrap_memory_bytes, config.memory_budget_mib) {
         return Err("campaign bootstrap state exceeds its deterministic memory budget".into());
     }
@@ -2061,40 +2070,43 @@ where
     let mut reserved = 0_u64;
     let mut coordinator_profile =
         live_coordinator_profile(std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some());
-    let action_time = game.action_time_fn();
-    let longest_action_time = game.longest_action_time();
+    let action_time = workload.action_time_fn();
+    let longest_action_time = workload.longest_action_time();
 
     let max_actions = config.action_limit;
     let retention = config.retention;
     with_worker_pool(
         config.workers,
-        |_| game.new_target(),
+        |_| workload.new_target(),
         |target, spec: JobSpec<G>| {
             let reservation = spec.reservation;
-            let frames_before = game.frames_clocked(target);
-            game.execute_job(
-                &config.run,
-                target,
-                &spec.snapshot,
-                &spec.replay,
-                spec.parent_actions,
-                spec.parent_milestones,
-                &spec.suffix,
-                max_actions,
-                retention,
-            )
-            .and_then(|result| {
-                let result_sha256 = game
-                    .result_sha256(&result)
-                    .map_err(|error| error.to_string())?;
-                Ok((
-                    reservation,
-                    result,
-                    game.frames_clocked(target).saturating_sub(frames_before),
-                    result_sha256,
-                ))
-            })
-            .map_err(|error| error.to_string())
+            let frames_before = workload.frames_clocked(target);
+            workload
+                .execute_job(
+                    &config.run,
+                    target,
+                    &spec.snapshot,
+                    &spec.replay,
+                    spec.parent_actions,
+                    spec.parent_milestones,
+                    &spec.suffix,
+                    max_actions,
+                    retention,
+                )
+                .and_then(|result| {
+                    let result_sha256 = workload
+                        .result_sha256(&result)
+                        .map_err(|error| error.to_string())?;
+                    Ok((
+                        reservation,
+                        result,
+                        workload
+                            .frames_clocked(target)
+                            .saturating_sub(frames_before),
+                        result_sha256,
+                    ))
+                })
+                .map_err(|error| error.to_string())
         },
         |pool| -> Result<(), Box<dyn Error>> {
             let select = |core: &mut CoordinatorCore<G>,
@@ -2160,8 +2172,9 @@ where
                             counter_reset: false,
                             concentration: None,
                         };
-                        let checkpoint = game.draw_checkpoint(draw_state)?;
-                        let draw_table_before = draw_checkpoint_to_wire(game, checkpoint.as_ref())?;
+                        let checkpoint = workload.draw_checkpoint(draw_state)?;
+                        let draw_table_before =
+                            draw_checkpoint_to_wire(workload, checkpoint.as_ref())?;
                         let splice = Some(CampaignSpliceRecord::Tail {
                             donor_id: continuation.donor,
                             leaf_id: continuation.leaf,
@@ -2213,9 +2226,9 @@ where
                         }
                         _ => (DEFAULT_MIXTURE_WEIGHT, 0),
                     };
-                    let draw_checkpoint_before = game.draw_checkpoint(draw_state)?;
+                    let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
                     let draw_table_before =
-                        draw_checkpoint_to_wire(game, draw_checkpoint_before.as_ref())?;
+                        draw_checkpoint_to_wire(workload, draw_checkpoint_before.as_ref())?;
                     let (spliced, splice) =
                         if energy_strategy(mutation_seed, mixture_weight, splice_weight)?
                             == EnergyStrategy::Splice
@@ -2253,7 +2266,7 @@ where
                         };
                     let mut suffix = match spliced {
                         Some(tail) => tail,
-                        None => game.expand_suffix(
+                        None => workload.expand_suffix(
                             &config.run,
                             draw_state,
                             config.suffix,
@@ -2272,9 +2285,9 @@ where
                         && core.all_prefixes_archived(parent_index, &suffix);
                     if all_prefixes_archived {
                         let draw_checkpoint_after =
-                            game.finish_stream_record(&config.run, draw_state, &[])?;
+                            workload.finish_stream_record(&config.run, draw_state, &[])?;
                         let draw_table_after =
-                            draw_checkpoint_to_wire(game, draw_checkpoint_after.as_ref())?;
+                            draw_checkpoint_to_wire(workload, draw_checkpoint_after.as_ref())?;
                         writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
                             worker,
                             parent_id,
@@ -2432,7 +2445,7 @@ where
                     let victories_before = core.victories;
                     let admission_started = profile_now(coordinator_profile.enabled);
                     let (sequence, decisions) =
-                        core.admit_job(game, pending_job.parent_id, result)?;
+                        core.admit_job(workload, pending_job.parent_id, result)?;
                     coordinator_profile.admission_ns = coordinator_profile
                         .admission_ns
                         .saturating_add(profile_elapsed(admission_started));
@@ -2482,11 +2495,11 @@ where
                         std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
                     }
                     let draw_table_after =
-                        finish_record(game, &config.run, &mut draw_state, &core, &decisions)?;
-                    let draw_state_memory_bytes = game.draw_state_memory_bytes(&draw_state);
+                        finish_record(workload, &config.run, &mut draw_state, &core, &decisions)?;
+                    let draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
                     if !draw_state_memory_is_within_reserve(
                         draw_state_memory_bytes,
-                        game.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
+                        workload.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
                     ) {
                         return Err(
                             "live draw state exceeds its deterministic memory reserve".into()
@@ -2662,15 +2675,15 @@ where
             &core,
             &counters,
             &coordinator_profile,
-            game.draw_state_memory_bytes(&draw_state),
+            workload.draw_state_memory_bytes(&draw_state),
             telemetry_started,
             sink,
         )?;
     }
     let stream_sha256 = writer.finish()?;
-    counters.draw_state_memory_bytes = game.draw_state_memory_bytes(&draw_state);
+    counters.draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
     Ok(build_report(
-        game,
+        workload,
         &header,
         origin_record,
         core,
@@ -2680,14 +2693,14 @@ where
     ))
 }
 
-fn finish_record<G: Game>(
-    game: &G,
+fn finish_record<G: Workload>(
+    workload: &G,
     run: &G::Run,
     draw_state: &mut G::DrawState,
     core: &CoordinatorCore<G>,
     decisions: &[CampaignAdmissionDecision],
 ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
-    let needs_full = game.retained_inputs_need_full(run);
+    let needs_full = workload.retained_inputs_need_full(run);
     let mut retained_inputs = Vec::new();
     for decision in decisions {
         let CampaignAdmissionDecision::Retained { id } = decision else {
@@ -2726,22 +2739,22 @@ fn finish_record<G: Game>(
         .iter()
         .map(|(parent_actions, input)| (*parent_actions, input.actions.as_slice()))
         .collect::<Vec<_>>();
-    let checkpoint = game.finish_stream_record(run, draw_state, &retained)?;
-    draw_checkpoint_to_wire(game, checkpoint.as_ref())
+    let checkpoint = workload.finish_stream_record(run, draw_state, &retained)?;
+    draw_checkpoint_to_wire(workload, checkpoint.as_ref())
 }
 
-fn draw_checkpoint_to_wire<G: Game>(
-    game: &G,
+fn draw_checkpoint_to_wire<G: Workload>(
+    workload: &G,
     checkpoint: Option<&G::DrawCheckpoint>,
 ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
     checkpoint
-        .map(|checkpoint| game.draw_checkpoint_to_wire(checkpoint))
+        .map(|checkpoint| workload.draw_checkpoint_to_wire(checkpoint))
         .transpose()
 }
 
 #[allow(clippy::too_many_lines)]
-pub fn replay_campaign_checkpointed<G: CampaignInterfaces>(
-    game: &G,
+pub fn replay_campaign_checkpointed<G: Workload>(
+    workload: &G,
     stream_bytes: &[u8],
     origin_report: Option<&G::ArchiveReport>,
     origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
@@ -2763,7 +2776,7 @@ where
     if header.frame_budget == Some(0) {
         return Err("recorded frame budget must be nonzero".into());
     }
-    if header.format != game.stream_format() {
+    if header.format != workload.stream_format() {
         return Err("campaign stream format is not recognized".into());
     }
     if !schedule_policy_is_supported(&header.schedule_policy) {
@@ -2772,7 +2785,7 @@ where
     if !progress_policy_is_supported(&header.progress_policy) {
         return Err("campaign stream progress policy is not recognized".into());
     }
-    if header.rom_sha256 != game.image_sha256() {
+    if header.rom_sha256 != workload.image_sha256() {
         return Err("campaign replay ROM does not match the recorded stream".into());
     }
     let record_lines = lines.collect::<Vec<_>>();
@@ -2815,7 +2828,7 @@ where
         ORIGIN_ARCHIVE => {
             let source =
                 origin_report.ok_or("archive campaign replay requires the source archive")?;
-            game.resume_input(source)?
+            workload.resume_input(source)?
         }
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
@@ -2841,9 +2854,9 @@ where
     }
     let replay_suffix = suffix_shape_from_identifier(&header.suffix_policy)?;
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
-    let replay_run = game.resolve_recorded(&header.game_policies)?;
-    let action_time = game.action_time_fn();
-    let longest_action_time = game.longest_action_time();
+    let replay_run = workload.resolve_recorded(&header.workload_policies)?;
+    let action_time = workload.action_time_fn();
+    let longest_action_time = workload.longest_action_time();
     if let Some(checkpoint) = origin_checkpoint {
         let sha256_matches =
             header.origin_checkpoint_sha256.as_deref() == Some(checkpoint.file_sha256.as_str());
@@ -2861,25 +2874,26 @@ where
         ORIGIN_GENESIS | ORIGIN_SNAPSHOT_ROOT => None,
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
-    let (mut draw_state, replay_draw_header) = game.initial_draw_state(&replay_run, draw_origin)?;
+    let (mut draw_state, replay_draw_header) =
+        workload.initial_draw_state(&replay_run, draw_origin)?;
     if let Some(memory_budget_mib) = header.memory_budget_mib {
         let budget = memory_budget_mib.saturating_mul(1024 * 1024);
-        if budget <= game.draw_state_memory_reserve_bytes(&replay_run, header.action_limit) {
+        if budget <= workload.draw_state_memory_reserve_bytes(&replay_run, header.action_limit) {
             return Err("recorded memory budget is too small for the bounded draw state".into());
         }
     }
     if !draw_state_memory_is_within_reserve(
-        game.draw_state_memory_bytes(&draw_state),
-        game.draw_state_memory_reserve_bytes(&replay_run, header.action_limit),
+        workload.draw_state_memory_bytes(&draw_state),
+        workload.draw_state_memory_reserve_bytes(&replay_run, header.action_limit),
     ) {
         return Err("replay draw state exceeds its deterministic memory reserve".into());
     }
     if replay_draw_header != header.draw_table {
         return Err("re-derived draw table does not match the recorded header".into());
     }
-    game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
+    workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
     let mut core = CoordinatorCore::new(
-        game,
+        workload,
         &replay_run,
         header.action_limit,
         header.archive_entry_limit,
@@ -2891,18 +2905,18 @@ where
     core.archive
         .enable_continuations(replay_mixture.uses_continuations());
     let mut counters = CampaignCounters::new(header.workers);
-    let mut target = game.new_target().map_err(|error| -> Box<dyn Error> {
+    let mut target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
     })?;
-    let frames_before = game.frames_clocked(&target);
+    let frames_before = workload.frames_clocked(&target);
     counters.tree_import = match header.origin_kind.as_str() {
         ORIGIN_GENESIS => {
-            core.bootstrap(game, &mut target)?;
+            core.bootstrap(workload, &mut target)?;
             None
         }
         ORIGIN_SNAPSHOT_ROOT => {
             core.bootstrap_snapshot_root(
-                game,
+                workload,
                 &replay_run,
                 &mut target,
                 origin_checkpoint.ok_or("snapshot-root replay requires its snapshot checkpoint")?,
@@ -2910,18 +2924,20 @@ where
             None
         }
         ORIGIN_ARCHIVE => Some(core.import_tree(
-            game,
+            workload,
             &mut target,
             origin_report.ok_or("archive campaign replay requires the source archive")?,
             origin_checkpoint.map(|checkpoint| &checkpoint.snapshots),
         )?),
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
-    counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
+    counters.bootstrap_frames = workload
+        .frames_clocked(&target)
+        .saturating_sub(frames_before);
     let bootstrap_memory_bytes = core
         .archive
         .resident_memory_bytes()
-        .saturating_add(game.draw_state_memory_bytes(&draw_state));
+        .saturating_add(workload.draw_state_memory_bytes(&draw_state));
     if !resident_memory_is_within_budget(bootstrap_memory_bytes, header.memory_budget_mib) {
         return Err(
             "campaign replay bootstrap state exceeds its deterministic memory budget".into(),
@@ -2972,10 +2988,10 @@ where
                     energy_strategy(skip.mutation_seed, skip.mixture_weight, skip.splice_weight)?;
                 let spliced = replay_splice::<G>(strategy, skip.splice)?;
                 let draw_checkpoint_before =
-                    game.draw_checkpoint_from_wire(skip.draw_table_before.as_ref())?;
+                    workload.draw_checkpoint_from_wire(skip.draw_table_before.as_ref())?;
                 let mut suffix = match spliced {
                     Some(tail) => tail,
-                    None => game.expand_suffix_recorded(
+                    None => workload.expand_suffix_recorded(
                         &replay_run,
                         &draw_state,
                         replay_suffix,
@@ -3006,13 +3022,13 @@ where
                 counters.skips_per_worker[worker] =
                     counters.skips_per_worker[worker].saturating_add(1);
                 let draw_checkpoint_after =
-                    game.finish_stream_record(&replay_run, &mut draw_state, &[])?;
+                    workload.finish_stream_record(&replay_run, &mut draw_state, &[])?;
                 let draw_table_after =
-                    draw_checkpoint_to_wire(game, draw_checkpoint_after.as_ref())?;
+                    draw_checkpoint_to_wire(workload, draw_checkpoint_after.as_ref())?;
                 if draw_table_after != skip.draw_table_after {
                     return Err("replayed skip draw-table checkpoint diverged".into());
                 }
-                game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
+                workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
             }
             CampaignStreamRecord::Job(job) => {
                 if job.selector.path == SelectorPath::Continuation
@@ -3050,10 +3066,10 @@ where
                     energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?;
                 let spliced = replay_splice::<G>(strategy, job.splice.clone())?;
                 let draw_checkpoint_before =
-                    game.draw_checkpoint_from_wire(job.draw_table_before.as_ref())?;
+                    workload.draw_checkpoint_from_wire(job.draw_table_before.as_ref())?;
                 let mut suffix = match spliced {
                     Some(tail) => tail,
-                    None => game.expand_suffix_recorded(
+                    None => workload.expand_suffix_recorded(
                         &replay_run,
                         &draw_state,
                         replay_suffix,
@@ -3067,8 +3083,8 @@ where
                     )?,
                 };
                 replay_suffix.bound_time(&mut suffix, action_time, longest_action_time);
-                let job_frames_before = game.frames_clocked(&target);
-                let result = game.execute_job(
+                let job_frames_before = workload.frames_clocked(&target);
+                let result = workload.execute_job(
                     &replay_run,
                     &mut target,
                     &snapshot,
@@ -3079,7 +3095,7 @@ where
                     header.action_limit,
                     replay_retention,
                 )?;
-                let frames = game
+                let frames = workload
                     .frames_clocked(&target)
                     .saturating_sub(job_frames_before);
                 if frames != job.frames {
@@ -3089,7 +3105,7 @@ where
                     )
                     .into());
                 }
-                let digest = game.result_sha256(&result)?;
+                let digest = workload.result_sha256(&result)?;
                 if digest != job.result_sha256 {
                     return Err(format!(
                         "replayed job {} result digest {digest} diverged from recorded {}",
@@ -3099,7 +3115,7 @@ where
                 }
                 drop(snapshot);
                 let victories_before = core.victories;
-                let (sequence, decisions) = core.admit_job(game, job.parent_id, result)?;
+                let (sequence, decisions) = core.admit_job(workload, job.parent_id, result)?;
                 if sequence != job.sequence {
                     return Err(format!(
                         "replayed admission order {sequence} diverged from recorded {}",
@@ -3115,7 +3131,7 @@ where
                     .into());
                 }
                 let draw_table_after =
-                    finish_record(game, &replay_run, &mut draw_state, &core, &decisions)?;
+                    finish_record(workload, &replay_run, &mut draw_state, &core, &decisions)?;
                 if draw_table_after != job.draw_table_after {
                     return Err(format!(
                         "replayed job {} draw-table checkpoint diverged",
@@ -3123,7 +3139,7 @@ where
                     )
                     .into());
                 }
-                game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
+                workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector)?;
                 if replay_mixture.isolates_continuations()
                     && job.selector.path == SelectorPath::Continuation
@@ -3199,9 +3215,9 @@ where
         resume_input_sha256: header.resume_input_sha256.clone(),
         resume_actions: header.resume_actions,
     };
-    counters.draw_state_memory_bytes = game.draw_state_memory_bytes(&draw_state);
+    counters.draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
     Ok(build_report(
-        game,
+        workload,
         &header,
         origin,
         core,
@@ -3217,9 +3233,9 @@ mod tests {
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
         CampaignCounters, CampaignJobRecord, CampaignJobResult, CampaignSpliceRecord,
         CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, CoordinatorCore,
-        DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, EnergyStrategy, Evaluation, GamePolicies,
-        InitialDrawState, InputPolicy, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
-        Reporting, SPLICE_ACTION_CAP, TargetExecution, admission_window_depth,
+        DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, EnergyStrategy, Evaluation, InitialDrawState,
+        InputPolicy, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS, Reporting,
+        SPLICE_ACTION_CAP, TargetExecution, WorkloadPolicies, admission_window_depth,
         archive_entry_limit_is_valid, compact_progress_curve, completed_results_within_bound,
         draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
         live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
@@ -3308,8 +3324,8 @@ mod tests {
         entries: Vec<ArchiveEntryReport<TestAction, TestKey, ()>>,
     }
 
-    struct TestGame;
-    impl CampaignTypes for TestGame {
+    struct TestWorkload;
+    impl CampaignTypes for TestWorkload {
         type Target = TestTarget;
         type Action = TestAction;
         type Key = TestKey;
@@ -3325,7 +3341,7 @@ mod tests {
         type TableHeader = ();
     }
 
-    impl Reporting for TestGame {
+    impl Reporting for TestWorkload {
         fn stream_format(&self) -> &'static str {
             "test-campaign-v1"
         }
@@ -3353,17 +3369,20 @@ mod tests {
         }
     }
 
-    impl InputPolicy for TestGame {
+    impl InputPolicy for TestWorkload {
         fn draw_state_memory_reserve_bytes(&self, _run: &Self::Run, _max_actions: usize) -> usize {
             0
         }
         fn draw_state_memory_bytes(&self, _state: &Self::DrawState) -> usize {
             0
         }
-        fn policies(&self, _run: &Self::Run) -> GamePolicies {
-            GamePolicies::new()
+        fn policies(&self, _run: &Self::Run) -> WorkloadPolicies {
+            WorkloadPolicies::new()
         }
-        fn resolve_recorded(&self, _policies: &GamePolicies) -> Result<Self::Run, Box<dyn Error>> {
+        fn resolve_recorded(
+            &self,
+            _policies: &WorkloadPolicies,
+        ) -> Result<Self::Run, Box<dyn Error>> {
             Ok(())
         }
         fn initial_draw_state(
@@ -3393,7 +3412,7 @@ mod tests {
         }
     }
 
-    impl TargetExecution for TestGame {
+    impl TargetExecution for TestWorkload {
         fn new_target(&self) -> Result<Self::Target, String> {
             Ok(TestTarget::default())
         }
@@ -3448,7 +3467,7 @@ mod tests {
         }
     }
 
-    impl Evaluation for TestGame {
+    impl Evaluation for TestWorkload {
         fn is_terminal(&self, _target: &Self::Target) -> bool {
             false
         }
@@ -3549,7 +3568,7 @@ mod tests {
         }
     }
 
-    impl Rollout<TestGame> for TestRollout<'_> {
+    impl Rollout<TestWorkload> for TestRollout<'_> {
         fn apply(
             &mut self,
             action: &TestAction,
@@ -3601,14 +3620,14 @@ mod tests {
         }
     }
 
-    fn test_core() -> (TestGame, (), CoordinatorCore<TestGame>, TestTarget) {
-        let game = TestGame;
+    fn test_core() -> (TestWorkload, (), CoordinatorCore<TestWorkload>, TestTarget) {
+        let workload = TestWorkload;
         let run = ();
-        let mut core = CoordinatorCore::new(&game, &run, 16, 1_024, None);
+        let mut core = CoordinatorCore::new(&workload, &run, 16, 1_024, None);
         let mut target = TestTarget::default();
-        core.bootstrap(&game, &mut target)
+        core.bootstrap(&workload, &mut target)
             .expect("bootstrap generic core");
-        (game, run, core, target)
+        (workload, run, core, target)
     }
 
     #[test]
@@ -3848,11 +3867,11 @@ mod tests {
 
     #[test]
     fn coordinator_classifies_new_and_duplicate_boundaries() {
-        let (game, _run, mut core, mut target) = test_core();
+        let (workload, _run, mut core, mut target) = test_core();
         let action = TestAction::new(0x01, 4);
         target.apply(&action);
         let snapshot = target.snapshot().expect("snapshot candidate");
-        let result = CampaignJobResult::<TestGame> {
+        let result = CampaignJobResult::<TestWorkload> {
             actions: vec![CampaignActionResult {
                 action,
                 observations: Vec::new(),
@@ -3869,7 +3888,7 @@ mod tests {
         };
 
         let (first_sequence, first) = core
-            .admit_job(&game, 0, result.clone())
+            .admit_job(&workload, 0, result.clone())
             .expect("admit new boundary");
         assert_eq!(first_sequence, 1);
         assert_eq!(first, vec![CampaignAdmissionDecision::Retained { id: 1 }]);
@@ -3877,7 +3896,7 @@ mod tests {
         assert!(!core.all_prefixes_archived(0, &[]));
 
         let (second_sequence, second) = core
-            .admit_job(&game, 0, result)
+            .admit_job(&workload, 0, result)
             .expect("admit duplicate boundary");
         assert_eq!(second_sequence, 2);
         assert_eq!(second, vec![CampaignAdmissionDecision::Duplicate { id: 1 }]);
@@ -3886,9 +3905,9 @@ mod tests {
 
     #[test]
     fn coordinator_counts_victories_and_keeps_the_first_winning_input() {
-        let (game, _run, mut core, _target) = test_core();
+        let (workload, _run, mut core, _target) = test_core();
         let winning = TestAction::new(0x81, 7);
-        let result = CampaignJobResult::<TestGame> {
+        let result = CampaignJobResult::<TestWorkload> {
             actions: vec![CampaignActionResult {
                 action: winning,
                 observations: Vec::new(),
@@ -3900,7 +3919,7 @@ mod tests {
             }],
         };
         let winning_action = result.actions[0].clone();
-        let (sequence, decisions) = core.admit_job(&game, 0, result).expect("admit victory");
+        let (sequence, decisions) = core.admit_job(&workload, 0, result).expect("admit victory");
         assert_eq!(sequence, 1);
         assert_eq!(decisions, vec![CampaignAdmissionDecision::Victory]);
         assert_eq!(core.victories, 1);
@@ -3917,7 +3936,7 @@ mod tests {
                 ..winning_action
             }],
         };
-        core.admit_job(&game, 0, later)
+        core.admit_job(&workload, 0, later)
             .expect("admit a second victory");
         assert_eq!(core.victories, 2);
         assert_eq!(
@@ -3926,7 +3945,7 @@ mod tests {
                 actions: vec![winning]
             })
         );
-        let (report, _) = core.into_archive_report_and_snapshots(&game, 0, true);
+        let (report, _) = core.into_archive_report_and_snapshots(&workload, 0, true);
         assert_eq!(
             report.entries.len(),
             1,
@@ -3936,7 +3955,7 @@ mod tests {
 
     #[test]
     fn whole_tree_import_rebuilds_inputs_and_reroots_sparse_parents() {
-        let game = TestGame;
+        let workload = TestWorkload;
         let run = ();
         let mut target = TestTarget::default();
         let action = |input: u8| TestAction::new(input, 1);
@@ -3960,14 +3979,14 @@ mod tests {
                 entry(10, Some(2), vec![action(0x01); 5]),
             ],
         };
-        let mut core = CoordinatorCore::new(&game, &run, 4, 32_768, None);
+        let mut core = CoordinatorCore::new(&workload, &run, 4, 32_768, None);
         let suffix_json = serde_json::to_string(&source).expect("serialize source archive");
         assert!(suffix_json.contains("\"input_suffix\""));
         let rebuilt: TestArchiveReport =
             serde_json::from_str(&suffix_json).expect("load suffix archive");
         assert_eq!(rebuilt, source);
         let counts = core
-            .import_tree(&game, &mut target, &source, None)
+            .import_tree(&workload, &mut target, &source, None)
             .expect("import source archive");
         assert_eq!(counts.over_limit, 1);
         assert_eq!(counts.rerooted, 1);
@@ -4001,12 +4020,12 @@ mod tests {
         };
 
         assert_eq!(
-            replay_splice::<TestGame>(EnergyStrategy::Splice, Some(encoded(vec![action])))
+            replay_splice::<TestWorkload>(EnergyStrategy::Splice, Some(encoded(vec![action])))
                 .expect("replay explicit tail"),
             Some(vec![action])
         );
         assert_eq!(
-            replay_splice::<TestGame>(
+            replay_splice::<TestWorkload>(
                 EnergyStrategy::Splice,
                 Some(CampaignSpliceRecord::Unavailable),
             )
@@ -4014,17 +4033,18 @@ mod tests {
             None
         );
         assert!(
-            replay_splice::<TestGame>(EnergyStrategy::Splice, Some(encoded(Vec::new()))).is_err()
+            replay_splice::<TestWorkload>(EnergyStrategy::Splice, Some(encoded(Vec::new())))
+                .is_err()
         );
         assert!(
-            replay_splice::<TestGame>(
+            replay_splice::<TestWorkload>(
                 EnergyStrategy::Splice,
                 Some(encoded(vec![action; SPLICE_ACTION_CAP + 1])),
             )
             .is_err()
         );
         assert_eq!(
-            replay_splice::<TestGame>(
+            replay_splice::<TestWorkload>(
                 EnergyStrategy::Splice,
                 Some(encoded(vec![action; SPLICE_ACTION_CAP])),
             )
@@ -4033,13 +4053,13 @@ mod tests {
             Some(SPLICE_ACTION_CAP)
         );
         assert!(
-            replay_splice::<TestGame>(
+            replay_splice::<TestWorkload>(
                 EnergyStrategy::Alphabet,
                 Some(CampaignSpliceRecord::Unavailable),
             )
             .is_err()
         );
-        assert!(replay_splice::<TestGame>(EnergyStrategy::Splice, None).is_err());
+        assert!(replay_splice::<TestWorkload>(EnergyStrategy::Splice, None).is_err());
     }
 
     #[test]
@@ -4065,11 +4085,11 @@ mod tests {
 
     #[test]
     fn admission_bookkeeping_helpers_preserve_retained_meaning() {
-        let (game, run, mut core, mut target) = test_core();
+        let (workload, run, mut core, mut target) = test_core();
         let action = TestAction::new(0x01, 4);
         target.apply(&action);
         let snapshot = target.snapshot().expect("snapshot candidate");
-        let result = CampaignJobResult::<TestGame> {
+        let result = CampaignJobResult::<TestWorkload> {
             actions: vec![CampaignActionResult {
                 action,
                 observations: Vec::new(),
@@ -4085,7 +4105,7 @@ mod tests {
             }],
         };
         let (_, admission) = core
-            .admit_job(&game, 0, result)
+            .admit_job(&workload, 0, result)
             .expect("admit second archive entry");
         assert_eq!(
             admission,
@@ -4099,12 +4119,12 @@ mod tests {
         ];
         assert_eq!(retained_archive_indexes(&core, &decisions), vec![0, 1]);
 
-        let (mut draw_state, _header) = game
+        let (mut draw_state, _header) = workload
             .initial_draw_state(&run, None)
             .expect("initialize draw state");
         assert!(
             finish_record(
-                &game,
+                &workload,
                 &run,
                 &mut draw_state,
                 &core,
@@ -4274,7 +4294,7 @@ mod tests {
         assert_eq!(header.suffix_policy, "one_or_two");
         assert_eq!(header.resume_policy, "whole_tree");
         assert_eq!(header.draw_table, None);
-        let expected: GamePolicies = [
+        let expected: WorkloadPolicies = [
             ("controller_vocabulary", "nes_down_ten"),
             ("key_policy", "frozen_area_span"),
             ("duration_policy", "stratified"),
@@ -4284,7 +4304,7 @@ mod tests {
         .into_iter()
         .map(|(field, value)| (field.to_owned(), value.to_owned()))
         .collect();
-        assert_eq!(header.game_policies, expected);
+        assert_eq!(header.workload_policies, expected);
 
         let written = serde_json::to_value(&header).expect("header serializes");
         let object = written.as_object().expect("header is an object");

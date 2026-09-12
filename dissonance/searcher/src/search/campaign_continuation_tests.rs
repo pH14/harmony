@@ -74,8 +74,8 @@ struct TestArchiveReport {
     entries: Vec<ArchiveEntryReport<TestAction, TestKey, ()>>,
 }
 
-struct TestGame;
-impl CampaignTypes for TestGame {
+struct TestWorkload;
+impl CampaignTypes for TestWorkload {
     type Target = TestTarget;
     type Action = TestAction;
     type Key = TestKey;
@@ -91,7 +91,7 @@ impl CampaignTypes for TestGame {
     type TableHeader = ();
 }
 
-impl Reporting for TestGame {
+impl Reporting for TestWorkload {
     fn diagnostics(_: &()) -> Option<serde_json::Value> {
         Some(serde_json::json!({"observed": 42}))
     }
@@ -120,17 +120,17 @@ impl Reporting for TestGame {
     }
 }
 
-impl InputPolicy for TestGame {
+impl InputPolicy for TestWorkload {
     fn draw_state_memory_reserve_bytes(&self, _run: &Self::Run, _max_actions: usize) -> usize {
         0
     }
     fn draw_state_memory_bytes(&self, _state: &Self::DrawState) -> usize {
         0
     }
-    fn policies(&self, _run: &Self::Run) -> GamePolicies {
-        GamePolicies::new()
+    fn policies(&self, _run: &Self::Run) -> WorkloadPolicies {
+        WorkloadPolicies::new()
     }
-    fn resolve_recorded(&self, _policies: &GamePolicies) -> Result<Self::Run, Box<dyn Error>> {
+    fn resolve_recorded(&self, _policies: &WorkloadPolicies) -> Result<Self::Run, Box<dyn Error>> {
         Ok(())
     }
     fn initial_draw_state(
@@ -160,7 +160,7 @@ impl InputPolicy for TestGame {
     }
 }
 
-impl TargetExecution for TestGame {
+impl TargetExecution for TestWorkload {
     fn new_target(&self) -> Result<Self::Target, String> {
         Ok(TestTarget::default())
     }
@@ -200,7 +200,7 @@ impl TargetExecution for TestGame {
     }
 }
 
-impl Evaluation for TestGame {
+impl Evaluation for TestWorkload {
     fn is_terminal(&self, _target: &Self::Target) -> bool {
         false
     }
@@ -382,7 +382,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         };
         let mut bytes = Vec::new();
         let (live, checkpoint) = run_campaign_checkpointed(
-            &TestGame,
+            &TestWorkload,
             &config,
             &CampaignOrigin::Genesis,
             &mut bytes,
@@ -391,7 +391,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         .unwrap();
         let mut buffered_bytes = Vec::new();
         let buffered = run_campaign_checkpointed_with_options(
-            &TestGame,
+            &TestWorkload,
             &config,
             &CampaignOrigin::Genesis,
             &mut buffered_bytes,
@@ -412,7 +412,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             let mut with_sidecar = Vec::new();
             let mut sidecar = Vec::new();
             let observed = run_campaign_checkpointed(
-                &TestGame,
+                &TestWorkload,
                 &config,
                 &CampaignOrigin::Genesis,
                 &mut with_sidecar,
@@ -448,7 +448,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             "fixture must exercise memory pressure"
         );
         let (replayed, replay_checkpoint) =
-            replay_campaign_checkpointed(&TestGame, &bytes, None, None).unwrap();
+            replay_campaign_checkpointed(&TestWorkload, &bytes, None, None).unwrap();
         assert_eq!(live, replayed);
         assert_eq!(checkpoint, replay_checkpoint);
         if persistent {
@@ -467,7 +467,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         }
         let mut bounded_stream = Vec::new();
         let (bounded, bounded_checkpoint) = run_campaign_checkpointed_with_frame_budget(
-            &TestGame,
+            &TestWorkload,
             &config,
             &CampaignOrigin::Genesis,
             &mut bounded_stream,
@@ -480,7 +480,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         assert!(bounded.executions_completed < config.execution_budget);
         let mut bounded_buffered_bytes = Vec::new();
         let bounded_buffered = run_campaign_checkpointed_with_options(
-            &TestGame,
+            &TestWorkload,
             &config,
             &CampaignOrigin::Genesis,
             &mut bounded_buffered_bytes,
@@ -497,11 +497,13 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             (bounded.clone(), bounded_checkpoint.clone())
         );
         assert_eq!(
-            replay_campaign_checkpointed(&TestGame, &bounded_stream, None, None).unwrap(),
+            replay_campaign_checkpointed(&TestWorkload, &bounded_stream, None, None).unwrap(),
             (bounded, bounded_checkpoint)
         );
         let tampered = text.replacen(&draw_mixture_identifier(config.mixture), "alphabet_only", 1);
-        assert!(replay_campaign_checkpointed(&TestGame, tampered.as_bytes(), None, None).is_err());
+        assert!(
+            replay_campaign_checkpointed(&TestWorkload, tampered.as_bytes(), None, None).is_err()
+        );
         let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
         let line = lines
             .iter_mut()
@@ -511,7 +513,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         value["splice"]["tail_postcard"] = serde_json::json!([1, 255, 120]);
         *line = serde_json::to_string(&value).unwrap();
         assert!(
-            replay_campaign_checkpointed(&TestGame, lines.join("\n").as_bytes(), None, None)
+            replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
                 .is_err()
         );
     }

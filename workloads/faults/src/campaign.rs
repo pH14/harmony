@@ -9,8 +9,8 @@ use searcher::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignConfig,
             CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
             CampaignStreamHeader, CampaignTypes, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
-            Evaluation, GamePolicies, InitialDrawState, InputPolicy, Reporting, SnapshotCheckpoint,
-            TargetExecution, postcard_result_sha256, run_campaign_checkpointed,
+            Evaluation, InitialDrawState, InputPolicy, Reporting, SnapshotCheckpoint,
+            TargetExecution, WorkloadPolicies, postcard_result_sha256, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
     },
@@ -51,7 +51,7 @@ pub struct FaultCampaignRun {
     pub vocabulary: FaultVocabulary,
 }
 
-pub struct FaultGame {
+pub struct FaultWorkload {
     kernel: Vec<u8>,
     initramfs: Vec<u8>,
     config: FaultConfig,
@@ -59,7 +59,7 @@ pub struct FaultGame {
     root_seal: OnceLock<u64>,
 }
 
-impl FaultGame {
+impl FaultWorkload {
     #[must_use]
     pub fn new(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Self {
         Self {
@@ -97,13 +97,13 @@ pub struct FaultCampaignEvidence {
     bugs: Vec<FaultBugRecord>,
 }
 
-pub type FaultCampaignOrigin = CampaignOrigin<FaultGame>;
+pub type FaultCampaignOrigin = CampaignOrigin<FaultWorkload>;
 pub type FaultSnapshotCheckpoint = SnapshotCheckpoint<FaultSnapshot>;
 pub type FaultCampaignStreamHeader = CampaignStreamHeader<FaultNoTableHeader>;
 pub type FaultCampaignModeReport = CampaignModeReport<FaultAction, FaultArchiveReport>;
 pub type FaultCampaignProgressRecord = CampaignProgressRecord<FaultArchiveKey>;
-type FaultCampaignActionResult = CampaignActionResult<FaultGame>;
-type FaultCampaignJobResult = CampaignJobResult<FaultGame>;
+type FaultCampaignActionResult = CampaignActionResult<FaultWorkload>;
+type FaultCampaignJobResult = CampaignJobResult<FaultWorkload>;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultCampaignReport {
@@ -145,7 +145,7 @@ pub struct FaultCampaignConfig {
 }
 
 impl FaultCampaignConfig {
-    fn generic(&self) -> CampaignConfig<FaultGame> {
+    fn generic(&self) -> CampaignConfig<FaultWorkload> {
         CampaignConfig {
             campaign_seed: self.campaign_seed,
             workers: self.workers,
@@ -170,7 +170,7 @@ impl FaultCampaignConfig {
     }
 }
 
-fn recorded<'a>(policies: &'a GamePolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
+fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
     policies
         .get(field)
         .map(String::as_str)
@@ -241,7 +241,7 @@ fn execute_job(
     Ok(CampaignJobResult { actions })
 }
 
-impl CampaignTypes for FaultGame {
+impl CampaignTypes for FaultWorkload {
     type Target = FaultTarget;
     type Action = FaultAction;
     type Key = FaultArchiveKey;
@@ -257,7 +257,7 @@ impl CampaignTypes for FaultGame {
     type TableHeader = FaultNoTableHeader;
 }
 
-impl Reporting for FaultGame {
+impl Reporting for FaultWorkload {
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -302,7 +302,7 @@ impl Reporting for FaultGame {
     }
 }
 
-impl InputPolicy for FaultGame {
+impl InputPolicy for FaultWorkload {
     fn max_action_limit(&self) -> usize {
         MAX_FAULT_ACTIONS
     }
@@ -311,7 +311,7 @@ impl InputPolicy for FaultGame {
         1
     }
 
-    fn policies(&self, run: &FaultCampaignRun) -> GamePolicies {
+    fn policies(&self, run: &FaultCampaignRun) -> WorkloadPolicies {
         [
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
@@ -333,7 +333,7 @@ impl InputPolicy for FaultGame {
 
     fn resolve_recorded(
         &self,
-        policies: &GamePolicies,
+        policies: &WorkloadPolicies,
     ) -> Result<FaultCampaignRun, Box<dyn Error>> {
         let run = FaultCampaignRun {
             vocabulary: FaultVocabulary::from_identifier(recorded(policies, VOCABULARY_FIELD)?)?,
@@ -391,7 +391,7 @@ impl InputPolicy for FaultGame {
     }
 }
 
-impl TargetExecution for FaultGame {
+impl TargetExecution for FaultWorkload {
     fn new_target(&self) -> Result<FaultTarget, String> {
         let target = FaultTarget::new(&self.kernel, &self.initramfs, &self.config)?;
         let seal = *self.root_seal.get_or_init(|| target.root_seal());
@@ -469,7 +469,7 @@ impl TargetExecution for FaultGame {
     }
 }
 
-impl Evaluation for FaultGame {
+impl Evaluation for FaultWorkload {
     fn is_terminal(&self, target: &FaultTarget) -> bool {
         target.exit_kind() != ExitKind::Ok || target.snapshot().is_none()
     }
@@ -610,7 +610,7 @@ impl Evaluation for FaultGame {
 }
 
 pub fn run_fault_campaign_checkpointed(
-    game: &FaultGame,
+    game: &FaultWorkload,
     config: &FaultCampaignConfig,
     origin: &FaultCampaignOrigin,
     stream: &mut dyn Write,
@@ -634,8 +634,8 @@ mod tests {
         }
     }
 
-    fn game() -> FaultGame {
-        FaultGame::new(b"kernel", b"initramfs", &config(&[]))
+    fn game() -> FaultWorkload {
+        FaultWorkload::new(b"kernel", b"initramfs", &config(&[]))
     }
 
     fn run(nodes: u16, hooks: Vec<u32>) -> FaultCampaignRun {
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn the_image_identity_covers_the_workload_image_bytes() {
         let etcd = game();
-        let postgres = FaultGame::new(b"kernel", b"postgres-initramfs", &config(&[]));
+        let postgres = FaultWorkload::new(b"kernel", b"postgres-initramfs", &config(&[]));
         assert_ne!(etcd.image_identity(), postgres.image_identity());
         assert_ne!(etcd.image_sha256(), postgres.image_sha256());
     }
@@ -687,9 +687,9 @@ mod tests {
     fn the_recorded_policies_pin_the_knobs_and_the_horizon() {
         let game = game();
         let policies = game.policies(&run(1, vec![1, 2]));
-        let tuned = FaultGame::new(b"kernel", b"initramfs", &config(&["faultlab.puts=20"]));
+        let tuned = FaultWorkload::new(b"kernel", b"initramfs", &config(&["faultlab.puts=20"]));
         assert!(tuned.resolve_recorded(&policies).is_err());
-        let short = FaultGame::new(
+        let short = FaultWorkload::new(
             b"kernel",
             b"initramfs",
             &FaultConfig {

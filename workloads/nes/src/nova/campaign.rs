@@ -28,8 +28,8 @@ use crate::{
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCheckpoint, CampaignConfig,
             CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
-            CampaignStreamHeader, CampaignTypes, Evaluation, GamePolicies, InputPolicy, Reporting,
-            SnapshotCheckpoint, TargetExecution, postcard_value_sha256,
+            CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy, Reporting,
+            SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_value_sha256,
             replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
@@ -332,7 +332,7 @@ impl NovaCampaignConfig {
     }
 }
 
-fn recorded<'a>(policies: &'a GamePolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
+fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
     policies
         .get(field)
         .map(String::as_str)
@@ -470,7 +470,7 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
     fn draw_state_memory_bytes(&self, _state: &()) -> usize {
         0
     }
-    fn policies(&self, _run: &NovaCampaignRun) -> GamePolicies {
+    fn policies(&self, _run: &NovaCampaignRun) -> WorkloadPolicies {
         [
             (
                 CONTROLLER_VOCABULARY_FIELD,
@@ -496,7 +496,10 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
         )))
         .collect()
     }
-    fn resolve_recorded(&self, policies: &GamePolicies) -> Result<NovaCampaignRun, Box<dyn Error>> {
+    fn resolve_recorded(
+        &self,
+        policies: &WorkloadPolicies,
+    ) -> Result<NovaCampaignRun, Box<dyn Error>> {
         let expected = self.policies(&NovaCampaignRun);
         if policies != &expected {
             for (field, value) in &expected {

@@ -30,9 +30,9 @@ use crate::{
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, GamePolicies,
-            InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, postcard_value_sha256,
-            replay_campaign_checkpointed, run_campaign_checkpointed,
+            CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
+            Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
+            postcard_value_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
     },
@@ -291,7 +291,7 @@ impl MetroidCampaignConfig {
     }
 }
 
-fn recorded<'a>(policies: &'a GamePolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
+fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
     policies
         .get(field)
         .map(String::as_str)
@@ -505,7 +505,7 @@ impl InputPolicy for MetroidGame {
         0
     }
 
-    fn policies(&self, _run: &MetroidCampaignRun) -> GamePolicies {
+    fn policies(&self, _run: &MetroidCampaignRun) -> WorkloadPolicies {
         [
             (
                 CONTROLLER_VOCABULARY_FIELD,
@@ -527,7 +527,7 @@ impl InputPolicy for MetroidGame {
 
     fn resolve_recorded(
         &self,
-        policies: &GamePolicies,
+        policies: &WorkloadPolicies,
     ) -> Result<MetroidCampaignRun, Box<dyn Error>> {
         let expected = self.policies(&MetroidCampaignRun);
         if policies != &expected {

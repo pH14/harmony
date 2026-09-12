@@ -32,7 +32,7 @@ oracle and CLI entry point. The larger Nova experiment in
 `initramfs-nova.cpio.gz` image and its specialized campaign/oracle binaries;
 that experiment does not provide SMB acceptance evidence.
 
-| Game/backend | Current evidence | Required artifacts and platform |
+| Workload/backend | Current evidence | Required artifacts and platform |
 | --- | --- | --- |
 | Nova/native | CI package acceptance and the Nova Consonance experiment exercise the pinned ROM and QuickNES core. | Host QuickNES core; the CI ROM is built from the pinned source recipe. |
 | Nova/Consonance | Real VM campaign and backend checks run in `.github/workflows/nova-consonance-experiment.yml`. | Linux/KVM, pinned kernel, generic NES base image, and the pinned Nova ROM/core. |

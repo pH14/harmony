@@ -4,7 +4,7 @@ use std::error::Error;
 
 use super::{
     archive::RetentionPolicy,
-    campaign::{CampaignActionResult, CampaignCandidate, CampaignInterfaces, CampaignJobResult},
+    campaign::{CampaignActionResult, CampaignCandidate, CampaignJobResult, Workload},
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -20,7 +20,7 @@ impl Outcome {
     }
 }
 
-pub trait Rollout<G: CampaignInterfaces + ?Sized> {
+pub trait Rollout<G: Workload + ?Sized> {
     fn apply(
         &mut self,
         action: &G::Action,
@@ -33,51 +33,55 @@ pub trait Rollout<G: CampaignInterfaces + ?Sized> {
     fn probe(&mut self, snapshot: &G::Snapshot) -> Result<bool, Box<dyn Error>>;
 }
 
-pub struct GameRollout<'a, G: CampaignInterfaces + ?Sized> {
-    game: &'a G,
+pub struct WorkloadRollout<'a, G: Workload + ?Sized> {
+    workload: &'a G,
     run: &'a G::Run,
     target: &'a mut G::Target,
 }
 
-impl<'a, G: CampaignInterfaces + ?Sized> GameRollout<'a, G> {
-    fn new(game: &'a G, run: &'a G::Run, target: &'a mut G::Target) -> Self {
-        Self { game, run, target }
+impl<'a, G: Workload + ?Sized> WorkloadRollout<'a, G> {
+    fn new(workload: &'a G, run: &'a G::Run, target: &'a mut G::Target) -> Self {
+        Self {
+            workload,
+            run,
+            target,
+        }
     }
 }
 
-impl<G: CampaignInterfaces + ?Sized> Rollout<G> for GameRollout<'_, G> {
+impl<G: Workload + ?Sized> Rollout<G> for WorkloadRollout<'_, G> {
     fn apply(
         &mut self,
         action: &G::Action,
         milestones: &mut G::Milestones,
     ) -> Result<(), Box<dyn Error>> {
-        self.game.apply_action(self.target, action, milestones)
+        self.workload.apply_action(self.target, action, milestones)
     }
 
     fn observations(&self) -> Vec<G::Observations> {
-        self.game.rollout_observations(self.target)
+        self.workload.rollout_observations(self.target)
     }
 
     fn outcome(&self) -> Result<Outcome, Box<dyn Error>> {
-        self.game.rollout_outcome(self.run, self.target)
+        self.workload.rollout_outcome(self.run, self.target)
     }
 
     fn snapshot(&mut self) -> Result<G::Snapshot, Box<dyn Error>> {
-        self.game.snapshot(self.target)
+        self.workload.snapshot(self.target)
     }
 
     fn key(&self) -> Result<G::Key, Box<dyn Error>> {
-        self.game.rollout_key(self.target)
+        self.workload.rollout_key(self.target)
     }
 
     fn probe(&mut self, snapshot: &G::Snapshot) -> Result<bool, Box<dyn Error>> {
-        self.game.rollout_probe(self.run, self.target, snapshot)
+        self.workload.rollout_probe(self.run, self.target, snapshot)
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn execute_job<G: CampaignInterfaces + ?Sized>(
-    game: &G,
+pub fn execute_job<G: Workload + ?Sized>(
+    workload: &G,
     run: &G::Run,
     target: &mut G::Target,
     origin_snapshot: &G::Snapshot,
@@ -88,17 +92,17 @@ pub fn execute_job<G: CampaignInterfaces + ?Sized>(
     max_actions: usize,
     retention: RetentionPolicy,
 ) -> Result<CampaignJobResult<G>, Box<dyn Error>> {
-    game.reset(target);
-    game.restore(target, origin_snapshot)?;
+    workload.reset(target);
+    workload.restore(target, origin_snapshot)?;
     let mut replay_milestones = parent_milestones;
     for action in replay {
-        game.apply_action(target, action, &mut replay_milestones)?;
-        if game.is_terminal(target) {
+        workload.apply_action(target, action, &mut replay_milestones)?;
+        if workload.is_terminal(target) {
             break;
         }
     }
     execute_suffix(
-        &mut GameRollout::new(game, run, target),
+        &mut WorkloadRollout::new(workload, run, target),
         parent_actions,
         parent_milestones,
         suffix,
@@ -107,7 +111,7 @@ pub fn execute_job<G: CampaignInterfaces + ?Sized>(
     )
 }
 
-pub fn execute_suffix<G: CampaignInterfaces + ?Sized>(
+pub fn execute_suffix<G: Workload + ?Sized>(
     target: &mut impl Rollout<G>,
     parent_actions: usize,
     parent_milestones: G::Milestones,

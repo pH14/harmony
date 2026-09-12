@@ -16,7 +16,7 @@ use nes_workload::{
             selector_policy_from_identifier,
         },
         campaign::{
-            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, Game, ResultBuffering,
+            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, ResultBuffering, Workload,
             replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
         },
         draw::{draw_mixture_from_identifier, suffix_shape_from_identifier},
@@ -125,7 +125,7 @@ fn phase(out: &Path, name: &str, started: Instant) -> Result<()> {
     )
 }
 
-fn replay_witness<G: Game>(game: &G, run: &G::Run, input: &Input<G::Action>) -> Result<Value> {
+fn replay_witness<G: Workload>(game: &G, run: &G::Run, input: &Input<G::Action>) -> Result<Value> {
     let mut target = game.new_target()?;
     let mut aggregate = G::Milestones::default();
     let mut evidence = G::Evidence::default();
@@ -169,7 +169,7 @@ fn replay_witness<G: Game>(game: &G, run: &G::Run, input: &Input<G::Action>) -> 
     )
 }
 
-fn evaluate<G: Game>(
+fn evaluate<G: Workload>(
     game: G,
     run: G::Run,
     request: &Request,

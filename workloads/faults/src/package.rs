@@ -207,7 +207,7 @@ mod live {
     };
     use crate::{
         bundle::FaultVocabulary,
-        campaign::{FaultCampaignConfig, FaultGame, run_fault_campaign_checkpointed},
+        campaign::{FaultCampaignConfig, FaultWorkload, run_fault_campaign_checkpointed},
         consonance::{FaultConfig, FaultTarget, identity},
         report::{BugReport, write_bug_reports},
         target::{ActionWindows, FaultAction},
@@ -240,7 +240,7 @@ mod live {
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
         let mut report = Report::new("search", artifacts, identity, options);
         std::fs::create_dir_all(&options.output)?;
-        let game = FaultGame::new(&artifacts.kernel, &artifacts.initramfs, &config);
+        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config);
         let campaign = FaultCampaignConfig {
             campaign_seed: options.seed,
             vocabulary: vocabulary.clone(),

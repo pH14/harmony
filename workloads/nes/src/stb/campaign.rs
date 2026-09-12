@@ -17,8 +17,8 @@ use crate::{
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignStreamHeader, CampaignTypes, Evaluation, GamePolicies, InputPolicy, Reporting,
-            SnapshotCheckpoint, TargetExecution, postcard_value_sha256,
+            CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy, Reporting,
+            SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_value_sha256,
             replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
@@ -216,7 +216,7 @@ impl StbCampaignConfig {
     }
 }
 
-fn recorded<'a>(policies: &'a GamePolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
+fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
     policies
         .get(field)
         .map(String::as_str)
@@ -408,7 +408,7 @@ impl InputPolicy for StbGame {
         0
     }
 
-    fn policies(&self, _run: &StbCampaignRun) -> GamePolicies {
+    fn policies(&self, _run: &StbCampaignRun) -> WorkloadPolicies {
         [
             (
                 CONTROLLER_VOCABULARY_FIELD,
@@ -428,7 +428,10 @@ impl InputPolicy for StbGame {
         .collect()
     }
 
-    fn resolve_recorded(&self, policies: &GamePolicies) -> Result<StbCampaignRun, Box<dyn Error>> {
+    fn resolve_recorded(
+        &self,
+        policies: &WorkloadPolicies,
+    ) -> Result<StbCampaignRun, Box<dyn Error>> {
         let expected = self.policies(&StbCampaignRun);
         if policies != &expected {
             for (field, value) in &expected {

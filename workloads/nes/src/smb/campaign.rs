@@ -20,7 +20,7 @@ use crate::{
     search::campaign::{
         CampaignActionResult, CampaignCheckpoint, CampaignJobResult, CampaignModeReport,
         CampaignOrigin, CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation,
-        GamePolicies, InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution,
+        InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
         postcard_result_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
     },
     search::draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
@@ -78,7 +78,7 @@ pub const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 pub const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 
 pub fn recorded_policy<'a>(
-    policies: &'a GamePolicies,
+    policies: &'a WorkloadPolicies,
     field: &str,
 ) -> Result<&'a str, Box<dyn Error>> {
     policies
@@ -846,8 +846,8 @@ where
             .as_ref()
             .map_or(0, EmpiricalStepTables::memory_bytes)
     }
-    fn policies(&self, run: &SmbCampaignRun) -> GamePolicies {
-        let mut policies: GamePolicies = [
+    fn policies(&self, run: &SmbCampaignRun) -> WorkloadPolicies {
+        let mut policies: WorkloadPolicies = [
             (
                 CONTROLLER_VOCABULARY_FIELD,
                 button_vocabulary_identifier(run.vocabulary).to_owned(),
@@ -866,7 +866,10 @@ where
         policies.insert(EMULATOR_BACKEND_FIELD.to_owned(), self.identity.clone());
         policies
     }
-    fn resolve_recorded(&self, policies: &GamePolicies) -> Result<SmbCampaignRun, Box<dyn Error>> {
+    fn resolve_recorded(
+        &self,
+        policies: &WorkloadPolicies,
+    ) -> Result<SmbCampaignRun, Box<dyn Error>> {
         let recorded = |field: &str| recorded_policy(policies, field);
         let pinned = [
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),

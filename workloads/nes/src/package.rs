@@ -6,7 +6,7 @@ use crate::{
 use searcher::search::{
     archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy, SelectorPolicy},
     campaign::{
-        CampaignConfig, CampaignOrigin, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Game,
+        CampaignConfig, CampaignOrigin, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Workload,
         run_campaign_checkpointed,
     },
     draw::{DrawMixture, SuffixShape},
@@ -122,7 +122,7 @@ fn record_identity(
     )?;
     Ok(())
 }
-fn search<G: Game>(game: G, run: G::Run, options: &SearchOptions) -> Result<(), Box<dyn Error>>
+fn search<G: Workload>(game: G, run: G::Run, options: &SearchOptions) -> Result<(), Box<dyn Error>>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
 {

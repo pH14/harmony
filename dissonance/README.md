@@ -5,7 +5,8 @@ crate owns archive retention, deterministic campaign scheduling, rollout mechani
 input mutation machinery, stream recording, and replay.
 
 Workload packages implement the search interfaces with typed actions, observations,
-keys, and snapshots. The NES package and machine drivers live under `../workloads`.
+keys, and snapshots. Workload adapters and execution drivers live under
+`../workloads`.
 
 Evaluation separates worker candidate keys from completed archive keys. The
 rollout records `rollout_key`, then the coordinator completes it against the
