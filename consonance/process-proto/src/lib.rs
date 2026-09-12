@@ -4,6 +4,7 @@ use core::fmt;
 
 pub const PROCESS_CLASS: u16 = 6;
 pub const CLASS_PROCESS: u16 = PROCESS_CLASS;
+pub const STANDING_NAMESPACE: u16 = 9;
 
 const PAUSE: u8 = 9;
 const KILL: u8 = 10;

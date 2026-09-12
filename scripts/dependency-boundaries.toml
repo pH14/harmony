@@ -25,7 +25,9 @@ execution_core = [
 platform_contracts = [
     "consonance/control-proto",
     "consonance/environment",
+    "consonance/execution-proto",
     "consonance/hypercall-proto",
+    "consonance/process-proto",
 ]
 consonance_client = [
     "consonance/client",
@@ -38,8 +40,10 @@ workload_support = [
     "workloads/nes-protocol",
     "workloads/nes-machine",
 ]
+guest_linux_platform = [
+    "consonance/harmony-linux/supervisor",
+]
 workload_packages = [
-    "workloads/fault-agent",
     "workloads/nes-guest",
     "workloads/fault-policy",
     "workloads/faults",
@@ -60,6 +64,12 @@ consonance_client = ["consonance_client", "platform_contracts", "execution_core"
 workload_support = [
     "consonance_client",
     "platform_contracts",
+    "workload_support",
+]
+guest_linux_platform = [
+    "consonance_client",
+    "platform_contracts",
+    "guest_linux_platform",
     "workload_support",
 ]
 workload_packages = [

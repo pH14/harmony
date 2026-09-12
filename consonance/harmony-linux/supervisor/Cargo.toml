@@ -1,0 +1,28 @@
+[package]
+name = "harmony-supervisor"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "The Consonance in-guest process supervisor"
+
+[workspace]
+
+[lib]
+name = "harmony_supervisor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "harmony-supervisor"
+path = "src/main.rs"
+
+[dependencies]
+execution-proto = { path = "../../execution-proto", version = "=0.1.0" }
+process-proto = { path = "../../process-proto", version = "=0.1.0" }
+harmony-sdk = { path = "../sdk", version = "=0.1.0" }
+hypercall-doorbell = { path = "../../hypercall-doorbell", version = "=0.1.0", features = ["linux-device"] }
+hypercall-proto = { path = "../../hypercall-proto", version = "=0.1.0", default-features = false, features = ["guest"] }
+libc = "0.2"
+thiserror = "2"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
