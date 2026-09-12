@@ -21,6 +21,10 @@ fn test_action_time(action: &TestAction) -> u64 {
     u64::from(action.hold_frames)
 }
 
+fn test_draw_action(fingerprint: u32, mutation_seed: u64) -> TestAction {
+    TestAction::new((mutation_seed as u8).wrapping_add(fingerprint as u8), 1)
+}
+
 const TEST_DRAW_VERSION_CAP: usize = 16;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -166,12 +170,12 @@ impl InputPolicy for TestWorkload {
     fn expand_suffix(
         &self,
         _run: &Self::Run,
-        _state: &Self::DrawState,
+        state: &Self::DrawState,
         _shape: SuffixShape,
         _mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        Ok(vec![TestAction::new(mutation_seed as u8, 1)])
+        Ok(vec![test_draw_action(state.fingerprint, mutation_seed)])
     }
 
     fn draw_checkpoint(
@@ -203,7 +207,8 @@ impl InputPolicy for TestWorkload {
         if !state.versions.iter().any(|checkpoint| checkpoint == before) {
             return Err("recorded draw checkpoint does not match live state".into());
         }
-        self.expand_suffix(run, state, shape, mixture, mutation_seed)
+        let _ = (run, shape, mixture);
+        Ok(vec![test_draw_action(before.fingerprint, mutation_seed)])
     }
 
     fn finish_stream_record(
