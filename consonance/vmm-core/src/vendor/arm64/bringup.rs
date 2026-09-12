@@ -21,7 +21,7 @@ pub(crate) fn compose<B: Backend<A = Arm64>>(
     bootargs: &str,
     guest_ram_len: usize,
 ) -> Result<Vmm<B>, VmmError> {
-    compose_inner(backend, image, None, bootargs, guest_ram_len, true)
+    compose_inner(backend, image, None, bootargs, guest_ram_len, true, 0)
 }
 
 fn compose_inner<B: Backend<A = Arm64>>(
@@ -31,6 +31,7 @@ fn compose_inner<B: Backend<A = Arm64>>(
     bootargs: &str,
     guest_ram_len: usize,
     map_doorbell: bool,
+    seed: u64,
 ) -> Result<Vmm<B>, VmmError> {
     backend.set_policy(&contract::policy())?;
 
@@ -69,9 +70,9 @@ fn compose_inner<B: Backend<A = Arm64>>(
         .checked_add(dtb_off)
         .ok_or_else(|| VmmError::ContractViolation("arm64 DTB GPA wraps address space".into()))?;
     let dtb_bytes = if let Some((_, _, start_gpa, end_gpa)) = initrd_layout {
-        dtb::build_with_initrd(ram_len, pvclock_gpa, bootargs, start_gpa, end_gpa)
+        dtb::build_with_initrd_seed(ram_len, pvclock_gpa, bootargs, start_gpa, end_gpa, seed)
     } else {
-        dtb::build(ram_len, pvclock_gpa, bootargs)
+        dtb::build_with_seed(ram_len, pvclock_gpa, bootargs, seed)
     };
 
     let dtb_start = usize::try_from(dtb_off)
@@ -144,6 +145,7 @@ pub fn boot_hvf(
         bootargs,
         guest_ram_len,
         false,
+        0,
     )?;
     vmm.wire_gic(super::board::new_gic());
     vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(
@@ -173,6 +175,7 @@ pub fn boot_hvf_control(
         bootargs,
         guest_ram_len,
         true,
+        0,
     )?;
     vmm.wire_gic(super::board::new_gic());
     vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(
@@ -194,7 +197,7 @@ pub fn boot_selected(
     bootargs: &str,
     guest_ram_len: usize,
 ) -> Result<Vmm<Box<dyn Backend<A = Arm64>>>, VmmError> {
-    boot_selected_inner(image, initramfs, bootargs, guest_ram_len, false)
+    boot_selected_inner(image, initramfs, bootargs, guest_ram_len, false, 0)
 }
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
@@ -203,8 +206,9 @@ pub fn boot_selected_control(
     initramfs: &[u8],
     bootargs: &str,
     guest_ram_len: usize,
+    seed: u64,
 ) -> Result<Vmm<Box<dyn Backend<A = Arm64>>>, VmmError> {
-    boot_selected_inner(image, initramfs, bootargs, guest_ram_len, true)
+    boot_selected_inner(image, initramfs, bootargs, guest_ram_len, true, seed)
 }
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
@@ -214,6 +218,7 @@ fn boot_selected_inner(
     bootargs: &str,
     guest_ram_len: usize,
     map_doorbell: bool,
+    seed: u64,
 ) -> Result<Vmm<Box<dyn Backend<A = Arm64>>>, VmmError> {
     let live = vmm_backend::LiveKvm::new()?;
     let backend: Box<dyn Backend<A = Arm64>> = Box::new(vmm_backend::Arm64KvmBackend::new(live));
@@ -224,6 +229,7 @@ fn boot_selected_inner(
         bootargs,
         guest_ram_len,
         map_doorbell,
+        seed,
     )?;
     vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(
         vtime::VClockConfig {
@@ -285,6 +291,7 @@ mod tests {
             "console=ttyAMA0",
             ram_len,
             true,
+            0,
         )
         .unwrap();
 
@@ -321,6 +328,7 @@ mod tests {
             "",
             ram_len,
             true,
+            0,
         );
         assert!(matches!(result, Err(VmmError::ContractViolation(_))));
     }

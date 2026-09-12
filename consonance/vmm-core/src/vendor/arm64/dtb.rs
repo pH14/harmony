@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use super::board::{CNTFRQ_HZ, GICD, GICR, PL011, PL011_SPI, RAM_BASE, VIRT_TIMER_INTID};
+use sha2::{Digest, Sha256};
 
 const BOOT_RNG_SEED: [u8; 64] = [
     0x48, 0x61, 0x72, 0x6d, 0x6f, 0x6e, 0x79, 0x2d, 0x41, 0x41, 0x35, 0x2d, 0x72, 0x6e, 0x67, 0x2d,
@@ -8,6 +9,22 @@ const BOOT_RNG_SEED: [u8; 64] = [
     0x69, 0x73, 0x74, 0x69, 0x63, 0x2d, 0x66, 0x69, 0x78, 0x65, 0x64, 0x2d, 0x62, 0x79, 0x2d, 0x63,
     0x6f, 0x6e, 0x73, 0x74, 0x72, 0x75, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x2d, 0x30, 0x30, 0x30, 0x31,
 ];
+const BOOT_RNG_DOMAIN: &[u8] = b"consonance.arm64-boot-rng.v1\0";
+
+fn boot_rng_seed(seed: u64) -> [u8; 64] {
+    if seed == 0 {
+        return BOOT_RNG_SEED;
+    }
+    let mut output = [0u8; 64];
+    for (block, chunk) in output.chunks_exact_mut(32).enumerate() {
+        let mut digest = Sha256::new();
+        digest.update(BOOT_RNG_DOMAIN);
+        digest.update(seed.to_le_bytes());
+        digest.update((block as u32).to_le_bytes());
+        chunk.copy_from_slice(&digest.finalize());
+    }
+    output
+}
 
 pub const FDT_MAGIC: u32 = 0xd00d_feed;
 const FDT_VERSION: u32 = 17;
@@ -122,7 +139,7 @@ fn u64_cells(v: u64) -> [u32; 2] {
 }
 
 pub fn build(ram_len: u64, pvclock_gpa: u64, bootargs: &str) -> Vec<u8> {
-    build_inner(ram_len, pvclock_gpa, bootargs, None)
+    build_inner(ram_len, pvclock_gpa, bootargs, None, 0)
 }
 
 pub(crate) fn build_with_initrd(
@@ -137,6 +154,36 @@ pub(crate) fn build_with_initrd(
         pvclock_gpa,
         bootargs,
         Some((initrd_start, initrd_end)),
+        0,
+    )
+}
+
+pub(crate) fn build_with_seed(
+    ram_len: u64,
+    pvclock_gpa: u64,
+    bootargs: &str,
+    seed: u64,
+) -> Vec<u8> {
+    build_inner(ram_len, pvclock_gpa, bootargs, None, seed)
+}
+
+pub(crate) fn build_with_initrd_seed(
+    ram_len: u64,
+    pvclock_gpa: u64,
+    bootargs: &str,
+    initrd_start: u64,
+    initrd_end: u64,
+    seed: u64,
+) -> Vec<u8> {
+    if seed == 0 {
+        return build_with_initrd(ram_len, pvclock_gpa, bootargs, initrd_start, initrd_end);
+    }
+    build_inner(
+        ram_len,
+        pvclock_gpa,
+        bootargs,
+        Some((initrd_start, initrd_end)),
+        seed,
     )
 }
 
@@ -145,6 +192,7 @@ fn build_inner(
     pvclock_gpa: u64,
     bootargs: &str,
     initrd: Option<(u64, u64)>,
+    seed: u64,
 ) -> Vec<u8> {
     let mut f = Fdt::new();
 
@@ -157,7 +205,8 @@ fn build_inner(
     f.begin_node("chosen");
     f.prop_str("stdout-path", "/pl011@9000000");
     f.prop_str("bootargs", bootargs);
-    f.prop_bytes("rng-seed", &BOOT_RNG_SEED);
+    let rng_seed = boot_rng_seed(seed);
+    f.prop_bytes("rng-seed", &rng_seed);
     if let Some((start, end)) = initrd {
         f.prop_bytes("linux,initrd-start", &start.to_be_bytes());
         f.prop_bytes("linux,initrd-end", &end.to_be_bytes());
@@ -483,6 +532,48 @@ mod tests {
     #[test]
     fn build_is_deterministic() {
         assert_eq!(sample(), sample());
+    }
+
+    #[test]
+    fn seeded_rng_property_is_repeatable_and_seed_sensitive() {
+        let first = parse(&build_with_seed(
+            0x2000_0000,
+            SAMPLE_PVCLOCK_GPA,
+            "console=ttyAMA0",
+            7,
+        ))
+        .unwrap();
+        let repeat = parse(&build_with_seed(
+            0x2000_0000,
+            SAMPLE_PVCLOCK_GPA,
+            "console=ttyAMA0",
+            7,
+        ))
+        .unwrap();
+        let other = parse(&build_with_seed(
+            0x2000_0000,
+            SAMPLE_PVCLOCK_GPA,
+            "console=ttyAMA0",
+            8,
+        ))
+        .unwrap();
+        let zero = parse(&build(0x2000_0000, SAMPLE_PVCLOCK_GPA, "console=ttyAMA0")).unwrap();
+        let first_seed = first.prop("chosen", "rng-seed").unwrap();
+        assert_eq!(
+            first_seed,
+            repeat.prop("chosen", "rng-seed").unwrap(),
+            "same boot seed must produce the same DTB entropy seed"
+        );
+        assert_ne!(
+            first_seed,
+            other.prop("chosen", "rng-seed").unwrap(),
+            "different boot seeds must produce different DTB entropy seeds"
+        );
+        assert_eq!(
+            zero.prop("chosen", "rng-seed").unwrap(),
+            BOOT_RNG_SEED.as_slice(),
+            "the zero seed retains the substrate boot entropy seed"
+        );
     }
 
     #[test]

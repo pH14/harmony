@@ -13,6 +13,9 @@ describes the same map. `bringup::compose` loads the image and optional
 initramfs, reserves the pvclock page, builds the DTB, maps RAM and control pages,
 and restores the entry state before returning a `Vmm`.
 
+The zero-seed substrate path retains the fixed boot entropy value; Linux
+control bringup derives the DTB `rng-seed` from the requested session seed.
+
 `dispatch` routes GIC, PL011, doorbell, and pvclock MMIO to the modeled devices.
 The userspace `gicv3` model is used by the HVF composition; stock arm64 KVM
 owns its GIC in the kernel and does not expose an arbitrary userspace INTID

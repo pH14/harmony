@@ -37,11 +37,8 @@ pub enum RunError {
         "this host is not wired yet ({0}); supported: macOS/arm64 (HVF), Linux/x86-64 (KVM), Linux/arm64 (KVM)"
     )]
     UnsupportedHost(&'static str),
-    #[cfg(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "aarch64"),
-    ))]
-    #[error("--seed is only wired on Linux/x86-64; use --seed 0 on this host")]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[error("--seed is only wired on Linux KVM; use --seed 0 on macOS")]
     SeedNotWired,
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
@@ -192,7 +189,7 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
     if spec.seed != 0 {
         return Err(RunError::SeedNotWired);
     }
-    let mut vmm = vmm_core::vendor::arm64::bringup::boot_hvf(
+    let mut vmm = vmm_core::vendor::arm64::bringup::boot_hvf_control(
         spec.kernel,
         spec.initramfs,
         spec.cmdline,
@@ -248,14 +245,12 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
-    if spec.seed != 0 {
-        return Err(RunError::SeedNotWired);
-    }
     let mut vmm = vmm_core::vendor::arm64::bringup::boot_selected_control(
         spec.kernel,
         spec.initramfs,
         spec.cmdline,
         spec.guest_ram_len,
+        spec.seed,
     )
     .map_err(|e| RunError::Vmm(e.to_string()))?;
     vmm.defer_virtual_time_checkpoint_hashes()
