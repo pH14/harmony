@@ -262,10 +262,7 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
     let cancel = vmm
         .cancellation_flag()
         .ok_or_else(|| RunError::Vmm("backend cannot be interrupted mid-run".into()))?;
-    // The watchdog holds off while guest exits keep arriving. A backend that
-    // counts none leaves it a plain wall bound.
-    let progress = vmm.run_progress().unwrap_or_default();
-    let watchdog = consonance_client::watchdog::Watchdog::start(spec.wall_budget, cancel, progress)
+    let watchdog = consonance_client::watchdog::Watchdog::start(spec.wall_budget, cancel)
         .map_err(|e| RunError::Vmm(format!("cannot arm KVM timeout: {e}")))?;
     let outcome = drive(vmm, spec, start);
     drop(watchdog);

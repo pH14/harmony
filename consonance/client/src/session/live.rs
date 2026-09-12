@@ -741,7 +741,7 @@ fn branch_spec(client: &mut Server, snap: SnapId, spec: &InputSpec) -> Result<()
 }
 
 /// Issue one control request, abandoning the guest if it spends more than
-/// `wall_limit` of host time inside the run without taking an exit.
+/// `wall_limit` of total host time inside the request.
 ///
 /// The bound is measured against the host clock on purpose: a guest that stalls
 /// advances no virtual time, so nothing else can notice it. Once the guard
@@ -755,17 +755,13 @@ fn drive_guarded(
     abandoned: &mut bool,
     request: &Request,
 ) -> Result<Reply, Box<dyn Error>> {
-    let (cancel, progress) = client.transport().vmm().map_or((None, None), |vmm| {
-        (vmm.cancellation_flag(), vmm.run_progress())
-    });
-    let Some((limit, cancel, progress)) =
-        guarded_run_plan(*abandoned, wall_limit, cancel, progress)?
-    else {
+    let cancel = client.transport().vmm().and_then(Vmm::cancellation_flag);
+    let Some((limit, cancel)) = guarded_run_plan(*abandoned, wall_limit, cancel)? else {
         return client
             .request(request)
             .map_err(|error| SessionError::Control(error.to_string()).into());
     };
-    let watchdog = Watchdog::start(limit, cancel, progress).map_err(|error| {
+    let watchdog = Watchdog::start(limit, cancel).map_err(|error| {
         SessionError::Control(format!("cannot arm the wall-clock bound: {error}"))
     })?;
     let reply = client.request(request);

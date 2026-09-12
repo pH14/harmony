@@ -52,15 +52,13 @@ changes neither guest state nor the normalized event sequence, and stays
 outside the session identity; a composition root that wants the hashes installs
 them afterwards with `Vmm::checkpoint_virtual_time_trace_at`.
 
-`SessionConfig::wall_limit` bounds the uninterrupted host time between guest
-exits during one run. Every exit returned by the backend resets the inactivity
-window, so a loaded host may make a progressing request slower without changing
-its outcome. A guest spinning on a frozen virtual clock takes no exit, so it
-never reaches its virtual-time deadline and only the host clock notices it;
-past the bound the run is abandoned through the backend's cancellation latch and reported as
+`SessionConfig::wall_limit` bounds one run in host time. A guest spinning on a
+frozen virtual clock takes no exit, so it never reaches its virtual-time
+deadline and only the host clock notices it; past the bound the run is
+abandoned through the backend's cancellation latch and reported as
 `SessionError::Hung`. A canceled VM cannot be entered again, so every later
 request on that session reports `SessionError::Abandoned`. A backend with no
-cancellation latch or exit progress counter can honor no such bound and reports
+cancellation latch can honor no such bound and reports
 `SessionError::Unboundable` on the first run rather than running unbounded. The
 limit is a host resource bound, so it is deliberately outside the session
 identity and the image identity. The `watchdog` module owns the mechanism — it
