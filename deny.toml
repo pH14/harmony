@@ -55,10 +55,6 @@ allow = [
   # Permissive transitive build/runtime dependencies used by the guest tools.
   "Zlib",
   "BSL-1.0",
-  # option-ext through tetanes-core -> dirs. MPL-2.0 permits distribution of
-  # the larger combined work under GPLv3/AGPLv3 while retaining MPL terms on
-  # option-ext's own files.
-  "MPL-2.0",
   # NCSA (University of Illinois/NCSA Open Source License): the LLVM libFuzzer
   # runtime pulled by libfuzzer-sys in the cargo-fuzz harnesses. Permissive,
   # FSF-certified GPL/AGPL-compatible.

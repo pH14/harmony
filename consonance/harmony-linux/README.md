@@ -57,9 +57,8 @@ does not change the accepted source bytes.
 - `sdk/` provides the no-std event, state, assertion, lifecycle, and entropy
   hooks used by guest payloads.
 - `workloads/nes-guest/` builds the headless NES workload and publishes its
-  state through the SDK. `workloads/tetanes-guest/` is the arm64 TetaNES
-  payload. The historical `linux/build-*-game-image.sh` entry points remain
-  as compatibility launchers for the package-owned recipes.
+  state through the SDK. The historical `linux/build-*-game-image.sh` entry
+  points remain as compatibility launchers for the package-owned recipes.
 
 The guest transport is synchronous and serialized by the kernel driver. Guest
 entropy comes from the host-provided seeded service; the compatibility library

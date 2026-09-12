@@ -38,8 +38,7 @@ mod arch {
 
     use hypercall_doorbell::{MmioDoorbell, PAGE_SIZE, REQ_GPA, RESP_GPA, VmcallTransport};
 
-    /// Board GPA of the reserved hypercall doorbell register (the same
-    /// address used by the TetaNES arm64 guest agent).
+    /// Board GPA of the reserved hypercall doorbell register.
     const DOORBELL_GPA: u64 = 0x0A00_0000;
 
     /// The arm64 production transport over the board's MMIO doorbell.

@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Build Harmony's native guest images from a locked Nix closure. Linux/aarch64
-# produces the minimal, NES, and PostgreSQL guests; Linux/x86_64 produces the
+# produces the minimal and PostgreSQL guests; Linux/x86_64 produces the
 # minimal guest used by the x86 virtual-time reference and the fault-library
 # kernel profile that runs stock userspace binaries. Nix supplies every
-# tool, source tarball, and Cargo registry crate. The application performs
-# assembly in a fresh external workspace with Cargo networking disabled.
+# tool and source tarball. The application performs assembly in a fresh
+# external workspace.
 set -euo pipefail
 
 usage() {
-    echo "usage: harmony-build-guest-images --output DIR [--rom FILE] [--minimal-only] [--mutate-cache-line] [--serialization-gate] [--n6]" >&2
+    echo "usage: harmony-build-guest-images --output DIR [--minimal-only] [--mutate-cache-line] [--serialization-gate] [--n6]" >&2
     exit 2
 }
 
 output=
-rom=
 minimal_only=0
 mutate_cache_line=0
 serialization_gate=0
@@ -24,11 +23,6 @@ while [ "$#" -gt 0 ]; do
         --output)
             [ "$#" -ge 2 ] || usage
             output=$2
-            shift 2
-            ;;
-        --rom)
-            [ "$#" -ge 2 ] || usage
-            rom=$2
             shift 2
             ;;
         --minimal-only)
@@ -63,15 +57,8 @@ case "$host_arch" in
             echo "FAIL: --serialization-gate is x86_64-only" >&2
             exit 1
         }
-        [ -n "$rom" ] || usage
         [ "$(id -u)" -eq 0 ] || {
             echo "FAIL: the PostgreSQL snapshot build requires root" >&2
-            exit 1
-        }
-        [ -f "$rom" ] || { echo "FAIL: ROM does not exist: $rom" >&2; exit 1; }
-        rom_sha=$(sha256sum "$rom" | awk '{print $1}')
-        [ "$rom_sha" = "$HARMONY_NIX_SMB_SHA256" ] || {
-            echo "FAIL: ROM sha256 mismatch (want $HARMONY_NIX_SMB_SHA256, got $rom_sha)" >&2
             exit 1
         }
         ;;
@@ -95,8 +82,8 @@ mkdir -p "$output"
 output=$(cd "$output" && pwd)
 
 if [ "$host_arch" = aarch64 ]; then
-    # rustc includes compilation identity in symbol hashes.  A randomized
-    # absolute source root changes those hashes even when diagnostics are
+    # The compiler embeds compilation identity in its output. A randomized
+    # absolute source root changes that identity even when diagnostics are
     # remapped, so native ARM builds use one stable, freshly-created path.
     # A stale or concurrent workspace fails closed instead of being reused.
     work=/build/harmony-nix-guest
@@ -121,8 +108,7 @@ repo=$work/repo
 downloads=$work/downloads
 artifacts=$work/artifacts
 build_root=$work/build
-cargo_home=$work/cargo-home
-mkdir -p "$repo" "$downloads" "$artifacts" "$build_root" "$cargo_home"
+mkdir -p "$repo" "$downloads" "$artifacts" "$build_root"
 cp -a "$HARMONY_NIX_SOURCE/." "$repo/"
 chmod -R u+w "$repo"
 
@@ -137,22 +123,6 @@ if [ "$host_arch" = aarch64 ]; then
         "$downloads/postgresql-17.10.tar.bz2"
 fi
 
-if [ "$host_arch" = aarch64 ]; then
-    cat >"$cargo_home/config.toml" <<EOF
-[net]
-offline = true
-
-[source.crates-io]
-replace-with = "nix-vendor"
-
-[source.nix-vendor]
-directory = "$HARMONY_NIX_CARGO_VENDOR"
-EOF
-fi
-
-export CARGO_HOME=$cargo_home
-export CARGO_NET_OFFLINE=true
-export CARGO_BUILD_JOBS=4
 export MAKEFLAGS=-j4
 export SOURCE_DATE_EPOCH=0
 export TZ=UTC
@@ -161,11 +131,6 @@ export HARMONY_DOWNLOAD_DIR=$downloads
 export HARMONY_ARTIFACT_DIR=$artifacts
 export GUEST_BUILD_ROOT=$build_root
 export HARMONY_BUILD_PATH_PREFIX=$work
-if [ "$host_arch" = aarch64 ]; then
-    export HARMONY_SMB_ROM=$rom
-    export HARMONY_RUST_SOURCE_ROOT=$HARMONY_NIX_RUST_SOURCE_ROOT
-    export HARMONY_RUST_LIBUNWIND=$HARMONY_NIX_RUST_LIBUNWIND
-fi
 
 guest=$repo/consonance/harmony-linux
 linux_dir=$guest/linux
@@ -197,27 +162,16 @@ fi
 
 stage=$work/stage
 if [ "$host_arch" = aarch64 ]; then
-    echo "== N5: build owned musl and the Cargo-lock-derived NES agent offline"
-    (
-        cd "$linux_dir"
-        # shellcheck source=../linux/lib-build.sh disable=SC1091
-        . ./lib-build.sh
-        build_arm64_game_musl
-    )
-    if ! agent_output=$(HARMONY_MUSL_PREFIX="$build_root/musl-arm64-game-prefix" \
-        bash "$repo/workloads/tetanes-guest/build.sh"); then
-        printf '%s\n' "$agent_output" >&2
-        echo "FAIL: offline NES agent build or image audit failed" >&2
-        exit 1
-    fi
-    printf '%s\n' "$agent_output"
-    agent=$(printf '%s\n' "$agent_output" | tail -1)
-    [ -x "$agent" ] || { echo "FAIL: offline NES agent missing: $agent" >&2; exit 1; }
-    export HARMONY_TETANES_AGENT=$agent
-
     echo "== N5: build minimal ARM kernel and initramfs"
     (cd "$linux_dir" && ./build-arm64-kernel.sh && ./build-arm64-initramfs.sh)
     if [ "$n6" -eq 1 ]; then
+        echo "== N6: build owned musl for the generated sweep"
+        (
+            cd "$linux_dir"
+            # shellcheck source=../linux/lib-build.sh disable=SC1091
+            . ./lib-build.sh
+            build_arm64_game_musl
+        )
         echo "== N6: build generated sweep and traps-off ARM kernel"
         (cd "$linux_dir" && \
             HARMONY_N6_CC="$build_root/musl-arm64-game-prefix/bin/musl-gcc" \
@@ -226,8 +180,6 @@ if [ "$host_arch" = aarch64 ]; then
     fi
 
     if [ "$minimal_only" -eq 0 ]; then
-        echo "== N5: build NES kernel, initramfs, and payload"
-        (cd "$linux_dir" && ./build-arm64-game-kernel.sh && ./build-arm64-game-image.sh)
         echo "== N5: build PostgreSQL kernel, initramfs, and payloads"
         (cd "$linux_dir" && ./build-arm64-postgres-kernel.sh && ./build-arm64-postgres-image.sh)
     fi
@@ -239,9 +191,6 @@ if [ "$host_arch" = aarch64 ]; then
         names=(
             Image
             initramfs.cpio.gz
-            Image-game
-            initramfs-game.cpio.gz
-            harmony-tetanes-agent
             Image-postgres
             initramfs-postgres.cpio.gz
             postgres

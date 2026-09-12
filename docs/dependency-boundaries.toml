@@ -43,7 +43,6 @@ workload_packages = [
     "workloads/nes-guest",
     "workloads/fault-policy",
     "workloads/faults",
-    "workloads/tetanes-guest",
     "workloads/nes",
 ]
 composition_apps_tests = [

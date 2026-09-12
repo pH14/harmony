@@ -13,21 +13,6 @@
         let
           pkgs = import nixpkgs { inherit system; };
           isArm64 = system == "aarch64-linux";
-          agentCargoVendor = pkgs.rustPlatform.importCargoLock {
-            lockFile = ./workloads/tetanes-guest/Cargo.lock;
-          };
-          rustCargoVendor = pkgs.rustPlatform.fetchCargoVendor {
-            name = "harmony-rust-std-cargo-vendor";
-            src = pkgs.rustPlatform.rustLibSrc;
-            hash = "sha256-5oJ/mtsJW0R3F7jgxafP23+WMLkyMKu10De5WIzb7Ro="; # pragma: allowlist secret — public source integrity hash
-          };
-          cargoVendor = pkgs.symlinkJoin {
-            name = "harmony-guest-cargo-vendor";
-            # importCargoLock is already a flat Cargo directory; the newer
-            # fetchCargoVendor helper keeps registry crates one level below
-            # its metadata root. Join that registry directory, not the root.
-            paths = [ agentCargoVendor "${rustCargoVendor}/source-registry-0" ];
-          };
           linuxSource = pkgs.fetchurl {
             url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.35.tar.xz";
             sha256 = "f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236";
@@ -47,27 +32,6 @@
             url = "https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.bz2";
             sha256 = "078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c90";
           };
-          rustSourceRoot = pkgs.rustPlatform.rustLibSrc;
-          # Rust's musl target needs the platform unwind ABI while rebuilding
-          # std. GCC's pinned musl runtime supplies that ABI in libgcc_eh.a;
-          # using it avoids pulling an entire native LLVM/Clang toolchain into
-          # the guest-image closure merely to obtain the unwind symbols.
-          rustMuslUnwind = pkgs.runCommand "harmony-rust-musl-libunwind.a" {
-            nativeBuildInputs = [ pkgs.stdenv.cc pkgs.binutils ];
-          } ''
-            archive=$(
-              find ${pkgs.pkgsMusl.stdenv.cc.cc}/lib/gcc \
-                -name libgcc_eh.a -print -quit
-            )
-            test -n "$archive"
-            cp "$archive" "$out"
-            chmod u+w "$out"
-            cc -c -march=armv8.1-a+lse \
-              ${./consonance/harmony-linux/nix/aarch64-lse-unwind-atomics.S} \
-              -o lse-unwind-atomics.o
-            ar r "$out" lse-unwind-atomics.o
-            ranlib "$out"
-          '';
           builder = pkgs.writeShellApplication {
             name = "harmony-build-guest-images";
             runtimeInputs = with pkgs; [
@@ -76,7 +40,6 @@
               binutils
               bison
               bzip2
-              cargo
               coreutils
               cpio
               diffutils
@@ -96,9 +59,7 @@
               which
               xz
             ] ++ nixpkgs.lib.optionals isArm64 [
-              cargo
               gcc
-              rustc
             ] ++ nixpkgs.lib.optionals (!isArm64) [
               elfutils
               elfutils.dev
@@ -113,13 +74,9 @@
               export HARMONY_NIX_SOURCE=${self.outPath}
               export HARMONY_NIX_LINUX_SOURCE=${linuxSource}
               export HARMONY_NIX_BUSYBOX_SOURCE=${busyboxSource}
-              export HARMONY_NIX_SMB_SHA256=0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea
               ${nixpkgs.lib.optionalString isArm64 ''
                 export HARMONY_NIX_MUSL_SOURCE=${muslSource}
                 export HARMONY_NIX_POSTGRES_SOURCE=${postgresSource}
-                export HARMONY_NIX_CARGO_VENDOR=${cargoVendor}
-                export HARMONY_NIX_RUST_SOURCE_ROOT=${rustSourceRoot}
-                export HARMONY_NIX_RUST_LIBUNWIND=${rustMuslUnwind}
               ''}
               ${nixpkgs.lib.optionalString (!isArm64) ''
                 export NIX_CFLAGS_COMPILE="-I${pkgs.elfutils.dev}/include -I${pkgs.openssl.dev}/include''${NIX_CFLAGS_COMPILE:+ $NIX_CFLAGS_COMPILE}"

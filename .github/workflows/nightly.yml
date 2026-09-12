@@ -97,12 +97,6 @@ jobs:
       # pointer with no FFI. Proptest cases are cut under cfg(miri).
       - name: miri — workloads/nes-guest (lib + agent + bin unit tests, out-of-workspace manifest)
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path workloads/nes-guest/Cargo.toml --lib --test agent --bins
-      # The M2 TetaNES agent's input-dependent buffer and pagemap decisions are
-      # in its library and execute under Miri. Linux/aarch64 device mmap is
-      # cfg-gated like play-agent's privileged edge; --bins still compiles the
-      # Miri-safe fallback entry point.
-      - name: miri — workloads/tetanes-guest (out-of-workspace manifest)
-        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path workloads/tetanes-guest/Cargo.toml --lib --bins
 
       # workloads/fault-agent carries unsafe (the /dev/harmony ioctl, the park
       # ioctls, and process-group signalling), so it runs under Miri like the
