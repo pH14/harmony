@@ -63,13 +63,18 @@ runs:
         if [[ "${STB_REQUIRE_VICTORY}" != true ]]; then
           stop_flags+=(--fixed-execution-soak)
         fi
-        workloads/nes/target/release/stb-campaign \
+        search_command=(workloads/nes/target/release/stb-campaign \
           --core "${STB_BUILD}/quicknes_libretro.so" \
           --rom "${STB_BUILD}/stb.nes" \
           --output "${STB_ARTIFACT}" \
           --ai "${STB_AI}" --seed "${STB_SEED}" --executions "${STB_EXECUTIONS}" \
           --workers "${STB_WORKERS}" --action-limit 512 \
-          "${stop_flags[@]}"
+          "${stop_flags[@]}")
+        if [[ -n "${STB_WALL_SECONDS:-}" ]]; then
+          timeout -k 10 "${STB_WALL_SECONDS}" "${search_command[@]}"
+        else
+          "${search_command[@]}"
+        fi
     - name: Check and describe compact evidence
       shell: bash
       run: |
@@ -151,21 +156,21 @@ runs:
       with:
         name: stb-${{ env.STB_AI }}-seed-${{ env.STB_SEED }}-${{ github.run_id }}
         path: |
-          workloads/nes/build/stb-artifact/witness.mp4
-          workloads/nes/build/stb-artifact/run-summary.json
-          workloads/nes/build/stb-artifact/progress.jsonl
-          workloads/nes/build/stb-artifact/champion-input.json
-          workloads/nes/build/stb-artifact/champion-observation.json
-          workloads/nes/build/stb-artifact/render-input.json
-          workloads/nes/build/stb-artifact/render-observation.json
-          workloads/nes/build/stb-artifact/video.json
-          workloads/nes/build/stb-artifact/campaign-report.json
-          workloads/nes/build/stb-artifact/replay-report.json
-          workloads/nes/build/stb-artifact/control-snapshot-probe.jsonl
-          workloads/nes/build/stb-artifact/ARTIFACT-LICENSE.md
-          workloads/nes/build/stb-artifact/UPSTREAM-LICENSE.txt
-          workloads/nes/build/stb-artifact/UPSTREAM-CREDITS.asm
-          workloads/nes/build/stb-artifact/stb-versions.env
-          workloads/nes/build/stb-artifact/SHA256SUMS
+          ${{ env.STB_ARTIFACT }}/witness.mp4
+          ${{ env.STB_ARTIFACT }}/run-summary.json
+          ${{ env.STB_ARTIFACT }}/progress.jsonl
+          ${{ env.STB_ARTIFACT }}/champion-input.json
+          ${{ env.STB_ARTIFACT }}/champion-observation.json
+          ${{ env.STB_ARTIFACT }}/render-input.json
+          ${{ env.STB_ARTIFACT }}/render-observation.json
+          ${{ env.STB_ARTIFACT }}/video.json
+          ${{ env.STB_ARTIFACT }}/campaign-report.json
+          ${{ env.STB_ARTIFACT }}/replay-report.json
+          ${{ env.STB_ARTIFACT }}/control-snapshot-probe.jsonl
+          ${{ env.STB_ARTIFACT }}/ARTIFACT-LICENSE.md
+          ${{ env.STB_ARTIFACT }}/UPSTREAM-LICENSE.txt
+          ${{ env.STB_ARTIFACT }}/UPSTREAM-CREDITS.asm
+          ${{ env.STB_ARTIFACT }}/stb-versions.env
+          ${{ env.STB_ARTIFACT }}/SHA256SUMS
         if-no-files-found: error
         retention-days: 30

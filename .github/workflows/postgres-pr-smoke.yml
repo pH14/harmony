@@ -1,0 +1,227 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Smoke / PostgreSQL
+
+# This is the bounded PR path for the existing faults workload. The scheduled
+# historical-bugs workflow owns the cold guest/image builders and long search;
+# this job consumes their durable artifacts and proves useful search actions.
+on:
+  pull_request:
+    paths:
+      - scripts/historical-*.sh
+      - .github/workflows/postgres-pr-smoke.yml
+      - .github/workflows/historical-bugs.yml
+      - workloads/bugs/historical/postgres-cic-corruption/**
+      - cli/**
+      - consonance/harmony-linux/**
+      - scripts/render-historical-bugs.py
+      - workloads/fault-agent/**
+      - workloads/fault-policy/**
+      - workloads/faults/**
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CASE_DIR: workloads/bugs/historical/postgres-cic-corruption
+
+jobs:
+  pr-smoke:
+    name: PostgreSQL faults search inside Consonance smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Initialize smoke artifact directory
+        run: mkdir -p pg-pr-smoke
+      - name: Install the musl toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools jq
+          rustup target add x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            workloads/fault-agent -> target
+      - name: Restore the locked faultlab guest artifacts
+        id: guest-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: nix-guest-output
+          key: guest-faultlab-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/**') }}
+          restore-keys: |
+            guest-faultlab-v1-
+      - name: Restore the locked PostgreSQL workload image
+        id: image-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: oci-images
+          # The consolidated historical-bugs images job must save this same
+          # key after writing oci-images/MANIFEST.sha256 for prefix fallback.
+          key: pgcic-oci-v1-${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**', 'workloads/bugs/historical/postgres-cic-corruption/case.json') }}
+          restore-keys: |
+            pgcic-oci-v1-manifest-
+            pgcic-oci-v1-
+      - name: Verify and record fixture cache provenance
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GUEST_CACHE_HIT: ${{ steps.guest-cache.outputs.cache-hit }}
+          GUEST_MATCHED_KEY: ${{ steps.guest-cache.outputs.cache-matched-key }}
+          GUEST_REQUESTED_KEY: guest-faultlab-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/**') }}
+          IMAGE_CACHE_HIT: ${{ steps.image-cache.outputs.cache-hit }}
+          IMAGE_MATCHED_KEY: ${{ steps.image-cache.outputs.cache-matched-key }}
+          IMAGE_REQUESTED_KEY: pgcic-oci-v1-${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**', 'workloads/bugs/historical/postgres-cic-corruption/case.json') }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GUEST_MATCHED_KEY}" || -z "${IMAGE_MATCHED_KEY}" ]]; then
+            cat >pg-pr-smoke/cache-unavailable.txt <<'EOF'
+          No exact or last-known-good guest/image cache was available. The scheduled/manual historical builder must populate the durable caches before this smoke can execute.
+          EOF
+            echo '::error::PostgreSQL smoke found no durable guest or image cache fallback.'
+            exit 1
+          fi
+          mkdir -p pg-pr-smoke
+          guest_manifest_verified=false
+          image_manifest_verified=false
+          image_legacy_cache=false
+          test -s nix-guest-output/MANIFEST.sha256
+          (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
+          guest_manifest_verified=true
+          test -s oci-images/pgcic-14.3.oci
+          if [[ -s oci-images/MANIFEST.sha256 ]]; then
+            (cd oci-images && sha256sum -c MANIFEST.sha256)
+            image_manifest_verified=true
+          else
+            image_legacy_cache=true
+            if [[ "${IMAGE_CACHE_HIT}" == true ]]; then
+              echo '::warning::Using an exact-key legacy PostgreSQL image cache without a manifest; required-file presence is the available validation.'
+            else
+              echo '::warning::Using a legacy PostgreSQL image cache without a manifest; required-file presence is the available validation.'
+            fi
+          fi
+          git diff --name-only "${BASE_SHA}"...HEAD >pg-pr-smoke/changed-files.txt
+          guest_changed=false
+          image_changed=false
+          while IFS= read -r path; do
+            case "${path}" in
+              flake.nix|flake.lock|consonance/harmony-linux/*)
+                guest_changed=true
+                ;;
+              workloads/bugs/historical/postgres-cic-corruption/image/*|workloads/bugs/historical/postgres-cic-corruption/case.json)
+                image_changed=true
+                ;;
+            esac
+          done <pg-pr-smoke/changed-files.txt
+          guest_provenance=exact-input
+          image_provenance=exact-input
+          guest_scope=guest-inputs-validated
+          image_scope=image-inputs-validated
+          if [[ "${image_legacy_cache}" == true ]]; then
+            image_provenance=legacy-cache-file-presence-only
+            image_scope=legacy-cache-file-presence-only
+          fi
+          if [[ "${GUEST_CACHE_HIT}" != true ]]; then
+            guest_provenance=last-known-good-cache-fallback
+            guest_scope=guest-inputs-validated-from-last-known-good
+            if [[ "${guest_changed}" == true ]]; then
+              guest_scope=guest-inputs-not-validated-for-changed-source
+            fi
+          fi
+          if [[ "${IMAGE_CACHE_HIT}" != true ]]; then
+            if [[ "${image_legacy_cache}" == true ]]; then
+              image_provenance=legacy-last-known-good-cache-fallback
+            else
+              image_provenance=last-known-good-cache-fallback
+            fi
+            image_scope=image-inputs-validated-from-last-known-good
+            if [[ "${image_changed}" == true ]]; then
+              image_scope=image-inputs-not-validated-for-changed-source
+            elif [[ "${image_legacy_cache}" == true ]]; then
+              image_scope=legacy-last-known-good-file-presence-only
+            fi
+          fi
+          if [[ "${GUEST_CACHE_HIT}" != true || "${IMAGE_CACHE_HIT}" != true ]]; then
+            echo '::warning::Using a last-known-good fixture cache; changed guest/image builders are covered by the scheduled/manual historical panel.'
+          fi
+          cat >pg-pr-smoke/cache-provenance.txt <<EOF
+          guest_requested_key=${GUEST_REQUESTED_KEY}
+          guest_matched_key=${GUEST_MATCHED_KEY}
+          guest_cache_hit=${GUEST_CACHE_HIT}
+          guest_provenance=${guest_provenance}
+          guest_manifest_verified=${guest_manifest_verified}
+          guest_fixture_source_changed=${guest_changed}
+          guest_validation_scope=${guest_scope}
+          image_requested_key=${IMAGE_REQUESTED_KEY}
+          image_matched_key=${IMAGE_MATCHED_KEY}
+          image_cache_hit=${IMAGE_CACHE_HIT}
+          image_provenance=${image_provenance}
+          image_manifest_verified=${image_manifest_verified}
+          image_legacy_cache=${image_legacy_cache}
+          image_fixture_source_changed=${image_changed}
+          image_validation_scope=${image_scope}
+          commit=$(git rev-parse HEAD)
+          EOF
+      - name: Stage the locked guest and image inputs
+        run: |
+          set -euo pipefail
+          mkdir -p guest
+          cp nix-guest-output/x86_64/bzImage-faultlab guest/bzImage-faultlab
+          cp nix-guest-output/x86_64/initramfs.cpio.gz guest/initramfs.cpio.gz
+          test -s oci-images/pgcic-14.3.oci
+      - name: Build the CLI and static fault agent
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p harmony-cli
+          cargo build --locked --release \
+            --manifest-path workloads/fault-agent/Cargo.toml \
+            --target x86_64-unknown-linux-musl
+      - name: Run a bounded PostgreSQL faults search through Consonance
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          timeout -k 10 180 \
+            target/release/harmony search --package faults \
+              oci-images/pgcic-14.3.oci --backend consonance \
+              --kernel guest/bzImage-faultlab \
+              --base-initramfs guest/initramfs.cpio.gz \
+              --fault-agent workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent \
+              --seed 1 --workers 1 --executions 4 --actions 4 \
+              --horizon-ms 50 --ram-mib 1024 \
+              --knobs 'faultlab.churn_rows=20 faultlab.churn_slices=2 faultlab.churn_rounds=20' \
+              --wall-minutes 1 --out pg-pr-smoke/search \
+            2>&1 | tee pg-pr-smoke.console.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("pg-pr-smoke/search/report.json").read_text())
+          summary = json.loads(Path("pg-pr-smoke/search/campaign-summary.json").read_text())
+          if report.get("executions", 0) <= 0:
+              raise SystemExit("PostgreSQL smoke admitted no executions")
+          if report.get("horizons_clocked", 0) <= 0:
+              raise SystemExit("PostgreSQL smoke clocked no guest horizons")
+          if summary.get("archive_entries", 0) <= 0:
+              raise SystemExit("PostgreSQL smoke retained no archive work")
+          stream = Path("pg-pr-smoke/search/stream.jsonl").read_text().splitlines()
+          if not any(json.loads(line).get("event") == "job" for line in stream[1:]):
+              raise SystemExit("PostgreSQL smoke recorded no admitted job")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: postgres-faults-pr-smoke-${{ github.run_id }}
+          path: |
+            pg-pr-smoke
+            pg-pr-smoke.console.txt
+          if-no-files-found: error
+          retention-days: 14

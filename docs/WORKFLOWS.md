@@ -14,20 +14,39 @@ by the `ci-workflow-prefix` lint in `scripts/custom-lints.py`.
 
 Automatic per-PR jobs must finish within 15 minutes (`ci-pr-job-timeout`
 lint). Short workloads that verify basic function are smoke tests. Long-running
-workloads are acceptance tests that run on an off-hours schedule.
+workloads are acceptance tests that run on an off-hours schedule. The sharded
+in-diff mutation gate is the one explicit per-PR timeout exception; its named
+rationale is adjacent to the 90-minute timeout in `quality.yml`.
+Miri's full crate suites remain schedule/manual only (their existing 240- and
+320-minute ceilings are intentionally retained). Relevant PR changes select a
+per-crate Miri matrix with a 15-minute ceiling; dependency and toolchain
+changes select every target. The bounded matrix reports the affected unsafe
+crate directly while the scheduled suite remains the broad safety net.
+Guest-backed PR smokes restore an exact cache when available and otherwise use
+the most recent matching main-branch cache. Each smoke records the requested
+and resolved cache keys, hit mode, fixture-source changes, and validation
+scope. Prefix fallbacks verify the cached artifact manifest when one exists;
+older manifestless caches require every expected artifact to be nonempty and
+are reported as legacy file-presence validation. Scheduled/manual builders
+publish manifest-bearing replacements. A PR that changes a guest or image
+builder can therefore prove the host orchestration while the deep builder
+validates the changed fixture. If no durable cache exists, the smoke preserves
+a `cache-unavailable.txt` artifact and fails with the builder handoff required
+to make it runnable.
 
 ## Current workflows
 
 | Workflow | Automatic triggers |
 | --- | --- |
 | Checks / Quality | PRs and pushes to main |
-| Checks / Memory safety | Nightly |
+| Checks / Memory safety | Relevant PRs and nightly/manual full suites |
 | Checks / Search evaluation | Relevant PRs and changes on main |
-| Acceptance / OCI | Relevant PRs and changes on main |
-| Acceptance / Consonance x86 | Relevant PRs and changes on main; nightly |
-| Acceptance / Workload backends | Relevant PRs and changes on main; nightly |
+| Acceptance / OCI | Bounded smoke on relevant PRs and main; deep nightly/manual |
+| Acceptance / Consonance x86 | Bounded smoke on relevant PRs and main; deep nightly/manual |
+| Acceptance / Workload backends | Bounded smoke on relevant PRs and main; deep nightly/manual |
 | Benchmarks / NES | Nightly, with parallel game/case jobs |
-| Benchmarks / Historical bugs | Nightly search; bounded replay on relevant PRs |
+| Smoke / PostgreSQL | Relevant PRs |
+| Benchmarks / Historical bugs | Nightly/manual search and replay panel |
 | Release / Harmony | Version tags |
 
 ## Skill evaluation boundary

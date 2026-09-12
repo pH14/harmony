@@ -25,6 +25,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/oci-smoke.yml"
+  schedule:
+    - cron: "11 5 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -44,6 +46,7 @@ env:
 
 jobs:
   smoke:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -59,6 +62,9 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Compute guest cache key
+        id: guest-key
+        run: echo "key=oci-smoke-guest-${{ hashFiles('consonance/harmony-linux/**') }}" >>"${GITHUB_OUTPUT}"
       - name: Restore guest artifacts
         id: guest
         uses: actions/cache@v4
@@ -66,7 +72,11 @@ jobs:
           path: |
             consonance/harmony-linux/build/bzImage
             consonance/harmony-linux/build/initramfs-postgres.cpio.gz
-          key: oci-smoke-guest-${{ hashFiles('consonance/harmony-linux/linux/**', 'consonance/harmony-linux/Makefile', 'consonance/harmony-linux/scripts/**') }}
+            consonance/harmony-linux/build/oci-smoke-manifest.sha256
+          key: ${{ steps.guest-key.outputs.key }}
+          restore-keys: |
+            oci-smoke-guest-manifest-
+            oci-smoke-guest-
       - name: Build guest artifacts
         if: steps.guest.outputs.cache-hit != 'true'
         # The counter-opcode scan baselines are per-toolchain; select the
@@ -100,10 +110,21 @@ jobs:
             make -C consonance/harmony-linux postgres-image'
       - name: Stage guest artifacts
         run: |
+          set -euo pipefail
+          (cd consonance/harmony-linux/build && sha256sum bzImage initramfs-postgres.cpio.gz >oci-smoke-manifest.sha256)
           mkdir -p consonance/harmony-linux/build/x86_64
           cp consonance/harmony-linux/build/bzImage \
              consonance/harmony-linux/build/initramfs-postgres.cpio.gz \
              consonance/harmony-linux/build/x86_64/
+      - name: Promote a manifest-bearing guest cache for fallback restores
+        if: steps.guest.outputs.cache-hit == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            consonance/harmony-linux/build/bzImage
+            consonance/harmony-linux/build/initramfs-postgres.cpio.gz
+            consonance/harmony-linux/build/oci-smoke-manifest.sha256
+          key: oci-smoke-guest-manifest-${{ steps.guest-key.outputs.key }}
 
       - name: Build CLI
         run: cargo build --release -p harmony-cli
@@ -166,3 +187,165 @@ jobs:
         with:
           name: oci-smoke-runs
           path: run-*
+
+  pr-smoke:
+    name: harmony oci run smoke
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Initialize smoke artifact directory
+        run: mkdir -p oci-pr-smoke
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+      - name: Grant /dev/kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Restore the locked OCI guest artifacts
+        id: guest-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            consonance/harmony-linux/build/bzImage
+            consonance/harmony-linux/build/initramfs-postgres.cpio.gz
+            consonance/harmony-linux/build/oci-smoke-manifest.sha256
+          key: oci-smoke-guest-${{ hashFiles('consonance/harmony-linux/**') }}
+          restore-keys: |
+            oci-smoke-guest-manifest-
+            oci-smoke-guest-
+      - name: Restore a legacy guest cache
+        id: legacy-guest-cache
+        if: steps.guest-cache.outputs.cache-matched-key == ''
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            consonance/harmony-linux/build/bzImage
+            consonance/harmony-linux/build/initramfs-postgres.cpio.gz
+          key: oci-smoke-guest-${{ hashFiles('consonance/harmony-linux/linux/**', 'consonance/harmony-linux/Makefile', 'consonance/harmony-linux/scripts/**') }}
+          restore-keys: |
+            oci-smoke-guest-
+      - name: Verify and record OCI guest cache provenance
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PRIMARY_CACHE_HIT: ${{ steps.guest-cache.outputs.cache-hit }}
+          PRIMARY_MATCHED_KEY: ${{ steps.guest-cache.outputs.cache-matched-key }}
+          LEGACY_CACHE_HIT: ${{ steps.legacy-guest-cache.outputs.cache-hit }}
+          LEGACY_MATCHED_KEY: ${{ steps.legacy-guest-cache.outputs.cache-matched-key }}
+          CACHE_REQUESTED_KEY: oci-smoke-guest-${{ hashFiles('consonance/harmony-linux/**') }}
+        run: |
+          set -euo pipefail
+          CACHE_HIT=${PRIMARY_CACHE_HIT}
+          CACHE_MATCHED_KEY=${PRIMARY_MATCHED_KEY}
+          if [[ -z "${CACHE_MATCHED_KEY}" ]]; then
+            CACHE_HIT=${LEGACY_CACHE_HIT}
+            CACHE_MATCHED_KEY=${LEGACY_MATCHED_KEY}
+          fi
+          if [[ -z "${CACHE_MATCHED_KEY}" ]]; then
+            cat >oci-pr-smoke/cache-unavailable.txt <<'EOF'
+          No exact or last-known-good OCI guest cache was available. The scheduled/manual deep builder must populate the durable guest cache before this smoke can execute.
+          EOF
+            echo '::error::OCI PR smoke found no durable guest cache fallback.'
+            exit 1
+          fi
+          mkdir -p oci-pr-smoke
+          manifest_verified=false
+          legacy_cache=false
+          test -s consonance/harmony-linux/build/bzImage
+          test -s consonance/harmony-linux/build/initramfs-postgres.cpio.gz
+          if [[ -s consonance/harmony-linux/build/oci-smoke-manifest.sha256 ]]; then
+            (cd consonance/harmony-linux/build && sha256sum -c oci-smoke-manifest.sha256)
+            manifest_verified=true
+          else
+            legacy_cache=true
+            if [[ "${CACHE_HIT}" == true ]]; then
+              echo '::warning::Using an exact-key legacy OCI guest cache without a manifest; required-file presence is the available validation.'
+            else
+              echo '::warning::Using a legacy OCI guest cache without a manifest; required-file presence is the available validation.'
+            fi
+          fi
+          changed=false
+          if [[ "${EVENT_NAME}" == pull_request ]]; then
+            git diff --name-only "${BASE_SHA}"...HEAD >oci-pr-smoke/changed-files.txt
+          elif [[ "${EVENT_NAME}" == push && "${BEFORE_SHA}" != 0000000000000000000000000000000000000000 ]]; then
+            git diff --name-only "${BEFORE_SHA}" HEAD >oci-pr-smoke/changed-files.txt
+          else
+            : >oci-pr-smoke/changed-files.txt
+          fi
+          while IFS= read -r path; do
+            case "${path}" in
+              consonance/harmony-linux/*)
+                changed=true
+                ;;
+            esac
+          done <oci-pr-smoke/changed-files.txt
+          provenance=exact-input
+          validation_scope=guest-inputs-validated
+          if [[ "${legacy_cache}" == true ]]; then
+            provenance=legacy-cache-file-presence-only
+            validation_scope=legacy-cache-file-presence-only
+          fi
+          if [[ "${CACHE_HIT}" != true ]]; then
+            if [[ "${legacy_cache}" == true ]]; then
+              provenance=legacy-last-known-good-cache-fallback
+            else
+              provenance=last-known-good-cache-fallback
+            fi
+            validation_scope=guest-inputs-validated-from-last-known-good
+            if [[ "${changed}" == true ]]; then
+              validation_scope=guest-inputs-not-validated-for-changed-source
+            elif [[ "${legacy_cache}" == true ]]; then
+              validation_scope=legacy-last-known-good-file-presence-only
+            fi
+            echo '::warning::Using the last-known-good guest cache; guest source changes are covered by the scheduled/manual deep builder.'
+          fi
+          cat >oci-pr-smoke/cache-provenance.txt <<EOF
+          requested_key=${CACHE_REQUESTED_KEY}
+          matched_key=${CACHE_MATCHED_KEY}
+          cache_hit=${CACHE_HIT}
+          provenance=${provenance}
+          manifest_verified=${manifest_verified}
+          legacy_cache=${legacy_cache}
+          fixture_source_changed=${changed}
+          validation_scope=${validation_scope}
+          commit=$(git rev-parse HEAD)
+          EOF
+      - name: Stage and verify the locked guest artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p consonance/harmony-linux/build/x86_64
+          cp consonance/harmony-linux/build/bzImage \
+            consonance/harmony-linux/build/initramfs-postgres.cpio.gz \
+            consonance/harmony-linux/build/x86_64/
+          test -s consonance/harmony-linux/build/x86_64/bzImage
+          test -s consonance/harmony-linux/build/x86_64/initramfs-postgres.cpio.gz
+      - name: Run one real product CLI OCI workload
+        run: |
+          set -euo pipefail
+          mkdir -p oci-pr-smoke
+          cargo build --locked --release -p harmony-cli
+          ./target/release/harmony preflight | tee oci-pr-smoke/preflight.txt
+          timeout -k 10 45 ./target/release/harmony oci run alpine:3 \
+            --seed 0 --timeout 15 --out oci-pr-smoke -- /bin/sh -c \
+            'echo oci-pr-smoke; head -c 8 /dev/urandom | od -An -tx1' \
+            2>&1 | tee oci-pr-smoke/console.txt
+          grep -q oci-pr-smoke oci-pr-smoke/console.txt
+          digest=$(awk '/^digest/{print $2}' oci-pr-smoke/console.txt)
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          test -s oci-pr-smoke/serial.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: oci-pr-smoke-${{ github.run_id }}
+          path: oci-pr-smoke
+          if-no-files-found: error
+          retention-days: 14

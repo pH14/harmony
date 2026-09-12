@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # The PostgreSQL CREATE INDEX CONCURRENTLY workload image
-# (bugs/historical/postgres-cic-corruption).
+# (workloads/bugs/historical/postgres-cic-corruption).
 #
 # One file, two arms: the default build args give 14.3, which carries the bug,
 # and the control arm passes PG_VERSION=14.4 with that release's sha256. The

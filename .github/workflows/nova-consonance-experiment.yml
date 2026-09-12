@@ -44,6 +44,7 @@ defaults:
 jobs:
   whole-vm-search-campaign:
     name: Dissonance search · QuickNES guest · Consonance snapshots
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     # A cold guest build precedes the 10,000-execution campaign. Slow hosted
     # replicas need more than 50 minutes for the fixed work; the assertions
@@ -237,7 +238,7 @@ jobs:
   compare-replicas:
     name: Compare deterministic campaign hashes across replicas
     needs: whole-vm-search-campaign
-    if: ${{ always() && needs.whole-vm-search-campaign.result == 'success' }}
+    if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.whole-vm-search-campaign.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -286,6 +287,7 @@ jobs:
 
   package-backend-acceptance:
     name: NES package native/Consonance backend acceptance
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     # Leave room for a cold guest build before the two backend checks.
     timeout-minutes: 75
@@ -435,3 +437,210 @@ jobs:
             package-consonance/stream.jsonl
           if-no-files-found: warn
           retention-days: 30
+
+  pr-native-smoke:
+    name: Native Dissonance search smoke
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize smoke artifact directory
+        run: mkdir -p nova-native-pr-smoke && touch nova-native-pr-smoke.console.txt
+      - name: Install Nova build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends binutils cc65 curl g++ git
+      - uses: Swatinem/rust-cache@v2
+      - name: Reproduce the pinned Nova ROM and QuickNES core
+        env:
+          NOVA_BUILD: workloads/nes/build/nova
+          HARMONY_QUICKNES_BUILD_JOBS: "2"
+        run: |
+          workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
+          scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
+      - name: Run a bounded native Nova search
+        run: |
+          set -euo pipefail
+          mkdir -p nova-native-pr-smoke
+          cargo build --locked --release -p harmony-cli
+          timeout -k 10 120 target/release/harmony search --package nes --backend native \
+            --core workloads/nes/build/nova/quicknes_libretro.so \
+            --seed 20260901 --workers 1 --executions 4 --actions 8 \
+            --out nova-native-pr-smoke workloads/nes/build/nova/nova.nes \
+            2>&1 | tee nova-native-pr-smoke.console.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("nova-native-pr-smoke/report.json").read_text())
+          if report.get("executions_completed", 0) <= 0:
+              raise SystemExit("native Nova smoke admitted no executions")
+          if len(report.get("archive", {}).get("entries", [])) <= 0:
+              raise SystemExit("native Nova smoke retained no archive work")
+          stream = Path("nova-native-pr-smoke/stream.jsonl").read_text().splitlines()
+          if not any(json.loads(line).get("event") == "job" for line in stream[1:]):
+              raise SystemExit("native Nova smoke recorded no job event")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nova-native-pr-smoke-${{ github.run_id }}
+          path: |
+            nova-native-pr-smoke
+            nova-native-pr-smoke.console.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  pr-consonance-smoke:
+    name: Nova search inside Consonance smoke
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Initialize smoke artifact directory
+        run: mkdir -p nova-consonance-pr-smoke
+      - uses: cachix/install-nix-action@v31
+      - name: Install Nova and guest-image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends binutils cc65 cpio ffmpeg g++ git gzip jq shellcheck
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            workloads/nes -> target
+            workloads/nes-guest -> target
+      - name: Restore the locked x86 guest artifacts
+        id: guest-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: nix-guest-output
+          key: guest-x86_64-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/linux/**', 'consonance/harmony-linux/nix/**', 'consonance/harmony-linux/libvoidstar/**') }}
+          restore-keys: |
+            guest-x86_64-v1-
+      - name: Verify and record guest cache provenance
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CACHE_HIT: ${{ steps.guest-cache.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.guest-cache.outputs.cache-matched-key }}
+          CACHE_REQUESTED_KEY: guest-x86_64-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/linux/**', 'consonance/harmony-linux/nix/**', 'consonance/harmony-linux/libvoidstar/**') }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CACHE_MATCHED_KEY}" ]]; then
+            cat >nova-consonance-pr-smoke/cache-unavailable.txt <<'EOF'
+          No exact or last-known-good x86 guest cache was available. The scheduled/manual deep builder must populate the durable guest cache before this smoke can execute.
+          EOF
+            echo '::error::Nova Consonance PR smoke found no durable guest cache fallback.'
+            exit 1
+          fi
+          cat >nova-consonance-pr-smoke/cache-provenance.txt <<EOF
+          requested_key=${CACHE_REQUESTED_KEY}
+          matched_key=${CACHE_MATCHED_KEY}
+          cache_hit=${CACHE_HIT}
+          commit=$(git rev-parse HEAD)
+          EOF
+          test -s nix-guest-output/MANIFEST.sha256
+          (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
+          changed=false
+          if [[ "${EVENT_NAME}" == pull_request ]]; then
+            git diff --name-only "${BASE_SHA}"...HEAD >nova-consonance-pr-smoke/changed-files.txt
+          elif [[ "${EVENT_NAME}" == push && "${BEFORE_SHA}" != 0000000000000000000000000000000000000000 ]]; then
+            git diff --name-only "${BEFORE_SHA}" HEAD >nova-consonance-pr-smoke/changed-files.txt
+          else
+            : >nova-consonance-pr-smoke/changed-files.txt
+          fi
+          while IFS= read -r path; do
+            case "${path}" in
+              flake.nix|flake.lock|consonance/harmony-linux/linux/*|consonance/harmony-linux/nix/*|consonance/harmony-linux/libvoidstar/*)
+                changed=true
+                ;;
+            esac
+          done <nova-consonance-pr-smoke/changed-files.txt
+          provenance=exact-input
+          validation_scope=guest-inputs-validated
+          if [[ "${CACHE_HIT}" != true ]]; then
+            provenance=last-known-good-cache-fallback
+            validation_scope=guest-inputs-validated-from-last-known-good
+            if [[ "${changed}" == true ]]; then
+              validation_scope=guest-inputs-not-validated-for-changed-source
+            fi
+            echo '::warning::Using the last-known-good guest cache; fixture source changes are covered by the scheduled/manual deep builder.'
+          fi
+          cat >nova-consonance-pr-smoke/cache-provenance.txt <<EOF
+          requested_key=${CACHE_REQUESTED_KEY}
+          matched_key=${CACHE_MATCHED_KEY}
+          cache_hit=${CACHE_HIT}
+          provenance=${provenance}
+          fixture_source_changed=${changed}
+          validation_scope=${validation_scope}
+          commit=$(git rev-parse HEAD)
+          EOF
+      - name: Reproduce Nova and its static QuickNES archive
+        env:
+          NOVA_BUILD: workloads/nes/build/nova
+          HARMONY_QUICKNES_BUILD_JOBS: "2"
+        run: |
+          workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
+          HARMONY_QUICKNES_STATIC_OUTPUT="${NOVA_BUILD}/libquicknes_libretro.a" \
+            scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
+      - name: Fetch the pinned BusyBox source
+        run: |
+          source consonance/harmony-linux/linux/versions.lock
+          mkdir -p consonance/harmony-linux/dl
+          archive="consonance/harmony-linux/dl/$(basename "${BUSYBOX_URL}")"
+          mirror="https://sources.buildroot.net/busybox/$(basename "${BUSYBOX_URL}")"
+          if ! curl --fail --location --connect-timeout 15 --max-time 60 \
+              --retry 2 --output "${archive}.part" "${mirror}"; then
+            busybox_source="$(nix build .#busybox-source --no-link --print-out-paths)"
+            install -m 0644 "${busybox_source}" "${archive}.part"
+          fi
+          printf '%s  %s\n' "${BUSYBOX_SHA256}" "${archive}.part" | sha256sum --check
+          mv "${archive}.part" "${archive}"
+      - name: Build the bounded Nova guest image
+        env:
+          HARMONY_NOVA_ROM: ${{ github.workspace }}/workloads/nes/build/nova/nova.nes
+          HARMONY_NOVA_CORE_STATIC: ${{ github.workspace }}/workloads/nes/build/nova/libquicknes_libretro.a
+        run: workloads/nes-guest/legacy/build-nova-game-image.sh
+      - name: Run Nova search through Consonance
+        run: |
+          set -euo pipefail
+          mkdir -p nova-consonance-pr-smoke
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          cargo build --locked --release --manifest-path workloads/nes/Cargo.toml \
+            -p nes-workload --features consonance --bin nova-consonance-campaign
+          timeout -k 10 240 \
+            workloads/nes/target/release/nova-consonance-campaign \
+              --kernel nix-guest-output/x86_64/bzImage \
+              --initramfs consonance/harmony-linux/build/initramfs-nova.cpio.gz \
+              --rom workloads/nes/build/nova/nova.nes \
+              --core workloads/nes/build/nova/quicknes_libretro.so \
+              --output nova-consonance-pr-smoke --seed 20260901 --executions 2 \
+              --workers 1 --action-limit 4 --wall-seconds 120 --memory-budget-mib 1024 \
+            2>&1 | tee nova-consonance-pr-smoke/console.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          summary = json.loads(Path("nova-consonance-pr-smoke/campaign-summary.json").read_text())
+          if summary.get("executions", 0) <= 0:
+              raise SystemExit("Consonance Nova smoke admitted no executions")
+          if summary.get("archive_entries", 0) <= 0:
+              raise SystemExit("Consonance Nova smoke retained no archive work")
+          if summary.get("best_input_actions", 0) <= 0:
+              raise SystemExit("Consonance Nova smoke produced no action input")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nova-consonance-pr-smoke-${{ github.run_id }}
+          path: nova-consonance-pr-smoke
+          if-no-files-found: error
+          retention-days: 14

@@ -175,6 +175,17 @@ jobs:
             docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "${tag}"
             test -s "oci-images/${IMAGE_PREFIX}-${version}.oci"
           done
+      - name: Record workload image checksums
+        run: |
+          set -euo pipefail
+          (cd oci-images && sha256sum -- *.oci >MANIFEST.sha256)
+          (cd oci-images && sha256sum -c MANIFEST.sha256)
+      - name: Save the PostgreSQL smoke image cache
+        if: matrix.id == 'postgres-cic-corruption'
+        uses: actions/cache/save@v4
+        with:
+          path: oci-images
+          key: pgcic-oci-v1-${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**', 'workloads/bugs/historical/postgres-cic-corruption/case.json') }}
       - uses: actions/upload-artifact@v4
         with:
           name: historical-images-${{ matrix.id }}-${{ github.run_id }}
