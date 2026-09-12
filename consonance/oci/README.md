@@ -75,3 +75,22 @@ discarded by the guest launcher.
 cargo test --manifest-path consonance/oci/Cargo.toml
 cargo clippy --manifest-path consonance/oci/Cargo.toml --all-targets -- -D warnings
 ```
+
+The platform integration smoke uses a platform-owned OCI fixture and this same
+preparation API. It checks launch metadata and credentials, bounded observation
+reads, SDK events, complete state hashes across repeated boots and restore,
+seed-sensitive entropy, clean observation revocation, and a missing-input
+negative control. Missing artifacts are errors when the ignored hardware test
+is explicitly selected:
+
+```sh
+HARMONY_PLATFORM_KERNEL=/path/to/kernel \
+HARMONY_PLATFORM_INITRAMFS=/path/to/initramfs-oci.cpio.gz \
+HARMONY_PLATFORM_FIXTURE=/path/to/fixture-layout \
+cargo test -p oci-support --test platform -- --ignored --nocapture
+```
+
+The fixture layout is built by `consonance/harmony-linux/runtime-fixture/package.py`.
+Kernel, runtime, and fixture must target the host architecture. The test currently
+uses the Linux in-process session backend; compilation alone is not a hardware
+qualification result.
