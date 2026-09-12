@@ -245,16 +245,18 @@ mod real {
         let memory_budget = memory_budget_for_workers(args.memory_budget_mib, args.workers)?;
         fs::create_dir_all(&args.output)?;
         let rom = fs::read(&args.rom)?;
-        let kernel = fs::read(&args.kernel)?;
-        let platform_initramfs = fs::read(&args.platform_initramfs)?;
-        let prepared = nes_workload::prepare::stage_and_prepare(
-            args.image
-                .to_str()
-                .ok_or("NES OCI image path must be UTF-8")?,
-            &rom,
-        )?;
-        let initramfs = prepared.initramfs(&platform_initramfs);
-        let game = NovaGame::new_consonance(&rom, &kernel, &initramfs);
+        let game = {
+            let kernel = fs::read(&args.kernel)?;
+            let platform_initramfs = fs::read(&args.platform_initramfs)?;
+            let prepared = nes_workload::prepare::stage_and_prepare(
+                args.image
+                    .to_str()
+                    .ok_or("NES OCI image path must be UTF-8")?,
+                &rom,
+            )?;
+            let initramfs = prepared.initramfs(&platform_initramfs);
+            NovaGame::new_consonance(&rom, &kernel, &initramfs)
+        };
         let config = NovaCampaignConfig {
             campaign_seed: args.seed,
             workers: args.workers,
@@ -289,6 +291,8 @@ mod real {
         drop(stream);
         drop(progress);
         drop(checkpoint);
+        let emulator_backend = game.emulator_identity().to_owned();
+        drop(game);
         let best_input = report
             .objective_witness
             .as_ref()
@@ -309,7 +313,7 @@ mod real {
             } else {
                 "consonance_marketing_campaign"
             },
-            "emulator_backend": game.emulator_identity(),
+            "emulator_backend": emulator_backend,
             "campaign_seed": report.campaign_seed,
             "workers": report.workers,
             "memory_budget_mib": args.memory_budget_mib,
