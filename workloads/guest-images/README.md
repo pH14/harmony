@@ -39,10 +39,16 @@ variants share `postgres-workload.sh`; the campaign, ordering, and UUID
 supervisors remain separate payloads so their fault behavior is preserved.
 
 The Docker and K3s recipes retain nested container software and their
-application setup. They require privileges for nested namespaces, cgroups,
-network devices, and netfilter rules; the standard platform OCI spec does not
-yet qualify those nested paths on every host. The recipes report failures from
-the nested runtime instead of selecting an alternate outer launcher. The ARM
+application setup. K3s also builds pinned iptables 1.8.11 from source with a
+musl static compiler and packages the `iptables`, `iptables-restore`, and
+related legacy aliases from one self-contained executable; the nftables backend
+and dynamic extension closure are disabled. Set
+`HARMONY_K3S_IPTABLES_CC` when the host's `musl-gcc` is not on `PATH`.
+
+The nested recipes require privileges for nested namespaces, cgroups, network
+devices, and netfilter rules; the standard platform OCI spec does not yet
+qualify those nested paths on every host. The recipes report failures from the
+nested runtime instead of selecting an alternate outer launcher. The ARM
 PostgreSQL image is built natively with its LSE-only binary scans; a native
 ARM host is required for that recipe.
 

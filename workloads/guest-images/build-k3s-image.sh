@@ -51,7 +51,7 @@ cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
 . "$workload_dir/versions.lock"
 
 require_linux_amd64
-require_tools cc make bzip2 python3 jq tar chroot mount umount
+require_tools cc make bzip2 python3 jq tar chroot mount umount readelf
 
 if [ "$(id -u)" != "0" ]; then
     echo "FAIL: build-k3s-image.sh must run as root (the OCI layout preserves the uid-999" >&2
@@ -65,6 +65,7 @@ K3SROOT=$BUILD_ROOT/k3s-root                    # the assembled guest rootfs
 PG_IMAGE_TAR=$DL_DIR/postgres-image.tar         # the official postgres image
 PAUSE_IMAGE_TAR=$DL_DIR/k3s-pause-image.tar     # the pause/sandbox image (fetch.sh)
 K3S_BIN=$DL_DIR/k3s                             # the pinned k3s binary
+IPTABLES_TARBALL=$DL_DIR/$(basename "$IPTABLES_SOURCE_URL")
 WORKLOAD_N=20                                   # fixed insert/select iterations (matches the other Postgres images)
 PG_CLUSTERIP=10.43.0.100                        # fixed Service ClusterIP (svc CIDR 10.43.0.0/16)
 
@@ -76,6 +77,7 @@ verify_pin() {  # <file> <sha> <hint>
     [ "$got" = "$2" ] || { echo "FAIL: $1 sha256 mismatch (want $2, got $got)" >&2; exit 1; }
 }
 verify_pin "$K3S_BIN" "$K3S_BIN_SHA256" "run 'make -C workloads/guest-images fetch' first"
+verify_pin "$IPTABLES_TARBALL" "$IPTABLES_SOURCE_SHA256" "run 'make -C workloads/guest-images fetch' first"
 if [ ! -f "$PG_IMAGE_TAR" ] || [ ! -s "$PG_IMAGE_TAR" ]; then
     echo "FAIL: $PG_IMAGE_TAR missing/empty — run 'make -C workloads/guest-images fetch' on the box" >&2
     echo "      (ctr+network; integrity anchored by $POSTGRES_IMAGE_INDEX_DIGEST)." >&2
@@ -102,6 +104,84 @@ set -o pipefail
 grep -qxF 'CONFIG_STATIC=y' "$BBOBJ/.config" || { echo "FAIL: busybox not static" >&2; exit 1; }
 make -C "$BBSRC" O="$BBOBJ" -j"$(nproc)" busybox >/dev/null
 
+# --- 1b. static iptables (the K3s netfilter command surface) ------------------
+# K3s' kube-proxy and Flannel use the legacy xtables API for IPv4. The pinned
+# source can compile every xtables extension into one multi-call executable;
+# this avoids shipping libxtables plugins or a dynamic libc/libmnl/libnftnl
+# closure. A musl compiler is required even on x86: accepting the host glibc
+# linker here would make the OCI layout depend on a host loader or library.
+IPTABLES_SRC=$BUILD_ROOT/iptables-$IPTABLES_VERSION
+IPTABLES_PREFIX=$BUILD_ROOT/iptables-prefix
+IPTABLES_HEADERS=$BUILD_ROOT/iptables-kernel-headers
+rm -rf "$IPTABLES_SRC" "$IPTABLES_PREFIX" "$IPTABLES_HEADERS"
+verify_and_extract "$IPTABLES_TARBALL" "$IPTABLES_SOURCE_SHA256" "$IPTABLES_SRC"
+mkdir -p "$IPTABLES_HEADERS"
+echo "== k3s image: exporting pinned Linux UAPI headers for iptables"
+extract_kernel
+make -s -C "$KSRC" ARCH=x86 INSTALL_HDR_PATH="$IPTABLES_HEADERS" headers_install
+[ -f "$IPTABLES_HEADERS/include/asm/types.h" ] || {
+    echo "FAIL: Linux headers_install did not provide asm/types.h for iptables" >&2
+    exit 1
+}
+[ -f "$IPTABLES_HEADERS/include/linux/version.h" ] || {
+    echo "FAIL: Linux headers_install did not provide linux/version.h for iptables" >&2
+    exit 1
+}
+
+iptables_cc=${HARMONY_K3S_IPTABLES_CC:-${K3S_IPTABLES_CC:-musl-gcc}}
+command -v "$iptables_cc" >/dev/null 2>&1 || {
+    echo "FAIL: K3s iptables needs a musl static compiler (missing $iptables_cc)" >&2
+    echo "      set HARMONY_K3S_IPTABLES_CC to the pinned x86_64 musl-gcc wrapper" >&2
+    exit 1
+}
+iptables_machine=$($iptables_cc -dumpmachine 2>/dev/null || true)
+case "$iptables_machine" in
+    x86_64-*|x86_64|amd64-*) ;;
+    *)
+        echo "FAIL: K3s iptables compiler is not x86_64: $iptables_cc ($iptables_machine)" >&2
+        exit 1
+        ;;
+esac
+iptables_cflags="-O2 -march=x86-64 -mtune=generic -static -fno-pie -no-pie -Wl,--build-id=none -ffile-prefix-map=$IPTABLES_SRC=/usr/src/iptables-$IPTABLES_VERSION"
+echo "== k3s image: building static iptables $IPTABLES_VERSION ($iptables_cc)"
+(
+    cd "$IPTABLES_SRC"
+    CC="$iptables_cc" CPPFLAGS="-I$IPTABLES_HEADERS/include" CFLAGS="$iptables_cflags" \
+        ./configure \
+        --prefix="$IPTABLES_PREFIX" \
+        --disable-nftables \
+        --disable-shared \
+        --enable-static \
+        --disable-libnfnetlink \
+        --disable-connlabel \
+        --disable-bpf-compiler \
+        --disable-nfsynproxy \
+        >"$BUILD_ROOT/iptables-configure.log"
+    make -j"$(nproc)" >"$BUILD_ROOT/iptables-build.log"
+    make install >"$BUILD_ROOT/iptables-install.log"
+)
+IPTABLES_MULTI=$IPTABLES_PREFIX/sbin/xtables-legacy-multi
+[ -x "$IPTABLES_MULTI" ] || {
+    echo "FAIL: static iptables multi-call executable was not installed" >&2
+    exit 1
+}
+if readelf -l "$IPTABLES_MULTI" | grep -q ' INTERP '; then
+    echo "FAIL: K3s iptables has a dynamic loader dependency" >&2
+    exit 1
+fi
+if readelf -d "$IPTABLES_MULTI" 2>/dev/null | grep -q ' (NEEDED) '; then
+    echo "FAIL: K3s iptables has a dynamic library dependency" >&2
+    exit 1
+fi
+for applet in iptables iptables-restore iptables-save iptables-legacy \
+    iptables-legacy-restore iptables-legacy-save ip6tables ip6tables-restore \
+    ip6tables-save ip6tables-legacy ip6tables-legacy-restore ip6tables-legacy-save; do
+    "$IPTABLES_PREFIX/sbin/$applet" --version >/dev/null || {
+        echo "FAIL: static iptables applet does not run: $applet" >&2
+        exit 1
+    }
+done
+
 # --- 2. assemble the guest rootfs --------------------------------------------
 echo "== k3s image: assembling rootfs"
 # DEFENSIVE: umount any leaked build-time bind mounts before rm -rf (rm -rf
@@ -124,6 +204,15 @@ for a in sh mount umount mkdir chmod chown cat echo grep sleep kill nice ln rm c
          cmp ls id mv touch dd find xargs awk tr sort uniq date hostname dmesg \
          mountpoint nproc seq tee timeout ip; do
     ln -sf busybox "$K3SROOT/bin/$a"
+done
+
+# Install the checked static multi-call executable only after assembling the
+# fresh rootfs; the assembly step above removes any previous K3SROOT.
+install -m 0755 "$IPTABLES_MULTI" "$K3SROOT/bin/xtables-legacy-multi"
+for applet in iptables iptables-restore iptables-save iptables-legacy \
+    iptables-legacy-restore iptables-legacy-save ip6tables ip6tables-restore \
+    ip6tables-save ip6tables-legacy ip6tables-legacy-restore ip6tables-legacy-save; do
+    ln -sf xtables-legacy-multi "$K3SROOT/bin/$applet"
 done
 
 # The k3s binary (one static Go binary). k3s dispatches its bundled tools by

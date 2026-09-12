@@ -33,3 +33,11 @@ K3S_BIN_URL=https://github.com/k3s-io/k3s/releases/download/v1.36.2+k3s1/k3s
 K3S_BIN_SHA256=65a55ec56c24eab44383086166ec620a491952b7e23941a49ddca6e8a4c4b4de
 K3S_AIRGAP_URL=https://github.com/k3s-io/k3s/releases/download/v1.36.2+k3s1/k3s-airgap-images-amd64.tar
 K3S_AIRGAP_SHA256=6f8acd19735479234692f17b51889f60aa32059ce818f1fa5621a9b6511d2cb6
+
+# K3s uses the legacy xtables API for kube-proxy and Flannel's IPv4 NAT rules.
+# Build this source with a musl static compiler; the recipe deliberately
+# disables the nftables backend so no libmnl/libnftnl or host plugin closure is
+# copied into the workload OCI layout.
+IPTABLES_VERSION=1.8.11
+IPTABLES_SOURCE_URL=https://www.netfilter.org/projects/iptables/files/iptables-1.8.11.tar.xz
+IPTABLES_SOURCE_SHA256=d87303d55ef8c92bcad4dd3f978b26d272013642b029425775f5bad1009fe7b2

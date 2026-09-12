@@ -63,6 +63,7 @@ fetch_one "$PG_LIBPQ_DEB_URL" "$PG_LIBPQ_DEB_SHA256"
 fetch_one "$DOCKER_TGZ_URL" "$DOCKER_TGZ_SHA256"
 fetch_one "$K3S_BIN_URL" "$K3S_BIN_SHA256"
 fetch_one "$K3S_AIRGAP_URL" "$K3S_AIRGAP_SHA256"
+fetch_one "$IPTABLES_SOURCE_URL" "$IPTABLES_SOURCE_SHA256"
 
 fetch_postgres_image() {
     local out="$DL_DIR/postgres-image.tar"
