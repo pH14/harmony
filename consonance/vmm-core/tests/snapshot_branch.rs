@@ -126,7 +126,7 @@ fn non_quiescent_in_flight_events_round_trip_through_the_engine() {
 }
 
 #[test]
-fn task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
+fn rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
     let in_flight = VcpuEvents {
         exception_injected: 1,
         exception_nr: 13,

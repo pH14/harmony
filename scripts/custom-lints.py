@@ -678,6 +678,7 @@ TOPLEVEL_DIR_ALLOWLIST = {
     ".githooks",
     ".github",
     "benchmarks",
+    "bugs",
     "cli",
     "consonance",
     "dissonance",
@@ -770,7 +771,9 @@ def tracked_files(repo_root: Path) -> list[str]:
         text=True,
         check=True,
     )
-    return [p for p in result.stdout.split("\0") if p]
+    # This script defines the patterns it searches for, so it cannot lint itself.
+    self_path = str(Path(__file__).resolve().relative_to(repo_root))
+    return [p for p in result.stdout.split("\0") if p and p != self_path]
 
 
 def check_content_rules(

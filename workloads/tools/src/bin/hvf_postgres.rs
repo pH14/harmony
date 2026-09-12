@@ -322,7 +322,7 @@ fn main() -> std::process::ExitCode {
     use std::time::{Duration, Instant};
 
     use sha2::{Digest, Sha256};
-    use vmm_core::m3_report::{
+    use vmm_core::liveness_report::{
         GapHistogram, MAX_GAP_FACTOR, MAX_GAP_VNS, PerformanceMark, PhasePerformance,
         TICK_PERIOD_VNS, Throughput, WORKLOAD_ROWS, compare_exit_counts, compare_gap_oracles,
         parse_x86_diagnostic, validate_acceptance,
@@ -348,7 +348,7 @@ fn main() -> std::process::ExitCode {
         Stop,
     }
 
-    let usage = "usage: hvf_postgres_m3 <Image-postgres> <initramfs-postgres.cpio.gz> \
+    let usage = "usage: hvf_postgres <Image-postgres> <initramfs-postgres.cpio.gz> \
                  <optional-x86-diagnostic|-> <m3-report> [max-events] [calibration-log]";
     let mut args = std::env::args_os().skip(1);
     let Some(image_path) = args.next() else {
@@ -737,7 +737,7 @@ fn main() -> std::process::ExitCode {
                 let mut report = std::io::BufWriter::new(file);
                 writeln!(report, "format consonance.virtual_time-m3-failure.v1")?;
                 writeln!(report, "status FAIL")?;
-                writeln!(report, "payload postgres-container-task38-arm64-static-lse")?;
+                writeln!(report, "payload postgres-container-arm64-static-lse")?;
                 writeln!(report, "kernel_sha256 {}", hex(&image_sha))?;
                 writeln!(report, "canonical_snapshot_sha256 {}", hex(&initramfs_sha))?;
                 writeln!(report, "failure {error}")?;
@@ -1019,7 +1019,7 @@ fn main() -> std::process::ExitCode {
     let report_result = (|| -> std::io::Result<()> {
         writeln!(report, "format consonance.virtual_time-m3-report.v2")?;
         writeln!(report, "status {status}")?;
-        writeln!(report, "payload postgres-container-task38-arm64-static-lse")?;
+        writeln!(report, "payload postgres-container-arm64-static-lse")?;
         writeln!(report, "kernel_sha256 {}", hex(&image_sha))?;
         writeln!(report, "canonical_snapshot_sha256 {}", hex(&initramfs_sha))?;
         writeln!(report, "terminal_event {terminal_event}")?;
@@ -1195,7 +1195,7 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64", not(miri))))]
 fn main() -> std::process::ExitCode {
-    eprintln!("hvf_postgres_m3 requires an Apple Silicon macOS host outside Miri");
+    eprintln!("hvf_postgres requires an Apple Silicon macOS host outside Miri");
     std::process::ExitCode::from(2)
 }
 

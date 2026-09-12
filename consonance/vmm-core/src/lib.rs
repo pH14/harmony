@@ -38,7 +38,7 @@
 pub mod control;
 pub mod exec;
 /// M3's pure real-payload acceptance, V-time-gap, and throughput oracles.
-pub mod m3_report;
+pub mod liveness_report;
 /// Complete host-neutral snapshot artifacts for cross-host continuation.
 pub mod portable_snapshot;
 /// Restore-aware accumulation and comparison of control-session traces.

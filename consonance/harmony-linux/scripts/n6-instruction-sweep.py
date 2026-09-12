@@ -1169,6 +1169,12 @@ def main() -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("listing")
+    check_parser = subparsers.add_parser("check-listing")
+    check_parser.add_argument(
+        "--listing",
+        type=Path,
+        default=Path("consonance/harmony-linux/scripts/instruction-contract.generated.tsv"),
+    )
     assembly_parser = subparsers.add_parser("guest-assembly")
     assembly_parser.add_argument("--arch", choices=ARCHES, required=True)
     header_parser = subparsers.add_parser("guest-header")
@@ -1186,6 +1192,14 @@ def main() -> int:
         rows = load_rows(args.table)
         if args.command == "listing":
             sys.stdout.write(listing(rows))
+        elif args.command == "check-listing":
+            current = listing(rows)
+            committed = args.listing.read_text()
+            if current != committed:
+                raise SweepError(
+                    f"{args.listing} is stale; regenerate it with "
+                    f"`{Path(__file__).name} listing`"
+                )
         elif args.command == "guest-assembly":
             sys.stdout.write(guest_assembly(rows, args.arch))
         elif args.command == "guest-header":

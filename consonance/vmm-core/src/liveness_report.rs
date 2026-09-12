@@ -532,7 +532,7 @@ pub fn parse_x86_diagnostic(bytes: &[u8]) -> Result<Throughput, M3ReportError> {
     if lines[0] != "format consonance.m3-x86-diagnostic.v1" {
         return Err(M3ReportError::BaselineFormat("wrong format identifier"));
     }
-    if lines[1] != "payload postgres-container-task38" {
+    if lines[1] != "payload postgres-container" {
         return Err(M3ReportError::BaselineFormat("wrong payload identifier"));
     }
     if lines[2] != "mode descriptive-x86" {
@@ -872,7 +872,7 @@ mod tests {
     fn optional_x86_diagnostic_parser_binds_payload_and_mode() {
         let sample = parse_x86_diagnostic(
             b"format consonance.m3-x86-diagnostic.v1\n\
-              payload postgres-container-task38\n\
+              payload postgres-container\n\
               mode descriptive-x86\n\
               rows 20\n\
               wall_ns 123456\n",
@@ -887,7 +887,7 @@ mod tests {
         assert_eq!(
             parse_x86_diagnostic(
                 b"format consonance.m3-x86-diagnostic.v1\n\
-                  payload postgres-container-task38\n\
+                  payload postgres-container\n\
                   mode virtual_time-arm64\n\
                   rows 20\n\
                   wall_ns 123456\n",

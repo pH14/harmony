@@ -86,8 +86,7 @@ const KVM_SET_XSAVE: u64 = ioc(1, 0xAE, 0xA5, size_of::<kvm_xsave>() as u64);
 pub struct KvmBackend {
     vcpu: VcpuFd,
     vm: VmFd,
-    #[allow(dead_code)]
-    kvm: Kvm,
+    _kvm: Kvm,
     run: *mut kvm_run,
     mmap_size: usize,
     /// `KVM_CAP_XSAVE2`-reported XSAVE image size in bytes (`Some`, ≥ 4 KiB) on a
@@ -184,7 +183,7 @@ impl KvmBackend {
         Ok(KvmBackend {
             vcpu,
             vm,
-            kvm,
+            _kvm: kvm,
             run,
             mmap_size,
             xsave2_size,

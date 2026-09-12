@@ -53,9 +53,9 @@ jobs:
           # first-parent diff (base -> PR merge, or previous -> pushed commit).
           fetch-depth: 2
       - name: Benchmark report checks
-        run: node --test .github/scripts/benchmark-report.test.cjs
+        run: node --test scripts/benchmark-report.test.cjs
       - name: Historical-bug oracle checks
-        run: .github/scripts/historical-oracle.test.sh
+        run: scripts/historical-oracle.test.sh
       - name: Kernel patch-series checks
         run: bash consonance/harmony-linux/linux/test-patch-series.sh
       - name: Install stable toolchain
@@ -93,8 +93,7 @@ jobs:
       - name: N6 instruction sweep generators and negative controls
         run: |
           python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
-          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py listing > /tmp/n6-listing.tsv
-          cmp /tmp/n6-listing.tsv consonance/harmony-linux/scripts/instruction-contract.generated.tsv
+          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py check-listing
           python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
       - name: V-time cost fitter self-test
         run: python3 scripts/fit-vtime-costs.py --self-test
@@ -230,7 +229,7 @@ jobs:
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/bin/(hvf_boot|hvf_control_probe|hvf_control_server|hvf_postgres_m3|kvm_arm64_boot|kvm_arm64_control_server)\.rs|consonance/client/src/session/live\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/bin/(hvf_boot|hvf_control_probe|hvf_control_server|hvf_postgres|kvm_arm64_boot|kvm_arm64_control_server)\.rs|consonance/client/src/session/live\.rs' \
             --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()

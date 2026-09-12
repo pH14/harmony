@@ -9,7 +9,7 @@ name: Benchmarks / Historical bugs
 on:
   pull_request:
     paths:
-      - .github/scripts/historical-*.sh
+      - scripts/historical-*.sh
       - .github/workflows/historical-bugs.yml
       - bugs/historical/postgres-cic-corruption/**
       - cli/**
@@ -339,7 +339,7 @@ jobs:
           KNOBS: ${{ needs.manifest.outputs.knobs }}
           ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
           ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
-        run: .github/scripts/historical-replay.sh probe "${CASE_DIR}/probe.json"
+        run: scripts/historical-replay.sh probe "${CASE_DIR}/probe.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -387,7 +387,7 @@ jobs:
           ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
           ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
           WITNESS: ${{ needs.manifest.outputs.witness }}
-        run: .github/scripts/historical-replay.sh witness "${WITNESS}"
+        run: scripts/historical-replay.sh witness "${WITNESS}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -447,7 +447,7 @@ jobs:
           KNOBS: ${{ needs.manifest.outputs.knobs }}
           ORACLE_ASSERTION: ${{ needs.manifest.outputs.oracle_assertion }}
           ORACLE_EVIDENCE: ${{ needs.manifest.outputs.oracle_evidence }}
-        run: .github/scripts/historical-search.sh
+        run: scripts/historical-search.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -496,4 +496,4 @@ jobs:
         if: always()
         with:
           script: |
-            await require('./.github/scripts/benchmark-report.cjs')({github, context, core});
+            await require('./scripts/benchmark-report.cjs')({github, context, core});

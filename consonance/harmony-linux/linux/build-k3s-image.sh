@@ -284,7 +284,7 @@ chmod 0755 "$K3SROOT/k8s/client.sh"
 # anyway). A fixed node name keeps the node object reproducible.
 cat >"$K3SROOT/etc/rancher/k3s/config.yaml" <<EOF
 node-name: det-node
-token: harmony-task49-deterministic-token
+token: harmony-deterministic-token
 flannel-backend: host-gw
 disable-network-policy: true
 disable-helm-controller: true

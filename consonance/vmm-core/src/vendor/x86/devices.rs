@@ -514,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn task04_init_order_does_not_capture_divisor() {
+    fn init_order_does_not_capture_divisor() {
         let mut u = Uart8250::new();
         u.write(UART_PORT_BASE + 1, 0x00);
         u.write(UART_PORT_LCR, 0x80);

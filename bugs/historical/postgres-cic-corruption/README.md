@@ -150,8 +150,8 @@ campaign.
   campaign's own report carries no per-execution oracle record, so the control's
   oracle is shown to run and pass by the probe replay.
 
-`.github/scripts/historical-oracle.sh` holds these rules and reads the two ids
-from `case.json`; `.github/scripts/historical-oracle.test.sh` exercises them
+`scripts/historical-oracle.sh` holds these rules and reads the two ids
+from `case.json`; `scripts/historical-oracle.test.sh` exercises them
 against synthetic reports in quality CI.
 
 The earlier reproduction in the fault-library work — a campaign that reported
