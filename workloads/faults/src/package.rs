@@ -240,8 +240,8 @@ mod live {
     use serde_json::json;
 
     use super::{
-        Artifacts, BugSummary, Options, ReplaySummary, Report, first_confirmed_bug,
-        replay_confirms_bug,
+        Artifacts, BugSummary, Options, ReplaySummary, Report, StateHashEncoding,
+        first_confirmed_bug, replay_confirms_bug,
     };
     use crate::{
         bundle::FaultVocabulary,

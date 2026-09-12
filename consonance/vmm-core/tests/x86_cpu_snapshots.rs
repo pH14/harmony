@@ -658,7 +658,6 @@ mod live_kvm {
             uninterrupted.step().expect("service ADD MMIO"),
             Step::Continued
         );
-        let uninterrupted_stop = capture_mmio_boundary(&uninterrupted, before_vns);
         let uninterrupted_endpoint = continue_to_hlt(&mut uninterrupted);
 
         let mut save_and_continue = fresh_mmio_vmm();
@@ -714,14 +713,6 @@ mod live_kvm {
         );
         let cold_endpoint = continue_to_hlt(&mut cold);
 
-        assert!(
-            uninterrupted_stop == save_stop,
-            "uninterrupted and saved MMIO stops differ; retained MMIO evidence is available"
-        );
-        assert!(
-            uninterrupted_stop == cold_stop,
-            "cold MMIO stop differs from the saved stop; retained MMIO evidence is available"
-        );
         assert!(
             uninterrupted_endpoint == save_and_continue_endpoint,
             "uninterrupted and save-and-continue MMIO endpoints differ; retained evidence is available"

@@ -542,37 +542,6 @@ where
     }
 }
 
-struct SnapshotReceipt {
-    id: SnapId,
-    at: u64,
-}
-
-fn snapshot_handle(
-    client: &mut Server,
-    operation: &'static str,
-) -> Result<SnapshotReceipt, Box<dyn Error>> {
-    let reply = client
-        .request(&Request::Snapshot)
-        .map_err(|error| SessionError::Control(error.to_string()))?;
-    match reply {
-        Reply::Snapshot {
-            id,
-            at,
-            tainted: false,
-            ..
-        } => Ok(SnapshotReceipt { id, at: at.0 }),
-        Reply::Snapshot {
-            id, tainted: true, ..
-        } => {
-            let error: Box<dyn Error> =
-                SessionError::Control(format!("{operation} was tainted")).into();
-            let _ = drop_control_handle(client, id);
-            Err(error)
-        }
-        reply => Err(SessionError::Reply { operation, reply }.into()),
-    }
-}
-
 fn branch_payload(
     client: &mut Server,
     snap: SnapId,
@@ -703,20 +672,6 @@ impl Error for ConsoleDiagnostic {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(self.source.as_ref())
     }
-}
-
-fn expect_unit(reply: Reply, operation: &'static str) -> Result<(), Box<dyn Error>> {
-    match reply {
-        Reply::Unit => Ok(()),
-        reply => Err(SessionError::Reply { operation, reply }.into()),
-    }
-}
-
-fn drop_control_handle(client: &mut Server, handle: SnapId) -> Result<(), Box<dyn Error>> {
-    let reply = client
-        .request(&Request::Drop(handle))
-        .map_err(|error| SessionError::Control(error.to_string()))?;
-    expect_unit(reply, "drop snapshot")
 }
 
 #[must_use]
