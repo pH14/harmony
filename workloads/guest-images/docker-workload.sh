@@ -32,16 +32,6 @@ require_delegated_cgroup() {
         fail "application is outside the delegated /runtime cgroup: $self_cgroup"
     root_procs=$($BB cat "$root/cgroup.procs") || fail "cannot read delegated cgroup"
     [ -z "$root_procs" ] || fail "delegated cgroup root contains a process"
-
-    controllers=$($BB cat "$root/cgroup.controllers") || fail "cannot read cgroup controllers"
-    enabled=$($BB cat "$root/cgroup.subtree_control") || \
-        fail "cannot read enabled cgroup controllers"
-    for controller in cpu cpuset memory pids; do
-        echo "$controllers" | $BB grep -qw "$controller" || \
-            fail "platform cgroup controller is unavailable: $controller"
-        echo "$enabled" | $BB grep -qw "$controller" || \
-            fail "platform cgroup controller is not delegated: $controller"
-    done
 }
 
 if [ ! -x /usr/local/bin/runc ]; then

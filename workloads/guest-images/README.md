@@ -46,14 +46,15 @@ and dynamic extension closure are disabled. Set
 `HARMONY_K3S_IPTABLES_CC` when the host's `musl-gcc` is not on `PATH`.
 
 The nested recipes require the platform's delegated cgroup-v2 contract: an
-empty namespace root, the workload at `/runtime`, and `cpu`, `cpuset`, `memory`,
-and `pids` enabled for child cgroups. Docker's nested spec uses the absolute
-`/pg-container` child path; K3s creates its own pod and container leaves below
-the same delegated root. Both workloads fail before launch when the contract
-is absent, and retain the privileges needed for nested namespaces, cgroups,
-network devices, and netfilter rules. The ARM PostgreSQL image is built
-natively with its LSE-only binary scans; a native ARM host is required for
-that recipe.
+empty namespace root, the workload at `/runtime`, and a writable cgroup mount.
+Docker's nested spec uses the absolute `/pg-container` child path and does not
+set controller resources, so it does not require a particular controller set.
+K3s validates and uses `cpu`, `cpuset`, and `memory`, and its agent requires
+`pids`; K3s creates its own pod and container leaves below the same delegated
+root. Both workloads fail before launch when their required contract is absent,
+and retain the privileges needed for nested namespaces, cgroups, network
+devices, and netfilter rules. The ARM PostgreSQL image is built natively with
+its LSE-only binary scans; a native ARM host is required for that recipe.
 
 The arm64 platform kernel recipe owns its generic namespace and filesystem
 configuration. Workload packages do not select a named platform kernel profile.
