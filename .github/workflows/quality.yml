@@ -42,10 +42,44 @@ env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
+  safety-scope:
+    name: select formal safety checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      kani: ${{ steps.select.outputs.kani }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Select checks from changed inputs
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == pull_request ]]; then
+            git diff --name-only "${BASE_SHA}"...HEAD >changed-files.txt
+          elif [[ "${EVENT_NAME}" == push && "${BEFORE_SHA}" != 0000000000000000000000000000000000000000 ]]; then
+            git diff --name-only "${BEFORE_SHA}" HEAD >changed-files.txt
+          else
+            git ls-files >changed-files.txt
+          fi
+
+          kani=$(python3 scripts/quality_scope.py <changed-files.txt)
+          echo "kani=${kani}" >>"${GITHUB_OUTPUT}"
+          echo "Kani selected: ${kani}"
+          if [[ "${kani}" == true ]]; then
+            sed 's/^/  /' changed-files.txt
+          fi
+
   # Gating: fmt, clippy (enforces clippy.toml), cargo-deny, and the test suite.
   gates:
     name: gates
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -219,6 +253,7 @@ jobs:
   coverage:
     name: coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
@@ -286,6 +321,9 @@ jobs:
     # Comfortably above the observed ~59-min preemption window and far below the
     # 6h hosted-runner job ceiling; the 16-way split keeps even large diffs well
     # below this tripwire. See the header comment (hm-y53x).
+    # ci-pr-job-timeout-exception: mutants -- per-PR mutation coverage is required;
+    # sixteen in-diff shards keep each bounded while the 90-minute ceiling covers
+    # the measured hosted-runner preemption window.
     timeout-minutes: 90
     if: github.event_name == 'pull_request'
     strategy:
@@ -385,7 +423,10 @@ jobs:
   # — every crate with proofs must appear below.
   kani:
     name: kani
+    needs: safety-scope
+    if: needs.safety-scope.outputs.kani == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
@@ -425,6 +466,7 @@ jobs:
   public-api:
     name: public-api
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       # cargo-public-api needs rustdoc-JSON, which is nightly-only. Pin it so
       # the snapshot output is reproducible across runs and machines.
