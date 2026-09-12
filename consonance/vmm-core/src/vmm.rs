@@ -791,6 +791,13 @@ where
             ));
         }
         let (vcpu, clock_offset, prep) = <B::A as Vendor>::validate_restore(self, s)?;
+        self.backend
+            .validate_restore_state(&vcpu)
+            .map_err(|error| {
+                VmmError::ContractViolation(format!(
+                    "restore_vm_state: backend rejected snapshot shape: {error}"
+                ))
+            })?;
         let svt = s.vtime();
         let vtime_commit = match self.vtime.as_ref() {
             Some(vt) => {

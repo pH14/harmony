@@ -56,4 +56,6 @@ The HVF state oracle uses the default policy with virtual timer masking enabled
 and a zero timer offset. It round trips valid general, SIMD/floating-point,
 system-register, debug, timer, and pending-interrupt records, and rejects
 unmasked, nonzero-offset, or reserved timer-control states before mutating the
-vCPU.
+vCPU. ARM KVM and HVF expose pure restore-shape checks through the `Backend`
+trait, so portable snapshot import rejects their known invalid vCPU records
+before guest RAM or backend state is changed.

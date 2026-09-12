@@ -64,6 +64,10 @@ pub trait Backend {
 
     fn save(&self) -> Result<<Self::A as Arch>::VcpuState>;
 
+    fn validate_restore_state(&self, _state: &<Self::A as Arch>::VcpuState) -> Result<()> {
+        Ok(())
+    }
+
     fn restore(&mut self, state: &<Self::A as Arch>::VcpuState) -> Result<()>;
 
     fn exit_counts(&self) -> ExitCounts;
@@ -140,6 +144,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn save(&self) -> Result<<Self::A as Arch>::VcpuState> {
         (**self).save()
+    }
+
+    fn validate_restore_state(&self, state: &<Self::A as Arch>::VcpuState) -> Result<()> {
+        (**self).validate_restore_state(state)
     }
 
     fn restore(&mut self, state: &<Self::A as Arch>::VcpuState) -> Result<()> {

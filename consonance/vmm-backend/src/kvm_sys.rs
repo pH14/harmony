@@ -710,12 +710,17 @@ impl Backend for KvmBackend {
         })
     }
 
+    fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
+        let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
+        validate_restore_shape(state, self.msr_filter.as_ref(), xsave_len)?;
+        restore_xsave_image(&state.xsave, state.xsave_restore_bv).map(|_| ())
+    }
+
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }
-        let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
-        validate_restore_shape(state, self.msr_filter.as_ref(), xsave_len)?;
+        self.validate_restore_state(state)?;
         let xsave = restore_xsave_image(&state.xsave, state.xsave_restore_bv)?;
 
         self.vcpu

@@ -1635,7 +1635,7 @@ mod tests {
         Reproducer, Request, Resolution, SnapId, StopConditions, StopMask, StopReason,
     };
     use environment::{
-        channel::Effect as EnvHostEffect,
+        channel::{Effect as EnvHostEffect, RecordedEnv},
         input_spec::{InputSpec as EnvSpec, ServiceConfig, nominal_factory},
     };
 
@@ -1711,6 +1711,7 @@ mod tests {
         restore_defers_materialization, restore_error_is_precommit, server_caps,
         sparse_page_order_error,
     };
+    use crate::control_state::ScheduleFailure;
     use crate::portable_snapshot::PortableSnapshotError;
     use crate::vendor::Vendor;
     use crate::vendor::x86::contract_vclock_config;
@@ -4122,6 +4123,60 @@ mod tests {
         }
     }
 
+    fn seed_import_session_state(destination: &mut ControlServer<MockBackend>) {
+        let config = ServiceConfig {
+            identity: b"test-service-v1".to_vec(),
+            configuration: b"preflight".to_vec(),
+        };
+        destination.recorded.set_config(config.clone());
+        let seed = destination.recorded.seed();
+        destination.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                seed,
+                Box::new(TestService {
+                    response: vec![0xA5],
+                    calls: 7,
+                }),
+            ),
+            &config,
+        );
+        let at = destination.vmm().unwrap().effective_vns().unwrap();
+        destination
+            .schedule
+            .insert(at, EnvHostEffect::write_memory(0, vec![0x5A; 4]).unwrap());
+        destination.reseed_schedule.insert(at, 0x5151);
+        destination.exec_nonce = 7;
+    }
+
+    fn assert_post_rejection_continuation(destination: &mut ControlServer<MockBackend>) {
+        let mut reference = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut reference);
+        seed_import_session_state(&mut reference);
+        let deadline = destination.vmm().unwrap().effective_vns().unwrap() + 1;
+        let request = Request::Run {
+            until: StopConditions {
+                deadline: Some(Moment(deadline)),
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        };
+        let destination_reply = destination.handle(&request).unwrap();
+        let reference_reply = reference.handle(&request).unwrap();
+        assert_eq!(destination_reply, reference_reply);
+        assert!(matches!(
+            destination_reply,
+            Ok(Reply::Stop(StopReason::Quiescent { .. }))
+        ));
+        assert_eq!(hash(destination), hash(&mut reference));
+        assert_eq!(destination.recorded, reference.recorded);
+        assert_eq!(destination.schedule, reference.schedule);
+        assert_eq!(destination.reseed_schedule, reference.reseed_schedule);
+        assert_eq!(
+            destination.vmm().unwrap().guest_memory(),
+            reference.vmm().unwrap().guest_memory()
+        );
+    }
+
     struct ImportStateBefore {
         ram: Vec<u8>,
         hash: [u8; 32],
@@ -4130,6 +4185,8 @@ mod tests {
         recorded: EnvSpec,
         schedule: BTreeMap<u64, EnvHostEffect>,
         reseeds: BTreeMap<u64, u64>,
+        exec_nonce: u64,
+        schedule_poisoned: Option<ScheduleFailure>,
         fallbacks: u64,
         bytes: u64,
     }
@@ -4144,6 +4201,8 @@ mod tests {
                 recorded: destination.recorded.clone(),
                 schedule: destination.schedule.clone(),
                 reseeds: destination.reseed_schedule.clone(),
+                exec_nonce: destination.exec_nonce,
+                schedule_poisoned: destination.schedule_poisoned,
                 fallbacks: destination.in_place_fallbacks(),
                 bytes: destination.last_restore_bytes_written(),
             }
@@ -4166,6 +4225,8 @@ mod tests {
         assert_eq!(&destination.recorded, &before.recorded);
         assert_eq!(&destination.schedule, &before.schedule);
         assert_eq!(&destination.reseed_schedule, &before.reseeds);
+        assert_eq!(destination.exec_nonce, before.exec_nonce);
+        assert_eq!(destination.schedule_poisoned, before.schedule_poisoned);
         assert_eq!(destination.in_place_fallbacks(), before.fallbacks);
         assert_eq!(destination.last_restore_bytes_written(), before.bytes);
     }
@@ -4186,11 +4247,13 @@ mod tests {
             });
             let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
             hello(&mut destination);
+            seed_import_session_state(&mut destination);
             let before = ImportStateBefore::capture(&destination);
             let result = destination
                 .import_portable_snapshot(full.as_slice())
                 .map(|_| ());
             assert_import_rejection_preserves_server(&mut destination, &before, result);
+            assert_post_rejection_continuation(&mut destination);
         }
 
         for malformed in [0_u8, 1] {
@@ -4208,11 +4271,13 @@ mod tests {
             let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
             hello(&mut destination);
             let destination_base = snap(&mut destination);
+            seed_import_session_state(&mut destination);
             let before = ImportStateBefore::capture(&destination);
             let result = destination
                 .import_sparse_snapshot(destination_base, sparse)
                 .map(|_| ());
             assert_import_rejection_preserves_server(&mut destination, &before, result);
+            assert_post_rejection_continuation(&mut destination);
         }
     }
 
@@ -4518,6 +4583,16 @@ mod tests {
         fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
             self.0.save()
         }
+        fn validate_restore_state(
+            &self,
+            state: &vmm_backend::VcpuState,
+        ) -> vmm_backend::Result<()> {
+            if state.xsave.len() == 1 {
+                Err(vmm_backend::BackendError::InvalidState)
+            } else {
+                Ok(())
+            }
+        }
         fn restore(&mut self, _s: &vmm_backend::VcpuState) -> vmm_backend::Result<()> {
             Err(vmm_backend::BackendError::Memory("induced restore failure"))
         }
@@ -4530,6 +4605,62 @@ mod tests {
         fn capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::X86Caps> {
             self.0.capabilities()
         }
+    }
+
+    #[test]
+    fn backend_restore_shape_is_preflighted_before_portable_import() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let source_snap = snap(&mut source);
+        let artifact = full_artifact_with_vm_state(&source, source_snap, |state| {
+            state.xsave.0.push(0);
+        });
+
+        let build = || -> Vmm<RestoreFailBackend> {
+            let mut m = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
+            m.set_policy(&X86Policy {
+                cpuid: vmm_backend::CpuidModel::default(),
+                msr_filter: vmm_backend::MsrFilter::default(),
+            })
+            .unwrap();
+            let mut v = Vmm::new(RestoreFailBackend(m), GuestRam::new(RAM).unwrap());
+            v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 0).unwrap());
+            v.wire_snapshot_hashing();
+            v.wire_lapic(
+                lapic::Lapic::new(lapic::LapicConfig {
+                    apic_id: 0,
+                    timer_hz: 24_000_000,
+                })
+                .unwrap(),
+            );
+            v
+        };
+        let mut destination = with_test_service(ControlServer::new(
+            build(),
+            Box::new(|| Err(VmmError::ContractViolation("unused".into()))),
+        ));
+        assert!(
+            destination
+                .handle(&Request::Hello(server_caps()))
+                .unwrap()
+                .is_ok()
+        );
+        let before_ram = destination.vmm().unwrap().guest_memory().to_vec();
+        let before_hash = destination.vmm().unwrap().state_hash().unwrap();
+        let before_stats = destination.snapshot_store_stats();
+        assert!(matches!(
+            destination.import_portable_snapshot(artifact.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "portable VM state restore validation"
+            ))
+        ));
+        assert_eq!(destination.vmm().unwrap().guest_memory(), before_ram);
+        assert_eq!(
+            destination.vmm().unwrap().state_hash().unwrap(),
+            before_hash
+        );
+        assert_eq!(destination.snapshot_store_stats(), before_stats);
+        assert_eq!(destination.latest_snapshot(), None);
     }
 
     #[test]
