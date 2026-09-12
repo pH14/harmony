@@ -100,6 +100,123 @@ struct Report {
     ready: bool,
     /// One entry per unmet requirement, empty when ready.
     blockers: Vec<String>,
+    /// What a workload bundle declares, when one was named.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bundle: Option<BundleReport>,
+}
+
+/// What one workload bundle file declares, and what is missing from it.
+///
+/// A campaign costs hours, and an investigation can only report meanings the
+/// bundle wrote down. Both are read here from the same parser the run path
+/// uses, so a bundle that passes this reads the same way later.
+#[derive(Serialize)]
+struct BundleReport {
+    path: PathBuf,
+    /// The parse error, when the file is not a bundle. Every other field is
+    /// then empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    nodes: Vec<String>,
+    hooks: Vec<u32>,
+    /// One `kind id: meaning` line per declared property.
+    assertions: Vec<String>,
+    diagnostics: Vec<String>,
+    setup: bool,
+    ready: bool,
+    /// Declarations that name something the bundle does not have, plus the
+    /// observability an investigation would lack. Empty means complete.
+    blockers: Vec<String>,
+}
+
+/// Everything wrong with a parsed bundle, in report order.
+///
+/// Split from the reading so the rules are testable without a file.
+fn bundle_blockers(d: &faults_workload::declarations::Declarations) -> Vec<String> {
+    let mut blockers = Vec::new();
+    if d.nodes.is_empty() {
+        blockers.push("no `node` line: the image supervises nothing".to_string());
+    }
+    for assertion in &d.assertions {
+        if let Some(hook) = assertion.reported_by_hook
+            && !d.hooks.iter().any(|h| h.id == hook)
+        {
+            blockers.push(format!(
+                "assertion {} is reported by hook {hook}, which the bundle does not declare",
+                assertion.id
+            ));
+        }
+        if assertion.reported_by_hook.is_none() {
+            blockers.push(format!(
+                "assertion {} names no `from <hook>`: a report cannot say which command                  evaluated it",
+                assertion.id
+            ));
+        }
+    }
+    for hook in &d.hooks {
+        if hook.description.is_none() {
+            blockers.push(format!(
+                "hook {} has no `describe hook {}` line: a finding cannot say what ran",
+                hook.id, hook.id
+            ));
+        }
+    }
+    if d.assertions.is_empty() {
+        blockers.push(
+            "no `assert` line: a finding would name a property number with no claim attached"
+                .to_string(),
+        );
+    }
+    if d.diagnostics.is_empty() {
+        blockers.push(
+            "no `diagnostic` line: an investigation has no declared command for reading guest evidence"
+                .to_string(),
+        );
+    }
+    blockers
+}
+
+impl BundleReport {
+    fn read(path: &Path) -> Self {
+        let empty = |error: Option<String>| BundleReport {
+            path: path.to_path_buf(),
+            error,
+            nodes: Vec::new(),
+            hooks: Vec::new(),
+            assertions: Vec::new(),
+            diagnostics: Vec::new(),
+            setup: false,
+            ready: false,
+            blockers: Vec::new(),
+        };
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) => return empty(Some(error.to_string())),
+        };
+        let declared = match faults_workload::declarations::Declarations::parse(&text) {
+            Ok(declared) => declared,
+            Err(error) => return empty(Some(error)),
+        };
+        BundleReport {
+            path: path.to_path_buf(),
+            error: None,
+            nodes: declared.nodes.iter().map(|n| n.name.clone()).collect(),
+            hooks: declared.hooks.iter().map(|h| h.id).collect(),
+            assertions: declared
+                .assertions
+                .iter()
+                .map(|a| format!("{} {}: {}", a.kind.keyword(), a.id, a.meaning))
+                .collect(),
+            diagnostics: declared
+                .diagnostics
+                .iter()
+                .map(|d| d.name.clone())
+                .collect(),
+            setup: !declared.setup.is_empty(),
+            ready: !declared.ready.is_empty(),
+            blockers: bundle_blockers(&declared),
+        }
+    }
 }
 
 /// Every requirement `harmony oci run` checks before it can start, in report
@@ -150,7 +267,16 @@ fn blockers(
     blockers
 }
 
-pub fn run(json: bool) -> Result<ExitCode, Box<dyn std::error::Error>> {
+/// Whether the report answers the question its command asked: about the named
+/// bundle when there is one, and about this host otherwise.
+fn ready(report: &Report) -> bool {
+    match &report.bundle {
+        Some(bundle) => bundle.error.is_none() && bundle.blockers.is_empty(),
+        None => report.ready,
+    }
+}
+
+pub fn run(json: bool, bundle: Option<&Path>) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let host = HostReport::detect();
     let guest = GuestArtifacts::locate(host.isa);
     let base_initramfs = crate::oci::select_base_initramfs(&guest.initramfs).cloned();
@@ -162,6 +288,7 @@ pub fn run(json: bool) -> Result<ExitCode, Box<dyn std::error::Error>> {
         base_initramfs.as_ref(),
     );
 
+    let bundle = bundle.map(BundleReport::read);
     let report = Report {
         os: host.os,
         isa: host.isa,
@@ -174,6 +301,7 @@ pub fn run(json: bool) -> Result<ExitCode, Box<dyn std::error::Error>> {
         base_initramfs,
         ready: blockers.is_empty(),
         blockers,
+        bundle,
     };
 
     if json {
@@ -181,7 +309,9 @@ pub fn run(json: bool) -> Result<ExitCode, Box<dyn std::error::Error>> {
     } else {
         print_text(&report);
     }
-    Ok(if report.ready {
+    // Reading a bundle needs no hypervisor, so `--bundle` answers about the
+    // file: a complete bundle on a host with no guest artifacts still succeeds.
+    Ok(if ready(&report) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -236,11 +366,181 @@ fn print_text(r: &Report) {
     for blocker in &r.blockers {
         println!("            - {blocker}");
     }
+    if let Some(b) = &r.bundle {
+        println!("bundle      {}", b.path.display());
+        if let Some(error) = &b.error {
+            println!("            UNREADABLE: {error}");
+            return;
+        }
+        println!(
+            "            nodes {}",
+            if b.nodes.is_empty() {
+                "none".to_string()
+            } else {
+                b.nodes.join(", ")
+            }
+        );
+        println!(
+            "            hooks {}",
+            if b.hooks.is_empty() {
+                "none".to_string()
+            } else {
+                b.hooks
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        );
+        for assertion in &b.assertions {
+            println!("            assert {assertion}");
+        }
+        for diagnostic in &b.diagnostics {
+            println!("            diagnostic {diagnostic}");
+        }
+        println!(
+            "            setup {} / ready {}",
+            if b.setup { "declared" } else { "none" },
+            if b.ready { "declared" } else { "none" }
+        );
+        println!(
+            "            complete {}",
+            if b.blockers.is_empty() { "yes" } else { "no" }
+        );
+        for blocker in &b.blockers {
+            println!("            - {blocker}");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use faults_workload::declarations::Declarations;
+
+    const COMPLETE: &str = "\
+node postgres /opt/harmony/node.sh
+setup /opt/harmony/setup.sh
+ready /opt/harmony/ready.sh
+hook 3 /opt/harmony/hooks.sh 3
+describe hook 3 pg_amcheck --heapallindexed against cic_k_idx
+assert always 2 from 3 every heap tuple has a matching index tuple
+diagnostic amcheck /usr/bin/pg_amcheck --heapallindexed
+";
+
+    #[test]
+    fn a_complete_bundle_has_no_blockers() {
+        let declared = Declarations::parse(COMPLETE).expect("parse");
+        assert!(bundle_blockers(&declared).is_empty(), "{declared:?}");
+    }
+
+    /// A property whose hook is not declared would produce a finding naming a
+    /// command the workspace cannot describe.
+    #[test]
+    fn an_assertion_pointing_at_a_missing_hook_blocks() {
+        let text = COMPLETE.replace("from 3", "from 9");
+        let declared = Declarations::parse(&text).expect("parse");
+        let found = bundle_blockers(&declared);
+        assert!(found.iter().any(|b| b.contains("hook 9")), "{found:?}");
+    }
+
+    /// Silence from a failure-only check is not a pass. A bundle that declares
+    /// no property at all gives a finding nothing to claim.
+    #[test]
+    fn a_bundle_without_properties_or_diagnostics_blocks() {
+        let declared = Declarations::parse("node a /bin/a\nhook 1 /bin/h\n").expect("parse");
+        let found = bundle_blockers(&declared);
+        assert!(found.iter().any(|b| b.contains("`assert`")), "{found:?}");
+        assert!(
+            found.iter().any(|b| b.contains("`diagnostic`")),
+            "{found:?}"
+        );
+        assert!(
+            found.iter().any(|b| b.contains("describe hook 1")),
+            "{found:?}"
+        );
+    }
+
+    /// An agent is told to check its bundle with `preflight --bundle` while it
+    /// builds an image, on a host with no guest artifacts installed. A nonzero
+    /// exit there would report a host gap as a bundle problem.
+    #[test]
+    fn a_named_bundle_decides_the_exit_status_on_a_host_with_no_guest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bundle");
+        std::fs::write(&path, COMPLETE).unwrap();
+        let mut report = report_without_a_guest();
+        assert!(!ready(&report), "no bundle named: the host decides");
+
+        report.bundle = Some(BundleReport::read(&path));
+        assert!(ready(&report), "a complete bundle on an unequipped host");
+
+        let bare = dir.path().join("bare");
+        std::fs::write(&bare, "node a /bin/a\n").unwrap();
+        report.bundle = Some(BundleReport::read(&bare));
+        assert!(!ready(&report), "an incomplete bundle still fails");
+    }
+
+    fn report_without_a_guest() -> Report {
+        Report {
+            os: "linux",
+            isa: Isa::X86_64,
+            nested: Detected::No,
+            container: Detected::No,
+            hypervisor: Hypervisor::Unsupported("no supported hypervisor".to_owned()),
+            matrix_cell: MatrixCell::Unsupported,
+            run_loop: false,
+            guest: GuestArtifacts {
+                dir: None,
+                kernel: None,
+                initramfs: Vec::new(),
+            },
+            base_initramfs: None,
+            ready: false,
+            blockers: vec!["controlled guest kernel missing".to_owned()],
+            bundle: None,
+        }
+    }
+
+    /// The report names what the bundle declares, including whether it has a
+    /// setup and a readiness command: a workload with neither starts its nodes
+    /// against an unprepared filesystem.
+    #[test]
+    fn the_report_names_what_the_bundle_declares() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bundle");
+        std::fs::write(&path, COMPLETE).unwrap();
+        let report = BundleReport::read(&path);
+        assert_eq!(report.error, None);
+        assert_eq!(report.nodes, ["postgres"]);
+        assert_eq!(report.hooks, [3]);
+        assert_eq!(report.diagnostics, ["amcheck"]);
+        assert!(report.setup, "the bundle declares a setup command");
+        assert!(report.ready, "and a readiness command");
+        assert!(report.blockers.is_empty(), "{:?}", report.blockers);
+
+        let bare = dir.path().join("bare");
+        std::fs::write(&bare, "node a /bin/a\n").unwrap();
+        let report = BundleReport::read(&bare);
+        assert!(!report.setup, "this one declares neither");
+        assert!(!report.ready);
+    }
+
+    #[test]
+    fn a_bundle_that_does_not_parse_is_reported_as_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bundle");
+        std::fs::write(&path, b"node\n").unwrap();
+        let report = BundleReport::read(&path);
+        assert!(report.error.is_some(), "a malformed bundle names its error");
+    }
+
+    #[test]
+    fn a_missing_bundle_file_is_reported_rather_than_panicking() {
+        let report = BundleReport::read(Path::new("/nonexistent/bundle"));
+        assert!(report.error.is_some());
+    }
 
     fn ready_inputs() -> (Hypervisor, MatrixCell, bool, PathBuf, PathBuf) {
         (

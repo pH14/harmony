@@ -63,6 +63,7 @@ pub fn vmm_core::exec::ExecSession::input(&self) -> &[u8]
 pub fn vmm_core::exec::ExecSession::into_outcome(self) -> vmm_core::exec::ExecOutcome
 pub fn vmm_core::exec::ExecSession::is_done(&self) -> bool
 pub fn vmm_core::exec::ExecSession::new(&str, u64) -> vmm_core::exec::ExecSession
+pub fn vmm_core::exec::ExecSession::outcome(&self) -> vmm_core::exec::ExecOutcome
 pub fn vmm_core::exec::ExecSession::truncated(&self) -> bool
 pub const vmm_core::exec::MAX_CAPTURE: usize
 pub mod vmm_core::m3_report

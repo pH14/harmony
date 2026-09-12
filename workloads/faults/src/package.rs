@@ -120,6 +120,24 @@ pub struct ReplaySummary {
 /// A campaign hit counts as a rediscovery only when running its action list
 /// again shows the same evidence: every assertion the campaign saw violated,
 /// and the same stop when the stop was the only evidence the campaign had. A
+/// The summary a reproducing replay leaves for the bug it reproduced.
+///
+/// A replay run is itself the confirmation, and it supplies the state hash the
+/// recorded observations never carried.
+#[must_use]
+pub fn reproduced(bug: &crate::report::BugReport, run: &ReplaySummary) -> BugSummary {
+    BugSummary {
+        execution: bug.execution,
+        actions: bug.actions.clone(),
+        stop: bug.observations.stop,
+        violations: bug.observations.violations.iter().copied().collect(),
+        sometimes: bug.observations.sometimes.iter().copied().collect(),
+        state_hash: run.state_hash.clone(),
+        confirmed: true,
+        replay: Some(run.clone()),
+    }
+}
+
 /// run that reported no bug, or a different one, confirms nothing.
 #[must_use]
 pub fn replay_confirms_bug(
@@ -420,7 +438,7 @@ mod live {
             // the hit is a rediscovery.
             let violations: Vec<u32> = bug.observations.violations.iter().copied().collect();
             let witness = match replay_once(artifacts, &config, &bug.actions) {
-                Ok(summary) => Some(summary),
+                Ok((summary, _)) => Some(summary),
                 Err(error) => {
                     eprintln!("bug {} did not replay: {error}", bug.bug);
                     None
@@ -480,8 +498,17 @@ mod live {
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         for run in 1..=repeat {
-            let mut summary = replay_once(artifacts, &config, actions)?;
+            let (mut summary, reproduction) = replay_once(artifacts, &config, actions)?;
             summary.run = run;
+            // The first run that reproduced the bug writes the same
+            // `bug-1.json` a search would, so a replay leaves a workspace an
+            // investigation can open without repeating the campaign.
+            if let Some(bug) = reproduction
+                && !report.bug_found
+            {
+                bug.write(&options.output)?;
+                report.bugs.push(crate::package::reproduced(&bug, &summary));
+            }
             report.horizons_clocked = report
                 .horizons_clocked
                 .saturating_add(summary.guest_horizons);
@@ -504,7 +531,7 @@ mod live {
         artifacts: &Artifacts,
         config: &FaultConfig,
         actions: &[FaultAction],
-    ) -> Result<ReplaySummary, Box<dyn Error>> {
+    ) -> Result<(ReplaySummary, Option<crate::report::BugReport>), Box<dyn Error>> {
         let mut target = FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, config)?;
         for action in actions {
             target.apply(*action);
@@ -530,7 +557,22 @@ mod live {
             actions_applied: target.horizons_clocked(),
             guest_horizons: target.guest_horizons_run(),
         };
-        Ok(summary)
+        let reproduction = summary
+            .bug
+            .then(|| {
+                crate::report::BugReport::new(
+                    1,
+                    1,
+                    crate::target::ActionWindows {
+                        root_seal: target.root_seal(),
+                        horizon_nanos: config.horizon_nanos,
+                    },
+                    actions,
+                    observation,
+                )
+            })
+            .transpose()?;
+        Ok((summary, reproduction))
     }
 
     fn hostname() -> String {
@@ -549,6 +591,7 @@ pub use live::{replay, search};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::target::{ActionWindows, FaultObservations};
 
     fn options() -> Options {
         Options {
@@ -674,6 +717,40 @@ mod tests {
             confirmed,
             replay: None,
         }
+    }
+
+    #[test]
+    fn a_reproducing_replay_supplies_the_state_hash_and_confirms_the_bug() {
+        let mut observations = FaultObservations {
+            moment: 12_300_000_000,
+            stop: FaultStop::Assertion { point: 2 },
+            ..FaultObservations::default()
+        };
+        observations.violations.insert(2);
+        observations.sometimes.insert(24);
+        let bug = crate::report::BugReport::new(
+            1,
+            7,
+            ActionWindows {
+                root_seal: 1_000,
+                horizon_nanos: 500_000_000,
+            },
+            &[FaultAction::Hook(3)],
+            &observations,
+        )
+        .expect("a bug report");
+        let run = replay_summary(true, FaultStop::Assertion { point: 2 }, &[2]);
+
+        let summary = reproduced(&bug, &run);
+
+        assert_eq!(summary.execution, 7);
+        assert_eq!(summary.actions, vec![FaultAction::Hook(3)]);
+        assert_eq!(summary.stop, FaultStop::Assertion { point: 2 });
+        assert_eq!(summary.violations, vec![2]);
+        assert_eq!(summary.sometimes, vec![24]);
+        assert_eq!(summary.state_hash, "hash");
+        assert!(summary.confirmed, "the replay reproduced the evidence");
+        assert_eq!(summary.replay, Some(run));
     }
 
     #[test]

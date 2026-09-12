@@ -17,6 +17,14 @@ in the fault agent's bundle format:
 | `hook <id> <argv...>` | a command the search can run at any moment |
 | `setup <argv...>` | runs once, before any node starts |
 | `ready <argv...>` | must pass before the run's setup point is sealed |
+| `describe node\|hook <id> <text...>` | what that node or hook is |
+| `assert always\|sometimes\|reachable <id> [from <hook>] <text...>` | what that property claims |
+| `diagnostic <name> <argv...>` | a command an investigator can run in the guest |
+
+The last three lines carry no action alphabet. [`declarations`](src/declarations.rs)
+reads them so investigation can report a property's meaning, the hook that
+evaluates it, and the properties a point holds no verdict for. A failure-only
+check that stayed silent is unevaluated, not satisfied.
 
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
 alphabet, and assembles a guest initramfs: the base image, the OCI rootfs, and
@@ -102,6 +110,40 @@ Search also writes
 ([`report`](src/report.rs)); each of those carries the action list and the
 encoded window list that reproduces it.
 
+## The workspace
+
+A search also writes its `--out` directory as a workspace
+([`workspace`](src/workspace.rs)): a journal of transactions under `journal/`
+and content-addressed payloads under `blobs/`. Each transaction is published by
+one rename, so a checkpoint, its evidence, a request result, and a branch head
+become visible together or not at all. State is the fold of the journal, and a
+crash leaves the previous committed head.
+
+[`investigate`](src/investigate.rs) implements the verbs over that history:
+fork a continuation before a finding, advance it by a bounded amount of guest
+time, run a command in the guest, and export. Advancement goes through the
+`Continuation` interface; [`investigate::live`](src/investigate/live.rs) is the
+Consonance implementation and crosses each recorded window boundary the way the
+campaign did, so a cold fork with no intervention reproduces the source's
+virtual moment, state hash, and events. Splitting one advance across separate
+processes changes nothing.
+
+A caller-supplied request id makes a retry return the committed result rather
+than running the command again. `exec` marks its branch modified and retains
+the checkpoint it produced, because the recorded action list cannot rebuild
+guest state that a command changed. The original finding stays recorded.
+
 The Consonance backend needs Linux and KVM. The action model, the bundle
 parser, the archive key, the image preparation and the report shapes are
 portable and tested everywhere.
+
+## What the search does not consume
+
+Harmony ships a coverage runtime, `libvoidstar.so`, exporting
+`__sanitizer_cov_trace_pc_guard` and the `harmony_coverage_*` calls. This
+package does not install it into a workload rootfs, and the fault search
+consumes no basic-block identities: it draws over the action alphabet the
+bundle declares, guided by the assertion and reachability points the workload
+reports. Building a workload with sanitizer coverage therefore adds no
+exploration signal here, and a report must not claim coverage-guided
+exploration from the presence of the flag.

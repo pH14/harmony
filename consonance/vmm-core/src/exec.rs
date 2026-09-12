@@ -235,6 +235,24 @@ impl ExecSession {
         self.truncated
     }
 
+    /// The session's [`ExecOutcome`] without consuming it, so a command whose
+    /// bound expired can report what it captured while its capture stays live
+    /// for a later advance to finish.
+    pub fn outcome(&self) -> ExecOutcome {
+        match self.done {
+            Some(Done::Sentinel { status, cut }) => ExecOutcome {
+                output: self.capture[..cut].to_vec(),
+                ok: true,
+                status: Some(status),
+            },
+            Some(Done::Timeout) | None => ExecOutcome {
+                output: self.capture.clone(),
+                ok: false,
+                status: None,
+            },
+        }
+    }
+
     /// Consume the session into its [`ExecOutcome`]. If no terminal state was
     /// reached (neither [`feed`](Self::feed) matched nor
     /// [`finish_timeout`](Self::finish_timeout) was called), it is treated as a

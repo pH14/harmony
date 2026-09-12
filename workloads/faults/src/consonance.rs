@@ -58,10 +58,10 @@ const SNAPSHOT_CACHE_LIMIT: usize = 96;
 /// Guest time run past a horizon deadline when the session refuses to seal the
 /// endpoint. The refusal is a point the virtual clock cannot seal, such as an
 /// exit still in flight, so a short step forward finds a sealable one.
-const SETTLE_STEP_NANOS: u64 = 100_000;
+pub const SETTLE_STEP_NANOS: u64 = 100_000;
 /// Guest time one endpoint may spend settling in total. Past it the endpoint
 /// counts as having no successor and the search never branches from it.
-const SETTLE_ALLOWANCE_NANOS: u64 = 16 * SETTLE_STEP_NANOS;
+pub const SETTLE_ALLOWANCE_NANOS: u64 = 16 * SETTLE_STEP_NANOS;
 /// Serial console bytes kept when a guest is abandoned: the workload's own
 /// account of what it was doing when it stopped exiting.
 const CONSOLE_TAIL: usize = 1_500;
@@ -209,7 +209,11 @@ pub fn service_factory() -> ServiceFactory {
 }
 
 /// The branch configuration that installs `actions`' standing faults.
-fn branch_config(
+///
+/// # Errors
+///
+/// Returns an error when the window list cannot be encoded.
+pub fn branch_config(
     windows: ActionWindows,
     actions: &[FaultAction],
 ) -> Result<ServiceConfig, Box<dyn Error>> {

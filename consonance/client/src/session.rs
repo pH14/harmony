@@ -782,7 +782,7 @@ mod live;
     any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
 ))]
-pub use live::{Session, host_minor_faults};
+pub use live::{GuestCommand, Session, host_minor_faults};
 
 /// One SDK event tuple: V-time, publisher event id, and opaque value bytes.
 pub type SdkEvent = (u64, u32, Vec<u8>);

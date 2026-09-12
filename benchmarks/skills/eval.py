@@ -1,0 +1,684 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The Harmony developer-skill evaluation runner.
+
+One program owns attempt preparation, the model call, freezing the submission,
+independent evaluation, and the report. GitHub Actions invokes it rather than
+repeating any of that.
+
+    ./benchmarks/skills/eval.py qualify --out runs/qualify
+    ./benchmarks/skills/eval.py run --panel investigation --attempts 3 --out runs/pilot
+    ./benchmarks/skills/eval.py report --out runs/pilot
+
+An attempt gets a fresh directory holding only its own materials: the panel's
+fixture, the factual references both arms receive, and — in the skills arm —
+the four skills. The evaluator's ground truth, this repository, and other
+attempts stay outside it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import random
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import asdict
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import adapters  # noqa: E402
+import fixture  # noqa: E402
+import panels  # noqa: E402
+
+FORMAT = "harmony-skill-evaluation-v1"
+REPOSITORY = Path(__file__).resolve().parents[2]
+ARMS = ("skills", "documentation")
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _harmony(explicit: str | None) -> Path:
+    """The CLI an attempt drives.
+
+    Raises:
+        SystemExit: when no built binary is available.
+    """
+    if explicit:
+        binary = Path(explicit).resolve()
+        if not binary.exists():
+            raise SystemExit(f"{binary} does not exist")
+        return binary
+    for profile in ("release", "debug"):
+        binary = REPOSITORY / "target" / profile / "harmony"
+        if binary.exists():
+            return binary
+    raise SystemExit("no harmony binary; run `cargo build -p harmony-cli` "
+                     "or pass --harmony PATH")
+
+
+def _skills_digest() -> dict:
+    """Every skill file and its hash, so a cohort can prove what it shipped."""
+    root = REPOSITORY / "skills"
+    return {str(path.relative_to(root)): _digest(path)
+            for path in sorted(root.rglob("*.md"))}
+
+
+# Panel material name -> the shipped document it is a copy of.
+REFERENCES = {
+    "CLI-README.md": Path("cli") / "README.md",
+    "SDK-README.md": Path("consonance") / "harmony-linux" / "sdk" / "README.md",
+    "WORKLOAD-README.md": Path("workloads") / "fault-agent" / "README.md",
+    "PACKAGE-README.md": Path("workloads") / "faults" / "README.md",
+}
+
+
+def prepare(attempt_dir: Path, panel: panels.Panel, arm: str, harmony: Path,
+            fixture_facts: dict) -> dict:
+    """Lay out one attempt's isolated workspace."""
+    if attempt_dir.exists():
+        shutil.rmtree(attempt_dir)
+    attempt_dir.mkdir(parents=True)
+    supplied = []
+
+    if "workspace" in panel.materials:
+        source = Path(fixture_facts["workspace"])
+        shutil.copytree(source, attempt_dir / "workspace")
+        supplied.append("workspace/")
+    if "source" in panel.materials:
+        materials = Path(fixture_facts["materials"])
+        shutil.copytree(materials / "source", attempt_dir / "source")
+        supplied.append("source/")
+        for name in ("CONTRACT.md", "EXECUTION.md"):
+            if name in panel.materials:
+                shutil.copy(materials / name, attempt_dir / name)
+                supplied.append(name)
+    # The references are the shipped documents, so both arms read what a human
+    # reads and neither gets a summary written for the evaluation.
+    for name, path in REFERENCES.items():
+        if name in panel.materials:
+            shutil.copy(REPOSITORY / path, attempt_dir / name)
+            supplied.append(name)
+
+    # Both arms drive the same binary through the same path.
+    tools = attempt_dir / "bin"
+    tools.mkdir()
+    (tools / "harmony").symlink_to(harmony)
+    supplied.append("bin/harmony")
+
+    if arm == "skills":
+        destination = attempt_dir / ".claude" / "skills"
+        destination.parent.mkdir(exist_ok=True)
+        shutil.copytree(REPOSITORY / "skills", destination)
+        supplied.append(".claude/skills/")
+
+    # The staged binary sits on PATH, in the attempt directory, and at an
+    # absolute path. An attempt may reach it any of those ways.
+    spellings = list(panel.bash_allow)
+    if "harmony" in spellings:
+        spellings += ["./bin/harmony", "bin/harmony", str(tools / "harmony")]
+    allow = [f"Bash({name}:*)" for name in spellings]
+    settings = {"permissions": {"allow": allow, "deny": [], "defaultMode": "default"}}
+    (attempt_dir / ".claude" / "settings.json").parent.mkdir(exist_ok=True)
+    (attempt_dir / ".claude" / "settings.json").write_text(json.dumps(settings, indent=1))
+    return {
+        "supplied": supplied,
+        "bash_allow": panel.bash_allow,
+        # The contract asks for a pinned container per attempt. A directory on
+        # the runner host is weaker: the attempt's file tools are confined to
+        # it, and its commands are the allowlist above, but it shares the host
+        # and the operator's agent configuration. Reports say which was used.
+        "isolation": "directory on the runner host",
+    }
+
+
+def launch(adapter, attempt_dir: Path, panel: panels.Panel,
+           budget: adapters.Budget) -> adapters.Attempt:
+    environment = dict(os.environ)
+    environment["PATH"] = f"{attempt_dir / 'bin'}{os.pathsep}{environment['PATH']}"
+    previous = os.environ.get("PATH")
+    os.environ["PATH"] = environment["PATH"]
+    try:
+        return adapter.run(attempt_dir, panel.prompt, budget)
+    finally:
+        if previous is not None:
+            os.environ["PATH"] = previous
+
+
+def freeze(attempt_dir: Path, into: Path) -> dict:
+    """Copy the submission out of the attempt directory and digest it."""
+    frozen = into / "submission"
+    if frozen.exists():
+        shutil.rmtree(frozen)
+    shutil.copytree(attempt_dir, frozen, symlinks=True,
+                    ignore=shutil.ignore_patterns(".claude-config"))
+    return {"digest": panels.digest_tree(frozen), "path": str(frozen)}
+
+
+def judge(panel_name: str, frozen: Path, transcript: list[dict], baseline: str,
+          harmony: Path, denials: list[str],
+          infrastructure_error: str | None) -> tuple[list[panels.Check], str]:
+    """Grade one frozen submission and decide the attempt's verdict."""
+    grader = panels.GRADERS.get(panel_name)
+    if grader is None:
+        return [], "ungraded"
+    if infrastructure_error:
+        return [], "infrastructure"
+    checks = grader(frozen, transcript, baseline, harmony)
+    artifact = [check for check in checks if check.kind == "artifact"]
+    if denials and not any(check.passed for check in artifact):
+        # The runner's own allowlist stopped the attempt before it could
+        # produce anything, which says nothing about the agent.
+        return checks, "infrastructure"
+    return checks, "pass" if all(check.passed for check in artifact) else "fail"
+
+
+def one_attempt(out: Path, panel: panels.Panel, arm: str, index: int,
+                adapter, budget: adapters.Budget, harmony: Path,
+                fixture_facts: dict) -> dict:
+    label = f"{panel.name}-{arm}-{index}"
+    record_dir = out / label
+    record_dir.mkdir(parents=True, exist_ok=True)
+    attempt_dir = record_dir / "attempt"
+    supplied = prepare(attempt_dir, panel, arm, harmony, fixture_facts)
+    # What the attempt must not change: the recorded finding for an
+    # investigation, the supplied release for a preparation panel.
+    if (attempt_dir / "workspace").exists():
+        baseline = panels.baseline_finding(attempt_dir / "workspace")
+    elif (attempt_dir / "source").exists():
+        baseline = panels.source_baseline(attempt_dir / "source")
+    else:
+        baseline = ""
+
+    started = time.time()
+    result = launch(adapter, attempt_dir, panel, budget)
+    frozen = freeze(attempt_dir, record_dir)
+
+    (record_dir / "transcript.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in result.transcript))
+
+    checks, verdict = judge(
+        panel.name, Path(frozen["path"]), result.transcript, baseline, harmony,
+        result.denials, result.infrastructure_error)
+
+    record = {
+        "format": FORMAT,
+        "attempt": label,
+        "panel": panel.name,
+        "arm": arm,
+        "index": index,
+        "verdict": verdict,
+        "baseline": baseline,
+        "stopped_by": result.stopped_by,
+        "exit_status": result.exit_status,
+        "infrastructure_error": result.infrastructure_error,
+        "seconds": round(result.seconds, 1),
+        "tool_calls": result.tool_calls,
+        "denials": result.denials,
+        "usage": result.usage,
+        "adapter": adapter.name,
+        "model": result.model,
+        "adapter_version": result.adapter_version,
+        "budget": asdict(budget),
+        "supplied": supplied,
+        "fixture": fixture_facts,
+        "skills": _skills_digest() if arm == "skills" else {},
+        "submission": frozen,
+        "started": started,
+        "checks": [asdict(check) for check in checks],
+    }
+    (record_dir / "attempt.json").write_text(json.dumps(record, indent=1))
+    return record
+
+
+def command_run(args: argparse.Namespace) -> int:
+    out = Path(args.out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    harmony = _harmony(args.harmony)
+    panel = panels.PANELS[args.panel]
+
+    fixture_root = out / "fixture"
+    if "source" in panel.materials:
+        facts = fixture.prepare_preparation(
+            fixture_root, REPOSITORY,
+            Path(args.source_tarball) if args.source_tarball else None)
+        facts["execution_host"] = _execution_host()
+    elif args.recorded_workspace:
+        facts = fixture.adopt(Path(args.recorded_workspace), fixture_root)
+    else:
+        facts = fixture.derive(fixture_root, REPOSITORY)
+    (out / "fixture.json").write_text(json.dumps(facts, indent=1))
+
+    adapter = adapters.build(args.adapter, model=args.model, effort=args.effort)
+    budget = adapters.Budget(
+        wall_seconds=args.wall_seconds or panel.wall_seconds,
+        total_tokens=args.total_tokens or panel.total_tokens,
+        tool_calls=args.tool_calls or panel.tool_calls)
+
+    # Matched pairs in a randomized order, so a systematic drift in provider
+    # behavior over the session cannot land on one arm.
+    order = [(arm, index) for index in range(1, args.attempts + 1) for arm in ARMS]
+    random.Random(args.seed).shuffle(order)
+
+    records = []
+    for arm, index in order:
+        print(f"[{panel.name}] {arm} attempt {index}", file=sys.stderr, flush=True)
+        record = one_attempt(out, panel, arm, index, adapter, budget, harmony, facts)
+        print(f"    {record['verdict']} ({record['stopped_by']}, "
+              f"{record['seconds']}s)", file=sys.stderr, flush=True)
+        records.append(record)
+    _write_report(out, records)
+    return 0
+
+
+def _execution_host() -> str:
+    """What the runner host can actually do for a preparation attempt.
+
+    A panel that cannot build or cannot run says so in its report rather than
+    leaving a reader to assume the attempt had both.
+    """
+    parts = []
+    parts.append("docker" if shutil.which("docker") else "no docker")
+    parts.append("KVM" if Path("/dev/kvm").exists() else "no KVM")
+    return "; ".join(parts)
+
+
+def _preparation_checks(out: Path, harmony: Path) -> list[tuple[str, bool, str]]:
+    """Exercise the preparation grader on a known-good and an empty submission.
+
+    The known-good submission is the historical case's own image recipe, which
+    no attempt is ever given. Grading it here shows the checks pass on work
+    that meets the contract, and grading an empty directory shows they do not
+    pass on nothing.
+    """
+    results = []
+    good = out / "grader" / "good"
+    empty = out / "grader" / "empty"
+    for directory in (good, empty):
+        if directory.exists():
+            shutil.rmtree(directory)
+        (directory / "source").mkdir(parents=True)
+
+    image = REPOSITORY / "bugs" / "historical" / "postgres-cic-corruption" / "image"
+    shutil.copy(image / "bundle", good / "bundle")
+    shutil.copy(image / "Dockerfile", good / "Dockerfile")
+    for script in ("setup.sh", "ready.sh", "node.sh", "hooks.sh"):
+        shutil.copy(image / script, good / script)
+    (good / "source" / "postgresql-14.3.tar.bz2").write_bytes(b"the pinned release")
+    (good / "REPORT.md").write_text(
+        "The property is that every live heap tuple in cic has a matching index "
+        "tuple; hook 3 evaluates it with pg_amcheck --heapallindexed and its "
+        "silence is not a pass. This integration does not cover indexes other "
+        "than cic_k_idx, and I did not run a campaign.\n")
+
+    baseline = panels.source_baseline(good / "source")
+    checks = panels.grade_integration(good, [], baseline, harmony)
+    failed = [check.name for check in checks
+              if check.kind == "artifact" and not check.passed]
+    results.append(("the preparation grader passes a submission that meets the "
+                    "contract", not failed, "; ".join(failed) or
+                    f"{len(checks)} checks"))
+
+    # A release that is not the pinned one must never reach an attempt: every
+    # submission's build recipe is graded against that checksum.
+    wrong = out / "grader" / "wrong.tar.bz2"
+    wrong.write_bytes(b"not the pinned release")
+    try:
+        fixture.prepare_source(out / "grader" / "source", REPOSITORY, wrong)
+        refused = False
+    except SystemExit:
+        refused = True
+    results.append(("a release that is not the pinned one is refused",
+                    refused, "staged a file with the wrong checksum"))
+
+    # Doing nothing satisfies "left the supplied release unmodified", so the
+    # negative control is that every check about produced work fails.
+    empty_checks = panels.grade_integration(
+        empty, [], panels.source_baseline(empty / "source"), harmony)
+    passed = [check.name for check in empty_checks
+              if check.kind == "artifact" and check.passed
+              and check.name != "left the supplied release unmodified"]
+    results.append(("it fails a submission that produced nothing",
+                    not passed, "; ".join(passed) or "no check passed"))
+
+    # A bundle that names a script nobody wrote is caught; one that names a
+    # binary the build installs without naming it is not.
+    unwritten = out / "grader" / "unwritten"
+    if unwritten.exists():
+        shutil.rmtree(unwritten)
+    (unwritten / "source").mkdir(parents=True)
+    shutil.copytree(good, unwritten, dirs_exist_ok=True)
+    (unwritten / "bundle").write_text(
+        (good / "bundle").read_text()
+        + "\nnode late /usr/local/bin/never_written.sh\n"
+        + "describe node late a node whose program the submission never wrote\n")
+    built = out / "grader" / "built"
+    if built.exists():
+        shutil.rmtree(built)
+    (built / "source").mkdir(parents=True)
+    shutil.copytree(good, built, dirs_exist_ok=True)
+    # `make install` puts pg_isready under the prefix without the recipe ever
+    # naming it, which is how a correct submission reaches a named binary.
+    (built / "bundle").write_text(
+        (good / "bundle").read_text()
+        .replace("ready /opt/harmony/ready.sh",
+                 "ready /usr/local/pgsql/bin/pg_isready"))
+
+    def script_check(directory: Path) -> list[bool]:
+        return [check.passed for check in
+                panels.grade_integration(directory, [], baseline, harmony)
+                if check.name == "wrote the scripts the bundle names"]
+
+    late = script_check(unwritten)
+    installed = script_check(built)
+    results.append(("the script check catches an unwritten script and passes an "
+                    "installed binary", late == [False] and installed == [True],
+                    f"unwritten script: {late}; installed binary: {installed}"))
+
+    # The coverage claim is graded from prose, so check both directions: a
+    # report that claims the instrumentation guides the search is caught, and
+    # one that says it is unused, wrapped across lines as reports are, is not.
+    claimed = panels.claims_coverage_guidance(
+        "The image links libvoidstar.so, so the search explores it with\n"
+        "coverage-guided feedback from the basic blocks it reports.\n")
+    denied = panels.claims_coverage_guidance(
+        "* **No coverage-guided or `libvoidstar`-linked instrumentation** is\n"
+        "  used. The faults package does not install `libvoidstar.so` into a\n"
+        "  workload rootfs.\n")
+    results.append(("the coverage claim check reads a claim and a denial apart",
+                    claimed and not denied,
+                    f"claim caught: {claimed}; denial misread: {denied}"))
+    return results
+
+
+def command_qualify(args: argparse.Namespace) -> int:
+    """Check the runner and the fixture without calling a model."""
+    out = Path(args.out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    harmony = _harmony(args.harmony)
+    facts = fixture.derive(out / "fixture", REPOSITORY)
+
+    results = []
+
+    def check(name: str, ok: bool, evidence: str) -> None:
+        results.append({"check": name, "passed": ok, "evidence": evidence})
+
+    workspace = Path(facts["workspace"])
+    listed = subprocess.run([harmony, "-w", workspace, "--json", "findings"],
+                            capture_output=True, text=True, check=False)
+    check("the fixture opens as a workspace", listed.returncode == 0,
+          listed.stderr.strip()[:400] or "findings listed")
+    findings = json.loads(listed.stdout)["findings"] if listed.returncode == 0 else []
+    check("it holds exactly one finding", len(findings) == 1, f"{len(findings)} findings")
+    check("the failed property carries its meaning",
+          bool(findings) and "matching entry" in findings[0]["meanings"][0],
+          findings[0]["meanings"][0] if findings else "no finding")
+
+    described = subprocess.run([harmony, "-w", workspace, "--json", "inspect", "bug-1"],
+                               capture_output=True, text=True, check=False)
+    summary = json.loads(described.stdout) if described.returncode == 0 else {}
+    check("inspection names the hook that reported it",
+          summary.get("properties", [{}])[0].get("reported_by_hook") == 3,
+          json.dumps(summary.get("properties", [])[:1]))
+    check("a silent check is reported unevaluated rather than satisfied",
+          sorted(summary.get("unevaluated", [])) == [26, 27],
+          f"unevaluated: {summary.get('unevaluated')}")
+
+    evidence = subprocess.run(
+        [harmony, "-w", workspace, "--json", "inspect", "bug-1", "command"],
+        capture_output=True, text=True, check=False)
+    lines = json.loads(evidence.stdout)["lines"] if evidence.returncode == 0 else []
+    check("the retained detector output is readable",
+          any("lacks matching index tuple" in line for line in lines),
+          f"{len(lines)} lines")
+
+    missing = subprocess.run([harmony, "-w", workspace, "inspect", "bug-9"],
+                             capture_output=True, text=True, check=False)
+    check("an unknown selector is refused rather than substituted",
+          missing.returncode != 0 and "bug-9" in missing.stderr,
+          missing.stderr.strip()[:200])
+
+    for name, ok, evidence in _preparation_checks(out, harmony):
+        check(name, ok, evidence)
+
+    adapter = adapters.build(args.adapter, model=args.model, effort=args.effort)
+    version = adapter.version()
+    check("the agent adapter is available", "unavailable" not in version, version)
+
+    # What each panel is, so a run can prove the two arms differ in the skills
+    # directory alone and that nothing ships ungraded.
+    described = [{
+        "panel": name,
+        "graded": name in panels.GRADERS,
+        "needs_kvm": panel.needs_kvm,
+        "prompt_bytes": len(panel.prompt),
+        "prompt_sha256": hashlib.sha256(panel.prompt.encode()).hexdigest(),
+        "materials": panel.materials,
+        "bash_allow": panel.bash_allow,
+    } for name, panel in sorted(panels.PANELS.items())]
+    check("every panel has a prompt, materials, and a grader",
+          all(item["graded"] and item["prompt_bytes"] and item["materials"]
+              for item in described),
+          f"{len(described)} panels")
+
+    passed = all(item["passed"] for item in results)
+    report = {"format": FORMAT, "stage": "qualify", "passed": passed,
+              "fixture": facts, "checks": results, "panels": described,
+              "harmony": str(harmony), "adapter": adapter.name,
+              "adapter_version": version, "model": adapter.model}
+    (out / "qualify.json").write_text(json.dumps(report, indent=1))
+    for item in results:
+        print(f"{'ok  ' if item['passed'] else 'FAIL'} {item['check']}: {item['evidence']}")
+    return 0 if passed else 1
+
+
+def _write_report(out: Path, records: list[dict]) -> None:
+    by_arm: dict[str, list[dict]] = {arm: [] for arm in ARMS}
+    for record in records:
+        by_arm[record["arm"]].append(record)
+    summary = {
+        "format": FORMAT,
+        "panel": records[0]["panel"] if records else None,
+        "model": records[0]["model"] if records else None,
+        "adapter_version": records[0]["adapter_version"] if records else None,
+        "fixture": records[0]["fixture"] if records else None,
+        "isolation": records[0]["supplied"].get("isolation") if records else None,
+        "arms": {
+            arm: {
+                "attempts": len(items),
+                "passed": sum(1 for item in items if item["verdict"] == "pass"),
+                "failed": sum(1 for item in items if item["verdict"] == "fail"),
+                "infrastructure": sum(1 for item in items
+                                      if item["verdict"] == "infrastructure"),
+                "checks": _check_rates(items),
+            }
+            for arm, items in by_arm.items()
+        },
+        "attempts": [
+            {k: record[k] for k in
+             ("attempt", "arm", "verdict", "stopped_by", "seconds", "tool_calls")}
+            for record in records
+        ],
+        "refused": sorted({command for record in records
+                           for command in record.get("denials") or []}),
+        "regraded": any(record.get("regraded") for record in records),
+    }
+    (out / "report.json").write_text(json.dumps(summary, indent=1))
+    (out / "report.md").write_text(_markdown(summary))
+
+
+def _check_rates(items: list[dict]) -> dict:
+    rates: dict[str, list[int]] = {}
+    for item in items:
+        for check in item["checks"]:
+            rates.setdefault(check["name"], []).append(1 if check["passed"] else 0)
+    return {name: f"{sum(values)}/{len(values)}" for name, values in rates.items()}
+
+
+def _markdown(summary: dict) -> str:
+    lines = [f"# {summary['panel']} panel", "",
+             f"Model: {summary['model']} via {summary['adapter_version']}", ""]
+    source = (summary.get("fixture") or {}).get("source")
+    if source == "derived":
+        lines += ["The fixture was derived from the historical case without "
+                  "executing a VM, so this panel measures CLI usability and "
+                  "not a real investigation.", ""]
+    if summary.get("isolation"):
+        lines += [f"Isolation: {summary['isolation']}.", ""]
+    host = (summary.get("fixture") or {}).get("execution_host")
+    if host:
+        lines += [f"Execution host: {host}.", ""]
+    if summary.get("regraded"):
+        lines += ["These verdicts come from grading the frozen submissions "
+                  "again under rules that changed after the attempts ran.", ""]
+    lines += ["| Arm | Attempts | Passed | Failed | Infrastructure |",
+              "| --- | --- | --- | --- | --- |"]
+    for arm, facts in summary["arms"].items():
+        lines.append(f"| {arm} | {facts['attempts']} | {facts['passed']} | "
+                     f"{facts['failed']} | {facts['infrastructure']} |")
+    lines += ["", "## Checks", ""]
+    names = sorted({name for facts in summary["arms"].values()
+                    for name in facts["checks"]})
+    lines += ["| Check | " + " | ".join(summary["arms"]) + " |",
+              "| --- | " + " | ".join("---" for _ in summary["arms"]) + " |"]
+    for name in names:
+        row = [summary["arms"][arm]["checks"].get(name, "-") for arm in summary["arms"]]
+        lines.append(f"| {name} | " + " | ".join(row) + " |")
+    if summary.get("refused"):
+        lines += ["", "## Commands the allowlist refused", "",
+                  "An attempt that produced nothing after a refusal is recorded "
+                  "as an infrastructure result.", ""]
+        lines += [f"* `{command}`" for command in summary["refused"][:20]]
+    lines += ["", "## Attempts", "",
+              "| Attempt | Arm | Verdict | Stopped by | Seconds | Tool calls |",
+              "| --- | --- | --- | --- | --- | --- |"]
+    for attempt in summary["attempts"]:
+        lines.append("| " + " | ".join(str(attempt[k]) for k in
+                     ("attempt", "arm", "verdict", "stopped_by", "seconds",
+                      "tool_calls")) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def _baseline(record: dict) -> str:
+    """What the attempt had to leave unchanged, for a record graded again."""
+    if record.get("baseline") is not None:
+        return record["baseline"]
+    materials = Path((record.get("fixture") or {}).get("materials") or "")
+    if (materials / "source").exists():
+        return panels.source_baseline(materials / "source")
+    if (materials / "workspace").exists():
+        return panels.baseline_finding(materials / "workspace")
+    raise SystemExit(f"{record['attempt']}: no baseline to grade against")
+
+
+def command_grade(args: argparse.Namespace) -> int:
+    """Grade frozen submissions again under the current rules.
+
+    Grading rules change after attempts run. Each submission is frozen with its
+    transcript and its digest, so the current rules reach it without a model
+    being spent again.
+    """
+    out = Path(args.out).resolve()
+    harmony = _harmony(args.harmony)
+    records = []
+    for path in sorted(out.glob("*/attempt.json")):
+        record = json.loads(path.read_text())
+        frozen = Path(record["submission"]["path"])
+        if not frozen.exists():
+            raise SystemExit(f"{record['attempt']}: {frozen} is gone")
+        if panels.digest_tree(frozen) != record["submission"]["digest"]:
+            raise SystemExit(f"{record['attempt']}: the frozen submission "
+                             f"changed since the run")
+        lines = (path.parent / "transcript.jsonl").read_text().splitlines()
+        checks, verdict = judge(
+            record["panel"], frozen, [json.loads(line) for line in lines if line],
+            _baseline(record), harmony, record.get("denials") or [],
+            record.get("infrastructure_error"))
+        before = record["verdict"]
+        record["checks"] = [asdict(check) for check in checks]
+        record["verdict"] = verdict
+        record["regraded"] = True
+        path.write_text(json.dumps(record, indent=1))
+        print(f"{record['attempt']}: {before} -> {verdict}",
+              file=sys.stderr, flush=True)
+        records.append(record)
+    if not records:
+        raise SystemExit(f"no attempts under {out}")
+    _write_report(out, records)
+    print((out / "report.md").read_text())
+    return 0
+
+
+def command_report(args: argparse.Namespace) -> int:
+    out = Path(args.out).resolve()
+    records = [json.loads(path.read_text())
+               for path in sorted(out.glob("*/attempt.json"))]
+    if not records:
+        raise SystemExit(f"no attempts under {out}")
+    _write_report(out, records)
+    print((out / "report.md").read_text())
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def shared(target: argparse.ArgumentParser) -> None:
+        target.add_argument("--out", required=True)
+        target.add_argument("--harmony")
+        target.add_argument("--adapter", default="claude-code",
+                            choices=sorted(adapters.ADAPTERS))
+        target.add_argument("--model", default="claude-sonnet-5")
+        target.add_argument("--effort", default="medium")
+
+    qualify = sub.add_parser("qualify", help="check the runner and fixture")
+    shared(qualify)
+    qualify.set_defaults(handler=command_qualify)
+
+    run = sub.add_parser("run", help="run one panel's matched attempts")
+    shared(run)
+    run.add_argument("--panel", required=True, choices=sorted(panels.PANELS))
+    run.add_argument("--attempts", type=int, default=3)
+    run.add_argument("--seed", type=int, default=7)
+    run.add_argument("--wall-seconds", type=int,
+                     help="overrides the panel's own wall-clock ceiling")
+    run.add_argument("--total-tokens", type=int,
+                     help="overrides the panel's own token ceiling")
+    run.add_argument("--tool-calls", type=int,
+                     help="overrides the panel's own tool-call ceiling")
+    run.add_argument("--recorded-workspace",
+                     help="a workspace a real search wrote, instead of a "
+                          "derived fixture")
+    run.add_argument("--source-tarball",
+                     help="a local copy of the pinned PostgreSQL release, "
+                          "instead of fetching it")
+    run.set_defaults(handler=command_run)
+
+    report = sub.add_parser("report", help="rebuild the report from attempts")
+    report.add_argument("--out", required=True)
+    report.set_defaults(handler=command_report)
+
+    grade = sub.add_parser("grade",
+                           help="grade frozen submissions again, with no model")
+    grade.add_argument("--out", required=True)
+    grade.add_argument("--harmony")
+    grade.set_defaults(handler=command_grade)
+
+    args = parser.parse_args(argv)
+    return args.handler(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -5,3 +5,19 @@ hook 1 /opt/harmony/hooks.sh 1
 hook 2 /opt/harmony/hooks.sh 2
 hook 3 /opt/harmony/hooks.sh 3
 hook 4 /opt/harmony/hooks.sh 4
+describe node postgres the seeded cluster, running as uid 70
+describe hook 1 HOT-update churn through the seeded churn procedure
+describe hook 2 DROP INDEX then CREATE INDEX CONCURRENTLY on cic(k)
+describe hook 3 pg_amcheck --heapallindexed against cic_k_idx
+describe hook 4 VACUUM cic, the only pruning event outside the churn
+assert always 2 from 3 every live heap tuple in cic has a matching tuple in cic_k_idx
+assert reachable 20 from 1 the churn procedure returned
+assert sometimes 21 from 1 a churn round ran to completion
+assert reachable 22 from 2 CREATE INDEX CONCURRENTLY returned
+assert sometimes 23 from 2 an index build finished
+assert reachable 24 from 3 pg_amcheck read the index and reported on it
+assert sometimes 25 from 4 VACUUM cic ran, the one pruning event the search controls
+assert reachable 26 from 3 the check found the server not accepting connections
+assert reachable 27 from 3 the check failed for a reason that says nothing about the index
+diagnostic amcheck /opt/harmony/hooks.sh 3
+diagnostic hookerr /bin/cat /run/hook.err

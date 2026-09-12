@@ -195,6 +195,10 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
                 }
                 bundle.setup = Some(argv);
             }
+            // Declaration lines describe nodes, hooks, properties, and
+            // diagnostics for investigation. The agent supervises processes
+            // and does not read them.
+            "describe" | "assert" | "diagnostic" => {}
             _ => return Err(BundleError::UnknownItem { line, word: item }),
         }
     }
@@ -376,6 +380,18 @@ ready /usr/bin/etcdctl endpoint health
     #[test]
     fn a_bundle_without_a_setup_line_declares_none() {
         assert_eq!(parse_bundle("node a /a\n").unwrap().setup, None);
+    }
+
+    #[test]
+    fn declaration_lines_do_not_change_what_the_agent_supervises() {
+        let bundle = parse_bundle(
+            "node a /a\nhook 1 /h\ndescribe hook 1 the checker\n\
+             assert always 2 from 1 the index is complete\n\
+             diagnostic dump sh -c 'cat /run/out'\n",
+        )
+        .unwrap();
+        assert_eq!(bundle.nodes.len(), 1);
+        assert_eq!(bundle.hooks.len(), 1);
     }
 
     #[test]
