@@ -131,8 +131,11 @@ mod real {
             &rom,
         )?;
         let initramfs = prepared.initramfs(&platform_initramfs);
-        let mut consonance =
-            NovaTarget::from_machine(ConsonanceMachine::new(&kernel, &initramfs)?)?;
+        let machine = ConsonanceMachine::new(&kernel, &initramfs)?;
+        if !machine.starts_at_power_on() {
+            return Err("oracle requires a generic power-on NES image".into());
+        }
+        let mut consonance = NovaTarget::from_power_on(machine)?;
         let mut rng = args.seed;
         let mut compared_actions = 0_u64;
         let mut stream = Sha256::new();
@@ -145,7 +148,12 @@ mod real {
             direct.reset();
             consonance.reset();
             if direct.mechanical_state() != consonance.mechanical_state() {
-                return Err(format!("setup state mismatch in sequence {sequence}").into());
+                return Err(format!(
+                    "setup state mismatch in sequence {sequence}: direct={:?} consonance={:?}",
+                    direct.mechanical_state(),
+                    consonance.mechanical_state(),
+                )
+                .into());
             }
             for action_index in 0..args.actions_per_sequence {
                 if direct.is_dead() || direct.cleared_a_level() {
