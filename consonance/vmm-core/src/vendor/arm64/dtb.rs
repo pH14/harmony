@@ -1,26 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! A minimal hand-rolled flattened-device-tree (FDT / DTB) writer (`tasks/112`
-//! M3), plus a reader used only to prove the writer's output round-trips.
-//!
-//! Hand-rolled — no vetted FDT crate — to match the x86 hand-built-boot-struct
-//! precedent (the ACPI/`boot_params` writers) and stay
-//! inside the dependency whitelist (judgment call #2; a vetted `vm-fdt`-style
-//! crate is an ask-by-comment if the foreman prefers). The DTB describes the
-//! [`board`](super::board) memory map: the CPU (`psci` enable-method), memory,
-//! the GICv3 (`arm,gic-v3`, distributor + redistributor), the PL011 console,
-//! the generic timer (`arm,armv8-timer`, the PPIs), and a **reserved region for
-//! the paravirt clock page** (the `hm-rk5` seam — reserved, not populated).
-//!
-//! **Everything in an FDT is big-endian**, regardless of the guest's byte order
-//! — the format's own contract. The writer is deterministic (equal inputs ⇒
-//! byte-identical output) and total; the reader never panics on arbitrary bytes.
 
 use super::board::{CNTFRQ_HZ, GICD, GICR, PL011, PL011_SPI, RAM_BASE, VIRT_TIMER_INTID};
 
-/// The fixed 64-byte AA-5/M1 bootloader seed, supplied unchanged to the M4
-/// guest. The owned kernel credits all 512 bits before it can enter the
-/// wall-time jitter harvester. Keeping the established M1 value is also part
-/// of running the M1 guest-input oracle verbatim on the KVM substrate.
 const BOOT_RNG_SEED: [u8; 64] = [
     0x48, 0x61, 0x72, 0x6d, 0x6f, 0x6e, 0x79, 0x2d, 0x41, 0x41, 0x35, 0x2d, 0x72, 0x6e, 0x67, 0x2d,
     0x73, 0x65, 0x65, 0x64, 0x2d, 0x76, 0x31, 0x2d, 0x64, 0x65, 0x74, 0x65, 0x72, 0x6d, 0x69, 0x6e,
@@ -28,11 +9,8 @@ const BOOT_RNG_SEED: [u8; 64] = [
     0x6f, 0x6e, 0x73, 0x74, 0x72, 0x75, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x2d, 0x30, 0x30, 0x30, 0x31,
 ];
 
-/// FDT header magic (`0xd00dfeed`), stored big-endian at offset 0.
 pub const FDT_MAGIC: u32 = 0xd00d_feed;
-/// FDT format version this writer emits.
 const FDT_VERSION: u32 = 17;
-/// The last version this layout is backward-compatible with.
 const FDT_LAST_COMP_VERSION: u32 = 16;
 
 const FDT_BEGIN_NODE: u32 = 0x0000_0001;
@@ -40,23 +18,15 @@ const FDT_END_NODE: u32 = 0x0000_0002;
 const FDT_PROP: u32 = 0x0000_0003;
 const FDT_END: u32 = 0x0000_0009;
 
-/// Interrupt-type cell value for an SPI (shared peripheral interrupt).
 const GIC_SPI: u32 = 0;
-/// Interrupt-type cell value for a PPI (private peripheral interrupt).
 const GIC_PPI: u32 = 1;
-/// Trigger flags cell: level-high (`IRQ_TYPE_LEVEL_HIGH`).
 const IRQ_LEVEL_HIGH: u32 = 4;
-/// The GIC's own phandle (referenced by every device's `interrupt-parent`).
 const GIC_PHANDLE: u32 = 1;
 
-/// A phandle-less GIC PPI number → its DT interrupt-cell `number` (PPIs are
-/// numbered from 16 on the GIC but `GIC_PPI n` in the DT means INTID `16 + n`).
 const fn ppi_dt_number(intid: u32) -> u32 {
     intid - 16
 }
 
-/// The FDT structure + strings builder. Nodes are opened/closed in order and
-/// property names are interned into the strings block on first use.
 struct Fdt {
     structure: Vec<u8>,
     strings: Vec<u8>,
@@ -76,14 +46,12 @@ impl Fdt {
         out.extend_from_slice(&v.to_be_bytes());
     }
 
-    /// Pad the structure block to a 4-byte boundary with zero bytes.
     fn pad4(&mut self) {
         while !self.structure.len().is_multiple_of(4) {
             self.structure.push(0);
         }
     }
 
-    /// Intern a property name, returning its offset in the strings block.
     fn intern(&mut self, name: &str) -> u32 {
         let bytes = name.as_bytes();
         let mut i = 0;
@@ -149,23 +117,14 @@ impl Fdt {
     }
 }
 
-/// Emit a `reg`/address pair as two 32-bit cells (`#address-cells = 2`,
-/// `#size-cells = 2`): a 64-bit value split hi:lo.
 fn u64_cells(v: u64) -> [u32; 2] {
     [(v >> 32) as u32, v as u32]
 }
 
-/// Build the DTB for a guest with `ram_len` bytes of RAM at [`RAM_BASE`] and
-/// the reserved paravirt-clock page at `pvclock_gpa`. Deterministic and total.
-///
-/// `bootargs` is the guest kernel command line (empty is fine for the
-/// skeleton). The returned bytes are a complete, aligned FDT.
 pub fn build(ram_len: u64, pvclock_gpa: u64, bootargs: &str) -> Vec<u8> {
     build_inner(ram_len, pvclock_gpa, bootargs, None)
 }
 
-/// Build the Linux DTB variant with an external initramfs range. The end is
-/// exclusive, matching Linux's `linux,initrd-end` binding.
 pub(crate) fn build_with_initrd(
     ram_len: u64,
     pvclock_gpa: u64,
@@ -307,10 +266,6 @@ fn build_inner(
     assemble(&f.structure, &f.strings)
 }
 
-/// Assemble the header + memory-reservation block + structure + strings into a
-/// complete FDT. The layout (all big-endian): header (40 bytes), an empty
-/// reservation block (one `{0,0}` terminator), the structure block, the
-/// strings block.
 fn assemble(structure: &[u8], strings: &[u8]) -> Vec<u8> {
     const HEADER_LEN: usize = 40;
     let off_mem_rsvmap = HEADER_LEN;
@@ -338,34 +293,23 @@ fn assemble(structure: &[u8], strings: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Errors from [`parse`] — a malformed FDT is a value, never a panic (rule #4).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum FdtError {
-    /// The buffer is shorter than the header or a claimed section runs past it.
     #[error("truncated FDT")]
     Truncated,
-    /// The header magic is not [`FDT_MAGIC`].
     #[error("bad FDT magic")]
     BadMagic,
-    /// A structure-block token was not one of the defined tokens, or nodes were
-    /// unbalanced.
     #[error("malformed FDT structure")]
     Malformed,
 }
 
-/// A parsed device tree as a flat list of `(depth, name)` nodes and a lookup
-/// of `(node_path_tail, prop_name) -> bytes`, enough for the round-trip test to
-/// assert structure and read back specific properties.
 #[derive(Debug, Default)]
 pub struct ParsedFdt {
-    /// Every node's name, in document order (root is `""`).
     pub nodes: Vec<String>,
-    /// `(node_name, prop_name) -> value bytes`.
     pub props: Vec<(String, String, Vec<u8>)>,
 }
 
 impl ParsedFdt {
-    /// The value of property `prop` on the first node named `node`.
     pub fn prop(&self, node: &str, prop: &str) -> Option<&[u8]> {
         self.props
             .iter()
@@ -380,11 +324,6 @@ fn be32_at(buf: &[u8], off: usize) -> Result<u32, FdtError> {
     Ok(u32::from_be_bytes(b.try_into().expect("4-byte slice")))
 }
 
-/// Parse an FDT produced by [`build`]. Validates the magic and walks the
-/// structure block, collecting node names and properties.
-///
-/// # Errors
-/// [`FdtError`] for any malformed input.
 pub fn parse(fdt: &[u8]) -> Result<ParsedFdt, FdtError> {
     if be32_at(fdt, 0)? != FDT_MAGIC {
         return Err(FdtError::BadMagic);
@@ -483,7 +422,6 @@ mod tests {
         assert_eq!(be32_at(&dtb, 24).unwrap(), FDT_LAST_COMP_VERSION);
     }
 
-    /// The pvclock GPA `sample()` builds with (RAM_BASE + 0x0101_0000).
     const SAMPLE_PVCLOCK_GPA: u64 = RAM_BASE + 0x0101_0000;
 
     #[test]
@@ -580,11 +518,6 @@ mod tests {
         assert_eq!(parse(&bad).unwrap_err(), FdtError::BadMagic);
     }
 
-    /// Review r6, case 1: a `size_dt_struct` that stops **short of** the real
-    /// `FDT_END` (here, exactly the trailing terminator token is dropped from
-    /// the declared block) must fail closed — the loop is bounded by
-    /// `struct_end`, so it never walks past the declared block to find a
-    /// terminator that the header says isn't there.
     #[test]
     fn parse_rejects_size_dt_struct_short_of_fdt_end() {
         let mut dtb = sample();
@@ -597,13 +530,6 @@ mod tests {
         );
     }
 
-    /// Review r6, case 2: tokens that live **past** the declared struct block
-    /// must not be decoded. The block below has no `FDT_END` inside it; the
-    /// `FDT_END_NODE`/`FDT_END` that would "complete" the tree sit in the gap
-    /// after `struct_end`. An unbounded loop would consume those out-of-block
-    /// bytes and accept the FDT; the bounded loop rejects it. The identical
-    /// bytes parse once the declaration is made honest — proving the rejection
-    /// is the boundary check, not malformed tokens.
     #[test]
     fn parse_rejects_tokens_outside_the_declared_struct_block() {
         let tok = |v: u32| v.to_be_bytes();
@@ -635,10 +561,6 @@ mod tests {
         assert_eq!(p.prop("", "p").unwrap(), &[0xDE, 0xAD, 0xBE, 0xEF]);
     }
 
-    /// Assemble a raw FDT with the header written **verbatim**, so
-    /// `size_dt_struct` may deliberately disagree with where the structure's
-    /// terminator actually sits (which `build`/`assemble` never do). Layout:
-    /// header(40) · rsvmap(16) · `struct_block` · `trailing` · `strings`.
     fn raw_fdt(
         struct_block: &[u8],
         trailing: &[u8],

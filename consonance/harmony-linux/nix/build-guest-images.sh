@@ -181,7 +181,8 @@ if [ "$host_arch" = aarch64 ]; then
 
     if [ "$minimal_only" -eq 0 ]; then
         echo "== N5: build PostgreSQL kernel, initramfs, and payloads"
-        (cd "$linux_dir" && ./build-arm64-postgres-kernel.sh && ./build-arm64-postgres-image.sh)
+        (cd "$linux_dir" && ARM64_KERNEL_PROFILE=postgres ./build-arm64-kernel.sh) && \
+            "$repo/workloads/guest-images/build-arm64-postgres-image.sh"
     fi
 
     mkdir -p "$stage/arm64"

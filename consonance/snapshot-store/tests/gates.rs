@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Acceptance gates 2-5 from the task spec: dedup, zero pages (including the sparse
-//! 1 GiB materialize), mapping copy-on-write, and gc, plus error-path coverage.
 
 use snapshot_store::{PAGE_SIZE, SnapshotId, Store, StoreConfig, StoreError};
 
@@ -12,7 +10,6 @@ fn page(seed: u8) -> [u8; PAGE_SIZE] {
     [seed; PAGE_SIZE]
 }
 
-/// Base of N distinct pages plus children whose writes don't change anything.
 fn base_of_n(store: &mut Store, n: u8) -> SnapshotId {
     let mut b = store.begin_base();
     for i in 0..n {
@@ -21,8 +18,6 @@ fn base_of_n(store: &mut Store, n: u8) -> SnapshotId {
     b.seal(b"base-vm-state".to_vec())
 }
 
-/// Gate 2: a base of N distinct pages, plus 10 children each rewriting the same pages
-/// with identical content => stored_unique_pages stays N and children own nothing.
 #[test]
 fn dedup_identical_rewrites() {
     const N: u8 = 8;
@@ -55,7 +50,6 @@ fn dedup_identical_rewrites() {
     assert_eq!(s.store_stats().stored_unique_pages, u64::from(N) + 1);
 }
 
-/// Gate 3a: never-written pages read as zeros at every chain depth and in materialize.
 #[test]
 fn zero_pages_at_every_depth() {
     let mut s = store(16);
@@ -88,8 +82,6 @@ fn zero_pages_at_every_depth() {
     }
 }
 
-/// Gate 3b: a sparse 1 GiB-logical base with 10 written pages materializes without
-/// allocating ~1 GiB of resident memory (asserted via bytes_resident).
 #[test]
 fn sparse_one_gib_materialize_stays_sparse() {
     const GIB: u64 = 1 << 30;
@@ -129,8 +121,6 @@ fn sparse_one_gib_materialize_stays_sparse() {
     }
 }
 
-/// Gate 4: write to a materialized mapping, then re-read via read_page and a fresh
-/// materialize => original content intact.
 #[test]
 fn mapping_writes_never_reach_the_store() {
     let mut s = store(8);
@@ -159,8 +149,6 @@ fn mapping_writes_never_reach_the_store() {
     assert_eq!(&fresh.as_slice()[7 * PAGE_SIZE..], &page(0)[..]);
 }
 
-/// Gate 5: chain A->B->C; releasing B frees nothing C needs; releasing C then gc
-/// shrinks stats accordingly; releasing everything frees everything.
 #[test]
 fn gc_preserves_live_chains_then_reclaims() {
     let mut s = store(8);
@@ -209,7 +197,6 @@ fn gc_preserves_live_chains_then_reclaims() {
     assert_eq!(stats.logical_pages_total, 0);
 }
 
-/// gc keeps shared structure alive while any branch needs it (tree shape, not chain).
 #[test]
 fn gc_with_shared_ancestor_fanout() {
     let mut s = store(8);
@@ -305,8 +292,6 @@ fn error_paths() {
     assert!(!StoreError::UnknownSnapshot(base).to_string().is_empty());
 }
 
-/// Immutability under everything at once: later snapshots, gc, dedup, and mapping
-/// writes leave a sealed snapshot's logical image bit-identical.
 #[test]
 fn sealed_images_are_immutable() {
     let mut s = store(8);

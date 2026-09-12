@@ -1,15 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Acceptance gate 3 — the wire decoder is a Tier-1 fuzz target. `decode_request`
-//! and `decode_reply` must never panic and never read out of bounds on arbitrary
-//! bytes, and every frame they *accept* must round-trip canonically:
-//! `encode(decode(x)) == x[..consumed]`, and re-decoding reproduces the value.
-//!
-//! Two passes per input: the raw bytes (the untrusted-transport boundary), and
-//! the same bytes wrapped in a valid header so the body parser is reached far
-//! more often than random magic would allow.
-//!
-//! Run (needs the pinned nightly + cargo-fuzz, per the crate README.md):
-//!   cargo +nightly-2026-06-16 fuzz run decode_frame
 
 #![no_main]
 
@@ -18,8 +7,6 @@ use control_proto::{
 };
 use libfuzzer_sys::fuzz_target;
 
-/// Any request the decoder accepts must re-encode to exactly the consumed bytes
-/// and re-decode to the same value (canonical, stable encoding).
 fn check_request(data: &[u8]) {
     if let Ok(Some((seq, req, consumed))) = decode_request(data) {
         let mut re = Vec::new();
@@ -38,7 +25,6 @@ fn check_request(data: &[u8]) {
     }
 }
 
-/// Same canonical round-trip for replies.
 fn check_reply(data: &[u8]) {
     if let Ok(Some((seq, reply, consumed))) = decode_reply(data) {
         let mut re = Vec::new();
@@ -57,7 +43,6 @@ fn check_reply(data: &[u8]) {
     }
 }
 
-/// Wrap `body` in a valid frame header so the body parser is exercised.
 fn wrap(body: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(14 + body.len());
     v.extend_from_slice(b"CTL1");

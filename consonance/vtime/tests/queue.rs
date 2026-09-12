@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 4 — TimerQueue determinism: identical firing sequences on replay,
-//! FIFO tie-break for equal deadlines, drift-free periodic re-arm.
 
 use vtime::{TimerQueue, TimerToken};
 
-/// Builds the same queue twice and drives it over the same `pop_due`
-/// schedule: the firing sequences must be identical, element for element.
 #[test]
 fn replay_produces_identical_firing_sequence() {
     let build = || {
@@ -38,8 +34,6 @@ fn replay_produces_identical_firing_sequence() {
     assert!(a.windows(2).all(|w| w[0].0 <= w[1].0));
 }
 
-/// Equal deadlines fire in scheduling (FIFO) order, mixing one-shots and
-/// periodics.
 #[test]
 fn fifo_tie_break_for_equal_deadlines() {
     let mut q = TimerQueue::new();
@@ -60,8 +54,6 @@ fn fifo_tie_break_for_equal_deadlines() {
     assert_eq!(q.peek_next(), Some((150, TimerToken(11))));
 }
 
-/// Re-scheduling an existing token replaces its entry and moves it to the
-/// back of its new deadline's FIFO class.
 #[test]
 fn reschedule_moves_to_back_of_fifo_class() {
     let mut q = TimerQueue::new();
@@ -74,9 +66,6 @@ fn reschedule_moves_to_back_of_fifo_class() {
     );
 }
 
-/// Periodic re-arm is fixed-cadence: fire times are exactly first + k·period
-/// even when popped late (no drift accumulation), and catch-up firings come
-/// out in deterministic deadline order.
 #[test]
 fn periodic_rearm_has_no_drift() {
     let first = 1_000u64;
@@ -97,7 +86,6 @@ fn periodic_rearm_has_no_drift() {
     );
 }
 
-/// pop_due with now before every deadline pops nothing and peek is stable.
 #[test]
 fn nothing_due_pops_nothing() {
     let mut q = TimerQueue::new();

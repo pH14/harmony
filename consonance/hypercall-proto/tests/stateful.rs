@@ -1,25 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Model-based (stateful) property test for [`hypercall_proto::Dispatcher`].
-//!
-//! `proptest-state-machine` generates a precondition-satisfying sequence of
-//! operations — service registration, `dispatch` (well-formed and deliberately
-//! malformed frames), `save_state`, and `restore_state` — and drives them against
-//! both the real [`Dispatcher`] and an independent reference model.
-//!
-//! The reference re-implements, from scratch, the dispatcher's routing/framing
-//! rules and each reference service's logical behavior. Two invariants are
-//! asserted: after every `dispatch` the produced response frame must equal the
-//! model-predicted frame byte-for-byte, and after every transition the
-//! dispatcher's `save_state` blob must equal the model's. Because `restore_state`
-//! rewinds the model in lockstep, a restore that silently diverged would be caught
-//! by the next dispatch or the next save-blob comparison.
-//!
-//! Service ids map to fixed service types (Console=1, Entropy=2, Block=3,
-//! Event=4); registration always (re)creates that id's canonical service, which
-//! keeps `save_state`/`restore_state` registration-shape invariants clean.
-//!
-//! Ordered collections are used freely here: the determinism rules constrain
-//! library code, not the test oracle.
 #![cfg(feature = "host")]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -60,14 +39,12 @@ fn normalize_seed(seed: u64) -> u64 {
     }
 }
 
-/// Deterministic block-device contents for a given size, mirrored by model and SUT.
 fn block_data(sectors: u8) -> Vec<u8> {
     (0..sectors as usize * SECTOR_SIZE)
         .map(|i| i as u8)
         .collect()
 }
 
-/// Independent reference model of one registered service.
 #[derive(Clone, Debug)]
 enum SvcModel {
     Console(Vec<u8>),
@@ -86,8 +63,6 @@ fn rd_u64(b: &[u8], off: usize) -> u64 {
 }
 
 impl SvcModel {
-    /// Predict `(status, response_payload)` for one request, mutating model state
-    /// exactly as the reference service would.
     fn handle(&mut self, opcode: u16, payload: &[u8]) -> (u16, Vec<u8>) {
         match self {
             SvcModel::Console(bytes) => {
@@ -187,9 +162,6 @@ impl SvcModel {
         }
     }
 
-    /// Restore exactly what `save` captured. Block state is not serialized, so its
-    /// restore is a no-op — mirroring the library. We only ever feed blobs the
-    /// matching service produced, so parsing is infallible here.
     fn restore(&mut self, state: &[u8]) {
         match self {
             SvcModel::Console(bytes) => {
@@ -216,7 +188,6 @@ impl SvcModel {
     }
 }
 
-/// The dispatcher's `save_state` format over the registered (ascending-id) set.
 fn model_save(registered: &BTreeMap<u16, SvcModel>) -> Vec<u8> {
     let mut out = Vec::new();
     for (id, svc) in registered {
@@ -228,7 +199,6 @@ fn model_save(registered: &BTreeMap<u16, SvcModel>) -> Vec<u8> {
     out
 }
 
-/// Mirror of `Dispatcher::restore_state` over a blob this set produced.
 fn model_restore(registered: &mut BTreeMap<u16, SvcModel>, blob: &[u8]) {
     let mut offset = 0;
     for svc in registered.values_mut() {
@@ -275,7 +245,6 @@ enum Malform {
 
 #[derive(Clone, Debug)]
 enum Transition {
-    /// (Re)register a service. `which` picks the canonical service type.
     Register {
         which: u8,
         seed: u64,
@@ -297,9 +266,7 @@ enum Transition {
 #[derive(Clone, Debug)]
 struct RefState {
     registered: BTreeMap<u16, SvcModel>,
-    /// (registration id-set, save blob) for each `Save`, by index.
     saves: Vec<(BTreeSet<u16>, Vec<u8>)>,
-    /// Frame the last `Dispatch` is predicted to produce.
     last_response: Vec<u8>,
 }
 
@@ -497,7 +464,6 @@ impl ReferenceStateMachine for ProtoRef {
 
 struct ProtoSut {
     dispatcher: Dispatcher,
-    /// Save blobs by index, aligned with the model's `saves`.
     blobs: Vec<Vec<u8>>,
 }
 
@@ -586,7 +552,6 @@ impl StateMachineTest for ProtoMachine {
 prop_state_machine! {
     #![proptest_config(Config { cases: 256, ..Config::default() })]
 
-    /// Drive 1..40 operations against the dispatcher and the reference model.
     #[test]
     fn dispatcher_matches_model(sequential 1..40 => ProtoMachine);
 }

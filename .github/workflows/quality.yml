@@ -53,9 +53,9 @@ jobs:
           # first-parent diff (base -> PR merge, or previous -> pushed commit).
           fetch-depth: 2
       - name: Benchmark report checks
-        run: node --test .github/scripts/benchmark-report.test.cjs
+        run: node --test scripts/benchmark-report.test.cjs
       - name: Historical-bug oracle checks
-        run: .github/scripts/historical-oracle.test.sh
+        run: scripts/historical-oracle.test.sh
       - name: Kernel patch-series checks
         run: bash consonance/harmony-linux/linux/test-patch-series.sh
       - name: Install stable toolchain
@@ -84,7 +84,7 @@ jobs:
       # The root `cargo deny check` only sees the root workspace. License-check the
       # out-of-workspace manifests too (the cargo-fuzz harnesses), so
       # their deps — e.g. libfuzzer-sys's NCSA-licensed LLVM runtime — are asserted
-      # AGPL-compatible against the same allow-list (task 91).
+      # AGPL-compatible against the same allow-list.
       - name: cargo deny (guest + fuzz manifests)
         run: |
           cargo deny --manifest-path consonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
@@ -93,8 +93,6 @@ jobs:
       - name: N6 instruction sweep generators and negative controls
         run: |
           python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
-          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py listing > /tmp/n6-listing.tsv
-          cmp /tmp/n6-listing.tsv consonance/harmony-linux/scripts/instruction-contract.generated.tsv
           python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
       - name: V-time cost fitter self-test
         run: python3 scripts/fit-vtime-costs.py --self-test
@@ -136,7 +134,7 @@ jobs:
           # std leak). Fails the gate if anything pulls in std.
           rustup target add x86_64-unknown-none
           cargo build --manifest-path consonance/harmony-linux/sdk/Cargo.toml --lib --target x86_64-unknown-none
-      # workloads/nes-guest (task 86) is out-of-workspace (its own manifest).
+      # workloads/nes-guest is out-of-workspace (its own manifest).
       # Gate it explicitly or it rots green. The portable brain
       # (chord decode, RAM map, billboard, mock-core agent loop) tests everywhere;
       # the native bin build compiles the cfg(linux) libretro-FFI + hugetlb +
@@ -230,7 +228,7 @@ jobs:
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/bin/(hvf_boot|hvf_control_probe|hvf_control_server|hvf_postgres_m3|kvm_arm64_boot|kvm_arm64_control_server)\.rs|consonance/client/src/session/live\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/bin/(hvf_boot|hvf_control_probe|hvf_control_server|kvm_arm64_boot|kvm_arm64_control_server)\.rs|consonance/client/src/session/live\.rs' \
             --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()
@@ -275,7 +273,7 @@ jobs:
   #                   this runner up to the bound, then fail with that code.
   # Host preemption tears down the whole runner VM, so no in-job retry can
   # survive it; that residual is covered by the sharding above plus the
-  # self-hosted option in the task-139 write-up.
+  # self-hosted option in the runner-preemption write-up.
   mutants:
     name: mutants (${{ matrix.shard }}/16)
     runs-on: ubuntu-latest

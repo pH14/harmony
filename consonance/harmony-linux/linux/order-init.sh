@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# /init of the **bug-2 (ordering/interrupt-timing) benchmark image** (task 69 M2).
-# It is the task-37 bare-Postgres init (consonance/harmony-linux/linux/pg-init.sh) plus the
+# /init of the **bug-2 (ordering/interrupt-timing) benchmark image**.
+# It is the bare-Postgres init (consonance/harmony-linux/linux/pg-init.sh) plus the
 # planted-bug supervisor `order-super`: bring up the kernel filesystems, run the
 # deterministic Postgres insert/select workload to completion (the image's
 # determinism pedigree), stop postgres, then run the supervised process whose
@@ -88,7 +88,7 @@ rc=$?
 # block I/O has been used — see pg-init.sh). The order oracle keys on
 # "a Crash is the bug; Quiescent is clean".
 #
-# HARDENING (task 69 M2): this crash echo must NOT contain the attribution marker
+# HARDENING: this crash echo must NOT contain the attribution marker
 # substring `ORDER_BUG` — `marker_attributed` scans the whole post-seal console,
 # so an init line carrying the marker would let an *unrelated* non-zero exit be
 # mis-attributed to this bug. Attribution comes SOLELY from order-super's own

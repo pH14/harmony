@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Strip or detect disallowed plain // comments in Rust source files.
+"""Strip or detect disallowed comments in Rust source files.
 
 Preserved comments:
-  - Doc comments (/// and //!)
   - SPDX-License-Identifier lines
-  - // SAFETY: blocks (required by project unsafe-block documentation rule)
+  - // SAFETY: blocks and /// # Safety doc sections (required by the project
+    unsafe-block documentation rule and by clippy::missing_safety_doc)
 
 Usage:
   strip-comments.py           # strip in-place, exit 0
@@ -24,8 +24,6 @@ REPO_ROOT = Path(
 
 def is_preserved(line: str, prev_was_safety: bool) -> bool:
     stripped = line.lstrip()
-    if stripped.startswith("///") or stripped.startswith("//!"):
-        return True
     if not stripped.startswith("//"):
         return False
     comment_text = stripped[2:].strip()
@@ -94,9 +92,6 @@ def strip_inline_comment(line: str) -> str:
                 continue
         if ch == '/' and line[idx + 1] == '/':
             if not in_string and not in_char and not in_raw_string:
-                if idx + 2 < len(line) and line[idx + 2] in ('/', '!'):
-                    idx += 1
-                    continue
                 code_part = line[:idx].rstrip()
                 if code_part.strip():
                     return code_part + "\n" if line.endswith("\n") else code_part
@@ -106,6 +101,22 @@ def strip_inline_comment(line: str) -> str:
     return line
 
 
+def safety_doc_lines(lines: list[str]) -> set[int]:
+    """Indices of `/// # Safety` doc lines, which clippy requires on unsafe fns."""
+    keep: set[int] = set()
+    block: list[int] = []
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("///"):
+            block.append(i)
+            continue
+        for j, k in enumerate(block):
+            if lines[k].lstrip()[3:].strip().lower() == "# safety":
+                keep.update(block[j:])
+                break
+        block = []
+    return keep
+
+
 def process_file(path: Path, check_only: bool) -> list[tuple[int, str]]:
     try:
         original = path.read_text()
@@ -113,6 +124,7 @@ def process_file(path: Path, check_only: bool) -> list[tuple[int, str]]:
         return []
 
     lines = original.splitlines(keepends=True)
+    keep_safety = safety_doc_lines(lines)
     result: list[str] = []
     violations: list[tuple[int, str]] = []
     modified = False
@@ -122,8 +134,8 @@ def process_file(path: Path, check_only: bool) -> list[tuple[int, str]]:
     for lineno, line in enumerate(lines, 1):
         stripped = line.lstrip()
 
-        if stripped.startswith("//") and not stripped.startswith("///") and not stripped.startswith("//!"):
-            if is_preserved(line, prev_was_safety):
+        if stripped.startswith("//"):
+            if lineno - 1 in keep_safety or is_preserved(line, prev_was_safety):
                 prev_was_safety = "SAFETY:" in stripped.upper() or prev_was_safety
                 result.append(line)
                 consecutive_blank = 0
@@ -136,7 +148,7 @@ def process_file(path: Path, check_only: bool) -> list[tuple[int, str]]:
         else:
             prev_was_safety = False
 
-        if "//" in line and not stripped.startswith("///") and not stripped.startswith("//!"):
+        if "//" in line and lineno - 1 not in keep_safety:
             new_line = strip_inline_comment(line)
             if new_line != line:
                 violations.append((lineno, stripped.rstrip()))
@@ -204,7 +216,7 @@ def main() -> int:
     if check_only and total_violations > 0:
         print(
             f"\n{total_violations} disallowed comment(s) found.\n"
-            "Plain // comments are not allowed. Use /// or //! for documentation.\n"
+            "Code comments are not allowed, including /// and //! doc comments.\n"
             "Allowed exceptions: // SPDX-License-Identifier, // SAFETY: blocks.\n"
             "If the content is strictly required high-level context, put it in\n"
             "the nearest README.md or in docs/ instead of a code comment.\n"

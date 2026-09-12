@@ -1,25 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Kani proof harnesses for the idle planner (quality-f), split out of
-//! `idle.rs` so cargo-mutants can glob-exclude them: they are `#[cfg(kani)]`
-//! and verified by the dedicated `kani` CI job, not the mutation oracle.
-//! Declared as `#[cfg(kani)] #[path = "idle_proofs.rs"] mod proofs;` in idle.rs,
-//! so it remains a child of `idle` (`use super::*` reaches its items).
-//!
-//! Unlike `clock_proofs.rs`, none of these touch the `u128` divide in `vns`:
-//! the idle planner is pure `u64` saturating arithmetic (`saturating_sub`,
-//! `max`), so every input can stay **fully symbolic over all of `u64`** and
-//! CBMC still discharges each harness cheaply.
 
 use super::*;
 use crate::{VClock, VClockConfig};
 
-/// [`IdlePlanner::plan`] never panics and returns the saturating spec for **all**
-/// `now_vns, deadline_vns ∈ u64`:
-///   * `advance_vns == deadline.saturating_sub(now)`,
-///   * `landed_vns == max(now, deadline) == now + advance` (no wrap; a
-///     far-future deadline clamps the advance, never overflowing),
-///   * `already_due == (advance == 0) == (deadline <= now)`,
-///   * `landed_vns >= now` (the clock never moves backward).
 #[kani::proof]
 fn plan_matches_saturating_spec() {
     let now: u64 = kani::any();
@@ -35,13 +18,6 @@ fn plan_matches_saturating_spec() {
     assert!(a.landed_vns >= now);
 }
 
-/// Applying the planned advance to a 1:1 [`VClock`] lands the clock **exactly at
-/// the deadline** for a future deadline, and **clamps to `u64::MAX`** without
-/// wrapping when the deadline is unrepresentably far. At ratio 1:1
-/// `vns(0) == vns_base`, so the clock's effective V-time at the (frozen) work
-/// point is read directly. `vns_base` is bounded only to keep `now := vns_base`
-/// a faithful pre-jump clock; the saturation regime is still reached because
-/// `deadline` ranges over all of `u64`.
 #[kani::proof]
 fn advance_lands_clock_at_deadline_or_clamps() {
     let vns_base: u64 = kani::any();

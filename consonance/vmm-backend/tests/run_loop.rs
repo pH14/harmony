@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 1 (`MockBackend` drives the run-loop contract) and gate 2 (the run-loop
-//! / completion proptest). Both exercise the portable trait with no `/dev/kvm`.
-//!
-//! The mock is behind the non-default `mock` feature; this whole file compiles to
-//! nothing without it (the gates run `--all-features`).
 #![cfg(feature = "mock")]
 
 use std::collections::BTreeMap;
@@ -15,10 +10,6 @@ use vmm_backend::{
     X86Exit, X86Policy,
 };
 
-/// Proptest case count: full per the convention natively, cut to 16 under Miri
-/// (the interpreter is ~10–100× slower) with failure-persistence disabled
-/// (its default path resolution uses `getcwd`, which Miri's fs isolation
-/// rejects). Mirrors `hypercall-doorbell`'s `config` helper.
 fn cases(native: u32) -> ProptestConfig {
     let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { native });
     if cfg!(miri) {
@@ -27,7 +18,6 @@ fn cases(native: u32) -> ProptestConfig {
     cfg
 }
 
-/// A configured mock (both config calls landed, so `run` is past `NotConfigured`).
 fn configured() -> MockBackend {
     let mut m = MockBackend::new();
     m.set_policy(&X86Policy {
@@ -38,8 +28,6 @@ fn configured() -> MockBackend {
     m
 }
 
-/// Apply the matching completion for a just-returned exit (the discipline a live
-/// VMM must follow before the next `run`).
 fn complete_correctly(m: &mut MockBackend, exit: &Exit<X86>) -> Result<(), BackendError> {
     match exit {
         Exit::Arch(X86Exit::Io { write: None, .. })
@@ -436,10 +424,6 @@ fn mock_map_memory_validation_errors() {
     ));
 }
 
-/// Task 95 M2.1: the trait default declines (`Unsupported` — callers full-scan),
-/// and `Box<dyn Backend<A = X86>>` **forwards** the drain to the inner impl instead of
-/// re-answering the default — the shadowing landmine the explicit blanket
-/// forward exists to disarm. The scripted set comes back sorted + deduplicated.
 #[test]
 fn drain_default_declines_and_box_forwards_to_the_inner_impl() {
     let mut plain = MockBackend::new();
@@ -455,7 +439,6 @@ fn drain_default_declines_and_box_forwards_to_the_inner_impl() {
     assert_eq!(boxed.drain_dirty_pages().unwrap(), Vec::<u64>::new());
 }
 
-/// An arbitrary `Exit<X86>` spanning every variant.
 fn arb_exit() -> impl Strategy<Value = Exit<X86>> {
     prop_oneof![
         (any::<u16>(), 1u8..=4, any::<Option<u32>>())
@@ -482,9 +465,6 @@ fn arb_exit() -> impl Strategy<Value = Exit<X86>> {
 proptest! {
     #![proptest_config(cases(256))]
 
-    /// Driving a scripted sequence with correct completions: every `run`
-    /// succeeds, the returned exit equals the scripted one, and the final
-    /// `exit_counts()` matches the reason histogram exactly.
     #[test]
     fn counts_match_histogram(script in proptest::collection::vec(arb_exit(), 0..40)) {
         let mut m = configured();
@@ -505,9 +485,6 @@ proptest! {
         prop_assert_eq!(counts.total(), script.len() as u64);
     }
 
-    /// Completion discipline is enforced exactly: skipping a needed completion
-    /// makes the next `run` fail closed with `PendingCompletion`; a no-completion
-    /// exit lets the next `run` proceed. Nothing in any branch panics.
     #[test]
     fn discipline_is_enforced(script in proptest::collection::vec(arb_exit(), 1..40)) {
         let mut m = configured();

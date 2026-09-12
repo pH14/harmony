@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Shared proptest strategies and a fixed fully-populated `VmState` for the
-//! integration tests. Each `tests/*.rs` file pulls in only what it needs, so
-//! some helpers are unused per binary.
 #![allow(dead_code)]
 
 use proptest::prelude::*;
@@ -10,18 +7,6 @@ use vm_state::{
     VcpuRegs, VcpuSregs, VmState, VtimeState, Xcrs, XsaveImage,
 };
 
-/// Per-test proptest config. Native runs keep the spec's case counts. **Under
-/// Miri** two things change so `cargo +nightly miri test -p vm-state` stays
-/// usable:
-///
-/// * **Cases are cut to 16.** The interpreter is ~10–100× slower; 16 independent
-///   seeds still drive the byte-parsing and zerocopy-read paths Miri is here to
-///   scrutinize for UB. The reduction is Miri-only (`cfg!(miri)`); native runs
-///   honor the ≥256 convention.
-/// * **Failure persistence is disabled.** proptest's default resolves a
-///   regression-file path via `current_dir()` (getcwd), which Miri rejects under
-///   filesystem isolation. There is no regression-replay workflow under Miri, so
-///   dropping it is free; native runs keep the default file persistence.
 pub fn config(native_cases: u32) -> ProptestConfig {
     let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { native_cases });
     if cfg!(miri) {
@@ -260,9 +245,6 @@ pub fn arb_vm_state() -> impl Strategy<Value = VmState> {
         )
 }
 
-/// A fixed, fully-populated `VmState` with a non-trivial value in every field —
-/// the input for the golden-stability, version-rejection, and ratio-rejection
-/// tests. Deterministic and small.
 pub fn fully_populated() -> VmState {
     let seg = |n: u64| Segment {
         base: 0x1000 * n,

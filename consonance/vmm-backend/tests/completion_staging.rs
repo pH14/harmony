@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Regression coverage for the architecture-aware completion classification.
-//!
-//! These assertions intentionally call both the trait seam and the generic
-//! [`Exit`] wrapper. A mutation that replaces either architecture's decision,
-//! or drops the wrapper's forwarding, must change an observed result here.
 
 use vmm_backend::{Arch, Arm64, CommonExit, Exit, Gpa, HypercallFrame};
 

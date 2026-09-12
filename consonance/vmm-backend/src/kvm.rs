@@ -1,48 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **pure** KVM exit-mapping + state-conversion logic for `KvmBackend`
-//! (`#[cfg(target_os = "linux")]`).
-//!
-//! Everything here issues **no syscall**: the `kvm_run` ⇄ `Exit<X86>`/completion
-//! translation (`RunPage` + `decode_*`/`apply_*`), the `kvm_bindings` ⇄
-//! [`crate::arch::x86::VcpuState`] conversions, and the snapshot-shape / CPUID-table /
-//! MSR-count / capability helpers. It is driven by **non-`#[ignore]` unit tests
-//! with synthetic `kvm_run`/`kvm_*` structs** (`#[cfg(test)] mod tests`), so the
-//! Linux CI runner exercises it under `nextest`/`llvm-cov`/`mutants` and Miri
-//! scrutinizes the raw-pointer reads for UB — all without `/dev/kvm`.
-//!
-//! The box-only **syscall orchestration** (the `KvmBackend` struct, its
-//! `Backend` impl, and the raw `mmap`/`ioctl` wrappers) lives in
-//! [`crate::kvm_sys`], which is the one module excluded from the coverage and
-//! mutation gates (it cannot run without `/dev/kvm`); it calls the pure helpers
-//! below and is otherwise just KVM ioctls.
 
 use std::collections::BTreeMap;
 
 use kvm_bindings::{
-    KVM_CPUID_FLAG_SIGNIFCANT_INDEX,
-    KVM_EXIT_FAIL_ENTRY,
-    KVM_EXIT_HLT,
-    KVM_EXIT_INTERNAL_ERROR,
-    KVM_EXIT_IO,
-    KVM_EXIT_IO_IN,
-    KVM_EXIT_IRQ_WINDOW_OPEN,
-    KVM_EXIT_MMIO,
-    KVM_EXIT_SHUTDOWN,
-    KVM_EXIT_X86_RDMSR,
-    KVM_EXIT_X86_WRMSR,
-    KVM_MP_STATE_HALTED,
-    KVM_MP_STATE_RUNNABLE,
-    kvm_cpuid_entry2,
-    kvm_debugregs,
-    kvm_dtable,
-    kvm_msr_entry,
-    kvm_regs,
-    kvm_run,
-    kvm_segment,
-    kvm_sregs2,
-    kvm_vcpu_events,
-    kvm_xcrs,
-    kvm_xsave,
+    KVM_CPUID_FLAG_SIGNIFCANT_INDEX, KVM_EXIT_FAIL_ENTRY, KVM_EXIT_HLT, KVM_EXIT_INTERNAL_ERROR,
+    KVM_EXIT_IO, KVM_EXIT_IO_IN, KVM_EXIT_IRQ_WINDOW_OPEN, KVM_EXIT_MMIO, KVM_EXIT_SHUTDOWN,
+    KVM_EXIT_X86_RDMSR, KVM_EXIT_X86_WRMSR, KVM_MP_STATE_HALTED, KVM_MP_STATE_RUNNABLE,
+    kvm_cpuid_entry2, kvm_debugregs, kvm_dtable, kvm_msr_entry, kvm_regs, kvm_run, kvm_segment,
+    kvm_sregs2, kvm_vcpu_events, kvm_xcrs, kvm_xsave,
 };
 
 use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Exit};
@@ -54,37 +19,19 @@ use crate::exit::{Capabilities, CommonExit, Exit};
 use crate::run_buf::RunBuf;
 use crate::types::{Gpa, MpState};
 
-/// Map a `kvm-ioctls`/`vmm-sys-util` errno into a portable [`BackendError`].
 pub(crate) fn kvm_err(e: kvm_ioctls::Error) -> BackendError {
     BackendError::Io(std::io::Error::from_raw_os_error(e.errno()))
 }
 
-/// What the last returned exit awaits, with the `kvm_run` context needed to write
-/// its completion before the next entry. Stock KVM never surfaces
-/// Hypercall/Cpuid (serviced in-kernel), so there is no pending variant for them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Pending {
     None,
-    /// `Io { write: None }`: write the IN value into the PIO data buffer.
-    IoIn {
-        data_offset: u64,
-        size: u8,
-    },
-    /// `Mmio { write: None }`: write the load value into `mmio.data[..len]`.
-    MmioLoad {
-        len: u32,
-    },
-    /// `Rdmsr`: `complete_read` sets `msr.data` (+ `error = 0`), `complete_fault`
-    /// sets `error != 0`.
+    IoIn { data_offset: u64, size: u8 },
+    MmioLoad { len: u32 },
     Rdmsr,
-    /// `Wrmsr`: `complete_ok` resumes with `error = 0`, `complete_fault` with
-    /// `error != 0`.
     Wrmsr,
 }
 
-/// A raw view over the `kvm_run` page. All access goes through the single raw
-/// pointer — no long-lived `&`/`&mut kvm_run` is created — so the typed-field
-/// reads and the byte-offset PIO access never alias as conflicting references.
 #[derive(Clone, Copy)]
 pub(crate) struct RunPage {
     run: *mut kvm_run,
@@ -106,7 +53,6 @@ impl RunPage {
         unsafe { (*self.run).exit_reason }
     }
 
-    /// The `KVM_EXIT_IO` fields: `(direction, size, port, count, data_offset)`.
     fn io(&self) -> (u8, u8, u16, u32, u64) {
         // SAFETY: read only for a `KVM_EXIT_IO`, where `io` is the active union
         // member; the struct is `Copy` and read out wholesale.
@@ -114,22 +60,18 @@ impl RunPage {
         (io.direction, io.size, io.port, io.count, io.data_offset)
     }
 
-    /// The `KVM_EXIT_MMIO` fields: `(phys_addr, len, is_write, data)`.
     fn mmio(&self) -> (u64, u32, u8, [u8; 8]) {
         // SAFETY: active union member for a `KVM_EXIT_MMIO`; `Copy` read.
         let m = unsafe { (*self.run).__bindgen_anon_1.mmio };
         (m.phys_addr, m.len, m.is_write, m.data)
     }
 
-    /// The `KVM_EXIT_X86_{RD,WR}MSR` fields: `(index, data)`.
     fn msr(&self) -> (u32, u64) {
         // SAFETY: active union member for an MSR exit; `Copy` read.
         let m = unsafe { (*self.run).__bindgen_anon_1.msr };
         (m.index, m.data)
     }
 
-    /// Read the low `size` bytes (≤4) of the first PIO data item at `data_offset`
-    /// through the bounded `run_buf` seam.
     fn read_pio(&self, data_offset: u64, size: u8) -> Result<u32> {
         let n = (size as usize).min(4);
         // SAFETY: `run`/`len` describe a live buffer; `RunBuf` bound-checks the
@@ -140,8 +82,6 @@ impl RunPage {
         Ok(u32::from_le_bytes(bytes))
     }
 
-    /// Write the low `size` bytes (≤4) of `value` into the PIO data buffer at
-    /// `data_offset` (the IN completion), through the bounded `run_buf` seam.
     fn write_pio(&self, data_offset: u64, size: u8, value: u64) -> Result<()> {
         let n = (size as usize).min(4);
         let bytes = (value as u32).to_le_bytes();
@@ -150,8 +90,6 @@ impl RunPage {
         buf.write_bytes(data_offset as usize, &bytes[..n])
     }
 
-    /// Write the low `len` bytes (≤8) of `value` into `mmio.data` (the MMIO load
-    /// completion).
     fn write_mmio_data(&self, len: u32, value: u64) {
         let n = (len as usize).min(8);
         let bytes = value.to_le_bytes();
@@ -165,7 +103,6 @@ impl RunPage {
         }
     }
 
-    /// Set the MSR completion `data` + `error` (the RDMSR value path).
     fn set_msr(&self, data: u64, error: u8) {
         // SAFETY: active union member for a pending MSR exit; in-place field writes.
         unsafe {
@@ -175,7 +112,6 @@ impl RunPage {
         }
     }
 
-    /// Set only the MSR completion `error` (the allow/deny-gp resolution).
     fn set_msr_error(&self, error: u8) {
         // SAFETY: active union member for a pending MSR exit; in-place field write.
         unsafe {
@@ -183,22 +119,12 @@ impl RunPage {
         }
     }
 
-    /// `kvm_run.ready_for_interrupt_injection` (kernel → user, written by KVM in
-    /// `post_kvm_run_save` after **every** `KVM_RUN`): non-zero iff the guest can
-    /// accept a maskable interrupt on the next entry. KVM derives it from
-    /// `RFLAGS.IF`, the STI / MOV-SS interrupt shadow, and whether an event is
-    /// already being injected — so it is the single authoritative injectability
-    /// gate (the three conditions the task lists, folded into one byte). A plain
-    /// top-level field, not part of the exit-info union, read by typed access.
     fn ready_for_interrupt_injection(&self) -> u8 {
         // SAFETY: `run` is a valid `kvm_run` (constructor contract); this is a
         // plain, always-initialized top-level field.
         unsafe { (*self.run).ready_for_interrupt_injection }
     }
 
-    /// Read `kvm_run.immediate_exit`, the one-shot entry guard used to let KVM
-    /// consume a staged userspace completion and return before guest
-    /// instruction execution.
     #[cfg(test)]
     pub(crate) fn immediate_exit(&self) -> u8 {
         // SAFETY: `run` is a valid `kvm_run` (constructor contract); this is a
@@ -206,7 +132,6 @@ impl RunPage {
         unsafe { (*self.run).immediate_exit }
     }
 
-    /// Set `kvm_run.immediate_exit` for a completion-only entry.
     pub(crate) fn set_immediate_exit(&self, on: bool) {
         // SAFETY: as above; in-place write of a plain top-level field.
         unsafe {
@@ -214,10 +139,6 @@ impl RunPage {
         }
     }
 
-    /// Set `kvm_run.request_interrupt_window` (user → kernel): when non-zero, the
-    /// next `KVM_RUN` exits with `KVM_EXIT_IRQ_WINDOW_OPEN` as soon as the guest is
-    /// injectable, so a vector that could not be delivered immediately is retried
-    /// at that exit. A plain top-level field, written by typed access.
     fn set_request_interrupt_window(&self, on: bool) {
         // SAFETY: as above; in-place write of a plain top-level field.
         unsafe {
@@ -226,33 +147,12 @@ impl RunPage {
     }
 }
 
-/// The action [`plan_irq_entry`] decided for the next VM-entry under the
-/// userspace irqchip (`KVM_IRQCHIP_NONE`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum IrqEntry {
-    /// Queue this vector via the `KVM_INTERRUPT` ioctl, then enter the guest.
     Queue(u8),
-    /// Enter the guest directly — nothing pending, or a pending vector is waiting
-    /// on the interrupt window (which this call armed).
     Run,
 }
 
-/// Decide what to do with a pending maskable IRQ immediately before `KVM_RUN`,
-/// and arm/clear the interrupt-window request on the run page to match. This is
-/// the standard userspace-irqchip injection handshake: queue the vector now if
-/// the guest can take it; otherwise ask KVM to exit (`KVM_EXIT_IRQ_WINDOW_OPEN`)
-/// the moment it can, so the caller retries the same vector on that exit.
-///
-/// `readiness_current` says KVM wrote the page's `ready_for_interrupt_injection`
-/// after the last change to the vCPU's state. A restore rewrites the RFLAGS
-/// and interrupt shadow the byte is derived from without refreshing it, and a
-/// vector queued on that stale byte fails the VM entry, so until the next exit
-/// the only safe move is to ask for the window.
-///
-/// Pure: reads `ready_for_interrupt_injection`, writes `request_interrupt_window`,
-/// and issues **no syscall** — the orchestration layer performs the
-/// `KVM_INTERRUPT` ioctl for [`IrqEntry::Queue`]. (Box-only syscalls cannot live
-/// here; this is the part the synthetic-`kvm_run` unit tests + Miri exercise.)
 pub(crate) fn plan_irq_entry(
     page: RunPage,
     pending_irq: Option<u8>,
@@ -274,9 +174,6 @@ pub(crate) fn plan_irq_entry(
     }
 }
 
-/// Decode the current `kvm_run` into an `Exit<X86>` (or `None` for a control exit the
-/// run loop re-enters on) plus the completion it requires. Pure: reads `page`,
-/// issues no syscall.
 pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit<X86>, Pending)>> {
     match page.exit_reason() {
         KVM_EXIT_IO => decode_io(page).map(Some),
@@ -301,23 +198,10 @@ pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit<X86>, Pending)>>
     }
 }
 
-/// Whether a decoded KVM exit leaves a completion in the shared `kvm_run`
-/// buffer after it is returned to the caller. Read-style exits carry a
-/// [`Pending`] value until `complete_*` writes their result; write-style PIO and
-/// MMIO exits carry no value, but KVM still retains their fast-path callback
-/// until the next `KVM_RUN`. The box-only loop uses this pure predicate so the
-/// callback-retirement invariant is unit-tested without `/dev/kvm`.
 pub(crate) fn decoded_exit_stages_completion(exit: &Exit<X86>, pending: Pending) -> bool {
     exit.stages_completion() && pending == Pending::None
 }
 
-/// Map a `KVM_EXIT_IO`. OUT carries the value out (read from the PIO data buffer
-/// via the `run_buf` seam); IN arms `Pending::IoIn` for completion.
-///
-/// **Fails closed on string/REP PIO** (`io.count != 1`): such an exit carries
-/// `count * size` bytes, but `X86Exit::Io` models a single scalar. M1/M2 use only
-/// single-byte UART access, so rather than silently drop the extra items, this
-/// returns `BackendError`.
 fn decode_io(page: RunPage) -> Result<(Exit<X86>, Pending)> {
     let (direction, size, port, count, data_offset) = page.io();
     if count != 1 {
@@ -347,8 +231,6 @@ fn decode_io(page: RunPage) -> Result<(Exit<X86>, Pending)> {
     }
 }
 
-/// Map a `KVM_EXIT_MMIO`. A store carries the value out; a load arms
-/// `Pending::MmioLoad`.
 fn decode_mmio(page: RunPage) -> (Exit<X86>, Pending) {
     let (phys_addr, len, is_write, data) = page.mmio();
     let gpa = Gpa(phys_addr);
@@ -377,8 +259,6 @@ fn decode_mmio(page: RunPage) -> (Exit<X86>, Pending) {
     }
 }
 
-/// Apply a `complete_read` value to the `kvm_run` for the given pending exit.
-/// Pure. Errors `NoPendingRead` if no read-style exit is pending.
 pub(crate) fn apply_complete_read(page: RunPage, pending: Pending, value: u64) -> Result<()> {
     match pending {
         Pending::IoIn { data_offset, size } => page.write_pio(data_offset, size, value),
@@ -394,8 +274,6 @@ pub(crate) fn apply_complete_read(page: RunPage, pending: Pending, value: u64) -
     }
 }
 
-/// Apply the `deny-gp` disposition to a pending `Rdmsr`/`Wrmsr` (`error != 0`).
-/// Pure. Errors `BadCompletion` if the pending exit is not an MSR exit.
 pub(crate) fn apply_complete_fault(page: RunPage, pending: Pending) -> Result<()> {
     match pending {
         Pending::Rdmsr | Pending::Wrmsr => {
@@ -406,8 +284,6 @@ pub(crate) fn apply_complete_fault(page: RunPage, pending: Pending) -> Result<()
     }
 }
 
-/// Resolve a pending `Wrmsr` as allow/drop (`error == 0`). Pure. Errors
-/// `BadCompletion` if the pending exit is not a `Wrmsr`.
 pub(crate) fn apply_complete_ok(page: RunPage, pending: Pending) -> Result<()> {
     match pending {
         Pending::Wrmsr => {
@@ -418,15 +294,6 @@ pub(crate) fn apply_complete_ok(page: RunPage, pending: Pending) -> Result<()> {
     }
 }
 
-/// Consume one already-staged userspace completion without entering the guest.
-///
-/// The caller supplies the one raw-entry operation so this pure state/RunPage
-/// seam can be exercised with a synthetic page. KVM's contract for this path is
-/// deliberately strict: one entry is issued with `immediate_exit` set, and it
-/// must return `EINTR` after consuming the completion. Any other result fails
-/// closed. The one-shot flag is cleared on every return path; a failed entry
-/// leaves the staged marker and pending state untouched so the caller can
-/// retry or abandon the backend conservatively.
 pub(crate) fn retire_staged_completion<F>(
     page: RunPage,
     pending: &mut Pending,
@@ -457,8 +324,6 @@ where
     }
 }
 
-/// Build the `KVM_SET_CPUID2` entry table from the frozen model. The
-/// `SIGNIFCANT_INDEX` flag mapping is the part worth gating.
 pub(crate) fn cpuid_entries(model: &CpuidModel) -> Vec<kvm_cpuid_entry2> {
     model
         .entries
@@ -480,9 +345,6 @@ pub(crate) fn cpuid_entries(model: &CpuidModel) -> Vec<kvm_cpuid_entry2> {
         .collect()
 }
 
-/// A `KVM_GET/SET_MSRS` ioctl returns the count it actually serviced and stops at
-/// the first index it rejects. A short count means the MSR set did not fully
-/// transfer — fail closed (an incomplete `allow-stateful` set must not look ok).
 pub(crate) fn ensure_full_msr_count(serviced: usize, requested: usize) -> Result<()> {
     if serviced != requested {
         return Err(BackendError::Internal(
@@ -492,9 +354,6 @@ pub(crate) fn ensure_full_msr_count(serviced: usize, requested: usize) -> Result
     Ok(())
 }
 
-/// Assemble the saved MSR map from a `KVM_GET_MSRS` result, failing closed on a
-/// short count. `entries` is the filled `kvm_msr_entry` slice; `got` the returned
-/// count; `requested` the number asked for.
 pub(crate) fn saved_msrs(
     entries: &[kvm_msr_entry],
     got: usize,
@@ -508,15 +367,6 @@ pub(crate) fn saved_msrs(
         .collect())
 }
 
-/// Restore special registers while invalidating translations from displaced
-/// guest page tables. KVM's SET_SREGS2 requests an MMU reset and guest TLB flush
-/// only when paging control registers change. Host-written RAM can change the
-/// page tables while all those registers retain their values.
-///
-/// Write a transient CR0.WP value followed by the exact snapshot. At least one
-/// write changes CR0, even when the live value is unknown. WP does not change
-/// execution mode; no guest instruction may run between these two writes.
-/// A failed write aborts restoration so the caller discards the partial VM.
 pub(crate) fn restore_sregs2_with_flush<F>(state: &VcpuSregs, mut set: F) -> Result<()>
 where
     F: FnMut(&kvm_sregs2) -> Result<()>,
@@ -528,15 +378,6 @@ where
     set(&target)
 }
 
-/// Validate a snapshot's cheap shape against this backend's config *before* any
-/// `SET_*` ioctl, so a malformed blob cannot half-mutate the live vCPU:
-///
-/// - the MSR key set must exactly equal the configured `allow-stateful` indices
-///   (a missing key would leave that MSR at a stale value; an extra key names an
-///   MSR outside the filter), and
-/// - the XSAVE image must be the host's image size (`xsave_len`).
-///
-/// Either mismatch is [`BackendError::InvalidState`].
 pub(crate) fn validate_restore_shape(
     state: &VcpuState,
     filter: Option<&MsrFilter>,
@@ -557,8 +398,6 @@ pub(crate) fn validate_restore_shape(
     Ok(())
 }
 
-/// The honest stock-KVM capabilities: every determinism field `false` (the holes
-/// are declared, not laundered — see the crate non-determinism posture).
 pub(crate) fn kvm_capabilities() -> Capabilities<X86Caps> {
     Capabilities {
         name: "kvm-stock",
@@ -783,7 +622,6 @@ pub(crate) fn to_kvm_events(e: &VcpuEvents) -> kvm_vcpu_events {
     k
 }
 
-/// Map KVM's `mp_state` to our [`MpState`] (anything but `HALTED` is runnable).
 pub(crate) fn mp_from_kvm(mp_state: u32) -> MpState {
     if mp_state == KVM_MP_STATE_HALTED {
         MpState::Halted
@@ -792,7 +630,6 @@ pub(crate) fn mp_from_kvm(mp_state: u32) -> MpState {
     }
 }
 
-/// Map our [`MpState`] back to KVM's `mp_state`.
 pub(crate) fn mp_to_kvm(mp: MpState) -> u32 {
     match mp {
         MpState::Halted => KVM_MP_STATE_HALTED,
@@ -800,7 +637,6 @@ pub(crate) fn mp_to_kvm(mp: MpState) -> u32 {
     }
 }
 
-/// Read `XCR0` (the `xcr == 0` entry) out of a `kvm_xcrs`.
 pub(crate) fn xcr0_of(x: &kvm_xcrs) -> u64 {
     x.xcrs
         .iter()
@@ -809,7 +645,6 @@ pub(crate) fn xcr0_of(x: &kvm_xcrs) -> u64 {
         .map_or(0, |e| e.value)
 }
 
-/// Build a `kvm_xcrs` carrying a single `XCR0` entry.
 pub(crate) fn xcrs_of(xcr0: u64) -> kvm_xcrs {
     let mut x = kvm_xcrs {
         nr_xcrs: 1,
@@ -820,7 +655,6 @@ pub(crate) fn xcrs_of(xcr0: u64) -> kvm_xcrs {
     x
 }
 
-/// Serialize the fixed 4 KiB `kvm_xsave` region as bytes.
 pub(crate) fn xsave_to_bytes(x: &kvm_xsave) -> Vec<u8> {
     let mut out = Vec::with_capacity(x.region.len() * 4);
     for word in &x.region {
@@ -829,8 +663,6 @@ pub(crate) fn xsave_to_bytes(x: &kvm_xsave) -> Vec<u8> {
     out
 }
 
-/// Deserialize a 4 KiB byte image back into a `kvm_xsave`. Rejects a wrong-sized
-/// image as `InvalidState` (never a panic).
 pub(crate) fn xsave_from_bytes(bytes: &[u8]) -> Result<kvm_xsave> {
     let mut x = kvm_xsave::default();
     if bytes.len() != x.region.len() * 4 {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the **bug-2 (ordering/interrupt-timing) benchmark initramfs** (task 69
-# M2): the task-37 bare-Postgres image (a static busybox + a real PostgreSQL 17
+# Build the **bug-2 (ordering/interrupt-timing) benchmark initramfs**: the
+# bare-Postgres image (a static busybox + a real PostgreSQL 17
 # install + a pre-`initdb`'d RAM-backed ext4 cluster) plus the planted-bug
 # supervisor `order-super` and the `order-init.sh` /init that runs it. A verbatim
 # clone of build-campaign-image.sh (bug 1) with the supervisor/init/ext4-UUID/
@@ -14,9 +14,9 @@
 #   2. order-init.sh installed as /init (postgres workload → supervisor).
 # Everything else — the pinned .debs, the determinism overlay, the fixed-UUID
 # ext4, the reproducible cpio packing — is identical to the postgres image, so
-# the order image inherits task 37's determinism closure verbatim.
+# the order image inherits the postgres image's determinism closure verbatim.
 #
-# The companion kernel is the *unchanged* task-36 container-class bzImage (no
+# The companion kernel is the *unchanged* container-class bzImage (no
 # kernel change: mmap/mlock/ioperm(CONFIG_X86_IOPL_IOPERM, default y)/DEVPORT are
 # all already available — the foreman verifies these on the box; if ioperm is
 # absent, order-super's /dev/port fallback path is used instead).
@@ -154,7 +154,7 @@ setpriv --reuid="$BUILD_UID" --regid="$BUILD_UID" --clear-groups env LC_ALL=C.UT
     || { cat "$BUILD_ROOT/order-initdb.log"; exit 1; }
 cat >>"$STAGEFS/pgdata/postgresql.conf" <<EOF
 
-# --- task 37 determinism overlay (see consonance/harmony-linux/linux/README.md) ---
+# --- determinism overlay (see consonance/harmony-linux/linux/README.md) ---
 listen_addresses = ''
 unix_socket_directories = '/tmp'
 fsync = on
@@ -177,7 +177,7 @@ mke2fs -q -t ext4 -U "$FIXED_UUID" \
     -E lazy_itable_init=0,lazy_journal_init=0 \
     -d "$STAGEFS" -F "$EXT4" "$EXT4_SIZE"
 
-# --- 4. the baked workload v2 (task 42), identical to the postgres image ------
+# --- 4. the baked workload v2, identical to the postgres image ------
 {
     echo "CREATE TABLE ledger(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), i int, t timestamptz);"
     i=1

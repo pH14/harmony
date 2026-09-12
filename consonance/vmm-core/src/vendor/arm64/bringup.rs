@@ -1,20 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The arm64 boot composition (`tasks/112` M3) — the arm64 analogue of x86's
-//! `bringup::compose`: install the CPU-contract policy **through the trait**,
-//! allocate RAM, flat-load the `Image`, build + place the DTB, build + restore
-//! the entry state, map the RAM, and return a [`Vmm`] ready to `run()`.
-//!
-//! [`compose`] takes the `Backend` **by value** (constructed bare at the
-//! composition root; policy goes in through [`Backend::set_policy`], not a
-//! concrete constructor), so the composition — including the `unsafe`
-//! `map_memory` pointer seam — is unit-testable with the `MockArm64Backend` on
-//! every platform (and under Miri). The one place a concrete
-//! `(Arm64KvmBackend, Arm64)` pair is named is the M4 `boot_selected`
-//! (Linux+aarch64-gated) — not here.
-//!
-//! HVF composes the userspace GICv3. KVM/arm64 instead owns an in-kernel
-//! GICv3, so its boot root leaves the userspace model unwired and drives the
-//! clockevent PPI through the backend's level-input seam.
 
 use vmm_backend::{Arm64, Backend, Gpa};
 
@@ -22,10 +6,6 @@ use super::board::{PAGE, RAM_BASE, align_up};
 use super::{contract, dtb, entry, image_loader};
 use crate::vmm::{GuestRam, Vmm, VmmError};
 
-/// Boot an arm64 `Image` with the shared guest policy via [`compose`].
-/// Takes the `Backend` by value (constructed bare at the composition root),
-/// mirroring x86's `boot`. The one place a concrete `(Arm64KvmBackend, Arm64)`
-/// pair is named is the M4 `boot_selected` (Linux+aarch64-gated).
 pub fn boot<B: Backend<A = Arm64>>(
     backend: B,
     image: &[u8],
@@ -35,16 +15,6 @@ pub fn boot<B: Backend<A = Arm64>>(
     compose(backend, image, bootargs, guest_ram_len)
 }
 
-/// Compose a ready [`Vmm`] for an arm64 `Image` boot with a backend supplied
-/// by the caller. This is testable with mocks on every platform. Order is
-/// load-bearing:
-/// policy **before** the first run; map **before** restore; `ram` moves into
-/// the `Vmm` so the mapped pointer stays valid.
-///
-/// # Errors
-/// [`VmmError::vendor_boot`] wrapping an [`image_loader::ImageLoadError`] (a
-/// malformed image or one that does not fit alongside the DTB), or a
-/// [`VmmError::Backend`] from policy install / map / restore.
 pub(crate) fn compose<B: Backend<A = Arm64>>(
     backend: B,
     image: &[u8],
@@ -54,11 +24,6 @@ pub(crate) fn compose<B: Backend<A = Arm64>>(
     compose_inner(backend, image, None, bootargs, guest_ram_len, true)
 }
 
-/// Shared arm64 composition with an explicit control-channel mapping choice.
-/// The control mapping is a canonical 16-KiB low-GPA region, matching Apple
-/// HVF's measured mapping granule while retaining the fixed request/response
-/// page GPAs in its upper half. The M1 boot omits it because that milestone has
-/// no SDK control channel; M2 opts in through [`boot_hvf_control`].
 fn compose_inner<B: Backend<A = Arm64>>(
     mut backend: B,
     image: &[u8],
@@ -164,15 +129,6 @@ fn layout_fits(
         && initrd_end.is_none_or(|end| end <= ram_len)
 }
 
-/// Compose the measured macOS/arm64 Hypervisor.framework backend for the M1
-/// Linux boot. The userspace GICv3 is wired because HVF surfaces its CPU
-/// interface sysregs and accepts pending IRQ injection at the vCPU boundary.
-/// The legacy 8-KiB doorbell mapping is intentionally absent; M1 has no SDK
-/// control channel and HVF requires 16-KiB guest mappings on this host.
-///
-/// # Errors
-/// Returns HVF construction, image, mapping, state, or GIC
-/// composition error without falling back to a different execution path.
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 pub fn boot_hvf(
     image: &[u8],
@@ -202,13 +158,6 @@ pub fn boot_hvf(
     Ok(vmm)
 }
 
-/// Compose the measured macOS/arm64 backend with the canonical 16-KiB control
-/// memslot required by the M2 cooperating payload. All other wiring is exactly
-/// [`boot_hvf`]'s: userspace GICv3, assigned-at-exit V-time, and pvclock.
-///
-/// # Errors
-/// Returns the same fail-closed composition errors as [`boot_hvf`], including
-/// any HVF rejection of the measured control mapping.
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 pub fn boot_hvf_control(
     image: &[u8],
@@ -238,23 +187,6 @@ pub fn boot_hvf_control(
     Ok(vmm)
 }
 
-/// **The composition root** (`tasks/112` M4): the one place the concrete
-/// `(Arm64KvmBackend, Arm64)` pair is named — Linux+aarch64-gated, mirroring
-/// x86's stock-KVM virtual-time boot. Constructs the stock KVM/arm64 backend
-/// (`KVM_CREATE_VM` → `KVM_CREATE_VCPU` → `KVM_ARM_VCPU_INIT` in
-/// `LiveKvm::new`), boxes it as `Box<dyn Backend<A = Arm64>>`, composes the
-/// same Image + initramfs bytes as the HVF oracle, and wires exit-assigned
-/// V-time plus the paravirtual clock. The in-kernel GICv3 owns guest GIC MMIO
-/// and ICC system registers; no userspace GIC model is composed.
-///
-/// The real `KVM_RUN` boot to a console marker and the same-seed `state_hash`
-/// determinism gate over this pair run natively on msr1 during M4; there is no
-/// local KVM loop (`hm-8l3` REFUSE), so this root has no
-/// local oracle — only the aarch64-linux cross-check compiles it.
-///
-/// # Errors
-/// [`VmmError::Backend`] if `/dev/kvm` is unavailable or an init ioctl fails;
-/// any [`boot`] error thereafter.
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub fn boot_selected(
     image: &[u8],
@@ -265,14 +197,6 @@ pub fn boot_selected(
     boot_selected_inner(image, initramfs, bootargs, guest_ram_len, false)
 }
 
-/// Compose the Linux/aarch64 KVM backend with the canonical retained control
-/// slot used by the cooperating NES payload. The in-kernel GICv3, assigned
-/// V-time, pvclock, image, initramfs, and entry state are otherwise identical
-/// to [`boot_selected`].
-///
-/// # Errors
-/// Returns the same fail-closed construction and composition errors as
-/// [`boot_selected`], including any KVM rejection of the control memslot.
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub fn boot_selected_control(
     image: &[u8],
@@ -318,8 +242,6 @@ mod tests {
     use super::*;
     use vmm_backend::MockArm64Backend;
 
-    /// A tiny valid Image with a nonzero text_offset, so the load + DTB
-    /// placement path is exercised end to end.
     fn tiny_image() -> Vec<u8> {
         image_loader::wrap_image(&[0x42u8; 256], 0, 0xA)
     }

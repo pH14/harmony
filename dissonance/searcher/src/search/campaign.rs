@@ -1,22 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Game-neutral campaign coordinator with a recorded job stream.
-//!
-//! A campaign runs W workers on one machine against one shared archive. A job
-//! is a pure function of (parent snapshot, mutation seed); the coordinator
-//! serializes selection and admission through a deterministic sliding window,
-//! and records the complete admission-ordered job stream. Physical workers
-//! drain the window dynamically, but host completion order cannot reach
-//! campaign state.
-//!
-//! Everything game-specific arrives through [`Game`]: target construction and
-//! stepping, key and milestone decoding, alive/dead/won classification, the
-//! draws a suffix is built from, and an opaque [`GamePolicies`] set naming
-//! whatever policies the game owns. The search layer keeps the policies it
-//! owns — the mutation shape, admission, selection, and the resume rule — and
-//! records each under its own header field. A game supplies no name the
-//! search layer reads.
-
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
@@ -41,25 +24,21 @@ use crate::search::draw::{
     suffix_shape_from_identifier, suffix_shape_identifier,
 };
 
-/// Longest stored tail one splice draw appends, bounding a single job.
 pub const SPLICE_ACTION_CAP: usize = 128;
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::parallel::{ResultSlots, with_worker_pool};
 use crate::search::rand::RomuDuoJrRand;
 
-/// A campaign's finished report and its whole-tree snapshot checkpoint.
 pub type CampaignOutcome<G> = (
     CampaignModeReport<<G as CampaignTypes>::Action, <G as CampaignTypes>::ArchiveReport>,
     SnapshotCheckpoint<<G as CampaignTypes>::Snapshot>,
 );
 
-/// A game's initial draw state and the header provenance recorded for it.
 pub type InitialDrawState<G> = (
     <G as CampaignTypes>::DrawState,
     Option<<G as CampaignTypes>::TableHeader>,
 );
 
-/// Fixed statement of the live worker schedule, recorded in new reports.
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
      but host completion order cannot reach campaign state; the same seed, configuration, \
@@ -75,16 +54,10 @@ const ORIGIN_GENESIS: &str = "genesis";
 const ORIGIN_SNAPSHOT_ROOT: &str = "snapshot_root";
 const ORIGIN_ARCHIVE: &str = "archive";
 
-/// Bounded physical overlap, independent of logical reservation/admission order.
 #[derive(Clone, Copy, Debug, Default)]
 pub enum ResultBuffering {
-    /// Keep at most one unadmitted result-bearing job per physical worker.
-    /// This is the default, including for whole-VM snapshots.
     #[default]
     OnePerWorker,
-    /// Let each physical worker execute a second already-reserved job while
-    /// its first result awaits ordered admission. This may double worker-result
-    /// memory; it does not enlarge the logical reservation window.
     TwoPerWorker,
 }
 
@@ -97,56 +70,29 @@ impl ResultBuffering {
     }
 }
 
-/// Optional execution controls. Buffering changes host memory and timing only;
-/// callers record that choice in benchmark provenance, outside deterministic
-/// campaign bytes. A wall-time stop can still change with execution speed.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CampaignExecutionOptions {
-    /// Stop reserving at this admitted emulator-frame count, then drain.
     pub frame_budget: Option<u64>,
-    /// Cap running plus completed-but-unadmitted jobs for each executor.
-    /// Worker results are outside the archive's logical memory budget and must
-    /// be included in the caller's host capacity planning and RSS measurements.
     pub result_buffering: ResultBuffering,
 }
 
-/// Reservations held ahead of ordered admission per logical worker when the
-/// run does not set its own.
 pub const DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER: usize = 1;
 
-/// Number of reservations that may be ahead of the ordered admission cursor.
-///
-/// This is the actual sliding-window depth, not a speculative batch size. The
-/// initial fill puts only this many jobs in flight; after each ordered
-/// admission exactly one new reservation is selected. Consequently selection
-/// of reservation `k` observes archive state no older than admission
-/// `k - pipeline_depth`, while the physical executors retain their prefetch.
 const fn admission_window_depth(workers: usize, reservations_per_worker: usize) -> usize {
     workers.saturating_mul(reservations_per_worker)
 }
 
-/// Namespace of live windowed runs. Version 3 charges reserved restore
-/// snapshots through ordered admission; version 2 could remove their charge
-/// while their worker window still owned the allocation.
 const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v3";
-/// Namespace of windowed streams recorded before the collision was closed.
 const HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v1";
 const UNCHARGED_SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v2";
 const SCHEDULE_POLICY_WINDOW_PREFIX: &str = "deterministic_window_";
 
-/// The schedule policy a run records: the per-worker window is part of the
-/// identifier because replay must hold the same reservations in flight.
 fn schedule_policy_identifier(reservations_per_worker: usize) -> String {
     format!(
         "{SCHEDULE_POLICY_WINDOW_PREFIX}{reservations_per_worker}{SCHEDULE_POLICY_WINDOW_SUFFIX}"
     )
 }
 
-/// The per-worker window a recorded schedule policy names; `None` for the
-/// legacy policy and for identifiers no run could have recorded.
-///
-/// The historical `_v1` namespace still resolves, except at window 64, where
-/// its text is the legacy policy and the legacy meaning wins.
 fn schedule_policy_window(policy: Option<&str>) -> Option<usize> {
     let policy = policy?;
     if policy == LEGACY_CAMPAIGN_SCHEDULE_POLICY {
@@ -168,15 +114,6 @@ fn schedule_policy_is_legacy(policy: Option<&str>) -> bool {
     matches!(policy, None | Some(LEGACY_CAMPAIGN_SCHEDULE_POLICY))
 }
 
-/// Whether a recorded policy predates the corrected memory-budget
-/// maintenance.
-///
-/// Runs in the historical namespaces enforced the budget at different stream
-/// positions and charged the CLOCK sweep one visit per drop attempt rather
-/// than per examined entry. Both decide which entries an archive holds, so a
-/// budgeted stream from those runs replays against a different archive.
-/// Without a budget the maintenance step does nothing and the streams replay
-/// unchanged. Version 2 also predates in-flight snapshot accounting.
 fn schedule_policy_predates_budget_maintenance(policy: Option<&str>) -> bool {
     policy.is_none_or(|policy| {
         policy.ends_with(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX)
@@ -184,18 +121,12 @@ fn schedule_policy_predates_budget_maintenance(policy: Option<&str>) -> bool {
     })
 }
 
-/// Consecutive pre-execution duplicate skips after which a worker executes the
-/// next drawn job anyway and lets admission deduplicate, so a saturated archive
-/// cannot livelock selection.
 const CONSECUTIVE_SKIP_LIMIT: u64 = 1_024;
 
-/// Curve sampling interval in admitted executions.
 const CURVE_INTERVAL: u64 = 100;
 
-/// Fixed sidecar checkpoint interval in completed executions.
 const PROGRESS_CHECKPOINT_INTERVAL: u64 = 100;
 
-/// Maximum deterministic progress samples retained in a live campaign.
 const MAX_PROGRESS_CURVE_POINTS: usize = 1_024;
 
 fn compact_progress_curve<M, P>(
@@ -213,97 +144,46 @@ fn compact_progress_curve<M, P>(
     next_interval
 }
 
-/// Whether a sidecar checkpoint is due for the completed execution count.
-///
-/// Progress sidecars are observations, but their checkpoint boundaries are
-/// part of deterministic run diagnostics: every same-seed run must emit the
-/// same execution series regardless of host speed. The Unix timestamp in a
-/// record remains informational only.
 fn progress_checkpoint_due(executions: u64) -> bool {
     executions > 0 && (executions == 1 || executions.is_multiple_of(PROGRESS_CHECKPOINT_INTERVAL))
 }
 
-/// Identifier recorded for the resume rule: the source archive's whole
-/// retained tree is imported, and the header's resume input is the frontier
-/// identity only.
 pub const RESUME_IDENTIFIER: &str = "whole_tree";
 
-/// Identifier recorded when a challenge starts from one evaluator-supplied
-/// snapshot with an empty challenge-local input.
 pub const SNAPSHOT_ROOT_RESUME_IDENTIFIER: &str = "snapshot_root";
 
-/// The recorded identifier strings of one run's game-owned policies, keyed by
-/// the stream-header field each value is written to.
-///
-/// The generic layer never interprets a name or a value: it writes the set
-/// into the header and the report, and hands the recorded set back to
-/// [`InputPolicy::resolve_recorded`], which decides whether it names a run this
-/// build can reproduce. A target with no controller and no input alphabet
-/// records whatever names its own policies have instead.
 pub type GamePolicies = BTreeMap<String, String>;
 
-/// The associated types shared by the independently implementable campaign
-/// facets. Keeping these in one contract lets a target, input policy, evaluator,
-/// and reporter be supplied by separate implementations for the same context.
 pub trait CampaignTypes: Sync {
-    /// Emulated game instance a worker drives.
-    /// The pool constructs, uses, and drops each target on its worker thread;
-    /// targets are never transferred between threads.
     type Target;
-    /// One recorded input action.
     type Action: Copy + Ord + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
-    /// Archive key.
     type Key: ArchiveKey + Debug + Eq + Send + Sync;
-    /// Milestone summary merged across executions.
     type Milestones: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
-    /// Route-agnostic mechanical progress merged across executions.
     type Progress: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
-    /// Restorable machine state.
     type Snapshot: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
-    /// Per-frame observation recorded inside a job result.
     type Observations: Clone + Debug + Eq + Send + Sync + Serialize;
-    /// Game-owned evidence accumulated outside the archive: watermarks,
-    /// first-input tables, champions.
     type Evidence: Clone + Default;
-    /// The game's archive report shape.
     type ArchiveReport: Clone;
-    /// Per-run game policies (input vocabulary and draw policy).
     type Run: Clone + Sync;
-    /// Live state of the recorded input-draw policy.
     type DrawState;
-    /// State checkpoint owned by the input policy. Stateless policies use
-    /// `()` and never materialize a draw checkpoint; empirical policies can
-    /// retain their historical checkpoint representation.
     type DrawCheckpoint: Clone + Debug + Eq + Send + Sync;
-    /// Header provenance for a derived draw-table policy.
     type TableHeader: Clone + Debug + Eq + Serialize + DeserializeOwned;
 }
 
-/// Stream and result serialization owned by a campaign adapter.
 pub trait Reporting: CampaignTypes {
-    /// Optional bounded observation diagnostics for the live sidecar. These
-    /// values never influence selection, admission, or deterministic reports.
     fn diagnostics(_evidence: &Self::Evidence) -> Option<serde_json::Value> {
         None
     }
-    /// Accumulate observation-only diagnostics during witness replay. Unlike
-    /// admission evidence, this hook must not select champions or publish inputs.
-    /// `sequence` counts replayed actions from one, not search executions.
     fn merge_witness_diagnostics(
         _evidence: &mut Self::Evidence,
         _observations: &[Self::Observations],
         _sequence: u64,
     ) {
     }
-    /// Stream format identifier written as the first line of every stream.
     fn stream_format(&self) -> &'static str;
-    /// Format tag of the snapshot checkpoint file.
     fn checkpoint_format(&self) -> &'static str;
-    /// SHA-256 of the game image bytes.
     fn image_sha256(&self) -> String;
-    /// Incrementally digest one complete worker result for stream replay verification.
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
-    /// Assemble the game's archive report from the campaign's final state.
     fn archive_report(
         &self,
         evidence: &Self::Evidence,
@@ -311,45 +191,19 @@ pub trait Reporting: CampaignTypes {
     ) -> Self::ArchiveReport;
 }
 
-/// Input vocabulary and mutation-draw policy owned by a campaign adapter.
 pub trait InputPolicy: CampaignTypes {
-    /// Ceiling on the per-run action limit.
     fn max_action_limit(&self) -> usize;
-    /// Time of the longest single action the target can draw; the suffix
-    /// time bound is a multiple of it.
     fn longest_action_time(&self) -> u64;
-    /// The recorded identifiers of one run's game-owned policies.
     fn policies(&self, run: &Self::Run) -> GamePolicies;
-    /// Resolve a recorded policy set back into a run, rejecting any name or
-    /// value that names no compiled policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unrecognized policy set.
     fn resolve_recorded(&self, policies: &GamePolicies) -> Result<Self::Run, Box<dyn Error>>;
-    /// Fixed logical-memory reserve withheld from the recorded global budget
-    /// for the run's bounded input-draw acceleration state.
     fn draw_state_memory_reserve_bytes(&self, run: &Self::Run, max_actions: usize) -> usize;
-    /// Current logical bytes held by the live input-draw acceleration state.
     fn draw_state_memory_bytes(&self, state: &Self::DrawState) -> usize;
 
-    /// Build the run's initial draw state and, for a derived policy, the
-    /// header provenance recorded for it. `origin` carries the source archive
-    /// and its file hash when the run resumes one.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the fold fails.
     fn initial_draw_state(
         &self,
         run: &Self::Run,
         origin: Option<(&str, &Self::ArchiveReport)>,
     ) -> Result<InitialDrawState<Self>, Box<dyn Error>>;
-    /// The draw state's current checkpoint, when the policy records one.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the checkpoint cannot be computed.
     fn draw_checkpoint(
         &self,
         state: &Self::DrawState,
@@ -357,8 +211,6 @@ pub trait InputPolicy: CampaignTypes {
         let _ = state;
         Ok(None)
     }
-    /// Convert an input-policy checkpoint to the legacy stream representation.
-    /// The stream remains serde-compatible with historical empirical records.
     fn draw_checkpoint_to_wire(
         &self,
         checkpoint: &Self::DrawCheckpoint,
@@ -366,8 +218,6 @@ pub trait InputPolicy: CampaignTypes {
         let _ = checkpoint;
         Err("stateless input policy produced a draw checkpoint".into())
     }
-    /// Decode the legacy stream representation into the policy's checkpoint.
-    /// Stateless policies reject a non-empty historical checkpoint explicitly.
     fn draw_checkpoint_from_wire(
         &self,
         checkpoint: Option<&EmpiricalStepCheckpoint>,
@@ -377,12 +227,6 @@ pub trait InputPolicy: CampaignTypes {
         }
         Ok(None)
     }
-    /// Expand one mutation seed into its complete suffix from the live draw
-    /// state, under the search layer's mutation `shape`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a draw bound is invalid.
     fn expand_suffix(
         &self,
         run: &Self::Run,
@@ -391,12 +235,6 @@ pub trait InputPolicy: CampaignTypes {
         mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>>;
-    /// Expand one recorded mutation seed against the recorded draw-state
-    /// version, verifying the version exists and matches.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the recorded version is unknown or mismatched.
     fn expand_suffix_recorded(
         &self,
         run: &Self::Run,
@@ -411,14 +249,6 @@ pub trait InputPolicy: CampaignTypes {
         }
         self.expand_suffix(run, state, shape, mixture, mutation_seed)
     }
-    /// Fold the record's retained inputs into the draw state and close the
-    /// record, returning the periodic checkpoint when one is due. Each
-    /// retained input arrives with its parent's action count so the game's
-    /// recorded fold rule can consume the full input or only its new suffix.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the fold fails.
     fn finish_stream_record(
         &self,
         run: &Self::Run,
@@ -428,17 +258,9 @@ pub trait InputPolicy: CampaignTypes {
         let _ = (run, state, retained);
         Ok(None)
     }
-    /// Whether retained-input folding needs the complete root-relative input
-    /// instead of only the newly retained parent-relative suffix.
     fn retained_inputs_need_full(&self, _run: &Self::Run) -> bool {
         false
     }
-    /// Remember the current draw-state version when a recorded stream will
-    /// need it, so replay can re-derive suffixes drawn against it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the checkpoint cannot be computed.
     fn remember_draw_version(
         &self,
         state: &mut Self::DrawState,
@@ -449,53 +271,26 @@ pub trait InputPolicy: CampaignTypes {
     }
 }
 
-/// Target construction, execution, and action-boundary observation owned by a
-/// campaign adapter.
 pub trait TargetExecution: CampaignTypes {
-    /// Build one worker's target.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the target cannot be built.
     fn new_target(&self) -> Result<Self::Target, String>;
-    /// Reset a target to gameplay genesis.
     fn reset(&self, target: &mut Self::Target);
-    /// Restore a snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the restore fails.
     fn restore(
         &self,
         target: &mut Self::Target,
         snapshot: &Self::Snapshot,
     ) -> Result<(), Box<dyn Error>>;
-    /// Frames the target has emulated over its lifetime.
     fn frames_clocked(&self, target: &Self::Target) -> u64;
-    /// Time-accounting function handed to the archive.
     fn action_time_fn(&self) -> fn(&Self::Action) -> u64;
-    /// Deterministic logical memory charge for one resident snapshot.
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
-    /// Apply one action and merge its milestone evidence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when milestone decoding fails.
     fn apply_action(
         &self,
         target: &mut Self::Target,
         action: &Self::Action,
         milestones: &mut Self::Milestones,
     ) -> Result<(), Box<dyn Error>>;
-    /// Per-action observations captured by the target after an action.
-    ///
-    /// The default is suitable for games whose stream has no observations;
-    /// workload adapters with native observations override it.
     fn rollout_observations(&self, _target: &Self::Target) -> Vec<Self::Observations> {
         Vec::new()
     }
-    /// Run the admission probe and restore the supplied candidate snapshot
-    /// before returning. The default is a restore-only probe.
     fn rollout_probe(
         &self,
         _run: &Self::Run,
@@ -505,19 +300,7 @@ pub trait TargetExecution: CampaignTypes {
         self.restore(target, snapshot)?;
         Ok(true)
     }
-    /// Snapshot the target.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when snapshotting fails.
     fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>>;
-    /// Execute one job: restore the origin snapshot, replay the actions that
-    /// lead from it to the parent, and apply the suffix, collecting
-    /// per-boundary candidates with worker-side probe verdicts.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when emulation or snapshotting fails.
     #[allow(clippy::too_many_arguments)]
     fn execute_job(
         &self,
@@ -549,26 +332,13 @@ pub trait TargetExecution: CampaignTypes {
     }
 }
 
-/// Outcome classification, archive keys, and retained evidence owned by a workload.
 pub trait Evaluation: CampaignTypes {
-    /// Whether the target is dead or failed, ending an imported walk.
     fn is_terminal(&self, target: &Self::Target) -> bool;
-    /// Whether the target satisfies any terminal condition recorded by this run.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the terminal state cannot be observed reliably.
     fn is_run_terminal(
         &self,
         run: &Self::Run,
         target: &Self::Target,
     ) -> Result<bool, Box<dyn Error>>;
-    /// Classify the current target at a rollout boundary.
-    ///
-    /// Games with distinct death, victory, and infrastructure-failure states
-    /// should override this hook. The conservative default treats a generic
-    /// terminal target as dead and asks the run predicate only for live
-    /// targets.
     fn rollout_outcome(
         &self,
         run: &Self::Run,
@@ -581,62 +351,30 @@ pub trait Evaluation: CampaignTypes {
             failed: false,
         })
     }
-    /// Decode the completed archive key of the target's current state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when decoding fails.
     fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>>;
-    /// Decode a worker candidate key before coordinator completion.
-    ///
-    /// Workloads with ancestry-dependent key fields keep their recorded worker
-    /// representation here and fill those fields in `complete_candidate_key`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when decoding fails.
     fn rollout_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
         self.current_key(target)
     }
-    /// Complete a worker-decoded candidate key against its snapshot. Workers
-    /// leave ancestry-dependent fields canonical so result digests stay
-    /// independent of them.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the snapshot cannot supply the identity.
     fn complete_candidate_key(
         &self,
         key: Self::Key,
         snapshot: &Self::Snapshot,
     ) -> Result<Self::Key, Box<dyn Error>>;
-    /// Merge one milestone summary into another, keeping the strongest of
-    /// each rung.
     fn merge_milestones(&self, into: &mut Self::Milestones, from: Self::Milestones);
-    /// The strongest milestone summary the evidence has accumulated.
     fn aggregate_milestones(evidence: &Self::Evidence) -> Self::Milestones;
-    /// The strongest route-agnostic progress the evidence has accumulated.
     fn aggregate_progress(evidence: &Self::Evidence) -> Self::Progress;
-    /// Merge a resumed source archive's whole-run evidence.
     fn merge_origin_evidence(&self, evidence: &mut Self::Evidence, source: &Self::ArchiveReport);
-    /// Initialize game-owned evidence from an evaluator-supplied snapshot root.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the restored target cannot be observed.
     fn merge_snapshot_root_evidence(
         &self,
         evidence: &mut Self::Evidence,
         target: &Self::Target,
     ) -> Result<(), Box<dyn Error>>;
-    /// Merge one imported entry's evidence.
     fn merge_import_evidence(
         &self,
         evidence: &mut Self::Evidence,
         milestones: Self::Milestones,
         input: &Input<Self::Action>,
     );
-    /// Merge one executed action's evidence at its admission sequence.
     fn merge_action_evidence<F>(
         &self,
         evidence: &mut Self::Evidence,
@@ -646,23 +384,16 @@ pub trait Evaluation: CampaignTypes {
     ) -> Result<(), Box<dyn Error>>
     where
         F: FnOnce() -> Result<Input<Self::Action>, Box<dyn Error>>;
-    /// The retained entries of a source archive report.
     fn source_entries<'a>(
         &self,
         source: &'a Self::ArchiveReport,
     ) -> &'a [ArchiveEntryReport<Self::Action, Self::Key, Self::Milestones>];
-    /// A source archive's frontier resume input.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the source holds no retained entries.
     fn resume_input(
         &self,
         source: &Self::ArchiveReport,
     ) -> Result<Input<Self::Action>, Box<dyn Error>>;
 }
 
-/// Complete typed campaign surface consumed by the generic engine.
 pub trait Game: CampaignTypes + TargetExecution + InputPolicy + Evaluation + Reporting {}
 
 impl<T> Game for T where T: CampaignTypes + TargetExecution + InputPolicy + Evaluation + Reporting {}
@@ -671,100 +402,56 @@ pub trait CampaignInterfaces: Game {}
 
 impl<T: Game + ?Sized> CampaignInterfaces for T {}
 
-/// The generic half of the final archive state, handed to
-/// [`Reporting::archive_report`].
 pub struct ArchiveReportState<G: CampaignTypes + ?Sized> {
-    /// Campaign seed.
     pub seed: u64,
-    /// Admitted executions.
     pub executions: u64,
-    /// Insertion-ordered entry reports.
     pub entries: Vec<ArchiveEntryReport<G::Action, G::Key, G::Milestones>>,
-    /// Deterministic multi-resolution progress curve.
     pub progress_curve: Vec<ProgressPoint<G::Milestones, G::Progress>>,
-    /// Candidates retained.
     pub retained: u64,
-    /// Candidates rejected.
     pub rejected: u64,
-    /// Dead endpoints observed.
     pub deaths: u64,
-    /// Selector accounting.
     pub selector: SelectorAccounting,
 }
 
-/// Where a campaign starts: clean genesis, one evaluator snapshot, or a
-/// recorded source archive.
 pub enum CampaignOrigin<G: Game + ?Sized> {
-    /// Start from gameplay genesis with a single empty input.
     Genesis,
-    /// Start from one restorable snapshot with an empty challenge-local input.
     SnapshotRoot {
-        /// The one-entry snapshot checkpoint and its recorded logical identity.
         checkpoint: CampaignCheckpoint<G::Snapshot>,
     },
-    /// Resume a recorded archive with its whole retained tree.
     Archive {
-        /// Path string recorded verbatim in the stream header.
         path: String,
-        /// SHA-256 of the source archive file bytes.
         file_sha256: String,
-        /// The parsed source archive report.
         report: Box<G::ArchiveReport>,
-        /// Snapshot checkpoint of the source archive, when one was supplied.
         checkpoint: Option<CampaignCheckpoint<G::Snapshot>>,
     },
 }
 
-/// A loaded snapshot checkpoint and the file identity recorded for it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CampaignCheckpoint<S> {
-    /// Path string recorded verbatim in the stream header.
     pub path: String,
-    /// SHA-256 of the checkpoint file bytes.
     pub file_sha256: String,
-    /// The decoded snapshots.
     pub snapshots: SnapshotCheckpoint<S>,
 }
 
-/// Restorable archive snapshots keyed by archive identifier.
-///
-/// Live campaigns retain snapshots only for entries that remain selectable.
-/// A whole-tree resume restores those directly and deterministically
-/// re-emulates any omitted, replaced ancestors from the recorded inputs.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "S: Serialize + DeserializeOwned")]
 pub struct SnapshotCheckpoint<S> {
-    /// The game's checkpoint format tag.
     pub format: String,
-    /// Snapshots in archive identifier order.
     pub entries: Vec<SnapshotCheckpointEntry<S>>,
 }
 
-/// One archive entry's snapshot.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "S: Serialize + DeserializeOwned")]
 pub struct SnapshotCheckpointEntry<S> {
-    /// Archive identifier the snapshot belongs to.
     pub id: u64,
-    /// The retained snapshot.
     pub snapshot: S,
 }
 
 impl<S: Serialize + DeserializeOwned> SnapshotCheckpoint<S> {
-    /// Encode the checkpoint as bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the encoder fails.
     pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
         Ok(postcard::to_allocvec(self)?)
     }
 
-    /// Decode a checkpoint, refusing any other format tag.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the bytes do not decode or carry another format.
     pub fn from_bytes(bytes: &[u8], expected_format: &str) -> Result<Self, Box<dyn Error>> {
         let checkpoint: Self = postcard::from_bytes(bytes)?;
         if checkpoint.format != expected_format {
@@ -774,232 +461,126 @@ impl<S: Serialize + DeserializeOwned> SnapshotCheckpoint<S> {
     }
 }
 
-/// Fixed configuration for one live campaign run.
 pub struct CampaignConfig<G: Game + ?Sized> {
-    /// Campaign seed from which every worker stream derives.
     pub campaign_seed: u64,
-    /// Number of worker threads.
     pub workers: u32,
-    /// Number of executed jobs the campaign admits, unless stopped by wall budget.
     pub execution_budget: u64,
-    /// Bounded clean-reset action horizon.
     pub action_limit: usize,
-    /// Operator-supplied host name recorded in the header; never probed.
     pub host: String,
-    /// Optional live-only wall cutoff that stops issuing new reservations.
-    ///
-    /// It never enters campaign state: the stream that was recorded up to the
-    /// cutoff still replays exactly.
     pub wall_budget: Option<Duration>,
-    /// Live-only: continue issuing reservations after the first victory until
-    /// another live limit stops the run. Never recorded or used by replay.
     pub continue_after_victory: bool,
-    /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
-    /// Reservations held ahead of ordered admission per logical worker,
-    /// recorded in the header's schedule policy.
     pub reservations_per_worker: usize,
-    /// Deterministic logical-memory budget for live search structures.
     pub memory_budget_mib: Option<usize>,
-    /// Live-only: materialize full archive inputs and snapshots at completion.
     pub materialize_final_artifacts: bool,
-    /// Game-owned per-run policies, recorded in the header and report.
     pub run: G::Run,
-    /// Mutation shape for this run, recorded in the header and report.
     pub suffix: SuffixShape,
-    /// Draw mixture for this run, recorded in the header and report.
     pub mixture: DrawMixture,
-    /// Admission rule for this run, recorded in the header and report.
     pub retention: RetentionPolicy,
-    /// Parent selector for this run, recorded in the header and report.
     pub selector: SelectorPolicy,
-    /// Live-only: where the first winning input is written the moment it is
-    /// admitted, before the in-flight jobs drain. Never recorded.
     pub victory_input_path: Option<PathBuf>,
 }
 
-/// First line of the stream: everything a replay needs to know about the run.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "T: Serialize + DeserializeOwned")]
 pub struct CampaignStreamHeader<T> {
-    /// Stream format identifier.
     pub format: String,
-    /// Campaign seed.
     pub campaign_seed: u64,
-    /// Worker count W.
     pub workers: u32,
-    /// Live admission-order policy. Absent from historical completion-order streams.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule_policy: Option<String>,
-    /// Deterministic progress-curve payload policy. Absent from streams whose
-    /// curve points predate mechanical progress watermarks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress_policy: Option<String>,
-    /// Operator-supplied host name.
     pub host: String,
-    /// Origin kind: `genesis`, `snapshot_root`, or `archive`.
     pub origin_kind: String,
-    /// Source archive path for archive origins.
     pub origin_path: Option<String>,
-    /// SHA-256 of the source archive file bytes for archive origins.
     pub origin_archive_sha256: Option<String>,
-    /// Snapshot checkpoint path when an origin restored from one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_checkpoint_path: Option<String>,
-    /// SHA-256 of the snapshot checkpoint file bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_checkpoint_sha256: Option<String>,
-    /// SHA-256 of the serialized resume input.
     pub resume_input_sha256: String,
-    /// Action count of the resume input.
     pub resume_actions: usize,
-    /// Execution budget requested for the run.
     pub execution_budget: u64,
-    /// Stop selecting jobs after this many admitted emulator frames. The
-    /// deterministic reservation window drains and may overshoot the limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_budget: Option<u64>,
-    /// Wall budget in seconds when one was set.
     pub wall_budget_seconds: Option<u64>,
-    /// Bounded clean-reset action horizon.
     pub action_limit: usize,
-    /// Archive entry bound the run retained under.
     pub archive_entry_limit: usize,
-    /// Deterministic logical-memory budget for live search structures.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_budget_mib: Option<usize>,
-    /// Resume rule identifier.
     pub resume_policy: String,
-    /// Mutation shape identifier.
     pub suffix_policy: String,
-    /// Draw mixture identifier; streams written before the mixture became a
-    /// run option carry no field and replay under the biased half.
     #[serde(default = "default_mixture_policy")]
     pub mixture_policy: String,
-    /// The game-owned policy identifiers of the run, one header field each.
     #[serde(flatten)]
     pub game_policies: GamePolicies,
-    /// Derived draw-table provenance; absent for uniform tables. The field
-    /// keeps its recorded name so streams written before the generic
-    /// draw-table naming still replay.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         rename = "chord_table"
     )]
     pub draw_table: Option<T>,
-    /// Admission rule identifier.
     pub retention_policy: String,
-    /// Parent selector identifier.
     pub parent_scheduler: String,
-    /// Executor mode identifier.
     pub executor_mode: String,
-    /// How per-worker stream seeds derive from (campaign seed, worker index).
     pub worker_seed_derivation: String,
-    /// SHA-256 of the game image bytes.
     pub rom_sha256: String,
 }
 
-/// Mixture recorded implicitly by streams written before the mixture became
-/// a run option.
 fn default_mixture_policy() -> String {
     MIXTURE_BIASED_HALF_IDENTIFIER.to_owned()
 }
 
-/// Weight recorded implicitly by streams written before the mixture adapted.
 fn default_mixture_weight() -> u8 {
     128
 }
 
-/// Dispatch-time resolution of a splice-strategy draw.
-///
-/// New streams record both a successful donor/leaf choice and a deterministic
-/// fall back to the alphabet. Older streams omit this field and replay by
-/// deriving the splice from their serial archive state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum CampaignSpliceRecord {
-    /// No stored donor advanced beyond the selected parent at dispatch.
     Unavailable,
-    /// Append the recorded donor's path to this recorded descendant.
     Tail {
-        /// Dispatch-time selection-cell donor archive id.
         donor_id: u64,
-        /// Dispatch-time deepest descendant archive id.
         leaf_id: u64,
-        /// Exact generic action tail selected at dispatch, postcard encoded.
-        /// Older streams omit it and use donor/leaf reconstruction.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tail_postcard: Option<Vec<u8>>,
     },
 }
 
-/// One admission decision for one candidate boundary, in candidate order.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
 pub enum CampaignAdmissionDecision {
-    /// The candidate entered the archive with this new id.
-    Retained {
-        /// Assigned insertion-order archive id.
-        id: u64,
-    },
-    /// The candidate input already had this archive id.
-    Duplicate {
-        /// Existing archive id resolved by the input hash.
-        id: u64,
-    },
-    /// Bounded quality-diversity retention rejected the candidate.
+    Retained { id: u64 },
+    Duplicate { id: u64 },
     Rejected,
-    /// No fixed probe mask kept the candidate alive for the horizon.
     ProbeRefused,
-    /// The action reached the run's recorded success predicate; the lineage
-    /// ends here and its input is the campaign's winning input.
     Victory,
 }
 
-/// Stream record for one executed, admitted job.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CampaignJobRecord {
-    /// Admission-order sequence number, starting at one.
     pub sequence: u64,
-    /// Worker index that executed the job.
     pub worker: u32,
-    /// Archive id of the selected parent.
     pub parent_id: u64,
-    /// Mutation seed drawn from the worker's stream; it alone determines the suffix.
     pub mutation_seed: u64,
-    /// Frames the job emulated, admission probes included.
     pub frames: u64,
-    /// SHA-256 of the game's deterministic job-result projection.
     pub result_sha256: String,
-    /// Ordered admission decisions for the job's candidates.
     pub decisions: Vec<CampaignAdmissionDecision>,
-    /// Biased-strategy weight out of 256 the energy mixture used for this
-    /// draw; the recorded half-weight for every other mixture and for
-    /// streams written before the mixture adapted.
     #[serde(default = "default_mixture_weight")]
     pub mixture_weight: u8,
-    /// Splice-strategy weight out of 256 the splice mixture used for this
-    /// draw; zero for every other mixture and for older streams.
     #[serde(default)]
     pub splice_weight: u8,
-    /// Dispatch-time splice resolution. Absent for non-splice draws and
-    /// historical streams that predate explicit concurrent splice evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub splice: Option<CampaignSpliceRecord>,
 
-    /// Selector draw record.
     pub selector: SelectorDraw,
-    /// Derived table version used to draw this job. The field keeps its
-    /// recorded name so streams written before the generic draw-table naming
-    /// still replay.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         rename = "chord_table_before"
     )]
     pub draw_table_before: Option<EmpiricalStepCheckpoint>,
-    /// Periodic derived table hash after admitting this stream record.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -1008,41 +589,25 @@ pub struct CampaignJobRecord {
     pub draw_table_after: Option<EmpiricalStepCheckpoint>,
 }
 
-/// Stream record for one job skipped before execution as a known duplicate.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CampaignSkipRecord {
-    /// Worker index that drew the duplicate.
     pub worker: u32,
-    /// Archive id of the selected parent.
     pub parent_id: u64,
-    /// Mutation seed whose full prefix chain was already archived.
     pub mutation_seed: u64,
-    /// Biased-strategy weight out of 256 the energy mixture used for this
-    /// draw; the recorded half-weight for every other mixture and for
-    /// streams written before the mixture adapted.
     #[serde(default = "default_mixture_weight")]
     pub mixture_weight: u8,
-    /// Splice-strategy weight out of 256 the splice mixture used for this
-    /// draw; zero for every other mixture and for older streams.
     #[serde(default)]
     pub splice_weight: u8,
-    /// Dispatch-time splice resolution. Skips are synchronous, but recording
-    /// it keeps every new splice draw self-contained.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub splice: Option<CampaignSpliceRecord>,
 
-    /// Selector draw record.
     pub selector: SelectorDraw,
-    /// Derived table version used to draw this skipped job. The field keeps
-    /// its recorded name so streams written before the generic draw-table
-    /// naming still replay.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         rename = "chord_table_before"
     )]
     pub draw_table_before: Option<EmpiricalStepCheckpoint>,
-    /// Periodic derived table hash after this stream record.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -1051,195 +616,110 @@ pub struct CampaignSkipRecord {
     pub draw_table_after: Option<EmpiricalStepCheckpoint>,
 }
 
-/// One line of the recorded stream after the header.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum CampaignStreamRecord {
-    /// An executed job admitted at its sequence position.
     Job(CampaignJobRecord),
-    /// A pre-execution duplicate skip; consumes no budget and changes no state.
     Skip(CampaignSkipRecord),
 }
 
-/// Origin summary recorded in the campaign report.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CampaignOriginRecord {
-    /// Origin kind: `genesis` or `archive`.
     pub kind: String,
-    /// Source archive path for archive origins.
     pub path: Option<String>,
-    /// SHA-256 of the source archive file bytes for archive origins.
     pub archive_sha256: Option<String>,
-    /// Snapshot checkpoint path when a whole-tree resume restored from one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_path: Option<String>,
-    /// SHA-256 of the snapshot checkpoint file bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_sha256: Option<String>,
-    /// SHA-256 of the serialized resume input.
     pub resume_input_sha256: String,
-    /// Action count of the resume input.
     pub resume_actions: usize,
 }
 
-/// Complete deterministic report for one campaign, live or replayed.
-///
-/// Every field derives from the stream header, the recorded stream, and the
-/// origin; no field carries wall-clock state, so a replay reproduces the
-/// report byte for byte.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "A: Serialize + DeserializeOwned + Ord + Clone, R: Serialize + DeserializeOwned")]
 pub struct CampaignModeReport<A: Ord, R> {
-    /// Always `campaign`.
     pub mode: String,
-    /// Campaign seed.
     pub campaign_seed: u64,
-    /// Worker count W of the live run.
     pub workers: u32,
-    /// Operator-supplied host name of the live run.
     pub host: String,
-    /// Fixed statement of the campaign determinism trade.
     pub schedule_identity: String,
-    /// Origin summary.
     pub origin: CampaignOriginRecord,
-    /// Execution budget requested for the run.
     pub execution_budget: u64,
-    /// Stop selecting jobs after this many admitted emulator frames. The
-    /// deterministic reservation window drains and may overshoot the limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_budget: Option<u64>,
-    /// Jobs actually executed and admitted, the winning admission's own
-    /// drained window included. This is the run's throughput.
     pub executions_completed: u64,
-    /// Ordered admission position of the first job to reach the success
-    /// predicate; absent when none did. This is the run's score. Jobs
-    /// already reserved when that admission happened still drain into
-    /// `executions_completed`, so the two differ by the window's overshoot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executions_to_first_victory: Option<u64>,
-    /// Wall budget in seconds when one was set for the live run.
     pub wall_budget_seconds: Option<u64>,
-    /// Bounded clean-reset action horizon.
     pub action_limit: usize,
-    /// Archive entry bound the run retained under.
     pub archive_entry_limit: usize,
-    /// Deterministic logical-memory budget for live search structures.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_budget_mib: Option<usize>,
-    /// Resume rule identifier.
     pub resume_policy: String,
-    /// Mutation shape identifier.
     pub suffix_policy: String,
-    /// Draw mixture identifier; reports written before the mixture became a
-    /// run option carry no field and describe the biased half.
     #[serde(default = "default_mixture_policy")]
     pub mixture_policy: String,
-    /// The game-owned policy identifiers of the run, one report field each.
     #[serde(flatten)]
     pub game_policies: GamePolicies,
-    /// Admission rule identifier.
     pub retention_policy: String,
-    /// Parent selector identifier.
     pub parent_scheduler: String,
-    /// Executor mode identifier.
     pub executor_mode: String,
-    /// How per-worker stream seeds derive from (campaign seed, worker index).
     pub worker_seed_derivation: String,
-    /// SHA-256 of the game image bytes.
     pub rom_sha256: String,
-    /// Frames emulated by the origin bootstrap walk, probes included.
     pub bootstrap_frames: u64,
-    /// Outcome counts of the whole-tree import; absent at genesis.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tree_import: Option<TreeImportCounts>,
-    /// Bootstrap frames plus every job's frames, probes included.
     pub frames_emulated: u64,
-    /// Bootstrap frames plus every job's frames through the ordered
-    /// admission that first reached the success predicate; absent when no
-    /// admission did. Jobs already reserved when that admission happened
-    /// still drain into `frames_emulated`, so the two differ by the window's
-    /// overshoot. This is the frame cost of the score, while
-    /// `frames_emulated` is drained throughput.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frames_to_first_victory: Option<u64>,
-    /// Jobs skipped before execution as known duplicates.
     pub duplicates_skipped: u64,
-    /// Candidates refused by the admission probe.
     pub probe_refused: u64,
-    /// Actions that reached the run's recorded success predicate.
     pub victories: u64,
-    /// The first input that reached the success predicate, when one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub victory_input: Option<Input<A>>,
-    /// Cell collisions the time-in-group replacement rule decided.
     pub replacement_frames_displaced: u64,
-    /// Snapshots displaced solely by the global memory budget.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub snapshot_evictions: u64,
-    /// Deterministic logical bytes charged to snapshots at completion.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub resident_snapshot_bytes: usize,
-    /// Deterministic conservative bytes charged to compact history/indexes.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub history_memory_bytes: usize,
-    /// Deterministic logical bytes held by the bounded input-draw state.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub draw_state_memory_bytes: usize,
-    /// Total deterministic bytes charged to live search state at completion.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub resident_memory_bytes: usize,
-    /// Compact entries still held by the live acceleration structure.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub live_entries: usize,
-    /// Deterministic history compactions completed by this campaign.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub history_compactions: u64,
-    /// Test-only evidence that bounded liveness reactivated its retained
-    /// executable anchor after displacement.
     #[cfg(test)]
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub(crate) liveness_anchor_reactivations: u64,
-    /// Stream-recorded entries retired from live memory.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub historical_entries_dropped: u64,
-    /// Rare full inputs lazily reconstructed from compact prefix state.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub input_reconstructions: u64,
-    /// Unique live action-prefix nodes used for duplicate detection.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub input_index_nodes: usize,
-    /// Compact historical selection-cell novelty keys still remembered.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub historical_cells: usize,
-    /// Selector groups carrying a live barren counter at completion.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub barren_groups: usize,
-    /// Executed jobs per worker index.
     pub jobs_per_worker: Vec<u64>,
-    /// Pre-execution duplicate skips per worker index.
     pub skips_per_worker: Vec<u64>,
-    /// SHA-256 of the complete stream file bytes.
     pub stream_sha256: String,
-    /// The archive in the standard report shape used by film and audits.
     pub archive: R,
 }
 
-/// Outcome counts of a whole-tree import, recorded in the campaign report.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TreeImportCounts {
-    /// Source entries retained as new entries.
     pub imported: u64,
-    /// Source entries whose rebuilt input was already retained.
     pub duplicate: u64,
-    /// Source entries the archive refused under this run's replacement rules.
     pub rejected: u64,
-    /// Source entries whose rebuilt walk ended dead or failed.
     pub terminal: u64,
-    /// Source entries longer than this run's action limit.
     pub over_limit: u64,
-    /// Source entries attached to an ancestor other than their recorded parent.
     pub rerooted: u64,
-    /// Source entries restored from the snapshot checkpoint instead of emulated.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub checkpointed: u64,
 }
@@ -1287,7 +767,6 @@ fn uses_bounded_progress_curve(policy: Option<&str>) -> bool {
     policy == Some(CAMPAIGN_PROGRESS_POLICY)
 }
 
-/// Triggered retries in the isolated policies do not tune ordinary mutation.
 fn record_mixture_outcome(
     energy: &mut MixtureEnergy,
     mixture: DrawMixture,
@@ -1319,15 +798,11 @@ fn stop_reservations_after_victory(continue_after_victory: bool, victory_found: 
     victory_found && !continue_after_victory
 }
 
-/// One candidate boundary inside a job result.
 #[derive(Serialize)]
 #[serde(bound = "")]
 pub struct CampaignCandidate<G: CampaignTypes + ?Sized> {
-    /// Worker-decoded archive key, ancestry fields canonical.
     pub key: G::Key,
-    /// Worker-side probe verdict under the run's admission rule.
     pub viable: bool,
-    /// The boundary's snapshot.
     pub snapshot: G::Snapshot,
 }
 
@@ -1359,23 +834,15 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignCandidate<G> {
     }
 }
 
-/// One executed action inside a job result.
 #[derive(Serialize)]
 #[serde(bound = "")]
 pub struct CampaignActionResult<G: CampaignTypes + ?Sized> {
-    /// The executed action.
     pub action: G::Action,
-    /// Per-frame observations across the action.
     pub observations: Vec<G::Observations>,
-    /// Milestones after the action.
     pub milestones: G::Milestones,
-    /// Whether the action ended dead.
     pub dead: bool,
-    /// Whether the action reached the victory mode.
     pub victory: bool,
-    /// Whether emulation failed.
     pub failed: bool,
-    /// Admission candidate at this boundary, absent for terminal actions.
     pub candidate: Option<CampaignCandidate<G>>,
 }
 
@@ -1421,13 +888,9 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
     }
 }
 
-/// Complete result of one executed job. Games choose the deterministic
-/// projection they digest into the stream; [`postcard_result_sha256`] uses the
-/// complete serialization, including snapshots.
 #[derive(Serialize)]
 #[serde(bound = "")]
 pub struct CampaignJobResult<G: CampaignTypes + ?Sized> {
-    /// Executed actions in order.
     pub actions: Vec<CampaignActionResult<G>>,
 }
 
@@ -1455,7 +918,6 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignJobResult<G> {
     }
 }
 
-/// Reject a stream whose selector annotations disagree with the selector.
 fn verify_selector_annotation(draw: &SelectorDraw) -> Result<(), Box<dyn Error>> {
     match (draw.path, draw.concentration) {
         (SelectorPath::GroupWalk, None) => {
@@ -1468,7 +930,6 @@ fn verify_selector_annotation(draw: &SelectorDraw) -> Result<(), Box<dyn Error>>
     }
 }
 
-/// Derive one worker's stream seed from the campaign seed and worker index.
 pub fn derive_worker_seed(campaign_seed: u64, worker_index: u32) -> Result<u64, Box<dyn Error>> {
     let mut hasher = Sha256::new();
     hasher.update(campaign_seed.to_le_bytes());
@@ -1480,10 +941,6 @@ pub fn derive_worker_seed(campaign_seed: u64, worker_index: u32) -> Result<u64, 
     Ok(u64::from_le_bytes(bytes))
 }
 
-/// Serial archive-and-accumulator state shared by the live coordinator loop and
-/// replay. Admission through this struct is the single admission lock: every
-/// archive mutation happens here, in stream order, so the archive state at any
-/// stream position is identical in the live run and in replay.
 pub(crate) struct CoordinatorCore<G: Game + ?Sized> {
     pub(crate) archive: Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
     pub(crate) evidence: G::Evidence,
@@ -1535,7 +992,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         }
     }
 
-    /// Retain genesis at execution zero.
     pub(crate) fn bootstrap(
         &mut self,
         game: &G,
@@ -1559,8 +1015,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         Ok(())
     }
 
-    /// Retain one evaluator-supplied snapshot as archive id zero with an empty
-    /// challenge-local input.
     pub(crate) fn bootstrap_snapshot_root(
         &mut self,
         game: &G,
@@ -1591,18 +1045,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         Ok(())
     }
 
-    /// Import a source archive's whole retained tree at execution zero, after
-    /// retaining genesis.
-    ///
-    /// Entries are walked in source order. Each one restores its imported
-    /// parent's snapshot, applies the actions past the parent's input, and is
-    /// inserted under this run's policies, so liveness, cells, lineages, and
-    /// replacement decisions are re-derived rather than copied. The admission
-    /// probe is not repeated: the source already admitted every entry, and
-    /// probing tens of thousands of imports would cost more frames than the
-    /// search they seed. An entry whose parent was not imported is re-rooted
-    /// at its nearest imported ancestor; an entry that dies or exceeds the
-    /// action limit is skipped and counted.
     pub(crate) fn import_tree(
         &mut self,
         game: &G,
@@ -1748,9 +1190,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         Ok(counts)
     }
 
-    /// Admit one executed job at the next sequence position, merging its
-    /// per-action evidence in order and applying the retention rules
-    /// through the campaign's sole archive implementation.
     pub(crate) fn admit_job(
         &mut self,
         game: &G,
@@ -1860,10 +1299,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         });
     }
 
-    /// Coarsen the report-only curve deterministically when it reaches its
-    /// fixed live bound. Every compaction doubles the interval and retains the
-    /// points aligned to it, so the curve remains evenly spaced without any
-    /// operation whose cost grows with total campaign history.
     fn compact_progress_curve_if_needed(&mut self) {
         if !self.bounded_progress_curve {
             return;
@@ -1871,14 +1306,10 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         self.curve_interval = compact_progress_curve(&mut self.curve, self.curve_interval);
     }
 
-    /// The strongest milestone summary so far; delegated through the game via
-    /// the evidence, see [`Evaluation::aggregate_milestones`].
     fn aggregate_milestones(&self) -> G::Milestones {
         G::aggregate_milestones(&self.evidence)
     }
 
-    /// Push the final curve point at the campaign's
-    /// last execution, without duplicating an interval point.
     fn finish_curve(&mut self) {
         if self.sequence > 0
             && self.curve.last().map(|point| point.executions) != Some(self.sequence)
@@ -1887,9 +1318,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         }
     }
 
-    /// Report whether every executable boundary of this drawn job is already
-    /// archived, in which case executing it cannot change the archive, any
-    /// maximum, or the death count.
     fn all_prefixes_archived(&self, parent_index: usize, suffix: &[G::Action]) -> bool {
         let parent_actions = self.archive.entries[parent_index].input_len;
         let executable = suffix
@@ -1930,7 +1358,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
     }
 }
 
-/// Merge two milestone summaries through the game's evidence rules.
 fn merge_max<G: Game + ?Sized>(
     game: &G,
     mut base: G::Milestones,
@@ -1940,8 +1367,6 @@ fn merge_max<G: Game + ?Sized>(
     base
 }
 
-/// The origin record for the stream header; its resume input is the source
-/// archive's frontier identity.
 fn resolve_origin<G: Game>(
     game: &G,
     origin: &CampaignOrigin<G>,
@@ -2030,7 +1455,6 @@ fn stream_header<G: Game>(
     }
 }
 
-/// Line-oriented stream writer that hashes exactly the bytes it writes.
 struct StreamWriter<'a> {
     sink: &'a mut dyn Write,
     hasher: Sha256,
@@ -2058,8 +1482,6 @@ impl<'a> StreamWriter<'a> {
     }
 }
 
-/// Everything the coordinator counts alongside the core, derived from the
-/// stream on replay.
 struct CampaignCounters {
     bootstrap_frames: u64,
     tree_import: Option<TreeImportCounts>,
@@ -2092,8 +1514,6 @@ struct LiveCoordinatorProfile {
 }
 
 impl LiveCoordinatorProfile {
-    /// Account one dispatched job's replay path and suffix in actions and in
-    /// the game's action time.
     fn note_dispatch<G: Game + ?Sized>(&mut self, spec: &JobSpec<G>, time: fn(&G::Action) -> u64) {
         if !self.enabled {
             return;
@@ -2141,10 +1561,6 @@ fn profile_elapsed(started: Option<Instant>) -> u128 {
 }
 
 impl CampaignCounters {
-    /// Record the ordered admission that first reached the success
-    /// predicate, in its sequence position and in the frames run to reach
-    /// it. Jobs reserved before that admission keep draining afterwards and
-    /// keep adding to both totals, so only the first winner may set these.
     fn note_first_victory(&mut self, sequence: u64) {
         if self.frames_to_first_victory.is_none() {
             self.frames_to_first_victory =
@@ -2292,15 +1708,12 @@ impl postcard::ser_flavors::Flavor for PostcardSha256 {
     }
 }
 
-/// Incrementally digest the pinned postcard representation without building
-/// a full encoded result buffer.
 pub fn postcard_result_sha256<G: Game + ?Sized>(
     result: &CampaignJobResult<G>,
 ) -> Result<String, Box<dyn Error>> {
     postcard_value_sha256(result)
 }
 
-/// Hash a value using the pinned postcard encoding without allocating its full bytes.
 pub fn postcard_value_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn Error>> {
     let digest = postcard::serialize_with_flavor::<_, PostcardSha256, sha2::digest::Output<Sha256>>(
         value,
@@ -2309,21 +1722,17 @@ pub fn postcard_value_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String,
     Ok(format!("{digest:x}"))
 }
 
-/// Job specification sent to a worker.
 struct JobSpec<G: Game + ?Sized> {
     reservation: usize,
     snapshot: Arc<G::Snapshot>,
-    /// Actions from the snapshot to the parent entry.
     replay: Vec<G::Action>,
     parent_actions: usize,
     parent_milestones: G::Milestones,
     suffix: Vec<G::Action>,
 }
 
-/// A selected job's worker specification and its coordinator-side record.
 type SelectedJob<G> = (JobSpec<G>, PendingJob);
 
-/// What the coordinator remembers about a worker's in-flight job.
 struct PendingJob {
     snapshot_id: u64,
     worker: u32,
@@ -2336,8 +1745,6 @@ struct PendingJob {
     draw_table_before: Option<EmpiricalStepCheckpoint>,
 }
 
-/// One finished window slot, held until every earlier reservation can be
-/// admitted in deterministic order.
 struct CompletedJob<G: Game + ?Sized> {
     physical_worker: u32,
     pending: PendingJob,
@@ -2399,105 +1806,67 @@ fn replay_splice<G: Game>(
     }
 }
 
-/// One periodic observation of a live run.
-///
-/// Written to a sidecar file so an operator can see a run advance without
-/// waiting for its sentinel. It is not part of the recorded stream and takes no
-/// part in replay.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "K: Serialize + DeserializeOwned")]
 pub struct CampaignProgressRecord<K> {
-    /// Workload-owned observation counters; no selector feedback is implied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workload_diagnostics: Option<serde_json::Value>,
-    /// Objective workload evidence, independent of the selector's deepest key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<serde_json::Value>,
-    /// Observed milestones may come from different explored branches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub milestones: Option<serde_json::Value>,
-    /// Terminal events admitted so far.
     #[serde(default)]
     pub victories: u64,
-    /// Deaths observed across admitted executions.
     #[serde(default)]
     pub deaths: u64,
-    /// Monotonic wall time, used for telemetry only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_elapsed_millis: Option<u64>,
-    /// Optional host phase timings and dispatched action budgets; never replay state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordinator: Option<serde_json::Value>,
-    /// Seconds since the Unix epoch when the line was written.
     pub unix_time: u64,
-    /// Executions admitted so far.
     pub executions: u64,
-    /// Emulator frames completed so far, including bootstrap work.
     #[serde(default)]
     pub frames_emulated: u64,
-    /// Deepest retained key so far, absent while the archive is empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deepest_key: Option<K>,
-    /// Fewest time units any entry at that key spent inside its coarsest
-    /// group.
     pub cheapest_time_in_group: u64,
-    /// Entries retained so far.
     pub retained: u64,
-    /// Entries still participating in retention.
     #[serde(default)]
     pub active_entries: usize,
-    /// Restorable machine snapshots currently resident in memory.
     #[serde(default)]
     pub resident_snapshots: usize,
-    /// Deterministic logical bytes charged to resident snapshots.
     #[serde(default)]
     pub resident_snapshot_bytes: usize,
-    /// Deterministic conservative bytes charged to compact history/indexes.
     #[serde(default)]
     pub history_memory_bytes: usize,
-    /// Deterministic logical bytes held by the bounded input-draw state.
     #[serde(default)]
     pub draw_state_memory_bytes: usize,
-    /// Deterministic bytes charged to compact per-entry metadata.
     #[serde(default)]
     pub entry_metadata_memory_bytes: usize,
-    /// Deterministic bytes charged to the shared action-prefix index.
     #[serde(default)]
     pub input_index_memory_bytes: usize,
-    /// Deterministic bytes charged to remembered novelty cells.
     #[serde(default)]
     pub novelty_memory_bytes: usize,
-    /// Deterministic bytes charged to pooled barren-group counters.
     #[serde(default)]
     pub barren_memory_bytes: usize,
-    /// Total deterministic bytes charged to live search state.
     #[serde(default)]
     pub resident_memory_bytes: usize,
-    /// Snapshots displaced by the global memory budget so far.
     #[serde(default)]
     pub snapshot_evictions: u64,
-    /// Active entries the memory budget's sweep deactivated so far.
     #[serde(default)]
     pub entry_drops: u64,
-    /// Compact entries held by the live acceleration structure.
     #[serde(default)]
     pub live_entries: usize,
-    /// Deterministic history compactions completed so far.
     #[serde(default)]
     pub history_compactions: u64,
-    /// Stream-recorded entries retired from live memory so far.
     #[serde(default)]
     pub historical_entries_dropped: u64,
-    /// Full inputs lazily reconstructed from compact prefix state so far.
     #[serde(default)]
     pub input_reconstructions: u64,
-    /// Unique live action-prefix nodes used for duplicate detection.
     #[serde(default)]
     pub input_index_nodes: usize,
-    /// Compact historical selection-cell novelty keys remembered so far.
     #[serde(default)]
     pub historical_cells: usize,
-    /// Selector groups carrying a live barren counter.
     #[serde(default)]
     pub barren_groups: usize,
 }
@@ -2569,8 +1938,6 @@ fn write_live_progress<G: Game>(
     Ok(())
 }
 
-/// Seed the coordinator from the origin: genesis alone, or genesis plus the
-/// whole source tree.
 fn bootstrap_core<G: Game>(
     game: &G,
     run: &G::Run,
@@ -2629,18 +1996,6 @@ fn validate_snapshot_root_checkpoint<'a, G: Game + ?Sized>(
     Ok(&entry.snapshot)
 }
 
-/// Run a campaign, also returning every retained entry's snapshot so a later
-/// whole-tree resume can restore the population instead of re-emulating it.
-///
-/// The coordinator thread owns the archive, the accumulators, the per-worker
-/// RNG streams, and the stream writer; selection and admission both happen on
-/// it, serially, which realizes the single admission lock. Workers only
-/// execute jobs. The interleaving of results is the run's only nondeterminism.
-///
-/// # Errors
-///
-/// Returns an error when the origin is unusable, a worker fails, emulation or
-/// snapshotting fails, or the stream cannot be written.
 pub fn run_campaign_checkpointed<G: CampaignInterfaces>(
     game: &G,
     config: &CampaignConfig<G>,
@@ -2654,12 +2009,6 @@ where
     run_campaign_checkpointed_with_frame_budget(game, config, origin, stream, progress, None)
 }
 
-/// Run with an optional deterministic admitted-frame budget. Existing callers
-/// retain their original configuration and stream bytes through the wrapper.
-///
-/// # Errors
-/// Returns campaign errors or rejects a zero frame budget. The reservation
-/// window drains normally, preserving a replayable witness and exact cost.
 pub fn run_campaign_checkpointed_with_frame_budget<G: CampaignInterfaces>(
     game: &G,
     config: &CampaignConfig<G>,
@@ -2684,12 +2033,6 @@ where
     )
 }
 
-/// Run with explicit frame and physical result-buffering controls. Logical
-/// selection, admission, snapshot pins and recorded bytes do not depend on the
-/// physical buffering choice. Existing entry points keep one result per worker.
-///
-/// # Errors
-/// Returns campaign errors or rejects an invalid frame budget/configuration.
 #[allow(clippy::too_many_lines)]
 pub fn run_campaign_checkpointed_with_options<G: CampaignInterfaces>(
     game: &G,
@@ -3284,59 +2627,59 @@ where
                         counters.note_first_victory(sequence);
                     }
                     result_slots.admit(physical_worker)?;
-                    if let Some(sink) = progress.as_deref_mut() {
-                        if progress_checkpoint_due(sequence) {
-                            write_live_progress(
-                                &core,
-                                &counters,
-                                &coordinator_profile,
+                    if let Some(sink) = progress.as_deref_mut()
+                        && progress_checkpoint_due(sequence)
+                    {
+                        write_live_progress(
+                            &core,
+                            &counters,
+                            &coordinator_profile,
+                            draw_state_memory_bytes,
+                            telemetry_started,
+                            sink,
+                        )?;
+                        if coordinator_profile.enabled {
+                            eprintln!(
+                                "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} available_result_slots={} queued_specs={} completed_buffered={} job_frames={} replay_jobs={} replay_actions={} replay_time={} suffix_actions={} suffix_time={}",
+                                coordinator_profile.receive_wait_ns,
+                                coordinator_profile.admission_ns,
+                                coordinator_profile.bookkeeping_ns,
+                                coordinator_profile.history_compaction_ns,
+                                coordinator_profile.stream_write_ns,
+                                coordinator_profile.selection_ns,
+                                coordinator_profile.receives,
+                                coordinator_profile.admissions,
+                                coordinator_profile.selections,
+                                core.archive.entries.len(),
+                                core.archive.active_count(),
+                                core.archive.historical_input_actions(),
+                                core.archive.stored_input_actions(),
+                                core.archive.input_index_nodes(),
+                                core.archive.resident_snapshot_count(),
+                                core.archive.resident_snapshot_bytes(),
+                                core.archive.entry_metadata_memory_bytes(),
+                                core.archive.input_index_memory_bytes(),
+                                core.archive.novelty_memory_bytes(),
+                                core.archive.barren_memory_bytes(),
+                                core.archive.history_memory_bytes(),
                                 draw_state_memory_bytes,
-                                telemetry_started,
-                                sink,
-                            )?;
-                            if coordinator_profile.enabled {
-                                eprintln!(
-                                    "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} available_result_slots={} queued_specs={} completed_buffered={} job_frames={} replay_jobs={} replay_actions={} replay_time={} suffix_actions={} suffix_time={}",
-                                    coordinator_profile.receive_wait_ns,
-                                    coordinator_profile.admission_ns,
-                                    coordinator_profile.bookkeeping_ns,
-                                    coordinator_profile.history_compaction_ns,
-                                    coordinator_profile.stream_write_ns,
-                                    coordinator_profile.selection_ns,
-                                    coordinator_profile.receives,
-                                    coordinator_profile.admissions,
-                                    coordinator_profile.selections,
-                                    core.archive.entries.len(),
-                                    core.archive.active_count(),
-                                    core.archive.historical_input_actions(),
-                                    core.archive.stored_input_actions(),
-                                    core.archive.input_index_nodes(),
-                                    core.archive.resident_snapshot_count(),
-                                    core.archive.resident_snapshot_bytes(),
-                                    core.archive.entry_metadata_memory_bytes(),
-                                    core.archive.input_index_memory_bytes(),
-                                    core.archive.novelty_memory_bytes(),
-                                    core.archive.barren_memory_bytes(),
-                                    core.archive.history_memory_bytes(),
-                                    draw_state_memory_bytes,
-                                    core.archive
-                                        .resident_memory_bytes()
-                                        .saturating_add(draw_state_memory_bytes),
-                                    core.archive.snapshot_evictions(),
-                                    core.archive.history_compactions(),
-                                    core.archive.historical_entries_dropped(),
-                                    core.archive.input_reconstructions(),
-                                    result_slots.available(),
-                                    queued_specs.len(),
-                                    completed.len(),
-                                    counters.job_frames,
-                                    coordinator_profile.replay_jobs,
-                                    coordinator_profile.replay_actions,
-                                    coordinator_profile.replay_time,
-                                    coordinator_profile.suffix_actions,
-                                    coordinator_profile.suffix_time,
-                                );
-                            }
+                                core.archive
+                                    .resident_memory_bytes()
+                                    .saturating_add(draw_state_memory_bytes),
+                                core.archive.snapshot_evictions(),
+                                core.archive.history_compactions(),
+                                core.archive.historical_entries_dropped(),
+                                core.archive.input_reconstructions(),
+                                result_slots.available(),
+                                queued_specs.len(),
+                                completed.len(),
+                                counters.job_frames,
+                                coordinator_profile.replay_jobs,
+                                coordinator_profile.replay_actions,
+                                coordinator_profile.replay_time,
+                                coordinator_profile.suffix_actions,
+                                coordinator_profile.suffix_time,
+                            );
                         }
                     }
                     next_admission = next_admission.saturating_add(1);
@@ -3432,7 +2775,6 @@ where
     ))
 }
 
-/// Resolve the record's retained inputs and close the draw-state record.
 fn finish_record<G: Game>(
     game: &G,
     run: &G::Run,
@@ -3483,10 +2825,6 @@ fn finish_record<G: Game>(
     draw_checkpoint_to_wire(game, checkpoint.as_ref())
 }
 
-/// Convert an input policy's typed checkpoint to the historical stream field.
-/// The stream schema remains tied to `EmpiricalStepCheckpoint` for replay
-/// compatibility; stateless policies return `None` and never need to invent a
-/// checkpoint representation.
 fn draw_checkpoint_to_wire<G: Game>(
     game: &G,
     checkpoint: Option<&G::DrawCheckpoint>,
@@ -3496,21 +2834,6 @@ fn draw_checkpoint_to_wire<G: Game>(
         .transpose()
 }
 
-/// Replay a recorded campaign stream serially and rebuild its report.
-///
-/// Replay re-executes every recorded job from (parent id, mutation seed) on a
-/// single target, verifies each result digest and frame count byte for byte,
-/// re-applies the retention rules, and verifies every recomputed
-/// admission decision against the recorded one. Any mismatch is an error.
-///
-/// When the recorded header names a snapshot checkpoint, `origin_checkpoint`
-/// must be that file and its hash must match; a replay without it re-emulates
-/// the import and must still reach the same archive.
-///
-/// # Errors
-///
-/// Returns an error when the stream is malformed, the origin does not match
-/// the header, or any recomputed value differs from the recorded one.
 #[allow(clippy::too_many_lines)]
 pub fn replay_campaign_checkpointed<G: CampaignInterfaces>(
     game: &G,
@@ -4570,10 +3893,6 @@ mod tests {
         );
     }
 
-    /// The header a stream recorded before the policy map existed, verbatim.
-    /// The generic layer now holds the game's policies in a map and names its
-    /// draw-table fields generically; both must still read and write these
-    /// exact field names, or recorded streams stop replaying.
     const RECORDED_HEADER: &str = r#"{"format":"smb-campaign-v1","campaign_seed":7,"workers":2,
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"wall_budget_seconds":null,
@@ -5228,7 +4547,6 @@ mod tests {
         assert!(!object.contains_key("chord_table"));
     }
 
-    /// A job record's draw-table checkpoints keep their recorded names.
     #[test]
     fn a_recorded_job_keeps_its_draw_table_field_names() {
         let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":0,"mutation_seed":9,

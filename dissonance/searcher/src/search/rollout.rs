@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Action-boundary rollout mechanics shared by workload adapters.
-
 use std::error::Error;
 
 use super::{
@@ -9,7 +7,6 @@ use super::{
     campaign::{CampaignActionResult, CampaignCandidate, CampaignInterfaces, CampaignJobResult},
 };
 
-/// Workload classification at an action boundary.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Outcome {
     pub dead: bool,
@@ -23,10 +20,6 @@ impl Outcome {
     }
 }
 
-/// Workload operations required by the engine's suffix loop.
-///
-/// A probe restores the supplied snapshot, including adapter observation state,
-/// before returning. Its execution cost may advance lifetime accounting.
 pub trait Rollout<G: CampaignInterfaces + ?Sized> {
     fn apply(
         &mut self,
@@ -40,10 +33,6 @@ pub trait Rollout<G: CampaignInterfaces + ?Sized> {
     fn probe(&mut self, snapshot: &G::Snapshot) -> Result<bool, Box<dyn Error>>;
 }
 
-/// Adapter from the game contract to the action-boundary rollout engine.
-/// Workloads provide target-specific observations, outcome classification, and
-/// probes through the optional `Game::rollout_*` seams; restore, snapshot, key,
-/// and action application remain owned by the generic game contract.
 pub struct GameRollout<'a, G: CampaignInterfaces + ?Sized> {
     game: &'a G,
     run: &'a G::Run,
@@ -86,10 +75,6 @@ impl<G: CampaignInterfaces + ?Sized> Rollout<G> for GameRollout<'_, G> {
     }
 }
 
-/// Execute one worker job from an origin snapshot through its parent path and
-/// suffix. The target is reset before restoring the origin so worker reuse
-/// cannot carry adapter state across jobs. Replay milestones are intentionally
-/// local: the parent archive already owns the aggregate passed to the suffix.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_job<G: CampaignInterfaces + ?Sized>(
     game: &G,
@@ -122,10 +107,6 @@ pub fn execute_job<G: CampaignInterfaces + ?Sized>(
     )
 }
 
-/// Extend a restored parent, preserving action evidence before probing candidates.
-///
-/// Workloads own action meaning and evaluation. The engine owns limits,
-/// candidate capture, probe placement, result assembly, and terminal stopping.
 pub fn execute_suffix<G: CampaignInterfaces + ?Sized>(
     target: &mut impl Rollout<G>,
     parent_actions: usize,

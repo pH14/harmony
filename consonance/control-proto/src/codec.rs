@@ -1,21 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The versioned, length-delimited wire codec.
-//!
-//! A frame is `magic(4) · version(2) · seq(4) · len(4) · body[len]`, all integers
-//! little-endian. The body is a tagged encoding of a [`Request`] or a
-//! `Result<Reply, ControlError>`; every variable-length field is `u32`-length
-//! prefixed.
-//!
-//! Encoding is **bit-deterministic and canonical**: each value has exactly one
-//! byte form (fixed field order, no maps, no padding), and the declared `len`
-//! always equals the body's natural size — so `encode(decode(x)) == x` for any
-//! frame `decode` accepts. Decoding is **strict and total**: it bounds-checks
-//! every length and tag against the *actual* buffer before use, rejects an
-//! over-cap `len` from the header alone (before buffering the body), rejects a
-//! body that does not consume exactly `len` bytes, and never panics or reads out
-//! of bounds on arbitrary input (conventions rule 4). A frame that is merely
-//! not-yet-fully-received yields `Ok(None)` ("need more"), distinct from a loud
-//! [`ProtocolError`].
 
 use crate::error::ProtocolError;
 use crate::types::{
@@ -25,9 +8,7 @@ use crate::types::{
 };
 use crate::{MAX_FRAME_LEN, PROTO_VERSION};
 
-/// Frame magic: `b"CTL1"` read little-endian. Pins the on-wire byte order.
 const MAGIC: u32 = u32::from_le_bytes(*b"CTL1");
-/// The fixed frame header: magic(4) + version(2) + seq(4) + len(4).
 const HEADER_LEN: usize = 14;
 
 const REQ_HELLO: u8 = 1;
@@ -102,19 +83,12 @@ const PE_BAD_LENGTH: u8 = 3;
 const ABSENT: u8 = 0;
 const PRESENT: u8 = 1;
 
-/// Encode a [`Request`] into a length-delimited frame appended to `buf`.
-///
-/// Fallible only on size: a body that would exceed [`MAX_FRAME_LEN`] returns
-/// [`ProtocolError::BadLength`] and leaves `buf` unchanged — never a panic, a
-/// truncation, or a frame the decoder's cap would reject.
 pub fn encode_request(seq: u32, req: &Request, buf: &mut Vec<u8>) -> Result<(), ProtocolError> {
     let mut body = Vec::new();
     write_request(&mut body, req);
     finish_frame(seq, &body, buf)
 }
 
-/// Encode a `Result<Reply, ControlError>` into a length-delimited frame appended
-/// to `buf`. Same size contract as [`encode_request`].
 pub fn encode_reply(
     seq: u32,
     reply: &Result<Reply, crate::error::ControlError>,
@@ -125,10 +99,6 @@ pub fn encode_reply(
     finish_frame(seq, &body, buf)
 }
 
-/// Decode exactly one [`Request`] frame from the front of `buf`, returning
-/// `(seq, request, bytes_consumed)`.
-///
-/// A partial frame yields `Ok(None)` ("need more"). Never panics on any input.
 pub fn decode_request(buf: &[u8]) -> Result<Option<(u32, Request, usize)>, ProtocolError> {
     let Some((seq, body, consumed)) = decode_frame(buf)? else {
         return Ok(None);
@@ -139,10 +109,6 @@ pub fn decode_request(buf: &[u8]) -> Result<Option<(u32, Request, usize)>, Proto
     Ok(Some((seq, req, consumed)))
 }
 
-/// Decode exactly one reply frame from the front of `buf`, returning
-/// `(seq, Result<Reply, ControlError>, bytes_consumed)`.
-///
-/// A partial frame yields `Ok(None)` ("need more"). Never panics on any input.
 #[allow(clippy::type_complexity)]
 pub fn decode_reply(
     buf: &[u8],
@@ -156,8 +122,6 @@ pub fn decode_reply(
     Ok(Some((seq, reply, consumed)))
 }
 
-/// Append a complete frame (header + body) to `buf`, or fail with
-/// [`ProtocolError::BadLength`] leaving `buf` untouched.
 fn finish_frame(seq: u32, body: &[u8], buf: &mut Vec<u8>) -> Result<(), ProtocolError> {
     if body.len() > MAX_FRAME_LEN {
         return Err(ProtocolError::BadLength);
@@ -170,12 +134,8 @@ fn finish_frame(seq: u32, body: &[u8], buf: &mut Vec<u8>) -> Result<(), Protocol
     Ok(())
 }
 
-/// A framed body sliced from the input: `(seq, body, bytes_consumed)`.
 type Framed<'a> = (u32, &'a [u8], usize);
 
-/// Parse the frame header and slice out the body, validating magic/version and
-/// rejecting an over-cap length **from the header alone** — before any body is
-/// buffered. Returns `Ok(None)` when the header or body is not yet fully present.
 fn decode_frame(buf: &[u8]) -> Result<Option<Framed<'_>>, ProtocolError> {
     if buf.len() < HEADER_LEN {
         return Ok(None);
@@ -417,12 +377,6 @@ fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
     })
 }
 
-/// The `RegsView` wire layout — fixed field order, no padding, all little-endian
-/// (canonical). The `gpr`/`seg` arrays are written element-by-element in their
-/// canonical order; growing the view (an additive `VERSION` bump) appends fields
-/// after `vtime`, so an older decoder still consumes the prefix it knows and a
-/// newer one reads the extension. Every element is a fixed-width integer, so the
-/// body length is constant for a given version.
 fn write_regs_view(w: &mut Vec<u8>, v: &RegsView) {
     put_u16(w, v.version);
     for g in &v.gpr {
@@ -493,8 +447,6 @@ fn write_env(w: &mut Vec<u8>, env: &Reproducer) {
     put_bytes(w, &env.bytes);
 }
 
-/// `blob_version` is carried verbatim and never validated here — an off-version
-/// blob still decodes, so the backend can answer `BadEnvVersion` (gate 4).
 fn read_env(r: &mut Reader) -> Result<Reproducer, ProtocolError> {
     Ok(Reproducer {
         blob_version: r.u16()?,
@@ -806,18 +758,11 @@ fn put_u64(w: &mut Vec<u8>, v: u64) {
     w.extend_from_slice(&v.to_le_bytes());
 }
 
-/// Append a `u32`-length-prefixed byte blob. The length saturates at `u32::MAX`,
-/// which is unreachable for an emitted frame: the whole body is capped at
-/// [`MAX_FRAME_LEN`] (16 MiB) by [`finish_frame`], so any sub-blob is far smaller.
 fn put_bytes(w: &mut Vec<u8>, b: &[u8]) {
     put_u32(w, u32::try_from(b.len()).unwrap_or(u32::MAX));
     w.extend_from_slice(b);
 }
 
-/// A forward-only cursor over a frame body. Every read past the end is
-/// [`ProtocolError::ShortFrame`]; byte blobs are sliced (bounds-checked against
-/// the actual body) before any copy, so an untrusted length can never force an
-/// out-of-bounds read or an unbounded allocation.
 struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
@@ -828,8 +773,6 @@ impl<'a> Reader<'a> {
         Self { buf, pos: 0 }
     }
 
-    /// Require that the whole body was consumed — rejects trailing bytes inside
-    /// the declared frame length, which keeps the encoding canonical.
     fn finish(&self) -> Result<(), ProtocolError> {
         if self.pos == self.buf.len() {
             Ok(())
@@ -869,8 +812,6 @@ impl<'a> Reader<'a> {
         ]))
     }
 
-    /// Read a canonical boolean: `0` → `false`, `1` → `true`, anything else a
-    /// malformed frame (keeps the encoding one-to-one — no spurious `true` bytes).
     fn bool(&mut self) -> Result<bool, ProtocolError> {
         match self.u8()? {
             0 => Ok(false),
@@ -879,13 +820,11 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// Read a `u32`-length-prefixed byte blob, borrowed from the body.
     fn bytes(&mut self) -> Result<&'a [u8], ProtocolError> {
         let len = self.u32()? as usize;
         self.take(len)
     }
 
-    /// Read a fixed 32-byte array (the hash digest).
     fn array32(&mut self) -> Result<[u8; 32], ProtocolError> {
         let b = self.take(32)?;
         let mut out = [0u8; 32];

@@ -1,42 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Model-based (stateful) property test for [`snapshot_store::Store`].
-//!
-//! `proptest-state-machine` generates a precondition-satisfying sequence of
-//! operations — `begin_base` (the initial state) plus `derive`/write/`seal`,
-//! `read_page`, `materialize`, `retain`, `release`, and `gc` — and drives them
-//! against both the real [`Store`] and a naive reference model. The model keeps,
-//! per snapshot, the full logical image (one seed byte per page), its refcount,
-//! its `owned_pages`/`chain_len`, and its parent link — everything needed to know
-//! which transitions are valid and what every observation must yield.
-//!
-//! After every transition we assert that `read_page` for every gfn of every live
-//! snapshot, the per-snapshot `stats`, the store-wide `store_stats`, and a
-//! `materialize` round-trip all agree with the model, and that released snapshots
-//! are uniformly unobservable. Indices into the model's `snaps` vector are stable
-//! by construction (snapshots are only ever appended); the system-under-test keeps
-//! a parallel vector of real `SnapshotId`s at the same indices.
-//!
-//! Ordered collections (`Vec`, `BTreeSet`) are used freely here: the determinism
-//! rules constrain library code, not the test oracle.
 
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 use proptest_state_machine::{ReferenceStateMachine, StateMachineTest, prop_state_machine};
 use snapshot_store::{PAGE_SIZE, SnapshotId, Store, StoreConfig, StoreError};
 
-/// Small logical image so per-snapshot full-image models stay cheap across long
-/// operation sequences and many snapshots.
 const MEM_PAGES: u64 = 16;
 
-/// Materialize a page's content from its one-byte seed. The tiny content space
-/// (256 values, the all-zero page at seed 0) keeps store-wide dedup and zero-page
-/// handling constantly exercised.
 fn page(seed: u8) -> [u8; PAGE_SIZE] {
     [seed; PAGE_SIZE]
 }
 
-/// One snapshot in the reference model. `seeds[gfn]` is the seed of the content at
-/// that gfn, so the full logical image is recoverable without storing 4 KiB/page.
 #[derive(Clone, Debug)]
 struct RefSnap {
     seeds: Vec<u8>,
@@ -44,15 +18,10 @@ struct RefSnap {
     refcount: u64,
     owned_pages: u64,
     chain_len: u32,
-    /// Index of the parent layer, or `None` for the base. Stable for the run.
     parent: Option<usize>,
-    /// Whether the store still holds this layer. A layer is resident while it is
-    /// live (refcount > 0) or retained as the ancestor of a live layer; `gc`
-    /// drops the rest. Mirrors membership of `Store`'s internal layer map.
     resident: bool,
 }
 
-/// The reference state: snapshots in creation order, indexes stable forever.
 #[derive(Clone, Debug)]
 struct RefState {
     snaps: Vec<RefSnap>,
@@ -65,18 +34,12 @@ impl RefState {
             .collect()
     }
 
-    /// Layers the store still holds (live or retained as an ancestor).
     fn resident_indices(&self) -> Vec<usize> {
         (0..self.snaps.len())
             .filter(|&i| self.snaps[i].resident)
             .collect()
     }
 
-    /// Insert the distinct non-zero page CONTENTS that layer `i` *owns* — the
-    /// pages it dirtied relative to its parent (vs the implicit zero image for
-    /// the base). The all-zero page is implicit and never interned, so it is
-    /// excluded. The store interns exactly the union of these over all resident
-    /// layers (content-deduplicated store-wide).
     fn owned_nonzero_contents(&self, i: usize, out: &mut std::collections::BTreeSet<u8>) {
         let snap = &self.snaps[i];
         match snap.parent {
@@ -92,8 +55,6 @@ impl RefState {
         }
     }
 
-    /// Exact `stored_unique_pages`: distinct non-zero contents interned across
-    /// every resident layer's owned set.
     fn stored_unique_pages_exact(&self) -> u64 {
         let mut contents = std::collections::BTreeSet::new();
         for i in self.resident_indices() {
@@ -102,8 +63,6 @@ impl RefState {
         contents.len() as u64
     }
 
-    /// Exact `bytes_resident`: interned unique page payload plus the vm_state
-    /// blob of every resident layer. (The store counts no bookkeeping overhead.)
     fn bytes_resident_exact(&self) -> u64 {
         let page_bytes = self.stored_unique_pages_exact() * PAGE_SIZE as u64;
         let vm_bytes: u64 = self
@@ -114,8 +73,6 @@ impl RefState {
         page_bytes + vm_bytes
     }
 
-    /// Replicate `Store::gc`: a layer survives iff it is reachable upward (via
-    /// `parent`) from some live layer; the rest stop being resident.
     fn gc(&mut self) {
         let mut reachable = std::collections::BTreeSet::new();
         for i in 0..self.snaps.len() {
@@ -138,13 +95,10 @@ impl RefState {
     }
 }
 
-/// A write batch is a list of (gfn, seed) pairs; last write to a gfn wins, matching
-/// builder semantics.
 type Writes = Vec<(u64, u8)>;
 
 #[derive(Clone, Debug)]
 enum Transition {
-    /// Derive a child of a live snapshot, apply a write batch, seal with `vm_state`.
     Derive {
         parent: usize,
         writes: Writes,
@@ -166,10 +120,6 @@ enum Transition {
     Gc,
 }
 
-/// Apply a write batch to a seed image (last write wins) and return the resulting
-/// seeds plus the count of pages that end up differing from `parent` (the
-/// `owned_pages` a seal would record — writes equal to the inherited content are
-/// dropped).
 fn apply_writes(parent: &[u8], writes: &[(u64, u8)]) -> (Vec<u8>, u64) {
     let mut seeds = parent.to_vec();
     for &(gfn, seed) in writes {
@@ -179,7 +129,6 @@ fn apply_writes(parent: &[u8], writes: &[(u64, u8)]) -> (Vec<u8>, u64) {
     (seeds, owned)
 }
 
-/// Reference state machine driving generation; see module docs.
 struct StoreRef;
 
 impl ReferenceStateMachine for StoreRef {
@@ -268,13 +217,11 @@ impl ReferenceStateMachine for StoreRef {
     }
 }
 
-/// The system under test: the real store plus the index→id map mirroring the model.
 struct StoreSut {
     store: Store,
     ids: Vec<SnapshotId>,
 }
 
-/// Read one page and assert it matches the model seed.
 fn assert_page(store: &Store, id: SnapshotId, gfn: u64, seed: u8) {
     let mut out = [0xAAu8; PAGE_SIZE];
     store.read_page(id, gfn, &mut out).unwrap();
@@ -413,7 +360,6 @@ impl StateMachineTest for StoreMachine {
 prop_state_machine! {
     #![proptest_config(Config { cases: 256, ..Config::default() })]
 
-    /// Drive 1..40 operations against the store and the reference model.
     #[test]
     fn store_matches_model(sequential 1..40 => StoreMachine);
 }

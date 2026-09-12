@@ -1,10 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Print selected work-RAM bytes after every chord of a recorded input.
-//!
-//! The replay drives the same [`SmbTarget`] the searcher drives, so the trace
-//! reports the bytes the search actually saw rather than a re-derivation.
-
 use std::{env, error::Error, fs, path::PathBuf};
 
 use nes_workload::{

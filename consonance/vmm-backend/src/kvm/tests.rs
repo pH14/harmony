@@ -1,11 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Non-`#[ignore]` unit tests for the pure KVM mapping logic (`super`), driven by
-//! **synthetic `kvm_run`/`kvm_*` structs** — no `/dev/kvm`, no ioctl. They run on
-//! the Linux CI runner (so `cargo llvm-cov` / `cargo mutants --in-diff` exercise
-//! the decode/apply seam, the `kvm_bindings` ⇄ `VcpuState` conversions, and the
-//! snapshot/CPUID/MSR/capability helpers) and under Miri (which scrutinizes the
-//! raw `kvm_run` access for UB). The box-only syscall orchestration in
-//! `kvm_sys` is what stays excluded from those gates.
 
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::collections::BTreeMap;
@@ -23,15 +16,12 @@ use crate::exit::Exit;
 use crate::types::Gpa;
 use crate::types::MpState;
 
-/// A page-aligned, zeroed buffer large enough to hold a `kvm_run` plus a PIO data
-/// area, reached only through its raw pointer (the production shape).
 struct SynRun {
     ptr: *mut u8,
     layout: Layout,
     len: usize,
 }
 
-/// Where synthetic PIO data lives — comfortably past `size_of::<kvm_run>()`.
 const PIO_OFF: usize = 8192;
 
 impl SynRun {
@@ -694,18 +684,14 @@ fn xsave_bytes_round_trip_and_length_check() {
 }
 
 impl SynRun {
-    /// Set `kvm_run.ready_for_interrupt_injection` (kernel → user).
     fn set_ready(&self, ready: bool) {
         // SAFETY: plain top-level field of the owned, zeroed `kvm_run`.
         unsafe { (*self.run()).ready_for_interrupt_injection = u8::from(ready) };
     }
-    /// Read `kvm_run.request_interrupt_window` (user → kernel) back.
     fn request_window(&self) -> u8 {
         // SAFETY: plain top-level field of the owned `kvm_run`.
         unsafe { (*self.run()).request_interrupt_window }
     }
-    /// Pre-set `kvm_run.request_interrupt_window` (to prove `plan_irq_entry`
-    /// clears a stale request).
     fn set_request_window(&self, on: bool) {
         // SAFETY: plain top-level field of the owned `kvm_run`.
         unsafe { (*self.run()).request_interrupt_window = u8::from(on) };

@@ -1,10 +1,10 @@
 #!/bin/sh
 # Runs as PID 1 INSIDE the official-postgres OCI container (its `process.args`).
-# The ENTIRE task-37-style workload flow lives here — start the postgres binary,
+# The ENTIRE bare-Postgres-style workload flow lives here — start the postgres binary,
 # wait for it cooperatively, drive the fixed insert/select loop, stop it — so the
 # guest `/init` only has to `runc run` this and wait. The point: the cooperative
 # `psql` loop runs *inside* the container, where it works under the consonance
-# VMM for exactly the same reason task 37's bare-Postgres loop did — a blocking
+# VMM for exactly the same reason the bare-Postgres image's loop did — a blocking
 # `psql` connect yields the single vCPU to the starting postmaster, whose RDTSCs
 # (timestamps) trap → VM-exits → V-time advances → the periodic tick fires →
 # postgres is scheduled and reaches "ready". Driving postgres from *outside* the
@@ -20,7 +20,7 @@ echo "PGC38: starting postgres in container"
 "$PGBIN/postgres" -D "$PGDATA" &
 PGPID=$!
 
-# Cooperative readiness wait (task 37): each blocking `psql` connect yields the
+# Cooperative readiness wait: each blocking `psql` connect yields the
 # vCPU to the starting postmaster; retry the idempotent SELECT 1 until it
 # connects. Never a `sleep` (the sleeper never wakes), never a busy spin.
 until "$PGBIN/psql" -q -c 'SELECT 1' >/dev/null 2>&1; do : ; done

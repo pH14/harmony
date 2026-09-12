@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// uuid-super — benchmark bug (iii): a RARE-ENTROPY-VALUE bug (task 69). The third
+// uuid-super — benchmark bug (iii): a RARE-ENTROPY-VALUE bug. The third
 // planted bug of the seeded-bug benchmark, beside campaign-super.c (bug i) and
 // order-super.c (bug ii). See the benchmark manifest (BugClass::RareEntropy).
 //
 // The bug in one sentence: the process draws a value from the guest's seeded
 // entropy source (the deterministic `gen_random_uuid()`-style draw the VMM
-// controls via the run seed — task 42), and a branch taken ONLY when the draw's
+// controls via the run seed), and a branch taken ONLY when the draw's
 // top PREFIX_BITS match a fixed target prefix poisons a pointer and dereferences
 // it, crashing. Nominally the prefix does not match (probability 2^-PREFIX_BITS),
 // so the poisoning branch is dead code; the campaign must find the rare seed.
@@ -43,15 +43,15 @@
 #define FAIL_CODE 0x63
 // Post-READY operational-loop length + work cycle. On a NON-firing branch the
 // process runs this loop emitting the same bug-agnostic operational logs the
-// other supers do, giving the log-template signal (task 67) a workload to read
+// other supers do, giving the log-template signal a workload to read
 // until the campaign deadline cuts it off. Mirrors campaign-super.c's
 // ITERS/`BUDGET_MAX/2` so all three supers share the SAME log cadence — the
-// apples-to-apples signal workload (task 69 M2). A FIRING branch never reaches
+// apples-to-apples signal workload. A FIRING branch never reaches
 // the loop: it crashes at the prefix match, emitting the UUID_BUG marker well
 // before the deadline (marker-based certification, terminal-agnostic).
 #define ITERS 200000000L
 #define WORK_CYCLE 500000L
-// Pre-draw stabilization span (task 69 M2 fix — box calibration 2026-07-07). A
+// Pre-draw stabilization span (box calibration 2026-07-07). A
 // short bounded busy loop runs after UUID_READY and BEFORE the entropy draw so
 // `seal_base`'s snapshot-retry (advancing `snapshot_retry_step` = 10_000 ns each
 // try) lands a snapshottable base INSIDE this loop — before the draw — the way
@@ -106,7 +106,7 @@ static void announce_bug(void)
 
 // Draw the run's entropy from the VMM seeded-entropy service via **RDRAND**,
 // which the determinism hypervisor intercepts and answers with the per-branch
-// campaign seed (task 42's `gen_random_uuid()` path). This MUST be drawn *after*
+// campaign seed (the same `gen_random_uuid()` path the workload uses). This MUST be drawn *after*
 // the snapshot (see `main`): a value baked into the process before the base seal
 // — e.g. `getenv("SEED")`, which an earlier draft used — is captured by the
 // snapshot, so branching with different EnvSpec seeds could never vary it and the

@@ -6,9 +6,9 @@ license.workspace = true
 
 [features]
 # Non-default. Gates the in-process `MockBackend` (the deterministic `Backend`
-# substrate task 15 unit-tests vmm-core against). NOT `#[cfg(test)]`: a
+# substrate vmm-core's unit tests run against). NOT `#[cfg(test)]`: a
 # `#[cfg(test)]` item is invisible to downstream crates, so it could not be the
-# mock task 15 turns on under `[dev-dependencies]`. The default build compiles the
+# mock those unit tests turn on under `[dev-dependencies]`. The default build compiles the
 # trait + value types only. See consonance/vmm-backend/README.md.
 mock = []
 # Non-default. Gates `vmm_backend::contract`, the shared `Backend` contract
@@ -37,7 +37,7 @@ proptest = "1"
 
 # NOT `[lints] workspace = true`: this crate must register the `kani` cfg (so the
 # standard build's `unexpected_cfgs` lint does not flag the `#[cfg(kani)]` memslot-
-# splitter proof harnesses in `src/region.rs` / `src/region_proofs.rs`, task 54), and
+# splitter proof harnesses in `src/region.rs` / `src/region_proofs.rs`), and
 # Cargo REJECTS combining `[lints] workspace = true` with a crate-local `[lints.rust]`
 # table ("cannot override `workspace.lints` in `lints`"). So, like `vtime`/`lapic`, we
 # spell the lints explicitly. `clippy::all = deny` is a faithful mirror of

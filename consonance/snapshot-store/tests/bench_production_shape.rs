@@ -1,19 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Task 95 M1.1 — the production-shape bench (informational, not pass/fail).
-//!
-//! `tests/bench.rs` measures the store at a 32 MiB toy shape. This file measures it at
-//! the shape production actually runs: a 2 GiB guest, i.e. 524,288 frames, on a
-//! synthetic *booted-guest* image (mostly zeros, some duplicate
-//! page contents). Every number printed here goes into `README.md`.
-//!
-//! Run with:
-//!   cargo test -p snapshot-store --release --test bench_production_shape -- --ignored --nocapture
-//!
-//! Constrained machines: `HARMONY_BENCH_PAGES=<power of two >= 4096>` scales the shape
-//! down. The effective shape is printed in every `[BENCH]` line, so a recorded number is
-//! always self-describing. At the default shape the peak RSS is ~4 GiB (the
-//! `full_image_vec_copy` floor allocates two full images), so the benches take a process-
-//! wide lock and run one at a time.
 
 #![allow(clippy::disallowed_methods)]
 
@@ -24,23 +9,16 @@ use std::time::{Duration, Instant};
 use memmap2::MmapOptions;
 use snapshot_store::{PAGE_SIZE, SnapshotId, Store, StoreConfig};
 
-/// Production shape: a 2 GiB guest, overridable for constrained machines via
-/// HARMONY_BENCH_PAGES (power of two, >= 4096).
 const PROD_MEM_PAGES: u64 = 524_288;
-/// Non-zero fraction of the synthetic booted image: 1 in 4 pages (a booted guest is
-/// mostly zeros); every 8th non-zero page repeats an earlier content (dedup realism).
 const NONZERO_STRIDE: u64 = 4;
 const DEDUP_GROUP: u64 = 8;
 
-/// The benches allocate multiple GiB each; run them one at a time even when the test
-/// harness would otherwise thread them.
 static BENCH_LOCK: Mutex<()> = Mutex::new(());
 
 fn serialize() -> std::sync::MutexGuard<'static, ()> {
     BENCH_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Effective guest size in pages for this run.
 fn bench_pages() -> u64 {
     match std::env::var("HARMONY_BENCH_PAGES") {
         Err(_) => PROD_MEM_PAGES,
@@ -58,7 +36,6 @@ fn bench_pages() -> u64 {
     }
 }
 
-/// Shape suffix printed on every `[BENCH]` line.
 fn shape(mem_pages: u64) -> String {
     let mib = mem_pages * PAGE_SIZE as u64 / (1 << 20);
     format!("mem_pages={mem_pages} image_mib={mib}")
@@ -71,7 +48,6 @@ fn splitmix64(seed: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Fill one page with content unique to `seed` (distinct seeds ⇒ distinct pages).
 fn fill_page(buf: &mut [u8], seed: u64) {
     debug_assert_eq!(buf.len(), PAGE_SIZE);
     let (chunks, remainder) = buf.as_chunks_mut::<8>();
@@ -88,10 +64,6 @@ fn page_of(seed: u64) -> Vec<u8> {
     p
 }
 
-/// Content seed of `gfn` in the synthetic booted image, or `None` for a zero page.
-///
-/// Non-zero iff `gfn % 4 == 0`; among the non-zero pages every 8th reuses the content
-/// of the first page of its group of 8, so 1/8 of the non-zero pages dedup away.
 fn page_seed(gfn: u64) -> Option<u64> {
     if !gfn.is_multiple_of(NONZERO_STRIDE) {
         return None;
@@ -104,7 +76,6 @@ fn page_seed(gfn: u64) -> Option<u64> {
     })
 }
 
-/// The whole synthetic image as one flat buffer (`mem_pages * PAGE_SIZE` bytes).
 fn synthetic_image(mem_pages: u64) -> Vec<u8> {
     let mut img = vec![0u8; mem_pages as usize * PAGE_SIZE];
     for gfn in 0..mem_pages {
@@ -121,12 +92,6 @@ fn frame(img: &[u8], gfn: u64) -> &[u8] {
     &img[off..off + PAGE_SIZE]
 }
 
-/// Fault every page of `img` in before timing anything against it.
-///
-/// `vec![0u8; n]` is a lazy anonymous mapping: the ~3/4 of the image that stays zero is
-/// never touched by `synthetic_image`, so the *first* loop to read it eats several
-/// hundred ms of minor faults. Without this the hash-only baseline (which runs first)
-/// measures the faults and comes out slower than the full seal it is a baseline for.
 fn warm(img: &[u8]) {
     let mut sink = 0u8;
     for off in (0..img.len()).step_by(PAGE_SIZE) {
@@ -135,7 +100,6 @@ fn warm(img: &[u8]) {
     black_box(sink);
 }
 
-/// Seal a base holding the whole synthetic image.
 fn seal_full_base(store: &mut Store, img: &[u8], mem_pages: u64) -> SnapshotId {
     let mut b = store.begin_base();
     for gfn in 0..mem_pages {
@@ -295,12 +259,6 @@ fn full_rescan_delta_seal() {
     );
 }
 
-/// Floor (a): the ideal write path — one write-mapping of the sized tempfile, one
-/// memcpy per resolved page, flush. This is exactly what M1.2b makes `materialize` do.
-///
-/// Timed from tempfile creation, like `Store::materialize`, so the difference between
-/// the two is purely (chain resolve + per-page syscalls + `map_copy`) and not tempfile
-/// setup. The floor omits the final `map_copy`, which is O(1) — it maps lazily.
 fn mmap_memcpy_floor(mem_pages: u64, pages: &[(u64, Vec<u8>)]) -> Duration {
     let len = mem_pages * PAGE_SIZE as u64;
     let t = Instant::now();
@@ -320,8 +278,6 @@ fn mmap_memcpy_floor(mem_pages: u64, pages: &[(u64, Vec<u8>)]) -> Duration {
     t.elapsed()
 }
 
-/// Floor (b): the restore memcpy `vmm.rs::restore_guest_memory` does today, and which
-/// M2.2 removes — `ram.copy_from_slice(image)` over the whole image.
 fn full_image_vec_copy(mem_pages: u64) -> Duration {
     let len = mem_pages as usize * PAGE_SIZE;
     let src = vec![1u8; len];
@@ -340,7 +296,6 @@ fn materialize_sweep() {
     let _g = serialize();
     let mem_pages = bench_pages();
 
-    /// Pages each interior layer of the chain dirties (small, disjoint from the base).
     const LAYER_DIRTY: u64 = 64;
     const MAX_DEPTH: u64 = 32;
 

@@ -2,8 +2,6 @@
 
 #![recursion_limit = "256"]
 
-//! Run a bounded Super Tilt Bro campaign and render one retained witness.
-
 use std::{
     env,
     error::Error,
@@ -33,9 +31,6 @@ use nes_workload::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-/// Safe defaults for a first local qualification run. Larger explicit values
-/// remain available for sustained evaluation under the generic campaign
-/// limits. These defaults do not cap explicitly supplied run budgets.
 const DEFAULT_EXECUTIONS: u64 = 2_000;
 const DEFAULT_WORKERS: u32 = 2;
 

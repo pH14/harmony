@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Link the pinned QuickNES archive only for the static Nova guest profile.
 
 use std::{env, path::Path, process};
 

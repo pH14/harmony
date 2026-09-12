@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Run a bounded Nova the Squirrel campaign and render its champion.
-
 use std::{
     env,
     error::Error,

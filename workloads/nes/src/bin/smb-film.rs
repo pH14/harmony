@@ -1,12 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Render a recorded Super Mario Bros input as an H.264 MP4 with game audio.
-//!
-//! The replay drives the same [`SmbTarget`] the searcher drives, so the film
-//! is the recorded run rather than a re-derivation of it. The target is built
-//! over a capture-enabled QuickNES core, and each applied chord's frames and
-//! samples are drained straight into FFmpeg.
-
 use std::{
     env,
     error::Error,
@@ -132,8 +125,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Sink for the streaming pass: RGB24 frames go to FFmpeg's pipe, interleaved
-/// samples to a raw file the mux pass reads back.
 struct FilmWriter {
     encoder: ChildStdin,
     audio: BufWriter<File>,
@@ -168,7 +159,6 @@ impl FilmWriter {
         Ok(())
     }
 
-    /// Close both sinks and report the frame and stereo-sample-frame counts.
     fn finish(mut self) -> Result<(u64, u64), Box<dyn Error>> {
         self.audio.flush()?;
         Ok((self.frames, self.sample_frames))
@@ -213,13 +203,6 @@ fn spawn_encoder(width: u32, height: u32, output: &Path) -> Result<Child, Box<dy
         .spawn()?)
 }
 
-/// Mux the raw audio track into the silent video.
-///
-/// QuickNES mixes at 48 kHz against the NTSC frame cadence (~60.10 Hz) while
-/// the video is timestamped at exactly 60 fps, so declaring 48 kHz would leave
-/// the audio short over a long film. Declaring the rate that spreads the
-/// recorded samples over the video's duration keeps the tracks aligned end to
-/// end, at an inaudible pitch shift.
 fn mux_audio(
     video_only: &Path,
     audio_raw: &Path,
@@ -264,7 +247,6 @@ fn mux_audio(
     Ok(())
 }
 
-/// Write a `factor`-times-faster copy beside the film as `<stem>-<factor>x.mp4`.
 fn speed_up(video: &Path, factor: u32) -> Result<PathBuf, Box<dyn Error>> {
     let stem = video
         .file_stem()

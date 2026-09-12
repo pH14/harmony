@@ -30,7 +30,7 @@ wildcards = "deny"
 multiple-versions = "warn"
 
 [licenses]
-# Our own first-party crates are AGPL-3.0-or-later (task 91). Every *dependency*
+# Our own first-party crates are AGPL-3.0-or-later. Every *dependency*
 # must be AGPL-compatible-as-inbound — i.e. its terms may be combined into an
 # AGPLv3 work. The permissive licenses below (MIT / Apache-2.0 / BSD / Unicode /
 # NCSA / Zlib / BSL-1.0) and the file-scoped MPL-2.0 all satisfy that

@@ -32,7 +32,7 @@ PG_SOURCE_SHA256=078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c9
 # discipline as the kernel/busybox. PostgreSQL 17.11 is the trixie security build;
 # pinned 2026-09-01. The runtime shared-lib closure (glibc, libicu, libssl, ...)
 # is taken from the build host's own /lib at build time (the determinism box is
-# the pinned build environment) — see consonance/harmony-linux/linux/build-postgres-image.sh. URLs
+# the pinned build environment) — see workloads/guest-images/build-postgres-image.sh. URLs
 # are the debian-security pool; if a version is superseded, re-fetch the same
 # files (sha256-addressable) from snapshot.debian.org.
 PG_MAJOR=17

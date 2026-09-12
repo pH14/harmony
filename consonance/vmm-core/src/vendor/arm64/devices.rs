@@ -1,73 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The arm64 platform devices (pure logic, Mac-testable): the PL011 UART.
-//!
-//! The PL011 carries the 8250's *pattern* (`docs/ARCHITECTURE.md`: "the
-//! 8250 UART pattern itself carries"), not its registers: a serial-output
-//! capture the engine's `SERL` hash chunk and the scrape stream read, an
-//! injected-input queue for the task-81 `exec` verb (off-record, live-only —
-//! never hashed, never snapshotted), and a small register-shadow file. The
-//! GICv3 + generic-timer fabric is the `gicv3` crate's, not this module's.
 
 use std::collections::VecDeque;
 
-/// PL011 register offsets (Arm PrimeCell UART PL011 TRM). The subset the
-/// skeleton models; in-range offsets outside it read as absent (`0`) and drop
-/// writes (deny-ignore), mirroring the legacy-platform posture.
 pub(crate) mod reg {
-    /// `UARTDR` — data register (write: transmit; read: receive).
     pub(crate) const DR: u64 = 0x000;
-    /// `UARTFR` — flag register.
     pub(crate) const FR: u64 = 0x018;
-    /// `UARTIBRD` — integer baud-rate divisor.
     pub(crate) const IBRD: u64 = 0x024;
-    /// `UARTFBRD` — fractional baud-rate divisor.
     pub(crate) const FBRD: u64 = 0x028;
-    /// `UARTLCR_H` — line control.
     pub(crate) const LCR_H: u64 = 0x02C;
-    /// `UARTCR` — control register.
     pub(crate) const CR: u64 = 0x030;
-    /// `UARTIMSC` — interrupt mask set/clear.
     pub(crate) const IMSC: u64 = 0x038;
-    /// `UARTRIS` — raw interrupt status.
     pub(crate) const RIS: u64 = 0x03C;
-    /// `UARTMIS` — masked interrupt status.
     pub(crate) const MIS: u64 = 0x040;
-    /// `UARTICR` — interrupt clear (write-1-to-clear; no latched state in the
-    /// skeleton, so a write is accepted and dropped).
     pub(crate) const ICR: u64 = 0x044;
 }
 
-/// `UARTFR.TXFE` — transmit FIFO empty (the model transmits instantly).
 const FR_TXFE: u32 = 1 << 7;
-/// `UARTFR.RXFE` — receive FIFO empty.
 const FR_RXFE: u32 = 1 << 4;
 
-/// The PL011 UART model: serial capture + `exec` input + register shadows.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Pl011 {
-    /// Every byte the guest transmitted (`UARTDR` writes), in order — the
-    /// guest-observable serial stream (`SERL` chunk, run result, scrape).
     capture: Vec<u8>,
-    /// Injected serial input (task-81 `exec`): popped by guest `UARTDR` reads.
-    /// **Off-record by ruling**: live-only, never hashed, never snapshotted,
-    /// cleared on restore.
     rx: VecDeque<u8>,
-    /// Shadows of the guest-programmed configuration registers, in
-    /// [`Pl011::shadow_regs`] order: `IBRD`, `FBRD`, `LCR_H`, `CR`, `IMSC`.
-    /// Residual state — it governs no skeleton behavior yet, but two runs that
-    /// program the UART differently must hash differently.
     regs: [u32; 5],
 }
 
 impl Pl011 {
-    /// A fresh (reset) PL011.
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Service a register load at `offset` (page-relative). Total: an
-    /// unmodeled in-range offset reads as absent (`0`); the caller has already
-    /// range-checked the frame.
     pub(crate) fn read(&mut self, offset: u64) -> u32 {
         match offset {
             reg::DR => u32::from(self.rx.pop_front().unwrap_or(0)),
@@ -88,9 +50,6 @@ impl Pl011 {
         }
     }
 
-    /// Service a register store at `offset` (page-relative). Total: a
-    /// transmit lands in the capture, configuration writes land in shadows,
-    /// everything else is accepted and dropped (deny-ignore).
     pub(crate) fn write(&mut self, offset: u64, value: u32) {
         match offset {
             reg::DR => self.capture.push(value as u8),
@@ -104,24 +63,18 @@ impl Pl011 {
         }
     }
 
-    /// The serial output captured so far.
     pub(crate) fn capture(&self) -> &[u8] {
         &self.capture
     }
 
-    /// Queue bytes on the guest's serial input (task-81 `exec`; off-record).
     pub(crate) fn inject_input(&mut self, bytes: &[u8]) {
         self.rx.extend(bytes.iter().copied());
     }
 
-    /// The configuration-register shadows (`IBRD`, `FBRD`, `LCR_H`, `CR`,
-    /// `IMSC`), for the device blob.
     pub(crate) fn shadow_regs(&self) -> &[u32; 5] {
         &self.regs
     }
 
-    /// Overwrite the residual state from a snapshot. Clears the injected-input
-    /// queue (input never survives a restore — off-record by ruling).
     pub(crate) fn restore(&mut self, capture: Vec<u8>, regs: [u32; 5]) {
         self.capture = capture;
         self.regs = regs;
@@ -145,6 +98,7 @@ mod tests {
     #[test]
     fn fr_reports_tx_empty_and_rx_state() {
         let mut u = Pl011::new();
+        assert_eq!(u.read(reg::FR), 0x90, "PL011 FR: TXFE is bit 7, RXFE bit 4");
         assert_eq!(u.read(reg::FR), FR_TXFE | FR_RXFE);
         u.inject_input(b"x");
         assert_eq!(u.read(reg::FR), FR_TXFE, "input queued clears RXFE");

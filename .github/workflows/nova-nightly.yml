@@ -274,4 +274,4 @@ jobs:
       - uses: actions/github-script@v7
         with:
           script: |
-            await require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/benchmark-report.cjs`)({github, context, core});
+            await require(`${process.env.GITHUB_WORKSPACE}/scripts/benchmark-report.cjs`)({github, context, core});

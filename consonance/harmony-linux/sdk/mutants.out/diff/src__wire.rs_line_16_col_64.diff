@@ -1,0 +1,21 @@
+--- src/wire.rs
++++ replace << with >>
+@@ -8,17 +8,17 @@
+ 
+ pub const NS_CONTROL: u8 = 0;
+ pub const NS_ASSERT: u8 = 1;
+ pub const NS_STATE: u8 = 2;
+ pub const NS_BUGGIFY: u8 = 3;
+ pub const NS_LIFECYCLE: u8 = 4;
+ 
+ pub const CATALOG_EVENT_ID: u32 = 0;
+-pub const SETUP_COMPLETE_EVENT_ID: u32 = (NS_LIFECYCLE as u32) << NS_SHIFT;
++pub const SETUP_COMPLETE_EVENT_ID: u32 = (NS_LIFECYCLE as u32) >> /* ~ changed by cargo-mutants ~ */ NS_SHIFT;
+ pub const FRAME_COMPLETE_EVENT_ID: u32 = ((NS_LIFECYCLE as u32) << NS_SHIFT) | 1;
+ 
+ pub const CATALOG_MAGIC: u32 = u32::from_le_bytes(*b"SDKC");
+ 
+ pub const DISP_HIT: u8 = 0;
+ pub const DISP_VIOLATION: u8 = 1;
+ 
+ pub const STATE_SET: u8 = 0;

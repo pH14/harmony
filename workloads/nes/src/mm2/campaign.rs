@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Mega Man 2 implementation of the game-neutral campaign interface.
-
 use std::{
     collections::BTreeSet,
     error::Error,
@@ -40,9 +38,7 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-/// Stream format written by Mega Man 2 campaigns.
 pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v1";
-/// Snapshot checkpoint format written by Mega Man 2 campaigns.
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v1";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
@@ -60,11 +56,9 @@ const VIABILITY_PROBE_FRAMES: u16 = 60;
 type Mm2Preference = (u8, u8, u16);
 type Mm2ChampionKey = (Mm2ProgressWatermark, Mm2Preference);
 
-/// Header placeholder for a game with no adaptive draw table.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Mm2NoTableHeader;
 
-/// ROM and emulator identity shared by Mega Man 2 workers.
 pub struct Mm2Game {
     rom: Vec<u8>,
     core_path: PathBuf,
@@ -76,16 +70,11 @@ pub struct Mm2Game {
 }
 
 impl Mm2Game {
-    /// Build a game context whose sealed genesis starts at one stage from
-    /// power-on.
     #[must_use]
     pub fn new_at_stage(rom: &[u8], core_path: &Path, core_sha256: &str, stage: Mm2Stage) -> Self {
         Self::new_at_stage_after(rom, core_path, core_sha256, power_on_walk(), stage)
     }
 
-    /// Build a game context whose sealed genesis starts at one stage after
-    /// `prefix` has run from power-on and left the game on the stage select
-    /// screen; earlier victories chain through here.
     #[must_use]
     pub fn new_at_stage_after(
         rom: &[u8],
@@ -117,16 +106,12 @@ impl Mm2Game {
         }
     }
 
-    /// Write the champion input to `path` each time it improves, so a long
-    /// run can be filmed at its deepest point before it ends.
     #[must_use]
     pub fn with_champion_input_path(mut self, path: PathBuf) -> Self {
         self.champion_input_path = Some(path);
         self
     }
 
-    /// The chords that walk from a victory at the end of `chords` back to
-    /// the stage select screen, so the next stage can chain from power-on.
     pub fn walk_to_stage_select(
         &self,
         chords: &[ButtonChord],
@@ -146,30 +131,25 @@ impl Mm2Game {
         Ok(())
     }
 
-    /// Inputs run from power-on before the stage is picked.
     #[must_use]
     pub fn prefix(&self) -> &[ButtonChord] {
         &self.prefix
     }
 
-    /// Pinned emulator identity recorded in streams.
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
         &self.identity
     }
 
-    /// Stage used to construct target genesis.
     #[must_use]
     pub fn stage(&self) -> Mm2Stage {
         self.stage
     }
 }
 
-/// Fixed recorded run policy.
 #[derive(Clone, Copy, Debug)]
 pub struct Mm2CampaignRun;
 
-/// Game-owned campaign evidence.
 #[derive(Clone, Default)]
 pub struct Mm2CampaignEvidence {
     aggregate: Mm2Milestones,
@@ -182,17 +162,11 @@ pub struct Mm2CampaignEvidence {
     genesis_screen: Option<u8>,
 }
 
-/// Campaign origin.
 pub type Mm2CampaignOrigin = CampaignOrigin<Mm2Game>;
-/// Resume checkpoint.
 pub type Mm2CampaignCheckpoint = CampaignCheckpoint<Mm2Snapshot>;
-/// Whole-tree snapshot checkpoint.
 pub type Mm2SnapshotCheckpoint = SnapshotCheckpoint<Mm2Snapshot>;
-/// Stream header.
 pub type Mm2CampaignStreamHeader = CampaignStreamHeader<Mm2NoTableHeader>;
-/// Campaign report.
 pub type Mm2CampaignModeReport = CampaignModeReport<ButtonChord, Mm2ArchiveReport>;
-/// Progress sidecar record.
 pub type Mm2CampaignProgressRecord = CampaignProgressRecord<Mm2ArchiveKey>;
 type Mm2CampaignActionResult = CampaignActionResult<Mm2Game>;
 type Mm2CampaignJobResult = CampaignJobResult<Mm2Game>;
@@ -242,37 +216,21 @@ fn mm2_result_sha256(result: &Mm2CampaignJobResult) -> Result<String, Box<dyn Er
     postcard_value_sha256(&Mm2Result { actions })
 }
 
-/// Fixed configuration for one live campaign.
 pub struct Mm2CampaignConfig {
-    /// Campaign seed.
     pub campaign_seed: u64,
-    /// Worker thread count.
     pub workers: u32,
-    /// Admitted execution budget.
     pub execution_budget: u64,
-    /// Maximum actions in one clean-reset input.
     pub action_limit: usize,
-    /// Operator-supplied host label.
     pub host: String,
-    /// Optional live-only wall cutoff.
     pub wall_budget: Option<std::time::Duration>,
-    /// Live-only: continue issuing reservations after the first victory.
     pub continue_after_victory: bool,
-    /// Maximum retained archive entries.
     pub archive_entry_limit: usize,
-    /// Deterministic logical-memory budget for live search structures.
     pub memory_budget_mib: Option<usize>,
-    /// Live-only: materialize full archive inputs and snapshots at completion.
     pub materialize_final_artifacts: bool,
-    /// Admission policy.
     pub retention: RetentionPolicy,
-    /// Generic parent selector.
     pub selector: crate::search::archive::SelectorPolicy,
-    /// Generic suffix-length shape.
     pub suffix: SuffixShape,
-    /// Generic draw mixture.
     pub mixture: DrawMixture,
-    /// Live-only path receiving the first boss-defeating input.
     pub victory_input_path: Option<PathBuf>,
 }
 
@@ -413,9 +371,6 @@ fn update_first_inputs(
     }
 }
 
-/// The action's endpoint as a champion key, or nothing when the endpoint is
-/// a death: a dying player can reach keys no live input extends, and the
-/// champion input exists to be replayed and extended.
 fn action_champion_key(observations: &[Mm2Observations]) -> Option<Mm2ChampionKey> {
     observations
         .last()
@@ -826,7 +781,6 @@ impl Evaluation for Mm2Game {
     }
 }
 
-/// Run a campaign and return its report plus whole-tree checkpoint.
 pub fn run_mm2_campaign_checkpointed(
     game: &Mm2Game,
     config: &Mm2CampaignConfig,
@@ -837,7 +791,6 @@ pub fn run_mm2_campaign_checkpointed(
     run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
 }
 
-/// Replay a recorded stream exactly.
 pub fn replay_mm2_campaign_checkpointed(
     game: &Mm2Game,
     stream_bytes: &[u8],

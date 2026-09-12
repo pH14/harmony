@@ -1,24 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Named, reporting-only discoveries. No ordering, route, or search reward.
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use super::target::MetroidObservations;
 
-/// Raw boss identity, kept separate from the archive's legacy progress count.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BossDefeats {
-    /// Kraid's defeat flag, $687B bit 0.
     pub kraid: bool,
-    /// Ridley's defeat flag, $687C bit 1 (not bit 0).
     pub ridley: bool,
 }
 
-/// Reporting transitions observed anywhere inside one controller action.
-/// Latching preserves brief states without emitting extra search observations.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TourianEvents {
     pub mother_brain_defeated: bool,
@@ -34,14 +27,9 @@ impl TourianEvents {
     }
 }
 
-/// First observation in admission order. Frame is a route coordinate, not work.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct FirstSeen {
-    /// Admitted execution, starting at one; zero denotes the supplied origin.
     pub execution: u64,
-    /// End of the controller action in frames since gameplay genesis. Cartridge
-    /// RAM is sampled after an action; this is a reported route coordinate,
-    /// not an exact within-action pickup timestamp.
     pub route_action_end_frame: u64,
 }
 
@@ -56,7 +44,6 @@ const GEAR: [(u8, &str); 8] = [
     (0x80, "ice_beam"),
 ];
 
-/// Name an observed area without ranking it. Unknown bytes remain unknown.
 #[must_use]
 pub fn area_name(area: u8) -> Option<&'static str> {
     match area {
@@ -69,16 +56,11 @@ pub fn area_name(area: u8) -> Option<&'static str> {
     }
 }
 
-/// Bounded union over live observations, separate from archive policy evidence.
 #[derive(Clone, Debug, Serialize)]
 pub struct NamedProgress {
-    /// Schema and decoder meaning; independent of search policy versions.
     pub format: &'static str,
-    /// All named milestones are present; null means not observed in this scope.
     pub first_seen: BTreeMap<&'static str, Option<FirstSeen>>,
-    /// Capacity, not missile pickups: defeated bosses also grant capacity.
     pub max_missile_capacity: u8,
-    /// Energy tank count reported by the game, separate from missile capacity.
     pub max_energy_tanks: u8,
 }
 
@@ -112,8 +94,6 @@ impl Default for NamedProgress {
 }
 
 impl NamedProgress {
-    /// Record discoveries and return only newly observed names for witness
-    /// export. These names are never passed to selection or archive admission.
     pub fn observe(
         &mut self,
         observation: &MetroidObservations,

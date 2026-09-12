@@ -1,24 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 4 — version negotiation. A `Hello` with an out-of-range
-//! `protocol_version` / `env_version` range is detectable from the decoded
-//! `Caps` alone; and an off-version `Reproducer.blob_version` decodes to a
-//! `Request` carrying it (so the backend can answer `BadEnvVersion`), never a
-//! decode error.
 
 use control_proto::{
     APP_PROTOCOL_VERSION, CapFlags, Caps, CoverageGeometry, Reproducer, Request, SnapId,
     decode_request, encode_request,
 };
 
-/// What a backend supports, for the negotiation predicates below. The **negotiated
-/// application** version ([`APP_PROTOCOL_VERSION`]), not the framing
-/// [`PROTO_VERSION`] — the two are distinct (see `lib.rs`).
 const OUR_PROTOCOL: u16 = APP_PROTOCOL_VERSION;
 const OUR_ENV_MIN: u16 = 1;
 const OUR_ENV_MAX: u16 = 3;
 
-/// Acceptable iff the peer speaks our protocol version and the env-version ranges
-/// overlap — decided from `Caps` fields only.
 fn caps_acceptable(c: &Caps) -> bool {
     c.protocol_version == OUR_PROTOCOL
         && c.env_version_min <= OUR_ENV_MAX
@@ -85,9 +75,6 @@ fn disjoint_env_range_is_detectable_from_caps() {
     assert!(!caps_acceptable(&decoded), "disjoint env range rejected");
 }
 
-/// The load-bearing gate-4 property: an off-version `Reproducer.blob_version`
-/// is **carried**, not a decode error — so the backend (not the codec) gets to
-/// answer `BadEnvVersion`.
 #[test]
 fn off_version_env_blob_decodes_and_carries_the_version() {
     for blob_version in [0u16, 4, 99, u16::MAX] {

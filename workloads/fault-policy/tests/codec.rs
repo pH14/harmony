@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 4 — codec. `EnvSpec::encode`→`decode` round-trips for arbitrary specs;
-//! `Answer`/`HostFault`/`Action`::encode`→`decode` round-trip; `decode` on
-//! arbitrary/mutated bytes never panics and rejects off-version with
-//! `EnvError::BadVersion`.
 
 mod common;
 
@@ -15,7 +11,6 @@ use proptest::prelude::*;
 proptest! {
     #![proptest_config(config(512))]
 
-    /// `decode(encode(canon(spec))) == canon(spec)`.
     #[test]
     fn envspec_round_trips(spec in arb_spec()) {
         let spec = canon(spec);
@@ -25,36 +20,29 @@ proptest! {
         prop_assert_eq!(bytes, back.encode());
     }
 
-    /// `Answer::encode`→`decode` round-trips for any structurally-valid answer.
     #[test]
     fn answer_round_trips(ans in arb_answer()) {
         let bytes = ans.encode();
         prop_assert_eq!(&ans, &Answer::decode(&bytes).expect("our own encoding decodes"));
     }
 
-    /// `HostFault::encode`→`decode` round-trips — the `perturb` transport form.
     #[test]
     fn host_fault_round_trips(f in arb_host_fault()) {
         let bytes = f.encode();
         prop_assert_eq!(f, HostFault::decode(&bytes).expect("our own encoding decodes"));
     }
 
-    /// `Action::encode`→`decode` round-trips for either plane.
     #[test]
     fn action_round_trips(a in arb_action()) {
         let bytes = a.encode();
         prop_assert_eq!(&a, &Action::decode(&bytes).expect("our own encoding decodes"));
     }
 
-    /// `EnvSpec::decode` is total on arbitrary bytes — only Ok or Err, never a
-    /// panic or an out-of-bounds read.
     #[test]
     fn envspec_decode_never_panics(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
         let _ = EnvSpec::decode(&bytes);
     }
 
-    /// `Answer::decode`, `HostFault::decode`, `Action::decode` are total on
-    /// arbitrary bytes.
     #[test]
     fn catalog_decode_never_panics(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
         let _ = Answer::decode(&bytes);
@@ -62,7 +50,6 @@ proptest! {
         let _ = Action::decode(&bytes);
     }
 
-    /// A valid blob with its version field bumped decodes to `BadVersion`.
     #[test]
     fn off_version_is_bad_version(spec in arb_spec()) {
         let mut bytes = canon(spec).encode();

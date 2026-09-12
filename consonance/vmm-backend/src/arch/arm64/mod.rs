@@ -1,18 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The arm64 vendor: the [`Arch`] implementation ([`Arm64`]) and its value-type
-//! vocabulary — the exit variants ([`Arm64Exit`]), the vCPU record set
-//! ([`Arm64VcpuState`] and its subrecords), the installed-policy tables
-//! ([`Arm64Policy`]: [`IdRegModel`] + [`SysregTrapPolicy`]), the injectable
-//! events ([`Arm64Injection`]), the GICv3 interrupt identity ([`GicIntId`]),
-//! and the capability flags ([`Arm64Caps`]).
-//!
-//! This is the `docs/ARCHITECTURE.md` pre-build skeleton (`hm-cbt`): built
-//! against the *unfrozen* trait (designed-not-frozen — AA-3's trait-freeze memo
-//! owns the freeze), trusted only once M4's native msr1 validation returns GO.
-//! Every measured constant is a named `TODO(AA-N)`,
-//! never a default; the one number stated here as fact — `BR_RETIRED` raw
-//! event `0x21` — is a documented hardware fact (Arm ARM PMU event
-//! enumeration), not a measurement.
 
 mod state;
 
@@ -26,7 +12,6 @@ pub(crate) use state::{canonicalize_core_regs, has_noncanonical_core_regs};
 use crate::arch::{Arch, ArchExit};
 use crate::exit::ExitReason;
 
-/// The arm64 vendor (a zero-sized type; see `docs/ARCHITECTURE.md`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Arm64;
 
@@ -40,36 +25,9 @@ impl Arch for Arm64 {
     type Completion = Arm64Completion;
 }
 
-/// The arm64-specific exit variants — the per-ISA half of the two-level
-/// [`Exit`](crate::Exit). Cross-arch exits (MMIO — including the arm64
-/// reserved-GPA hypercall doorbell — idle/WFI, shutdown, deadline) live in
-/// [`CommonExit`](crate::CommonExit); do **not** duplicate them here.
-///
-/// **The whole enum is patched-ABI surface, not stock**: stock KVM/arm64
-/// emulates supported sysregs and UNDEFs unsupported ones **in-kernel** — it
-/// never surfaces a sysreg trap to userspace (there is no MSR-filter
-/// analogue). So no variant here is reachable on the stock backend, exactly as
-/// x86's `Cpuid`/`Rdtsc`/`Hypercall` exits are patched-only. The variants
-/// exist for the AA-3 patched backend; the roster grows exactly as the AA-6
-/// contract truth table dictates, each variant exhaustively matched by
-/// `dispatch_arch` (no wildcard arm — default-deny stays structural).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Arm64Exit {
-    /// A trapped ID/PMU/timer system-register access (the `HCR_EL2`/`MDCR_EL2`
-    /// trap groups' userspace surface). A read (`write == None`) resolves via
-    /// `complete_read` or `complete_fault` (deny-UNDEF); a write via
-    /// `complete_ok` or `complete_fault` — mirroring the x86 MSR exit
-    /// discipline. `TODO(patched-abi)`: the concrete exit ABI is the AA-3
-    /// 0004-analogue patch's; this variant is the ruled *shape* only.
-    Sysreg {
-        /// The system-register encoding, packed `op0:op1:CRn:CRm:op2` exactly
-        /// as ESR_EL2's ISS encodes a trapped `MRS`/`MSR` (bits `[21:1]` of
-        /// the ISS, the architectural sysreg identity).
-        sysreg: u32,
-        /// `Some(v)` = a trapped write of `v` (`MSR`); `None` = a trapped read
-        /// (`MRS`, awaits `complete_read`/`complete_fault`).
-        write: Option<u64>,
-    },
+    Sysreg { sysreg: u32, write: Option<u64> },
 }
 
 impl ArchExit for Arm64Exit {
@@ -86,113 +44,53 @@ impl ArchExit for Arm64Exit {
     }
 }
 
-/// A GICv3 interrupt identity (INTID) — the arm64 [`Arch::IntId`]. `u32`-wide:
-/// SGIs `0..16` (**deliverable** — not reserved as x86's vectors `< 16` are),
-/// PPIs `16..32`, SPIs `32..=` the distributor-configured implementation limit
-/// (`GICD_TYPER.ITLinesNumber`, architectural max **1019**); `1020..1024` are
-/// special INTIDs ([`GicIntId::SPURIOUS`] = 1023); `1024..` (extended SPI /
-/// LPI) are not modeled by the skeleton.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(transparent)]
 pub struct GicIntId(pub u32);
 
 impl GicIntId {
-    /// The spurious INTID (`1023`): "no interrupt pending" at acknowledge.
     pub const SPURIOUS: GicIntId = GicIntId(1023);
-    /// The architectural maximum ordinary SPI INTID (`1019`).
     pub const MAX_SPI: u32 = 1019;
 
-    /// `true` for a software-generated interrupt (`0..16`).
     pub fn is_sgi(self) -> bool {
         self.0 < 16
     }
 
-    /// `true` for a private peripheral interrupt (`16..32`).
     pub fn is_ppi(self) -> bool {
         (16..32).contains(&self.0)
     }
 
-    /// `true` for a shared peripheral interrupt (`32..=1019`).
     pub fn is_spi(self) -> bool {
         (32..=Self::MAX_SPI).contains(&self.0)
     }
 }
 
-/// An event the VMM injects at a V-time-chosen boundary. arm64 has no NMI: the
-/// only maskable-injection identity is a GIC INTID (IRQ; FIQ/Group-0 is not
-/// modeled by the skeleton — `TODO(AA-6)`: the contract's group model).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Arm64Injection {
-    /// A maskable interrupt identity for the next injectable entry.
-    Interrupt {
-        /// The GICv3 INTID.
-        intid: GicIntId,
-    },
+    Interrupt { intid: GicIntId },
 }
 
-/// The installed arm64 CPU-contract policy: the frozen synthetic `ID_AA64*`
-/// model and the default-deny trapped-sysreg table, installed together
-/// (before the first run) through [`Backend::set_policy`](crate::Backend).
-///
-/// **A policy *skeleton*** (spec non-goal 5): the shapes are ruled
-/// (`docs/ARCHITECTURE.md`, ARM row — "ID-reg freeze + trapped-sysreg
-/// table, same data-driven table→model→enforce shape"), but the concrete row
-/// set is `TODO(AA-6)` (the enforcement-mechanism truth table) and the trap
-/// *enforcement* is `TODO(patched-abi)` (AA-3). It does not claim enforcement
-/// completeness.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Arm64Policy {
-    /// The shared guest-visible ID-register model, installed config-time via KVM's writable-ID-register
-    /// surface (`KVM_SET_ONE_REG` on the ID regs before the first `KVM_RUN`) —
-    /// reachable on stock KVM.
     pub id_regs: IdRegModel,
-    /// The default-deny trapped-sysreg table. Recording the shape only: the
-    /// runtime trap-to-userspace enforcement is the AA-3 patched backend's.
     pub sysreg_traps: SysregTrapPolicy,
 }
 
-/// The frozen guest-visible `ID_AA64*` register values, keyed by the packed
-/// `op0:op1:CRn:CRm:op2` sysreg encoding (the same packing as
-/// [`Arm64Exit::Sysreg`]). Sorted map so iteration order (and any encoding
-/// derived from it) is deterministic (rule #4).
-///
-/// Empty in the skeleton: the concrete frozen values are the ARM CPU
-/// contract's — `TODO(AA-6)`.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct IdRegModel {
-    /// `packed sysreg encoding → frozen value`.
     pub regs: std::collections::BTreeMap<u32, u64>,
 }
 
-/// The default-deny trapped-sysreg table: the set of sysreg encodings whose
-/// guest access must surface (patched ABI) rather than be emulated in-kernel.
-/// **Default-deny is the posture, not this set**: an encoding absent here is
-/// denied *by the contract*, and the skeleton's empty set simply records that
-/// no row has been ruled yet — `TODO(AA-6)`: the enforcement-mechanism truth
-/// table supplies the rows; `TODO(patched-abi)`: AA-3 supplies the exits.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct SysregTrapPolicy {
-    /// The packed sysreg encodings to trap.
     pub trapped: std::collections::BTreeSet<u32>,
 }
 
-/// The arm64 runtime feature payload: ownership of the guest interrupt controller.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Arm64Caps {
-    /// The backend owns an in-kernel GICv3 whose guest MMIO and ICC system
-    /// register interface do not exit to the userspace `gicv3` model. In that
-    /// composition the VMM drives level inputs through
-    /// [`Backend::set_pending_irq`](crate::Backend::set_pending_irq), and the
-    /// backend carries the controller's canonical migration state in its vCPU
-    /// snapshot. `false` means interrupt state is userspace-owned or absent.
     pub in_kernel_gic: bool,
 }
 
-/// The arm64 arch-payload completions ([`Arch::Completion`]). **Uninhabited in
-/// the skeleton**: the one arch exit ([`Arm64Exit::Sysreg`]) resolves through
-/// the neutral `complete_read`/`complete_ok`/`complete_fault` trio, and no
-/// arm64 completion carries an arch-shaped payload (x86's is the CPUID quad).
-/// Grows only as the AA-6 contract dictates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Arm64Completion {}
 

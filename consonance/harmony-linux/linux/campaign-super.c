@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// campaign-super — a supervised process with a PLANTED, fault-triggerable bug
-// (task 60). The added component of the Postgres-campaign workload image.
+// campaign-super — a supervised process with a PLANTED, fault-triggerable bug.
+// The added component of the Postgres-campaign workload image.
 //
 // The bug in one sentence: the process keeps a small "ledger" (a canary + a
 // retry budget) in a FIXED-address, mlock'd guest page and runs a bounded,
@@ -9,7 +9,7 @@
 // to that ledger word (a host CorruptMemory fault flipping the budget's sign bit
 // or the canary) is the *only* way to reach the "impossible" branch, which the
 // supervisor reports through a distinctive serial marker + isa-debug-exit
-// (mapped to Crash{Panic} by the task-58 server). No upset ⇒ the loop completes
+// (mapped to Crash{Panic} by the server). No upset ⇒ the loop completes
 // and the guest reaches its ordinary forced-reboot terminal (Crash{Shutdown}),
 // which the campaign oracle treats as benign.
 //
@@ -59,7 +59,7 @@
 #define ITERS 200000000L
 // The isa-debug-exit port (vmm-core `ISA_DEBUG_EXIT_PORT`) and the FAIL code the
 // supervisor writes to it. A nonzero code → DebugExit{code} → Crash{Panic};
-// 0x60 tags "task 60".
+// 0x60 tags this benchmark's failure marker.
 #define ISA_DEBUG_EXIT_PORT 0xF4
 #define FAIL_CODE 0x60
 
@@ -189,9 +189,9 @@ int main(void)
     // `l->` access is a volatile load/store (above), so the guards are never
     // optimized out and the host's flip is always seen.
     //
-    // Realistic operational logging (task 69 M2 — see IMPLEMENTATION §"guest
+    // Realistic operational logging (see IMPLEMENTATION §"guest
     // logging"): a supervised retry-worker emits periodic health/progress lines a
-    // real service would, so the log-template signal (task 67) has a workload to
+    // real service would, so the log-template signal has a workload to
     // read. Every line below is **bug-agnostic by construction** — its content is
     // a function of the worker's *normal* budget cycle `[0, BUDGET_MAX/2)`,
     // chosen WITHOUT reference to the planted trigger (which fires only when

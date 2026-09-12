@@ -1,14 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 1 — timer round-trip property tests.
-//!
-//! For arbitrary `(timer_hz, divide, initial_count, now_vns, mode)`: arming at
-//! `t0` makes `next_timer_deadline()` exactly `t0 + ceil(N·divide·1e9/timer_hz)`;
-//! the Current Count read at `t0` is exactly `N` (the arming-instant round trip —
-//! must hold for *every* `timer_hz`, including non-dividing ones like
-//! `24_000_000`); the Current Count at `t0 + Δ` equals `N − floor(Δ·timer_hz /
-//! (divide·1e9))`, monotonically non-increasing and 0 at/after the deadline; and
-//! a periodic timer lands its vector in IRR once per period with exact re-arm
-//! instants.
 
 use lapic::{APIC_LVT_TIMER, APIC_SVR, APIC_TDCR, APIC_TMCCT, APIC_TMICT, Lapic, LapicConfig};
 use proptest::prelude::*;
@@ -19,33 +9,25 @@ const SVR_ENABLE: u32 = 1 << 8;
 const MODE_ONESHOT: u32 = 0b00;
 const MODE_PERIODIC: u32 = 0b01;
 
-/// Reference divide-config decoder (mirrors the crate-private one): bits [3,1,0]
-/// select the divisor, bit 2 ignored; `0b111` is ÷1.
 fn divide_value(tdcr: u32) -> u64 {
     let sel = ((tdcr & 0b1000) >> 1) | (tdcr & 0b11);
     if sel == 0b111 { 1 } else { 2u64 << sel }
 }
 
-/// Reference period: `ceil(N·divide·1e9 / timer_hz)`, saturating to `u64::MAX`.
 fn period_vns(timer_hz: u64, divide: u64, n: u32) -> u64 {
     let numer = u128::from(n) * u128::from(divide) * NS_PER_SEC;
     u64::try_from(numer.div_ceil(u128::from(timer_hz))).unwrap_or(u64::MAX)
 }
 
-/// Reference elapsed ticks over `delta` ns: `floor(Δ·timer_hz / (divide·1e9))`,
-/// saturating to `u32::MAX`.
 fn elapsed_ticks(timer_hz: u64, divide: u64, delta: u64) -> u32 {
     let ticks = (u128::from(delta) * u128::from(timer_hz)) / (u128::from(divide) * NS_PER_SEC);
     u32::try_from(ticks).unwrap_or(u32::MAX)
 }
 
-/// Build an LVT-timer register value.
 fn lvt_timer(vector: u8, mode: u32, masked: bool) -> u32 {
     u32::from(vector) | (mode << 17) | (if masked { 1 << 16 } else { 0 })
 }
 
-/// A software-enabled LAPIC with the timer programmed (divide, LVT mode/vector)
-/// but not yet armed.
 fn armed_setup(timer_hz: u64, tdcr: u32, vector: u8, mode: u32) -> Lapic {
     let mut l = Lapic::new(LapicConfig {
         apic_id: 0,
@@ -59,8 +41,6 @@ fn armed_setup(timer_hz: u64, tdcr: u32, vector: u8, mode: u32) -> Lapic {
     l
 }
 
-/// A strategy biased toward tricky frequencies (non-dividing, the 25 MHz
-/// crystal, extremes) plus a broad random span.
 fn timer_hz_strategy() -> impl Strategy<Value = u64> {
     prop_oneof![
         Just(1u64),
@@ -75,8 +55,6 @@ fn timer_hz_strategy() -> impl Strategy<Value = u64> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
-    /// Arming-instant round trip + deadline formula + count decay, for arbitrary
-    /// inputs and *every* `timer_hz`.
     #[test]
     fn deadline_and_count_round_trip(
         timer_hz in timer_hz_strategy(),
@@ -118,8 +96,6 @@ proptest! {
         }
     }
 
-    /// Writing initial-count 0 disarms; a masked or software-disabled timer does
-    /// not arm and produces no deadline.
     #[test]
     fn disarm_and_masked_paths(
         timer_hz in timer_hz_strategy(),
@@ -148,10 +124,6 @@ proptest! {
         prop_assert_eq!(d.next_timer_deadline(), None);
     }
 
-    /// `advance_to` is idempotent for a given `now_vns`: a repeat call at the
-    /// same V-time never re-fires or changes state — including at the `u64::MAX`
-    /// saturation boundary, where the deadline clamps and a naive `now >=
-    /// deadline` fire would loop (PR #38 regression).
     #[test]
     fn advance_to_is_idempotent(
         timer_hz in timer_hz_strategy(),
@@ -178,9 +150,6 @@ proptest! {
         prop_assert_eq!(l.snapshot(), after_first);
     }
 
-    /// At the saturation boundary, `next_timer_deadline` reports `None` (not a
-    /// clamped `u64::MAX`) and `advance_to` never fires — so a `TimerQueue`
-    /// caller cannot loop on a due-but-never-firing timer (PR #38 re-review).
     #[test]
     fn unrepresentable_deadline_is_none_and_never_fires(
         timer_hz in timer_hz_strategy(),
@@ -208,8 +177,6 @@ proptest! {
         }
     }
 
-    /// A count loaded while the LVT timer is masked arms on unmask, counting from
-    /// the unmask instant (PR #38 re-review).
     #[test]
     fn masked_load_then_unmask_arms(
         timer_hz in timer_hz_strategy(),
@@ -229,7 +196,6 @@ proptest! {
         prop_assert_eq!(l.mmio_read(APIC_TMCCT, unmask_at).unwrap(), n);
     }
 
-    /// One-shot fires exactly once and then stops.
     #[test]
     fn oneshot_fires_once(
         timer_hz in timer_hz_strategy(),
@@ -253,8 +219,6 @@ proptest! {
         prop_assert!(!l.advance_to(deadline.saturating_add(1)));
     }
 
-    /// Periodic: the LVT-timer vector lands in IRR exactly once per period, and
-    /// each re-arm instant is exact (drift-free cadence).
     #[test]
     fn periodic_fires_each_period(
         timer_hz in timer_hz_strategy(),
@@ -283,9 +247,6 @@ proptest! {
     }
 }
 
-/// Independent reference for the unified timer model. `count_at_arm` is the count
-/// remaining at `arm_vns` (the anchor); the deadline / Current Count are measured
-/// from it, so a divide change re-anchors instead of rewriting history.
 struct TimerRef {
     timer_hz: u64,
     enabled: bool,
@@ -301,8 +262,6 @@ struct TimerRef {
 }
 
 impl TimerRef {
-    /// A fresh `Lapic::new`: software-disabled, LVT timer masked (mode 0), no
-    /// count loaded.
     fn fresh(timer_hz: u64) -> Self {
         TimerRef {
             timer_hz,
@@ -334,7 +293,6 @@ impl TimerRef {
         u32::try_from(ticks).unwrap_or(u32::MAX)
     }
 
-    /// Current Count: remaining when running, else 0.
     fn current_count(&self) -> u32 {
         if !self.running {
             return 0;
@@ -348,7 +306,6 @@ impl TimerRef {
         self.running.then(|| self.current_count())
     }
 
-    /// The one re-arm path (mirrors `Lapic::retime`).
     fn retime(&mut self, prior_remaining: Option<u32>, old_divide: u64) {
         if !self.armable() {
             self.running = false;
@@ -368,15 +325,12 @@ impl TimerRef {
         self.running = true;
     }
 
-    /// Initial Count write: a fresh arm of the new count.
     fn arm(&mut self, n: u32) {
         self.initial_count = n;
         self.pending = n != 0;
         self.retime(None, divide_value(self.divide_config));
     }
 
-    /// A config change (LVT mask/mode, SVR enable, or Divide): capture the prior
-    /// remaining + divisor, apply, then re-time.
     fn config_write(&mut self, apply: impl FnOnce(&mut Self)) {
         let prior = self.running_remaining();
         let old_divide = divide_value(self.divide_config);
@@ -391,7 +345,6 @@ impl TimerRef {
         u64::try_from(u128::from(self.arm_vns) + self.period_for(self.count_at_arm)).ok()
     }
 
-    /// Returns whether the timer fired at `t` (mirrors `advance_to`'s bool).
     fn advance(&mut self, t: u64) -> bool {
         self.now = t;
         if !self.running {

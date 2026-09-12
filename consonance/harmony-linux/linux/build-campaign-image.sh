@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the **Postgres-campaign workload initramfs** (task 60): the task-37
-# bare-Postgres image (a static busybox + a real PostgreSQL 17 install + a
+# Build the **Postgres-campaign workload initramfs**: the bare-Postgres image (a static busybox + a real PostgreSQL 17 install + a
 # pre-`initdb`'d RAM-backed ext4 cluster) plus the planted-bug supervisor
 # `campaign-super` and the `campaign-init.sh` /init that runs it. Produces
 # consonance/harmony-linux/build/initramfs-campaign.cpio.gz.
@@ -12,9 +11,9 @@
 #   2. campaign-init.sh installed as /init (postgres workload → supervisor).
 # Everything else — the pinned .debs, the determinism overlay, the fixed-UUID
 # ext4, the reproducible cpio packing — is identical to the postgres image, so
-# the campaign image inherits task 37's determinism closure verbatim.
+# the campaign image inherits the postgres image's determinism closure verbatim.
 #
-# The companion kernel is the *unchanged* task-36 container-class bzImage (no
+# The companion kernel is the *unchanged* container-class bzImage (no
 # kernel change: mmap/mlock/ioperm(CONFIG_X86_IOPL_IOPERM, default y)/DEVPORT are
 # all already available — the foreman verifies these on the box; if ioperm is
 # absent, campaign-super's /dev/port fallback path is used instead).
@@ -41,7 +40,7 @@ fi
 PGV=$PG_MAJOR                                  # from versions.lock
 PG_UID=70                                      # guest postgres uid/gid (Debian's)
 BUILD_UID=65534                                # non-root uid for the build-time initdb
-FIXED_UUID="deadbeef-0000-0000-0000-000000000060"   # pinned ext4 UUID (task 60)
+FIXED_UUID="deadbeef-0000-0000-0000-000000000060"   # pinned ext4 UUID
 EXT4_SIZE=96M                                   # cluster (~22M) + workload WAL headroom
 WORKLOAD_N=20                                   # fixed insert/select iterations
 
@@ -152,7 +151,7 @@ setpriv --reuid="$BUILD_UID" --regid="$BUILD_UID" --clear-groups env LC_ALL=C.UT
     || { cat "$BUILD_ROOT/campaign-initdb.log"; exit 1; }
 cat >>"$STAGEFS/pgdata/postgresql.conf" <<EOF
 
-# --- task 37 determinism overlay (see consonance/harmony-linux/linux/README.md) ---
+# --- determinism overlay (see consonance/harmony-linux/linux/README.md) ---
 listen_addresses = ''
 unix_socket_directories = '/tmp'
 fsync = on
@@ -175,7 +174,7 @@ mke2fs -q -t ext4 -U "$FIXED_UUID" \
     -E lazy_itable_init=0,lazy_journal_init=0 \
     -d "$STAGEFS" -F "$EXT4" "$EXT4_SIZE"
 
-# --- 4. the baked workload v2 (task 42), identical to the postgres image ------
+# --- 4. the baked workload v2, identical to the postgres image ------
 {
     echo "CREATE TABLE ledger(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), i int, t timestamptz);"
     i=1

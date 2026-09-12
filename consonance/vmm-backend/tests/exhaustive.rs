@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 5 — exhaustiveness. A `match` over each vendor's `Exit<A>` with **no
-//! wildcard** compiles (the variant set is closed and the contract surface is
-//! complete), and `ExitCounts::entries()` covers every `ExitReason` exactly
-//! once — across **both** vendors' rosters (the counter roster names the whole
-//! trapped surface; it grew its arm64 variant additively, appended after the
-//! pre-arm64 prefix). Portable; no mock needed.
 
 use vmm_backend::{
     Arm64, Arm64Exit, CommonExit, Exit, ExitCounts, ExitReason, Gpa, HypercallFrame, X86, X86Exit,
 };
 
-/// Classify every `Exit<X86>` with a wildcard-free `match`. If a variant is ever added
-/// without updating this arm, the crate stops compiling — that is the gate.
 fn classify(exit: &Exit<X86>) -> ExitReason {
     match exit {
         Exit::Arch(X86Exit::Io { .. }) => ExitReason::Io,
@@ -25,8 +17,6 @@ fn classify(exit: &Exit<X86>) -> ExitReason {
     }
 }
 
-/// The arm64 twin: a wildcard-free `match` over `Exit<Arm64>` (the second
-/// vendor's closed variant set — the two-level default-deny holds per vendor).
 fn classify_arm64(exit: &Exit<Arm64>) -> ExitReason {
     match exit {
         Exit::Common(CommonExit::Mmio { .. }) => ExitReason::Mmio,
@@ -37,8 +27,6 @@ fn classify_arm64(exit: &Exit<Arm64>) -> ExitReason {
     }
 }
 
-/// One value of every `Exit<X86>` variant — the closed set the x86 contract
-/// enumerates, in `ExitCounts` field order (the pre-arm64 roster prefix).
 fn one_of_each() -> [Exit<X86>; 8] {
     [
         Exit::Arch(X86Exit::Io {
@@ -66,9 +54,6 @@ fn one_of_each() -> [Exit<X86>; 8] {
     ]
 }
 
-/// One value of every **arm64-only** `Exit<Arm64>` arch variant (the common
-/// exits already appear in [`one_of_each`]; only the vendor's own variants add
-/// roster entries).
 fn arm64_one_of_each() -> [Exit<Arm64>; 1] {
     [Exit::Arch(Arm64Exit::Sysreg {
         sysreg: 0x0018_0000,

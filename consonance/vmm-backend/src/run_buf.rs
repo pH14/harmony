@@ -1,39 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `RunBuf` — a bounds-checked window over a raw byte region.
-//!
-//! This is one of the crate's two **Miri-driveable pointer seams** (the other is
-//! [`crate::region`]). On the box it wraps the `mmap`-ed `kvm_run` shared page so
-//! the run loop can read a PIO `OUT` value out of the data buffer and write an
-//! `IN` value back; in tests and under Miri it wraps a fake `alloc_zeroed` page
-//! so **all the offset math is exercised with no syscall** (the
-//! `hypercall-doorbell` precedent, `AGENTS.md` / `AGENTS.md`).
-//!
-//! Both accessors bound-check `offset + len <= len` **before** any pointer
-//! arithmetic or copy. That check is the load-bearing safety property: no offset,
-//! however large, can read or write past the region or trigger UB — an
-//! out-of-bounds request is a [`BackendError::Memory`], never undefined behavior.
-//! Construction is the only `unsafe`: the caller vouches that `ptr` names `len`
-//! live, exclusively-owned bytes (on the box, the kernel-owned `kvm_run`). The
-//! accessors themselves are safe to call with any arguments.
 
 use core::ptr;
 
 use crate::error::{BackendError, Result};
 
-/// A bounds-checked window over `len` raw bytes at `ptr`.
-///
-/// Held as a raw pointer (never a `&mut [u8]` field) because on the box the
-/// kernel writes the page out-of-band across `KVM_RUN`, exactly as
-/// `hypercall-doorbell` holds its shared pages: a reference live across that write
-/// would be aliasing UB.
 pub(crate) struct RunBuf {
     ptr: *mut u8,
     len: usize,
 }
 
 impl RunBuf {
-    /// Wrap `len` bytes at `ptr`.
-    ///
     /// # Safety
     /// `ptr` must point to `len` contiguous, initialized, exclusively-owned bytes
     /// that stay live and at a fixed address for the lifetime of this `RunBuf`,
@@ -44,7 +20,6 @@ impl RunBuf {
         Self { ptr, len }
     }
 
-    /// Bound check: `off + size <= len`, computed without overflow.
     fn check(&self, off: usize, size: usize) -> Result<()> {
         match off.checked_add(size) {
             Some(end) if end <= self.len => Ok(()),
@@ -52,7 +27,6 @@ impl RunBuf {
         }
     }
 
-    /// Copy `dst.len()` bytes out of the region starting at `off`.
     pub(crate) fn read_bytes(&self, off: usize, dst: &mut [u8]) -> Result<()> {
         self.check(off, dst.len())?;
         // SAFETY: `check` proved `off + dst.len() <= len`; the read stays
@@ -62,7 +36,6 @@ impl RunBuf {
         Ok(())
     }
 
-    /// Copy `src` into the region starting at `off`.
     pub(crate) fn write_bytes(&mut self, off: usize, src: &[u8]) -> Result<()> {
         self.check(off, src.len())?;
         // SAFETY: `check` proved `off + src.len() <= len`; the write stays
@@ -75,17 +48,10 @@ impl RunBuf {
 
 #[cfg(test)]
 mod tests {
-    //! These drive the unsafe pointer/offset logic with a fake page so the
-    //! **Miri** gate (`cargo +nightly miri test -p vmm-backend`) scrutinizes it
-    //! for UB with no syscall. The page is a raw `alloc_zeroed` allocation
-    //! reached only through its pointer (the production shape: raw RAM, not a
-    //! `Box` — mirrors `hypercall-doorbell`'s `Page`), so the seam is clean under
-    //! the default Stacked-Borrows model.
 
     use super::*;
     use std::alloc::{Layout, alloc_zeroed, dealloc};
 
-    /// A 4 KiB-aligned, `len`-byte scratch page reached only by raw pointer.
     struct Scratch {
         ptr: *mut u8,
         layout: Layout,

@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 3 — strict decode / fuzz robustness. Every malformed blob yields the
-//! matching `VmStateError`, never a panic.
 
 mod common;
 
@@ -8,10 +6,8 @@ use common::{config, fully_populated};
 use proptest::prelude::*;
 use vm_state::{ARCH_X86_64, VM_STATE_MAGIC, VM_STATE_VERSION, VmState, VmStateError};
 
-/// magic:u32 + version:u16 + arch:u16 + section_count:u16 (v2 — the arch tag).
 const HEADER_LEN: usize = 10;
 
-/// Split a valid blob into its `(section_count_field, [(tag, payload)])`.
 fn split(blob: &[u8]) -> (u16, Vec<(u16, Vec<u8>)>) {
     let count = u16::from_le_bytes([blob[8], blob[9]]);
     let mut secs = Vec::new();
@@ -27,7 +23,6 @@ fn split(blob: &[u8]) -> (u16, Vec<(u16, Vec<u8>)>) {
     (count, secs)
 }
 
-/// Re-pack a header with the given section count and section list.
 fn pack(count: u16, secs: &[(u16, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&VM_STATE_MAGIC.to_le_bytes());
@@ -65,10 +60,6 @@ fn wrong_version() {
     );
 }
 
-/// The v2 arch tag is a **hard gate on the record set**: a blob whose sections are
-/// byte-perfect but whose arch tag is another architecture's is REJECTED, never
-/// decoded into this build's x86 fields (`docs/ARCHITECTURE.md` — versioned
-/// wire evolution, never silent reinterpretation).
 #[test]
 fn foreign_arch_tag_is_rejected_not_reinterpreted() {
     let mut blob = valid();
@@ -204,16 +195,12 @@ fn bad_mp_state_byte() {
 proptest! {
     #![proptest_config(config(1024))]
 
-    /// Arbitrary bytes never panic decode or peek_version.
     #[test]
     fn arbitrary_bytes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
         let _ = VmState::decode(&bytes);
         let _ = VmState::peek_version(&bytes);
     }
 
-    /// A single-byte mutation of a valid blob never panics, and never silently
-    /// decodes to a state that re-encodes to *different* bytes (decode only ever
-    /// accepts canonical blobs).
     #[test]
     fn mutated_valid_blob_never_panics(
         idx in any::<prop::sample::Index>(),

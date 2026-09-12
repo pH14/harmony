@@ -1,10 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Shared test helpers: proptest strategies over the catalog, the host plane,
-//! and the reproducer; a canonicalizer; a reference admissibility check
-//! independent of the crate's own (so the override-semantics gate is a real
-//! cross-check, not a tautology); and a frontier-simulating runner that drives a
-//! `RecordedEnv` over a `Moment`-stamped schedule. Each `tests/*.rs` pulls only
-//! what it needs.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -16,8 +10,6 @@ use fault_policy::{
     FaultPolicy, FlowEvent, HostFault, Moment, NodeId, Outcome, Ratio, Span, StandingFault,
 };
 
-/// Proptest config: spec case count, cut hard under Miri (kept for portability
-/// even though this crate has no `unsafe`).
 pub fn config(cases: u32) -> ProptestConfig {
     let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { cases });
     if cfg!(miri) {
@@ -69,7 +61,6 @@ pub fn arb_fault() -> impl Strategy<Value = Fault> {
     ]
 }
 
-/// A non-zero-denominator [`Ratio`] (every constructed ratio is valid).
 pub fn arb_ratio() -> impl Strategy<Value = Ratio> {
     (any::<u64>(), 1u64..=u64::MAX)
         .prop_map(|(num, den)| Ratio::new(num, den).expect("den >= 1 by strategy bound"))
@@ -87,8 +78,6 @@ pub fn arb_host_fault() -> impl Strategy<Value = HostFault> {
     ]
 }
 
-/// An arbitrary action from either plane (guest answers may be inadmissible — for
-/// override/codec fuzzing).
 pub fn arb_action() -> impl Strategy<Value = Action> {
     prop_oneof![
         arb_host_fault().prop_map(Action::Host),
@@ -96,7 +85,6 @@ pub fn arb_action() -> impl Strategy<Value = Action> {
     ]
 }
 
-/// An arbitrary (possibly inadmissible) answer — for override/codec fuzzing.
 pub fn arb_answer() -> impl Strategy<Value = Answer> {
     prop_oneof![
         Just(Answer::Nominal),
@@ -105,8 +93,6 @@ pub fn arb_answer() -> impl Strategy<Value = Answer> {
     ]
 }
 
-/// A non-baseline policy: every fault class gets a random probability (`den ≥ 1`)
-/// and a random eligible subset.
 pub fn arb_policy() -> impl Strategy<Value = FaultPolicy> {
     (
         (
@@ -168,8 +154,6 @@ pub fn arb_class() -> impl Strategy<Value = DecisionClass> {
     ]
 }
 
-/// An arbitrary decision point. Supply lengths stay small so the suite is quick
-/// and supply allocations stay bounded.
 pub fn arb_point() -> impl Strategy<Value = DecisionPoint> {
     prop_oneof![
         (0u32..=4096).prop_map(|bytes| DecisionPoint::Entropy { bytes }),
@@ -202,19 +186,14 @@ pub fn arb_standing() -> impl Strategy<Value = StandingFault> {
         })
 }
 
-/// An arbitrary `Moment`-keyed override map (host and guest actions on one axis).
 pub fn arb_overrides() -> impl Strategy<Value = BTreeMap<Moment, Action>> {
     prop::collection::btree_map(any::<u64>(), arb_action(), 0..12)
 }
 
-/// An arbitrary `Moment`-keyed reseed-marker table (task 78).
 pub fn arb_reseeds() -> impl Strategy<Value = BTreeMap<Moment, u64>> {
     prop::collection::btree_map(any::<u64>(), any::<u64>(), 0..6)
 }
 
-/// An arbitrary reproducer spec (standing in arbitrary order; use [`canon`]
-/// before a structural round-trip comparison — the override map is already
-/// canonical, being a `BTreeMap`).
 pub fn arb_spec() -> impl Strategy<Value = EnvSpec> {
     prop_oneof![
         (any::<u64>(), arb_policy()).prop_map(|(seed, policy)| EnvSpec::Seeded { seed, policy }),
@@ -242,9 +221,6 @@ pub fn arb_spec() -> impl Strategy<Value = EnvSpec> {
     ]
 }
 
-/// Canonicalize a spec the way [`EnvSpec::encode`] does: sort standing by its
-/// key, dropping duplicates. (The override map is a `BTreeMap`, so it is already
-/// canonical.) `decode(encode(canon(s)))` equals `canon(s)`.
 pub fn canon(spec: EnvSpec) -> EnvSpec {
     match spec {
         EnvSpec::Recorded {
@@ -274,10 +250,6 @@ fn standing_key(s: &StandingFault) -> (u16, &[u8], u64, u64) {
     (s.class as u16, s.target.as_slice(), s.window.0, s.window.1)
 }
 
-/// Drive a `RecordedEnv` over a `Moment`-stamped guest schedule the way the
-/// frontier would: set the `Moment` for each decision, then `decide`. Returns the
-/// answer sequence. This is the pure-crate stand-in for a real reactive run — the
-/// frontier supplies the retired-instruction count; here the test does.
 pub fn run_guest_schedule(
     env: &mut fault_policy::RecordedEnv,
     sched: &[(Moment, DecisionPoint)],
@@ -291,9 +263,6 @@ pub fn run_guest_schedule(
         .collect()
 }
 
-/// Re-derives the spec's admissibility prose so the override-semantics gate
-/// checks the implementation against an independent statement of the rule, not
-/// against itself.
 pub fn ref_admissible(point: &DecisionPoint, ans: &Answer) -> bool {
     match point {
         DecisionPoint::Entropy { bytes } | DecisionPoint::Payload { bytes } => match ans {

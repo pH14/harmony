@@ -1,29 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! M3 TCG smoke (`tasks/112`) — **liveness/shape only, no counts**.
-//!
-//! Boots the `Image`+DTB **boot artifacts this vendor produces** on QEMU's own
-//! emulated aarch64 machine (`-M virt,gic-version=3`) to a console marker,
-//! proving the guest image is well-formed and boots. It is `#[ignore]`d by
-//! default and runs only via `cargo test -- --ignored` (like the public-api
-//! harness), because it needs `clang` + `llvm-objcopy` + `qemu-system-aarch64`;
-//! when any is absent it **skips loudly** rather than failing, so a plain
-//! `cargo nextest` on a stable-only box stays green.
-//!
-//! What this proves, and what it does **not**:
-//! - it proves the arm64 `Image` header ([`image_loader`]) is recognized and
-//!   booted by a real aarch64 boot loader (QEMU), that the entry lands at the
-//!   image's first instruction, and that the [`dtb`] this vendor emits is a
-//!   structurally valid FDT QEMU accepts;
-//! - it does **not** exercise `Arm64KvmBackend` (QEMU is its *own* VMM, not our
-//!   backend — that path talks to `/dev/kvm` and is M4's, arrival-day) and it
-//!   says **nothing** about `BR_RETIRED` counts, PMIs, or exit-boundary variability — those require
-//!   independent native evidence.
-//!
-//! Evidence integrity (`docs/DETERMINISM.md`): every constituent RC is
-//! propagated — a nonzero assemble/objcopy/QEMU status, a missing marker, or a
-//! non-clean poweroff fails the test. A done-marker is never a success
-//! condition; the success condition is `marker present AND QEMU exited 0` (the
-//! payload's PSCI `SYSTEM_OFF`).
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -32,18 +7,8 @@ use std::process::Command;
 use vmm_core::vendor::arm64::board;
 use vmm_core::vendor::arm64::{dtb, image_loader};
 
-/// The console marker the payload prints; its presence in QEMU's serial output
-/// is half of the success condition (the other half is a clean PSCI poweroff).
 const MARKER: &str = "HARMONY-ARM64-BOOT";
 
-/// The **body** of the boot payload — everything *after* the 64-byte `Image`
-/// header. It writes [`MARKER`] to the PL011 console at the board's UART address
-/// and powers off via PSCI `SYSTEM_OFF`. The header (magic, sizes, and the
-/// `code0` branch over itself) is prepended by the production
-/// [`image_loader::wrap_image`], so this smoke boots the **exact** header the
-/// vendor emits — one hand-rolled header fewer to drift from [`image_loader`]'s
-/// field layout. The board PL011 address is spliced in as a literal so the
-/// payload and [`board::PL011`] can never disagree.
 fn payload_body_source() -> String {
     let uart_hi = (board::PL011.0 >> 16) as u16;
     assert_eq!(
@@ -74,8 +39,6 @@ msg:
     )
 }
 
-/// Locate `llvm-objcopy`: on PATH, else the rustlib `llvm-tools` component next
-/// to the active toolchain. Returns `None` if neither is found.
 fn find_objcopy() -> Option<PathBuf> {
     if Command::new("llvm-objcopy")
         .arg("--version")
@@ -104,9 +67,6 @@ fn tool_present(name: &str) -> bool {
     Command::new(name).arg("--version").output().is_ok()
 }
 
-/// The `timeout`/`gtimeout` binary, if present (coreutils). The payload
-/// self-exits via PSCI in well under a second, so this is a belt-and-braces
-/// hang guard, not the primary exit.
 fn timeout_cmd() -> Option<&'static str> {
     ["timeout", "gtimeout"]
         .into_iter()
@@ -164,7 +124,7 @@ fn image_and_dtb_boot_on_qemu_tcg() {
     );
     let body = std::fs::read(&body_path).expect("read payload body");
 
-    let image = image_loader::wrap_image(&body, 0, 0xA /* 4K page bits */);
+    let image = image_loader::wrap_image(&body, 0, 0xA);
     std::fs::write(&image_path, &image).expect("write wrapped Image");
 
     let hdr = image_loader::parse_header(&image)

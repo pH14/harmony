@@ -770,15 +770,17 @@ def tracked_files(repo_root: Path) -> list[str]:
         text=True,
         check=True,
     )
-    return [p for p in result.stdout.split("\0") if p]
+    # This script defines the patterns it searches for, so it cannot lint itself.
+    self_path = str(Path(__file__).resolve().relative_to(repo_root))
+    return [p for p in result.stdout.split("\0") if p and p != self_path]
 
 
 def check_content_rules(
     repo_root: Path, files: list[str], baseline: dict[str, list[str]]
-) -> tuple[list[Violation], set[str]]:
-    """Return (new_violations, baseline_entries_still_present)."""
+) -> tuple[list[Violation], set[tuple[str, str]]]:
+    """Return (new_violations, baseline (rule, key) pairs still present)."""
     new_violations: list[Violation] = []
-    still_baselined: set[str] = set()
+    still_baselined: set[tuple[str, str]] = set()
 
     for rule in RULES:
         rule_baseline = set(baseline.get(rule.name, []))
@@ -795,7 +797,7 @@ def check_content_rules(
                 if rule.pattern.search(line):
                     key = f"{rel_path}:{i}"
                     if key in rule_baseline:
-                        still_baselined.add(key)
+                        still_baselined.add((rule.name, key))
                     else:
                         new_violations.append(
                             Violation(rule=rule.name, path=rel_path, line=i, text=line.strip())
@@ -865,7 +867,7 @@ def main(argv: list[str] | None = None) -> int:
         key = _violation_key(v)
         rule_baseline = set(baseline.get(v.rule, []))
         if key in rule_baseline:
-            still_baselined.add(key)
+            still_baselined.add((v.rule, key))
         else:
             new_file_violations.append(v)
 
@@ -875,10 +877,8 @@ def main(argv: list[str] | None = None) -> int:
         full: dict[str, list[str]] = {}
         for v in new_violations + new_file_violations:
             full.setdefault(v.rule, []).append(_violation_key(v))
-        for key in still_baselined:
-            for rule_name, keys in baseline.items():
-                if key in keys:
-                    full.setdefault(rule_name, []).append(key)
+        for rule_name, key in still_baselined:
+            full.setdefault(rule_name, []).append(key)
         save_baseline(root, full)
         count = sum(len(v) for v in full.values())
         print(f"baseline updated: {count} known violation(s) in {BASELINE_PATH}")
@@ -974,8 +974,8 @@ def main(argv: list[str] | None = None) -> int:
     stale: list[str] = []
     for rule_name, keys in baseline.items():
         for key in keys:
-            if key not in still_baselined:
-                stale.append(f"  {key}")
+            if (rule_name, key) not in still_baselined:
+                stale.append(f"  [{rule_name}] {key}")
 
     error_count = len(all_violations) + len(stale)
     if error_count > 0:

@@ -1,14 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Task 35 — kill the `lib.rs:521` `BuilderCore::seal` mutant
-//! (`self.store.next_id += 1` → `*= 1`) by assertion rather than by hang.
-//!
-//! With `*= 1` the id counter freezes at 0, so every `seal` hands out id 0. That
-//! makes a derived child reuse its parent's id, leaving a self-parented layer
-//! whose chain walk (`resolve`/`materialize`/`gc`) never terminates — which is
-//! why the surviving mutant showed up only as a ~372 s *timeout*. The test below
-//! seals several snapshots and asserts their ids are **distinct**, a check that
-//! fails fast on the first comparison and performs **no** chain walk, so a frozen
-//! counter is caught deterministically by an assertion, not by the hang.
 
 use snapshot_store::{PAGE_SIZE, Store, StoreConfig};
 

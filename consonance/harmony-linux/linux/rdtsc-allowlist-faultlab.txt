@@ -2,8 +2,7 @@
 # task-park build of the same series (FAULTLAB=1 ./build-kernel.sh);
 # the other kernels' baselines are rdtsc-allowlist.txt and
 # rdtsc-allowlist-gha.txt.
-# (Task 110, the
-# paravirtual clock interface reachability gate, x86 half — see
+# (The paravirtual clock interface reachability gate, x86 half — see
 # scan-counter-opcodes.sh). One `artifact:symbol+0xOFFSET` entry per line — the
 # artifact, containing function, and the rdtsc/rdtscp instruction's byte OFFSET
 # within it (cross-model r10 P1). Per-SITE, not per-function-count: a NEW read is

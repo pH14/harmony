@@ -3,7 +3,7 @@
 # Build the pinned guest kernel: a vendored **Kata Containers guest-kernel config**
 # (kata/, the container-host base) + the **determinism overlay** (config-fragment),
 # merged on top so it wins, out-of-tree at a fixed O= path, with all reproducibility
-# levers set (see lib-build.sh). Task 36 rebased the base from `tinyconfig` to Kata's
+# levers set (see lib-build.sh). The base was rebased from `tinyconfig` to Kata's
 # config; the overlay is unchanged in intent. See consonance/harmony-linux/linux/README.md.
 set -euo pipefail
 
@@ -75,7 +75,7 @@ assert_off() {
     done
 }
 # Functional must-haves for the boot-to-/init image (provided by Kata and/or overlay).
-# HARMONY_PVCLOCK (task 110) is compiled in but runtime-inert without the
+# HARMONY_PVCLOCK is compiled in but runtime-inert without the
 # harmony_pvclock kernel parameter, so one image serves as both the page-on
 # and page-off measurement arm.
 assert_y 64BIT PRINTK TTY SERIAL_8250 SERIAL_8250_CONSOLE BINFMT_ELF \
@@ -95,8 +95,8 @@ fi
 # the HPET is excluded at runtime instead — see config-fragment.)
 # Determinism overlay: every symbol below is set ON by the Kata base and must be
 # flipped OFF by config-fragment (or is absent because the overlay won the timer
-# choice). EXT4_FS is deliberately NOT here any more — the container workload
-# (tasks 37/38) needs it, and Kata provides it; see the capability audit.
+# choice). EXT4_FS is deliberately NOT here any more — the container workloads
+# need it, and Kata provides it; see the capability audit.
 # Dynticks: assert the *meaningful* tickless symbols off — NO_HZ_COMMON (selects
 # the dynticks machinery + TICK_ONESHOT) and the choice members NO_HZ_FULL/
 # NO_HZ_IDLE. NOT plain CONFIG_NO_HZ: that is the deprecated "Old Idle dynticks
@@ -115,7 +115,7 @@ fi
 echo "== kernel: building bzImage"
 make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 
-# Task 110: the counter-opcode reachability gate (paravirtual clock interface, x86
+# The counter-opcode reachability gate (paravirtual clock interface, x86
 # half) — every rdtsc/rdtscp left in the image must match a reviewed,
 # trap-backstopped allowlist entry (function + exact instruction count). Scans
 # the uncompressed vmlinux (symbols); self-tests its own ability to fail

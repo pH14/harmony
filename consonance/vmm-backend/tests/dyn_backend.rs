@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 4 — object-safety / dyn-compatibility **and** the `impl Backend for
-//! Box<B>` blanket-forward (task 21). The composition root holds a
-//! `Box<dyn Backend<A = X86>>` and injects the concrete backend at `fn main`; this test
-//! constructs one and drives **every** trait method through it, so each blanket
-//! forward is exercised with a trait-observable assertion (a mutant that drops a
-//! forward is caught: a skipped completion leaves the exit pending, so the next
-//! `run` fails `PendingCompletion`; a skipped config makes `run` fail
-//! `NotConfigured`; etc.). Compilation is itself the object-safety assertion.
 #![cfg(feature = "mock")]
 
 use vmm_backend::{
@@ -14,9 +6,6 @@ use vmm_backend::{
     VcpuState, X86, X86Completion, X86Exit, X86Policy,
 };
 
-/// Compiles only while `Backend` is dyn-compatible (no generic methods, no
-/// `Self`-by-value returns). `Box<dyn Backend<A = X86>>: Backend` is proven by the test
-/// body, which drives the blanket impl directly.
 fn _assert_object_safe(_: &dyn Backend<A = X86>) {}
 
 #[test]

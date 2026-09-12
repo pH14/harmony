@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Print the stock KVM/arm64 guest identity-register surface before policy
-//! installation. M5 uses this beside `hvf_probe` to derive the conservative
-//! cross-host register intersection from measured values.
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 fn main() -> std::process::ExitCode {

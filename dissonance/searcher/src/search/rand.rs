@@ -1,14 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! RomuDuoJr pseudo-random generator with splitmix64 seeding.
-//!
-//! Every recorded stream's draws come from this generator, so its output must
-//! stay draw-for-draw identical to the generator the recordings were made
-//! with. Algorithms: RomuDuoJr from
-//! <https://arxiv.org/pdf/2002.11331> and splitmix64 from
-//! <https://prng.di.unimi.it/splitmix64.c>; bounded draws use the 128-bit
-//! multiply-shift reduction, not modulo.
-
 use std::num::NonZeroUsize;
 
 fn splitmix64(state: &mut u64) -> u64 {
@@ -19,7 +10,6 @@ fn splitmix64(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Deterministic draw source for selection, mutation, and suffix derivation.
 #[derive(Clone, Copy, Debug)]
 pub struct RomuDuoJrRand {
     x_state: u64,
@@ -27,7 +17,6 @@ pub struct RomuDuoJrRand {
 }
 
 impl RomuDuoJrRand {
-    /// Seed both state words through splitmix64.
     #[must_use]
     pub fn with_seed(mut seed: u64) -> Self {
         Self {
@@ -36,7 +25,6 @@ impl RomuDuoJrRand {
         }
     }
 
-    /// Next 64-bit draw.
     #[expect(clippy::unreadable_literal)]
     pub fn next_u64(&mut self) -> u64 {
         let xp = self.x_state;
@@ -45,7 +33,6 @@ impl RomuDuoJrRand {
         xp
     }
 
-    /// Draw below the exclusive bound via the multiply-shift reduction.
     pub fn below(&mut self, upper_bound_excl: NonZeroUsize) -> usize {
         let mul =
             u128::from(self.next_u64()).wrapping_mul(u128::from(upper_bound_excl.get() as u64));

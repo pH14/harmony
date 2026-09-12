@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! End-to-end gate for the guest SDK with **no hypervisor**: an `Sdk` over a
-//! loopback `Transport` that services a real `hypercall_proto::Dispatcher`
-//! (exactly as `hypercall-doorbell` is loopback-tested). The SDK's every emission
-//! must land as the expected `(event_id, payload)` on the host EventSink, and the
-//! whole thing must be deterministic (same catalog + calls ⇒ identical stream).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -23,10 +18,8 @@ impl Transport for DispatcherLoopback {
     }
 }
 
-/// Recorded `(event_id, data)` pairs shared between the host service and the test.
 type EventLog = Rc<RefCell<Vec<(u32, Vec<u8>)>>>;
 
-/// Event sink recording `(id, data)` into a handle the test keeps a clone of.
 #[derive(Clone, Default)]
 struct SharedEvent(EventLog);
 
@@ -50,8 +43,6 @@ impl Service for SharedEvent {
     }
 }
 
-/// The demo catalog: two sometimes points, an always, an unreachable, a state
-/// register, and a buggify site.
 fn catalog() -> Vec<Point> {
     vec![
         Point::sometimes(1, "commit_seen"),
@@ -63,8 +54,6 @@ fn catalog() -> Vec<Point> {
     ]
 }
 
-/// Build an `Sdk` over a fresh loopback, returning it plus the shared event log.
-/// `init` has already emitted the catalog declaration.
 fn harness() -> (Sdk<DispatcherLoopback>, EventLog) {
     let events: EventLog = Rc::new(RefCell::new(Vec::new()));
     let mut d = Dispatcher::new();
@@ -73,8 +62,6 @@ fn harness() -> (Sdk<DispatcherLoopback>, EventLog) {
     (sdk, events)
 }
 
-/// The first emission is the catalog declaration (event id 0, `SDKC` magic +
-/// version + point count).
 #[test]
 fn init_declares_the_catalog_first() {
     let (_sdk, events) = harness();
@@ -91,10 +78,6 @@ fn init_declares_the_catalog_first() {
     assert_eq!(count, 6, "six declared points");
 }
 
-/// `init` rejects a catalog declaring two points at the same `(namespace, id)`
-/// coordinate — even across assert kinds, since all assert kinds share
-/// `NS_ASSERT` and would fire at one `event_id` (silently aliasing the host
-/// catalog). The same id in a DIFFERENT namespace is not a collision.
 #[test]
 fn init_rejects_duplicate_coordinates() {
     let fresh = || {
@@ -121,9 +104,6 @@ fn init_rejects_duplicate_coordinates() {
     );
 }
 
-/// `init` also rejects a catalog with two points sharing a `name`, even at
-/// distinct `(namespace, id)` coordinates — the host never-fired report is keyed
-/// by name, so a duplicate would silently alias it.
 #[test]
 fn init_rejects_duplicate_names() {
     let mut d = Dispatcher::new();
@@ -141,8 +121,6 @@ fn init_rejects_duplicate_names() {
     );
 }
 
-/// Always/sometimes/reachable/unreachable emit exactly the right disposition,
-/// and only when they should.
 #[test]
 fn assertion_verbs_emit_expected_dispositions() {
     let (mut sdk, events) = harness();
@@ -180,7 +158,6 @@ fn assertion_verbs_emit_expected_dispositions() {
     );
 }
 
-/// state_set / state_max emit `[op, value_le]` under the state namespace.
 #[test]
 fn state_verbs_emit_op_and_value() {
     let (mut sdk, events) = harness();
@@ -204,8 +181,6 @@ fn state_verbs_emit_op_and_value() {
     );
 }
 
-/// M6 SDK surface is the production op-2 protocol, not a test-only scheduler:
-/// the wrapper returns the host-prescribed next threshold and runnable index.
 #[test]
 fn coverage_yield_round_trips_through_the_sdk() {
     let events: EventLog = Rc::new(RefCell::new(Vec::new()));
@@ -219,7 +194,6 @@ fn coverage_yield_round_trips_through_the_sdk() {
     assert!(sdk.coverage_yield(7, 4, 3).is_err());
 }
 
-/// setup_complete emits the lifecycle event (empty payload).
 #[test]
 fn setup_complete_emits_the_lifecycle_event() {
     let (mut sdk, events) = harness();
@@ -229,7 +203,6 @@ fn setup_complete_emits_the_lifecycle_event() {
     assert_eq!(ev[base..], [(wire::SETUP_COMPLETE_EVENT_ID, vec![])]);
 }
 
-/// frame_complete emits an exact little-endian cumulative frame counter.
 #[test]
 fn frame_complete_emits_the_frame_clock_lifecycle_event() {
     let (mut sdk, events) = harness();
@@ -245,8 +218,6 @@ fn frame_complete_emits_the_frame_clock_lifecycle_event() {
     );
 }
 
-/// Determinism: the same catalog + call sequence yields a byte-identical event
-/// stream (the gate-4 determinism property, at the SDK layer).
 #[test]
 fn same_calls_yield_identical_event_streams() {
     fn run() -> Vec<(u32, Vec<u8>)> {
@@ -260,7 +231,6 @@ fn same_calls_yield_identical_event_streams() {
     assert_eq!(run(), run());
 }
 
-/// An id past the 24-bit local space is a typed error, never a silent overflow.
 #[test]
 fn oversize_ids_are_rejected() {
     let (mut sdk, _events) = harness();
@@ -271,7 +241,6 @@ fn oversize_ids_are_rejected() {
     assert_eq!(sdk.state_set(u32::MAX, 0), Err(SdkError::PointIdTooLarge));
 }
 
-/// A catalog too large to fit one Event frame is rejected, not truncated.
 #[test]
 fn oversize_catalog_is_rejected() {
     let events: EventLog = Rc::new(RefCell::new(Vec::new()));

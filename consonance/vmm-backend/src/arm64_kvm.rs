@@ -1,27 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **stock KVM/arm64 backend** (`tasks/112` M4), split like the x86 backend
-//! into a *pure* half (this module — the `KVM_RUN`⇄[`Exit`] decode, the register
-//! save/restore table, and the [`Backend`] orchestration over a thin syscall
-//! seam) and a *box-only* half (`arm64_kvm_sys` — the real ioctls, gated
-//! `all(target_os = "linux", target_arch = "aarch64")`).
-//!
-//! **The syscall boundary is a trait** ([`Arm64Kvm`]), so the whole backend —
-//! including the ioctl *ordering* (`KVM_ARM_VCPU_INIT` before the first
-//! `KVM_SET_ONE_REG`, policy-before-run, map-before-restore) — is asserted
-//! portably against a recording fake ([`FakeKvm`]) on the Mac and under Miri,
-//! with no `/dev/kvm` (`docs/DETERMINISM.md`: mechanism attestation
-//! without the hardware). The real ioctl path against `/dev/kvm` has
-//! **no local oracle** — it runs natively on msr1 during M4 (`hm-7pb`; the
-//! Mac has no local KVM loop, `hm-8l3` REFUSE).
-//!
-//! **The stock/patched split is load-bearing and honest** (mirroring x86, where
-//! stock surfaces Io/Mmio/MSR/Shutdown and the Hypercall/Cpuid/instruction exits
-//! are patched-only). On the **stock** backend `run` returns **only**
-//! `Mmio`/`Shutdown`; every other decode arm is patched-ABI
-//! (`// TODO(patched-abi)`, for the AA-3 backend) and the stock hardware never
-//! reaches it. Interrupt injection and the trap-group *enforcement*
-//! of the policy are all `Unsupported`/AA-gated — the skeleton claims no
-//! determinism (`capabilities()` reports every field honestly `false`).
 
 use crate::arch::arm64::{
     Arm64, Arm64GicState, Arm64VcpuState, GicIntId, canonicalize_core_regs,
@@ -32,50 +9,20 @@ use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
 use crate::types::{Gpa, MpState};
 
-/// `KVM_EXIT_MMIO` — a guest MMIO access (the entire stock userspace-device
-/// surface on arm64: guest RAM is high, device frames fault out here).
 pub(crate) const KVM_EXIT_MMIO: u32 = 6;
-/// `KVM_EXIT_SYSTEM_EVENT` — a PSCI `SYSTEM_OFF`/`RESET`/`CRASH` (the stock
-/// shutdown path).
 pub(crate) const KVM_EXIT_SYSTEM_EVENT: u32 = 24;
-/// `KVM_EXIT_INTR` — the run was interrupted by a host signal (re-enter).
 pub(crate) const KVM_EXIT_INTR: u32 = 10;
-/// `KVM_EXIT_FAIL_ENTRY` — the vCPU could not be entered (fail closed).
 pub(crate) const KVM_EXIT_FAIL_ENTRY: u32 = 9;
-/// `KVM_EXIT_INTERNAL_ERROR` — KVM-internal failure (fail closed).
 pub(crate) const KVM_EXIT_INTERNAL_ERROR: u32 = 17;
-/// `KVM_EXIT_HYPERCALL` — a guest `HVC` surfaced to userspace (uapi/linux
-/// `kvm.h`: `3`; **not** `13`, which is `KVM_EXIT_S390_SIEIC`). **Patched-only**:
-/// stock KVM/arm64 services guest `HVC`/PSCI in-kernel and never surfaces this.
 pub(crate) const KVM_EXIT_HYPERCALL: u32 = 3;
 
-/// A **patched-ABI** exit reason for a deterministic WFx / idle
-/// (the arm64 mirror of the x86 `KVM_EXIT_HLT`→`Idle` path). Stock KVM/arm64
-/// blocks WFI **in-kernel** and never surfaces it, so this arm is unreachable on
-/// the stock backend. `// TODO(patched-abi)`: the concrete reason value is the
-/// AA-3 0004-analogue patch's — this placeholder only shapes the decode.
 pub(crate) const KVM_EXIT_ARM_WFX_PLACEHOLDER: u32 = 0xA001;
-/// A **patched-ABI** exit reason for a trapped ID/PMU/timer sysreg (there is no
-/// MSR-filter analogue on stock KVM/arm64 — it emulates/UNDEFs sysregs
-/// in-kernel). `// TODO(patched-abi)`: the AA-3 backend's value.
 pub(crate) const KVM_EXIT_ARM_SYSREG_PLACEHOLDER: u32 = 0xA002;
 
-/// `KVM_SYSTEM_EVENT_SHUTDOWN` — PSCI `SYSTEM_OFF`.
 pub(crate) const KVM_SYSTEM_EVENT_SHUTDOWN: u32 = 1;
-/// `KVM_SYSTEM_EVENT_RESET` — PSCI `SYSTEM_RESET` (terminal for a single-shot
-/// determinism guest, like shutdown).
 pub(crate) const KVM_SYSTEM_EVENT_RESET: u32 = 2;
-/// `KVM_SYSTEM_EVENT_CRASH` — a guest crash event.
 pub(crate) const KVM_SYSTEM_EVENT_CRASH: u32 = 3;
 
-/// `KVM_ARM_VCPU_PSCI_0_2` — the `KVM_ARM_VCPU_INIT` feature **bit index** (`2`,
-/// `uapi/linux/kvm.h`) that selects KVM's in-kernel **PSCI 0.2+** implementation.
-/// The DTB this vendor emits advertises `arm,psci-1.0` over `HVC` (`vmm-core`'s
-/// `dtb`), so the guest issues PSCI `SYSTEM_OFF`/`SYSTEM_RESET`/`CPU_ON` as
-/// `HVC`s; **without** this bit KVM runs *legacy* PSCI (0.1) and answers those
-/// `NOT_SUPPORTED`, so a headless determinism guest can never cleanly power off.
-/// Unlike the vGIC **delivery** fabric there is no AA-6 deferral rationale for
-/// it — a guest that cannot `SYSTEM_OFF` cannot end a run.
 #[cfg(any(
     all(target_os = "linux", target_arch = "aarch64"),
     test,
@@ -104,11 +51,6 @@ const HARMONY_TIMER_HZ: u64 = 62_500_000;
 const HARMONY_TIMER_INTID: u32 = 27;
 const GIC_STATE_VERSION: u32 = 3;
 
-/// `KVM_MEM_LOG_DIRTY_PAGES` — one dirty bit per guest page in a memslot.
-///
-/// Keep this value in the portable half as the backend is unit-tested on hosts
-/// where the arm64 `kvm-bindings` constants are not available.  The live box
-/// half uses the corresponding generated binding when it builds the ioctl.
 pub(crate) const KVM_MEM_LOG_DIRTY_PAGES: u32 = 1;
 const KVM_PAGE_SIZE: u64 = 4096;
 const KVM_DIRTY_BITMAP_WORD_PAGES: u64 = 64;
@@ -120,12 +62,6 @@ const fn vgic_sysreg(op0: u64, op1: u64, crn: u64, crm: u64, op2: u64) -> u64 {
 const ICC_PMR_EL1: u64 = vgic_sysreg(3, 0, 4, 6, 0);
 const ICC_IGRPEN1_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 7);
 
-/// The `kvm_vcpu_init.features` bitmap the backend requests at
-/// `KVM_ARM_VCPU_INIT`: **PSCI 0.2 selected** (see [`KVM_ARM_VCPU_PSCI_0_2`]),
-/// every other feature left default-off (the skeleton opts into nothing else —
-/// `EL1_32BIT`, `PMU_V3`, `SVE`, `PTRAUTH*` are AA-6 / port decisions). A pure
-/// function so `LiveKvm` and the portable [`FakeKvm`] derive the **identical**
-/// bitmap — the live path's request is exactly what the fake pins.
 #[cfg(any(
     all(target_os = "linux", target_arch = "aarch64"),
     test,
@@ -137,62 +73,31 @@ pub(crate) fn vcpu_init_features() -> [u32; 7] {
     features
 }
 
-/// The MMIO payload of a `KVM_EXIT_MMIO` (`kvm_run.mmio`), as plain data.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct MmioView {
-    /// The guest-physical address accessed.
     pub phys_addr: u64,
-    /// Up to 8 little-endian data bytes (the low `len` are meaningful).
     pub data: [u8; 8],
-    /// Access width in bytes (1/2/4/8).
     pub len: u32,
-    /// `true` = store (the guest wrote `data`); `false` = load (awaits a
-    /// completion the VMM writes back into `data`).
     pub is_write: bool,
 }
 
-/// A plain-data snapshot of the fields of `kvm_run` the [`decode_exit`] logic
-/// reads, filled by the box layer from the real mmap'd `kvm_run` (so the decode
-/// never touches `kvm_bindings` and stays portable + Miri-testable).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct KvmRunView {
-    /// The `kvm_run.exit_reason`.
     pub exit_reason: u32,
-    /// The MMIO payload (meaningful iff `exit_reason == KVM_EXIT_MMIO`).
     pub mmio: MmioView,
-    /// The `kvm_run.system_event.type` (iff `KVM_EXIT_SYSTEM_EVENT`).
     pub system_event_type: u32,
-    /// The `HVC` argument frame (iff the patched `KVM_EXIT_HYPERCALL`).
     pub hypercall_args: [u64; 4],
-    /// The trapped sysreg encoding + write value (iff the patched sysreg exit):
-    /// `(encoding, Some(value_written) | None_for_read)`.
     pub sysreg: (u32, Option<u64>),
 }
 
-/// What the last returned exit awaits, if anything (the completion-discipline
-/// bookkeeping, mirroring the x86 `Pending`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Pending {
-    /// Nothing pending; `run` may resume.
     None,
-    /// An MMIO **load** of `len` bytes: `complete_read` writes the value back.
-    MmioLoad {
-        /// The access width in bytes.
-        len: u32,
-    },
-    /// A **patched** trapped sysreg **read**: `complete_read` or
-    /// `complete_fault` (deny-UNDEF).
+    MmioLoad { len: u32 },
     SysregRead,
-    /// A **patched** trapped sysreg **write**: `complete_ok` or `complete_fault`.
     SysregWrite,
 }
 
-/// Decode a `KVM_RUN` result into an [`Exit`] (`None` = a control exit the run
-/// loop re-enters on). Total; an unrecognized reason fails closed
-/// (default-deny), never a silent continue.
-///
-/// **Stock surface = `Mmio` + `Shutdown` only.** Every other arm is
-/// patched-ABI (`// TODO(patched-abi)`) and the stock hardware never reaches it.
 pub(crate) fn decode_exit(view: &KvmRunView) -> Result<Option<(Exit<Arm64>, Pending)>> {
     match view.exit_reason {
         KVM_EXIT_MMIO => {
@@ -265,7 +170,6 @@ pub(crate) fn decode_exit(view: &KvmRunView) -> Result<Option<(Exit<Arm64>, Pend
     }
 }
 
-/// Read the low `len` bytes of `data` as a little-endian `u64` (`len ≤ 8`).
 fn le_value(data: &[u8; 8], len: u32) -> u64 {
     let mut buf = [0u8; 8];
     let n = (len as usize).min(8);
@@ -273,8 +177,6 @@ fn le_value(data: &[u8; 8], len: u32) -> u64 {
     u64::from_le_bytes(buf)
 }
 
-/// The low `len` bytes of `value` as an 8-byte little-endian MMIO data buffer
-/// (the completion the VMM writes back for an MMIO load).
 fn le_data(value: u64, len: u32) -> [u8; 8] {
     let mut data = value.to_le_bytes();
     for b in data.iter_mut().skip((len as usize).min(8)) {
@@ -283,9 +185,6 @@ fn le_data(value: u64, len: u32) -> [u8; 8] {
     data
 }
 
-/// Number of `u64` words required for a KVM dirty bitmap for one page-aligned
-/// memslot. Kept fallible because the size comes from registration metadata and
-/// the syscall seam is an untrusted boundary.
 pub(crate) fn dirty_bitmap_words(size: u64) -> Result<usize> {
     if size == 0 || !size.is_multiple_of(KVM_PAGE_SIZE) {
         return Err(BackendError::InvalidState);
@@ -295,8 +194,6 @@ pub(crate) fn dirty_bitmap_words(size: u64) -> Result<usize> {
     usize::try_from(words).map_err(|_| BackendError::InvalidState)
 }
 
-/// Admit the live arm64 dirty-log path only on the page geometry its bitmap
-/// arithmetic and memslot contract model.
 #[cfg(any(test, all(target_os = "linux", target_arch = "aarch64")))]
 pub(crate) fn require_4k_host_page_size(page_size: i64) -> Result<()> {
     if page_size != KVM_PAGE_SIZE as i64 {
@@ -307,16 +204,10 @@ pub(crate) fn require_4k_host_page_size(page_size: i64) -> Result<()> {
     Ok(())
 }
 
-/// Convert the maximum page span accepted by the KVM clear-dirty ABI to its
-/// bitmap-word limit. Kept as a small pure helper so the checked chunking rule
-/// is testable without allocating a multi-terabyte bitmap.
 fn dirty_clear_max_words(max_pages: u64) -> Result<usize> {
     usize::try_from(max_pages / KVM_DIRTY_BITMAP_WORD_PAGES).map_err(|_| BackendError::InvalidState)
 }
 
-/// Validate one `KVM_CLEAR_DIRTY_LOG` request before it crosses the syscall
-/// seam. The kernel consumes one bitmap word per 64 pages; only a request that
-/// reaches the slot's final partial word may have a non-64-page length.
 pub(crate) fn validate_clear_dirty_log(
     slot_size: u64,
     first_page: u64,
@@ -353,9 +244,6 @@ pub(crate) fn validate_clear_dirty_log(
     Ok(())
 }
 
-/// Decode one validated KVM dirty bitmap to absolute guest frame numbers.
-/// Padding bits in the final word are ignored. Every arithmetic step is
-/// checked so malformed seam data cannot panic or wrap a high ARM GPA.
 fn decode_dirty_bitmap(
     slot_gpa: u64,
     slot_size: u64,
@@ -397,34 +285,20 @@ fn decode_dirty_bitmap(
     Ok(())
 }
 
-/// The byte offsets of the `kvm_run` fields the decode reads, computed by the
-/// box layer from the arch-specific `kvm_run` (`offset_of!`). The MMIO
-/// sub-fields overlap `system_event` in the exit-info union, exactly as in the
-/// real `kvm_run`.
 #[cfg_attr(
     not(any(test, all(target_os = "linux", target_arch = "aarch64"))),
     allow(dead_code)
 )]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RunOffsets {
-    /// `kvm_run.exit_reason` (`u32`).
     pub(crate) exit_reason: usize,
-    /// `mmio.phys_addr` (`u64`).
     pub(crate) mmio_phys_addr: usize,
-    /// `mmio.data` (`[u8; 8]`) — also the MMIO-load completion write-back slot.
     pub(crate) mmio_data: usize,
-    /// `mmio.len` (`u32`).
     pub(crate) mmio_len: usize,
-    /// `mmio.is_write` (`u8`).
     pub(crate) mmio_is_write: usize,
-    /// `system_event.type` (`u32`).
     pub(crate) system_event_type: usize,
 }
 
-/// A raw view over the mmap'd `kvm_run` shared page (the arm64 analogue of the
-/// x86 `RunPage`): bounds-checked reads of the plain fields the decode needs,
-/// and the MMIO-load completion write-back into `mmio.data`. All accesses are
-/// bounds-checked against `len` and fail closed — never an out-of-bounds read.
 #[cfg_attr(
     not(any(test, all(target_os = "linux", target_arch = "aarch64"))),
     allow(dead_code)
@@ -446,7 +320,6 @@ impl RunPage {
         Self { ptr, len }
     }
 
-    /// Fail closed unless `[off, off + n)` is within the page.
     fn check(&self, off: usize, n: usize) -> Result<()> {
         match off.checked_add(n) {
             Some(end) if end <= self.len => Ok(()),
@@ -454,8 +327,6 @@ impl RunPage {
         }
     }
 
-    /// Read `N` bytes at `off`.
-    ///
     /// # Safety
     /// The constructor contract (a valid page of `len` bytes) must hold.
     unsafe fn read_array<const N: usize>(&self, off: usize) -> Result<[u8; N]> {
@@ -467,8 +338,6 @@ impl RunPage {
         Ok(b)
     }
 
-    /// Read the plain `kvm_run` fields at `off` into a [`KvmRunView`].
-    ///
     /// # Safety
     /// The constructor contract must hold; `off` must name fields of the mapped
     /// `kvm_run` (the box computes them via `offset_of!`).
@@ -491,9 +360,6 @@ impl RunPage {
         }
     }
 
-    /// Write an MMIO-load completion's 8 data bytes into `mmio.data` (read back
-    /// by the kernel on the next `KVM_RUN`).
-    ///
     /// # Safety
     /// The constructor contract must hold; `off.mmio_data` must name the mapped
     /// `mmio.data`.
@@ -506,42 +372,20 @@ impl RunPage {
     }
 }
 
-/// The register-class shift (`KVM_REG_ARM_COPROC_SHIFT`): the class selector
-/// (`ARM_CORE`, `ARM64_SYSREG`) lives at bits 16..28, **not** the high bits.
 const KVM_REG_ARM_COPROC_SHIFT: u64 = 16;
 pub(crate) const KVM_REG_ARM64: u64 = 0x6000_0000_0000_0000;
 const KVM_REG_SIZE_U32: u64 = 0x0020_0000_0000_0000;
 pub(crate) const KVM_REG_SIZE_U64: u64 = 0x0030_0000_0000_0000;
 const KVM_REG_SIZE_U128: u64 = 0x0040_0000_0000_0000;
-/// `KVM_REG_ARM_CORE = 0x0010 << KVM_REG_ARM_COPROC_SHIFT` (= `0x10_0000`), the
-/// class of `struct kvm_regs` fields (uapi/linux `.../asm/kvm.h`). At bits 16+,
-/// so it never collides with the field index in bits 0..15.
 pub(crate) const KVM_REG_ARM_CORE: u64 = 0x0010 << KVM_REG_ARM_COPROC_SHIFT;
-/// `KVM_REG_ARM64_SYSREG = 0x0013 << KVM_REG_ARM_COPROC_SHIFT` (= `0x13_0000`),
-/// the class of EL1 system registers; the `op0:op1:CRn:CRm:op2` encoding fills
-/// bits 0..15 below it.
 pub(crate) const KVM_REG_ARM64_SYSREG: u64 = 0x0013 << KVM_REG_ARM_COPROC_SHIFT;
-/// KVM-as-firmware pseudo-register class (`uapi/asm/kvm.h`).
 pub(crate) const KVM_REG_ARM_FW: u64 = 0x0014 << KVM_REG_ARM_COPROC_SHIFT;
-/// Writable PSCI-version pseudo-register. This must be set before first entry.
 const KVM_REG_ARM_PSCI_VERSION: u64 = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_FW;
-/// PSCI 1.0, encoded by the architectural `PSCI_VERSION(1, 0)` macro.
 const KVM_ARM_PSCI_1_0: u64 = 0x0001_0000;
-/// Firmware-feature bitmap pseudo-register class (`uapi/asm/kvm.h`).
 const KVM_REG_ARM_FW_FEAT_BMAP: u64 = 0x0016 << KVM_REG_ARM_COPROC_SHIFT;
-/// Optional Standard Secure Service bitmap: bit 0 is SMCCC TRNG v1.0.
-///
-/// Stock KVM enables this bit by default and services `TRNG_RND64` from the
-/// host kernel's live RNG. The owned Linux guest probes it before
-/// `random_init_early()` and would mix those bytes into full-RAM state before
-/// `/chosen/rng-seed` makes the CRNG ready. The deterministic baseline writes
-/// zero before first entry.
 const KVM_REG_ARM_STD_BMAP: u64 = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_FW_FEAT_BMAP;
-/// Optional Standard Hypervisor Service bitmap (PV time).
 const KVM_REG_ARM_STD_HYP_BMAP: u64 = KVM_REG_ARM_STD_BMAP | 1;
-/// Optional KVM vendor-hypercall bitmap (including host PTP).
 const KVM_REG_ARM_VENDOR_HYP_BMAP: u64 = KVM_REG_ARM_STD_BMAP | 2;
-/// Second optional KVM vendor-hypercall bitmap.
 const KVM_REG_ARM_VENDOR_HYP_BMAP_2: u64 = KVM_REG_ARM_STD_BMAP | 3;
 const OPTIONAL_FIRMWARE_BITMAPS: [u64; 4] = [
     KVM_REG_ARM_STD_BMAP,
@@ -550,7 +394,6 @@ const OPTIONAL_FIRMWARE_BITMAPS: [u64; 4] = [
     KVM_REG_ARM_VENDOR_HYP_BMAP_2,
 ];
 
-/// A **core** register ID: `struct kvm_regs` field offset ÷ 4.
 const fn core_reg(index: u64) -> u64 {
     KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_CORE | index
 }
@@ -559,7 +402,6 @@ const fn core_reg_sized(size: u64, index: u64) -> u64 {
     KVM_REG_ARM64 | size | KVM_REG_ARM_CORE | index
 }
 
-/// An EL1 **system** register ID from its `op0:op1:CRn:CRm:op2` encoding.
 const fn sysreg_id(op0: u64, op1: u64, crn: u64, crm: u64, op2: u64) -> u64 {
     KVM_REG_ARM64
         | KVM_REG_SIZE_U64
@@ -601,9 +443,6 @@ const fn dbgwcr(index: u64) -> u64 {
     sysreg_id(2, 0, 0, index, 7)
 }
 
-/// The EL1 sysreg IDs of the skeleton [`Arm64SysregFile`](crate::Arm64SysregFile),
-/// paired with a selector so save/restore is one table walk. Full record set is
-/// `TODO(AA-6)`; this is the minimal round-trippable subset.
 #[derive(Clone, Copy)]
 enum SysSel {
     Sctlr,
@@ -695,8 +534,6 @@ fn vgic_level_attr(block: u32) -> u64 {
     VGIC_LEVEL_INFO_LINE_LEVEL + u64::from(block)
 }
 
-/// Capture the in-kernel vGIC through KVM's migration API and normalize it to
-/// the same architectural record used by the userspace model.
 fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
     let mut s = Arm64GicState {
         impl_spis: HARMONY_GIC_IMPL_SPIS,
@@ -771,10 +608,6 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
     Ok(())
 }
 
-/// Restore a canonical record through KVM's vGIC migration API. Mutable files
-/// are replaced (clear-before-set where the architectural register is
-/// write-one-to-modify), and forwarding is enabled last. The implementation
-/// IIDR handshake happens before vGIC initialization in the syscall layer.
 fn restore_vgic<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64GicState) -> Result<()> {
     validate_vgic_state(s)?;
     let words = (HARMONY_GIC_NR_IRQS / 32) as usize;
@@ -834,8 +667,6 @@ fn restore_vgic<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64GicState) -> Result<()
     Ok(())
 }
 
-/// Read the full skeleton vCPU state over the reg-ID table (pure; drives the
-/// [`Arm64Kvm`] seam).
 pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
     let mut s = Arm64VcpuState::default();
     for i in 0..31u64 {
@@ -876,7 +707,6 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
     Ok(s)
 }
 
-/// Restore the full skeleton vCPU state over the reg-ID table.
 pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) -> Result<()> {
     if has_noncanonical_core_regs(&s.core)
         || s.debug.trap_debug_exceptions
@@ -932,17 +762,9 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
     Ok(())
 }
 
-/// The KVM/arm64 syscall boundary as a trait, so the [`Arm64KvmBackend`]
-/// orchestration (ioctl ordering, completion discipline) is testable against a
-/// recording fake with no `/dev/kvm`. The real impl (`arm64_kvm_sys::LiveKvm`)
-/// is Linux+aarch64-gated; a portable [`FakeKvm`] backs the unit/Miri tests.
 pub trait Arm64Kvm {
-    /// `KVM_ARM_PREFERRED_TARGET` + `KVM_ARM_VCPU_INIT` — MUST precede the first
-    /// `set_one_reg`/`run` (KVM rejects register access on an un-init'd vCPU).
     fn vcpu_init(&mut self) -> Result<()>;
 
-    /// `KVM_SET_USER_MEMORY_REGION` for one RAM memslot.
-    ///
     /// # Safety
     /// `host` must point to `len` bytes of pinned, page-aligned backing that
     /// stays live and unaliased for the backend's lifetime (the
@@ -955,15 +777,6 @@ pub trait Arm64Kvm {
         len: u64,
     ) -> Result<()>;
 
-    /// `KVM_SET_USER_MEMORY_REGION` with explicit memslot flags.
-    ///
-    /// The legacy four-argument method above remains the default logging path
-    /// for the standalone ARM probe and for source compatibility with existing
-    /// seam users.  Backend registration goes through this method so disabling
-    /// dirty logging in a test cannot accidentally register a logged slot.
-    /// Implementations that support flags must override it; the default keeps
-    /// older seam implementations functional but cannot model an unlogged slot.
-    ///
     /// # Safety
     /// The `host` pointer has the same pinned-backing lifetime requirements as
     /// [`Self::set_user_memory_region`].
@@ -981,22 +794,8 @@ pub trait Arm64Kvm {
         unsafe { self.set_user_memory_region(slot, gpa, host, len) }
     }
 
-    /// Retrieve one KVM dirty bitmap. In manual-protect mode this operation
-    /// does not clear the bits; callers must follow it with
-    /// [`Self::clear_dirty_log`] after decoding the bitmap.
-    ///
-    /// `size` is the registered memslot length in bytes. Implementations must
-    /// return exactly one `u64` per 64 pages (rounded up); a malformed bitmap
-    /// is an error rather than a truncated or over-read decode.
     fn get_dirty_log(&mut self, slot: u32, size: u64) -> Result<Vec<u64>>;
 
-    /// Clear selected bits from one KVM dirty bitmap.
-    ///
-    /// `first_page` is relative to the slot and must be 64-page aligned.
-    /// `num_pages` is a multiple of 64, except when the range reaches the
-    /// slot's final partial word. `bitmap` contains exactly the words covering
-    /// the requested range. Implementations validate all of these shape
-    /// constraints before issuing `KVM_CLEAR_DIRTY_LOG`.
     #[doc(hidden)]
     fn clear_dirty_log(
         &mut self,
@@ -1007,101 +806,47 @@ pub trait Arm64Kvm {
         bitmap: &[u64],
     ) -> Result<()>;
 
-    /// `KVM_GET_ONE_REG` (u64).
     fn get_one_reg(&self, id: u64) -> Result<u64>;
-    /// `KVM_SET_ONE_REG` (u64). Also the config-time `ID_AA64*` freeze write
-    /// (the ID registers are writable sysregs before the first run).
     fn set_one_reg(&mut self, id: u64, value: u64) -> Result<()>;
-    /// `KVM_GET_ONE_REG` for a 32-bit core field.
     fn get_one_reg32(&self, id: u64) -> Result<u32>;
-    /// `KVM_SET_ONE_REG` for a 32-bit core field.
     fn set_one_reg32(&mut self, id: u64, value: u32) -> Result<()>;
-    /// `KVM_GET_ONE_REG` for a 128-bit SIMD register, in architectural byte
-    /// order.
     fn get_one_reg128(&self, id: u64) -> Result<[u8; 16]>;
-    /// `KVM_SET_ONE_REG` for a 128-bit SIMD register.
     fn set_one_reg128(&mut self, id: u64, value: [u8; 16]) -> Result<()>;
 
-    /// `KVM_GET_MP_STATE`.
     fn get_mp_state(&self) -> Result<MpState>;
-    /// `KVM_SET_MP_STATE`.
     fn set_mp_state(&mut self, mp: MpState) -> Result<()>;
 
-    /// Drive one in-kernel vGICv3 input line through `KVM_IRQ_LINE`.
     fn set_irq_line(&mut self, id: GicIntId, level: bool) -> Result<()>;
 
-    /// Read a vGICv3 migration attribute. `width64` selects the 64-bit
-    /// CPU-interface groups; distributor, redistributor, and level groups are
-    /// 32-bit and return a zero-extended value.
     fn get_vgic_attr(&self, group: u32, attr: u64, width64: bool) -> Result<u64>;
 
-    /// Write a vGICv3 migration attribute using the same width rule as
-    /// [`Self::get_vgic_attr`].
     fn set_vgic_attr(&mut self, group: u32, attr: u64, width64: bool, value: u64) -> Result<()>;
 
-    /// Stage the data an MMIO **load** completes with, written into the mmap'd
-    /// `kvm_run.mmio.data` before the next `run` (the x86 `complete_read`
-    /// equivalent, below the trait).
     fn write_mmio_data(&mut self, data: [u8; 8]) -> Result<()>;
 
-    /// Re-enter only far enough for KVM to retire the pending MMIO instruction.
-    ///
-    /// The live implementation sets `kvm_run.immediate_exit` before
-    /// `KVM_RUN`. KVM consumes the prior MMIO completion, updates the target
-    /// register/PC, then returns `EINTR` without executing the next guest
-    /// instruction. This turns the substrate-local in-flight exit into the
-    /// fully serviced architectural boundary the VMM hashes and snapshots.
     fn complete_mmio_exit(&mut self) -> Result<()>;
 
-    /// `KVM_RUN`, returning the plain-data view [`decode_exit`] consumes.
     fn run(&mut self) -> Result<KvmRunView>;
 }
 
-/// The stock KVM/arm64 [`Backend`], generic over the [`Arm64Kvm`] syscall seam
-/// (`K` is `LiveKvm` in production, [`FakeKvm`] in tests).
 pub struct Arm64KvmBackend<K: Arm64Kvm> {
     kvm: K,
     configured: bool,
     pending: Pending,
-    /// A patched sysreg completion that still lives in the run-page ABI. The
-    /// skeleton has no completion-only KVM entry for that ABI, so it must stay
-    /// marked and fail closed rather than execute the next guest instruction.
     completion_staged: bool,
-    /// The registered `(gpa, len)` memslots, in insertion order — so a second
-    /// `map_memory` that overlaps an existing region fails closed (the
-    /// [`Backend::map_memory`] contract), rather than silently registering a
-    /// duplicate `slot 0` that replaces the first.
     regions: Vec<(u64, u64)>,
-    /// The registered `(slot, gpa, size)` RAM memslots, in registration order.
-    /// A drain issues one `KVM_GET_DIRTY_LOG` for each entry.
     dirty_slots: Vec<(u32, u64, u64)>,
-    /// Whether future registrations request `KVM_MEM_LOG_DIRTY_PAGES`.
     dirty_log: bool,
-    /// Latched if a successfully registered slot was ever created without the
-    /// dirty-log flag. Such a backend can never vouch for a complete set again.
     unlogged_slot: bool,
-    /// A clear succeeded or may have succeeded before a later dirty-log
-    /// operation failed. Once set, no later drain can vouch for completeness.
     dirty_log_poisoned: bool,
-    /// The one level input requested for the next entry. The userspace
-    /// interrupt controller remains the queue; this is only its current
-    /// arbitrated output (or the in-kernel clockevent line).
     pending_irq: Option<GicIntId>,
-    /// The line currently driven into the in-kernel vGIC.
     applied_irq: Option<GicIntId>,
-    /// One acceptance report awaiting the VMM's drain.
     accepted_irq: Option<GicIntId>,
-    /// The active identity already reported, preventing duplicate reports
-    /// while the guest remains in the handler.
     reported_active_irq: Option<GicIntId>,
     counts: ExitCounts,
 }
 
 impl<K: Arm64Kvm> Arm64KvmBackend<K> {
-    /// Wrap an already-`vcpu_init`'d syscall seam. (Construction — `KVM_CREATE_VM`
-    /// → `KVM_CREATE_VCPU` → `KVM_ARM_VCPU_INIT` — happens in the box
-    /// constructor, `arm64_kvm_sys::LiveKvm::new`, which calls `vcpu_init`; the
-    /// fake records it, so the ordering is asserted portably.)
     pub fn new(kvm: K) -> Self {
         Self {
             kvm,
@@ -1121,7 +866,6 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         }
     }
 
-    /// Read-only access to the syscall seam (for test assertions).
     pub fn kvm(&self) -> &K {
         &self.kvm
     }
@@ -1139,11 +883,6 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         Ok(())
     }
 
-    /// Apply the latest one-slot level request. A replacement is ordered
-    /// low-before-high so two identities are never asserted by this backend
-    /// simultaneously. `set_pending_irq` calls this at the serviced-exit
-    /// boundary, making the canonical vGIC line state observable before a
-    /// snapshot; the entry call is an idempotent safety net.
     fn apply_pending_irq(&mut self) -> Result<()> {
         if self.applied_irq == self.pending_irq {
             return Ok(());
@@ -1158,9 +897,6 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         Ok(())
     }
 
-    /// Observe the in-kernel pending→active transition after an exit. The
-    /// owned Linux clockevent ACKs through MMIO before EOI, so the first exit
-    /// from its handler exposes the active bit and cannot be missed.
     fn observe_irq_acceptance(&mut self) -> Result<()> {
         let Some(id) = self.applied_irq else {
             self.reported_active_irq = None;
@@ -1190,7 +926,6 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         Ok(())
     }
 
-    /// Enter the guest and decode. Re-enters on control exits (`None`).
     fn enter_guest(&mut self) -> Result<Exit<Arm64>> {
         loop {
             self.apply_pending_irq()?;
@@ -1207,11 +942,6 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         }
     }
 
-    /// Clear every maximal run of nonzero dirty-bitmap words. Manual dirty-log
-    /// mode leaves the result of GET intact, so clearing only these runs avoids
-    /// the full-slot write-protect/bitmap walk on sparse workloads. The local
-    /// `slot_gfns` is held until all CLEAR calls for this slot succeed, so an
-    /// error can never expose a partial result.
     fn clear_dirty_runs(&mut self, slot: u32, size: u64, bitmap: &[u64]) -> Result<()> {
         let words = dirty_bitmap_words(size)?;
         if bitmap.len() != words {
@@ -1483,9 +1213,6 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 }
 
-/// A recording fake [`Arm64Kvm`]: it holds a register map, a scripted queue of
-/// `KVM_RUN` views, and an ordered log of every ioctl the backend issued (so a
-/// test can assert `vcpu_init` precedes the first `set_one_reg`, etc.).
 #[cfg(any(test, feature = "mock"))]
 #[derive(Debug, Default)]
 pub struct FakeKvm {
@@ -1494,34 +1221,17 @@ pub struct FakeKvm {
     regs128: std::collections::BTreeMap<u64, [u8; 16]>,
     mp_state: MpState,
     run_queue: std::collections::VecDeque<KvmRunView>,
-    /// The ordered ioctl log — e.g. `"vcpu_init"`, `"set_one_reg"`, `"run"`.
     pub calls: Vec<&'static str>,
-    /// The last MMIO-load data the backend staged (for completion assertions).
     pub last_mmio_data: Option<[u8; 8]>,
-    /// Recorded `(slot, gpa, len)` memslots.
     pub memslots: Vec<(u32, u64, u64)>,
-    /// Recorded `(slot, flags)` for each memory registration, in call order.
     pub memslot_flags: Vec<(u32, u32)>,
-    /// The current deterministic dirty bitmap for each registered slot. Manual
-    /// `get_dirty_log` leaves this bitmap unchanged; `clear_dirty_log` clears
-    /// the selected bits, matching KVM's manual-protect mode.
     pub dirty_bitmaps: std::collections::BTreeMap<u32, Vec<u64>>,
-    /// Every dirty-log request `(slot, size)` issued by the backend.
     pub dirty_log_calls: Vec<(u32, u64)>,
-    /// One-based request number at which the fake should return an error.
     pub dirty_log_fail_on_call: Option<usize>,
-    /// Every clear request `(slot, size, first_page, num_pages, bitmap)` issued
-    /// by the backend.
     pub dirty_clear_calls: Vec<(u32, u64, u64, u32, Vec<u64>)>,
-    /// One-based clear request number at which the fake should return an error.
     pub dirty_clear_fail_on_call: Option<usize>,
-    /// Portable model of the vGIC device-attribute register file.
     vgic_attrs: std::collections::BTreeMap<(u32, u64, bool), u64>,
-    /// Whether a scripted entry models the guest accepting an asserted IRQ.
     accept_irqs: bool,
-    /// The `kvm_vcpu_init.features` bitmap `vcpu_init` requested (via the shared
-    /// [`vcpu_init_features`], the same one `LiveKvm` sends) — so a test pins
-    /// that PSCI 0.2 is advertised. Test-only observability.
     #[cfg_attr(not(test), allow(dead_code))]
     init_features: [u32; 7],
     initialized: bool,
@@ -1529,44 +1239,34 @@ pub struct FakeKvm {
 
 #[cfg(any(test, feature = "mock"))]
 impl FakeKvm {
-    /// A fresh fake with an empty script.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Enqueue a `KVM_RUN` view for a future `run`.
     pub fn push_run(&mut self, view: KvmRunView) -> &mut Self {
         self.run_queue.push_back(view);
         self
     }
 
-    /// The recorded register value (for test assertions).
     pub fn reg(&self, id: u64) -> Option<u64> {
         self.regs.get(&id).copied()
     }
 
-    /// Select whether the next scripted guest entry accepts an asserted line.
     pub fn set_accept_irqs(&mut self, accept: bool) -> &mut Self {
         self.accept_irqs = accept;
         self
     }
 
-    /// Set the deterministic bitmap returned for a slot's dirty-log
-    /// retrieval. Manual GET leaves it in place until a matching CLEAR.
     pub fn set_dirty_bitmap(&mut self, slot: u32, bitmap: Vec<u64>) -> &mut Self {
         self.dirty_bitmaps.insert(slot, bitmap);
         self
     }
 
-    /// Make the one-based dirty-log request number fail, for testing that a
-    /// mid-drain error never exposes an earlier partial result.
     pub fn fail_dirty_log_on_call(&mut self, call: usize) -> &mut Self {
         self.dirty_log_fail_on_call = Some(call);
         self
     }
 
-    /// Make the one-based dirty-log clear request number fail, for testing
-    /// that a clear error never exposes an earlier partial result.
     pub fn fail_dirty_clear_on_call(&mut self, call: usize) -> &mut Self {
         self.dirty_clear_fail_on_call = Some(call);
         self
@@ -1837,14 +1537,6 @@ mod tests {
         }
     }
 
-    /// Finding 2 (review r4): the raw mmap'd-`kvm_run` reads
-    /// ([`RunPage::view`]/[`RunPage::write_mmio_data`]) are exercised over a
-    /// synthetic heap buffer, so the unsafe pointer logic is **Miri-reachable**
-    /// on the x86 host (the box-only `arm64_kvm_sys`, where the reads run
-    /// against the real `kvm_run`, is `cfg`'d out of that Miri job — this is the
-    /// seam that keeps the unsafe under the UB gate, the x86 `RunPage`
-    /// precedent). Full loopback: build an MMIO exit in the buffer → `view` →
-    /// `decode_exit` → `write_mmio_data` → read it back.
     #[test]
     fn run_page_loopback_over_a_synthetic_buffer() {
         let off = RunOffsets {
@@ -1898,13 +1590,6 @@ mod tests {
         assert!(unsafe { page.view(&bad) }.is_err());
     }
 
-    /// Findings 1+2 (review r3): pin the KVM UAPI constants to the canonical
-    /// `uapi/linux/kvm.h` values, portably. The compile-time pin in
-    /// `arm64_kvm_sys` checks them against `kvm-bindings` on the aarch64-linux
-    /// leg; this test additionally verifies — off the box, on any host — that
-    /// the **full register IDs** the encoders emit equal the well-known KVM
-    /// register IDs (so the class-shift lives at bits 16+, not 48+, and never
-    /// collides with the field), and that the hypercall reason is 3, not 13.
     #[test]
     fn kvm_uapi_constants_match_the_headers() {
         assert_eq!(
@@ -2103,9 +1788,6 @@ mod tests {
         ));
     }
 
-    /// Finding 1 (review r1): a non-architectural MMIO access width is a
-    /// malformed exit — fail closed on any `len ∉ {1,2,4,8}`, never a
-    /// zero-byte load or a truncated completion.
     #[test]
     fn mmio_rejects_non_architectural_widths() {
         for bad in [0u32, 3, 5, 6, 7, 9, 16] {
@@ -2209,14 +1891,6 @@ mod tests {
         assert_eq!(pending, Pending::SysregWrite);
     }
 
-    /// Review r8 (P1): the backend must advertise **PSCI 0.2** at
-    /// `KVM_ARM_VCPU_INIT`. The DTB advertises `arm,psci-1.0` over `HVC`, so the
-    /// guest issues PSCI as `HVC`s; without this feature bit KVM runs legacy PSCI
-    /// and answers `SYSTEM_OFF` (which the boot path relies on for a clean
-    /// poweroff) `NOT_SUPPORTED`. Pin the requested bitmap against the fake —
-    /// which records exactly what `LiveKvm` sends (the shared
-    /// [`vcpu_init_features`]). Live PSCI conformance is an M4/msr1 gate (the
-    /// Mac has no `/dev/kvm` oracle; `hm-8l3` REFUSE).
     #[test]
     fn vcpu_init_advertises_psci_0_2() {
         let f = vcpu_init_features();
@@ -2238,9 +1912,6 @@ mod tests {
         assert_ne!(fake.init_features[0] & (1 << KVM_ARM_VCPU_PSCI_0_2), 0);
     }
 
-    /// The ioctl-ordering + policy discipline, asserted against the fake with no
-    /// `/dev/kvm`: `vcpu_init` precedes the first `set_one_reg`, `set_policy`
-    /// installs the ID-reg freeze, and `run` fails closed until configured.
     #[test]
     fn backend_orders_ioctls_and_installs_policy() {
         let mut fake = FakeKvm::new();
@@ -2293,8 +1964,6 @@ mod tests {
         }
     }
 
-    /// A save→restore round-trip over the reg-ID table reproduces the vCPU
-    /// state bit-for-bit (the fake stores the reg map).
     #[test]
     fn save_restore_round_trips_through_the_reg_table() {
         let mut fake = FakeKvm::new();
@@ -2442,9 +2111,6 @@ mod tests {
         }
     }
 
-    /// The MMIO read/completion round-trip: a load stays pending until
-    /// `complete_read`, which writes the little-endian data and performs a
-    /// completion-only reentry before the backend exposes a sealable boundary.
     #[test]
     fn mmio_load_completion_stages_data_for_the_next_run() {
         let mut fake = FakeKvm::new();
@@ -2634,11 +2300,6 @@ mod tests {
         );
     }
 
-    /// `map_memory` forwards the (validated, page-aligned) region through the
-    /// `unsafe` seam. Driven against the fake so the `unsafe` block is
-    /// Miri-reachable (the fake records but never dereferences the pointer —
-    /// the real pointer work is `LiveKvm`'s, box-only); the alignment/overlap
-    /// validation is exercised too.
     #[test]
     fn map_memory_forwards_a_validated_region_through_the_seam() {
         let mut fake = FakeKvm::new();

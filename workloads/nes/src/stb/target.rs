@@ -1,12 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Super Tilt Bro memory decoder and machine-backed target.
-//!
-//! The source-built game keeps both fighters in system RAM. This module is
-//! the only place that knows those labels; the generic searcher receives a
-//! bounded controller vocabulary, compact mechanical observations, and
-//! restorable snapshots.
-
 use std::{error::Error, io::Write, path::Path};
 
 use machine::{
@@ -19,13 +12,10 @@ use crate::target::{ExitKind, Target};
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
-/// A Super Tilt Bro input replayed from the sealed local-match genesis.
 pub type StbInput = crate::search::archive::Input<ButtonChord>;
 
-/// Initial raw stock counter; zero still denotes the final live stock.
 pub const INITIAL_STOCKS: u8 = 4;
 
-/// Built-in autonomous AI levels from the normal configuration menu.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StbAi {
     Easy = 1,
@@ -97,103 +87,74 @@ const CONFIG_AI_LEVEL: usize = 0xda;
 const CONFIG_SELECTED_STAGE: usize = 0xdb;
 const CONFIG_GAME_MODE: usize = 0xe2;
 
-/// Player RAM that is meaningful only while both fighters are active in the
-/// in-game state. Keeping this payload optional prevents menu/game-over RAM
-/// reuse from becoming a fabricated damage, stock, location, or capability
-/// observation.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct StbGameplayState {
-    /// Player state-machine values.
     pub player_a_state: u8,
     pub player_b_state: u8,
-    /// Signed world coordinates in whole pixels. The source stores each as
-    /// a pixel byte plus a signed screen/page byte.
     pub player_a_x: i16,
     pub player_b_x: i16,
     pub player_a_y: i16,
     pub player_b_y: i16,
-    /// Screen/page components distinguish scroll from a wrapped pixel byte.
     pub player_a_x_screen: i8,
     pub player_b_x_screen: i8,
     pub player_a_y_screen: i8,
     pub player_b_y_screen: i8,
-    /// Facing direction bytes from the source state.
     pub player_a_direction: u8,
     pub player_b_direction: u8,
-    /// Damage percentages and remaining stocks.
     pub player_a_damage: u8,
     pub player_b_damage: u8,
     pub player_a_stocks: u8,
     pub player_b_stocks: u8,
-    /// State-machine clocks and hitstun counters.
     pub player_a_state_clock: u8,
     pub player_b_state_clock: u8,
     pub player_a_hitstun: u8,
     pub player_b_hitstun: u8,
-    /// Mechanical contact flags (zero means no contact).
     pub player_a_grounded: bool,
     pub player_b_grounded: bool,
     pub player_a_walled: bool,
     pub player_b_walled: bool,
 }
 
-/// Source-grounded mechanical state at one emulator frame.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct StbMechanicalState {
-    /// Global state (`0` is in-game and `2` is the game-over screen).
     pub game_state: u8,
-    /// Configured game mode (`0` is local).
     pub game_mode: u8,
-    /// Configured autonomous opponent level (`1` is Easy in the config UI).
     pub ai_level: u8,
-    /// Selected versus stage index.
     pub stage: u8,
-    /// Player RAM decoded only in the source phase where it has gameplay
-    /// meaning. This is `None` on menus and game-over screens.
     pub gameplay: Option<StbGameplayState>,
-    /// Winner byte is meaningful only once `game_state == 2`.
     pub game_winner: u8,
 }
 
 impl StbMechanicalState {
-    /// Whether the source has entered the game-over screen.
     #[must_use]
     pub fn match_over(self) -> bool {
         self.game_state == GAME_STATE_GAMEOVER
     }
 
-    /// Whether player A won the local match.
     #[must_use]
     pub fn player_a_won(self) -> bool {
         self.match_over() && self.game_winner == 0
     }
 
-    /// Whether the optional player payload is valid for gameplay use.
     #[must_use]
     pub fn gameplay_valid(self) -> bool {
         self.gameplay.is_some()
     }
 }
 
-/// Mechanical evidence emitted at a changed state boundary.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbObservations {
     pub frame_count: u64,
     pub decoded: StbMechanicalState,
     pub changed_indices: Vec<u16>,
-    /// Whether player A or B lost one stock at this event.
     #[serde(default)]
     pub player_a_ko: bool,
     #[serde(default)]
     pub player_b_ko: bool,
-    /// Cumulative validated stock-loss counts at this observation. The
-    /// terminal underflow loss is included even though the source resets its
-    /// terminal stock byte to zero before entering the game-over screen.
     #[serde(default)]
     pub player_a_ko_count: u8,
     #[serde(default)]
     pub player_b_ko_count: u8,
-    /// Whether this event is the terminal match state.
     #[serde(default)]
     pub terminal: bool,
     pub log_line: String,
@@ -207,7 +168,6 @@ struct StbStockEvidence {
     player_b_ko_count: u8,
 }
 
-/// Geometry and frame count of one rendered replay.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbVideoMetadata {
     pub width: u32,
@@ -219,18 +179,14 @@ pub struct StbVideoMetadata {
     pub input_endpoint: StbMechanicalState,
 }
 
-/// Complete state needed to resume one STB prefix exactly.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbSnapshot<P = machine::SharedState> {
     pub(crate) emulator_state: P,
     pub(crate) observation: StbObservations,
     pub(crate) wram: Vec<u8>,
     pub(crate) failed: bool,
-    /// Last phase-valid gameplay payload used to carry stock evidence across
-    /// the source's invalid fighter-RAM transition into game over.
     #[serde(default)]
     pub(crate) last_valid_gameplay: Option<StbGameplayState>,
-    /// Cumulative stock-loss evidence at this exact snapshot endpoint.
     #[serde(default)]
     pub(crate) player_a_ko_count: u8,
     #[serde(default)]
@@ -238,14 +194,12 @@ pub struct StbSnapshot<P = machine::SharedState> {
 }
 
 impl<P> StbSnapshot<P> {
-    /// Decoded endpoint state carried by this snapshot.
     #[must_use]
     pub fn state(&self) -> StbMechanicalState {
         self.observation.decoded
     }
 }
 
-/// Machine-backed target used by STB campaigns.
 #[derive(Debug)]
 pub struct StbTarget<M: Machine = QuickNesMachine> {
     machine: M,
@@ -264,12 +218,10 @@ pub struct StbTarget<M: Machine = QuickNesMachine> {
 }
 
 impl<M: Machine> StbTarget<M> {
-    /// Seal a machine that is already stopped at a valid local-match genesis.
     pub fn from_machine(machine: M) -> Result<Self, MachineError> {
         Self::from_machine_with_ai(machine, StbAi::Easy)
     }
 
-    /// Validate the requested native opponent before sealing gameplay genesis.
     pub fn from_machine_with_ai(mut machine: M, ai: StbAi) -> Result<Self, MachineError> {
         let wram = read_wram(&machine)?;
         let state = decode_state(&wram)?;
@@ -303,37 +255,31 @@ impl<M: Machine> StbTarget<M> {
         })
     }
 
-    /// Current decoded state.
     #[must_use]
     pub fn mechanical_state(&self) -> StbMechanicalState {
         self.observation.decoded
     }
 
-    /// Whether the local match is over (win or loss).
     #[must_use]
     pub fn is_match_over(&self) -> bool {
         self.observation.decoded.match_over()
     }
 
-    /// Whether player A won after the game-over transition.
     #[must_use]
     pub fn player_a_won(&self) -> bool {
         self.observation.decoded.player_a_won()
     }
 
-    /// Total deterministic frames clocked by this instance.
     #[must_use]
     pub fn frames_clocked(&self) -> u64 {
         self.machine.now().0
     }
 
-    /// Observer events emitted by the most recent action.
     #[must_use]
     pub fn last_action_observations(&self) -> &[StbObservations] {
         &self.action_observations
     }
 
-    /// Test a fixed continuation and restore the caller's state afterward.
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
         if self.failed || self.is_match_over() || frames == 0 {
             return false;
@@ -373,8 +319,6 @@ impl<M: Machine> StbTarget<M> {
 }
 
 impl StbTarget<QuickNesMachine> {
-    /// Load the pinned UNROM image and walk ordinary title/mode/config/
-    /// character/stage menus to the local AI match genesis.
     pub fn from_rom_bytes_headless(
         rom: &[u8],
         core_path: &Path,
@@ -383,7 +327,6 @@ impl StbTarget<QuickNesMachine> {
         Self::from_rom_bytes_headless_with_ai(rom, core_path, core_sha256, StbAi::Easy)
     }
 
-    /// Reach the selected native AI match using ordinary menu inputs.
     pub fn from_rom_bytes_headless_with_ai(
         rom: &[u8],
         core_path: &Path,
@@ -403,8 +346,6 @@ impl StbTarget<QuickNesMachine> {
         Self::from_machine_with_ai(machine, ai)
     }
 
-    /// Replay a searched input while writing packed RGB24 frames and S16LE
-    /// stereo audio. Capture is never enabled by workers.
     pub fn render_input(
         &mut self,
         input: &StbInput,
@@ -940,15 +881,10 @@ impl<M: Machine> Drop for StbTarget<M> {
     }
 }
 
-/// Ordinary controller tape from power-on to the selected local-AI match.
-///
-/// The probe binary exposes this tape's state boundaries so a changed ROM or
-/// emulator backend cannot silently turn a menu input into gameplay genesis.
 pub fn setup_tape() -> Vec<ButtonChord> {
     setup_tape_with_ai(StbAi::Easy)
 }
 
-/// Select difficulty with ordinary menu input, preserving the Easy setup tape.
 pub fn setup_tape_with_ai(ai: StbAi) -> Vec<ButtonChord> {
     let mut tape = Vec::new();
     let press_release = |tape: &mut Vec<ButtonChord>, button| {
@@ -991,8 +927,6 @@ fn byte(wram: &[u8], address: usize) -> Result<u8, MachineError> {
         .ok_or_else(|| MachineError::Backend(format!("STB RAM address {address:#x} is absent")))
 }
 
-/// Decode the source-labelled STB state from the 2 KiB QuickNES system-RAM
-/// window.
 pub fn decode_state(wram: &[u8]) -> Result<StbMechanicalState, MachineError> {
     let game_state = byte(wram, GLOBAL_GAME_STATE)?;
     let game_mode = byte(wram, CONFIG_GAME_MODE)?;
@@ -1097,8 +1031,6 @@ fn validate_genesis(
     Ok(())
 }
 
-/// Coarse paired fighter location. The signed world coordinate keeps camera
-/// scroll and off-screen movement distinct from a wrapped low byte.
 #[must_use]
 pub fn spatial_bucket(state: StbMechanicalState) -> Option<(i16, i16, i16, i16)> {
     state.gameplay.map(|gameplay| {
@@ -1111,8 +1043,6 @@ pub fn spatial_bucket(state: StbMechanicalState) -> Option<(i16, i16, i16, i16)>
     })
 }
 
-/// Equality-only fields that trigger observation boundaries. This tuple is
-/// not an ordering: the archive owns progress and capability preferences.
 pub type StbBoundaryFields = (u8, u8, u8, u8, u8, u8, bool, bool);
 
 #[must_use]

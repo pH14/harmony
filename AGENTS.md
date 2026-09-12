@@ -21,8 +21,10 @@ deterministic execution.
 - For code-review work, use the applicable lenses in `REVIEWING.md`.
 - Backwards compatibility is not a goal. Do not preserve old code paths to
   avoid breaking changes.
-- Keep code comments to a minimum. Add one only when necessary to explain why
-  the code exists, never how it works.
+- Rust code carries no comments, doc comments included. `scripts/strip-comments.py`
+  removes them and CI enforces it. The exceptions are the SPDX header and the
+  safety invariant beside every `unsafe` block. Component knowledge belongs in
+  the nearest README.
 
 ## Maintaining these instructions
 

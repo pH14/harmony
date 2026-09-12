@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Experimental end-to-end Nova payload probe on stock x86 or arm64 KVM.
-//!
-//! Boots Linux + QuickNES + Nova, waits for the guest SDK's setup boundary,
-//! seals that whole-VM state, then branches twice with the same seeded
-//! environment. In each branch the guest fetches one opaque two-byte input
-//! payload and yields after executing it. Equal endpoint hashes and SDK event
-//! pages establish the intended Consonance-owned snapshot/input path without
-//! claiming the stock runner is a production determinism host.
 
 #[cfg(all(
     target_os = "linux",

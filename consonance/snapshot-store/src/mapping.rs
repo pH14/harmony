@@ -1,70 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The mmap-backed [`Mapping`] returned by `Store::materialize` — the only module in
-//! this crate permitted to use `unsafe` (for the `memmap2` mapping calls).
 
 use std::fs::File;
 use std::io;
 
 use memmap2::{MmapMut, MmapOptions};
 
-/// A private, mutable copy-on-write view of one snapshot's full logical memory image.
-///
-/// Backed by a sparse tempfile owned by this value: the file holds the snapshot's
-/// resolved non-zero pages and holes everywhere else, and is mapped `MAP_PRIVATE`
-/// (portable across macOS and Linux). Reads fault pages in lazily; writes copy the
-/// touched page privately and never reach the file or the [`Store`](crate::Store) —
-/// the snapshot stays immutable no matter what is written here. The unlinked tempfile
-/// is reclaimed by the OS when the `Mapping` drops.
-///
-/// [`Store::materialize`](crate::Store::materialize) always produces the mmap backing.
-/// The [`Mapping::anonymous`] seam produces the same *interface* over a 4-KiB-aligned
-/// heap buffer, so code that takes a `Mapping` — including `unsafe` code that maps its
-/// [`as_mut_slice`](Mapping::as_mut_slice) as memory — stays exercisable under the Miri
-/// interpreter, which cannot execute `mmap`.
 pub struct Mapping {
     backing: Backing,
 }
 
-/// How a [`Mapping`]'s bytes are held.
 enum Backing {
-    /// The production path: a copy-on-write `mmap` over a sparse tempfile.
-    Mapped {
-        /// `None` only for zero-length images (`mmap` rejects zero-length maps).
-        map: Option<MmapMut>,
-        /// Keeps the backing tempfile open for the mapping's lifetime. The kernel would
-        /// keep the pages alive anyway, but holding the handle makes the ownership story
-        /// explicit and the SAFETY argument below local.
-        _file: File,
-    },
-    /// A test/Miri seam: a heap buffer of 4-KiB-aligned pages — no `mmap`, no
-    /// tempfile. Same observable bytes and interface as `Mapped`; built only by
-    /// [`Mapping::anonymous`]. The base address is 4-KiB-aligned like the `mmap`
-    /// backing, because consumers hand the buffer to `Backend::map_memory`, whose
-    /// contract requires a page-aligned host address — the seam must satisfy the
-    /// same contract it exists to let Miri check. `len` is the exposed byte length
-    /// (the allocation is whole pages, rounded up).
+    Mapped { map: Option<MmapMut>, _file: File },
     Anonymous { pages: Vec<AlignedPage>, len: usize },
 }
 
-/// One 4-KiB-aligned, 4-KiB-sized page of [`Backing::Anonymous`] storage. A
-/// `Vec<AlignedPage>`'s buffer starts at a 4-KiB-aligned address (`Vec` allocates at
-/// the element's alignment) and is one contiguous run of initialized bytes with no
-/// padding (`size == align == 4096`), so it can be viewed as `&[u8]`.
 #[repr(C, align(4096))]
 #[derive(Clone)]
 struct AlignedPage([u8; crate::PAGE_SIZE]);
 
 impl Mapping {
-    /// Write `pages` (`(gfn, PAGE_SIZE bytes)`) into `file` through a single write
-    /// mapping, one memcpy per page, at byte offset `gfn * PAGE_SIZE`.
-    ///
-    /// `file` must be a freshly created, unlinked tempfile already sized to exactly
-    /// `len` bytes. Offsets not covered by `pages` are never touched, so the file stays
-    /// sparse — zero and absent pages cost neither disk nor page cache. The mapping is
-    /// flushed and unmapped before returning, so the caller may then map the same file
-    /// copy-on-write via [`Mapping::new`].
-    ///
-    /// This replaces a `seek` + `write_all` pair of syscalls per page (task 95 M1.2b).
     pub(crate) fn populate<'a>(
         file: &File,
         len: u64,
@@ -96,8 +50,6 @@ impl Mapping {
         map.flush()
     }
 
-    /// Map `len` bytes of `file` copy-on-write. `file` must be a freshly created,
-    /// unlinked tempfile already sized to at least `len` bytes.
     pub(crate) fn new(file: File, len: u64) -> io::Result<Mapping> {
         let map = if len == 0 {
             None
@@ -120,19 +72,6 @@ impl Mapping {
         })
     }
 
-    /// A `len`-byte, zero-filled mapping backed by a **4-KiB-aligned heap buffer**
-    /// instead of a tempfile `mmap` — the Miri-executable seam behind
-    /// `Store::materialize`'s interface.
-    ///
-    /// Byte-observably identical to a freshly materialized all-zero image, but with no
-    /// `mmap`/tempfile, so a consumer that takes a `Mapping` (and the `unsafe` pointer
-    /// handling it performs on [`as_mut_slice`](Mapping::as_mut_slice) — e.g. mapping the
-    /// buffer as guest RAM via `Backend::map_memory`) can be driven under the Miri
-    /// interpreter, which cannot execute `mmap`. The base address is 4-KiB-aligned —
-    /// `map_memory`'s contract requires a page-aligned host address, and this seam
-    /// must satisfy the same contract the production `mmap` backing does (a plain
-    /// `Vec<u8>` would not). Intended for tests / the UB safety net; production
-    /// restores always go through `Store::materialize`. Fill via `as_mut_slice`.
     pub fn anonymous(len: usize) -> Mapping {
         let pages = vec![AlignedPage([0u8; crate::PAGE_SIZE]); len.div_ceil(crate::PAGE_SIZE)];
         Mapping {
@@ -140,7 +79,6 @@ impl Mapping {
         }
     }
 
-    /// The full logical image as bytes.
     pub fn as_slice(&self) -> &[u8] {
         match &self.backing {
             Backing::Mapped { map, .. } => map.as_deref().unwrap_or(&[]),
@@ -154,7 +92,6 @@ impl Mapping {
         }
     }
 
-    /// The full logical image as mutable bytes. Writes are private to this mapping.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         match &mut self.backing {
             Backing::Mapped { map, .. } => map.as_deref_mut().unwrap_or(&mut []),
@@ -166,7 +103,6 @@ impl Mapping {
         }
     }
 
-    /// Length in bytes (`mem_pages * PAGE_SIZE`).
     pub fn len(&self) -> usize {
         match &self.backing {
             Backing::Mapped { map, .. } => map.as_ref().map_or(0, |m| m.len()),
@@ -174,7 +110,6 @@ impl Mapping {
         }
     }
 
-    /// True for a zero-length image.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -203,10 +138,6 @@ mod anon_tests {
         assert_eq!(m.as_slice(), &[] as &[u8]);
     }
 
-    /// `Backend::map_memory` requires a **4-KiB-aligned host base address** (KVM
-    /// rejects an unaligned userspace address with `EINVAL`). The anonymous seam
-    /// exists to stand in for the (page-aligned) `mmap` backing under Miri, so it
-    /// must honor the same contract — a plain `Vec<u8>` would not (PR #99 round 2).
     #[test]
     fn anonymous_base_is_4kib_aligned() {
         let m = Mapping::anonymous(3 * PAGE_SIZE);
@@ -217,8 +148,6 @@ mod anon_tests {
         );
     }
 
-    /// The exposed length is exactly what was asked for, even when the page-granular
-    /// allocation rounds up internally.
     #[test]
     fn anonymous_len_is_exact_not_page_rounded() {
         let m = Mapping::anonymous(PAGE_SIZE + 10);
@@ -232,7 +161,6 @@ mod tests {
     use super::*;
     use crate::PAGE_SIZE;
 
-    /// A sized, empty tempfile of `pages` pages.
     fn sized(pages: u64) -> (File, u64) {
         let len = pages * PAGE_SIZE as u64;
         let file = tempfile::tempfile().unwrap();
@@ -288,5 +216,4 @@ mod tests {
         let err = Mapping::populate(&file, len, std::iter::once((2u64, &p[..]))).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
-
 }

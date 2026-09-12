@@ -1,49 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The reconciliation between two consecutive standing-poll answers.
-//!
-//! The host's answer is a *state*, not a command stream: it says which fault
-//! windows contain the current `Moment`. The agent turns state into edges by
-//! diffing each answer against the previous one, so a fault applies once when
-//! its window opens and is undone once when the window closes.
-//!
-//! | fault | window opens | window closes |
-//! |---|---|---|
-//! | `ProcKill` | `SIGKILL` the node's group | nothing: a kill is permanent |
-//! | `ProcPause` | `SIGSTOP` | `SIGCONT` |
-//! | `ProcRestart` | `SIGKILL` | start the node again |
-//! | `RunHook` | launch the hook once | nothing: hooks are not awaited |
-//! | `ProcPark` | arm the park on the node's process group | disarm it; a hold in progress finishes |
-//!
-//! A node that exits while no fault names it is an unexpected death: it is
-//! counted and started again at the next tick, so a workload that crashes on
-//! its own keeps running and the count is the observable.
 
 use crate::faults::{ActiveFaults, Park};
 use crate::regs::RegisterSnapshot;
 
-/// One thing the agent must do to the guest this tick, in the order the
-/// supervisor emits them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
-    /// `SIGKILL` the node's process group.
     Kill(u16),
-    /// `SIGSTOP` the node's process group.
     Stop(u16),
-    /// `SIGCONT` the node's process group.
     Cont(u16),
-    /// Spawn the node's command in a fresh process group.
     Start(u16),
-    /// Launch the hook once, without waiting for it.
     RunHook(u32),
-    /// Arm a park on the node's process group through the guest kernel.
     Park(u16, Park),
-    /// Disarm the node's park; a hold already taken runs to its end.
     Unpark(u16),
 }
 
 impl Action {
-    /// The serial-log description of this action, the `<what>` of a
-    /// `FA: <tick> <what>` line.
     #[must_use]
     pub fn describe(self) -> String {
         match self {
@@ -61,22 +32,14 @@ impl Action {
     }
 }
 
-/// The counters the agent publishes as IJON state registers.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Counters {
-    /// Completed poll ticks.
     pub ticks: u64,
-    /// Hooks launched.
     pub hooks_started: u64,
-    /// Hooks that have exited.
     pub hooks_finished: u64,
-    /// Node exits with no fault in force.
     pub unexpected_deaths: u64,
-    /// Node starts after the initial one.
     pub restarts: u64,
-    /// Bitmap of the `assert_sometimes` ids a hook has reported.
     pub sometimes: u64,
-    /// Threads the guest kernel has parked at a place.
     pub parked: u64,
 }
 
@@ -84,14 +47,9 @@ pub struct Counters {
 struct NodeState {
     alive: bool,
     paused: bool,
-    /// Set while the node is down because the agent killed it. It suppresses
-    /// both the unexpected-death count and the automatic restart, which is what
-    /// makes `ProcKill` permanent and `ProcRestart` the only fault that brings
-    /// a node back.
     expected_down: bool,
 }
 
-/// The agent's model of its nodes and the last answer it applied.
 #[derive(Clone, Debug)]
 pub struct Supervisor {
     nodes: Vec<NodeState>,
@@ -100,7 +58,6 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
-    /// A supervisor for `node_count` nodes the caller has already started.
     #[must_use]
     pub fn new(node_count: usize) -> Self {
         Self {
@@ -117,8 +74,6 @@ impl Supervisor {
         }
     }
 
-    /// Reconcile one standing-poll answer, given the nodes observed to have
-    /// exited since the last tick, and return the actions to apply in order.
     pub fn tick(&mut self, active: &ActiveFaults, deaths: &[u16]) -> Vec<Action> {
         self.counters.ticks += 1;
         for &node in deaths {
@@ -197,27 +152,20 @@ impl Supervisor {
         actions
     }
 
-    /// Record that a launched hook has exited.
     pub fn note_hook_finished(&mut self) {
         self.counters.hooks_finished += 1;
     }
 
-    /// Record that a park took its hit and held a thread.
     pub fn note_parked(&mut self) {
         self.counters.parked += 1;
     }
 
-    /// Record an `assert_sometimes` hit reported by a hook. Ids at or beyond
-    /// [`regs::SOMETIMES_BITMAP_IDS`](crate::regs::SOMETIMES_BITMAP_IDS) are
-    /// still forwarded to the host by the caller; only the bitmap register is
-    /// this narrow.
     pub fn note_sometimes(&mut self, id: u32) {
         if let Some(bit) = crate::regs::sometimes_bit(id) {
             self.counters.sometimes |= bit;
         }
     }
 
-    /// One bit per node, set while the node is running.
     #[must_use]
     pub fn alive_bitmap(&self) -> u64 {
         let mut bits = 0;
@@ -229,13 +177,11 @@ impl Supervisor {
         bits
     }
 
-    /// The counters as published.
     #[must_use]
     pub fn counters(&self) -> Counters {
         self.counters
     }
 
-    /// The current register values.
     #[must_use]
     pub fn snapshot(&self) -> RegisterSnapshot {
         RegisterSnapshot {

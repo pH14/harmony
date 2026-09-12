@@ -1,15 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The TLV encoder, decoder, and version peek.
-//!
-//! Container layout (all integers little-endian):
-//!
-//! ```text
-//! header:  magic:u32  version:u16  arch:u16  section_count:u16
-//! section: tag:u16  len:u32  payload[len]      (repeated, ascending tag order)
-//! ```
-//!
-//! Every v1 tag is present exactly once; sections are emitted in ascending tag
-//! order. Decoding is strict and total — see [`VmStateError`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -40,11 +29,8 @@ const TAG_HYPERCALL: u16 = 11;
 const TAG_DEVICES: u16 = 12;
 const TAG_CONTRACT_HASH: u16 = 13;
 
-/// The number of sections every v1 blob carries.
 const SECTION_COUNT: u16 = 13;
 
-/// Length of the fixed container header (magic + version + arch tag + section
-/// count). 10 bytes since v2 (the arch tag).
 const HEADER_LEN: usize = 10;
 
 const MP_STATE_RUNNABLE: u8 = 0;
@@ -53,21 +39,6 @@ const MP_STATE_HALTED: u8 = 1;
 const CONTRACT_HASH_LEN: usize = 32;
 
 impl VmState {
-    /// Encode to the versioned TLV blob. Deterministic: equal `VmState` ⇒ equal
-    /// bytes (MSRs via the `BTreeMap`'s sorted order; timer entries written in the
-    /// `(deadline_vns, seq)` order the caller already holds them in — see the
-    /// errors below; all fixed records fully initialized with no padding).
-    ///
-    /// # Errors
-    ///
-    /// - [`VmStateError::InvalidField`] if `timers` violates a task-05
-    ///   `TimerQueue` invariant: entries not strictly ascending/unique by
-    ///   `(deadline_vns, seq)`, a duplicate `token`, or any `seq >= next_seq`
-    ///   (see `validate_timers`). `encode` does **not** silently fix these —
-    ///   silent canonicalization would break `decode(encode(s)?) == s`, so a
-    ///   non-conforming queue is rejected and the caller fixes it.
-    /// - [`VmStateError::InvalidField`] if a variable-length section would exceed
-    ///   `u32::MAX` bytes (not reachable for any real machine state).
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
         let mut out = Vec::new();
         out.extend_from_slice(
@@ -105,15 +76,6 @@ impl VmState {
         Ok(out)
     }
 
-    /// Decode a blob produced by [`VmState::encode`]. Strict: validates magic,
-    /// version, section count, ordering, and every field; never panics on
-    /// arbitrary input.
-    ///
-    /// # Errors
-    ///
-    /// Returns the matching [`VmStateError`] for a bad magic, an unsupported
-    /// version, a truncated or trailing buffer, an unknown / duplicate /
-    /// out-of-order / missing section tag, or an out-of-range field value.
     pub fn decode(bytes: &[u8]) -> Result<VmState, VmStateError> {
         let header = HeaderWire::read_from_prefix(bytes)
             .map_err(|_| VmStateError::Truncated)?
@@ -212,14 +174,6 @@ impl VmState {
         })
     }
 
-    /// The format version a blob was written with, read from the header without
-    /// decoding the body. Validates the magic but accepts any version (so a
-    /// caller can distinguish an unsupported version from a corrupt blob).
-    ///
-    /// # Errors
-    ///
-    /// [`VmStateError::Truncated`] if the buffer is shorter than the header, or
-    /// [`VmStateError::BadMagic`] if the magic does not match.
     pub fn peek_version(bytes: &[u8]) -> Result<u16, VmStateError> {
         let header = HeaderWire::read_from_prefix(bytes)
             .map_err(|_| VmStateError::Truncated)?
@@ -232,7 +186,6 @@ impl VmState {
     }
 }
 
-/// Append one `tag:u16 len:u32 payload` section.
 pub(crate) fn put_section(out: &mut Vec<u8>, tag: u16, payload: &[u8]) -> Result<(), VmStateError> {
     let len = u32::try_from(payload.len()).map_err(|_| VmStateError::InvalidField)?;
     out.extend_from_slice(&tag.to_le_bytes());
@@ -241,8 +194,6 @@ pub(crate) fn put_section(out: &mut Vec<u8>, tag: u16, payload: &[u8]) -> Result
     Ok(())
 }
 
-/// Read a fixed-layout wire record from an exact-length payload, mapping a size
-/// mismatch to [`VmStateError::InvalidField`].
 pub(crate) fn read_fixed<W: FromBytes + KnownLayout + Immutable>(
     payload: &[u8],
 ) -> Result<W, VmStateError> {
@@ -303,20 +254,6 @@ fn decode_msrs(payload: &[u8]) -> Result<MsrBlock, VmStateError> {
     Ok(MsrBlock(map))
 }
 
-/// Validate the task-05 `TimerQueue` invariants a queue must satisfy to restore
-/// faithfully. Any violation is [`VmStateError::InvalidField`]:
-///
-/// 1. **Canonical firing order** — entries strictly ascending and unique by
-///    `(deadline_vns, seq)` (task-05 fires same-deadline timers in `seq`/FIFO
-///    order, so this is the order they must be stored and replayed in).
-/// 2. **Unique tokens** — task-05's queue keys a `token -> entry` index, so a
-///    duplicate `token` would make a later cancel/reschedule hit the wrong entry.
-/// 3. **`seq < next_seq`** — `next_seq` is the queue's next insertion counter; a
-///    stored `seq >= next_seq` would collide with the seq the restored queue
-///    hands out for its next same-deadline insertion.
-///
-/// Checking here (rather than silently fixing) is what makes
-/// `decode(encode(s)?) == s` hold for every `VmState` `encode` accepts.
 fn validate_timers(entries: &[TimerEntry], next_seq: u64) -> Result<(), VmStateError> {
     let mut prev_key: Option<(u64, u64)> = None;
     let mut tokens = BTreeSet::new();
@@ -385,8 +322,6 @@ pub(crate) fn decode_contract_hash(payload: &[u8]) -> Result<[u8; 32], VmStateEr
     <[u8; CONTRACT_HASH_LEN]>::try_from(payload).map_err(|_| VmStateError::InvalidField)
 }
 
-/// Read a little-endian `u32` at `offset`, or [`VmStateError::InvalidField`] if
-/// the slice is too short (a malformed section, not a truncated buffer).
 pub(crate) fn le_u32(buf: &[u8], offset: usize) -> Result<u32, VmStateError> {
     let bytes = buf
         .get(offset..offset + 4)
@@ -394,7 +329,6 @@ pub(crate) fn le_u32(buf: &[u8], offset: usize) -> Result<u32, VmStateError> {
     Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
-/// Read a little-endian `u64` at `offset`, or [`VmStateError::InvalidField`].
 pub(crate) fn le_u64(buf: &[u8], offset: usize) -> Result<u64, VmStateError> {
     let bytes = buf
         .get(offset..offset + 8)
@@ -404,8 +338,6 @@ pub(crate) fn le_u64(buf: &[u8], offset: usize) -> Result<u64, VmStateError> {
     ]))
 }
 
-/// A forward-only cursor over the section stream. Every read that would pass the
-/// end of the buffer yields [`VmStateError::Truncated`].
 pub(crate) struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,

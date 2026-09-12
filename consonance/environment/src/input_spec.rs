@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Generic deterministic input configuration and scheduled machine operations.
 use crate::channel::{
     Answer, ChannelError, Effect, MAX_CHANNEL_BYTES, NominalHandler, RecordedEnv, ServiceHandler,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
-/// Implementation and configuration required by a service extension.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceConfig {
     pub identity: Vec<u8>,
@@ -37,7 +35,6 @@ impl ServiceConfig {
         Ok(result)
     }
 }
-/// A composition-supplied extension factory. Ordinary sessions use the nominal factory.
 pub type ServiceFactory =
     Arc<dyn Fn(&ServiceConfig) -> Result<Box<dyn ServiceHandler>, ChannelError> + Send + Sync>;
 pub fn nominal_factory() -> ServiceFactory {
@@ -50,7 +47,6 @@ pub fn nominal_factory() -> ServiceFactory {
         Ok(Box::new(NominalHandler))
     })
 }
-/// Versioned deterministic inputs. Fault meanings belong to the supplying package.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InputSpec {
     seed: u64,
@@ -61,7 +57,6 @@ pub struct InputSpec {
     answers: BTreeMap<(u64, u16, u64), Answer>,
 }
 impl InputSpec {
-    /// This format has a distinct version from historical fault-aware environments.
     pub const BLOB_VERSION: u16 = 5;
     pub fn seeded(seed: u64) -> Self {
         Self {
@@ -100,7 +95,6 @@ impl InputSpec {
     pub fn record_effect(&mut self, at: u64, effect: Effect) {
         self.effects.insert(at, effect);
     }
-    /// Answers selected by a host policy, indexed by moment, service, and request.
     pub fn answers(&self) -> &BTreeMap<(u64, u16, u64), Answer> {
         &self.answers
     }
@@ -179,8 +173,6 @@ impl InputSpec {
         }
         out
     }
-    /// Encode inputs for transport, rejecting a specification the decoder cannot
-    /// accept. Composition code uses this before committing additional inputs.
     pub fn try_encode(&self) -> Result<Vec<u8>, ChannelError> {
         let bytes = self.encode();
         Self::decode(&bytes)?;

@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Live in-process boot and control operations for [`super::Session`].
-//!
-//! This module is kept separate from the portable session/configuration types:
-//! it requires a real VMM composition and is exercised by Linux/KVM lanes.
 
 use std::{collections::BTreeMap, error::Error, fmt, path::Path, time::Duration};
 
@@ -34,7 +30,6 @@ use crate::Client;
 
 type Server = Client<ControlServer<Box<dyn Backend<A = HostArch>>>>;
 
-/// One in-process whole-VM session.
 pub struct Session {
     client: Server,
     setup: SnapId,
@@ -42,8 +37,6 @@ pub struct Session {
     image_identity: [u8; 32],
     config: SessionConfig,
     snapshot_times: BTreeMap<SnapId, u64>,
-    /// Set once a run exceeds the wall-clock bound. The VM was canceled, so no
-    /// later request may enter it.
     abandoned: bool,
 }
 
@@ -62,25 +55,20 @@ impl std::fmt::Debug for Session {
 }
 
 impl Session {
-    /// Stable identity for the complete VM image and neutral session contract.
     #[must_use]
     pub fn identity(kernel: &[u8], initramfs: &[u8]) -> String {
         super::identity(kernel, initramfs)
     }
 
-    /// Stable identity for an image and its complete launch/resource contract.
     #[must_use]
     pub fn identity_with_config(kernel: &[u8], initramfs: &[u8], config: &SessionConfig) -> String {
         super::identity_with_config(kernel, initramfs, config)
     }
 
-    /// Boot one guest, configure the empty ordered payload tape, and retain a
-    /// setup snapshot at the guest's `setup_complete` lifecycle point.
     pub fn new(kernel: &[u8], initramfs: &[u8]) -> Result<Self, Box<dyn Error>> {
         Self::new_with_config(kernel, initramfs, SessionConfig::default())
     }
 
-    /// Boot one guest with package-owned launch and resource settings.
     pub fn new_with_config(
         kernel: &[u8],
         initramfs: &[u8],
@@ -89,7 +77,6 @@ impl Session {
         Self::new_with_config_and_payloads(kernel, initramfs, config, Vec::new())
     }
 
-    /// Boot one guest with explicit launch settings and setup payloads.
     pub fn new_with_config_and_payloads(
         kernel: &[u8],
         initramfs: &[u8],
@@ -158,7 +145,6 @@ impl Session {
         })
     }
 
-    /// Construct a session from image paths.
     pub fn from_paths(kernel: &Path, initramfs: &Path) -> Result<Self, Box<dyn Error>> {
         let kernel_bytes = std::fs::read(kernel)
             .map_err(|error| format!("read kernel {}: {error}", kernel.display()))?;
@@ -167,7 +153,6 @@ impl Session {
         Self::new(&kernel_bytes, &initramfs_bytes)
     }
 
-    /// Construct a configured session from image paths.
     pub fn from_paths_with_config(
         kernel: &Path,
         initramfs: &Path,
@@ -180,18 +165,14 @@ impl Session {
         Self::new_with_config(&kernel_bytes, &initramfs_bytes, config)
     }
 
-    /// Capture the setup point as a portable snapshot.
     pub fn setup_snapshot(&self) -> Result<PortableSnapshot, Box<dyn Error>> {
         self.export_snapshot(self.setup, self.setup_at)
     }
 
-    /// Capture the setup point in the sparse snapshot representation used by
-    /// adapters that retain page and sidecar sharing across archive entries.
     pub fn setup_sparse_snapshot(&self) -> Result<SparseSnapshot, Box<dyn Error>> {
         self.export_sparse_snapshot(self.setup, None)
     }
 
-    /// Capture a held snapshot as a sparse, share-aware portable value.
     pub fn export_sparse_snapshot(
         &self,
         snapshot: SnapId,
@@ -216,7 +197,6 @@ impl Session {
         .map_err(Into::into)
     }
 
-    /// Import a sparse portable value and return its fresh control handle.
     pub fn import_sparse_snapshot(
         &mut self,
         snapshot: &SparseSnapshot,
@@ -237,21 +217,18 @@ impl Session {
         Ok(receipt.id)
     }
 
-    /// Snapshot the current control-server state and retain its V-time.
     pub fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
         let receipt = snapshot_handle(&mut self.client, "snapshot")?;
         self.snapshot_times.insert(receipt.id, receipt.at);
         Ok((receipt.id, receipt.at))
     }
 
-    /// Drop a held control-server snapshot.
     pub fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
         self.drop_handle(snapshot)?;
         self.snapshot_times.remove(&snapshot);
         Ok(())
     }
 
-    /// Branch from a held snapshot with ordered opaque payload records.
     pub fn branch_payloads(
         &mut self,
         snapshot: SnapId,
@@ -260,22 +237,10 @@ impl Session {
         branch_payload(&mut self.client, snapshot, payloads, self.config.seed)
     }
 
-    /// Install the composition's service implementation resolver, so a branch
-    /// carrying a package's service configuration builds that package's
-    /// handler for opaque SDK service requests. Held snapshots keep the
-    /// identity and configuration they recorded.
     pub fn set_service_factory(&mut self, factory: ServiceFactory) {
         self.client.transport_mut().set_service_factory(factory);
     }
 
-    /// Branch from a held snapshot under a package's service configuration,
-    /// ordered payload records, and the host-plane effects to apply during the
-    /// run that follows, each at the virtual moment it is recorded against.
-    ///
-    /// The installed service factory builds the handler and the control server
-    /// checks every effect before the live VM changes, so a configuration whose
-    /// implementation is not installed — or an effect the machine cannot apply
-    /// at the moment given — fails the branch and leaves the session untouched.
     pub fn branch_with_service(
         &mut self,
         snapshot: SnapId,
@@ -287,9 +252,6 @@ impl Session {
         branch_spec(&mut self.client, snapshot, &spec)
     }
 
-    /// Run from the current state until virtual time reaches `deadline`, or
-    /// until the guest stops earlier on an SDK assertion, a crash, or
-    /// quiescence.
     pub fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
         let request = Request::Run {
             until: StopConditions {
@@ -308,12 +270,6 @@ impl Session {
         }
     }
 
-    /// Snapshot the current stopped state, running the guest a further
-    /// `settle_step` of virtual time whenever the control server cannot seal
-    /// that point yet, up to `max_settle` in total.
-    ///
-    /// Reports the snapshot, its V-time, and the stop reason of the last settle
-    /// run — absent when the point sealed with no settling.
     pub fn seal(
         &mut self,
         settle_step: u64,
@@ -328,7 +284,6 @@ impl Session {
         )
     }
 
-    /// Seal the current point, or `None` when the server cannot seal it yet.
     fn try_seal(&mut self) -> Result<Option<(SnapId, u64)>, Box<dyn Error>> {
         let outcome = self.client.transport_mut().handle(&Request::Snapshot);
         match outcome {
@@ -358,8 +313,6 @@ impl Session {
         }
     }
 
-    /// Run `step` further nanoseconds of virtual time from wherever the guest
-    /// currently stands.
     fn settle_step(&mut self, step: u64) -> Result<StopReason, Box<dyn Error>> {
         let now = self
             .client
@@ -373,7 +326,6 @@ impl Session {
         self.run_until(deadline)
     }
 
-    /// Issue one control request with the session's host wall-clock bound armed.
     fn drive(&mut self, request: &Request) -> Result<Reply, Box<dyn Error>> {
         drive_guarded(
             &mut self.client,
@@ -383,12 +335,10 @@ impl Session {
         )
     }
 
-    /// Replay a held snapshot without staging any payloads.
     pub fn replay_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
         self.replay(snapshot)
     }
 
-    /// Run until the caller's control conditions return a stop reason.
     pub fn run(
         &mut self,
         until: StopConditions,
@@ -405,7 +355,6 @@ impl Session {
         }
     }
 
-    /// Read guest physical memory through the control protocol.
     pub fn read(&mut self, gpa: u64, len: u32) -> Result<Vec<u8>, Box<dyn Error>> {
         match self
             .client
@@ -421,16 +370,10 @@ impl Session {
         }
     }
 
-    /// Read a bounded tail of the guest console for diagnostics.
-    ///
-    /// Console collection is best-effort at the workload boundary: callers can
-    /// report the original control or execution failure when the diagnostic
-    /// request itself is unavailable.
     pub fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
         drain_console(&mut self.client)
     }
 
-    /// Run the fixed setup lifecycle point used by payload guests.
     pub fn run_to_snapshot(&mut self, floor: u64) -> Result<u64, Box<dyn Error>> {
         run_to_snapshot(
             &mut self.client,
@@ -441,12 +384,10 @@ impl Session {
         )
     }
 
-    /// Set the VMM snapshot derive-chain bound for profiling experiments.
     pub fn set_max_chain_len(&mut self, max_chain_len: u32) {
         self.client.transport_mut().set_max_chain_len(max_chain_len);
     }
 
-    /// Non-zero pages owned by one held snapshot, when store statistics exist.
     pub fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64> {
         self.client
             .transport()
@@ -454,7 +395,6 @@ impl Session {
             .map(|stats| stats.owned_pages)
     }
 
-    /// Dirty page GFNs drained by the most recent seal.
     pub fn last_seal_dirty_gfns(&self) -> Option<Vec<u64>> {
         self.client
             .transport()
@@ -462,12 +402,10 @@ impl Session {
             .map(ToOwned::to_owned)
     }
 
-    /// Derive-chain length of one held snapshot.
     pub fn snapshot_chain_len(&self, snapshot: SnapId) -> Option<u32> {
         self.client.transport().snapshot_chain_len(snapshot)
     }
 
-    /// Restore statistics from the most recent branch or replay.
     pub fn last_restore_stats(&self) -> (u64, u64) {
         (
             self.client.transport().last_restore_bytes_written(),
@@ -475,7 +413,6 @@ impl Session {
         )
     }
 
-    /// Doorbell exits accumulated by the live VMM.
     pub fn doorbell_exits(&self) -> u64 {
         self.client
             .transport()
@@ -484,15 +421,12 @@ impl Session {
             .unwrap_or(0)
     }
 
-    /// Restore a portable snapshot into this session and make it current.
     pub fn restore(&mut self, snapshot: &PortableSnapshot) -> Result<(), Box<dyn Error>> {
         let handle = self.import_snapshot(snapshot)?;
         let result = self.replay(handle);
         self.cleanup_handles([handle], result)
     }
 
-    /// Apply exactly one opaque payload record from `snapshot` and stop at the
-    /// guest's next lifecycle point.  The result is a portable whole-VM seal.
     pub fn apply_payload(
         &mut self,
         snapshot: &PortableSnapshot,
@@ -522,7 +456,6 @@ impl Session {
         self.cleanup_handles(temporary_handles, result)
     }
 
-    /// Read the current SDK event prefix, including the package's check state.
     pub fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
         let mut offset = 0_u32;
         let mut events = Vec::new();
@@ -549,7 +482,6 @@ impl Session {
         Ok(events)
     }
 
-    /// Read the current whole-VM state digest.
     pub fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
         match self
             .client
@@ -567,26 +499,21 @@ impl Session {
         }
     }
 
-    /// The setup image identity used to reject a portable snapshot from a
-    /// different kernel/initramfs pair.
     #[must_use]
     pub fn image_identity(&self) -> [u8; 32] {
         self.image_identity
     }
 
-    /// The setup V-time from which the session's portable snapshots derive.
     #[must_use]
     pub fn setup_at(&self) -> u64 {
         self.setup_at
     }
 
-    /// The setup snapshot handle retained by this session.
     #[must_use]
     pub fn setup_handle(&self) -> (SnapId, u64) {
         (self.setup, self.setup_at)
     }
 
-    /// V-time associated with a live control snapshot handle.
     #[must_use]
     pub fn snapshot_time(&self, snapshot: SnapId) -> Option<u64> {
         self.snapshot_times.get(&snapshot).copied()
@@ -729,15 +656,6 @@ fn branch_spec(client: &mut Server, snap: SnapId, spec: &InputSpec) -> Result<()
     Ok(())
 }
 
-/// Issue one control request, abandoning the guest if it spends more than
-/// `wall_limit` of host time inside the run without taking an exit.
-///
-/// The bound is measured against the host clock on purpose: a guest that stalls
-/// advances no virtual time, so nothing else can notice it. Once the guard
-/// expires the VM is unusable, so the request's own reply is discarded in favor
-/// of [`SessionError::Hung`] and `abandoned` is set, which turns every later
-/// request into [`SessionError::Abandoned`]. A request that returns first
-/// claims the run and keeps its reply.
 fn drive_guarded(
     client: &mut Server,
     wall_limit: Option<Duration>,
@@ -800,9 +718,6 @@ fn run_to_snapshot(
     }
 }
 
-/// Capture a bounded console tail/trace without hiding the original failure.
-/// Console reads are best-effort: an unavailable or malformed diagnostic reply
-/// returns the original error unchanged.
 fn with_console(client: &mut Server, error: Box<dyn Error>) -> Box<dyn Error> {
     let Ok(console) = drain_console(client) else {
         return error;
@@ -861,7 +776,6 @@ fn drop_control_handle(client: &mut Server, handle: SnapId) -> Result<(), Box<dy
     expect_unit(reply, "drop snapshot")
 }
 
-/// Return this process's minor-fault count when the host exposes it.
 #[must_use]
 pub fn host_minor_faults() -> Option<u64> {
     vmm_core::control::host_minor_faults()

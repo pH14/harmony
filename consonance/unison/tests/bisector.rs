@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Acceptance gates 2–5: bisector exactness (property), efficiency bound,
-//! halt mismatch, and the no-divergence path.
-//!
-//! The property test perturbs the toy PRNG state: the xorshift64* update is a
-//! bijection, so two states that differ once differ at every later step, which
-//! makes the injected divergence persistent and the ground truth exact. A
-//! register perturbation (which later writes can erase before a checkpoint
-//! observes it) gets a directed test with a program that never writes r0.
 
 use proptest::prelude::*;
 use unison::flaky::{FlakyFactory, Perturbation};
@@ -38,8 +30,6 @@ fn ceil_log2(n: u64) -> u64 {
     u64::from(64 - n.saturating_sub(1).leading_zeros())
 }
 
-/// Bracket with compare_runs, bisect, and assert the bisector returns exactly
-/// `diverge_at` within the efficiency bound.
 fn assert_bisects_exactly(
     toy: &ToyFactory,
     flaky: &FlakyFactory<ToyFactory>,

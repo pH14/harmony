@@ -1,11 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Nova the Squirrel memory decoder and machine-backed target adapter.
-//!
-//! This module is the game-knowledge boundary. The generic search code sees
-//! controller actions, opaque keys, observations, and snapshots; every Nova
-//! address and interpretation stays here.
-
 use std::{error::Error, io::Write, path::Path};
 
 use machine::{
@@ -36,16 +30,12 @@ const LEVEL_AVAILABLE: usize = 0x7f27 - SAVE_RAM_BASE;
 const COLLECTIBLE_BITS: usize = 0x7f2f - SAVE_RAM_BASE;
 const PERSISTENT_BITMAP_LEN: usize = 8;
 
-/// Number of ordinary world levels exposed by Nova's source-defined campaign.
 pub const NOVA_CAMPAIGN_LEVEL_COUNT: u8 = 40;
 
-/// A one-based, source-defined Nova campaign level.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct NovaLevel(u8);
 
 impl NovaLevel {
-    /// Validate a one-based level number from `1` through
-    /// [`NOVA_CAMPAIGN_LEVEL_COUNT`].
     pub fn from_number(number: u8) -> Result<Self, MachineError> {
         if (1..=NOVA_CAMPAIGN_LEVEL_COUNT).contains(&number) {
             Ok(Self(number))
@@ -56,7 +46,6 @@ impl NovaLevel {
         }
     }
 
-    /// The one-based level number shown to operators.
     #[must_use]
     pub fn number(self) -> u8 {
         self.0
@@ -81,40 +70,25 @@ fn level_prefix_bitmap(count: u8) -> [u8; PERSISTENT_BITMAP_LEN] {
     bitmap
 }
 
-/// A Nova input replayed from the sealed gameplay genesis.
 pub type NovaInput = crate::search::archive::Input<ButtonChord>;
 
-/// Source-derived mechanical state at one emulator frame.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct NovaMechanicalState {
-    /// Current internal map number.
     pub level: u8,
-    /// Player-selected campaign level number.
     pub started_level: u8,
-    /// Player X in whole pixels, decoded from 12.4 fixed point.
     pub x: u16,
-    /// Player Y in whole pixels, decoded from 12.4 fixed point.
     pub y: u16,
-    /// Current health in half-hearts.
     pub health: u8,
-    /// Puzzle chips currently carried.
     pub chips: u8,
-    /// Puzzle chips required by the current map.
     pub chips_needed: u8,
-    /// Current copied ability.
     pub ability: u8,
-    /// Whether the engine requested an internal map reload.
     pub level_reload_pending: bool,
-    /// Persistent cleared-level bitmap.
     pub levels_cleared: [u8; PERSISTENT_BITMAP_LEN],
-    /// Persistent available-level bitmap.
     pub levels_available: [u8; PERSISTENT_BITMAP_LEN],
-    /// Persistent collectible bitmap.
     pub collectibles: [u8; PERSISTENT_BITMAP_LEN],
 }
 
 impl NovaMechanicalState {
-    /// Count durable completed levels.
     #[must_use]
     pub fn cleared_count(self) -> u8 {
         self.levels_cleared
@@ -125,7 +99,6 @@ impl NovaMechanicalState {
             .unwrap_or(u8::MAX)
     }
 
-    /// Count currently unlocked levels.
     #[must_use]
     pub fn available_count(self) -> u8 {
         self.levels_available
@@ -136,7 +109,6 @@ impl NovaMechanicalState {
             .unwrap_or(u8::MAX)
     }
 
-    /// Count durable collectibles.
     #[must_use]
     pub fn collectible_count(self) -> u8 {
         self.collectibles
@@ -148,41 +120,26 @@ impl NovaMechanicalState {
     }
 }
 
-/// Mechanical evidence emitted at a changed spatial/resource boundary.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NovaObservations {
-    /// Frames emulated since the sealed gameplay genesis.
     pub frame_count: u64,
-    /// Decoded source-grounded mechanical state.
     pub decoded: NovaMechanicalState,
-    /// Sorted system-RAM indices changed since the prior emitted event.
     pub changed_indices: Vec<u16>,
-    /// Whether health first reached zero at this event.
     pub dead: bool,
-    /// Compact game-neutral mechanical log line.
     pub log_line: String,
 }
 
-/// Geometry and frame count of one rendered replay.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NovaVideoMetadata {
-    /// Tightly packed frame width.
     pub width: u32,
-    /// Tightly packed frame height.
     pub height: u32,
-    /// Frames written.
     pub frames: u64,
-    /// Native signed 16-bit PCM sample rate.
     pub audio_sample_rate: u32,
-    /// Interleaved PCM channel count.
     pub audio_channels: u8,
-    /// Stereo PCM frames written.
     pub audio_frames: u64,
-    /// Decoded game state after the searched input and before the film tail.
     pub input_endpoint: NovaMechanicalState,
 }
 
-/// Complete state needed to resume a Nova prefix exactly.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NovaSnapshot<P = machine::SharedState> {
     pub(crate) emulator_state: P,
@@ -192,7 +149,6 @@ pub struct NovaSnapshot<P = machine::SharedState> {
 }
 
 impl<P> NovaSnapshot<P> {
-    /// Decoded endpoint state carried by this snapshot.
     #[must_use]
     pub fn state(&self) -> NovaMechanicalState {
         self.observation.decoded
@@ -203,7 +159,6 @@ const JOYPAD_A: u8 = 1 << 0;
 const JOYPAD_START: u8 = 1 << 3;
 const JOYPAD_UP: u8 = 1 << 4;
 
-/// Fixed title path ending at the main menu, after save-file initialization.
 const BOOT_TO_MAIN_MENU: [ButtonChord; 3] = [
     ButtonChord {
         buttons: 0,
@@ -219,7 +174,6 @@ const BOOT_TO_MAIN_MENU: [ButtonChord; 3] = [
     },
 ];
 
-/// Fixed main-menu/level-select/pre-level path. Search inputs begin afterward.
 const MAIN_MENU_TO_GAMEPLAY: [ButtonChord; 12] = [
     ButtonChord {
         buttons: JOYPAD_START,
@@ -271,7 +225,6 @@ const MAIN_MENU_TO_GAMEPLAY: [ButtonChord; 12] = [
     },
 ];
 
-/// Machine-backed target used by Nova campaigns.
 #[derive(Debug)]
 pub struct NovaTarget<M: Machine = QuickNesMachine> {
     machine: M,
@@ -289,7 +242,6 @@ pub struct NovaTarget<M: Machine = QuickNesMachine> {
 }
 
 impl<M: Machine> NovaTarget<M> {
-    /// Execute the first-level controller boot walk on a power-on core.
     pub fn from_power_on(mut machine: M) -> Result<Self, MachineError> {
         for actions in [&BOOT_TO_MAIN_MENU[..], &MAIN_MENU_TO_GAMEPLAY[..]] {
             machine::nes::run_actions(&mut machine, actions)?;
@@ -297,12 +249,6 @@ impl<M: Machine> NovaTarget<M> {
         Self::from_machine(machine)
     }
 
-    /// Seal a machine that is already stopped at Nova gameplay genesis.
-    ///
-    /// The constructor reads the two NES memory windows through the machine
-    /// boundary, validates that they contain a live player state, and retains
-    /// one snapshot handle for deterministic reset. The machine must already
-    /// have completed all title, menu, and level-select setup.
     pub fn from_machine(mut machine: M) -> Result<Self, MachineError> {
         let (wram, save_ram) = read_memory(&machine)?;
         let state = decode_state(&wram, &save_ram)?;
@@ -374,7 +320,6 @@ impl NovaTarget<QuickNesMachine> {
         Self::from_machine(machine)
     }
 
-    /// Load Nova and seal gameplay genesis through the pinned QuickNES core.
     pub fn from_rom_bytes_headless(
         rom: &[u8],
         core_path: &Path,
@@ -383,8 +328,6 @@ impl NovaTarget<QuickNesMachine> {
         Self::from_rom_bytes_headless_at_level(rom, core_path, core_sha256, NovaLevel::default())
     }
 
-    /// Load Nova and seal genesis at one independently selected campaign
-    /// level through the game's normal menus.
     pub fn from_rom_bytes_headless_at_level(
         rom: &[u8],
         core_path: &Path,
@@ -399,32 +342,26 @@ impl NovaTarget<QuickNesMachine> {
 }
 
 impl<M: Machine> NovaTarget<M> {
-    /// Current decoded state.
     #[must_use]
     pub fn mechanical_state(&self) -> NovaMechanicalState {
         self.observation.decoded
     }
 
-    /// Whether the current state has no health.
     #[must_use]
     pub fn is_dead(&self) -> bool {
         self.observation.decoded.health == 0
     }
 
-    /// Whether this input durably cleared a level beyond sealed genesis.
     #[must_use]
     pub fn cleared_a_level(&self) -> bool {
         self.observation.decoded.cleared_count() > self.genesis_cleared
     }
 
-    /// Whether all campaign levels have a durable clear flag.
     #[must_use]
     pub fn cleared_every_level(&self) -> bool {
         self.observation.decoded.cleared_count() >= NOVA_CAMPAIGN_LEVEL_COUNT
     }
 
-    /// Configure the run's fixed terminal policy before executing actions.
-    /// The campaign records this policy and rejects a mismatched replay context.
     pub fn set_halt_on_level_clear(&mut self, halt: bool) {
         self.halt_on_level_clear = halt;
     }
@@ -433,19 +370,16 @@ impl<M: Machine> NovaTarget<M> {
         self.failed || self.is_dead() || (self.halt_on_level_clear && self.cleared_a_level())
     }
 
-    /// Total deterministic frames this instance has emulated.
     #[must_use]
     pub fn frames_clocked(&self) -> u64 {
         self.machine.now().0
     }
 
-    /// Observer events emitted by the most recent action.
     #[must_use]
     pub fn last_action_observations(&self) -> &[NovaObservations] {
         &self.action_observations
     }
 
-    /// Test one fixed continuation and restore the caller's state afterward.
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
         if self.halted() {
             return false;
@@ -549,11 +483,6 @@ impl<M: Machine> NovaTarget<M> {
 }
 
 impl NovaTarget<QuickNesMachine> {
-    /// Replay an input from gameplay genesis and write RGB24 video and S16LE
-    /// stereo audio.
-    ///
-    /// Video is a replay-only observer. Search workers never enable it, and
-    /// the recorded headless campaign identity is unchanged.
     pub fn render_input(
         &mut self,
         input: &NovaInput,
@@ -958,7 +887,6 @@ fn fixed_point_pixels(high: u8, low: u8) -> u16 {
     u16::from(high) * 16 + u16::from(low >> 4)
 }
 
-/// Decode Nova's work/save-RAM observations from bounded external slices.
 pub fn decode_state(wram: &[u8], save_ram: &[u8]) -> Result<NovaMechanicalState, MachineError> {
     Ok(NovaMechanicalState {
         level: read_byte(wram, LEVEL_NUMBER)?,
@@ -982,13 +910,11 @@ pub fn decode_state(wram: &[u8], save_ram: &[u8]) -> Result<NovaMechanicalState,
     })
 }
 
-/// Coarse location used by observation emission and archive cells.
 #[must_use]
 pub fn spatial_bucket(state: NovaMechanicalState) -> (u8, u8, u16, u16) {
     (state.started_level, state.level, state.x / 32, state.y / 32)
 }
 
-/// Adapter-owned lexicographic preference, opaque to the search coordinator.
 #[must_use]
 pub fn preference_tuple(state: NovaMechanicalState) -> (u8, u8, u8, bool, u8, u8) {
     (

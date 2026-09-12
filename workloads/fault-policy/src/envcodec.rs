@@ -1,11 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! [`EnvCodec`] — the vocabulary-aware **proposal seam**. The search loop (the outer
-//! search loop) is structurally blind to fault semantics: it cannot *invent* a
-//! legal [`HostFault`]/[`Answer`], so it asks the codec to `seeded` a fresh
-//! environment, `mutate` an existing one, or `compose` two on the single
-//! [`Moment`] axis. All three operate over the merged host+guest override map,
-//! and all three are deterministic — `mutate`/`compose` take an explicit
-//! salt/offset, so the search stays replayable.
 
 use std::collections::BTreeMap;
 
@@ -16,41 +9,16 @@ use crate::policy::FaultPolicy;
 use crate::prng::Prng;
 use crate::recorded::{EnvSpec, StandingFault};
 
-/// Domain separation for `mutate`'s PRNG, so a mutation salt and a base seed that
-/// happen to coincide do not draw the same stream.
 const MUTATE_DOMAIN: u64 = 0x4D75_7461_7465_2121;
 
-/// The proposal seam the search loop calls. A unit type: every operation is a pure
-/// function of its inputs, holding no state of its own.
-///
-/// This is one of the three opaque seams that make the search loop
-/// *agnostic-by-interface* (navigation, scoring, **proposal**): vocabulary
-/// knowledge lives here, not in the search policy, so adding a fault type grows
-/// the codec and never the search loop (the dissonance D-invariant).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EnvCodec;
 
 impl EnvCodec {
-    /// Propose a pure **seeded** environment: a seed and a [`FaultPolicy`] answer
-    /// every decision locally, with no overrides (FoundationDB `BUGGIFY` style).
     pub fn seeded(seed: u64, policy: FaultPolicy) -> EnvSpec {
         EnvSpec::Seeded { seed, policy }
     }
 
-    /// Deterministically **mutate** an environment: one tweak to the merged
-    /// override map, selected by `salt` (same `(env, salt)` ⇒ same result). The
-    /// mutation operates **only on the host plane** — it inserts, moves, or
-    /// removes an [`Action::Host`] override, which carries no admissibility
-    /// constraint (a host fault needs no [`DecisionPoint`](crate::DecisionPoint)).
-    /// Guest-plane mutation requires the live decision context the explorer
-    /// supplies at `decide` time, not this offline codec; therefore **every
-    /// [`Action::Guest`] override is preserved verbatim** — `mutate` never
-    /// removes, relocates, or overwrites one, so it can never fabricate an
-    /// out-of-context guest answer.
-    ///
-    /// Always returns a [`Recorded`](EnvSpec::Recorded) spec (inserting a host
-    /// fault into a [`Seeded`](EnvSpec::Seeded) base promotes it); the base's
-    /// seed, policy, and standing faults are preserved.
     pub fn mutate(env: &EnvSpec, salt: u64) -> EnvSpec {
         let mut overrides = env.overrides().clone();
         let standing = match env {
@@ -99,42 +67,6 @@ impl EnvCodec {
         }
     }
 
-    /// **Compose** a `base` prefix with a `tail` continuation on the single
-    /// [`Moment`] axis — the task-45 acceptance gate: *one-axis `Moment` override
-    /// re-keying*. It keeps `base`'s genesis prefix `[0, at)` and splices `tail` in
-    /// at `at`, re-keying every `tail` override's `Moment` by `+ at`. Because
-    /// `Moment` is one axis for both planes, this is plain integer arithmetic; the
-    /// result is genesis-complete and collision-free (`base` contributes only
-    /// `m < at`, `tail` only `m + at ≥ at`) and carries `base`'s seed/policy (which
-    /// equal `tail`'s). This succeeds at **any** `at`, genesis or not — the
-    /// explorer rebases a branch-local delta onto a base below a snapshot this way.
-    ///
-    /// It **fails closed** ([`EnvError::UnsupportedComposition`]) for the cases
-    /// outside this one-axis scope, which belong to **task 93** (the compose-model
-    /// revisit — "see task 93"):
-    ///
-    /// - **Either input carries a [`StandingFault`].** Its window bounds are
-    ///   parameterized in raw retired-*branch* counts, while the override keys
-    ///   `compose` shifts are `Moment` (retired-*instruction*) offsets; a correct
-    ///   re-key of the window across the splice needs the runtime branch ↔
-    ///   instruction mapping `compose` lacks (task 93's).
-    /// - **Either input is a pure [`Seeded`](EnvSpec::Seeded) environment.** Every
-    ///   one of its decisions is seed-serviced, so splicing it at `at > 0` would
-    ///   desync the tail's fresh PRNG stream (the composed prefix advances the
-    ///   shared seed before the tail starts). Seeded/PRNG-state composition needs
-    ///   the snapshot's captured PRNG state — task 93.
-    /// - **`tail`'s seed or policy differs from `base`'s.** A single `EnvSpec`
-    ///   carries one seed/policy, so it cannot hold a piecewise stream.
-    ///
-    /// Returns [`EnvError::Overflow`] if a tail `m + at` would exceed [`u64::MAX`]
-    /// (rejected, never saturated — a wrap would collapse distinct overrides).
-    ///
-    /// **Scope note.** This is one-axis `Moment` *override* re-keying only. A
-    /// `Recorded` input is treated as override-driven; if the composed run draws
-    /// the seed for an unoverridden decision across a non-genesis splice, that is
-    /// the seeded composition deferred to task 93 — the caller composes
-    /// override-covered reproducers. `compose` re-keys the override map (the gate)
-    /// and rejects the statically-detectable seeded inputs (the `Seeded` variant).
     pub fn compose(base: &EnvSpec, tail: &EnvSpec, at: Moment) -> Result<EnvSpec, EnvError> {
         if !standing_of(base).is_empty()
             || !standing_of(tail).is_empty()
@@ -181,7 +113,6 @@ impl EnvCodec {
     }
 }
 
-/// The standing faults of a spec (`Seeded` has none).
 fn standing_of(spec: &EnvSpec) -> &[StandingFault] {
     match spec {
         EnvSpec::Recorded { standing, .. } => standing,
@@ -189,29 +120,14 @@ fn standing_of(spec: &EnvSpec) -> &[StandingFault] {
     }
 }
 
-/// Re-key a tail `Moment` onto the composed genesis timeline by `+ at`, rejecting
-/// overflow with [`EnvError::Overflow`] rather than wrapping (a wrap would collapse
-/// two distinct overrides onto one key, breaking collision-free replay). Factored
-/// out so the Kani harnesses can prove it injective and overflow-safe.
 fn rekey_moment(m: Moment, at: Moment) -> Result<Moment, EnvError> {
     m.checked_add(at).ok_or(EnvError::Overflow)
 }
 
-/// Kani proof harnesses for the bounded integer invariants `compose` rests on
-/// (`Ratio`'s no-divide-by-zero guard; `rekey_moment` injectivity + overflow
-/// safety). `#[cfg(kani)]` + a separate file so they are verified by the `kani`
-/// job, not compiled into the normal/test build or seen by the mutation oracle. A
-/// child of `envcodec`, so `use super::*` reaches the private `rekey_moment` and
-/// the imported `Ratio`.
 #[cfg(kani)]
 #[path = "envcodec_proofs.rs"]
 mod proofs;
 
-/// A deterministic [`Moment`] slot that does **not** hold a guest action — used
-/// by `mutate` to place a host action without ever clobbering a guest override.
-/// Draws one PRNG word, then scans upward (wrapping) past any guest-occupied
-/// slot; it may land on a free slot or overwrite another host action, both legal.
-/// Terminates because guest actions are finite.
 fn free_non_guest_slot(map: &BTreeMap<Moment, Action>, rng: &mut Prng) -> Moment {
     let mut d = rng.next_u64();
     while matches!(map.get(&d), Some(Action::Guest(_))) {
@@ -220,19 +136,6 @@ fn free_non_guest_slot(map: &BTreeMap<Moment, Action>, rng: &mut Prng) -> Moment
     d
 }
 
-/// Draw one legal [`HostFault`] from `rng`. Every host fault is unconditionally
-/// legal (no service point, no admissibility), so any draw is a valid proposal;
-/// `SetClockRate`'s denominator is forced `≥ 1` so the `Ratio` always constructs.
-/// The interrupt-identity range the mutation generator draws from.
-///
-/// The wire field is a `u32` because interrupt identities are **per-arch** — a GIC
-/// INTID exceeds 8 bits (`docs/ARCHITECTURE.md`). But a *generator* must mint
-/// identities the machine under test can actually **accept**: one outside the
-/// machine's identity space is refused at stage time, so it is a wasted mutation,
-/// not a fault. **Widening the storage must not widen the generated range.** Today
-/// the only vendor is x86, whose xAPIC identity space is 8 bits wide; when a vendor
-/// with a wider space lands, this becomes a per-vendor input to the codec rather
-/// than a constant here.
 const MUTATE_INTID_MASK: u64 = 0xFF;
 
 fn host_fault_from(rng: &mut Prng) -> HostFault {
@@ -255,12 +158,6 @@ fn host_fault_from(rng: &mut Prng) -> HostFault {
 
 #[cfg(test)]
 mod tests {
-    //! Exact-value unit tests that pin the private helpers and per-branch effects
-    //! against mutation (the PR #16 round-2 `cargo mutants` survivors). They reach
-    //! the private `host_fault_from` / `free_non_guest_slot` and the private
-    //! `Prng` / `MUTATE_DOMAIN`, which integration tests in `tests/` cannot, so
-    //! each mutant has a test that fails with an *exact* value, not a property it
-    //! could slip past.
 
     use std::collections::BTreeMap;
 
@@ -272,17 +169,12 @@ mod tests {
     use crate::prng::Prng;
     use crate::recorded::EnvSpec;
 
-    /// First seed whose initial PRNG word selects `host_fault_from` arm `arm`
-    /// (`word % 4 == arm`). Computed from the bare `Prng`, independent of any
-    /// mutant in `host_fault_from` itself.
     fn seed_for_arm(arm: u64) -> u64 {
         (0u64..10_000)
             .find(|&s| Prng::new(s).next_u64() % 4 == arm)
             .expect("an arm-selecting seed exists in range")
     }
 
-    /// First salt whose `mutate` op selector (`(salt ^ MUTATE_DOMAIN) word % 3`)
-    /// equals `op`. Independent of any mutant in `mutate`'s arms.
     fn salt_for_op(op: u64) -> u64 {
         (0u64..10_000)
             .find(|&s| Prng::new(s ^ MUTATE_DOMAIN).next_u64() % 3 == op)
@@ -359,11 +251,6 @@ mod tests {
         );
     }
 
-    /// The regression the architecture boundary widening nearly introduced: the wire
-    /// field is a `u32`, but the mutation generator must stay inside the identity
-    /// space the machine under test can accept. An unrestricted `u32` draw would
-    /// mint an out-of-range identity with probability 1 − 2⁻²⁴ — every one of them
-    /// refused at stage time, silently killing this mutation arm.
     #[test]
     fn generated_interrupt_identities_stay_inside_the_admissible_range() {
         for seed in 0u64..2_000 {

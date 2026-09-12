@@ -1,11 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 2 — override semantics. For every overridden `Moment` a **guest**
-//! override wins **iff** its `Answer` is admissible for the decision surfacing at
-//! that `Moment`; an inadmissible (or host-plane) override is deterministically
-//! ignored (the seeded base answers); every other decision is the seeded base.
-//! The general property checks the implementation against an independent
-//! restatement of the rule ([`ref_admissible`]); targeted cases pin each
-//! inadmissibility class.
 
 mod common;
 
@@ -18,8 +11,6 @@ use fault_policy::{
 };
 use proptest::prelude::*;
 
-/// Build a materialized env from a seed/policy and a single **guest** override at
-/// `Moment` `at`.
 fn one_guest_override(seed: u64, policy: FaultPolicy, at: Moment, ans: Answer) -> RecordedEnv {
     EnvSpec::Recorded {
         seed,
@@ -35,19 +26,11 @@ fn one_guest_override(seed: u64, policy: FaultPolicy, at: Moment, ans: Answer) -
 proptest! {
     #![proptest_config(config(256))]
 
-    /// The public `DecisionPoint::admits` (the single source of truth the
-    /// `RecordedEnv` and the frontier both use) agrees with the independent
-    /// restatement of the rule for every point/answer pairing.
     #[test]
     fn admits_matches_reference(p in arb_point(), ans in common::arb_answer()) {
         prop_assert_eq!(p.admits(&ans), ref_admissible(&p, &ans));
     }
 
-    /// The general rule, cross-checked against `ref_admissible` and an
-    /// independently-advanced seeded base. Each decision `i` runs at `Moment i`;
-    /// overrides (host or guest) are keyed by `Moment`. A guest override fires
-    /// iff admissible (consuming no PRNG); a host override or an inadmissible one
-    /// falls through to the base.
     #[test]
     fn override_wins_iff_admissible(
         seed in any::<u64>(),
@@ -84,8 +67,6 @@ proptest! {
     }
 }
 
-/// An admissible guest override fires at exactly its `Moment` and nowhere else —
-/// and consumes no PRNG, so the base stays in lockstep for every other Moment.
 #[test]
 fn override_fires_at_its_moment_only() {
     let seed = 42;
@@ -111,8 +92,6 @@ fn override_fires_at_its_moment_only() {
     }
 }
 
-/// Run `point` at `Moment 0` with a single guest `override0` installed, and a
-/// parallel bare `SeededEnv`; return `(env answer, base answer)`.
 fn first(point: &P, seed: u64, policy: FaultPolicy, override0: Answer) -> (Answer, Answer) {
     let mut env = one_guest_override(seed, policy.clone(), 0, override0);
     env.set_moment(0);

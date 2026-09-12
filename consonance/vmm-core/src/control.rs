@@ -1,103 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **control-transport server** (task 58): the frontier glue that serves
-//! dissonance's out-of-band R2 verbs — `hello` / `snapshot` / `drop` / `branch`
-//! / `replay` / `run` / `hash` (+ `perturb`, unsupported until task 59) — over
-//! `control-proto`'s length-delimited codec, against a live [`Vmm`] and a
-//! [`SnapshotEngine`].
-//!
-//! This is the first time any of the eight verbs is actually served: the
-//! explorer's socket-backed `Machine` (dissonance task 12 / 58) drives this
-//! server as a black box. The server is **workload-agnostic substrate surface**
-//! (task 43 F5 discipline): nothing here knows what runs inside the guest — it
-//! restores snapshots, reseeds entropy, steps the event loop, and hashes state.
-//!
-//! ## Verb semantics (seed-driven scope, task 58)
-//!
-//! - **`hello(caps)`** → the server's [`Caps`]: application protocol 10
-//!   (framing protocol 1), `Reproducer` blob version exactly
-//!   [`EnvSpec::BLOB_VERSION`], **empty/zero-width coverage
-//!   geometry** (no coverage producer exists yet) and — task 73 —
-//!   `GUEST_HAS_SDK` (the doorbell is serviced). A mismatched application
-//!   version, or any other verb before a successful `hello`, answers
-//!   [`ControlError::Unsupported`].
-//! - **`snapshot`** → seal the current point (memory + `vm_state`) into the
-//!   engine and mint a pool-wide [`SnapId`]. Task 41's non-quiescent capture is
-//!   merged, so mid-workload points are sealable; the remaining fail-closed
-//!   boundaries (an RNG mid-exit completion, a non-V-time-synchronized point)
-//!   answer [`ControlError::NotQuiescent`] — the caller runs a little further
-//!   and retries.
-//! - **`drop(snap)`** → release + GC via the store (pool GC).
-//! - **`branch(snap, env)`** → restore `snap` into a **fresh, equivalently
-//!   composed VM** (from the [`VmmFactory`]) and **reseed the entropy stream
-//!   from the env's seed** ([`Vmm::reseed_entropy`]) so the branched future
-//!   diverges through the already-deterministic RDRAND path (the proven
-//!   divergence mechanism, tasks 40/42). An env carrying **reseed markers**
-//!   (task 78) is honored marker-wise instead: the marker at the restore floor
-//!   is the branch reseed, markers beyond it are staged and re-executed at
-//!   their exact `Moment`s by `run` (a collapsed hop's reseed replays at its
-//!   recorded position — bit-identical compose folds under entropy draws), and
-//!   a marker beyond the trajectory is the same loud
-//!   [`ControlError::ScheduleUnsatisfiable`] as a crossed fault. The no-marker
-//!   path is byte-for-byte the task-58/59 behavior.
-//!   The env blob is decoded (and rejected
-//!   loudly — [`ControlError::BadEnvVersion`] / [`ControlError::MalformedEnvironment`])
-//!   but now its **host-plane overrides are enforced** (task 59): they are staged
-//!   like a `perturb` and applied at their `Moment`s during the branched run. An
-//!   env carrying a **guest** override or a **standing** host effect still answers
-//!   [`ControlError::Unsupported`] (those require the guest-plane or scheduling
-//!   enforcement loop). A service configuration is passed to the installed generic
-//!   handler factory and is never silently discarded.
-//! - **`replay(snap)`** → restore verbatim under the selected restore mode,
-//!   **no reseed** — the repro / determinism-gate path.
-//! - **`run(until)`** → advance via [`Vmm::step`] until a terminal stop or the
-//!   V-time deadline. Terminal mapping is substrate-level and workload-blind:
-//!   `Hlt` and `DebugExit{0}` → [`StopReason::Quiescent`]; `DebugExit{code≠0}`
-//!   → [`StopReason::Crash`] (kind `Panic`, detail = the code byte);
-//!   backend `Shutdown` (triple fault / guest-initiated shutdown) →
-//!   [`StopReason::Crash`] (kind `Shutdown`). A workload that *terminates by
-//!   convention* through a forced reboot (the Postgres image's `reboot -f`)
-//!   reads as a `Crash{Shutdown}` here — interpreting that convention is the
-//!   caller's (workload-aware) job, never this server's. `resolve` is accepted
-//!   on the wire but there is never an outstanding decision on the seed-driven
-//!   substrate, so any resolve answers [`ControlError::ResolveWithoutDecision`].
-//!   The [`StopMask`](control_proto::StopMask) gates no *decision* class yet (none
-//!   surface on the seed substrate), but it DOES gate the cooperating-SDK stops
-//!   (task 73 round-7): [`SnapshotPoint`](control_proto::StopReason::SnapshotPoint)
-//!   and [`Assertion`](control_proto::StopReason::Assertion) surface only when
-//!   their class bit is armed, so `StopMask::NONE` runs an SDK guest straight
-//!   through to the terminal. Crash / quiescence / deadline always stop.
-//! - **`hash(scope)`** → [`Vmm::state_hash`] for `Whole`; `Disk` / `Region`
-//!   answer [`ControlError::Unsupported`] (no disk device exists; region
-//!   hashing has no consumer yet).
-//! - **`perturb(fault, at)`** → **stage a [`HostFault`](Effect)
-//!   at a [`Moment`](u64)** (task 59): the fault blob is decoded
-//!   and validated (an out-of-range [`CorruptMemory`](Effect::CorruptMemory)
-//!   gpa is a loud [`ControlError::PerturbOutOfRange`], a malformed blob a
-//!   [`ControlError::MalformedEnvironment`], the out-of-scope `SkewTime`/
-//!   `SetClockRate` a [`ControlError::Unsupported`]), then queued. [`run`](ControlServer::run)
-//!   applies it *between instructions* at its `Moment` — a guest-RAM XOR for
-//!   `CorruptMemory`, an IRR raise through the LAPIC arbitration for
-//!   `InjectInterrupt` — and stamps it into the recorded env
-//!   ([`recorded_env`](ControlServer::recorded_env)), so the emitted reproducer
-//!   replays to the identical `state_hash`.
-//!
-//! ## Restore discipline
-//!
-//! `branch`/`replay` default to the proven fresh-VM path. An explicit
-//! [`RestoreMode::InPlace`] keeps the live VM, retires any staged userspace
-//! completion without executing another guest instruction, patches only the
-//! target-different and live-dirty pages, and restores the captured machine
-//! state. Any unavailable prerequisite or in-place error is counted and falls
-//! back to the fresh-VM path for that operation.
-//!
-//! ## Two result categories, fail-loud
-//!
-//! A guest-observable outcome is a [`StopReason`]; a recoverable control-plane
-//! failure is a [`ControlError`] **reply**; an unrecoverable substrate failure
-//! (a mid-run [`VmmError`], a store invariant, a factory that cannot boot) is a
-//! [`ServeError`] that **tears the session down** — the socket closes, the
-//! client surfaces a transport error, and the campaign aborts loudly. Nothing
-//! is ever silently absorbed or misclassified across the categories.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
@@ -142,11 +43,6 @@ fn host_minor_faults_with(getrusage: impl FnOnce(*mut libc::rusage) -> i32) -> O
     u64::try_from(minor_faults).ok()
 }
 
-/// Returns this host process's cumulative minor-page-fault count.
-///
-/// This is an out-of-band profiling counter. It must never affect guest state,
-/// encoded protocol bytes, or a determinism hash. Miri uses the testable seam
-/// rather than calling the host C library.
 #[cfg(all(target_os = "linux", not(miri)))]
 pub fn host_minor_faults() -> Option<u64> {
     host_minor_faults_with(|usage| {
@@ -156,67 +52,26 @@ pub fn host_minor_faults() -> Option<u64> {
     })
 }
 
-/// Returns no host minor-fault counter where `getrusage` is unavailable.
 #[cfg(any(not(target_os = "linux"), miri))]
 pub fn host_minor_faults() -> Option<u64> {
     None
 }
 
-/// Boots a fresh, equivalently-composed VM — the restore target for `Memcpy`,
-/// `Remap` fallback, and every failed `InPlace` attempt. On the box
-/// this re-runs the composition root (the Linux virtual-time boot helper): same RAM size,
-/// same wiring (V-time + xAPIC + legacy), same contract — the boot-loaded guest
-/// image is immediately overwritten by the restore, so the factory's seed is
-/// irrelevant. In the portable gates it builds a fresh scripted
-/// `Vmm<MockBackend>`. The server drops the previous VM before calling it so no
-/// backend completion or host resource can leak across the restore.
 pub type VmmFactory<B> = Box<dyn FnMut() -> Result<Vmm<B>, VmmError>>;
 
-/// Boots a fresh restore target **around a materialized snapshot mapping** —
-/// the task-95 M2.2 remap-restore factory (see
-/// [`crate::vendor::x86::bringup::compose_restore_target`]): the mapping's buffer becomes the
-/// guest RAM the memslots register, so the restore performs **no** full-image
-/// memcpy and untouched pages fault lazily. Must compose its VMs exactly like
-/// the session's [`VmmFactory`] (same RAM size, wiring, contract) minus the
-/// boot-image load; the server then restores only the non-memory half
-/// ([`Vmm::restore_vm_state`]). Same drop-the-old-VM-first discipline as
-/// [`VmmFactory`].
 pub type RemapVmmFactory<B> = Box<dyn FnMut(snapshot_store::Mapping) -> Result<Vmm<B>, VmmError>>;
 
-/// How `branch`/`replay` restore guest memory (task 95 M2.2) — the A/B knob of
-/// the restore determinism gate, and the fallback if a box gate fails.
-///
-/// **The mode always tells the truth** (PR #95 round-1): a server starts in
-/// [`RestoreMode::Memcpy`] — the only path it *can* take — and
-/// [`ControlServer::set_remap_factory`] flips it to [`RestoreMode::Remap`] as
-/// part of installing the capability, so `Remap` is the default exactly where
-/// remapping is possible and a composition that never opts in never *claims*
-/// to remap. There is no silent degrade: [`ControlServer::restore_mode`]
-/// reports the path restores actually take.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RestoreMode {
-    /// Patch the live VM's RAM to the target snapshot and restore its vCPU and
-    /// device state without replacing the VM. Any unavailable prerequisite or
-    /// restore failure falls back to the fresh-VM path for that operation.
     InPlace,
-    /// The mapping becomes the memslot backing (no memcpy; lazy faults). The
-    /// default once a [`RemapVmmFactory`] is installed.
     Remap,
-    /// Materialize, boot a fresh owned-RAM VM, memcpy the image in — the
-    /// pre-task-95 path, byte-for-byte. The default until a remap factory
-    /// exists (there is nothing else a factory-less server could do).
     Memcpy,
 }
 
-/// Whether restoring in `mode` requires materializing a complete snapshot
-/// mapping before the live VM is replaced. In-place restore deliberately
-/// defers materialization so it can patch only changed pages.
 fn restore_defers_materialization(mode: RestoreMode) -> bool {
     mode == RestoreMode::InPlace
 }
 
-/// Only errors guaranteed to occur before `restore_vm_state` mutates the
-/// target may be returned as a recoverable `RestoreFailed` reply.
 fn restore_error_is_precommit(error: &VmmError) -> bool {
     matches!(
         error,
@@ -224,9 +79,6 @@ fn restore_error_is_precommit(error: &VmmError) -> bool {
     )
 }
 
-/// Classify the ordering relationship between adjacent sparse-page GFNs.
-/// Keeping this check separate from the store's own validation makes the
-/// control-plane error contract explicit before any layer is derived.
 fn sparse_page_order_error(previous: Option<u64>, current: u64) -> Option<SnapshotError> {
     let previous = previous?;
     if current < previous {
@@ -238,69 +90,33 @@ fn sparse_page_order_error(previous: Option<u64>, current: u64) -> Option<Snapsh
     None
 }
 
-/// An unrecoverable, session-fatal server failure — the loud half of the
-/// two-result-categories rule. [`ControlServer::serve`] returns it after which
-/// the transport is closed (the peer sees EOF and surfaces a transport error);
-/// recoverable failures are answered on the wire as [`ControlError`] replies
-/// instead and never reach this type.
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
-    /// The transport stream failed (read/write).
     #[error("control transport I/O error")]
     Io(#[from] std::io::Error),
-    /// The inbound byte stream is not a decodable frame sequence (bad magic /
-    /// version / over-cap length / malformed body, or EOF mid-frame). Framing
-    /// cannot be resynchronized, so this is fatal.
     #[error("control transport framing error: {0}")]
     Protocol(#[from] control_proto::ProtocolError),
-    /// The substrate failed mid-verb (a step error, a failed fresh-VM boot, a
-    /// backend save failure). The VM's state can no longer be vouched for.
     #[error("substrate failure: {0}")]
     Vmm(#[from] VmmError),
-    /// The snapshot store / codec hit an invariant failure (not a caller error
-    /// — those answer `ControlError` replies).
     #[error("snapshot store failure")]
     Snapshot(#[from] SnapshotError),
-    /// An installed service cannot capture or restore its execution state.
     #[error("service state failure: {0}")]
     Service(#[from] environment::channel::ChannelError),
-    /// A verb arrived after a previous fatal error already tore the VM down
-    /// (the server is poisoned; a prior [`ServeError`] was returned).
     #[error("server poisoned by a prior fatal error")]
     Poisoned,
 }
 
-/// Stable evidence returned by portable snapshot export/import.
-///
-/// The imported handle is session-local, while the remaining fields are the
-/// source seal's immutable cut and immediate whole-state oracle.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PortableSnapshotReceipt {
-    /// Session-local handle for export or the newly imported base snapshot.
     pub id: SnapId,
-    /// Exact synchronized V-time at the seal.
     pub at: Moment,
-    /// SDK event-prefix length included in the snapshot.
     pub sdk_events: u64,
-    /// Portable normalized-event prefix length at the seal.
     pub trace_events: u64,
-    /// Portable deadline-schedule prefix length at the seal.
     pub trace_schedules: u64,
-    /// Whether the sealed lineage was tainted by improvisation.
     pub tainted: bool,
-    /// Source [`Vmm::state_hash`] at the same stopped seal boundary.
     pub state_hash: [u8; 32],
 }
 
-/// The [`Caps`] this server negotiates: the current negotiated application
-/// protocol ([`control_proto::APP_PROTOCOL_VERSION`]), `Reproducer` blobs exactly
-/// at [`EnvSpec::BLOB_VERSION`], **zero-width coverage geometry** (no coverage
-/// producer exists — task 58 is seed-driven), and — task 73 — the
-/// `GUEST_HAS_SDK` flag (the server services the hypercall doorbell for a
-/// cooperating guest SDK). Exposed so the client side can pin its check against
-/// the same
-/// constant — a peer that negotiated an older version rejects **at `hello`** rather
-/// than breaking mid-session on a reply tag it does not know (PR #51 round-8).
 pub fn server_caps() -> Caps {
     Caps {
         protocol_version: control_proto::APP_PROTOCOL_VERSION,
@@ -314,157 +130,34 @@ pub fn server_caps() -> Caps {
     }
 }
 
-/// The control-transport server: one live [`Vmm`], a [`SnapshotEngine`] holding
-/// the snapshot pool, the [`VmmFactory`] that boots restore targets, and the
-/// wire-handle table. One server = one session = one VM; see the module doc.
 pub struct ControlServer<B: Backend<A: Vendor>> {
-    /// The live VM. `None` only after a fatal error already tore it down (or
-    /// transiently inside a `branch`/`replay`, where the old VM must be dropped
-    /// before the factory boots its replacement).
     vmm: Option<Vmm<B>>,
     factory: VmmFactory<B>,
     service_factory: ServiceFactory,
-    /// The remap-restore factory (task 95 M2.2), when the composition root
-    /// provides one; `None` = memcpy-only (the pre-task-95 behavior, and what
-    /// every existing composition gets unchanged).
     remap_factory: Option<RemapVmmFactory<B>>,
-    /// The restore-mode A/B knob. Effective only with a [`RemapVmmFactory`]
-    /// installed; see [`RestoreMode`].
     restore_mode: RestoreMode,
     engine: SnapshotEngine,
-    /// The **derive parent** for the next seal (task 95 M2.1): the store id of
-    /// the snapshot the live VM's state is a tracked continuation of — set after
-    /// a successful seal (the new snapshot) and after a successful
-    /// `branch`/`replay` (the restore source), `None` for a fresh boot or
-    /// whenever the dirty-tracking window could not be armed. When `Some` and
-    /// the parent is still live with `chain_len < max_chain_len`, a seal
-    /// captures via `snapshot_derive` over the drained dirty set; on **any**
-    /// doubt it falls back to `snapshot_base` (the safety rule: the dirty set is
-    /// a cost hint, never a correctness input — a seal never fails because the
-    /// optimization was unavailable).
     derive_parent: Option<SnapshotId>,
-    /// Store image that the live VM's tracked dirty window continues from.
-    /// Cleared whenever the VM is replaced, the image handle is dropped, or
-    /// dirty tracking cannot prove the window complete.
     current_image: Option<SnapshotId>,
-    /// Host-only evidence: number of requested in-place restores that used the
-    /// existing fresh-VM path after an in-place prerequisite or restore failed.
     in_place_fallbacks: u64,
-    /// Host-only evidence: bytes patched into RAM by the most recent successful
-    /// in-place restore (zero for a fresh-VM restore or an empty patch).
     last_restore_bytes_written: u64,
-    /// Wire [`SnapId`] → store [`SnapshotId`]. Wire handles are minted here,
-    /// monotonically; a dropped handle is removed (using it again is a loud
-    /// [`ControlError::UnknownSnapshot`]).
     snaps: BTreeMap<u64, SnapshotId>,
     next_snap: u64,
     hello_done: bool,
-    /// The **staged host-fault schedule** (task 59): **one fault per [`Moment`]**,
-    /// ordered. Populated by [`Request::Perturb`] and by a [`Request::Branch`]
-    /// whose env carries host overrides; **drained** by [`ControlServer::run`] as
-    /// each `Moment` is reached (a re-run rewinds via `branch`/`replay`, which
-    /// re-stages).
-    ///
-    /// **One fault per `Moment`.** Task 45's [`EnvSpec`] override map is
-    /// `BTreeMap<Moment, Action>` — one action per `Moment` — so a second
-    /// same-`Moment` fault cannot be recorded without losing the first
-    /// (a non-reproducing reproducer). The frontier therefore **loudly rejects** a
-    /// second same-`Moment` stage ([`ControlError::PerturbMomentTaken`]), keeping
-    /// every emitted reproducer exact. (The one-fault-per-`Moment` rule is the
-    /// integrator's final ruling — spec amendment PR #54.) A `BTreeMap` so no
-    /// insertion order can reach the apply sequence.
     schedule: BTreeMap<u64, Effect>,
-    /// The **staged reseed schedule** (task 78): the branch env's reseed markers
-    /// strictly beyond the restore floor, ordered. A marker-carrying env's
-    /// collapsed-hop reseeds are re-executed at their recorded `Moment`s by
-    /// [`run`](ControlServer::run) (the exit-boundary discipline of the task-59
-    /// plane) — the ruled fix for the sequential-entropy splice: a compose-folded
-    /// env replays each hop's reseed at its position instead of reseeding once at
-    /// the fold's root. A reseed staged beyond the trajectory is the same loud
-    /// [`ControlError::ScheduleUnsatisfiable`] class as a crossed fault. At a
-    /// `Moment` shared with a staged host fault the reseed applies **first**
-    /// (fixed order, so the apply sequence is deterministic; the recorded
-    /// tables are disjoint, so replay preserves it).
     reseed_schedule: BTreeMap<u64, u64>,
-    /// The **active recorded reproducer** (task 59 requirement 3): every applied
-    /// host fault is stamped here via task-45's [`EnvSpec::record_effect`], so the env
-    /// [`recorded_env`](ControlServer::recorded_env) returns replays to the
-    /// identical `state_hash` (the record → replay closure). With one fault per
-    /// `Moment` (above) the stamping is exact — no fault is ever lost. Its seed is
-    /// set by the most recent [`Request::Branch`] (default `0` before any branch);
-    /// reset on each restore so a new future records fresh.
     recorded: EnvSpec,
-    /// **Poison latch** for an unsatisfiable schedule (PR #51 round-3). Set to the
-    /// **exact [`ControlError`]** a [`run`](ControlServer::run) failed with when it
-    /// could not satisfy the schedule because execution crossed a staged
-    /// `Moment` ([`ControlError::ScheduleUnsatisfiable`]). While latched,
-    /// [`run`](ControlServer::run), [`perturb`](ControlServer::perturb), and
-    /// [`snapshot`](ControlServer::snapshot) keep failing loud by **re-emitting that
-    /// same error verbatim** (identity + coordinates preserved) — the marker can
-    /// never be satisfied at its recorded count, so the session must **rewind**
-    /// (`branch`/`replay`, which clears the latch via
-    /// [`reset_schedule_to_fresh_vm`](ControlServer::reset_schedule_to_fresh_vm))
-    /// before it can continue. Without the latch a client that ignored the error and
-    /// re-sent `run` would get the crossed fault applied from the past — the exact
-    /// non-reproducing case the error exists to prevent. Storing the whole error
-    /// (not just `(Moment, vtime)`) is what lets the two poison classes re-emit
-    /// their **own** typed variant on every subsequent request.
     schedule_poisoned: Option<ControlError>,
-    /// The task-73 **SDK channel snapshots**, keyed by wire [`SnapId`]: the
-    /// replay-relevant SDK state (seeded stream position + emitted event log)
-    /// captured when a snapshot is sealed, so a `branch`/`replay` from a mid-run
-    /// SDK snapshot reproduces (its seeded streams continue from the right
-    /// position) and keeps the declared catalog the never-fired report needs.
-    /// Removed with its snapshot on `drop`; ephemeral pool state, like the
-    /// snapshot handles themselves.
     sdk_snaps: BTreeMap<u64, SdkSnap>,
-    /// **The lineage taint bit** for the *current live timeline* (task 81). Set the
-    /// instant an [`Request::Exec`] improvisation is issued (conservatively, before
-    /// it runs — so no failure mode leaves an improvised timeline looking clean),
-    /// and **re-derived on every restore** from the branched/replayed snapshot's
-    /// taint ([`tainted_snaps`](Self::tainted_snaps)). Taint never clears downstream:
-    /// an untainted timeline is reachable only by restoring an untainted ancestor
-    /// (or the fresh boot after a `RestoreFailed`). Gates the reproducer mint
-    /// ([`Request::RecordedEnv`] → [`ControlError::Tainted`]) and stamps the
-    /// snapshot reply.
     timeline_tainted: bool,
-    /// **The set of tainted snapshots** (task 81), keyed by wire [`SnapId`]. A
-    /// [`snapshot`](ControlServer::snapshot) taken from a tainted timeline records
-    /// its handle here (and its reply carries `tainted: true`); a `branch`/`replay`
-    /// of a handle in this set yields a tainted timeline. This is the durable half
-    /// of the taint guard — it survives across timelines so the taint propagates
-    /// **exactly along snapshot ancestry**, and a future Archive/donation path
-    /// (task 64+) can consult a snapshot's `tainted` flag without a session.
-    /// Removed with its handle on `drop`. A `BTreeSet` so membership order never
-    /// reaches an output.
     tainted_snaps: BTreeSet<u64>,
-    /// Immutable evidence and policy captured at each seal. Unlike the wire
-    /// reply, this side table also retains the immediate state hash and policy
-    /// required to export the complete replay state later in the session.
     snapshot_meta: BTreeMap<u64, SnapshotMeta>,
-    /// A monotonically-increasing counter salting each [`Request::Exec`]'s
-    /// completion-sentinel marker ([`ExecSession`]), so two `exec`s on one session
-    /// cannot alias their sentinels. Not wall-clock / RNG (conventions rule 4);
-    /// `exec` is off the record, so this never needs to be reproducible — only
-    /// unique-enough within a session.
     exec_nonce: u64,
-    /// Completed restore-delimited production-trace segments. The current
-    /// live VMM's segment is appended only in the read-only
-    /// [`session_virtual_time_trace`](Self::session_virtual_time_trace) view.
     session_trace: Vec<SessionTraceSegment>,
-    /// Boundary that began the current live VMM's trace segment.
     session_trace_start: SessionTraceStart,
-    /// Dirty main-RAM GFNs drained by the most recent seal, retained solely
-    /// for out-of-band profiling and never included in deterministic state.
     last_seal_dirty_gfns: Option<Vec<u64>>,
 }
 
-/// The per-snapshot SDK state the control server retains (task 73): the VM-level
-/// channel snapshot (seeded stream position + event log) **and** the
-/// [`ServiceConfig`] active when the snapshot was sealed. The configuration is captured
-/// because [`reset_schedule_to_fresh_vm`](ControlServer::reset_schedule_to_fresh_vm)
-/// resets the recorded reproducer to `none()` on every restore — so a **replay**
-/// must restore this configuration before materializing the SDK environment.
 #[derive(Clone)]
 struct SdkSnap {
     channel: SdkSnapshot,
@@ -478,19 +171,11 @@ struct SnapshotMeta {
     trace_events: u64,
     trace_schedules: u64,
     tainted: bool,
-    /// Lazily computed whole-state hash. A local seal leaves this absent;
-    /// imported portable artifacts carry the hash embedded by their source.
     state_hash: Option<[u8; 32]>,
-    /// Canonical state-blob bytes following the large `MEM\0` chunk, captured
-    /// at the same stopped boundary as this metadata.
     state_blob_suffix: Vec<u8>,
     policy: ServiceConfig,
 }
 
-/// Hash the exact canonical `MEM\0` chunk followed by its seal-time suffix.
-///
-/// RAM is streamed directly into SHA-256, avoiding a second full-image copy
-/// while preserving the frozen whole-state hash preimage byte for byte.
 fn hash_state_blob_parts(memory: &[u8], suffix: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"MEM\0");
@@ -505,11 +190,6 @@ fn reseed_marker_requires_arrival(marker: u64, restored_floor: u64) -> bool {
 }
 
 impl<B: Backend<A: Vendor>> ControlServer<B> {
-    /// Build a server around a live VM. The [`SnapshotEngine`] is sized to the
-    /// VM's guest-memory image; `factory` boots the fresh restore target for
-    /// every `branch`/`replay` and must compose its VMs exactly like `vmm`
-    /// (same RAM size, wiring, and contract — a mismatch is caught fail-closed
-    /// by [`Vmm::restore_vm_state`] at the first restore).
     pub fn new(mut vmm: Vmm<B>, factory: VmmFactory<B>) -> Self {
         let engine = SnapshotEngine::new(vmm.guest_memory().len());
         let seed = vmm.entropy_state().unwrap_or(0);
@@ -547,42 +227,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
     }
 
-    /// Install the workload composition's service implementation resolver.
-    /// Existing snapshots keep their recorded identity and configuration.
     pub fn set_service_factory(&mut self, factory: ServiceFactory) {
         self.service_factory = factory;
     }
 
-    /// The **active recorded reproducer** (task 59): the [`EnvSpec`] every applied
-    /// host fault has been stamped into, in `Moment` order. Replaying/branching
-    /// this env re-applies the identical schedule at the identical counts, so it
-    /// reproduces the run's `state_hash` bit-for-bit (the record → replay
-    /// closure). Empty (a bare `Seeded`) until a fault is applied.
     pub fn recorded_env(&self) -> &EnvSpec {
         &self.recorded
     }
 
-    /// Read-only access to the live VM (e.g. for a composition root that wants
-    /// the serial capture after a session ends). `None` after a fatal error.
     pub fn vmm(&self) -> Option<&Vmm<B>> {
         self.vmm.as_ref()
     }
 
-    /// Mutable access to the live VM for host-side evidence settings a
-    /// composition root chooses before its first run, such as
-    /// [`Vmm::defer_virtual_time_checkpoint_hashes`]. Restores replace the VM,
-    /// so a setting applied here covers only the current one. `None` after a
-    /// fatal error.
     pub fn vmm_mut(&mut self) -> Option<&mut Vmm<B>> {
         self.vmm.as_mut()
     }
 
-    /// Complete restore-aware normalized trace for this control session.
-    ///
-    /// Each branch/replay replacement closes one segment. The current live
-    /// VMM is captured into the returned owned view without mutating the
-    /// server, so callers can write final evidence after [`Self::serve`]
-    /// returns. `None` means no VMM in the session had virtual_time tracing.
     pub fn session_virtual_time_trace(&self) -> Option<SessionVirtualTimeTrace> {
         let mut segments = self.session_trace.clone();
         if let Some(trace) = self.vmm.as_ref().and_then(Vmm::virtual_time_trace) {
@@ -594,13 +254,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         (!segments.is_empty()).then(|| SessionVirtualTimeTrace::from_segments(segments))
     }
 
-    /// Move the accumulated session trace out of the server and append an owned
-    /// capture of the current live segment.
-    ///
-    /// Composition roots use this after [`Self::serve`] returns so a large
-    /// campaign is not duplicated in memory while its evidence file is written.
-    /// The live VMM and all determinism-relevant state are unchanged; only the
-    /// host-side completed-segment evidence buffer is drained.
     pub fn take_session_virtual_time_trace(&mut self) -> Option<SessionVirtualTimeTrace> {
         let mut segments = std::mem::take(&mut self.session_trace);
         if let Some(trace) = self.vmm.as_ref().and_then(Vmm::virtual_time_trace) {
@@ -612,9 +265,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         (!segments.is_empty()).then(|| SessionVirtualTimeTrace::from_segments(segments))
     }
 
-    /// Close the current VMM's host-only trace immediately before a restore.
-    /// Taking the trace resets its live buffer, so this also preserves segment
-    /// boundaries when the restore keeps the same VMM in place.
     fn finish_session_trace_segment(&mut self) {
         if let Some(trace) = self.vmm.as_mut().and_then(Vmm::take_virtual_time_trace) {
             self.session_trace.push(SessionTraceSegment::capture(
@@ -624,101 +274,54 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
     }
 
-    /// Install the remap-restore factory (task 95 M2.2) **and switch the
-    /// restore mode to [`RestoreMode::Remap`]** — installing the capability is
-    /// the opt-in, so remap becomes the default exactly where it is possible
-    /// (a factory-less server stays truthfully on `Memcpy`; PR #95 round-1).
-    /// Every `branch`/`replay` then builds the fresh VM **around** the
-    /// materialized mapping instead of memcpying the image into a fresh
-    /// allocation; [`Self::set_restore_mode`] can still flip back for A/B. The
-    /// factory must mirror the session's [`VmmFactory`] composition (RAM size,
-    /// wiring, contract) minus the boot-image load.
     pub fn set_remap_factory(&mut self, factory: RemapVmmFactory<B>) {
         self.remap_factory = Some(factory);
         self.restore_mode = RestoreMode::Remap;
     }
 
-    /// Flip the restore-mode A/B knob. [`RestoreMode::Remap`] requires an
-    /// installed [`RemapVmmFactory`]; [`RestoreMode::InPlace`] uses the live VM
-    /// and falls back to a fresh target when a prerequisite is unavailable.
     pub fn set_restore_mode(&mut self, mode: RestoreMode) {
         self.restore_mode = mode;
     }
 
-    /// The active restore mode (informational; see [`RestoreMode`]).
     pub fn restore_mode(&self) -> RestoreMode {
         self.restore_mode
     }
 
-    /// Number of in-place restore attempts that fell back to a fresh VM.
     pub fn in_place_fallbacks(&self) -> u64 {
         self.in_place_fallbacks
     }
 
-    /// Bytes patched by the most recent successful in-place restore.
     pub fn last_restore_bytes_written(&self) -> u64 {
         self.last_restore_bytes_written
     }
 
-    /// Tune the engine's derive-chain bound (task 95 M2.1; see
-    /// [`SnapshotEngine::set_max_chain_len`]).
     pub fn set_max_chain_len(&mut self, max_chain_len: u32) {
         self.engine.set_max_chain_len(max_chain_len);
     }
 
-    /// The store-side derive-chain length behind a wire handle (`1` = a base
-    /// layer, `> 1` = a dirty-set derive; task 95 M2.1) — gate evidence and
-    /// diagnostics for which capture path a seal took. `None` for an unknown or
-    /// dropped handle. Read-only; not a wire verb.
     pub fn snapshot_chain_len(&self, snap: SnapId) -> Option<u32> {
         let id = self.snaps.get(&snap.0)?;
         self.engine.stats(*id).ok().map(|s| s.chain_len)
     }
 
-    /// Store-wide snapshot accounting — how many layers are live and how much
-    /// the store keeps resident. Read-only; not a wire verb.
-    ///
-    /// The `Drop` verb's obligation is that dropping a handle **actually
-    /// releases the state**, not merely forgets the handle. That is only
-    /// checkable against the store's own accounting, so the protocol tests read
-    /// it here (`docs/TESTING.md`).
     pub fn snapshot_store_stats(&self) -> snapshot_store::StoreStats {
         self.engine.store_stats()
     }
 
-    /// Statistics for one live snapshot, including its non-zero owned pages.
-    /// This is a read-only, out-of-band profiling accessor; it does not
-    /// participate in the control protocol or deterministic state.
     pub fn snapshot_stats(&self, snap: SnapId) -> Option<snapshot_store::SnapStats> {
         self.snaps
             .get(&snap.0)
             .and_then(|id| self.engine.stats(*id).ok())
     }
 
-    /// Dirty main-RAM page GFNs drained by the most recent successful seal.
-    /// `None` means that seal used a full-image/base capture and had no
-    /// drainable dirty window. GFNs are relative to the VMM's main-RAM image,
-    /// matching [`Vmm::drain_dirty_pages`]. This evidence is never hashed or
-    /// serialized.
     pub fn last_seal_dirty_gfns(&self) -> Option<&[u64]> {
         self.last_seal_dirty_gfns.as_deref()
     }
 
-    /// Most recently minted live snapshot handle, if any. This is an
-    /// out-of-band composition-root convenience for exporting the final
-    /// midpoint selected by a one-shot portability driver; wire clients still
-    /// address snapshots only by explicit handles.
     pub fn latest_snapshot(&self) -> Option<SnapId> {
         self.snaps.last_key_value().map(|(&id, _)| SnapId(id))
     }
 
-    /// Export a target snapshot as an in-process sparse portable value.
-    ///
-    /// base and target must be live handles in this server. The page list
-    /// is resolved against target by the snapshot store and contains only
-    /// pages that may differ from base; the sidecar carries the exact
-    /// non-memory replay state. This path never materializes RAM and never
-    /// computes a whole-state hash.
     pub fn export_sparse_snapshot(
         &self,
         base: SnapId,
@@ -763,12 +366,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(SparsePortableSnapshot { pages, sidecar })
     }
 
-    /// Import an in-process sparse portable value as a child of base.
-    ///
-    /// The sidecar, vendor VM state, and complete page list are validated
-    /// before the store derives a layer or a wire handle is minted. The
-    /// resulting layer therefore retains base as its ancestor and costs
-    /// O(number of supplied pages), with no full-RAM materialization.
     pub fn import_sparse_snapshot(
         &mut self,
         base: SnapId,
@@ -777,11 +374,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.import_sparse_snapshot_parts(base, &portable.pages, &portable.sidecar)
     }
 
-    /// Import sparse pages and their opaque sidecar without taking ownership.
-    ///
-    /// This is the parts-oriented form used by callers that keep page buffers
-    /// in a worker-owned cache. Validation is atomic: an invalid GFN ordering,
-    /// sidecar, or VM state leaves both the store and handle tables unchanged.
     pub fn import_sparse_snapshot_parts(
         &mut self,
         base: SnapId,
@@ -889,14 +481,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         })
     }
 
-    /// Export one session-local snapshot as a complete host-neutral artifact.
-    ///
-    /// The artifact contains materialized RAM, the exact canonical vendor
-    /// VM-state bytes, SDK stream and remaining payload suffix, service
-    /// configuration, taint, seal cut, and source whole-state hash. It is
-    /// streamed in a fixed order and closed by a SHA-256 digest. No live-VM
-    /// state is read, so exporting after the source has continued cannot
-    /// accidentally capture a mixed-time artifact.
     pub fn export_portable_snapshot<W: Write>(
         &self,
         snap: SnapId,
@@ -939,13 +523,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         })
     }
 
-    /// Import a complete host-neutral artifact as a fresh base snapshot.
-    ///
-    /// Import verifies the artifact digest, every bounded nested codec, the
-    /// exact configured RAM size, and the destination vendor's VM-state codec
-    /// before minting a handle. The VM is not replaced; a subsequent ordinary
-    /// `Replay` uses the server's selected restore mode exactly like any local
-    /// snapshot.
     pub fn import_portable_snapshot<R: Read>(
         &mut self,
         reader: R,
@@ -1007,12 +584,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         })
     }
 
-    /// Serve one session over a byte stream (a connected unix socket, or an
-    /// in-process socketpair end): decode request frames, dispatch each through
-    /// [`ControlServer::handle`], and write the reply frames back, until the
-    /// peer closes the stream (EOF between frames → `Ok`). Any [`ServeError`]
-    /// is returned immediately — the caller drops the stream, which the peer
-    /// observes as a torn session (fail-loud).
     pub fn serve<S: Read + Write>(&mut self, mut stream: S) -> Result<(), ServeError> {
         let mut inbuf: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 4096];
@@ -1038,11 +609,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
     }
 
-    /// Dispatch one verb. The nested result keeps the two categories apart:
-    /// the outer `Err` is a session-fatal [`ServeError`]; the inner
-    /// `Result<Reply, ControlError>` is what goes on the wire (both arms are
-    /// encoded as reply frames). Public so composition roots and tests can
-    /// drive the dispatch directly, without a socket.
     #[allow(clippy::result_large_err)]
     pub fn handle(&mut self, req: &Request) -> Result<Result<Reply, ControlError>, ServeError> {
         if !self.hello_done && !matches!(req, Request::Hello(_)) {
@@ -1138,27 +704,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
     }
 
-    /// `read(gpa, len)`: return exactly `len` bytes of guest **physical** memory at
-    /// `gpa`, or a loud [`ControlError`] — **never a truncated success** (task 80).
-    /// A pure observation: it borrows the guest image immutably and mutates nothing,
-    /// so it cannot perturb the run or any hash.
-    ///
-    /// The outer `Result` keeps the two categories apart like every other verb: a
-    /// **poisoned** server (`vmm == None` after a prior fatal error) is the same
-    /// session-fatal [`ServeError::Poisoned`] `regs`/`hash`/`snapshot` return —
-    /// **not** a recoverable reply. Guarding the RAM fetch with `ok_or(Poisoned)`
-    /// (PR #83 round-1 blocking) is what makes that so: an empty-slice fallback would
-    /// have masked the torn session as a bogus `ReadOutOfRange { ram_len: 0 }`, a
-    /// recoverable error a client would retry against a VM that no longer exists.
-    ///
-    /// The recoverable range guards, both fail-loud, checked before any copy:
-    /// - `len > `[`READ_CAP`] → [`ControlError::ReadTooLarge`], rejected **before**
-    ///   the slice is taken (and before touching the VM — a pure request-validation
-    ///   error, like `hash`'s unsupported scopes) so an untrusted `len` can never
-    ///   force an over-large copy (conventions rule 4).
-    /// - `[gpa, gpa+len)` past guest RAM (or a `gpa + len` overflow) →
-    ///   [`ControlError::ReadOutOfRange`]. A short read would hand the caller bytes
-    ///   it never asked for; the loud error makes the caller widen or re-address.
     #[allow(clippy::result_large_err)]
     fn read(&self, gpa: u64, len: u32) -> Result<Result<Reply, ControlError>, ServeError> {
         if len > READ_CAP {
@@ -1175,9 +720,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
     }
 
-    /// Decode and schedule a mechanical effect at an exact execution moment.
-    /// Branch inputs use the same validation path. Invalid requests leave the
-    /// schedule unchanged; applied effects become part of the reproducer.
     fn perturb(
         &mut self,
         fault: &control_proto::HostFault,
@@ -1200,9 +742,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(Reply::Unit)
     }
 
-    /// Validate an effect before staging it. Moments must be reachable and
-    /// unoccupied, memory ranges must be mapped in full, and interrupt identities
-    /// must be supported by the selected machine. The operation is read-only.
     fn validate_host_fault(&self, fault: &Effect, at: u64, floor: u64) -> Result<(), ControlError> {
         if self.schedule.contains_key(&at) || self.recorded.effects().contains_key(&at) {
             return Err(ControlError::PerturbMomentTaken { at });
@@ -1210,15 +749,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.check_fault_admissible(fault, at, floor)
     }
 
-    /// The **occupancy-free** admissibility checks for a host fault, shared by
-    /// [`perturb`](ControlServer::perturb)'s [`validate_host_fault`](ControlServer::validate_host_fault)
-    /// and by the branch-env pre-swap validation (PR #51 round-5): the backend can
-    /// arm the exact-count seam, the `Moment` is not behind the `floor`, the gpa is
-    /// in range, and the fault class is in scope. It reads only the **current**
-    /// `vmm` (its capability + RAM size) and the given `floor`, so the branch path
-    /// can call it against the *live* VM using the snapshot's V-time as the floor —
-    /// **before** swapping in the restored VM (making a rejected branch
-    /// side-effect-free).
     fn check_fault_admissible(
         &self,
         fault: &Effect,
@@ -1257,20 +787,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(())
     }
 
-    /// The capture-path chooser for one seal (task 95 M2.1). Derive over the
-    /// drained dirty set **only** when everything is provably right: a tracked
-    /// parent exists, it is still live in the store, its chain is under the
-    /// bound, and the drain vouches for completeness ([`Vmm::drain_dirty_pages`]
-    /// returns `Some` — backend log readable, no untracked host write). On any
-    /// doubt — including a failed derive itself — fall back to `snapshot_base`
-    /// (correct-by-construction; content-dedup keeps a flatten cheap in storage).
-    /// At the chain bound, a complete dirty-log drain flattens by walking only
-    /// the chain page sets plus the current dirty set. The seal RPC never fails
-    /// because the optimization was unavailable.
-    /// Returns `(id, window_consumed, dirty_gfns)`: `window_consumed` is `true`
-    /// iff the drain ran (and therefore reset the tracking window as its own
-    /// retrieve-and-reset side effect), while `dirty_gfns` preserves that
-    /// drain's relative page set for out-of-band profiling.
     fn seal_into_store(
         engine: &mut SnapshotEngine,
         vmm: &mut Vmm<B>,
@@ -1306,32 +822,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .map(|id| (id, false, None))
     }
 
-    /// `snapshot`: seal the current point into the engine (memory image +
-    /// canonical `vm_state` blob) and mint a wire handle. Since task 95 M2.1 the
-    /// memory half derives from the tracked parent over the drained dirty set
-    /// when it safely can ([`Self::seal_into_store`]); the reply and semantics
-    /// are identical either way.
-    ///
-    /// **The reply binds the seal's evidence cut** (task 127, bead `hm-bbx.6`):
-    /// the one [`Reply::Snapshot`] carries the handle, the synchronized seal
-    /// `Moment` (the sealed `vm_state`'s own exact V-time — the same value a
-    /// later restore's floor validates against), the **included SDK-event
-    /// count** (the SDK capture vector's prefix length; positions below it are
-    /// included, at/after excluded — a prefix-length cut, never a `Moment`
-    /// comparison), and the timeline taint. All four are read from the same
-    /// stopped server state between two verbs — the server stamp is the sole
-    /// authority; a client never reconstructs the cut with a second read. The
-    /// serial-console capture is a separate source-local stream and is
-    /// structurally unable to enter the count. Every error path below returns
-    /// **neither a usable handle nor a cut** — no partial cut on failure.
-    ///
-    /// **Rejects loudly while a host-fault schedule is pending** (PR #51 round-3):
-    /// a snapshot seals only VM state, and every restore of it clears the schedule
-    /// — so the sealed state's *future* (the staged fault) would be unreproducible
-    /// from the snapshot. A staged fault is "armed" in exactly the sense
-    /// [`ControlError::SnapshotWhileArmed`] names, so the seal is refused rather
-    /// than silently dropping the future (persisting the schedule inside the
-    /// snapshot is a semantics change that would need its own ruling).
     fn snapshot(&mut self) -> Result<Result<Reply, ControlError>, ServeError> {
         self.last_seal_dirty_gfns = None;
         if let Some(err) = &self.schedule_poisoned {
@@ -1403,7 +893,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }))
     }
 
-    /// `drop`: release the store layer behind a wire handle and GC.
     fn drop_snap(&mut self, snap: SnapId) -> Result<Reply, ControlError> {
         let Some(store_id) = self.snaps.remove(&snap.0) else {
             return Err(ControlError::UnknownSnapshot(snap));
@@ -1422,11 +911,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(Reply::Unit)
     }
 
-    /// Patch the existing VM to `store_id` and restore its non-memory state.
-    ///
-    /// Every error is deliberately collapsed for the caller: in-place restore
-    /// is an optimization, so the only safe response to a missing prerequisite
-    /// or a substrate rejection is the existing fresh-VM restore path.
     fn restore_in_place(
         &mut self,
         store_id: SnapshotId,
@@ -1468,7 +952,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(bytes)
     }
 
-    /// Install a genuine fresh boot after a recoverable restore rejection.
     fn install_recovery_boot(&mut self, fresh: Vmm<B>) {
         self.vmm = Some(fresh);
         self.derive_parent = None;
@@ -1487,8 +970,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
     }
 
-    /// `branch` (with an env) / `replay` (without): restore `snap` under the
-    /// selected mode, then reseed from the env's seed iff branching.
     fn restore(
         &mut self,
         snap: SnapId,
@@ -1732,22 +1213,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(Ok(Reply::Unit))
     }
 
-    /// Overwrite the recorded reproducer's service configuration in place,
-    /// keeping its variant (task 73), so a replay rebuilds the same handler.
     fn set_recorded_policy(&mut self, policy: ServiceConfig) {
         self.recorded.set_config(policy);
     }
 
-    /// Reset the host-plane schedule + recorded reproducer for the VM currently in
-    /// `self.vmm` — called on **every** path that replaces the live VM (a
-    /// successful `branch`/`replay`, and a recoverable `RestoreFailed` that keeps
-    /// the fresh boot). Clears the schedule and reseeds the recorded reproducer
-    /// from the restored VM's **actual entropy stream** ([`Vmm::entropy_state`]),
-    /// not the prior session's seed (PR #51 round-2 finding): a `replay` restores a
-    /// snapshot whose stream may sit mid-flight under a seed unrelated to the old
-    /// session, and a `branch` has just reseeded — reading the live stream captures
-    /// the right value for both, so `recorded_env()` stamps a reproducer that
-    /// actually reproduces.
     fn reset_schedule_to_fresh_vm(&mut self) {
         self.schedule.clear();
         self.reseed_schedule.clear();
@@ -1760,31 +1229,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.recorded = EnvSpec::seeded(seed);
     }
 
-    /// `run(until)`: step the event loop to a terminal stop or the V-time
-    /// deadline. The deadline is checked against [`Vmm::effective_vns`]
-    /// **before** each step, so a run already at-or-past its deadline stops
-    /// immediately (without entering the guest), and the stop point is the first
-    /// V-time-intercept boundary at-or-after the deadline — deterministic across
-    /// same-seed runs, because effective V-time is.
-    ///
-    /// Deadlines and scheduled moments are observed only at deterministic VM-exit
-    /// boundaries. The backend is never asked to stop between instructions.
-    /// `run(until)` therefore advances to the first exit boundary that reaches the
-    /// deadline or scheduled moment. A staged fault is stamped into the recorded
-    /// environment when its boundary is reached.
-    ///
-    /// **Reached vs. crossed vs. future.** At each V-time `vns` the
-    /// drain classifies a staged `Moment m`:
-    /// - `m == vns` → apply now at this exit boundary. This holds regardless of
-    ///   the deadline.
-    /// - `m < vns` → **late/crossed**: the guest executed *past* `m` (only possible
-    ///   on an overshoot), so it can never be applied at its recorded count — the
-    ///   schedule is poisoned and every later `run`/`perturb`/`snapshot`
-    ///   rejects until a `branch`/`replay` rewinds.
-    /// - `m > vns` → **future**: not yet reached; left staged (or dropped at a
-    ///   terminal).
-    ///
-    /// The deadline stop is `vns ≥ deadline`; no stronger exact-stop guarantee is made.
     fn run(
         &mut self,
         until: &control_proto::StopConditions,
@@ -1923,23 +1367,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
     }
 
-    /// `exec(cmd, deadline)`: the **improvisation** (task 81). Inject `cmd` on the
-    /// guest's serial input (as if typed at the serial shell), step the VM until the
-    /// completion sentinel or the V-time `deadline`, and capture the serial output.
-    ///
-    /// **Taints the timeline first — before any fallible work** (the conservative
-    /// taint invariant). Even if injection, a step, or a terminal aborts the run
-    /// below, the timeline is already (correctly) tainted, so the reproducer guard
-    /// ([`recorded_env_reply`](Self::recorded_env_reply)) can never mint a clean
-    /// reproducer after an attempted `exec`. The server **refuses nothing** — a
-    /// caller may deliberately sacrifice a timeline; fork-first is a usage
-    /// discipline, not a server rule.
-    ///
-    /// **Off the record by ruling** (`docs/PROTOCOL.md`): the
-    /// serial channel is deliberately crude, there is **no determinism guarantee**
-    /// on this path, and nothing here is recorded into the reproducer
-    /// ([`recorded`](Self::recorded) is untouched) or the fault schedule. See the
-    /// sentinel scheme + failure modes in [`crate::exec`] and `README.md`.
     fn exec(
         &mut self,
         cmd: &str,
@@ -1993,13 +1420,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }))
     }
 
-    /// The reply to [`Request::RecordedEnv`] (task 81) — the taint guard's
-    /// **fail-loud site**. Mint the recorded reproducer (the [`recorded`](Self::recorded)
-    /// [`EnvSpec`] as a wire [`Reproducer`]) **only** on an untainted timeline; a
-    /// timeline an `exec` improvisation has tainted returns [`ControlError::Tainted`]
-    /// instead — an improvised timeline is off the record and has no honest
-    /// reproducer, so the server refuses rather than hand back an `Reproducer` that
-    /// does not reproduce. Pure (no VM mutation), so it is answerable at any point.
     fn recorded_env_reply(&self) -> Result<Reply, ControlError> {
         if self.timeline_tainted {
             return Err(ControlError::Tainted);
@@ -2015,22 +1435,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     }
 }
 
-/// Map a substrate [`TerminalReason`] to the wire [`StopReason`], stamped with
-/// the effective V-time. Workload-blind (module doc): `Hlt` and a clean
-/// `DebugExit{0}` are quiescence; a non-zero debug-exit code is a
-/// guest-reported failure (`Crash{Panic}`, detail = the code byte); a backend
-/// `Shutdown` (triple fault / guest-initiated shutdown) is `Crash{Shutdown}` —
-/// a workload whose *clean terminal is a forced reboot* (the Postgres image)
-/// reads as `Crash{Shutdown}` here, and interpreting that convention is the
-/// workload-aware caller's job.
-/// Map a task-73 [`SdkStop`] to the wire [`StopReason`], stamped with the
-/// effective V-time. An assertion violation carries its point id + detail as the
-/// [`EventRef`]; a `setup_complete` is a snapshot fork.
-/// A page of the SDK event capture starting at `offset`, bounded to the control
-/// frame limit (round-5 P4): the cumulative encoded reply body stays under
-/// [`control_proto::MAX_FRAME_LEN`], but always includes at least one event when
-/// any remain — a single event's bytes are `<= MAX_PAYLOAD`, far under the frame
-/// limit — so paging strictly progresses (the client fetches until an empty page).
 fn page_sdk_events(all: &[(u64, u32, Vec<u8>)], offset: usize) -> Vec<(u64, u32, Vec<u8>)> {
     const REPLY_OVERHEAD: usize = 6;
     let start = offset.min(all.len());
@@ -2047,11 +1451,6 @@ fn page_sdk_events(all: &[(u64, u32, Vec<u8>)], offset: usize) -> Vec<(u64, u32,
     page
 }
 
-/// Page the guest serial capture for [`Request::Console`]: `total` is the full
-/// capture byte length (the client's paging bound), `chunk` is `serial[offset..]`
-/// bounded to the control frame limit so an arbitrarily long console never
-/// overflows a single reply. Pure over `serial` — no VM state is read or touched,
-/// so it cannot perturb a subsequent `state_hash`.
 fn page_console(serial: &[u8], offset: usize) -> (u32, Vec<u8>) {
     const REPLY_OVERHEAD: usize = 2 + 4 + 4;
     let total = serial.len().min(u32::MAX as usize) as u32;
@@ -2061,16 +1460,6 @@ fn page_console(serial: &[u8], offset: usize) -> (u32, Vec<u8>) {
     (total, serial[start..end].to_vec())
 }
 
-/// Assemble the wire [`RegsView`] for the `regs` observation verb (task 80) from
-/// the VM's best-effort vCPU read ([`Vmm::inspect_vcpu`]) and its effective V-time
-/// ([`Vmm::effective_vns`]). Pure and non-mutating.
-///
-/// The GPRs and segment selectors are placed in the view's canonical order
-/// (`rax rbx rcx rdx rsi rdi rbp rsp r8..r15` — note **rbp before rsp** — and
-/// `cs ss ds es fs gs`). `Moment` and `vtime` are the two names of the single
-/// deterministic axis: the effective V-time is a VM-exit count in whole
-/// nanoseconds (ratio 1), which is exactly the [`Moment`] the perturb/run plane
-/// addresses, so both fields carry it (a fresh / V-time-unwired VM reads `0`).
 fn regs_view<B: Backend<A: Vendor>>(vmm: &Vmm<B>) -> RegsView {
     let vns = vmm.effective_vns().unwrap_or(0);
     let mut view = <B::A as Vendor>::regs_view(&vmm.inspect_vcpu());
@@ -2132,10 +1521,6 @@ fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
 
 #[cfg(test)]
 mod tests {
-    //! Direct-dispatch unit tests over a scripted `MockBackend` — no socket.
-    //! The socket loopback + adapter integration lives in the acceptance suite
-    //! (which composes this server with the explorer's
-    //! socket `Machine`).
 
     use control_proto::{
         Answer, CapFlags, ControlError, CrashKind, HashScope, HostFault, Moment, READ_CAP, Reply,
@@ -2244,27 +1629,14 @@ mod tests {
         assert!(host_minor_faults().is_some_and(|faults| faults > 1));
     }
 
-    /// Guest RAM for the doorbell-driving tests (was a per-test `0x2_0000`):
-    /// 128 KiB natively, 64 KiB under Miri — the smallest size covering the
-    /// doorbell protocol pages (`REQ_GPA` `0xE000` / reply `0xF000`, production
-    /// constants). The sha256 `state_hash` over the `MEM` chunk dominates these
-    /// tests' interpreted cost and scales with this size (task 98 / hm-d8o).
-    /// Native runs are byte-for-byte unchanged.
     const BIG_RAM: usize = if cfg!(miri) { 0x1_0000 } else { 0x2_0000 };
 
     const RAM: usize = 0x4000;
 
-    /// A configured, V-time-wired `Vmm<MockBackend>` with a distinctive memory
-    /// image loaded and the canonical-blob hash wired (as the box composition
-    /// does), advanced to a synchronized (post-RDTSC) boundary.
     fn vmm_at_sync(exits: Vec<Exit<X86>>, work: u64, seed: u64) -> Vmm<MockBackend> {
         vmm_at_sync_from(MockBackend::new(), exits, work, seed)
     }
 
-    /// [`vmm_at_sync`] over a caller-prepared mock (e.g. one with dirty tracking
-    /// enabled, task 95 M2.1) — the sync `Rdtsc` prelude + `exits` are
-    /// **appended** to anything the mock already has scripted, so pass a mock
-    /// with an empty exit script unless you mean to run yours first.
     fn vmm_at_sync_from(
         mut m: MockBackend,
         exits: Vec<Exit<X86>>,
@@ -2298,9 +1670,6 @@ mod tests {
         v
     }
 
-    /// A server whose live VM is at a synchronized point and whose factory
-    /// boots fresh VMs scripted with `fork_exits` (each ending in `Hlt` so a
-    /// deadline-free run terminates).
     fn server(fork_exits: Vec<Exit<X86>>) -> ControlServer<MockBackend> {
         let live = vmm_at_sync(vec![Exit::Common(CommonExit::Idle)], 500, 0xBA5E);
         let factory = Box::new(move || {
@@ -2373,8 +1742,6 @@ mod tests {
         assert!(s.sdk_snaps.is_empty());
     }
 
-    /// [`server`] whose live VM's mock has **dirty tracking armed** (task 95
-    /// M2.1), so a second seal can derive from the first.
     #[test]
     fn vmm_mut_reaches_the_live_vm() {
         let mut s = server(Vec::new());
@@ -2409,11 +1776,6 @@ mod tests {
         with_test_service(ControlServer::new(live, factory))
     }
 
-    /// [`server`] plus a remap-restore factory (task 95 M2.2) mirroring the
-    /// memcpy factory's composition — built through the production
-    /// `compose_restore_target`, so the portable A/B drives the real seam.
-    /// `wire_lapic: false` mis-composes the target on purpose when
-    /// `sabotage_lapic` (the RestoreFailed-recovery test's arm).
     fn server_with_remap(
         fork_exits: Vec<Exit<X86>>,
         sabotage_lapic: bool,
@@ -2443,8 +1805,6 @@ mod tests {
         }
     }
 
-    /// [`snap`] returning the full seal-bound reply fields — `(id, at,
-    /// sdk_events, tainted)` — for the task-127 cut assertions.
     fn snap_cut(server: &mut ControlServer<MockBackend>) -> (SnapId, u64, u64, bool) {
         match server.handle(&Request::Snapshot).unwrap() {
             Ok(Reply::Snapshot {
@@ -2465,9 +1825,6 @@ mod tests {
         }
     }
 
-    /// A branch reproducer with the M2 ordered payload source offered. The
-    /// promotion to `Recorded` is deliberate: `Some([])` means offered but
-    /// exhausted, unlike a bare `Seeded` spec where service 8 is unavailable.
     fn payload_env(seed: u64, payloads: Vec<Vec<u8>>) -> Reproducer {
         let mut spec = EnvSpec::seeded(seed);
         spec.set_payloads(Some(payloads));
@@ -2477,9 +1834,6 @@ mod tests {
         }
     }
 
-    /// A synchronized control server whose RAM covers the canonical doorbell
-    /// pages. The compact generic `server` fixture intentionally has only
-    /// 16 KiB, below `REQ_GPA`; this fixture mirrors its composition at 128 KiB.
     fn payload_server() -> ControlServer<MockBackend> {
         let mut backend = MockBackend::with_exits([Exit::Arch(X86Exit::Rdmsr { index: 0x10 })]);
         backend
@@ -2935,7 +2289,6 @@ mod tests {
         );
     }
 
-    /// Stage one payload request in the canonical transport page.
     fn stage_payload_request(server: &mut ControlServer<MockBackend>, bytes: u32) -> u32 {
         const REQ_GPA: u64 = 0xE000;
         let mut frame = [0_u8; 4096];
@@ -2957,7 +2310,6 @@ mod tests {
         u32::try_from(n).unwrap()
     }
 
-    /// Ring a staged payload request directly and return its framed reply.
     fn ring_payload(server: &mut ControlServer<MockBackend>, bytes: u32) -> (u16, Vec<u8>) {
         const RESP_GPA: u64 = 0xF000;
         let n = stage_payload_request(server, bytes);
@@ -2985,8 +2337,6 @@ mod tests {
         }
     }
 
-    /// Drive the production control replacement path twice so the returned
-    /// evidence contains the initial VMM plus two replay-delimited segments.
     fn accumulated_session_server() -> ControlServer<MockArm64Backend> {
         let make_vmm = |exits: Vec<Exit<Arm64>>, seed: u64| {
             let mut backend = MockArm64Backend::with_exits(exits);
@@ -3044,9 +2394,6 @@ mod tests {
             .expect("virtual_time control server produces a session trace")
     }
 
-    /// The load-bearing positive oracle for restore-aware accumulation: two
-    /// independently driven servers retain and compare every replacement
-    /// segment, rather than agreeing only on the final live VMM's suffix.
     #[test]
     #[cfg_attr(
         miri,
@@ -3106,17 +2453,10 @@ mod tests {
         }
     }
 
-    /// The store-side chain length of a wire handle (1 = a base layer; >1 = a
-    /// derived capture) — through the same public accessor the box gate uses,
-    /// so the accessor's handle→stats mapping is exercised portably too.
     fn chain_len(s: &ControlServer<MockBackend>, id: SnapId) -> u32 {
         s.snapshot_chain_len(id).expect("handle is live")
     }
 
-    /// M2.1 wiring: with tracking armed, the second seal derives from the first
-    /// (chain 2), the drained set covers a host-side write, and the derived
-    /// snapshot materializes exactly the live image — byte-identical to what a
-    /// full-scan base seal of the same state stores.
     #[test]
     #[cfg_attr(
         miri,
@@ -3147,9 +2487,6 @@ mod tests {
         assert_eq!(map.as_slice(), twin.as_slice());
     }
 
-    /// PR #95 round-1: the restore mode is truthful — `Memcpy` until a remap
-    /// factory exists (the only path a factory-less server can take), flipped
-    /// to `Remap` by installing one. No silent degrade.
     #[test]
     fn restore_mode_is_memcpy_until_a_remap_factory_installs() {
         let s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -3192,12 +2529,10 @@ mod tests {
         assert!(sparse_page_order_error(Some(1), 3).is_none());
     }
 
-    /// The safety default: without backend dirty tracking every seal full-scans
-    /// (base layers throughout) — nothing ever derives on an unvouched window.
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests"
     )]
     fn untracked_seals_always_full_scan() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -3208,12 +2543,10 @@ mod tests {
         assert_eq!(chain_len(&s, second), 1, "no tracking ⇒ base, never derive");
     }
 
-    /// The chain bound (M2.1): at `max_chain_len` the seal flattens via a fresh
-    /// base instead of deriving deeper.
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests"
     )]
     fn seal_flattens_at_the_chain_bound() {
         let mut s = server_tracked();
@@ -3240,12 +2573,10 @@ mod tests {
         );
     }
 
-    /// A released parent (the client dropped the handle) makes the next seal
-    /// fall back to a base — the parent-liveness check of the safety rule.
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests"
     )]
     fn seal_falls_back_to_base_when_the_parent_was_dropped() {
         let mut s = server_tracked();
@@ -3264,12 +2595,10 @@ mod tests {
         assert_eq!(chain_len(&s, second), 1, "dead parent ⇒ full scan");
     }
 
-    /// An untrackable full-image host write between seals forces the fallback
-    /// (the wholesale poison), and the state still captures correctly.
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests"
     )]
     fn seal_falls_back_after_a_wholesale_host_write() {
         let mut s = server_tracked();
@@ -3285,10 +2614,6 @@ mod tests {
         assert_eq!(chain_len(&s, second), 1, "wholesale write ⇒ full scan");
     }
 
-    /// M2.2's determinism A/B (the portable arm of box gate b): branching the
-    /// same snapshot with the same env under `Memcpy` and under `Remap` yields
-    /// bit-identical guest memory, identical run outcomes, and identical
-    /// `state_hash` — and the remap arm really is mapping-backed (no memcpy).
     #[test]
     #[cfg_attr(
         miri,
@@ -3345,8 +2670,6 @@ mod tests {
         assert_eq!(hash_memcpy.unwrap(), hash_remap.unwrap());
     }
 
-    /// A live-dirty page absent from the store-side snapshot diff is still
-    /// restored from the target image, and the operation keeps the same VMM.
     #[test]
     #[cfg_attr(
         miri,
@@ -3384,9 +2707,6 @@ mod tests {
         );
     }
 
-    /// A fresh/untracked server has no source image and no readable dirty log.
-    /// The target diff is nevertheless complete, so in-place restore is safe
-    /// and must not fall back merely because the log is unavailable.
     #[test]
     #[cfg_attr(
         miri,
@@ -3404,10 +2724,6 @@ mod tests {
         assert_eq!(s.last_restore_bytes_written(), RAM as u64);
     }
 
-    /// Once a source image exists, an unavailable dirty log is not safe: a
-    /// wholesale live write may have changed pages absent from the store diff.
-    /// The restore must take the fresh-VM fallback rather than accepting an
-    /// empty patch as an in-place success.
     #[test]
     #[cfg_attr(
         miri,
@@ -3442,8 +2758,6 @@ mod tests {
         );
     }
 
-    /// A lost source image makes the optimization unavailable, so the restore
-    /// uses the established fresh-VM path and records exactly one fallback.
     #[test]
     #[cfg_attr(
         miri,
@@ -3488,10 +2802,6 @@ mod tests {
         );
     }
 
-    /// A remap-path restore that rejects (mis-composed target: the snapshot has
-    /// an xAPIC, the target none) answers the recoverable `RestoreFailed` and
-    /// leaves the session on a genuine fresh boot — usable, exactly like the
-    /// memcpy path's recovery.
     #[test]
     #[cfg_attr(
         miri,
@@ -3519,9 +2829,6 @@ mod tests {
         ));
     }
 
-    /// Like `run_all` but arms the SDK `SNAPSHOT_POINT` class (round-7), so a
-    /// deferred `setup_complete` point surfaces (the default `StopMask::NONE` now
-    /// runs straight through it).
     fn run_seeking_snapshot(server: &mut ControlServer<MockBackend>) -> StopReason {
         let req = Request::Run {
             until: StopConditions {
@@ -3536,7 +2843,6 @@ mod tests {
         }
     }
 
-    /// A deadline-free `run` returning the raw reply (for the loud-error paths).
     fn run_all_res(server: &mut ControlServer<MockBackend>) -> Result<Reply, ControlError> {
         server
             .handle(&Request::Run {
@@ -3575,7 +2881,7 @@ mod tests {
         assert_eq!(caps.coverage.producer, 0);
         assert!(
             caps.flags.contains(CapFlags::GUEST_HAS_SDK),
-            "task 73 services the doorbell, so GUEST_HAS_SDK is advertised"
+            "the server services the doorbell, so GUEST_HAS_SDK is advertised"
         );
     }
 
@@ -3596,10 +2902,6 @@ mod tests {
         hello(&mut s);
     }
 
-    /// The `SdkEvents` verb (task 73) is routed to the live VM's capture — a
-    /// mock guest that never rings the doorbell yields an empty `SdkEvents` reply
-    /// (not `Unsupported`), so a remote client always gets the capture over the
-    /// wire.
     #[test]
     fn sdk_events_verb_is_routed_to_the_capture() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -3627,8 +2929,6 @@ mod tests {
         }
     }
 
-    /// `read` returns exactly the guest bytes at `[gpa, gpa+len)` — here the boot
-    /// marker the fixture loads at offset 0.
     #[test]
     fn read_returns_the_guest_bytes() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -3645,9 +2945,6 @@ mod tests {
         );
     }
 
-    /// A `[gpa, gpa+len)` range past guest RAM (or an address+len that would
-    /// overflow `u64`) is a loud `ReadOutOfRange` — never a truncated/zero-filled
-    /// success.
     #[test]
     fn read_out_of_range_is_loud() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -3672,9 +2969,6 @@ mod tests {
         );
     }
 
-    /// A `len` over the per-call cap is `ReadTooLarge`, checked **before** the range
-    /// (so even an over-cap read at a huge address is the cap error, not a slice) and
-    /// before any allocation.
     #[test]
     fn read_oversized_len_is_loud() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -3696,8 +2990,6 @@ mod tests {
         );
     }
 
-    /// `regs` reports the current versioned view; `moment` and `vtime` are the two
-    /// names of the single V-time axis, so both equal the live effective V-time.
     #[test]
     fn regs_reports_the_versioned_view_at_the_current_moment() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -3710,8 +3002,6 @@ mod tests {
         assert_eq!(v.moment.0, 500, "the fixture is wired at exit count 500");
     }
 
-    /// Both observation verbs are subject to the `hello`-first gate — before a
-    /// session is negotiated nothing is supported.
     #[test]
     fn observations_before_hello_are_unsupported() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -3722,15 +3012,10 @@ mod tests {
         );
     }
 
-    /// A `read`/`regs` against a **poisoned** server (`vmm == None` after a prior
-    /// fatal error) is the same session-fatal [`ServeError::Poisoned`] every sibling
-    /// verb returns — never a recoverable reply (PR #83 round-1 blocking: `read`
-    /// must not fall back to an empty-RAM slice and fake a `ReadOutOfRange { ram_len:
-    /// 0 }`, which a client would retry against a VM that no longer exists).
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn read_and_regs_on_a_poisoned_server_are_session_fatal() {
         let live = vmm_at_sync(vec![Exit::Common(CommonExit::Idle)], 500, 0xBA5E);
@@ -3766,14 +3051,10 @@ mod tests {
         ));
     }
 
-    /// The **observation contract** (task 80): a full inspection pass (regs +
-    /// several reads, including a deliberately out-of-range one) between other
-    /// verbs leaves `hash(Whole)` bit-identical and is never stamped into the
-    /// recorded reproducer (`recorded_env` is unchanged) — observation, not a move.
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn observations_do_not_perturb_hash_or_recorded_env() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -3824,9 +3105,6 @@ mod tests {
         ]
     }
 
-    /// The observable output of a "core" verb — the things the invariance gate
-    /// pins. `Run`/`Hash` are the spec's named surfaces; the control acks are
-    /// included so a stray mutation anywhere shows up.
     #[derive(Clone, Debug, PartialEq)]
     enum Rec {
         Ctl(Result<Reply, ControlError>),
@@ -3834,9 +3112,6 @@ mod tests {
         Hash(Result<Reply, ControlError>),
     }
 
-    /// Run a script against a fresh (identically-seeded) server, optionally
-    /// executing the `read`/`regs` observations, and return the ordered outputs of
-    /// every non-observation verb.
     fn run_obs_script(ops: &[ObsOp], include_obs: bool) -> Vec<Rec> {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
@@ -3878,14 +3153,8 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
-        /// **Acceptance gate 1 (observation invariance).** Any interleaving of
-        /// `read`/`regs` among the other verbs yields byte-identical `hash` results
-        /// and `StopReason` outcomes as the same sequence with the observations
-        /// stripped — the docs/PROTOCOL.md search-surface criterion: observation, not a
-        /// move. Reads that are out of range / over-cap (loud errors) are included,
-        /// so even a *rejected* observation is proven inert.
         #[test]
-        #[cfg_attr(miri, ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)")]
+        #[cfg_attr(miri, ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping")]
         fn observations_never_change_hash_or_stop_outcomes(
             ops in prop::collection::vec(arb_obs_op(), 1..16)
         ) {
@@ -3966,8 +3235,6 @@ mod tests {
         );
     }
 
-    /// Payload branch, snapshot, replay, and exhaustion close the control loop:
-    /// the live suffix and generic service configuration remain deterministic.
     #[test]
     #[cfg_attr(
         miri,
@@ -4084,7 +3351,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn branch_accepts_mechanical_operations_and_rejects_unknown_extensions() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -4148,7 +3415,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests"
     )]
     fn hash_whole_matches_the_vmm_and_other_scopes_are_unsupported() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -4241,13 +3508,6 @@ mod tests {
         );
     }
 
-    /// Review r13 (the last of the r11 GPA family): `CorruptMemory` **stage-time**
-    /// admissibility must use the same region resolver `corrupt_memory` applies at
-    /// arrival. On a high-RAM-base (arm64) machine a valid absolute GPA is
-    /// admissible, and a low unmapped GPA is rejected **at stage time**
-    /// (recoverable) rather than staged to explode session-fatally at arrival.
-    /// (x86, `ram_base_gpa == 0`, is covered byte-identically by
-    /// `perturb_stages_faults_and_rejects_the_unenforceable`.)
     #[test]
     fn perturb_corrupt_memory_stage_time_resolves_high_arm_gpas() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -4291,7 +3551,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn run_maps_terminals_workload_blind() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -4368,10 +3628,6 @@ mod tests {
         assert!(matches!(run_all(&mut s), StopReason::Quiescent { .. }));
     }
 
-    /// M5's portable artifact must carry the control side tables, not merely
-    /// RAM + VM-state. Consume one ordered payload, export the midpoint, then
-    /// prove a fresh server restores the same immediate whole-state hash and
-    /// consumes the exact same remaining payload to the same next hash.
     #[test]
     #[cfg_attr(
         miri,
@@ -4633,7 +3889,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn branch_reseeds_and_replay_does_not() {
         let mut s = server(vec![
@@ -4667,7 +3923,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn a_failed_factory_is_session_fatal_and_poisons_the_server() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -4692,7 +3948,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn restore_validation_rejection_is_recoverable_and_keeps_the_fresh_vm() {
         let live = vmm_at_sync(vec![Exit::Common(CommonExit::Idle)], 500, 0xBA5E);
@@ -4728,8 +3984,6 @@ mod tests {
         let _ = hash(&mut s);
     }
 
-    /// A backend that forwards to an inner mock but **fails `restore`** — to
-    /// exercise restore's *fatal* (post-validation substrate-breakage) split.
     struct RestoreFailBackend(MockBackend);
     impl Backend for RestoreFailBackend {
         type A = vmm_backend::X86;
@@ -4793,7 +4047,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn restore_substrate_failure_is_session_fatal_and_poisons_the_server() {
         let build = || -> Vmm<RestoreFailBackend> {
@@ -4840,7 +4094,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "drives a real UnixStream socketpair across threads; Miri can't execute the socket syscalls (task 98)"
+        ignore = "drives a real UnixStream socketpair across threads; Miri can't execute the socket syscalls"
     )]
     fn serve_speaks_frames_over_an_in_memory_stream() {
         use std::io::{Read, Write};
@@ -4890,9 +4144,6 @@ mod tests {
         client_thread.join().unwrap();
     }
 
-    /// A live VM for enforcement: V-time + userspace-LAPIC + snapshot-hashing
-    /// wired, a distinctive RAM image loaded, and a script of `exit_count`
-    /// clock-advancing exits followed by a terminal halt.
     fn enforce_vmm(exit_count: usize, image: [u8; RAM], seed: u64) -> Vmm<MockBackend> {
         let mut exits = vec![Exit::Arch(X86Exit::Rdmsr { index: 0x10 }); exit_count];
         exits.push(Exit::Common(CommonExit::Idle));
@@ -4916,14 +4167,12 @@ mod tests {
         v
     }
 
-    /// The pristine 16 KiB image the enforcement tests start from.
     fn enforce_image() -> [u8; RAM] {
         let mut image = [0u8; RAM];
         image[..12].copy_from_slice(b"ENFORCE_BOOT");
         image
     }
 
-    /// Enough one-nanosecond exits to reach the schedule's final moment.
     fn exits_to_cover(schedule: &[(u64, EnvHostEffect)]) -> usize {
         schedule
             .iter()
@@ -4932,9 +4181,6 @@ mod tests {
             .unwrap_or(0)
     }
 
-    /// Build a server, stage `schedule` via `perturb`, run to terminal, and
-    /// return `(state_hash, recorded_env)`. The factory is unused (no
-    /// branch/replay in these direct tests), so it errors loudly if ever called.
     fn enforce_run(schedule: &[(u64, EnvHostEffect)], seed: u64) -> ([u8; 32], EnvSpec) {
         let live = enforce_vmm(exits_to_cover(schedule), enforce_image(), seed);
         let factory = Box::new(|| {
@@ -4970,7 +4216,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "enforce_run boots + runs + state-hashes VMs several times (~2 s/KiB sha256 under Miri); it never restores, and its boot-path map_memory seam is Miri-run via bringup::tests::compose_drives_guestram_and_unsafe_map_memory — the same grounds as its proptest sibling arbitrary_schedule_applied_twice_is_identical; covered natively (task 98 / hm-d8o)"
+        ignore = "enforce_run boots + runs + state-hashes VMs several times (~2 s/KiB sha256 under Miri); it never restores, and its boot-path map_memory seam is Miri-run via bringup::tests::compose_drives_guestram_and_unsafe_map_memory — the same grounds as its proptest sibling arbitrary_schedule_applied_twice_is_identical; covered natively"
     )]
     fn same_schedule_run_twice_is_bit_identical_and_control_differs() {
         let schedule = vec![
@@ -5465,7 +4711,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests"
     )]
     fn recorded_env_replays_to_the_same_hash() {
         let schedule = vec![
@@ -5501,9 +4747,6 @@ mod tests {
         );
     }
 
-    /// A V-time-wired VM that takes a single RDTSC to effective V-time `rdtsc_work`,
-    /// then Hlt — used to drive the beyond-deadline / overshoot cases with a chosen
-    /// V-time landing (no arrival armed, so `run()` returns the scripted RDTSC).
     fn rdtsc_then_hlt_vmm(rdtsc_work: u64) -> Vmm<MockBackend> {
         let mut m = MockBackend::with_exits(vec![
             Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
@@ -5523,8 +4766,6 @@ mod tests {
         v
     }
 
-    /// A server over [`rdtsc_then_hlt_vmm`] whose factory boots identically-composed
-    /// restore targets, so `branch`/`replay` (the poison recovery) succeed.
     fn rdtsc_then_hlt_server(rdtsc_work: u64) -> ControlServer<MockBackend> {
         ControlServer::new(
             rdtsc_then_hlt_vmm(rdtsc_work),
@@ -5585,7 +4826,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn snapshot_while_a_fault_is_staged_is_rejected() {
         let mut s = rdtsc_then_hlt_server(2000);
@@ -5610,7 +4851,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn branch_env_host_faults_go_through_the_same_validation_as_perturb() {
         let host_env = |m: u64, fault: EnvHostEffect| {
@@ -5688,7 +4929,6 @@ mod tests {
         );
     }
 
-    /// Build a branch env carrying a single host fault at `m`.
     fn host_env(m: u64, fault: EnvHostEffect) -> Reproducer {
         let mut spec = EnvSpec::seeded(7);
         spec.record_effect(m, fault);
@@ -5701,7 +4941,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn a_rejected_branch_env_fault_is_side_effect_free() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -5745,7 +4985,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn a_terminal_stop_with_a_staged_fault_poisons_loud() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -5770,7 +5010,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn perturb_after_a_synchronized_deadline_stop_reproduces() {
         let run_to = |s: &mut ControlServer<ExitBoundaryBackend>, d: u64| {
@@ -5860,7 +5100,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn a_branch_env_moment_occupies_the_schedule_for_ruling_b() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -5888,14 +5128,8 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(384))]
 
-        /// Gate 1 proptest (≥256 cases): an arbitrary staged schedule applied twice
-        /// yields identical state evolution. `Moment`s are **distinct** (a
-        /// `BTreeMap` key — the one-fault-per-Moment rule rejects duplicates, so the
-        /// schedule under test never carries them) in `1..=32` (the fixture emits
-        /// one one-nanosecond exit per moment); faults are in-range CorruptMemory (any gpa whose word
-        /// fits the 16 KiB RAM, any mask) or InjectInterrupt (any non-reserved vector).
         #[test]
-        #[cfg_attr(miri, ignore = "VM-running property test, too slow under Miri; covered natively (task 98)")]
+        #[cfg_attr(miri, ignore = "VM-running property test, too slow under Miri; covered natively")]
         fn arbitrary_schedule_applied_twice_is_identical(
             schedule in proptest::collection::btree_map(
                 1u64..=32u64,
@@ -5916,12 +5150,6 @@ mod tests {
         }
     }
 
-    /// A mock-wrapping backend that makes each scripted exit boundary land at
-    /// the next armed arrival, while an unarmed `run()` is a terminal `Hlt`.
-    /// This lets a *random* verb
-    /// sequence drive any number of arrivals + runs without pre-scripting exits.
-    /// `deterministic_tsc` (forwarded from the inner mock) is `true`, so the server
-    /// treats it as an armable host-plane backend.
     struct ExitBoundaryBackend {
         inner: MockBackend,
         exits_left: u64,
@@ -6020,9 +5248,6 @@ mod tests {
         v
     }
 
-    /// A server over the exit-boundary mock, whose factory boots identically-composed
-    /// restore targets (so `branch`/`replay` succeed). Seed `0x59` for the live VM
-    /// and every fork.
     fn exit_boundary_server() -> ControlServer<ExitBoundaryBackend> {
         let live = exit_boundary_vmm(0x59);
         ControlServer::new(live, Box::new(|| Ok(exit_boundary_vmm(0x59))))
@@ -6051,11 +5276,6 @@ mod tests {
         s.vmm().unwrap().state_hash().unwrap()
     }
 
-    /// A **no-op** host fault (`CorruptMemory` with a zero XOR mask) — it changes no
-    /// guest byte, but staging it at a `Moment` arms the exact-count arrival so a
-    /// `run` lands there. On the portable mock this is the stand-in for the box's
-    /// exit-boundary arrival: the mock's bare `run()` HLTs immediately, while an
-    /// armed arrival assigns the next scripted exit to the exact `Moment`.
     fn schedule_marker(at: u64) -> Request {
         Request::Perturb {
             fault: HostFault(
@@ -6069,21 +5289,10 @@ mod tests {
         }
     }
 
-    /// The **moment-address materialization procedure** (task 80), exercised
-    /// portably on the exit-boundary mock: given `(env, moment)` with a
-    /// genesis-complete `env`, `branch(genesis, env)` then advance to the exact
-    /// `Moment` (here via a no-op arrival marker — see [`schedule_marker`]; on the
-    /// box the deadline instruction-level stops) and read that materialized point with the
-    /// observation verbs. Materializing the same address **twice from genesis**
-    /// yields byte-identical `regs` (including `rip` and `moment`), `read`, and
-    /// `hash(Whole)` — the address is a stable coordinate. (The box gate proves the
-    /// same against the live Postgres workload, where the state actually differs
-    /// Moment-to-Moment; the mock's static image makes this a determinism/mechanism
-    /// proof, not a state-evolution one.)
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn moment_address_materializes_identically_twice() {
         let mut s = exit_boundary_server();
@@ -6157,15 +5366,10 @@ mod tests {
         }
     }
 
-    /// Observation invariance **during materialization** (task 80 gate 3, portable
-    /// analogue): a full inspection pass (regs + several reads) at an intermediate
-    /// Moment does not perturb the run — continuing to a later Moment yields the
-    /// same `hash(Whole)` as an uninspected control that reaches the later Moment
-    /// through the identical arrival schedule.
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn inspection_mid_materialization_does_not_perturb_the_continuation() {
         let env = seeded_env_arr(0x0B5E_0BED);
@@ -6346,7 +5550,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn recoverable_restore_failure_clears_the_stale_schedule() {
         let live = exit_boundary_vmm(0x59);
@@ -6395,7 +5599,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn replay_derives_recorded_seed_from_the_restored_stream() {
         let mut s = exit_boundary_server();
@@ -6481,15 +5685,8 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
-        /// The **structural invariant** (PR #51 round 2): after any random sequence
-        /// of `perturb`/`run`/`branch`/`replay` on the exit-boundary mock, the
-        /// `recorded_env()` — re-applied by branching it from the starting snapshot
-        /// on a fresh server and running — reproduces the live `state_hash` after
-        /// every completed run. This is the net that covers the whole verb space:
-        /// the recorded apply point must equal the actual apply point, or the op
-        /// must have failed loudly (rejected ops are simply skipped by the model).
         #[test]
-        #[cfg_attr(miri, ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)")]
+        #[cfg_attr(miri, ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping")]
         fn verb_sequence_recorded_env_reproduces_live_hash(ops in prop::collection::vec(arb_verb_op(), 1..12)) {
             let mut s = exit_boundary_server();
             arr_hello(&mut s);
@@ -6521,7 +5718,7 @@ mod tests {
                                 prop_assert_eq!(h_live, arr_hash(&r), "recorded_env() must reproduce the live hash");
                             }
                             Ok(other) => prop_assert!(false, "unexpected run reply: {other:?}"),
-                            Err(_) => { /* loud rejection — the model skips this op */ }
+                            Err(_) => {}
                         }
                     }
                     VerbOp::Branch(seed) => {
@@ -6545,13 +5742,6 @@ mod tests {
         }
     }
 
-    /// A mock-wrapping backend whose guest is a **resumable idle**: `run` always
-    /// returns a natural `Hlt` and the vCPU has `RFLAGS.IF` set, so every
-    /// arrival is reached through the idle-jump path (`on_hlt` → `idle_action` →
-    /// jump to `min(timer, arrival)`). No timer
-    /// is armed, so the staged host-fault arrival is the sole wake event; with
-    /// `CorruptMemory`-only faults (no IRR raise) the run idles Moment-to-Moment and
-    /// terminates cleanly once the schedule drains. `deterministic_tsc` is `true`.
     struct IdleBackend(MockBackend);
     impl Backend for IdleBackend {
         type A = vmm_backend::X86;
@@ -6661,14 +5851,8 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
-        /// HLT-before-fault reproduction net (PR #51 round-4): the same
-        /// recorded-env-reproduces invariant as the exit-boundary proptest, but every
-        /// arrival is reached through the **idle jump** (the guest HLTs before each
-        /// staged `Moment`; `idle_action` wakes at the arrival). `CorruptMemory`-only
-        /// (an idle guest with no timer terminates cleanly once the schedule drains),
-        /// verbs `perturb`/`run`/`branch`/`replay`, all from a fixed base snapshot.
         #[test]
-        #[cfg_attr(miri, ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)")]
+        #[cfg_attr(miri, ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping")]
         fn idle_hlt_before_fault_recorded_env_reproduces(ops in prop::collection::vec(
             prop_oneof![
                 (0u64..(RAM as u64 - 8), 1u64..=400).prop_map(|(g, off)| IdleOp::Perturb(g, off)),
@@ -6707,7 +5891,7 @@ mod tests {
                                 prop_assert_eq!(h_live, arr_hash(&r), "idle-path recorded_env() must reproduce the live hash");
                             }
                             Ok(other) => prop_assert!(false, "unexpected run reply: {other:?}"),
-                            Err(_) => { /* loud rejection — skip */ }
+                            Err(_) => {}
                         }
                     }
                     IdleOp::Branch(seed) => {
@@ -6721,7 +5905,6 @@ mod tests {
         }
     }
 
-    /// A branch env carrying only reseed markers (no overrides/standing).
     fn marker_env(seed: u64, markers: &[(u64, u64)]) -> Reproducer {
         let mut spec = EnvSpec::seeded(seed);
         for &(m, s) in markers {
@@ -6743,7 +5926,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn branch_with_a_floor_marker_reseeds_from_the_marker_not_the_env_seed() {
         let mut s = exit_boundary_server();
@@ -6771,7 +5954,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn mid_run_reseed_marker_applies_at_its_moment_and_recorded_env_reproduces() {
         let run_leg = |mid_seed: u64| -> ([u8; 32], EnvSpec) {
@@ -6813,7 +5996,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn reseed_marker_behind_the_restore_floor_is_rejected() {
         let mut s = exit_boundary_server();
@@ -6855,7 +6038,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn snapshot_with_a_staged_reseed_is_snapshot_while_armed() {
         let mut s = exit_boundary_server();
@@ -6877,7 +6060,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn terminal_with_a_staged_reseed_poisons_and_rewind_recovers() {
         let mut s = server(vec![
@@ -6907,8 +6090,6 @@ mod tests {
         assert!(run_all_res(&mut s).is_ok());
     }
 
-    /// Page `Request::Console` from offset 0 until drained (the discipline the
-    /// remote `SocketMachine` uses), returning the full serial capture.
     fn drain_console(server: &mut ControlServer<MockBackend>) -> Vec<u8> {
         let mut buf = Vec::new();
         loop {
@@ -6932,9 +6113,6 @@ mod tests {
         buf
     }
 
-    /// `page_console` reports the full length as `total`, returns the requested
-    /// suffix, and yields an empty chunk at/past the end (the paging terminator)
-    /// and for an absent VM.
     #[test]
     fn page_console_paging_math() {
         let serial = b"ORDER_READY\nphase one\nphase two\n";
@@ -6949,15 +6127,10 @@ mod tests {
         assert_eq!(page_console(&[], 0), (0u32, Vec::new()));
     }
 
-    /// A `Console` drain is a **pure read**: an identical (branch, run) off the
-    /// same base yields the identical `state_hash` whether or not the console is
-    /// drained before hashing. This is the determinism-neutrality task 69 requires
-    /// — `RunTrace.records` are host-side observation and never couple into the
-    /// hash. (The mock guest may emit an empty console; the invariant is the hash.)
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn console_drain_is_determinism_neutral() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -6989,11 +6162,6 @@ mod tests {
         );
     }
 
-    /// The fixture server emits a serial byte, rings the `setup_complete`
-    /// doorbell, rings it again, emits another serial byte, then goes idle.
-    /// Exit-count virtual time makes each successfully serviced exit an exact
-    /// boundary, so each lifecycle doorbell can surface its own sealable point.
-    /// The factory mirrors the live composition so branch/replay restores validate.
     fn seal_cut_server() -> ControlServer<MockBackend> {
         const REQ_GPA: usize = 0xE000;
         let setup_id: u32 = 4 << 24;
@@ -7054,8 +6222,6 @@ mod tests {
         with_test_service(ControlServer::new(live, factory))
     }
 
-    /// Page the `SdkEvents` verb from offset 0 until drained (the remote
-    /// client's discipline), returning the full capture.
     fn drain_sdk(server: &mut ControlServer<MockBackend>) -> Vec<(u64, u32, Vec<u8>)> {
         let mut all = Vec::new();
         loop {
@@ -7075,12 +6241,10 @@ mod tests {
         }
     }
 
-    /// The two seals bind the SDK-vector prefix length independently of console
-    /// bytes and the clock values at which the events arrived.
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated snapshot-seal logic over the mock server VM (task 98 / hm-d8o); pure safe code, logic covered natively"
+        ignore = "sha256-dominated snapshot-seal logic over the mock server VM; pure safe code, logic covered natively"
     )]
     fn sdk_fixture_cuts_by_prefix_length() {
         let mut s = seal_cut_server();
@@ -7130,15 +6294,10 @@ mod tests {
         );
     }
 
-    /// **Branch/replay preserves the captured SDK prefix length.** A verbatim
-    /// `replay` of either seal restores the capture to exactly that seal's
-    /// prefix, and a re-seal from the restored state stamps the identical cut;
-    /// a reseeding `branch` keeps the ancestor's event prefix (the declared
-    /// catalog) and stamps the same cut too.
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn branch_and_replay_preserve_the_captured_sdk_prefix_length() {
         let mut s = seal_cut_server();
@@ -7172,14 +6331,10 @@ mod tests {
         assert_eq!((at, n), (at1, n1), "the branched fork re-stamps the cut");
     }
 
-    /// **The cut is identical across same-seed sessions** — two fresh servers
-    /// driven through the identical fixture stamp bit-identical cuts, captures,
-    /// and console pages (the determinism contract; this suite runs on macOS
-    /// and Linux, so platform identity rides the same assertion in CI).
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated snapshot-seal logic over the mock server VM (task 98 / hm-d8o); pure safe code, logic covered natively"
+        ignore = "sha256-dominated snapshot-seal logic over the mock server VM; pure safe code, logic covered natively"
     )]
     fn the_cut_is_identical_across_same_seed_sessions() {
         #[allow(clippy::type_complexity)]
@@ -7208,8 +6363,6 @@ mod tests {
         assert_eq!(session(), session(), "same seed ⇒ bit-identical cuts");
     }
 
-    /// Take a snapshot, returning its handle and the taint bit its reply carries
-    /// (task 127: the one seal-bound `Reply::Snapshot` carries the flag both ways).
     fn snap_tainted(server: &mut ControlServer<MockBackend>) -> (SnapId, bool) {
         match server.handle(&Request::Snapshot).unwrap() {
             Ok(Reply::Snapshot { id, tainted, .. }) => (id, tainted),
@@ -7217,8 +6370,6 @@ mod tests {
         }
     }
 
-    /// Improvise: `exec` with an already-expired deadline (`Moment(0)`), so it taints
-    /// the timeline and returns immediately without stepping the mock guest.
     fn exec(server: &mut ControlServer<MockBackend>, cmd: &str) -> (Vec<u8>, bool) {
         match server
             .handle(&Request::Exec {
@@ -7232,7 +6383,6 @@ mod tests {
         }
     }
 
-    /// The reproducer mint result: `Ok(Reproducer)` or the loud `Tainted`.
     fn recorded_env_res(server: &mut ControlServer<MockBackend>) -> Result<Reply, ControlError> {
         server.handle(&Request::RecordedEnv).unwrap()
     }
@@ -7257,9 +6407,6 @@ mod tests {
         server.handle(&Request::Replay(snap)).unwrap()
     }
 
-    /// `exec` taints the live timeline: the reproducer mints cleanly before, is a
-    /// loud `Tainted` after, and the `ExecResult` (crude, deadline-0) is unsuccessful
-    /// with empty capture — but the guard fired regardless of the run's outcome.
     #[test]
     fn exec_taints_and_recorded_env_then_fails_loud() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -7271,15 +6418,10 @@ mod tests {
         assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
     }
 
-    /// A snapshot taken from a tainted timeline reports `tainted: true`; one taken
-    /// before any `exec` reports untainted. Both ride the one seal-bound reply
-    /// (task 127), so the tainted seal binds the same evidence cut fields the
-    /// untainted one does — here the deadline-0 `exec` never advanced the guest,
-    /// so the two cuts are identical.
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests"
     )]
     fn snapshot_reply_carries_the_taint() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -7296,13 +6438,10 @@ mod tests {
         );
     }
 
-    /// A `branch` **and** a `replay` from a tainted snapshot both yield a tainted
-    /// timeline (taint follows ancestry through either restore verb), and the mint
-    /// stays refused on the restored fork.
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn branch_and_replay_from_a_tainted_snapshot_stay_tainted() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -7320,15 +6459,10 @@ mod tests {
         assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
     }
 
-    /// **Taint never crosses, and a rewind to an untainted ancestor recovers.** A
-    /// clean snapshot taken *before* any `exec` restores to an untainted timeline —
-    /// even from a currently-tainted live state — so the mint works again. This is
-    /// the "untainted state is only reachable from an untainted ancestor" rule: the
-    /// clean ancestor is one.
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn rewind_to_an_untainted_ancestor_clears_the_live_taint() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -7346,12 +6480,10 @@ mod tests {
         assert!(!snap_tainted(&mut s).1);
     }
 
-    /// One op in the arbitrary-DAG proptest.
     #[derive(Clone, Debug)]
     enum TaintOp {
         Snapshot,
         Exec,
-        /// Branch/replay reference an existing snapshot by index (mod the count).
         Branch(usize),
         Replay(usize),
     }
@@ -7369,7 +6501,7 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(300))]
         #[test]
-        #[cfg_attr(miri, ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)")]
+        #[cfg_attr(miri, ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping")]
         fn taint_propagates_exactly_along_ancestry(ops in arb_taint_ops()) {
             let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
             hello(&mut s);
@@ -7415,9 +6547,6 @@ mod tests {
         }
     }
 
-    /// The registered clock-page GPA survives a `snapshot` → `branch`: the
-    /// fork's VM keeps stamping the page the restored guest already published
-    /// (without the carry, its first busy-wait would hang on a frozen clock).
     #[test]
     #[cfg_attr(
         miri,
@@ -7492,10 +6621,6 @@ mod tests {
             .expect("restored page matches the restored clock");
     }
 
-    /// A factory that does NOT offer the pvclock cannot restore a snapshot
-    /// whose VM had a registered page: the blob's v4 pvclock record fails the
-    /// validate phase before any mutation — the recoverable `RestoreFailed`,
-    /// never a silent frozen clock.
     #[test]
     #[cfg_attr(
         miri,

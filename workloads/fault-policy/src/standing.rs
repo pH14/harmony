@@ -1,72 +1,33 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The standing-fault wire forms shared by a host package and the in-guest fault
-//! agent: the answer to a standing poll, and the window list a package hands its
-//! service handler as configuration.
-//!
-//! A **standing fault** is a class, an opaque class-interpreted target, and a
-//! half-open V-time window `[start, end)`. The guest polls; the host answers with
-//! the current [`Moment`](crate::Moment) and every window that contains it. The
-//! guest diffs consecutive answers to learn which faults just opened and which
-//! just closed, so the poll is idempotent and a missed tick loses nothing but
-//! resolution.
-//!
-//! Both forms share one entry layout: `u16` class, `u16` target length, the
-//! target bytes, `u64` window start, `u64` window end, all little-endian. The
-//! poll answer prefixes a `u64` moment and a `u32` entry count; the window list
-//! prefixes only the count. Reading validates every length against the real
-//! buffer before use and rejects trailing bytes, so arbitrary input yields
-//! [`EnvError::Malformed`] and never a panic.
 
 use crate::codec::{self, Reader};
 use crate::error::EnvError;
 
-/// The package namespace carrying the standing poll over the generic SDK
-/// opaque service request. Disjoint from the net-flow (`4`) and buggify (`7`)
-/// namespaces the [`consonance`](crate::consonance) adapter owns.
 pub const STANDING_NAMESPACE: u16 = 9;
 
-/// One standing fault, owned. This is the form a package builds its window list
-/// from and the form [`decode_windows`] returns.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct StandingWindow {
-    /// The [`DecisionClass`](crate::DecisionClass) discriminant this fault
-    /// perturbs, as [`DecisionClass::as_u16`](crate::DecisionClass::as_u16).
     pub class: u16,
-    /// Opaque, class-interpreted target bytes — for
-    /// [`Process`](crate::DecisionClass::Process), the
-    /// [`process_target`](crate::process_target) encoding.
     pub target: Vec<u8>,
-    /// Inclusive start of the half-open V-time window.
     pub start: u64,
-    /// Exclusive end of the half-open V-time window.
     pub end: u64,
 }
 
 impl StandingWindow {
-    /// Whether `moment` falls in the half-open window. An empty or inverted
-    /// window contains nothing.
     #[must_use]
     pub fn contains(&self, moment: u64) -> bool {
         moment >= self.start && moment < self.end
     }
 }
 
-/// One standing fault as it appears in an encoded frame, borrowing its target.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StandingEntry<'a> {
-    /// The [`DecisionClass`](crate::DecisionClass) discriminant.
     pub class: u16,
-    /// Opaque, class-interpreted target bytes.
     pub target: &'a [u8],
-    /// Inclusive start of the half-open V-time window.
     pub start: u64,
-    /// Exclusive end of the half-open V-time window.
     pub end: u64,
 }
 
-/// Borrowing iterator over the entries of an encoded frame. Every length was
-/// validated against the buffer before the iterator was built, so it never
-/// yields a truncated entry.
 #[derive(Clone, Debug)]
 pub struct StandingIter<'a> {
     buf: &'a [u8],
@@ -122,8 +83,6 @@ fn write_entries(w: &mut Vec<u8>, entries: &[StandingWindow]) -> Result<(), EnvE
     Ok(())
 }
 
-/// Walk `count` entries from `offset`, returning the offset just past the last
-/// one. Every length is checked against the buffer.
 fn scan_entries(buf: &[u8], offset: usize, count: u32) -> Result<usize, EnvError> {
     let mut at = offset;
     for _ in 0..count {
@@ -156,15 +115,12 @@ fn read_u64(buf: &[u8], at: usize) -> Result<u64, EnvError> {
     ]))
 }
 
-/// Encode the answer to a standing poll taken at `moment`: the moment, then the
-/// entries the caller decided are in force.
 pub fn encode_standing(moment: u64, entries: &[StandingWindow]) -> Result<Vec<u8>, EnvError> {
     let mut w = moment.to_le_bytes().to_vec();
     write_entries(&mut w, entries)?;
     Ok(w)
 }
 
-/// Decode a standing-poll answer into its moment and its entries.
 pub fn parse_standing(buf: &[u8]) -> Result<(u64, StandingIter<'_>), EnvError> {
     let mut r = Reader::new(buf);
     let moment = r.u64()?;
@@ -180,15 +136,12 @@ pub fn parse_standing(buf: &[u8]) -> Result<(u64, StandingIter<'_>), EnvError> {
     ))
 }
 
-/// Encode a window list — the configuration bytes a package hands the service
-/// handler that answers its polls.
 pub fn encode_windows(entries: &[StandingWindow]) -> Result<Vec<u8>, EnvError> {
     let mut w = Vec::new();
     write_entries(&mut w, entries)?;
     Ok(w)
 }
 
-/// Decode bytes produced by [`encode_windows`].
 pub fn decode_windows(buf: &[u8]) -> Result<Vec<StandingWindow>, EnvError> {
     let mut r = Reader::new(buf);
     let count = r.u32()?;

@@ -1,31 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The arm64 boot entry state (`tasks/112` M3) — the arm64 analogue of the x86
-//! `entry`, but tiny: the Linux/arm64 boot protocol
-//! (`Documentation/arm64/booting.rst`) is "enter at the image's first
-//! instruction, at EL1 (under KVM), with `x0` = the DTB physical address and
-//! `x1..x3` = 0". No GDT/IDT/page-table/segment apparatus.
-//!
-//! The returned [`Arm64VcpuState`] is overlaid onto a backend `save()` template
-//! by the composition root (the get→modify→set pattern), exactly as the x86
-//! entry state is — a live `restore` validates register shapes a pure builder
-//! cannot know.
 
 use vmm_backend::{Arm64VcpuState, MpState};
 
-/// `PSTATE`/`SPSR` value for **EL1h** (EL1 using `SP_EL1`) with `DAIF` masked —
-/// the reset processor state the arm64 boot protocol enters with.
-///
-/// Bit layout: `M[3:0] = 0b0101` (EL1h) with `M[4] = 0` (AArch64), and the
-/// `DAIF` mask bits `D`(9) `A`(8) `I`(7) `F`(6) all set = `0x3c0`. Together
-/// `0x3c0 | 0x5 = 0x3c5`. Written as the composed literal (not `0x3c0 | 5`) so
-/// the value the guest actually sees is unmistakable in one place.
 pub const PSTATE_EL1H_DAIF: u64 = 0x3c5;
 
-/// Build the boot entry state: `PC` at `entry_gpa`, `x0` = `dtb_gpa`,
-/// `x1..x3 = 0`, `PSTATE` = [`PSTATE_EL1H_DAIF`], and `MpState::Runnable`.
-/// Every other register is left zero (the boot protocol requires nothing of
-/// them, and a live template supplies whatever the backend's `restore`
-/// validates).
 pub fn boot_entry(entry_gpa: u64, dtb_gpa: u64) -> Arm64VcpuState {
     let mut s = Arm64VcpuState::default();
     s.core.pc = entry_gpa;
@@ -35,10 +13,6 @@ pub fn boot_entry(entry_gpa: u64, dtb_gpa: u64) -> Arm64VcpuState {
     s
 }
 
-/// Overlay the boot entry registers onto a backend `save()` template. The
-/// substrate-specific valid SCTLR shape is retained, while every other carried
-/// EL1 register is assigned a deterministic reset value instead of preserving
-/// KVM's architecturally-UNKNOWN poison or another host's reset residue.
 pub fn apply_entry(state: &mut Arm64VcpuState, entry: &Arm64VcpuState) {
     state.core = entry.core;
     state.mp_state = entry.mp_state;

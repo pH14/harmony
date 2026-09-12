@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Compact, headless evaluation of NES packages through the shared campaign engine.
 
 use nes_workload::{
     metroid::campaign::{MetroidCampaignRun, MetroidGame},

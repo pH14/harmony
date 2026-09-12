@@ -8,6 +8,7 @@ on:
       - .github/workflows/nova-consonance-experiment.yml
       - consonance/**
       - workloads/**
+      - '!workloads/bugs/**'
       - dissonance/**
       - cli/**
       - scripts/build-quicknes-core.sh
@@ -20,6 +21,7 @@ on:
       - .github/workflows/nova-consonance-experiment.yml
       - consonance/**
       - workloads/**
+      - '!workloads/bugs/**'
       - dissonance/**
       - cli/**
       - scripts/build-quicknes-core.sh
@@ -114,7 +116,7 @@ jobs:
         env:
           HARMONY_NOVA_ROM: ${{ github.workspace }}/workloads/nes/build/nova/nova.nes
           HARMONY_NOVA_CORE_STATIC: ${{ github.workspace }}/workloads/nes/build/nova/libquicknes_libretro.a
-        run: consonance/harmony-linux/linux/build-nova-game-image.sh
+        run: workloads/nes-guest/legacy/build-nova-game-image.sh
       - name: Build the Consonance-backed Dissonance campaign
         run: |
           cargo build --locked --release --manifest-path workloads/nes/Cargo.toml \

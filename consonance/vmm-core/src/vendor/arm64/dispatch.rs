@@ -1,19 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The arm64 vendor's exit dispatch, interrupt-fabric seams, and snapshot
-//! record glue (`docs/ARCHITECTURE.md`'s vendor column, arm64 row).
-//!
-//! Everything here names arm64: the PL011 device state, the `PSTATE.I`
-//! interruptibility test, the sysreg-trap dispositions (fail-closed skeleton),
-//! and the arm64 `vm_state` record set. The engine ([`crate::vmm`]) reaches
-//! all of it **only** through the [`Vendor`](crate::vendor::Vendor) trait.
-//!
-//! **Skeleton posture, stated once:** the GICv3 fabric computes arbitration
-//! and deadlines only — real *delivery* into a guest is `TODO(AA-6)` (the
-//! vGICv3 round-trip verdict) and the boot roots leave it unwired; no MMIO
-//! address is modeled (the machine memory map arrives with the M3 boot path);
-//! and a trapped sysreg has no ruled disposition (`TODO(AA-6)`). Every one of
-//! those absences **fails closed**, never silently succeeds — default-deny is
-//! the posture the contract will fill in, not a stub to be papered over.
 
 use hypercall_proto::{Service, Status};
 use vm_state::Arm64VmState;
@@ -29,8 +14,6 @@ use crate::vendor::arm64::records::{
 use crate::virtual_time::{DeviceClass, NormalizedEventClass};
 use crate::vmm::{Step, Vmm, VmmError};
 
-/// `PSTATE.I` (IRQ mask, bit 7): set ⇒ maskable interrupts are masked — the
-/// arm64 mirror of x86's `RFLAGS_IF` (inverted sense: masked vs enabled).
 pub(crate) const PSTATE_I: u64 = 1 << 7;
 
 const ICC_PMR_EL1: u32 = 0x0030_100c;
@@ -44,12 +27,6 @@ const ICC_HPPIR1_EL1: u32 = 0x0034_3018;
 const OSDLR_EL1: u32 = 0x0028_0406;
 const OSLAR_EL1: u32 = 0x0028_0400;
 
-/// Whether a canonical HVF ISS names one of N6's frozen PMU registers.
-///
-/// The frozen machine exposes no PMU. HVF nevertheless surfaces EL0 PMU
-/// accesses to userspace, so every listed read/write is completed as UNDEF;
-/// stock KVM reaches the same guest-visible SIGILL result in-kernel. Keep this
-/// predicate exact: neighboring implementation registers remain default-deny.
 fn is_frozen_pmu_sysreg(sysreg: u32) -> bool {
     let op0 = (sysreg >> 20) & 0x3;
     let op2 = (sysreg >> 17) & 0x7;
@@ -72,7 +49,6 @@ fn is_frozen_pmu_sysreg(sysreg: u32) -> bool {
     )
 }
 
-/// `true` iff `addr` lies inside the `(base, len)` device frame.
 fn in_frame(addr: u64, frame: (u64, u64)) -> bool {
     addr >= frame.0 && addr < frame.0 + frame.1
 }
@@ -109,9 +85,6 @@ fn should_reassert_clockevent(intid: u32, line_asserted: bool) -> bool {
     intid == super::board::PVCLOCK_PPI && line_asserted
 }
 
-/// Whether `addr` is an implemented SPI's 64-bit `GICD_IROUTERn` register.
-/// The uniprocessor model has one fixed affinity target (Aff0..3 = 0), so the
-/// register is stateless and its only supported value is zero.
 fn is_gicd_irouter(addr: u64) -> bool {
     use super::board::{GICD, IMPL_SPIS};
 
@@ -121,15 +94,6 @@ fn is_gicd_irouter(addr: u64) -> bool {
     (first_spi..end).contains(&addr) && addr.is_multiple_of(8)
 }
 
-/// Convert an ARM backend exit to the substrate-independent M1 log shape.
-/// Payloads are fixed-order little-endian encodings of every field that can
-/// affect dispatch; no backend debug string or host address enters this log.
-///
-/// GIC distributor/redistributor MMIO and CPU-interface sysregs are deliberately
-/// raw-only. HVF surfaces those transactions so the userspace GIC can service
-/// them, while stock KVM consumes the same architectural operations inside its
-/// in-kernel vGIC. Counting them would bind the portable clock and normalized
-/// log to the substrate's implementation boundary.
 pub(crate) fn normalize_virtual_time_exit_arm64(
     exit: &Exit<Arm64>,
 ) -> Option<(NormalizedEventClass, Vec<u8>)> {
@@ -175,25 +139,13 @@ pub(crate) fn normalize_virtual_time_exit_arm64(
     }
 }
 
-/// The arm64 per-VM device state
-/// ([`Vendor::Devices`](crate::vendor::Vendor::Devices)): the PL011 UART
-/// (always present — the serial console) and the optional GICv3 +
-/// generic-timer fabric, mirroring x86's `lapic: Option<_>` wiring pattern.
 pub struct Arm64Devices {
-    /// The PL011 UART (serial console + the task-81 `exec` input queue).
     pub(crate) uart: Pl011,
-    /// The userspace GICv3 + generic-timer model — the pure arbitration/
-    /// deadline half of the fabric. **Its output is not delivered into a real
-    /// guest**: the stock backend has no delivery path (M2 §Delivery;
-    /// `TODO(AA-6)`, the vGICv3 round-trip verdict), so wiring it is a
-    /// test/mock composition today, never a silicon claim.
     pub(crate) gic: Option<gicv3::Gicv3>,
-    /// Paravirtual clockevent deadline and its virtual-timer PPI input level.
     pub(crate) clockevent: Arm64ClockeventState,
 }
 
 impl Arm64Devices {
-    /// Fresh (reset) arm64 device state: a reset PL011, no fabric.
     pub(crate) fn new() -> Self {
         Self {
             uart: Pl011::new(),
@@ -204,9 +156,6 @@ impl Arm64Devices {
 }
 
 impl<B: Backend<A = Arm64>> Vmm<B> {
-    /// Capture live vCPU + GIC state directly for the independent M5
-    /// architectural comparator. This path does not call `save_vm_state`,
-    /// encode a vendor snapshot, or compute a state hash.
     pub fn arm64_architectural_state(&self) -> Result<super::Arm64ArchitecturalState, VmmError> {
         let mut vcpu = self.backend.save()?;
         let backend_gic = vcpu.gic.take().map(|gic| records::gic_from_backend(&gic));
@@ -223,8 +172,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         Ok(super::Arm64ArchitecturalState { vcpu, gic })
     }
 
-    /// Read the live interrupt controller in the canonical architectural form
-    /// shared by the KVM in-kernel vGIC and the HVF userspace model.
     pub fn canonical_arm64_gic_state(&self) -> Result<Option<gicv3::GicState>, VmmError> {
         let vcpu = self.backend.save()?;
         match (vcpu.gic.as_ref(), self.devices.gic.as_ref()) {
@@ -237,13 +184,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
     }
 
-    /// Service a trapped sysreg access ([`Arm64Exit::Sysreg`]
-    /// (`vmm_backend::Arm64Exit::Sysreg`)). **Fails closed:** the sysreg
-    /// dispositions are the ARM CPU contract's rows (`TODO(AA-6)`, the
-    /// enforcement-mechanism truth table) and the trap surface itself is the
-    /// AA-3 patched backend's (`TODO(patched-abi)`) — the skeleton rules no
-    /// disposition, so a surfaced trap is a loud contract violation, never a
-    /// silently invented value or a silently dropped write.
     pub(crate) fn dispatch_sysreg(
         &mut self,
         sysreg: u32,
@@ -369,13 +309,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
     }
 
-    /// Route an MMIO access over the [`board`](super::board) memory map: the
-    /// PL011 console frame → the UART device; the reserved doorbell GPA → the
-    /// hypercall doorbell (`docs/ARCHITECTURE.md`: on arm64 a doorbell
-    /// surfaces as `KVM_EXIT_MMIO`, recognized here — default-deny without an
-    /// SDK channel, exactly as x86's `DOORBELL_PORT`); the GICv3 frames → the
-    /// wired fabric, or a loud "GIC unwired (delivery AA-6-gated)" when it is
-    /// not. Every other address fails closed (default-deny).
     pub(crate) fn dispatch_mmio_arm64(
         &mut self,
         gpa: Gpa,
@@ -600,9 +533,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         )))
     }
 
-    /// Replace the pending absolute clockevent deadline. Programming while the
-    /// clockevent-PPI device input is high is a protocol fault; the guest must ACK or
-    /// DISARM first.
     fn arm_clockevent_program(&mut self, deadline: u64) -> Result<(), VmmError> {
         use super::board::PVCLOCK_PPI;
 
@@ -616,7 +546,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         Ok(())
     }
 
-    /// Apply the exact clockevent control protocol (`1 = DISARM`, `2 = ACK`).
     fn arm_clockevent_control(&mut self, control: u32) -> Result<(), VmmError> {
         use super::board::PVCLOCK_PPI;
 
@@ -672,8 +601,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
     }
 
-    /// After the exit's page publication, assert the clockevent PPI iff the registered
-    /// guest-clock value has reached the one pending absolute deadline.
     pub(crate) fn service_arm_clockevent_due(&mut self) -> Result<(), VmmError> {
         use super::board::PVCLOCK_PPI;
 
@@ -723,31 +650,15 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         Ok(())
     }
 
-    /// Wire the userspace GICv3 + generic-timer fabric. **Arbitration and
-    /// deadlines only** (`tasks/112` M2): the model's output feeds the
-    /// backend's one-slot inject seam, which the **stock** `Arm64KvmBackend`
-    /// answers `Unsupported` (no delivery path into a real guest exists for a
-    /// userspace GIC — `TODO(AA-6)`, the vGICv3 round-trip verdict). Wiring is
-    /// therefore a mock/test composition; the arm64 boot roots leave it
-    /// unwired.
     pub fn wire_gic(&mut self, gic: gicv3::Gicv3) -> &mut Self {
         self.devices.gic = Some(gic);
         self
     }
 
-    /// `true` once the userspace GICv3 is wired.
     pub fn gic_wired(&self) -> bool {
         self.devices.gic.is_some()
     }
 
-    /// Advance the fabric to the current V-time and hand the backend the one
-    /// arbitrated deliverable INTID (or `None`) for the next entry. Peeking
-    /// (not taking) leaves it pending; the pending→active transition happens
-    /// in [`Self::complete_irq_delivery_arm64`] only once the backend confirms
-    /// acceptance — the same discipline as x86's LAPIC path, so a snapshot
-    /// taken while an INTID awaits injection shows it pending. A no-op when
-    /// the fabric is unwired (the x86 unwired-LAPIC posture: the backend's
-    /// inject seam is never touched and `state_hash` carries no fabric chunk).
     pub(crate) fn service_pending_irqs_arm64(&mut self) -> Result<(), VmmError> {
         if no_userspace_or_kernel_gic(
             self.devices.gic.is_some(),
@@ -775,10 +686,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         Ok(())
     }
 
-    /// Complete delivery of every INTID the backend accepted during the last
-    /// entry: the fabric's pending→active transition. With no fabric wired
-    /// the accepted queue is still drained so a mock-injected identity can
-    /// never sit stale across entries.
     pub(crate) fn complete_irq_delivery_arm64(&mut self) {
         while self.backend.take_accepted_interrupt().is_some() {
             if let Some(gic) = self.devices.gic.as_mut() {
@@ -787,9 +694,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
     }
 
-    /// Whether a deliverable interrupt is **already pending** in the fabric.
-    /// Peeks without advancing (the run loop advances before every entry, so
-    /// at an idle exit the fabric is already current). No fabric ⇒ never.
     pub(crate) fn pending_deliverable_interrupt_arm64(&mut self) -> Result<bool, VmmError> {
         if kernel_gic_only(
             self.devices.gic.is_some(),
@@ -804,8 +708,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             .is_some_and(|g| g.peek_interrupt().is_some()))
     }
 
-    /// The next armed generic-timer deadline in V-time ns (the pure
-    /// deadlines-out half of the fabric). No fabric ⇒ none.
     pub(crate) fn next_timer_deadline_vns_arm64(&self) -> Option<u64> {
         let generic = self
             .devices
@@ -823,7 +725,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
     }
 
-    /// Restored paravirtual clockevent state for the host-only placement trace.
     pub(crate) fn clockevent_trace_schedule_arm64(&self) -> Option<(u64, u32)> {
         self.devices
             .clockevent
@@ -832,8 +733,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             .map(|deadline_vns| (deadline_vns, super::board::PVCLOCK_PPI))
     }
 
-    /// [`Self::next_timer_deadline_vns_arm64`], filtered to timers whose fire
-    /// would actually deliver — an armed-but-undeliverable timer is no wake.
     pub(crate) fn deliverable_timer_deadline_vns_arm64(&self) -> Option<u64> {
         let in_kernel_gic = self.backend.capabilities().arch.in_kernel_gic;
         let generic = self.devices.gic.as_ref().and_then(|gic| {
@@ -857,12 +756,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
     }
 
-    /// Stage-time validation of a wire-format interrupt identity against the
-    /// **implemented, distributor-bounded** GICv3 identity space: SGIs `0..16`
-    /// are deliverable (never x86's reserved-vector rule), PPIs `16..32`, SPIs
-    /// to the configured limit; anything past the implemented range is
-    /// [`InterruptReject::OutOfRange`]. No fabric ⇒
-    /// [`InterruptReject::NoFabric`].
     pub(crate) fn check_wire_interrupt_arm64(&self, vector: u32) -> Result<(), InterruptReject> {
         let Some(gic) = self.devices.gic.as_ref() else {
             return Err(InterruptReject::NoFabric);
@@ -873,10 +766,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         Ok(())
     }
 
-    /// Raise the wire-format INTID pending in the fabric so normal arbitration
-    /// delivers it. Fails loud on an unimplemented identity or with no fabric
-    /// wired (guest delivery itself stays AA-6-gated — see
-    /// [`Self::wire_gic`]).
     pub(crate) fn inject_host_interrupt_arm64(&mut self, vector: u32) -> Result<(), VmmError> {
         let Some(gic) = self.devices.gic.as_mut() else {
             return Err(VmmError::ContractViolation(format!(
@@ -890,10 +779,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         })
     }
 
-    /// Whether a genuine guest interrupt is pending delivery but not yet
-    /// accepted. Advances the fabric first (this is called from outside the
-    /// run loop, where the fabric may be stale; the advance is idempotent with
-    /// the per-entry service). No fabric ⇒ never.
     pub(crate) fn has_pending_guest_interrupt_arm64(&mut self) -> Result<bool, VmmError> {
         if self.devices.gic.is_none() {
             return Ok(false);
@@ -904,14 +789,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         Ok(gic.peek_interrupt().is_some())
     }
 
-    /// Build the canonical [`Arm64VmState`] from `vcpu` + the current live
-    /// machine (the memory-less half of a snapshot): the arm64 record set, the
-    /// V-time block + entropy stream, and the vmm-core-owned device blob
-    /// (PL011 residuals, the report stream, the guest clock offset). The
-    /// `contract_hash` is stamped so a restore can reject a blob taken under a
-    /// different policy skeleton. Infallible and byte-deterministic — the
-    /// V-time block anchors to the deterministic `assigned_clock`,
-    /// exactly like the x86 builder.
     pub(crate) fn build_vm_state_arm64(&self, vcpu: &Arm64VcpuState) -> Arm64VmState {
         let mut s = Arm64VmState::default();
         records::fill_vcpu_state(&mut s, vcpu);
@@ -925,9 +802,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 s.hypercall = vt.entropy.save_state();
                 vt.guest_clock_offset
             }
-            None => {
-                0
-            }
+            None => 0,
         };
         debug_assert!(vcpu.gic.is_none() || self.devices.gic.is_none());
         let backend_gic = vcpu.gic.as_ref().map(records::gic_from_backend);
@@ -954,11 +829,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         s
     }
 
-    /// The arm64 half of a snapshot restore, **validating without mutating**:
-    /// the contract hash, the device blob, and the channel composition. Yields
-    /// the decoded vCPU record set, the guest clock-offset register the engine
-    /// re-applies with its V-time commit, and the prepared device state for
-    /// [`Self::commit_restore_arm64`].
     pub(crate) fn validate_restore_arm64(
         &self,
         s: &Arm64VmState,
@@ -1096,9 +966,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         Ok((vcpu, clock_offset, Arm64RestorePrep { gic: new_gic, dev }))
     }
 
-    /// The arm64 half of the restore **commit** (all infallible): install the
-    /// coherence-checked GICv3, the PL011 residual state, and the restored
-    /// guest-observable report stream.
     pub(crate) fn commit_restore_arm64(&mut self, prep: Arm64RestorePrep) {
         let Arm64RestorePrep { gic, dev } = prep;
         if let Some(g) = gic {
@@ -1121,19 +988,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
     }
 }
 
-/// The arm64 half of a validated-but-uncommitted restore
-/// ([`Vendor::validate_restore`](crate::vendor::Vendor::validate_restore) →
-/// [`Vendor::commit_restore`](crate::vendor::Vendor::commit_restore)): the
-/// coherence-checked GICv3 and the decoded device blob.
 pub struct Arm64RestorePrep {
     gic: Option<gicv3::Gicv3>,
     dev: Arm64DeviceState,
 }
 
-/// Deterministic, fixed-layout encoding of an [`Arm64VcpuState`] for the
-/// engine's `VCPU` hash chunk (little-endian, declaration order; no map
-/// iteration, no float). Canonicalizes exactly what the snapshot records
-/// canonicalize, so a restored VM hashes like a never-restored one.
 pub(crate) fn encode_vcpu_state(s: &Arm64VcpuState) -> Vec<u8> {
     let mut v = Vec::new();
     for x in s.core.x {
@@ -1196,7 +1055,6 @@ pub(crate) fn encode_vcpu_state(s: &Arm64VcpuState) -> Vec<u8> {
     v
 }
 
-/// SHA-256 of `bytes`, for the diagnostic component digests.
 fn dig(bytes: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -1204,11 +1062,6 @@ fn dig(bytes: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// The arm64 **device** breakdown for the diagnostic [`Vmm::state_components`]
-/// (never part of `state_hash`): the `gic` component digests exactly the bytes
-/// the `GICV` hash chunk hashes ([`Arm64::hash_device_chunks`](crate::vendor::Vendor::hash_device_chunks)),
-/// so a GIC-only `state_hash` divergence localizes here. Present only when the
-/// fabric is wired (an unwired VM has no `GICV` chunk either).
 pub(crate) fn device_components(
     vcpu: &Arm64VcpuState,
     devices: &Arm64Devices,
@@ -1228,11 +1081,6 @@ pub(crate) fn device_components(
     }
 }
 
-/// The arm64 register-file breakdown for the **diagnostic**
-/// [`Vmm::state_components`] (never part of `state_hash`), so a determinism
-/// bisector can localize which register file diverged. Labels are stable and
-/// in a fixed order (the arm64 vendor's own label set — the x86 labels
-/// `regs`/`desc-tables`/… are that vendor's and stay untouched).
 pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [u8; 32])>) {
     let mut core = Vec::new();
     for x in s.core.x {
@@ -1315,6 +1163,11 @@ pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pstate_i_is_bit_7() {
+        assert_eq!(PSTATE_I, 0x80);
+    }
     use crate::vendor::arm64::board::{
         CNTFRQ_HZ, GICD, GICR, IMPL_SPIS, PL011, PVCLOCK_PPI, new_gic,
     };
@@ -1394,8 +1247,6 @@ mod tests {
         assert_eq!(vmm.next_timer_deadline_vns_arm64(), Some(1_000_000_000));
     }
 
-    /// The N6 PMU listing is a deny surface: every trapped access becomes
-    /// guest-visible UNDEF, while an adjacent non-table encoding stays loud.
     #[test]
     fn frozen_pmu_surface_is_exactly_denied_as_undef() {
         const fn sysreg(op0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {

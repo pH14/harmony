@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Pure-logic event-loop gates (no `/dev/kvm`): drive [`vmm_core::vmm::Vmm`]
-//! against the scripted [`vmm_backend::MockBackend`] and assert the serial
-//! capture, terminal reason, default-deny behavior, and `state_hash`
-//! purity/coverage. This is the `hypercall-doorbell` loopback pattern applied to the
-//! backend seam (tasks/15 §"Mock-backend testing").
 
 use vmm_backend::{
     Backend, CommonExit, Exit, Gpa, MockBackend, MpState, VcpuState, X86, X86Exit, X86Policy,
@@ -13,7 +8,6 @@ use vmm_core::vmm::{GuestRam, Step, TerminalReason, Vmm, VmmError};
 
 const HELLO: &[u8] = b"PAYLOAD hello START\nPAYLOAD hello PASS\n";
 
-/// A 1-byte port read exit.
 fn io_in(port: u16) -> Exit<X86> {
     Exit::Arch(X86Exit::Io {
         port,
@@ -22,7 +16,6 @@ fn io_in(port: u16) -> Exit<X86> {
     })
 }
 
-/// A 1-byte port write exit.
 fn io_out(port: u16, value: u8) -> Exit<X86> {
     Exit::Arch(X86Exit::Io {
         port,
@@ -31,8 +24,6 @@ fn io_out(port: u16, value: u8) -> Exit<X86> {
     })
 }
 
-/// The task-04 UART init writes (none captured): IER, LCR DLAB=1, divisor low/high,
-/// LCR 8N1, FCR, MCR.
 fn uart_init() -> Vec<Exit<X86>> {
     vec![
         io_out(0x3F9, 0x00),
@@ -45,8 +36,6 @@ fn uart_init() -> Vec<Exit<X86>> {
     ]
 }
 
-/// Build the full scripted `hello` sequence: init, then for each byte an LSR poll
-/// + a THR write, then the clean isa-debug-exit PASS.
 fn hello_script() -> Vec<Exit<X86>> {
     let mut s = uart_init();
     for &b in HELLO {
@@ -57,7 +46,6 @@ fn hello_script() -> Vec<Exit<X86>> {
     s
 }
 
-/// A configured mock + a small `GuestRam`, wrapped in a `Vmm`, ready to `run`.
 fn vmm_with(script: Vec<Exit<X86>>) -> Vmm<MockBackend> {
     let mut mock = MockBackend::with_exits(script);
     mock.set_policy(&X86Policy {

@@ -1,11 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Measure the host cost of one arm64 KVM doorbell MMIO round trip.
-//!
-//! The payload is deliberately tiny and deterministic: it stores a zero-length
-//! request at the board doorbell GPA forever. The VMM answers that malformed
-//! request with the normal framed transport error, so every timed `step` is a
-//! complete guest-store → `KVM_EXIT_MMIO` → host-dispatch → MMIO-completion
-//! round trip without requiring a Linux image or an initramfs.
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 use sha2::{Digest, Sha256};
@@ -91,12 +84,7 @@ fn arguments() -> Result<(u64, u64, String), String> {
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 fn guest_image() -> Vec<u8> {
-    const CODE: [u32; 4] = [
-        0xd2a1_4000,
-        0x5280_0001,
-        0xb900_0001,
-        0x17ff_ffff,
-    ];
+    const CODE: [u32; 4] = [0xd2a1_4000, 0x5280_0001, 0xb900_0001, 0x17ff_ffff];
     let mut code = Vec::with_capacity(CODE.len() * 4);
     for word in CODE {
         code.extend_from_slice(&word.to_le_bytes());

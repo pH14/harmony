@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! SMB implementation of the generic campaign, see [`crate::search::campaign`].
-//!
-//! This module holds everything the generic coordinator asks a game for:
-//! target construction and stepping, key and milestone decoding from work
-//! RAM, the chord vocabularies a single action is drawn from, the mined
-//! chord tables and the source rule that seeds them, and the identifier
-//! strings recorded for those policies. The search layer owns the mutation
-//! shape, the mixture odds, admission, selection, and the resume rule; none
-//! of them is stated here.
-
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
@@ -70,44 +60,23 @@ pub use crate::search::campaign::{
     TreeImportCounts as SmbTreeImportCounts, derive_worker_seed,
 };
 
-/// Stream format identifier written as the first line of every campaign stream.
 pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v2";
 
-/// Format tag of the snapshot checkpoint file.
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v3";
-/// Checkpoint format for whole-VM SMB snapshots.
 pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot-checkpoint-v1";
 
-/// Conservative portion of the global campaign budget reserved for the
-/// bounded empirical chord tables and their short pending/recent windows.
 const DRAW_STATE_MEMORY_RESERVE_BYTES: usize = 2 * 1024 * 1024;
 
-/// Identifier recorded for the hold distribution, see
-/// [`crate::smb::archive::sample_chord_from_masks`].
 pub const DURATION_IDENTIFIER: &str = "stratified";
 
-/// Stream-header field names SMB records its policies under. These are the
-/// recorded names, so they are pinned by every stream already written.
 pub const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
-/// Header field naming the archive key policy.
 pub const KEY_POLICY_FIELD: &str = "key_policy";
-/// Header field naming the hold distribution.
 pub const DURATION_POLICY_FIELD: &str = "duration_policy";
-/// Header field naming the chord policy.
 pub const CHORD_POLICY_FIELD: &str = "chord_policy";
-/// Header field naming the cell-replacement rule.
 pub const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
-/// Header field naming the run's success predicate. Absent from legacy streams,
-/// whose success predicate was unconditionally whole-game victory.
 pub const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
-/// Header field pinning the native emulator revision, build, options, and binary.
 pub const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 
-/// One recorded game policy of a campaign stream header.
-///
-/// # Errors
-///
-/// Returns an error when the header records no policy under `field`.
 pub fn recorded_policy<'a>(
     policies: &'a GamePolicies,
     field: &str,
@@ -118,7 +87,6 @@ pub fn recorded_policy<'a>(
         .ok_or_else(|| format!("campaign stream is missing the {field} policy").into())
 }
 
-/// The SMB campaign game context: the ROM and everything decoded from it.
 pub struct SmbGame<M = QuickNesMachine, P = Vec<u8>> {
     rom: Vec<u8>,
     core_path: PathBuf,
@@ -153,7 +121,6 @@ fn quicknes_identity(core_sha256: &str) -> String {
     )
 }
 
-/// Backend construction used by SMB campaign workers.
 #[doc(hidden)]
 pub trait SmbMachineKind<P>: Machine + NesBackend<P> + Sized
 where
@@ -216,10 +183,6 @@ impl SmbMachineKind<ConsonancePortable> for ConsonanceMachine {
 }
 
 impl SmbGame<QuickNesMachine, Vec<u8>> {
-    /// Build a context over the pinned QuickNES execution target.
-    ///
-    /// The binary identity and all fixed core options are written into the
-    /// stream policy. Cross-core streams and checkpoints are rejected.
     #[must_use]
     pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
         Self {
@@ -234,11 +197,6 @@ impl SmbGame<QuickNesMachine, Vec<u8>> {
         }
     }
 
-    /// Build a context from the external core named by `HARMONY_QUICKNES_CORE`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the environment variable or core bytes cannot be read.
     pub fn from_environment(rom: &[u8]) -> Result<Self, Box<dyn Error>> {
         let core_path = PathBuf::from(
             std::env::var_os("HARMONY_QUICKNES_CORE")
@@ -270,11 +228,6 @@ impl SmbGame<QuickNesMachine, Vec<u8>> {
     not(miri)
 ))]
 impl SmbGame<ConsonanceMachine, ConsonancePortable> {
-    /// Build an SMB game whose workers boot a whole-VM Consonance machine.
-    ///
-    /// `SmbTarget::from_machine` owns the SMB power-on walk; the generic NES
-    /// guest image must therefore expose a power-on state when this backend is
-    /// used.
     #[must_use]
     pub fn new_consonance(rom: &[u8], kernel: &[u8], initramfs: &[u8]) -> Self {
         Self {
@@ -297,13 +250,11 @@ impl SmbGame<ConsonanceMachine, ConsonancePortable> {
 }
 
 impl<M, P> SmbGame<M, P> {
-    /// Pinned backend identity recorded in streams and fixture manifests.
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
         &self.identity
     }
 
-    /// Snapshot checkpoint format for this emulator backend.
     #[must_use]
     pub fn snapshot_checkpoint_format(&self) -> &'static str {
         match &self.backend {
@@ -319,26 +270,18 @@ impl<M, P> SmbGame<M, P> {
     }
 }
 
-/// Per-run SMB policies recorded in the stream header.
 #[derive(Clone, Copy, Debug)]
 pub struct SmbCampaignRun {
-    /// Chord policy for this run.
     pub chord: SmbCampaignChordPolicy,
-    /// Controller vocabulary for this run.
     pub vocabulary: SmbButtonVocabulary,
-    /// Recorded terminal predicate. `None` denotes the legacy whole-game
-    /// victory policy and preserves byte-exact replay of old streams.
     pub terminal: Option<SmbTerminalPredicate>,
 }
 
-/// Live state of the recorded chord-draw policy: the folded tables and, on
-/// replay, the remembered versions recorded draws were made against.
 pub struct SmbDrawState {
     tables: Option<EmpiricalStepTables<ButtonChord>>,
     versions: BTreeMap<u64, SmbChordTableVersion>,
 }
 
-/// Game-owned evidence accumulated outside the archive.
 #[derive(Clone, Default)]
 pub struct SmbCampaignEvidence {
     aggregate: SmbMilestones,
@@ -349,66 +292,35 @@ pub struct SmbCampaignEvidence {
     champion_milestones: SmbMilestones,
 }
 
-/// The SMB origin instantiation.
 pub type SmbCampaignOrigin<M = QuickNesMachine, P = Vec<u8>> = CampaignOrigin<SmbGame<M, P>>;
-/// The SMB checkpoint instantiation.
 pub type SmbCampaignCheckpoint<P = Vec<u8>> = CampaignCheckpoint<SmbSnapshot<P>>;
-/// The SMB snapshot checkpoint instantiation.
 pub type SmbSnapshotCheckpoint<P = Vec<u8>> = SnapshotCheckpoint<SmbSnapshot<P>>;
-/// One SMB archive entry's snapshot.
 pub type SmbSnapshotCheckpointEntry<P = Vec<u8>> =
     crate::search::campaign::SnapshotCheckpointEntry<SmbSnapshot<P>>;
-/// The SMB stream header instantiation.
 pub type SmbCampaignStreamHeader = CampaignStreamHeader<SmbChordTableHeader>;
-/// The SMB campaign report instantiation.
 pub type SmbCampaignModeReport = CampaignModeReport<ButtonChord, SmbArchiveReport>;
-/// The SMB sidecar progress record instantiation.
 pub type SmbCampaignProgressRecord = CampaignProgressRecord<SmbArchiveKey>;
-/// One executed SMB action inside a job result.
 pub(crate) type SmbCampaignActionResult<M = QuickNesMachine, P = Vec<u8>> =
     CampaignActionResult<SmbGame<M, P>>;
-/// Fixed configuration for one live campaign run.
 pub struct SmbCampaignConfig {
-    /// Campaign seed from which every worker stream derives.
     pub campaign_seed: u64,
-    /// Number of worker threads.
     pub workers: u32,
-    /// Number of executed jobs the campaign admits, unless stopped by wall budget.
     pub execution_budget: u64,
-    /// Bounded clean-reset action horizon.
     pub action_limit: usize,
-    /// Operator-supplied host name recorded in the header; never probed.
     pub host: String,
-    /// Optional live-only wall cutoff that stops issuing new reservations.
     pub wall_budget: Option<std::time::Duration>,
-    /// Live-only: continue issuing reservations after the first victory until
-    /// another live limit stops the run. Never recorded or used by replay.
     pub continue_after_victory: bool,
-    /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
-    /// Reservations held ahead of ordered admission per worker, recorded in
-    /// the header's schedule policy.
     pub reservations_per_worker: usize,
-    /// Deterministic logical-memory budget for the live search structures.
     pub memory_budget_mib: Option<usize>,
-    /// Live-only: materialize full archive inputs and snapshots at completion.
     pub materialize_final_artifacts: bool,
-    /// Chord policy for this run, recorded in the header and report.
     pub chord: SmbCampaignChordPolicy,
-    /// Controller vocabulary for this run, recorded in the header and report.
     pub vocabulary: SmbButtonVocabulary,
-    /// Success predicate for this run, recorded in the stream header.
     pub terminal: SmbTerminalPredicate,
-    /// Admission rule for this run, recorded in the header and report.
     pub retention: RetentionPolicy,
-    /// Parent selector for this run, recorded in the header and report.
     pub selector: crate::search::archive::SelectorPolicy,
-    /// Suffix shape for this run, recorded in the header and report.
     pub suffix: SuffixShape,
-    /// Draw mixture for this run, recorded in the header and report.
     pub mixture: DrawMixture,
-    /// Live-only: where the first winning input is written the moment it is
-    /// admitted, before the in-flight jobs drain. Never recorded.
     pub victory_input_path: Option<std::path::PathBuf>,
 }
 
@@ -444,24 +356,17 @@ impl SmbCampaignConfig {
     }
 }
 
-/// Mechanically recorded success predicate for an SMB campaign.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SmbTerminalPredicate {
-    /// Stop only on ordinary whole-game victory.
     #[default]
     GameVictory,
-    /// Stop when execution leaves the named zero-based world/level pair, or
-    /// reaches ordinary whole-game victory.
     LevelTransition {
-        /// Zero-based source world.
         world: u8,
-        /// Zero-based source level.
         level: u8,
     },
 }
 
 impl SmbTerminalPredicate {
-    /// Stable stream-header identifier for this predicate.
     #[must_use]
     pub fn identifier(self) -> String {
         match self {
@@ -472,11 +377,6 @@ impl SmbTerminalPredicate {
         }
     }
 
-    /// Parse one stable stream-header identifier.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown predicate or malformed world/level.
     pub fn from_identifier(identifier: &str) -> Result<Self, Box<dyn Error>> {
         if identifier == "game_victory" {
             return Ok(Self::GameVictory);
@@ -517,27 +417,16 @@ impl SmbTerminalPredicate {
     }
 }
 
-/// Controller vocabulary a campaign draws button masks from, recorded in
-/// the stream header per run.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SmbButtonVocabulary {
-    /// Masks written in the SMB-disassembly bit order the emulator reads
-    /// reversed; kept so its recordings replay byte-exact.
     DownTenMask,
-    /// The emulator-order chord set without B+direction chords; kept so its
-    /// recordings replay byte-exact.
     NesDownTen,
-    /// The emulator-order chord set with each direction alone and with A, B,
-    /// and A+B; kept so its recordings replay byte-exact.
     NesRunThirteen,
-    /// Every physically pressable chord: nine direction sets times none, A,
-    /// B, and A+B.
     #[default]
     NesPressable,
 }
 
 impl SmbButtonVocabulary {
-    /// Button masks this vocabulary draws from.
     #[must_use]
     pub fn masks(self) -> &'static [u8] {
         match self {
@@ -549,7 +438,6 @@ impl SmbButtonVocabulary {
     }
 }
 
-/// Header identifier for a controller vocabulary.
 #[must_use]
 pub fn button_vocabulary_identifier(vocabulary: SmbButtonVocabulary) -> &'static str {
     match vocabulary {
@@ -560,11 +448,6 @@ pub fn button_vocabulary_identifier(vocabulary: SmbButtonVocabulary) -> &'static
     }
 }
 
-/// Controller vocabulary named by a recorded header identifier.
-///
-/// # Errors
-///
-/// Returns an error when the identifier names no known vocabulary.
 pub fn button_vocabulary_from_identifier(
     identifier: &str,
 ) -> Result<SmbButtonVocabulary, Box<dyn Error>> {
@@ -577,12 +460,6 @@ pub fn button_vocabulary_from_identifier(
     }
 }
 
-/// A source archive's frontier identity: the shortest input among the entries
-/// at the deepest recorded `(world, level, progress)`, earliest id on ties.
-///
-/// # Errors
-///
-/// Returns an error when the source archive has no retained entries.
 pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInput, Box<dyn Error>> {
     let frontier = source
         .entries
@@ -599,17 +476,6 @@ pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInpu
         .ok_or_else(|| "source archive contains no frontier entries".into())
 }
 
-/// Expand one mutation seed into its complete suffix.
-///
-/// The search layer owns the shape and the mixture odds; SMB supplies only
-/// the two draws they compose — one chord from the run's vocabulary, and one
-/// chord offered by the run's mined tables. Public so recorded-artifact
-/// diagnostics can re-derive the actions a stream's jobs executed.
-///
-/// # Errors
-///
-/// Returns an error when a draw bound is invalid or a recorded chord policy
-/// is missing its folded tables.
 pub fn derive_suffix(
     mutation_seed: u64,
     shape: SuffixShape,
@@ -636,93 +502,53 @@ pub fn derive_suffix(
     )
 }
 
-/// SMB-only filter preserving the existing deep-lineage extraction semantics.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbChordSourceFilter {
-    /// Zero-based source world.
     pub world: u8,
-    /// Zero-based source level.
     pub level: u8,
-    /// Minimum retained source progress.
     pub minimum_progress: u16,
 }
 
-/// Which retained source entries seed the chord tables.
-///
-/// Live folding always consumes every retained input; this source rule only
-/// selects the entries folded from a source archive at start-up. Serde stays
-/// untagged so headers recorded before the all-levels rule existed, which
-/// serialized the bare filter fields, still deserialize as `Level`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum SmbChordSource {
-    /// One `(world, level)` pair at or past a progress floor.
     Level(SmbChordSourceFilter),
-    /// Every retained entry, so the rule carries no level knowledge.
     All(SmbChordSourceAll),
 }
 
-/// Marker for the level-neutral source rule.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbChordSourceAll {}
 
-/// Complete registered derivation for one pair of mined chord tables.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbChordTableDerivation {
-    /// Thin SMB source rule.
     pub source_filter: SmbChordSource,
-    /// Game-neutral extraction, mixture, update, and hash parameters.
     pub parameters: EmpiricalStepParameters,
-    /// Table-hash rule, bound to the policy identifier so historical
-    /// recordings keep verifying under the rule they were made with.
     #[serde(default)]
     pub hash_rule: EmpiricalStepHashRule,
-    /// What part of each retained input the fold consumes, bound to the
-    /// policy identifier for the same reason.
     #[serde(default)]
     pub fold: ChordFoldSource,
 }
 
-/// What part of one retained input a chord fold consumes.
-///
-/// Folding the full input duplicates the whole prefix on every keep, so the
-/// table and its fold cost grow with lineage depth; folding only the newly
-/// drawn suffix keeps both proportional to the new presses.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ChordFoldSource {
-    /// The complete clean-reset input.
     #[default]
     FullInput,
-    /// Only the actions past the retained entry's parent input.
     SuffixOnly,
 }
 
-/// Header provenance for a derived chord-table policy.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbChordTableHeader {
-    /// SHA-256 of the named resume archive, or SHA-256 of empty bytes at genesis.
     pub source_sha256: String,
-    /// Registered source filter and game-neutral fold parameters.
     pub derivation: SmbChordTableDerivation,
-    /// Hash after folding the named source and before the first campaign draw.
     pub initial: EmpiricalStepCheckpoint,
 }
 
-/// Chord policy a campaign draws chords from, recorded in the stream header.
-///
-/// The feedback tables are the only draw source; retired policies survive
-/// only as stream identifiers for recordings made before their removal, and
-/// those streams no longer replay.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SmbCampaignChordPolicy {
-    /// Derive recent and all-history tables from the recorded source, mixing
-    /// their registered empirical weights into the biased half of each draw.
     DerivedHalf(SmbChordTableDerivation),
 }
 
 impl Default for SmbCampaignChordPolicy {
-    /// The promoted level-neutral derivation with the registered
-    /// head-to-head fold parameters.
     fn default() -> Self {
         Self::DerivedHalf(SmbChordTableDerivation {
             source_filter: SmbChordSource::All(SmbChordSourceAll {}),
@@ -740,7 +566,6 @@ impl Default for SmbCampaignChordPolicy {
     }
 }
 
-/// Header identifier for a chord policy.
 #[must_use]
 pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
     match policy {
@@ -788,11 +613,6 @@ pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
     }
 }
 
-/// Chord policy named by a recorded header identifier.
-///
-/// # Errors
-///
-/// Returns an error when the identifier names no known chord policy.
 pub fn chord_policy_from_identifier(
     identifier: &str,
 ) -> Result<SmbCampaignChordPolicy, Box<dyn Error>> {
@@ -970,10 +790,6 @@ fn current_chord_checkpoint(
         .map_err(Into::into)
 }
 
-/// One recorded table version, light enough to keep for every dispatch point:
-/// the append-only history is shared with the live fold and named by length,
-/// and only the bounded recent window is snapshotted (shared between versions
-/// whose visible tables did not change).
 struct SmbChordTableVersion {
     checkpoint: EmpiricalStepCheckpoint,
     history_len: usize,
@@ -1483,12 +1299,6 @@ where
     }
 }
 
-/// Run one live campaign, writing the stream as it goes.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as
-/// [`run_smb_campaign_checkpointed`].
 pub fn run_smb_campaign<M, P>(
     game: &SmbGame<M, P>,
     config: &SmbCampaignConfig,
@@ -1502,17 +1312,6 @@ where
     run_smb_campaign_with_progress(game, config, origin, stream, None)
 }
 
-/// Run a campaign, optionally emitting periodic progress lines to a sidecar.
-///
-/// The sidecar is pure observation: it reads archive state that is already
-/// settled, consumes no randomness, and writes to a sink separate from the
-/// recorded stream. A run with a sidecar and the same run without one record
-/// byte-identical streams and archives.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as
-/// [`run_smb_campaign_checkpointed`].
 pub fn run_smb_campaign_with_progress<M, P>(
     game: &SmbGame<M, P>,
     config: &SmbCampaignConfig,
@@ -1527,13 +1326,6 @@ where
     run_smb_campaign_checkpointed(game, config, origin, stream, progress).map(|(report, _)| report)
 }
 
-/// Run a campaign, also returning every retained entry's snapshot so a later
-/// whole-tree resume can restore the population instead of re-emulating it.
-///
-/// # Errors
-///
-/// Returns an error when the origin is unusable, a worker fails, emulation or
-/// snapshotting fails, or the stream cannot be written.
 pub fn run_smb_campaign_checkpointed<M, P>(
     game: &SmbGame<M, P>,
     config: &SmbCampaignConfig,
@@ -1548,12 +1340,6 @@ where
     run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
 }
 
-/// Replay a recorded campaign stream serially and rebuild its report.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as
-/// [`replay_smb_campaign_checkpointed`].
 pub fn replay_smb_campaign<M, P>(
     game: &SmbGame<M, P>,
     stream_bytes: &[u8],
@@ -1567,12 +1353,6 @@ where
         .map(|(report, _)| report)
 }
 
-/// Replay a recorded campaign, also returning the rebuilt snapshot checkpoint.
-///
-/// # Errors
-///
-/// Returns an error when the stream is malformed, the origin does not match
-/// the header, or any recomputed value differs from the recorded one.
 pub fn replay_smb_campaign_checkpointed<M, P>(
     game: &SmbGame<M, P>,
     stream_bytes: &[u8],

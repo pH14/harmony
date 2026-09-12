@@ -1,14 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **x86-64 vendor** (`docs/ARCHITECTURE.md`): everything in the
-//! deterministic VMM that names the x86 ISA — the CPU/MSR contract and its
-//! installed policy ([`contract`]), the exit dispatch and dispositions
-//! ([`dispatch`]), the boot loaders and entry state ([`linux_loader`], [`entry`]), the interrupt fabric and platform device models
-//! ([`devices`] + the `lapic` crate), and the
-//! `vm_state` record set ([`records`]).
-//!
-//! The engine ([`crate::vmm`]) reaches all of it through [`Vendor`] alone. x86
-//! is the sole vendor today; an ARM vendor is a sibling module here (the §D
-//! pre-build wave), not an edit to the engine.
 
 pub mod bringup;
 pub mod contract;

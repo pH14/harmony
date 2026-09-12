@@ -1,59 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The hook output protocol: a hook reports its own assertions by writing one
-//! directive per stdout line, which the agent forwards to the SDK.
-//!
-//! ```text
-//! @sometimes <u32>          assert_sometimes hit at that point
-//! @reachable <u32>          assert_reachable at that point
-//! @always <u32> <0|1>       assert_always(cond) at that point
-//! ```
-//!
-//! Any other line is ordinary hook output and is ignored. A line that starts
-//! with `@` but does not parse is an error rather than silent output: a
-//! workload whose oracle line is misspelled would otherwise report no bug and
-//! look healthy.
 
-/// The largest line the reader will accumulate before dropping it. A hook that
-/// writes an unterminated multi-megabyte line is misbehaving, and the agent
-/// must not grow with it.
 const MAX_LINE: usize = 64 * 1024;
 
-/// One directive from a hook's stdout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Directive {
-    /// `assert_sometimes` was satisfied at this point.
     Sometimes(u32),
-    /// `assert_reachable` at this point.
     Reachable(u32),
-    /// `assert_always(cond)` at this point.
-    Always {
-        /// The assertion point id.
-        point: u32,
-        /// The condition the hook evaluated; `false` is a bug report.
-        cond: bool,
-    },
+    Always { point: u32, cond: bool },
 }
 
-/// Why a `@`-prefixed line was rejected.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum DirectiveError {
-    /// The verb after `@` is not one of the three.
     #[error("unknown directive {0:?}")]
     UnknownVerb(String),
-    /// The verb is known but its arguments are wrong in count or form.
     #[error("directive {verb:?} has malformed arguments")]
-    BadArguments {
-        /// The verb that was recognised.
-        verb: &'static str,
-    },
+    BadArguments { verb: &'static str },
 }
 
-/// Parse one hook output line.
-///
-/// # Errors
-///
-/// Returns [`DirectiveError`] when the line claims to be a directive (a leading
-/// `@`) but is not one. Ordinary output is `Ok(None)`.
 pub fn parse_directive(line: &str) -> Result<Option<Directive>, DirectiveError> {
     let trimmed = line.trim();
     if !trimmed.starts_with('@') {
@@ -98,26 +61,18 @@ fn one_id<'a>(
     Ok(id)
 }
 
-/// Splits the bytes read from a hook's output file into whole lines across
-/// reads, so a directive split by a read boundary is still delivered once.
 #[derive(Debug, Default)]
 pub struct LineReader {
     buf: Vec<u8>,
-    /// Set when the pending line has already exceeded [`MAX_LINE`]: the rest of
-    /// it is discarded up to the next newline.
     dropping: bool,
 }
 
 impl LineReader {
-    /// A reader with no pending bytes.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Append `chunk` and return every line it completed. Invalid UTF-8 is
-    /// replaced rather than rejected: hook output is untrusted bytes, and a
-    /// non-UTF-8 byte in ordinary output must not stop the agent.
     pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
         let mut lines = Vec::new();
         for &byte in chunk {
@@ -138,8 +93,6 @@ impl LineReader {
         lines
     }
 
-    /// Take the trailing bytes as a final line, for a hook that exited without
-    /// a closing newline.
     pub fn flush(&mut self) -> Option<String> {
         let dropping = core::mem::replace(&mut self.dropping, false);
         let buf = core::mem::take(&mut self.buf);

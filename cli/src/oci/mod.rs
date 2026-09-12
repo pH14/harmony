@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `harmony oci run`: boot an OCI image inside the deterministic hypervisor
-//! and run it to completion.
-//!
-//! Pipeline: acquire the image ([`image`]), build the injected initramfs
-//! segment ([`bundle`]), append it to the stock guest initramfs, boot and
-//! drive the guest ([`runner`]), then write the run artifact and print the
-//! digest. Identical inputs produce an identical digest; that claim is
-//! ISA-scoped (docs/DETERMINISM.md §4).
 
 use oci_support::{bundle, cache, image};
 mod runner;
@@ -21,58 +13,38 @@ use std::time::Duration;
 
 #[derive(Args)]
 pub struct RunArgs {
-    /// OCI image: a registry reference (`postgres:16`, exported via docker or
-    /// podman) or a path to a `docker save` tarball / OCI layout directory.
     pub image: String,
 
-    /// Schedule seed. The same seed, image, and guest artifacts produce a
-    /// byte-identical run and digest.
     #[arg(long, default_value_t = 0)]
     pub seed: u64,
 
-    /// Directory to write the run artifact (serial.log + run.json) into.
     #[arg(long)]
     pub out: Option<PathBuf>,
 
-    /// Guest RAM in MiB.
     #[arg(long, default_value_t = 512)]
     pub ram_mib: usize,
 
-    /// Wall-clock budget in seconds before the run is abandoned.
     #[arg(long, default_value_t = 900)]
     pub timeout: u64,
 
-    /// Stream the full serial console (kernel log included) instead of just
-    /// the container's output.
     #[arg(long)]
     pub console: bool,
 
-    /// Proceed on a support-matrix cell that is expected but has no
-    /// committed evidence (docs/DETERMINISM.md §4).
     #[arg(long)]
     pub allow_untested: bool,
 
-    /// Override the image's entrypoint/cmd (everything after `--`).
     #[arg(last = true)]
     pub cmd: Vec<String>,
 }
 
-/// Base initramfs variants that can host an injected bundle, best first:
-/// the dedicated oci runner, then the container-class images that carry
-/// busybox (+ runc).
 pub const BASE_INITRAMFS: &[&str] = &[
     "initramfs-oci.cpio.gz",
     "initramfs-docker.cpio.gz",
     "initramfs-postgres.cpio.gz",
 ];
 
-/// Whether a drive loop for this host exists in this build, and the hosts
-/// that have one. `harmony preflight` reports readiness against the same
-/// predicate `execute` is compiled under.
 pub use runner::{HOST_SUPPORTED, SUPPORTED_HOSTS};
 
-/// The best base initramfs among the installed ones, in `BASE_INITRAMFS`
-/// order. `None` means no installed initramfs can host an injected bundle.
 pub fn select_base_initramfs(installed: &[PathBuf]) -> Option<&PathBuf> {
     BASE_INITRAMFS.iter().find_map(|name| {
         installed
@@ -81,8 +53,6 @@ pub fn select_base_initramfs(installed: &[PathBuf]) -> Option<&PathBuf> {
     })
 }
 
-/// The refusal naming what a host without an accepted base initramfs is
-/// missing.
 pub fn missing_base_initramfs() -> String {
     format!(
         "no container-capable guest initramfs found (looked for {}); build one with \
@@ -225,9 +195,6 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
     })
 }
 
-/// The cached rootfs segment for `image`, or a fresh stage. Path inputs
-/// (docker-save tarballs, OCI layouts) have no content-addressed ID and are
-/// always staged.
 fn rootfs_segment_for(
     image: &str,
 ) -> Result<(Vec<u8>, image::RuntimeConfig), Box<dyn std::error::Error>> {
@@ -254,7 +221,6 @@ fn rootfs_segment_for(
     Ok((segment, staged.config))
 }
 
-/// The injected init prints `HARMONY_OCI_EXIT rc=<n>` before powering off.
 fn parse_container_rc(serial: &[u8]) -> Option<i32> {
     let text = String::from_utf8_lossy(serial);
     text.lines()
@@ -271,8 +237,6 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    /// The base initramfs is chosen by preference order, not by the order
-    /// the guest directory listed its files.
     #[test]
     fn base_initramfs_follows_preference_order() {
         let dir = std::path::Path::new("/g");
@@ -291,8 +255,6 @@ mod tests {
         );
     }
 
-    /// An installed initramfs that is not a container-capable base is not a
-    /// base: `harmony oci run` cannot inject a bundle into it.
     #[test]
     fn base_initramfs_rejects_unaccepted_names() {
         let installed = vec![

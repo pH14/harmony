@@ -1,10 +1,10 @@
-# The harmony in-guest play-agent (task 86): the real-game workload — a minimal
+# The harmony in-guest play-agent: the real-game workload — a minimal
 # headless libretro frontend running Super Mario Bros. as an ordinary supervised
 # Linux guest process. Per frame (its own `retro_run` counter is the frame clock)
 # it draws chord inputs from the seeded entropy stream (`Sdk::entropy_fill`),
 # emits SMB state registers (`state_set`/`state_max` — the host owns cell
-# interpretation, R-L2), publishes the always-on billboard (task 87's enabling
-# seam), and marks legibility events (`assert_reachable`).
+# interpretation, R-L2), publishes the always-on billboard (the frame
+# clock's enabling interface), and marks legibility events (`assert_reachable`).
 #
 # Standalone workspace (like `consonance/harmony-linux/sdk`): the root
 # Cargo.toml excludes `consonance/harmony-linux/`, so this crate declares its own `[workspace]` and

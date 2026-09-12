@@ -1,62 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The workload description the agent reads at start, one item per line.
-//!
-//! ```text
-//! setup <argv...>          a command run once, before any node starts
-//! node <name> <argv...>    a supervised long-lived process
-//! hook <id> <argv...>      a one-shot command a RunHook fault launches
-//! ready <argv...>          a command that exits 0 once setup is done
-//! ```
-//!
-//! The setup line is where a workload prepares the root filesystem it needs:
-//! the image's init mounts `/proc`, `/sys` and `/dev` and nothing else, so a
-//! workload that wants `/dev/shm`, a writable `/tmp`, or a configured loopback
-//! interface asks for them here.
-//!
-//! A node's id is its line order among `node` lines, from 0 — the same id the
-//! host names in a `DecisionClass::Process` standing-fault target, so the two
-//! sides agree without a handshake. Blank lines and `#` comments are ignored.
-//! Arguments split on whitespace; a double-quoted argument keeps its spaces and
-//! honours `\"` and `\\`, which is what a `sh -c "..."` node needs.
 
-/// The largest number of nodes a bundle may describe: the alive bitmap the
-/// agent publishes in a state register is one `u64`, one bit per node.
 pub const MAX_NODES: usize = 64;
 
-/// A supervised long-lived process.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeSpec {
-    /// The operator-facing name; the agent's own identity for a node is its
-    /// index in [`Bundle::nodes`].
     pub name: String,
-    /// The command and its arguments.
     pub argv: Vec<String>,
 }
 
-/// A one-shot command launched by a `Fault::RunHook(id)` window opening.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HookSpec {
-    /// The hook id the host names in the fault.
     pub id: u32,
-    /// The command and its arguments.
     pub argv: Vec<String>,
 }
 
-/// A parsed bundle.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Bundle {
-    /// The supervised nodes, in bundle order; the index is the node id.
     pub nodes: Vec<NodeSpec>,
-    /// The hooks, sorted by id.
     pub hooks: Vec<HookSpec>,
-    /// The readiness probe, if the bundle declares one.
     pub ready: Option<Vec<String>>,
-    /// The one-shot preparation command, if the bundle declares one.
     pub setup: Option<Vec<String>>,
 }
 
 impl Bundle {
-    /// The hook with `id`, if the bundle declares it.
     #[must_use]
     pub fn hook(&self, id: u32) -> Option<&HookSpec> {
         self.hooks
@@ -66,89 +32,34 @@ impl Bundle {
     }
 }
 
-/// Why a bundle was rejected. Every variant names the 1-based line so an image
-/// build reports a usable location.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum BundleError {
-    /// A line started with something other than `setup`, `node`, `hook`, or
-    /// `ready`.
     #[error("line {line}: unknown item {word:?}")]
-    UnknownItem {
-        /// The 1-based line number.
-        line: usize,
-        /// The keyword that was not recognised.
-        word: String,
-    },
-    /// A line has too few words to be the item it claims to be.
+    UnknownItem { line: usize, word: String },
     #[error("line {line}: {item} needs {need} more word(s)")]
     Incomplete {
-        /// The 1-based line number.
         line: usize,
-        /// The item keyword.
         item: &'static str,
-        /// How many words are missing.
         need: usize,
     },
-    /// A hook id is not a `u32`.
     #[error("line {line}: hook id {word:?} is not a u32")]
-    BadHookId {
-        /// The 1-based line number.
-        line: usize,
-        /// The offending word.
-        word: String,
-    },
-    /// Two hooks share an id, so a `RunHook` fault would be ambiguous.
+    BadHookId { line: usize, word: String },
     #[error("line {line}: hook id {id} is already declared")]
-    DuplicateHookId {
-        /// The 1-based line number.
-        line: usize,
-        /// The repeated id.
-        id: u32,
-    },
-    /// Two nodes share a name.
+    DuplicateHookId { line: usize, id: u32 },
     #[error("line {line}: node name {name:?} is already declared")]
-    DuplicateNodeName {
-        /// The 1-based line number.
-        line: usize,
-        /// The repeated name.
-        name: String,
-    },
-    /// More than one readiness probe.
+    DuplicateNodeName { line: usize, name: String },
     #[error("line {line}: a second ready probe")]
-    DuplicateReady {
-        /// The 1-based line number.
-        line: usize,
-    },
-    /// More than one setup command.
+    DuplicateReady { line: usize },
     #[error("line {line}: a second setup command")]
-    DuplicateSetup {
-        /// The 1-based line number.
-        line: usize,
-    },
-    /// A quoted argument has no closing quote.
+    DuplicateSetup { line: usize },
     #[error("line {line}: unterminated quote")]
-    UnterminatedQuote {
-        /// The 1-based line number.
-        line: usize,
-    },
-    /// The bundle describes more nodes than the alive bitmap can address.
+    UnterminatedQuote { line: usize },
     #[error("line {line}: more than {MAX_NODES} nodes")]
-    TooManyNodes {
-        /// The 1-based line number.
-        line: usize,
-    },
-    /// The bundle describes no node at all, so there is nothing to supervise.
+    TooManyNodes { line: usize },
     #[error("the bundle declares no node")]
     NoNodes,
 }
 
-/// Parse a bundle file's contents.
-///
-/// # Errors
-///
-/// Returns the first [`BundleError`] the text triggers; a bundle is a build
-/// artifact, so a malformed one fails the agent at start rather than being
-/// partially honoured.
 pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
     let mut bundle = Bundle::default();
     for (index, raw) in text.lines().enumerate() {
@@ -264,7 +175,6 @@ fn parse_hook(
     Ok(())
 }
 
-/// Split a line into words. `None` when a double-quoted word is unterminated.
 fn tokenize(line: &str) -> Option<Vec<String>> {
     let mut words = Vec::new();
     let mut current = String::new();

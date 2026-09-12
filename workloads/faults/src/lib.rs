@@ -1,13 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Deterministic fault-search package for distributed workloads.
-//!
-//! A workload image declares its nodes, hooks, readiness and setup commands in
-//! `/etc/harmony/bundle`. The package boots that image under the in-guest
-//! fault agent, and the search draws an action list the agent enforces: kill a
-//! node, pause it, restart it, run a hook, park a thread at an execution
-//! place, inject an interrupt, or wait. Each action runs for a fixed horizon
-//! of guest time, so an input names an exact schedule the whole-VM snapshots
-//! reproduce.
 
 pub mod archive;
 pub mod bundle;

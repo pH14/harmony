@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace - with +
+@@ -2,17 +2,17 @@
+ #![no_std]
+ #![doc = "The harmony guest SDK: assertions, IJON state registers, and lifecycle points a cooperating in-guest workload emits over the deterministic hypercall channel."]
+ pub mod wire;
+ 
+ use hypercall_proto::{Client, ClientError, MAX_PAYLOAD, Transport};
+ 
+ use core::fmt;
+ 
+-const CATALOG_BUF: usize = MAX_PAYLOAD - 4;
++const CATALOG_BUF: usize = MAX_PAYLOAD + /* ~ changed by cargo-mutants ~ */ 4;
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ pub enum PointKind {
+     AssertAlways,
+     AssertSometimes,
+     AssertReachable,
+     AssertUnreachable,
+     StateReg,

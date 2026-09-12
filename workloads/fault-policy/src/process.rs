@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The [`DecisionClass::Process`](crate::DecisionClass::Process) target
-//! encoding, shared by the host searcher and the in-guest fault agent so a
-//! [`StandingFault`](crate::StandingFault)'s opaque `target` bytes mean the same
-//! thing on both sides.
-//!
-//! Layout: `u16` node id little-endian, then [`Fault::encode`](crate::Answer)
-//! bytes as written by the shared catalog codec.
 
 use crate::catalog::Fault;
 use crate::codec::{self, Reader};
 
-/// Encode a process-class standing-fault target.
 #[must_use]
 pub fn process_target(node: u16, fault: &Fault) -> Vec<u8> {
     let mut w = node.to_le_bytes().to_vec();
@@ -18,8 +10,6 @@ pub fn process_target(node: u16, fault: &Fault) -> Vec<u8> {
     w
 }
 
-/// Decode bytes produced by [`process_target`]. `None` on any malformed or
-/// trailing input — a malformed target never panics a service.
 #[must_use]
 pub fn decode_process_target(b: &[u8]) -> Option<(u16, Fault)> {
     let mut r = Reader::new(b);

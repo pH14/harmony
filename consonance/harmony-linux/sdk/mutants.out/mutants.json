@@ -1,0 +1,173 @@
+[
+  {
+    "diff": "--- src/lib.rs\n+++ replace - with +\n@@ -2,17 +2,17 @@\n #![no_std]\n #![doc = \"The harmony guest SDK: assertions, IJON state registers, and lifecycle points a cooperating in-guest workload emits over the deterministic hypercall channel.\"]\n pub mod wire;\n \n use hypercall_proto::{Client, ClientError, MAX_PAYLOAD, Transport};\n \n use core::fmt;\n \n-const CATALOG_BUF: usize = MAX_PAYLOAD - 4;\n+const CATALOG_BUF: usize = MAX_PAYLOAD + /* ~ changed by cargo-mutants ~ */ 4;\n \n #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n pub enum PointKind {\n     AssertAlways,\n     AssertSometimes,\n     AssertReachable,\n     AssertUnreachable,\n     StateReg,\n",
+    "file": "src/lib.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:10:40: replace - with +",
+    "package": "harmony-sdk",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 41,
+        "line": 10
+      },
+      "start": {
+        "column": 40,
+        "line": 10
+      }
+    }
+  },
+  {
+    "diff": "--- src/lib.rs\n+++ replace - with /\n@@ -2,17 +2,17 @@\n #![no_std]\n #![doc = \"The harmony guest SDK: assertions, IJON state registers, and lifecycle points a cooperating in-guest workload emits over the deterministic hypercall channel.\"]\n pub mod wire;\n \n use hypercall_proto::{Client, ClientError, MAX_PAYLOAD, Transport};\n \n use core::fmt;\n \n-const CATALOG_BUF: usize = MAX_PAYLOAD - 4;\n+const CATALOG_BUF: usize = MAX_PAYLOAD / /* ~ changed by cargo-mutants ~ */ 4;\n \n #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n pub enum PointKind {\n     AssertAlways,\n     AssertSometimes,\n     AssertReachable,\n     AssertUnreachable,\n     StateReg,\n",
+    "file": "src/lib.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "src/lib.rs:10:40: replace - with /",
+    "package": "harmony-sdk",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 41,
+        "line": 10
+      },
+      "start": {
+        "column": 40,
+        "line": 10
+      }
+    }
+  },
+  {
+    "diff": "--- src/wire.rs\n+++ replace - with +\n@@ -1,14 +1,14 @@\n // SPDX-License-Identifier: AGPL-3.0-or-later\n \n pub const SDK_WIRE_VERSION: u8 = 1;\n \n pub const NS_SHIFT: u32 = 24;\n-pub const LOCAL_MASK: u32 = (1 << NS_SHIFT) - 1;\n+pub const LOCAL_MASK: u32 = (1 << NS_SHIFT) + /* ~ changed by cargo-mutants ~ */ 1;\n pub const LOCAL_MAX: u32 = LOCAL_MASK;\n \n pub const NS_CONTROL: u8 = 0;\n pub const NS_ASSERT: u8 = 1;\n pub const NS_STATE: u8 = 2;\n pub const NS_BUGGIFY: u8 = 3;\n pub const NS_LIFECYCLE: u8 = 4;\n \n",
+    "file": "src/wire.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "src/wire.rs:6:45: replace - with +",
+    "package": "harmony-sdk",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 46,
+        "line": 6
+      },
+      "start": {
+        "column": 45,
+        "line": 6
+      }
+    }
+  },
+  {
+    "diff": "--- src/wire.rs\n+++ replace - with /\n@@ -1,14 +1,14 @@\n // SPDX-License-Identifier: AGPL-3.0-or-later\n \n pub const SDK_WIRE_VERSION: u8 = 1;\n \n pub const NS_SHIFT: u32 = 24;\n-pub const LOCAL_MASK: u32 = (1 << NS_SHIFT) - 1;\n+pub const LOCAL_MASK: u32 = (1 << NS_SHIFT) / /* ~ changed by cargo-mutants ~ */ 1;\n pub const LOCAL_MAX: u32 = LOCAL_MASK;\n \n pub const NS_CONTROL: u8 = 0;\n pub const NS_ASSERT: u8 = 1;\n pub const NS_STATE: u8 = 2;\n pub const NS_BUGGIFY: u8 = 3;\n pub const NS_LIFECYCLE: u8 = 4;\n \n",
+    "file": "src/wire.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "src/wire.rs:6:45: replace - with /",
+    "package": "harmony-sdk",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 46,
+        "line": 6
+      },
+      "start": {
+        "column": 45,
+        "line": 6
+      }
+    }
+  },
+  {
+    "diff": "--- src/wire.rs\n+++ replace << with >>\n@@ -1,14 +1,14 @@\n // SPDX-License-Identifier: AGPL-3.0-or-later\n \n pub const SDK_WIRE_VERSION: u8 = 1;\n \n pub const NS_SHIFT: u32 = 24;\n-pub const LOCAL_MASK: u32 = (1 << NS_SHIFT) - 1;\n+pub const LOCAL_MASK: u32 = (1 >> /* ~ changed by cargo-mutants ~ */ NS_SHIFT) - 1;\n pub const LOCAL_MAX: u32 = LOCAL_MASK;\n \n pub const NS_CONTROL: u8 = 0;\n pub const NS_ASSERT: u8 = 1;\n pub const NS_STATE: u8 = 2;\n pub const NS_BUGGIFY: u8 = 3;\n pub const NS_LIFECYCLE: u8 = 4;\n \n",
+    "file": "src/wire.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "src/wire.rs:6:32: replace << with >>",
+    "package": "harmony-sdk",
+    "replacement": ">>",
+    "span": {
+      "end": {
+        "column": 34,
+        "line": 6
+      },
+      "start": {
+        "column": 32,
+        "line": 6
+      }
+    }
+  },
+  {
+    "diff": "--- src/wire.rs\n+++ replace << with >>\n@@ -8,17 +8,17 @@\n \n pub const NS_CONTROL: u8 = 0;\n pub const NS_ASSERT: u8 = 1;\n pub const NS_STATE: u8 = 2;\n pub const NS_BUGGIFY: u8 = 3;\n pub const NS_LIFECYCLE: u8 = 4;\n \n pub const CATALOG_EVENT_ID: u32 = 0;\n-pub const SETUP_COMPLETE_EVENT_ID: u32 = (NS_LIFECYCLE as u32) << NS_SHIFT;\n+pub const SETUP_COMPLETE_EVENT_ID: u32 = (NS_LIFECYCLE as u32) >> /* ~ changed by cargo-mutants ~ */ NS_SHIFT;\n pub const FRAME_COMPLETE_EVENT_ID: u32 = ((NS_LIFECYCLE as u32) << NS_SHIFT) | 1;\n \n pub const CATALOG_MAGIC: u32 = u32::from_le_bytes(*b\"SDKC\");\n \n pub const DISP_HIT: u8 = 0;\n pub const DISP_VIOLATION: u8 = 1;\n \n pub const STATE_SET: u8 = 0;\n",
+    "file": "src/wire.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "src/wire.rs:16:64: replace << with >>",
+    "package": "harmony-sdk",
+    "replacement": ">>",
+    "span": {
+      "end": {
+        "column": 66,
+        "line": 16
+      },
+      "start": {
+        "column": 64,
+        "line": 16
+      }
+    }
+  },
+  {
+    "diff": "--- src/wire.rs\n+++ replace | with &\n@@ -9,17 +9,17 @@\n pub const NS_CONTROL: u8 = 0;\n pub const NS_ASSERT: u8 = 1;\n pub const NS_STATE: u8 = 2;\n pub const NS_BUGGIFY: u8 = 3;\n pub const NS_LIFECYCLE: u8 = 4;\n \n pub const CATALOG_EVENT_ID: u32 = 0;\n pub const SETUP_COMPLETE_EVENT_ID: u32 = (NS_LIFECYCLE as u32) << NS_SHIFT;\n-pub const FRAME_COMPLETE_EVENT_ID: u32 = ((NS_LIFECYCLE as u32) << NS_SHIFT) | 1;\n+pub const FRAME_COMPLETE_EVENT_ID: u32 = ((NS_LIFECYCLE as u32) << NS_SHIFT) & /* ~ changed by cargo-mutants ~ */ 1;\n \n pub const CATALOG_MAGIC: u32 = u32::from_le_bytes(*b\"SDKC\");\n \n pub const DISP_HIT: u8 = 0;\n pub const DISP_VIOLATION: u8 = 1;\n \n pub const STATE_SET: u8 = 0;\n pub const STATE_MAX: u8 = 1;\n",
+    "file": "src/wire.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "src/wire.rs:17:78: replace | with &",
+    "package": "harmony-sdk",
+    "replacement": "&",
+    "span": {
+      "end": {
+        "column": 79,
+        "line": 17
+      },
+      "start": {
+        "column": 78,
+        "line": 17
+      }
+    }
+  },
+  {
+    "diff": "--- src/wire.rs\n+++ replace | with ^\n@@ -9,17 +9,17 @@\n pub const NS_CONTROL: u8 = 0;\n pub const NS_ASSERT: u8 = 1;\n pub const NS_STATE: u8 = 2;\n pub const NS_BUGGIFY: u8 = 3;\n pub const NS_LIFECYCLE: u8 = 4;\n \n pub const CATALOG_EVENT_ID: u32 = 0;\n pub const SETUP_COMPLETE_EVENT_ID: u32 = (NS_LIFECYCLE as u32) << NS_SHIFT;\n-pub const FRAME_COMPLETE_EVENT_ID: u32 = ((NS_LIFECYCLE as u32) << NS_SHIFT) | 1;\n+pub const FRAME_COMPLETE_EVENT_ID: u32 = ((NS_LIFECYCLE as u32) << NS_SHIFT) ^ /* ~ changed by cargo-mutants ~ */ 1;\n \n pub const CATALOG_MAGIC: u32 = u32::from_le_bytes(*b\"SDKC\");\n \n pub const DISP_HIT: u8 = 0;\n pub const DISP_VIOLATION: u8 = 1;\n \n pub const STATE_SET: u8 = 0;\n pub const STATE_MAX: u8 = 1;\n",
+    "file": "src/wire.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "src/wire.rs:17:78: replace | with ^",
+    "package": "harmony-sdk",
+    "replacement": "^",
+    "span": {
+      "end": {
+        "column": 79,
+        "line": 17
+      },
+      "start": {
+        "column": 78,
+        "line": 17
+      }
+    }
+  },
+  {
+    "diff": "--- src/wire.rs\n+++ replace << with >>\n@@ -9,17 +9,17 @@\n pub const NS_CONTROL: u8 = 0;\n pub const NS_ASSERT: u8 = 1;\n pub const NS_STATE: u8 = 2;\n pub const NS_BUGGIFY: u8 = 3;\n pub const NS_LIFECYCLE: u8 = 4;\n \n pub const CATALOG_EVENT_ID: u32 = 0;\n pub const SETUP_COMPLETE_EVENT_ID: u32 = (NS_LIFECYCLE as u32) << NS_SHIFT;\n-pub const FRAME_COMPLETE_EVENT_ID: u32 = ((NS_LIFECYCLE as u32) << NS_SHIFT) | 1;\n+pub const FRAME_COMPLETE_EVENT_ID: u32 = ((NS_LIFECYCLE as u32) >> /* ~ changed by cargo-mutants ~ */ NS_SHIFT) | 1;\n \n pub const CATALOG_MAGIC: u32 = u32::from_le_bytes(*b\"SDKC\");\n \n pub const DISP_HIT: u8 = 0;\n pub const DISP_VIOLATION: u8 = 1;\n \n pub const STATE_SET: u8 = 0;\n pub const STATE_MAX: u8 = 1;\n",
+    "file": "src/wire.rs",
+    "function": null,
+    "genre": "BinaryOperator",
+    "name": "src/wire.rs:17:65: replace << with >>",
+    "package": "harmony-sdk",
+    "replacement": ">>",
+    "span": {
+      "end": {
+        "column": 67,
+        "line": 17
+      },
+      "start": {
+        "column": 65,
+        "line": 17
+      }
+    }
+  }
+]

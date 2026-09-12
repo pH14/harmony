@@ -1,11 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! A workload-neutral in-process Consonance session.
-//!
-//! [`Session`] owns one VMM and its control server.  Workload packages provide
-//! only ordered payload records; this module supplies the common boot,
-//! snapshot, branch, replay, SDK-event, and sparse portable-snapshot
-//! mechanics.  Keeping this seam here prevents a package adapter from
-//! depending on another workload's machine crate.
 
 use std::{error::Error, fmt, sync::Arc, time::Duration};
 
@@ -17,7 +10,6 @@ use environment::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Default guest memory for callers that use [`SessionConfig::default`].
 const DEFAULT_RAM: usize = 128 * 1024 * 1024;
 
 #[cfg(target_arch = "x86_64")]
@@ -34,52 +26,20 @@ fn default_cmdline() -> &'static str {
 const DEFAULT_SEED: u64 = 0;
 const DEFAULT_RUN_BUDGET: u64 = 2_000_000_000;
 pub const PAGE_SIZE: usize = 4096;
-/// Guest physical address where the main RAM mapping begins for this backend.
 #[cfg(target_arch = "x86_64")]
 pub const RAM_GPA_BASE: u64 = 0;
 #[cfg(target_arch = "aarch64")]
 pub const RAM_GPA_BASE: u64 = 0x4000_0000;
 
-/// Package-owned launch and resource settings for one neutral session.
-///
-/// A workload selects these values once while preparing its execution
-/// identity. The settings that affect boot and restore compatibility are
-/// included in [`Session::identity_with_config`]; the host resource bounds and
-/// evidence settings documented as such below are not.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SessionConfig {
-    /// Guest RAM in bytes. The VMM requires a page-aligned, non-zero value.
     pub ram_bytes: usize,
-    /// Seed supplied to the controlled x86 virtual-time boot path.
     pub seed: u64,
-    /// Maximum virtual time allotted to each lifecycle run.
     pub run_budget: u64,
-    /// Exact Linux command line used by the image launch.
     pub cmdline: String,
-    /// Optional domain tag included in portable image identity hashing.
-    /// Empty selects the generic session identity domain.
     pub identity_tag: String,
-    /// Host wall-clock bound on one lifecycle run, or `None` for no bound.
-    ///
-    /// A guest spinning on a frozen virtual clock takes no exit, so it never
-    /// reaches its virtual-time deadline; only host time notices it. Past this
-    /// bound the run is abandoned and reported as [`SessionError::Hung`]. This
-    /// is a host resource bound rather than an input, so it is deliberately
-    /// absent from [`identity_with_config`] and from the image identity.
     #[serde(default)]
     pub wall_limit: Option<Duration>,
-    /// Record sparse virtual-time checkpoint hashes after a run rather than
-    /// during it.
-    ///
-    /// Each due checkpoint otherwise hashes the whole guest RAM inside the run
-    /// that reached it, which a large guest cannot afford during boot. A
-    /// composition root that opts in installs the byte-identical hashes
-    /// afterwards with
-    /// [`Vmm::checkpoint_virtual_time_trace_at`](vmm_core::vmm::Vmm::checkpoint_virtual_time_trace_at).
-    /// This is host-side evidence plumbing: it changes neither guest state nor
-    /// the normalized event sequence, so like [`Self::wall_limit`] it is
-    /// deliberately absent from [`identity_with_config`] and from the image
-    /// identity.
     #[serde(default)]
     pub defer_virtual_time_checkpoint_hashes: bool,
 }
@@ -99,7 +59,6 @@ impl Default for SessionConfig {
 }
 
 impl SessionConfig {
-    /// Build explicit package launch settings.
     #[must_use]
     pub fn new(ram_bytes: usize, seed: u64, run_budget: u64, cmdline: impl Into<String>) -> Self {
         Self {
@@ -113,26 +72,18 @@ impl SessionConfig {
         }
     }
 
-    /// Include a workload-specific domain in portable snapshot identity.
     #[must_use]
     pub fn with_identity_tag(mut self, identity_tag: impl Into<String>) -> Self {
         self.identity_tag = identity_tag.into();
         self
     }
 
-    /// Abandon a run that spends more than `wall_limit` of host time inside
-    /// the guest. Available where the backend can be interrupted mid-run.
     #[must_use]
     pub fn with_wall_limit(mut self, wall_limit: Duration) -> Self {
         self.wall_limit = Some(wall_limit);
         self
     }
 
-    /// Defer sparse virtual-time checkpoint hashing on every VM this session
-    /// boots, including the ones a restore boots from the session's factory.
-    ///
-    /// The setting is applied before the guest runs, so the boot itself is
-    /// covered.
     #[must_use]
     pub fn with_deferred_virtual_time_checkpoint_hashes(mut self) -> Self {
         self.defer_virtual_time_checkpoint_hashes = true;
@@ -173,12 +124,6 @@ impl SessionConfig {
     }
 }
 
-/// A portable whole VM snapshot relative to this session's setup point.
-///
-/// The page list and sidecar are copied out of the control server so a
-/// campaign can serialize checkpoints and later restore them into a fresh
-/// worker VM.  Page bytes are intentionally represented as `Vec<u8>` here:
-/// this type is a package boundary and must not expose `Arc` or VMM internals.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PortableSnapshot {
     pub setup: u64,
@@ -196,8 +141,6 @@ struct SharedStateInner {
     len: usize,
 }
 
-/// Chunked opaque sidecar bytes shared between related sparse snapshots.
-/// Sharing metadata never appears in the serialized representation.
 #[derive(Clone)]
 pub struct SharedState {
     inner: Arc<SharedStateInner>,
@@ -276,9 +219,6 @@ impl<'de> Deserialize<'de> for SharedState {
     }
 }
 
-/// A sparse whole-VM snapshot whose page and sidecar chunks can share storage
-/// with an export base. Its serde field layout is the established v2 machine
-/// format: `base`, `image_identity`, `pages`, and `sidecar`.
 pub struct SparseSnapshot {
     base: u64,
     image_identity: [u8; 32],
@@ -474,13 +414,11 @@ fn validate_sparse_pages(pages: &[(u64, Arc<[u8; 4096]>)]) -> Result<(), String>
 }
 
 impl PortableSnapshot {
-    /// Exact synchronized V-time at the source seal.
     #[must_use]
     pub fn at(&self) -> u64 {
         self.at
     }
 
-    /// Number of sparse pages carried by this snapshot.
     #[must_use]
     pub fn page_count(&self) -> usize {
         self.pages.len()
@@ -526,7 +464,6 @@ impl PortableSnapshot {
     }
 }
 
-/// Errors returned by the neutral session boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
     #[error("control request {operation} returned an unexpected reply: {reply:?}")]
@@ -540,43 +477,20 @@ pub enum SessionError {
     Portable(String),
     #[error("guest stopped before the expected snapshot point: {0:?}")]
     Stop(StopReason),
-    /// The guest spent more than the configured wall-clock limit inside one
-    /// run without taking an exit. The VM is abandoned; the session cannot be
-    /// resumed and the caller reports the run rather than retrying it.
     #[error("guest ran for more than {0:?} of host time without exiting")]
     Hung(Duration),
-    /// A previous run exceeded the wall-clock limit, so the VM was canceled
-    /// and cannot be entered again. Reported by every later request instead of
-    /// a fresh [`SessionError::Hung`] for a run that never happened.
     #[error("session was abandoned after a guest hang and cannot run again")]
     Abandoned,
-    /// The configuration carries a wall-clock limit, but the backend cannot be
-    /// interrupted mid-run, so no run on it can be bounded.
     #[error("backend cannot be interrupted mid-run, so its runs cannot be wall-clock bounded")]
     Unboundable,
-    /// The guest never reached a snapshot-eligible point within the caller's
-    /// settle allowance.
     #[error("guest reached no snapshot-eligible point within a settle allowance of {allowance} ns")]
-    Settle {
-        /// Settle allowance spent before the attempt was abandoned. Settling
-        /// asks for one step at a time and a step can stop early, so this
-        /// bounds the virtual time the guest consumed rather than reporting it.
-        allowance: u64,
-    },
+    Settle { allowance: u64 },
 }
 
-/// The backend's host-only latch: set to take a run away from a guest that has
-/// stopped returning to the host.
 type CancelLatch = Arc<std::sync::atomic::AtomicBool>;
 
-/// One armed host wall-clock bound: how much host time the run may spend, and
-/// the latch that ends it.
 type GuardedRun = (Duration, CancelLatch);
 
-/// Decide how one control request runs under the session's host wall-clock
-/// bound. `None` runs the request unguarded; `Some` carries the bound to arm
-/// and the backend latch to arm it against. This pure policy stays here so it
-/// is testable without a VM or Linux linker.
 #[cfg_attr(
     not(all(
         target_os = "linux",
@@ -600,13 +514,6 @@ fn guarded_run_plan(
     Ok(Some((limit, cancel)))
 }
 
-/// Build the input specification one service branch records: the branch seed,
-/// the package's service configuration, its ordered payload records, and the
-/// host-plane effects the branch stages for the run that follows it. This pure
-/// wire-shape policy stays here so it is testable without a VM or Linux linker.
-///
-/// The recorded form holds one effect per moment, so two effects sharing a
-/// moment are reported rather than silently collapsed into the later one.
 #[cfg_attr(
     not(all(
         target_os = "linux",
@@ -635,9 +542,6 @@ fn service_branch_spec(
     Ok(spec)
 }
 
-/// Whether running the guest further can move it off a point the control
-/// server refuses to seal. A crashed or quiescent guest advances no further,
-/// so a retried seal would only repeat the refusal.
 #[cfg_attr(
     not(all(
         target_os = "linux",
@@ -656,15 +560,6 @@ fn settling_can_advance(stop: &StopReason) -> bool {
     }
 }
 
-/// Seal the current point, running the guest a little further whenever the
-/// control server refuses it.
-///
-/// `seal` answers `None` for a point that is not snapshot-eligible yet, and
-/// `advance` runs one settle step and reports where the guest stopped. Both
-/// take `context` so one caller can lend the same session to each. This pure
-/// retry policy stays here so it is testable without a VM or Linux linker; the
-/// third result field is the last settle run's stop reason, absent when the
-/// point sealed with no settling at all.
 #[cfg_attr(
     not(all(
         target_os = "linux",
@@ -720,9 +615,6 @@ where
 )]
 const MAX_CONSOLE_DIAGNOSTIC: usize = 64 * 1024;
 
-/// Drain paged console replies into a bounded diagnostic buffer. The transport
-/// closure stays in the live module; this pure paging policy is portable and
-/// therefore testable without a VM or Linux linker.
 #[cfg_attr(
     not(all(
         target_os = "linux",
@@ -775,7 +667,6 @@ mod live;
 ))]
 pub use live::{Session, host_minor_faults};
 
-/// One SDK event tuple: V-time, publisher event id, and opaque value bytes.
 pub type SdkEvent = (u64, u32, Vec<u8>);
 #[cfg_attr(
     not(all(
@@ -796,13 +687,11 @@ type SparsePage = (u64, Arc<[u8; PAGE_SIZE]>);
 )]
 type SparsePages = Vec<SparsePage>;
 
-/// Stable identity for the complete VM image and neutral session contract.
 #[must_use]
 pub fn identity(kernel: &[u8], initramfs: &[u8]) -> String {
     identity_with_config(kernel, initramfs, &SessionConfig::default())
 }
 
-/// Stable identity for an image and its complete launch/resource contract.
 #[must_use]
 pub fn identity_with_config(kernel: &[u8], initramfs: &[u8], config: &SessionConfig) -> String {
     format!(
@@ -843,7 +732,6 @@ fn update_digest_field(digest: &mut Sha256, bytes: &[u8]) {
     digest.update(bytes);
 }
 
-/// Convert a control session to a stable identity without constructing it.
 #[must_use]
 pub fn image_identity_hex(kernel: &[u8], initramfs: &[u8]) -> String {
     bytes_hex(&image_identity(kernel, initramfs))
@@ -1212,9 +1100,7 @@ mod tests {
         assert_eq!(equal, decoded);
     }
 
-    /// A caller-scripted stand-in for the control server's seal/run pair.
     struct SettleFixture {
-        /// Virtual time at which the guest becomes snapshot-eligible.
         eligible_at: u64,
         now: u64,
         stop: StopReason,

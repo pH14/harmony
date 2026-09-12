@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Arbitration property test: [`Gicv3::peek_interrupt`] agrees with a naive
-//! reference model over arbitrary register-file programs — the gicv3 sibling
-//! of `lapic/tests/delivery.rs`.
 
 use gicv3::{GicConfig, GicFrame, Gicv3};
 use proptest::prelude::*;
@@ -16,7 +13,6 @@ const ICENABLER: u64 = 0x0180;
 const IPRIORITYR: u64 = 0x0400;
 const GICD_CTLR: u64 = 0x0000;
 
-/// One programmed interrupt line in the reference model.
 #[derive(Clone, Copy, Debug, Default)]
 struct Line {
     group1: bool,
@@ -26,7 +22,6 @@ struct Line {
     priority: u8,
 }
 
-/// The naive reference arbitration: filter, then min by `(priority, intid)`.
 fn reference_peek(lines: &[Line], pmr: u8, grp1_enabled: bool) -> Option<u32> {
     if !grp1_enabled {
         return None;
@@ -47,9 +42,6 @@ fn reference_peek(lines: &[Line], pmr: u8, grp1_enabled: bool) -> Option<u32> {
         .map(|(i, _)| i as u32)
 }
 
-/// Program `lines` into a fresh model through the real MMIO surface (the
-/// distributor for SPIs, the redistributor SGI frame for SGIs/PPIs), raise
-/// the pending set, and acknowledge the active set directly.
 fn program(lines: &[Line], pmr: u8, grp1_enabled: bool) -> Gicv3 {
     let mut g = Gicv3::new(GicConfig {
         impl_spis: IMPL_SPIS,
@@ -149,7 +141,6 @@ fn line_strategy() -> impl Strategy<Value = Line> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
-    /// The model's arbitration equals the reference for every programmed file.
     #[test]
     fn peek_matches_the_reference_model(
         lines in proptest::collection::vec(line_strategy(), LIMIT as usize),
@@ -160,9 +151,6 @@ proptest! {
         prop_assert_eq!(g.peek_interrupt(), reference_peek(&lines, pmr, grp1));
     }
 
-    /// Acknowledge/EOI walk-down: repeatedly taking the arbitrated INTID and
-    /// EOI-ing it drains the deliverable set in strictly non-decreasing
-    /// priority order, mirroring the reference at every step.
     #[test]
     fn take_eoi_drains_in_reference_order(
         lines in proptest::collection::vec(line_strategy(), LIMIT as usize),
@@ -187,7 +175,6 @@ proptest! {
         }
     }
 
-    /// A snapshot round-trip preserves arbitration exactly.
     #[test]
     fn snapshot_preserves_arbitration(
         lines in proptest::collection::vec(line_strategy(), LIMIT as usize),

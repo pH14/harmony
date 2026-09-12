@@ -10,7 +10,7 @@
 # the char-device patch (patches/x86/0002-x86-harmony-character-device.patch,
 # CONFIG_HARMONY_DEVICE=y in config-fragment), both landed 2026-07-20 in PR #133.
 # Every bzImage built before that date — including the content-pinned PR-44
-# kernel the task-68/95 gates boot — has no such device, so:
+# kernel the CI gates boot — has no such device, so:
 #
 #   make -C consonance/harmony-linux/linux kernel        # bzImage WITH CONFIG_HARMONY_DEVICE=y
 #   consonance/harmony-linux/linux/build-bridge-image.sh

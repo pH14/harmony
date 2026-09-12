@@ -1,68 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The billboard writer — the guest-side producer of task 86's always-on,
-//! per-frame core-state export.
-//!
-//! Shared guest writer and host reader for the versioned NES publication.
-//! Independent golden fixtures pin the wire representation.
-//!
-//! ## The byte layout (v1) — all little-endian
-//!
-//! | Offset | Size | Field |
-//! |---|---|---|
-//! | 0 | 4 | magic `b"HBBD"` |
-//! | 4 | 2 | layout version (1) |
-//! | 6 | 2 | flags (reserved, 0) |
-//! | 8 | 4 | frame counter (must equal the `REG_FRAME` value) |
-//! | 12 | 1 | the frame's joypad byte |
-//! | 13 | 3 | reserved padding (0) |
-//! | 16 | 4 | savestate offset (= 32) |
-//! | 20 | 4 | savestate length |
-//! | 24 | 4 | work-RAM offset (= 32 + savestate length) |
-//! | 28 | 4 | work-RAM length (= 2048) |
-//!
-//! The regions are contiguous: savestate at [`HEADER_LEN`], work RAM
-//! immediately after. The layout (and so the buffer's total length) is fixed
-//! once at init from the core's `retro_serialize_size` — the buffer's
-//! guest-physical address and length are published once via state registers,
-//! so the length can never change mid-run.
 
 use std::fmt;
 
 pub const WORK_RAM_LEN: usize = 2048;
 pub const MAX_HOLD_FRAMES: u8 = 120;
 
-/// The billboard magic: ASCII `HBBD`.
 pub const BILLBOARD_MAGIC: [u8; 4] = *b"HBBD";
 
-/// The layout version this writer stamps.
 pub const BILLBOARD_LAYOUT_VERSION: u16 = 1;
 
-/// The fixed header size in bytes.
 pub const HEADER_LEN: usize = 32;
 
-/// The fixed region layout for one run: header, then the savestate, then the
-/// 2 KiB console work RAM, contiguous. Frozen at init from the core's
-/// serialize size.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct BillboardLayout {
     savestate_len: u32,
 }
 
-/// Why a billboard write failed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BillboardError {
-    /// The destination buffer is smaller than the layout's total length.
-    BufferTooSmall {
-        /// The buffer length received.
-        got: usize,
-        /// The layout's required total length.
-        need: usize,
-    },
-    /// The savestate length overflows the u32 region field.
-    SavestateTooLarge {
-        /// The savestate length requested.
-        got: usize,
-    },
+    BufferTooSmall { got: usize, need: usize },
+    SavestateTooLarge { got: usize },
 }
 
 impl fmt::Display for BillboardError {
@@ -81,7 +38,6 @@ impl fmt::Display for BillboardError {
 impl std::error::Error for BillboardError {}
 
 impl BillboardLayout {
-    /// Freeze the layout for a run from the core's serialize size.
     pub fn new(savestate_len: usize) -> Result<Self, BillboardError> {
         let len32 = u32::try_from(savestate_len)
             .ok()
@@ -92,18 +48,14 @@ impl BillboardLayout {
         })
     }
 
-    /// The savestate region length.
     pub fn savestate_len(&self) -> usize {
         self.savestate_len as usize
     }
 
-    /// The buffer's total length: header + savestate + work RAM.
     pub fn total_len(&self) -> usize {
         HEADER_LEN + self.savestate_len as usize + WORK_RAM_LEN
     }
 
-    /// Write the 32-byte header for `frame` with `joypad` into `buf`. The
-    /// region table is the layout's fixed one; flags are zero.
     pub fn write_header(
         &self,
         buf: &mut [u8],
@@ -131,9 +83,6 @@ impl BillboardLayout {
         Ok(())
     }
 
-    /// The mutable savestate region of `buf` (the slice `retro_serialize`
-    /// fills). Call only after [`write_header`](Self::write_header) has proven
-    /// the buffer long enough for this layout.
     pub fn savestate_mut<'a>(&self, buf: &'a mut [u8]) -> &'a mut [u8] {
         let len = buf.len();
         let start = HEADER_LEN;
@@ -141,8 +90,6 @@ impl BillboardLayout {
         &mut buf[start.min(len)..end.min(len)]
     }
 
-    /// The mutable work-RAM region of `buf` (same discipline as
-    /// [`savestate_mut`](Self::savestate_mut)).
     pub fn work_ram_mut<'a>(&self, buf: &'a mut [u8]) -> &'a mut [u8] {
         let len = buf.len();
         let start = HEADER_LEN + self.savestate_len as usize;
@@ -151,13 +98,9 @@ impl BillboardLayout {
     }
 }
 
-/// The Nova billboard layout version for per-action frame observations.
 pub const NOVA_BILLBOARD_LAYOUT_VERSION: u16 = 2;
-/// Nova's fixed billboard header size in bytes.
 pub const NOVA_HEADER_LEN: usize = 32;
-/// Nova's cartridge-backed save-RAM window size.
 pub const NOVA_SAVE_RAM_LEN: usize = 8 * 1024;
-/// Nova's per-action work-RAM ring size.
 pub const NOVA_WORK_RAM_RING_LEN: usize = MAX_HOLD_FRAMES as usize * WORK_RAM_LEN;
 
 const NOVA_DEAD_FLAG: u16 = 1 << 0;
@@ -166,19 +109,12 @@ const NOVA_WORK_RAM_OFFSET: usize = NOVA_HEADER_LEN;
 const NOVA_SAVE_RAM_OFFSET: usize = NOVA_WORK_RAM_OFFSET + NOVA_WORK_RAM_RING_LEN;
 const NOVA_SAVESTATE_OFFSET: usize = NOVA_SAVE_RAM_OFFSET + NOVA_SAVE_RAM_LEN;
 
-/// Frozen Nova v2 billboard layout.
-///
-/// The first 32 bytes are a fixed header. The header is followed by 120
-/// 2-KiB work-RAM slots, one 8-KiB save-RAM window, and the variable-sized
-/// savestate. The ring and save window are the host's observation surface;
-/// the savestate remains available for the chord-end snapshot boundary.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NovaBillboardLayout {
     savestate_len: u32,
 }
 
 impl NovaBillboardLayout {
-    /// Freeze the Nova layout for a run from the core's serialize size.
     pub fn new(savestate_len: usize) -> Result<Self, BillboardError> {
         let fixed_len = NOVA_SAVESTATE_OFFSET;
         let len32 = u32::try_from(savestate_len)
@@ -190,54 +126,41 @@ impl NovaBillboardLayout {
         })
     }
 
-    /// The savestate region length.
     #[must_use]
     pub fn savestate_len(&self) -> usize {
         self.savestate_len as usize
     }
 
-    /// The fixed work-RAM ring offset from the billboard start.
     #[must_use]
     pub const fn work_ram_offset(&self) -> usize {
         NOVA_WORK_RAM_OFFSET
     }
 
-    /// The fixed work-RAM ring length.
     #[must_use]
     pub const fn work_ram_ring_len(&self) -> usize {
         NOVA_WORK_RAM_RING_LEN
     }
 
-    /// The fixed save-RAM window offset from the billboard start.
     #[must_use]
     pub const fn save_ram_offset(&self) -> usize {
         NOVA_SAVE_RAM_OFFSET
     }
 
-    /// The fixed save-RAM window length.
     #[must_use]
     pub const fn save_ram_len(&self) -> usize {
         NOVA_SAVE_RAM_LEN
     }
 
-    /// The fixed savestate offset from the billboard start.
     #[must_use]
     pub const fn savestate_offset(&self) -> usize {
         NOVA_SAVE_RAM_OFFSET + NOVA_SAVE_RAM_LEN
     }
 
-    /// The billboard's total byte length.
     #[must_use]
     pub fn total_len(&self) -> usize {
         self.savestate_offset() + self.savestate_len()
     }
 
-    /// Write the final header for one action.
-    ///
-    /// `frame` is the cumulative emulated-frame counter, `frames_run` is the
-    /// number of ring slots populated by this action, and the two flags report
-    /// endpoint conditions. The action joypad remains in the header so the
-    /// host can associate raw slots with the opaque payload it supplied.
     pub fn write_header(
         &self,
         buf: &mut [u8],
@@ -274,7 +197,6 @@ impl NovaBillboardLayout {
         Ok(())
     }
 
-    /// The entire work-RAM ring, clamped on a short buffer.
     pub fn work_ram_ring_mut<'a>(&self, buf: &'a mut [u8]) -> &'a mut [u8] {
         let len = buf.len();
         let start = NOVA_WORK_RAM_OFFSET;
@@ -282,7 +204,6 @@ impl NovaBillboardLayout {
         &mut buf[start.min(len)..end.min(len)]
     }
 
-    /// One work-RAM ring slot, clamped on a short or out-of-range buffer.
     pub fn work_ram_slot_mut<'a>(&self, buf: &'a mut [u8], slot: usize) -> &'a mut [u8] {
         if slot >= NOVA_WORK_RAM_RING_LEN / WORK_RAM_LEN {
             return &mut buf[0..0];
@@ -295,7 +216,6 @@ impl NovaBillboardLayout {
         &mut buf[start.min(len)..end.min(len)]
     }
 
-    /// The mutable save-RAM window, clamped on a short buffer.
     pub fn save_ram_mut<'a>(&self, buf: &'a mut [u8]) -> &'a mut [u8] {
         let len = buf.len();
         let start = NOVA_SAVE_RAM_OFFSET;
@@ -303,7 +223,6 @@ impl NovaBillboardLayout {
         &mut buf[start.min(len)..end.min(len)]
     }
 
-    /// The mutable savestate region, clamped on a short buffer.
     pub fn savestate_mut<'a>(&self, buf: &'a mut [u8]) -> &'a mut [u8] {
         let len = buf.len();
         let start = self.savestate_offset();
@@ -311,7 +230,6 @@ impl NovaBillboardLayout {
         &mut buf[start.min(len)..end.min(len)]
     }
 
-    /// Whether the header's dead flag is set.
     #[must_use]
     pub fn dead_flag(buf: &[u8]) -> bool {
         buf.get(6..8)
@@ -320,7 +238,6 @@ impl NovaBillboardLayout {
             .unwrap_or(false)
     }
 
-    /// Whether the header's cleared flag is set.
     #[must_use]
     pub fn cleared_flag(buf: &[u8]) -> bool {
         buf.get(6..8)
@@ -330,16 +247,12 @@ impl NovaBillboardLayout {
     }
 }
 
-/// Compatibility alias for callers that name the second wire layout
-/// explicitly.
 pub type BillboardLayoutV2 = NovaBillboardLayout;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Reproduce the canonical `encode_billboard` byte-for-byte for comparison
-    /// with the writer (this is a test-only reference encoder).
     fn canonical_encode_billboard(
         frame: u32,
         joypad: u8,
@@ -366,8 +279,6 @@ mod tests {
         buf
     }
 
-    /// The writer's bytes must equal the canonical encoder byte-for-byte —
-    /// but with the full 2 KiB work RAM (this producer's fixed region size).
     #[test]
     fn writer_matches_canonical_encoding() {
         let savestate: Vec<u8> = (0..40u8).map(|b| b.wrapping_mul(7)).collect();
@@ -382,9 +293,6 @@ mod tests {
         assert_eq!(buf, expected);
     }
 
-    /// A hard golden pin of the 32 header bytes, so a drift in any constant is
-    /// a red test with the exact bytes in the diff (the header does not depend
-    /// on region contents).
     #[test]
     fn header_bytes_golden() {
         let layout = BillboardLayout::new(0x40).unwrap();
@@ -434,8 +342,6 @@ mod tests {
         ));
     }
 
-    /// Region accessors are clamped, never panicking, even on a wrongly-sized
-    /// buffer (rule 4).
     #[test]
     fn region_accessors_clamp_on_short_buffers() {
         let layout = BillboardLayout::new(64).unwrap();

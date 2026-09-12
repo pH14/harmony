@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 6 — loopback. An in-process `Reply`-returning server stub driven by an
-//! in-process client over a `Vec<u8>` pipe exercises every verb; two identical
-//! sessions produce byte-identical transcripts.
-//!
-//! This stands in for the frontier socket server (vmm-core): it only decodes
-//! requests, picks a canned reply, and encodes it — the wire codec is the whole
-//! point under test. The stub keeps the minimum state needed to make the
-//! `resolve`-without-`Decision` path real (`environment::Answer` is opaque here).
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, DecisionId, HashScope, HostFault,
@@ -37,14 +29,9 @@ fn conds() -> StopConditions {
     }
 }
 
-/// A minimal backend stub. The only state is the snapshot counter and whether a
-/// decision is currently outstanding (single-vCPU ⇒ at most one).
 struct StubServer {
     next_snap: u64,
     armed: bool,
-    /// Task 81: whether an `exec` improvisation has tainted the timeline. Drives
-    /// the taint-carrying `Snapshot` reply and the `RecordedEnv` guard so the
-    /// loopback crosses those wire shapes too.
     tainted: bool,
 }
 
@@ -141,9 +128,6 @@ impl StubServer {
     }
 }
 
-/// The client+server+pipe in one place: each `exchange` encodes the request onto
-/// the wire, the server decodes/handles/encodes a reply, the client decodes it —
-/// appending every byte (both directions) to the transcript.
 struct Loopback {
     server: StubServer,
     transcript: Vec<u8>,
@@ -185,8 +169,6 @@ impl Loopback {
     }
 }
 
-/// Drive a fixed session that touches every verb (and both reply categories),
-/// returning the full byte transcript and the decoded reply sequence.
 fn run_session() -> (Vec<u8>, Vec<Result<Reply, ControlError>>) {
     let mut lb = Loopback::new();
     let mut replies = Vec::new();

@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 3 — snapshot round-trip property test.
-//!
-//! Builds an arbitrary reachable LAPIC state (a random sequence of MMIO writes,
-//! advances, raises, and deliveries), then asserts `snapshot()` → `restore()`
-//! reproduces an observationally identical LAPIC: identical reads at every
-//! register offset for several `now_vns` values, and identical
-//! `next_timer_deadline` / `has_deliverable`. Also checks that `snapshot()` is
-//! deterministic — equal states produce equal [`LapicState`].
 
 use lapic::{
     APIC_DFR, APIC_EOI, APIC_ICR_HIGH, APIC_ICR_LOW, APIC_LDR, APIC_LVT_ERROR, APIC_LVT_LINT0,
@@ -15,8 +7,6 @@ use lapic::{
 };
 use proptest::prelude::*;
 
-/// `now_vns` values swept when comparing register reads across restore — spans
-/// the arming instant, mid-count, and saturation extremes.
 const SWEEP_TIMES: [u64; 7] = [
     0,
     1,
@@ -36,8 +26,6 @@ enum Op {
     Eoi,
 }
 
-/// Offsets a guest realistically writes (a mix of writable registers plus a few
-/// read-only ones, to exercise the deny-ignore-write path during state-building).
 fn writable_offset() -> impl Strategy<Value = u32> {
     prop_oneof![
         Just(APIC_SVR),
@@ -68,7 +56,6 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     ]
 }
 
-/// Apply a sequence of operations to a fresh LAPIC, returning the driven device.
 fn drive(ops: &[Op], timer_hz: u64) -> Lapic {
     let mut l = Lapic::new(LapicConfig {
         apic_id: 0,
@@ -95,7 +82,6 @@ fn drive(ops: &[Op], timer_hz: u64) -> Lapic {
     l
 }
 
-/// Assert two LAPICs are observationally identical.
 fn assert_observationally_equal(a: &Lapic, b: &Lapic) -> Result<(), TestCaseError> {
     prop_assert_eq!(a.next_timer_deadline(), b.next_timer_deadline());
     prop_assert_eq!(a.has_deliverable(), b.has_deliverable());
@@ -135,8 +121,6 @@ proptest! {
         prop_assert_eq!(l.snapshot(), snap);
     }
 
-    /// Equal histories produce equal `LapicState` — the determinism requirement
-    /// (no map iteration order, no float, no clock read leaks in).
     #[test]
     fn snapshot_is_deterministic_across_runs(
         ops in prop::collection::vec(op_strategy(), 1..40),
@@ -147,7 +131,6 @@ proptest! {
         prop_assert_eq!(a.snapshot(), b.snapshot());
     }
 
-    /// A spurious snapshot `version` is rejected by `restore`.
     #[test]
     fn restore_rejects_bad_version(bad in any::<u32>()) {
         let l = Lapic::new(LapicConfig { apic_id: 0, timer_hz: 25_000_000 }).unwrap();
@@ -158,8 +141,6 @@ proptest! {
     }
 }
 
-/// Restore rejects structurally impossible timer bookkeeping (and a zero timer
-/// frequency), and accepts a genuinely coherent armed snapshot.
 #[test]
 fn restore_rejects_inconsistent_timer() {
     let l = Lapic::new(LapicConfig {
@@ -204,13 +185,6 @@ fn restore_rejects_inconsistent_timer() {
     assert!(Lapic::restore(&good).is_ok());
 }
 
-/// `restore` enforces the running-timer anchor bound: a running timer's
-/// `count_at_arm` is the full load or a re-anchored remainder, so it is **never
-/// more than** `initial_count`. The boundary `count_at_arm == initial_count` (the
-/// normal fresh-arm state) must be accepted; one tick over is unreachable through
-/// the MMIO paths and must be rejected. Pins the `count_at_arm > initial_count`
-/// restore guard (`src/device.rs`) — without this, a `> -> <` mutation of that
-/// comparison survives.
 #[test]
 fn restore_enforces_anchor_count_bound() {
     let mut armed = Lapic::new(LapicConfig {
@@ -232,8 +206,6 @@ fn restore_enforces_anchor_count_bound() {
     assert_eq!(Lapic::restore(&over).unwrap_err(), LapicError::InvalidState);
 }
 
-/// The `PPR` offset constant resolves and is read-only (sanity that the public
-/// constant set is wired correctly for downstream callers).
 #[test]
 fn ppr_offset_is_exposed() {
     let l = Lapic::new(LapicConfig {

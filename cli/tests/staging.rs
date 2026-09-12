@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Offline tests for the `harmony oci` staging pipeline: cpio byte
-//! stability and the run-record exit-marker parse. The image and boot
-//! halves need docker / a hypervisor and are exercised by the live run
-//! itself, not here.
 
 use std::process::Command;
 

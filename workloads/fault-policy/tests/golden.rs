@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 3 — golden answers and host-plane wire format. A hand-frozen `Answer`
-//! sequence for one seed under a known `FaultPolicy`, spanning every
-//! `DecisionClass`, pins the PRNG and the sampling against silent drift; a
-//! frozen `HostFault`/`Action`/`EnvSpec` byte layout pins the host-plane wire
-//! format. Regenerate (and review) with `GOLDEN_CAPTURE=1`.
 
 use std::collections::BTreeMap;
 
@@ -14,7 +9,6 @@ use fault_policy::{
 
 const SEED: u64 = 0x0123_4567_89AB_CDEF;
 
-/// A policy that faults often, so every fault class shows concrete faults.
 fn policy() -> FaultPolicy {
     let mut p = FaultPolicy::none();
     p.set_class(
@@ -56,8 +50,6 @@ fn policy() -> FaultPolicy {
     p
 }
 
-/// The decision sequence — at least one of every class, fault classes repeated
-/// so the sampling distribution is exercised.
 fn sequence() -> Vec<P> {
     let net = |c: u64| P::NetFlow {
         src: NodeId(0),
@@ -107,8 +99,6 @@ fn answers() -> Vec<String> {
         .collect()
 }
 
-/// Frozen expectations — `Answer::encode` hex per decision, captured once and
-/// reviewed. Regenerate with `GOLDEN_CAPTURE=1 cargo test -p environment --test golden`.
 const EXPECTED: &[&str] = &[
     "01080000008c70b62c4782947c",
     "0110000000de281fbf925670d5c005e0a53b1eb788",
@@ -149,9 +139,6 @@ fn golden_answer_sequence() {
     );
 }
 
-/// Sanity: the sequence really does cover every class, and the answers decode
-/// back to the expected shapes (supplies on supply classes, nominal-or-fault on
-/// fault classes) — so the golden is not pinning a degenerate all-nominal run.
 #[test]
 fn golden_covers_every_class_with_faults() {
     let mut env = SeededEnv::new(SEED, policy());
@@ -179,9 +166,6 @@ fn golden_covers_every_class_with_faults() {
     );
 }
 
-/// One host fault of every variant, with their frozen `HostFault::encode` hex.
-/// These tag/field layouts are a stable contract a recorded reproducer's replay
-/// (and the `perturb` transport) depends on. Regenerate with `GOLDEN_CAPTURE=1`.
 fn host_faults() -> Vec<(HostFault, &'static str)> {
     vec![
         (
@@ -221,9 +205,6 @@ fn golden_host_fault_wire_format() {
     }
 }
 
-/// The process faults the in-guest fault agent enforces, with their frozen
-/// `Answer::encode` hex. A round-trip test cannot catch a tag renumbering, and
-/// the agent decodes these bytes from a separately built binary.
 #[test]
 fn golden_process_fault_wire_format() {
     let capture = std::env::var_os("GOLDEN_CAPTURE").is_some();
@@ -251,8 +232,6 @@ fn golden_process_fault_wire_format() {
     }
 }
 
-/// Byte tag 18 sits between the two and is permanently unassigned, so a blob
-/// that names it is refused rather than reinterpreted.
 #[test]
 fn the_unassigned_process_fault_tag_is_refused() {
     assert!(Answer::decode(&[0x02, 18]).is_err());

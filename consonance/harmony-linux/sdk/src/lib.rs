@@ -1,81 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![no_std]
-#![doc = "The harmony guest SDK: assertions, IJON state registers, and lifecycle points a cooperating in-guest workload emits over the deterministic hypercall channel."]
-//!
-//! # The thin-SDK ruling (load-bearing)
-//!
-//! The SDK is **hooks + transport only** (ruled): it contributes
-//! *identity and observation* — named points, their firings, numeric state — and
-//! the **host owns every interpretation**. There are no checkers and no policy in
-//! the guest; Elle/history checkers live at the evaluator layer (task 75). So:
-//!
-//! - **`assert_always`** emits only on **violation**; the host turns the
-//!   violation into `StopReason::Assertion`.
-//! - **`assert_sometimes`** emits on **every hit** — features are a timestamped
-//!   stream (task 64), not a terminal set.
-//! - **`assert_reachable`** / **`assert_unreachable`** are the reached/must-not-
-//!   reach duals: a reached `unreachable` is a violation.
-//! - **`state_set` / `state_max`** are the IJON numeric registers (S&P 2020): the
-//!   guest reports the raw `(reg, op, value)`; the host interprets max-novelty.
-//! - **`coverage_yield(thread, observed, ready)`** surfaces a crossed
-//!   per-thread instrumentation threshold. The host returns the next threshold
-//!   and one index in the cooperating runtime's runnable set.
-//! - **`setup_complete`** and **`frame_complete`** are lifecycle hooks the host
-//!   turns into `StopReason::SnapshotPoint`; the latter carries the guest's
-//!   cumulative emulated-frame count, never host time.
-//!
-//! The SDK never times anything — the **host** stamps each emission at the
-//! `Moment` it surfaces. Guest randomness is **not** an SDK primitive: the
-//! Entropy hypercall (`Client::entropy_fill`, host `SeededEntropy`) is the single
-//! seeded source, re-exported as [`Sdk::entropy_fill`].
-//!
-//! # Form
-//!
-//! A `no_std`, `alloc`-free crate generic over `hypercall_proto::Transport`, so
-//! `Sdk<Client-over-VmcallTransport>` composes with the purpose-built guest
-//! doorbell shim with zero new transport code. Every emission rides the existing
-//! Event service (`ServiceId::Event`, op 1) under the byte-deterministic,
-//! versioned payload convention in [`wire`]; package-defined requests ride SDK
-//! opcode 3; the M6 threshold handshake uses op 2 on that same service.
-//! A package that defines its own request namespace owns the codec for it, as
-//! `workloads/fault-policy` does for standing faults. Task 74's OTel bridge
-//! reuses these same transport conventions (a reserved event-id namespace).
-//!
 pub mod wire;
 
 use hypercall_proto::{Client, ClientError, MAX_PAYLOAD, Transport};
 
 use core::fmt;
 
-/// The scratch buffer the one-shot catalog declaration is marshalled into. Sized
-/// to the largest payload one Event frame carries; a catalog that overflows it is
-/// reported as [`SdkError::CatalogTooLarge`], never truncated. Only
-/// [`Sdk::init`] uses a buffer this large, and it runs once at guest startup.
 const CATALOG_BUF: usize = MAX_PAYLOAD - 4;
 
-/// The declared kind of an SDK [`Point`] — its role in the catalog. The kind
-/// selects the runtime event-id namespace ([`wire`]) and lets the host-side
-/// never-fired report be sliced by role.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PointKind {
-    /// An `assert_always`: it must hold on every pass; a violation is a bug.
     AssertAlways,
-    /// An `assert_sometimes`: at least one satisfied hit is expected across the
-    /// campaign; a declared-but-never-hit point is a coverage gap.
     AssertSometimes,
-    /// An `assert_reachable`: this point should be reached at least once.
     AssertReachable,
-    /// An `assert_unreachable`: reaching this point is a bug.
     AssertUnreachable,
-    /// An IJON numeric state register.
     StateReg,
-    /// A package-defined perturbation site. The optional fault adapter owns the
-    /// request and response codec; the generic SDK only declares its coordinate.
     Buggify,
 }
 
 impl PointKind {
-    /// The catalog wire byte for this kind.
     const fn byte(self) -> u8 {
         match self {
             PointKind::AssertAlways => wire::KIND_ALWAYS,
@@ -87,10 +30,6 @@ impl PointKind {
         }
     }
 
-    /// The runtime event-id **namespace** a point of this kind fires in — the
-    /// coordinate the host keys on. All four assert kinds share [`wire::NS_ASSERT`]
-    /// (their role is a catalog attribute, not a separate id space), so two assert
-    /// points with the same id collide even across always/sometimes.
     const fn namespace(self) -> u8 {
         match self {
             PointKind::AssertAlways
@@ -103,22 +42,14 @@ impl PointKind {
     }
 }
 
-/// One declared point: a **stable id**, a human name, and a [`PointKind`]. The id
-/// is the guest-owned identity that fires at runtime; the name is the stable key
-/// the host-side catalog keys its never-fired report on. Ids must fit
-/// [`wire::LOCAL_MAX`] (24 bits) and be unique within their kind's namespace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Point {
-    /// The stable site id (unique within the kind's namespace, `<= LOCAL_MAX`).
     pub id: u32,
-    /// The human-readable name — the catalog's stable report key.
     pub name: &'static str,
-    /// The declared kind.
     pub kind: PointKind,
 }
 
 impl Point {
-    /// An `assert_always` point.
     pub const fn always(id: u32, name: &'static str) -> Self {
         Self {
             id,
@@ -126,7 +57,6 @@ impl Point {
             kind: PointKind::AssertAlways,
         }
     }
-    /// An `assert_sometimes` point.
     pub const fn sometimes(id: u32, name: &'static str) -> Self {
         Self {
             id,
@@ -134,7 +64,6 @@ impl Point {
             kind: PointKind::AssertSometimes,
         }
     }
-    /// An `assert_reachable` point.
     pub const fn reachable(id: u32, name: &'static str) -> Self {
         Self {
             id,
@@ -142,7 +71,6 @@ impl Point {
             kind: PointKind::AssertReachable,
         }
     }
-    /// An `assert_unreachable` point.
     pub const fn unreachable(id: u32, name: &'static str) -> Self {
         Self {
             id,
@@ -150,7 +78,6 @@ impl Point {
             kind: PointKind::AssertUnreachable,
         }
     }
-    /// An IJON state register.
     pub const fn state(id: u32, name: &'static str) -> Self {
         Self {
             id,
@@ -158,8 +85,6 @@ impl Point {
             kind: PointKind::StateReg,
         }
     }
-    /// A package-defined perturbation site. Runtime resolution is supplied by
-    /// the optional fault adapter, not by the generic SDK.
     pub const fn buggify(id: u32, name: &'static str) -> Self {
         Self {
             id,
@@ -169,24 +94,12 @@ impl Point {
     }
 }
 
-/// An SDK error. Wraps the underlying [`ClientError`] and adds the SDK-local
-/// framing failures. Total and panic-free: a too-large catalog or an out-of-range
-/// id is a typed error, never a truncation or a panic.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SdkError<E> {
-    /// The underlying hypercall client failed.
     Client(ClientError<E>),
-    /// The declared catalog does not fit one Event frame.
     CatalogTooLarge,
-    /// A point/register id exceeds [`wire::LOCAL_MAX`] (the 24-bit local space).
     PointIdTooLarge,
-    /// Two declared points share a `(namespace, id)` coordinate — they would fire
-    /// at the same `event_id`, aliasing the host catalog (and its never-fired
-    /// report) silently. Rejected at [`init`](Sdk::init).
     DuplicateCoordinate,
-    /// Two declared points share a `name` — the host catalog's never-fired report
-    /// is keyed by name, so a duplicate silently aliases the report. Rejected at
-    /// [`init`](Sdk::init).
     DuplicateName,
 }
 
@@ -210,9 +123,6 @@ impl<E> From<ClientError<E>> for SdkError<E> {
     }
 }
 
-/// A forward-only, panic-free byte writer over a fixed buffer. A write past the
-/// end sets the overflow flag and is dropped; [`finish`](Cursor::finish) then
-/// returns `None`. All integers are little-endian ([`wire`] convention).
 struct Cursor<'a> {
     buf: &'a mut [u8],
     pos: usize,
@@ -255,22 +165,11 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// The guest SDK handle: a thin wrapper over a `hypercall_proto::Client` that
-/// speaks the [`wire`] convention. Construct it with [`init`](Sdk::init), which
-/// declares the point catalog in one Event, then call the verbs.
 pub struct Sdk<T: Transport> {
     client: Client<T>,
 }
 
 impl<T: Transport> Sdk<T> {
-    /// Build the SDK over `transport` and **register the declared point set** in
-    /// one catalog-declaration Event (each point = stable id + name + kind). The
-    /// host folds this declaration into its catalog so a never-hit point is
-    /// detectable (the never-fired report).
-    ///
-    /// Fails with [`SdkError::CatalogTooLarge`] if the catalog does not fit one
-    /// frame, or [`SdkError::PointIdTooLarge`] if any id exceeds the 24-bit local
-    /// space.
     pub fn init(transport: T, catalog: &[Point]) -> Result<Self, SdkError<T::Error>> {
         let mut sdk = Self {
             client: Client::new(transport),
@@ -279,7 +178,6 @@ impl<T: Transport> Sdk<T> {
         Ok(sdk)
     }
 
-    /// Marshal and emit the catalog-declaration Event.
     fn declare(&mut self, catalog: &[Point]) -> Result<(), SdkError<T::Error>> {
         for (i, p) in catalog.iter().enumerate() {
             for q in &catalog[i + 1..] {
@@ -313,8 +211,6 @@ impl<T: Transport> Sdk<T> {
         self.emit(wire::CATALOG_EVENT_ID, &buf[..len])
     }
 
-    /// `assert_always(cond, point)`: emit **only on violation** (`!cond`). The
-    /// host surfaces a violation as `StopReason::Assertion`.
     pub fn assert_always(&mut self, cond: bool, point: u32) -> Result<(), SdkError<T::Error>> {
         if cond {
             return Ok(());
@@ -322,9 +218,6 @@ impl<T: Transport> Sdk<T> {
         self.emit_assert(point, wire::DISP_VIOLATION)
     }
 
-    /// `assert_sometimes(cond, point)`: emit a **hit on every satisfied pass**
-    /// (`cond`). Each hit is a timestamped feature (task 64); the never-fired
-    /// report flags a `sometimes` point that never hit.
     pub fn assert_sometimes(&mut self, cond: bool, point: u32) -> Result<(), SdkError<T::Error>> {
         if !cond {
             return Ok(());
@@ -332,50 +225,30 @@ impl<T: Transport> Sdk<T> {
         self.emit_assert(point, wire::DISP_HIT)
     }
 
-    /// `assert_reachable(point)`: emit a **hit** — this point was reached (a
-    /// positive signal; a never-reached `reachable` point is a coverage gap).
     pub fn assert_reachable(&mut self, point: u32) -> Result<(), SdkError<T::Error>> {
         self.emit_assert(point, wire::DISP_HIT)
     }
 
-    /// `assert_unreachable(point)`: emit a **violation** — reaching this point is
-    /// a bug, so the host surfaces `StopReason::Assertion`.
     pub fn assert_unreachable(&mut self, point: u32) -> Result<(), SdkError<T::Error>> {
         self.emit_assert(point, wire::DISP_VIOLATION)
     }
 
-    /// `state_set(reg, v)`: report the IJON register `reg` was assigned `v`. The
-    /// guest reports the raw value + op; the host interprets novelty.
     pub fn state_set(&mut self, reg: u32, v: u64) -> Result<(), SdkError<T::Error>> {
         self.emit_state(reg, wire::STATE_SET, v)
     }
 
-    /// `state_max(reg, v)`: report `v` as a candidate maximum for register `reg`.
-    /// The host tracks the running max and the novelty of a new one; the guest
-    /// stays thin (no max tracking, per the thin-SDK ruling).
     pub fn state_max(&mut self, reg: u32, v: u64) -> Result<(), SdkError<T::Error>> {
         self.emit_state(reg, wire::STATE_MAX, v)
     }
 
-    /// `setup_complete()`: the lifecycle hook. The host surfaces
-    /// `StopReason::SnapshotPoint` here so the campaign can seal the boot/setup
-    /// prefix and fork from it.
     pub fn setup_complete(&mut self) -> Result<(), SdkError<T::Error>> {
         self.emit(wire::SETUP_COMPLETE_EVENT_ID, &[])
     }
 
-    /// `frame_complete(frame_count)`: report the cumulative number of emulated
-    /// frames at a cooperating workload boundary. The host surfaces a snapshot
-    /// point for the event; a control client uses the payload as its logical
-    /// frame clock rather than interpreting V-time nanoseconds as game time.
     pub fn frame_complete(&mut self, frame_count: u64) -> Result<(), SdkError<T::Error>> {
         self.emit(wire::FRAME_COMPLETE_EVENT_ID, &frame_count.to_le_bytes())
     }
 
-    /// Surface a crossed instrumented basic-block threshold and obtain the
-    /// next threshold plus the selected runnable index. The cooperating runtime
-    /// must use stable logical thread ids and dispatch `selected` from the same
-    /// `ready`-entry ordering it declared in this request.
     pub fn coverage_yield(
         &mut self,
         thread: u32,
@@ -387,21 +260,14 @@ impl<T: Transport> Sdk<T> {
             .map_err(SdkError::Client)
     }
 
-    /// Fill `out` with deterministic guest entropy. **Not a new primitive** — it
-    /// forwards to `Client::entropy_fill` (the host `SeededEntropy` stream), the
-    /// project's single guest-random source, cited here so a workload holding
-    /// only an [`Sdk`] handle still has determinized randomness.
     pub fn entropy_fill(&mut self, out: &mut [u8]) -> Result<(), SdkError<T::Error>> {
         self.client.entropy_fill(out).map_err(SdkError::Client)
     }
 
-    /// Mutable access to the underlying hypercall client — the escape hatch for a
-    /// workload that also needs the console/block/entropy services directly.
     pub fn client_mut(&mut self) -> &mut Client<T> {
         &mut self.client
     }
 
-    /// Emit one assertion event `[disposition, detail_len=0, ...]` for `point`.
     fn emit_assert(&mut self, point: u32, disposition: u8) -> Result<(), SdkError<T::Error>> {
         if point > wire::LOCAL_MAX {
             return Err(SdkError::PointIdTooLarge);
@@ -410,7 +276,6 @@ impl<T: Transport> Sdk<T> {
         self.emit(wire::event_id(wire::NS_ASSERT, point), &buf)
     }
 
-    /// Emit one state event `[op, value]` for register `reg`.
     fn emit_state(&mut self, reg: u32, op: u8, value: u64) -> Result<(), SdkError<T::Error>> {
         if reg > wire::LOCAL_MAX {
             return Err(SdkError::PointIdTooLarge);
@@ -421,8 +286,18 @@ impl<T: Transport> Sdk<T> {
         self.emit(wire::event_id(wire::NS_STATE, reg), &buf)
     }
 
-    /// One Event emission through the client.
     fn emit(&mut self, id: u32, data: &[u8]) -> Result<(), SdkError<T::Error>> {
         self.client.event_emit(id, data).map_err(SdkError::Client)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_buffer_leaves_room_for_the_four_byte_header() {
+        assert_eq!(MAX_PAYLOAD, 4072);
+        assert_eq!(CATALOG_BUF, 4068);
     }
 }

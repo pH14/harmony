@@ -1,16 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Trim a recorded whole-tree checkpoint to one (world, level) pair's
-//! subtree: the archive report keeps only that pair's entries (optionally
-//! bounded by creation execution), and the snapshot checkpoint keeps only
-//! their snapshots. A campaign resuming the trimmed pair starts from the
-//! bootstrap state plus exactly that subtree, imported through the normal
-//! whole-tree path, which re-roots entries whose parents were trimmed away.
-//!
-//! The snapshot checkpoint may be piped on stdin (`-`) so a remote copy can
-//! stream through without landing whole on disk; the report prints the
-//! SHA-256 of the bytes it consumed for verification against the source.
-
 use std::{
     env,
     error::Error,

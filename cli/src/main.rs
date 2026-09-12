@@ -1,12 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! # harmony — the product CLI
-//!
-//! One binary, two verbs. `harmony preflight` reports which support-matrix
-//! cell (docs/DETERMINISM.md §4) the current host occupies and whether the
-//! guest artifacts are installed. `harmony oci run` boots an OCI container
-//! image inside the deterministic hypervisor and prints the run digest.
-//! Hypervisor verbs fail closed: an unsupported or untested host is named,
-//! never silently degraded.
 
 mod host;
 mod preflight;
@@ -24,25 +16,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Explore a workload with its package-owned semantics.
     Search(search::Args),
-    /// Report host capabilities: support-matrix cell, hypervisor
-    /// availability, and installed guest artifacts.
     Preflight {
-        /// Emit the report as JSON instead of text.
         #[arg(long)]
         json: bool,
     },
-    /// Run OCI container workloads deterministically.
     #[command(subcommand)]
     Oci(OciCommand),
 }
 
 #[derive(Subcommand)]
 enum OciCommand {
-    /// Boot an OCI image in the deterministic hypervisor and run it to
-    /// completion. Prints the run digest; identical seed + image ⇒
-    /// identical digest.
     Run(oci::RunArgs),
 }
 

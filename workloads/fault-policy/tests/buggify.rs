@@ -1,16 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Task 73 — the buggify decision class on the **fault** stream.
-//!
-//! Two properties the task-73 spec (gate 3) pins:
-//!
-//! 1. **Stream separation.** A [`DecisionClass::Buggify`] draw comes from the
-//!    domain-separated *fault* PRNG, never the *supply* PRNG. So interleaving
-//!    buggify decisions (or turning their probability up) leaves a run's
-//!    entropy/payload/scheduler **supply** stream byte-identical — enabling
-//!    buggify can never perturb the workload's own randomness.
-//! 2. **Per-point biasing reproduces a golden draw sequence.** Given a seed and a
-//!    [`FaultPolicy`] with per-point biases, the fire/nominal sequence for a
-//!    fixed point order is deterministic and pinned.
 
 mod common;
 
@@ -19,7 +7,6 @@ use fault_policy::{
     SeededEnv,
 };
 
-/// Collect the resolved [`Answer`]s a [`SeededEnv`] gives for a point sequence.
 fn answers(seed: u64, policy: FaultPolicy, points: &[DecisionPoint]) -> Vec<Answer> {
     let mut env = SeededEnv::new(seed, policy);
     points
@@ -31,7 +18,6 @@ fn answers(seed: u64, policy: FaultPolicy, points: &[DecisionPoint]) -> Vec<Answ
         .collect()
 }
 
-/// The entropy (supply) answers only, dropping the buggify answers.
 fn supply_only(seed: u64, policy: FaultPolicy, points: &[DecisionPoint]) -> Vec<Answer> {
     answers(seed, policy, points)
         .into_iter()
@@ -46,16 +32,12 @@ fn supply_only(seed: u64, policy: FaultPolicy, points: &[DecisionPoint]) -> Vec<
         .collect()
 }
 
-/// A policy whose default buggify probability is `num/den`.
 fn buggify_policy(num: u32, den: u32) -> FaultPolicy {
     let mut p = FaultPolicy::none();
     p.set_buggify_default(num, den).expect("den >= 1");
     p
 }
 
-/// GATE 3a — stream separation. The supply stream is byte-identical whether or
-/// not buggify decisions are interleaved, and whatever the buggify probability
-/// is: buggify draws from the fault stream, entropy from the supply stream.
 #[test]
 fn buggify_never_disturbs_the_supply_stream() {
     let seed = 0xABCD_1234_5678_9F01;
@@ -87,10 +69,6 @@ fn buggify_never_disturbs_the_supply_stream() {
     );
 }
 
-/// GATE 3b — per-point biasing golden. Distinct per-point biases produce a
-/// deterministic, pinned fire/nominal sequence for a fixed point order under a
-/// fixed seed. Point 0 always fires (1/1), point 1 never fires (0/1), point 2
-/// uses the default (1/2, seed-dependent).
 #[test]
 fn per_point_biasing_reproduces_a_golden_sequence() {
     let seed = 42;
@@ -122,11 +100,6 @@ fn per_point_biasing_reproduces_a_golden_sequence() {
     assert_eq!(fired, again, "buggify is deterministic per (seed, policy)");
 }
 
-/// `set_class(Buggify, …)` is rejected (buggify has no per-class slot — it is
-/// keyed per point), and a buggify-only policy set the sanctioned way round-trips
-/// through its **own** bytes. Regression for the review's finding that routing
-/// buggify through `set_class` lands a `BuggifyFire` in the net slot and makes
-/// `from_bytes(to_bytes())` reject the policy's own bytes.
 #[test]
 fn set_class_rejects_buggify_and_policy_round_trips() {
     let mut p = FaultPolicy::none();
@@ -151,10 +124,6 @@ fn set_class_rejects_buggify_and_policy_round_trips() {
     );
 }
 
-/// The dynamic stream state round-trips: an env resumed at a captured position
-/// produces the **identical** continuation across BOTH the supply (entropy) and
-/// fault (buggify) streams — the SDK-channel snapshot fix (a fork from a mid-run
-/// snapshot must continue the seeded streams from where they were).
 #[test]
 fn stream_state_resumes_both_streams_exactly() {
     let seed = 0x1234_5678_9ABC_DEF0;
@@ -194,8 +163,6 @@ fn stream_state_resumes_both_streams_exactly() {
     );
 }
 
-/// A buggify point only admits `Nominal` or `Fault(BuggifyFire)` — never a supply
-/// answer, and never a foreign-class fault.
 #[test]
 fn buggify_point_admits_only_nominal_or_buggify_fire() {
     let p = DecisionPoint::Buggify { point: 7 };
