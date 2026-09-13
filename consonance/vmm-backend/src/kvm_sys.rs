@@ -796,7 +796,7 @@ mod xsave_diagnostic {
     const X87_FSW: std::ops::Range<usize> = 2..4;
     const X87_FTW: std::ops::Range<usize> = 4..5;
     const X87_ST: std::ops::Range<usize> = 32..160;
-    const X87_ST_SEED: [u8; 128] = [0xA7; 128];
+    const X87_ST_SEED: [u8; 10] = [0xA7; 10];
     const _: () = assert!(GUEST_XSAVE_GPA + GUEST_XSAVE_PAGE_LEN <= RAM_LEN);
     const ACTIVE_XMM0: [u8; 16] = [
         0xA5, 0x5A, 0x3C, 0xC3, 0x96, 0x69, 0x78, 0x87, 0x12, 0x21, 0x34, 0x43, 0x56, 0x65, 0xAB,
@@ -1198,11 +1198,14 @@ mod xsave_diagnostic {
             None
         };
         if observation.guest_program() {
-            state.xsave[X87_ST.start..X87_ST.end].fill(0);
+            state.xsave[0..24].fill(0);
+            state.xsave[X87_ST].fill(0);
             state.xsave[X87_FCW].copy_from_slice(&[0x7f, 0x03]);
             state.xsave[X87_FSW].fill(0);
             state.xsave[X87_FTW].copy_from_slice(&[0xff]);
-            state.xsave[X87_ST].copy_from_slice(&X87_ST_SEED);
+            for slot in state.xsave[X87_ST].chunks_exact_mut(16) {
+                slot[..X87_ST_SEED.len()].copy_from_slice(&X87_ST_SEED);
+            }
         }
         state.xsave[SSE_XMM0].fill(0);
         state.xsave[XCOMP_BV].fill(0);
@@ -1449,7 +1452,11 @@ mod xsave_diagnostic {
             writeln!(metadata, "pre_guest_x87_fcw=[7f, 03]").expect("metadata write");
             writeln!(metadata, "pre_guest_x87_fsw=[00, 00]").expect("metadata write");
             writeln!(metadata, "pre_guest_x87_ftw=[ff]").expect("metadata write");
-            writeln!(metadata, "pre_guest_x87_st_seed=repeat-0xa7").expect("metadata write");
+            writeln!(
+                metadata,
+                "pre_guest_x87_st_seed=8-slots-of-10-bytes-0xa7-with-6-zero-padding-bytes"
+            )
+            .expect("metadata write");
             writeln!(metadata, "pre_guest_x87_st_seed_len={}", X87_ST_SEED.len())
                 .expect("metadata write");
         }
@@ -1595,6 +1602,14 @@ mod xsave_diagnostic {
                 metadata,
                 "guest_xsave_x87_ftw_empty={}",
                 image[X87_FTW].iter().all(|&byte| byte == 0)
+            )
+            .expect("metadata write");
+            writeln!(
+                metadata,
+                "guest_xsave_x87_payload_matches_seed={}",
+                image[X87_ST]
+                    .chunks_exact(16)
+                    .all(|slot| slot[..10] == X87_ST_SEED)
             )
             .expect("metadata write");
             writeln!(metadata, "guest_xsave_x87_st_payload_len={}", X87_ST.len())
