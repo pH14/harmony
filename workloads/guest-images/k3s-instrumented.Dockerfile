@@ -19,14 +19,16 @@ RUN go install "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-to
     && make -C .harmony/libvoidstar BUILD_DIR=/opt/harmony all \
     && sdk_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
     && test -d "$sdk_dir" \
+    && go mod edit -require="github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
+    && go mod edit -replace="github.com/antithesishq/antithesis-sdk-go=$sdk_dir" \
     && sed -i "s|buildDate=\$(date -u '+%Y-%m-%dT%H:%M:%SZ')|buildDate=${BUILD_DATE}|" scripts/build \
     && sed -i 's|CGO_ENABLED=1 "${GO}" build $BLDFLAGS|CGO_ENABLED=1 "${GO}" build -toolexec=/go/bin/antithesis-go-toolexec $BLDFLAGS|' scripts/build \
     && NO_DAPPER=true GIT_TAG="$GIT_TAG" COMMIT="$COMMIT" TREE_STATE=clean DIRTY= \
        STATIC_BUILD=false ./scripts/download \
     && mkdir -p /opt/harmony/symbols \
     && NO_DAPPER=true GIT_TAG="$GIT_TAG" COMMIT="$COMMIT" TREE_STATE=clean DIRTY= \
-       STATIC_BUILD=false ANTITHESIS_SDK_MODULE_DIR="$sdk_dir" \
-       ANTITHESIS_SYMBOLS_DIR=/opt/harmony/symbols ANTITHESIS_SYMBOL_PREFIX=k3s-server \
+       STATIC_BUILD=false ANTITHESIS_SYMBOLS_DIR=/opt/harmony/symbols \
+       ANTITHESIS_SYMBOL_PREFIX=k3s-server \
        ./scripts/build \
     && NO_DAPPER=true GIT_TAG="$GIT_TAG" COMMIT="$COMMIT" TREE_STATE=clean DIRTY= \
        STATIC_BUILD=false ./scripts/package-cli \
