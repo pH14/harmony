@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# ARM64 Nova userspace and pinned billboard requirements. This profile keeps
+# the minimal platform image unchanged while providing the shell, MMIO, and
+# HugeTLB surfaces used by the Nova initramfs and static play-agent.
+
+CONFIG_BINFMT_SCRIPT=y
+CONFIG_PROC_FS=y
+CONFIG_PROC_SYSCTL=y
+CONFIG_PROC_PAGE_MONITOR=y
+CONFIG_SYSCTL=y
+CONFIG_FUTEX=y
+CONFIG_MMU=y
+CONFIG_SHMEM=y
+CONFIG_TMPFS=y
+CONFIG_DEVMEM=y
+# CONFIG_STRICT_DEVMEM is not set
+
+# The agent allocates one 2 MiB MAP_HUGETLB billboard page. Compaction and
+# migration keep the two-page reservation reliable on the native ARM host.
+CONFIG_COMPACTION=y
+CONFIG_HUGETLBFS=y
+CONFIG_MIGRATION=y

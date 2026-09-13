@@ -30,6 +30,12 @@ case "$arm64_profile" in
         arm64_output=Image-postgres
         arm64_extra_fragment=$GUEST_DIR/../../workloads/guest-images/arm64-postgres-config-fragment
         ;;
+    nova)
+        arm64_source_root=$BUILD_ROOT/arm64-nova-src
+        arm64_object_root=$BUILD_ROOT/kernel-build-arm64-nova
+        arm64_output=Image-nova
+        arm64_extra_fragment=$LINUX_DIR/arm64-nova-config-fragment
+        ;;
     n6-traps-off)
         arm64_source_root=$BUILD_ROOT/arm64-n6-traps-off-src
         arm64_object_root=$BUILD_ROOT/kernel-build-arm64-n6-traps-off
@@ -37,7 +43,7 @@ case "$arm64_profile" in
         arm64_extra_fragment=$LINUX_DIR/arm64-n6-traps-off-config-fragment
         ;;
     *)
-        echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal or postgres)" >&2
+        echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal, postgres, nova, or n6-traps-off)" >&2
         exit 1
         ;;
 esac
@@ -174,6 +180,11 @@ case "$arm64_profile" in
             SYSVIPC POSIX_MQUEUE NAMESPACES UTS_NS IPC_NS PID_NS NET_NS NET UNIX \
             INET CGROUPS EPOLL EVENTFD SIGNALFD TIMERFD INOTIFY_USER SECCOMP \
             DEVMEM
+        assert_off STRICT_DEVMEM
+        ;;
+    nova)
+        assert_y BINFMT_SCRIPT PROC_FS PROC_SYSCTL PROC_PAGE_MONITOR SYSCTL FUTEX \
+            MMU SHMEM TMPFS DEVMEM HUGETLBFS COMPACTION MIGRATION
         assert_off STRICT_DEVMEM
         ;;
 esac
