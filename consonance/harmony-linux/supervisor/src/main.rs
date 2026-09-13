@@ -1626,6 +1626,7 @@ mod runtime {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support isolated filesystem processes")]
         fn check_output_is_unlinked_while_the_open_stream_remains_readable() {
             let directory =
                 std::env::temp_dir().join(format!("harmony-check-output-{}", std::process::id()));
