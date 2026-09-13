@@ -51,17 +51,21 @@ accepted instrumentation reports advance that generation, which keeps stale
 pre-fault evidence distinct from a check completed after recovery. Each check
 receives its starting generation in `HARMONY_DISTURBANCE_GENERATION`, allowing a
 stateful checker to invalidate cached results without importing process-fault
-semantics.
+semantics. The supervisor unlinks each check's output file after opening its
+read and write descriptors, so completed checks do not accumulate in the guest
+tmpfs.
 
 Instrumented nodes receive a pair of inherited event descriptors. The generic
 control and report frames live in `process-proto`; the supervisor acknowledges
 runtime readiness, orders arms and disarms, and only credits an event kill when
 its report matches the acknowledged rarity and window-start identity. Event
 parks report completed holds through the same channel, and their standing
-windows remain active long enough for the recorded hold to complete. Outstanding windows,
-commands, arms, and a reported kill awaiting observed child death contribute
-to the pending-fault fence. A protocol failure while work is outstanding marks
-the execution as an infrastructure failure.
+windows remain active long enough for the recorded hold to complete. When
+multiple event-kill windows overlap for one node, a reported kill advances the
+supervisor to the next unfired window identity. Outstanding windows, commands,
+arms, and a reported kill awaiting observed child death contribute to the
+pending-fault fence. A protocol failure while work is outstanding marks the
+execution as an infrastructure failure.
 
 The faults workload owns the semantic fault policy and composes its optional C
 instrumentation runtime with `libvoidstar`. The supervisor consumes only the

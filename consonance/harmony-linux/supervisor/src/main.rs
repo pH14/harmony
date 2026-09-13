@@ -228,7 +228,7 @@ mod runtime {
         report_len: usize,
         kill_armed: Option<u8>,
         kill_arm_start: Option<u64>,
-        park_armed: Option<EventPark>,
+        park_armed: bool,
         park_seen: u64,
         reported_kill_pending: bool,
         ready: bool,
@@ -257,7 +257,7 @@ mod runtime {
                 report_len: 0,
                 kill_armed: None,
                 kill_arm_start: None,
-                park_armed: None,
+                park_armed: false,
                 park_seen: 0,
                 reported_kill_pending: false,
                 ready: false,
@@ -279,7 +279,7 @@ mod runtime {
             self.deferred.clear();
             self.outbound = None;
             self.pending = None;
-            self.park_armed = None;
+            self.park_armed = false;
             self.reported_kill_pending = false;
             self.drain_reports(node, supervisor, tick, true);
             if let Some((rarity, start)) = kill_arm {
@@ -302,7 +302,7 @@ mod runtime {
 
         fn poll_status(&mut self) {
             if self.ready
-                && self.park_armed.is_some()
+                && self.park_armed
                 && self.commands.is_empty()
                 && self.outbound.is_none()
                 && self.pending.is_none()
@@ -378,7 +378,7 @@ mod runtime {
             if self.kill_armed.is_some() {
                 pending = pending.saturating_add(1);
             }
-            if self.park_armed.is_some() {
+            if self.park_armed {
                 pending = pending.saturating_add(1);
             }
             if self.reported_kill_pending {
@@ -406,7 +406,7 @@ mod runtime {
                     || self.outbound.is_some()
                     || self.pending.is_some()
                     || self.kill_armed.is_some()
-                    || self.park_armed.is_some())
+                    || self.park_armed)
         }
 
         fn drive(&mut self, node: u16, supervisor: &mut Supervisor, tick: u64) {
@@ -500,15 +500,15 @@ mod runtime {
                     self.kill_armed = None;
                     self.kill_arm_start = None;
                 }
-                Ok(EventReply::Echo(EventCommand::ArmPark { rarity, hold_nanos })) => {
-                    self.park_armed = Some(EventPark { rarity, hold_nanos });
+                Ok(EventReply::Echo(EventCommand::ArmPark { .. })) => {
+                    self.park_armed = true;
                 }
                 Ok(EventReply::Echo(EventCommand::DisarmPark)) => {
-                    self.park_armed = None;
+                    self.park_armed = false;
                     supervisor.note_process_transition();
                 }
                 Ok(EventReply::ParkStatus { fires, armed }) => {
-                    let was_armed = self.park_armed.is_some();
+                    let was_armed = self.park_armed;
                     if fires >= self.park_seen {
                         let delta = fires - self.park_seen;
                         self.park_seen = fires;
@@ -517,7 +517,7 @@ mod runtime {
                         self.park_seen = fires;
                     }
                     if !armed {
-                        self.park_armed = None;
+                        self.park_armed = false;
                         if was_armed {
                             supervisor.note_process_transition();
                         }
@@ -764,7 +764,13 @@ mod runtime {
         };
         runtime.check_runs = runtime.check_runs.saturating_add(1);
         let run = runtime.check_runs;
-        let check = spawn_check(spec, argv, run, supervisor.disturbance_generation())?;
+        let check = spawn_check(
+            spec,
+            argv,
+            Path::new(HOOK_DIR),
+            run,
+            supervisor.disturbance_generation(),
+        )?;
         runtime.check = Some(check);
         supervisor.note_check_started();
         log(tick, &format!("check {run} started"));
@@ -1366,13 +1372,16 @@ mod runtime {
     fn spawn_check(
         execution: &execution_proto::ExecutionSpec,
         argv: &[String],
+        hook_dir: &Path,
         run: u64,
         start_generation: u64,
     ) -> Result<Check, String> {
-        std::fs::create_dir_all(HOOK_DIR).map_err(|error| format!("{HOOK_DIR}: {error}"))?;
-        let path = PathBuf::from(HOOK_DIR).join(format!("check-{run}.out"));
+        std::fs::create_dir_all(hook_dir)
+            .map_err(|error| format!("{}: {error}", hook_dir.display()))?;
+        let path = hook_dir.join(format!("check-{run}.out"));
         let sink = File::create(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let output = File::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        std::fs::remove_file(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut command = process::command(execution, argv)
             .map_err(|error| format!("check {:?}: {error}", argv[0]))?;
         command.env(
@@ -1585,7 +1594,8 @@ mod runtime {
     #[cfg(test)]
     mod tests {
         use super::{
-            Action, ActiveWindows, EventChannel, EventCommand, Supervisor, events, inherit_event_fd,
+            Action, ActiveWindows, EventChannel, EventCommand, Supervisor, events,
+            inherit_event_fd, read_lines, spawn_check,
         };
         use process_proto::ProcessAction;
         use std::io::{Read, Write};
@@ -1596,6 +1606,57 @@ mod runtime {
             let mut active = ActiveWindows::new();
             active.insert(0, &ProcessAction::EventKill { rarity: 0 }, 0);
             active
+        }
+
+        fn current_groups() -> Vec<u32> {
+            // SAFETY: a zero-sized getgroups call writes nothing and returns the count.
+            let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+            assert!(count >= 0);
+            let mut groups = vec![0; usize::try_from(count).expect("group count")];
+            if count == 0 {
+                return groups;
+            }
+            // SAFETY: groups has count writable gid slots for this synchronous call.
+            let actual = unsafe { libc::getgroups(count, groups.as_mut_ptr()) };
+            assert!(actual >= 0);
+            groups.truncate(usize::try_from(actual).expect("actual group count"));
+            groups.sort_unstable();
+            groups.dedup();
+            groups
+        }
+
+        #[test]
+        fn check_output_is_unlinked_while_the_open_stream_remains_readable() {
+            let directory =
+                std::env::temp_dir().join(format!("harmony-check-output-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&directory);
+            std::fs::create_dir(&directory).expect("create check directory");
+            let argv = [
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                "printf '@reachable 7\\n'".to_owned(),
+            ];
+            let execution = execution_proto::ExecutionSpec {
+                version: execution_proto::VERSION,
+                argv: argv.to_vec(),
+                env: Vec::new(),
+                cwd: "/".to_owned(),
+                // SAFETY: these calls read scalar credentials and retain no borrowed state.
+                uid: unsafe { libc::geteuid() },
+                // SAFETY: this call reads a scalar credential and retains no borrowed state.
+                gid: unsafe { libc::getegid() },
+                additional_gids: current_groups(),
+                bundle: None,
+            };
+            let mut check = spawn_check(&execution, &argv, &directory, 3, 0).expect("spawn check");
+            assert!(!directory.join("check-3.out").exists());
+            assert!(check.child.wait().expect("wait for check").success());
+            assert_eq!(
+                read_lines(&mut check.output, &mut check.reader),
+                ["@reachable 7"]
+            );
+            drop(check);
+            std::fs::remove_dir(directory).expect("remove check directory");
         }
 
         #[test]

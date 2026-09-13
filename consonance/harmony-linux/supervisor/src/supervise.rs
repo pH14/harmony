@@ -86,6 +86,7 @@ pub struct ProcessSupervisor {
     nodes: Vec<NodeState>,
     previous: ActiveWindows,
     counters: Counters,
+    event_kill_selected: Vec<Option<EventKillWindow>>,
     event_kill_armed: Vec<EventKillWindow>,
     event_kill_fired: Vec<EventKillWindow>,
 }
@@ -108,6 +109,7 @@ impl ProcessSupervisor {
             ],
             previous: ActiveWindows::new(),
             counters: Counters::default(),
+            event_kill_selected: vec![None; node_count],
             event_kill_armed: Vec::new(),
             event_kill_fired: Vec::new(),
         }
@@ -140,10 +142,11 @@ impl ProcessSupervisor {
             let node = index as u16;
             let was = self.previous.node(node);
             let now = active.node(node);
-            let was_event_kill = self.previous.event_kill(node);
-            let now_event_kill = active.event_kill(node);
-            let now_event_kill_can_arm =
-                now_event_kill.is_some_and(|window| self.event_kill_can_arm(window));
+            let was_event_kill = self.event_kill_selected[index];
+            let now_event_kill = active.event_kill(node, &self.event_kill_fired);
+            let was_event_kill_fired = was_event_kill
+                .is_some_and(|window| self.event_kill_fired.binary_search(&window).is_ok());
+            self.event_kill_selected[index] = now_event_kill;
             let state = &mut self.nodes[index];
 
             if (now.kill && !was.kill) || (now.restart && !was.restart) {
@@ -170,20 +173,22 @@ impl ProcessSupervisor {
                 actions.push(Action::Unpark(node));
             }
             if state.alive {
-                match (was_event_kill, now_event_kill) {
-                    (None, Some(window)) => {
-                        if now_event_kill_can_arm {
+                if !state.event_kill_death {
+                    match (was_event_kill, now_event_kill) {
+                        (None, Some(window)) => {
                             actions.push(Action::ArmEventKill(node, window.rarity));
                         }
-                    }
-                    (Some(_), None) => actions.push(Action::DisarmEventKill(node)),
-                    (Some(previous), Some(window)) if previous != window => {
-                        actions.push(Action::DisarmEventKill(node));
-                        if now_event_kill_can_arm {
+                        (Some(_), None) if !was_event_kill_fired => {
+                            actions.push(Action::DisarmEventKill(node));
+                        }
+                        (Some(previous), Some(window)) if previous != window => {
+                            if !was_event_kill_fired {
+                                actions.push(Action::DisarmEventKill(node));
+                            }
                             actions.push(Action::ArmEventKill(node, window.rarity));
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
                 match (was.event_park, now.event_park) {
                     (None, Some(park)) => actions.push(Action::ArmEventPark(node, park)),
@@ -201,9 +206,7 @@ impl ProcessSupervisor {
                 state.paused = false;
                 state.expected_down = false;
                 self.counters.restarts += 1;
-                if let Some(window) = now_event_kill
-                    && now_event_kill_can_arm
-                {
+                if let Some(window) = now_event_kill {
                     actions.push(Action::ArmEventKill(node, window.rarity));
                 }
                 if let Some(park) = now.event_park {
@@ -228,9 +231,7 @@ impl ProcessSupervisor {
             self.nodes[index].alive = true;
             self.nodes[index].paused = false;
             self.counters.restarts += 1;
-            if let Some(window) = active.event_kill(node)
-                && self.event_kill_can_arm(window)
-            {
+            if let Some(window) = self.event_kill_selected[index] {
                 actions.push(Action::ArmEventKill(node, window.rarity));
             }
             if let Some(park) = active.node(node).event_park {
@@ -324,14 +325,12 @@ impl ProcessSupervisor {
 
     #[must_use]
     pub fn event_kill_start(&self, node: u16, rarity: u8) -> Option<u64> {
-        self.previous
-            .event_kill(node)
+        self.event_kill_selected
+            .get(usize::from(node))
+            .copied()
+            .flatten()
             .filter(|window| window.rarity == rarity)
             .map(|window| window.start)
-    }
-
-    fn event_kill_can_arm(&self, window: EventKillWindow) -> bool {
-        self.event_kill_fired.binary_search(&window).is_err()
     }
 
     pub fn note_event_parked(&mut self, fires: u64) {
@@ -615,6 +614,7 @@ mod tests {
                     EventPark {
                         rarity: 3,
                         hold_nanos: 8,
+                        start: 0,
                     },
                 ),
             ]
@@ -623,6 +623,55 @@ mod tests {
             sup.tick(&ActiveWindows::new(), &[]),
             [Action::DisarmEventKill(0), Action::DisarmEventPark(0)]
         );
+    }
+
+    #[test]
+    fn touching_event_park_windows_rearm_with_their_new_start() {
+        let mut sup = Supervisor::new(1);
+        let mut first = ActiveWindows::new();
+        first.insert(
+            0,
+            &ProcessAction::EventPark {
+                rarity: 3,
+                hold_nanos: 10_000_000,
+            },
+            0,
+        );
+        let mut second = ActiveWindows::new();
+        second.insert(
+            0,
+            &ProcessAction::EventPark {
+                rarity: 3,
+                hold_nanos: 10_000_000,
+            },
+            500_000_000,
+        );
+        assert_eq!(
+            sup.tick(&first, &[]),
+            [Action::ArmEventPark(
+                0,
+                EventPark {
+                    rarity: 3,
+                    hold_nanos: 10_000_000,
+                    start: 0,
+                }
+            )]
+        );
+        assert_eq!(
+            sup.tick(&second, &[]),
+            [
+                Action::DisarmEventPark(0),
+                Action::ArmEventPark(
+                    0,
+                    EventPark {
+                        rarity: 3,
+                        hold_nanos: 10_000_000,
+                        start: 500_000_000,
+                    }
+                )
+            ]
+        );
+        assert_eq!(sup.tick(&second, &[]), []);
     }
 
     #[test]
@@ -644,6 +693,30 @@ mod tests {
         assert_eq!(sup.counters().unexpected_deaths, 0);
         assert_eq!(sup.counters().event_kill_fires, 1);
         assert_eq!(sup.counters().event_kill_site, 0xfeed);
+    }
+
+    #[test]
+    fn a_fired_event_kill_advances_to_the_next_window() {
+        let mut sup = Supervisor::new(1);
+        let mut events = ActiveWindows::new();
+        events.insert(0, &ProcessAction::EventKill { rarity: 0 }, 0);
+        events.insert(0, &ProcessAction::EventKill { rarity: 0 }, 500_000_000);
+
+        assert_eq!(sup.tick(&events, &[]), [Action::ArmEventKill(0, 0)]);
+        sup.note_event_kill_armed(0, 0, 0);
+        assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
+        assert_eq!(
+            sup.tick(&events, &[0]),
+            [Action::Start(0), Action::ArmEventKill(0, 0)]
+        );
+        assert_eq!(sup.event_kill_start(0, 0), Some(500_000_000));
+        assert_eq!(sup.pending_faults(), 1);
+
+        sup.note_event_kill_armed(0, 0, 500_000_000);
+        assert!(sup.note_event_kill(0, 0, 500_000_000, 0xcafe));
+        assert_eq!(sup.tick(&events, &[0]), [Action::Start(0)]);
+        assert_eq!(sup.pending_faults(), 0);
+        assert_eq!(sup.counters().event_kill_fires, 2);
     }
 
     #[test]
@@ -983,6 +1056,7 @@ mod tests {
                 EventPark {
                     rarity: 2,
                     hold_nanos: 4,
+                    start: 0,
                 }
             )
             .describe(),

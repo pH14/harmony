@@ -13,6 +13,7 @@ pub struct Park {
 pub struct EventPark {
     pub rarity: u8,
     pub hold_nanos: u64,
+    pub start: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -28,7 +29,6 @@ pub struct NodeActions {
     pub pause: bool,
     pub restart: bool,
     pub park: Option<Park>,
-    pub event_kill: Option<u8>,
     pub event_park: Option<EventPark>,
 }
 
@@ -76,7 +76,6 @@ impl ActiveWindows {
                 if let Err(at) = self.event_kills.binary_search(&window) {
                     self.event_kills.insert(at, window);
                 }
-                self.refresh_event_kill(node);
                 return;
             }
             ProcessAction::Kill
@@ -108,31 +107,15 @@ impl ActiveWindows {
                     hold_nanos: *hold_nanos,
                 });
             }
-            ProcessAction::EventKill { rarity } => flags.event_kill = Some(*rarity),
             ProcessAction::EventPark { rarity, hold_nanos } => {
                 flags.event_park = Some(EventPark {
                     rarity: *rarity,
                     hold_nanos: *hold_nanos,
+                    start,
                 });
             }
-            ProcessAction::RunHook(_) => {}
+            ProcessAction::EventKill { .. } | ProcessAction::RunHook(_) => {}
         }
-    }
-
-    fn refresh_event_kill(&mut self, node: u16) {
-        let rarity = self
-            .event_kills
-            .iter()
-            .find(|window| window.node == node)
-            .map(|window| window.rarity);
-        let index = match self.nodes.binary_search_by_key(&node, |entry| entry.0) {
-            Ok(index) => index,
-            Err(at) => {
-                self.nodes.insert(at, (node, NodeActions::default()));
-                at
-            }
-        };
-        self.nodes[index].1.event_kill = rarity;
     }
 
     pub fn from_answer(body: &[u8]) -> Result<Self, WireError> {
@@ -162,10 +145,10 @@ impl ActiveWindows {
     }
 
     #[must_use]
-    pub fn event_kill(&self, node: u16) -> Option<EventKillWindow> {
+    pub fn event_kill(&self, node: u16, fired: &[EventKillWindow]) -> Option<EventKillWindow> {
         self.event_kills
             .iter()
-            .find(|window| window.node == node)
+            .find(|window| window.node == node && fired.binary_search(window).is_err())
             .copied()
     }
 
@@ -177,16 +160,18 @@ impl ActiveWindows {
     #[must_use]
     pub fn pending_process_faults(&self, fired: &[EventKillWindow]) -> u64 {
         let mut pending = 0_u64;
-        for (node, actions) in &self.nodes {
+        for (_, actions) in &self.nodes {
             pending = pending.saturating_add(u64::from(actions.kill));
             pending = pending.saturating_add(u64::from(actions.pause));
             pending = pending.saturating_add(u64::from(actions.restart));
             pending = pending.saturating_add(u64::from(actions.park.is_some()));
             pending = pending.saturating_add(u64::from(actions.event_park.is_some()));
-            if let Some(window) = self.event_kills.iter().find(|window| window.node == *node)
-                && fired.binary_search(window).is_err()
-            {
+        }
+        let mut last_pending_node = None;
+        for window in &self.event_kills {
+            if fired.binary_search(window).is_err() && last_pending_node != Some(window.node) {
                 pending = pending.saturating_add(1);
+                last_pending_node = Some(window.node);
             }
         }
         pending
@@ -247,7 +232,6 @@ mod tests {
                 restart: true,
                 kill: false,
                 park: None,
-                event_kill: None,
                 event_park: None,
             }
         );
@@ -367,7 +351,7 @@ mod tests {
         active.insert(0, &ProcessAction::EventKill { rarity: 3 }, 10);
         active.insert(0, &ProcessAction::EventKill { rarity: 7 }, 20);
         assert_eq!(
-            active.event_kill(0),
+            active.event_kill(0, &[]),
             Some(EventKillWindow {
                 node: 0,
                 rarity: 3,
@@ -375,11 +359,10 @@ mod tests {
             })
         );
         assert_eq!(active.event_kill_windows().len(), 2);
-        assert_eq!(active.node(0).event_kill, Some(3));
     }
 
     #[test]
-    fn pending_process_faults_ignore_a_fired_canonical_event_window() {
+    fn pending_process_faults_advance_past_a_fired_event_window() {
         let mut active = ActiveWindows::new();
         active.insert(0, &ProcessAction::EventKill { rarity: 7 }, 20);
         active.insert(0, &ProcessAction::EventKill { rarity: 3 }, 10);
@@ -390,6 +373,12 @@ mod tests {
             start: 10,
         };
         assert_eq!(active.pending_process_faults(&[]), 2);
-        assert_eq!(active.pending_process_faults(&[canonical]), 1);
+        assert_eq!(active.pending_process_faults(&[canonical]), 2);
+        let later = EventKillWindow {
+            node: 0,
+            rarity: 7,
+            start: 20,
+        };
+        assert_eq!(active.pending_process_faults(&[canonical, later]), 1);
     }
 }
