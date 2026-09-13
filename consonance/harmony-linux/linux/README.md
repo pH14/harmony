@@ -56,6 +56,24 @@ The x86 image targets Linux/x86 hosts. ARM images target Linux/aarch64 and are
 written under `build/arm64/`. Workload-specific targets reuse the appropriate
 kernel and keep the base artifacts separate.
 
+## External ARM64 kernel profiles
+
+Workload packages that need an ARM64 profile beyond the built-in platform
+profiles invoke `build-arm64-kernel.sh` with `ARM64_KERNEL_PROFILE=external`.
+The caller supplies `ARM64_KERNEL_PROFILE_NAME` (lowercase letters, digits,
+and hyphens), `ARM64_KERNEL_CONFIG_FRAGMENT`, `ARM64_KERNEL_OUTPUT` (a
+filename basename), and explicit space-separated `ARM64_KERNEL_REQUIRED_Y`
+and `ARM64_KERNEL_REQUIRED_OFF` symbol lists. The lists may be `-` when empty.
+
+The builder derives the source and object roots as
+`$BUILD_ROOT/arm64-$ARM64_KERNEL_PROFILE_NAME-src` and
+`$BUILD_ROOT/kernel-build-arm64-$ARM64_KERNEL_PROFILE_NAME`. It validates the
+required symbols after `olddefconfig`, before compiling or publishing the
+profile image, and then runs the shared ARM64 executable counter and exclusive
+instruction gates. The workload owns the profile name, fragment, required
+symbols, output name, and any image recipe; the platform owns kernel patching,
+common configuration, isolation, and shared gates.
+
 The locked x86 Nix build also produces `initramfs-go-runtime.cpio.gz`, an
 uninstrumented static Go program running directly as `/init`. It exercises
 runtime startup, goroutines/channels, and timers using the default Go runtime

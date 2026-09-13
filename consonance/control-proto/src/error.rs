@@ -26,6 +26,8 @@ pub enum ControlError {
     SnapshotWhileArmed,
     #[error("not at a quiescent point")]
     NotQuiescent,
+    #[error("snapshot refused: {reason}")]
+    SnapshotRefused { reason: String },
     #[error("unsupported environment blob version {0}")]
     BadEnvVersion(u16),
     #[error("malformed environment blob")]

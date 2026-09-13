@@ -18,7 +18,12 @@ TARGETS = (
     },
     {
         "name": "hypercall-doorbell",
-        "command": "-p hypercall-doorbell --features linux-device",
+        "command": "-p hypercall-doorbell --features linux-device -- --skip round_trip_arbitrary_payloads",
+        "paths": ("consonance/hypercall-doorbell/**",),
+    },
+    {
+        "name": "hypercall-doorbell-round-trip",
+        "command": "-p hypercall-doorbell --features linux-device --test loopback round_trip_arbitrary_payloads -- --exact",
         "paths": ("consonance/hypercall-doorbell/**",),
     },
     {
@@ -67,6 +72,8 @@ GLOBAL_PATH_PATTERNS = (
     ".cargo/**",
     "clippy.toml",
     "deny.toml",
+    "scripts/miri_scope.py",
+    "scripts/test_miri_scope.py",
     ".github/workflows/nightly.yml",
 )
 

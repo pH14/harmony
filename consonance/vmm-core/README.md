@@ -17,11 +17,67 @@ operation. Timer deadlines are applied at exit boundaries. An idle guest can
 advance to the next deterministic deadline through the same clock; no host
 clock is consulted.
 
-Guest RAM is owned by `Vmm` for the lifetime of the backend. The state hash and
-snapshot machinery include all observable guest memory, vCPU state, device
-state, timer state, virtual time, entropy, control state, and protocol state.
-Snapshots are taken at quiescent boundaries and can be restored into a
-copy-on-write memory mapping.
+Guest RAM is owned by `Vmm` for the lifetime of the backend. The canonical state
+fingerprint and snapshot machinery cover guest memory, vCPU state, device state,
+timer state, virtual time, entropy, control state, and protocol state. Vendor
+fingerprint encodings cover the complete state records used for restore, while
+the complete portable artifact digest covers the same persisted bytes. The
+VMST switch is still default-off for legacy paths; a present v6
+`xsave_restore_bv` intentionally changes the VCPU identity in either mode.
+Snapshots can be restored into a copy-on-write memory mapping. SDK state
+capture retains pending stops and unanswered service requests without consuming
+them, including the response sequence and request identity. Portable format 4
+carries this state; version 3 remains readable without pending stops. Portable
+format 5 adds pending host effects and reseeds, the recorded input prefix,
+schedule failure, and command nonce. Replay restores these without reseeding or
+reapplying consumed inputs; an explicit branch selects a new plan and retains
+the command nonce. Whole-state hashes include this control state, including the
+recorded prefix used for duplicate-input rejection. Legacy v3/v4 artifacts remain
+readable with their historical empty control-state default; their recorded hash
+uses the old coverage. The codec retains v4 bytes when control state is absent.
+Portable format 6 carries sections that exceed the legacy envelope limits,
+including long SDK event histories; smaller records retain their v4/v5 bytes.
+Complete reads allocate incrementally from received bytes, and sparse section
+lengths are bounded by the supplied input. Readers retain v3–v5 compatibility.
+Whole-VM capture preserves pending SDK stops and is side-effect-free for a
+pending pvclock registration, carrying its GPA, `armed = false` state, and page
+bytes so the next handshake resumes from the same state.
+`compare_portable_execution_state` strictly validates two complete artifacts,
+then compares their persisted bytes while ignoring only the stored
+`trace_events` and `trace_schedules` counters and independently checked envelope
+digests. It reports those counters for diagnostics; they are not restore inputs,
+and the helper does not change live trace scheduling or establish backend
+admissibility or future execution equivalence.
+Pvclock-bearing device records explicitly preserve the registered page GPA,
+registration capability, and pending-versus-armed handshake state. Pending
+registrations use x86 v5 and arm64 v9–12; already-representable states retain
+legacy x86 v4 and arm64 v5–8 bytes, where a GPA implies an armed registration.
+
+The architecture-neutral engine record preserves terminal reasons and deferred
+SDK reentry state. Nonempty records use VM-state container v4; ordinary runnable
+states retain v3 bytes. Legacy v3 records remain readable with the historical
+runnable lifecycle default. A terminal restore does not enter the guest again.
+
+X86 CPU capture retains SREGS2 flags and cached PAE PDPTRs, plus debug-register
+flags. Nonzero extended fields select VM-state v5; zero values retain v3/v4
+bytes. Cached PDPTRs are distinct from the current PDPT contents in guest RAM
+and must survive restore without reloading them from that memory. Every
+standard-format XSAVE capture retains the original `XSTATE_BV` in the v6
+tag-15 record, whether or not canonicalization changes the x87/SSE init-state
+bits. The value is validated before restore and included in both the vCPU
+identity and the complete VMST identity when snapshot hashing is wired. Short
+or compacted images retain the legacy no-provenance behavior. Always retaining
+the field for standard captures also avoids a 14-byte record-length variation
+crossing a sparse sidecar charge boundary. A matching fingerprint is not a proof
+of whole-guest future equivalence; focused guest-byte coverage remains required.
+Legacy records without that field keep their historical normalized restore
+behavior and cannot recover discarded header provenance.
+
+Hardware continuation coverage depends on the backend and paging mode. AMD
+default NPT has an unresolved PAE capture divergence
+([#314](https://github.com/pH14/harmony/issues/314)); unchanged stopped records
+alone do not prove an unchanged guest future. The separate same-seed XSAVE
+divergence remains tracked in [#307](https://github.com/pH14/harmony/issues/307).
 
 ## Architecture boundary
 
@@ -48,3 +104,60 @@ by platform and require the corresponding KVM or Hypervisor.framework host.
 cargo test -p vmm-core
 cargo clippy -p vmm-core --all-targets -- -D warnings
 ```
+
+The x86 exit dispatcher finishes the current instruction's device-access chain
+before returning a stopped endpoint. Continuation accesses retain their device,
+virtual-time, and trace accounting, but do not enter the next guest instruction
+or deliver new scheduled inputs between fragments. Snapshot capture performs no
+completion work. A periodic trace checkpoint crossed inside an instruction
+lands on its final access; deferred hash consumers use
+`virtual_time_checkpoint_due` to identify that exact capture position.
+
+`Vmm::arm_checkpoint_hash_preimage` enables one bounded retained record for
+the most recent synchronous checkpoint. The record returned by
+`take_checkpoint_hash_preimage` contains the completed trace event index, the
+published state hash, and the exact state-blob suffix used to compute it. It
+reuses the checkpoint's existing backend save and does not copy guest RAM or
+perform another CPU read; calling the arm method again clears the prior
+record. The feature is disabled by default and captures only completed
+checkpoint boundaries, so it is suitable for a paired diagnostic that already
+retains the corresponding RAM image. Read the record and RAM immediately after
+that `step` returns, before advancing or otherwise mutating the VM; the record
+alone does not freeze RAM. Hashing retains its original RAM-then-CPU-read order.
+
+The ignored `x2_paired_boots_retain_first_checkpoint_difference` diagnostic
+requires `X2_PAIRED_REPORT` to name a fresh directory. It advances two independent
+VMs to their existing synchronous checkpoints and retains one differing pair,
+including RAM and the exact hash suffix. It adds no CPU capture beyond each
+checkpoint's existing read. Reports distinguish the first log difference from
+the retained checkpoint indices and identify terminal cases with no available
+exact pair. This is a fresh paired reproduction, not recovery of an earlier
+sequential run. The ordinary same-input boot gate remains the acceptance check.
+
+PR acceptance combines the portable contract suite and selected Miri checks
+with bounded hardware gates. `x86-virtual-time.yml` checks serviced exits, RF,
+PAE translations, and guest-written XSAVE output, including a reused VM whose
+FPU state was changed by another continuation. `snapshot-linux-smoke.yml`
+compares two complete same-seed Linux execution logs; its success requires
+nonzero events and zero differences. Workload acceptance smokes exercise
+continuations through their restore oracles.
+After a failed smoke gate reports a `StateHash` event index, the ignored
+`x2_component_diff_selected_checkpoint` diagnostic replays that boundary with
+`X2_CKPT_EVENT` and retains its reference or first-divergent raw captures under
+`X2_REPORT_DIR`. Each replay finishes its boot and destroys the VM before the
+next replay starts. A no-divergence replay remains diagnostic evidence rather
+than qualification.
+
+Linux smoke fixtures come from main's durable guest cache. Each run verifies
+the manifest and records the exact or last-known-good cache provenance. A
+fallback fixture does not validate changed guest source; the scheduled/manual
+builder supplies that evidence. Execution is bounded independently of builds,
+and failed gates retain diagnostics. Broader repetitions and vendor sampling
+remain scheduled/manual. These gates are regression evidence, not a claim that
+the retained XSAVE-presence and AMD NPT PAE counterexamples are resolved.
+
+Full and sparse portable imports share the VMM's read-only restore preparation
+before entering the snapshot store. Invalid engine state, XSAVE provenance,
+device records, and clock wiring are rejected before changing the destination
+execution. Import requires a live validation target. This preflight does not
+replace backend validation or make host ioctl failures transactional.

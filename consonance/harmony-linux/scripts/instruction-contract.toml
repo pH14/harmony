@@ -168,8 +168,8 @@ arch = "x86_64"
 channel = "exit-mechanics"
 operations = ["exit-time RFLAGS.RF"]
 claim = "execute"
-layers = ["hypervisor-save-canonicalization"]
-disposition = "The save boundary clears RF because VMX and SVM expose different unreadable mid-instruction residue."
+layers = ["hypervisor-completion", "hypervisor-save-preservation"]
+disposition = "Snapshot capture preserves all RFLAGS bits, including RF, so active instruction-breakpoint continuation survives capture and cold restore. Serviced exits retire before the next snapshot boundary."
 
 [[instruction]]
 id = "x86-undefined-af"

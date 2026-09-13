@@ -284,6 +284,18 @@ fn accepted_irq_for_sysreg(
         .flatten()
 }
 
+fn validate_restore_vcpu_state(state: &Arm64VcpuState) -> Result<()> {
+    if has_noncanonical_core_regs(&state.core)
+        || state.mp_state != MpState::Runnable
+        || !state.vtimer.masked
+        || state.vtimer.offset != 0
+        || state.vtimer.cntv_ctl_el0 & !0b11 != 0
+    {
+        return Err(BackendError::InvalidState);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct HvfExitHandle {
     vcpu: u64,
@@ -852,18 +864,15 @@ impl Backend for HvfBackend {
         Ok(state)
     }
 
+    fn validate_restore_state(&self, state: &Arm64VcpuState) -> Result<()> {
+        validate_restore_vcpu_state(state)
+    }
+
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
-        if has_noncanonical_core_regs(&state.core)
-            || state.mp_state != MpState::Runnable
-            || !state.vtimer.masked
-            || state.vtimer.offset != 0
-            || state.vtimer.cntv_ctl_el0 & !0b11 != 0
-        {
-            return Err(BackendError::InvalidState);
-        }
+        validate_restore_vcpu_state(state)?;
         for (reg, value) in state.core.x.iter().copied().enumerate() {
             self.set_reg(reg as u32, value)?;
         }

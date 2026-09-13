@@ -26,6 +26,25 @@ guest code; the library and mock-core tests run on the development host.
 `static-quicknes` is available for images whose userspace cannot execute the
 dynamic loader before the guest clock is enabled.
 
+## Native ARM64 Nova restore image
+
+`build-arm64-nova-image.sh` builds the Nova restore oracle's isolated ARM64
+kernel profile and initramfs on the validated Linux/aarch64 host. It publishes
+`Image-nova`, `initramfs-nova.cpio.gz`, and the ROM hash under
+`consonance/harmony-linux/build/arm64/`:
+
+```sh
+GUEST_BUILD_ROOT=/tmp/harmony-arm64-nova-qualification \
+  HARMONY_NOVA_ROM="$PWD/workloads/nes/build/nova/nova.nes" \
+  ./workloads/nes-guest/build-arm64-nova-image.sh
+```
+
+The ROM comes from the pinned `workloads/nes/scripts/build-nova-rom.sh`
+recipe. The wrapper keeps the Nova kernel source, object tree, config
+fragment, and output separate from the platform's other ARM64 profiles while
+the platform builder retains the shared AA-5(c) configuration and executable
+counter and exclusive-instruction gates.
+
 ## Generic NES base image
 
 `build-base-image.sh` builds `initramfs-nes.cpio.gz`, a ROM-free base image

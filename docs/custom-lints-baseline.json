@@ -1,14 +1,14 @@
 {
   "guest-linux-no-workload-names": [
-    "consonance/harmony-linux/linux/README.md:68",
+    "consonance/harmony-linux/linux/README.md:86",
     "consonance/harmony-linux/linux/bridge-probe.c:21",
-    "consonance/harmony-linux/linux/build-arm64-kernel.sh:172",
+    "consonance/harmony-linux/linux/build-arm64-kernel.sh:230",
     "consonance/harmony-linux/linux/build-arm64-kernel.sh:27",
     "consonance/harmony-linux/linux/build-arm64-kernel.sh:28",
     "consonance/harmony-linux/linux/build-arm64-kernel.sh:29",
     "consonance/harmony-linux/linux/build-arm64-kernel.sh:30",
     "consonance/harmony-linux/linux/build-arm64-kernel.sh:31",
-    "consonance/harmony-linux/linux/build-arm64-kernel.sh:40",
+    "consonance/harmony-linux/linux/build-arm64-kernel.sh:61",
     "consonance/harmony-linux/linux/build-arm64-oci-image.sh:117",
     "consonance/harmony-linux/linux/build-campaign-image.sh:11",
     "consonance/harmony-linux/linux/build-campaign-image.sh:115",

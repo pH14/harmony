@@ -190,3 +190,36 @@ fn inner_length_overrun_is_short_frame_not_overread() {
     buf.extend_from_slice(&body);
     assert_eq!(decode_request(&buf), Err(ProtocolError::ShortFrame));
 }
+
+#[test]
+fn snapshot_refusal_diagnostic_rejects_malformed_text_and_lengths() {
+    let frame = |body: &[u8]| {
+        let mut buf = header_only(PROTO_VERSION, 1, body.len() as u32);
+        buf.extend_from_slice(body);
+        buf
+    };
+    let body = [0x01, 0x14, 0x03, 0x00, 0x00, 0x00, b'S', b'D', b'K'];
+    assert!(decode_reply(&frame(&body)).unwrap().is_some());
+    for n in 2..body.len() {
+        assert_eq!(
+            decode_reply(&frame(&body[..n])),
+            Err(ProtocolError::ShortFrame)
+        );
+    }
+    let mut invalid_utf8 = body;
+    invalid_utf8[6] = 0xff;
+    assert_eq!(
+        decode_reply(&frame(&invalid_utf8)),
+        Err(ProtocolError::ShortFrame)
+    );
+    let mut trailing = body.to_vec();
+    trailing.push(0);
+    assert_eq!(
+        decode_reply(&frame(&trailing)),
+        Err(ProtocolError::ShortFrame)
+    );
+    assert_eq!(
+        decode_reply(&frame(&[0x01, 0x14, 0xff, 0xff, 0xff, 0xff])),
+        Err(ProtocolError::ShortFrame)
+    );
+}

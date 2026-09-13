@@ -15,6 +15,19 @@ fn to_hex(bytes: &[u8]) -> String {
     s
 }
 
+fn from_hex(hex: &str) -> Vec<u8> {
+    let hex = hex.trim();
+    assert_eq!(hex.len() % 2, 0);
+    hex.as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let hi = (pair[0] as char).to_digit(16).unwrap();
+            let lo = (pair[1] as char).to_digit(16).unwrap();
+            ((hi << 4) | lo) as u8
+        })
+        .collect()
+}
+
 #[test]
 fn golden_encoding_is_stable() {
     let bytes = fully_populated().encode().unwrap();
@@ -30,6 +43,18 @@ fn golden_blob_round_trips() {
     let s = fully_populated();
     let bytes = s.encode().unwrap();
     assert_eq!(VmState::decode(&bytes), Ok(s));
+}
+
+#[test]
+fn c950_v4_fixture_round_trips_with_legacy_bytes() {
+    let bytes = from_hex(include_str!("fixtures/x86-extended-record.hex"));
+    assert_eq!(VmState::peek_version(&bytes), Ok(4));
+    let decoded = VmState::decode(&bytes).unwrap();
+    assert_eq!(decoded.engine_state, [0xca, 0xfe]);
+    assert_eq!(decoded.sregs.flags, 0);
+    assert_eq!(decoded.sregs.pdptrs, [0; 4]);
+    assert_eq!(decoded.debugregs.flags, 0);
+    assert_eq!(decoded.encode().unwrap(), bytes);
 }
 
 #[test]

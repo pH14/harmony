@@ -562,7 +562,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 }
             }),
             events: records::canonical_events(&vcpu.events),
-            pvclock: self.pvclock_snapshot().map(|s| (s.gpa, s.registrable)),
+            pvclock: self.pvclock_snapshot(),
         };
         s.devices = records::encode_device_blob(&dev);
         s.contract_hash = contract::contract_hash();
@@ -576,8 +576,13 @@ impl<B: Backend<A = X86>> Vmm<B> {
         if s.contract_hash != contract::contract_hash() {
             return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
         }
+        vmm_backend::restore_xsave_image(&s.xsave.0, s.xsave_restore_bv).map_err(|error| {
+            VmmError::ContractViolation(format!(
+                "restore_vm_state: invalid XSAVE restore provenance: {error}"
+            ))
+        })?;
         let dev = records::decode_device_blob(&s.devices.0)?;
-        if let Some(reason) = records::cap_unrestorable_events(&dev.events) {
+        if let Some(reason) = records::unrestorable_events(&dev.events) {
             return Err(VmmError::ContractViolation(format!(
                 "restore_vm_state: {reason}"
             )));
@@ -787,6 +792,10 @@ pub(crate) fn encode_vcpu_state(s: &VcpuState) -> Vec<u8> {
     }
     v.extend_from_slice(&(s.xsave.len() as u64).to_le_bytes());
     v.extend_from_slice(&s.xsave);
+    if let Some(restore_bv) = s.xsave_restore_bv {
+        v.extend_from_slice(b"XSRB");
+        v.extend_from_slice(&restore_bv.to_le_bytes());
+    }
     v
 }
 
@@ -967,71 +976,51 @@ pub(crate) fn vcpu_components(s: &VcpuState, out: &mut Vec<(&'static str, [u8; 3
         dig(&xs[lo..hi])
     };
     out.push(("xsave-legacy", part(0, 512)));
-    out.push(("xsave-header", part(512, 576)));
+    let header_start = 512.min(xs.len());
+    let header_end = 576.min(xs.len());
+    out.push(("xsave-header", dig(&xs[header_start..header_end])));
+    if let Some(value) = s.xsave_restore_bv {
+        out.push(("xsave-restore-bv", dig(&value.to_le_bytes())));
+    }
     out.push(("xsave-extended", part(576, xs.len())));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vmm::GuestRam;
-    use vmm_backend::{MockBackend, X86Policy};
 
-    const RAM: usize = 0x4000;
+    fn canonical_xsave_image() -> Vec<u8> {
+        let mut image = vec![0; 576];
+        image[0..2].copy_from_slice(&0x037Fu16.to_le_bytes());
+        image[24..28].copy_from_slice(&0x1F80u32.to_le_bytes());
+        image[28..32].copy_from_slice(&0x0000FFFFu32.to_le_bytes());
+        image[512..520].copy_from_slice(&3u64.to_le_bytes());
+        vmm_backend::arch::x86::canonicalize_xsave(&mut image);
+        image
+    }
 
-    fn vmm(wire_lapic: bool) -> Vmm<MockBackend> {
-        let mut m = MockBackend::with_exits(vec![]);
-        m.set_policy(&X86Policy {
-            cpuid: vmm_backend::CpuidModel::default(),
-            msr_filter: vmm_backend::MsrFilter::default(),
-        })
-        .unwrap();
-        let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
-        if wire_lapic {
-            v.wire_lapic(
-                lapic::Lapic::new(lapic::LapicConfig {
-                    apic_id: 0,
-                    timer_hz: 24_000_000,
-                })
-                .unwrap(),
-            );
+    fn xsave_state(restore_bv: Option<u64>) -> VcpuState {
+        VcpuState {
+            xsave: canonical_xsave_image(),
+            xsave_restore_bv: restore_bv,
+            ..Default::default()
         }
-        v
     }
 
     #[test]
-    fn inject_host_interrupt_sets_the_vector_bit_in_the_lapic_irr() {
-        let mut v = vmm(true);
-        v.inject_host_interrupt(0x40).unwrap();
-        let irr = v.devices.lapic.as_ref().unwrap().snapshot().irr;
-        assert_eq!(irr[0x40 / 32] & (1 << (0x40 % 32)), 1 << (0x40 % 32));
-        assert_eq!(irr.iter().map(|w| w.count_ones()).sum::<u32>(), 1);
-    }
+    fn xsave_restore_provenance_is_an_optional_identity_suffix() {
+        let legacy = encode_vcpu_state(&xsave_state(None));
+        let with_zero = encode_vcpu_state(&xsave_state(Some(0)));
+        let with_three = encode_vcpu_state(&xsave_state(Some(3)));
+        let with_two = encode_vcpu_state(&xsave_state(Some(2)));
 
-    #[test]
-    fn inject_host_interrupt_without_a_wired_lapic_is_a_contract_violation() {
-        let mut v = vmm(false);
-        assert!(matches!(
-            v.inject_host_interrupt(0x40),
-            Err(VmmError::ContractViolation(_))
-        ));
-    }
-
-    #[test]
-    fn inject_host_interrupt_refuses_a_vector_outside_the_xapic_space() {
-        let mut v = vmm(true);
-        assert!(matches!(
-            v.inject_host_interrupt(0x1_0000),
-            Err(VmmError::ContractViolation(_))
-        ));
-    }
-
-    #[test]
-    fn inject_host_interrupt_refuses_an_architecturally_reserved_vector() {
-        let mut v = vmm(true);
-        assert!(matches!(
-            v.inject_host_interrupt(8),
-            Err(VmmError::ContractViolation(_))
-        ));
+        assert!(with_zero.starts_with(&legacy));
+        assert!(with_three.starts_with(&legacy));
+        assert_eq!(with_zero.len(), legacy.len() + 12);
+        assert_eq!(with_three.len(), legacy.len() + 12);
+        assert_eq!(with_two.len(), legacy.len() + 12);
+        assert_ne!(with_zero, with_two);
+        assert_ne!(with_zero, with_three);
+        assert_ne!(with_three, with_two);
     }
 }

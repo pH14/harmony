@@ -30,8 +30,8 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  # The per-PR matrix keeps each affected unsafe crate's Miri run within the
-  # common 15-minute CI bound. vmm-core selects its focused pointer-lifetime
+  # The per-PR matrix keeps each affected unsafe crate's selected Miri target
+  # within the common 15-minute CI bound. vmm-core selects its focused pointer-lifetime
   # seam test instead of the 240-minute full crate suite. Dependency and
   # toolchain changes select all targets because they can alter every build.
   miri-scope:
@@ -79,7 +79,7 @@ jobs:
         run: |
           rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
       - uses: Swatinem/rust-cache@v2
-      - name: Run the affected crate's Miri tests
+      - name: Run the selected Miri target
         env:
           MIRIFLAGS: ${{ matrix.miriflags }}
           MIRI_COMMAND: ${{ matrix.command }}

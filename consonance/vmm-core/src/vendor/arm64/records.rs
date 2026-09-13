@@ -192,10 +192,14 @@ const DEVICE_BLOB_VERSION_BASE: u16 = 1;
 const DEVICE_BLOB_VERSION_GIC: u16 = 2;
 const DEVICE_BLOB_VERSION_DOORBELL: u16 = 3;
 const DEVICE_BLOB_VERSION_GIC_DOORBELL: u16 = 4;
-const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 5;
-const DEVICE_BLOB_VERSION_GIC_PVCLOCK: u16 = 6;
-const DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK: u16 = 7;
-const DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK: u16 = 8;
+const DEVICE_BLOB_VERSION_PVCLOCK_LEGACY: u16 = 5;
+const DEVICE_BLOB_VERSION_GIC_PVCLOCK_LEGACY: u16 = 6;
+const DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK_LEGACY: u16 = 7;
+const DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK_LEGACY: u16 = 8;
+const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 9;
+const DEVICE_BLOB_VERSION_GIC_PVCLOCK: u16 = 10;
+const DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK: u16 = 11;
+const DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK: u16 = 12;
 const DOORBELL_BLOB_LEN: usize = 4 * 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -210,6 +214,7 @@ pub(crate) struct Arm64ClockeventState {
 pub(crate) struct Arm64PvclockState {
     pub gpa: Option<u64>,
     pub registrable: bool,
+    pub armed: bool,
     pub virtual_time: bool,
     pub clockevent: Arm64ClockeventState,
 }
@@ -312,15 +317,40 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
 pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
     let mut v = Vec::new();
     put_u32(&mut v, DEVICE_BLOB_MAGIC);
+    let pending_pvclock = d.pvclock.is_some_and(|pv| pv.gpa.is_some() && !pv.armed);
     let version = match (d.gic.is_some(), !d.doorbell.is_empty(), d.pvclock.is_some()) {
         (false, false, false) => DEVICE_BLOB_VERSION_BASE,
         (true, false, false) => DEVICE_BLOB_VERSION_GIC,
         (false, true, false) => DEVICE_BLOB_VERSION_DOORBELL,
         (true, true, false) => DEVICE_BLOB_VERSION_GIC_DOORBELL,
-        (false, false, true) => DEVICE_BLOB_VERSION_PVCLOCK,
-        (true, false, true) => DEVICE_BLOB_VERSION_GIC_PVCLOCK,
-        (false, true, true) => DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK,
-        (true, true, true) => DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK,
+        (false, false, true) => {
+            if pending_pvclock {
+                DEVICE_BLOB_VERSION_PVCLOCK
+            } else {
+                DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
+            }
+        }
+        (true, false, true) => {
+            if pending_pvclock {
+                DEVICE_BLOB_VERSION_GIC_PVCLOCK
+            } else {
+                DEVICE_BLOB_VERSION_GIC_PVCLOCK_LEGACY
+            }
+        }
+        (false, true, true) => {
+            if pending_pvclock {
+                DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK
+            } else {
+                DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK_LEGACY
+            }
+        }
+        (true, true, true) => {
+            if pending_pvclock {
+                DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK
+            } else {
+                DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK_LEGACY
+            }
+        }
     };
     v.extend_from_slice(&version.to_le_bytes());
     v.extend_from_slice(&d.clock_offset.to_le_bytes());
@@ -349,6 +379,9 @@ pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
             None => v.push(0),
         }
         v.push(u8::from(pv.registrable));
+        if pending_pvclock {
+            v.push(u8::from(pv.armed));
+        }
         v.push(u8::from(pv.virtual_time));
         encode_clockevent_state(&mut v, pv.clockevent);
     }
@@ -398,15 +431,19 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         return Err(SnapshotError::DeviceBlob("bad arm64 device-blob magic"));
     }
     let version = c.u16()?;
-    let (has_gic, has_doorbell, has_pvclock) = match version {
-        DEVICE_BLOB_VERSION_BASE => (false, false, false),
-        DEVICE_BLOB_VERSION_GIC => (true, false, false),
-        DEVICE_BLOB_VERSION_DOORBELL => (false, true, false),
-        DEVICE_BLOB_VERSION_GIC_DOORBELL => (true, true, false),
-        DEVICE_BLOB_VERSION_PVCLOCK => (false, false, true),
-        DEVICE_BLOB_VERSION_GIC_PVCLOCK => (true, false, true),
-        DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK => (false, true, true),
-        DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK => (true, true, true),
+    let (has_gic, has_doorbell, has_pvclock, has_pvclock_armed) = match version {
+        DEVICE_BLOB_VERSION_BASE => (false, false, false, false),
+        DEVICE_BLOB_VERSION_GIC => (true, false, false, false),
+        DEVICE_BLOB_VERSION_DOORBELL => (false, true, false, false),
+        DEVICE_BLOB_VERSION_GIC_DOORBELL => (true, true, false, false),
+        DEVICE_BLOB_VERSION_PVCLOCK_LEGACY => (false, false, true, false),
+        DEVICE_BLOB_VERSION_GIC_PVCLOCK_LEGACY => (true, false, true, false),
+        DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK_LEGACY => (false, true, true, false),
+        DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK_LEGACY => (true, true, true, false),
+        DEVICE_BLOB_VERSION_PVCLOCK => (false, false, true, true),
+        DEVICE_BLOB_VERSION_GIC_PVCLOCK => (true, false, true, true),
+        DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK => (false, true, true, true),
+        DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK => (true, true, true, true),
         _ => {
             return Err(SnapshotError::DeviceBlob(
                 "unsupported arm64 device-blob version",
@@ -457,6 +494,23 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
                 "registered pvclock page is marked non-registrable",
             ));
         }
+        let armed = if has_pvclock_armed {
+            match c.take(1)?[0] {
+                0 => false,
+                _ => {
+                    return Err(SnapshotError::DeviceBlob(
+                        "current pvclock record must represent a pending registration",
+                    ));
+                }
+            }
+        } else {
+            gpa.is_some()
+        };
+        if has_pvclock_armed && gpa.is_none() {
+            return Err(SnapshotError::DeviceBlob(
+                "current pvclock record is missing its registered GPA",
+            ));
+        }
         let virtual_time = match c.take(1)?[0] {
             0 => false,
             1 => true,
@@ -487,6 +541,7 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         Some(Arm64PvclockState {
             gpa,
             registrable,
+            armed,
             virtual_time,
             clockevent: Arm64ClockeventState {
                 deadline,
@@ -557,6 +612,7 @@ mod tests {
             pvclock: Some(Arm64PvclockState {
                 gpa: Some(0x4031_1000),
                 registrable: true,
+                armed: true,
                 virtual_time: true,
                 clockevent: Arm64ClockeventState {
                     deadline: None,
@@ -569,11 +625,18 @@ mod tests {
         }
     }
 
+    fn sample_with_pending_pvclock() -> Arm64DeviceState {
+        let mut pending = sample_with_pvclock();
+        pending.pvclock.as_mut().unwrap().armed = false;
+        pending
+    }
+
     fn sample_with_empty_pvclock() -> Arm64DeviceState {
         Arm64DeviceState {
             pvclock: Some(Arm64PvclockState {
                 gpa: None,
                 registrable: false,
+                armed: false,
                 virtual_time: false,
                 clockevent: Arm64ClockeventState {
                     deadline: None,
@@ -611,6 +674,115 @@ mod tests {
         ] {
             let blob = encode_device_blob(&d);
             assert_eq!(decode_device_blob(&blob.0).unwrap(), d);
+        }
+    }
+
+    #[test]
+    fn current_pvclock_record_round_trips_a_pending_registration() {
+        let pending = sample_with_pending_pvclock();
+        let blob = encode_device_blob(&pending).0;
+        assert_eq!(
+            u16::from_le_bytes([blob[4], blob[5]]),
+            DEVICE_BLOB_VERSION_PVCLOCK
+        );
+        assert_eq!(decode_device_blob(&blob).unwrap(), pending);
+    }
+
+    #[test]
+    fn current_pvclock_versions_round_trip_every_device_composition() {
+        let mut gic_and_pvclock = sample_with_gic();
+        gic_and_pvclock.pvclock = sample_with_pending_pvclock().pvclock;
+
+        let mut doorbell_and_pvclock = sample_with_doorbell();
+        doorbell_and_pvclock.pvclock = sample_with_pending_pvclock().pvclock;
+
+        let mut all = sample_with_gic();
+        all.doorbell = sample_with_doorbell().doorbell;
+        all.pvclock = sample_with_pending_pvclock().pvclock;
+
+        for (state, version) in [
+            (sample_with_pending_pvclock(), DEVICE_BLOB_VERSION_PVCLOCK),
+            (gic_and_pvclock, DEVICE_BLOB_VERSION_GIC_PVCLOCK),
+            (doorbell_and_pvclock, DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK),
+            (all, DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK),
+        ] {
+            let blob = encode_device_blob(&state).0;
+            assert_eq!(u16::from_le_bytes([blob[4], blob[5]]), version);
+
+            assert_eq!(decode_device_blob(&blob).unwrap(), state);
+        }
+    }
+
+    #[test]
+    fn legacy_pvclock_versions_derive_armed_from_the_gpa() {
+        let mut gic_and_pvclock = sample_with_gic();
+        gic_and_pvclock.pvclock = sample_with_pvclock().pvclock;
+        let mut doorbell_and_pvclock = sample_with_doorbell();
+        doorbell_and_pvclock.pvclock = sample_with_pvclock().pvclock;
+        let mut all = gic_and_pvclock.clone();
+        all.doorbell = sample_with_doorbell().doorbell;
+
+        for (mut state, legacy_version) in [
+            (sample_with_pvclock(), DEVICE_BLOB_VERSION_PVCLOCK_LEGACY),
+            (gic_and_pvclock, DEVICE_BLOB_VERSION_GIC_PVCLOCK_LEGACY),
+            (
+                doorbell_and_pvclock,
+                DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK_LEGACY,
+            ),
+            (all, DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK_LEGACY),
+        ] {
+            state.pvclock.as_mut().unwrap().armed = false;
+            let mut blob = encode_device_blob(&state).0;
+            let armed_index = blob.len() - 20;
+            assert_eq!(blob[armed_index], 0);
+            blob.remove(armed_index);
+            blob[4..6].copy_from_slice(&legacy_version.to_le_bytes());
+            state.pvclock.as_mut().unwrap().armed = true;
+            assert_eq!(encode_device_blob(&state).0, blob);
+            assert_eq!(decode_device_blob(&blob).unwrap(), state);
+        }
+
+        let unregistered = encode_device_blob(&sample_with_empty_pvclock()).0;
+        assert_eq!(
+            u16::from_le_bytes([unregistered[4], unregistered[5]]),
+            DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
+        );
+        assert_eq!(
+            decode_device_blob(&unregistered).unwrap(),
+            sample_with_empty_pvclock()
+        );
+    }
+
+    #[test]
+    fn archived_legacy_pvclock_fixtures_round_trip_byte_exactly() {
+        for (blob, version) in [
+            (
+                include_bytes!("../../../tests/fixtures/harmony-arm64-v5-pvclock.bin").as_slice(),
+                DEVICE_BLOB_VERSION_PVCLOCK_LEGACY,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/harmony-arm64-v6-gic-pvclock.bin")
+                    .as_slice(),
+                DEVICE_BLOB_VERSION_GIC_PVCLOCK_LEGACY,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/harmony-arm64-v7-doorbell-pvclock.bin")
+                    .as_slice(),
+                DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK_LEGACY,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/harmony-arm64-v8-gic-doorbell-pvclock.bin")
+                    .as_slice(),
+                DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK_LEGACY,
+            ),
+        ] {
+            assert_eq!(u16::from_le_bytes([blob[4], blob[5]]), version);
+            let decoded = decode_device_blob(blob).unwrap();
+            let pvclock = decoded.pvclock.expect("legacy fixture carries pvclock");
+            assert_eq!(pvclock.gpa, Some(0x4031_1000));
+            assert!(pvclock.registrable);
+            assert!(pvclock.armed, "a legacy GPA implies an armed registration");
+            assert_eq!(encode_device_blob(&decoded).0, blob);
         }
     }
 
@@ -670,6 +842,34 @@ mod tests {
         let line_flag = bad_bool.len() - 17;
         bad_bool[line_flag] = 2;
         assert!(decode_device_blob(&bad_bool).is_err());
+
+        let mut armed = sample_with_pvclock();
+        armed.pvclock.as_mut().unwrap().armed = false;
+        let mut armed = encode_device_blob(&armed).0;
+        let armed_flag = armed.len() - 20;
+        armed[armed_flag] = 1;
+        assert!(decode_device_blob(&armed).is_err());
+
+        let mut missing_gpa_state = sample_with_pvclock();
+        missing_gpa_state.pvclock.as_mut().unwrap().armed = false;
+        let mut missing_gpa = encode_device_blob(&missing_gpa_state).0;
+        let armed_flag = missing_gpa.len() - 20;
+        let gpa_flag = armed_flag - 10;
+        missing_gpa.drain(gpa_flag + 1..gpa_flag + 9);
+        missing_gpa[gpa_flag] = 0;
+        assert!(decode_device_blob(&missing_gpa).is_err());
+
+        let mut nonregistrable = sample_with_pvclock();
+        nonregistrable.pvclock.as_mut().unwrap().armed = false;
+        nonregistrable.pvclock.as_mut().unwrap().registrable = false;
+        assert!(decode_device_blob(&encode_device_blob(&nonregistrable).0).is_err());
+
+        let mut pending = sample_with_pvclock();
+        pending.pvclock.as_mut().unwrap().armed = false;
+        let mut bad_armed = encode_device_blob(&pending).0;
+        let armed_flag = bad_armed.len() - 20;
+        bad_armed[armed_flag] = 2;
+        assert!(decode_device_blob(&bad_armed).is_err());
     }
 
     #[test]

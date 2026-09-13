@@ -439,16 +439,22 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p pr-kvm-smoke
-          cargo test -p vmm-backend --test kvm_smoke \
-            bringup_smoke_out_then_hlt -- --ignored --exact --test-threads=1 --nocapture \
+          timeout -k 10 120 cargo test -p vmm-backend --test kvm_smoke \
+            serviced_pio_is_exactly_snapshottable_without_guest_execution -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee pr-kvm-smoke/execution.txt
-          cargo test -p vmm-backend --test kvm_smoke \
+          grep -Fq 'running 1 test' pr-kvm-smoke/execution.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' pr-kvm-smoke/execution.txt
+          timeout -k 10 120 cargo test -p vmm-backend --test kvm_smoke \
             save_restore_round_trips_on_real_kvm -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee pr-kvm-smoke/restore.txt
-          cargo test -p vmm-core --test x86_kvm_virtual_time \
+          grep -Fq 'running 1 test' pr-kvm-smoke/restore.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' pr-kvm-smoke/restore.txt
+          timeout -k 10 120 cargo test -p vmm-core --test x86_kvm_virtual_time \
             x1_ten_same_seed_runs_produce_one_normalized_log \
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee pr-kvm-smoke/replay.txt
+          grep -Fq 'running 1 test' pr-kvm-smoke/replay.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' pr-kvm-smoke/replay.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -456,3 +462,214 @@ jobs:
           path: pr-kvm-smoke
           if-no-files-found: error
           retention-days: 14
+
+  # Bounded snapshot/completion qualification on the runner's built product
+  # tree. Every exact test is required on every replica, including AMD default
+  # NPT hosts, and every test has an independent external wall bound.
+  snapshot-hardware:
+    name: snapshot-hardware replica ${{ matrix.replica }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize snapshot evidence
+        run: |
+          set -euo pipefail
+          mkdir -p snapshot-report
+          printf '%s\n' 'snapshot-hardware-started' > snapshot-report/job-started.txt
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build snapshot gate test binaries once
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -euo pipefail
+          cargo test --locked --release -p vmm-backend --test kvm_smoke --no-run \
+            2>&1 | tee snapshot-report/build-vmm-backend.log
+          cargo test --locked --release -p vmm-core --test x86_cpu_snapshots --no-run \
+            2>&1 | tee snapshot-report/build-vmm-core.log
+      - name: Grant /dev/kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -c /dev/kvm
+          ls -l /dev/kvm
+      - name: Record host vendor and paging mode
+        id: host
+        env:
+          SNAPSHOT_REPLICA: ${{ matrix.replica }}
+        run: |
+          set -euo pipefail
+          mkdir -p snapshot-report
+          printf '%s\n' "replica=$SNAPSHOT_REPLICA" > snapshot-report/replica.txt
+          git rev-parse HEAD > snapshot-report/source-revision.txt
+          {
+            uname -a
+            lscpu
+            grep -m1 'model name' /proc/cpuinfo
+            grep -m1 'vendor_id' /proc/cpuinfo
+          } > snapshot-report/host.txt
+          vendor=$(awk -F: '/^vendor_id[[:space:]]*:/{gsub(/[[:space:]]/, "", $2); print $2; exit}' /proc/cpuinfo)
+          npt=unavailable
+          ept=unavailable
+          if test -r /sys/module/kvm_amd/parameters/npt; then
+            npt=$(tr -d '[:space:]' < /sys/module/kvm_amd/parameters/npt)
+          fi
+          if test -r /sys/module/kvm_intel/parameters/ept; then
+            ept=$(tr -d '[:space:]' < /sys/module/kvm_intel/parameters/ept)
+          fi
+          printf 'CPU_VENDOR=%s\nKVM_AMD_NPT=%s\nKVM_INTEL_EPT=%s\n' "$vendor" "$npt" "$ept" | tee snapshot-report/paging-mode.txt
+          cat /proc/cpuinfo > snapshot-report/cpuinfo.txt
+          amd_npt=false
+          intel_ept=false
+          if [[ "$vendor" == AuthenticAMD ]]; then
+            case "$npt" in
+              Y|1) amd_npt=true ;;
+              N|0) ;;
+              *) echo "Unknown AMD NPT mode: $npt" >&2; exit 1 ;;
+            esac
+          elif [[ "$vendor" == GenuineIntel ]]; then
+            case "$ept" in
+              Y|1) intel_ept=true ;;
+              N|0) ;;
+              *) echo "Unknown Intel EPT mode: $ept" >&2; exit 1 ;;
+            esac
+          else
+            echo "Unknown x86 CPU vendor: $vendor" >&2
+            exit 1
+          fi
+          printf 'vendor=%s\nnpt=%s\nept=%s\namd_npt=%s\nintel_ept=%s\n' "$vendor" "$npt" "$ept" "$amd_npt" "$intel_ept" >> "$GITHUB_OUTPUT"
+      - name: Run required KVM completion and full-VMM tests
+        env:
+          CARGO_TERM_COLOR: never
+          AMD_NPT: ${{ steps.host.outputs.amd_npt }}
+        run: |
+          set -euo pipefail
+          mkdir -p snapshot-report
+          mkdir -p snapshot-report/npt-guest-write snapshot-report/xsave snapshot-report/xsave-live
+
+          run_exact() {
+            local package=$1
+            local binary=$2
+            local test_name=$3
+            local label=$4
+            local env_assignment=${5:-}
+            local log="snapshot-report/${label}.log"
+            local result=0
+            local pipeline_status cargo_rc tee_rc
+            local command="timeout -k 10 60 cargo test --locked --release -p ${package} --test ${binary} ${test_name} -- --ignored --exact --test-threads=1 --nocapture"
+            if [[ -n "$env_assignment" ]]; then
+              command="env ${env_assignment} ${command}"
+            fi
+            printf '%s\n' "$command" | tee "snapshot-report/${label}.command"
+            set +e
+            if [[ -n "$env_assignment" ]]; then
+              env "$env_assignment" timeout -k 10 60 cargo test --locked --release \
+                -p "$package" --test "$binary" "$test_name" \
+                -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee "$log"
+            else
+              timeout -k 10 60 cargo test --locked --release \
+                -p "$package" --test "$binary" "$test_name" \
+                -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee "$log"
+            fi
+            pipeline_status=("${PIPESTATUS[@]}")
+            set -e
+            cargo_rc=${pipeline_status[0]}
+            tee_rc=${pipeline_status[1]}
+            if ! printf 'CARGO_EXIT=%s\nTEE_EXIT=%s\n' "$cargo_rc" "$tee_rc" | tee "snapshot-report/${label}.status"; then
+              result=1
+            fi
+            if [[ "$tee_rc" -ne 0 || "$cargo_rc" -ne 0 ]]; then
+              result=1
+            fi
+            if ! grep -Fq 'running 1 test' "$log"; then
+              result=1
+            fi
+            if ! grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"; then
+              result=1
+            fi
+            return "$result"
+          }
+
+          failed=0
+          run_exact vmm-backend kvm_smoke serviced_pio_is_exactly_snapshottable_without_guest_execution pio || failed=1
+          run_exact vmm-backend kvm_smoke serviced_msr_is_exactly_snapshottable_without_guest_execution msr || failed=1
+          run_exact vmm-backend kvm_smoke serviced_exception_payload_round_trips_and_empty_restore_clears_it exception-payload || failed=1
+          run_exact vmm-backend kvm_smoke serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu mmio-backend || failed=1
+          run_exact vmm-core x86_cpu_snapshots live_kvm::mmio_rmw_finishes_before_full_vmm_snapshot mmio-full-vmm \
+            "MMIO_CONTINUATION_REPORT_DIR=$PWD/snapshot-report/mmio-full-vmm" || failed=1
+          run_exact vmm-core x86_cpu_snapshots live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore pae-full-vmm || failed=1
+          run_exact vmm-backend kvm_smoke resume_flag_preserves_instruction_breakpoint_continuation resume-flag || failed=1
+          run_exact vmm-core x86_cpu_snapshots live_kvm::xsave_guest_bytes_survive_cold_continuation xsave \
+            "XSAVE_CONTINUATION_REPORT_DIR=$PWD/snapshot-report/xsave" || failed=1
+          if [[ "$AMD_NPT" == true ]]; then
+            run_exact vmm-core x86_cpu_snapshots live_kvm::amd_default_npt_pae_guest_write_observations npt-guest-write \
+              "NPT_REPORT_DIR=$PWD/snapshot-report/npt-guest-write" || failed=1
+          else
+            printf '%s\n' 'NPT_STATUS=not-required-on-non-amd-or-npt-disabled-host' > snapshot-report/npt-status.txt
+          fi
+          run_exact vmm-core x86_cpu_snapshots live_kvm::xsave_live_registers_survive_cold_continuation xsave-live \
+            "XSAVE_LIVE_REGISTERS_REPORT_DIR=$PWD/snapshot-report/xsave-live" || failed=1
+          if [[ "$failed" -ne 0 ]]; then
+            printf '%s\n' 'SNAPSHOT_GATE_STATUS=failed' | tee snapshot-report/required-tests.status
+            exit 1
+          fi
+          printf '%s\n' 'SNAPSHOT_GATE_STATUS=passed' | tee snapshot-report/required-tests.status
+      - name: Record PAE SREGS2 phase diagnostic (informational)
+        if: ${{ !cancelled() && steps.host.outcome == 'success' && (steps.host.outputs.amd_npt == 'true' || steps.host.outputs.intel_ept == 'true') }}
+        continue-on-error: true
+        env:
+          CARGO_TERM_COLOR: never
+          PAE_PHASE_REPORT_DIR: ${{ github.workspace }}/snapshot-report/pae-phase
+        run: |
+          set -euo pipefail
+          mkdir -p "$PAE_PHASE_REPORT_DIR"
+          set +e
+          timeout -k 10 120 cargo test --locked --release -p vmm-backend --lib \
+            kvm_sys::xsave_diagnostic::x86_pae_sregs2_phase_observations \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee snapshot-report/pae-phase.log
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          printf 'CARGO_EXIT=%s\nTEE_EXIT=%s\n' "${pipeline_status[0]}" "${pipeline_status[1]}" \
+            > snapshot-report/pae-phase.status
+          test "${pipeline_status[0]}" -eq 0
+          test "${pipeline_status[1]}" -eq 0
+          grep -Fq 'running 1 test' snapshot-report/pae-phase.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/pae-phase.log
+      - name: Record raw XSAVE acquisition and restore phases
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        env:
+          CARGO_TERM_COLOR: never
+          XSAVE_RAW_REPORT_DIR: ${{ github.workspace }}/snapshot-report/xsave-raw
+        run: |
+          set -euo pipefail
+          mkdir -p "$XSAVE_RAW_REPORT_DIR"
+          set +e
+          timeout -k 10 120 cargo test --locked --release -p vmm-backend --lib \
+            kvm_sys::xsave_diagnostic::raw_xsave_presence_phases \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee snapshot-report/xsave-raw.log
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          printf 'CARGO_EXIT=%s\nTEE_EXIT=%s\n' "${pipeline_status[0]}" "${pipeline_status[1]}" \
+            > snapshot-report/xsave-raw.status
+          test "${pipeline_status[0]}" -eq 0
+          test "${pipeline_status[1]}" -eq 0
+          grep -Fq 'running 1 test' snapshot-report/xsave-raw.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/xsave-raw.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-snapshot-hardware-${{ github.run_id }}-replica-${{ matrix.replica }}
+          path: snapshot-report
+          if-no-files-found: error
+          retention-days: 30

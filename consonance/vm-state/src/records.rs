@@ -15,6 +15,10 @@ pub trait SnapshotRecords: Sized {
 
     fn timers(&self) -> &TimerQueueState;
 
+    fn engine_state(&self) -> &[u8];
+
+    fn set_engine_state(&mut self, state: Vec<u8>);
+
     fn entropy_bytes(&self) -> &[u8];
 }
 
@@ -35,6 +39,14 @@ impl SnapshotRecords for VmState {
 
     fn timers(&self) -> &TimerQueueState {
         &self.timers
+    }
+
+    fn engine_state(&self) -> &[u8] {
+        &self.engine_state
+    }
+
+    fn set_engine_state(&mut self, state: Vec<u8>) {
+        self.engine_state = state;
     }
 
     fn entropy_bytes(&self) -> &[u8] {
@@ -64,5 +76,10 @@ mod tests {
         assert_eq!(s.vtime(), &s.vtime);
         assert_eq!(s.timers(), &s.timers);
         assert_eq!(s.entropy_bytes(), &s.hypercall[..]);
+        assert!(s.engine_state().is_empty());
+
+        let mut state = s;
+        state.set_engine_state(vec![4, 5, 6]);
+        assert_eq!(state.engine_state(), &[4, 5, 6]);
     }
 }

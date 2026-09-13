@@ -14,6 +14,9 @@ on:
       - scripts/build-quicknes-core.sh
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
+      - flake.nix
+      - flake.lock
 
   push:
     branches: [main]
@@ -27,6 +30,9 @@ on:
       - scripts/build-quicknes-core.sh
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
+      - flake.nix
+      - flake.lock
   schedule:
     - cron: "17 4 * * *"
 
@@ -137,13 +143,14 @@ jobs:
       - name: Verify x86 in-place restore oracle
         env:
           HARMONY_CONSONANCE_RESTORE_ORACLE: "1"
+          HARMONY_CONSONANCE_ORACLE_REPORT_DIR: ${{ github.workspace }}/nova-consonance-report/restore-artifacts
         run: |
           timeout -k 10 600 \
             workloads/tools/target/release/kvm_x86_nova_probe \
               nix-guest-output/x86_64/bzImage \
               consonance/harmony-linux/build/initramfs-nova.cpio.gz \
             2>&1 | tee nova-consonance-report/restore-oracle.txt
-          grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 .* fallbacks=0$' \
+          grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 fresh_equal=8 full_state_equal=8 a_controls=1 b1_controls=1 b3_controls=1 b3_captures=3 c_controls=1 d_controls=1 d_processes=2 d_source_pid=[0-9]+ d_destination_pid=[0-9]+ e_controls=50 e_reordered_positions=[1-9][0-9]* .* fallbacks=0$' \
             nova-consonance-report/restore-oracle.txt
       - name: Compare direct and whole-VM Nova observations
         run: |
@@ -514,6 +521,7 @@ jobs:
             . -> target
             workloads/nes -> target
             workloads/nes-guest -> target
+            workloads/tools -> target
       - name: Restore the locked x86 guest artifacts
         id: guest-cache
         uses: actions/cache/restore@v4
@@ -607,6 +615,69 @@ jobs:
           HARMONY_NOVA_ROM: ${{ github.workspace }}/workloads/nes/build/nova/nova.nes
           HARMONY_NOVA_CORE_STATIC: ${{ github.workspace }}/workloads/nes/build/nova/libquicknes_libretro.a
         run: workloads/nes-guest/legacy/build-nova-game-image.sh
+      - name: Build the bounded full-state restore oracle
+        run: cargo build --locked --release --manifest-path workloads/tools/Cargo.toml --bin kvm_x86_nova_probe
+      - name: Test oracle evidence retention
+        run: cargo test --locked --release --manifest-path workloads/tools/Cargo.toml --bin kvm_x86_nova_probe
+      - name: Record Nova oracle provenance
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          provenance=nova-consonance-pr-smoke/oracle-provenance.txt
+          {
+            printf 'git_head=%s\n' "$(git rev-parse HEAD)"
+            printf 'git_tree=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+            printf 'event_sha=%s\n' "${EVENT_SHA}"
+            printf 'pull_request_head_sha=%s\n' "${PR_HEAD_SHA:-unset}"
+            printf 'restore_oracle_seed=0x4e4f_5641_5f43_4931\n'
+            printf 'oracle_tree_seed_env=%s\n' "${HARMONY_CONSONANCE_ORACLE_TREE_SEED:-unset}"
+            printf 'oracle_tree_seed_default=0x071b_130c_6d1c_1d63\n'
+            printf 'campaign_seed=20260901\n'
+            printf 'uname=%s\n' "$(uname -a)"
+            printf 'proc_model_vendor:\n'
+            grep -m1 '^model name' /proc/cpuinfo || true
+            grep -m1 '^vendor_id' /proc/cpuinfo || true
+            printf 'paging_mode:\n'
+            vendor=$(awk -F: '/^vendor_id[[:space:]]*:/{gsub(/[[:space:]]/, "", $2); print $2; exit}' /proc/cpuinfo)
+            npt=$(cat /sys/module/kvm_amd/parameters/npt 2>/dev/null || printf unknown)
+            ept=$(cat /sys/module/kvm_intel/parameters/ept 2>/dev/null || printf unknown)
+            printf 'cpu_vendor=%s\nKVM_AMD_NPT=%s\nKVM_INTEL_EPT=%s\n' "${vendor:-unknown}" "${npt}" "${ept}"
+            printf 'lscpu:\n'
+            lscpu
+            printf 'sha256:\n'
+            for entry in \
+              'oracle_binary workloads/tools/target/release/kvm_x86_nova_probe' \
+              'kernel nix-guest-output/x86_64/bzImage' \
+              'initramfs consonance/harmony-linux/build/initramfs-nova.cpio.gz' \
+              'nova_rom workloads/nes/build/nova/nova.nes' \
+              'quicknes_static workloads/nes/build/nova/libquicknes_libretro.a' \
+              'quicknes_shared workloads/nes/build/nova/quicknes_libretro.so'; do
+              label=${entry%% *}
+              path=${entry#* }
+              printf '%s=' "${label}"
+              sha256sum "${path}" | awk '{print $1}'
+              printf '%s_path=%s\n' "${label}" "${path}"
+            done
+          } >"${provenance}"
+          cp nix-guest-output/MANIFEST.sha256 nova-consonance-pr-smoke/guest-kernel-manifest.sha256
+      - name: Verify the bounded full-state restore oracle
+        env:
+          HARMONY_CONSONANCE_RESTORE_ORACLE: "1"
+          HARMONY_CONSONANCE_ORACLE_REPORT_DIR: ${{ github.workspace }}/nova-consonance-pr-smoke/restore-artifacts
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          timeout -k 10 240 \
+            workloads/tools/target/release/kvm_x86_nova_probe \
+              nix-guest-output/x86_64/bzImage \
+              consonance/harmony-linux/build/initramfs-nova.cpio.gz \
+            2>&1 | tee nova-consonance-pr-smoke/restore-oracle.txt
+          grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 fresh_equal=8 full_state_equal=8 a_controls=1 b1_controls=1 b3_controls=1 b3_captures=3 c_controls=1 d_controls=1 d_processes=2 d_source_pid=[0-9]+ d_destination_pid=[0-9]+ e_controls=50 e_reordered_positions=[1-9][0-9]* .* fallbacks=0$' \
+            nova-consonance-pr-smoke/restore-oracle.txt
       - name: Run Nova search through Consonance
         run: |
           set -euo pipefail

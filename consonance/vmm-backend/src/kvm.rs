@@ -294,17 +294,17 @@ pub(crate) fn apply_complete_ok(page: RunPage, pending: Pending) -> Result<()> {
     }
 }
 
-pub(crate) fn retire_staged_completion<F>(
+pub(crate) fn finish_staged_completion<F>(
     page: RunPage,
     pending: &mut Pending,
     staged: &mut bool,
     mut enter: F,
-) -> Result<()>
+) -> Result<Option<Exit<X86>>>
 where
     F: FnMut() -> std::result::Result<(), std::io::Error>,
 {
     if !*staged {
-        return Ok(());
+        return Ok(None);
     }
 
     page.set_immediate_exit(true);
@@ -315,12 +315,45 @@ where
         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
             *staged = false;
             *pending = Pending::None;
-            Ok(())
+            Ok(None)
         }
         Err(error) => Err(BackendError::Io(error)),
-        Ok(()) => Err(BackendError::Internal(
-            "completion-only KVM_RUN returned without EINTR",
-        )),
+        Ok(()) => {
+            let Some((exit, next_pending)) = decode_exit(page)? else {
+                return Err(BackendError::Internal(
+                    "completion-only KVM_RUN returned a control exit",
+                ));
+            };
+
+            if !matches!(
+                &exit,
+                Exit::Arch(X86Exit::Io { .. }) | Exit::Common(CommonExit::Mmio { .. })
+            ) {
+                return Err(BackendError::Internal(
+                    "completion-only KVM_RUN returned an unexpected exit",
+                ));
+            }
+
+            *pending = next_pending;
+            *staged = decoded_exit_stages_completion(&exit, next_pending);
+            Ok(Some(exit))
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn retire_staged_completion<F>(
+    page: RunPage,
+    pending: &mut Pending,
+    staged: &mut bool,
+    enter: F,
+) -> Result<()>
+where
+    F: FnMut() -> std::result::Result<(), std::io::Error>,
+{
+    match finish_staged_completion(page, pending, staged, enter)? {
+        None => Ok(()),
+        Some(_) => Err(BackendError::PendingCompletion),
     }
 }
 
@@ -592,6 +625,12 @@ pub(crate) fn from_kvm_events(e: &kvm_vcpu_events) -> VcpuEvents {
         smi_latched_init: e.smi.latched_init,
         triple_fault_pending: e.triple_fault.pending,
     }
+}
+
+pub(crate) fn to_kvm_restore_events(e: &VcpuEvents) -> kvm_vcpu_events {
+    let mut events = to_kvm_events(e);
+    events.flags |= kvm_bindings::KVM_VCPUEVENT_VALID_PAYLOAD;
+    events
 }
 
 pub(crate) fn to_kvm_events(e: &VcpuEvents) -> kvm_vcpu_events {

@@ -17,6 +17,8 @@ pub enum SnapshotError {
     },
     #[error("device blob malformed: {0}")]
     DeviceBlob(&'static str),
+    #[error("engine state malformed: {0}")]
+    EngineState(&'static str),
     #[error("dirty gfn {gfn} out of range: guest image is {pages} pages")]
     DirtyGfnOutOfRange { gfn: u64, pages: u64 },
     #[error("sparse snapshot pages are not sorted: {previous} then {current}")]

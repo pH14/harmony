@@ -64,8 +64,7 @@ fn main() -> std::process::ExitCode {
         }),
         ("vtimer", |state| {
             state.vtimer.cntv_cval_el0 ^= 0x1234;
-            state.vtimer.offset ^= 0x4321;
-            state.vtimer.masked = !state.vtimer.masked;
+            state.vtimer.cntv_ctl_el0 ^= 0b01;
         }),
         ("pending-interrupts", |state| {
             state.interrupts.irq = !state.interrupts.irq;
@@ -77,6 +76,24 @@ fn main() -> std::process::ExitCode {
             eprintln!("HVF_STATE_CLASS_FAIL class={name} error={error:?}");
             return std::process::ExitCode::FAILURE;
         }
+    }
+    let invalid_timers: [Perturbation; 3] = [
+        ("unmasked", |state| state.vtimer.masked = false),
+        ("offset", |state| state.vtimer.offset = 1),
+        ("control-bits", |state| state.vtimer.cntv_ctl_el0 |= 0b100),
+    ];
+    for (name, perturb) in invalid_timers {
+        let mut invalid = baseline;
+        perturb(&mut invalid);
+        if !matches!(
+            backend.restore(&invalid),
+            Err(vmm_backend::BackendError::InvalidState)
+        ) || !matches!(backend.save(), Ok(observed) if observed == baseline)
+        {
+            eprintln!("HVF_STATE_REJECTION_FAIL class={name}");
+            return std::process::ExitCode::FAILURE;
+        }
+        println!("HVF_STATE_REJECTION_OK class={name}");
     }
     println!("HVF_STATE_ROUNDTRIP_OK classes=6 baseline_restores=6");
     std::process::ExitCode::SUCCESS

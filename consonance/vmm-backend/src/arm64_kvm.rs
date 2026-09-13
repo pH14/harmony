@@ -608,6 +608,25 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_restore_vcpu_state(s: &Arm64VcpuState) -> Result<()> {
+    if has_noncanonical_core_regs(&s.core)
+        || s.debug.trap_debug_exceptions
+        || s.debug.trap_debug_reg_accesses
+        || !s.vtimer.masked
+        || s.vtimer.offset != 0
+        || s.vtimer.cntv_ctl_el0 & !CNTV_CTL_WRITABLE_BITS != 0
+        || s.sysregs.sctlr_el1 & KVM_SCTLR_NONPORTABLE_BITS != 0
+        || s.sysregs.tcr_el1 & KVM_TCR_NONPORTABLE_BITS != 0
+        || s.interrupts.irq
+        || s.interrupts.fiq
+        || u32::try_from(s.simd_fp.fpsr).is_err()
+        || u32::try_from(s.simd_fp.fpcr).is_err()
+    {
+        return Err(BackendError::InvalidState);
+    }
+    validate_vgic_state(s.gic.as_ref().ok_or(BackendError::InvalidState)?)
+}
+
 fn restore_vgic<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64GicState) -> Result<()> {
     validate_vgic_state(s)?;
     let words = (HARMONY_GIC_NR_IRQS / 32) as usize;
@@ -708,19 +727,7 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
 }
 
 pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) -> Result<()> {
-    if has_noncanonical_core_regs(&s.core)
-        || s.debug.trap_debug_exceptions
-        || s.debug.trap_debug_reg_accesses
-        || !s.vtimer.masked
-        || s.vtimer.offset != 0
-        || s.vtimer.cntv_ctl_el0 & !CNTV_CTL_WRITABLE_BITS != 0
-        || s.sysregs.sctlr_el1 & KVM_SCTLR_NONPORTABLE_BITS != 0
-        || s.sysregs.tcr_el1 & KVM_TCR_NONPORTABLE_BITS != 0
-        || s.interrupts.irq
-        || s.interrupts.fiq
-    {
-        return Err(BackendError::InvalidState);
-    }
+    validate_restore_vcpu_state(s)?;
     for i in 0..31u64 {
         k.set_one_reg(core_reg(i * 2), s.core.x[i as usize])?;
     }
@@ -1180,7 +1187,14 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn save(&self) -> Result<Arm64VcpuState> {
+        if self.pending != Pending::None || self.completion_staged {
+            return Err(BackendError::PendingCompletion);
+        }
         save_vcpu(&self.kvm)
+    }
+
+    fn validate_restore_state(&self, state: &Arm64VcpuState) -> Result<()> {
+        validate_restore_vcpu_state(state)
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
@@ -1216,6 +1230,8 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 #[cfg(any(test, feature = "mock"))]
 #[derive(Debug, Default)]
 pub struct FakeKvm {
+    #[cfg(test)]
+    state_reads: std::sync::atomic::AtomicUsize,
     regs: std::collections::BTreeMap<u64, u64>,
     regs32: std::collections::BTreeMap<u64, u32>,
     regs128: std::collections::BTreeMap<u64, [u8; 16]>,
@@ -1370,6 +1386,9 @@ impl Arm64Kvm for FakeKvm {
     }
 
     fn get_one_reg(&self, id: u64) -> Result<u64> {
+        #[cfg(test)]
+        self.state_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.regs.get(&id).copied().unwrap_or(0))
     }
 
@@ -1385,6 +1404,9 @@ impl Arm64Kvm for FakeKvm {
     }
 
     fn get_one_reg32(&self, id: u64) -> Result<u32> {
+        #[cfg(test)]
+        self.state_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.regs32.get(&id).copied().unwrap_or(0))
     }
 
@@ -1400,6 +1422,9 @@ impl Arm64Kvm for FakeKvm {
     }
 
     fn get_one_reg128(&self, id: u64) -> Result<[u8; 16]> {
+        #[cfg(test)]
+        self.state_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.regs128.get(&id).copied().unwrap_or([0; 16]))
     }
 
@@ -1415,6 +1440,9 @@ impl Arm64Kvm for FakeKvm {
     }
 
     fn get_mp_state(&self) -> Result<MpState> {
+        #[cfg(test)]
+        self.state_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self.mp_state)
     }
 
@@ -1509,7 +1537,7 @@ impl Arm64Kvm for FakeKvm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arch::arm64::{Arm64Policy, IdRegModel};
+    use crate::arch::arm64::{Arm64CoreRegs, Arm64Policy, Arm64SimdFpState, IdRegModel};
 
     fn mmio_store(gpa: u64, value: u64, len: u32) -> KvmRunView {
         KvmRunView {
@@ -2013,12 +2041,14 @@ mod tests {
         b.accepted_irq = Some(intid);
         b.reported_active_irq = Some(intid);
 
+        assert!(b.validate_restore_state(&state).is_ok());
         assert!(matches!(
             b.restore(&state),
             Err(BackendError::PendingCompletion)
         ));
         b.pending = Pending::None;
         b.completion_staged = true;
+        assert!(b.validate_restore_state(&state).is_ok());
         assert!(matches!(
             b.restore(&state),
             Err(BackendError::PendingCompletion)
@@ -2031,6 +2061,77 @@ mod tests {
         assert_eq!(b.applied_irq, None);
         assert_eq!(b.accepted_irq, None);
         assert_eq!(b.reported_active_irq, None);
+    }
+
+    #[test]
+    fn save_rejects_pending_or_staged_completion_without_kvm_access() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+        let state = b.save().unwrap();
+        let calls = b.kvm().calls.clone();
+        let state_reads = b
+            .kvm()
+            .state_reads
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(state_reads > 0);
+
+        for pending in [Pending::SysregRead, Pending::SysregWrite] {
+            b.pending = pending;
+            b.completion_staged = false;
+            assert!(matches!(b.save(), Err(BackendError::PendingCompletion)));
+            assert_eq!(b.pending, pending);
+            assert!(!b.completion_staged);
+            assert_eq!(b.kvm().calls, calls);
+            assert_eq!(
+                b.kvm()
+                    .state_reads
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                state_reads
+            );
+        }
+
+        b.pending = Pending::None;
+        b.completion_staged = true;
+        assert!(matches!(b.save(), Err(BackendError::PendingCompletion)));
+        assert_eq!(b.pending, Pending::None);
+        assert!(b.completion_staged);
+        assert_eq!(b.kvm().calls, calls);
+        assert_eq!(
+            b.kvm()
+                .state_reads
+                .load(std::sync::atomic::Ordering::Relaxed),
+            state_reads
+        );
+
+        b.completion_staged = false;
+        assert_eq!(b.save().unwrap(), state);
+    }
+
+    #[test]
+    fn save_accepts_completed_mmio_and_eager_mmio_write_states() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(mmio_load(0x0900_0018, 4));
+        fake.push_run(mmio_store(0x0900_0020, 0x5A, 1));
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+
+        let initial = b.save().unwrap();
+        assert!(matches!(
+            b.run(),
+            Ok(Exit::Common(CommonExit::Mmio { write: None, .. }))
+        ));
+        assert!(matches!(b.save(), Err(BackendError::PendingCompletion)));
+
+        b.complete_read(0x90).unwrap();
+        assert_eq!(b.save().unwrap(), initial);
+        assert!(matches!(
+            b.run(),
+            Ok(Exit::Common(CommonExit::Mmio { write: Some(_), .. }))
+        ));
+        assert_eq!(b.save().unwrap(), initial);
     }
 
     #[test]
@@ -2109,6 +2210,45 @@ mod tests {
                 "restore accepted noncanonical {name}"
             );
         }
+    }
+
+    #[test]
+    fn backend_restore_validation_rejects_shape_without_kvm_access() {
+        let mut source = FakeKvm::new();
+        source.vcpu_init().unwrap();
+        let valid = save_vcpu(&source).unwrap();
+
+        let mut target = FakeKvm::new();
+        target.vcpu_init().unwrap();
+        target.calls.clear();
+        let backend = Arm64KvmBackend::new(target);
+
+        assert!(backend.validate_restore_state(&valid).is_ok());
+        assert!(backend.kvm().calls.is_empty());
+
+        for invalid in [
+            Arm64VcpuState {
+                core: Arm64CoreRegs {
+                    pstate: 1 << 25,
+                    ..valid.core
+                },
+                ..valid
+            },
+            Arm64VcpuState {
+                simd_fp: Arm64SimdFpState {
+                    fpsr: u64::from(u32::MAX) + 1,
+                    ..valid.simd_fp
+                },
+                ..valid
+            },
+            Arm64VcpuState { gic: None, ..valid },
+        ] {
+            assert!(matches!(
+                backend.validate_restore_state(&invalid),
+                Err(BackendError::InvalidState)
+            ));
+        }
+        assert!(backend.kvm().calls.is_empty());
     }
 
     #[test]

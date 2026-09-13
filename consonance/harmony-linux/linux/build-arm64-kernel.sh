@@ -30,6 +30,27 @@ case "$arm64_profile" in
         arm64_output=Image-postgres
         arm64_extra_fragment=$GUEST_DIR/../../workloads/guest-images/arm64-postgres-config-fragment
         ;;
+    external)
+        arm64_profile_name=${ARM64_KERNEL_PROFILE_NAME:?set ARM64_KERNEL_PROFILE_NAME}
+        case "$arm64_profile_name" in
+            ''|*[!a-z0-9-]*)
+                echo "FAIL: ARM64_KERNEL_PROFILE_NAME must contain only lowercase letters, digits, and hyphens" >&2
+                exit 1
+                ;;
+        esac
+        arm64_source_root=$BUILD_ROOT/arm64-$arm64_profile_name-src
+        arm64_object_root=$BUILD_ROOT/kernel-build-arm64-$arm64_profile_name
+        arm64_output=${ARM64_KERNEL_OUTPUT:?set ARM64_KERNEL_OUTPUT}
+        case "$arm64_output" in
+            ''|.|..|*[!A-Za-z0-9_.-]*)
+                echo "FAIL: ARM64_KERNEL_OUTPUT must be a filename basename" >&2
+                exit 1
+                ;;
+        esac
+        arm64_extra_fragment=${ARM64_KERNEL_CONFIG_FRAGMENT:?set ARM64_KERNEL_CONFIG_FRAGMENT}
+        arm64_required_y=${ARM64_KERNEL_REQUIRED_Y:?set ARM64_KERNEL_REQUIRED_Y}
+        arm64_required_off=${ARM64_KERNEL_REQUIRED_OFF:?set ARM64_KERNEL_REQUIRED_OFF}
+        ;;
     n6-traps-off)
         arm64_source_root=$BUILD_ROOT/arm64-n6-traps-off-src
         arm64_object_root=$BUILD_ROOT/kernel-build-arm64-n6-traps-off
@@ -37,7 +58,7 @@ case "$arm64_profile" in
         arm64_extra_fragment=$LINUX_DIR/arm64-n6-traps-off-config-fragment
         ;;
     *)
-        echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal or postgres)" >&2
+        echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal, postgres, external, or n6-traps-off)" >&2
         exit 1
         ;;
 esac
@@ -144,6 +165,43 @@ assert_off() {
     done
 }
 
+assert_symbol_list() {
+    local expected=$1
+    local symbols_text=$2
+    local symbol
+    local -a symbols=()
+    if [ "$symbols_text" = - ]; then
+        return
+    fi
+    if [[ "$symbols_text" == *$'\n'* || "$symbols_text" == *$'\r'* || "$symbols_text" == *$'\t'* ]]; then
+        echo "FAIL: external kernel required symbols must be separated by spaces" >&2
+        exit 1
+    fi
+    IFS=' ' read -r -a symbols <<<"$symbols_text"
+    if [ "${#symbols[@]}" -eq 0 ]; then
+        echo "FAIL: external kernel required symbols cannot be empty" >&2
+        exit 1
+    fi
+    for symbol in "${symbols[@]}"; do
+        if [[ ! "$symbol" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+            echo "FAIL: external kernel required symbols must be uppercase names" >&2
+            exit 1
+        fi
+        case "$expected" in
+            y)
+                assert_y "$symbol"
+                ;;
+            off)
+                assert_off "$symbol"
+                ;;
+            *)
+                echo "FAIL: unknown external kernel assertion kind: $expected" >&2
+                exit 1
+                ;;
+        esac
+    done
+}
+
 assert_y ARM64 64BIT SMP OF PRINTK TTY SERIAL_AMBA_PL011 \
     SERIAL_AMBA_PL011_CONSOLE BINFMT_ELF BLK_DEV_INITRD \
     RD_GZIP SYSFS DEVTMPFS POSIX_TIMERS ARM_ARCH_TIMER \
@@ -177,6 +235,10 @@ case "$arm64_profile" in
         assert_off STRICT_DEVMEM
         ;;
 esac
+if [ "$arm64_profile" = external ]; then
+    assert_symbol_list y "$arm64_required_y"
+    assert_symbol_list off "$arm64_required_off"
+fi
 if ! grep -qxF 'CONFIG_NR_CPUS=2' "$arm64_object_root/.config"; then
     echo "FAIL: CONFIG_NR_CPUS must be the arm64 minimum (2)" >&2
     exit 1

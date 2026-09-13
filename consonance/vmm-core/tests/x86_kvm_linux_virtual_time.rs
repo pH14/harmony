@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time;
-use vmm_core::virtual_time::{NormalizedLog, check_delivery_placement, compare_normalized_logs};
+use vmm_core::virtual_time::{
+    NormalizedEvent, NormalizedLog, check_delivery_placement, compare_normalized_logs,
+};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
 const GUEST_RAM_LEN: usize = 256 << 20;
@@ -19,6 +22,7 @@ const PVCLOCK_REGISTERED: &[u8] = b"harmony_pvclock: exit-count clock page regis
 const GUEST_READY: &[u8] = b"GUEST_READY";
 const DEFAULT_MAX_STEPS: u64 = 50_000_000;
 const DEFAULT_WALL_SECS: u64 = 300;
+const DEFAULT_SELECTED_MAX_EXTRA_STEPS: u64 = 4_096;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -58,6 +62,10 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+fn report_root(variable: &str) -> Option<PathBuf> {
+    std::env::var_os(variable).map(PathBuf::from)
 }
 
 struct BootRun {
@@ -413,6 +421,7 @@ fn x2_same_seed_boots_one_normalized_log() {
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs.cpio.gz");
     let boots = env_u64("X2_BOOTS", 10);
+    assert!(boots >= 2, "determinism requires at least two boots");
     eprintln!("[x2] cmdline: {CMDLINE}");
 
     let reference = boot_once(&kernel, &initramfs, true);
@@ -649,12 +658,226 @@ fn dump_state_diff(vmm_a: &StockVmm, vmm_b: &StockVmm) {
     }
 }
 
+fn dump_byte_diff(label: &str, bytes_a: &[u8], bytes_b: &[u8]) {
+    if bytes_a == bytes_b {
+        return;
+    }
+    println!("X2_{label}_LEN A={} B={}", bytes_a.len(), bytes_b.len());
+    if let Some(off) = (0..bytes_a.len().min(bytes_b.len())).find(|&i| bytes_a[i] != bytes_b[i]) {
+        let lo = off.saturating_sub(64);
+        for (tag, bytes) in [("A", bytes_a), ("B", bytes_b)] {
+            let hi = (off + 64).min(bytes.len());
+            println!("X2_{label}_DIFF {tag} @{off}: {}", hex(&bytes[lo..hi]));
+        }
+    }
+}
+
+fn dump_captured_state_diff(capture_a: &SelectedCheckpoint, capture_b: &SelectedCheckpoint) {
+    let components_a = &capture_a.components;
+    let components_b = &capture_b.components;
+    assert_eq!(
+        components_a.len(),
+        components_b.len(),
+        "captured component breakdowns must have one shape"
+    );
+    let mut diffs = 0u32;
+    for ((label_a, digest_a), (label_b, digest_b)) in components_a.iter().zip(components_b) {
+        assert_eq!(label_a, label_b, "captured component labels must align");
+        let verdict = if digest_a == digest_b {
+            "MATCH"
+        } else {
+            diffs += 1;
+            "DIFF"
+        };
+        println!("X2_COMPONENT {label_a}={verdict}");
+    }
+    println!("X2_COMPONENT_DIFFS={diffs}");
+    dump_byte_diff("SERIAL", &capture_a.serial, &capture_b.serial);
+    dump_byte_diff("RAM", &capture_a.memory, &capture_b.memory);
+    dump_byte_diff("STATE_BLOB", &capture_a.state_blob, &capture_b.state_blob);
+    dump_byte_diff("VMST_RAW", &capture_a.vm_state, &capture_b.vm_state);
+    let state_a = vm_state::VmState::decode(&capture_a.vm_state)
+        .expect("decode retained reference VMST for component diff");
+    let state_b = vm_state::VmState::decode(&capture_b.vm_state)
+        .expect("decode retained candidate VMST for component diff");
+    if state_a.regs != state_b.regs {
+        println!("X2_REGS_DIFF A={:?} B={:?}", state_a.regs, state_b.regs);
+    }
+    if state_a.sregs != state_b.sregs {
+        println!("X2_SREGS_DIFF A={:?} B={:?}", state_a.sregs, state_b.sregs);
+    }
+    dump_byte_diff("VMST_XSAVE", &state_a.xsave.0, &state_b.xsave.0);
+    if state_a.xsave_restore_bv != state_b.xsave_restore_bv {
+        println!(
+            "X2_XSAVE_RESTORE_BV_DIFF A={:?} B={:?}",
+            state_a.xsave_restore_bv, state_b.xsave_restore_bv
+        );
+    }
+}
+
 fn first_checkpoint_hash(run: &BootRun) -> [u8; 32] {
     run.log
         .events
         .iter()
         .find_map(|e| e.state_hash)
         .expect("the bounded boot must cross the first state-hash checkpoint")
+}
+
+struct SelectedCheckpoint {
+    event: NormalizedEvent,
+    steps: u64,
+    log: NormalizedLog,
+    memory: Vec<u8>,
+    vm_state: Vec<u8>,
+    state_blob: Vec<u8>,
+    state_hash: [u8; 32],
+    components: Vec<(&'static str, [u8; 32])>,
+    serial: Vec<u8>,
+}
+
+fn selected_checkpoint_event() -> u64 {
+    std::env::var("X2_CKPT_EVENT")
+        .expect("X2_CKPT_EVENT is required for selected-checkpoint diagnostics")
+        .parse()
+        .expect("X2_CKPT_EVENT must be an unsigned event index")
+}
+
+fn run_to_selected_checkpoint(vmm: &mut StockVmm, target: u64) -> SelectedCheckpoint {
+    let max_steps = env_u64(
+        "X2_CKPT_MAX_STEPS",
+        target.saturating_add(DEFAULT_SELECTED_MAX_EXTRA_STEPS),
+    );
+    assert!(
+        max_steps > target,
+        "X2_CKPT_MAX_STEPS must exceed the selected event index"
+    );
+    for steps in 1..=max_steps {
+        let result = vmm.step().unwrap_or_else(|error| {
+            panic!("selected-checkpoint replay failed before event {target}: {error}")
+        });
+        let last_index = vmm
+            .virtual_time_trace()
+            .expect("boot_linux_stock_virtual_time wires the virtual_time trace")
+            .normalized_log()
+            .events
+            .last()
+            .map(|event| event.event_index);
+        match last_index {
+            Some(index) if index == target => {
+                return capture_selected_checkpoint(vmm, target, steps);
+            }
+            Some(index) if index > target => {
+                panic!("selected-checkpoint replay passed event {target} at event {index}");
+            }
+            _ => {}
+        }
+        assert!(
+            matches!(result, Step::Continued),
+            "selected-checkpoint replay stopped before event {target}: {result:?}"
+        );
+    }
+    panic!("selected-checkpoint replay did not reach event {target} within {max_steps} steps");
+}
+
+fn capture_selected_checkpoint(vmm: &StockVmm, target: u64, steps: u64) -> SelectedCheckpoint {
+    let trace = vmm
+        .virtual_time_trace()
+        .expect("boot_linux_stock_virtual_time wires the virtual_time trace");
+    let event = trace
+        .normalized_log()
+        .events
+        .last()
+        .cloned()
+        .expect("selected-checkpoint replay has a normalized event");
+    assert_eq!(event.event_index, target);
+    assert!(
+        event.state_hash.is_some(),
+        "selected event {target} is not a state-hash checkpoint"
+    );
+    let state = vmm
+        .save_vm_state()
+        .expect("capture selected checkpoint VM state");
+    let vm_state = state.encode().expect("encode selected checkpoint VM state");
+    let decoded =
+        vm_state::VmState::decode(&vm_state).expect("decode selected checkpoint VM state");
+    assert_eq!(decoded, state, "selected checkpoint VMST must round-trip");
+    SelectedCheckpoint {
+        event,
+        steps,
+        log: trace.normalized_log().clone(),
+        memory: vmm.guest_memory().to_vec(),
+        vm_state,
+        state_blob: vmm
+            .state_blob()
+            .expect("encode selected checkpoint state blob"),
+        state_hash: vmm.state_hash().expect("hash selected checkpoint VM state"),
+        components: vmm.state_components(),
+        serial: vmm.serial().to_vec(),
+    }
+}
+
+fn retain_selected_checkpoint(
+    root: Option<&std::path::Path>,
+    label: &str,
+    capture: &SelectedCheckpoint,
+) {
+    let Some(root) = root else { return };
+    let directory = root.join(label);
+    std::fs::create_dir_all(&directory).expect("create selected checkpoint report directory");
+    std::fs::write(directory.join("memory.bin"), &capture.memory)
+        .expect("write selected checkpoint memory");
+    std::fs::write(directory.join("vm-state.bin"), &capture.vm_state)
+        .expect("write selected checkpoint VMST");
+    std::fs::write(directory.join("state-blob.bin"), &capture.state_blob)
+        .expect("write selected checkpoint state blob");
+    std::fs::write(directory.join("serial.bin"), &capture.serial)
+        .expect("write selected checkpoint serial");
+    let mut trace = String::new();
+    for event in &capture.log.events {
+        writeln!(
+            trace,
+            "EVENT {} {:?} {} {} {:?} {}",
+            event.event_index,
+            event.class,
+            hex(&event.payload_digest),
+            event.vns_after,
+            event.interrupts,
+            event
+                .state_hash
+                .map(|hash| hex(&hash))
+                .unwrap_or_else(|| "-".into()),
+        )
+        .expect("write selected checkpoint trace");
+    }
+    std::fs::write(directory.join("normalized-log.txt"), trace)
+        .expect("write selected checkpoint trace");
+    let mut components = String::new();
+    for (name, digest) in &capture.components {
+        writeln!(components, "{name} {}", hex(digest)).expect("write selected components");
+    }
+    std::fs::write(directory.join("components.txt"), components)
+        .expect("write selected checkpoint components");
+    let summary = format!(
+        "label={label}\nsteps={}\nevent_index={}\nclass={:?}\nvns_after={}\nreported_state_hash={}\ncaptured_state_hash={}\n",
+        capture.steps,
+        capture.event.event_index,
+        capture.event.class,
+        capture.event.vns_after,
+        hex(&capture.event.state_hash.expect("reported checkpoint hash")),
+        hex(&capture.state_hash),
+    );
+    std::fs::write(directory.join("summary.txt"), summary)
+        .expect("write selected checkpoint summary");
+}
+
+fn report_selected_checkpoint(label: &str, capture: &SelectedCheckpoint) {
+    eprintln!(
+        "[x2] checkpoint diagnostic {label} replay: event={} steps={} reported_hash={} captured_hash={}",
+        capture.event.event_index,
+        capture.steps,
+        hex(&capture.event.state_hash.expect("reported checkpoint hash")),
+        hex(&capture.state_hash),
+    );
 }
 
 #[test]
@@ -691,4 +914,299 @@ fn x2_component_diff_first_checkpoint() {
         }
     }
     println!("X2_CKPT_NO_DIVERGENT_PAIR attempts={attempts}");
+}
+
+#[test]
+#[ignore = "failure-only selected-checkpoint diagnostic; requires real KVM + built guest image"]
+fn x2_component_diff_selected_checkpoint() {
+    require_kvm();
+    let kernel = require_artifact("bzImage");
+    let initramfs = require_artifact("initramfs.cpio.gz");
+    let target = selected_checkpoint_event();
+    let attempts = env_u64("X2_CKPT_ATTEMPTS", 4);
+    assert!(attempts > 0, "X2_CKPT_ATTEMPTS must be positive");
+    let report = report_root("X2_REPORT_DIR");
+
+    let reference = {
+        let mut vmm_ref =
+            boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+                .expect("boot_linux_stock_virtual_time");
+        let reference = run_to_selected_checkpoint(&mut vmm_ref, target);
+        report_selected_checkpoint("reference", &reference);
+        retain_selected_checkpoint(report.as_deref(), "reference", &reference);
+        let completion = run_boot(&mut vmm_ref, false);
+        report_run("checkpoint reference completion", &completion);
+        assert!(
+            completion.clean()
+                && completion.reached_userspace
+                && completion.guest_ready
+                && completion.pvclock_registered
+                && completion.placement_error.is_none(),
+            "checkpoint reference must complete as a clean userspace boot with the clock page registered \
+             (terminal {:?}, step_error {:?})",
+            completion.reason,
+            completion.step_error
+        );
+        reference
+    };
+
+    for attempt in 0..attempts {
+        let candidate = {
+            let mut vmm =
+                boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+                    .expect("boot_linux_stock_virtual_time");
+            let candidate = run_to_selected_checkpoint(&mut vmm, target);
+            report_selected_checkpoint(&format!("candidate {attempt}"), &candidate);
+            if candidate.event.state_hash != reference.event.state_hash {
+                retain_selected_checkpoint(
+                    report.as_deref(),
+                    "candidate-first-divergent",
+                    &candidate,
+                );
+            }
+            let completion = run_boot(&mut vmm, false);
+            report_run(
+                &format!("checkpoint candidate {attempt} completion"),
+                &completion,
+            );
+            assert!(
+                completion.clean()
+                    && completion.reached_userspace
+                    && completion.guest_ready
+                    && completion.pvclock_registered
+                    && completion.placement_error.is_none(),
+                "checkpoint candidate {attempt} must complete as a clean userspace boot with the clock page registered \
+                 (terminal {:?}, step_error {:?})",
+                completion.reason,
+                completion.step_error
+            );
+            candidate
+        };
+        if candidate.event.state_hash != reference.event.state_hash {
+            eprintln!(
+                "[x2] checkpoint diagnostic first divergent candidate replay: attempt={attempt}"
+            );
+            println!(
+                "X2_CKPT_DIAGNOSTIC_DIVERGENCE event={target} attempt={attempt} reference={} candidate={}",
+                hex(&reference
+                    .event
+                    .state_hash
+                    .expect("reported reference checkpoint hash")),
+                hex(&candidate
+                    .event
+                    .state_hash
+                    .expect("reported candidate checkpoint hash")),
+            );
+            dump_captured_state_diff(&reference, &candidate);
+            return;
+        }
+    }
+    println!(
+        "X2_CKPT_DIAGNOSTIC_NO_DIVERGENCE event={target} attempts={attempts} reference={} qualification=not-established",
+        hex(&reference
+            .event
+            .state_hash
+            .expect("reported reference checkpoint hash")),
+    );
+}
+
+enum PairedAdvance {
+    Checkpoint(vmm_core::vmm::CheckpointHashPreimage),
+    Stopped(Step),
+}
+
+fn advance_paired_checkpoint(
+    vmm: &mut StockVmm,
+    steps: &mut u64,
+    started: Instant,
+) -> Result<PairedAdvance, String> {
+    let max_steps = env_u64("X2_MAX_STEPS", DEFAULT_MAX_STEPS);
+    let wall = Duration::from_secs(env_u64("X2_WALL_SECS", DEFAULT_WALL_SECS));
+    loop {
+        if *steps >= max_steps || started.elapsed() > wall {
+            return Err(format!(
+                "paired diagnostic budget exhausted at {steps} steps"
+            ));
+        }
+        let stop = vmm.step().map_err(|error| error.to_string())?;
+        *steps += 1;
+        if let Some(preimage) = vmm.take_checkpoint_hash_preimage() {
+            return Ok(PairedAdvance::Checkpoint(preimage));
+        }
+        if stop != Step::Continued {
+            if !matches!(stop, Step::Terminal(_) | Step::SdkStop) {
+                return Err(format!("unexpected paired stop {stop:?}"));
+            }
+            return Ok(PairedAdvance::Stopped(stop));
+        }
+    }
+}
+
+fn retain_paired_checkpoint(
+    directory: &std::path::Path,
+    label: &str,
+    vmm: &StockVmm,
+    preimage: &vmm_core::vmm::CheckpointHashPreimage,
+) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    let memory = vmm.guest_memory().to_vec();
+    let mut hash = Sha256::new();
+    hash.update(b"MEM\0");
+    hash.update((memory.len() as u64).to_le_bytes());
+    hash.update(&memory);
+    hash.update(&preimage.state_blob_suffix);
+    let reconstructed: [u8; 32] = hash.finalize().into();
+    if reconstructed != preimage.state_hash {
+        return Err(format!(
+            "{label} RAM and retained suffix do not reconstruct checkpoint hash"
+        ));
+    }
+    let root = directory.join(label);
+    std::fs::create_dir(&root).map_err(|error| error.to_string())?;
+    std::fs::write(root.join("memory.bin"), &memory).map_err(|error| error.to_string())?;
+    std::fs::write(root.join("state-suffix.bin"), &preimage.state_blob_suffix)
+        .map_err(|error| error.to_string())?;
+    let log = vmm
+        .virtual_time_trace()
+        .ok_or("paired trace unavailable")?
+        .normalized_log();
+    let event = log
+        .events
+        .iter()
+        .find(|event| event.event_index == preimage.event_index)
+        .ok_or("retained checkpoint event unavailable")?;
+    if event.state_hash != Some(preimage.state_hash) {
+        return Err(format!(
+            "{label} retained checkpoint does not match normalized event"
+        ));
+    }
+    let mut text = format!(
+        "kind=fresh-paired-reproduction\nlabel={label}\ncheckpoint_event={}\nstate_hash={}\nmemory_sha256={}\nsuffix_sha256={}\nmemory_bytes={}\nsuffix_bytes={}\n",
+        preimage.event_index,
+        hex(&preimage.state_hash),
+        hex(&Sha256::digest(&memory)),
+        hex(&Sha256::digest(&preimage.state_blob_suffix)),
+        memory.len(),
+        preimage.state_blob_suffix.len(),
+    );
+    for event in &log.events {
+        writeln!(
+            text,
+            "EVENT {} {:?} {} {} {:?} {}",
+            event.event_index,
+            event.class,
+            hex(&event.payload_digest),
+            event.vns_after,
+            event.interrupts,
+            event
+                .state_hash
+                .map(|hash| hex(&hash))
+                .unwrap_or_else(|| "-".to_owned())
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    std::fs::write(root.join("checkpoint.txt"), text).map_err(|error| error.to_string())
+}
+
+#[test]
+#[ignore = "bounded fresh paired diagnostic; real KVM and guest artifacts required"]
+fn x2_paired_boots_retain_first_checkpoint_difference() {
+    use sha2::{Digest, Sha256};
+    require_kvm();
+    let directory =
+        report_root("X2_PAIRED_REPORT").expect("X2_PAIRED_REPORT must name a fresh directory");
+    std::fs::create_dir(&directory).expect("create fresh paired report directory");
+    let kernel = require_artifact("bzImage");
+    let initramfs = require_artifact("initramfs.cpio.gz");
+    let mut reference =
+        boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+            .expect("compose reference VM");
+    let mut candidate =
+        boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+            .expect("compose candidate VM");
+    reference.arm_checkpoint_hash_preimage();
+    candidate.arm_checkpoint_hash_preimage();
+    #[allow(clippy::disallowed_methods)]
+    let started = Instant::now();
+    let mut steps = [0, 0];
+    let mut comparisons = 0;
+    let mut report = format!(
+        "kind=fresh-paired-reproduction\nprior_sequential_witness_recovered=false\nseed={SEED}\ncmdline={CMDLINE}\nkernel_sha256={}\ninitramfs_sha256={}\nram_bytes={GUEST_RAM_LEN}\n",
+        hex(&Sha256::digest(&kernel)),
+        hex(&Sha256::digest(&initramfs)),
+    );
+    loop {
+        let left = advance_paired_checkpoint(&mut reference, &mut steps[0], started);
+        let right = advance_paired_checkpoint(&mut candidate, &mut steps[1], started);
+        if left.is_err() || right.is_err() {
+            writeln!(
+                report,
+                "status=inconclusive\nreference_error={:?}\ncandidate_error={:?}",
+                left.err(),
+                right.err()
+            )
+            .unwrap();
+            std::fs::write(directory.join("report.txt"), &report).unwrap();
+            panic!("paired diagnostic could not reach comparable checkpoints");
+        }
+        let left = left.unwrap();
+        let right = right.unwrap();
+        let left_log = reference.virtual_time_trace().unwrap().normalized_log();
+        let right_log = candidate.virtual_time_trace().unwrap().normalized_log();
+        let difference = compare_normalized_logs(left_log, right_log).err();
+        match (left, right) {
+            (PairedAdvance::Checkpoint(left), PairedAdvance::Checkpoint(right)) => {
+                comparisons += 1;
+                if difference.is_some()
+                    || left.event_index != right.event_index
+                    || left.state_hash != right.state_hash
+                {
+                    let retained_left =
+                        retain_paired_checkpoint(&directory, "reference", &reference, &left);
+                    let retained_right =
+                        retain_paired_checkpoint(&directory, "candidate", &candidate, &right);
+                    if retained_left.is_err() || retained_right.is_err() {
+                        writeln!(report, "status=inconclusive-retention\nfirst_log_difference={difference:?}\nreference_checkpoint={}\ncandidate_checkpoint={}\nreference_retention_error={:?}\ncandidate_retention_error={:?}\ncomparisons={comparisons}\nsteps={steps:?}", left.event_index, right.event_index, retained_left.err(), retained_right.err()).unwrap();
+                        std::fs::write(directory.join("report.txt"), &report).unwrap();
+                        panic!("paired divergence retention failed; see report");
+                    }
+                    writeln!(report, "status=diverged\nfirst_log_difference={difference:?}\nreference_checkpoint={}\ncandidate_checkpoint={}\ncomparisons={comparisons}\nsteps={steps:?}", left.event_index, right.event_index).unwrap();
+                    std::fs::write(directory.join("report.txt"), &report).unwrap();
+                    panic!("fresh paired boots diverged; exact checkpoint preimages retained");
+                }
+            }
+            (PairedAdvance::Stopped(left), PairedAdvance::Stopped(right)) => {
+                let expected_terminal = left == Step::Terminal(TerminalReason::Idle)
+                    && right == Step::Terminal(TerminalReason::Idle);
+                writeln!(
+                    report,
+                    "reference_terminal={left:?}\ncandidate_terminal={right:?}"
+                )
+                .unwrap();
+                let clean = expected_terminal
+                    && [&reference, &candidate].iter().all(|vmm| {
+                        find(vmm.serial(), REACHED_USERSPACE)
+                            && find(vmm.serial(), GUEST_READY)
+                            && find(vmm.serial(), PVCLOCK_REGISTERED)
+                            && check_delivery_placement(
+                                vmm.virtual_time_trace().unwrap().schedule(),
+                                vmm.virtual_time_trace().unwrap().normalized_log(),
+                            )
+                            .is_ok()
+                    });
+                writeln!(report, "status={}\nterminal_log_difference={difference:?}\ncomparisons={comparisons}\nsteps={steps:?}\nterminal_raw_pair_retained=false", if difference.is_none() && clean && comparisons > 0 { "no-divergence-observed" } else { "inconclusive-terminal" }).unwrap();
+                std::fs::write(directory.join("report.txt"), &report).unwrap();
+                assert!(
+                    difference.is_none() && clean && comparisons > 0,
+                    "paired boots ended without a comparable original checkpoint pair; see report"
+                );
+                break;
+            }
+            _ => {
+                writeln!(report, "status=inconclusive-asymmetric-terminal\nfirst_log_difference={difference:?}\ncomparisons={comparisons}\nsteps={steps:?}\nterminal_raw_pair_retained=false").unwrap();
+                std::fs::write(directory.join("report.txt"), &report).unwrap();
+                panic!("paired boots reached different terminal/checkpoint boundaries");
+            }
+        }
+    }
 }

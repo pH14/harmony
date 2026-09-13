@@ -30,8 +30,6 @@ const SEED: u64 = 0x4661_756c_744c_6162;
 const SETUP_BUDGET: u64 = 120_000_000_000;
 const WALL_LIMIT: Duration = Duration::from_secs(60);
 const SNAPSHOT_CACHE_LIMIT: usize = 96;
-const SETTLE_STEP_NANOS: u64 = 100_000;
-const SETTLE_ALLOWANCE_NANOS: u64 = 16 * SETTLE_STEP_NANOS;
 const CONSOLE_TAIL: usize = 1_500;
 const WATCHDOG_CUTOFF: &str = "fault-guest-watchdog-cutoff: ";
 
@@ -638,31 +636,21 @@ impl Live {
                 String::from_utf8_lossy(&tail[start..])
             );
         }
-        let mut stop = FaultStop::from_stop_reason(&stop);
-        let mut snap = None;
-        if stop.is_continuable() {
-            match self.session.seal(SETTLE_STEP_NANOS, SETTLE_ALLOWANCE_NANOS) {
-                Ok((sealed, at, settled)) => {
-                    if let Some(settled) = &settled {
-                        stop = FaultStop::from_stop_reason(settled);
-                    }
-                    if stop.is_continuable() {
-                        snap = Some((sealed, at));
-                    }
-                }
-                Err(error) => match error.downcast_ref::<SessionError>() {
-                    Some(SessionError::Stop(reason)) => stop = FaultStop::from_stop_reason(reason),
-                    Some(SessionError::Settle { allowance }) => {
-                        eprintln!("fault endpoint never sealed within {allowance} ns of settling");
-                    }
-                    _ => return Err(self.abandon("seal", &error)),
-                },
-            }
-        }
-        if snap.is_none() && stop.is_continuable() {
-            stop = FaultStop::Unexpected;
-        }
-        Ok((self.observe(stop)?, snap))
+        let stop = FaultStop::from_stop_reason(&stop);
+        let snap = if stop.is_continuable() {
+            let (snapshot, at) = self
+                .session
+                .snapshot()
+                .map_err(|error| self.abandon("snapshot", &error))?;
+            Some((snapshot, at))
+        } else {
+            None
+        };
+        let observation = match self.observe(stop) {
+            Ok(observation) => observation,
+            Err(error) => return Err(self.abandon("observe", &error)),
+        };
+        Ok((observation, snap))
     }
 
     fn observe(&mut self, stop: FaultStop) -> Result<FaultObservations, String> {

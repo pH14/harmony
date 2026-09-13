@@ -5,7 +5,7 @@ use std::{error::Error, fs, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::target::{FaultAction, FaultStop};
+use crate::target::{FaultAction, FaultObservations, FaultStop};
 
 pub const PACKAGE: &str = "faults";
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,8 +50,18 @@ pub struct BugSummary {
     pub violations: Vec<u32>,
     pub sometimes: Vec<u32>,
     pub state_hash: String,
+    #[serde(default)]
+    pub state_hash_encoding: StateHashEncoding,
     pub confirmed: bool,
     pub replay: Option<ReplaySummary>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateHashEncoding {
+    EngineDigest,
+    #[default]
+    LegacySha256OfDigest,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -60,10 +70,34 @@ pub struct ReplaySummary {
     pub bug: bool,
     pub stop: FaultStop,
     pub state_hash: String,
+    #[serde(default)]
+    pub state_hash_encoding: StateHashEncoding,
     pub violations: Vec<u32>,
     pub sometimes: Vec<u32>,
     pub actions_applied: u64,
     pub guest_horizons: u64,
+}
+
+impl ReplaySummary {
+    #[must_use]
+    pub fn from_observation(
+        observation: &FaultObservations,
+        state_digest: [u8; 32],
+        actions_applied: u64,
+        guest_horizons: u64,
+    ) -> Self {
+        Self {
+            run: 1,
+            bug: observation.is_bug(),
+            stop: observation.stop,
+            state_hash: state_digest_hex(&state_digest),
+            state_hash_encoding: StateHashEncoding::EngineDigest,
+            violations: observation.violations.iter().copied().collect(),
+            sometimes: observation.sometimes.iter().copied().collect(),
+            actions_applied,
+            guest_horizons,
+        }
+    }
 }
 
 #[must_use]
@@ -185,6 +219,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn state_digest_hex(digest: &[u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 #[cfg(all(
     feature = "consonance",
     target_os = "linux",
@@ -202,8 +240,8 @@ mod live {
     use serde_json::json;
 
     use super::{
-        Artifacts, BugSummary, Options, ReplaySummary, Report, first_confirmed_bug,
-        replay_confirms_bug, sha256_hex,
+        Artifacts, BugSummary, Options, ReplaySummary, Report, StateHashEncoding,
+        first_confirmed_bug, replay_confirms_bug,
     };
     use crate::{
         bundle::FaultVocabulary,
@@ -332,6 +370,11 @@ mod live {
                     .as_ref()
                     .map(|witness| witness.state_hash.clone())
                     .unwrap_or_default(),
+                state_hash_encoding: witness
+                    .as_ref()
+                    .map_or(StateHashEncoding::default(), |witness| {
+                        witness.state_hash_encoding
+                    }),
                 confirmed,
                 replay: witness,
             });
@@ -390,16 +433,12 @@ mod live {
             .into());
         }
         let observation = target.observation();
-        let summary = ReplaySummary {
-            run: 1,
-            bug: target.found_bug(),
-            stop: observation.stop,
-            state_hash: target.state_hash().map(|bytes| sha256_hex(&bytes))?,
-            violations: observation.violations.iter().copied().collect(),
-            sometimes: observation.sometimes.iter().copied().collect(),
-            actions_applied: target.horizons_clocked(),
-            guest_horizons: target.guest_horizons_run(),
-        };
+        let summary = ReplaySummary::from_observation(
+            observation,
+            target.state_hash()?,
+            target.horizons_clocked(),
+            target.guest_horizons_run(),
+        );
         Ok(summary)
     }
 
@@ -526,6 +565,7 @@ mod tests {
             bug,
             stop,
             state_hash: "hash".to_owned(),
+            state_hash_encoding: StateHashEncoding::LegacySha256OfDigest,
             violations: violations.to_vec(),
             sometimes: vec![24],
             actions_applied: 3,
@@ -541,6 +581,7 @@ mod tests {
             violations: vec![2],
             sometimes: vec![24],
             state_hash: "hash".to_owned(),
+            state_hash_encoding: StateHashEncoding::LegacySha256OfDigest,
             confirmed,
             replay: None,
         }
@@ -644,6 +685,80 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Report>(&text).expect("decode"),
             report
+        );
+    }
+
+    #[test]
+    fn a_replay_report_serializes_the_engine_digest_without_hashing_it_again() {
+        let state_digest = [
+            0x14, 0xbc, 0xef, 0x45, 0x9b, 0x6a, 0x75, 0x95, 0x9b, 0x50, 0x36, 0x70, 0x94, 0xbf,
+            0x7f, 0x48, 0x2b, 0x55, 0xd5, 0x34, 0xbd, 0xb7, 0x94, 0xfd, 0x79, 0x0f, 0x37, 0xab,
+            0x70, 0xcc, 0x5c, 0x96,
+        ];
+        let observation = FaultObservations::default();
+        let summary = ReplaySummary::from_observation(&observation, state_digest, 1, 1);
+        let artifacts = Artifacts {
+            kernel: Vec::new(),
+            initramfs: Vec::new(),
+            agent: Vec::new(),
+        };
+        let mut report = Report::new("replay", &artifacts, String::new(), &options());
+        report.replays.push(summary);
+
+        let expected = "14bcef459b6a75959b50367094bf7f482b55d534bdb794fd790f37ab70cc5c96";
+        assert_eq!(report.replays[0].state_hash, expected);
+        assert_eq!(
+            report.replays[0].state_hash_encoding,
+            StateHashEncoding::EngineDigest
+        );
+        assert_ne!(report.replays[0].state_hash, sha256_hex(&state_digest));
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        report.write(directory.path()).expect("write");
+        let text = std::fs::read_to_string(directory.path().join("report.json")).expect("read");
+        let decoded: Report = serde_json::from_str(&text).expect("decode");
+        assert_eq!(decoded.replays[0].state_hash, expected);
+        assert_eq!(
+            decoded.replays[0].state_hash_encoding,
+            StateHashEncoding::EngineDigest
+        );
+    }
+
+    #[test]
+    fn a_legacy_replay_report_without_encoding_marker_stays_legacy() {
+        let artifacts = Artifacts {
+            kernel: Vec::new(),
+            initramfs: Vec::new(),
+            agent: Vec::new(),
+        };
+        let mut report = Report::new("replay", &artifacts, String::new(), &options());
+        report.bugs.push(bug_summary(1, false));
+        report
+            .replays
+            .push(replay_summary(false, FaultStop::Deadline, &[]));
+        let legacy_hash = "4218d5589ba8e154820f48e72ff2e82ddd26078f11b6c09da4d3b6e4bce7a079";
+        report.bugs[0].state_hash = legacy_hash.to_owned();
+        report.replays[0].state_hash = legacy_hash.to_owned();
+        let mut value = serde_json::to_value(&report).expect("serialize");
+        value["bugs"][0]
+            .as_object_mut()
+            .expect("bug object")
+            .remove("state_hash_encoding");
+        value["replays"][0]
+            .as_object_mut()
+            .expect("replay object")
+            .remove("state_hash_encoding");
+
+        let decoded: Report = serde_json::from_value(value).expect("decode legacy report");
+        assert_eq!(decoded.bugs[0].state_hash, legacy_hash);
+        assert_eq!(
+            decoded.bugs[0].state_hash_encoding,
+            StateHashEncoding::LegacySha256OfDigest
+        );
+        assert_eq!(decoded.replays[0].state_hash, legacy_hash);
+        assert_eq!(
+            decoded.replays[0].state_hash_encoding,
+            StateHashEncoding::LegacySha256OfDigest
         );
     }
 }
