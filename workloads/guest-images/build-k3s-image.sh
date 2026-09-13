@@ -45,7 +45,7 @@ cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
 . "$workload_dir/versions.lock"
 
 require_linux_amd64
-require_tools cc make bzip2 python3 jq tar chroot mount umount readelf
+require_tools cc make bzip2 python3 jq tar chroot mount umount readelf docker
 
 if [ "$(id -u)" != "0" ]; then
     echo "FAIL: build-k3s-image.sh must run as root (the OCI layout preserves the uid-999" >&2
@@ -58,7 +58,10 @@ fi
 K3SROOT=$BUILD_ROOT/k3s-root                    # the assembled guest rootfs
 PG_IMAGE_TAR=$DL_DIR/postgres-image.tar         # the official postgres image
 PAUSE_IMAGE_TAR=$DL_DIR/k3s-pause-image.tar     # the pause/sandbox image (fetch.sh)
-K3S_BIN=$DL_DIR/k3s                             # the pinned k3s binary
+K3S_BUILD=$BUILD_ROOT/k3s-instrumented
+K3S_BIN=$K3S_BUILD/k3s
+K3S_RUNTIME=$K3S_BUILD/runtime
+K3S_SYMBOLS=$K3S_BUILD/symbols
 IPTABLES_TARBALL=$DL_DIR/$(basename "$IPTABLES_SOURCE_URL")
 WORKLOAD_N=20                                   # fixed insert/select iterations (matches the other Postgres images)
 PG_CLUSTERIP=10.43.0.100                        # fixed Service ClusterIP (svc CIDR 10.43.0.0/16)
@@ -70,7 +73,17 @@ verify_pin() {  # <file> <sha> <hint>
     got=$(sha256_of "$1")
     [ "$got" = "$2" ] || { echo "FAIL: $1 sha256 mismatch (want $2, got $got)" >&2; exit 1; }
 }
-verify_pin "$K3S_BIN" "$K3S_BIN_SHA256" "run 'make -C workloads/guest-images fetch' first"
+"$workload_dir/build-instrumented-k3s.sh"
+[ -x "$K3S_BIN" ] || { echo "FAIL: instrumented K3s build did not produce $K3S_BIN" >&2; exit 1; }
+[ -f "$K3S_RUNTIME/usr/lib/libvoidstar.so" ] || {
+    echo "FAIL: instrumented K3s build did not produce libvoidstar.so" >&2
+    exit 1
+}
+set -- "$K3S_SYMBOLS"/*.sym.tsv
+[ "$#" -gt 0 ] && [ -s "$1" ] || {
+    echo "FAIL: instrumented K3s build did not produce symbol metadata" >&2
+    exit 1
+}
 verify_pin "$IPTABLES_TARBALL" "$IPTABLES_SOURCE_SHA256" "run 'make -C workloads/guest-images fetch' first"
 if [ ! -f "$PG_IMAGE_TAR" ] || [ ! -s "$PG_IMAGE_TAR" ]; then
     echo "FAIL: $PG_IMAGE_TAR missing/empty — run 'make -C workloads/guest-images fetch' on the box" >&2
@@ -189,7 +202,8 @@ rm -rf "$K3SROOT"
 mkdir -p "$K3SROOT"/{bin,sbin,etc,proc,sys,dev,tmp,root,run}
 mkdir -p "$K3SROOT/usr/local/bin" "$K3SROOT/sys/fs/cgroup" "$K3SROOT/var/lib" \
          "$K3SROOT/etc/rancher/k3s" "$K3SROOT/var/lib/rancher/k3s/agent/images" \
-         "$K3SROOT/var/lib/rancher/k3s/server/manifests" "$K3SROOT/k8s"
+         "$K3SROOT/var/lib/rancher/k3s/server/manifests" "$K3SROOT/k8s" \
+         "$K3SROOT/symbols"
 ln -sf /run "$K3SROOT/var/run"
 
 cp "$BBOBJ/busybox" "$K3SROOT/bin/busybox"
@@ -215,6 +229,8 @@ done
 # argv[0], so symlink kubectl/crictl/ctr to it (the init also uses `k3s kubectl`).
 install -m 0755 "$K3S_BIN" "$K3SROOT/usr/local/bin/k3s"
 for t in kubectl crictl ctr; do ln -sf k3s "$K3SROOT/usr/local/bin/$t"; done
+cp -a "$K3S_RUNTIME/." "$K3SROOT/"
+cp "$K3S_SYMBOLS"/*.sym.tsv "$K3SROOT/symbols/"
 
 # The in-guest flow agent (optional). Built as a static musl binary by
 # a caller-supplied static musl `flow-agent` binary; bake it in when its path is

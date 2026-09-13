@@ -27,10 +27,14 @@ POSTGRES_IMAGE_NAME=postgres:17
 POSTGRES_IMAGE_INDEX_DIGEST=sha256:5f050f770b427fbd477edee6c3968a72e5c6be97e050a7e368b2b74a9494a285
 POSTGRES_IMAGE_AMD64_DIGEST=sha256:9c1534cbf839ec70409508a874f4c02bf4739de2f32f77efe080eef1cfd34bf4
 
-# The lightweight Kubernetes fixture's static binary and air-gap image set.
+# The lightweight Kubernetes fixture's source build and air-gap image set.
 K3S_VERSION=v1.36.2+k3s1
-K3S_BIN_URL=https://github.com/k3s-io/k3s/releases/download/v1.36.2+k3s1/k3s
-K3S_BIN_SHA256=65a55ec56c24eab44383086166ec620a491952b7e23941a49ddca6e8a4c4b4de
+K3S_SOURCE_COMMIT=01b6f04aaa69e8b09303f0393d4b4f1811da23aa
+K3S_SOURCE_URL=https://github.com/k3s-io/k3s/archive/01b6f04aaa69e8b09303f0393d4b4f1811da23aa.tar.gz
+K3S_SOURCE_SHA256=765681632f10d223480004667ce342de93bffbbbd776dfb04f140b74d61e68cb
+K3S_GO_IMAGE=golang:1.26.4-alpine3.22@sha256:457d8584db11412777c4196146b8060fdaabe0b0ba7b62c553d08e07d8c22bd3
+K3S_BUILD_DATE=2026-06-24T22:57:34Z
+ANTITHESIS_GO_SDK_VERSION=0.8.0
 K3S_AIRGAP_URL=https://github.com/k3s-io/k3s/releases/download/v1.36.2+k3s1/k3s-airgap-images-amd64.tar
 K3S_AIRGAP_SHA256=6f8acd19735479234692f17b51889f60aa32059ce818f1fa5621a9b6511d2cb6
 

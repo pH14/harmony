@@ -7,9 +7,13 @@ ABI used by guest workloads. It sends SDK JSON to `/dev/harmony`, obtains
 seeded entropy through the driver's fixed transaction, and exposes the legacy
 coverage and sanitizer callback symbols expected by instrumented programs.
 
-Device exchanges are serialized per process. The library keeps explicit thread
-identities and counters for callback thresholding. Device errors fail closed:
-an event is dropped and entropy returns zero rather than using host randomness.
+Device exchanges are serialized per process. An instrumented program that does
+not configure explicit scheduler identities yields through `/dev/harmony` every
+64 coverage callbacks. The process-wide counter and claimed thresholds keep
+the exit stream live when callbacks race across Go threads. A transport failure
+terminates the managed process group because continuing would silently remove
+deterministic scheduling points. Other device errors fail closed: an event is
+dropped and entropy returns zero rather than using host randomness.
 
 Build and test it with:
 
