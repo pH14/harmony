@@ -1618,6 +1618,7 @@ mod runtime {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
         fn a_dead_node_drains_its_event_ack_before_matching_the_report() {
             let (control, child_control) = UnixStream::pair().expect("control pair");
             let (report, child_report) = UnixStream::pair().expect("report pair");
@@ -1680,6 +1681,7 @@ mod runtime {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
         fn an_expired_event_stays_pending_until_the_disarm_acknowledgement() {
             let (control, child_control) = UnixStream::pair().expect("control pair");
             let (report, _child_report) = UnixStream::pair().expect("report pair");
@@ -1702,6 +1704,7 @@ mod runtime {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
         fn a_reported_kill_stays_pending_until_observed_death() {
             let (control, _child_control) = UnixStream::pair().unwrap();
             let (report, mut child_report) = UnixStream::pair().unwrap();
@@ -1722,6 +1725,7 @@ mod runtime {
             assert_eq!(channel.pending_faults(), 0);
         }
         #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
         fn report_eof_cannot_clear_kill_waiting_for_observed_death() {
             let (control, _child_control) = UnixStream::pair().unwrap();
             let (report, mut child_report) = UnixStream::pair().unwrap();
@@ -1747,6 +1751,7 @@ mod runtime {
             assert_eq!(channel.pending_faults(), 0);
         }
         #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
         fn control_eof_after_reap_cannot_lose_kill_report() {
             let (control, mut child_control) = UnixStream::pair().unwrap();
             let (report, mut child_report) = UnixStream::pair().unwrap();
@@ -1779,6 +1784,7 @@ mod runtime {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
         fn an_unexplained_closed_transport_on_a_live_node_is_an_error() {
             let (control, child_control) = UnixStream::pair().unwrap();
             let (report, _child_report) = UnixStream::pair().unwrap();

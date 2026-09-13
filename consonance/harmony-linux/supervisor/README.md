@@ -75,4 +75,7 @@ cargo clippy --manifest-path consonance/harmony-linux/supervisor/Cargo.toml --al
 Miri covers the portable parsing and reconciliation modules. Process integration
 tests run natively: Miri cannot execute the credential, spawn, and wait syscalls.
 The native suite checks process-group isolation, descendant cleanup, and readiness
-probes alongside running nodes; the OCI fixture checks guest credentials.
+probes alongside running nodes; the OCI fixture checks guest credentials. Linux
+event-channel socket regressions run natively because the pinned Miri interpreter
+does not support their nonblocking ioctl. Descriptor duplication and ownership
+remain covered under Miri.
