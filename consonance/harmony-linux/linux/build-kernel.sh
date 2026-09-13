@@ -107,6 +107,7 @@ fi
 assert_off NUMA CPU_FREQ MODULES TRANSPARENT_HUGEPAGE KSM SUSPEND \
     HIBERNATION X86_PM_TIMER HIGH_RES_TIMERS RANDOMIZE_BASE \
     LOCALVERSION_AUTO HW_RANDOM NO_HZ_COMMON NO_HZ_FULL NO_HZ_IDLE TICK_ONESHOT
+assert_off RWSEM_SPIN_ON_OWNER
 # Empty version suffix: git/build state must not leak into the bytes.
 if ! grep -qxF 'CONFIG_LOCALVERSION=""' "$KOBJ/.config"; then
     echo "FAIL: CONFIG_LOCALVERSION must be empty (reproducibility)" >&2
