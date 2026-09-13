@@ -747,6 +747,10 @@ pub vmm_core::vmm::VmmError::VendorBoot(alloc::boxed::Box<(dyn core::error::Erro
 pub vmm_core::vmm::VmmError::Vtime(vtime::error::VtimeError)
 impl vmm_core::vmm::VmmError
 pub fn vmm_core::vmm::VmmError::vendor_boot<E>(E) -> Self where E: core::error::Error + core::marker::Send + core::marker::Sync + 'static
+pub struct vmm_core::vmm::CheckpointHashPreimage
+pub vmm_core::vmm::CheckpointHashPreimage::event_index: u64
+pub vmm_core::vmm::CheckpointHashPreimage::state_blob_suffix: alloc::vec::Vec<u8>
+pub vmm_core::vmm::CheckpointHashPreimage::state_hash: [u8; 32]
 pub struct vmm_core::vmm::GuestRam
 impl vmm_core::vmm::GuestRam
 pub fn vmm_core::vmm::GuestRam::as_bytes(&self) -> &[u8]
@@ -772,6 +776,7 @@ pub fn vmm_core::vmm::Vmm<B>::lapic_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::wire_lapic(&mut self, lapic::device::Lapic) -> &mut Self
 impl<B: vmm_backend::backend::Backend> vmm_core::vmm::Vmm<B> where <B as vmm_backend::backend::Backend>::A: vmm_core::vendor::Vendor
 pub fn vmm_core::vmm::Vmm<B>::apply_effect(&mut self, &environment::channel::Effect) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::arm_checkpoint_hash_preimage(&mut self) -> &mut Self
 pub fn vmm_core::vmm::Vmm<B>::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_core::vmm::Vmm<B>::checkpoint_virtual_time_trace(&mut self) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::checkpoint_virtual_time_trace_at(&mut self, u64, [u8; 32]) -> core::result::Result<(), vmm_core::vmm::VmmError>
@@ -824,6 +829,7 @@ pub fn vmm_core::vmm::Vmm<B>::state_blob(&self) -> core::result::Result<alloc::v
 pub fn vmm_core::vmm::Vmm<B>::state_components(&self) -> alloc::vec::Vec<(&'static str, [u8; 32])>
 pub fn vmm_core::vmm::Vmm<B>::state_hash(&self) -> core::result::Result<[u8; 32], vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::step(&mut self) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::take_checkpoint_hash_preimage(&mut self) -> core::option::Option<vmm_core::vmm::CheckpointHashPreimage>
 pub fn vmm_core::vmm::Vmm<B>::take_sdk_stop(&mut self) -> core::option::Option<vmm_core::vmm::SdkStop>
 pub fn vmm_core::vmm::Vmm<B>::take_snapshot_point(&mut self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::terminal_reason(&self) -> core::option::Option<vmm_core::vmm::TerminalReason>
