@@ -330,7 +330,32 @@ impl FaultTarget {
                 }
                 Err(observation) => Ok(Some(observation)),
             }
-        })?;
+        });
+        self.finish_restore(snapshot, rebuilt)
+    }
+
+    fn finish_restore(
+        &mut self,
+        snapshot: &FaultSnapshot,
+        rebuilt: Result<Option<FaultObservations>, String>,
+    ) -> Result<(), Box<dyn Error>> {
+        self.action_observations.clear();
+        self.watchdog_cutoffs = 0;
+        let rebuilt = match rebuilt {
+            Ok(rebuilt) => rebuilt,
+            Err(error) if error.starts_with(WATCHDOG_CUTOFF) => {
+                self.actions.clear();
+                self.observation = FaultObservations::default();
+                self.failed = true;
+                self.watchdog_cutoffs = 1;
+                self.action_observations.push(FaultObservations {
+                    watchdog_cutoff: true,
+                    ..FaultObservations::default()
+                });
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        };
         self.actions.clone_from(&snapshot.actions);
         self.observation = match rebuilt {
             None => snapshot.observation.clone(),
@@ -369,10 +394,10 @@ impl FaultTarget {
     }
 
     pub fn apply(&mut self, action: FaultAction) {
-        self.action_observations.clear();
         if self.failed || !self.observation.stop.is_continuable() {
             return;
         }
+        self.action_observations.clear();
         let result = with_live(&self.config, |live| {
             let before = live.horizons_run;
             let observation = live.advance(&self.actions, action)?;
@@ -429,6 +454,18 @@ fn with_live<T>(
     })
 }
 
+fn session_failure(what: &str, error: &(dyn Error + 'static)) -> String {
+    let message = format!("{what}: {error}");
+    if matches!(
+        error.downcast_ref::<SessionError>(),
+        Some(SessionError::Hung(_) | SessionError::Abandoned)
+    ) {
+        format!("{WATCHDOG_CUTOFF}{message}")
+    } else {
+        message
+    }
+}
+
 impl Live {
     fn boot(config: &Config) -> Result<Self, String> {
         let mut session = Session::new_with_config_and_payloads(
@@ -464,7 +501,7 @@ impl Live {
         })
     }
 
-    fn abandon(&mut self, what: &str, error: &dyn std::fmt::Display) -> String {
+    fn abandon(&mut self, what: &str, error: &(dyn Error + 'static)) -> String {
         self.abandoned = true;
         let tail = self.session.console_tail().unwrap_or_default();
         let start = tail.len().saturating_sub(CONSOLE_TAIL);
@@ -472,7 +509,7 @@ impl Live {
             "fault guest abandoned during {what}: {error}\nconsole tail:\n{}",
             String::from_utf8_lossy(&tail[start..])
         );
-        format!("{what}: {error}")
+        session_failure(what, error)
     }
 
     fn replay(&mut self, snapshot: SnapId) -> Result<(), String> {
@@ -617,18 +654,7 @@ impl Live {
         self.horizons_run = self.horizons_run.saturating_add(1);
         let stop = match self.session.run_until(deadline) {
             Ok(stop) => stop,
-            Err(error) => {
-                let watchdog = matches!(
-                    error.downcast_ref::<SessionError>(),
-                    Some(SessionError::Hung(_) | SessionError::Abandoned)
-                );
-                let message = self.abandon("run", &error);
-                return Err(if watchdog {
-                    format!("{WATCHDOG_CUTOFF}{message}")
-                } else {
-                    message
-                });
-            }
+            Err(error) => return Err(self.abandon("run", error.as_ref())),
         };
         if let StopReason::Crash { vtime, info } = &stop {
             let tail = self.session.console_tail().unwrap_or_default();
@@ -657,7 +683,7 @@ impl Live {
                     Some(SessionError::Settle { allowance }) => {
                         eprintln!("fault endpoint never sealed within {allowance} ns of settling");
                     }
-                    _ => return Err(self.abandon("seal", &error)),
+                    _ => return Err(self.abandon("seal", error.as_ref())),
                 },
             }
         }
@@ -723,6 +749,102 @@ pub fn from_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unbooted_target() -> FaultTarget {
+        FaultTarget {
+            config: Arc::new(Config {
+                key: [0; 32],
+                kernel: Vec::new(),
+                initramfs: Vec::new(),
+                session: FaultConfig {
+                    knobs: Vec::new(),
+                    ram_mib: DEFAULT_RAM_MIB,
+                }
+                .session_config(),
+            }),
+            actions: Vec::new(),
+            observation: FaultObservations::default(),
+            action_observations: Vec::new(),
+            failed: false,
+            watchdog_cutoffs: 0,
+            execution_ticks: 17,
+            guest_horizons_run: 0,
+            root_seal: 0,
+        }
+    }
+
+    #[test]
+    fn reconstruction_cutoff_discards_stale_evidence_and_allows_a_later_restore() {
+        let mut target = unbooted_target();
+        let snapshot = FaultSnapshot {
+            actions: vec![FaultAction::Wait(std::num::NonZeroU16::new(32768).unwrap())],
+            observation: FaultObservations {
+                ticks: 123,
+                ..FaultObservations::default()
+            },
+            failed: false,
+        };
+        target.observation.stop = FaultStop::Crash;
+        target.action_observations.push(target.observation.clone());
+        target
+            .finish_restore(&snapshot, Err(format!("{WATCHDOG_CUTOFF}run: expired")))
+            .unwrap();
+        assert!(target.failed());
+        assert!(!target.found_bug());
+        assert!(target.snapshot().is_none());
+        assert!(target.actions.is_empty());
+        assert_eq!(target.watchdog_cutoffs(), 1);
+        target.apply(FaultAction::Kill(0));
+        assert_eq!(target.execution_ticks(), 17);
+        assert_eq!(target.last_action_observations().len(), 1);
+        assert!(target.last_action_observations()[0].watchdog_cutoff);
+        assert!(!target.last_action_observations()[0].is_bug());
+        assert_eq!(target.last_action_observations()[0].ticks, 0);
+        target.finish_restore(&snapshot, Ok(None)).unwrap();
+        assert!(!target.failed());
+        assert_eq!(target.watchdog_cutoffs(), 0);
+        assert_eq!(target.observation(), &snapshot.observation);
+        assert_eq!(target.snapshot().unwrap().actions, snapshot.actions);
+        assert!(!target.last_action_observations()[0].watchdog_cutoff);
+    }
+
+    #[test]
+    fn run_and_seal_watchdogs_share_the_recoverable_classification() {
+        let snapshot = FaultSnapshot {
+            actions: Vec::new(),
+            observation: FaultObservations::default(),
+            failed: false,
+        };
+        for phase in ["run", "seal"] {
+            for error in [SessionError::Hung(WALL_LIMIT), SessionError::Abandoned] {
+                let mut target = unbooted_target();
+                target
+                    .finish_restore(&snapshot, Err(session_failure(phase, &error)))
+                    .unwrap();
+                assert!(target.failed());
+                assert_eq!(target.watchdog_cutoffs(), 1);
+                assert!(target.last_action_observations()[0].watchdog_cutoff);
+            }
+            assert!(
+                !session_failure(phase, &SessionError::Unboundable).starts_with(WATCHDOG_CUTOFF)
+            );
+        }
+    }
+
+    #[test]
+    fn other_reconstruction_errors_remain_fatal() {
+        let mut target = unbooted_target();
+        let snapshot = FaultSnapshot {
+            actions: Vec::new(),
+            observation: FaultObservations::default(),
+            failed: false,
+        };
+        let error = target
+            .finish_restore(&snapshot, Err("replay: invalid snapshot".into()))
+            .unwrap_err();
+        assert_eq!(error.to_string(), "replay: invalid snapshot");
+        assert_eq!(target.watchdog_cutoffs(), 0);
+    }
 
     #[test]
     fn the_factory_serves_the_nominal_service_the_setup_point_was_sealed_under() {

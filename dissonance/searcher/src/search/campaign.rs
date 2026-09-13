@@ -368,6 +368,12 @@ pub trait Evaluation: CampaignTypes {
             disposition: self.execution_disposition(target),
         })
     }
+    fn merge_preparation_failure(
+        &self,
+        _evidence: &mut Self::Evidence,
+        _observations: &[Self::Observations],
+    ) {
+    }
     fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>>;
     fn rollout_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
         self.current_key(target)
@@ -901,12 +907,13 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
 #[derive(Serialize)]
 #[serde(bound = "")]
 pub struct CampaignJobResult<G: CampaignTypes + ?Sized> {
+    pub preparation_failure: Option<Vec<G::Observations>>,
     pub actions: Vec<CampaignActionResult<G>>,
 }
 
 impl<G: CampaignTypes + ?Sized> PartialEq for CampaignJobResult<G> {
     fn eq(&self, other: &Self) -> bool {
-        self.actions == other.actions
+        self.preparation_failure == other.preparation_failure && self.actions == other.actions
     }
 }
 impl<G: CampaignTypes + ?Sized> Eq for CampaignJobResult<G> {}
@@ -914,6 +921,7 @@ impl<G: CampaignTypes + ?Sized> Eq for CampaignJobResult<G> {}
 impl<G: CampaignTypes + ?Sized> Clone for CampaignJobResult<G> {
     fn clone(&self) -> Self {
         Self {
+            preparation_failure: self.preparation_failure.clone(),
             actions: self.actions.clone(),
         }
     }
@@ -923,6 +931,7 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignJobResult<G> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CampaignJobResult")
+            .field("preparation_failure", &self.preparation_failure)
             .field("actions", &self.actions)
             .finish()
     }
@@ -1256,17 +1265,29 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         parent_id: u64,
         result: CampaignJobResult<G>,
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>), Box<dyn Error>> {
+        let CampaignJobResult {
+            preparation_failure,
+            actions,
+        } = result;
+        if preparation_failure.is_some() && !actions.is_empty() {
+            return Err("preparation failure result also carries actions".into());
+        }
         self.sequence = self.sequence.saturating_add(1);
         let sequence = self.sequence;
         let parent_index = self
             .archive
             .index_of_id(parent_id)
             .ok_or("campaign job parent is no longer resident")?;
+        if let Some(observations) = preparation_failure {
+            self.execution_failures = self.execution_failures.saturating_add(1);
+            workload.merge_preparation_failure(&mut self.evidence, &observations);
+            return Ok((sequence, Vec::new()));
+        }
         let mut current_parent = parent_index;
         let mut pending_suffix = Vec::new();
         let mut previous_key = None;
         let mut decisions = Vec::new();
-        for action in result.actions {
+        for action in actions {
             pending_suffix.push(action.action);
             workload.merge_action_evidence(&mut self.evidence, &action, sequence, || {
                 let mut input = self
@@ -4270,7 +4291,24 @@ mod tests {
         )
         .expect("terminal parent is a valid no-op rollout");
         assert!(result.actions.is_empty());
+        assert!(result.preparation_failure.is_none());
         assert_eq!(rollout.target.value, 0);
+
+        let mut target = TestTarget::default();
+        let mut failed = TestRollout::new(&mut target);
+        failed.failed_after = Some(0);
+        let result = execute_suffix(
+            &mut failed,
+            0,
+            (),
+            &[TestAction::new(1, 1)],
+            8,
+            RetentionPolicy::Unprobed,
+            false,
+        )
+        .expect("failed parent is a reportable preparation failure");
+        assert!(result.actions.is_empty());
+        assert_eq!(result.preparation_failure, Some(vec![()]));
     }
 
     #[test]
@@ -4464,6 +4502,7 @@ mod tests {
             &workload,
             0,
             CampaignJobResult {
+                preparation_failure: None,
                 actions: vec![CampaignActionResult {
                     action: terminal_objective,
                     observations: Vec::new(),
@@ -4486,6 +4525,7 @@ mod tests {
             &workload,
             0,
             CampaignJobResult {
+                preparation_failure: None,
                 actions: vec![CampaignActionResult {
                     action: failed,
                     observations: vec![()],
@@ -4501,6 +4541,48 @@ mod tests {
         .expect("admit failed execution");
         assert_eq!(core.terminal_endpoints, 1);
         assert_eq!(core.terminal_objectives, 1);
+        assert_eq!(core.execution_failures, 1);
+    }
+
+    #[test]
+    fn coordinator_admits_one_preparation_failure_without_actions() {
+        let (workload, _run, mut core, _target) = test_core();
+        let (sequence, decisions) = core
+            .admit_job(
+                &workload,
+                0,
+                CampaignJobResult {
+                    preparation_failure: Some(vec![()]),
+                    actions: Vec::new(),
+                },
+            )
+            .expect("admit preparation failure");
+        assert_eq!(sequence, 1);
+        assert!(decisions.is_empty());
+        assert_eq!(core.execution_failures, 1);
+        assert_eq!(core.archive.retained, 1);
+
+        let action = TestAction::new(1, 1);
+        let error = core
+            .admit_job(
+                &workload,
+                0,
+                CampaignJobResult {
+                    preparation_failure: Some(vec![()]),
+                    actions: vec![CampaignActionResult {
+                        action,
+                        observations: Vec::new(),
+                        milestones: (),
+                        outcome: Outcome::default(),
+                        candidate: None,
+                    }],
+                },
+            )
+            .expect_err("preparation failure cannot fabricate actions");
+        assert_eq!(
+            error.to_string(),
+            "preparation failure result also carries actions"
+        );
         assert_eq!(core.execution_failures, 1);
     }
 
@@ -4729,6 +4811,7 @@ mod tests {
         target.apply(&action);
         let snapshot = target.snapshot().expect("snapshot candidate");
         let result = CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
             actions: vec![CampaignActionResult {
                 action,
                 observations: Vec::new(),
@@ -4763,6 +4846,7 @@ mod tests {
         let (workload, _run, mut core, _target) = test_core();
         let winning = TestAction::new(0x81, 7);
         let result = CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
             actions: vec![CampaignActionResult {
                 action: winning,
                 observations: Vec::new(),
@@ -4799,6 +4883,7 @@ mod tests {
         );
 
         let later = CampaignJobResult {
+            preparation_failure: None,
             actions: vec![CampaignActionResult {
                 action: TestAction::new(0x01, 9),
                 ..winning_action
@@ -4960,6 +5045,7 @@ mod tests {
         target.apply(&action);
         let snapshot = target.snapshot().expect("snapshot candidate");
         let result = CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
             actions: vec![CampaignActionResult {
                 action,
                 observations: Vec::new(),

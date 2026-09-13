@@ -120,6 +120,14 @@ by another action in a multi-action suffix can still be attributed to the
 applied duration; this baseline does not claim causal attribution within a
 suffix.
 
+If a parent is already in the failed execution state when a generic rollout is
+prepared, the job result carries one preparation-failure observation vector and
+no actions. Admission counts that result as one execution failure, gives the
+observations to the workload's evaluation hook, and continues the campaign.
+Preparation failures do not create candidates, objectives, or duration
+observations. A nonfailed terminal parent still produces an empty result with
+no preparation-failure report.
+
 Choices are powers of two from one through the greatest power of two that fits
 the requested bound. Half of draws explore scales uniformly. The other half
 selects the greatest observed useful-outcome count per unit of logical work,
