@@ -17,6 +17,8 @@ in the platform supervisor's bundle format:
 | `hook <id> <argv...>` | a command the search can run at any moment |
 | `setup <argv...>` | runs once, before any node starts |
 | `ready <argv...>` | must pass before setup is sealed and before new hooks launch after a supervised node start |
+| `workload <argv...>` | one long-lived workload driver started after initial readiness |
+| `check <argv...>` | a short-lived oracle command run continuously after initial readiness |
 
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
 alphabet, and passes the image to the canonical OCI preparation API with

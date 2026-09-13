@@ -30,9 +30,9 @@ application that actually exits 127.
 
 Tracked node and hook children retain their exit status until their owning
 `Child` consumes it. Orphan cleanup enumerates the supervising thread's other
-children and reaps them individually, so a finished hook cannot lose its status
-to the node reaper.
-The canonical kernels require `CONFIG_PROC_CHILDREN` for this enumeration.
+children and reaps them individually, so a finished hook, workload, check, or
+readiness probe cannot lose its status to the node reaper. The canonical
+kernels require `CONFIG_PROC_CHILDREN` for this enumeration.
 
 The `ready` command is checked before setup completes. After setup, every
 supervised node start begins a recovery generation and launches the command as
@@ -42,6 +42,26 @@ queued in request order until the current generation becomes ready; hooks that
 were already running retain their results. The hooks-started register advances
 only after a queued or immediate request successfully spawns. A bundle without
 a readiness command launches hooks immediately.
+
+After initial readiness, an optional `workload` command starts once and remains
+independent of node recovery. An optional `check` command runs serially and
+continuously; its directives carry the run number and disturbance-generation
+range that produced the latest successful evidence. Process transitions and
+accepted instrumentation reports advance that generation, which keeps stale
+pre-fault evidence distinct from a check completed after recovery.
+
+Instrumented nodes receive a pair of inherited event descriptors. The generic
+control and report frames live in `process-proto`; the supervisor acknowledges
+runtime readiness, orders arms and disarms, and only credits an event kill when
+its report matches the acknowledged rarity and window-start identity. Event
+parks report completed holds through the same channel. Outstanding windows,
+commands, arms, and a reported kill awaiting observed child death contribute
+to the pending-fault fence. A protocol failure while work is outstanding marks
+the execution as an infrastructure failure.
+
+The faults workload owns the semantic fault policy and composes its optional C
+instrumentation runtime with `libvoidstar`. The supervisor consumes only the
+generic process actions and event protocol and does not depend on that workload.
 
 `bundle`, `directive`, `reconcile`, `recovery`, and `supervise` are portable library
 modules. Linux device and process wiring is isolated to the binary. The

@@ -21,6 +21,11 @@ fn to_process_action(fault: &Fault) -> ProcessAction {
         Fault::ProcKill => ProcessAction::Kill,
         Fault::ProcRestart => ProcessAction::Restart,
         Fault::RunHook(id) => ProcessAction::RunHook(*id),
+        Fault::ProcEventKill { rarity } => ProcessAction::EventKill { rarity: *rarity },
+        Fault::ProcEventPark { rarity, hold } => ProcessAction::EventPark {
+            rarity: *rarity,
+            hold_nanos: hold.0,
+        },
         Fault::ProcPark { addr, hits, hold } => ProcessAction::Park {
             addr: *addr,
             hits: *hits,
@@ -36,6 +41,11 @@ fn from_process_action(action: ProcessAction) -> Option<Fault> {
         ProcessAction::Kill => Fault::ProcKill,
         ProcessAction::Restart => Fault::ProcRestart,
         ProcessAction::RunHook(id) => Fault::RunHook(id),
+        ProcessAction::EventKill { rarity } => Fault::ProcEventKill { rarity },
+        ProcessAction::EventPark { rarity, hold_nanos } => Fault::ProcEventPark {
+            rarity,
+            hold: Span(hold_nanos),
+        },
         ProcessAction::Park {
             addr,
             hits,
@@ -60,6 +70,11 @@ mod tests {
             Fault::ProcRestart,
             Fault::ProcPause(Span(1234)),
             Fault::RunHook(7),
+            Fault::ProcEventKill { rarity: 0 },
+            Fault::ProcEventPark {
+                rarity: 3,
+                hold: Span(2_000_000),
+            },
             Fault::ProcPark {
                 addr: 0x4b_0e86,
                 hits: 28,
@@ -83,5 +98,25 @@ mod tests {
     #[test]
     fn a_retired_tag_does_not_decode() {
         assert_eq!(decode_process_target(&[0, 0, 18]), None);
+    }
+
+    #[test]
+    fn an_event_park_with_no_hold_does_not_decode() {
+        let bytes = [0, 0, 21, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(decode_process_target(&bytes), None);
+    }
+
+    #[test]
+    fn event_rarity_outside_the_shared_width_does_not_decode() {
+        let kill = process_target(0, &Fault::ProcEventKill { rarity: 64 });
+        assert_eq!(decode_process_target(&kill), None);
+        let park = process_target(
+            0,
+            &Fault::ProcEventPark {
+                rarity: 64,
+                hold: Span(1),
+            },
+        );
+        assert_eq!(decode_process_target(&park), None);
     }
 }

@@ -20,7 +20,6 @@
 #ifndef HARMONY_WRITE
 #define HARMONY_WRITE(fd, buf, len) write((fd), (buf), (len))
 #endif
-
 static pthread_mutex_t harmony_device_lock = PTHREAD_MUTEX_INITIALIZER;
 
 enum {
@@ -158,6 +157,11 @@ static uint64_t get_u64(const unsigned char *in)
     return value;
 }
 
+__attribute__((weak)) void harmony_instrumentation_event(uint64_t site)
+{
+    (void)site;
+}
+
 /*
  * Give an instrumented logical thread a stable identity and runnable-set
  * width. The first prescribed threshold is one basic block. Reconfiguration
@@ -225,7 +229,7 @@ void init_coverage_module(const void *module, size_t size)
 
 void notify_coverage(uint64_t edge)
 {
-    (void)edge;
+    harmony_instrumentation_event(edge);
     if (harmony_coverage.counter != UINT64_MAX)
         harmony_coverage.counter++;
     if (harmony_coverage.counter == harmony_coverage.threshold &&

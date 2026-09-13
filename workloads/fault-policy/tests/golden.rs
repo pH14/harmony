@@ -210,6 +210,14 @@ fn golden_process_fault_wire_format() {
     let capture = std::env::var_os("GOLDEN_CAPTURE").is_some();
     for (fault, expected) in [
         (Fault::RunHook(7), "021107000000"),
+        (Fault::ProcEventKill { rarity: 0 }, "021400"),
+        (
+            Fault::ProcEventPark {
+                rarity: 3,
+                hold: Span(2_000_000),
+            },
+            "02150380841e0000000000",
+        ),
         (
             Fault::ProcPark {
                 addr: 0x4b_0e86,

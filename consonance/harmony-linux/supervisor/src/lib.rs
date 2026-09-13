@@ -2,6 +2,7 @@
 
 pub mod bundle;
 pub mod directive;
+pub mod evidence;
 pub mod process;
 pub mod reconcile;
 pub mod recovery;
@@ -10,7 +11,8 @@ pub mod supervise;
 
 pub use bundle::{Bundle, BundleError, HookSpec, NodeSpec, parse_bundle};
 pub use directive::{Directive, DirectiveError, LineReader, parse_directive};
-pub use reconcile::{ActiveWindows, HookWindow, NodeActions, Park};
+pub use evidence::{CheckCapture, CheckEvidence};
+pub use reconcile::{ActiveWindows, EventKillWindow, EventPark, HookWindow, NodeActions, Park};
 pub use recovery::{RecoveryError, RecoveryGate};
 pub use supervise::{Action, Counters, ProcessSupervisor, Supervisor};
 

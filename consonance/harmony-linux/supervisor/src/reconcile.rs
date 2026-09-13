@@ -9,12 +9,27 @@ pub struct Park {
     pub hold_nanos: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EventPark {
+    pub rarity: u8,
+    pub hold_nanos: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct EventKillWindow {
+    pub node: u16,
+    pub rarity: u8,
+    pub start: u64,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct NodeActions {
     pub kill: bool,
     pub pause: bool,
     pub restart: bool,
     pub park: Option<Park>,
+    pub event_kill: Option<u8>,
+    pub event_park: Option<EventPark>,
 }
 
 impl NodeActions {
@@ -34,6 +49,7 @@ pub struct HookWindow {
 pub struct ActiveWindows {
     nodes: Vec<(u16, NodeActions)>,
     hooks: Vec<HookWindow>,
+    event_kills: Vec<EventKillWindow>,
 }
 
 impl ActiveWindows {
@@ -51,10 +67,23 @@ impl ActiveWindows {
                 }
                 return;
             }
+            ProcessAction::EventKill { rarity } => {
+                let window = EventKillWindow {
+                    node,
+                    rarity: *rarity,
+                    start,
+                };
+                if let Err(at) = self.event_kills.binary_search(&window) {
+                    self.event_kills.insert(at, window);
+                }
+                self.refresh_event_kill(node);
+                return;
+            }
             ProcessAction::Kill
             | ProcessAction::Pause(_)
             | ProcessAction::Restart
-            | ProcessAction::Park { .. } => {}
+            | ProcessAction::Park { .. }
+            | ProcessAction::EventPark { .. } => {}
         }
         let index = match self.nodes.binary_search_by_key(&node, |entry| entry.0) {
             Ok(index) => index,
@@ -79,8 +108,31 @@ impl ActiveWindows {
                     hold_nanos: *hold_nanos,
                 });
             }
+            ProcessAction::EventKill { rarity } => flags.event_kill = Some(*rarity),
+            ProcessAction::EventPark { rarity, hold_nanos } => {
+                flags.event_park = Some(EventPark {
+                    rarity: *rarity,
+                    hold_nanos: *hold_nanos,
+                });
+            }
             ProcessAction::RunHook(_) => {}
         }
+    }
+
+    fn refresh_event_kill(&mut self, node: u16) {
+        let rarity = self
+            .event_kills
+            .iter()
+            .find(|window| window.node == node)
+            .map(|window| window.rarity);
+        let index = match self.nodes.binary_search_by_key(&node, |entry| entry.0) {
+            Ok(index) => index,
+            Err(at) => {
+                self.nodes.insert(at, (node, NodeActions::default()));
+                at
+            }
+        };
+        self.nodes[index].1.event_kill = rarity;
     }
 
     pub fn from_answer(body: &[u8]) -> Result<Self, WireError> {
@@ -107,6 +159,37 @@ impl ActiveWindows {
     #[must_use]
     pub fn hooks(&self) -> &[HookWindow] {
         &self.hooks
+    }
+
+    #[must_use]
+    pub fn event_kill(&self, node: u16) -> Option<EventKillWindow> {
+        self.event_kills
+            .iter()
+            .find(|window| window.node == node)
+            .copied()
+    }
+
+    #[must_use]
+    pub fn event_kill_windows(&self) -> &[EventKillWindow] {
+        &self.event_kills
+    }
+
+    #[must_use]
+    pub fn pending_process_faults(&self, fired: &[EventKillWindow]) -> u64 {
+        let mut pending = 0_u64;
+        for (node, actions) in &self.nodes {
+            pending = pending.saturating_add(u64::from(actions.kill));
+            pending = pending.saturating_add(u64::from(actions.pause));
+            pending = pending.saturating_add(u64::from(actions.restart));
+            pending = pending.saturating_add(u64::from(actions.park.is_some()));
+            pending = pending.saturating_add(u64::from(actions.event_park.is_some()));
+            if let Some(window) = self.event_kills.iter().find(|window| window.node == *node)
+                && fired.binary_search(window).is_err()
+            {
+                pending = pending.saturating_add(1);
+            }
+        }
+        pending
     }
 }
 
@@ -164,6 +247,8 @@ mod tests {
                 restart: true,
                 kill: false,
                 park: None,
+                event_kill: None,
+                event_park: None,
             }
         );
         assert_eq!(active.node(2), NodeActions::default());
@@ -273,5 +358,38 @@ mod tests {
                 HookWindow { id: 2, start: 500 },
             ]
         );
+    }
+
+    #[test]
+    fn overlapping_event_kill_windows_have_a_canonical_first_window() {
+        let mut active = ActiveWindows::new();
+        active.insert(0, &ProcessAction::EventKill { rarity: 7 }, 20);
+        active.insert(0, &ProcessAction::EventKill { rarity: 3 }, 10);
+        active.insert(0, &ProcessAction::EventKill { rarity: 7 }, 20);
+        assert_eq!(
+            active.event_kill(0),
+            Some(EventKillWindow {
+                node: 0,
+                rarity: 3,
+                start: 10,
+            })
+        );
+        assert_eq!(active.event_kill_windows().len(), 2);
+        assert_eq!(active.node(0).event_kill, Some(3));
+    }
+
+    #[test]
+    fn pending_process_faults_ignore_a_fired_canonical_event_window() {
+        let mut active = ActiveWindows::new();
+        active.insert(0, &ProcessAction::EventKill { rarity: 7 }, 20);
+        active.insert(0, &ProcessAction::EventKill { rarity: 3 }, 10);
+        active.insert(0, &ProcessAction::Pause(4), 10);
+        let canonical = EventKillWindow {
+            node: 0,
+            rarity: 3,
+            start: 10,
+        };
+        assert_eq!(active.pending_process_faults(&[]), 2);
+        assert_eq!(active.pending_process_faults(&[canonical]), 1);
     }
 }

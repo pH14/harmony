@@ -11,6 +11,12 @@ Device exchanges are serialized per process. The library keeps explicit thread
 identities and counters for callback thresholding. Device errors fail closed:
 an event is dropped and entropy returns zero rather than using host randomness.
 
+Coverage callbacks invoke the optional weak `harmony_instrumentation_event`
+hook when a workload links a compatible instrumentation runtime. The library
+does not define a fault protocol or make fault decisions; workloads compose
+the runtime they need with this ABI shim. Calls remain harmless when no runtime
+provides the hook.
+
 Build and test it with:
 
 ```sh
