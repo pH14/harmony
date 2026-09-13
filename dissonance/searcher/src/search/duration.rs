@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
+    marker::PhantomData,
     num::{NonZeroU64, NonZeroUsize},
 };
 
@@ -10,7 +11,10 @@ use serde::{Deserialize, Serialize};
 use crate::search::rand::RomuDuoJrRand;
 
 pub const DURATION_POLICY_IDENTIFIER: &str = "recent_useful_work_log_duration_v1";
+pub const DURATION_POLICIES_IDENTIFIER: &str = "recent_useful_work_context_log_duration_v1";
+pub const MAX_DURATION_CONTEXTS: usize = 256;
 const RECENT_OBSERVATIONS: usize = 128;
+const CONTEXT_NODE_OVERHEAD: usize = 128;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct Observation {
@@ -24,6 +28,84 @@ pub struct DurationCheckpoint {
     policy: String,
     #[serde(deserialize_with = "deserialize_recent")]
     recent: Vec<Observation>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DurationRequest<C> {
+    pub context: C,
+    pub max_duration: NonZeroU64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DurationDraw<C> {
+    pub context: C,
+    pub max_duration: NonZeroU64,
+    pub duration: NonZeroU64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(bound(serialize = "C: Serialize", deserialize = "C: Deserialize<'de>"))]
+pub struct DurationContextCheckpoint<C> {
+    pub context: C,
+    pub history: DurationCheckpoint,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(bound(serialize = "C: Serialize", deserialize = "C: Deserialize<'de>"))]
+pub struct DurationPoliciesCheckpoint<C> {
+    pub policy: String,
+    #[serde(deserialize_with = "deserialize_contexts")]
+    pub contexts: Vec<DurationContextCheckpoint<C>>,
+}
+
+fn deserialize_contexts<'de, D, C>(
+    deserializer: D,
+) -> Result<Vec<DurationContextCheckpoint<C>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    C: Deserialize<'de>,
+{
+    struct ContextVisitor<C>(PhantomData<C>);
+
+    impl<'de, C> serde::de::Visitor<'de> for ContextVisitor<C>
+    where
+        C: Deserialize<'de>,
+    {
+        type Value = Vec<DurationContextCheckpoint<C>>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                formatter,
+                "at most {MAX_DURATION_CONTEXTS} duration contexts"
+            )
+        }
+
+        fn visit_seq<S>(self, mut sequence: S) -> Result<Self::Value, S::Error>
+        where
+            S: serde::de::SeqAccess<'de>,
+        {
+            if sequence
+                .size_hint()
+                .is_some_and(|size| size > MAX_DURATION_CONTEXTS)
+            {
+                return Err(serde::de::Error::custom(
+                    "duration context history exceeds its capacity",
+                ));
+            }
+            let mut contexts = Vec::with_capacity(MAX_DURATION_CONTEXTS);
+            while let Some(context) = sequence.next_element()? {
+                if contexts.len() == MAX_DURATION_CONTEXTS {
+                    return Err(serde::de::Error::custom(
+                        "duration context history exceeds its capacity",
+                    ));
+                }
+                contexts.push(context);
+            }
+            Ok(contexts)
+        }
+    }
+
+    deserializer.deserialize_seq(ContextVisitor(PhantomData))
 }
 
 fn deserialize_recent<'de, D>(deserializer: D) -> Result<Vec<Observation>, D::Error>
@@ -85,7 +167,7 @@ impl DurationPolicy {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            recent: VecDeque::with_capacity(RECENT_OBSERVATIONS),
+            recent: VecDeque::new(),
         }
     }
 
@@ -174,6 +256,172 @@ impl DurationPolicy {
         let mut policy = Self::new();
         policy.recent.extend(checkpoint.recent);
         Ok(policy)
+    }
+
+    #[must_use]
+    pub fn memory_bytes(&self) -> usize {
+        std::mem::size_of::<Self>().saturating_add(
+            self.recent
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Observation>()),
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DurationPolicies<C> {
+    policies: BTreeMap<C, DurationPolicy>,
+    order: VecDeque<C>,
+}
+
+impl<C: Copy + Ord> Default for DurationPolicies<C> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<C: Copy + Ord> DurationPolicies<C> {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            policies: BTreeMap::new(),
+            order: VecDeque::with_capacity(MAX_DURATION_CONTEXTS),
+        }
+    }
+
+    #[must_use]
+    pub fn draw(
+        &self,
+        context: C,
+        rand: &mut RomuDuoJrRand,
+        max_duration: NonZeroU64,
+    ) -> DurationDraw<C> {
+        let empty = DurationPolicy::new();
+        let policy = self.policies.get(&context).unwrap_or(&empty);
+        DurationDraw {
+            context,
+            max_duration,
+            duration: NonZeroU64::new(policy.draw(rand, max_duration))
+                .expect("duration policy draws a positive duration"),
+        }
+    }
+
+    pub fn observe(
+        &mut self,
+        context: C,
+        duration: NonZeroU64,
+        useful: bool,
+        execution_work: NonZeroU64,
+    ) -> Result<(), &'static str> {
+        if !duration.get().is_power_of_two() {
+            return Err("duration observation is not a logarithmic choice");
+        }
+        if !self.policies.contains_key(&context) {
+            if self.order.len() == MAX_DURATION_CONTEXTS {
+                let old = self
+                    .order
+                    .pop_front()
+                    .ok_or("duration context order is inconsistent")?;
+                self.policies.remove(&old);
+            }
+            self.order.push_back(context);
+            self.policies.insert(context, DurationPolicy::new());
+        }
+        self.policies
+            .get_mut(&context)
+            .ok_or("duration context was not retained")?
+            .observe(duration, useful, execution_work)
+    }
+
+    #[must_use]
+    pub fn context_checkpoint(&self, context: C) -> Option<DurationCheckpoint> {
+        self.policies.get(&context).map(DurationPolicy::checkpoint)
+    }
+
+    #[must_use]
+    pub(crate) fn eviction_checkpoint(&self, context: C) -> Option<DurationContextCheckpoint<C>> {
+        if self.policies.contains_key(&context) || self.order.len() < MAX_DURATION_CONTEXTS {
+            return None;
+        }
+        self.order.front().and_then(|old| {
+            self.policies
+                .get(old)
+                .map(|history| DurationContextCheckpoint {
+                    context: *old,
+                    history: history.checkpoint(),
+                })
+        })
+    }
+
+    #[must_use]
+    pub fn checkpoint(&self) -> DurationPoliciesCheckpoint<C> {
+        DurationPoliciesCheckpoint {
+            policy: DURATION_POLICIES_IDENTIFIER.to_owned(),
+            contexts: self
+                .order
+                .iter()
+                .filter_map(|context| {
+                    self.policies
+                        .get(context)
+                        .map(|policy| DurationContextCheckpoint {
+                            context: *context,
+                            history: policy.checkpoint(),
+                        })
+                })
+                .collect(),
+        }
+    }
+
+    pub fn from_checkpoint(
+        checkpoint: DurationPoliciesCheckpoint<C>,
+    ) -> Result<Self, &'static str> {
+        if checkpoint.policy != DURATION_POLICIES_IDENTIFIER {
+            return Err("unrecognized duration policies");
+        }
+        if checkpoint.contexts.len() > MAX_DURATION_CONTEXTS {
+            return Err("duration context history exceeds its capacity");
+        }
+        let mut policies = Self::new();
+        for entry in checkpoint.contexts {
+            if policies.policies.contains_key(&entry.context) {
+                return Err("duration checkpoint repeats a context");
+            }
+            let policy = DurationPolicy::from_checkpoint(entry.history)?;
+            policies.order.push_back(entry.context);
+            policies.policies.insert(entry.context, policy);
+        }
+        Ok(policies)
+    }
+
+    #[must_use]
+    pub fn memory_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            .saturating_add(
+                self.order
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<C>()),
+            )
+            .saturating_add(
+                self.policies
+                    .values()
+                    .map(|policy| policy.memory_bytes().saturating_add(CONTEXT_NODE_OVERHEAD))
+                    .sum::<usize>(),
+            )
+    }
+
+    #[must_use]
+    pub fn memory_reserve_bytes() -> usize {
+        std::mem::size_of::<Self>()
+            .saturating_add(MAX_DURATION_CONTEXTS.saturating_mul(std::mem::size_of::<C>()))
+            .saturating_add(
+                MAX_DURATION_CONTEXTS.saturating_mul(
+                    std::mem::size_of::<DurationPolicy>()
+                        .saturating_add(
+                            RECENT_OBSERVATIONS.saturating_mul(std::mem::size_of::<Observation>()),
+                        )
+                        .saturating_add(CONTEXT_NODE_OVERHEAD),
+                ),
+            )
     }
 }
 

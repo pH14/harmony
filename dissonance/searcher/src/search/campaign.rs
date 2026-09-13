@@ -5,6 +5,7 @@ use std::{
     error::Error,
     fmt::Debug,
     io::Write,
+    num::NonZeroU64,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -22,6 +23,10 @@ use crate::search::draw::{
     DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
     draw_mixture_from_identifier, draw_mixture_identifier, energy_strategy,
     suffix_shape_from_identifier, suffix_shape_identifier,
+};
+use crate::search::duration::{
+    DurationCheckpoint, DurationContextCheckpoint, DurationDraw, DurationPolicies, DurationPolicy,
+    DurationRequest,
 };
 
 pub const SPLICE_ACTION_CAP: usize = 128;
@@ -183,6 +188,49 @@ pub trait InputPolicy: CampaignTypes {
         run: &Self::Run,
         origin: Option<(&str, &Self::ArchiveReport)>,
     ) -> Result<InitialDrawState<Self>, Box<dyn Error>>;
+    fn duration_request(
+        &self,
+        run: &Self::Run,
+        parent: Self::Key,
+        remaining_work: Option<NonZeroU64>,
+    ) -> Option<DurationRequest<Self::Key>> {
+        let _ = (run, parent, remaining_work);
+        None
+    }
+    fn expand_suffix_duration(
+        &self,
+        run: &Self::Run,
+        state: &Self::DrawState,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        mutation_seed: u64,
+        draw: DurationDraw<Self::Key>,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        let _ = draw;
+        self.expand_suffix(run, state, shape, mixture, mutation_seed)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn expand_suffix_recorded_duration(
+        &self,
+        run: &Self::Run,
+        state: &Self::DrawState,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        before: Option<&Self::DrawCheckpoint>,
+        mutation_seed: u64,
+        draw: Option<DurationDraw<Self::Key>>,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        match draw {
+            Some(draw) => {
+                self.expand_suffix_duration(run, state, shape, mixture, mutation_seed, draw)
+            }
+            None => self.expand_suffix_recorded(run, state, shape, mixture, before, mutation_seed),
+        }
+    }
+    fn duration_of_action(&self, run: &Self::Run, action: &Self::Action) -> Option<NonZeroU64> {
+        let _ = (run, action);
+        None
+    }
     fn draw_checkpoint(
         &self,
         state: &Self::DrawState,
@@ -519,8 +567,8 @@ pub enum CampaignAdmissionDecision {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(bound = "C: Serialize + DeserializeOwned")]
-pub struct CampaignJobRecord<C> {
+#[serde(bound = "C: Serialize + DeserializeOwned, K: Serialize + DeserializeOwned")]
+pub struct CampaignJobRecord<C, K = ()> {
     pub sequence: u64,
     pub worker: u32,
     pub parent_id: u64,
@@ -538,11 +586,23 @@ pub struct CampaignJobRecord<C> {
     pub draw_checkpoint_before: Option<C>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draw_checkpoint_after: Option<C>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_draw: Option<DurationDraw<K>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_admission_sequence_at_draw: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_remaining_work: Option<NonZeroU64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_checkpoint_at_draw: Option<DurationCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_checkpoint_before: Option<DurationCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_checkpoint_after: Option<DurationCheckpoint>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(bound = "C: Serialize + DeserializeOwned")]
-pub struct CampaignSkipRecord<C> {
+#[serde(bound = "C: Serialize + DeserializeOwned, K: Serialize + DeserializeOwned")]
+pub struct CampaignSkipRecord<C, K = ()> {
     pub worker: u32,
     pub parent_id: u64,
     pub mutation_seed: u64,
@@ -556,14 +616,26 @@ pub struct CampaignSkipRecord<C> {
     pub draw_checkpoint_before: Option<C>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draw_checkpoint_after: Option<C>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_draw: Option<DurationDraw<K>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_admission_sequence_at_draw: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_remaining_work: Option<NonZeroU64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_checkpoint_at_draw: Option<DurationCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_checkpoint_before: Option<DurationCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_checkpoint_after: Option<DurationCheckpoint>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(bound = "C: Serialize + DeserializeOwned")]
+#[serde(bound = "C: Serialize + DeserializeOwned, K: Serialize + DeserializeOwned")]
 #[serde(tag = "event", rename_all = "snake_case")]
-pub enum CampaignStreamRecord<C> {
-    Job(CampaignJobRecord<C>),
-    Skip(CampaignSkipRecord<C>),
+pub enum CampaignStreamRecord<C, K = ()> {
+    Job(CampaignJobRecord<C, K>),
+    Skip(CampaignSkipRecord<C, K>),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -909,7 +981,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         archive.max_entries = archive_entry_limit;
         if let Some(memory_budget_mib) = memory_budget_mib {
             let total = memory_budget_mib.saturating_mul(1024 * 1024);
-            let draw_reserve = workload.draw_state_memory_reserve_bytes(run, max_actions);
+            let draw_reserve = workload
+                .draw_state_memory_reserve_bytes(run, max_actions)
+                .saturating_add(DurationPolicies::<G::Key>::memory_reserve_bytes());
             archive.set_memory_budget(
                 total.saturating_sub(draw_reserve),
                 G::snapshot_memory_charge,
@@ -1503,6 +1577,161 @@ fn execution_work_delta(before: u64, after: u64, scope: &str) -> Result<u64, Box
         .ok_or_else(|| format!("{scope} execution-work counter rewound").into())
 }
 
+fn duration_was_applied<G: Workload + ?Sized>(
+    workload: &G,
+    run: &G::Run,
+    draw: &DurationDraw<G::Key>,
+    actions: &[CampaignActionResult<G>],
+) -> bool {
+    actions
+        .iter()
+        .filter(|action| !action.outcome.disposition.is_failed())
+        .any(|action| workload.duration_of_action(run, &action.action) == Some(draw.duration))
+}
+
+struct DurationAdmissionRecord<C> {
+    sequence: u64,
+    context: C,
+    before: Option<DurationCheckpoint>,
+    evicted: Option<DurationContextCheckpoint<C>>,
+}
+
+fn duration_checkpoint_at_reservation<C: Copy + Ord>(
+    policies: &DurationPolicies<C>,
+    admissions: &VecDeque<DurationAdmissionRecord<C>>,
+    context: C,
+    sequence: u64,
+) -> Option<DurationCheckpoint> {
+    for admission in admissions
+        .iter()
+        .filter(|admission| admission.sequence > sequence)
+    {
+        if admission.context == context {
+            return admission.before.clone();
+        }
+        if admission
+            .evicted
+            .as_ref()
+            .is_some_and(|evicted| evicted.context == context)
+        {
+            return admission
+                .evicted
+                .as_ref()
+                .map(|evicted| evicted.history.clone());
+        }
+    }
+    policies.context_checkpoint(context)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_duration_reservation<C>(
+    draw: Option<&DurationDraw<C>>,
+    admission_sequence: Option<u64>,
+    recorded_remaining_work: Option<NonZeroU64>,
+    current_sequence: u64,
+    window_depth: usize,
+    campaign_work_budget: Option<u64>,
+    current_work: u64,
+    work_history: &VecDeque<(u64, u64)>,
+) -> Result<Option<NonZeroU64>, Box<dyn Error>> {
+    let Some(_draw) = draw else {
+        if admission_sequence.is_some() {
+            return Err("duration reservation sequence is missing its duration choice".into());
+        }
+        if recorded_remaining_work.is_some() {
+            return Err("recorded stream carries remaining duration work without a choice".into());
+        }
+        return Ok(None);
+    };
+    let Some(admission_sequence) = admission_sequence else {
+        return Err("recorded duration choice is missing its admission sequence".into());
+    };
+    let window_depth = u64::try_from(window_depth)?;
+    if admission_sequence > current_sequence {
+        return Err("duration choice claims a future admission sequence".into());
+    }
+    if current_sequence.saturating_sub(admission_sequence) > window_depth {
+        return Err("duration choice is older than the bounded admission window".into());
+    }
+    let work_at_draw = if admission_sequence == current_sequence {
+        Some(current_work)
+    } else {
+        work_history
+            .iter()
+            .find(|(sequence, _)| *sequence == admission_sequence)
+            .map(|(_, work)| *work)
+    }
+    .ok_or("duration choice has no reconstructed reservation work")?;
+    let expected_remaining_work = campaign_work_budget
+        .and_then(|budget| NonZeroU64::new(budget.saturating_sub(work_at_draw)));
+    if expected_remaining_work != recorded_remaining_work {
+        return Err("recorded duration work diverges from its reservation sequence".into());
+    }
+    Ok(expected_remaining_work)
+}
+
+fn duration_was_useful(decisions: &[CampaignAdmissionDecision]) -> bool {
+    decisions.iter().any(|decision| {
+        matches!(
+            decision,
+            CampaignAdmissionDecision::Retained { .. } | CampaignAdmissionDecision::Objective
+        )
+    })
+}
+
+fn verify_duration_draw(
+    draw: &DurationDraw<impl Copy>,
+    checkpoint: Option<&DurationCheckpoint>,
+    mutation_seed: u64,
+) -> Result<(), Box<dyn Error>> {
+    let policy = match checkpoint {
+        Some(checkpoint) => DurationPolicy::from_checkpoint(checkpoint.clone())?,
+        None => DurationPolicy::new(),
+    };
+    let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
+    let expected = policy.draw(&mut rand, draw.max_duration);
+    if expected != draw.duration.get() {
+        return Err("recorded duration choice diverges from its draw-time policy state".into());
+    }
+    Ok(())
+}
+
+fn validate_duration_draw<G: Workload + ?Sized>(
+    workload: &G,
+    run: &G::Run,
+    parent: G::Key,
+    campaign_work_budget: Option<u64>,
+    remaining_work: Option<NonZeroU64>,
+    recorded: Option<DurationDraw<G::Key>>,
+) -> Result<Option<DurationDraw<G::Key>>, Box<dyn Error>> {
+    if let Some(remaining_work) = remaining_work {
+        let Some(campaign_work_budget) = campaign_work_budget else {
+            return Err("recorded duration work has no campaign budget".into());
+        };
+        if remaining_work.get() > campaign_work_budget {
+            return Err("recorded duration work exceeds its campaign budget".into());
+        }
+    }
+    let request = workload.duration_request(run, parent, remaining_work);
+    match (request, recorded) {
+        (None, None) => Ok(None),
+        (Some(_), None) => Err("recorded stream is missing its duration choice".into()),
+        (None, Some(_)) => Err("recorded stream carries an unexpected duration choice".into()),
+        (Some(request), Some(draw)) => {
+            if draw.context != request.context {
+                return Err("recorded duration context diverges from the workload request".into());
+            }
+            if draw.max_duration != request.max_duration {
+                return Err("recorded duration maximum diverges from the workload request".into());
+            }
+            if draw.duration > draw.max_duration || !draw.duration.get().is_power_of_two() {
+                return Err("recorded duration choice is outside its bounded alphabet".into());
+            }
+            Ok(Some(draw))
+        }
+    }
+}
+
 #[derive(Default, Serialize)]
 struct LiveCoordinatorProfile {
     enabled: bool,
@@ -1764,6 +1993,10 @@ struct PendingJob<G: Workload + ?Sized> {
     splice: Option<CampaignSpliceRecord>,
     selector: SelectorDraw,
     draw_checkpoint_before: Option<G::DrawCheckpoint>,
+    duration_draw: Option<DurationDraw<G::Key>>,
+    duration_admission_sequence_at_draw: Option<u64>,
+    duration_remaining_work: Option<NonZeroU64>,
+    duration_checkpoint_at_draw: Option<DurationCheckpoint>,
 }
 
 struct CompletedJob<G: Workload + ?Sized> {
@@ -2032,6 +2265,7 @@ where
 {
     let work_budget = options.work_budget;
     let result_limit = options.result_buffering.capacity();
+    let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
     if work_budget == Some(0) {
         return Err("work budget must be nonzero".into());
     }
@@ -2052,7 +2286,11 @@ where
     }
     if let Some(memory_budget_mib) = config.memory_budget_mib {
         let budget = memory_budget_mib.saturating_mul(1024 * 1024);
-        if budget <= workload.draw_state_memory_reserve_bytes(&config.run, config.action_limit) {
+        if budget
+            <= workload
+                .draw_state_memory_reserve_bytes(&config.run, config.action_limit)
+                .saturating_add(duration_memory_reserve)
+        {
             return Err("campaign memory budget is too small for the bounded draw state".into());
         }
     }
@@ -2067,6 +2305,7 @@ where
         } => Some((file_sha256.as_str(), report.as_ref())),
     };
     let (mut draw_state, draw_header) = workload.initial_draw_state(&config.run, draw_origin)?;
+    let mut duration_policies = DurationPolicies::<G::Key>::new();
     if !draw_state_memory_is_within_reserve(
         workload.draw_state_memory_bytes(&draw_state),
         workload.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
@@ -2115,7 +2354,8 @@ where
     let bootstrap_memory_bytes = core
         .archive
         .resident_memory_bytes()
-        .saturating_add(workload.draw_state_memory_bytes(&draw_state));
+        .saturating_add(workload.draw_state_memory_bytes(&draw_state))
+        .saturating_add(duration_policies.memory_bytes());
     if !resident_memory_is_within_budget(bootstrap_memory_bytes, config.memory_budget_mib) {
         return Err("campaign bootstrap state exceeds its deterministic memory budget".into());
     }
@@ -2177,6 +2417,7 @@ where
             let select = |core: &mut CoordinatorCore<G>,
                           rands: &mut [RomuDuoJrRand],
                           draw_state: &mut G::DrawState,
+                          duration_policies: &DurationPolicies<G::Key>,
                           writer: &mut StreamWriter<'_>,
                           counters: &mut CampaignCounters,
                           reserved: &mut u64,
@@ -2267,6 +2508,10 @@ where
                                 splice,
                                 selector,
                                 draw_checkpoint_before,
+                                duration_draw: None,
+                                duration_admission_sequence_at_draw: None,
+                                duration_remaining_work: None,
+                                duration_checkpoint_at_draw: None,
                             },
                         )));
                     }
@@ -2325,9 +2570,53 @@ where
                         } else {
                             (None, None)
                         };
-                    let mut suffix = match spliced {
-                        Some(tail) => tail,
-                        None => workload.expand_suffix(
+                    let remaining_work = work_budget.and_then(|budget| {
+                        NonZeroU64::new(
+                            budget.saturating_sub(
+                                counters
+                                    .bootstrap_execution_work
+                                    .saturating_add(counters.job_execution_work),
+                            ),
+                        )
+                    });
+                    let mut duration_checkpoint_at_draw = None;
+                    let duration_draw = if spliced.is_none() {
+                        workload
+                            .duration_request(
+                                &config.run,
+                                core.archive.entries[parent_index].key,
+                                remaining_work,
+                            )
+                            .map(|request| {
+                                duration_checkpoint_at_draw =
+                                    duration_policies.context_checkpoint(request.context);
+                                let mut duration_rand = RomuDuoJrRand::with_seed(mutation_seed);
+                                duration_policies.draw(
+                                    request.context,
+                                    &mut duration_rand,
+                                    request.max_duration,
+                                )
+                            })
+                    } else {
+                        None
+                    };
+                    let duration_remaining_work = duration_draw.and(remaining_work);
+                    let duration_admission_sequence_at_draw = duration_draw.map(|_| core.sequence);
+                    let mut suffix = match (spliced, duration_draw) {
+                        (Some(tail), _) => tail,
+                        (None, Some(draw)) => workload.expand_suffix_duration(
+                            &config.run,
+                            draw_state,
+                            config.suffix,
+                            MixtureDraw {
+                                mixture: config.mixture,
+                                weight: mixture_weight,
+                                splice_weight,
+                            },
+                            mutation_seed,
+                            draw,
+                        )?,
+                        (None, None) => workload.expand_suffix(
                             &config.run,
                             draw_state,
                             config.suffix,
@@ -2345,6 +2634,8 @@ where
                     let all_prefixes_archived = consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                         && core.all_prefixes_archived(parent_index, &suffix);
                     if all_prefixes_archived {
+                        let duration_checkpoint_before = duration_draw
+                            .and_then(|draw| duration_policies.context_checkpoint(draw.context));
                         let draw_checkpoint_after =
                             workload.finish_stream_record(&config.run, draw_state, &[])?;
                         writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
@@ -2357,6 +2648,12 @@ where
                             selector,
                             draw_checkpoint_before,
                             draw_checkpoint_after,
+                            duration_draw,
+                            duration_admission_sequence_at_draw,
+                            duration_remaining_work,
+                            duration_checkpoint_at_draw,
+                            duration_checkpoint_after: duration_checkpoint_before.clone(),
+                            duration_checkpoint_before,
                         }))?;
                         core.archive.record_selection(parent_index, &selector);
                         core.archive.maintain_memory_budget()?;
@@ -2390,6 +2687,10 @@ where
                             splice,
                             selector,
                             draw_checkpoint_before,
+                            duration_draw,
+                            duration_admission_sequence_at_draw,
+                            duration_remaining_work,
+                            duration_checkpoint_at_draw,
                         },
                     )));
                 }
@@ -2409,6 +2710,7 @@ where
                     &mut core,
                     &mut rands,
                     &mut draw_state,
+                    &duration_policies,
                     &mut writer,
                     &mut counters,
                     &mut reserved,
@@ -2501,10 +2803,35 @@ where
                     let execution_work = completed_job.execution_work;
                     let result_sha256 = completed_job.result_sha256;
                     let physical_worker = completed_job.physical_worker;
+                    let duration_applied = pending_job
+                        .duration_draw
+                        .filter(|_| execution_work > 0)
+                        .filter(|draw| {
+                            duration_was_applied(workload, &config.run, draw, &result.actions)
+                        })
+                        .is_some();
+                    let duration_checkpoint_before = pending_job
+                        .duration_draw
+                        .and_then(|draw| duration_policies.context_checkpoint(draw.context));
                     let objectives_before = core.objectives_reached;
                     let admission_started = profile_now(coordinator_profile.enabled);
                     let (sequence, decisions) =
                         core.admit_job(workload, pending_job.parent_id, result)?;
+                    if duration_applied {
+                        let draw = pending_job
+                            .duration_draw
+                            .ok_or("duration application was reported without a duration draw")?;
+                        duration_policies.observe(
+                            draw.context,
+                            draw.duration,
+                            duration_was_useful(&decisions),
+                            NonZeroU64::new(execution_work)
+                                .ok_or("duration application requires positive execution work")?,
+                        )?;
+                    }
+                    let duration_checkpoint_after = pending_job
+                        .duration_draw
+                        .and_then(|draw| duration_policies.context_checkpoint(draw.context));
                     coordinator_profile.admission_ns = coordinator_profile
                         .admission_ns
                         .saturating_add(profile_elapsed(admission_started));
@@ -2564,6 +2891,15 @@ where
                             "live draw state exceeds its deterministic memory reserve".into()
                         );
                     }
+                    if !resident_memory_is_within_budget(
+                        core.archive
+                            .resident_memory_bytes()
+                            .saturating_add(draw_state_memory_bytes)
+                            .saturating_add(duration_policies.memory_bytes()),
+                        config.memory_budget_mib,
+                    ) {
+                        return Err("live adaptive duration state exceeds its memory budget".into());
+                    }
                     core.archive.unpin_job_origin(pending_job.snapshot_id);
                     core.archive.unpin_metadata(pending_job.parent_id);
                     let compaction_started = profile_now(coordinator_profile.enabled);
@@ -2593,6 +2929,13 @@ where
                         selector: pending_job.selector,
                         draw_checkpoint_before: pending_job.draw_checkpoint_before,
                         draw_checkpoint_after,
+                        duration_draw: pending_job.duration_draw,
+                        duration_admission_sequence_at_draw: pending_job
+                            .duration_admission_sequence_at_draw,
+                        duration_remaining_work: pending_job.duration_remaining_work,
+                        duration_checkpoint_at_draw: pending_job.duration_checkpoint_at_draw,
+                        duration_checkpoint_before,
+                        duration_checkpoint_after,
                     }))?;
                     coordinator_profile.stream_write_ns = coordinator_profile
                         .stream_write_ns
@@ -2668,6 +3011,7 @@ where
                         &mut core,
                         &mut rands,
                         &mut draw_state,
+                        &duration_policies,
                         &mut writer,
                         &mut counters,
                         &mut reserved,
@@ -2735,13 +3079,17 @@ where
             &core,
             &counters,
             &coordinator_profile,
-            workload.draw_state_memory_bytes(&draw_state),
+            workload
+                .draw_state_memory_bytes(&draw_state)
+                .saturating_add(duration_policies.memory_bytes()),
             telemetry_started,
             sink,
         )?;
     }
     let stream_sha256 = writer.finish()?;
-    counters.draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
+    counters.draw_state_memory_bytes = workload
+        .draw_state_memory_bytes(&draw_state)
+        .saturating_add(duration_policies.memory_bytes());
     Ok(build_report(
         workload,
         &header,
@@ -2813,6 +3161,7 @@ where
     G::ArchiveReport: Serialize,
 {
     let stream_sha256 = format!("{:x}", Sha256::digest(stream_bytes));
+    let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
     let text = std::str::from_utf8(stream_bytes)?;
     let mut lines = text.lines();
     let header: CampaignStreamHeader<G::DrawHeader> =
@@ -2854,7 +3203,7 @@ where
     let mut replay_job_parents = Vec::<u64>::new();
     let mut replay_job_metadata = Vec::<Vec<u64>>::new();
     for line in &record_lines {
-        let record: CampaignStreamRecord<G::DrawCheckpoint> = serde_json::from_str(line)?;
+        let record: CampaignStreamRecord<G::DrawCheckpoint, G::Key> = serde_json::from_str(line)?;
         let before = match record {
             CampaignStreamRecord::Job(job) => {
                 replay_job_parents.push(job.parent_id);
@@ -2937,9 +3286,14 @@ where
     };
     let (mut draw_state, replay_draw_header) =
         workload.initial_draw_state(&replay_run, draw_origin)?;
+    let mut duration_policies = DurationPolicies::<G::Key>::new();
     if let Some(memory_budget_mib) = header.memory_budget_mib {
         let budget = memory_budget_mib.saturating_mul(1024 * 1024);
-        if budget <= workload.draw_state_memory_reserve_bytes(&replay_run, header.action_limit) {
+        if budget
+            <= workload
+                .draw_state_memory_reserve_bytes(&replay_run, header.action_limit)
+                .saturating_add(duration_memory_reserve)
+        {
             return Err("recorded memory budget is too small for the bounded draw state".into());
         }
     }
@@ -3004,7 +3358,8 @@ where
     let bootstrap_memory_bytes = core
         .archive
         .resident_memory_bytes()
-        .saturating_add(workload.draw_state_memory_bytes(&draw_state));
+        .saturating_add(workload.draw_state_memory_bytes(&draw_state))
+        .saturating_add(duration_policies.memory_bytes());
     if !resident_memory_is_within_budget(bootstrap_memory_bytes, header.memory_budget_mib) {
         return Err(
             "campaign replay bootstrap state exceeds its deterministic memory budget".into(),
@@ -3018,6 +3373,8 @@ where
         schedule_policy_window(&header.schedule_policy)
             .ok_or("campaign stream schedule policy is not recognized")?,
     );
+    let mut duration_admissions = VecDeque::new();
+    let mut duration_work = VecDeque::from([(0, counters.bootstrap_execution_work)]);
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
     let mut replay_job_snapshots =
         BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, u64)>::new();
@@ -3044,7 +3401,7 @@ where
 
     let mut replay_job_index = 0_usize;
     for line in record_lines {
-        let record: CampaignStreamRecord<G::DrawCheckpoint> = serde_json::from_str(line)?;
+        let record: CampaignStreamRecord<G::DrawCheckpoint, G::Key> = serde_json::from_str(line)?;
         match record {
             CampaignStreamRecord::Skip(skip) => {
                 let parent_index = core
@@ -3055,9 +3412,70 @@ where
                     energy_strategy(skip.mutation_seed, skip.mixture_weight, skip.splice_weight)?;
                 let spliced = replay_splice::<G>(strategy, skip.splice)?;
                 let draw_checkpoint_before = skip.draw_checkpoint_before;
-                let mut suffix = match spliced {
-                    Some(tail) => tail,
-                    None => workload.expand_suffix_recorded(
+                if spliced.is_some()
+                    && (skip.duration_draw.is_some()
+                        || skip.duration_admission_sequence_at_draw.is_some()
+                        || skip.duration_remaining_work.is_some()
+                        || skip.duration_checkpoint_at_draw.is_some())
+                {
+                    return Err("recorded splice carries unexpected duration evidence".into());
+                }
+                let recorded_duration_draw =
+                    spliced.is_none().then_some(skip.duration_draw).flatten();
+                let duration_remaining_work = validate_duration_reservation(
+                    recorded_duration_draw.as_ref(),
+                    skip.duration_admission_sequence_at_draw,
+                    skip.duration_remaining_work,
+                    core.sequence,
+                    replay_window_depth,
+                    header.work_budget,
+                    counters
+                        .bootstrap_execution_work
+                        .saturating_add(counters.job_execution_work),
+                    &duration_work,
+                )?;
+                let duration_draw = if spliced.is_none() {
+                    validate_duration_draw(
+                        workload,
+                        &replay_run,
+                        core.archive.entries[parent_index].key,
+                        header.work_budget,
+                        duration_remaining_work,
+                        recorded_duration_draw,
+                    )?
+                } else {
+                    None
+                };
+                if let Some(draw) = duration_draw {
+                    let admission_sequence = skip
+                        .duration_admission_sequence_at_draw
+                        .ok_or("recorded duration choice is missing its admission sequence")?;
+                    if admission_sequence != core.sequence {
+                        return Err(
+                            "recorded skip duration was not drawn at its selection point".into(),
+                        );
+                    }
+                    let expected_checkpoint = duration_checkpoint_at_reservation(
+                        &duration_policies,
+                        &duration_admissions,
+                        draw.context,
+                        admission_sequence,
+                    );
+                    if expected_checkpoint != skip.duration_checkpoint_at_draw {
+                        return Err("recorded skip duration state diverged at selection".into());
+                    }
+                    verify_duration_draw(&draw, expected_checkpoint.as_ref(), skip.mutation_seed)?;
+                } else if skip.duration_checkpoint_at_draw.is_some() {
+                    return Err("recorded stream carries duration state without a choice".into());
+                }
+                let duration_checkpoint_before = duration_draw
+                    .and_then(|draw| duration_policies.context_checkpoint(draw.context));
+                if duration_checkpoint_before != skip.duration_checkpoint_before {
+                    return Err("replayed skip duration state diverged before expansion".into());
+                }
+                let mut suffix = match (spliced, duration_draw) {
+                    (Some(tail), _) => tail,
+                    (None, draw) => workload.expand_suffix_recorded_duration(
                         &replay_run,
                         &draw_state,
                         replay_suffix,
@@ -3068,6 +3486,7 @@ where
                         },
                         draw_checkpoint_before.as_ref(),
                         skip.mutation_seed,
+                        draw,
                     )?,
                 };
                 replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
@@ -3091,6 +3510,11 @@ where
                     workload.finish_stream_record(&replay_run, &mut draw_state, &[])?;
                 if draw_checkpoint_after != skip.draw_checkpoint_after {
                     return Err("replayed skip draw-table checkpoint diverged".into());
+                }
+                let duration_checkpoint_after = duration_draw
+                    .and_then(|draw| duration_policies.context_checkpoint(draw.context));
+                if duration_checkpoint_after != skip.duration_checkpoint_after {
+                    return Err("replayed skip duration state diverged after expansion".into());
                 }
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
             }
@@ -3130,9 +3554,65 @@ where
                     energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?;
                 let spliced = replay_splice::<G>(strategy, job.splice.clone())?;
                 let draw_checkpoint_before = job.draw_checkpoint_before;
-                let mut suffix = match spliced {
-                    Some(tail) => tail,
-                    None => workload.expand_suffix_recorded(
+                if spliced.is_some()
+                    && (job.duration_draw.is_some()
+                        || job.duration_admission_sequence_at_draw.is_some()
+                        || job.duration_remaining_work.is_some()
+                        || job.duration_checkpoint_at_draw.is_some())
+                {
+                    return Err("recorded splice carries unexpected duration evidence".into());
+                }
+                let recorded_duration_draw =
+                    spliced.is_none().then_some(job.duration_draw).flatten();
+                let duration_remaining_work = validate_duration_reservation(
+                    recorded_duration_draw.as_ref(),
+                    job.duration_admission_sequence_at_draw,
+                    job.duration_remaining_work,
+                    core.sequence,
+                    replay_window_depth,
+                    header.work_budget,
+                    counters
+                        .bootstrap_execution_work
+                        .saturating_add(counters.job_execution_work),
+                    &duration_work,
+                )?;
+                let duration_draw = if spliced.is_none() {
+                    validate_duration_draw(
+                        workload,
+                        &replay_run,
+                        core.archive.entries[parent_index].key,
+                        header.work_budget,
+                        duration_remaining_work,
+                        recorded_duration_draw,
+                    )?
+                } else {
+                    None
+                };
+                if let Some(draw) = duration_draw {
+                    let admission_sequence = job
+                        .duration_admission_sequence_at_draw
+                        .ok_or("recorded duration choice is missing its admission sequence")?;
+                    let expected_checkpoint = duration_checkpoint_at_reservation(
+                        &duration_policies,
+                        &duration_admissions,
+                        draw.context,
+                        admission_sequence,
+                    );
+                    if expected_checkpoint != job.duration_checkpoint_at_draw {
+                        return Err("recorded job duration state diverged at selection".into());
+                    }
+                    verify_duration_draw(&draw, expected_checkpoint.as_ref(), job.mutation_seed)?;
+                } else if job.duration_checkpoint_at_draw.is_some() {
+                    return Err("recorded stream carries duration state without a choice".into());
+                }
+                let duration_checkpoint_before = duration_draw
+                    .and_then(|draw| duration_policies.context_checkpoint(draw.context));
+                if duration_checkpoint_before != job.duration_checkpoint_before {
+                    return Err("replayed job duration state diverged before expansion".into());
+                }
+                let mut suffix = match (spliced, duration_draw) {
+                    (Some(tail), _) => tail,
+                    (None, draw) => workload.expand_suffix_recorded_duration(
                         &replay_run,
                         &draw_state,
                         replay_suffix,
@@ -3143,6 +3623,7 @@ where
                         },
                         draw_checkpoint_before.as_ref(),
                         job.mutation_seed,
+                        draw,
                     )?,
                 };
                 replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
@@ -3179,6 +3660,12 @@ where
                     )
                     .into());
                 }
+                let duration_applied = duration_draw
+                    .filter(|_| execution_work > 0)
+                    .filter(|draw| {
+                        duration_was_applied(workload, &replay_run, draw, &result.actions)
+                    })
+                    .is_some();
                 drop(snapshot);
                 let objectives_before = core.objectives_reached;
                 let (sequence, decisions) = core.admit_job(workload, job.parent_id, result)?;
@@ -3196,6 +3683,32 @@ where
                     )
                     .into());
                 }
+                if duration_applied {
+                    let draw = duration_draw
+                        .ok_or("duration application was reported without a duration draw")?;
+                    let evicted = duration_policies.eviction_checkpoint(draw.context);
+                    duration_policies.observe(
+                        draw.context,
+                        draw.duration,
+                        duration_was_useful(&decisions),
+                        NonZeroU64::new(execution_work)
+                            .ok_or("duration application requires positive execution work")?,
+                    )?;
+                    duration_admissions.push_back(DurationAdmissionRecord {
+                        sequence,
+                        context: draw.context,
+                        before: duration_checkpoint_before.clone(),
+                        evicted,
+                    });
+                    while duration_admissions.len() > replay_window_depth {
+                        duration_admissions.pop_front();
+                    }
+                }
+                let duration_checkpoint_after = duration_draw
+                    .and_then(|draw| duration_policies.context_checkpoint(draw.context));
+                if duration_checkpoint_after != job.duration_checkpoint_after {
+                    return Err("replayed job duration state diverged after admission".into());
+                }
                 let draw_checkpoint_after =
                     finish_record(workload, &replay_run, &mut draw_state, &core, &decisions)?;
                 if draw_checkpoint_after != job.draw_checkpoint_after {
@@ -3204,6 +3717,22 @@ where
                         job.sequence
                     )
                     .into());
+                }
+                let draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
+                if !draw_state_memory_is_within_reserve(
+                    draw_state_memory_bytes,
+                    workload.draw_state_memory_reserve_bytes(&replay_run, header.action_limit),
+                ) {
+                    return Err("replay draw state exceeds its deterministic memory reserve".into());
+                }
+                if !resident_memory_is_within_budget(
+                    core.archive
+                        .resident_memory_bytes()
+                        .saturating_add(draw_state_memory_bytes)
+                        .saturating_add(duration_policies.memory_bytes()),
+                    header.memory_budget_mib,
+                ) {
+                    return Err("replay adaptive duration state exceeds its memory budget".into());
                 }
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector)?;
@@ -3263,6 +3792,15 @@ where
                     counters.jobs_per_worker[worker].saturating_add(1);
                 counters.job_execution_work =
                     counters.job_execution_work.saturating_add(execution_work);
+                duration_work.push_back((
+                    sequence,
+                    counters
+                        .bootstrap_execution_work
+                        .saturating_add(counters.job_execution_work),
+                ));
+                while duration_work.len() > replay_window_depth.saturating_add(1) {
+                    duration_work.pop_front();
+                }
                 if objectives_before == 0 && core.objectives_reached > 0 {
                     counters.note_first_objective(sequence);
                 }
@@ -3282,7 +3820,9 @@ where
         resume_input_sha256: header.resume_input_sha256.clone(),
         resume_actions: header.resume_actions,
     };
-    counters.draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
+    counters.draw_state_memory_bytes = workload
+        .draw_state_memory_bytes(&draw_state)
+        .saturating_add(duration_policies.memory_bytes());
     Ok(build_report(
         workload,
         &header,
