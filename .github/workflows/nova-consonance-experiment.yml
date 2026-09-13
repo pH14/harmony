@@ -617,6 +617,49 @@ jobs:
         run: workloads/nes-guest/legacy/build-nova-game-image.sh
       - name: Build the bounded full-state restore oracle
         run: cargo build --locked --release --manifest-path workloads/tools/Cargo.toml --bin kvm_x86_nova_probe
+      - name: Record Nova oracle provenance
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          provenance=nova-consonance-pr-smoke/oracle-provenance.txt
+          {
+            printf 'git_head=%s\n' "$(git rev-parse HEAD)"
+            printf 'git_tree=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+            printf 'event_sha=%s\n' "${EVENT_SHA}"
+            printf 'pull_request_head_sha=%s\n' "${PR_HEAD_SHA:-unset}"
+            printf 'restore_oracle_seed=0x4e4f_5641_5f43_4931\n'
+            printf 'oracle_tree_seed_env=%s\n' "${HARMONY_CONSONANCE_ORACLE_TREE_SEED:-unset}"
+            printf 'oracle_tree_seed_default=0x071b_130c_6d1c_1d63\n'
+            printf 'campaign_seed=20260901\n'
+            printf 'uname=%s\n' "$(uname -a)"
+            printf 'proc_model_vendor:\n'
+            grep -m1 '^model name' /proc/cpuinfo || true
+            grep -m1 '^vendor_id' /proc/cpuinfo || true
+            printf 'paging_mode:\n'
+            vendor=$(awk -F: '/^vendor_id[[:space:]]*:/{gsub(/[[:space:]]/, "", $2); print $2; exit}' /proc/cpuinfo)
+            npt=$(cat /sys/module/kvm_amd/parameters/npt 2>/dev/null || printf unknown)
+            ept=$(cat /sys/module/kvm_intel/parameters/ept 2>/dev/null || printf unknown)
+            printf 'cpu_vendor=%s\nKVM_AMD_NPT=%s\nKVM_INTEL_EPT=%s\n' "${vendor:-unknown}" "${npt}" "${ept}"
+            printf 'lscpu:\n'
+            lscpu
+            printf 'sha256:\n'
+            for entry in \
+              'oracle_binary workloads/tools/target/release/kvm_x86_nova_probe' \
+              'kernel nix-guest-output/x86_64/bzImage' \
+              'initramfs consonance/harmony-linux/build/initramfs-nova.cpio.gz' \
+              'nova_rom workloads/nes/build/nova/nova.nes' \
+              'quicknes_static workloads/nes/build/nova/libquicknes_libretro.a' \
+              'quicknes_shared workloads/nes/build/nova/quicknes_libretro.so'; do
+              label=${entry%% *}
+              path=${entry#* }
+              printf '%s=' "${label}"
+              sha256sum "${path}" | awk '{print $1}'
+              printf '%s_path=%s\n' "${label}" "${path}"
+            done
+          } >"${provenance}"
+          cp nix-guest-output/MANIFEST.sha256 nova-consonance-pr-smoke/guest-kernel-manifest.sha256
       - name: Verify the bounded full-state restore oracle
         env:
           HARMONY_CONSONANCE_RESTORE_ORACLE: "1"
