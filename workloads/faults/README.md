@@ -87,9 +87,11 @@ address at nearly every endpoint.
 The generic `execution_work` counter and `report.json`
 `execution_ticks` count the guest ticks requested by successfully applied actions
 after setup. This logical counter is monotonic across target reset and snapshot
-restore; longer waits cost more even when an endpoint is cached. The separate `guest_horizons` diagnostic measures physical guest runs;
-cache reuse can change it and reset clears it. Setup, prefix reconstruction,
-and failed actions are outside the logical counter.
+restore; longer waits cost more even when an endpoint is cached. The separate
+`guest_horizons` diagnostic counts action evaluations that enter the guest;
+internal watchdog progress deadlines do not change it. Cache reuse can change
+the count and reset clears it. Setup, prefix reconstruction, and failed actions
+are outside the logical counter.
 
 ## Running it
 
