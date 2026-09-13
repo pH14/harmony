@@ -105,6 +105,13 @@ pub struct RunResult {
     pub exit_counts: vmm_backend::ExitCounts,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckpointHashPreimage {
+    pub event_index: u64,
+    pub state_hash: [u8; 32],
+    pub state_blob_suffix: Vec<u8>,
+}
+
 pub enum RamBacking {
     Owned(GuestRam),
     Snapshot(snapshot_store::Mapping),
@@ -315,6 +322,8 @@ where
     pub(crate) completion_staged: bool,
     pub(crate) sdk_snapshot_reentry_required: bool,
     pub(crate) snapshot_hashing: bool,
+    checkpoint_hash_preimage_armed: bool,
+    checkpoint_hash_preimage: Option<CheckpointHashPreimage>,
     pub(crate) idle_wake_vns: Option<u64>,
     pub(crate) sdk: Option<SdkChannel>,
     pub(crate) pvclock: Option<PvclockChannel>,
@@ -372,6 +381,8 @@ where
             completion_staged: false,
             sdk_snapshot_reentry_required: false,
             snapshot_hashing: false,
+            checkpoint_hash_preimage_armed: false,
+            checkpoint_hash_preimage: None,
             idle_wake_vns: None,
             sdk: None,
             pvclock: None,
@@ -571,6 +582,16 @@ where
 
     pub fn snapshot_hashing_wired(&self) -> bool {
         self.snapshot_hashing
+    }
+
+    pub fn arm_checkpoint_hash_preimage(&mut self) -> &mut Self {
+        self.checkpoint_hash_preimage_armed = true;
+        self.checkpoint_hash_preimage = None;
+        self
+    }
+
+    pub fn take_checkpoint_hash_preimage(&mut self) -> Option<CheckpointHashPreimage> {
+        self.checkpoint_hash_preimage.take()
     }
 
     pub fn has_pending_guest_interrupt(&mut self) -> Result<bool, VmmError> {
@@ -1001,12 +1022,22 @@ where
             if *checkpoint_due && next.is_none() {
                 self.virtual_time_checkpoint_events.insert(event_index);
             }
-            let state_hash = synchronous_checkpoint_due(
+            let state_hash = if synchronous_checkpoint_due(
                 *checkpoint_due && next.is_none(),
                 self.deferred_virtual_time_checkpoints,
-            )
-            .then(|| self.state_hash())
-            .transpose()?;
+            ) {
+                let (hash, suffix) = self.state_hash_preimage()?;
+                if self.checkpoint_hash_preimage_armed {
+                    self.checkpoint_hash_preimage = Some(CheckpointHashPreimage {
+                        event_index,
+                        state_hash: hash,
+                        state_blob_suffix: suffix,
+                    });
+                }
+                Some(hash)
+            } else {
+                None
+            };
             let vns_after = self
                 .vtime
                 .as_ref()
@@ -1131,12 +1162,17 @@ where
     }
 
     pub fn state_hash(&self) -> Result<[u8; 32], VmmError> {
+        self.state_hash_preimage().map(|(hash, _)| hash)
+    }
+
+    fn state_hash_preimage(&self) -> Result<([u8; 32], Vec<u8>), VmmError> {
         let mut hasher = Sha256::new();
         hasher.update(b"MEM\0");
         hasher.update((self.ram.as_bytes().len() as u64).to_le_bytes());
         hasher.update(self.ram.as_bytes());
-        hasher.update(self.state_blob_suffix()?);
-        Ok(hasher.finalize().into())
+        let suffix = self.state_blob_suffix()?;
+        hasher.update(&suffix);
+        Ok((hasher.finalize().into(), suffix))
     }
 
     pub fn state_components(&self) -> Vec<(&'static str, [u8; 32])> {
@@ -5657,6 +5693,74 @@ mod tests {
         }
     }
 
+    struct CountSaveBackend {
+        inner: MockBackend,
+        save_calls: std::cell::Cell<usize>,
+        fail_after: usize,
+    }
+
+    impl Backend for CountSaveBackend {
+        type A = vmm_backend::X86;
+
+        fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
+            self.inner.set_policy(policy)
+        }
+        unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> vmm_backend::Result<()> {
+            // SAFETY: forwards to the inner mock, which only records the region
+            // (no dereference); this adds no obligation beyond the trait contract.
+            unsafe { self.inner.map_memory(gpa, host) }
+        }
+        fn run(&mut self) -> vmm_backend::Result<Exit<vmm_backend::X86>> {
+            self.inner.run()
+        }
+        fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
+            self.inner.inject(e)
+        }
+        fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {
+            self.inner.set_pending_irq(v)
+        }
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            self.inner.take_accepted_interrupt()
+        }
+        fn complete_read(&mut self, v: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_read(v)
+        }
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_fault()
+        }
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_ok()
+        }
+        fn complete_hypercall(&mut self, rax: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_hypercall(rax)
+        }
+        fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
+            self.inner.complete_arch(c)
+        }
+        fn save(&self) -> vmm_backend::Result<VcpuState> {
+            let calls = self.save_calls.get();
+            self.save_calls.set(calls + 1);
+            if calls >= self.fail_after {
+                return Err(vmm_backend::BackendError::Memory(
+                    "induced second save failure",
+                ));
+            }
+            self.inner.save()
+        }
+        fn restore(&mut self, s: &VcpuState) -> vmm_backend::Result<()> {
+            self.inner.restore(s)
+        }
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.inner.exit_counts()
+        }
+        fn reset_exit_counts(&mut self) {
+            self.inner.reset_exit_counts()
+        }
+        fn capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::X86Caps> {
+            self.inner.capabilities()
+        }
+    }
+
     struct ContinuationBackend {
         inner: MockBackend,
         ordinary: VecDeque<Exit<X86>>,
@@ -6019,6 +6123,56 @@ mod tests {
                 .events
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn armed_checkpoint_preimage_reuses_the_synchronous_hash_save() {
+        let exits = || (0..256).map(report_out).collect::<Vec<_>>();
+        let mut armed = Vmm::new(
+            CountSaveBackend {
+                inner: configured_mock(exits()),
+                save_calls: std::cell::Cell::new(0),
+                fail_after: 1,
+            },
+            GuestRam::new(0x2000).unwrap(),
+        );
+        armed.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 7).unwrap());
+        armed.arm_checkpoint_hash_preimage();
+        for _ in 0..256 {
+            assert_eq!(armed.step().unwrap(), Step::Continued);
+        }
+        let retained = armed
+            .take_checkpoint_hash_preimage()
+            .expect("the completed 256th event retains its synchronous hash input");
+        assert_eq!(retained.event_index, 255);
+        let mut expected = Sha256::new();
+        expected.update(b"MEM\0");
+        expected.update((armed.guest_memory().len() as u64).to_le_bytes());
+        expected.update(armed.guest_memory());
+        expected.update(&retained.state_blob_suffix);
+        let expected: [u8; 32] = expected.finalize().into();
+        assert_eq!(retained.state_hash, expected);
+        assert_eq!(
+            armed.virtual_time_trace().unwrap().normalized_log().events[255].state_hash,
+            Some(retained.state_hash)
+        );
+        assert_eq!(armed.backend.save_calls.get(), 1);
+        assert!(armed.take_checkpoint_hash_preimage().is_none());
+
+        let mut disabled = Vmm::new(
+            CountSaveBackend {
+                inner: configured_mock(exits()),
+                save_calls: std::cell::Cell::new(0),
+                fail_after: 1,
+            },
+            GuestRam::new(0x2000).unwrap(),
+        );
+        disabled.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 7).unwrap());
+        for _ in 0..256 {
+            assert_eq!(disabled.step().unwrap(), Step::Continued);
+        }
+        assert_eq!(disabled.backend.save_calls.get(), 1);
+        assert!(disabled.take_checkpoint_hash_preimage().is_none());
     }
 
     #[test]

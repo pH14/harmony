@@ -113,6 +113,27 @@ completion work. A periodic trace checkpoint crossed inside an instruction
 lands on its final access; deferred hash consumers use
 `virtual_time_checkpoint_due` to identify that exact capture position.
 
+`Vmm::arm_checkpoint_hash_preimage` enables one bounded retained record for
+the most recent synchronous checkpoint. The record returned by
+`take_checkpoint_hash_preimage` contains the completed trace event index, the
+published state hash, and the exact state-blob suffix used to compute it. It
+reuses the checkpoint's existing backend save and does not copy guest RAM or
+perform another CPU read; calling the arm method again clears the prior
+record. The feature is disabled by default and captures only completed
+checkpoint boundaries, so it is suitable for a paired diagnostic that already
+retains the corresponding RAM image. Read the record and RAM immediately after
+that `step` returns, before advancing or otherwise mutating the VM; the record
+alone does not freeze RAM. Hashing retains its original RAM-then-CPU-read order.
+
+The ignored `x2_paired_boots_retain_first_checkpoint_difference` diagnostic
+requires `X2_PAIRED_REPORT` to name a fresh directory. It advances two independent
+VMs to their existing synchronous checkpoints and retains one differing pair,
+including RAM and the exact hash suffix. It adds no CPU capture beyond each
+checkpoint's existing read. Reports distinguish the first log difference from
+the retained checkpoint indices and identify terminal cases with no available
+exact pair. This is a fresh paired reproduction, not recovery of an earlier
+sequential run. The ordinary same-input boot gate remains the acceptance check.
+
 PR acceptance combines the portable contract suite and selected Miri checks
 with bounded hardware gates. `x86-virtual-time.yml` checks serviced exits, RF,
 PAE translations, and guest-written XSAVE output, including a reused VM whose

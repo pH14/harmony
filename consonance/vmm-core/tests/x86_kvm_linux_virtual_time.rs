@@ -1009,3 +1009,204 @@ fn x2_component_diff_selected_checkpoint() {
             .expect("reported reference checkpoint hash")),
     );
 }
+
+enum PairedAdvance {
+    Checkpoint(vmm_core::vmm::CheckpointHashPreimage),
+    Stopped(Step),
+}
+
+fn advance_paired_checkpoint(
+    vmm: &mut StockVmm,
+    steps: &mut u64,
+    started: Instant,
+) -> Result<PairedAdvance, String> {
+    let max_steps = env_u64("X2_MAX_STEPS", DEFAULT_MAX_STEPS);
+    let wall = Duration::from_secs(env_u64("X2_WALL_SECS", DEFAULT_WALL_SECS));
+    loop {
+        if *steps >= max_steps || started.elapsed() > wall {
+            return Err(format!(
+                "paired diagnostic budget exhausted at {steps} steps"
+            ));
+        }
+        let stop = vmm.step().map_err(|error| error.to_string())?;
+        *steps += 1;
+        if let Some(preimage) = vmm.take_checkpoint_hash_preimage() {
+            return Ok(PairedAdvance::Checkpoint(preimage));
+        }
+        if stop != Step::Continued {
+            if !matches!(stop, Step::Terminal(_) | Step::SdkStop) {
+                return Err(format!("unexpected paired stop {stop:?}"));
+            }
+            return Ok(PairedAdvance::Stopped(stop));
+        }
+    }
+}
+
+fn retain_paired_checkpoint(
+    directory: &std::path::Path,
+    label: &str,
+    vmm: &StockVmm,
+    preimage: &vmm_core::vmm::CheckpointHashPreimage,
+) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    let memory = vmm.guest_memory().to_vec();
+    let mut hash = Sha256::new();
+    hash.update(b"MEM\0");
+    hash.update((memory.len() as u64).to_le_bytes());
+    hash.update(&memory);
+    hash.update(&preimage.state_blob_suffix);
+    let reconstructed: [u8; 32] = hash.finalize().into();
+    if reconstructed != preimage.state_hash {
+        return Err(format!(
+            "{label} RAM and retained suffix do not reconstruct checkpoint hash"
+        ));
+    }
+    let root = directory.join(label);
+    std::fs::create_dir(&root).map_err(|error| error.to_string())?;
+    std::fs::write(root.join("memory.bin"), &memory).map_err(|error| error.to_string())?;
+    std::fs::write(root.join("state-suffix.bin"), &preimage.state_blob_suffix)
+        .map_err(|error| error.to_string())?;
+    let log = vmm
+        .virtual_time_trace()
+        .ok_or("paired trace unavailable")?
+        .normalized_log();
+    let event = log
+        .events
+        .iter()
+        .find(|event| event.event_index == preimage.event_index)
+        .ok_or("retained checkpoint event unavailable")?;
+    if event.state_hash != Some(preimage.state_hash) {
+        return Err(format!(
+            "{label} retained checkpoint does not match normalized event"
+        ));
+    }
+    let mut text = format!(
+        "kind=fresh-paired-reproduction\nlabel={label}\ncheckpoint_event={}\nstate_hash={}\nmemory_sha256={}\nsuffix_sha256={}\nmemory_bytes={}\nsuffix_bytes={}\n",
+        preimage.event_index,
+        hex(&preimage.state_hash),
+        hex(&Sha256::digest(&memory)),
+        hex(&Sha256::digest(&preimage.state_blob_suffix)),
+        memory.len(),
+        preimage.state_blob_suffix.len(),
+    );
+    for event in &log.events {
+        writeln!(
+            text,
+            "EVENT {} {:?} {} {} {:?} {}",
+            event.event_index,
+            event.class,
+            hex(&event.payload_digest),
+            event.vns_after,
+            event.interrupts,
+            event
+                .state_hash
+                .map(|hash| hex(&hash))
+                .unwrap_or_else(|| "-".to_owned())
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    std::fs::write(root.join("checkpoint.txt"), text).map_err(|error| error.to_string())
+}
+
+#[test]
+#[ignore = "bounded fresh paired diagnostic; real KVM and guest artifacts required"]
+fn x2_paired_boots_retain_first_checkpoint_difference() {
+    use sha2::{Digest, Sha256};
+    require_kvm();
+    let directory =
+        report_root("X2_PAIRED_REPORT").expect("X2_PAIRED_REPORT must name a fresh directory");
+    std::fs::create_dir(&directory).expect("create fresh paired report directory");
+    let kernel = require_artifact("bzImage");
+    let initramfs = require_artifact("initramfs.cpio.gz");
+    let mut reference =
+        boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+            .expect("compose reference VM");
+    let mut candidate =
+        boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+            .expect("compose candidate VM");
+    reference.arm_checkpoint_hash_preimage();
+    candidate.arm_checkpoint_hash_preimage();
+    #[allow(clippy::disallowed_methods)]
+    let started = Instant::now();
+    let mut steps = [0, 0];
+    let mut comparisons = 0;
+    let mut report = format!(
+        "kind=fresh-paired-reproduction\nprior_sequential_witness_recovered=false\nseed={SEED}\ncmdline={CMDLINE}\nkernel_sha256={}\ninitramfs_sha256={}\nram_bytes={GUEST_RAM_LEN}\n",
+        hex(&Sha256::digest(&kernel)),
+        hex(&Sha256::digest(&initramfs)),
+    );
+    loop {
+        let left = advance_paired_checkpoint(&mut reference, &mut steps[0], started);
+        let right = advance_paired_checkpoint(&mut candidate, &mut steps[1], started);
+        if left.is_err() || right.is_err() {
+            writeln!(
+                report,
+                "status=inconclusive\nreference_error={:?}\ncandidate_error={:?}",
+                left.err(),
+                right.err()
+            )
+            .unwrap();
+            std::fs::write(directory.join("report.txt"), &report).unwrap();
+            panic!("paired diagnostic could not reach comparable checkpoints");
+        }
+        let left = left.unwrap();
+        let right = right.unwrap();
+        let left_log = reference.virtual_time_trace().unwrap().normalized_log();
+        let right_log = candidate.virtual_time_trace().unwrap().normalized_log();
+        let difference = compare_normalized_logs(left_log, right_log).err();
+        match (left, right) {
+            (PairedAdvance::Checkpoint(left), PairedAdvance::Checkpoint(right)) => {
+                comparisons += 1;
+                if difference.is_some()
+                    || left.event_index != right.event_index
+                    || left.state_hash != right.state_hash
+                {
+                    let retained_left =
+                        retain_paired_checkpoint(&directory, "reference", &reference, &left);
+                    let retained_right =
+                        retain_paired_checkpoint(&directory, "candidate", &candidate, &right);
+                    if retained_left.is_err() || retained_right.is_err() {
+                        writeln!(report, "status=inconclusive-retention\nfirst_log_difference={difference:?}\nreference_checkpoint={}\ncandidate_checkpoint={}\nreference_retention_error={:?}\ncandidate_retention_error={:?}\ncomparisons={comparisons}\nsteps={steps:?}", left.event_index, right.event_index, retained_left.err(), retained_right.err()).unwrap();
+                        std::fs::write(directory.join("report.txt"), &report).unwrap();
+                        panic!("paired divergence retention failed; see report");
+                    }
+                    writeln!(report, "status=diverged\nfirst_log_difference={difference:?}\nreference_checkpoint={}\ncandidate_checkpoint={}\ncomparisons={comparisons}\nsteps={steps:?}", left.event_index, right.event_index).unwrap();
+                    std::fs::write(directory.join("report.txt"), &report).unwrap();
+                    panic!("fresh paired boots diverged; exact checkpoint preimages retained");
+                }
+            }
+            (PairedAdvance::Stopped(left), PairedAdvance::Stopped(right)) => {
+                let expected_terminal = left == Step::Terminal(TerminalReason::Idle)
+                    && right == Step::Terminal(TerminalReason::Idle);
+                writeln!(
+                    report,
+                    "reference_terminal={left:?}\ncandidate_terminal={right:?}"
+                )
+                .unwrap();
+                let clean = expected_terminal
+                    && [&reference, &candidate].iter().all(|vmm| {
+                        find(vmm.serial(), REACHED_USERSPACE)
+                            && find(vmm.serial(), GUEST_READY)
+                            && find(vmm.serial(), PVCLOCK_REGISTERED)
+                            && check_delivery_placement(
+                                vmm.virtual_time_trace().unwrap().schedule(),
+                                vmm.virtual_time_trace().unwrap().normalized_log(),
+                            )
+                            .is_ok()
+                    });
+                writeln!(report, "status={}\nterminal_log_difference={difference:?}\ncomparisons={comparisons}\nsteps={steps:?}\nterminal_raw_pair_retained=false", if difference.is_none() && clean && comparisons > 0 { "no-divergence-observed" } else { "inconclusive-terminal" }).unwrap();
+                std::fs::write(directory.join("report.txt"), &report).unwrap();
+                assert!(
+                    difference.is_none() && clean && comparisons > 0,
+                    "paired boots ended without a comparable original checkpoint pair; see report"
+                );
+                break;
+            }
+            _ => {
+                writeln!(report, "status=inconclusive-asymmetric-terminal\nfirst_log_difference={difference:?}\ncomparisons={comparisons}\nsteps={steps:?}\nterminal_raw_pair_retained=false").unwrap();
+                std::fs::write(directory.join("report.txt"), &report).unwrap();
+                panic!("paired boots reached different terminal/checkpoint boundaries");
+            }
+        }
+    }
+}
