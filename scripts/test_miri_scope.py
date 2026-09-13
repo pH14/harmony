@@ -23,7 +23,23 @@ class MiriScopeTests(unittest.TestCase):
             "vendor::x86::bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping",
             vmm_core[0]["command"],
         )
-        self.assertEqual(self.names(["consonance/hypercall-doorbell/src/lib.rs"]), {"hypercall-doorbell"})
+        doorbell = selected_targets(["consonance/hypercall-doorbell/src/lib.rs"])
+        self.assertEqual(
+            {target["name"] for target in doorbell},
+            {"hypercall-doorbell", "hypercall-doorbell-round-trip"},
+        )
+        full = next(target for target in doorbell if target["name"] == "hypercall-doorbell")
+        round_trip = next(
+            target for target in doorbell if target["name"] == "hypercall-doorbell-round-trip"
+        )
+        self.assertEqual(
+            full["command"].split()[-3:],
+            ["--", "--skip", "round_trip_arbitrary_payloads"],
+        )
+        self.assertEqual(
+            round_trip["command"].split()[-5:],
+            ["--test", "loopback", "round_trip_arbitrary_payloads", "--", "--exact"],
+        )
         self.assertEqual(self.names(["consonance/client/src/watchdog.rs"]), {"consonance-client"})
         self.assertEqual(self.names(["consonance/vm-state/src/lib.rs"]), {"vm-state"})
         self.assertEqual(self.names(["consonance/vmm-backend/src/kvm.rs"]), {"vmm-backend"})
@@ -36,6 +52,11 @@ class MiriScopeTests(unittest.TestCase):
         names = self.names(["workloads/nes-guest/Cargo.toml"])
         self.assertEqual(names, {target["name"] for target in selected_targets(["Cargo.lock"])})
         self.assertEqual(names, {target["name"] for target in selected_targets(["rust-toolchain.toml"])})
+
+    def test_selector_changes_select_every_target(self) -> None:
+        all_names = {target["name"] for target in selected_targets(["Cargo.lock"])}
+        self.assertEqual(self.names(["scripts/miri_scope.py"]), all_names)
+        self.assertEqual(self.names(["scripts/test_miri_scope.py"]), all_names)
 
     def test_unrelated_paths_and_empty_diffs_select_none(self) -> None:
         self.assertEqual(
