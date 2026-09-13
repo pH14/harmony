@@ -1,10 +1,11 @@
 diff --git a/tools/antithesis-go-toolexec/compile.go b/tools/antithesis-go-toolexec/compile.go
-index d95788f..7897aa8 100644
+index c0d428d0..2005f645 100644
 --- a/tools/antithesis-go-toolexec/compile.go
 +++ b/tools/antithesis-go-toolexec/compile.go
-@@ -38,6 +38,18 @@ func rewriteCompile(cfg *Config, pkg *Package, args []string) ([]string, func(),
- 	}
- 	cleanup := func() { os.RemoveAll(work) }
+@@ -27 +27 @@ const registrationFile = "antithesis_module.go"
+-//  2. generated files are appended (a coverage registration, a catalog); and
++//  2. generated files are added (a coverage registration, a catalog); and
+@@ -40,0 +41,12 @@ func rewriteCompile(cfg *Config, pkg *Package, args []string) ([]string, func(),
 +	trimmed := false
 +	for i, arg := range args {
 +		if arg == "-trimpath" && i+1 < len(args) {
@@ -17,6 +18,110 @@ index d95788f..7897aa8 100644
 +		cleanup()
 +		return nil, nil, fmt.Errorf("compile invocation for %s has no -trimpath", pkg.ImportPath)
 +	}
- 	// Every failure below must release the work directory: the caller only gets
- 	// the cleanup function on success.
- 	fail := func(err error) ([]string, func(), error) {
+@@ -151 +163,4 @@ func instrumentCoverage(cfg *Config, pkg *Package, args []string, paths []string
+-	args = append(args, registration) // edit 2
++	firstSource := pkg.SourceStart
++	args = append(args, "")
++	copy(args[firstSource+1:], args[firstSource:])
++	args[firstSource] = registration // edit 2
+@@ -174,3 +189,3 @@ func instrumentCoverage(cfg *Config, pkg *Package, args []string, paths []string
+-// Declaring it as a package-level variable orders initialization correctly.
+-// Go's dependency analysis ensures that the SDK and this variable are initialized
+-// before any variable in the package whose initializer calls instrumented code.
++// The caller presents this file to the compiler before the package's existing
++// source files so the handle is initialized before an independent package variable
++// initializer can call instrumented code.
+diff --git a/tools/antithesis-go-toolexec/policy.go b/tools/antithesis-go-toolexec/policy.go
+index 8cc6bd09..f9b2ddde 100644
+--- a/tools/antithesis-go-toolexec/policy.go
++++ b/tools/antithesis-go-toolexec/policy.go
+@@ -22,0 +23,4 @@ type Package struct {
++	// SourceStart is the index of the first source argument before exclusions
++	// remove files from GoFiles.
++	SourceStart int
++
+@@ -63,0 +68 @@ func selectedPackage(cfg *Config, args []string) (*Package, bool) {
++	pkg.SourceStart = pkg.GoFiles[0].Index
+diff --git a/tools/antithesis-go-toolexec/policy_test.go b/tools/antithesis-go-toolexec/policy_test.go
+index bc3cc096..9d374ed6 100644
+--- a/tools/antithesis-go-toolexec/policy_test.go
++++ b/tools/antithesis-go-toolexec/policy_test.go
+@@ -6,0 +7 @@ import (
++	"github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-instrumentor/common"
+@@ -63,0 +65,11 @@ func TestSkipFile(t *testing.T) {
++func TestSelectedPackagePreservesFirstSourceIndex(t *testing.T) {
++	common.NewLogWriter("", common.Normal)
++	t.Setenv("TOOLEXEC_IMPORTPATH", "example.com/app")
++	args := strings.Fields("-importcfg $W/importcfg -pack /src/api.pb.go /src/main.go")
++	pkg, selected := selectedPackage(&Config{Instrument: []string{"example.com/app"}}, args)
++	qt.Assert(t, qt.IsTrue(selected))
++	qt.Assert(t, qt.Equals(pkg.SourceStart, len(args)-2))
++	qt.Assert(t, qt.HasLen(pkg.GoFiles, 1))
++	qt.Assert(t, qt.Equals(pkg.GoFiles[0].Path, "/src/main.go"))
++}
++
+diff --git a/tools/antithesis-go-toolexec/runtime_edges_test.go b/tools/antithesis-go-toolexec/runtime_edges_test.go
+index e66f580e..195396e3 100644
+--- a/tools/antithesis-go-toolexec/runtime_edges_test.go
++++ b/tools/antithesis-go-toolexec/runtime_edges_test.go
+@@ -109,0 +110,60 @@ func TestRuntimeEdgesToolexec(t *testing.T) {
++func TestPackageVariableCanCallInstrumentedCode(t *testing.T) {
++	dir := t.TempDir()
++	helperDir := filepath.Join(dir, "helper")
++	qt.Assert(t, qt.IsNil(os.Mkdir(helperDir, 0o755)))
++	qt.Assert(t, qt.IsNil(os.WriteFile(filepath.Join(helperDir, "go.mod"), []byte("module helper\n\ngo 1.24\n"), 0o644)))
++	helper := `package helper
++
++type Initializer interface {
++	Initialize()
++}
++
++func New(initializer Initializer) string {
++	initializer.Initialize()
++	return "initialized"
++}
++`
++	qt.Assert(t, qt.IsNil(os.WriteFile(filepath.Join(helperDir, "helper.go"), []byte(helper), 0o644)))
++	goMod := "module initedge\n\ngo 1.24\n\nrequire (\n\tgithub.com/antithesishq/antithesis-sdk-go v0.0.0\n\thelper v0.0.0\n)\n\n" +
++		"replace github.com/antithesishq/antithesis-sdk-go => " + sharedRecorder + "\n\n" +
++		"replace helper => " + helperDir + "\n"
++	qt.Assert(t, qt.IsNil(os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644)))
++	source := `package main
++
++import (
++	"fmt"
++	"helper"
++	"io"
++)
++
++type value struct{}
++
++func (*value) Initialize() {
++	fmt.Fprintln(io.Discard, "called")
++}
++
++var initialized = helper.New(&value{})
++
++func main() {
++	if initialized != "initialized" {
++		panic("package variable was not initialized")
++	}
++}
++`
++	qt.Assert(t, qt.IsNil(os.WriteFile(filepath.Join(dir, "program.go"), []byte(source), 0o644)))
++
++	symbolsDir := filepath.Join(dir, "symbols")
++	binary := filepath.Join(dir, "prog")
++	build := exec.Command("go", "build", "-toolexec="+sharedToolexec, "-o", binary, ".")
++	build.Dir = dir
++	build.Env = buildEnv(symbolsDir, "initedge", "ANTITHESIS_SKIP_CATALOG=1")
++	if out, err := build.CombinedOutput(); err != nil {
++		t.Fatalf("building the instrumented program failed: %v\n%s", err, out)
++	}
++	command := exec.Command(binary)
++	command.Dir = dir
++	if out, err := command.CombinedOutput(); err != nil {
++		t.Fatalf("running the instrumented program failed: %v\n%s", err, out)
++	}
++}
++

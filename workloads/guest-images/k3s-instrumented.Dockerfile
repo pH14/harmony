@@ -25,7 +25,10 @@ RUN go mod download "github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK
     && test -d "$sdk_dir" \
     && chmod -R u+w "$sdk_dir" \
     && patch -d "$sdk_dir" -p1 < .harmony/antithesis-go-toolexec-reproducible.patch \
-    && (cd "$sdk_dir" && go install ./tools/antithesis-go-toolexec) \
+    && (cd "$sdk_dir" \
+       && go test ./tools/antithesis-go-toolexec \
+          -run 'Test(PackageVariableCanCallInstrumentedCode|SelectedPackagePreservesFirstSourceIndex)$' \
+       && go install ./tools/antithesis-go-toolexec) \
     && make -C .harmony/libvoidstar BUILD_DIR=/opt/harmony all \
     && patch -p1 < .harmony/k3s-source-pins.patch \
     && go mod edit -require="github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
