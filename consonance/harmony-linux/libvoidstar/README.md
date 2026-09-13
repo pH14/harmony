@@ -9,7 +9,7 @@ coverage and sanitizer callback symbols expected by instrumented programs.
 
 Device exchanges are serialized per process. An instrumented program that does
 not configure explicit scheduler identities yields through `/dev/harmony` every
-1,024 coverage callbacks. A process-wide counter selects the next threshold, and
+4,096 coverage callbacks. A process-wide counter selects the next threshold, and
 callbacks that reach it serialize through the device exchange. Contending Go
 threads wait for that exchange to finish so a single-vCPU guest cannot starve
 the thread responsible for creating the scheduling point. A transport failure
