@@ -1259,12 +1259,25 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         Ok(counts)
     }
 
+    #[cfg(test)]
     pub(crate) fn admit_job(
         &mut self,
         workload: &G,
         parent_id: u64,
         result: CampaignJobResult<G>,
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>), Box<dyn Error>> {
+        let (sequence, decisions, _) =
+            self.admit_job_tracking(workload, parent_id, result, |_| false)?;
+        Ok((sequence, decisions))
+    }
+
+    fn admit_job_tracking(
+        &mut self,
+        workload: &G,
+        parent_id: u64,
+        result: CampaignJobResult<G>,
+        mut tracked_action: impl FnMut(&G::Action) -> bool,
+    ) -> Result<(u64, Vec<CampaignAdmissionDecision>, DurationAdmission), Box<dyn Error>> {
         let CampaignJobResult {
             preparation_failure,
             actions,
@@ -1281,13 +1294,16 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         if let Some(observations) = preparation_failure {
             self.execution_failures = self.execution_failures.saturating_add(1);
             workload.merge_preparation_failure(&mut self.evidence, &observations);
-            return Ok((sequence, Vec::new()));
+            return Ok((sequence, Vec::new(), DurationAdmission::default()));
         }
         let mut current_parent = parent_index;
         let mut pending_suffix = Vec::new();
         let mut previous_key = None;
         let mut decisions = Vec::new();
+        let mut duration = DurationAdmission::default();
         for action in actions {
+            let tracked = tracked_action(&action.action) && !action.outcome.disposition.is_failed();
+            duration.applied |= tracked;
             pending_suffix.push(action.action);
             workload.merge_action_evidence(&mut self.evidence, &action, sequence, || {
                 let mut input = self
@@ -1310,6 +1326,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 crate::search::rollout::ExecutionDisposition::Runnable => {}
             }
             if action.outcome.objective_reached {
+                duration.useful |= tracked;
                 self.objectives_reached = self.objectives_reached.saturating_add(1);
                 if self.objective_witness.is_none() {
                     let mut input = self
@@ -1341,6 +1358,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 )?;
                 match admitted {
                     Some(id) if self.archive.retained > retained_before => {
+                        duration.useful |= tracked;
                         decisions.push(CampaignAdmissionDecision::Retained {
                             id: self
                                 .archive
@@ -1373,7 +1391,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             self.push_curve_point();
             self.compact_progress_curve_if_needed();
         }
-        Ok((sequence, decisions))
+        Ok((sequence, decisions, duration))
     }
 
     fn push_curve_point(&mut self) {
@@ -1598,16 +1616,10 @@ fn execution_work_delta(before: u64, after: u64, scope: &str) -> Result<u64, Box
         .ok_or_else(|| format!("{scope} execution-work counter rewound").into())
 }
 
-fn duration_was_applied<G: Workload + ?Sized>(
-    workload: &G,
-    run: &G::Run,
-    draw: &DurationDraw<G::Key>,
-    actions: &[CampaignActionResult<G>],
-) -> bool {
-    actions
-        .iter()
-        .filter(|action| !action.outcome.disposition.is_failed())
-        .any(|action| workload.duration_of_action(run, &action.action) == Some(draw.duration))
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct DurationAdmission {
+    applied: bool,
+    useful: bool,
 }
 
 struct DurationAdmissionRecord<C> {
@@ -1689,15 +1701,6 @@ fn validate_duration_reservation<C>(
         return Err("recorded duration work diverges from its reservation sequence".into());
     }
     Ok(expected_remaining_work)
-}
-
-fn duration_was_useful(decisions: &[CampaignAdmissionDecision]) -> bool {
-    decisions.iter().any(|decision| {
-        matches!(
-            decision,
-            CampaignAdmissionDecision::Retained { .. } | CampaignAdmissionDecision::Objective
-        )
-    })
 }
 
 fn verify_duration_draw(
@@ -2824,28 +2827,33 @@ where
                     let execution_work = completed_job.execution_work;
                     let result_sha256 = completed_job.result_sha256;
                     let physical_worker = completed_job.physical_worker;
-                    let duration_applied = pending_job
+                    let tracked_duration = pending_job
                         .duration_draw
                         .filter(|_| execution_work > 0)
-                        .filter(|draw| {
-                            duration_was_applied(workload, &config.run, draw, &result.actions)
-                        })
-                        .is_some();
+                        .map(|draw| draw.duration);
                     let duration_checkpoint_before = pending_job
                         .duration_draw
                         .and_then(|draw| duration_policies.context_checkpoint(draw.context));
                     let objectives_before = core.objectives_reached;
                     let admission_started = profile_now(coordinator_profile.enabled);
-                    let (sequence, decisions) =
-                        core.admit_job(workload, pending_job.parent_id, result)?;
-                    if duration_applied {
+                    let (sequence, decisions, duration_admission) = core.admit_job_tracking(
+                        workload,
+                        pending_job.parent_id,
+                        result,
+                        |action| {
+                            tracked_duration.is_some_and(|duration| {
+                                workload.duration_of_action(&config.run, action) == Some(duration)
+                            })
+                        },
+                    )?;
+                    if duration_admission.applied {
                         let draw = pending_job
                             .duration_draw
                             .ok_or("duration application was reported without a duration draw")?;
                         duration_policies.observe(
                             draw.context,
                             draw.duration,
-                            duration_was_useful(&decisions),
+                            duration_admission.useful,
                             NonZeroU64::new(execution_work)
                                 .ok_or("duration application requires positive execution work")?,
                         )?;
@@ -3681,15 +3689,17 @@ where
                     )
                     .into());
                 }
-                let duration_applied = duration_draw
+                let tracked_duration = duration_draw
                     .filter(|_| execution_work > 0)
-                    .filter(|draw| {
-                        duration_was_applied(workload, &replay_run, draw, &result.actions)
-                    })
-                    .is_some();
+                    .map(|draw| draw.duration);
                 drop(snapshot);
                 let objectives_before = core.objectives_reached;
-                let (sequence, decisions) = core.admit_job(workload, job.parent_id, result)?;
+                let (sequence, decisions, duration_admission) =
+                    core.admit_job_tracking(workload, job.parent_id, result, |action| {
+                        tracked_duration.is_some_and(|duration| {
+                            workload.duration_of_action(&replay_run, action) == Some(duration)
+                        })
+                    })?;
                 if sequence != job.sequence {
                     return Err(format!(
                         "replayed admission order {sequence} diverged from recorded {}",
@@ -3704,14 +3714,14 @@ where
                     )
                     .into());
                 }
-                if duration_applied {
+                if duration_admission.applied {
                     let draw = duration_draw
                         .ok_or("duration application was reported without a duration draw")?;
                     let evicted = duration_policies.eviction_checkpoint(draw.context);
                     duration_policies.observe(
                         draw.context,
                         draw.duration,
-                        duration_was_useful(&decisions),
+                        duration_admission.useful,
                         NonZeroU64::new(execution_work)
                             .ok_or("duration application requires positive execution work")?,
                     )?;
@@ -3861,16 +3871,17 @@ mod tests {
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
         CampaignConfig, CampaignCounters, CampaignJobRecord, CampaignJobResult, CampaignOrigin,
         CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes,
-        CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, EnergyStrategy, Evaluation,
-        InitialDrawState, InputPolicy, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
-        Reporting, SPLICE_ACTION_CAP, TargetExecution, WorkloadPolicies, admission_window_depth,
-        archive_entry_limit_is_valid, compact_progress_curve, completed_results_within_bound,
-        draw_state_memory_is_within_reserve, execution_work_delta, finish_record, is_zero_usize,
-        live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
-        progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
-        replay_campaign_checkpointed, replay_splice, resident_memory_is_within_budget,
-        retained_archive_indexes, run_campaign_checkpointed, schedule_policy_identifier,
-        schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
+        CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, DurationAdmission,
+        EnergyStrategy, Evaluation, InitialDrawState, InputPolicy, LiveCoordinatorProfile,
+        MAX_PROGRESS_CURVE_POINTS, Reporting, SPLICE_ACTION_CAP, TargetExecution, WorkloadPolicies,
+        admission_window_depth, archive_entry_limit_is_valid, compact_progress_curve,
+        completed_results_within_bound, draw_state_memory_is_within_reserve, execution_work_delta,
+        finish_record, is_zero_usize, live_coordinator_profile, postcard_value_sha256,
+        profile_elapsed, profile_now, progress_checkpoint_due, progress_policy_is_supported,
+        record_compaction_elapsed, replay_campaign_checkpointed, replay_splice,
+        resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
+        schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
+        stop_reservations_after_objective,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -4839,6 +4850,74 @@ mod tests {
         assert_eq!(second_sequence, 2);
         assert_eq!(second, vec![CampaignAdmissionDecision::Duplicate { id: 1 }]);
         assert_eq!(core.archive.retained, 2);
+    }
+
+    #[test]
+    fn duration_credit_follows_the_action_that_created_novelty() {
+        let (workload, _run, mut core, _target) = test_core();
+        let tracked = TestAction::new(0x01, 4);
+        let seed = CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
+            actions: vec![CampaignActionResult {
+                action: tracked,
+                observations: Vec::new(),
+                milestones: (),
+                outcome: Outcome::default(),
+                candidate: Some(CampaignCandidate {
+                    key: TestKey(1),
+                    viable: true,
+                    snapshot: 1,
+                }),
+            }],
+        };
+        core.admit_job(&workload, 0, seed)
+            .expect("seed tracked boundary");
+
+        let untracked = TestAction::new(0x01, 7);
+        let result = CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
+            actions: vec![
+                CampaignActionResult {
+                    action: tracked,
+                    observations: Vec::new(),
+                    milestones: (),
+                    outcome: Outcome::default(),
+                    candidate: Some(CampaignCandidate {
+                        key: TestKey(1),
+                        viable: true,
+                        snapshot: 1,
+                    }),
+                },
+                CampaignActionResult {
+                    action: untracked,
+                    observations: Vec::new(),
+                    milestones: (),
+                    outcome: Outcome::default(),
+                    candidate: Some(CampaignCandidate {
+                        key: TestKey(2),
+                        viable: true,
+                        snapshot: 2,
+                    }),
+                },
+            ],
+        };
+        let (_, decisions, duration) = core
+            .admit_job_tracking(&workload, 0, result, |action| *action == tracked)
+            .expect("admit mixed novelty");
+        assert_eq!(
+            decisions,
+            vec![
+                CampaignAdmissionDecision::Duplicate { id: 1 },
+                CampaignAdmissionDecision::Retained { id: 2 },
+            ]
+        );
+        assert_eq!(
+            duration,
+            DurationAdmission {
+                applied: true,
+                useful: false,
+            }
+        );
     }
 
     #[test]

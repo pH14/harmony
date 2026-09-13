@@ -57,8 +57,10 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
   `1 << rarity` times.
 - **Oracle**: the helper journals each acknowledged put outside etcd as
   `key<TAB>value<TAB>PutResponse.Header.Revision`. The fault agent reruns a check that performs
-  serializable local reads through each member and compares the complete journal with each
-  recovered key/value set. A member read below a journaled acknowledgement revision is stale and
+  serializable local reads through each member. It checks new acknowledged records incrementally
+  between faults and invalidates that watermark whenever the agent's disturbance generation
+  changes, then compares the complete journal with each recovered key/value set. A member read
+  below a journaled acknowledgement revision is stale and
   remains inconclusive until it catches up. Once a member's response revision fences a record, an
   acknowledged-but-missing or changed value on that member is the case's only failing assertion.
   The complete history is checked after every fault, so records verified before a crash are checked

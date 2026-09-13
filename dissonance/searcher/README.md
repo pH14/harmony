@@ -112,13 +112,13 @@ interpret the unit or the context.
 
 The policy keeps at most 256 contexts. Contexts enter a FIFO admission order
 only when an applied duration receives positive execution work and the job is
-retained or reaches an objective; all updates happen at ordered job admission.
+admitted; all updates happen at ordered job admission.
 Each retained context keeps only its most recent 128 observations. This keeps
 memory bounded and lets old preferences expire. A suffix that does no work or
-does not apply its selected duration produces no observation. Retention caused
-by another action in a multi-action suffix can still be attributed to the
-applied duration; this baseline does not claim causal attribution within a
-suffix.
+does not apply its selected duration produces no observation. The observation
+is useful only when the action carrying that duration is itself retained or
+reaches an objective. Retention caused by another action in the same suffix
+does not give the duration credit.
 
 If a parent is already in the failed execution state when a generic rollout is
 prepared, the job result carries one preparation-failure observation vector and

@@ -16,10 +16,10 @@ use crate::target::{FaultAction, FaultObservations};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
-pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_lifecycle_events_v3";
+pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_lifecycle_events_v4";
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_guest_ticks";
-pub const DURATION_IDENTIFIER: &str = "adaptive_wait_ticks_v1";
+pub const DURATION_IDENTIFIER: &str = "adaptive_wait_ticks_v2";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FaultArchiveGroup {
@@ -28,7 +28,6 @@ pub struct FaultArchiveGroup {
     hooks_running: u64,
     alive: u64,
     parked: u64,
-    event_kill_site: u64,
     event_ready: u64,
     event_kill_fires: u64,
     event_park_fires: u64,
@@ -43,7 +42,6 @@ pub struct FaultArchiveKey {
     pub hooks_running: u64,
     pub alive: u64,
     pub parked: u64,
-    pub event_kill_site: u64,
     pub event_ready: u64,
     pub event_kill_fires: u64,
     pub event_park_fires: u64,
@@ -65,7 +63,6 @@ impl ArchiveKey for FaultArchiveKey {
             hooks_running: self.hooks_running,
             alive: self.alive,
             parked: self.parked,
-            event_kill_site: self.event_kill_site,
             event_ready: self.event_ready,
             event_kill_fires: self.event_kill_fires,
             event_park_fires: self.event_park_fires,
@@ -106,7 +103,6 @@ pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
             .min(HOOKS_FINISHED_KEY_CAP),
         alive: observations.alive,
         parked: observations.parked.min(HOOKS_FINISHED_KEY_CAP),
-        event_kill_site: observations.event_kill_site,
         event_ready: observations.event_ready,
         event_kill_fires: observations.event_kill_fires.min(HOOKS_FINISHED_KEY_CAP),
         event_park_fires: observations.event_park_fires.min(HOOKS_FINISHED_KEY_CAP),
@@ -308,6 +304,21 @@ mod tests {
                 ..FaultArchiveKey::default()
             }
         );
+    }
+
+    #[test]
+    fn raw_event_sites_remain_diagnostic_only() {
+        let first = FaultObservations {
+            event_kill_site: 41,
+            event_kill_fires: 1,
+            ..FaultObservations::default()
+        };
+        let second = FaultObservations {
+            event_kill_site: 999,
+            ..first.clone()
+        };
+        assert_eq!(archive_key(&first), archive_key(&second));
+        assert_ne!(first.event_kill_site, second.event_kill_site);
     }
 
     #[test]

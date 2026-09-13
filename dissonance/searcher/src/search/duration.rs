@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::search::rand::RomuDuoJrRand;
 
-pub const DURATION_POLICY_IDENTIFIER: &str = "recent_useful_work_log_duration_v1";
-pub const DURATION_POLICIES_IDENTIFIER: &str = "recent_useful_work_context_log_duration_v1";
+pub const DURATION_POLICY_IDENTIFIER: &str = "recent_useful_work_log_duration_v2";
+pub const DURATION_POLICIES_IDENTIFIER: &str = "recent_useful_work_context_log_duration_v2";
 pub const MAX_DURATION_CONTEXTS: usize = 256;
 const RECENT_OBSERVATIONS: usize = 128;
 const CONTEXT_NODE_OVERHEAD: usize = 128;

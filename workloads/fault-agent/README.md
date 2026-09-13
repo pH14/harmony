@@ -122,6 +122,11 @@ before a later disturbance cannot serve as current evidence. The tick register
 and pending-fault fence are emitted every tick; the other registers are emitted
 when they change.
 
+Every check process receives its starting generation in
+`HARMONY_DISTURBANCE_GENERATION`. Stateful checkers can use that value to
+invalidate results cached before a fault without coupling their data model to
+the agent's process and event fault vocabulary.
+
 `pending_faults` counts active process windows and event arms that can still
 produce a disturbance, together with queued or in-flight mutating commands, runtime
 armed state, and an acknowledged EventKill awaiting the child death and

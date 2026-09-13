@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -20,6 +21,7 @@ const workloadWorkers = 4
 
 const requestTimeout = 15 * time.Second
 const settleInterval = 200 * time.Millisecond
+const disturbanceGenerationEnv = "HARMONY_DISTURBANCE_GENERATION"
 
 const (
 	reachablePoint = 11
@@ -40,6 +42,12 @@ type journalRecord struct {
 type memberView struct {
 	revision int64
 	values   map[string]string
+}
+
+type oracleState struct {
+	offset     int64
+	verified   int
+	generation uint64
 }
 
 type verdict int
@@ -75,14 +83,63 @@ func check(journalPath string, endpoints []string) error {
 		}
 		return err
 	}
-	expected := selectEntries(string(snapshot))
+	generation, generationOK := disturbanceGeneration()
+	state, stateOK := readOracleState(journalPath + ".verified")
+	expected, next := selectCheckWindow(snapshot, state, stateOK, generation, generationOK)
 	if len(expected) == 0 {
+		if next.offset > state.offset || next.generation != state.generation {
+			return writeOracleState(journalPath+".verified", next)
+		}
 		return nil
 	}
 	if compareAgainstMembers(expected, endpoints, readPrefix) == verdictAgreed {
-		fmt.Printf("verified %d\n", len(expected))
+		if err := writeOracleState(journalPath+".verified", next); err != nil {
+			return err
+		}
+		fmt.Printf("verified %d\n", next.verified)
 	}
 	return nil
+}
+
+func disturbanceGeneration() (uint64, bool) {
+	value, err := strconv.ParseUint(os.Getenv(disturbanceGenerationEnv), 10, 64)
+	return value, err == nil
+}
+
+func readOracleState(path string) (oracleState, bool) {
+	text, err := os.ReadFile(path)
+	if err != nil {
+		return oracleState{}, false
+	}
+	var state oracleState
+	if _, err := fmt.Sscanf(string(text), "%d\n%d\n%d\n", &state.offset, &state.verified, &state.generation); err != nil || state.offset < 0 || state.verified < 0 {
+		return oracleState{}, false
+	}
+	return state, true
+}
+
+func writeOracleState(path string, state oracleState) error {
+	return os.WriteFile(path, []byte(fmt.Sprintf("%d\n%d\n%d\n", state.offset, state.verified, state.generation)), 0o644)
+}
+
+func selectCheckWindow(snapshot []byte, state oracleState, stateOK bool, generation uint64, generationOK bool) ([]journalRecord, oracleState) {
+	end := bytes.LastIndexByte(snapshot, '\n') + 1
+	if end == 0 {
+		return nil, state
+	}
+	full := !generationOK || !stateOK || state.generation != generation || state.offset > int64(end)
+	start := state.offset
+	verified := state.verified
+	if full {
+		start = 0
+		verified = 0
+	}
+	expected := selectEntries(string(snapshot[start:end]))
+	return expected, oracleState{
+		offset:     int64(end),
+		verified:   verified + len(expected),
+		generation: generation,
+	}
 }
 
 func compareAgainstMembers(

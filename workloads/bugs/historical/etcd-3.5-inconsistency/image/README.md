@@ -73,14 +73,18 @@ is the positive `PutResponse.Header.Revision` returned for that key. Records wit
 acknowledgement revision are not part of the oracle's source of truth.
 
 The check runs inside `etcd-oracle`, a single uninstrumented Go binary. The bundle's `check` line
-invokes `etcd-oracle check`, which reads the complete acknowledged journal and the complete `museum/`
-prefix from every member using serializable local reads. Each member response carries its local
+invokes `etcd-oracle check`. Between disturbances it compares only complete journal records
+appended after the last conclusive pass. When the fault agent's disturbance generation changes,
+it compares the complete acknowledged journal again, including keys verified before the fault.
+Each comparison reads the complete `museum/` prefix from every member using serializable local
+reads. Each member response carries its local
 header revision. A record is compared only when that revision is at least the record's journaled
 ack revision; a lower revision means the member is still applying acknowledged entries, so the
 oracle retries until the member catches up or the read deadline expires. Read failures and stale
 responses are inconclusive. Once a member is fenced at every acknowledged revision, a missing or
-changed value is conclusive data loss. The complete journal is checked on every invocation, so a
-key verified before a later crash is checked again after that crash.
+changed value is conclusive data loss. The persisted journal watermark is an optimization only:
+a missing or malformed watermark causes a full scan, and an incomplete final record stays before
+the watermark until a later invocation completes it.
 
 The process emits `@reachable 11` and `@always 1 1` only after every member agrees. A conclusive
 loss emits `@always 1 0`; an empty journal, a down member, or an inconclusive read is silent. A

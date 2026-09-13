@@ -1411,6 +1411,10 @@ mod real {
         let output = File::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let child = command(argv)
             .process_group(0)
+            .env(
+                "HARMONY_DISTURBANCE_GENERATION",
+                start_generation.to_string(),
+            )
             .stdout(Stdio::from(sink))
             .spawn()
             .map_err(|error| format!("check {:?}: {error}", argv[0]))?;
