@@ -9,12 +9,13 @@
     all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 fn main() -> std::process::ExitCode {
-    let result =
-        if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--control-child")) {
-            run_control_child()
-        } else {
-            run()
-        };
+    let result = match std::env::args_os().nth(1).as_deref() {
+        Some(value) if value == std::ffi::OsStr::new("--control-child") => run_control_child(),
+        Some(value) if value == std::ffi::OsStr::new("--verify-d-bundle") => {
+            d_bundle::run_verify_d_bundle()
+        }
+        _ => run(),
+    };
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
@@ -65,6 +66,16 @@ type ProbeVmm = vmm_core::vmm::Vmm<ProbeBackend>;
     ),
     all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
+type ProbeServer = vmm_core::control::ControlServer<ProbeBackend>;
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
 fn boot_probe(kernel: &[u8], initramfs: &[u8]) -> Result<ProbeVmm, vmm_core::vmm::VmmError> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     let mut vmm = vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time(
@@ -90,6 +101,1078 @@ fn boot_probe(kernel: &[u8], initramfs: &[u8]) -> Result<ProbeVmm, vmm_core::vmm
     )?;
     vmm.wire_snapshot_hashing();
     Ok(vmm)
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn latest_frame(events: &[(u64, u32, Vec<u8>)]) -> Option<u64> {
+    const SDK_NS_SHIFT: u32 = 24;
+    const SDK_NS_STATE: u8 = 2;
+    const SDK_STATE_SET: u8 = 0;
+    const SDK_STATE_MAX: u8 = 1;
+    const REG_FRAME: u32 = 10;
+    let event_id = (u32::from(SDK_NS_STATE) << SDK_NS_SHIFT) | REG_FRAME;
+    let mut frame = None;
+    for &(_, id, ref bytes) in events {
+        if id != event_id || bytes.len() != 9 {
+            continue;
+        }
+        let value = u64::from_le_bytes(bytes[1..9].try_into().ok()?);
+        match bytes[0] {
+            SDK_STATE_SET => frame = Some(value),
+            SDK_STATE_MAX => frame = Some(frame.unwrap_or(0).max(value)),
+            _ => {}
+        }
+    }
+    frame
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn probe_drive(
+    server: &mut ProbeServer,
+    request: &control_proto::Request,
+) -> Result<control_proto::Reply, String> {
+    match server.handle(request) {
+        Ok(Ok(reply)) => Ok(reply),
+        Ok(Err(error)) => Err(format!("{request:?} returned {error:?}")),
+        Err(error) => Err(format!("{request:?} ended the session: {error:?}")),
+    }
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+mod d_bundle {
+    use super::*;
+
+    const D_BUNDLE_FORMAT: &str = "harmony-nova-d-bundle-v1";
+
+    const D_BUNDLE_SOURCE_COMMIT_ENV: &str = "HARMONY_CONSONANCE_SOURCE_COMMIT";
+
+    pub(super) const D_BUNDLE_EXPORT_ENV: &str = "HARMONY_CONSONANCE_D_BUNDLE_EXPORT_DIR";
+
+    const D_BUNDLE_SEED: u64 = 0x4e4f_5641_5f43_4931;
+
+    fn d_bundle_isa() -> &'static str {
+        #[cfg(target_arch = "x86_64")]
+        {
+            "x86_64"
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            "aarch64"
+        }
+    }
+
+    fn d_bundle_os() -> &'static str {
+        #[cfg(target_os = "linux")]
+        {
+            "linux"
+        }
+        #[cfg(target_os = "macos")]
+        {
+            "macos"
+        }
+    }
+
+    fn d_bundle_backend() -> &'static str {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            "kvm-x86_64"
+        }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            "kvm-aarch64"
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            "hvf-aarch64"
+        }
+    }
+
+    fn d_bundle_features() -> &'static str {
+        #[cfg(feature = "arm-sha2-asm")]
+        {
+            "arm-sha2-asm"
+        }
+        #[cfg(not(feature = "arm-sha2-asm"))]
+        {
+            "default"
+        }
+    }
+
+    fn d_bundle_deadline() -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        {
+            2_000_000_000
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            20_000_000_000
+        }
+    }
+
+    fn d_bundle_source_commit() -> String {
+        match std::env::var(D_BUNDLE_SOURCE_COMMIT_ENV) {
+            Ok(value) if !value.is_empty() => value,
+            _ => "unknown".to_owned(),
+        }
+    }
+
+    fn d_bundle_validate_source_commit(value: &str) -> Result<(), String> {
+        if !(7..=64).contains(&value.len()) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!(
+                "{D_BUNDLE_SOURCE_COMMIT_ENV} must be a 7-64 character hexadecimal commit"
+            ));
+        }
+        Ok(())
+    }
+
+    fn d_bundle_sha256(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    fn d_bundle_executable_sha256() -> Result<String, String> {
+        let path = std::env::current_exe()
+            .map_err(|error| format!("D bundle cannot locate probe executable: {error}"))?;
+        let bytes = std::fs::read(&path)
+            .map_err(|error| format!("D bundle cannot read probe executable {path:?}: {error}"))?;
+        Ok(d_bundle_sha256(&bytes))
+    }
+
+    fn d_bundle_hex32(bytes: &[u8; 32]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn d_bundle_parse_hex32(value: &str, key: &str) -> Result<[u8; 32], String> {
+        if value.len() != 64 {
+            return Err(format!(
+                "D bundle {key} must contain 64 hexadecimal characters"
+            ));
+        }
+        let mut bytes = [0u8; 32];
+        for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+            let high = (pair[0] as char)
+                .to_digit(16)
+                .ok_or_else(|| format!("D bundle {key} contains malformed hexadecimal"))?;
+            let low = (pair[1] as char)
+                .to_digit(16)
+                .ok_or_else(|| format!("D bundle {key} contains malformed hexadecimal"))?;
+            bytes[index] = ((high << 4) | low) as u8;
+        }
+        Ok(bytes)
+    }
+
+    fn d_bundle_parse_manifest(
+        bytes: &[u8],
+    ) -> Result<std::collections::BTreeMap<String, String>, String> {
+        let text =
+            std::str::from_utf8(bytes).map_err(|_| "D bundle manifest is not UTF-8".to_owned())?;
+        let mut entries = std::collections::BTreeMap::new();
+        for (line_number, line) in text.lines().enumerate() {
+            let (key, value) = line.split_once('=').ok_or_else(|| {
+                format!(
+                    "D bundle manifest line {} lacks a key/value separator",
+                    line_number + 1
+                )
+            })?;
+            if key.is_empty()
+                || !key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+                || value.contains(['\r', '\n'])
+            {
+                return Err(format!(
+                    "D bundle manifest line {} has malformed metadata",
+                    line_number + 1
+                ));
+            }
+            if entries.insert(key.to_owned(), value.to_owned()).is_some() {
+                return Err(format!("D bundle manifest repeats key {key}"));
+            }
+        }
+        Ok(entries)
+    }
+
+    fn d_bundle_required<'a>(
+        entries: &'a std::collections::BTreeMap<String, String>,
+        key: &str,
+    ) -> Result<&'a str, String> {
+        entries
+            .get(key)
+            .map(String::as_str)
+            .ok_or_else(|| format!("D bundle manifest lacks {key}"))
+    }
+
+    fn d_bundle_u64(
+        entries: &std::collections::BTreeMap<String, String>,
+        key: &str,
+    ) -> Result<u64, String> {
+        d_bundle_required(entries, key)?
+            .parse::<u64>()
+            .map_err(|_| format!("D bundle {key} is not an unsigned integer"))
+    }
+
+    fn d_bundle_optional_u64(
+        entries: &std::collections::BTreeMap<String, String>,
+        key: &str,
+    ) -> Result<Option<u64>, String> {
+        let value = d_bundle_required(entries, key)?;
+        if value == "none" {
+            return Ok(None);
+        }
+        value
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|_| format!("D bundle {key} is not an unsigned integer or none"))
+    }
+
+    struct DBundle {
+        source_commit: String,
+        source_feature: String,
+        source_isa: String,
+        source_os: String,
+        source_backend: String,
+        source_executable_sha256: String,
+        kernel_sha256: String,
+        initramfs_sha256: String,
+        source_snapshot: Vec<u8>,
+        source_events: Vec<u8>,
+        expected_events: Vec<u8>,
+        expected_state: Vec<u8>,
+        expected_artifact: Vec<u8>,
+        expected_hash: [u8; 32],
+        source_snapshot_id: u64,
+        source_at: u64,
+        source_frame: Option<u64>,
+        source_events_len: u64,
+        expected_at: u64,
+        expected_frame: Option<u64>,
+        expected_events_len: u64,
+    }
+
+    struct DBundleActualEndpoint<'a> {
+        at: u64,
+        frame: Option<u64>,
+        events_len: usize,
+        events: &'a [u8],
+        state: &'a [u8],
+        hash: &'a [u8; 32],
+        artifact: &'a [u8],
+        snapshot_id: u64,
+        fallbacks: u64,
+    }
+
+    struct DBundleActualSource<'a> {
+        frame: Option<u64>,
+        events_len: usize,
+        events: &'a [u8],
+        fallbacks: u64,
+    }
+
+    pub(super) struct DBundleExport<'a> {
+        pub(super) directory: &'a std::path::Path,
+        pub(super) kernel: &'a [u8],
+        pub(super) initramfs: &'a [u8],
+        pub(super) parent_id: u64,
+        pub(super) parent_snapshot: &'a [u8],
+        pub(super) payload: &'a [u8],
+        pub(super) source_snapshot_id: u64,
+        pub(super) source_at: u64,
+        pub(super) source_frame: Option<u64>,
+        pub(super) source_events_len: usize,
+        pub(super) source_events: &'a [u8],
+        pub(super) source_snapshot: &'a [u8],
+        pub(super) expected_at: u64,
+        pub(super) expected_frame: Option<u64>,
+        pub(super) expected_events_len: usize,
+        pub(super) expected_events: &'a [u8],
+        pub(super) expected_state: &'a [u8],
+        pub(super) expected_artifact: &'a [u8],
+        pub(super) expected_hash: &'a [u8; 32],
+    }
+
+    fn d_bundle_read_file(
+        directory: &std::path::Path,
+        entries: &std::collections::BTreeMap<String, String>,
+        filename: &str,
+        hash_key: &str,
+        length_key: &str,
+    ) -> Result<Vec<u8>, String> {
+        let bytes = std::fs::read(directory.join(filename))
+            .map_err(|error| format!("D bundle cannot read {filename}: {error}"))?;
+        let expected_length = d_bundle_u64(entries, length_key)?;
+        if bytes.len() as u64 != expected_length {
+            return Err(format!(
+                "D bundle {filename} length mismatch: expected {expected_length}, got {}",
+                bytes.len()
+            ));
+        }
+        let expected_hash = d_bundle_required(entries, hash_key)?;
+        if d_bundle_sha256(&bytes) != expected_hash {
+            return Err(format!("D bundle {filename} SHA-256 mismatch"));
+        }
+        Ok(bytes)
+    }
+
+    fn d_bundle_read(
+        directory: &std::path::Path,
+        kernel: &[u8],
+        initramfs: &[u8],
+    ) -> Result<DBundle, String> {
+        use vmm_core::portable_snapshot::compare_portable_execution_state;
+
+        let manifest = std::fs::read(directory.join("manifest.txt"))
+            .map_err(|error| format!("D bundle manifest cannot be read: {error}"))?;
+        let entries = d_bundle_parse_manifest(&manifest)?;
+        if d_bundle_required(&entries, "format")? != D_BUNDLE_FORMAT {
+            return Err("D bundle format is unsupported".to_owned());
+        }
+        let source_commit = d_bundle_required(&entries, "source_commit")?;
+        d_bundle_validate_source_commit(source_commit)?;
+        let current_commit = d_bundle_source_commit();
+        if current_commit == "unknown" {
+            return Err(format!(
+                "{D_BUNDLE_SOURCE_COMMIT_ENV} is required to verify a D bundle"
+            ));
+        }
+        d_bundle_validate_source_commit(&current_commit)?;
+        if source_commit != current_commit {
+            return Err(format!(
+                "D bundle source commit mismatch: bundle={source_commit} current={current_commit}"
+            ));
+        }
+        let source_feature = d_bundle_required(&entries, "source_feature")?;
+        if source_feature != d_bundle_features() {
+            return Err("D bundle build feature set does not match this binary".to_owned());
+        }
+        let source_isa = d_bundle_required(&entries, "source_isa")?;
+        if source_isa != d_bundle_isa() {
+            return Err(format!(
+                "D bundle ISA mismatch: bundle={source_isa} current={}",
+                d_bundle_isa()
+            ));
+        }
+        let source_backend = d_bundle_required(&entries, "source_backend")?;
+        let source_os = d_bundle_required(&entries, "source_os")?;
+        if !matches!(
+            (source_isa, source_backend, source_os),
+            ("x86_64", "kvm-x86_64", "linux")
+                | ("aarch64", "kvm-aarch64", "linux")
+                | ("aarch64", "hvf-aarch64", "macos")
+        ) {
+            return Err(format!(
+                "D bundle source ISA/backend/OS tuple is unsupported: isa={source_isa} backend={source_backend} os={source_os}"
+            ));
+        }
+        let source_executable_sha256 = d_bundle_required(&entries, "source_executable_sha256")?;
+        d_bundle_parse_hex32(source_executable_sha256, "source_executable_sha256")?;
+        if d_bundle_u64(&entries, "ram_bytes")? != PROBE_RAM as u64
+            || d_bundle_u64(&entries, "seed")? != D_BUNDLE_SEED
+            || d_bundle_u64(&entries, "deadline")? != d_bundle_deadline()
+        {
+            return Err("D bundle execution contract does not match this binary".to_owned());
+        }
+        let kernel_sha256 = d_bundle_required(&entries, "kernel_sha256")?;
+        let initramfs_sha256 = d_bundle_required(&entries, "initramfs_sha256")?;
+        if kernel_sha256 != d_bundle_sha256(kernel)
+            || initramfs_sha256 != d_bundle_sha256(initramfs)
+        {
+            return Err("D bundle kernel or initramfs digest does not match".to_owned());
+        }
+        if d_bundle_required(&entries, "continuation_stop")? != "snapshot_point"
+            || d_bundle_required(&entries, "continuation_resolve")? != "none"
+        {
+            return Err("D bundle continuation contract is unsupported".to_owned());
+        }
+        let parent_snapshot = d_bundle_read_file(
+            directory,
+            &entries,
+            "parent-snapshot.bin",
+            "parent_snapshot_sha256",
+            "parent_snapshot_len",
+        )?;
+        let source_snapshot = d_bundle_read_file(
+            directory,
+            &entries,
+            "source-snapshot.bin",
+            "source_snapshot_sha256",
+            "source_snapshot_len",
+        )?;
+        let source_events = d_bundle_read_file(
+            directory,
+            &entries,
+            "source-sdk-events.bin",
+            "source_sdk_events_sha256",
+            "source_sdk_events_bytes_len",
+        )?;
+        let _payload = d_bundle_read_file(
+            directory,
+            &entries,
+            "continuation-input.bin",
+            "continuation_input_sha256",
+            "continuation_input_len",
+        )?;
+        let expected_events = d_bundle_read_file(
+            directory,
+            &entries,
+            "expected-endpoint-events.bin",
+            "expected_endpoint_events_sha256",
+            "expected_endpoint_events_bytes_len",
+        )?;
+        let expected_state = d_bundle_read_file(
+            directory,
+            &entries,
+            "expected-endpoint-state.bin",
+            "expected_endpoint_state_sha256",
+            "expected_endpoint_state_len",
+        )?;
+        let expected_artifact = d_bundle_read_file(
+            directory,
+            &entries,
+            "expected-endpoint-portable.bin",
+            "expected_endpoint_artifact_sha256",
+            "expected_endpoint_artifact_len",
+        )?;
+        for (label, bytes) in [
+            ("parent snapshot", &parent_snapshot),
+            ("source snapshot", &source_snapshot),
+            ("expected endpoint", &expected_artifact),
+        ] {
+            compare_portable_execution_state(bytes, bytes, PROBE_RAM).map_err(|error| {
+                format!("D bundle {label} is not a valid portable snapshot: {error}")
+            })?;
+        }
+        let expected_hash = d_bundle_parse_hex32(
+            d_bundle_required(&entries, "expected_endpoint_hash")?,
+            "expected_endpoint_hash",
+        )?;
+        let parent_id = d_bundle_u64(&entries, "parent_snapshot_id")?;
+        let source_snapshot_id = d_bundle_u64(&entries, "source_snapshot_id")?;
+        if parent_id == 0 || source_snapshot_id <= 1 {
+            return Err("D bundle snapshot identifiers are malformed".to_owned());
+        }
+        let source_at = d_bundle_u64(&entries, "source_boundary_vtime")?;
+        let source_events_len = d_bundle_u64(&entries, "source_boundary_events_len")?;
+        let expected_at = d_bundle_u64(&entries, "expected_endpoint_vtime")?;
+        let expected_events_len = d_bundle_u64(&entries, "expected_endpoint_events_len")?;
+        if expected_at <= source_at || expected_events_len <= source_events_len {
+            return Err("D bundle continuation does not advance time and SDK evidence".to_owned());
+        }
+        Ok(DBundle {
+            source_commit: source_commit.to_owned(),
+            source_feature: source_feature.to_owned(),
+            source_isa: source_isa.to_owned(),
+            source_os: source_os.to_owned(),
+            source_backend: source_backend.to_owned(),
+            source_executable_sha256: source_executable_sha256.to_owned(),
+            kernel_sha256: kernel_sha256.to_owned(),
+            initramfs_sha256: initramfs_sha256.to_owned(),
+            source_snapshot,
+            source_events,
+            expected_events,
+            expected_state,
+            expected_artifact,
+            expected_hash,
+            source_snapshot_id,
+            source_at,
+            source_frame: d_bundle_optional_u64(&entries, "source_boundary_frame")?,
+            source_events_len,
+            expected_at,
+            expected_frame: d_bundle_optional_u64(&entries, "expected_endpoint_frame")?,
+            expected_events_len,
+        })
+    }
+
+    fn d_bundle_write_file(
+        directory: &std::path::Path,
+        filename: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        std::fs::write(directory.join(filename), bytes)
+            .map_err(|error| format!("D bundle cannot write {filename}: {error}"))
+    }
+
+    fn d_bundle_frame(frame: Option<u64>) -> String {
+        frame.map_or_else(|| "none".to_owned(), |value| value.to_string())
+    }
+
+    fn d_bundle_retain_verification_mismatch(
+        bundle: &DBundle,
+        source: Option<&DBundleActualSource<'_>>,
+        endpoint: Option<&DBundleActualEndpoint<'_>>,
+        failures: &[String],
+    ) -> Result<(), String> {
+        let Some(directory) = std::env::var_os("HARMONY_CONSONANCE_ORACLE_REPORT_DIR") else {
+            return Ok(());
+        };
+        let destination_executable_sha256 = d_bundle_executable_sha256()?;
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        if let Some(source) = source {
+            d_bundle_write_file(
+                &directory,
+                "d-bundle-verify-actual-source-events.bin",
+                source.events,
+            )?;
+        }
+        if let Some(endpoint) = endpoint {
+            d_bundle_write_file(
+                &directory,
+                "d-bundle-verify-actual-endpoint-events.bin",
+                endpoint.events,
+            )?;
+            d_bundle_write_file(
+                &directory,
+                "d-bundle-verify-actual-endpoint-state.bin",
+                endpoint.state,
+            )?;
+            d_bundle_write_file(
+                &directory,
+                "d-bundle-verify-actual-endpoint-hash.bin",
+                endpoint.hash,
+            )?;
+            d_bundle_write_file(
+                &directory,
+                "d-bundle-verify-actual-endpoint-portable.bin",
+                endpoint.artifact,
+            )?;
+        }
+        let failure_text = format!("{}\n", failures.join("\n"));
+        d_bundle_write_file(
+            &directory,
+            "d-bundle-verify-mismatches.txt",
+            failure_text.as_bytes(),
+        )?;
+        let source_metadata = source.map_or_else(String::new, |source| {
+            format!(
+                "actual_source_frame={}\n\
+actual_source_events_len={}\n\
+actual_source_events_sha256={}\n\
+actual_source_fallbacks={}\n",
+                d_bundle_frame(source.frame),
+                source.events_len,
+                d_bundle_sha256(source.events),
+                source.fallbacks,
+            )
+        });
+        let endpoint_metadata = endpoint.map_or_else(String::new, |endpoint| {
+            format!(
+                "actual_endpoint_snapshot_id={}\n\
+actual_endpoint_vtime={}\n\
+actual_endpoint_frame={}\n\
+actual_endpoint_events_len={}\n\
+actual_endpoint_events_sha256={}\n\
+actual_endpoint_state_sha256={}\n\
+actual_endpoint_hash={}\n\
+actual_endpoint_portable_sha256={}\n\
+in_place_fallbacks={}\n",
+                endpoint.snapshot_id,
+                endpoint.at,
+                d_bundle_frame(endpoint.frame),
+                endpoint.events_len,
+                d_bundle_sha256(endpoint.events),
+                d_bundle_sha256(endpoint.state),
+                d_bundle_hex32(endpoint.hash),
+                d_bundle_sha256(endpoint.artifact),
+                endpoint.fallbacks,
+            )
+        });
+        let metadata = format!(
+            "format={D_BUNDLE_FORMAT}\n\
+source_commit={}\n\
+destination_commit={}\n\
+source_executable_sha256={}\n\
+destination_executable_sha256={destination_executable_sha256}\n\
+source_feature={}\n\
+source_isa={}\n\
+source_os={}\n\
+source_backend={}\n\
+destination_feature={}\n\
+destination_isa={}\n\
+destination_os={}\n\
+destination_backend={}\n\
+kernel_sha256={}\n\
+initramfs_sha256={}\n\
+source_snapshot_id={}\n\
+source_boundary_vtime={}\n\
+source_boundary_frame={}\n\
+source_boundary_events_len={}\n\
+{source_metadata}expected_endpoint_vtime={}\n\
+expected_endpoint_frame={}\n\
+expected_endpoint_events_len={}\n\
+expected_endpoint_events_sha256={}\n\
+expected_endpoint_state_sha256={}\n\
+expected_endpoint_hash={}\n\
+expected_endpoint_portable_sha256={}\n\
+{endpoint_metadata}mismatch_count={}\n",
+            bundle.source_commit,
+            d_bundle_source_commit(),
+            bundle.source_executable_sha256,
+            bundle.source_feature,
+            bundle.source_isa,
+            bundle.source_os,
+            bundle.source_backend,
+            d_bundle_features(),
+            d_bundle_isa(),
+            d_bundle_os(),
+            d_bundle_backend(),
+            bundle.kernel_sha256,
+            bundle.initramfs_sha256,
+            bundle.source_snapshot_id,
+            bundle.source_at,
+            d_bundle_frame(bundle.source_frame),
+            bundle.source_events_len,
+            bundle.expected_at,
+            d_bundle_frame(bundle.expected_frame),
+            bundle.expected_events_len,
+            d_bundle_sha256(&bundle.expected_events),
+            d_bundle_sha256(&bundle.expected_state),
+            d_bundle_hex32(&bundle.expected_hash),
+            d_bundle_sha256(&bundle.expected_artifact),
+            failures.len(),
+        );
+        d_bundle_write_file(
+            &directory,
+            "d-bundle-verify-metadata.txt",
+            metadata.as_bytes(),
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn d_bundle_write(input: &DBundleExport<'_>) -> Result<(), String> {
+        use vmm_core::portable_snapshot::compare_portable_execution_state;
+
+        let source_commit = d_bundle_source_commit();
+        if source_commit == "unknown" {
+            return Err(format!(
+                "{D_BUNDLE_SOURCE_COMMIT_ENV} is required to export a D bundle"
+            ));
+        }
+        d_bundle_validate_source_commit(&source_commit)?;
+        let executable_sha256 = d_bundle_executable_sha256()?;
+        if input.parent_id == 0 || input.source_snapshot_id <= 1 {
+            return Err("cannot export a D bundle with malformed snapshot identifiers".to_owned());
+        }
+        for (label, bytes) in [
+            ("parent snapshot", input.parent_snapshot),
+            ("source snapshot", input.source_snapshot),
+            ("expected endpoint", input.expected_artifact),
+        ] {
+            compare_portable_execution_state(bytes, bytes, PROBE_RAM).map_err(|error| {
+                format!("D bundle {label} is not a valid portable snapshot: {error}")
+            })?;
+        }
+        std::fs::create_dir_all(input.directory)
+            .map_err(|error| format!("D bundle directory cannot be created: {error}"))?;
+        d_bundle_write_file(
+            input.directory,
+            "parent-snapshot.bin",
+            input.parent_snapshot,
+        )?;
+        d_bundle_write_file(
+            input.directory,
+            "source-snapshot.bin",
+            input.source_snapshot,
+        )?;
+        d_bundle_write_file(input.directory, "continuation-input.bin", input.payload)?;
+        d_bundle_write_file(
+            input.directory,
+            "source-sdk-events.bin",
+            input.source_events,
+        )?;
+        d_bundle_write_file(
+            input.directory,
+            "expected-endpoint-events.bin",
+            input.expected_events,
+        )?;
+        d_bundle_write_file(
+            input.directory,
+            "expected-endpoint-state.bin",
+            input.expected_state,
+        )?;
+        d_bundle_write_file(
+            input.directory,
+            "expected-endpoint-portable.bin",
+            input.expected_artifact,
+        )?;
+        let parent_id = input.parent_id;
+        let source_snapshot_id = input.source_snapshot_id;
+        let source_at = input.source_at;
+        let source_events_len = input.source_events_len;
+        let expected_at = input.expected_at;
+        let expected_events_len = input.expected_events_len;
+        let manifest = format!(
+            "format={D_BUNDLE_FORMAT}\n\
+    source_commit={source_commit}\n\
+    source_executable_sha256={executable_sha256}\n\
+    source_feature={}\n\
+    source_isa={}\n\
+    source_os={}\n\
+    source_backend={}\n\
+    ram_bytes={}\n\
+    seed={}\n\
+    deadline={}\n\
+    kernel_sha256={}\n\
+    initramfs_sha256={}\n\
+    continuation_stop=snapshot_point\n\
+    continuation_resolve=none\n\
+    parent_snapshot_id={parent_id}\n\
+    parent_snapshot_sha256={}\n\
+    parent_snapshot_len={}\n\
+    source_snapshot_id={source_snapshot_id}\n\
+    source_snapshot_sha256={}\n\
+    source_snapshot_len={}\n\
+    source_boundary_vtime={source_at}\n\
+    source_boundary_frame={}\n\
+    source_boundary_events_len={source_events_len}\n\
+    source_sdk_events_sha256={}\n\
+    source_sdk_events_bytes_len={}\n\
+    continuation_input_sha256={}\n\
+    continuation_input_len={}\n\
+    expected_endpoint_vtime={expected_at}\n\
+    expected_endpoint_frame={}\n\
+    expected_endpoint_events_len={expected_events_len}\n\
+    expected_endpoint_events_sha256={}\n\
+    expected_endpoint_events_bytes_len={}\n\
+    expected_endpoint_state_sha256={}\n\
+    expected_endpoint_state_len={}\n\
+    expected_endpoint_artifact_sha256={}\n\
+    expected_endpoint_artifact_len={}\n\
+    expected_endpoint_hash={}\n",
+            d_bundle_features(),
+            d_bundle_isa(),
+            d_bundle_os(),
+            d_bundle_backend(),
+            PROBE_RAM,
+            D_BUNDLE_SEED,
+            d_bundle_deadline(),
+            d_bundle_sha256(input.kernel),
+            d_bundle_sha256(input.initramfs),
+            d_bundle_sha256(input.parent_snapshot),
+            input.parent_snapshot.len(),
+            d_bundle_sha256(input.source_snapshot),
+            input.source_snapshot.len(),
+            d_bundle_frame(input.source_frame),
+            d_bundle_sha256(input.source_events),
+            input.source_events.len(),
+            d_bundle_sha256(input.payload),
+            input.payload.len(),
+            d_bundle_frame(input.expected_frame),
+            d_bundle_sha256(input.expected_events),
+            input.expected_events.len(),
+            d_bundle_sha256(input.expected_state),
+            input.expected_state.len(),
+            d_bundle_sha256(input.expected_artifact),
+            input.expected_artifact.len(),
+            d_bundle_hex32(input.expected_hash),
+        );
+        d_bundle_write_file(input.directory, "manifest.txt", manifest.as_bytes())?;
+        println!(
+            "NOVA_CONSONANCE_D_BUNDLE_EXPORTED dir={} source_snapshot_id={} endpoint_vtime={} endpoint_events={} endpoint_state_bytes={} endpoint_portable_bytes={}",
+            input.directory.display(),
+            input.source_snapshot_id,
+            input.expected_at,
+            input.expected_events_len,
+            input.expected_state.len(),
+            input.expected_artifact.len()
+        );
+        Ok(())
+    }
+
+    fn d_bundle_run_to_snapshot(server: &mut ProbeServer) -> Result<control_proto::Moment, String> {
+        let request = control_proto::Request::Run {
+            until: control_proto::StopConditions {
+                deadline: Some(control_proto::Moment(d_bundle_deadline())),
+                on: control_proto::StopMask::NONE.arm(control_proto::class_bit::SNAPSHOT_POINT),
+            },
+            resolve: None,
+        };
+        match super::probe_drive(server, &request)? {
+            control_proto::Reply::Stop(control_proto::StopReason::SnapshotPoint { vtime }) => {
+                Ok(vtime)
+            }
+            other => Err(format!(
+                "D bundle continuation expected snapshot point, received {other:?}"
+            )),
+        }
+    }
+
+    fn d_bundle_sdk_events(
+        server: &mut ProbeServer,
+    ) -> Result<(Vec<u8>, Option<u64>, usize), String> {
+        let mut events = Vec::new();
+        let mut offset = 0u32;
+        loop {
+            let reply = super::probe_drive(server, &control_proto::Request::SdkEvents { offset })?;
+            let page = match reply {
+                control_proto::Reply::SdkEvents(page) => page,
+                other => return Err(format!("D bundle SDK event fetch returned {other:?}")),
+            };
+            if page.is_empty() {
+                break;
+            }
+            let page_len = u32::try_from(page.len())
+                .map_err(|_| "D bundle SDK event page is too large".to_owned())?;
+            offset = offset
+                .checked_add(page_len)
+                .ok_or("D bundle SDK event stream exceeds its offset range")?;
+            events.extend(page);
+        }
+        let frame = super::latest_frame(&events);
+        Ok((format!("{events:?}").into_bytes(), frame, events.len()))
+    }
+
+    pub(super) fn run_verify_d_bundle() -> Result<(), String> {
+        use control_proto::{HashScope, Reply, Request, SnapId};
+        use std::io::BufReader;
+        use vmm_core::{
+            control::{ControlServer, RestoreMode, VmmFactory, server_caps},
+            portable_snapshot::compare_portable_execution_state,
+        };
+
+        let mut args = std::env::args_os().skip(2);
+        let (Some(kernel_path), Some(initramfs_path), Some(bundle_path), None) =
+            (args.next(), args.next(), args.next(), args.next())
+        else {
+            return Err(
+                "usage: kvm_x86_nova_probe --verify-d-bundle <bzImage> <initramfs-nova.cpio.gz> <bundle-dir>"
+                    .to_owned(),
+            );
+        };
+        let kernel = std::fs::read(&kernel_path)
+            .map_err(|error| format!("cannot read {kernel_path:?}: {error}"))?;
+        let initramfs = std::fs::read(&initramfs_path)
+            .map_err(|error| format!("cannot read {initramfs_path:?}: {error}"))?;
+        let bundle = d_bundle_read(std::path::Path::new(&bundle_path), &kernel, &initramfs)?;
+        let source_compare = compare_portable_execution_state(
+            &bundle.source_snapshot,
+            &bundle.source_snapshot,
+            PROBE_RAM,
+        )
+        .map_err(|error| format!("D bundle source snapshot validation failed: {error}"))?;
+        if !source_compare.equal {
+            return Err("D bundle source snapshot is not self-consistent".to_owned());
+        }
+
+        let live = boot_probe(&kernel, &initramfs)
+            .map_err(|error| format!("D bundle destination boot failed: {error:?}"))?;
+        let factory_kernel = kernel.clone();
+        let factory_initramfs = initramfs.clone();
+        let factory: VmmFactory<ProbeBackend> =
+            Box::new(move || boot_probe(&factory_kernel, &factory_initramfs));
+        let mut server = ControlServer::new(live, factory);
+        server.set_restore_mode(RestoreMode::InPlace);
+        match super::probe_drive(&mut server, &Request::Hello(server_caps()))? {
+            Reply::Hello(caps) if caps == server_caps() => {}
+            other => return Err(format!("D bundle hello returned {other:?}")),
+        }
+        let import = server
+            .import_portable_snapshot(BufReader::new(bundle.source_snapshot.as_slice()))
+            .map_err(|error| {
+                format!("D bundle portable import rejected by destination backend: {error}")
+            })?;
+        if import.id != SnapId(1) || import.at.0 != bundle.source_at {
+            return Err(format!(
+                "D bundle source boundary mismatch: receipt_id={} receipt_vtime={} expected_id=1 expected_vtime={}",
+                import.id.0, import.at.0, bundle.source_at
+            ));
+        }
+        match super::probe_drive(&mut server, &Request::Replay(SnapId(1)))? {
+            Reply::Unit => {}
+            other => return Err(format!("D bundle source replay returned {other:?}")),
+        }
+        let (source_events, source_frame, source_events_len) = d_bundle_sdk_events(&mut server)?;
+        let source_fallbacks = server.in_place_fallbacks();
+        let mut source_failures = Vec::new();
+        if source_events_len as u64 != bundle.source_events_len
+            || source_events != bundle.source_events
+        {
+            source_failures.push(format!(
+                "source_events expected_len={} actual_len={} expected_sha256={} actual_sha256={}",
+                bundle.source_events_len,
+                source_events_len,
+                d_bundle_sha256(&bundle.source_events),
+                d_bundle_sha256(&source_events)
+            ));
+        }
+        if source_frame != bundle.source_frame {
+            source_failures.push(format!(
+                "source_frame expected={} actual={}",
+                d_bundle_frame(bundle.source_frame),
+                d_bundle_frame(source_frame)
+            ));
+        }
+        if source_fallbacks != 0 {
+            source_failures.push(format!(
+                "in_place_fallbacks expected=0 actual={source_fallbacks}"
+            ));
+        }
+        let source_evidence = DBundleActualSource {
+            frame: source_frame,
+            events_len: source_events_len,
+            events: &source_events,
+            fallbacks: source_fallbacks,
+        };
+        if !source_failures.is_empty() {
+            d_bundle_retain_verification_mismatch(
+                &bundle,
+                Some(&source_evidence),
+                None,
+                &source_failures,
+            )?;
+            return Err(format!(
+                "D bundle imported source SDK evidence differed: {}",
+                source_failures.join("; ")
+            ));
+        }
+        let at = d_bundle_run_to_snapshot(&mut server)?;
+        let (events, frame, events_len) = d_bundle_sdk_events(&mut server)?;
+        let state = server
+            .vmm()
+            .ok_or("D bundle destination VM unavailable")?
+            .state_blob()
+            .map_err(|error| format!("D bundle endpoint state export failed: {error}"))?;
+        let hash = match super::probe_drive(
+            &mut server,
+            &Request::Hash {
+                scope: HashScope::Whole,
+            },
+        )? {
+            Reply::Hash(hash) => hash,
+            other => return Err(format!("D bundle endpoint hash returned {other:?}")),
+        };
+        let snapshot = match super::probe_drive(&mut server, &Request::Snapshot)? {
+            Reply::Snapshot { id, .. } => id,
+            other => return Err(format!("D bundle endpoint snapshot returned {other:?}")),
+        };
+        let mut artifact = Vec::new();
+        server
+            .export_portable_snapshot(snapshot, &mut artifact)
+            .map_err(|error| format!("D bundle endpoint portable export failed: {error}"))?;
+        let fallbacks = server.in_place_fallbacks();
+        let comparison =
+            compare_portable_execution_state(&bundle.expected_artifact, &artifact, PROBE_RAM);
+        let mut failures = Vec::new();
+        if at.0 != bundle.expected_at {
+            failures.push(format!(
+                "endpoint_vtime expected={} actual={}",
+                bundle.expected_at, at.0
+            ));
+        }
+        if frame != bundle.expected_frame {
+            failures.push(format!(
+                "endpoint_frame expected={} actual={}",
+                d_bundle_frame(bundle.expected_frame),
+                d_bundle_frame(frame)
+            ));
+        }
+        if events_len as u64 != bundle.expected_events_len || events != bundle.expected_events {
+            failures.push(format!(
+                "endpoint_events expected_len={} actual_len={} expected_sha256={} actual_sha256={}",
+                bundle.expected_events_len,
+                events_len,
+                d_bundle_sha256(&bundle.expected_events),
+                d_bundle_sha256(&events)
+            ));
+        }
+        if state != bundle.expected_state {
+            failures.push(format!(
+                "endpoint_state expected_len={} actual_len={} expected_sha256={} actual_sha256={}",
+                bundle.expected_state.len(),
+                state.len(),
+                d_bundle_sha256(&bundle.expected_state),
+                d_bundle_sha256(&state)
+            ));
+        }
+        if hash != bundle.expected_hash {
+            failures.push(format!(
+                "endpoint_hash expected={} actual={}",
+                d_bundle_hex32(&bundle.expected_hash),
+                d_bundle_hex32(&hash)
+            ));
+        }
+        match &comparison {
+            Ok(value) if !value.equal => failures.push(format!(
+                "portable_execution_state equal=false trace_events={}/{} trace_schedules={}/{}",
+                value.left_trace_events,
+                value.right_trace_events,
+                value.left_trace_schedules,
+                value.right_trace_schedules
+            )),
+            Err(error) => failures.push(format!("portable_execution_state error={error}")),
+            Ok(_) => {}
+        }
+        if fallbacks != 0 {
+            failures.push(format!("in_place_fallbacks expected=0 actual={fallbacks}"));
+        }
+        if !failures.is_empty() {
+            let endpoint = DBundleActualEndpoint {
+                at: at.0,
+                frame,
+                events_len,
+                events: &events,
+                state: &state,
+                hash: &hash,
+                artifact: &artifact,
+                snapshot_id: snapshot.0,
+                fallbacks,
+            };
+            d_bundle_retain_verification_mismatch(
+                &bundle,
+                Some(&source_evidence),
+                Some(&endpoint),
+                &failures,
+            )?;
+            return Err(format!(
+                "D bundle continuation differed: {}",
+                failures.join("; ")
+            ));
+        }
+        let comparison = match comparison {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(format!(
+                    "D bundle endpoint portable comparison failed: {error}"
+                ));
+            }
+        };
+        println!(
+            "NOVA_CONSONANCE_D_BUNDLE_VERIFY_OK isa={} backend={} source_snapshot_id={} endpoint_vtime={} endpoint_events={} endpoint_state_bytes={} endpoint_portable_bytes={} trace_events={}/{} trace_schedules={}/{} fallbacks={}",
+            d_bundle_isa(),
+            d_bundle_backend(),
+            bundle.source_snapshot_id,
+            at.0,
+            events_len,
+            state.len(),
+            artifact.len(),
+            comparison.left_trace_events,
+            comparison.right_trace_events,
+            comparison.left_trace_schedules,
+            comparison.right_trace_schedules,
+            server.in_place_fallbacks(),
+        );
+        Ok(())
+    }
 }
 
 #[cfg(any(
@@ -915,28 +1998,6 @@ fn run() -> Result<(), String> {
         sorted[index]
     }
 
-    fn latest_frame(events: &[(u64, u32, Vec<u8>)]) -> Option<u64> {
-        const SDK_NS_SHIFT: u32 = 24;
-        const SDK_NS_STATE: u8 = 2;
-        const SDK_STATE_SET: u8 = 0;
-        const SDK_STATE_MAX: u8 = 1;
-        const REG_FRAME: u32 = 10;
-        let event_id = (u32::from(SDK_NS_STATE) << SDK_NS_SHIFT) | REG_FRAME;
-        let mut frame = None;
-        for &(_, id, ref bytes) in events {
-            if id != event_id || bytes.len() != 9 {
-                continue;
-            }
-            let value = u64::from_le_bytes(bytes[1..9].try_into().ok()?);
-            match bytes[0] {
-                SDK_STATE_SET => frame = Some(value),
-                SDK_STATE_MAX => frame = Some(frame.unwrap_or(0).max(value)),
-                _ => {}
-            }
-        }
-        frame
-    }
-
     fn latest_register(events: &[(u64, u32, Vec<u8>)], register: u32) -> Result<u64, String> {
         const SDK_NS_SHIFT: u32 = 24;
         const SDK_NS_STATE: u8 = 2;
@@ -1188,13 +2249,19 @@ fn run() -> Result<(), String> {
         vec![word as u8, ((word >> 8) % 12 + 1) as u8]
     }
 
+    struct DRunImages<'a> {
+        kernel: &'a [u8],
+        initramfs: &'a [u8],
+        kernel_path: &'a std::path::Path,
+        initramfs_path: &'a std::path::Path,
+    }
+
     fn run_restore_oracle(
         server: &mut Server,
         base: SnapId,
         profile: &mut ProbeProfile,
         _cold_factory: &dyn Fn() -> Result<Server, String>,
-        kernel_path: &std::path::Path,
-        initramfs_path: &std::path::Path,
+        images: &DRunImages<'_>,
     ) -> Result<(), String> {
         const CONTROL_AT: [u64; 8] = [1, 2, 4, 8, 16, 32, 64, 199];
 
@@ -1675,8 +2742,8 @@ fn run() -> Result<(), String> {
                 std::fs::write(&parent_path, &parent_artifact)
                     .map_err(|error| format!("cold parent export failed: {error}"))?;
                 let mut cold = ChildSession::spawn(
-                    kernel_path,
-                    initramfs_path,
+                    images.kernel_path,
+                    images.initramfs_path,
                     &parent_path,
                     &fresh_path,
                     Some(&fresh_state_path),
@@ -1851,8 +2918,8 @@ fn run() -> Result<(), String> {
         }
 
         let mut source = ChildSession::spawn(
-            kernel_path,
-            initramfs_path,
+            images.kernel_path,
+            images.initramfs_path,
             &parent_path,
             &source_path,
             None,
@@ -1912,8 +2979,8 @@ fn run() -> Result<(), String> {
         drop(b1_s_artifact);
 
         let mut destination = ChildSession::spawn(
-            kernel_path,
-            initramfs_path,
+            images.kernel_path,
+            images.initramfs_path,
             &source_path,
             &destination_path,
             Some(&destination_state_path),
@@ -1979,6 +3046,32 @@ fn run() -> Result<(), String> {
             &d_endpoint,
             RAM,
         )?;
+
+        if let Some(directory) = std::env::var_os(d_bundle::D_BUNDLE_EXPORT_ENV) {
+            let parent_artifact = std::fs::read(&parent_path)
+                .map_err(|error| format!("D bundle parent export was not readable: {error}"))?;
+            d_bundle::d_bundle_write(&d_bundle::DBundleExport {
+                directory: std::path::Path::new(&directory),
+                kernel: images.kernel,
+                initramfs: images.initramfs,
+                parent_id: ab_edge.parent.0,
+                parent_snapshot: &parent_artifact,
+                payload: &ab_edge.payload,
+                source_snapshot_id: source_s_snapshot.0,
+                source_at: source_s_at.0,
+                source_frame: source_s_frame,
+                source_events_len: source_s_events_len,
+                source_events: &source_s_events,
+                source_snapshot: &source_s_artifact,
+                expected_at: d_endpoint.at.0,
+                expected_frame: d_endpoint.frame,
+                expected_events_len: d_endpoint.events_len,
+                expected_events: &d_endpoint.events,
+                expected_state: &d_endpoint.state,
+                expected_artifact: &d_endpoint.artifact,
+                expected_hash: &d_endpoint.hash,
+            })?;
+        }
 
         drop(d_endpoint);
         drop(a_endpoint);
@@ -2271,8 +3364,12 @@ fn run() -> Result<(), String> {
             base,
             &mut profile,
             &cold_factory,
-            std::path::Path::new(&kernel_path),
-            std::path::Path::new(&initramfs_path),
+            &DRunImages {
+                kernel: &kernel,
+                initramfs: &initramfs,
+                kernel_path: std::path::Path::new(&kernel_path),
+                initramfs_path: std::path::Path::new(&initramfs_path),
+            },
         )?;
     }
     let first = endpoint(&mut server, base, &mut profile)?;

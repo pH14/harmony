@@ -73,3 +73,45 @@ line).
 For extended qualification, `HARMONY_CONSONANCE_ORACLE_TREE_SEED` selects a
 fixed decimal seed for tree construction and edge replay. Leaving it unset
 preserves the historical sequence; every success report records the seed.
+
+The qualified D source snapshot and its continuation evidence can be exported
+as an opt-in directory bundle. Set an explicit, operator-declared source commit
+identity when exporting; this metadata records the claimed source identity and
+does not replace binding the built executable to an immutable source archive
+during qualification. The bundle also records the build feature set, ISA,
+kernel/initramfs SHA-256 digests, exact D branch payload, source boundary
+evidence, and expected continuation time, ordered SDK events, raw state, hash,
+and portable snapshot:
+
+```sh
+HARMONY_CONSONANCE_SOURCE_COMMIT=$(git rev-parse HEAD) \
+HARMONY_CONSONANCE_D_BUNDLE_EXPORT_DIR=/path/to/d-bundle \
+HARMONY_CONSONANCE_RESTORE_ORACLE=1 \
+  workloads/tools/target/release/kvm_x86_nova_probe \
+  path/to/bzImage path/to/initramfs-nova.cpio.gz
+```
+
+Verify that bundle on a second host with the same ISA using the explicit CLI
+mode. The verifier checks metadata, image digests, file digests, and portable
+snapshot structure before booting the destination VM. It then imports the
+recorded D source snapshot, replays the same typed continuation, and compares
+time, ordered SDK evidence, raw state, whole-state hash, and portable execution
+state with zero in-place fallbacks:
+
+```sh
+HARMONY_CONSONANCE_SOURCE_COMMIT=$(git rev-parse HEAD) \
+  workloads/tools/target/release/kvm_x86_nova_probe \
+  --verify-d-bundle \
+  path/to/bzImage path/to/initramfs-nova.cpio.gz \
+  /path/to/d-bundle
+```
+
+If verification finds a continuation mismatch, set
+`HARMONY_CONSONANCE_ORACLE_REPORT_DIR` to retain the actual endpoint events,
+raw state, whole-state hash, portable snapshot, metadata, and field-level
+mismatch report alongside the expected bundle evidence.
+
+The export is performed only after the existing D comparison succeeds, and
+the ordinary oracle does not create a bundle unless its export variable is
+set. A different ISA or unsupported KVM/HVF state contract produces an
+explicit verification error.
