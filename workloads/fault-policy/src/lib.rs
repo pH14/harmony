@@ -29,6 +29,8 @@ pub const CATALOG_VERSION: u16 = 5;
 
 pub const MAX_SUPPLY_LEN: u32 = 1 << 20;
 
+pub const EVENT_RARITY_LIMIT: u8 = 64;
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Outcome {
     Resolved(Answer),

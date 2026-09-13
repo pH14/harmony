@@ -31,6 +31,8 @@ const F_NET_RESET: u8 = 15;
 const F_BUGGIFY_FIRE: u8 = 16;
 const F_RUN_HOOK: u8 = 17;
 const F_PROC_PARK: u8 = 19;
+const F_PROC_EVENT_KILL: u8 = 20;
+const F_PROC_EVENT_PARK: u8 = 21;
 
 pub(crate) fn put_u16(w: &mut Vec<u8>, v: u16) {
     w.extend_from_slice(&v.to_le_bytes());
@@ -85,6 +87,15 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
         }
         Fault::ProcKill => w.push(F_PROC_KILL),
         Fault::ProcRestart => w.push(F_PROC_RESTART),
+        Fault::ProcEventKill { rarity } => {
+            w.push(F_PROC_EVENT_KILL);
+            w.push(*rarity);
+        }
+        Fault::ProcEventPark { rarity, hold } => {
+            w.push(F_PROC_EVENT_PARK);
+            w.push(*rarity);
+            put_u64(w, hold.0);
+        }
         Fault::BuggifyFire => w.push(F_BUGGIFY_FIRE),
         Fault::RunHook(id) => {
             w.push(F_RUN_HOOK);
@@ -115,6 +126,24 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
         F_PROC_PAUSE => Fault::ProcPause(Span(r.u64()?)),
         F_PROC_KILL => Fault::ProcKill,
         F_PROC_RESTART => Fault::ProcRestart,
+        F_PROC_EVENT_KILL => {
+            let rarity = r.u8()?;
+            if rarity >= crate::EVENT_RARITY_LIMIT {
+                return Err(EnvError::Malformed);
+            }
+            Fault::ProcEventKill { rarity }
+        }
+        F_PROC_EVENT_PARK => {
+            let rarity = r.u8()?;
+            let hold = r.u64()?;
+            if rarity >= crate::EVENT_RARITY_LIMIT || hold == 0 {
+                return Err(EnvError::Malformed);
+            }
+            Fault::ProcEventPark {
+                rarity,
+                hold: Span(hold),
+            }
+        }
         F_BUGGIFY_FIRE => Fault::BuggifyFire,
         F_RUN_HOOK => Fault::RunHook(r.u32()?),
         F_PROC_PARK => Fault::ProcPark {

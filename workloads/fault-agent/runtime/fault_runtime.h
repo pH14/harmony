@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+#ifndef HARMONY_FAULT_RUNTIME_H
+#define HARMONY_FAULT_RUNTIME_H
+
+#include <stdint.h>
+
+enum {
+    HARMONY_FAULT_EVENT_CMD_KILL = 1,
+    HARMONY_FAULT_EVENT_CMD_PARK = 2,
+    HARMONY_FAULT_EVENT_CMD_PARK_STATUS = 3,
+    HARMONY_FAULT_EVENT_PROTOCOL_VERSION = 1,
+    HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE = 24,
+    HARMONY_FAULT_EVENT_REPORT_SIZE = 16
+};
+
+#define HARMONY_FAULT_EVENT_RARITY_LIMIT 64
+#define HARMONY_FAULT_EVENT_REPORT_HELLO UINT64_C(0x4841524d4f4e5945)
+#define HARMONY_FAULT_EVENT_SITE_TABLE_SIZE (UINT64_C(1) << 19)
+
+void harmony_fault_runtime_event(uint64_t site);
+void harmony_instrumentation_event(uint64_t site);
+
+#endif
