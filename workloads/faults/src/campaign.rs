@@ -33,8 +33,8 @@ use crate::{
     target::{FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v3";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-checkpoint-v3";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v4";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-checkpoint-v4";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 
 const VOCABULARY_FIELD: &str = "action_vocabulary";
@@ -800,26 +800,14 @@ mod tests {
     }
 
     #[test]
-    fn wait_contexts_pool_sites_but_separate_lifecycle_states() {
+    fn wait_contexts_separate_lifecycle_states() {
         let game = game();
         let run = run(3, vec![]);
         let parent = FaultArchiveKey {
             alive: 7,
-            event_kill_site: 41,
             ..FaultArchiveKey::default()
         };
         let request = game.duration_request(&run, parent, None).unwrap();
-        let other_site = FaultArchiveKey {
-            event_kill_site: 999,
-            sometimes: 12,
-            ..parent
-        };
-        assert_eq!(
-            request.context,
-            game.duration_request(&run, other_site, None)
-                .unwrap()
-                .context
-        );
         let down = FaultArchiveKey { alive: 3, ..parent };
         assert_ne!(
             request.context,

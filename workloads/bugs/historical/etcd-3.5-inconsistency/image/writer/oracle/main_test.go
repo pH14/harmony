@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -85,6 +86,54 @@ func TestAKeyVerifiedBeforeALaterFaultIsCheckedAgain(t *testing.T) {
 	missing, stale = compareView(expected, second)
 	if missing != 1 || stale {
 		t.Fatalf("post-fault compareView = (%d, %v), want (1, false)", missing, stale)
+	}
+}
+
+func TestAStableGenerationChecksOnlyNewAcknowledgements(t *testing.T) {
+	first := "museum/1/key-000000000007\tvalue-1-7\t17\n"
+	second := "museum/2/key-000000000009\tvalue-2-9\t23\n"
+	records, state := selectCheckWindow([]byte(first), oracleState{}, false, 4, true)
+	if len(records) != 1 || state.offset != int64(len(first)) || state.verified != 1 {
+		t.Fatalf("first window = (%v, %+v)", records, state)
+	}
+	records, state = selectCheckWindow([]byte(first+second), state, true, 4, true)
+	if len(records) != 1 || records[0].key != key("2", 9) || state.verified != 2 {
+		t.Fatalf("incremental window = (%v, %+v)", records, state)
+	}
+}
+
+func TestADisturbanceRechecksTheFullAcknowledgedHistory(t *testing.T) {
+	first := "museum/1/key-000000000007\tvalue-1-7\t17\n"
+	second := "museum/2/key-000000000009\tvalue-2-9\t23\n"
+	_, state := selectCheckWindow([]byte(first), oracleState{}, false, 4, true)
+	records, state := selectCheckWindow([]byte(first+second), state, true, 5, true)
+	if len(records) != 2 || state.verified != 2 || state.generation != 5 {
+		t.Fatalf("disturbed window = (%v, %+v)", records, state)
+	}
+}
+
+func TestAnIncompleteJournalRecordRemainsForTheNextWindow(t *testing.T) {
+	complete := "museum/1/key-000000000007\tvalue-1-7\t17\n"
+	partial := "museum/2/key-000000000009\tvalue-2"
+	_, state := selectCheckWindow([]byte(complete+partial), oracleState{}, false, 4, true)
+	if state.offset != int64(len(complete)) {
+		t.Fatalf("offset = %d, want %d", state.offset, len(complete))
+	}
+	records, state := selectCheckWindow([]byte(complete+partial+"-9\t23\n"), state, true, 4, true)
+	if len(records) != 1 || records[0].key != key("2", 9) || state.verified != 2 {
+		t.Fatalf("completed window = (%v, %+v)", records, state)
+	}
+}
+
+func TestOracleStateRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.verified")
+	want := oracleState{offset: 73, verified: 11, generation: 5}
+	if err := writeOracleState(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := readOracleState(path)
+	if !ok || got != want {
+		t.Fatalf("readOracleState = (%+v, %v), want (%+v, true)", got, ok, want)
 	}
 }
 

@@ -1375,6 +1375,10 @@ mod runtime {
         let output = File::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let mut command = process::command(execution, argv)
             .map_err(|error| format!("check {:?}: {error}", argv[0]))?;
+        command.env(
+            "HARMONY_DISTURBANCE_GENERATION",
+            start_generation.to_string(),
+        );
         let child = command
             .stdout(Stdio::from(sink))
             .spawn()

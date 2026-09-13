@@ -62,9 +62,12 @@ branch installs it.
 [`consonance`](src/consonance.rs) drives one `consonance_client::session::Session`
 per evaluator thread. Each portable action prefix maps to a real whole-VM
 snapshot: the session branches its parent under the prefix's window list and
-the host-plane effect its last action stages, runs to the action's horizon
-deadline, and seals the endpoint. An endpoint the session cannot seal within
-its settle allowance has no successor and the search records it as dead; one
+the host-plane effect its last action stages, runs to the action's deadline,
+and seals the endpoint. Long waits cross five-second guest-time progress
+deadlines before their final endpoint, so a guest that is still advancing
+refreshes the host watchdog while one that cannot advance still times out. An
+endpoint the session cannot seal within its settle allowance has no successor
+and the search records it as dead; one
 whose guest stopped for good while settling is recorded with that stop. A
 bounded LRU keeps recent prefixes resident and rebuilds evicted ones from their
 longest cached ancestor.
@@ -76,8 +79,10 @@ with the boot that reaches setup.
 
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
-which pairs the sometimes-assertion set with the live-node bitmap and the
-hook-completion count.
+which captures assertion, lifecycle, liveness, and event-firing state. The raw
+instrumented site reported by an event kill remains diagnostic evidence; it is
+not archive novelty because a large instrumented binary can report a distinct
+address at nearly every endpoint.
 
 The generic `execution_work` counter and `report.json`
 `execution_ticks` count the guest ticks requested by successfully applied actions

@@ -48,7 +48,10 @@ independent of node recovery. An optional `check` command runs serially and
 continuously; its directives carry the run number and disturbance-generation
 range that produced the latest successful evidence. Process transitions and
 accepted instrumentation reports advance that generation, which keeps stale
-pre-fault evidence distinct from a check completed after recovery.
+pre-fault evidence distinct from a check completed after recovery. Each check
+receives its starting generation in `HARMONY_DISTURBANCE_GENERATION`, allowing a
+stateful checker to invalidate cached results without importing process-fault
+semantics.
 
 Instrumented nodes receive a pair of inherited event descriptors. The generic
 control and report frames live in `process-proto`; the supervisor acknowledges

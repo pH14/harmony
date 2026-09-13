@@ -32,6 +32,7 @@ const WALL_LIMIT: Duration = Duration::from_secs(60);
 const SNAPSHOT_CACHE_LIMIT: usize = 96;
 const SETTLE_STEP_NANOS: u64 = 100_000;
 const SETTLE_ALLOWANCE_NANOS: u64 = 16 * SETTLE_STEP_NANOS;
+const RUN_PROGRESS_QUANTUM_NANOS: u64 = 5_000_000_000;
 const CONSOLE_TAIL: usize = 1_500;
 const WATCHDOG_CUTOFF: &str = "fault-guest-watchdog-cutoff: ";
 
@@ -71,7 +72,7 @@ impl FaultConfig {
     }
 }
 
-const IDENTITY_TAG: &str = "faults-consonance-execution-v1";
+const IDENTITY_TAG: &str = "faults-consonance-execution-v2";
 
 #[derive(Clone, Debug)]
 struct StandingHandler {
@@ -650,11 +651,19 @@ impl Live {
         actions: &[FaultAction],
         index: usize,
     ) -> Result<(FaultObservations, Option<(SnapId, u64)>), String> {
-        let deadline = self.windows.window(actions, index)?.1;
-        self.horizons_run = self.horizons_run.saturating_add(1);
-        let stop = match self.session.run_until(deadline) {
-            Ok(stop) => stop,
-            Err(error) => return Err(self.abandon("run", error.as_ref())),
+        let (mut progress, deadline) = self.windows.window(actions, index)?;
+        let stop = loop {
+            let next = next_run_deadline(progress, deadline);
+            self.horizons_run = self.horizons_run.saturating_add(1);
+            let stop = match self.session.run_until(next) {
+                Ok(stop) => stop,
+                Err(error) => return Err(self.abandon("run", error.as_ref())),
+            };
+            if matches!(stop, StopReason::Deadline { .. }) && next < deadline {
+                progress = next;
+                continue;
+            }
+            break stop;
         };
         if let StopReason::Crash { vtime, info } = &stop {
             let tail = self.session.console_tail().unwrap_or_default();
@@ -703,6 +712,12 @@ impl Live {
         capture.check_infrastructure_status()?;
         Ok(FaultObservations::new(moment, &capture, stop))
     }
+}
+
+fn next_run_deadline(progress: u64, deadline: u64) -> u64 {
+    progress
+        .saturating_add(RUN_PROGRESS_QUANTUM_NANOS)
+        .min(deadline)
 }
 
 #[must_use]
@@ -771,6 +786,24 @@ mod tests {
             guest_horizons_run: 0,
             root_seal: 0,
         }
+    }
+
+    #[test]
+    fn long_runs_refresh_the_watchdog_at_bounded_progress_deadlines() {
+        let start = 7;
+        let deadline = start + RUN_PROGRESS_QUANTUM_NANOS * 2 + 11;
+        let mut progress = start;
+        let mut steps = 0;
+        while progress < deadline {
+            let next = next_run_deadline(progress, deadline);
+            assert!(next > progress);
+            assert!(next - progress <= RUN_PROGRESS_QUANTUM_NANOS);
+            progress = next;
+            steps += 1;
+        }
+        assert_eq!(progress, deadline);
+        assert_eq!(steps, 3);
+        assert_eq!(next_run_deadline(deadline, deadline), deadline);
     }
 
     #[test]
