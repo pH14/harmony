@@ -64,6 +64,11 @@ runtime exit statuses: an application status is present only after the
 supervisor has observed the application process return, while a runtime status
 also covers a `runc` startup failure.
 
+The runner installs the seeded SDK service before entering the guest. OCI
+applications can therefore use `/dev/harmony` for deterministic entropy,
+events, and coverage-driven scheduling through the same recorded environment
+as other Consonance executions.
+
 On Linux x86 and arm64, the timeout watchdog sets a host cancellation latch and
 interrupts the owning KVM thread with reserved SIGUSR1. It repeats the interrupt
 after expiry until the driver returns, covering a signal arriving just before

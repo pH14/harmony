@@ -6,9 +6,9 @@
 # server pod over the in-guest CNI, deterministic-twice).
 #
 # **What runs (see consonance/harmony-linux/linux/README.md).** One single-vCPU
-# guest boots `k3s` (a lightweight Kubernetes distro: ONE static Go binary that
+# guest boots `k3s`, whose launcher embeds an instrumented dynamic server and
 # bundles containerd + runc + the flannel/bridge/host-local CNI + kube-proxy +
-# kubectl, with a sqlite datastore). The OCI workload entrypoint brings the
+# kubectl, with a sqlite datastore. The OCI workload entrypoint brings the
 # cluster up, then:
 #   * a `postgres` Pod runs the official `postgres:17` OCI image on a **pre-baked
 #     PGDATA** (build-time initdb, baked here as a hostPath, uid 999) listening on
@@ -225,8 +225,8 @@ for applet in iptables iptables-restore iptables-save iptables-legacy \
     ln -sf xtables-legacy-multi "$K3SROOT/bin/$applet"
 done
 
-# The k3s binary (one static Go binary). k3s dispatches its bundled tools by
-# argv[0], so symlink kubectl/crictl/ctr to it (the init also uses `k3s kubectl`).
+# The packaged k3s launcher dispatches its bundled tools by argv[0], so symlink
+# kubectl/crictl/ctr to it (the init also uses `k3s kubectl`).
 install -m 0755 "$K3S_BIN" "$K3SROOT/usr/local/bin/k3s"
 for t in kubectl crictl ctr; do ln -sf k3s "$K3SROOT/usr/local/bin/$t"; done
 cp -a "$K3S_RUNTIME/." "$K3SROOT/"

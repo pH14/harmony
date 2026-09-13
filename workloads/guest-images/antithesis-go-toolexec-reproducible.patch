@@ -1,0 +1,22 @@
+diff --git a/tools/antithesis-go-toolexec/compile.go b/tools/antithesis-go-toolexec/compile.go
+index d95788f..7897aa8 100644
+--- a/tools/antithesis-go-toolexec/compile.go
++++ b/tools/antithesis-go-toolexec/compile.go
+@@ -38,6 +38,18 @@ func rewriteCompile(cfg *Config, pkg *Package, args []string) ([]string, func(),
+ 	}
+ 	cleanup := func() { os.RemoveAll(work) }
++	trimmed := false
++	for i, arg := range args {
++		if arg == "-trimpath" && i+1 < len(args) {
++			args[i+1] += ";" + work + "=>/antithesis/" + pkg.ImportPath
++			trimmed = true
++			break
++		}
++	}
++	if !trimmed {
++		cleanup()
++		return nil, nil, fmt.Errorf("compile invocation for %s has no -trimpath", pkg.ImportPath)
++	}
+ 	// Every failure below must release the work directory: the caller only gets
+ 	// the cleanup function on success.
+ 	fail := func(err error) ([]string, func(), error) {

@@ -1,0 +1,37 @@
+diff --git a/scripts/build b/scripts/build
+index 0b6e63b..9f55c51 100755
+--- a/scripts/build
++++ b/scripts/build
+@@ -147,8 +147,10 @@ if [ ! -x ${INSTALLBIN}/cni${BINARY_POSTFIX} ]; then
+     WORKDIR=$TMPDIR/src/github.com/containernetworking/plugins
+     git clone --single-branch --depth=1 --branch=$VERSION_CNIPLUGINS https://github.com/rancher/plugins.git $WORKDIR
++    test "$(git -C $WORKDIR rev-parse HEAD)" = "413c9c219e9021d7bd8ab64a696655ab45382382"
+     cd $WORKDIR
+     rm -rf plugins/meta/flannel
+     git clone --single-branch --depth=1 --branch=$VERSION_FLANNEL_PLUGIN https://github.com/flannel-io/cni-plugin.git plugins/meta/flannel
++    test "$(git -C plugins/meta/flannel rev-parse HEAD)" = "0940aaf4a0edda6c9bcd9bc34b3466a0d579ddda"
+     sed -i 's/package main/package flannel/; s/func main/func Main/' plugins/meta/flannel/*.go
+     GO111MODULE=off GOPATH=$TMPDIR CGO_ENABLED=0 "${GO}" build -tags "$TAGS" -gcflags="all=${GCFLAGS}" -ldflags "$VERSIONFLAGS $LDFLAGS $STATIC" -o $INSTALLBIN/cni${BINARY_POSTFIX}
+ )
+diff --git a/scripts/download b/scripts/download
+index 708a785..2667e44 100755
+--- a/scripts/download
++++ b/scripts/download
+@@ -25,5 +25,6 @@ case ${OS} in
+   linux)
+     git clone --single-branch --branch=${VERSION_RUNC} --depth=1 https://github.com/opencontainers/runc ${RUNC_DIR}
++    test "$(git -C ${RUNC_DIR} rev-parse HEAD)" = "c241c0bb5e60a8e8c1b2e53d4eca8d0068d8d57e"
+     K3S_ROOT_TAR="k3s-root-${ARCH}.tar"
+     curl --compressed -sfL https://github.com/k3s-io/k3s-root/releases/download/${VERSION_ROOT}/${K3S_ROOT_TAR} -o ${K3S_ROOT_TAR}
+     echo "${K3S_ROOT_SHA256}  ${K3S_ROOT_TAR}" | sha256sum -c
+@@ -42,7 +43,10 @@ esac
+ 
+ git clone --single-branch --branch=${VERSION_CONTAINERD} --depth=1 https://${PKG_CONTAINERD_K3S%/v[0-9]*} ${CONTAINERD_DIR}
++test "$(git -C ${CONTAINERD_DIR} rev-parse HEAD)" = "7e04eb8fad2b9597d04c8109b67476ab9270bc22"
+ 
+ for CHART_FILE in $(grep -rlF HelmChart manifests/ | xargs yq eval --no-doc .spec.chart | xargs -n1 basename); do
+   CHART_NAME=$(echo $CHART_FILE | grep -oE '^(-*[a-z])+')
+   curl -sfL ${CHARTS_URL}/${CHART_NAME}/${CHART_FILE} -o ${CHARTS_DIR}/${CHART_FILE}
+ done
++
++sha256sum --check .harmony/k3s-charts.sha256

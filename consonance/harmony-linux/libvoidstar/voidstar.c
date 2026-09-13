@@ -26,6 +26,7 @@
 #endif
 
 static pthread_mutex_t harmony_device_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t harmony_automatic_coverage_lock = PTHREAD_MUTEX_INITIALIZER;
 
 enum {
     HARMONY_CMD_ENTROPY = 0,
@@ -52,7 +53,7 @@ static _Atomic uint64_t harmony_automatic_coverage_counter;
 static _Atomic uint64_t harmony_automatic_coverage_threshold =
     HARMONY_COVERAGE_QUANTUM;
 static _Atomic bool harmony_automatic_coverage_enabled = true;
-static uint32_t harmony_automatic_process_id;
+static _Atomic uint32_t harmony_automatic_process_id;
 static uint32_t harmony_next_guard = 1;
 static _Atomic uint64_t harmony_next_edge_offset;
 
@@ -287,15 +288,19 @@ static void automatic_coverage_yield(void)
         &harmony_automatic_coverage_counter, 1, memory_order_relaxed) + 1;
     threshold = atomic_load_explicit(
         &harmony_automatic_coverage_threshold, memory_order_acquire);
-    for (;;) {
-        if (observed < threshold || threshold == UINT64_MAX)
-            return;
-        if (atomic_compare_exchange_weak_explicit(
-                &harmony_automatic_coverage_threshold, &threshold, UINT64_MAX,
-                memory_order_acq_rel, memory_order_acquire))
-            break;
+    if (observed < threshold)
+        return;
+    if (pthread_mutex_lock(&harmony_automatic_coverage_lock) != 0)
+        coverage_transport_failure();
+    threshold = atomic_load_explicit(
+        &harmony_automatic_coverage_threshold, memory_order_acquire);
+    if (observed < threshold) {
+        if (pthread_mutex_unlock(&harmony_automatic_coverage_lock) != 0)
+            coverage_transport_failure();
+        return;
     }
-    process = harmony_automatic_process_id;
+    process = atomic_load_explicit(
+        &harmony_automatic_process_id, memory_order_acquire);
     if (process == 0)
         process = (uint32_t)getpid() & ~HARMONY_AUTOMATIC_COVERAGE_NAMESPACE;
     if (coverage_exchange_request(
@@ -308,12 +313,16 @@ static void automatic_coverage_yield(void)
     atomic_store_explicit(
         &harmony_automatic_coverage_threshold, next_threshold,
         memory_order_release);
+    if (pthread_mutex_unlock(&harmony_automatic_coverage_lock) != 0)
+        coverage_transport_failure();
 }
 
 uint64_t init_coverage_module(size_t num_edges, const char *symbols)
 {
     (void)symbols;
-    harmony_automatic_process_id = process_id_from_environment();
+    atomic_store_explicit(
+        &harmony_automatic_process_id, process_id_from_environment(),
+        memory_order_release);
     return atomic_fetch_add_explicit(
         &harmony_next_edge_offset, (uint64_t)num_edges, memory_order_relaxed);
 }

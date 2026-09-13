@@ -23,6 +23,7 @@ faults-workload = { version = "=0.1.0", path = "../workloads/faults", features =
 vmm-core = { path = "../consonance/vmm-core", version = "0.1.0" }
 vmm-backend = { path = "../consonance/vmm-backend", version = "0.1.0" }
 consonance-client = { path = "../consonance/client", version = "=0.1.0" }
+environment = { path = "../consonance/environment", version = "=0.1.0" }
 
 [lints]
 workspace = true

@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdatomic.h>
@@ -16,6 +17,13 @@ static size_t coverage_requests;
 static int coverage_requested;
 static uint32_t last_coverage_thread;
 static uint64_t last_coverage_observed;
+static pthread_mutex_t read_gate_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t read_gate_changed = PTHREAD_COND_INITIALIZER;
+static int hold_coverage_read;
+static int coverage_read_entered;
+static int release_coverage_read;
+static int waiter_started;
+static _Atomic int waiter_finished;
 
 static int mock_open(const char *path, int flags)
 {
@@ -62,6 +70,14 @@ static ssize_t mock_read(int fd, void *data, size_t size)
         uint32_t selected;
         size_t index;
 
+        assert(pthread_mutex_lock(&read_gate_lock) == 0);
+        if (hold_coverage_read) {
+            coverage_read_entered = 1;
+            assert(pthread_cond_broadcast(&read_gate_changed) == 0);
+            while (!release_coverage_read)
+                assert(pthread_cond_wait(&read_gate_changed, &read_gate_lock) == 0);
+        }
+        assert(pthread_mutex_unlock(&read_gate_lock) == 0);
         assert(size == 12);
         for (index = 0; index < 4; index++) {
             thread |= (uint32_t)coverage_request[1 + index] << (index * 8);
@@ -93,10 +109,34 @@ static ssize_t mock_read(int fd, void *data, size_t size)
 #define HARMONY_WRITE(fd, buf, len) mock_write((fd), (buf), (len))
 #include "../voidstar.c"
 
+static void *drive_automatic_exchange(void *unused)
+{
+    size_t index;
+
+    (void)unused;
+    for (index = 0; index < 64; index++)
+        assert(!notify_coverage(0));
+    return NULL;
+}
+
+static void *drive_waiting_callback(void *unused)
+{
+    (void)unused;
+    assert(pthread_mutex_lock(&read_gate_lock) == 0);
+    waiter_started = 1;
+    assert(pthread_cond_broadcast(&read_gate_changed) == 0);
+    assert(pthread_mutex_unlock(&read_gate_lock) == 0);
+    assert(!notify_coverage(0));
+    atomic_store_explicit(&waiter_finished, 1, memory_order_release);
+    return NULL;
+}
+
 int main(void)
 {
     static const char event[] = "{\"antithesis_assert\":{}}";
     uint32_t guards[3] = {1, 2, 3};
+    pthread_t owner;
+    pthread_t waiter;
 
     fuzz_json_data(event, sizeof(event) - 1);
     assert(captured_len == sizeof(event) - 1);
@@ -110,18 +150,41 @@ int main(void)
     assert(coverage_requests == 1);
     assert(last_coverage_observed == 1);
     assert((last_coverage_thread & UINT32_C(0x80000000)) != 0);
+    assert(pthread_mutex_lock(&read_gate_lock) == 0);
+    hold_coverage_read = 1;
+    assert(pthread_mutex_unlock(&read_gate_lock) == 0);
+    assert(pthread_create(&owner, NULL, drive_automatic_exchange, NULL) == 0);
+    assert(pthread_mutex_lock(&read_gate_lock) == 0);
+    while (!coverage_read_entered)
+        assert(pthread_cond_wait(&read_gate_changed, &read_gate_lock) == 0);
+    assert(pthread_mutex_unlock(&read_gate_lock) == 0);
+    assert(pthread_create(&waiter, NULL, drive_waiting_callback, NULL) == 0);
+    assert(pthread_mutex_lock(&read_gate_lock) == 0);
+    while (!waiter_started)
+        assert(pthread_cond_wait(&read_gate_changed, &read_gate_lock) == 0);
+    assert(pthread_mutex_unlock(&read_gate_lock) == 0);
+    assert(pthread_mutex_trylock(&harmony_automatic_coverage_lock) == EBUSY);
+    assert(!atomic_load_explicit(&waiter_finished, memory_order_acquire));
+    assert(pthread_mutex_lock(&read_gate_lock) == 0);
+    release_coverage_read = 1;
+    assert(pthread_cond_broadcast(&read_gate_changed) == 0);
+    assert(pthread_mutex_unlock(&read_gate_lock) == 0);
+    assert(pthread_join(owner, NULL) == 0);
+    assert(pthread_join(waiter, NULL) == 0);
+    assert(atomic_load_explicit(&waiter_finished, memory_order_acquire));
+    assert(coverage_requests == 2);
     assert(harmony_coverage_configure(7, 3) == 0);
     assert(!notify_coverage(1));
-    assert(coverage_requests == 2);
+    assert(coverage_requests == 3);
     assert(harmony_coverage_selected() == 0);
     assert(!notify_coverage(2));
-    assert(coverage_requests == 3);
+    assert(coverage_requests == 4);
     assert(harmony_coverage_selected() == 2);
     __sanitizer_cov_trace_pc_guard_init(guards, guards + 3);
     assert(guards[0] == 1 && guards[1] == 2 && guards[2] == 3);
     __sanitizer_cov_trace_pc_guard_internal(&guards[0], 4);
     __sanitizer_cov_trace_pc_guard(&guards[0]);
-    assert(coverage_requests == 5);
+    assert(coverage_requests == 6);
     assert(harmony_coverage_configure(1, 0) == -1);
     assert(harmony_coverage_configure(UINT32_C(0x80000000), 1) == -1);
     return 0;

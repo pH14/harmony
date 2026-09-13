@@ -196,6 +196,7 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
         spec.guest_ram_len,
     )
     .map_err(|e| RunError::Vmm(e.to_string()))?;
+    enable_sdk(&mut vmm, spec.seed);
     vmm.defer_virtual_time_checkpoint_hashes()
         .map_err(|e| RunError::Vmm(e.to_string()))?;
 
@@ -229,6 +230,7 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
         spec.seed,
     )
     .map_err(|e| RunError::Vmm(e.to_string()))?;
+    enable_sdk(&mut vmm, spec.seed);
     vmm.defer_virtual_time_checkpoint_hashes()
         .map_err(|e| RunError::Vmm(e.to_string()))?;
     #[allow(clippy::disallowed_methods)]
@@ -253,6 +255,7 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
         spec.seed,
     )
     .map_err(|e| RunError::Vmm(e.to_string()))?;
+    enable_sdk(&mut vmm, spec.seed);
     vmm.defer_virtual_time_checkpoint_hashes()
         .map_err(|e| RunError::Vmm(e.to_string()))?;
     #[allow(clippy::disallowed_methods)]
@@ -265,6 +268,24 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
     let outcome = drive(vmm, spec, start);
     drop(watchdog);
     outcome
+}
+
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
+))]
+fn enable_sdk<B: vmm_backend::Backend>(vmm: &mut vmm_core::vmm::Vmm<B>, seed: u64)
+where
+    B::A: vmm_core::vendor::Vendor,
+{
+    let config = environment::input_spec::ServiceConfig::default();
+    let handler = Box::new(environment::channel::NominalHandler)
+        as Box<dyn environment::channel::ServiceHandler>;
+    vmm.enable_sdk(
+        environment::channel::RecordedEnv::new(seed, handler),
+        &config,
+    );
 }
 
 #[cfg(any(

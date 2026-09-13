@@ -26,6 +26,10 @@ mkdir -p "$source_dir" "$output"
 tar -xf "$source_tar" -C "$source_dir" --strip-components=1
 mkdir -p "$source_dir/.harmony"
 cp -a "$repo_root/consonance/harmony-linux/libvoidstar" "$source_dir/.harmony/"
+cp "$workload_dir/antithesis-go-toolexec-reproducible.patch" "$source_dir/.harmony/"
+cp "$workload_dir/k3s-source-pins.patch" "$source_dir/.harmony/"
+cp "$workload_dir/k3s-charts.sha256" "$source_dir/.harmony/"
+cp "$workload_dir/k3s-builder-apk.lock" "$source_dir/.harmony/"
 
 docker build \
     --build-arg "GOLANG=$K3S_GO_IMAGE" \
