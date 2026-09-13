@@ -519,23 +519,34 @@ jobs:
           } > snapshot-report/host.txt
           vendor=$(awk -F: '/^vendor_id[[:space:]]*:/{gsub(/[[:space:]]/, "", $2); print $2; exit}' /proc/cpuinfo)
           npt=unavailable
+          ept=unavailable
           if test -r /sys/module/kvm_amd/parameters/npt; then
             npt=$(tr -d '[:space:]' < /sys/module/kvm_amd/parameters/npt)
           fi
-          printf 'CPU_VENDOR=%s\nKVM_AMD_NPT=%s\n' "$vendor" "$npt" | tee snapshot-report/paging-mode.txt
+          if test -r /sys/module/kvm_intel/parameters/ept; then
+            ept=$(tr -d '[:space:]' < /sys/module/kvm_intel/parameters/ept)
+          fi
+          printf 'CPU_VENDOR=%s\nKVM_AMD_NPT=%s\nKVM_INTEL_EPT=%s\n' "$vendor" "$npt" "$ept" | tee snapshot-report/paging-mode.txt
           cat /proc/cpuinfo > snapshot-report/cpuinfo.txt
           amd_npt=false
+          intel_ept=false
           if [[ "$vendor" == AuthenticAMD ]]; then
             case "$npt" in
               Y|1) amd_npt=true ;;
               N|0) ;;
               *) echo "Unknown AMD NPT mode: $npt" >&2; exit 1 ;;
             esac
-          elif [[ "$vendor" != GenuineIntel ]]; then
+          elif [[ "$vendor" == GenuineIntel ]]; then
+            case "$ept" in
+              Y|1) intel_ept=true ;;
+              N|0) ;;
+              *) echo "Unknown Intel EPT mode: $ept" >&2; exit 1 ;;
+            esac
+          else
             echo "Unknown x86 CPU vendor: $vendor" >&2
             exit 1
           fi
-          printf 'vendor=%s\nnpt=%s\namd_npt=%s\n' "$vendor" "$npt" "$amd_npt" >> "$GITHUB_OUTPUT"
+          printf 'vendor=%s\nnpt=%s\nept=%s\namd_npt=%s\nintel_ept=%s\n' "$vendor" "$npt" "$ept" "$amd_npt" "$intel_ept" >> "$GITHUB_OUTPUT"
       - name: Run required KVM completion and full-VMM tests
         env:
           CARGO_TERM_COLOR: never
@@ -612,6 +623,28 @@ jobs:
             exit 1
           fi
           printf '%s\n' 'SNAPSHOT_GATE_STATUS=passed' | tee snapshot-report/required-tests.status
+      - name: Record PAE SREGS2 phase diagnostic (informational)
+        if: ${{ !cancelled() && steps.host.outcome == 'success' && (steps.host.outputs.amd_npt == 'true' || steps.host.outputs.intel_ept == 'true') }}
+        continue-on-error: true
+        env:
+          CARGO_TERM_COLOR: never
+          PAE_PHASE_REPORT_DIR: ${{ github.workspace }}/snapshot-report/pae-phase
+        run: |
+          set -euo pipefail
+          mkdir -p "$PAE_PHASE_REPORT_DIR"
+          set +e
+          timeout -k 10 120 cargo test --locked --release -p vmm-backend --lib \
+            kvm_sys::xsave_diagnostic::x86_pae_sregs2_phase_observations \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee snapshot-report/pae-phase.log
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          printf 'CARGO_EXIT=%s\nTEE_EXIT=%s\n' "${pipeline_status[0]}" "${pipeline_status[1]}" \
+            > snapshot-report/pae-phase.status
+          test "${pipeline_status[0]}" -eq 0
+          test "${pipeline_status[1]}" -eq 0
+          grep -Fq 'running 1 test' snapshot-report/pae-phase.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/pae-phase.log
       - name: Record raw XSAVE acquisition and restore phases
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}
         env:

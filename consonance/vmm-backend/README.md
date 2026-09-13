@@ -73,3 +73,22 @@ MMIO boundary, canonicalized copies, a raw SET/GET round trip, and one HLT
 continuation for an initialized SSE case and an otherwise identical zero-SSE
 control. The report is evidence about the host/KVM path and does not change
 snapshot semantics.
+
+The ignored Linux x86 test
+`kvm_sys::xsave_diagnostic::x86_pae_sregs2_phase_observations` is a bounded
+PAE cache diagnostic for issue [#314](https://github.com/pH14/harmony/issues/314).
+Set `PAE_PHASE_REPORT_DIR` and run
+`cargo test --locked --release -p vmm-backend --lib kvm_sys::xsave_diagnostic::x86_pae_sregs2_phase_observations -- --ignored --exact --nocapture`
+on a KVM host, using a fresh report directory for each run. It starts the existing guest witness three times and arms each
+phase after a common pre-write `KVM_GET_SREGS2` and the common `KVM_GET_REGS`
+RIP check at the guest-written PDPT B boundary: no SREGS2 read at B, one raw
+GET at B, or one raw GET followed by raw SET of the pre-write-A record. The
+x86 backend auto-completes the visible PIO boundary before the phase arm; the
+report labels backend-visible exits separately from completion checkpoints.
+AMD NPT is the target observation path and Intel EPT is a control path. Raw
+SREGS2 bytes, flags, cached PDPTRs, CR0/CR3/CR4, PDPT RAM, UART, and RIP are
+retained. The result is host/KVM observation evidence and is not a consistency
+proof or a change to restore semantics.
+The x86 workflow runs this as a continue-on-error informational step on every
+supported NPT/EPT host, including when the required snapshot gate fails, and
+keeps its report with the existing snapshot artifacts.

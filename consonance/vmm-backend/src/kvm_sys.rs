@@ -771,7 +771,7 @@ impl Backend for KvmBackend {
     }
 }
 
-#[cfg(all(test, not(miri)))]
+#[cfg(test)]
 mod xsave_diagnostic {
     use super::*;
 
@@ -1227,5 +1227,628 @@ mod xsave_diagnostic {
             .unwrap_or_else(|e| panic!("create {} failed: {e}", report_root.display()));
         run_variant(&report_root, true);
         run_variant(&report_root, false);
+    }
+
+    const PAE_RAM_LEN: usize = 4 * 1024 * 1024;
+    const PAE_PAGE_SIZE: usize = 4096;
+    const PAE_CODE_GPA: usize = 0x1000;
+    const PAE_DATA_GPA: usize = 0x8000;
+    const PAE_GDT_GPA: usize = 0x7000;
+    const PAE_PDPT_GPA: usize = 0x4000;
+    const PAE_PD_A_GPA: usize = 0x5000;
+    const PAE_PD_B_GPA: usize = 0x6000;
+    const PAE_REMAPPED_CODE_GPA: usize = 0x201000;
+    const PAE_REMAPPED_DATA_GPA: usize = 0x208000;
+    const PAE_PDPT_A_ENTRY: u64 = 0x5001;
+    const PAE_PDPT_B_ENTRY: u64 = 0x6001;
+    const PAE_SREGS2_FLAGS_PDPTRS_VALID: u64 = 1;
+    const PAE_IA32_EFER: u32 = 0xC000_0080;
+    const PAE_WARMUP_MARKER: u8 = 0xA5;
+    const PAE_GUEST_PDPT_WRITE_LEN: usize = 10;
+    const PAE_BASE_PROGRAM_LEN: usize = 21;
+    const PAE_GUEST_PDPT_WRITE: [u8; PAE_GUEST_PDPT_WRITE_LEN] =
+        [0xC7, 0x05, 0x00, 0x40, 0x00, 0x00, 0x01, 0x60, 0x00, 0x00];
+
+    #[derive(Clone, Copy, Debug)]
+    enum PaePhase {
+        NoReadAtB,
+        OneGetAtB,
+        GetThenSetPrewriteA,
+    }
+
+    impl PaePhase {
+        const fn name(self) -> &'static str {
+            match self {
+                Self::NoReadAtB => "no-read-at-b",
+                Self::OneGetAtB => "one-get-at-b",
+                Self::GetThenSetPrewriteA => "get-then-set-prewrite-a",
+            }
+        }
+
+        const fn reads_at_b(self) -> u64 {
+            match self {
+                Self::NoReadAtB => 0,
+                Self::OneGetAtB | Self::GetThenSetPrewriteA => 1,
+            }
+        }
+
+        const fn sets_at_b(self) -> u64 {
+            match self {
+                Self::GetThenSetPrewriteA => 1,
+                Self::NoReadAtB | Self::OneGetAtB => 0,
+            }
+        }
+    }
+
+    struct PaeObservation {
+        phase: PaePhase,
+        prewrite_a: kvm_sregs2,
+        at_b: Option<kvm_sregs2>,
+        endpoint: kvm_sregs2,
+        pdpt_b: Vec<u8>,
+        endpoint_byte: u8,
+        endpoint_rip: u64,
+        boundary_exit: &'static str,
+        continuation_exit: &'static str,
+        endpoint_exit: &'static str,
+    }
+
+    fn pae_policy() -> X86Policy {
+        let mut policy = diagnostic_policy();
+        policy.msr_filter.allow_inkernel.push(MsrRange {
+            base: PAE_IA32_EFER,
+            count: 1,
+        });
+        policy
+    }
+
+    fn pae_put_u64(bytes: &mut [u8], gpa: usize, value: u64) {
+        bytes[gpa..gpa + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn pae_put_bytes(bytes: &mut [u8], gpa: usize, value: &[u8]) {
+        bytes[gpa..gpa + value.len()].copy_from_slice(value);
+    }
+
+    fn pae_guest_ram() -> MmapRam {
+        let mut ram =
+            MmapRam::new(PAE_RAM_LEN).unwrap_or_else(|e| panic!("PAE RAM mmap failed: {e}"));
+        let bytes = ram.as_mut_bytes();
+        let program = [
+            0xBA,
+            0xF8,
+            0x03,
+            0x00,
+            0x00,
+            0xB0,
+            PAE_WARMUP_MARKER,
+            0xEE,
+            0xA0,
+            0x00,
+            0x80,
+            0x00,
+            0x00,
+            0xBA,
+            0xF8,
+            0x03,
+            0x00,
+            0x00,
+            0xEE,
+            0x43,
+            0xF4,
+        ];
+        pae_put_bytes(bytes, PAE_CODE_GPA, &program);
+        pae_put_bytes(bytes, PAE_REMAPPED_CODE_GPA, &program);
+        bytes.copy_within(
+            PAE_CODE_GPA..PAE_CODE_GPA + PAE_BASE_PROGRAM_LEN,
+            PAE_CODE_GPA + PAE_GUEST_PDPT_WRITE_LEN,
+        );
+        bytes.copy_within(
+            PAE_REMAPPED_CODE_GPA..PAE_REMAPPED_CODE_GPA + PAE_BASE_PROGRAM_LEN,
+            PAE_REMAPPED_CODE_GPA + PAE_GUEST_PDPT_WRITE_LEN,
+        );
+        pae_put_bytes(bytes, PAE_CODE_GPA, &PAE_GUEST_PDPT_WRITE);
+        pae_put_bytes(bytes, PAE_REMAPPED_CODE_GPA, &PAE_GUEST_PDPT_WRITE);
+        bytes[PAE_DATA_GPA] = 0x42;
+        bytes[PAE_REMAPPED_DATA_GPA] = 0x99;
+        pae_put_u64(bytes, PAE_PDPT_GPA, PAE_PDPT_A_ENTRY);
+        pae_put_u64(bytes, PAE_PD_A_GPA, 0x83);
+        pae_put_u64(bytes, PAE_PD_B_GPA, 0x20_00_83);
+        pae_put_u64(bytes, PAE_GDT_GPA, 0);
+        pae_put_u64(bytes, PAE_GDT_GPA + 8, 0x00CF_9B00_0000_FFFF);
+        pae_put_u64(bytes, PAE_GDT_GPA + 16, 0x00CF_9300_0000_FFFF);
+        ram
+    }
+
+    fn pae_code_segment() -> crate::arch::x86::Segment {
+        crate::arch::x86::Segment {
+            base: 0,
+            limit: u32::MAX,
+            selector: 0x8,
+            type_: 0xB,
+            present: 1,
+            dpl: 0,
+            db: 1,
+            s: 1,
+            l: 0,
+            g: 1,
+            avl: 0,
+            unusable: 0,
+        }
+    }
+
+    fn pae_data_segment() -> crate::arch::x86::Segment {
+        crate::arch::x86::Segment {
+            base: 0,
+            limit: u32::MAX,
+            selector: 0x10,
+            type_: 0x3,
+            present: 1,
+            dpl: 0,
+            db: 1,
+            s: 1,
+            l: 0,
+            g: 1,
+            avl: 0,
+            unusable: 0,
+        }
+    }
+
+    fn pae_backend() -> (MmapRam, KvmBackend, kvm_sregs2) {
+        let mut ram = pae_guest_ram();
+        let mut backend = KvmBackend::new().unwrap_or_else(|e| panic!("PAE KVM setup failed: {e}"));
+        unsafe {
+            // SAFETY: `ram` is page-aligned, pinned for this scope, and outlives `backend`.
+            backend
+                .map_memory(Gpa(0), ram.as_mut_bytes())
+                .unwrap_or_else(|e| panic!("PAE map_memory failed: {e}"));
+        }
+        backend
+            .set_policy(&pae_policy())
+            .unwrap_or_else(|e| panic!("PAE set_policy failed: {e}"));
+        let mut state = backend
+            .save()
+            .unwrap_or_else(|e| panic!("PAE entry save failed: {e}"));
+        let data = pae_data_segment();
+        state.regs.rip = PAE_CODE_GPA as u64;
+        state.regs.rsp = (PAE_RAM_LEN - PAE_PAGE_SIZE) as u64;
+        state.regs.rbx = 0;
+        state.regs.rflags = 0x2;
+        state.sregs.cs = pae_code_segment();
+        state.sregs.ds = data;
+        state.sregs.es = data;
+        state.sregs.fs = data;
+        state.sregs.gs = data;
+        state.sregs.ss = data;
+        state.sregs.gdt = crate::arch::x86::DescriptorTable {
+            base: PAE_GDT_GPA as u64,
+            limit: 0x17,
+        };
+        state.sregs.cr0 = 0x8000_0011;
+        state.sregs.cr2 = 0;
+        state.sregs.cr3 = PAE_PDPT_GPA as u64;
+        state.sregs.cr4 = 0x30;
+        state.sregs.efer = 0;
+        state.sregs.flags = PAE_SREGS2_FLAGS_PDPTRS_VALID;
+        state.sregs.pdptrs = [PAE_PDPT_A_ENTRY, 0, 0, 0];
+        state.msrs.insert(PAE_IA32_EFER, 0);
+        state.mp_state = MpState::Runnable;
+        backend
+            .restore(&state)
+            .unwrap_or_else(|e| panic!("PAE entry restore failed: {e}"));
+        let prewrite_a = unsafe {
+            // SAFETY: the vCPU is stopped before the first guest instruction and the ioctl writes
+            // a complete kernel-sized `kvm_sregs2` into the returned value.
+            raw_get_sregs2(backend.vcpu.as_raw_fd())
+        }
+        .unwrap_or_else(|e| panic!("PAE pre-write A KVM_GET_SREGS2 failed: {e}"));
+        (ram, backend, prewrite_a)
+    }
+
+    fn pae_exit_label(exit: &Exit<X86>, phase: &str) -> &'static str {
+        match exit {
+            Exit::Arch(X86Exit::Io {
+                port: 0x3F8,
+                size: 1,
+                write: Some(_),
+            }) => "KVM_EXIT_IO",
+            Exit::Common(CommonExit::Idle) => "KVM_EXIT_HLT",
+            other => panic!("{phase} returned unexpected KVM_RUN exit: {other:?}"),
+        }
+    }
+
+    fn pae_expect_output(exit: &Exit<X86>, expected: u8, phase: &str) {
+        match exit {
+            Exit::Arch(X86Exit::Io {
+                port: 0x3F8,
+                size: 1,
+                write: Some(value),
+            }) => assert_eq!(*value, u32::from(expected), "{phase} UART byte"),
+            other => panic!("{phase} returned unexpected KVM_RUN exit: {other:?}"),
+        }
+    }
+
+    fn pae_sregs2_bytes(value: &kvm_sregs2) -> Vec<u8> {
+        assert_eq!(
+            size_of::<kvm_sregs2>(),
+            320,
+            "kvm_sregs2 ABI size must match the byte evidence contract"
+        );
+        // SAFETY: `kvm_sregs2` is the repr(C) 320-byte kernel ABI value; it has no implicit
+        // padding, and its explicit segment/dtable padding fields are initialized by Default and
+        // retained by raw KVM_GET_SREGS2 before all bytes are copied here.
+        unsafe {
+            std::slice::from_raw_parts(
+                (value as *const kvm_sregs2).cast::<u8>(),
+                size_of::<kvm_sregs2>(),
+            )
+            .to_vec()
+        }
+    }
+
+    #[test]
+    fn pae_sregs2_bytes_preserves_initialized_abi_fields() {
+        let mut value = kvm_sregs2::default();
+        value.cs.base = 0x0123_4567_89AB_CDEF;
+        value.cs.padding = 0xA7;
+        value.gdt.base = 0xFEDC_BA98_7654_3210;
+        value.gdt.limit = 0x1357;
+        value.gdt.padding = [0x2468, 0x369A, 0x48AC];
+        value.flags = PAE_SREGS2_FLAGS_PDPTRS_VALID;
+        value.pdptrs = [PAE_PDPT_A_ENTRY, 0x1111, 0x2222, 0x3333];
+        let bytes = pae_sregs2_bytes(&value);
+        assert_eq!(bytes.len(), 320);
+        assert_eq!(&bytes[0..8], &value.cs.base.to_ne_bytes());
+        assert_eq!(bytes[23], value.cs.padding);
+        assert_eq!(&bytes[192..200], &value.gdt.base.to_ne_bytes());
+        assert_eq!(&bytes[200..202], &value.gdt.limit.to_ne_bytes());
+        assert_eq!(&bytes[202..208], &[0x68, 0x24, 0x9A, 0x36, 0xAC, 0x48]);
+        assert_eq!(&bytes[280..288], &value.flags.to_ne_bytes());
+        assert_eq!(&bytes[288..296], &value.pdptrs[0].to_ne_bytes());
+    }
+
+    fn pae_hash(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x1000_0000_01b3)
+        })
+    }
+
+    fn pae_sregs_summary(label: &str, value: &kvm_sregs2, metadata: &mut String) {
+        writeln!(
+            metadata,
+            "{label}_flags={:#x} {label}_pdptr0={:#x} {label}_pdptr1={:#x} {label}_pdptr2={:#x} {label}_pdptr3={:#x} {label}_cr0={:#x} {label}_cr3={:#x} {label}_cr4={:#x}",
+            value.flags,
+            value.pdptrs[0],
+            value.pdptrs[1],
+            value.pdptrs[2],
+            value.pdptrs[3],
+            value.cr0,
+            value.cr3,
+            value.cr4,
+        )
+        .expect("PAE metadata write");
+    }
+
+    fn run_pae_phase(
+        report_root: &Path,
+        phase: PaePhase,
+        host_vendor: &str,
+        host_paging: &str,
+        host_paging_setting: &str,
+    ) -> PaeObservation {
+        let report_dir = report_root.join(phase.name());
+        assert!(
+            !report_dir.exists(),
+            "{} must be a fresh PAE phase report directory",
+            report_dir.display()
+        );
+        fs::create_dir_all(&report_dir)
+            .unwrap_or_else(|e| panic!("create {} failed: {e}", report_dir.display()));
+        let (mut ram, mut backend, prewrite_a) = pae_backend();
+        assert_eq!(prewrite_a.flags, PAE_SREGS2_FLAGS_PDPTRS_VALID);
+        assert_eq!(prewrite_a.pdptrs[0], PAE_PDPT_A_ENTRY);
+        let pdpt_a = ram.as_mut_bytes()[PAE_PDPT_GPA..PAE_PDPT_GPA + 8].to_vec();
+        assert_eq!(pdpt_a, PAE_PDPT_A_ENTRY.to_le_bytes());
+        write_image(
+            &report_dir,
+            "prewrite-a-sregs2.bin",
+            &pae_sregs2_bytes(&prewrite_a),
+        );
+        write_image(&report_dir, "pdpt-a-prewrite.bin", &pdpt_a);
+
+        let boundary = backend
+            .run()
+            .unwrap_or_else(|e| panic!("{phase:?} boundary KVM_RUN failed: {e}"));
+        pae_expect_output(&boundary, PAE_WARMUP_MARKER, "PAE B boundary");
+        assert_eq!(pae_exit_label(&boundary, "PAE B boundary"), "KVM_EXIT_IO");
+        let boundary_rip = backend
+            .vcpu
+            .get_regs()
+            .unwrap_or_else(|e| panic!("PAE B KVM_GET_REGS failed: {e}"))
+            .rip;
+        assert_eq!(
+            boundary_rip,
+            (PAE_CODE_GPA + PAE_GUEST_PDPT_WRITE_LEN + 8) as u64
+        );
+        let pdpt_b = ram.as_mut_bytes()[PAE_PDPT_GPA..PAE_PDPT_GPA + 8].to_vec();
+        let mut at_b = None;
+        let mut endpoint_for_failure = None;
+        let continuation_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_eq!(pdpt_b, PAE_PDPT_B_ENTRY.to_le_bytes());
+            at_b = match phase {
+                PaePhase::NoReadAtB => None,
+                PaePhase::OneGetAtB | PaePhase::GetThenSetPrewriteA => {
+                    let value = unsafe {
+                        // SAFETY: the vCPU is stopped at the checked PIO boundary and KVM writes
+                        // the complete kernel-sized `kvm_sregs2` into this independent value.
+                        raw_get_sregs2(backend.vcpu.as_raw_fd())
+                    }
+                    .unwrap_or_else(|e| panic!("{} KVM_GET_SREGS2 at B failed: {e}", phase.name()));
+                    at_b = Some(value);
+                    match phase {
+                        PaePhase::GetThenSetPrewriteA => {
+                            unsafe {
+                                // SAFETY: the vCPU is stopped at the checked PIO boundary; the
+                                // source is a complete pre-write KVM SREGS2 record and no guest
+                                // run is interposed before the next continuation.
+                                raw_set_sregs2(backend.vcpu.as_raw_fd(), &prewrite_a)
+                            }
+                            .unwrap_or_else(|e| panic!("PAE raw KVM_SET_SREGS2 at B failed: {e}"));
+                            assert_eq!(
+                                ram.as_mut_bytes()[PAE_PDPT_GPA..PAE_PDPT_GPA + 8],
+                                PAE_PDPT_B_ENTRY.to_le_bytes()
+                            );
+                        }
+                        PaePhase::OneGetAtB | PaePhase::NoReadAtB => {}
+                    }
+                    Some(value)
+                }
+            };
+            backend.retire_pending_completion().unwrap_or_else(|e| {
+                panic!(
+                    "{} boundary completion retirement failed: {e}",
+                    phase.name()
+                )
+            });
+            let continuation = backend
+                .run()
+                .unwrap_or_else(|e| panic!("{} continuation KVM_RUN failed: {e}", phase.name()));
+            let endpoint_byte = match &continuation {
+                Exit::Arch(X86Exit::Io {
+                    port: 0x3F8,
+                    size: 1,
+                    write: Some(value),
+                }) => u8::try_from(*value).expect("PAE UART value fits in a byte"),
+                other => panic!(
+                    "{} returned unexpected continuation KVM_RUN exit: {other:?}",
+                    phase.name()
+                ),
+            };
+            assert!(matches!(endpoint_byte, 0x42 | 0x99));
+            let continuation_exit = pae_exit_label(&continuation, "PAE continuation");
+            backend.retire_pending_completion().unwrap_or_else(|e| {
+                panic!(
+                    "{} continuation completion retirement failed: {e}",
+                    phase.name()
+                )
+            });
+            let endpoint_exit_value = backend
+                .run()
+                .unwrap_or_else(|e| panic!("{} endpoint KVM_RUN failed: {e}", phase.name()));
+            let endpoint_exit = pae_exit_label(&endpoint_exit_value, "PAE endpoint");
+            assert_eq!(endpoint_exit, "KVM_EXIT_HLT");
+            let endpoint = unsafe {
+                // SAFETY: the vCPU is stopped at the checked HLT endpoint and KVM writes a
+                // complete kernel-sized `kvm_sregs2` into this diagnostic value.
+                raw_get_sregs2(backend.vcpu.as_raw_fd())
+            }
+            .unwrap_or_else(|e| panic!("{} endpoint KVM_GET_SREGS2 failed: {e}", phase.name()));
+            endpoint_for_failure = Some(endpoint);
+            let endpoint_rip = backend
+                .vcpu
+                .get_regs()
+                .unwrap_or_else(|e| panic!("{} endpoint KVM_GET_REGS failed: {e}", phase.name()))
+                .rip;
+            assert_eq!(
+                endpoint_rip,
+                (PAE_CODE_GPA + PAE_GUEST_PDPT_WRITE_LEN + PAE_BASE_PROGRAM_LEN) as u64
+            );
+            assert_eq!(backend.exit_counts().total(), 3);
+            assert_eq!(backend.exit_counts().io, 2);
+            assert_eq!(backend.exit_counts().idle, 1);
+            (
+                continuation_exit,
+                endpoint_exit,
+                endpoint,
+                endpoint_rip,
+                endpoint_byte,
+            )
+        }));
+        let (continuation_exit, endpoint_exit, endpoint, endpoint_rip, endpoint_byte) =
+            match continuation_result {
+                Ok(value) => value,
+                Err(payload) => {
+                    write_image(&report_dir, "pdpt-b.bin", &pdpt_b);
+                    if let Some(value) = &at_b {
+                        write_image(&report_dir, "at-b-sregs2.bin", &pae_sregs2_bytes(value));
+                    }
+                    if let Some(value) = &endpoint_for_failure {
+                        write_image(&report_dir, "endpoint-sregs2.bin", &pae_sregs2_bytes(value));
+                    }
+                    fs::write(
+                        report_dir.join("continuation-failed.txt"),
+                        format!("phase={}\ncontinuation=panic\n", phase.name()),
+                    )
+                    .unwrap_or_else(|e| panic!("write continuation failure report failed: {e}"));
+                    std::panic::resume_unwind(payload);
+                }
+            };
+        write_image(&report_dir, "pdpt-b.bin", &pdpt_b);
+        if let Some(value) = &at_b {
+            write_image(&report_dir, "at-b-sregs2.bin", &pae_sregs2_bytes(value));
+        }
+        write_image(
+            &report_dir,
+            "endpoint-sregs2.bin",
+            &pae_sregs2_bytes(&endpoint),
+        );
+        let mut metadata = String::new();
+        writeln!(metadata, "phase={}", phase.name()).expect("PAE metadata write");
+        writeln!(metadata, "host_vendor={host_vendor}").expect("PAE metadata write");
+        writeln!(metadata, "host_paging={host_paging}").expect("PAE metadata write");
+        writeln!(metadata, "host_paging_setting={host_paging_setting}")
+            .expect("PAE metadata write");
+        writeln!(
+            metadata,
+            "phase_arm=after-visible-boundary-after-backend-auto-completion"
+        )
+        .expect("PAE metadata write");
+        writeln!(
+            metadata,
+            "backend_visible_exit_labels=KVM_EXIT_IO,KVM_EXIT_IO,KVM_EXIT_HLT"
+        )
+        .expect("PAE metadata write");
+        writeln!(
+            metadata,
+            "backend_visible_exit_count={}",
+            backend.exit_counts().total()
+        )
+        .expect("PAE metadata write");
+        writeln!(
+            metadata,
+            "completion_retirement_checkpoints=before-continuation,before-endpoint"
+        )
+        .expect("PAE metadata write");
+        writeln!(metadata, "sregs2_gets_at_b={}", phase.reads_at_b()).expect("PAE metadata write");
+        writeln!(metadata, "sregs2_sets_at_b={}", phase.sets_at_b()).expect("PAE metadata write");
+        writeln!(metadata, "boundary_kvm_run_exit=KVM_EXIT_IO").expect("PAE metadata write");
+        writeln!(metadata, "boundary_rip={boundary_rip:#x}").expect("PAE metadata write");
+        writeln!(metadata, "continuation_kvm_run_exit={continuation_exit}")
+            .expect("PAE metadata write");
+        writeln!(metadata, "endpoint_kvm_run_exit={endpoint_exit}").expect("PAE metadata write");
+        writeln!(metadata, "pdpt_a_bytes={pdpt_a:02x?}").expect("PAE metadata write");
+        writeln!(metadata, "pdpt_a_hash={:#018x}", pae_hash(&pdpt_a)).expect("PAE metadata write");
+        writeln!(metadata, "pdpt_b_bytes={pdpt_b:02x?}").expect("PAE metadata write");
+        writeln!(metadata, "pdpt_b_hash={:#018x}", pae_hash(&pdpt_b)).expect("PAE metadata write");
+        writeln!(metadata, "endpoint_uart_byte={endpoint_byte:#04x}").expect("PAE metadata write");
+        writeln!(metadata, "endpoint_rip={endpoint_rip:#x}").expect("PAE metadata write");
+        pae_sregs_summary("prewrite_a", &prewrite_a, &mut metadata);
+        if let Some(value) = &at_b {
+            pae_sregs_summary("at_b", value, &mut metadata);
+        } else {
+            writeln!(metadata, "at_b_sregs2=not-read").expect("PAE metadata write");
+        }
+        pae_sregs_summary("endpoint", &endpoint, &mut metadata);
+        fs::write(report_dir.join("metadata.txt"), metadata).unwrap_or_else(|e| {
+            panic!(
+                "write {} failed: {e}",
+                report_dir.join("metadata.txt").display()
+            )
+        });
+        println!(
+            "PAE_PHASE_OBSERVATION phase={} sregs2_gets_at_b={} sregs2_sets_at_b={} endpoint_uart_byte={endpoint_byte:#04x} endpoint_rip={endpoint_rip:#x} pdpt_b_hash={:#018x}",
+            phase.name(),
+            phase.reads_at_b(),
+            phase.sets_at_b(),
+            pae_hash(&pdpt_b),
+        );
+        PaeObservation {
+            phase,
+            prewrite_a,
+            at_b,
+            endpoint,
+            pdpt_b,
+            endpoint_byte,
+            endpoint_rip,
+            boundary_exit: "KVM_EXIT_IO",
+            continuation_exit,
+            endpoint_exit,
+        }
+    }
+
+    #[test]
+    #[ignore = "live x86 KVM NPT/EPT PAE phase observation; set PAE_PHASE_REPORT_DIR"]
+    fn x86_pae_sregs2_phase_observations() {
+        assert!(
+            Path::new("/dev/kvm").exists(),
+            "/dev/kvm is required for this ignored PAE hardware diagnostic"
+        );
+        let cpuinfo = fs::read_to_string("/proc/cpuinfo").expect("read /proc/cpuinfo");
+        let host_vendor = cpuinfo
+            .lines()
+            .find_map(|line| {
+                line.split_once(':')
+                    .filter(|(key, _)| key.trim() == "vendor_id")
+                    .map(|(_, value)| value.trim())
+            })
+            .expect("/proc/cpuinfo must report a CPU vendor");
+        let (host_paging, host_paging_setting) = match host_vendor {
+            "AuthenticAMD" => {
+                let setting = fs::read_to_string("/sys/module/kvm_amd/parameters/npt")
+                    .expect("read kvm_amd NPT setting");
+                ("NPT", setting)
+            }
+            "GenuineIntel" => {
+                let setting = fs::read_to_string("/sys/module/kvm_intel/parameters/ept")
+                    .expect("read kvm_intel EPT setting");
+                ("EPT", setting)
+            }
+            other => panic!("PAE phase observation does not support CPU vendor {other}"),
+        };
+        let host_paging_setting = host_paging_setting.trim();
+        assert!(
+            matches!(host_paging_setting, "Y" | "1"),
+            "{host_paging} must be enabled"
+        );
+        let report_root = PathBuf::from(
+            std::env::var_os("PAE_PHASE_REPORT_DIR")
+                .expect("PAE_PHASE_REPORT_DIR must capture complete PAE evidence"),
+        );
+        fs::create_dir_all(&report_root)
+            .unwrap_or_else(|e| panic!("create {} failed: {e}", report_root.display()));
+        let observations = [
+            run_pae_phase(
+                &report_root,
+                PaePhase::NoReadAtB,
+                host_vendor,
+                host_paging,
+                host_paging_setting,
+            ),
+            run_pae_phase(
+                &report_root,
+                PaePhase::OneGetAtB,
+                host_vendor,
+                host_paging,
+                host_paging_setting,
+            ),
+            run_pae_phase(
+                &report_root,
+                PaePhase::GetThenSetPrewriteA,
+                host_vendor,
+                host_paging,
+                host_paging_setting,
+            ),
+        ];
+        for observation in observations {
+            assert_eq!(observation.boundary_exit, "KVM_EXIT_IO");
+            assert_eq!(observation.continuation_exit, "KVM_EXIT_IO");
+            assert_eq!(observation.endpoint_exit, "KVM_EXIT_HLT");
+            assert_eq!(observation.pdpt_b, PAE_PDPT_B_ENTRY.to_le_bytes());
+            assert_eq!(observation.prewrite_a.pdptrs[0], PAE_PDPT_A_ENTRY);
+            assert_eq!(
+                observation.endpoint_rip,
+                (PAE_CODE_GPA + PAE_GUEST_PDPT_WRITE_LEN + PAE_BASE_PROGRAM_LEN) as u64
+            );
+            assert_eq!(observation.endpoint.cr0, 0x8000_0011);
+            assert_eq!(observation.endpoint.cr3, PAE_PDPT_GPA as u64);
+            assert_eq!(observation.endpoint.cr4, 0x30);
+            assert!(matches!(observation.endpoint_byte, 0x42 | 0x99));
+            match observation.phase {
+                PaePhase::NoReadAtB => assert!(observation.at_b.is_none()),
+                PaePhase::OneGetAtB | PaePhase::GetThenSetPrewriteA => {
+                    assert!(observation.at_b.is_some())
+                }
+            }
+        }
     }
 }
