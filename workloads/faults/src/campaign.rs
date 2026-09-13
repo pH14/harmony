@@ -36,6 +36,8 @@ use crate::{
 pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v4";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-checkpoint-v4";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
+const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
+const SUPERVISOR_TICK_MICROS: u64 = crate::target::SUPERVISOR_TICK_NANOS / 1_000;
 
 const VOCABULARY_FIELD: &str = "action_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -435,9 +437,11 @@ impl InputPolicy for FaultWorkload {
                 checks_finished: u64::from(parent.checks_finished > 0),
                 ..FaultArchiveKey::default()
             },
-            max_duration: NonZeroU64::new(remaining_work.map_or(u64::from(u16::MAX), |work| {
-                work.get().min(u64::from(u16::MAX))
-            }))?,
+            max_duration: NonZeroU64::new(
+                remaining_work
+                    .map_or(ADAPTIVE_DURATION_MAX_TICKS, NonZeroU64::get)
+                    .min(ADAPTIVE_DURATION_MAX_TICKS),
+            )?,
         })
     }
 
@@ -452,6 +456,7 @@ impl InputPolicy for FaultWorkload {
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
         let ticks = std::num::NonZeroU16::new(u16::try_from(draw.duration.get())?)
             .ok_or("wait duration must be positive")?;
+        let hold_us = u32::try_from(draw.duration.get().saturating_mul(SUPERVISOR_TICK_MICROS))?;
         let mut suffix = draw_suffix(
             shape,
             mixture.mixture,
@@ -461,8 +466,13 @@ impl InputPolicy for FaultWorkload {
             |rand| sample_action(rand, &run.vocabulary, draw.context.event_ready),
         )?;
         for action in &mut suffix {
-            if matches!(action, FaultAction::Wait(_)) {
-                *action = FaultAction::Wait(ticks);
+            match action {
+                FaultAction::Wait(_) => *action = FaultAction::Wait(ticks),
+                FaultAction::EventPark {
+                    hold_us: action_hold_us,
+                    ..
+                } => *action_hold_us = hold_us,
+                _ => {}
             }
         }
         Ok(suffix)
@@ -495,6 +505,11 @@ impl InputPolicy for FaultWorkload {
     ) -> Option<NonZeroU64> {
         match action {
             FaultAction::Wait(ticks) => NonZeroU64::new(u64::from(ticks.get())),
+            FaultAction::EventPark { hold_us, .. }
+                if u64::from(*hold_us).is_multiple_of(SUPERVISOR_TICK_MICROS) =>
+            {
+                NonZeroU64::new(u64::from(*hold_us) / SUPERVISOR_TICK_MICROS)
+            }
             _ => None,
         }
     }
@@ -802,7 +817,11 @@ mod tests {
     #[test]
     fn wait_contexts_separate_lifecycle_states() {
         let game = game();
-        let run = run(3, vec![]);
+        let run = FaultCampaignRun {
+            vocabulary: FaultVocabulary::new(3, vec![])
+                .unwrap()
+                .with_instrumented_events(true),
+        };
         let parent = FaultArchiveKey {
             alive: 7,
             ..FaultArchiveKey::default()
@@ -820,10 +839,17 @@ mod tests {
                 .get(),
             16
         );
+        assert_eq!(
+            game.duration_request(&run, parent, None)
+                .unwrap()
+                .max_duration
+                .get(),
+            ADAPTIVE_DURATION_MAX_TICKS
+        );
     }
 
     #[test]
-    fn recorded_wait_choices_survive_suffix_reconstruction() {
+    fn recorded_duration_choices_reach_waits_and_event_holds() {
         let game = game();
         let run = run(3, vec![]);
         let mixture = MixtureDraw {
@@ -833,10 +859,11 @@ mod tests {
         };
         let draw = DurationDraw {
             context: FaultArchiveKey::default(),
-            max_duration: NonZeroU64::new(u64::from(u16::MAX)).unwrap(),
-            duration: NonZeroU64::new(8192).unwrap(),
+            max_duration: NonZeroU64::new(ADAPTIVE_DURATION_MAX_TICKS).unwrap(),
+            duration: NonZeroU64::new(256).unwrap(),
         };
         let mut waits = 0;
+        let mut event_parks = 0;
         for seed in 0..128 {
             let suffix = game
                 .expand_suffix_duration(&run, &(), SuffixShape::OneOrTwo, mixture, seed, draw)
@@ -854,13 +881,23 @@ mod tests {
                 .unwrap();
             assert_eq!(suffix, replay);
             for action in suffix {
-                if let FaultAction::Wait(ticks) = action {
-                    assert_eq!(ticks.get(), 8192);
-                    waits += 1;
+                match action {
+                    FaultAction::Wait(ticks) => {
+                        assert_eq!(ticks.get(), 256);
+                        assert_eq!(game.duration_of_action(&run, &action), Some(draw.duration));
+                        waits += 1;
+                    }
+                    FaultAction::EventPark { hold_us, .. } => {
+                        assert_eq!(hold_us, 2_560_000);
+                        assert_eq!(game.duration_of_action(&run, &action), Some(draw.duration));
+                        event_parks += 1;
+                    }
+                    _ => {}
                 }
             }
         }
         assert!(waits > 0);
+        assert!(event_parks > 0);
         assert!(
             game.expand_suffix_recorded_duration(
                 &run,

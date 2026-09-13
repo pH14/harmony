@@ -57,7 +57,8 @@ Instrumented nodes receive a pair of inherited event descriptors. The generic
 control and report frames live in `process-proto`; the supervisor acknowledges
 runtime readiness, orders arms and disarms, and only credits an event kill when
 its report matches the acknowledged rarity and window-start identity. Event
-parks report completed holds through the same channel. Outstanding windows,
+parks report completed holds through the same channel, and their standing
+windows remain active long enough for the recorded hold to complete. Outstanding windows,
 commands, arms, and a reported kill awaiting observed child death contribute
 to the pending-fault fence. A protocol failure while work is outstanding marks
 the execution as an infrastructure failure.

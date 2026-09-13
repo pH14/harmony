@@ -36,14 +36,15 @@ a readiness command keep immediate hook launches.
 
 ## Actions
 
-An input records each wait in 10 ms guest ticks. Other actions have a built-in
+An input records adaptive durations in 10 ms guest ticks. Waits and instrumented
+event holds range from 10 ms through 10.24 seconds. Other actions have a built-in
 500 ms execution window ([`target`](src/target.rs)):
 
 | action | effect |
 |---|---|
 | `Wait(ticks)` | the workload runs undisturbed for the recorded positive duration |
 | `EventKill(node, rarity)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
-| `EventPark(node, rarity, hold)` | an instrumented runtime holds a thread at a selected event |
+| `EventPark(node, rarity, hold)` | an instrumented runtime holds a thread at a selected event for the recorded adaptive duration |
 | `Kill(node)` | the node stays down for the whole horizon |
 | `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
 | `Restart(node)` | the node is killed and comes back inside the horizon |
@@ -55,7 +56,8 @@ Each fault action except `Interrupt` becomes a standing-fault window on the shar
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
 moment, so an input is fully described by its encoded window list and one
-branch installs it.
+branch installs it. An event-park window remains active across later actions
+until its hold can finish, allowing another fault to overlap the held thread.
 
 ## Execution
 
@@ -122,13 +124,14 @@ an outer CLI timeout is an infrastructure failure. The reports also expose
 runtime error has a separate SDK status and cannot turn a PID 1 exit into bug
 evidence.
 
-The searcher learns wait duration from admitted campaign outcomes and logical
-execution cost. It continues sampling short and long logarithmic durations while
-favoring durations that recently produced useful work. The adapter groups this
-feedback by node liveness and whether hooks, workload, checks, or event faults
-have progressed. Site identities and etcd concepts do not enter the duration
-policy. Choices and feedback state are recorded in the campaign stream; input
-replay executes the recorded durations directly.
+The searcher learns the duration of waits and instrumented event holds from
+admitted campaign outcomes and logical execution cost. It continues sampling
+short and long logarithmic durations while favoring durations whose own action
+recently produced useful work. The adapter groups this feedback by node liveness
+and whether hooks, workload, checks, or event faults have progressed. Site
+identities and workload-specific concepts do not enter the duration policy.
+Choices and feedback state are recorded in the campaign stream; input replay
+executes the recorded durations directly.
 
 Instrumentation actions become available automatically when the staged image
 contains the runtime bridge, nonempty event symbols, and an executable whose

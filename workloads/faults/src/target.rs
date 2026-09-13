@@ -160,19 +160,22 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
             node,
             rarity,
             hold_us,
-        } => ActionDelta {
-            standing: Some(standing(
-                process_target(
-                    node,
-                    &Fault::ProcEventPark {
-                        rarity,
-                        hold: Span(u64::from(hold_us) * 1_000),
-                    },
-                ),
-                (start, end),
-            )),
-            perturb: None,
-        },
+        } => {
+            let hold = u64::from(hold_us).saturating_mul(1_000);
+            ActionDelta {
+                standing: Some(standing(
+                    process_target(
+                        node,
+                        &Fault::ProcEventPark {
+                            rarity,
+                            hold: Span(hold),
+                        },
+                    ),
+                    (start, end.max(start.saturating_add(hold))),
+                )),
+                perturb: None,
+            }
+        }
         FaultAction::Kill(node) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcKill),
@@ -541,6 +544,29 @@ mod tests {
         assert_eq!(
             action_deltas(WINDOWS, &actions),
             action_deltas(WINDOWS, &replay)
+        );
+    }
+
+    #[test]
+    fn an_event_park_stands_until_its_hold_can_finish() {
+        let action = FaultAction::EventPark {
+            node: 2,
+            rarity: 12,
+            hold_us: 2_000_000,
+        };
+        let window = WINDOWS.window(&[action], 0).unwrap();
+        let fault = action_delta(action, window).standing.unwrap();
+        assert_eq!(fault.start, ROOT);
+        assert_eq!(fault.end, ROOT + 2_000_000_000);
+        assert_eq!(
+            decode_process_target(&fault.target),
+            Some((
+                2,
+                Fault::ProcEventPark {
+                    rarity: 12,
+                    hold: Span(2_000_000_000),
+                }
+            ))
         );
     }
 

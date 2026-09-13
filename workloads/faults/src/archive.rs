@@ -19,7 +19,7 @@ pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_lifecycle_events_v4";
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_guest_ticks";
-pub const DURATION_IDENTIFIER: &str = "adaptive_wait_ticks_v2";
+pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FaultArchiveGroup {

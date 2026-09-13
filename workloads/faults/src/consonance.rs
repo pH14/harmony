@@ -72,7 +72,7 @@ impl FaultConfig {
     }
 }
 
-const IDENTITY_TAG: &str = "faults-consonance-execution-v3";
+const IDENTITY_TAG: &str = "faults-consonance-execution-v4";
 
 #[derive(Clone, Debug)]
 struct StandingHandler {
