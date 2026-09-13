@@ -101,6 +101,14 @@ The preflight bounds the report at 1 MiB, requires the fixed 50-edge schema and
 52 through 250 sequence entries, and bounds each retained artifact at the
 configured 128 MiB probe RAM plus 8 MiB of format allowance.
 
+The replay mismatch path also writes
+`in-place-history-replay-actual-sidecar.bin`, produced by exporting the actual
+stored snapshot with itself as the sparse base. It must contain no pages; its
+length and SHA-256 are recorded in the failure JSON. The sidecar retains the
+exact stored state suffix and metadata used by the snapshot hash path. It is a
+hash preimage witness for offline comparison and is not asserted to reproduce
+the earlier replay hash.
+
 ```sh
 cargo build --locked --release --manifest-path workloads/tools/Cargo.toml \
   --bin kvm_x86_nova_probe

@@ -1653,7 +1653,8 @@ mod tests {
         OracleHistoryEdgeMetadata, OracleHistoryMetadata, OracleHistoryReplayMetadata,
         RETAINED_HISTORY_ARTIFACT_MAX_BYTES, RETAINED_HISTORY_MAX_SEQUENCE_LEN,
         RETAINED_HISTORY_REPORT_MAX_BYTES, boot_memory_kib, parse_retained_history,
-        render_in_place_history_metadata, write_oracle_failure_file,
+        render_in_place_history_metadata, retain_history_replay_mismatch,
+        write_oracle_failure_file,
     };
 
     fn history_fixture() -> (tempfile::TempDir, serde_json::Value) {
@@ -1906,6 +1907,66 @@ mod tests {
         assert_eq!(
             std::fs::read(directory.join("collision.bin")).unwrap(),
             b"first"
+        );
+    }
+
+    #[test]
+    fn replay_mismatch_report_binds_actual_sidecar() {
+        let temporary = tempfile::tempdir().expect("create replay mismatch directory");
+        let edge = OracleHistoryEdgeMetadata {
+            edge_index: 2,
+            parent_snapshot_id: 11,
+            child_snapshot_id: 17,
+            payload: vec![9, 3],
+            expected_hash: [0x11; 32],
+        };
+        let replay_hash = [0x22; 32];
+        write_oracle_failure_file(
+            temporary.path(),
+            "in-place-history-replay-actual.bin",
+            b"endpoint",
+        )
+        .expect("retain replay endpoint");
+        retain_history_replay_mismatch(
+            temporary.path(),
+            4,
+            &edge,
+            23,
+            29,
+            &replay_hash,
+            (b"endpoint", b"sidecar"),
+        )
+        .expect("retain replay mismatch");
+        assert_eq!(
+            std::fs::read(temporary.path().join("in-place-history-replay-actual.bin")).unwrap(),
+            b"endpoint"
+        );
+        assert_eq!(
+            std::fs::read(
+                temporary
+                    .path()
+                    .join("in-place-history-replay-actual-sidecar.bin")
+            )
+            .unwrap(),
+            b"sidecar"
+        );
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                temporary
+                    .path()
+                    .join("in-place-history-replay-failure.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            report["actual_endpoint_sidecar"],
+            serde_json::json!({
+                "file": "in-place-history-replay-actual-sidecar.bin",
+                "bytes": 7,
+                "sha256": "6c8b4535ccc87f19061c4646189e33d78f01c8b63dc4e3cb2f630b1796ee93b6",
+                "meaning": "stored snapshot hash-preimage sidecar exported after replay mismatch"
+            })
         );
     }
 
@@ -2942,12 +3003,13 @@ fn retain_history_replay_mismatch(
     mapped_parent_snapshot_id: u64,
     actual_snapshot_id: u64,
     replay_hash: &[u8; 32],
-    actual_endpoint: &[u8],
+    actual_artifacts: (&[u8], &[u8]),
 ) -> Result<(), String> {
+    let (actual_endpoint, actual_sidecar) = actual_artifacts;
     write_oracle_failure_file(
         directory,
-        "in-place-history-replay-actual.bin",
-        actual_endpoint,
+        "in-place-history-replay-actual-sidecar.bin",
+        actual_sidecar,
     )?;
     let report = serde_json::json!({
         "kind": "in-place-history-replay-failure",
@@ -2964,6 +3026,12 @@ fn retain_history_replay_mismatch(
         "replay_hash_meaning": "whole-state hash returned by the replay before mismatch retention",
         "actual_endpoint_file": "in-place-history-replay-actual.bin",
         "actual_endpoint_sha256": oracle_sha256(actual_endpoint),
+        "actual_endpoint_sidecar": {
+            "file": "in-place-history-replay-actual-sidecar.bin",
+            "bytes": actual_sidecar.len(),
+            "sha256": oracle_sha256(actual_sidecar),
+            "meaning": "stored snapshot hash-preimage sidecar exported after replay mismatch"
+        },
     });
     let report = serde_json::to_vec_pretty(&report)
         .map_err(|error| format!("cannot encode in-place history replay failure: {error}"))?;
@@ -4735,6 +4803,22 @@ fn run() -> Result<(), String> {
             if replay_hash != edge.expected_hash {
                 let (actual_snapshot_id, actual_endpoint) =
                     snapshot_current(&mut server, &mut profile)?;
+                write_oracle_failure_file(
+                    &report_directory,
+                    "in-place-history-replay-actual.bin",
+                    &actual_endpoint,
+                )?;
+                let actual_sparse = server
+                    .export_sparse_snapshot(actual_snapshot_id, actual_snapshot_id)
+                    .map_err(|error| {
+                        format!("in-place history replay sidecar export failed: {error}")
+                    })?;
+                if !actual_sparse.pages.is_empty() {
+                    return Err(format!(
+                        "in-place history replay sidecar unexpectedly contains {} pages",
+                        actual_sparse.pages.len()
+                    ));
+                }
                 retain_history_replay_mismatch(
                     &report_directory,
                     replay.comparison.unwrap_or(0),
@@ -4742,7 +4826,7 @@ fn run() -> Result<(), String> {
                     parent.0,
                     actual_snapshot_id.0,
                     &replay_hash,
-                    &actual_endpoint,
+                    (&actual_endpoint, &actual_sparse.sidecar),
                 )?;
                 return Err(format!(
                     "in-place history replay mismatch at comparison {} edge {}: expected={:02x?} replay={replay_hash:02x?}",
