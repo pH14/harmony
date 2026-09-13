@@ -6,6 +6,9 @@ license = "AGPL-3.0-or-later"
 
 [workspace]
 
+[features]
+arm-sha2-asm = ["sha2/asm"]
+
 [dependencies]
 vmm-core = { version = "=0.1.0", path = "../../consonance/vmm-core" }
 vmm-backend = { version = "=0.1.0", path = "../../consonance/vmm-backend" }
