@@ -33,8 +33,8 @@ use crate::{
     target::{FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v2";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-checkpoint-v2";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v3";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-checkpoint-v3";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 
 const VOCABULARY_FIELD: &str = "action_vocabulary";
@@ -215,10 +215,10 @@ fn execute_job(
 ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
     target.restore(origin_snapshot)?;
     for action in replay {
-        target.apply(*action);
         if outcome(target).disposition.is_terminal() {
             break;
         }
+        target.apply(*action);
     }
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
@@ -226,7 +226,13 @@ fn execute_job(
     let parent_outcome = outcome(target);
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
-        return Ok(CampaignJobResult { actions });
+        return Ok(CampaignJobResult {
+            preparation_failure: parent_outcome
+                .disposition
+                .is_failed()
+                .then(|| target.last_action_observations().to_vec()),
+            actions,
+        });
     }
     for action in suffix {
         if length >= max_actions {
@@ -264,7 +270,10 @@ fn execute_job(
             break;
         }
     }
-    Ok(CampaignJobResult { actions })
+    Ok(CampaignJobResult {
+        preparation_failure: None,
+        actions,
+    })
 }
 
 impl CampaignTypes for FaultWorkload {
@@ -659,6 +668,19 @@ impl Evaluation for FaultWorkload {
         }
     }
 
+    fn merge_preparation_failure(
+        &self,
+        evidence: &mut FaultCampaignEvidence,
+        observations: &[FaultObservations],
+    ) {
+        evidence.watchdog_cutoffs = evidence.watchdog_cutoffs.saturating_add(
+            observations
+                .iter()
+                .filter(|observation| observation.watchdog_cutoff)
+                .count() as u64,
+        );
+    }
+
     fn merge_action_evidence<F>(
         &self,
         evidence: &mut FaultCampaignEvidence,
@@ -758,6 +780,23 @@ mod tests {
         FaultCampaignRun {
             vocabulary: FaultVocabulary::new(nodes, hooks).expect("vocabulary"),
         }
+    }
+
+    #[test]
+    fn preparation_failure_counts_cutoffs_without_importing_oracle_evidence() {
+        let game = game();
+        let mut evidence = FaultCampaignEvidence::default();
+        let observation = FaultObservations {
+            watchdog_cutoff: true,
+            stop: crate::target::FaultStop::Crash,
+            ticks: 123,
+            ..FaultObservations::default()
+        };
+        game.merge_preparation_failure(&mut evidence, &[observation]);
+        assert_eq!(evidence.watchdog_cutoffs, 1);
+        assert!(evidence.bugs.is_empty());
+        assert_eq!(evidence.aggregate, FaultMilestones::default());
+        assert_eq!(evidence.watermark, FaultProgressWatermark::default());
     }
 
     #[test]

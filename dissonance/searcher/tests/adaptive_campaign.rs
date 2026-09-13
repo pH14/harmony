@@ -10,7 +10,7 @@ use searcher::search::{
         ArchiveReportState, CampaignActionResult, CampaignConfig, CampaignExecutionOptions,
         CampaignJobResult, CampaignOrigin, CampaignTypes, Evaluation, InitialDrawState,
         InputPolicy, Reporting, ResultBuffering, TargetExecution, WorkloadPolicies,
-        postcard_value_sha256, replay_campaign_checkpointed,
+        postcard_result_sha256, postcard_value_sha256, replay_campaign_checkpointed,
         run_campaign_checkpointed_with_options,
     },
     draw::{DrawMixture, MixtureDraw, SuffixShape},
@@ -54,6 +54,14 @@ impl ArchiveKey for TimingKey {
 struct TimingArchiveReport {
     #[serde(with = "entries_by_suffix")]
     entries: Vec<ArchiveEntryReport<TimedAction, TimingKey, ()>>,
+    preparation_failures: u64,
+    preparation_observations: Vec<(u8,)>,
+}
+
+#[derive(Clone, Default, Eq, PartialEq)]
+struct TimingEvidence {
+    preparation_failures: u64,
+    preparation_observations: Vec<(u8,)>,
 }
 
 #[derive(Default)]
@@ -61,10 +69,13 @@ struct TimingTarget {
     value: u8,
     execution_work: u64,
     failed: bool,
+    observations: Vec<(u8,)>,
 }
 
 struct TimingWorkload {
     fail_timed_action: bool,
+    fail_preparation: bool,
+    clear_observations_on_apply: bool,
 }
 
 impl CampaignTypes for TimingWorkload {
@@ -75,7 +86,7 @@ impl CampaignTypes for TimingWorkload {
     type Progress = ();
     type Snapshot = u8;
     type Observations = (u8,);
-    type Evidence = ();
+    type Evidence = TimingEvidence;
     type ArchiveReport = TimingArchiveReport;
     type Run = ();
     type DrawState = ();
@@ -115,6 +126,8 @@ impl Reporting for TimingWorkload {
     ) -> Self::ArchiveReport {
         TimingArchiveReport {
             entries: state.entries,
+            preparation_failures: _evidence.preparation_failures,
+            preparation_observations: _evidence.preparation_observations.clone(),
         }
     }
 }
@@ -228,6 +241,7 @@ impl TargetExecution for TimingWorkload {
     fn reset(&self, target: &mut Self::Target) {
         target.value = 0;
         target.failed = false;
+        target.observations.clear();
     }
 
     fn restore(
@@ -236,7 +250,8 @@ impl TargetExecution for TimingWorkload {
         snapshot: &Self::Snapshot,
     ) -> Result<(), Box<dyn Error>> {
         target.value = *snapshot;
-        target.failed = false;
+        target.failed = self.fail_preparation && *snapshot == 1;
+        target.observations = vec![(*snapshot,)];
         Ok(())
     }
 
@@ -258,17 +273,23 @@ impl TargetExecution for TimingWorkload {
         action: &Self::Action,
         _milestones: &mut Self::Milestones,
     ) -> Result<(), Box<dyn Error>> {
+        if self.clear_observations_on_apply {
+            target.observations.clear();
+        }
         if self.fail_timed_action && action.context == 3 {
             target.failed = true;
             return Ok(());
         }
         target.value = target.value.wrapping_add(1);
         target.execution_work = target.execution_work.saturating_add(action.duration.get());
+        if !self.clear_observations_on_apply {
+            target.observations = vec![(target.value,)];
+        }
         Ok(())
     }
 
     fn rollout_observations(&self, target: &Self::Target) -> Vec<Self::Observations> {
-        vec![(target.value,)]
+        target.observations.clone()
     }
 
     fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
@@ -310,6 +331,17 @@ impl Evaluation for TimingWorkload {
     fn aggregate_milestones(_evidence: &Self::Evidence) -> Self::Milestones {}
 
     fn aggregate_progress(_evidence: &Self::Evidence) -> Self::Progress {}
+
+    fn merge_preparation_failure(
+        &self,
+        evidence: &mut Self::Evidence,
+        observations: &[Self::Observations],
+    ) {
+        evidence.preparation_failures = evidence.preparation_failures.saturating_add(1);
+        evidence
+            .preparation_observations
+            .extend_from_slice(observations);
+    }
 
     fn merge_origin_evidence(&self, _evidence: &mut Self::Evidence, _source: &Self::ArchiveReport) {
     }
@@ -423,6 +455,38 @@ where
     format!("{}\n", lines.join("\n")).into_bytes()
 }
 
+fn mutate_first_preparation_failure<F>(stream: &[u8], mutate: F) -> Vec<u8>
+where
+    F: FnOnce(&mut Value),
+{
+    let mut mutate = Some(mutate);
+    let mut changed = false;
+    let lines = std::str::from_utf8(stream)
+        .expect("campaign stream is UTF-8")
+        .lines()
+        .enumerate()
+        .map(|(line_number, line)| {
+            if line_number == 0 {
+                return line.to_owned();
+            }
+            let mut record: Value = serde_json::from_str(line).expect("campaign record JSON");
+            if !changed
+                && record.get("event").and_then(Value::as_str) == Some("job")
+                && record.get("execution_work") == Some(&serde_json::json!(0))
+            {
+                mutate.take().expect("one mutation")(&mut record);
+                changed = true;
+            }
+            serde_json::to_string(&record).expect("campaign record encoding")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        changed,
+        "fixture campaign did not record a preparation failure"
+    );
+    format!("{}\n", lines.join("\n")).into_bytes()
+}
+
 fn fixture_stream(workload: &TimingWorkload) -> Vec<u8> {
     let mut stream = Vec::new();
     run_campaign_checkpointed_with_options(
@@ -444,6 +508,8 @@ fn fixture_stream(workload: &TimingWorkload) -> Vec<u8> {
 fn campaign_adaptive_duration_replays_concurrently_and_rejects_tampering() {
     let workload = TimingWorkload {
         fail_timed_action: false,
+        fail_preparation: false,
+        clear_observations_on_apply: false,
     };
     let config = fixture_config();
     let mut stream = Vec::new();
@@ -531,6 +597,8 @@ fn campaign_adaptive_duration_replays_concurrently_and_rejects_tampering() {
 fn replay_rejects_fabricated_duration_history_at_reservation() {
     let workload = TimingWorkload {
         fail_timed_action: false,
+        fail_preparation: false,
+        clear_observations_on_apply: false,
     };
     let stream = fixture_stream(&workload);
     let tampered = mutate_first_duration_job(&stream, |record| {
@@ -550,6 +618,8 @@ fn replay_rejects_fabricated_duration_history_at_reservation() {
 fn replay_rejects_remaining_work_that_does_not_match_reservation() {
     let workload = TimingWorkload {
         fail_timed_action: false,
+        fail_preparation: false,
+        clear_observations_on_apply: false,
     };
     let stream = fixture_stream(&workload);
     let tampered = mutate_first_duration_job(&stream, |record| {
@@ -566,6 +636,8 @@ fn replay_rejects_remaining_work_that_does_not_match_reservation() {
 fn failed_duration_actions_do_not_train_the_policy() {
     let workload = TimingWorkload {
         fail_timed_action: true,
+        fail_preparation: false,
+        clear_observations_on_apply: false,
     };
     let mut stream = Vec::new();
     let live = run_campaign_checkpointed_with_options(
@@ -594,4 +666,107 @@ fn failed_duration_actions_do_not_train_the_policy() {
     let replayed = replay_campaign_checkpointed(&workload, &stream, None, None)
         .expect("failed-duration campaign replay");
     assert_eq!(replayed, live);
+}
+
+#[test]
+fn preparation_failure_continues_campaign_and_is_hashed_once() {
+    let workload = TimingWorkload {
+        fail_timed_action: false,
+        fail_preparation: true,
+        clear_observations_on_apply: false,
+    };
+    let mut stream = Vec::new();
+    let live = run_campaign_checkpointed_with_options(
+        &workload,
+        &fixture_config(),
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+        CampaignExecutionOptions {
+            work_budget: Some(4_096),
+            result_buffering: ResultBuffering::TwoPerWorker,
+        },
+    )
+    .expect("preparation-failure campaign");
+
+    assert!(live.0.executions_completed > 1);
+    assert!(live.0.execution_failures > 0);
+    assert_eq!(
+        live.0.archive.preparation_failures,
+        live.0.execution_failures
+    );
+    assert_eq!(
+        live.0.archive.preparation_observations.len(),
+        usize::try_from(live.0.execution_failures).expect("failure count fits")
+    );
+    let preparation_jobs: Vec<Value> = std::str::from_utf8(&stream)
+        .expect("campaign stream is UTF-8")
+        .lines()
+        .skip(1)
+        .map(|line| serde_json::from_str(line).expect("campaign record JSON"))
+        .filter(|record: &Value| {
+            record.get("event").and_then(Value::as_str) == Some("job")
+                && record.get("execution_work") == Some(&serde_json::json!(0))
+        })
+        .collect();
+    assert!(!preparation_jobs.is_empty());
+    assert!(preparation_jobs.iter().all(|job| {
+        job.get("duration_checkpoint_after").is_none()
+            && job.get("duration_checkpoint_before").is_none()
+    }));
+
+    let replayed = replay_campaign_checkpointed(&workload, &stream, None, None)
+        .expect("preparation-failure campaign replay");
+    assert_eq!(replayed, live);
+
+    let hash_tampered = mutate_first_preparation_failure(&stream, |record| {
+        record["result_sha256"] = serde_json::json!("tampered");
+    });
+    assert!(
+        replay_campaign_checkpointed(&workload, &hash_tampered, None, None).is_err(),
+        "replay accepted a tampered preparation-failure result hash"
+    );
+
+    let without_failure = CampaignJobResult::<TimingWorkload> {
+        preparation_failure: None,
+        actions: Vec::new(),
+    };
+    let with_failure = CampaignJobResult::<TimingWorkload> {
+        preparation_failure: Some(vec![(1,)]),
+        actions: Vec::new(),
+    };
+    assert_ne!(
+        postcard_result_sha256(&without_failure).expect("empty result hash"),
+        postcard_result_sha256(&with_failure).expect("preparation-failure result hash")
+    );
+}
+
+#[test]
+fn failed_parent_skips_replay_and_preserves_preparation_observations() {
+    let workload = TimingWorkload {
+        fail_timed_action: false,
+        fail_preparation: true,
+        clear_observations_on_apply: true,
+    };
+    let mut target = workload.new_target().expect("fixture target");
+    let result = workload
+        .execute_job(
+            &(),
+            &mut target,
+            &1,
+            &[TimedAction {
+                context: 0,
+                duration: NonZeroU64::MIN,
+            }],
+            1,
+            (),
+            &[],
+            16,
+            RetentionPolicy::Unprobed,
+            false,
+        )
+        .expect("failed parent is reportable with replay input");
+
+    assert!(result.actions.is_empty());
+    assert_eq!(result.preparation_failure, Some(vec![(1,)]));
 }

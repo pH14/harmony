@@ -104,7 +104,12 @@ either the bugs found or the replay outcomes.
 
 The search report and `campaign-summary.json` also record
 `watchdog_cutoffs`, the number of guest action runs ended by the session's
-host watchdog. A completed CLI with such cutoffs remains a measured campaign;
+host watchdog, including cutoffs while reconstructing an evicted prefix. A
+reconstruction cutoff ends that preparation attempt, counts one execution failure
+and one watchdog cutoff, and leaves the worker available for later jobs. It
+produces no suffix action, retained candidate, oracle evidence, or duration
+feedback. Other reconstruction errors still fail the campaign. A completed CLI
+with such cutoffs remains a measured campaign;
 an outer CLI timeout is an infrastructure failure. The reports also expose
 `execution_failures`; the nightly gate rejects non-watchdog failures. An agent
 runtime error has a separate SDK status and cannot turn a PID 1 exit into bug

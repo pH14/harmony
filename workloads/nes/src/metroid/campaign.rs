@@ -343,7 +343,10 @@ fn execute_suffix(
     };
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
-        return Ok(CampaignJobResult { actions });
+        return Ok(CampaignJobResult {
+            preparation_failure: None,
+            actions,
+        });
     }
     for action in suffix {
         if length >= max_actions {
@@ -395,7 +398,10 @@ fn execute_suffix(
             break;
         }
     }
-    Ok(CampaignJobResult { actions })
+    Ok(CampaignJobResult {
+        preparation_failure: None,
+        actions,
+    })
 }
 
 fn update_first_inputs(

@@ -80,7 +80,7 @@ func check(journalPath string, endpoints []string) error {
 		return nil
 	}
 	if compareAgainstMembers(expected, endpoints, readPrefix) == verdictAgreed {
-		fmt.Printf("@verified %d\n", len(expected))
+		fmt.Printf("verified %d\n", len(expected))
 	}
 	return nil
 }

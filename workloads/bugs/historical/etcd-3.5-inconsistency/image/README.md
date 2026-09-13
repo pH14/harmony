@@ -84,5 +84,5 @@ key verified before a later crash is checked again after that crash.
 
 The process emits `@reachable 11` and `@always 1 1` only after every member agrees. A conclusive
 loss emits `@always 1 0`; an empty journal, a down member, or an inconclusive read is silent. A
-passing check reports `@verified` with the number of acknowledged records confirmed on every
+passing check reports `verified` with the number of acknowledged records confirmed on every
 member.
