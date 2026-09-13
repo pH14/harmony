@@ -690,7 +690,7 @@ fn drive_guarded(
             .request(request)
             .map_err(|error| SessionError::Control(error.to_string()).into());
     };
-    let watchdog = Watchdog::start(limit, cancel, progress).map_err(|error| {
+    let watchdog = Watchdog::start_with_progress(limit, cancel, progress).map_err(|error| {
         SessionError::Control(format!("cannot arm the wall-clock bound: {error}"))
     })?;
     let reply = client.request(request);
