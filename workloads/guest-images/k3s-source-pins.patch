@@ -11,7 +11,7 @@ index 0b6e63b..9f55c51 100755
      git clone --single-branch --depth=1 --branch=$VERSION_FLANNEL_PLUGIN https://github.com/flannel-io/cni-plugin.git plugins/meta/flannel
 +    test "$(git -C plugins/meta/flannel rev-parse HEAD)" = "0940aaf4a0edda6c9bcd9bc34b3466a0d579ddda"
      sed -i 's/package main/package flannel/; s/func main/func Main/' plugins/meta/flannel/*.go
-     GO111MODULE=off GOPATH=$TMPDIR CGO_ENABLED=0 "${GO}" build -tags "$TAGS" -gcflags="all=${GCFLAGS}" -ldflags "$VERSIONFLAGS $LDFLAGS $STATIC" -o $INSTALLBIN/cni${BINARY_POSTFIX}
+    GO111MODULE=off GOPATH=$TMPDIR CGO_ENABLED=0 "${GO}" build -trimpath -tags "$TAGS" -gcflags="all=${GCFLAGS}" -ldflags "$VERSIONFLAGS $LDFLAGS $STATIC" -o $INSTALLBIN/cni${BINARY_POSTFIX}
  )
 diff --git a/scripts/download b/scripts/download
 index 708a785..2667e44 100755

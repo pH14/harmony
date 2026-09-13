@@ -71,8 +71,9 @@ metadata from Kubernetes, containerd, and Kine before packaging. Its Alpine
 builder package closure, cloned helper commits, downloaded charts, Go base
 image, K3s source, and Go modules are pinned or hash checked. A local patch to
 the pinned Antithesis toolexec maps temporary rewrite directories through Go's
-`-trimpath`; two clean compilation-cache builds must produce the same embedded
-server hash.
+`-trimpath`; the K3s source patch applies the same rule to its temporary CNI
+build. Two clean compilation-cache builds must produce the same server and CNI
+hashes.
 
 The arm64 platform kernel recipe owns its generic namespace and filesystem
 configuration. Workload packages do not select a named platform kernel profile.
