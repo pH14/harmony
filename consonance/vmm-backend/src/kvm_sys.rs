@@ -789,6 +789,7 @@ mod xsave_diagnostic {
     const XSTATE_BV: std::ops::Range<usize> = 512..520;
     const XCOMP_BV: std::ops::Range<usize> = 520..528;
     const SSE_MXCSR: std::ops::Range<usize> = 24..28;
+    const SSE_MXCSR_MASK: std::ops::Range<usize> = 28..32;
     const SSE_XMM0: std::ops::Range<usize> = 160..176;
     const GUEST_XSAVE_GPA: usize = 0x2000;
     const GUEST_XRSTOR_GPA: usize = 0x3000;
@@ -815,6 +816,9 @@ mod xsave_diagnostic {
         Unobserved,
         GetOnly,
         GetSetGet,
+        EarlyBootUnobserved,
+        EarlyBootGetOnly,
+        EarlyBootGetSetGet,
     }
 
     impl BoundaryObservation {
@@ -824,11 +828,24 @@ mod xsave_diagnostic {
                 Self::Unobserved => "unobserved",
                 Self::GetOnly => "get-only",
                 Self::GetSetGet => "get-set-get",
+                Self::EarlyBootUnobserved => "early-boot-unobserved",
+                Self::EarlyBootGetOnly => "early-boot-get-only",
+                Self::EarlyBootGetSetGet => "early-boot-get-set-get",
             }
         }
 
         fn guest_program(self) -> bool {
-            !matches!(self, Self::LegacyGetSetGet)
+            !matches!(
+                self,
+                Self::LegacyGetSetGet
+                    | Self::EarlyBootUnobserved
+                    | Self::EarlyBootGetOnly
+                    | Self::EarlyBootGetSetGet
+            )
+        }
+
+        fn observes_boundary(self) -> bool {
+            !matches!(self, Self::Unobserved | Self::EarlyBootUnobserved)
         }
     }
 
@@ -837,6 +854,7 @@ mod xsave_diagnostic {
         PayloadPreservation,
         ZeroState,
         XrstorInit,
+        EarlyBoot,
     }
 
     impl GuestX87Cohort {
@@ -845,6 +863,7 @@ mod xsave_diagnostic {
                 Self::PayloadPreservation => "payload-preservation",
                 Self::ZeroState => "zero-state",
                 Self::XrstorInit => "xrstor-init",
+                Self::EarlyBoot => "early-boot",
             }
         }
 
@@ -853,6 +872,7 @@ mod xsave_diagnostic {
                 Self::PayloadPreservation => &X87_ST_SEED,
                 Self::ZeroState => &X87_ST_ZERO,
                 Self::XrstorInit => &X87_ST_ZERO,
+                Self::EarlyBoot => &X87_ST_ZERO,
             }
         }
 
@@ -861,6 +881,7 @@ mod xsave_diagnostic {
                 Self::PayloadPreservation => "8-slots-of-10-bytes-0xa7-with-6-zero-padding-bytes",
                 Self::ZeroState => "8-slots-of-10-zero-bytes-with-6-zero-padding-bytes",
                 Self::XrstorInit => "initial-vm-8-slots-of-10-zero-bytes-with-6-zero-padding-bytes",
+                Self::EarlyBoot => "canonical-init-xsave-with-no-guest-floating-point-instructions",
             }
         }
 
@@ -885,9 +906,17 @@ mod xsave_diagnostic {
                 (Self::XrstorInit, BoundaryObservation::Unobserved) => "guest-xrstor-unobserved",
                 (Self::XrstorInit, BoundaryObservation::GetOnly) => "guest-xrstor-get-only",
                 (Self::XrstorInit, BoundaryObservation::GetSetGet) => "guest-xrstor-get-set-get",
+                (Self::EarlyBoot, BoundaryObservation::EarlyBootUnobserved) => {
+                    "early-boot-unobserved"
+                }
+                (Self::EarlyBoot, BoundaryObservation::EarlyBootGetOnly) => "early-boot-get-only",
+                (Self::EarlyBoot, BoundaryObservation::EarlyBootGetSetGet) => {
+                    "early-boot-get-set-get"
+                }
                 (_, BoundaryObservation::LegacyGetSetGet) => {
                     panic!("legacy observation has no guest x87 cohort")
                 }
+                _ => panic!("cohort and observation do not match"),
             }
         }
 
@@ -896,6 +925,7 @@ mod xsave_diagnostic {
                 Self::PayloadPreservation => "guest-fninit-comparison.txt",
                 Self::ZeroState => "guest-fninit-zero-comparison.txt",
                 Self::XrstorInit => "guest-xrstor-comparison.txt",
+                Self::EarlyBoot => "early-boot-comparison.txt",
             }
         }
 
@@ -905,11 +935,16 @@ mod xsave_diagnostic {
                     "fninit-before-mmio-xsave-after-retirement"
                 }
                 Self::XrstorInit => "xrstor-before-mmio-xsave-after-retirement",
+                Self::EarlyBoot => "integer-mmio-hlt-without-floating-point-instructions",
             }
         }
 
         fn uses_xrstor(self) -> bool {
             matches!(self, Self::XrstorInit)
+        }
+
+        fn is_early_boot(self) -> bool {
+            matches!(self, Self::EarlyBoot)
         }
     }
 
@@ -924,6 +959,21 @@ mod xsave_diagnostic {
         guest_bv: u64,
         guest_xcomp_bv: u64,
         guest_restore_bv: Option<u64>,
+    }
+
+    enum PhaseResult {
+        Guest(GuestPhaseResult),
+        EarlyBoot(EarlyBootPhaseResult),
+    }
+
+    struct EarlyBootPhaseResult {
+        raw_endpoint: Vec<u8>,
+        canonical_endpoint: Vec<u8>,
+        endpoint_bv: u64,
+        endpoint_xcomp_bv: u64,
+        endpoint_restore_bv: Option<u64>,
+        endpoint_xcr0: u64,
+        endpoint_cr4: u64,
     }
 
     struct MmapRam {
@@ -1217,15 +1267,15 @@ mod xsave_diagnostic {
         value.map_or_else(|| "not-observed".to_owned(), |value| format!("{value:?}"))
     }
 
-    fn append_pairwise<F>(
+    fn append_pairwise<T, F>(
         output: &mut String,
         key: &str,
-        unobserved: &GuestPhaseResult,
-        get_only: &GuestPhaseResult,
-        get_set_get: &GuestPhaseResult,
+        unobserved: &T,
+        get_only: &T,
+        get_set_get: &T,
         equal: F,
     ) where
-        F: Fn(&GuestPhaseResult, &GuestPhaseResult) -> bool,
+        F: Fn(&T, &T) -> bool,
     {
         writeln!(
             output,
@@ -1268,8 +1318,24 @@ mod xsave_diagnostic {
         observation: BoundaryObservation,
     ) -> GuestPhaseResult {
         let label = cohort.phase_label(observation);
-        run_variant_with_observation(report_root, true, observation, Some(cohort), label)
-            .expect("guest phase must return a result")
+        match run_variant_with_observation(report_root, true, observation, Some(cohort), label) {
+            Some(PhaseResult::Guest(result)) => result,
+            Some(PhaseResult::EarlyBoot(_)) => panic!("guest phase returned early-boot result"),
+            None => panic!("guest phase must return a result"),
+        }
+    }
+
+    fn run_earlyboot_phase(
+        report_root: &Path,
+        observation: BoundaryObservation,
+    ) -> EarlyBootPhaseResult {
+        let cohort = GuestX87Cohort::EarlyBoot;
+        let label = cohort.phase_label(observation);
+        match run_variant_with_observation(report_root, false, observation, Some(cohort), label) {
+            Some(PhaseResult::EarlyBoot(result)) => result,
+            Some(PhaseResult::Guest(_)) => panic!("early-boot phase returned guest result"),
+            None => panic!("early-boot phase must return a result"),
+        }
     }
 
     fn run_variant_with_observation(
@@ -1278,7 +1344,8 @@ mod xsave_diagnostic {
         observation: BoundaryObservation,
         cohort: Option<GuestX87Cohort>,
         label: &'static str,
-    ) -> Option<GuestPhaseResult> {
+    ) -> Option<PhaseResult> {
+        let early_boot = cohort.is_some_and(GuestX87Cohort::is_early_boot);
         let report_dir = report_root.join(label);
         if observation.guest_program() {
             fs::create_dir(&report_dir)
@@ -1345,20 +1412,35 @@ mod xsave_diagnostic {
         state.sregs.ds.selector = 0;
         state.sregs.ds.limit = u32::MAX;
         state.sregs.ds.g = 1;
-        state.sregs.cr4 |= 1 << 18;
+        if early_boot {
+            state.sregs.cr4 &= !((1 << 9) | (1 << 18));
+        } else {
+            state.sregs.cr4 |= 1 << 18;
+        }
         state.sregs.cr0 &= !((1 << 2) | (1 << 3));
         state.regs.rip = CODE_GPA as u64;
         state.regs.rflags = 2;
         state.regs.rbx = 0;
         state.mp_state = MpState::Runnable;
-        state.xcr0 = 3;
-        state.xsave_restore_bv = if observation.guest_program() {
+        state.xcr0 = if early_boot { 1 } else { 3 };
+        state.xsave_restore_bv = if early_boot {
+            Some(2)
+        } else if observation.guest_program() {
             Some(3)
         } else {
             None
         };
         if observation.guest_program() {
             assert!(cohort.is_some(), "guest phase requires an x87 cohort");
+            assert!(
+                !early_boot,
+                "early-boot phase cannot execute guest FPU setup"
+            );
+        } else if early_boot {
+            assert!(
+                matches!(cohort, Some(GuestX87Cohort::EarlyBoot)),
+                "early-boot phase requires the early-boot cohort"
+            );
         } else {
             assert!(
                 cohort.is_none(),
@@ -1376,6 +1458,11 @@ mod xsave_diagnostic {
             for slot in state.xsave[X87_ST].chunks_exact_mut(16) {
                 slot[..st_seed.len()].copy_from_slice(st_seed);
             }
+        } else if early_boot {
+            state.xsave.fill(0);
+            state.xsave[X87_FCW].copy_from_slice(&[0x7f, 0x03]);
+            state.xsave[SSE_MXCSR].copy_from_slice(&[0x80, 0x1f, 0, 0]);
+            state.xsave[SSE_MXCSR_MASK].copy_from_slice(&[0xff, 0xff, 0, 0]);
         }
         state.xsave[SSE_XMM0].fill(0);
         state.xsave[XCOMP_BV].fill(0);
@@ -1391,6 +1478,11 @@ mod xsave_diagnostic {
         if active_sse {
             state.xsave[SSE_XMM0].copy_from_slice(&ACTIVE_XMM0);
         }
+        let requested_xcr0 = state.xcr0;
+        let requested_cr4 = state.sregs.cr4;
+        let requested_restore_bv = state.xsave_restore_bv;
+        let (requested_xsave_canonical_bv, requested_xsave_canonical_xcomp_bv) =
+            header(&state.xsave);
         backend
             .restore(&state)
             .unwrap_or_else(|e| panic!("restore entry state failed for {label}: {e}"));
@@ -1403,7 +1495,7 @@ mod xsave_diagnostic {
         );
         let xcr0_before_run = backend_xcr0_value(&backend);
         assert_eq!(
-            xcr0_before_run, 3,
+            xcr0_before_run, requested_xcr0,
             "configured guest XCR0 was not retained for {label}"
         );
 
@@ -1439,7 +1531,7 @@ mod xsave_diagnostic {
         let mut canonical_restore_bv_2 = None;
         let mut raw_after_set = None;
         let mut canonical_restore_bv_after_set = None;
-        if !matches!(observation, BoundaryObservation::Unobserved) {
+        if observation.observes_boundary() {
             let raw = unsafe {
                 // SAFETY: the owned vCPU is stopped at the checked MMIO boundary and the capability
                 // sized buffer is retained until KVM finishes the direct ioctl.
@@ -1489,7 +1581,9 @@ mod xsave_diagnostic {
 
         if matches!(
             observation,
-            BoundaryObservation::LegacyGetSetGet | BoundaryObservation::GetSetGet
+            BoundaryObservation::LegacyGetSetGet
+                | BoundaryObservation::GetSetGet
+                | BoundaryObservation::EarlyBootGetSetGet
         ) {
             let before = raw_before_1
                 .as_ref()
@@ -1550,6 +1644,34 @@ mod xsave_diagnostic {
                 "bounded continuation run",
                 error,
             ),
+        };
+        let endpoint_cr4 = if early_boot {
+            if !matches!(endpoint, Exit::Common(CommonExit::Idle)) {
+                fail_with_buffered_error(
+                    &report_dir,
+                    label,
+                    &buffered_images,
+                    "early-boot continuation HLT endpoint",
+                    format!("unexpected exit: {endpoint:?}"),
+                );
+            }
+            let endpoint_sregs = unsafe {
+                // SAFETY: the vCPU is stopped at the checked HLT endpoint and KVM writes the
+                // complete kernel-sized `kvm_sregs2` into this independent value.
+                raw_get_sregs2(fd)
+            }
+            .unwrap_or_else(|error| {
+                fail_with_buffered_error(
+                    &report_dir,
+                    label,
+                    &buffered_images,
+                    "endpoint KVM_GET_SREGS2",
+                    error,
+                )
+            });
+            Some(endpoint_sregs.cr4)
+        } else {
+            None
         };
         let guest_xsave = observation.guest_program().then(|| {
             ram.as_mut_bytes()[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN].to_vec()
@@ -1694,6 +1816,9 @@ mod xsave_diagnostic {
                 BoundaryObservation::Unobserved => "none",
                 BoundaryObservation::GetOnly => "raw-get-get",
                 BoundaryObservation::GetSetGet => "raw-get-get-set-get",
+                BoundaryObservation::EarlyBootUnobserved => "early-boot-none",
+                BoundaryObservation::EarlyBootGetOnly => "early-boot-raw-get-get",
+                BoundaryObservation::EarlyBootGetSetGet => "early-boot-raw-get-get-set-get",
             }
         )
         .expect("metadata write");
@@ -1708,8 +1833,43 @@ mod xsave_diagnostic {
         )
         .expect("metadata write");
         writeln!(metadata, "xsave_len={xsave_len}").expect("metadata write");
+        writeln!(metadata, "requested_xcr0={requested_xcr0:#x}").expect("metadata write");
+        writeln!(metadata, "requested_cr4={requested_cr4:#x}").expect("metadata write");
+        writeln!(
+            metadata,
+            "requested_cr4_osxsave={}",
+            requested_cr4 & (1 << 18) != 0
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "requested_cr4_osfxsr={}",
+            requested_cr4 & (1 << 9) != 0
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "requested_xsave_restore_bv={requested_restore_bv:?}"
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "requested_xsave_canonical_bv={requested_xsave_canonical_bv:#x}"
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "requested_xsave_canonical_xcomp_bv={requested_xsave_canonical_xcomp_bv:#x}"
+        )
+        .expect("metadata write");
         writeln!(metadata, "xcr0_before_run={xcr0_before_run:#x}").expect("metadata write");
         writeln!(metadata, "xcr0_endpoint={xcr0_endpoint:#x}").expect("metadata write");
+        writeln!(
+            metadata,
+            "cr4_endpoint={}",
+            endpoint_cr4.map_or_else(|| "not-observed".to_owned(), |value| format!("{value:#x}"))
+        )
+        .expect("metadata write");
         writeln!(metadata, "xcr0_source=KVM_GET_XCRS").expect("metadata write");
         writeln!(metadata, "cpuid_source=KVM_GET_CPUID2").expect("metadata write");
         writeln!(metadata, "guest_visible_cpuid1={}", words_hex(cpuid1)).expect("metadata write");
@@ -1771,6 +1931,12 @@ mod xsave_diagnostic {
         .expect("metadata write");
         writeln!(metadata, "endpoint_raw_bv={endpoint_bv:#x}").expect("metadata write");
         writeln!(metadata, "endpoint_raw_xcomp_bv={endpoint_xcomp:#x}").expect("metadata write");
+        writeln!(
+            metadata,
+            "endpoint_tuple=xcr0:{xcr0_endpoint:#x},cr4:{},raw_bv:{endpoint_bv:#x},raw_xcomp_bv:{endpoint_xcomp:#x},restore_bv:{canonical_restore_bv_endpoint:?}",
+            endpoint_cr4.map_or_else(|| "not-observed".to_owned(), |value| format!("{value:#x}"))
+        )
+        .expect("metadata write");
         writeln!(
             metadata,
             "before_reads_equal={}",
@@ -1869,6 +2035,14 @@ mod xsave_diagnostic {
             )
         });
 
+        if early_boot {
+            let endpoint_cr4 = endpoint_cr4.expect("early-boot endpoint CR4 must be observed");
+            assert_eq!(
+                endpoint_cr4 & ((1 << 9) | (1 << 18)),
+                0,
+                "{label} endpoint CR4 re-enabled OSFXSR or OSXSAVE"
+            );
+        }
         let expected_xmm0 = if active_sse { &ACTIVE_XMM0 } else { &ZERO_XMM0 };
         if let Some(raw) = raw_before_1.as_ref() {
             assert_xmm0_bytes(raw, expected_xmm0, "first boundary read", label);
@@ -1922,7 +2096,7 @@ mod xsave_diagnostic {
         }
 
         if observation.guest_program() {
-            Some(GuestPhaseResult {
+            Some(PhaseResult::Guest(GuestPhaseResult {
                 raw_endpoint,
                 canonical_endpoint,
                 endpoint_bv,
@@ -1938,7 +2112,17 @@ mod xsave_diagnostic {
                     .expect("guest program must capture guest XSAVE header")
                     .1,
                 guest_restore_bv,
-            })
+            }))
+        } else if early_boot {
+            Some(PhaseResult::EarlyBoot(EarlyBootPhaseResult {
+                raw_endpoint,
+                canonical_endpoint,
+                endpoint_bv,
+                endpoint_xcomp_bv: endpoint_xcomp,
+                endpoint_restore_bv: canonical_restore_bv_endpoint,
+                endpoint_xcr0: xcr0_endpoint,
+                endpoint_cr4: endpoint_cr4.expect("early-boot endpoint CR4 must be observed"),
+            }))
         } else {
             None
         }
@@ -2053,6 +2237,79 @@ mod xsave_diagnostic {
             .unwrap_or_else(|e| panic!("write {} failed: {e}", comparison_path.display()));
     }
 
+    fn run_earlyboot_cohort(report_root: &Path) {
+        let unobserved = run_earlyboot_phase(report_root, BoundaryObservation::EarlyBootUnobserved);
+        let get_only = run_earlyboot_phase(report_root, BoundaryObservation::EarlyBootGetOnly);
+        let get_set_get = run_earlyboot_phase(report_root, BoundaryObservation::EarlyBootGetSetGet);
+        let mut comparison = String::new();
+        writeln!(comparison, "cohort=early-boot").expect("comparison write");
+        writeln!(
+            comparison,
+            "guest_program=integer-mmio-hlt-without-floating-point-instructions"
+        )
+        .expect("comparison write");
+        writeln!(comparison, "phases=unobserved,get-only,get-set-get").expect("comparison write");
+        append_pairwise(
+            &mut comparison,
+            "raw_endpoint_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.raw_endpoint == second.raw_endpoint,
+        );
+        append_pairwise(
+            &mut comparison,
+            "canonical_endpoint_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.canonical_endpoint == second.canonical_endpoint,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_bv == second.endpoint_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_xcomp_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_xcomp_bv == second.endpoint_xcomp_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_restore_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_restore_bv == second.endpoint_restore_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_xcr0_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_xcr0 == second.endpoint_xcr0,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_cr4_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_cr4 == second.endpoint_cr4,
+        );
+        let comparison_path = report_root.join(GuestX87Cohort::EarlyBoot.comparison_file());
+        fs::write(&comparison_path, comparison)
+            .unwrap_or_else(|e| panic!("write {} failed: {e}", comparison_path.display()));
+    }
+
     #[test]
     #[ignore = "live Linux x86 KVM XSAVE provenance diagnostic; set XSAVE_RAW_REPORT_DIR"]
     fn raw_xsave_presence_phases() {
@@ -2071,6 +2328,7 @@ mod xsave_diagnostic {
         run_guest_cohort(&report_root, GuestX87Cohort::PayloadPreservation);
         run_guest_cohort(&report_root, GuestX87Cohort::ZeroState);
         run_guest_cohort(&report_root, GuestX87Cohort::XrstorInit);
+        run_earlyboot_cohort(&report_root);
     }
 
     const PAE_RAM_LEN: usize = 4 * 1024 * 1024;

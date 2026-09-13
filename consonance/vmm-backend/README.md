@@ -89,6 +89,16 @@ initialization through the absent x87 presence bit without executing `FNINIT`.
 All cohorts have separate phase directories and comparison files, and each
 report records its actual source image and seed. The report is evidence about
 the host/KVM path and does not change snapshot semantics.
+The fourteen-phase diagnostic also runs an early-boot integer cohort in three
+independent fresh VMs: no boundary observation, repeated GET-only observation,
+and GET/SET/GET observation. These VMs start with requested `XCR0=1`, clear
+`CR4.OSXSAVE` and `CR4.OSFXSR`, and restore a canonical architectural-init
+XSAVE image with requested restore presence `Some(2)`. Their guest executes
+only the existing integer MMIO write and HLT sequence, with no guest FPU,
+XSAVE, or XRSTOR instruction. Each phase records the requested XCR0/CR4 and
+XSAVE presence, every observed raw/canonical image, the actual endpoint tuple,
+and pairwise comparison metadata without requiring hardware presence to remain
+`2`.
 
 The ignored Linux x86 test
 `kvm_sys::xsave_diagnostic::x86_pae_sregs2_phase_observations` is a bounded
