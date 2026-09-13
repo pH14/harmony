@@ -114,7 +114,7 @@ static void *drive_automatic_exchange(void *unused)
     size_t index;
 
     (void)unused;
-    for (index = 0; index < 64; index++)
+    for (index = 0; index < HARMONY_COVERAGE_QUANTUM; index++)
         assert(!notify_coverage(0));
     return NULL;
 }
@@ -145,7 +145,7 @@ int main(void)
     fuzz_flush();
     assert(init_coverage_module(3, "first.sym.tsv") == 0);
     assert(init_coverage_module(5, "second.sym.tsv") == 3);
-    for (size_t index = 0; index < 64; index++)
+    for (size_t index = 0; index < HARMONY_COVERAGE_QUANTUM; index++)
         assert(!notify_coverage(0));
     assert(coverage_requests == 1);
     assert(last_coverage_observed == 1);
