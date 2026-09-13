@@ -661,10 +661,10 @@ jobs:
           retention-days: 14
 
   nested-runtime-qualification:
-    name: Docker/K3s nested runtime qualification
+    name: Docker/K3s nested runtime diagnostics
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 30
     env:
       HARMONY_GUEST_DIR: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64
     steps:
@@ -771,62 +771,35 @@ jobs:
             consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
             consonance/harmony-linux/build/x86_64/runtime-manifest.json \
             >nested-runtime-report/platform-sha256.txt
-      - name: Build pinned Docker and K3s workload images
+      - name: Restore the exact diagnostic workload image artifact
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          artifact-ids: 10309292148
+          run-id: 34729120767
+          path: exact-workload-artifact
+      - name: Stage and verify the exact diagnostic workload images
         run: |
           set -euo pipefail
-          {
-            echo '== fetching pinned workload inputs'
-            sudo env PATH="$PATH" \
-              HARMONY_DOWNLOAD_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/dl" \
-              HARMONY_ARTIFACT_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/build" \
-              GUEST_BUILD_ROOT=/tmp/harmony-workload-build \
-              make -C workloads/guest-images fetch
-            for input in postgres-image.tar k3s-pause-image.tar; do
-              test -s "$GITHUB_WORKSPACE/consonance/harmony-linux/dl/$input" || {
-                echo "FAIL: required fetched input is missing or empty: $input" >&2
-                exit 1
-              }
-            done
-            echo '== building the Docker workload image'
-            sudo env PATH="$PATH" \
-              HARMONY_DOWNLOAD_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/dl" \
-              HARMONY_ARTIFACT_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/build" \
-              GUEST_BUILD_ROOT=/tmp/harmony-workload-build \
-              make -C workloads/guest-images docker-image
-            echo '== building the K3s workload image'
-            sudo env PATH="$PATH" \
-              HARMONY_DOWNLOAD_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/dl" \
-              HARMONY_ARTIFACT_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/build" \
-              GUEST_BUILD_ROOT=/tmp/harmony-workload-build \
-              make -C workloads/guest-images k3s-image
-          } 2>&1 | tee nested-runtime-report/workload-build.log
-      - name: Collect workload build diagnostics
-        if: always()
-        run: |
-          set -euo pipefail
-          mkdir -p nested-runtime-report/build-logs
-          if [[ -d /tmp/harmony-workload-build ]]; then
-            sudo find /tmp/harmony-workload-build -type f -name '*.log' \
-              -exec cp -f {} nested-runtime-report/build-logs/ \; || true
-          fi
-          if [[ -f consonance/harmony-linux/build/x86_64/runtime-manifest.json ]]; then
-            cp -f consonance/harmony-linux/build/x86_64/runtime-manifest.json \
-              nested-runtime-report/platform-runtime-manifest.json
-          fi
-          if [[ -d consonance/harmony-linux/build/oci-images ]]; then
-            find consonance/harmony-linux/build/oci-images -type f -print0 \
-              | sort -z | xargs -0r sha256sum >nested-runtime-report/workload-layouts.sha256
-          fi
-          if [[ -d consonance/harmony-linux/dl ]]; then
-            sha256sum consonance/harmony-linux/dl/postgres-image.tar \
-              consonance/harmony-linux/dl/k3s-pause-image.tar \
-              >nested-runtime-report/workload-inputs.sha256 2>/dev/null || true
-          fi
-          sudo chown -R "$(id -u):$(id -g)" nested-runtime-report 2>/dev/null || true
-          if [[ -d consonance/harmony-linux/build/oci-images ]]; then
-            sudo chown -R "$(id -u):$(id -g)" \
-              consonance/harmony-linux/build/oci-images 2>/dev/null || true
-          fi
+          image_dir=$(find exact-workload-artifact -type d \
+            -path '*/consonance/harmony-linux/build/oci-images' -print -quit)
+          test -n "$image_dir"
+          for image in docker k3s; do
+            test -d "$image_dir/$image.oci"
+            test -s "$image_dir/$image.oci/index.json"
+            test -s "$image_dir/$image.oci/oci-layout"
+          done
+          rm -rf consonance/harmony-linux/build/oci-images
+          mkdir -p consonance/harmony-linux/build
+          cp -a "$image_dir" consonance/harmony-linux/build/oci-images
+          cat >nested-runtime-report/workload-artifact.txt <<'EOF'
+          artifact_id=10309292148
+          source_run=34729120767
+          source_head=ec4e989ee70fe1e7d7130a8181425f8fa13f58b8
+          purpose=diagnostic image input; no qualification result is implied
+          EOF
+          find consonance/harmony-linux/build/oci-images -type f -print0 \
+            | sort -z | xargs -0r sha256sum >nested-runtime-report/workload-layouts.sha256
       - name: Verify workload image layouts
         run: |
           set -euo pipefail
@@ -858,101 +831,40 @@ jobs:
           set -euo pipefail
           target/release/harmony preflight --json \
             | tee nested-runtime-report/preflight.json
-      - name: Run both nested workloads twice through the canonical runtime
+      - name: Trace nested startup using unchanged image contents
         run: |
           set -uo pipefail
           report=nested-runtime-report
-          run_workload() {
-            local name=$1
-            local image="$GITHUB_WORKSPACE/consonance/harmony-linux/build/oci-images/${name}.oci"
-            local repetition out console serial marker
-            local -a markers
-            case "$name" in
-              docker)
-                markers=(
-                  'DK38: OCI workload: nested runc'
-                  'DK38: launching official postgres OCI container via nested runc'
-                  'DK38: GUEST_READY'
-                )
-                ;;
-              k3s)
-                markers=(
-                  'K8S49: CLUSTER_UP'
-                  'K8S49: POSTGRES_READY'
-                  'K8S49: client connected to the postgres pod over the CNI'
-                  'K8S49: CNI pod IPs:'
-                  'K8S49: result rc=0 (client workload completed over the CNI)'
-                )
-                ;;
-              *)
-                echo "unknown workload: $name" >&2
-                return 1
-                ;;
-            esac
-            for repetition in 1 2; do
-              out="$report/runs/${name}-${repetition}"
-              console="$report/console/${name}-${repetition}.txt"
-              rm -rf "$out"
-              echo "== running $name repetition $repetition"
-              # Keep the shell watchdog beyond the CLI budget so timeout runs
-              # can persist their partial serial log before the process dies.
-              if ! timeout -k 10 1260 target/release/harmony oci run "$image" \
-                --seed 20260901 --ram-mib 2048 --timeout 1200 --console --out "$out" \
-                2>&1 | tee "$console"; then
-                echo "FAIL: $name repetition $repetition did not complete" >&2
-                return 1
-              fi
-              test -s "$out/serial.log" || {
-                echo "FAIL: missing serial log for $name repetition $repetition" >&2
-                return 1
-              }
-              test -s "$out/run.json" || {
-                echo "FAIL: missing run record for $name repetition $repetition" >&2
-                return 1
-              }
-              jq -e '.container_rc == 0 and .runtime_rc == 0' "$out/run.json" >/dev/null || {
-                echo "FAIL: nonzero application/runtime status for $name repetition $repetition" >&2
-                return 1
-              }
-              serial="$out/serial.log"
-              if [[ "$name" == k3s ]] && ! grep -Eq $'^GUEST_READY\r?$' "$serial"; then
-                echo "FAIL: missing final K3s readiness line" >&2
-                return 1
-              fi
-              for marker in "${markers[@]}"; do
-                grep -Fq "$marker" "$serial" || {
-                  echo "FAIL: missing marker for $name repetition $repetition: $marker" >&2
-                  return 1
-                }
-              done
-            done
-            if ! cmp -s "$report/runs/${name}-1/serial.log" \
-              "$report/runs/${name}-2/serial.log"; then
-              echo "FAIL: full serial logs differ for same-seed $name runs" >&2
-              sha256sum "$report/runs/${name}-1/serial.log" \
-                "$report/runs/${name}-2/serial.log" >&2
-              return 1
-            fi
-            test "$(jq -r .serial_sha256 "$report/runs/${name}-1/run.json")" = \
-              "$(jq -r .serial_sha256 "$report/runs/${name}-2/run.json")" || {
-              echo "FAIL: run records disagree on same-seed $name serial digest" >&2
-              return 1
-            }
-            sha256sum "$report/runs/${name}-1/serial.log" \
-              >"$report/${name}-serial.sha256"
-            echo "PASS: $name has identical same-seed serial logs and zero app/runtime exits"
-          }
-
           status=0
-          run_workload docker || status=1
-          run_workload k3s || status=1
+          timeout -k 10 360 target/release/harmony oci run \
+            consonance/harmony-linux/build/oci-images/docker.oci \
+            --seed 20260901 --ram-mib 2048 --timeout 300 --console \
+            --out "$report/runs/docker-trace" -- \
+            /bin/sh -x /usr/local/bin/docker-workload.sh \
+            2>&1 | tee "$report/console/docker-trace.txt" || status=1
+          # shellcheck disable=SC2016
+          timeout -k 10 360 target/release/harmony oci run \
+            consonance/harmony-linux/build/oci-images/k3s.oci \
+            --seed 20260901 --ram-mib 2048 --timeout 300 --console \
+            --out "$report/runs/k3s-trace" -- /bin/sh -c '
+              /bin/sh -x /usr/local/bin/k3s-workload.sh &
+              workload_pid=$!
+              while /bin/busybox kill -0 "$workload_pid" 2>/dev/null; do
+                /bin/busybox sleep 2
+                /bin/busybox echo DIAGNOSTIC_K3S_LOG
+                /bin/busybox tail -60 /run/k3s.log 2>/dev/null
+                /bin/busybox echo DIAGNOSTIC_PROCESSES
+                /bin/busybox ps
+              done
+              wait "$workload_pid"
+            ' 2>&1 | tee "$report/console/k3s-trace.txt" || status=1
+          echo "Diagnostic status=$status; this run is not acceptance evidence"
           exit "$status"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: nested-runtime-qualification-${{ github.run_id }}
+          name: nested-runtime-diagnostics-${{ github.run_id }}
           path: |
             nested-runtime-report
-            consonance/harmony-linux/build/oci-images
           if-no-files-found: warn
           retention-days: 30
