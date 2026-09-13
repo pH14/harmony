@@ -1651,8 +1651,106 @@ fn boot_memory_kib(console: &str) -> Result<(u64, u64), String> {
 mod tests {
     use super::{
         OracleHistoryEdgeMetadata, OracleHistoryMetadata, OracleHistoryReplayMetadata,
-        boot_memory_kib, render_in_place_history_metadata, write_oracle_failure_file,
+        RETAINED_HISTORY_ARTIFACT_MAX_BYTES, RETAINED_HISTORY_MAX_SEQUENCE_LEN,
+        RETAINED_HISTORY_REPORT_MAX_BYTES, boot_memory_kib, parse_retained_history,
+        render_in_place_history_metadata, write_oracle_failure_file,
     };
+
+    fn history_fixture() -> (tempfile::TempDir, serde_json::Value) {
+        let temporary = tempfile::tempdir().expect("create history fixture directory");
+        let mut edges = Vec::with_capacity(50);
+        for edge_index in 0..50 {
+            edges.push(OracleHistoryEdgeMetadata {
+                edge_index,
+                parent_snapshot_id: edge_index as u64 + 1,
+                child_snapshot_id: edge_index as u64 + 2,
+                payload: vec![edge_index as u8, edge_index as u8 + 1],
+                expected_hash: [edge_index as u8; 32],
+            });
+        }
+        let mut replay_sequence = Vec::with_capacity(52);
+        replay_sequence.push(OracleHistoryReplayMetadata {
+            phase: "initial-tree-build",
+            comparison: None,
+            edge_index: 0,
+        });
+        replay_sequence.push(OracleHistoryReplayMetadata {
+            phase: "initial-tree-build",
+            comparison: None,
+            edge_index: 1,
+        });
+        replay_sequence.push(OracleHistoryReplayMetadata {
+            phase: "pre-tree-replay",
+            comparison: None,
+            edge_index: 1,
+        });
+        for edge_index in 2..50 {
+            replay_sequence.push(OracleHistoryReplayMetadata {
+                phase: "tree-build",
+                comparison: None,
+                edge_index,
+            });
+        }
+        replay_sequence.push(OracleHistoryReplayMetadata {
+            phase: "history-replay",
+            comparison: Some(1),
+            edge_index: 2,
+        });
+        let expected_hash = edges[2].expected_hash;
+        let replay_hash = [0xfe; 32];
+        let metadata = render_in_place_history_metadata(&OracleHistoryMetadata {
+            root_snapshot_id: 1,
+            tree_seed: 5,
+            failing_comparison: 1,
+            failing_edge_index: 2,
+            failing_parent_snapshot_id: 3,
+            failing_child_snapshot_id: 4,
+            failing_payload: &edges[2].payload,
+            expected_hash: &expected_hash,
+            replay_hash: &replay_hash,
+            root_artifact: b"root",
+            parent_artifact: b"parent",
+            expected_endpoint: b"expected",
+            actual_endpoint: b"actual",
+            edges: &edges,
+            replay_sequence: &replay_sequence,
+        });
+        std::fs::write(
+            temporary.path().join("in-place-history-failure.json"),
+            metadata,
+        )
+        .expect("write history fixture report");
+        for (name, bytes) in [
+            ("in-place-history-root.bin", b"root".as_slice()),
+            ("in-place-history-parent.bin", b"parent".as_slice()),
+            ("in-place-history-expected.bin", b"expected".as_slice()),
+            ("in-place-history-actual.bin", b"actual".as_slice()),
+        ] {
+            std::fs::write(temporary.path().join(name), bytes)
+                .expect("write history fixture artifact");
+        }
+        let report = serde_json::from_slice(
+            &std::fs::read(temporary.path().join("in-place-history-failure.json"))
+                .expect("read history fixture report"),
+        )
+        .expect("parse history fixture report");
+        (temporary, report)
+    }
+
+    fn write_report(directory: &std::path::Path, report: &serde_json::Value) {
+        std::fs::write(
+            directory.join("in-place-history-failure.json"),
+            serde_json::to_vec(report).expect("encode history fixture report"),
+        )
+        .expect("write history fixture report");
+    }
+
+    fn parse_error(directory: &std::path::Path) -> String {
+        match parse_retained_history(directory) {
+            Ok(_) => panic!("malformed history fixture should fail preflight"),
+            Err(error) => error,
+        }
+    }
 
     #[test]
     fn boot_memory_accepts_plain_and_kernel_timestamped_reports() {
@@ -1810,6 +1908,148 @@ mod tests {
             b"first"
         );
     }
+
+    #[test]
+    fn retained_history_preflight_rejects_unsupported_version() {
+        let temporary = tempfile::tempdir().expect("create malformed report directory");
+        std::fs::write(
+            temporary.path().join("in-place-history-failure.json"),
+            br#"{"kind":"in-place-history-failure","report_version":2}"#,
+        )
+        .expect("write malformed report");
+        let error = match parse_retained_history(temporary.path()) {
+            Ok(_) => panic!("unsupported report version should fail preflight"),
+            Err(error) => error,
+        };
+        assert!(error.contains("version"));
+    }
+
+    #[test]
+    fn retained_history_preflight_accepts_complete_fixture() {
+        let (temporary, _) = history_fixture();
+        let history = parse_retained_history(temporary.path()).expect("valid fixture should parse");
+        assert_eq!(history.edges.len(), 50);
+        assert_eq!(history.replay_sequence.len(), 52);
+        assert_eq!(history.root_snapshot_id, 1);
+        assert_eq!(history.root.bytes, b"root");
+    }
+
+    #[test]
+    fn retained_history_preflight_accepts_maximum_history_sequence() {
+        let (temporary, mut report) = history_fixture();
+        let sequence = report["replay_sequence"]
+            .as_array_mut()
+            .expect("sequence array");
+        for comparison in 2..=199 {
+            sequence.push(serde_json::json!({
+                "phase": "history-replay",
+                "comparison": comparison,
+                "edge_index": 2
+            }));
+        }
+        report["failing_comparison"] = serde_json::json!(199);
+        write_report(temporary.path(), &report);
+        let history =
+            parse_retained_history(temporary.path()).expect("maximum fixture should parse");
+        assert_eq!(
+            history.replay_sequence.len(),
+            RETAINED_HISTORY_MAX_SEQUENCE_LEN
+        );
+        assert_eq!(history.failing_comparison, 199);
+    }
+
+    #[test]
+    fn retained_history_preflight_rejects_typed_protocol_and_sequence_errors() {
+        let (temporary, mut report) = history_fixture();
+        report["branch_protocol"]["payload_suffix"] = serde_json::json!([0, null, 1]);
+        write_report(temporary.path(), &report);
+        assert!(parse_error(temporary.path()).contains("protocol"));
+
+        let (temporary, mut report) = history_fixture();
+        report["replay_sequence"]
+            .as_array_mut()
+            .expect("sequence array")
+            .swap(2, 3);
+        write_report(temporary.path(), &report);
+        assert!(parse_error(temporary.path()).contains("sequence"));
+
+        let (temporary, mut report) = history_fixture();
+        report["replay_sequence"]
+            .as_array_mut()
+            .expect("sequence array")
+            .remove(2);
+        write_report(temporary.path(), &report);
+        assert!(parse_error(temporary.path()).contains("entries"));
+
+        let (temporary, mut report) = history_fixture();
+        report["replay_sequence"][51]["edge_index"] = serde_json::json!(50);
+        write_report(temporary.path(), &report);
+        assert!(parse_error(temporary.path()).contains("references edge"));
+
+        let (temporary, mut report) = history_fixture();
+        report["replay_sequence"][51]["comparison"] = serde_json::json!(200);
+        write_report(temporary.path(), &report);
+        assert!(parse_error(temporary.path()).contains("sequence"));
+
+        let (temporary, mut report) = history_fixture();
+        let sequence = report["replay_sequence"]
+            .as_array_mut()
+            .expect("sequence array");
+        for comparison in 2..=200 {
+            sequence.push(serde_json::json!({
+                "phase": "history-replay",
+                "comparison": comparison,
+                "edge_index": 2
+            }));
+        }
+        report["failing_comparison"] = serde_json::json!(200);
+        write_report(temporary.path(), &report);
+        assert!(parse_error(temporary.path()).contains("entries"));
+    }
+
+    #[test]
+    fn retained_history_preflight_rejects_edge_graph_errors() {
+        let (temporary, mut report) = history_fixture();
+        report["edge_table"][3]["parent_snapshot_id"] = serde_json::json!(999);
+        write_report(temporary.path(), &report);
+        assert!(parse_error(temporary.path()).contains("before it is sealed"));
+
+        let (temporary, mut report) = history_fixture();
+        report["edge_table"][3]["child_snapshot_id"] =
+            report["edge_table"][2]["child_snapshot_id"].clone();
+        write_report(temporary.path(), &report);
+        assert!(parse_error(temporary.path()).contains("reuses child"));
+    }
+
+    #[test]
+    fn retained_history_preflight_rejects_artifact_bindings() {
+        let (temporary, mut report) = history_fixture();
+        report["artifact_bindings"]["root"]["sha256"] = serde_json::json!("00".repeat(32));
+        write_report(temporary.path(), &report);
+        assert!(parse_error(temporary.path()).contains("SHA-256"));
+
+        let (temporary, mut report) = history_fixture();
+        report["artifact_bindings"]["root"]["bytes"] = serde_json::json!(99);
+        write_report(temporary.path(), &report);
+        assert!(parse_error(temporary.path()).contains("length"));
+
+        let (temporary, mut report) = history_fixture();
+        report["artifact_bindings"]["root"]["bytes"] =
+            serde_json::json!(RETAINED_HISTORY_ARTIFACT_MAX_BYTES + 1);
+        write_report(temporary.path(), &report);
+        assert!(parse_error(temporary.path()).contains("limit"));
+    }
+
+    #[test]
+    fn retained_history_preflight_rejects_oversized_report() {
+        let temporary = tempfile::tempdir().expect("create oversized report directory");
+        std::fs::write(
+            temporary.path().join("in-place-history-failure.json"),
+            vec![b' '; usize::try_from(RETAINED_HISTORY_REPORT_MAX_BYTES).unwrap() + 1],
+        )
+        .expect("write oversized report");
+        assert!(parse_error(temporary.path()).contains("limit"));
+    }
 }
 
 #[cfg(any(
@@ -1917,10 +2157,6 @@ fn render_in_place_history_metadata(metadata: &OracleHistoryMetadata<'_>) -> Str
     };
     let hash_hex =
         |hash: &[u8; 32]| -> String { hash.iter().map(|byte| format!("{byte:02x}")).collect() };
-    let sha256 = |bytes: &[u8]| {
-        use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::digest(bytes))
-    };
     let mut output = String::new();
     output.push_str("{\n  \"kind\": \"in-place-history-failure\",\n  \"report_version\": 1,\n");
     output.push_str(
@@ -2001,28 +2237,28 @@ fn render_in_place_history_metadata(metadata: &OracleHistoryMetadata<'_>) -> Str
         output,
         "{}, \"sha256\": \"{}\"}},",
         metadata.root_artifact.len(),
-        sha256(metadata.root_artifact)
+        oracle_sha256(metadata.root_artifact)
     )
     .expect("String write cannot fail");
     writeln!(
         output,
         "    \"parent\": {{\"file\": \"in-place-history-parent.bin\", \"bytes\": {}, \"sha256\": \"{}\"}},",
         metadata.parent_artifact.len(),
-        sha256(metadata.parent_artifact)
+        oracle_sha256(metadata.parent_artifact)
     )
     .expect("String write cannot fail");
     writeln!(
         output,
         "    \"expected_endpoint\": {{\"file\": \"in-place-history-expected.bin\", \"bytes\": {}, \"sha256\": \"{}\"}},",
         metadata.expected_endpoint.len(),
-        sha256(metadata.expected_endpoint)
+        oracle_sha256(metadata.expected_endpoint)
     )
     .expect("String write cannot fail");
     writeln!(
         output,
         "    \"actual_endpoint\": {{\"file\": \"in-place-history-actual.bin\", \"bytes\": {}, \"sha256\": \"{}\"}}\n  }},",
         metadata.actual_endpoint.len(),
-        sha256(metadata.actual_endpoint)
+        oracle_sha256(metadata.actual_endpoint)
     )
     .expect("String write cannot fail");
     output.push_str(
@@ -2064,6 +2300,674 @@ fn render_in_place_history_metadata(metadata: &OracleHistoryMetadata<'_>) -> Str
     }
     output.push_str("\n  ]\n}\n");
     output
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn oracle_sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+const RETAINED_HISTORY_REPORT_MAX_BYTES: u64 = 1024 * 1024;
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+const RETAINED_HISTORY_ARTIFACT_MAX_BYTES: u64 = PROBE_RAM as u64 + 8 * 1024 * 1024;
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+const RETAINED_HISTORY_EDGE_COUNT: usize = 50;
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+const RETAINED_HISTORY_MIN_SEQUENCE_LEN: usize = RETAINED_HISTORY_EDGE_COUNT + 2;
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+const RETAINED_HISTORY_MAX_SEQUENCE_LEN: usize = RETAINED_HISTORY_EDGE_COUNT + 1 + 199;
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+struct RetainedHistoryArtifact {
+    bytes: Vec<u8>,
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+struct RetainedHistory {
+    root_snapshot_id: u64,
+    tree_seed: u64,
+    failing_comparison: u64,
+    failing_edge_index: usize,
+    failing_parent_snapshot_id: u64,
+    failing_child_snapshot_id: u64,
+    expected_hash: [u8; 32],
+    replay_hash: [u8; 32],
+    edges: Vec<OracleHistoryEdgeMetadata>,
+    replay_sequence: Vec<OracleHistoryReplayMetadata>,
+    root: RetainedHistoryArtifact,
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn retained_object<'a>(
+    value: &'a serde_json::Value,
+    key: &str,
+) -> Result<&'a serde_json::Map<String, serde_json::Value>, String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| format!("in-place history report field {key} must be an object"))
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn retained_u64(value: &serde_json::Value, key: &str) -> Result<u64, String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| format!("in-place history report field {key} must be an unsigned integer"))
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn retained_optional_u64(value: &serde_json::Value, key: &str) -> Result<Option<u64>, String> {
+    let value = value
+        .get(key)
+        .ok_or_else(|| format!("in-place history report field {key} is missing"))?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    value.as_u64().map(Some).ok_or_else(|| {
+        format!("in-place history report field {key} must be null or an unsigned integer")
+    })
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn retained_bool(
+    value: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<bool, String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| format!("in-place history report field {key} must be boolean"))
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn retained_map_u64(
+    value: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<u64, String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| format!("in-place history report field {key} must be an unsigned integer"))
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn retained_map_string(
+    value: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<String, String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("in-place history report field {key} must be a string"))
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn retained_string(value: &serde_json::Value, key: &str) -> Result<String, String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("in-place history report field {key} must be a string"))
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn retained_bytes(value: &serde_json::Value, key: &str, max_len: usize) -> Result<Vec<u8>, String> {
+    let values = value
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("in-place history report field {key} must be an array"))?;
+    if values.len() > max_len {
+        return Err(format!(
+            "in-place history report field {key} has {} bytes, maximum is {max_len}",
+            values.len()
+        ));
+    }
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let byte = value.as_u64().ok_or_else(|| {
+                format!("in-place history report field {key}[{index}] must be an unsigned integer")
+            })?;
+            u8::try_from(byte).map_err(|_| {
+                format!("in-place history report field {key}[{index}] is outside byte range")
+            })
+        })
+        .collect()
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn retained_hash(value: &serde_json::Value, key: &str) -> Result<[u8; 32], String> {
+    let text = retained_string(value, key)?;
+    if text.len() != 64 {
+        return Err(format!(
+            "in-place history report field {key} must contain 64 hexadecimal characters"
+        ));
+    }
+    let mut hash = [0u8; 32];
+    for (index, pair) in text.as_bytes().chunks_exact(2).enumerate() {
+        let high = (pair[0] as char)
+            .to_digit(16)
+            .ok_or_else(|| format!("in-place history report field {key} is not hexadecimal"))?;
+        let low = (pair[1] as char)
+            .to_digit(16)
+            .ok_or_else(|| format!("in-place history report field {key} is not hexadecimal"))?;
+        hash[index] = ((high << 4) | low) as u8;
+    }
+    Ok(hash)
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn retained_artifact(
+    directory: &std::path::Path,
+    bindings: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    expected_file: &str,
+) -> Result<RetainedHistoryArtifact, String> {
+    let binding = bindings
+        .get(key)
+        .ok_or_else(|| format!("in-place history artifact binding {key} is missing"))?;
+    let binding = binding
+        .as_object()
+        .ok_or_else(|| format!("in-place history artifact binding {key} must be an object"))?;
+    let file = retained_map_string(binding, "file")?;
+    if file != expected_file {
+        return Err(format!(
+            "in-place history artifact {key} names {file:?}, expected {expected_file:?}"
+        ));
+    }
+    let expected_len = usize::try_from(retained_map_u64(binding, "bytes")?)
+        .map_err(|_| format!("in-place history artifact {key} length is too large"))?;
+    let expected_sha256 = retained_map_string(binding, "sha256")?;
+    if expected_sha256.len() != 64 || !expected_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(format!(
+            "in-place history artifact {key} SHA-256 must be 64 hexadecimal characters"
+        ));
+    }
+    if u64::try_from(expected_len).unwrap_or(u64::MAX) > RETAINED_HISTORY_ARTIFACT_MAX_BYTES {
+        return Err(format!(
+            "retained {key} artifact length {expected_len} exceeds the {}-byte limit",
+            RETAINED_HISTORY_ARTIFACT_MAX_BYTES
+        ));
+    }
+    let bytes = read_retained_file(
+        &directory.join(expected_file),
+        RETAINED_HISTORY_ARTIFACT_MAX_BYTES,
+        &format!("retained {key} artifact"),
+    )?;
+    if bytes.len() != expected_len {
+        return Err(format!(
+            "retained {key} artifact length {} does not match report {expected_len}",
+            bytes.len()
+        ));
+    }
+    let actual_sha256 = oracle_sha256(&bytes);
+    if actual_sha256 != expected_sha256 {
+        return Err(format!(
+            "retained {key} artifact SHA-256 {actual_sha256} does not match report {expected_sha256}"
+        ));
+    }
+    Ok(RetainedHistoryArtifact { bytes })
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn read_retained_file(
+    path: &std::path::Path,
+    max_bytes: u64,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let file =
+        std::fs::File::open(path).map_err(|error| format!("cannot read {label}: {error}"))?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read {label}: {error}"))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max_bytes {
+        return Err(format!("{label} exceeds the {max_bytes}-byte limit"));
+    }
+    Ok(bytes)
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn parse_retained_history(directory: &std::path::Path) -> Result<RetainedHistory, String> {
+    let report = read_retained_file(
+        &directory.join("in-place-history-failure.json"),
+        RETAINED_HISTORY_REPORT_MAX_BYTES,
+        "in-place history report",
+    )?;
+    let report: serde_json::Value = serde_json::from_slice(&report)
+        .map_err(|error| format!("in-place history report is malformed JSON: {error}"))?;
+    if report.get("kind").and_then(serde_json::Value::as_str) != Some("in-place-history-failure") {
+        return Err("in-place history report kind is unsupported".to_owned());
+    }
+    if retained_u64(&report, "report_version")? != 1 {
+        return Err("in-place history report version is unsupported".to_owned());
+    }
+    let protocol = retained_object(&report, "branch_protocol")?;
+    let payload_suffix = protocol
+        .get("payload_suffix")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("in-place history payload_suffix must be an array")?;
+    if payload_suffix.len() != 2
+        || payload_suffix[0].as_u64() != Some(0)
+        || payload_suffix[1].as_u64() != Some(1)
+        || !retained_bool(protocol, "tree_build_seals")?
+        || retained_bool(protocol, "pre_tree_replay_seals")?
+        || retained_bool(protocol, "history_replay_seals")?
+    {
+        return Err(
+            "in-place history branch protocol does not match the replay contract".to_owned(),
+        );
+    }
+    let root_snapshot_id = retained_u64(&report, "root_snapshot_id")?;
+    let tree_seed = retained_u64(&report, "tree_seed")?;
+    let failing_comparison = retained_u64(&report, "failing_comparison")?;
+    let failing_edge_index = usize::try_from(retained_u64(&report, "failing_edge_index")?)
+        .map_err(|_| "in-place history failing edge index is too large".to_owned())?;
+    let failing_parent_snapshot_id = retained_u64(&report, "failing_parent_snapshot_id")?;
+    let failing_child_snapshot_id = retained_u64(&report, "failing_child_snapshot_id")?;
+    let failing_payload = retained_bytes(&report, "failing_payload", 2)?;
+    if failing_payload.len() != 2 {
+        return Err("in-place history failing payload must contain two bytes".to_owned());
+    }
+    let expected_hash = retained_hash(&report, "expected_hash")?;
+    let replay_hash = retained_hash(&report, "replay_hash")?;
+    let edges_value = report
+        .get("edge_table")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("in-place history edge_table must be an array")?;
+    if edges_value.len() != RETAINED_HISTORY_EDGE_COUNT {
+        return Err(format!(
+            "in-place history edge_table has {} entries, expected {}",
+            edges_value.len(),
+            RETAINED_HISTORY_EDGE_COUNT
+        ));
+    }
+    let mut edges = Vec::with_capacity(edges_value.len());
+    for (edge_index, value) in edges_value.iter().enumerate() {
+        let actual_index = usize::try_from(retained_u64(value, "edge_index")?)
+            .map_err(|_| format!("in-place history edge {edge_index} index is too large"))?;
+        if actual_index != edge_index {
+            return Err(format!(
+                "in-place history edge table index {actual_index} is at position {edge_index}"
+            ));
+        }
+        let payload = retained_bytes(value, "payload", 2)?;
+        if payload.len() != 2 {
+            return Err(format!(
+                "in-place history edge {edge_index} payload must contain two bytes"
+            ));
+        }
+        edges.push(OracleHistoryEdgeMetadata {
+            edge_index,
+            parent_snapshot_id: retained_u64(value, "parent_snapshot_id")?,
+            child_snapshot_id: retained_u64(value, "child_snapshot_id")?,
+            payload,
+            expected_hash: retained_hash(value, "expected_hash")?,
+        });
+    }
+    let sequence_value = report
+        .get("replay_sequence")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("in-place history replay_sequence must be an array")?;
+    if !(RETAINED_HISTORY_MIN_SEQUENCE_LEN..=RETAINED_HISTORY_MAX_SEQUENCE_LEN)
+        .contains(&sequence_value.len())
+    {
+        return Err(format!(
+            "in-place history replay_sequence has {} entries, expected {}..={}",
+            sequence_value.len(),
+            RETAINED_HISTORY_MIN_SEQUENCE_LEN,
+            RETAINED_HISTORY_MAX_SEQUENCE_LEN
+        ));
+    }
+    let tree_sequence_len = edges.len() + 1;
+    let mut replay_sequence = Vec::with_capacity(sequence_value.len());
+    for (sequence_index, value) in sequence_value.iter().enumerate() {
+        let phase = retained_string(value, "phase")?;
+        let edge_index = usize::try_from(retained_u64(value, "edge_index")?)
+            .map_err(|_| format!("in-place history sequence {sequence_index} edge is too large"))?;
+        if edge_index >= edges.len() {
+            return Err(format!(
+                "in-place history sequence {sequence_index} references edge {edge_index}"
+            ));
+        }
+        let comparison = retained_optional_u64(value, "comparison")?;
+        if sequence_index < 2 {
+            if phase != "initial-tree-build" || comparison.is_some() || edge_index != sequence_index
+            {
+                return Err("in-place history initial setup sequence is invalid".to_owned());
+            }
+        } else if sequence_index == 2 {
+            if phase != "pre-tree-replay" || comparison.is_some() || edge_index != 1 {
+                return Err("in-place history pre-tree sequence is invalid".to_owned());
+            }
+        } else if sequence_index < tree_sequence_len {
+            if phase != "tree-build" || comparison.is_some() || edge_index != sequence_index - 1 {
+                return Err("in-place history tree-build sequence is invalid".to_owned());
+            }
+        } else {
+            let expected_comparison = u64::try_from(sequence_index - tree_sequence_len + 1)
+                .map_err(|_| "in-place history comparison index is too large".to_owned())?;
+            if phase != "history-replay" || comparison != Some(expected_comparison) {
+                return Err("in-place history replay sequence is invalid".to_owned());
+            }
+        }
+        let phase = match phase.as_str() {
+            "initial-tree-build" => "initial-tree-build",
+            "pre-tree-replay" => "pre-tree-replay",
+            "tree-build" => "tree-build",
+            "history-replay" => "history-replay",
+            _ => {
+                return Err(format!(
+                    "in-place history sequence phase {phase:?} is unsupported"
+                ));
+            }
+        };
+        replay_sequence.push(OracleHistoryReplayMetadata {
+            phase,
+            comparison,
+            edge_index,
+        });
+    }
+    let final_replay = replay_sequence
+        .last()
+        .ok_or("in-place history replay sequence is empty")?;
+    if final_replay.comparison != Some(failing_comparison)
+        || final_replay.edge_index != failing_edge_index
+    {
+        return Err(
+            "in-place history failing comparison does not match replay sequence".to_owned(),
+        );
+    }
+    let failing_edge = edges
+        .get(failing_edge_index)
+        .ok_or("in-place history failing edge is outside edge table")?;
+    if failing_edge.parent_snapshot_id != failing_parent_snapshot_id
+        || failing_edge.child_snapshot_id != failing_child_snapshot_id
+        || failing_edge.payload != failing_payload
+        || failing_edge.expected_hash != expected_hash
+    {
+        return Err("in-place history failing edge metadata does not match edge table".to_owned());
+    }
+    let mut known_snapshots = std::collections::BTreeSet::from([root_snapshot_id]);
+    for edge in &edges {
+        if !known_snapshots.contains(&edge.parent_snapshot_id) {
+            return Err(format!(
+                "in-place history edge {} references a snapshot before it is sealed",
+                edge.edge_index
+            ));
+        }
+        if !known_snapshots.insert(edge.child_snapshot_id) {
+            return Err(format!(
+                "in-place history edge {} reuses child snapshot {}",
+                edge.edge_index, edge.child_snapshot_id
+            ));
+        }
+    }
+    let snapshots = retained_object(&report, "snapshots")?;
+    let root = snapshots
+        .get("root")
+        .ok_or("in-place history root snapshot label is missing")?;
+    let root_id = retained_u64(root, "id")?;
+    if root_id != root_snapshot_id
+        || retained_string(root, "file")? != "in-place-history-root.bin"
+        || retained_string(root, "meaning")? != "stored root/base snapshot"
+    {
+        return Err("in-place history root snapshot label is invalid".to_owned());
+    }
+    let parent = snapshots
+        .get("parent")
+        .ok_or("in-place history parent snapshot label is missing")?;
+    if retained_u64(parent, "id")? != failing_parent_snapshot_id
+        || retained_string(parent, "file")? != "in-place-history-parent.bin"
+        || retained_string(parent, "meaning")? != "stored failing parent snapshot"
+    {
+        return Err("in-place history parent snapshot label is invalid".to_owned());
+    }
+    let expected_child = snapshots
+        .get("expected_child")
+        .ok_or("in-place history expected child snapshot label is missing")?;
+    if retained_u64(expected_child, "id")? != failing_child_snapshot_id
+        || retained_string(expected_child, "file")? != "in-place-history-expected.bin"
+        || retained_string(expected_child, "meaning")?
+            != "stored expected child snapshot exported as the expected endpoint"
+    {
+        return Err("in-place history expected child snapshot label is invalid".to_owned());
+    }
+    let bindings = retained_object(&report, "artifact_bindings")?;
+    let root = retained_artifact(directory, bindings, "root", "in-place-history-root.bin")?;
+    let _ = retained_artifact(directory, bindings, "parent", "in-place-history-parent.bin")?;
+    let _ = retained_artifact(
+        directory,
+        bindings,
+        "expected_endpoint",
+        "in-place-history-expected.bin",
+    )?;
+    let _ = retained_artifact(
+        directory,
+        bindings,
+        "actual_endpoint",
+        "in-place-history-actual.bin",
+    )?;
+    let endpoint_pair = retained_object(&report, "endpoint_pair")?;
+    if retained_map_string(endpoint_pair, "expected_file")? != "in-place-history-expected.bin"
+        || retained_map_string(endpoint_pair, "actual_file")? != "in-place-history-actual.bin"
+        || retained_map_string(endpoint_pair, "actual_meaning")?
+            != "current failing in-place replay endpoint captured before diagnostics"
+    {
+        return Err("in-place history endpoint pair labels are invalid".to_owned());
+    }
+    if retained_string(&report, "replay_hash_meaning")?
+        != "whole-state hash returned by the failing replay before retention; it is not an assertion about actual_endpoint"
+    {
+        return Err("in-place history replay hash label is invalid".to_owned());
+    }
+    Ok(RetainedHistory {
+        root_snapshot_id,
+        tree_seed,
+        failing_comparison,
+        failing_edge_index,
+        failing_parent_snapshot_id,
+        failing_child_snapshot_id,
+        expected_hash,
+        replay_hash,
+        edges,
+        replay_sequence,
+        root,
+    })
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn retain_history_replay_mismatch(
+    directory: &std::path::Path,
+    comparison: u64,
+    edge: &OracleHistoryEdgeMetadata,
+    mapped_parent_snapshot_id: u64,
+    actual_snapshot_id: u64,
+    replay_hash: &[u8; 32],
+    actual_endpoint: &[u8],
+) -> Result<(), String> {
+    write_oracle_failure_file(
+        directory,
+        "in-place-history-replay-actual.bin",
+        actual_endpoint,
+    )?;
+    let report = serde_json::json!({
+        "kind": "in-place-history-replay-failure",
+        "report_version": 1,
+        "comparison": comparison,
+        "edge_index": edge.edge_index,
+        "original_parent_snapshot_id": edge.parent_snapshot_id,
+        "mapped_parent_snapshot_id": mapped_parent_snapshot_id,
+        "original_child_snapshot_id": edge.child_snapshot_id,
+        "actual_snapshot_id": actual_snapshot_id,
+        "payload": edge.payload,
+        "expected_hash": edge.expected_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        "replay_hash": replay_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        "replay_hash_meaning": "whole-state hash returned by the replay before mismatch retention",
+        "actual_endpoint_file": "in-place-history-replay-actual.bin",
+        "actual_endpoint_sha256": oracle_sha256(actual_endpoint),
+    });
+    let report = serde_json::to_vec_pretty(&report)
+        .map_err(|error| format!("cannot encode in-place history replay failure: {error}"))?;
+    write_oracle_failure_file(directory, "in-place-history-replay-failure.json", &report)
 }
 
 #[cfg(any(
@@ -3760,9 +4664,164 @@ fn run() -> Result<(), String> {
         Ok(())
     }
 
+    fn run_in_place_history_replay(
+        kernel_path: std::ffi::OsString,
+        initramfs_path: std::ffi::OsString,
+        report_directory: std::ffi::OsString,
+    ) -> Result<(), String> {
+        let report_directory = std::path::PathBuf::from(report_directory);
+        let history = parse_retained_history(&report_directory)?;
+        #[cfg(target_os = "linux")]
+        if !std::path::Path::new("/dev/kvm").exists() {
+            return Err("/dev/kvm is unavailable on this runner".to_owned());
+        }
+        let kernel = std::fs::read(&kernel_path)
+            .map_err(|error| format!("cannot read replay kernel {kernel_path:?}: {error}"))?;
+        let initramfs = std::fs::read(&initramfs_path)
+            .map_err(|error| format!("cannot read replay initramfs {initramfs_path:?}: {error}"))?;
+        let live = boot_probe(&kernel, &initramfs)
+            .map_err(|error| format!("replay boot compose: {error:?}"))?;
+        let factory_kernel = kernel.clone();
+        let factory_initramfs = initramfs.clone();
+        let factory: VmmFactory<ProbeBackend> =
+            Box::new(move || boot_probe(&factory_kernel, &factory_initramfs));
+        let mut server = ControlServer::new(live, factory);
+        server.set_restore_mode(RestoreMode::InPlace);
+        let mut profile = ProbeProfile::new(true);
+        match drive(&mut server, &Request::Hello(server_caps()), &mut profile)? {
+            Reply::Hello(caps) if caps == server_caps() => {}
+            other => return Err(format!("replay hello returned {other:?}")),
+        }
+        let imported = server
+            .import_portable_snapshot(history.root.bytes.as_slice())
+            .map_err(|error| format!("in-place history root import failed: {error}"))?;
+        let mut snapshot_map = std::collections::BTreeMap::new();
+        snapshot_map.insert(history.root_snapshot_id, imported.id);
+        let fallbacks_start = server.in_place_fallbacks();
+        let mut history_replays = 0u64;
+        for replay in &history.replay_sequence {
+            let edge = history
+                .edges
+                .get(replay.edge_index)
+                .ok_or_else(|| format!("replay sequence references edge {}", replay.edge_index))?;
+            let parent = snapshot_map
+                .get(&edge.parent_snapshot_id)
+                .copied()
+                .ok_or_else(|| {
+                    format!(
+                        "replay edge {} parent {} has not been sealed",
+                        edge.edge_index, edge.parent_snapshot_id
+                    )
+                })?;
+            let seal = matches!(replay.phase, "initial-tree-build" | "tree-build");
+            let (child, oracle_hash, _) = oracle_action(
+                &mut server,
+                parent,
+                edge.payload.clone(),
+                seal,
+                &mut profile,
+            )?;
+            let replay_hash = if replay.phase == "initial-tree-build" && replay.edge_index == 0 {
+                hash_whole(&mut server, &mut profile)?
+            } else {
+                oracle_hash
+            };
+            if server.in_place_fallbacks() != fallbacks_start {
+                return Err(format!(
+                    "in-place history replay used {} fallback restores",
+                    server.in_place_fallbacks().saturating_sub(fallbacks_start)
+                ));
+            }
+            if replay_hash != edge.expected_hash {
+                let (actual_snapshot_id, actual_endpoint) =
+                    snapshot_current(&mut server, &mut profile)?;
+                retain_history_replay_mismatch(
+                    &report_directory,
+                    replay.comparison.unwrap_or(0),
+                    edge,
+                    parent.0,
+                    actual_snapshot_id.0,
+                    &replay_hash,
+                    &actual_endpoint,
+                )?;
+                return Err(format!(
+                    "in-place history replay mismatch at comparison {} edge {}: expected={:02x?} replay={replay_hash:02x?}",
+                    replay.comparison.unwrap_or(0),
+                    edge.edge_index,
+                    edge.expected_hash,
+                ));
+            }
+            if seal {
+                let child = child.ok_or_else(|| {
+                    format!(
+                        "replay edge {} did not produce a sealed snapshot",
+                        edge.edge_index
+                    )
+                })?;
+                if snapshot_map.insert(edge.child_snapshot_id, child).is_some() {
+                    return Err(format!(
+                        "replay edge {} reused child snapshot {}",
+                        edge.edge_index, edge.child_snapshot_id
+                    ));
+                }
+                let vmm = server.vmm().ok_or("oracle VM unavailable")?;
+                let _components = vmm.state_components();
+                let _sdk_capture = vmm.sdk_snapshot();
+            } else if child.is_some() {
+                return Err(format!(
+                    "replay edge {} unexpectedly produced a sealed child",
+                    edge.edge_index
+                ));
+            }
+            if replay.phase == "history-replay" {
+                history_replays = history_replays.saturating_add(1);
+            }
+        }
+        if snapshot_map.len() != history.edges.len() + 1 {
+            return Err(format!(
+                "in-place history replay sealed {} snapshots, expected {}",
+                snapshot_map.len(),
+                history.edges.len() + 1
+            ));
+        }
+        if server.in_place_fallbacks() != fallbacks_start {
+            return Err(format!(
+                "in-place history replay used {} fallback restores",
+                server.in_place_fallbacks().saturating_sub(fallbacks_start)
+            ));
+        }
+        println!(
+            "NOVA_CONSONANCE_IN_PLACE_HISTORY_REPLAY_OK tree_seed={} edges={} history_replays={} root_original={} root_imported={} failing_comparison={} failing_edge={} failing_parent_original={} failing_child_original={} expected_hash={:02x?} recorded_replay_hash={:02x?} root_artifact_bytes={}",
+            history.tree_seed,
+            history.edges.len(),
+            history_replays,
+            history.root_snapshot_id,
+            imported.id.0,
+            history.failing_comparison,
+            history.failing_edge_index,
+            history.failing_parent_snapshot_id,
+            history.failing_child_snapshot_id,
+            history.expected_hash,
+            history.replay_hash,
+            history.root.bytes.len(),
+        );
+        Ok(())
+    }
+
     let mut args = std::env::args_os().skip(1);
-    let (Some(kernel_path), Some(initramfs_path), None) = (args.next(), args.next(), args.next())
-    else {
+    let first = args.next();
+    if first.as_deref() == Some(std::ffi::OsStr::new("--replay-in-place-history")) {
+        let (Some(kernel_path), Some(initramfs_path), Some(report_directory), None) =
+            (args.next(), args.next(), args.next(), args.next())
+        else {
+            return Err(
+                "usage: kvm_x86_nova_probe --replay-in-place-history <bzImage> <initramfs-nova.cpio.gz> <report-dir>"
+                    .to_owned(),
+            );
+        };
+        return run_in_place_history_replay(kernel_path, initramfs_path, report_directory);
+    }
+    let (Some(kernel_path), Some(initramfs_path), None) = (first, args.next(), args.next()) else {
         return Err("usage: kvm_x86_nova_probe <bzImage> <initramfs-nova.cpio.gz>".to_string());
     };
     let restore_oracle = std::env::var_os("HARMONY_CONSONANCE_RESTORE_ORACLE").is_some();

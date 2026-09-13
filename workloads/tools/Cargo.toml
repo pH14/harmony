@@ -16,7 +16,7 @@ control-proto = { version = "=0.1.0", path = "../../consonance/control-proto" }
 environment = { version = "=0.1.0", path = "../../consonance/environment" }
 vtime = { path = "../../consonance/vtime", version = "0.1.0" }
 sha2 = "0.10"
+serde_json = "1"
 
 [dev-dependencies]
-serde_json = "1"
 tempfile = "3"

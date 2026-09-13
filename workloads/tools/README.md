@@ -87,6 +87,35 @@ the restore. These files are written only on the failure path, before any fresh
 diagnostic restore changes the VM, and a filename collision is reported as an
 error.
 
+An opt-in replay can consume this retained report from a compatible Linux KVM
+or Apple Silicon HVF boot. Preflight validates the report version, branch
+protocol, complete edge table, ordered sequence, snapshot labels, and the
+length and SHA-256 binding of every retained artifact before booting. The
+replay imports the stored root snapshot, remaps its original IDs to newly
+sealed IDs, and invokes the same branch, capture, continuation, and hashing
+helpers for the recorded initial A/B setup, unsealed B replay, tree build, and
+history sequence. It requires zero in-place fallbacks and stops at the first
+hash mismatch, retaining the actual endpoint and a JSON description:
+
+The preflight bounds the report at 1 MiB, requires the fixed 50-edge schema and
+52 through 250 sequence entries, and bounds each retained artifact at the
+configured 128 MiB probe RAM plus 8 MiB of format allowance.
+
+```sh
+cargo build --locked --release --manifest-path workloads/tools/Cargo.toml \
+  --bin kvm_x86_nova_probe
+workloads/tools/target/release/kvm_x86_nova_probe \
+  --replay-in-place-history path/to/bzImage \
+  path/to/initramfs-nova.cpio.gz path/to/restore-artifacts
+```
+
+The mode is diagnostic and leaves the ordinary restore oracle unchanged. The
+import replaces the stored memory and VM state when the first branch restores
+it, but the disposable boot still establishes the destination VM shape. The
+mode therefore verifies replay from a retained cold root on a compatible
+configured VM; it does not reconstruct the source bootstrap process or claim
+that differing kernel, initramfs, host, or backend inputs are identical.
+
 The qualified D source snapshot and its continuation evidence can be exported
 as an opt-in directory bundle. Set an explicit, operator-declared source commit
 identity when exporting; this metadata records the claimed source identity and
