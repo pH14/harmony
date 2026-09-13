@@ -20,10 +20,9 @@ printf '%s\n' \
     'cp "$FAKE_REPORT" "$out/report.json"' \
     'exit "${FAKE_EXIT_STATUS:-0}"' \
     >"${work}/tools/harmony"
-printf '%s\n' '#!/bin/sh' >"${work}/tools/fault-agent"
-chmod +x "${work}/tools/harmony" "${work}/tools/fault-agent"
-printf x >"${work}/guest/bzImage-faultlab"
-printf x >"${work}/guest/initramfs.cpio.gz"
+chmod +x "${work}/tools/harmony"
+printf x >"${work}/guest/bzImage"
+printf x >"${work}/guest/initramfs-oci.cpio.gz"
 printf x >"${work}/oci-images/pgcic-14.3.oci"
 printf x >"${work}/oci-images/pgcic-14.4.oci"
 printf '["Wait"]\n' >"${work}/input.json"

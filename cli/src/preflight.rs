@@ -46,7 +46,7 @@ impl GuestArtifacts {
     }
 
     fn scan(dir: &Path) -> Self {
-        let kernel = ["Image-postgres", "bzImage"]
+        let kernel = ["Image", "bzImage"]
             .iter()
             .map(|n| dir.join(n))
             .find(|p| p.is_file());
@@ -247,9 +247,9 @@ mod tests {
         assert_eq!(found.kernel, Some(dir.path().join("bzImage")));
         assert_eq!(found.initramfs, [dir.path().join("initramfs-oci.cpio.gz")]);
 
-        std::fs::write(dir.path().join("Image-postgres"), b"x").unwrap();
+        std::fs::write(dir.path().join("Image"), b"x").unwrap();
         let found = GuestArtifacts::scan(dir.path());
-        assert_eq!(found.kernel, Some(dir.path().join("Image-postgres")));
+        assert_eq!(found.kernel, Some(dir.path().join("Image")));
     }
 
     #[test]

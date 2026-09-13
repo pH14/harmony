@@ -86,7 +86,6 @@ impl Session {
         config.validate()?;
         let image_identity = image_identity_with_config(kernel, initramfs, &config);
         let ram = config.ram_bytes;
-        #[cfg(target_arch = "x86_64")]
         let seed = config.seed;
         let cmdline = config.cmdline.clone();
         let defer_checkpoint_hashes = config.defer_virtual_time_checkpoint_hashes;
@@ -95,7 +94,7 @@ impl Session {
             let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, ram, &cmdline, seed)
                 .map_err(|error| format!("Consonance boot compose failed: {error:?}"))?;
             #[cfg(target_arch = "aarch64")]
-            let mut vmm = boot_selected_control(kernel, initramfs, &cmdline, ram)
+            let mut vmm = boot_selected_control(kernel, initramfs, &cmdline, ram, seed)
                 .map_err(|error| format!("Consonance boot compose failed: {error:?}"))?;
             vmm.wire_snapshot_hashing();
             if defer_checkpoint_hashes {
@@ -480,6 +479,25 @@ impl Session {
             events.extend(page);
         }
         Ok(events)
+    }
+
+    pub fn read_observation(
+        &mut self,
+        handle: u32,
+        offset: u32,
+        len: u32,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        let events = self.sdk_events()?;
+        let region = super::observation_descriptor(&events, handle)?;
+        let address = region.range(offset, len)?;
+        let mut bytes = Vec::with_capacity(len as usize);
+        let mut consumed = 0;
+        while consumed < len {
+            let chunk = (len - consumed).min(control_proto::READ_CAP);
+            bytes.extend(self.read(address + u64::from(consumed), chunk)?);
+            consumed += chunk;
+        }
+        Ok(bytes)
     }
 
     pub fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {

@@ -38,7 +38,8 @@ mod real {
 
     struct Args {
         kernel: PathBuf,
-        initramfs: PathBuf,
+        platform_initramfs: PathBuf,
+        image: PathBuf,
         rom: PathBuf,
         core: PathBuf,
         seed: u64,
@@ -49,7 +50,8 @@ mod real {
     impl Args {
         fn parse() -> Result<Self, Box<dyn Error>> {
             let mut kernel = None;
-            let mut initramfs = None;
+            let mut platform_initramfs = None;
+            let mut image = None;
             let mut rom = None;
             let mut core = None;
             let mut seed = 0x4e4f_5641_5f4f_4253_u64;
@@ -62,7 +64,8 @@ mod real {
                     .ok_or_else(|| format!("missing value after {}", flag.to_string_lossy()))?;
                 match flag.to_string_lossy().as_ref() {
                     "--kernel" => kernel = Some(PathBuf::from(value)),
-                    "--initramfs" => initramfs = Some(PathBuf::from(value)),
+                    "--platform-initramfs" => platform_initramfs = Some(PathBuf::from(value)),
+                    "--image" => image = Some(PathBuf::from(value)),
                     "--rom" => rom = Some(PathBuf::from(value)),
                     "--core" => core = Some(PathBuf::from(value)),
                     "--seed" => seed = parse_number("seed", value)?,
@@ -78,7 +81,8 @@ mod real {
             }
             Ok(Self {
                 kernel: kernel.ok_or("missing --kernel")?,
-                initramfs: initramfs.ok_or("missing --initramfs")?,
+                platform_initramfs: platform_initramfs.ok_or("missing --platform-initramfs")?,
+                image: image.ok_or("missing --image")?,
                 rom: rom.ok_or("missing --rom")?,
                 core: core.ok_or("missing --core")?,
                 seed,
@@ -121,9 +125,17 @@ mod real {
         let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&args.core)?));
         let mut direct = NovaTarget::from_rom_bytes_headless(&rom, &args.core, &core_sha256)?;
         let kernel = fs::read(&args.kernel)?;
-        let initramfs = fs::read(&args.initramfs)?;
-        let mut consonance =
-            NovaTarget::from_machine(ConsonanceMachine::new(&kernel, &initramfs)?)?;
+        let platform_initramfs = fs::read(&args.platform_initramfs)?;
+        let prepared = nes_workload::prepare::stage_and_prepare(
+            args.image.to_str().ok_or("image path is not UTF-8")?,
+            &rom,
+        )?;
+        let initramfs = prepared.initramfs(&platform_initramfs);
+        let machine = ConsonanceMachine::new(&kernel, &initramfs)?;
+        if !machine.starts_at_power_on() {
+            return Err("oracle requires a generic power-on NES image".into());
+        }
+        let mut consonance = NovaTarget::from_power_on(machine)?;
         let mut rng = args.seed;
         let mut compared_actions = 0_u64;
         let mut stream = Sha256::new();
@@ -136,7 +148,12 @@ mod real {
             direct.reset();
             consonance.reset();
             if direct.mechanical_state() != consonance.mechanical_state() {
-                return Err(format!("setup state mismatch in sequence {sequence}").into());
+                return Err(format!(
+                    "setup state mismatch in sequence {sequence}: direct={:?} consonance={:?}",
+                    direct.mechanical_state(),
+                    consonance.mechanical_state(),
+                )
+                .into());
             }
             for action_index in 0..args.actions_per_sequence {
                 if direct.is_dead() || direct.cleared_a_level() {

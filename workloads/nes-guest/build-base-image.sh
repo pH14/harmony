@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the ROM-free generic NES base initramfs.
+# Build the generic NES OCI image.
 #
-# The base carries only a small static BusyBox and the pinned static QuickNES
-# play-agent. `nes_workload::prepare` appends /game.nes and /init for one ROM;
-# keeping those files out of this artifact makes the base reusable and keeps
-# copyrighted input outside the build recipe.
+# The image carries only a small static BusyBox and the pinned static QuickNES
+# play-agent. The host preparation API supplies each ROM as a read-only
+# external input and the platform runtime supplies PID 1 and supervision.
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
@@ -18,15 +17,7 @@ cd "$LINUX_DIR"
 # shellcheck source=../../consonance/harmony-linux/linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
 
-require_tools cargo cpio gzip make nproc patch readelf rustc tail
-
-case "$(cpio --help 2>&1 || true)" in
-    *"--reproducible"*) ;;
-    *)
-        echo "FAIL: GNU cpio with --reproducible is required" >&2
-        exit 1
-        ;;
-esac
+require_tools cargo cut make nproc patch readelf rustc sha256sum tail tar wc
 
 quicknes_archive=${HARMONY_QUICKNES_STATIC_LIB:-}
 agent_override=${PLAY_AGENT_BIN:-}
@@ -88,7 +79,7 @@ build_arm64_busybox() {
     require_linux_aarch64
     extract_busybox
     prepare_busybox_build_source
-    build_arm64_game_musl
+    build_arm64_musl
     rm -rf "$NES_BUSYBOX_OBJ"
     mkdir -p "$NES_BUSYBOX_OBJ"
     make -C "$BBSRC" O="$NES_BUSYBOX_OBJ" allnoconfig >/dev/null
@@ -106,7 +97,7 @@ build_arm64_busybox() {
     set +o pipefail
     yes '' | make -C "$BBSRC" O="$NES_BUSYBOX_OBJ" oldconfig >/dev/null
     set -o pipefail
-    make -C "$BBSRC" O="$NES_BUSYBOX_OBJ" CC="$ARM64_GAME_MUSL_PREFIX/bin/musl-gcc" \
+    make -C "$BBSRC" O="$NES_BUSYBOX_OBJ" CC="$ARM64_MUSL_PREFIX/bin/musl-gcc" \
         -j"$(nproc)" busybox >/dev/null
 }
 
@@ -140,7 +131,7 @@ build_agent_arm64() {
         exit 1
     }
     agent_rustflags=${RUSTFLAGS:-}
-    agent_rustflags="${agent_rustflags:+$agent_rustflags }-C target-feature=+lse,-outline-atomics -C panic=abort -C link-self-contained=no -C link-arg=-Wl,--build-id=none -C link-arg=-L$ARM64_GAME_MUSL_PREFIX/lib -C link-arg=-L$rust_unwind_dir"
+    agent_rustflags="${agent_rustflags:+$agent_rustflags }-C target-feature=+lse,-outline-atomics -C panic=abort -C link-self-contained=no -C link-arg=-Wl,--build-id=none -C link-arg=-L$ARM64_MUSL_PREFIX/lib -C link-arg=-L$rust_unwind_dir"
     if [ -n "${HARMONY_BUILD_PATH_PREFIX:-}" ]; then
         agent_rustflags="$agent_rustflags --remap-path-prefix=$HARMONY_BUILD_PATH_PREFIX=/build"
     fi
@@ -149,7 +140,7 @@ build_agent_arm64() {
         cd "$REPO_ROOT/workloads/nes-guest"
         RUSTC_BOOTSTRAP=1 \
             RUSTFLAGS="$agent_rustflags" \
-            CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$ARM64_GAME_MUSL_PREFIX/bin/musl-gcc" \
+            CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$ARM64_MUSL_PREFIX/bin/musl-gcc" \
             CARGO_TARGET_DIR="$agent_target" \
             HARMONY_QUICKNES_STATIC_LIB="$quicknes_archive" \
             cargo build --locked --release --target "$play_target" \
@@ -161,15 +152,17 @@ build_agent_arm64() {
 
 case "$(uname -m)" in
     x86_64)
+        OCI_ARCH=amd64
         build_x86_busybox
         agent=$(build_agent_x86)
         ;;
     aarch64)
+        OCI_ARCH=arm64
         build_arm64_busybox
         agent=$(build_agent_arm64)
         ;;
     *)
-        echo "FAIL: generic NES base must build on Linux/x86_64 or Linux/aarch64" >&2
+        echo "FAIL: generic NES OCI image must build on Linux/x86_64 or Linux/aarch64" >&2
         exit 1
         ;;
 esac
@@ -188,7 +181,7 @@ if readelf -d "$agent" 2>/dev/null | grep -q '(NEEDED)'; then
 fi
 
 rm -rf "$NES_ROOT"
-mkdir -p "$NES_ROOT"/{bin,etc,proc,sys,dev,tmp,opt/harmony}
+mkdir -p "$NES_ROOT"/{bin,etc,tmp,opt/harmony}
 install -m 0755 "$NES_BUSYBOX_OBJ/busybox" "$NES_ROOT/bin/busybox"
 for applet in sh mount mknod chmod cat echo grep halt reboot; do
     ln -sf busybox "$NES_ROOT/bin/$applet"
@@ -197,12 +190,46 @@ install -m 0755 "$agent" "$NES_ROOT/opt/harmony/play-agent"
 printf 'root:x:0:0:root:/root:/bin/sh\n' >"$NES_ROOT/etc/passwd"
 printf 'root:x:0:\n' >"$NES_ROOT/etc/group"
 
-# The output intentionally contains no /init or /game.nes. `prepare` appends
-# both in one ROM-specific archive, and later cpio entries override any base
-# files with those names.
+# Build one deterministic OCI layer. The image deliberately contains no /init,
+# /game.nes, supervisor, or execution control files. Those belong to the
+# platform runtime and host-side prepared execution respectively.
 find "$NES_ROOT" -mindepth 1 -exec touch -hcd @0 {} +
-( cd "$NES_ROOT" && find . -mindepth 1 -print0 | LC_ALL=C sort -z \
-    | cpio --null -o -H newc --owner=0:0 --reproducible --quiet ) \
-    | gzip -n -9 >"$ART_DIR/initramfs-nes.cpio.gz"
+layer="$BUILD_ROOT/nes-oci-layer.tar"
+tar --format=ustar --sort=name --mtime='@0' --owner=0 --group=0 \
+    --numeric-owner -cf "$layer" -C "$NES_ROOT" .
+layer_digest=$(sha256_of "$layer")
+layer_size=$(wc -c <"$layer")
+layer_size=$((layer_size))
 
-echo "ok: $ART_DIR/initramfs-nes.cpio.gz (ROM-free generic NES base)"
+config="$BUILD_ROOT/nes-oci-config.json"
+cat >"$config" <<EOF
+{"architecture":"$OCI_ARCH","os":"linux","config":{"Env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],"Entrypoint":[],"Cmd":[],"WorkingDir":"/","User":"0:0"},"rootfs":{"type":"layers","diff_ids":["sha256:$layer_digest"]},"history":[{"created":"1970-01-01T00:00:00Z","created_by":"harmony nes workload image"}]}
+EOF
+config_digest=$(sha256_of "$config")
+config_size=$(wc -c <"$config")
+config_size=$((config_size))
+
+manifest="$BUILD_ROOT/nes-oci-manifest.json"
+cat >"$manifest" <<EOF
+{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:$config_digest","size":$config_size},"layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"sha256:$layer_digest","size":$layer_size}]}
+EOF
+manifest_digest=$(sha256_of "$manifest")
+manifest_size=$(wc -c <"$manifest")
+manifest_size=$((manifest_size))
+
+image="$ART_DIR/nes.oci"
+staging="$ART_DIR/.nes.oci.tmp"
+rm -rf "$staging" "$image"
+mkdir -p "$staging/blobs/sha256"
+install -m 0644 "$layer" "$staging/blobs/sha256/$layer_digest"
+install -m 0644 "$config" "$staging/blobs/sha256/$config_digest"
+install -m 0644 "$manifest" "$staging/blobs/sha256/$manifest_digest"
+cat >"$staging/index.json" <<EOF
+{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:$manifest_digest","size":$manifest_size,"platform":{"architecture":"$OCI_ARCH","os":"linux"}}]}
+EOF
+printf '%s\n' '{"imageLayoutVersion":"1.0.0"}' >"$staging/oci-layout"
+mv "$staging" "$image"
+
+printf '%s  nes.oci/blobs/sha256/%s\n' "$manifest_digest" "$manifest_digest" \
+    >"$ART_DIR/nes.oci.sha256"
+echo "ok: $image (OCI layout; architecture=$OCI_ARCH)"

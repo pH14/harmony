@@ -83,8 +83,6 @@ mod search_cli_tests {
                 "consonance",
                 "--kernel",
                 "vmlinux",
-                "--fault-agent",
-                "fault-agent",
                 "--seed",
                 "1",
                 "--workers",

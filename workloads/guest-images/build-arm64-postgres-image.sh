@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build M3's real PostgreSQL container payload natively on Linux/aarch64.
-# PostgreSQL, its clients, BusyBox, and musl are all static and LSE-only; every
-# shipped ELF is rejected if it contains LL/SC or a live generic-counter access.
+# Build M3's real PostgreSQL OCI payload natively on Linux/aarch64. PostgreSQL,
+# its clients, BusyBox, and musl are all static and LSE-only; every shipped ELF
+# is rejected if it contains LL/SC or a live generic-counter access.
 set -euo pipefail
 
 workload_dir=$(cd "$(dirname "$0")" && pwd)
-cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
+repo_root=$(cd "$workload_dir/../.." && pwd)
+cd "$repo_root/consonance/harmony-linux/linux"
 
 # shellcheck source=../../consonance/harmony-linux/linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
+# shellcheck source=versions.lock disable=SC1091
+. "$workload_dir/versions.lock"
 
 require_linux_aarch64
-require_tools cc make gzip cpio python3 readelf patch perl flex bison chroot
+require_tools cc make bzip2 python3 readelf patch perl flex bison
 if [ "$(id -u)" -ne 0 ]; then
     echo "FAIL: build-arm64-postgres-image.sh needs root for build-time chroot/initdb" >&2
     exit 1
@@ -21,8 +24,7 @@ fi
 pg_pristine=$BUILD_ROOT/postgresql-$PG_SOURCE_VERSION
 pg_source=$BUILD_ROOT/arm64-postgres-pg-src
 pg_object=$BUILD_ROOT/arm64-postgres-pg-build
-postgres_root=$BUILD_ROOT/arm64-postgres-root
-container_root=$postgres_root/container
+container_root=$BUILD_ROOT/arm64-postgres-root
 busybox_object=$BUILD_ROOT/busybox-build-arm64-postgres
 guest_prefix=/opt/harmony/postgres
 stage_prefix=$container_root$guest_prefix
@@ -38,7 +40,7 @@ echo "== arm64 postgres image: pristine PostgreSQL $PG_SOURCE_VERSION source"
 rm -rf "$pg_source" "$pg_object"
 cp -a "$pg_pristine" "$pg_source"
 patch -d "$pg_source" --batch -p1 \
-    <"$LINUX_DIR/patches/postgresql/0001-static-bootstrap-without-plpgsql.patch"
+    <"$workload_dir/patches/postgresql/0001-static-bootstrap-without-plpgsql.patch"
 [ "$(grep -c '/bin/pwd' "$pg_source/configure")" -eq 2 ] || {
     echo "FAIL: PostgreSQL configure /bin/pwd anchors changed" >&2
     exit 1
@@ -48,8 +50,8 @@ mv "$pg_source/configure.tmp" "$pg_source/configure"
 chmod +x "$pg_source/configure"
 
 echo "== arm64 postgres image: building LSE-only static musl ($MUSL_VERSION)"
-build_arm64_game_musl
-musl_cc=$ARM64_GAME_MUSL_PREFIX/bin/musl-gcc
+build_arm64_musl
+musl_cc=$ARM64_MUSL_PREFIX/bin/musl-gcc
 
 # PostgreSQL embeds CC and CFLAGS in the server binary.  Keep those recorded
 # values independent of the randomized outer build directory while applying
@@ -93,9 +95,9 @@ make -C "$pg_object/src/common" -j"$(nproc)" all
 make -C "$pg_object/src/backend" -j"$(nproc)" postgres
 make -C "$pg_object/src/bin/psql" -j"$(nproc)" psql LIBS="$frontend_libs"
 make -C "$pg_object/src/bin/pg_ctl" -j"$(nproc)" pg_ctl LIBS="$frontend_libs"
-# Only the build-time initdb needs this exception: the static frontend archive
-# closure repeats identical upstream encoding-name objects. initdb is removed
-# before publication and every shipped binary remains under the normal link.
+# Only the initdb binary needs this exception: the static frontend archive
+# closure repeats identical upstream encoding-name objects. Every shipped
+# binary remains under the normal link.
 make -C "$pg_object/src/bin/initdb" -j"$(nproc)" initdb \
     LDFLAGS_EX='-Wl,--allow-multiple-definition' LIBS="$frontend_libs"
 
@@ -137,21 +139,11 @@ for symbol in STATIC BUSYBOX ASH SH_IS_ASH MOUNT MKNOD CHMOD CHOWN CHROOT \
     }
 done
 
-echo "== arm64 postgres image: assembling outer and container roots"
-rm -rf "$postgres_root"
-mkdir -p "$postgres_root"/{bin,dev,proc,sys,run,tmp}
+echo "== arm64 postgres image: assembling OCI rootfs"
+rm -rf "$container_root"
 mkdir -p "$container_root"/{bin,dev/shm,etc,proc,tmp,var/lib/postgresql}
 mkdir -p "$stage_prefix"/{bin,lib,share}
-"$musl_cc" -static -Os -march=armv8.1-a+lse -mno-outline-atomics \
-    -Wall -Wextra -Werror \
-    "$LINUX_DIR/arm64-mmio-console.c" -o "$postgres_root/bin/mmio-console"
-
-install -m 0755 "$busybox_object/busybox" "$postgres_root/bin/busybox"
 install -m 0755 "$busybox_object/busybox" "$container_root/bin/busybox"
-for applet in sh mount mknod chmod chown chroot mkdir cat echo grep halt reboot \
-    setuidgid sync tee unshare dmesg; do
-    ln -sf busybox "$postgres_root/bin/$applet"
-done
 for applet in sh setuidgid echo; do
     ln -sf busybox "$container_root/bin/$applet"
 done
@@ -204,9 +196,6 @@ install -d -o 65534 -g 65534 -m 0700 "$container_root$pgdata"
     done
 } >"$container_root/workload.sql"
 install -m 0755 "$workload_dir/arm64-postgres-run.sh" "$container_root/run-workload.sh"
-install -m 0755 "$workload_dir/arm64-postgres-container-setup.sh" \
-    "$postgres_root/arm64-postgres-container-setup.sh"
-install -m 0755 "$workload_dir/arm64-postgres-init.sh" "$postgres_root/init"
 
 if [ "$(stat -c %u "$container_root$pgdata")" -ne 65534 ]; then
     echo "FAIL: packed PGDATA is not owned by the runtime postgres uid" >&2
@@ -219,21 +208,22 @@ while read -r binary; do
         python3 "$GUEST_DIR/scripts/aa4-exclusive-scan.py" "$binary"
         python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" "$binary"
     fi
-done < <(find "$postgres_root" \( -type f -perm -0100 -o -type f -name '*.so*' \) \
+done < <(find "$container_root" \( -type f -perm -0100 -o -type f -name '*.so*' \) \
     | LC_ALL=C sort)
 
 # Publish the payloads as first-class N5 outputs as well as embedding them in
-# the initramfs. This makes the lock-built binary closure directly attestable.
+# the OCI layer. This makes the lock-built binary closure directly attestable.
 install -m 0755 "$stage_prefix/bin/postgres" "$ARM64_ART_DIR/postgres"
 install -m 0755 "$stage_prefix/bin/psql" "$ARM64_ART_DIR/psql"
 install -m 0755 "$stage_prefix/bin/pg_ctl" "$ARM64_ART_DIR/pg_ctl"
 
-echo "== arm64 postgres image: capturing the clean canonical guest snapshot"
-find "$postgres_root" -mindepth 1 -exec touch -hcd @0 {} +
-(cd "$postgres_root" && find . -mindepth 1 -print0 | LC_ALL=C sort -z \
-    | cpio --null -o -H newc --reproducible --quiet) \
-    | gzip -n -9 >"$ARM64_ART_DIR/initramfs-postgres.cpio.gz"
-snapshot_sha=$(sha256_of "$ARM64_ART_DIR/initramfs-postgres.cpio.gz")
-printf '%s  initramfs-postgres.cpio.gz\n' "$snapshot_sha" \
-    >"$ARM64_ART_DIR/initramfs-postgres.cpio.gz.sha256"
-echo "ok: canonical snapshot sha256=$snapshot_sha"
+echo "== arm64 postgres image: packing the OCI layout"
+OCI_OUT=$ARM64_ART_DIR/oci-images/postgres.oci
+rm -rf "$OCI_OUT"
+mkdir -p "$(dirname "$OCI_OUT")"
+python3 "$workload_dir/oci-package.py" \
+    --rootfs "$container_root" --architecture arm64 --output "$OCI_OUT" \
+    --entrypoint /run-workload.sh \
+    --env PATH=/opt/harmony/postgres/bin:/bin \
+    --user 0:0 --working-dir /var/lib/postgresql
+echo "ok: $OCI_OUT"

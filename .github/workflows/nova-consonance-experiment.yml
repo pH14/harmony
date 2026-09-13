@@ -2,10 +2,21 @@
 name: Acceptance / Workload backends
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Acceptance suite to run
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - nested-runtime
   pull_request:
     paths:
       - .github/workflows/nova-consonance-experiment.yml
+      - flake.nix
+      - flake.lock
       - consonance/**
       - workloads/**
       - '!workloads/bugs/**'
@@ -19,6 +30,8 @@ on:
     branches: [main]
     paths:
       - .github/workflows/nova-consonance-experiment.yml
+      - flake.nix
+      - flake.lock
       - consonance/**
       - workloads/**
       - '!workloads/bugs/**'
@@ -32,19 +45,25 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: nova-consonance-${{ github.event_name }}-${{ github.ref }}
+  group: nova-consonance-${{ github.event_name }}-${{ github.ref }}-${{ inputs.suite || 'all' }}
   cancel-in-progress: true
 
 defaults:
   run:
     shell: bash
 
+env:
+  CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+  HARMONY_GUEST_TOOLCHAIN: nightly-2026-06-16
+
 jobs:
   whole-vm-search-campaign:
     name: Dissonance search · QuickNES guest · Consonance snapshots
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'nested-runtime')
     runs-on: ubuntu-24.04
     # A cold guest build precedes the 10,000-execution campaign. Slow hosted
     # replicas need more than 50 minutes for the fixed work; the assertions
@@ -62,11 +81,17 @@ jobs:
       HARMONY_QUICKNES_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-      - name: Install Nova and initramfs build tools
+      - name: Install pinned Rust toolchains
+        run: |
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+          rustup toolchain install "$HARMONY_GUEST_TOOLCHAIN" --profile minimal \
+            --component rust-src --target x86_64-unknown-linux-musl
+      - name: Install Nova and platform build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends binutils cc65 cpio ffmpeg g++ shellcheck
+          sudo apt-get install --yes --no-install-recommends \
+            bc binutils bison build-essential bzip2 cc65 cpio ffmpeg flex g++ kmod libelf-dev libssl-dev python3 shellcheck wget
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -78,46 +103,37 @@ jobs:
           workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
           HARMONY_QUICKNES_STATIC_OUTPUT="${NOVA_BUILD}/libquicknes_libretro.a" \
             scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
-      - name: Restore locked guest artifacts
-        id: guest-cache
+      - name: Compute platform source key
+        id: platform-source
+        run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
+      - name: Restore the canonical platform runtime
+        id: platform-cache
         uses: actions/cache/restore@v4
         with:
-          path: nix-guest-output
-          key: guest-x86_64-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/linux/**', 'consonance/harmony-linux/nix/**', 'consonance/harmony-linux/libvoidstar/**') }}
-      - name: Build the locked Harmony guest kernel
-        if: steps.guest-cache.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p nix-guest-output
-          nix run .#guest-images -- --output "$PWD/nix-guest-output"
-          (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
-      - name: Verify locked guest artifacts
-        run: (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
-      - name: Save successful guest build
-        if: steps.guest-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: nix-guest-output
-          key: ${{ steps.guest-cache.outputs.cache-primary-key }}
-      - name: Fetch only the pinned BusyBox source
-        run: |
-          source consonance/harmony-linux/linux/versions.lock
-          mkdir -p consonance/harmony-linux/dl
-          archive="consonance/harmony-linux/dl/$(basename "${BUSYBOX_URL}")"
-          # The mirror serves the same pinned bytes; keep Nix as a fallback
-          # when that endpoint is unavailable. Both paths verify the lock hash.
-          mirror="https://sources.buildroot.net/busybox/$(basename "${BUSYBOX_URL}")"
-          if ! curl --fail --location --connect-timeout 15 --max-time 60 \
-              --retry 2 --output "${archive}.part" "${mirror}"; then
-            busybox_source="$(nix build .#busybox-source --no-link --print-out-paths)"
-            install -m 0644 "${busybox_source}" "${archive}.part"
-          fi
-          printf '%s  %s\n' "${BUSYBOX_SHA256}" "${archive}.part" | sha256sum --check
-          mv "${archive}.part" "${archive}"
-      - name: Build Nova, QuickNES, and the SDK agent into the guest
+          path: consonance/harmony-linux/build/x86_64
+          key: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
+      - name: Build the canonical platform runtime
+        if: steps.platform-cache.outputs.cache-hit != 'true'
         env:
-          HARMONY_NOVA_ROM: ${{ github.workspace }}/workloads/nes/build/nova/nova.nes
-          HARMONY_NOVA_CORE_STATIC: ${{ github.workspace }}/workloads/nes/build/nova/libquicknes_libretro.a
-        run: workloads/nes-guest/legacy/build-nova-game-image.sh
+          HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
+          HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
+        run: |
+          make -C consonance/harmony-linux fetch
+          consonance/harmony-linux/scripts/build-platform-runtime.sh
+      - name: Verify exact platform runtime
+        run: |
+          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
+            --artifacts consonance/harmony-linux/build/x86_64 \
+            --output nova-consonance-report/platform-provenance.json
+          python3 -c 'import json; assert json.load(open("nova-consonance-report/platform-provenance.json"))["scope"] == "exact-input"'
+      - name: Build the ROM-free generic NES OCI image
+        env:
+          HARMONY_QUICKNES_STATIC_LIB: ${{ github.workspace }}/workloads/nes/build/nova/libquicknes_libretro.a
+        run: |
+          make -C consonance/harmony-linux fetch
+          workloads/nes-guest/build-base-image.sh
+          test -s consonance/harmony-linux/build/nes.oci.sha256
+          test -s consonance/harmony-linux/build/nes.oci/index.json
       - name: Build the Consonance-backed Dissonance campaign
         run: |
           cargo build --locked --release --manifest-path workloads/nes/Cargo.toml \
@@ -140,8 +156,10 @@ jobs:
         run: |
           timeout -k 10 600 \
             workloads/tools/target/release/kvm_x86_nova_probe \
-              nix-guest-output/x86_64/bzImage \
-              consonance/harmony-linux/build/initramfs-nova.cpio.gz \
+              consonance/harmony-linux/build/x86_64/bzImage \
+              consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
+              consonance/harmony-linux/build/nes.oci \
+              "${NOVA_BUILD}/nova.nes" \
             2>&1 | tee nova-consonance-report/restore-oracle.txt
           grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 .* fallbacks=0$' \
             nova-consonance-report/restore-oracle.txt
@@ -149,8 +167,9 @@ jobs:
         run: |
           timeout -k 10 300 \
             workloads/nes/target/release/nova-consonance-observation-oracle \
-              --kernel nix-guest-output/x86_64/bzImage \
-              --initramfs consonance/harmony-linux/build/initramfs-nova.cpio.gz \
+              --kernel consonance/harmony-linux/build/x86_64/bzImage \
+              --platform-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
+              --image consonance/harmony-linux/build/nes.oci \
               --rom "${NOVA_BUILD}/nova.nes" \
               --core "${NOVA_BUILD}/quicknes_libretro.so" \
               --seed 20260901 \
@@ -163,8 +182,9 @@ jobs:
         run: |
           timeout -k 10 4800 \
             workloads/nes/target/release/nova-consonance-campaign \
-              --kernel nix-guest-output/x86_64/bzImage \
-              --initramfs consonance/harmony-linux/build/initramfs-nova.cpio.gz \
+              --kernel consonance/harmony-linux/build/x86_64/bzImage \
+              --platform-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
+              --image consonance/harmony-linux/build/nes.oci \
               --rom "${NOVA_BUILD}/nova.nes" \
               --core "${NOVA_BUILD}/quicknes_libretro.so" \
               --output nova-consonance-report \
@@ -210,9 +230,12 @@ jobs:
           if not video.get("mp4_sha256"):
               raise SystemExit("campaign did not produce a hashed film")
           PY
-          cp nix-guest-output/MANIFEST.sha256 nova-consonance-report/guest-kernel-manifest.sha256
+          cp consonance/harmony-linux/build/x86_64/runtime-manifest.json \
+            nova-consonance-report/platform-runtime-manifest.json
           sha256sum \
-            consonance/harmony-linux/build/initramfs-nova.cpio.gz \
+            consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
+            consonance/harmony-linux/build/nes.oci.sha256 \
+            consonance/harmony-linux/build/x86_64/runtime-manifest.json \
             "${NOVA_BUILD}/nova.nes" \
             "${NOVA_BUILD}/libquicknes_libretro.a" \
             >nova-consonance-report/workload.sha256
@@ -238,7 +261,7 @@ jobs:
   compare-replicas:
     name: Compare deterministic campaign hashes across replicas
     needs: whole-vm-search-campaign
-    if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.whole-vm-search-campaign.result == 'success' }}
+    if: ${{ always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'nested-runtime')) && needs.whole-vm-search-campaign.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -287,17 +310,23 @@ jobs:
 
   package-backend-acceptance:
     name: NES package native/Consonance backend acceptance
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'nested-runtime')
     runs-on: ubuntu-24.04
     # Leave room for a cold guest build before the two backend checks.
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-      - name: Install NES build tools
+      - name: Install pinned Rust toolchains
+        run: |
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+          rustup toolchain install "$HARMONY_GUEST_TOOLCHAIN" --profile minimal \
+            --component rust-src --target x86_64-unknown-linux-musl
+      - name: Install NES and platform build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends binutils cc65 cpio g++ jq patch shellcheck
+          sudo apt-get install --yes --no-install-recommends \
+            bc binutils bison build-essential bzip2 cc65 cpio flex g++ kmod libelf-dev libssl-dev python3 shellcheck wget
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -315,47 +344,37 @@ jobs:
           workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
           HARMONY_QUICKNES_STATIC_OUTPUT="${NOVA_BUILD}/libquicknes_libretro.a" \
             scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
-      - name: Restore locked guest artifacts
-        id: guest-cache
+      - name: Compute platform source key
+        id: platform-source
+        run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
+      - name: Restore the canonical platform runtime
+        id: platform-cache
         uses: actions/cache/restore@v4
         with:
-          path: nix-guest-output
-          key: guest-x86_64-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/linux/**', 'consonance/harmony-linux/nix/**', 'consonance/harmony-linux/libvoidstar/**') }}
-      - name: Build the locked Harmony guest kernel
-        if: steps.guest-cache.outputs.cache-hit != 'true'
+          path: consonance/harmony-linux/build/x86_64
+          key: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
+      - name: Build the canonical platform runtime
+        if: steps.platform-cache.outputs.cache-hit != 'true'
+        env:
+          HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
+          HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
         run: |
-          mkdir -p nix-guest-output
-          nix run .#guest-images -- --output "$PWD/nix-guest-output"
-          test -s nix-guest-output/x86_64/bzImage
-      - name: Verify locked guest artifacts
-        run: (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
-      - name: Save successful guest build
-        if: steps.guest-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: nix-guest-output
-          key: ${{ steps.guest-cache.outputs.cache-primary-key }}
-      - name: Fetch only the pinned BusyBox source
+          make -C consonance/harmony-linux fetch
+          consonance/harmony-linux/scripts/build-platform-runtime.sh
+      - name: Verify exact platform runtime
         run: |
-          source consonance/harmony-linux/linux/versions.lock
-          mkdir -p consonance/harmony-linux/dl
-          archive="consonance/harmony-linux/dl/$(basename "${BUSYBOX_URL}")"
-          # The mirror serves the same pinned bytes; keep Nix as a fallback
-          # when that endpoint is unavailable. Both paths verify the lock hash.
-          mirror="https://sources.buildroot.net/busybox/$(basename "${BUSYBOX_URL}")"
-          if ! curl --fail --location --connect-timeout 15 --max-time 60 \
-              --retry 2 --output "${archive}.part" "${mirror}"; then
-            busybox_source="$(nix build .#busybox-source --no-link --print-out-paths)"
-            install -m 0644 "${busybox_source}" "${archive}.part"
-          fi
-          printf '%s  %s\n' "${BUSYBOX_SHA256}" "${archive}.part" | sha256sum --check
-          mv "${archive}.part" "${archive}"
+          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
+            --artifacts consonance/harmony-linux/build/x86_64 \
+            --output package-backend-report/platform-provenance.json
+          python3 -c 'import json; assert json.load(open("package-backend-report/platform-provenance.json"))["scope"] == "exact-input"'
       - name: Build the ROM-free generic NES base image
         env:
           HARMONY_QUICKNES_STATIC_LIB: ${{ github.workspace }}/workloads/nes/build/nova/libquicknes_libretro.a
         run: |
+          make -C consonance/harmony-linux fetch
           workloads/nes-guest/build-base-image.sh
-          test -s consonance/harmony-linux/build/initramfs-nes.cpio.gz
+          test -s consonance/harmony-linux/build/nes.oci.sha256
+          test -s consonance/harmony-linux/build/nes.oci/index.json
       - name: Grant nested KVM access
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
@@ -374,8 +393,9 @@ jobs:
             workloads/nes/target/release/nes-backend-oracle \
               workloads/nes/build/nova/nova.nes \
               workloads/nes/build/nova/quicknes_libretro.so \
-              nix-guest-output/x86_64/bzImage \
-              consonance/harmony-linux/build/initramfs-nes.cpio.gz \
+              consonance/harmony-linux/build/x86_64/bzImage \
+              consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
+              consonance/harmony-linux/build/nes.oci \
             2>&1 | tee package-backend-report/nes-backend-oracle.txt
           grep -Eq '^NES_BACKEND_ORACLE_OK actions=[1-9][0-9]* sha256=[0-9a-f]{64}$' \
             package-backend-report/nes-backend-oracle.txt
@@ -393,8 +413,9 @@ jobs:
             --executions "${PACKAGE_EXECUTIONS}" --actions "${PACKAGE_ACTIONS}" \
             --out package-native workloads/nes/build/nova/nova.nes
           target/release/harmony search --package nes --backend consonance \
-            --kernel nix-guest-output/x86_64/bzImage \
-            --base-initramfs consonance/harmony-linux/build/initramfs-nes.cpio.gz \
+            --kernel consonance/harmony-linux/build/x86_64/bzImage \
+            --base-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
+            --image consonance/harmony-linux/build/nes.oci \
             --seed "${PACKAGE_SEED}" --workers "${PACKAGE_WORKERS}" \
             --executions "${PACKAGE_EXECUTIONS}" --actions "${PACKAGE_ACTIONS}" \
             --out package-consonance workloads/nes/build/nova/nova.nes
@@ -503,82 +524,85 @@ jobs:
           fetch-depth: 0
       - name: Initialize smoke artifact directory
         run: mkdir -p nova-consonance-pr-smoke
-      - uses: cachix/install-nix-action@v31
-      - name: Install Nova and guest-image tools
+      - name: Install Nova and image build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends binutils cc65 cpio ffmpeg g++ git gzip jq shellcheck
+          sudo apt-get install --yes --no-install-recommends \
+            binutils build-essential cc65 curl ffmpeg g++ git jq python3 shellcheck wget
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             . -> target
             workloads/nes -> target
             workloads/nes-guest -> target
-      - name: Restore the locked x86 guest artifacts
-        id: guest-cache
+      - name: Compute platform source key
+        id: platform-source
+        run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
+      - name: Restore the exact platform runtime
+        id: platform-cache
         uses: actions/cache/restore@v4
         with:
-          path: nix-guest-output
-          key: guest-x86_64-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/linux/**', 'consonance/harmony-linux/nix/**', 'consonance/harmony-linux/libvoidstar/**') }}
-          restore-keys: |
-            guest-x86_64-v1-
-      - name: Verify and record guest cache provenance
+          path: consonance/harmony-linux/build/x86_64
+          key: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
+      - name: Locate the exact cross-branch platform handoff
+        id: handoff
+        if: steps.platform-cache.outputs.cache-hit != 'true'
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
-          CACHE_HIT: ${{ steps.guest-cache.outputs.cache-hit }}
-          CACHE_MATCHED_KEY: ${{ steps.guest-cache.outputs.cache-matched-key }}
-          CACHE_REQUESTED_KEY: guest-x86_64-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/linux/**', 'consonance/harmony-linux/nix/**', 'consonance/harmony-linux/libvoidstar/**') }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_KEY: ${{ steps.platform-source.outputs.key }}
         run: |
           set -euo pipefail
-          if [[ -z "${CACHE_MATCHED_KEY}" ]]; then
+          run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
+            -f name="consonance-platform-v1-x86_64-$SOURCE_KEY" -F per_page=100 \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .workflow_run.id // empty')
+          echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
+      - name: Clear the runtime directory before handoff
+        if: steps.handoff.outputs.run_id != ''
+        run: rm -rf consonance/harmony-linux/build/x86_64
+      - uses: actions/download-artifact@v4
+        if: steps.handoff.outputs.run_id != ''
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.handoff.outputs.run_id }}
+          name: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
+          path: consonance/harmony-linux/build/x86_64
+      - name: Verify exact platform provenance
+        env:
+          CACHE_HIT: ${{ steps.platform-cache.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.platform-cache.outputs.cache-matched-key }}
+          CACHE_REQUESTED_KEY: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
+          HANDOFF_RUN_ID: ${{ steps.handoff.outputs.run_id }}
+          SOURCE_KEY: ${{ steps.platform-source.outputs.key }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CACHE_MATCHED_KEY}" && -z "${HANDOFF_RUN_ID}" ]]; then
             cat >nova-consonance-pr-smoke/cache-unavailable.txt <<'EOF'
-          No exact or last-known-good x86 guest cache was available. The scheduled/manual deep builder must populate the durable guest cache before this smoke can execute.
+          No exact platform runtime cache or exact cross-branch handoff was available. Run the scheduled/manual platform qualification before this smoke.
           EOF
-            echo '::error::Nova Consonance PR smoke found no durable guest cache fallback.'
+            echo '::error::Nova Consonance PR smoke found no exact platform runtime.'
             exit 1
           fi
-          cat >nova-consonance-pr-smoke/cache-provenance.txt <<EOF
-          requested_key=${CACHE_REQUESTED_KEY}
-          matched_key=${CACHE_MATCHED_KEY}
-          cache_hit=${CACHE_HIT}
-          commit=$(git rev-parse HEAD)
-          EOF
-          test -s nix-guest-output/MANIFEST.sha256
-          (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
-          changed=false
-          if [[ "${EVENT_NAME}" == pull_request ]]; then
-            git diff --name-only "${BASE_SHA}"...HEAD >nova-consonance-pr-smoke/changed-files.txt
-          elif [[ "${EVENT_NAME}" == push && "${BEFORE_SHA}" != 0000000000000000000000000000000000000000 ]]; then
-            git diff --name-only "${BEFORE_SHA}" HEAD >nova-consonance-pr-smoke/changed-files.txt
+          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
+            --artifacts consonance/harmony-linux/build/x86_64 \
+            --output nova-consonance-pr-smoke/platform-provenance.json
+          scope=$(python3 -c 'import json; print(json.load(open("nova-consonance-pr-smoke/platform-provenance.json"))["scope"])')
+          [[ "${scope}" == exact-input ]] || {
+            echo "::error::Nova Consonance PR smoke requires exact-input platform artifacts (got ${scope})."
+            exit 1
+          }
+          if [[ -n "${HANDOFF_RUN_ID}" ]]; then
+            provenance=exact-cross-branch-handoff
           else
-            : >nova-consonance-pr-smoke/changed-files.txt
-          fi
-          while IFS= read -r path; do
-            case "${path}" in
-              flake.nix|flake.lock|consonance/harmony-linux/linux/*|consonance/harmony-linux/nix/*|consonance/harmony-linux/libvoidstar/*)
-                changed=true
-                ;;
-            esac
-          done <nova-consonance-pr-smoke/changed-files.txt
-          provenance=exact-input
-          validation_scope=guest-inputs-validated
-          if [[ "${CACHE_HIT}" != true ]]; then
-            provenance=last-known-good-cache-fallback
-            validation_scope=guest-inputs-validated-from-last-known-good
-            if [[ "${changed}" == true ]]; then
-              validation_scope=guest-inputs-not-validated-for-changed-source
-            fi
-            echo '::warning::Using the last-known-good guest cache; fixture source changes are covered by the scheduled/manual deep builder.'
+            provenance=exact-cache
           fi
           cat >nova-consonance-pr-smoke/cache-provenance.txt <<EOF
           requested_key=${CACHE_REQUESTED_KEY}
+          source_key=${SOURCE_KEY}
           matched_key=${CACHE_MATCHED_KEY}
           cache_hit=${CACHE_HIT}
+          handoff_run_id=${HANDOFF_RUN_ID}
           provenance=${provenance}
-          fixture_source_changed=${changed}
-          validation_scope=${validation_scope}
+          scope=${scope}
           commit=$(git rev-parse HEAD)
           EOF
       - name: Reproduce Nova and its static QuickNES archive
@@ -589,24 +613,14 @@ jobs:
           workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
           HARMONY_QUICKNES_STATIC_OUTPUT="${NOVA_BUILD}/libquicknes_libretro.a" \
             scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
-      - name: Fetch the pinned BusyBox source
-        run: |
-          source consonance/harmony-linux/linux/versions.lock
-          mkdir -p consonance/harmony-linux/dl
-          archive="consonance/harmony-linux/dl/$(basename "${BUSYBOX_URL}")"
-          mirror="https://sources.buildroot.net/busybox/$(basename "${BUSYBOX_URL}")"
-          if ! curl --fail --location --connect-timeout 15 --max-time 60 \
-              --retry 2 --output "${archive}.part" "${mirror}"; then
-            busybox_source="$(nix build .#busybox-source --no-link --print-out-paths)"
-            install -m 0644 "${busybox_source}" "${archive}.part"
-          fi
-          printf '%s  %s\n' "${BUSYBOX_SHA256}" "${archive}.part" | sha256sum --check
-          mv "${archive}.part" "${archive}"
-      - name: Build the bounded Nova guest image
+      - name: Build the ROM-free generic NES OCI image
         env:
-          HARMONY_NOVA_ROM: ${{ github.workspace }}/workloads/nes/build/nova/nova.nes
-          HARMONY_NOVA_CORE_STATIC: ${{ github.workspace }}/workloads/nes/build/nova/libquicknes_libretro.a
-        run: workloads/nes-guest/legacy/build-nova-game-image.sh
+          HARMONY_QUICKNES_STATIC_LIB: ${{ github.workspace }}/workloads/nes/build/nova/libquicknes_libretro.a
+        run: |
+          make -C consonance/harmony-linux fetch
+          workloads/nes-guest/build-base-image.sh
+          test -s consonance/harmony-linux/build/nes.oci.sha256
+          test -s consonance/harmony-linux/build/nes.oci/index.json
       - name: Run Nova search through Consonance
         run: |
           set -euo pipefail
@@ -618,8 +632,9 @@ jobs:
             -p nes-workload --features consonance --bin nova-consonance-campaign
           timeout -k 10 240 \
             workloads/nes/target/release/nova-consonance-campaign \
-              --kernel nix-guest-output/x86_64/bzImage \
-              --initramfs consonance/harmony-linux/build/initramfs-nova.cpio.gz \
+              --kernel consonance/harmony-linux/build/x86_64/bzImage \
+              --platform-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
+              --image consonance/harmony-linux/build/nes.oci \
               --rom workloads/nes/build/nova/nova.nes \
               --core workloads/nes/build/nova/quicknes_libretro.so \
               --output nova-consonance-pr-smoke --seed 20260901 --executions 2 \
@@ -644,3 +659,300 @@ jobs:
           path: nova-consonance-pr-smoke
           if-no-files-found: error
           retention-days: 14
+
+  nested-runtime-qualification:
+    name: Docker/K3s nested runtime qualification
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      HARMONY_GUEST_DIR: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Initialize qualification report
+        run: |
+          mkdir -p nested-runtime-report/build-logs
+          mkdir -p nested-runtime-report/console
+          mkdir -p nested-runtime-report/runs
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+      - name: Install workload image build tools
+        run: |
+          set -euo pipefail
+          {
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends \
+              bc binutils bison build-essential bzip2 cpio curl \
+              flex g++ jq kmod libelf-dev libssl-dev musl-tools python3 wget xz-utils
+            sudo systemctl enable --now containerd
+            sudo ctr version
+          } 2>&1 | tee nested-runtime-report/host-setup.log
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+      - name: Compute platform source key
+        id: platform-source
+        run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
+      - name: Restore the exact platform runtime
+        id: platform-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: consonance/harmony-linux/build/x86_64
+          key: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
+      - name: Locate the exact cross-branch platform handoff
+        id: platform-handoff
+        if: steps.platform-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_KEY: ${{ steps.platform-source.outputs.key }}
+        run: |
+          set -euo pipefail
+          run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
+            -f name="consonance-platform-v1-x86_64-$SOURCE_KEY" -F per_page=100 \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .workflow_run.id // empty')
+          echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
+      - name: Clear the runtime directory before handoff
+        if: steps.platform-handoff.outputs.run_id != ''
+        run: rm -rf consonance/harmony-linux/build/x86_64
+      - uses: actions/download-artifact@v4
+        if: steps.platform-handoff.outputs.run_id != ''
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.platform-handoff.outputs.run_id }}
+          name: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
+          path: consonance/harmony-linux/build/x86_64
+      - name: Require exact platform provenance
+        id: platform-provenance
+        env:
+          CACHE_HIT: ${{ steps.platform-cache.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.platform-cache.outputs.cache-matched-key }}
+          CACHE_REQUESTED_KEY: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
+          HANDOFF_RUN_ID: ${{ steps.platform-handoff.outputs.run_id }}
+          SOURCE_KEY: ${{ steps.platform-source.outputs.key }}
+        run: |
+          set -euo pipefail
+          mkdir -p nested-runtime-report
+          if [[ "$CACHE_HIT" != true && -z "$HANDOFF_RUN_ID" ]]; then
+            cat >nested-runtime-report/cache-unavailable.txt <<'EOF'
+          No exact platform runtime cache or exact cross-branch handoff was available. Run the platform qualification publisher before this lane.
+          EOF
+            echo '::error::Nested runtime qualification requires an exact platform runtime handoff.'
+            exit 1
+          fi
+          if [[ -n "$HANDOFF_RUN_ID" ]]; then
+            provenance=exact-cross-branch-handoff
+          else
+            provenance=exact-cache
+          fi
+          cat >nested-runtime-report/cache-provenance.txt <<EOF
+          requested_key=${CACHE_REQUESTED_KEY}
+          source_key=${SOURCE_KEY}
+          matched_key=${CACHE_MATCHED_KEY}
+          cache_hit=${CACHE_HIT}
+          handoff_run_id=${HANDOFF_RUN_ID}
+          provenance=${provenance}
+          commit=$(git rev-parse HEAD)
+          EOF
+          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
+            --artifacts consonance/harmony-linux/build/x86_64 \
+            --output nested-runtime-report/platform-provenance.json
+          scope=$(python3 -c 'import json; print(json.load(open("nested-runtime-report/platform-provenance.json"))["scope"])')
+          if [[ "$scope" != exact-input ]]; then
+            echo "::error::Nested runtime qualification requires exact-input platform artifacts (got $scope)."
+            exit 1
+          fi
+          sha256sum \
+            consonance/harmony-linux/build/x86_64/bzImage \
+            consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
+            consonance/harmony-linux/build/x86_64/runtime-manifest.json \
+            >nested-runtime-report/platform-sha256.txt
+      - name: Build pinned Docker and K3s workload images
+        run: |
+          set -euo pipefail
+          {
+            echo '== fetching pinned workload inputs'
+            sudo env PATH="$PATH" \
+              HARMONY_DOWNLOAD_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/dl" \
+              HARMONY_ARTIFACT_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/build" \
+              GUEST_BUILD_ROOT=/tmp/harmony-workload-build \
+              make -C workloads/guest-images fetch
+            for input in postgres-image.tar k3s-pause-image.tar; do
+              test -s "$GITHUB_WORKSPACE/consonance/harmony-linux/dl/$input" || {
+                echo "FAIL: required fetched input is missing or empty: $input" >&2
+                exit 1
+              }
+            done
+            echo '== building the Docker workload image'
+            sudo env PATH="$PATH" \
+              HARMONY_DOWNLOAD_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/dl" \
+              HARMONY_ARTIFACT_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/build" \
+              GUEST_BUILD_ROOT=/tmp/harmony-workload-build \
+              make -C workloads/guest-images docker-image
+            echo '== building the K3s workload image'
+            sudo env PATH="$PATH" \
+              HARMONY_DOWNLOAD_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/dl" \
+              HARMONY_ARTIFACT_DIR="$GITHUB_WORKSPACE/consonance/harmony-linux/build" \
+              GUEST_BUILD_ROOT=/tmp/harmony-workload-build \
+              make -C workloads/guest-images k3s-image
+          } 2>&1 | tee nested-runtime-report/workload-build.log
+      - name: Collect workload build diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p nested-runtime-report/build-logs
+          if [[ -d /tmp/harmony-workload-build ]]; then
+            sudo find /tmp/harmony-workload-build -type f -name '*.log' \
+              -exec cp -f {} nested-runtime-report/build-logs/ \; || true
+          fi
+          if [[ -f consonance/harmony-linux/build/x86_64/runtime-manifest.json ]]; then
+            cp -f consonance/harmony-linux/build/x86_64/runtime-manifest.json \
+              nested-runtime-report/platform-runtime-manifest.json
+          fi
+          if [[ -d consonance/harmony-linux/build/oci-images ]]; then
+            find consonance/harmony-linux/build/oci-images -type f -print0 \
+              | sort -z | xargs -0r sha256sum >nested-runtime-report/workload-layouts.sha256
+          fi
+          if [[ -d consonance/harmony-linux/dl ]]; then
+            sha256sum consonance/harmony-linux/dl/postgres-image.tar \
+              consonance/harmony-linux/dl/k3s-pause-image.tar \
+              >nested-runtime-report/workload-inputs.sha256 2>/dev/null || true
+          fi
+          sudo chown -R "$(id -u):$(id -g)" nested-runtime-report 2>/dev/null || true
+          if [[ -d consonance/harmony-linux/build/oci-images ]]; then
+            sudo chown -R "$(id -u):$(id -g)" \
+              consonance/harmony-linux/build/oci-images 2>/dev/null || true
+          fi
+      - name: Verify workload image layouts
+        run: |
+          set -euo pipefail
+          for image in docker k3s; do
+            layout="consonance/harmony-linux/build/oci-images/${image}.oci"
+            test -d "$layout"
+            test -s "$layout/index.json"
+            test -s "$layout/oci-layout"
+          done
+      - name: Build Harmony CLI
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p harmony-cli 2>&1 \
+            | tee nested-runtime-report/cli-build.log
+      - name: Grant nested KVM access
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          stat -c '%n mode=%a owner=%U group=%G' /dev/kvm \
+            | tee nested-runtime-report/kvm.txt
+          grep -m1 'model name' /proc/cpuinfo | tee nested-runtime-report/runner.txt
+      - name: Verify CLI host and guest preflight
+        run: |
+          set -euo pipefail
+          target/release/harmony preflight --json \
+            | tee nested-runtime-report/preflight.json
+      - name: Run both nested workloads twice through the canonical runtime
+        run: |
+          set -uo pipefail
+          report=nested-runtime-report
+          run_workload() {
+            local name=$1
+            local image="$GITHUB_WORKSPACE/consonance/harmony-linux/build/oci-images/${name}.oci"
+            local repetition out console serial marker
+            local -a markers
+            case "$name" in
+              docker)
+                markers=(
+                  'DK38: OCI workload: nested runc'
+                  'DK38: launching official postgres OCI container via nested runc'
+                  'DK38: GUEST_READY'
+                )
+                ;;
+              k3s)
+                markers=(
+                  'K8S49: CLUSTER_UP'
+                  'K8S49: POSTGRES_READY'
+                  'K8S49: client connected to the postgres pod over the CNI'
+                  'K8S49: CNI pod IPs:'
+                  'K8S49: result rc=0 (client workload completed over the CNI)'
+                )
+                ;;
+              *)
+                echo "unknown workload: $name" >&2
+                return 1
+                ;;
+            esac
+            for repetition in 1 2; do
+              out="$report/runs/${name}-${repetition}"
+              console="$report/console/${name}-${repetition}.txt"
+              rm -rf "$out"
+              echo "== running $name repetition $repetition"
+              # Keep the shell watchdog beyond the CLI budget so timeout runs
+              # can persist their partial serial log before the process dies.
+              if ! timeout -k 10 1260 target/release/harmony oci run "$image" \
+                --seed 20260901 --ram-mib 2048 --timeout 1200 --console --out "$out" \
+                2>&1 | tee "$console"; then
+                echo "FAIL: $name repetition $repetition did not complete" >&2
+                return 1
+              fi
+              test -s "$out/serial.log" || {
+                echo "FAIL: missing serial log for $name repetition $repetition" >&2
+                return 1
+              }
+              test -s "$out/run.json" || {
+                echo "FAIL: missing run record for $name repetition $repetition" >&2
+                return 1
+              }
+              jq -e '.container_rc == 0 and .runtime_rc == 0' "$out/run.json" >/dev/null || {
+                echo "FAIL: nonzero application/runtime status for $name repetition $repetition" >&2
+                return 1
+              }
+              serial="$out/serial.log"
+              if [[ "$name" == k3s ]] && ! grep -Eq $'^GUEST_READY\r?$' "$serial"; then
+                echo "FAIL: missing final K3s readiness line" >&2
+                return 1
+              fi
+              for marker in "${markers[@]}"; do
+                grep -Fq "$marker" "$serial" || {
+                  echo "FAIL: missing marker for $name repetition $repetition: $marker" >&2
+                  return 1
+                }
+              done
+            done
+            if ! cmp -s "$report/runs/${name}-1/serial.log" \
+              "$report/runs/${name}-2/serial.log"; then
+              echo "FAIL: full serial logs differ for same-seed $name runs" >&2
+              sha256sum "$report/runs/${name}-1/serial.log" \
+                "$report/runs/${name}-2/serial.log" >&2
+              return 1
+            fi
+            test "$(jq -r .serial_sha256 "$report/runs/${name}-1/run.json")" = \
+              "$(jq -r .serial_sha256 "$report/runs/${name}-2/run.json")" || {
+              echo "FAIL: run records disagree on same-seed $name serial digest" >&2
+              return 1
+            }
+            sha256sum "$report/runs/${name}-1/serial.log" \
+              >"$report/${name}-serial.sha256"
+            echo "PASS: $name has identical same-seed serial logs and zero app/runtime exits"
+          }
+
+          status=0
+          run_workload docker || status=1
+          run_workload k3s || status=1
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nested-runtime-qualification-${{ github.run_id }}
+          path: |
+            nested-runtime-report
+            consonance/harmony-linux/build/oci-images
+          if-no-files-found: warn
+          retention-days: 30

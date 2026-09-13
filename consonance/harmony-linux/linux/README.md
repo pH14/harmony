@@ -1,73 +1,86 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# Harmony Linux images
+# Harmony Linux platform artifacts
 
-This directory builds the pinned Linux kernels and initramfs variants used by
-consonance guest workloads. The build scripts fetch sources from
-`versions.lock`, apply the architecture-specific patch series, merge fixed
-configuration fragments, assemble an image, and verify the resulting artifacts
-against `MANIFEST.sha256`.
+This directory owns the pinned Linux kernels, direct platform fixtures, and
+the workload-free OCI runtime. Sources come from `versions.lock`; the build
+applies the common kernel series followed by the target architecture series,
+merges the fixed configuration, and publishes hash-checked artifacts.
 
-The x86 kernel carries the `/dev/harmony` character device and the optional
-exit-count paravirtual clock source. The arm64 series supplies the corresponding
-clock page, LSE-only userspace contract, and virtual clock event. Initramfs
-variants launch the minimal, database, container, campaign, game, and exec
-workloads.
+The standard OCI runtime contains one kernel configuration per architecture,
+the pinned static `runc`, static BusyBox utilities, `/init`, and the
+platform-owned PID 1 and supervisor supplied through build inputs. It does not
+select or build an application image. The platform init receives the prepared
+bundle and owns guest setup, device exposure, runtime invocation, and terminal
+lifecycle.
 
-## x86 kernel profiles
+Cgroup v2 device enforcement requires `BPF_SYSCALL` and `CGROUP_BPF` for
+`runc`. Both architectures use the BPF interpreter with `BPF_JIT` disabled,
+so cgroup policy does not introduce dynamically generated kernel instructions.
+`FHANDLE` is disabled: `name_to_handle_at` and `open_by_handle_at` are outside
+the supported execution contract. This keeps privileged payloads inside the
+delegated cgroup view rather than exposing its device-policy ancestor through
+filesystem or namespace handles.
 
-One patch series and one pinned source build three x86 kernels, selected by
-environment variables on `build-kernel.sh`. Each profile has its own output
-name and its own reviewed counter-opcode baseline, because a configuration
-change moves the counter-read sites.
+The common kernel policy disables `RWSEM_SPIN_ON_OWNER` when either Harmony
+virtual clock is compiled in. Its reader-owner optimistic-spin timeout uses
+`sched_clock()`, which remains frozen during exit-free spinning. Contended
+rwsems use Linux's existing blocking and wakeup path.
 
-| Profile | Selector | Output |
-| --- | --- | --- |
-| Default | none | `bzImage` |
-| Instruction sweep negative | `N6_TRAPS_OFF=1` | `bzImage-n6-traps-off` |
-| Fault library | `FAULTLAB=1` | `bzImage-faultlab` |
+## Canonical artifacts
 
-The selectors are mutually exclusive, and setting both fails the build before
-any work happens. `HARMONY_RDTSC_ALLOWLIST` and `HARMONY_RDRAND_ALLOWLIST`
-choose the per-toolchain baseline for the default kernel; a profile that
-carries its own baseline scans against that one regardless.
+The x86 build publishes `build/x86_64/bzImage` and
+`build/x86_64/initramfs-oci.cpio.gz`. The native arm64 build publishes
+`build/aarch64/Image` and `build/aarch64/initramfs-oci.cpio.gz`. Each runtime
+directory also contains a checksum and `oci-runtime.manifest` describing the
+kernel, initramfs, BusyBox, `runc`, PID 1, and supervisor inputs.
 
-Both production profiles trap userspace `RDTSC` and `RDTSCP` and service them
-from Harmony's virtual clock on stock KVM. Workloads such as Go can read their
-runtime counter without receiving a signal or observing a physical host clock.
-The instruction-sweep negative kernel deliberately disables confinement to
-prove the regression gate rejects raw counter reads.
+Build the complete runtime from the repository root on native Linux:
 
-The fault-library profile additionally enables `CONFIG_HARMONY_PARK` for task
-parking. `x86-faultlab-config-fragment` records its configuration. The build
-selector is `FAULTLAB=1`; it no longer disables counter confinement.
+```sh
+make -C consonance/harmony-linux fetch
+consonance/harmony-linux/scripts/build-platform-runtime.sh
+```
 
-## Entry points
+The build requires `nightly-2026-06-16` with `rust-src` and the native Linux
+musl target. It builds the matching kernel and static guest binaries, packages
+the platform OCI fixture, and records a source and artifact manifest. The
+lower-level `build-oci-runtime-initramfs.sh` accepts the built platform init and
+supervisor through `HARMONY_RUNTIME_INIT` and `HARMONY_RUNTIME_SUPERVISOR`.
+It fails when a required input is missing. Every ARM executable must satisfy
+the existing LSE and counter reachability gates.
+
+The arm64 runtime uses `build-arm64-runc.sh` to build runc 1.5.0 from the
+source and Go bootstrap pins in `versions.lock`. The script exports UAPI
+headers from the pinned kernel, builds a fresh LSE-only musl toolchain, applies
+the two Go runtime patches under `patches/go`, and publishes the scan-checked
+binary as `build/aarch64/runc`. Its vendored build uses Go 1.25.0 locally with
+`netgo`, `osusergo`, and `urfave_cli_no_docs`; `seccomp` and `libpathrs` are
+omitted because their native ARM dependencies are not part of the platform
+closure, and the generated runtime requests neither feature.
+
+## Direct platform fixtures
+
+These targets remain direct substrate checks and are independent of the OCI
+runtime assembly:
 
 ```sh
 make -C consonance/harmony-linux/linux image
 make -C consonance/harmony-linux/linux test
 make -C consonance/harmony-linux/linux arm64-image
-make -C consonance/harmony-linux/linux game-image
+make -C consonance/harmony-linux/linux exec-image
 make -C consonance/harmony-linux/linux go-runtime-image
 ```
 
-The x86 image targets Linux/x86 hosts. ARM images target Linux/aarch64 and are
-written under `build/arm64/`. Workload-specific targets reuse the appropriate
-kernel and keep the base artifacts separate.
+The x86 kernel's default, traps-off, and faultlab outputs are separate test
+artifacts with their own instruction audit baselines. The arm64 traps-off
+output is likewise a deliberate negative control. These controls do not alter
+the standard OCI runtime configuration.
 
-The locked x86 Nix build also produces `initramfs-go-runtime.cpio.gz`, an
-uninstrumented static Go program running directly as `/init`. It exercises
-runtime startup, goroutines/channels, and timers using the default Go runtime
-settings. The `go_runtime_x86` stock-KVM gate runs the same image three times on
-each production kernel profile and compares normalized execution logs with
-full-state checkpoints through completion; the corresponding traps-off kernel
-must diverge. The N6 instruction sweep covers both production profiles and its
-traps-off negative control. These are focused runtime and counter regressions;
-they do not establish deterministic preemption for arbitrary computation or
-qualify etcd's complete workload.
+Workload image recipes and their pins live under `workloads/guest-images` and
+own their fetch entrypoint. Other workload packages own their inputs in the
+same way. The platform fetch entrypoint downloads only the kernel, BusyBox,
+arm64 musl source, the runc source, and the Go arm64 bootstrap archive.
 
-The published manifest is generated by the reproducibility gate. Build inputs,
-patches, configuration fragments, and generated artifact hashes are the source
-of truth; dated run transcripts, when present, are external evidence rather
-than build inputs.
+The reproducibility manifest records the patch series, configuration inputs,
+and generated artifact hashes. Build transcripts are evidence, not inputs.

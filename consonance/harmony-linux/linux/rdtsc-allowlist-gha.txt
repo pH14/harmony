@@ -14,8 +14,9 @@
 # Regenerate when the runner toolchain moves or the patch series changes: the
 # scan failure prints the unlisted/stale sites in paste-ready form; re-verify
 # the function-subset property against rdtsc-allowlist.txt before committing.
-# Last re-baseline: guest patch 0004's execution-tick OUT in do_syscall_64
-# shifted that function's one reviewed counter read from +0x1b2 to +0x1bd.
+# Last re-baseline: canonical HARMONY_PARK enables patch 0006's syscall
+# entry poll, shifting do_syscall_64's reviewed kstack-offset read from
+# +0x1bd to +0x1d1 (also captured in the fault-library baseline).
 # No function or opcode count was added or removed.
 # Selected by build-kernel.sh via HARMONY_RDTSC_ALLOWLIST (the x86-vtime
 # workflow sets it).
@@ -67,7 +68,7 @@ vmlinux:dmar_disable_qi+0x0
 vmlinux:dmar_disable_qi+0x79
 vmlinux:dmar_disable_qi+0xa8
 vmlinux:dmar_disable_qi+0xc4
-vmlinux:do_syscall_64+0x1bd
+vmlinux:do_syscall_64+0x1d1
 vmlinux:ecmd_submit_sync+0x60
 vmlinux:ecmd_submit_sync+0x7b
 vmlinux:entropy_timer+0x25

@@ -81,105 +81,44 @@ mod tests {
     not(miri)
 ))]
 fn run() -> Result<(), String> {
-    use control_proto::{
-        HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
-    };
-    use environment::input_spec::InputSpec as EnvSpec;
-    use std::{fmt::Write as _, time::Instant};
-    #[cfg(target_arch = "aarch64")]
-    use vmm_backend::Arm64 as HostArch;
-    use vmm_backend::Backend;
-    #[cfg(target_arch = "x86_64")]
-    use vmm_backend::X86 as HostArch;
-    #[cfg(target_arch = "aarch64")]
-    use vmm_core::vendor::arm64::{board, bringup::boot_selected_control};
-    #[cfg(target_arch = "x86_64")]
-    use vmm_core::vendor::x86::bringup::{
-        boot_linux_stock_virtual_time, compose_stock_virtual_time_restore_target,
-    };
-    use vmm_core::{
-        control::{ControlServer, RestoreMode, VmmFactory, host_minor_faults, server_caps},
-        snapshot::DEFAULT_MAX_CHAIN_LEN,
-    };
+    use consonance_client::session::{SdkEvent, Session, SessionConfig};
+    use nes_workload::prepare::stage_and_prepare;
+    use std::{fs, path::PathBuf};
 
-    type Server = ControlServer<Box<dyn Backend<A = HostArch>>>;
-    #[cfg(target_arch = "x86_64")]
     const RAM: usize = 128 * 1024 * 1024;
-    #[cfg(target_arch = "aarch64")]
-    const RAM: usize = 128 * 1024 * 1024;
-    #[cfg(target_arch = "x86_64")]
-    const RAM_GPA_BASE: u64 = 0;
-    #[cfg(target_arch = "aarch64")]
-    const RAM_GPA_BASE: u64 = board::RAM_BASE;
     const SEED: u64 = 0x4e4f_5641_5f43_4931;
     #[cfg(target_arch = "x86_64")]
-    const DEADLINE: u64 = 2_000_000_000;
+    const RUN_BUDGET: u64 = 2_000_000_000;
     #[cfg(target_arch = "aarch64")]
-    const DEADLINE: u64 = 20_000_000_000;
+    const RUN_BUDGET: u64 = 20_000_000_000;
     #[cfg(target_arch = "x86_64")]
     const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
         no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
         nox2apic hpet=disable harmony_pvclock rdinit=/init";
     #[cfg(target_arch = "aarch64")]
     const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
-
-    #[derive(Clone, Copy)]
-    enum ProfileVerb {
-        Branch,
-        Run,
-        Snapshot,
-        Read,
-        SdkEvents,
-    }
-
-    impl ProfileVerb {
-        const fn index(self) -> usize {
-            match self {
-                Self::Branch => 0,
-                Self::Run => 1,
-                Self::Snapshot => 2,
-                Self::Read => 3,
-                Self::SdkEvents => 4,
-            }
-        }
-
-        const fn name(self) -> &'static str {
-            match self {
-                Self::Branch => "Branch",
-                Self::Run => "Run",
-                Self::Snapshot => "Snapshot",
-                Self::Read => "Read",
-                Self::SdkEvents => "SdkEvents",
-            }
-        }
-    }
+    const HANDLE_REGISTER: u32 = 1;
+    const LENGTH_REGISTER: u32 = 2;
+    const OBSERVATION_FRAME_OFFSET: usize = 8;
+    const SDK_NAMESPACE_SHIFT: u32 = 24;
+    const SDK_STATE_NAMESPACE: u8 = 2;
+    const SDK_STATE_SET: u8 = 0;
+    const SDK_STATE_MAX: u8 = 1;
 
     #[derive(Default)]
     struct ProbeProfile {
         enabled: bool,
-        ram_gpa_base: u64,
-        wall_ns: [u128; 5],
-        calls: [u64; 5],
-        branch_wall_samples_ns: Vec<u128>,
-        snapshot_wall_samples_ns: Vec<u128>,
-        last_snapshot_wall_ns: u128,
-        flatten_wall_samples_ns: Vec<u128>,
+        branches: u64,
+        runs: u64,
+        snapshots: u64,
+        reads: u64,
+        sdk_events: u64,
         restore_calls: u64,
         restore_bytes: u64,
         in_place_fallbacks: u64,
-        setup_nonzero_pages: Option<u64>,
-        billboard: Option<(u64, u64)>,
-        agent_ranges: Vec<(u64, u64)>,
-        seals: u64,
-        dirty_available_seals: u64,
         dirty_pages: u64,
-        dirty_billboard_pages: u64,
-        dirty_agent_pages: u64,
-        dirty_other_pages: u64,
-        action_dirty_pages: u64,
-        action_dirty_billboard_pages: u64,
-        action_dirty_agent_pages: u64,
-        action_dirty_other_pages: u64,
+        setup_owned_pages: Option<u64>,
+        observation: Option<(u32, u64)>,
         actions: u64,
         frames: u64,
         doorbell_exits: u64,
@@ -191,108 +130,68 @@ fn run() -> Result<(), String> {
         fn new(enabled: bool) -> Self {
             Self {
                 enabled,
-                ram_gpa_base: RAM_GPA_BASE,
-                agent_ranges: Vec::new(),
                 ..Self::default()
             }
         }
 
-        fn record_verb(&mut self, request: &Request, wall_ns: u128) {
+        fn branch(&mut self, session: &Session, before: (u64, u64)) {
             if !self.enabled {
                 return;
             }
-            let Some(verb) = profile_verb(request) else {
-                return;
-            };
-            let index = verb.index();
-            self.wall_ns[index] = self.wall_ns[index].saturating_add(wall_ns);
-            self.calls[index] = self.calls[index].saturating_add(1);
-            if matches!(verb, ProfileVerb::Branch) {
-                self.branch_wall_samples_ns.push(wall_ns);
-            } else if matches!(verb, ProfileVerb::Snapshot) {
-                self.snapshot_wall_samples_ns.push(wall_ns);
-                self.last_snapshot_wall_ns = wall_ns;
-            }
-        }
-
-        fn record_restore(&mut self, bytes: u64, fallbacks: u64) {
-            if !self.enabled {
-                return;
-            }
+            let after = session.last_restore_stats();
+            self.branches = self.branches.saturating_add(1);
             self.restore_calls = self.restore_calls.saturating_add(1);
-            self.restore_bytes = self.restore_bytes.saturating_add(bytes);
-            self.in_place_fallbacks = fallbacks;
+            self.restore_bytes = self
+                .restore_bytes
+                .saturating_add(after.0.saturating_sub(before.0));
+            self.in_place_fallbacks = self
+                .in_place_fallbacks
+                .saturating_add(after.1.saturating_sub(before.1));
         }
 
-        fn record_seal(&mut self, dirty_gfns: Option<&[u64]>, chain_len: Option<u32>) {
+        fn run(&mut self) {
+            if self.enabled {
+                self.runs = self.runs.saturating_add(1);
+            }
+        }
+
+        fn snapshot(&mut self, session: &Session, snapshot: control_proto::SnapId) {
             if !self.enabled {
                 return;
             }
-            self.seals = self.seals.saturating_add(1);
-            let Some(dirty_gfns) = dirty_gfns else {
-                return;
-            };
-            self.dirty_available_seals = self.dirty_available_seals.saturating_add(1);
-            if chain_len == Some(1) {
-                self.flatten_wall_samples_ns
-                    .push(self.last_snapshot_wall_ns);
+            self.snapshots = self.snapshots.saturating_add(1);
+            if let Some(pages) = session.last_seal_dirty_gfns() {
+                self.dirty_pages = self
+                    .dirty_pages
+                    .saturating_add(u64::try_from(pages.len()).unwrap_or(u64::MAX));
             }
-            for &gfn in dirty_gfns {
-                let gpa = self.ram_gpa_base.saturating_add(gfn.saturating_mul(4096));
-                self.dirty_pages = self.dirty_pages.saturating_add(1);
-                if self.overlaps_billboard(gpa) {
-                    self.dirty_billboard_pages = self.dirty_billboard_pages.saturating_add(1);
-                } else if self
-                    .agent_ranges
-                    .iter()
-                    .any(|&(start, end)| gpa < end && start < gpa.saturating_add(4096))
-                {
-                    self.dirty_agent_pages = self.dirty_agent_pages.saturating_add(1);
-                } else {
-                    self.dirty_other_pages = self.dirty_other_pages.saturating_add(1);
-                }
+            self.setup_owned_pages = self
+                .setup_owned_pages
+                .or_else(|| session.snapshot_owned_pages(snapshot));
+        }
+
+        fn sdk_events(&mut self) {
+            if self.enabled {
+                self.sdk_events = self.sdk_events.saturating_add(1);
             }
         }
 
-        fn set_setup(&mut self, nonzero_pages: u64, billboard_gpa: u64, billboard_len: u64) {
-            if !self.enabled {
-                return;
+        fn read(&mut self) {
+            if self.enabled {
+                self.reads = self.reads.saturating_add(1);
             }
-            self.setup_nonzero_pages = Some(nonzero_pages);
-            self.billboard = Some((billboard_gpa, billboard_len));
         }
 
-        fn overlaps_billboard(&self, gpa: u64) -> bool {
-            self.billboard.is_some_and(|(start, len)| {
-                let end = start.saturating_add(len);
-                gpa < end && start < gpa.saturating_add(4096)
-            })
-        }
-
-        fn record_action(
+        fn action(
             &mut self,
             frames: u64,
             doorbell_exits: u64,
             touched_pages: Option<u64>,
             frame: Option<u64>,
-            dirty_before: [u64; 4],
         ) {
             if !self.enabled {
                 return;
             }
-            let dirty_after = self.dirty_totals();
-            self.action_dirty_pages = self
-                .action_dirty_pages
-                .saturating_add(dirty_after[0].saturating_sub(dirty_before[0]));
-            self.action_dirty_billboard_pages = self
-                .action_dirty_billboard_pages
-                .saturating_add(dirty_after[1].saturating_sub(dirty_before[1]));
-            self.action_dirty_agent_pages = self
-                .action_dirty_agent_pages
-                .saturating_add(dirty_after[2].saturating_sub(dirty_before[2]));
-            self.action_dirty_other_pages = self
-                .action_dirty_other_pages
-                .saturating_add(dirty_after[3].saturating_sub(dirty_before[3]));
             self.actions = self.actions.saturating_add(1);
             self.frames = self.frames.saturating_add(frames);
             self.doorbell_exits = self.doorbell_exits.saturating_add(doorbell_exits);
@@ -304,145 +203,45 @@ fn run() -> Result<(), String> {
             }
         }
 
-        fn dirty_totals(&self) -> [u64; 4] {
-            [
-                self.dirty_pages,
-                self.dirty_billboard_pages,
-                self.dirty_agent_pages,
-                self.dirty_other_pages,
-            ]
+        fn set_setup(&mut self, owned_pages: u64, handle: u32, length: u64) {
+            if self.enabled {
+                self.setup_owned_pages = Some(owned_pages);
+                self.observation = Some((handle, length));
+            }
         }
 
         fn render(&self) -> Option<String> {
-            if !self.enabled {
-                return None;
-            }
-            let mut line = String::from("consonance-probe-profile");
-            for verb in [
-                ProfileVerb::Branch,
-                ProfileVerb::Run,
-                ProfileVerb::Snapshot,
-                ProfileVerb::Read,
-                ProfileVerb::SdkEvents,
-            ] {
-                let index = verb.index();
-                let _ = write!(
-                    line,
-                    " {}_calls={} {}_wall_ns={}",
-                    verb.name().to_ascii_lowercase(),
-                    self.calls[index],
-                    verb.name().to_ascii_lowercase(),
-                    self.wall_ns[index]
-                );
-            }
-            let ranges = self
-                .agent_ranges
-                .iter()
-                .map(|&(start, end)| format!("{start:#x}-{end:#x}"))
-                .collect::<Vec<_>>()
-                .join(",");
-            let mut branch_samples = self.branch_wall_samples_ns.clone();
-            branch_samples.sort_unstable();
-            let branch_median_ns = percentile(&branch_samples, 50);
-            let branch_p99_ns = percentile(&branch_samples, 99);
-            let mut snapshot_samples = self.snapshot_wall_samples_ns.clone();
-            snapshot_samples.sort_unstable();
-            let snapshot_median_ns = percentile(&snapshot_samples, 50);
-            let snapshot_p99_ns = percentile(&snapshot_samples, 99);
-            let mut flatten_samples = self.flatten_wall_samples_ns.clone();
-            flatten_samples.sort_unstable();
-            let flatten_wall_ns = flatten_samples.iter().copied().sum::<u128>();
-            let flatten_median_ns = percentile(&flatten_samples, 50);
-            let flatten_p99_ns = percentile(&flatten_samples, 99);
-            let _ = write!(
-                line,
-                " branch_median_ns={} branch_p99_ns={} snapshot_median_ns={} snapshot_p99_ns={} restore_calls={} restore_bytes={} in_place_fallbacks={} seals={} dirty_available_seals={} flatten_calls={} flatten_wall_ns={} flatten_median_ns={} flatten_p99_ns={} dirty_pages={} dirty_billboard_pages={} dirty_agent_pages={} dirty_other_pages={} action_dirty_pages={} action_dirty_billboard_pages={} action_dirty_agent_pages={} action_dirty_other_pages={} setup_nonzero_pages={} billboard={} agent_ranges={} actions={} frames={} doorbell_exits={} touched_pages={}",
-                branch_median_ns,
-                branch_p99_ns,
-                snapshot_median_ns,
-                snapshot_p99_ns,
-                self.restore_calls,
-                self.restore_bytes,
-                self.in_place_fallbacks,
-                self.seals,
-                self.dirty_available_seals,
-                flatten_samples.len(),
-                flatten_wall_ns,
-                flatten_median_ns,
-                flatten_p99_ns,
-                self.dirty_pages,
-                self.dirty_billboard_pages,
-                self.dirty_agent_pages,
-                self.dirty_other_pages,
-                self.action_dirty_pages,
-                self.action_dirty_billboard_pages,
-                self.action_dirty_agent_pages,
-                self.action_dirty_other_pages,
-                self.setup_nonzero_pages.unwrap_or(0),
-                self.billboard.map_or_else(
-                    || "none".to_owned(),
-                    |(gpa, len)| { format!("{gpa:#x}+{len:#x}") }
-                ),
-                ranges,
-                self.actions,
-                self.frames,
-                self.doorbell_exits,
-                self.touched_pages,
-            );
-            Some(line)
+            self.enabled.then(|| {
+                format!(
+                    "consonance-probe-profile branches={} runs={} snapshots={} reads={} sdk_events={} restore_calls={} restore_bytes={} in_place_fallbacks={} dirty_pages={} setup_owned_pages={} observation={} actions={} frames={} doorbell_exits={} touched_pages={}",
+                    self.branches,
+                    self.runs,
+                    self.snapshots,
+                    self.reads,
+                    self.sdk_events,
+                    self.restore_calls,
+                    self.restore_bytes,
+                    self.in_place_fallbacks,
+                    self.dirty_pages,
+                    self.setup_owned_pages.unwrap_or(0),
+                    self.observation.map_or_else(
+                        || "none".to_owned(),
+                        |(handle, length)| format!("handle={handle}+{length:#x}"),
+                    ),
+                    self.actions,
+                    self.frames,
+                    self.doorbell_exits,
+                    self.touched_pages,
+                )
+            })
         }
     }
 
-    fn profile_verb(request: &Request) -> Option<ProfileVerb> {
-        match request {
-            Request::Branch { .. } | Request::Replay(_) => Some(ProfileVerb::Branch),
-            Request::Run { .. } => Some(ProfileVerb::Run),
-            Request::Snapshot => Some(ProfileVerb::Snapshot),
-            Request::Read { .. } => Some(ProfileVerb::Read),
-            Request::SdkEvents { .. } => Some(ProfileVerb::SdkEvents),
-            _ => None,
-        }
-    }
-
-    fn percentile(sorted: &[u128], percentile: usize) -> u128 {
-        if sorted.is_empty() {
-            return 0;
-        }
-        let index = (sorted.len() - 1).saturating_mul(percentile) / 100;
-        sorted[index]
-    }
-
-    fn latest_frame(events: &[(u64, u32, Vec<u8>)]) -> Option<u64> {
-        const SDK_NS_SHIFT: u32 = 24;
-        const SDK_NS_STATE: u8 = 2;
-        const SDK_STATE_SET: u8 = 0;
-        const SDK_STATE_MAX: u8 = 1;
-        const REG_FRAME: u32 = 10;
-        let event_id = (u32::from(SDK_NS_STATE) << SDK_NS_SHIFT) | REG_FRAME;
-        let mut frame = None;
-        for &(_, id, ref bytes) in events {
-            if id != event_id || bytes.len() != 9 {
-                continue;
-            }
-            let value = u64::from_le_bytes(bytes[1..9].try_into().ok()?);
-            match bytes[0] {
-                SDK_STATE_SET => frame = Some(value),
-                SDK_STATE_MAX => frame = Some(frame.unwrap_or(0).max(value)),
-                _ => {}
-            }
-        }
-        frame
-    }
-
-    fn latest_register(events: &[(u64, u32, Vec<u8>)], register: u32) -> Result<u64, String> {
-        const SDK_NS_SHIFT: u32 = 24;
-        const SDK_NS_STATE: u8 = 2;
-        const SDK_STATE_SET: u8 = 0;
-        const SDK_STATE_MAX: u8 = 1;
-        let event_id = (u32::from(SDK_NS_STATE) << SDK_NS_SHIFT) | register;
+    fn latest_register(events: &[SdkEvent], register: u32) -> Result<u64, String> {
+        let event_id = (u32::from(SDK_STATE_NAMESPACE) << SDK_NAMESPACE_SHIFT) | register;
         let mut value = None;
-        for &(_, id, ref bytes) in events {
-            if id != event_id || bytes.len() != 9 {
+        for (_, id, bytes) in events {
+            if *id != event_id || bytes.len() != 9 {
                 continue;
             }
             let next = u64::from_le_bytes(
@@ -459,187 +258,185 @@ fn run() -> Result<(), String> {
         value.ok_or_else(|| format!("SDK register {register} is absent"))
     }
 
-    fn drive(
-        server: &mut Server,
-        request: &Request,
+    fn sdk_events(
+        session: &mut Session,
         profile: &mut ProbeProfile,
-    ) -> Result<Reply, String> {
-        #[allow(clippy::disallowed_methods)]
-        let started = profile.enabled.then(Instant::now);
-        let result = server.handle(request);
-        #[allow(clippy::disallowed_methods)]
-        if let Some(started) = started {
-            profile.record_verb(request, started.elapsed().as_nanos());
-        }
-        if matches!(request, Request::Snapshot)
-            && let Ok(Ok(Reply::Snapshot { id, .. })) = &result
-        {
-            profile.record_seal(
-                server.last_seal_dirty_gfns(),
-                server.snapshot_chain_len(*id),
-            );
-        }
-        if matches!(request, Request::Branch { .. } | Request::Replay(_))
-            && matches!(result, Ok(Ok(Reply::Unit)))
-        {
-            profile.record_restore(
-                server.last_restore_bytes_written(),
-                server.in_place_fallbacks(),
-            );
-        }
-        match result {
-            Ok(Ok(reply)) => Ok(reply),
-            Ok(Err(error)) => Err(format!("{request:?} returned {error:?}")),
-            Err(error) => Err(format!("{request:?} ended the session: {error:?}")),
-        }
+    ) -> Result<Vec<SdkEvent>, String> {
+        let events = session
+            .sdk_events()
+            .map_err(|error| format!("SDK event fetch: {error}"))?;
+        profile.sdk_events();
+        Ok(events)
     }
 
-    fn console(server: &mut Server, profile: &mut ProbeProfile) -> String {
-        match drive(server, &Request::Console { offset: 0 }, profile) {
-            Ok(Reply::Console { chunk, .. }) => String::from_utf8_lossy(&chunk).into_owned(),
-            Ok(other) => format!("<unexpected console reply {other:?}>"),
-            Err(error) => format!("<console unavailable: {error}>"),
-        }
+    fn read_observation(
+        session: &mut Session,
+        profile: &mut ProbeProfile,
+        handle: u32,
+        length: u32,
+    ) -> Result<Vec<u8>, String> {
+        let bytes = session
+            .read_observation(handle, 0, length)
+            .map_err(|error| format!("observation read: {error}"))?;
+        profile.read();
+        Ok(bytes)
     }
 
-    fn run_to_snapshot(server: &mut Server, profile: &mut ProbeProfile) -> Result<Moment, String> {
-        let request = Request::Run {
-            until: StopConditions {
-                deadline: Some(Moment(DEADLINE)),
-                on: StopMask::NONE.arm(control_proto::class_bit::SNAPSHOT_POINT),
-            },
-            resolve: None,
+    fn observation_frame(observation: &[u8]) -> Result<u64, String> {
+        let frame = observation
+            .get(OBSERVATION_FRAME_OFFSET..OBSERVATION_FRAME_OFFSET + 4)
+            .ok_or_else(|| "observation header is truncated".to_owned())?;
+        let frame: [u8; 4] = frame
+            .try_into()
+            .map_err(|_| "observation frame field is malformed".to_owned())?;
+        Ok(u64::from(u32::from_le_bytes(frame)))
+    }
+
+    fn branch(
+        session: &mut Session,
+        profile: &mut ProbeProfile,
+        parent: control_proto::SnapId,
+        payload: Vec<u8>,
+    ) -> Result<(), String> {
+        let before = session.last_restore_stats();
+        session
+            .branch_payloads(parent, vec![payload, vec![0, 1]])
+            .map_err(|error| format!("branch: {error}"))?;
+        profile.branch(session, before);
+        Ok(())
+    }
+
+    fn run_to_snapshot(
+        session: &mut Session,
+        profile: &mut ProbeProfile,
+        parent: control_proto::SnapId,
+    ) -> Result<u64, String> {
+        let floor = session
+            .snapshot_time(parent)
+            .ok_or_else(|| "snapshot handle has no V-time".to_owned())?;
+        profile.run();
+        session
+            .run_to_snapshot(floor)
+            .map_err(|error| with_console(session, format!("run: {error}")))
+    }
+
+    fn take_snapshot(
+        session: &mut Session,
+        profile: &mut ProbeProfile,
+    ) -> Result<(control_proto::SnapId, u64), String> {
+        let receipt = session
+            .snapshot()
+            .map_err(|error| format!("snapshot: {error}"))?;
+        profile.snapshot(session, receipt.0);
+        Ok(receipt)
+    }
+
+    fn with_console(session: &mut Session, error: String) -> String {
+        let Ok(console) = session.console_tail() else {
+            return error;
         };
-        let reply = drive(server, &request, profile).map_err(|error| {
-            format!(
-                "{error}\n--- guest console ---\n{}",
-                console(server, profile)
-            )
-        })?;
-        match reply {
-            Reply::Stop(StopReason::SnapshotPoint { vtime }) => Ok(vtime),
-            other => Err(format!(
-                "expected Nova snapshot point, received {other:?}\n--- guest console ---\n{}",
-                console(server, profile)
-            )),
+        if console.is_empty() {
+            return error;
         }
-    }
-
-    fn payload_env(payloads: Vec<Vec<u8>>) -> Reproducer {
-        let mut spec = EnvSpec::seeded(SEED);
-        spec.set_payloads(Some(payloads));
-        Reproducer {
-            blob_version: EnvSpec::BLOB_VERSION,
-            bytes: spec.encode(),
-        }
+        format!(
+            "{error}; guest console:\n{}",
+            String::from_utf8_lossy(&console)
+        )
     }
 
     fn endpoint(
-        server: &mut Server,
-        base: SnapId,
+        session: &mut Session,
         profile: &mut ProbeProfile,
+        parent: control_proto::SnapId,
+        observation_handle: u32,
+        observation_length: u32,
     ) -> Result<([u8; 32], Vec<u8>), String> {
-        let env = payload_env(vec![vec![0x81, 12], vec![0, 1]]);
-        let before_faults = profile.enabled.then(host_minor_faults).flatten();
+        let before_faults = profile
+            .enabled
+            .then(consonance_client::session::host_minor_faults)
+            .flatten();
         let before_frame = profile.last_frame;
-        let dirty_before = profile.dirty_totals();
-        match drive(server, &Request::Branch { snap: base, env }, profile)? {
-            Reply::Unit => {}
-            other => return Err(format!("branch returned {other:?}")),
-        }
-        let before_exits = server.vmm().map(|vmm| vmm.doorbell_exits()).unwrap_or(0);
-        let at = run_to_snapshot(server, profile)?;
-        match drive(server, &Request::Snapshot, profile)? {
-            Reply::Snapshot { .. } => {}
-            other => return Err(format!("endpoint snapshot returned {other:?}")),
-        }
-        let hash = match drive(
-            server,
-            &Request::Hash {
-                scope: HashScope::Whole,
-            },
-            profile,
-        )? {
-            Reply::Hash(hash) => hash,
-            other => return Err(format!("hash returned {other:?}")),
-        };
-        let events = match drive(server, &Request::SdkEvents { offset: 0 }, profile)? {
-            Reply::SdkEvents(events) => {
-                let frame = latest_frame(&events);
-                let frames = frame.zip(before_frame).map_or_else(
-                    || frame.unwrap_or(0),
-                    |(after, before)| after.saturating_sub(before),
-                );
-                let after_exits = server.vmm().map(|vmm| vmm.doorbell_exits()).unwrap_or(0);
-                profile.record_action(
-                    frames,
-                    after_exits.saturating_sub(before_exits),
-                    before_faults.and_then(|before| {
-                        host_minor_faults().map(|after| after.saturating_sub(before))
-                    }),
-                    frame,
-                    dirty_before,
-                );
-                format!("{at:?}:{events:?}").into_bytes()
-            }
-            other => return Err(format!("SDK event fetch returned {other:?}")),
-        };
-        Ok((hash, events))
+        let before_exits = session.doorbell_exits();
+        branch(session, profile, parent, vec![0x81, 12])?;
+        let at = run_to_snapshot(session, profile, parent)?;
+        let events = sdk_events(session, profile)?;
+        let observation =
+            read_observation(session, profile, observation_handle, observation_length)?;
+        let frame = observation_frame(&observation)?;
+        let hash = session
+            .state_hash()
+            .map_err(|error| format!("whole-state hash: {error}"))?;
+        let after_faults =
+            before_faults.and_then(|_| consonance_client::session::host_minor_faults());
+        let touched_pages =
+            before_faults.and_then(|before| after_faults.map(|after| after.saturating_sub(before)));
+        let frames = before_frame.map_or(frame, |before| frame.saturating_sub(before));
+        profile.action(
+            frames,
+            session.doorbell_exits().saturating_sub(before_exits),
+            touched_pages,
+            Some(frame),
+        );
+        Ok((
+            hash,
+            format!("{at}:{events:?}:{observation:?}").into_bytes(),
+        ))
     }
 
-    fn hash_whole(server: &mut Server, profile: &mut ProbeProfile) -> Result<[u8; 32], String> {
-        match drive(
-            server,
-            &Request::Hash {
-                scope: HashScope::Whole,
-            },
-            profile,
-        )? {
-            Reply::Hash(hash) => Ok(hash),
-            other => Err(format!("hash returned {other:?}")),
-        }
+    struct Edge {
+        parent: control_proto::SnapId,
+        payload: Vec<u8>,
+        hash: [u8; 32],
+        evidence: Vec<u8>,
     }
 
-    struct OracleInitial {
-        components: Vec<(&'static str, [u8; 32])>,
-        memory: Vec<u8>,
-        sdk: String,
-    }
+    type OracleOutcome = (Option<control_proto::SnapId>, [u8; 32], Vec<u8>);
 
     fn oracle_action(
-        server: &mut Server,
-        parent: SnapId,
+        session: &mut Session,
+        profile: &mut ProbeProfile,
+        parent: control_proto::SnapId,
         payload: Vec<u8>,
         seal: bool,
-        profile: &mut ProbeProfile,
-    ) -> Result<(Option<SnapId>, [u8; 32], OracleInitial), String> {
-        match drive(
-            server,
-            &Request::Branch {
-                snap: parent,
-                env: payload_env(vec![payload, vec![0, 1]]),
-            },
-            profile,
-        )? {
-            Reply::Unit => {}
-            other => return Err(format!("restore-oracle branch returned {other:?}")),
-        }
-        let vmm = server.vmm().ok_or("oracle VM unavailable")?;
-        let initial = OracleInitial {
-            components: vmm.state_components(),
-            memory: vmm.guest_memory().to_vec(),
-            sdk: format!("{:?}", vmm.sdk_snapshot()),
-        };
-        run_to_snapshot(server, profile)?;
+        observation_handle: u32,
+        observation_length: u32,
+    ) -> Result<OracleOutcome, String> {
+        let before_faults = profile
+            .enabled
+            .then(consonance_client::session::host_minor_faults)
+            .flatten();
+        let before_frame = profile.last_frame;
+        let before_exits = session.doorbell_exits();
+        branch(session, profile, parent, payload)?;
+        let at = run_to_snapshot(session, profile, parent)?;
         let child = if seal {
-            match drive(server, &Request::Snapshot, profile)? {
-                Reply::Snapshot { id, .. } => Some(id),
-                other => return Err(format!("restore-oracle snapshot returned {other:?}")),
-            }
+            Some(take_snapshot(session, profile)?.0)
         } else {
             None
         };
-        Ok((child, hash_whole(server, profile)?, initial))
+        let events = sdk_events(session, profile)?;
+        let observation =
+            read_observation(session, profile, observation_handle, observation_length)?;
+        let frame = observation_frame(&observation)?;
+        let hash = session
+            .state_hash()
+            .map_err(|error| format!("whole-state hash: {error}"))?;
+        let after_faults =
+            before_faults.and_then(|_| consonance_client::session::host_minor_faults());
+        let touched_pages =
+            before_faults.and_then(|before| after_faults.map(|after| after.saturating_sub(before)));
+        let frames = before_frame.map_or(frame, |before| frame.saturating_sub(before));
+        profile.action(
+            frames,
+            session.doorbell_exits().saturating_sub(before_exits),
+            touched_pages,
+            Some(frame),
+        );
+        Ok((
+            child,
+            hash,
+            format!("{at}:{events:?}:{observation:?}").into_bytes(),
+        ))
     }
 
     fn oracle_word(state: &mut u64) -> u64 {
@@ -654,331 +451,256 @@ fn run() -> Result<(), String> {
     }
 
     fn run_restore_oracle(
-        server: &mut Server,
-        base: SnapId,
+        session: &mut Session,
+        base: control_proto::SnapId,
+        observation_handle: u32,
+        observation_length: u32,
         profile: &mut ProbeProfile,
     ) -> Result<(), String> {
-        #[derive(Clone)]
-        struct Edge {
-            parent: SnapId,
-            payload: Vec<u8>,
-            hash: [u8; 32],
-            components: Vec<(&'static str, [u8; 32])>,
-            sdk_capture: String,
-            initial_components: Vec<(&'static str, [u8; 32])>,
-        }
-
-        let sample_start = profile.branch_wall_samples_ns.len();
-        let bytes_start = profile.restore_bytes;
-        let fallbacks_start = server.in_place_fallbacks();
+        let fallbacks_start = session.last_restore_stats().1;
         let mut nodes = vec![base];
         let mut edges = Vec::with_capacity(50);
 
         let action_a = vec![0x81, 12];
-        let (s1, _, initial) = oracle_action(server, base, action_a.clone(), true, profile)?;
+        let (s1, s1_hash, s1_evidence) = oracle_action(
+            session,
+            profile,
+            base,
+            action_a.clone(),
+            true,
+            observation_handle,
+            observation_length,
+        )?;
         let s1 = s1.ok_or("restore-oracle action A did not seal S1")?;
         nodes.push(s1);
         edges.push(Edge {
             parent: base,
             payload: action_a,
-            initial_components: initial.components,
-            hash: hash_whole(server, profile)?,
-            components: server
-                .vmm()
-                .ok_or("oracle VM unavailable")?
-                .state_components(),
-            sdk_capture: format!(
-                "{:?}",
-                server.vmm().ok_or("oracle VM unavailable")?.sdk_snapshot()
-            ),
+            hash: s1_hash,
+            evidence: s1_evidence,
         });
+
         let action_b = vec![0x42, 7];
-        let (s2, s2_hash, initial) = oracle_action(server, s1, action_b.clone(), true, profile)?;
+        let (s2, s2_hash, s2_evidence) = oracle_action(
+            session,
+            profile,
+            s1,
+            action_b.clone(),
+            true,
+            observation_handle,
+            observation_length,
+        )?;
         let s2 = s2.ok_or("restore-oracle action B did not seal S2")?;
         nodes.push(s2);
         edges.push(Edge {
             parent: s1,
             payload: action_b.clone(),
-            initial_components: initial.components,
             hash: s2_hash,
-            components: server
-                .vmm()
-                .ok_or("oracle VM unavailable")?
-                .state_components(),
-            sdk_capture: format!(
-                "{:?}",
-                server.vmm().ok_or("oracle VM unavailable")?.sdk_snapshot()
-            ),
+            evidence: s2_evidence,
         });
-        let (_, replay_b_hash, _) = oracle_action(server, s1, action_b, false, profile)?;
-        if replay_b_hash != s2_hash {
-            return Err("restore-oracle S1 + B did not reproduce S2".to_string());
+        let (_, replay_b_hash, replay_b_evidence) = oracle_action(
+            session,
+            profile,
+            s1,
+            action_b,
+            false,
+            observation_handle,
+            observation_length,
+        )?;
+        if replay_b_hash != s2_hash || replay_b_evidence != edges[1].evidence {
+            return Err("restore-oracle S1 + B did not reproduce S2".to_owned());
         }
-        let mut equal = 1u64;
-
+        let mut equal = 1_u64;
         let mut rng = SEED ^ 0x4954_454d_325f_5452;
         while edges.len() < 50 {
             let word = oracle_word(&mut rng);
             let parent = nodes[(word as usize) % nodes.len()];
             let payload = oracle_payload(word.rotate_left(17));
-            let (child, hash, initial) =
-                oracle_action(server, parent, payload.clone(), true, profile)?;
+            let (child, hash, evidence) = oracle_action(
+                session,
+                profile,
+                parent,
+                payload.clone(),
+                true,
+                observation_handle,
+                observation_length,
+            )?;
             let child = child.ok_or("restore-oracle tree action did not seal")?;
             nodes.push(child);
             edges.push(Edge {
                 parent,
                 payload,
                 hash,
-                initial_components: initial.components,
-                components: server
-                    .vmm()
-                    .ok_or("oracle VM unavailable")?
-                    .state_components(),
-                sdk_capture: format!(
-                    "{:?}",
-                    server.vmm().ok_or("oracle VM unavailable")?.sdk_snapshot()
-                ),
+                evidence,
             });
         }
 
         while equal < 200 {
             let word = oracle_word(&mut rng);
             let edge = &edges[(word as usize) % edges.len()];
-            let (_, replay_hash, initial) =
-                oracle_action(server, edge.parent, edge.payload.clone(), false, profile)?;
-            if replay_hash != edge.hash {
-                let actual = server
-                    .vmm()
-                    .ok_or("oracle VM unavailable")?
-                    .state_components();
-                let changed: Vec<_> = edge
-                    .components
-                    .iter()
-                    .filter_map(|(name, expected)| {
-                        (actual
-                            .iter()
-                            .find(|(label, _)| label == name)
-                            .map(|(_, hash)| hash)
-                            != Some(expected))
-                        .then_some(*name)
-                    })
-                    .collect();
-                let sdk_capture_differs = edge.sdk_capture
-                    != format!(
-                        "{:?}",
-                        server.vmm().ok_or("oracle VM unavailable")?.sdk_snapshot()
-                    );
-                let first_restore_changed: Vec<_> = initial
-                    .components
-                    .iter()
-                    .filter_map(|(name, hash)| {
-                        (edge
-                            .initial_components
-                            .iter()
-                            .find(|(label, _)| label == name)
-                            .map(|(_, h)| h)
-                            != Some(hash))
-                        .then_some(*name)
-                    })
-                    .collect();
-                server.set_restore_mode(RestoreMode::Memcpy);
-                let branch = Request::Branch {
-                    snap: edge.parent,
-                    env: payload_env(vec![edge.payload.clone(), vec![0, 1]]),
-                };
-                match drive(server, &branch, profile)? {
-                    Reply::Unit => {}
-                    other => return Err(format!("diagnostic fresh branch returned {other:?}")),
-                }
-                let fresh_vmm = server.vmm().ok_or("oracle VM unavailable")?;
-                let fresh_parent = fresh_vmm.state_components();
-                let initial_changed: Vec<_> = initial
-                    .components
-                    .iter()
-                    .filter_map(|(name, hash)| {
-                        (fresh_parent
-                            .iter()
-                            .find(|(label, _)| label == name)
-                            .map(|(_, h)| h)
-                            != Some(hash))
-                        .then_some(*name)
-                    })
-                    .collect();
-                let initial_sdk_differs = initial.sdk != format!("{:?}", fresh_vmm.sdk_snapshot());
-                let initial_ram_differences: Vec<_> = initial
-                    .memory
-                    .chunks(4096)
-                    .zip(fresh_vmm.guest_memory().chunks(4096))
-                    .enumerate()
-                    .filter_map(|(gfn, (used, fresh))| (used != fresh).then_some(gfn))
-                    .take(16)
-                    .collect();
-                let fresh_result =
-                    oracle_action(server, edge.parent, edge.payload.clone(), false, profile)
-                        .map(|(_, hash, _)| hash == edge.hash);
+            let (_, replay_hash, replay_evidence) = oracle_action(
+                session,
+                profile,
+                edge.parent,
+                edge.payload.clone(),
+                false,
+                observation_handle,
+                observation_length,
+            )?;
+            if replay_hash != edge.hash || replay_evidence != edge.evidence {
                 return Err(format!(
-                    "restore-oracle hash mismatch at comparison {equal}: parent={:?} payload={:?} changed_components={changed:?} sdk_capture_differs={sdk_capture_differs} fresh_restore_matches={fresh_result:?} first_restore_changed={first_restore_changed:?} initial_changed_components={initial_changed:?} initial_sdk_differs={initial_sdk_differs} initial_ram_differences={initial_ram_differences:?} expected={:02x?} actual={replay_hash:02x?}",
-                    edge.parent, edge.payload, edge.hash
+                    "restore-oracle hash or observation mismatch at comparison {equal}: expected_hash={:02x?} actual_hash={:02x?} expected_evidence_bytes={} actual_evidence_bytes={}",
+                    edge.hash,
+                    replay_hash,
+                    edge.evidence.len(),
+                    replay_evidence.len(),
                 ));
             }
             equal = equal.saturating_add(1);
         }
 
-        let fallbacks = server.in_place_fallbacks().saturating_sub(fallbacks_start);
+        let fallbacks = session
+            .last_restore_stats()
+            .1
+            .saturating_sub(fallbacks_start);
         if fallbacks != 0 {
             return Err(format!(
                 "restore-oracle used {fallbacks} fresh-VM fallbacks"
             ));
         }
-        let mut samples = profile.branch_wall_samples_ns[sample_start..].to_vec();
-        samples.sort_unstable();
         println!(
-            "NOVA_CONSONANCE_RESTORE_ORACLE_OK equal={} tree_actions={} branch_median_ns={} branch_p99_ns={} restore_bytes={} fallbacks={}",
-            equal,
+            "NOVA_CONSONANCE_RESTORE_ORACLE_OK equal={equal} tree_actions={} restore_bytes={} fallbacks={fallbacks}",
             edges.len(),
-            percentile(&samples, 50),
-            percentile(&samples, 99),
-            profile.restore_bytes.saturating_sub(bytes_start),
-            fallbacks,
+            session.last_restore_stats().0,
         );
+
+        for snapshot in nodes.into_iter().skip(1).rev() {
+            session
+                .drop_snapshot(snapshot)
+                .map_err(|error| format!("drop restore-oracle snapshot: {error}"))?;
+        }
         Ok(())
     }
 
+    fn bytes_hex(bytes: &[u8; 32]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
     let mut args = std::env::args_os().skip(1);
-    let (Some(kernel_path), Some(initramfs_path), None) = (args.next(), args.next(), args.next())
-    else {
-        return Err("usage: kvm_x86_nova_probe <bzImage> <initramfs-nova.cpio.gz>".to_string());
+    let (Some(kernel_path), Some(platform_initramfs_path), Some(image_path), Some(rom_path), None) = (
+        args.next(),
+        args.next(),
+        args.next(),
+        args.next(),
+        args.next(),
+    ) else {
+        return Err(
+            "usage: kvm_x86_nova_probe <bzImage> <platform-initramfs> <nes.oci> <nova.nes>"
+                .to_owned(),
+        );
     };
-    let restore_oracle = std::env::var_os("HARMONY_CONSONANCE_RESTORE_ORACLE").is_some();
-    let mut profile = ProbeProfile::new(
-        restore_oracle || std::env::var_os("HARMONY_CONSONANCE_PROFILE").is_some(),
-    );
     if !std::path::Path::new("/dev/kvm").exists() {
-        return Err("/dev/kvm is unavailable on this runner".to_string());
+        return Err("/dev/kvm is unavailable on this runner".to_owned());
     }
-    let kernel = std::fs::read(&kernel_path)
-        .map_err(|error| format!("cannot read {kernel_path:?}: {error}"))?;
-    let initramfs = std::fs::read(&initramfs_path)
-        .map_err(|error| format!("cannot read {initramfs_path:?}: {error}"))?;
-
-    let boot = |kernel: &[u8], initramfs: &[u8]| {
-        #[cfg(target_arch = "x86_64")]
-        let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, RAM, CMDLINE, SEED)?;
-        #[cfg(target_arch = "aarch64")]
-        let mut vmm = boot_selected_control(kernel, initramfs, CMDLINE, RAM)?;
-        vmm.wire_snapshot_hashing();
-        Ok(vmm)
-    };
-    let live = boot(&kernel, &initramfs).map_err(|error| format!("boot compose: {error:?}"))?;
-    let factory_kernel = kernel.clone();
-    let factory_initramfs = initramfs.clone();
-    let factory: VmmFactory<Box<dyn Backend<A = HostArch>>> =
-        Box::new(move || boot(&factory_kernel, &factory_initramfs));
-    let mut server = ControlServer::new(live, factory);
-    let fresh_components = server
-        .vmm()
-        .ok_or("fresh composed VM is unavailable")?
-        .state_components();
-    #[cfg(target_arch = "x86_64")]
-    if profile.enabled {
-        server.set_remap_factory(Box::new(move |mapping| {
-            let mut vmm = compose_stock_virtual_time_restore_target(mapping, SEED)?;
-            vmm.wire_snapshot_hashing();
-            Ok(vmm)
-        }));
+    let kernel =
+        fs::read(&kernel_path).map_err(|error| format!("cannot read {kernel_path:?}: {error}"))?;
+    let platform_initramfs = fs::read(&platform_initramfs_path)
+        .map_err(|error| format!("cannot read {platform_initramfs_path:?}: {error}"))?;
+    let rom = fs::read(&rom_path)
+        .map_err(|error| format!("cannot read Nova ROM {rom_path:?}: {error}"))?;
+    let image_path = PathBuf::from(image_path);
+    let prepared = stage_and_prepare(
+        image_path
+            .to_str()
+            .ok_or("NES OCI image path must be UTF-8")?,
+        &rom,
+    )
+    .map_err(|error| format!("prepare NES OCI execution: {error}"))?;
+    let initramfs = prepared.initramfs(&platform_initramfs);
+    let config = SessionConfig::new(RAM, SEED, RUN_BUDGET, CMDLINE)
+        .with_identity_tag(prepared.identity_hex())
+        .with_deferred_virtual_time_checkpoint_hashes();
+    let setup_payloads = vec![vec![0, 1]; 16];
+    let mut session =
+        Session::new_with_config_and_payloads(&kernel, &initramfs, config, setup_payloads)
+            .map_err(|error| format!("Consonance session: {error}"))?;
+    let mut profile = ProbeProfile::new(std::env::var_os("HARMONY_CONSONANCE_PROFILE").is_some());
+    let (base, setup_vtime) = session.setup_handle();
+    let setup_events = sdk_events(&mut session, &mut profile)?;
+    let observation_handle = u32::try_from(latest_register(&setup_events, HANDLE_REGISTER)?)
+        .map_err(|_| "observation handle exceeds u32".to_owned())?;
+    if observation_handle == 0 {
+        return Err("observation handle is zero".to_owned());
     }
-    server.set_restore_mode(RestoreMode::InPlace);
-    match drive(&mut server, &Request::Hello(server_caps()), &mut profile)? {
-        Reply::Hello(caps) if caps == server_caps() => {}
-        other => return Err(format!("hello returned {other:?}")),
+    let observation_length = u32::try_from(latest_register(&setup_events, LENGTH_REGISTER)?)
+        .map_err(|_| "observation length exceeds u32".to_owned())?;
+    if observation_length == 0 {
+        return Err("observation length is zero".to_owned());
     }
-
-    let genesis = match drive(&mut server, &Request::Snapshot, &mut profile)? {
-        Reply::Snapshot { id, .. } => id,
-        other => return Err(format!("genesis snapshot returned {other:?}")),
-    };
-    let bootstrap = payload_env(vec![vec![0, 1]; 16]);
-    match drive(
-        &mut server,
-        &Request::Branch {
-            snap: genesis,
-            env: bootstrap,
-        },
+    let setup_observation = read_observation(
+        &mut session,
         &mut profile,
-    )? {
-        Reply::Unit => {}
-        other => return Err(format!("bootstrap branch returned {other:?}")),
+        observation_handle,
+        observation_length,
+    )?;
+    if setup_observation.is_empty() {
+        return Err("setup observation is empty".to_owned());
     }
-    let setup_at = run_to_snapshot(&mut server, &mut profile)?;
-    if profile.enabled {
-        server.set_max_chain_len(0);
-    }
-    let base = match drive(&mut server, &Request::Snapshot, &mut profile)? {
-        Reply::Snapshot { id, .. } => id,
-        other => return Err(format!("setup snapshot returned {other:?}")),
-    };
-    if profile.enabled {
-        server.set_max_chain_len(DEFAULT_MAX_CHAIN_LEN);
-    }
-    let setup_events = match drive(&mut server, &Request::SdkEvents { offset: 0 }, &mut profile)? {
-        Reply::SdkEvents(events) => events,
-        other => return Err(format!("setup SDK event fetch returned {other:?}")),
-    };
-    let setup_console = console(&mut server, &mut profile);
+    profile.last_frame = Some(observation_frame(&setup_observation)?);
+    let setup_console = session
+        .console_tail()
+        .map_err(|error| format!("guest console: {error}"))?;
+    let setup_console = String::from_utf8_lossy(&setup_console);
     let (mem_total_kib, boot_available_kib) = boot_memory_kib(&setup_console)
         .map_err(|error| format!("{error}\n--- guest console ---\n{setup_console}"))?;
-    const BILLBOARD_RESERVE_KIB: u64 = 2 * 2 * 1024;
-    let setup_available_floor_kib = boot_available_kib.saturating_sub(BILLBOARD_RESERVE_KIB);
     println!(
-        "NOVA_CONSONANCE_SETUP_MEMORY_OK mem_total_kib={mem_total_kib} boot_available_kib={boot_available_kib} billboard_reserve_kib={BILLBOARD_RESERVE_KIB} setup_available_floor_kib={setup_available_floor_kib}"
+        "NOVA_CONSONANCE_SETUP_MEMORY_OK mem_total_kib={mem_total_kib} boot_available_kib={boot_available_kib} observation_len={observation_length}"
     );
-    profile.last_frame = latest_frame(&setup_events);
-    let setup_stats = server
-        .snapshot_stats(base)
-        .ok_or("setup snapshot statistics are unavailable")?;
+    let owned_pages = session
+        .snapshot_owned_pages(base)
+        .ok_or_else(|| "setup snapshot statistics are unavailable".to_owned())?;
     profile.set_setup(
-        setup_stats.owned_pages,
-        latest_register(&setup_events, 11)?,
-        latest_register(&setup_events, 12)?,
+        owned_pages,
+        observation_handle,
+        u64::from(observation_length),
     );
-    let fresh_by_label: std::collections::BTreeMap<_, _> =
-        fresh_components.iter().copied().collect();
-    let used_components = server
-        .vmm()
-        .ok_or("used setup VM is unavailable")?
-        .state_components();
-    let changed_components = used_components
-        .iter()
-        .filter_map(|(label, digest)| (fresh_by_label.get(label) != Some(digest)).then_some(*label))
-        .collect::<Vec<_>>()
-        .join(",");
-    #[cfg(target_arch = "x86_64")]
-    let inventory_arch = "x86_64";
-    #[cfg(target_arch = "aarch64")]
-    let inventory_arch = "aarch64";
     println!(
-        "NOVA_CONSONANCE_STATE_INVENTORY arch={inventory_arch} fresh_used_changed={changed_components}"
+        "NOVA_CONSONANCE_STATE_INVENTORY arch={} image_identity={}",
+        std::env::consts::ARCH,
+        bytes_hex(&session.image_identity()),
     );
-    if restore_oracle {
-        run_restore_oracle(&mut server, base, &mut profile)?;
+    if std::env::var_os("HARMONY_CONSONANCE_RESTORE_ORACLE").is_some() {
+        run_restore_oracle(
+            &mut session,
+            base,
+            observation_handle,
+            observation_length,
+            &mut profile,
+        )?;
     }
-    let first = endpoint(&mut server, base, &mut profile)?;
-    let second = endpoint(&mut server, base, &mut profile)?;
+    let first = endpoint(
+        &mut session,
+        &mut profile,
+        base,
+        observation_handle,
+        observation_length,
+    )?;
+    let second = endpoint(
+        &mut session,
+        &mut profile,
+        base,
+        observation_handle,
+        observation_length,
+    )?;
     if first != second {
-        return Err("same-seed Nova branches produced different endpoint evidence".to_string());
+        return Err("same-seed Nova branches produced different endpoint evidence".to_owned());
     }
-
-    let hash = first
-        .0
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
     println!(
         "NOVA_CONSONANCE_PROBE_OK setup_vtime={} base_snapshot={} endpoint_hash={} sdk_evidence_bytes={}",
-        setup_at.0,
+        setup_vtime,
         base.0,
-        hash,
-        first.1.len()
+        bytes_hex(&first.0),
+        first.1.len(),
     );
     if let Some(line) = profile.render() {
         eprintln!("{line}");

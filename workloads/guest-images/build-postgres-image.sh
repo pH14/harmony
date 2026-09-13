@@ -1,31 +1,32 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the **bare-Postgres workload initramfs**: a static busybox + a
-# real PostgreSQL 17 install (from the pinned Debian .debs) + a RAM-backed ext4
-# image holding a pre-`initdb`'d cluster + the `pg-init.sh` /init that drives a
-# fixed insert/select workload loop. The companion kernel is the *unchanged*
-# container-class bzImage (this needs no kernel change — ext4, loop,
-# brd, tmpfs, AF_UNIX, SysV-IPC are all already built in; see the §capability
-# audit in consonance/harmony-linux/linux/README.md). See that file for the determinism
-# closure (locale/TZ pinning, pre-baked PGDATA, pg_strong_random → seeded CRNG).
+# Build the **bare-Postgres workload OCI layout**: a static busybox + a real
+# PostgreSQL 17 install (from the pinned Debian .debs) + a pre-`initdb`'d
+# cluster and the workload entrypoint. The platform package owns the kernel,
+# mounts, PID 1, and final guest termination; this image contains only the
+# application rootfs and its OCI config.
 #
-# Linux + root only: `mke2fs -d` bakes the cluster owned by the guest postgres uid
+# Linux + root only: the cluster is copied with its guest postgres ownership
 # (needs root), `initdb` runs as a non-root build user (postgres refuses uid 0),
 # and the runtime shared-library closure is copied from THIS host's /lib (the
 # determinism box is the pinned build environment). On macOS run it in a
 # linux/amd64 container as root — see CONTRIBUTING.md.
 set -euo pipefail
 
-cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
+workload_dir=$(cd "$(dirname "$0")" && pwd)
+repo_root=$(cd "$workload_dir/../.." && pwd)
+cd "$repo_root/consonance/harmony-linux/linux"
 
 # shellcheck source=../../consonance/harmony-linux/linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
+# shellcheck source=versions.lock disable=SC1091
+. "$workload_dir/versions.lock"
 
 require_linux_amd64
-require_tools cc make gzip bzip2 cpio dpkg-deb mke2fs setpriv ldd ldconfig
+require_tools cc make bzip2 dpkg-deb python3 setpriv ldd ldconfig
 
 if [ "$(id -u)" != "0" ]; then
-    echo "FAIL: build-postgres-image.sh must run as root (mke2fs -d bakes uid-70 ownership)." >&2
+    echo "FAIL: build-postgres-image.sh must run as root (the OCI image preserves uid-70 ownership)." >&2
     exit 1
 fi
 
@@ -33,13 +34,11 @@ fi
 PGV=$PG_MAJOR                                  # from versions.lock
 PG_UID=70                                      # guest postgres uid/gid (Debian's)
 BUILD_UID=65534                                # non-root uid for the build-time initdb
-FIXED_UUID="deadbeef-0000-0000-0000-000000000037"   # pinned ext4 UUID (determinism)
-EXT4_SIZE=96M                                   # cluster (~22M) + workload WAL headroom
 WORKLOAD_N=20                                   # fixed insert/select iterations
 
 PGROOT=$BUILD_ROOT/pg-root                      # the assembled guest rootfs
 PG_STAGE=$BUILD_ROOT/pg-stage                   # extracted .debs
-STAGEFS=$BUILD_ROOT/pg-stagefs                  # initdb output, baked into the ext4
+STAGEFS=$BUILD_ROOT/pg-stagefs                  # initdb output, copied into PGDATA
 PGBIN=$PG_STAGE/usr/lib/postgresql/$PGV/bin
 
 # --- 0. fetch-verify + extract the pinned postgres .debs ---------------------
@@ -47,7 +46,7 @@ extract_deb() {
     url=$1 sha=$2
     tarball="$DL_DIR/$(basename "$url")"
     if [ ! -f "$tarball" ]; then
-        echo "FAIL: $tarball missing — run 'make -C consonance/harmony-linux fetch' first" >&2
+        echo "FAIL: $tarball missing — run 'make -C workloads/guest-images fetch' first" >&2
         exit 1
     fi
     got=$(sha256_of "$tarball")
@@ -65,7 +64,7 @@ extract_deb "$PG_CLIENT_DEB_URL" "$PG_CLIENT_DEB_SHA256"
 extract_deb "$PG_LIBPQ_DEB_URL"  "$PG_LIBPQ_DEB_SHA256"
 [ -x "$PGBIN/postgres" ] || { echo "FAIL: postgres binary not in the extracted deb" >&2; exit 1; }
 
-# --- 1. static busybox (mirrors build-initramfs.sh; self-contained here) ------
+# --- 1. static busybox (mirrors the platform recipe; self-contained here) -----
 echo "== postgres image: building static busybox ($BUSYBOX_VERSION)"
 extract_busybox
 mkdir -p "$BBOBJ"
@@ -83,16 +82,16 @@ make -C "$BBSRC" O="$BBOBJ" -j"$(nproc)" busybox >/dev/null
 # --- 2. assemble the guest rootfs --------------------------------------------
 echo "== postgres image: assembling rootfs"
 rm -rf "$PGROOT"
-mkdir -p "$PGROOT"/{bin,lib,lib64,etc,proc,sys,dev,tmp,run,pgmnt}
+mkdir -p "$PGROOT"/{bin,lib,lib64,etc,proc,sys,dev,tmp,run,var/lib/postgresql}
 mkdir -p "$PGROOT/lib/x86_64-linux-gnu" "$PGROOT/usr/lib/x86_64-linux-gnu"
+mkdir -p "$PGROOT/usr/local/bin"
 install_libvoidstar "$PGROOT"
 
 cp "$BBOBJ/busybox" "$PGROOT/bin/busybox"
-# chroot: the harmony CLI can select this image as the base for an injected
-# OCI bundle, whose init falls back to a chroot start when runc is absent.
-for a in sh mount umount mkdir chown chmod sleep printf seq setuidgid cat echo ls \
-         head tee env losetup poweroff reboot ln rm cp true false test expr sync id \
-         chroot; do
+# The workload entrypoint uses only this generic BusyBox surface; platform
+# mounts and lifecycle operations are deliberately outside the image.
+for a in sh mkdir chown chmod sleep printf seq setuidgid cat echo ls \
+         head tee env ln rm cp true false test expr sync id; do
     ln -sf busybox "$PGROOT/bin/$a"
 done
 
@@ -120,15 +119,14 @@ mkdir -p "$PGROOT/usr/share" "$PGROOT/usr/lib/locale"
 cp -a /usr/share/zoneinfo "$PGROOT/usr/share/"
 cp -a /usr/lib/locale/locale-archive /usr/lib/locale/C.utf8 "$PGROOT/usr/lib/locale/"
 
-printf 'root:x:0:0:root:/root:/bin/sh\npostgres:x:%s:%s:postgres:/pgmnt:/bin/sh\n' "$PG_UID" "$PG_UID" >"$PGROOT/etc/passwd"
+printf 'root:x:0:0:root:/root:/bin/sh\npostgres:x:%s:%s:postgres:/var/lib/postgresql:/bin/sh\n' "$PG_UID" "$PG_UID" >"$PGROOT/etc/passwd"
 printf 'root:x:0:\npostgres:x:%s:\n' "$PG_UID" >"$PGROOT/etc/group"
 printf 'passwd: files\ngroup: files\n' >"$PGROOT/etc/nsswitch.conf"
 ldconfig -r "$PGROOT" 2>/dev/null || true   # ld.so.cache for deterministic lib resolution
 
-# --- 3. bake PGDATA: initdb ONCE at build time, into a subdir of the ext4 -----
-# A subdir keeps initdb's 0700 + uid-70 (postgres requires them of PGDATA; the
-# ext4 root that mke2fs creates is root-owned). initdb runs as a non-root build
-# user (it refuses uid 0); the cluster system identifier it mints from time/pid/
+# --- 3. bake PGDATA: initdb ONCE at build time into the OCI rootfs ------------
+# The data directory keeps initdb's 0700 + uid-70 (postgres requires both).
+# initdb runs as a non-root build user (it refuses uid 0); the cluster system identifier it mints from time/pid/
 # random is snapshotted here, so there is no initdb-time nondeterminism at runtime.
 echo "== postgres image: initdb (build-time, once) + determinism overlay"
 rm -rf "$STAGEFS"
@@ -156,15 +154,12 @@ autovacuum = off                 # keep the short run bounded + the golden clean
 max_wal_size = 64MB
 EOF
 
-echo "== postgres image: baking fixed-UUID ext4 with the cluster"
+echo "== postgres image: copying the deterministic cluster into PGDATA"
 chown -R "$PG_UID:$PG_UID" "$STAGEFS"
-EXT4=$PGROOT/pgdata.ext4
-rm -f "$EXT4"
-# Pin the determinism knobs at mkfs once: fixed UUID, and lazy_*_init=0 so there
-# is NO background ext4 inode/journal initialization thread firing at runtime.
-mke2fs -q -t ext4 -U "$FIXED_UUID" \
-    -E lazy_itable_init=0,lazy_journal_init=0 \
-    -d "$STAGEFS" -F "$EXT4" "$EXT4_SIZE"
+mkdir -p "$PGROOT/var/lib/postgresql"
+cp -a "$STAGEFS/pgdata" "$PGROOT/var/lib/postgresql/data"
+chown -R "$PG_UID:$PG_UID" "$PGROOT/var/lib/postgresql/data"
+chmod 0700 "$PGROOT/var/lib/postgresql/data"
 
 # --- 4. the baked workload v2: UUID + wall-clock, still deterministic -
 # Each row carries a gen_random_uuid() id (column DEFAULT) and a clock_timestamp()
@@ -190,14 +185,16 @@ mke2fs -q -t ext4 -U "$FIXED_UUID" \
     done
 } >"$PGROOT/workload.sql"
 
-install -m 0755 "$LINUX_DIR/pg-init.sh" "$PGROOT/init"
+install -m 0755 "$workload_dir/postgres-workload.sh" \
+    "$PGROOT/usr/local/bin/postgres-workload.sh"
 
-# --- 5. pack the initramfs (sorted, fixed mtime, owner 0:0, gzip -n) ----------
-# DEVTMPFS_MOUNT gives the guest /dev (incl. /dev/console) before init runs, so no
-# device nodes are baked. Best-effort reproducible; the cluster system identifier
-# (a build-time event) is the one non-reproducible byte across separate builds.
-echo "== postgres image: packing initramfs"
-find "$PGROOT" -mindepth 1 -exec touch -hcd @0 {} +
-( cd "$PGROOT" && find . -mindepth 1 -print0 | LC_ALL=C sort -z \
-    | cpio --null -o -H newc --owner=0:0 --quiet ) | gzip -n -9 >"$ART_DIR/initramfs-postgres.cpio.gz"
-echo "ok: $ART_DIR/initramfs-postgres.cpio.gz ($(du -h "$ART_DIR/initramfs-postgres.cpio.gz" | cut -f1))"
+# --- 5. pack the OCI layout --------------------------------------------------
+OCI_OUT=$ART_DIR/oci-images/postgres.oci
+rm -rf "$OCI_OUT"
+mkdir -p "$(dirname "$OCI_OUT")"
+python3 "$workload_dir/oci-package.py" \
+    --rootfs "$PGROOT" --architecture amd64 --output "$OCI_OUT" \
+    --entrypoint /usr/local/bin/postgres-workload.sh \
+    --env HARMONY_POSTGRES_VARIANT=postgres \
+    --user 0:0 --working-dir /var/lib/postgresql
+echo "ok: $OCI_OUT"

@@ -93,7 +93,6 @@ pub struct Report {
     pub mode: String,
     pub image_sha256: String,
     pub kernel_sha256: String,
-    pub fault_agent_sha256: String,
     pub identity: String,
     pub seed: u64,
     pub workers: u32,
@@ -118,7 +117,6 @@ impl Report {
             mode: mode.to_owned(),
             image_sha256: sha256_hex(&artifacts.initramfs),
             kernel_sha256: sha256_hex(&artifacts.kernel),
-            fault_agent_sha256: sha256_hex(&artifacts.agent),
             identity,
             seed: options.seed,
             workers: options.workers,
@@ -145,7 +143,6 @@ impl Report {
 pub struct Artifacts {
     pub kernel: Vec<u8>,
     pub initramfs: Vec<u8>,
-    pub agent: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -616,13 +613,11 @@ mod tests {
         let artifacts = Artifacts {
             kernel: b"kernel".to_vec(),
             initramfs: b"initramfs".to_vec(),
-            agent: b"agent".to_vec(),
         };
         let report = Report::new("search", &artifacts, "identity".to_owned(), &options());
         assert_eq!(report.package, PACKAGE);
         assert_eq!(report.kernel_sha256, sha256_hex(b"kernel"));
         assert_eq!(report.image_sha256, sha256_hex(b"initramfs"));
-        assert_eq!(report.fault_agent_sha256, sha256_hex(b"agent"));
         assert_eq!(report.first_bug_execution, None);
         let text = serde_json::to_string(&report).expect("serialize");
         assert!(text.contains("\"first_bug_execution\":null"));
@@ -636,7 +631,6 @@ mod tests {
         let artifacts = Artifacts {
             kernel: Vec::new(),
             initramfs: Vec::new(),
-            agent: Vec::new(),
         };
         let report = Report::new("replay", &artifacts, String::new(), &options());
         report.write(directory.path()).expect("write");

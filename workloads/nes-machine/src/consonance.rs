@@ -16,16 +16,12 @@ use crate::{
     Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions, StopReason, nes,
 };
 
-#[cfg(target_arch = "x86_64")]
-const RAM: usize = 128 * 1024 * 1024;
-#[cfg(target_arch = "aarch64")]
 const RAM: usize = 128 * 1024 * 1024;
 #[cfg(target_arch = "x86_64")]
 const BOOT_BUDGET: u64 = 2_000_000_000;
 #[cfg(target_arch = "aarch64")]
 const BOOT_BUDGET: u64 = 20_000_000_000;
 const RUN_BUDGET: u64 = BOOT_BUDGET;
-const RAM_GPA_BASE: u64 = consonance_client::session::RAM_GPA_BASE;
 const SEED: u64 = 0x4e4f_5641_5f53_4541;
 #[cfg(target_arch = "x86_64")]
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
@@ -40,7 +36,6 @@ pub use nes_protocol::{
     HEADER_LEN as BILLBOARD_HEADER_LEN,
 };
 pub const BILLBOARD_MAGIC: &[u8; 4] = &nes_protocol::BILLBOARD_MAGIC;
-const PAGE_SIZE: usize = consonance_client::session::PAGE_SIZE;
 
 #[derive(Clone, Copy)]
 enum ProfileVerb {
@@ -76,7 +71,6 @@ impl ProfileVerb {
 #[derive(Default)]
 struct ConsonanceProfile {
     enabled: bool,
-    ram_gpa_base: u64,
     wall_ns: [u128; 5],
     calls: [u64; 5],
     branch_wall_samples_ns: Vec<u128>,
@@ -87,15 +81,11 @@ struct ConsonanceProfile {
     restore_bytes: u64,
     in_place_fallbacks: u64,
     setup_nonzero_pages: Option<u64>,
-    billboard: Option<(u64, u64)>,
+    observation: Option<(u32, u64)>,
     seals: u64,
     dirty_available_seals: u64,
     dirty_pages: u64,
-    dirty_billboard_pages: u64,
-    dirty_other_pages: u64,
     action_dirty_pages: u64,
-    action_dirty_billboard_pages: u64,
-    action_dirty_other_pages: u64,
     actions: u64,
     frames: u64,
     doorbell_exits: u64,
@@ -106,7 +96,6 @@ impl ConsonanceProfile {
     fn new(enabled: bool) -> Self {
         Self {
             enabled,
-            ram_gpa_base: RAM_GPA_BASE,
             ..Self::default()
         }
     }
@@ -137,12 +126,17 @@ impl ConsonanceProfile {
         self.in_place_fallbacks = fallbacks;
     }
 
-    fn set_setup(&mut self, setup_nonzero_pages: u64, billboard_gpa: u64, billboard_len: u64) {
+    fn set_setup(
+        &mut self,
+        setup_nonzero_pages: u64,
+        observation_handle: u32,
+        observation_len: u64,
+    ) {
         if !self.enabled {
             return;
         }
         self.setup_nonzero_pages = Some(setup_nonzero_pages);
-        self.billboard = Some((billboard_gpa, billboard_len));
+        self.observation = Some((observation_handle, observation_len));
     }
 
     fn record_seal(&mut self, dirty_gfns: Option<&[u64]>, chain_len: Option<u32>) {
@@ -158,32 +152,13 @@ impl ConsonanceProfile {
             self.flatten_wall_samples_ns
                 .push(self.last_snapshot_wall_ns);
         }
-        for &gfn in dirty_gfns {
-            let gpa = self
-                .ram_gpa_base
-                .saturating_add(gfn.saturating_mul(PAGE_SIZE as u64));
+        for _ in dirty_gfns {
             self.dirty_pages = self.dirty_pages.saturating_add(1);
-            if self.overlaps_billboard(gpa) {
-                self.dirty_billboard_pages = self.dirty_billboard_pages.saturating_add(1);
-            } else {
-                self.dirty_other_pages = self.dirty_other_pages.saturating_add(1);
-            }
         }
     }
 
-    fn overlaps_billboard(&self, gpa: u64) -> bool {
-        self.billboard.is_some_and(|(start, len)| {
-            let end = start.saturating_add(len);
-            gpa < end && start < gpa.saturating_add(PAGE_SIZE as u64)
-        })
-    }
-
-    fn dirty_totals(&self) -> [u64; 3] {
-        [
-            self.dirty_pages,
-            self.dirty_billboard_pages,
-            self.dirty_other_pages,
-        ]
+    fn dirty_totals(&self) -> u64 {
+        self.dirty_pages
     }
 
     fn record_action(
@@ -191,7 +166,7 @@ impl ConsonanceProfile {
         frames: u64,
         doorbell_exits: u64,
         touched_pages: Option<u64>,
-        dirty_before: [u64; 3],
+        dirty_before: u64,
     ) {
         if !self.enabled {
             return;
@@ -205,13 +180,7 @@ impl ConsonanceProfile {
             .saturating_add(touched_pages.unwrap_or(0));
         self.action_dirty_pages = self
             .action_dirty_pages
-            .saturating_add(dirty_after[0].saturating_sub(dirty_before[0]));
-        self.action_dirty_billboard_pages = self
-            .action_dirty_billboard_pages
-            .saturating_add(dirty_after[1].saturating_sub(dirty_before[1]));
-        self.action_dirty_other_pages = self
-            .action_dirty_other_pages
-            .saturating_add(dirty_after[2].saturating_sub(dirty_before[2]));
+            .saturating_add(dirty_after.saturating_sub(dirty_before));
     }
 
     fn render(&self) -> Option<String> {
@@ -245,7 +214,7 @@ impl ConsonanceProfile {
         let flatten_wall_ns = flatten_samples.iter().copied().sum::<u128>();
         let _ = write!(
             line,
-            " branch_median_ns={} branch_p99_ns={} snapshot_median_ns={} snapshot_p99_ns={} restore_calls={} restore_bytes={} in_place_fallbacks={} seals={} dirty_available_seals={} flatten_calls={} flatten_wall_ns={} flatten_median_ns={} flatten_p99_ns={} dirty_pages={} dirty_billboard_pages={} dirty_other_pages={} action_dirty_pages={} action_dirty_billboard_pages={} action_dirty_other_pages={} setup_nonzero_pages={} billboard={} actions={} frames={} doorbell_exits={} touched_pages={}",
+            " branch_median_ns={} branch_p99_ns={} snapshot_median_ns={} snapshot_p99_ns={} restore_calls={} restore_bytes={} in_place_fallbacks={} seals={} dirty_available_seals={} flatten_calls={} flatten_wall_ns={} flatten_median_ns={} flatten_p99_ns={} dirty_pages={} action_dirty_pages={} setup_nonzero_pages={} observation={} actions={} frames={} doorbell_exits={} touched_pages={}",
             percentile(&branch_samples, 50),
             percentile(&branch_samples, 99),
             percentile(&snapshot_samples, 50),
@@ -260,15 +229,11 @@ impl ConsonanceProfile {
             percentile(&flatten_samples, 50),
             percentile(&flatten_samples, 99),
             self.dirty_pages,
-            self.dirty_billboard_pages,
-            self.dirty_other_pages,
             self.action_dirty_pages,
-            self.action_dirty_billboard_pages,
-            self.action_dirty_other_pages,
             self.setup_nonzero_pages.unwrap_or(0),
-            self.billboard.map_or_else(
+            self.observation.map_or_else(
                 || "none".to_owned(),
-                |(gpa, len)| format!("{gpa:#x}+{len:#x}"),
+                |(handle, len)| format!("handle={handle}+{len:#x}"),
             ),
             self.actions,
             self.frames,
@@ -316,7 +281,7 @@ pub struct ConsonanceMachine {
     session: Session,
     power_on_publication: bool,
     setup: SnapId,
-    billboard_gpa: u64,
+    billboard_handle: u32,
     billboard_len: u32,
     endpoint_work_ram: [u8; nes::WRAM_SIZE],
     save_ram: [u8; BILLBOARD_SAVE_RAM_LEN],
@@ -333,7 +298,7 @@ impl fmt::Debug for ConsonanceMachine {
         formatter
             .debug_struct("ConsonanceMachine")
             .field("setup", &self.setup)
-            .field("billboard_gpa", &self.billboard_gpa)
+            .field("billboard_handle", &self.billboard_handle)
             .field("billboard_len", &self.billboard_len)
             .field("lifetime_frames", &self.lifetime_frames)
             .field("ring_frames", &self.ring.len())
@@ -352,7 +317,8 @@ impl Drop for ConsonanceMachine {
 impl ConsonanceMachine {
     pub fn new(kernel: &[u8], initramfs: &[u8]) -> Result<Self, MachineError> {
         let config = SessionConfig::new(RAM, SEED, RUN_BUDGET, CMDLINE)
-            .with_identity_tag("consonance-nes-execution-v2");
+            .with_identity_tag("consonance-nes-execution-v2")
+            .with_deferred_virtual_time_checkpoint_hashes();
         let setup_payloads = vec![vec![0, 1]; 16];
         let mut session =
             Session::new_with_config_and_payloads(kernel, initramfs, config, setup_payloads)
@@ -369,13 +335,20 @@ impl ConsonanceMachine {
             |s| s.replay_snapshot(control_snap(setup)),
         )?;
         let registers = state_registers(&mut session, &mut profile)?;
-        let power_on_publication = registers.contains("nes.publication.gpa");
-        let (gpa_name, len_name) = if power_on_publication {
-            ("nes.publication.gpa", "nes.publication.len")
+        let power_on_publication = registers.contains("nes.publication.handle");
+        let (handle_name, len_name) = if power_on_publication {
+            ("nes.publication.handle", "nes.publication.len")
         } else {
-            ("nova_billboard_gpa", "nova_billboard_len")
+            ("nova_billboard_handle", "nova_billboard_len")
         };
-        let billboard_gpa = registers.get(gpa_name).map_err(MachineError::Backend)?;
+        let billboard_handle =
+            u32::try_from(registers.get(handle_name).map_err(MachineError::Backend)?)
+                .map_err(|_| MachineError::Backend("observation handle exceeds u32".to_owned()))?;
+        if billboard_handle == 0 {
+            return Err(MachineError::Backend(
+                "observation handle must be nonzero".to_owned(),
+            ));
+        }
         let billboard_len = u32::try_from(registers.get(len_name).map_err(MachineError::Backend)?)
             .map_err(|_| MachineError::Backend("billboard length exceeds u32".to_owned()))?;
         if usize::try_from(billboard_len)
@@ -388,7 +361,7 @@ impl ConsonanceMachine {
         }
         let observed = read_billboard(
             &mut session,
-            billboard_gpa,
+            billboard_handle,
             billboard_len,
             &mut profile,
             false,
@@ -403,12 +376,16 @@ impl ConsonanceMachine {
             .ok_or_else(|| {
                 MachineError::Backend("setup snapshot statistics unavailable".to_owned())
             })?;
-        profile.set_setup(setup_nonzero_pages, billboard_gpa, u64::from(billboard_len));
+        profile.set_setup(
+            setup_nonzero_pages,
+            billboard_handle,
+            u64::from(billboard_len),
+        );
         Ok(Self {
             session,
             power_on_publication,
             setup,
-            billboard_gpa,
+            billboard_handle,
             billboard_len,
             endpoint_work_ram: observed.endpoint_work_ram,
             save_ram: observed.save_ram,
@@ -544,7 +521,7 @@ impl Machine for ConsonanceMachine {
         }
         let observed = read_billboard(
             &mut self.session,
-            self.billboard_gpa,
+            self.billboard_handle,
             self.billboard_len,
             &mut self.profile,
             true,
@@ -656,7 +633,7 @@ fn state_registers(
 
 fn read_billboard(
     session: &mut Session,
-    billboard_gpa: u64,
+    billboard_handle: u32,
     billboard_len: u32,
     profile: &mut ConsonanceProfile,
     require_frames: bool,
@@ -677,7 +654,7 @@ fn read_billboard(
         |session| {
             let len = u32::try_from(BILLBOARD_OBSERVATION_LEN)
                 .map_err(|_| "billboard observation length exceeds u32")?;
-            session.read(billboard_gpa, len)
+            session.read_observation(billboard_handle, 0, len)
         },
     )?;
     if bytes.len() != BILLBOARD_OBSERVATION_LEN {
@@ -921,7 +898,7 @@ mod tests {
     fn profile_disabled_does_not_record() {
         let mut profile = ConsonanceProfile::new(false);
         profile.test_record_verb(ProfileVerb::Branch, 3);
-        profile.record_action(1, 2, None, [0; 3]);
+        profile.record_action(1, 2, None, 0);
         assert!(profile.render().is_none());
         assert_eq!(profile.calls, [0; 5]);
     }

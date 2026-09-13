@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Focused tests for the workflow timeout lint."""
+"""Focused tests for platform boundaries and workflow timeouts."""
 
 from __future__ import annotations
 
@@ -28,6 +28,20 @@ jobs:
     runs-on: ubuntu-latest
 {body}
 """
+
+
+class PlatformBoundaryLintTests(unittest.TestCase):
+    def test_new_platform_components_are_in_scope(self) -> None:
+        rules = {rule.name: rule for rule in LINTS.RULES}
+        for path in ("consonance/execution-proto/src/lib.rs", "consonance/future-component/README.md"):
+            self.assertTrue(rules["consonance-no-workload-names"].applies(path))
+        for path in ("consonance/harmony-linux/supervisor/src/main.rs",
+                     "consonance/harmony-linux/runtime/init.sh",
+                     "consonance/harmony-linux/README.md"):
+            self.assertTrue(rules["guest-linux-no-workload-names"].applies(path))
+            self.assertFalse(rules["consonance-no-workload-names"].applies(path))
+        self.assertFalse(rules["guest-linux-no-workload-names"].applies("workloads/example/init.sh"))
+        self.assertFalse(rules["consonance-no-workload-names"].applies("consonance-extra/example.rs"))
 
 
 class WorkflowTimeoutLintTests(unittest.TestCase):

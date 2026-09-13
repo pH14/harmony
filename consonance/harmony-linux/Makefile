@@ -3,7 +3,7 @@
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: test test-linux test-libvoidstar libvoidstar fetch kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-postgres-kernel arm64-postgres-image arm64-oci-image postgres-image campaign-image docker-image game-image nova-game-image clean
+.PHONY: test test-linux test-libvoidstar libvoidstar fetch kernel initramfs image arm64-kernel arm64-initramfs arm64-image oci-runtime-image arm64-oci-image clean
 
 test: test-libvoidstar test-linux
 
@@ -25,12 +25,13 @@ else
 	@exit 1
 endif
 
-# Download + hash-verify the pinned kernel and busybox tarballs into consonance/harmony-linux/dl/.
-# Works on any host; afterwards no network access is needed.
+# Download + hash-verify the pinned platform sources and static OCI runtime
+# assets into consonance/harmony-linux/dl/. Works on any host; afterwards no
+# platform build needs network access.
 fetch:
 	scripts/fetch.sh
 
-kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-postgres-kernel arm64-postgres-image arm64-oci-image postgres-image campaign-image docker-image game-image nova-game-image:
+kernel initramfs image arm64-kernel arm64-initramfs arm64-image oci-runtime-image arm64-oci-image:
 ifeq ($(UNAME_S),Linux)
 	$(MAKE) -C linux $@
 else

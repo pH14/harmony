@@ -1,0 +1,6 @@
+# NES package inputs. The platform runtime lock is loaded separately by the
+# image scripts; this file contains only the open-source emulator source.
+FCEUMM_COMMIT=0d610d9a6401697157f693a5407adf450a0e52fb
+FCEUMM_URL=https://github.com/libretro/libretro-fceumm/archive/0d610d9a6401697157f693a5407adf450a0e52fb.tar.gz
+FCEUMM_SHA256=fa4bd76278221ea5416da3085559ea4473c37f305bc96f804c79a3937207f0a1
+FCEUMM_LICENSE=GPL-2.0-or-later

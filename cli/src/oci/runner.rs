@@ -3,6 +3,7 @@
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     test,
 ))]
 use std::io::Write;
@@ -10,15 +11,17 @@ use std::time::Duration;
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
 ))]
 use std::time::Instant;
 
 pub const HOST_SUPPORTED: bool = cfg!(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
 ));
 
-pub const SUPPORTED_HOSTS: &str = "macOS/arm64 (HVF), Linux/x86-64 (KVM)";
+pub const SUPPORTED_HOSTS: &str = "macOS/arm64 (HVF), Linux/x86-64 (KVM), Linux/arm64 (KVM)";
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -27,22 +30,27 @@ pub enum RunError {
         not(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
         ))
     ))]
-    #[error("this host is not wired yet ({0}); supported: macOS/arm64 (HVF), Linux/x86-64 (KVM)")]
+    #[error(
+        "this host is not wired yet ({0}); supported: macOS/arm64 (HVF), Linux/x86-64 (KVM), Linux/arm64 (KVM)"
+    )]
     UnsupportedHost(&'static str),
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    #[error("--seed is only wired on Linux/x86-64 today; use --seed 0 on macOS")]
+    #[error("--seed is only wired on Linux KVM; use --seed 0 on macOS")]
     SeedNotWired,
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
     ))]
     #[error("vmm: {0}")]
     Vmm(String),
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
     ))]
     #[error(
         "wall budget of {budget_s}s exhausted before the guest reached a terminal state \
@@ -65,6 +73,7 @@ pub struct Outcome {
     not(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
     )),
     allow(dead_code)
 )]
@@ -87,6 +96,7 @@ pub enum StreamMode {
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     test,
 ))]
 struct StreamFilter {
@@ -100,12 +110,14 @@ struct StreamFilter {
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     test,
 ))]
-const MARKER_START: &[u8] = b"HARMONY_OCI: start";
+const MARKER_START: &[u8] = b"HARMONY_OCI: startup";
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     test,
 ))]
 const MARKER_PREFIX: &[u8] = b"HARMONY_OCI";
@@ -113,6 +125,7 @@ const MARKER_PREFIX: &[u8] = b"HARMONY_OCI";
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
     test,
 ))]
 impl StreamFilter {
@@ -165,9 +178,9 @@ pub fn cmdline() -> &'static str {
     if cfg!(target_arch = "x86_64") {
         "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 \
          nokaslr nosmp maxcpus=1 nox2apic hpet=disable cgroup_no_v1=all printk.time=0 \
-         harmony_pvclock random.trust_bootloader=on rdinit=/harmony-oci-init"
+         harmony_pvclock random.trust_bootloader=on rdinit=/init"
     } else {
-        "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/harmony-oci-init nohlt"
+        "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt"
     }
 }
 
@@ -176,7 +189,7 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
     if spec.seed != 0 {
         return Err(RunError::SeedNotWired);
     }
-    let mut vmm = vmm_core::vendor::arm64::bringup::boot_hvf(
+    let mut vmm = vmm_core::vendor::arm64::bringup::boot_hvf_control(
         spec.kernel,
         spec.initramfs,
         spec.cmdline,
@@ -230,11 +243,36 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
     outcome
 }
 
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
+    let mut vmm = vmm_core::vendor::arm64::bringup::boot_selected_control(
+        spec.kernel,
+        spec.initramfs,
+        spec.cmdline,
+        spec.guest_ram_len,
+        spec.seed,
+    )
+    .map_err(|e| RunError::Vmm(e.to_string()))?;
+    vmm.defer_virtual_time_checkpoint_hashes()
+        .map_err(|e| RunError::Vmm(e.to_string()))?;
+    #[allow(clippy::disallowed_methods)]
+    let start = Instant::now();
+    let cancel = vmm
+        .cancellation_flag()
+        .ok_or_else(|| RunError::Vmm("backend cannot be interrupted mid-run".into()))?;
+    let watchdog = consonance_client::watchdog::Watchdog::start(spec.wall_budget, cancel)
+        .map_err(|e| RunError::Vmm(format!("cannot arm KVM timeout: {e}")))?;
+    let outcome = drive(vmm, spec, start);
+    drop(watchdog);
+    outcome
+}
+
 #[cfg(any(
     miri,
     not(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
     ))
 ))]
 pub fn execute(_spec: &RunSpec) -> Result<Outcome, RunError> {
@@ -244,6 +282,7 @@ pub fn execute(_spec: &RunSpec) -> Result<Outcome, RunError> {
 #[cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
 ))]
 fn drive<B: vmm_backend::Backend>(
     mut vmm: vmm_core::vmm::Vmm<B>,
@@ -316,9 +355,9 @@ mod tests {
     fn full_mode_passes_raw_bytes_incrementally() {
         let out = filtered(
             StreamMode::Full,
-            &[b"kernel noise\nHARMONY", b"_OCI: start\nhi\n"],
+            &[b"kernel noise\nHARMONY", b"_OCI: startup\nhi\n"],
         );
-        assert_eq!(out, b"kernel noise\nHARMONY_OCI: start\nhi\n");
+        assert_eq!(out, b"kernel noise\nHARMONY_OCI: startup\nhi\n");
     }
 
     #[test]
@@ -326,8 +365,8 @@ mod tests {
         let out = filtered(
             StreamMode::Container,
             &[
-                b"[    0.0] kernel boot chatter, longer than the marker\n[    0.1] HARMONY_OCI: start\nhello\n",
-                b"HARMONY_OCI: via chroot\nworld\nHARMONY_OCI_EXIT rc=0\nreboot noise\n",
+                b"[    0.0] kernel boot chatter, longer than the marker\n[    0.1] HARMONY_OCI: startup\nhello\n",
+                b"HARMONY_OCI: runc\nworld\nHARMONY_OCI_APP_EXIT rc=0\nHARMONY_OCI_EXIT rc=0\nreboot noise\n",
             ],
         );
         assert_eq!(out, b"hello\nworld\n");
@@ -338,8 +377,8 @@ mod tests {
         let out = filtered(
             StreamMode::Container,
             &[
-                b"HARMONY_OCI: sta",
-                b"rt\nab",
+                b"HARMONY_OCI: star",
+                b"tup\nab",
                 b"c\nHARMONY_OCI_EX",
                 b"IT rc=1\nlate\n",
             ],
@@ -352,14 +391,16 @@ mod tests {
         let wired = cfg!(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
         ));
         assert_eq!(super::HOST_SUPPORTED, wired);
         assert!(super::SUPPORTED_HOSTS.contains("Linux/x86-64"));
+        assert!(super::SUPPORTED_HOSTS.contains("Linux/arm64"));
     }
 
     #[test]
     fn cmdline_selects_the_injected_init() {
-        assert!(cmdline().contains("rdinit=/harmony-oci-init"));
+        assert!(cmdline().contains("rdinit=/init"));
         if cfg!(target_arch = "x86_64") {
             assert!(cmdline().contains("console=ttyS0"));
             assert!(

@@ -15,8 +15,7 @@ consonance-client = { path = "../../consonance/client", version = "=0.1.0", opti
 control-proto = { path = "../../consonance/control-proto", version = "=0.1.0" }
 environment = { path = "../../consonance/environment", version = "=0.1.0", optional = true }
 fault-policy = { path = "../fault-policy", version = "=0.1.0" }
-guest-image = { path = "../guest-image", version = "=0.1.0" }
-oci-support = { path = "../oci", version = "=0.1.0" }
+oci-support = { path = "../../consonance/oci", version = "=0.1.0" }
 searcher = { path = "../../dissonance/searcher", version = "=0.1.0" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.151"

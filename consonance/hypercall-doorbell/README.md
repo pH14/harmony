@@ -48,3 +48,28 @@ and UAPI framing helper accepts the ioctl as a closure, so malformed lengths,
 driver errors, and boundary cases are covered without requiring a device.
 The crate is validated by protocol loopback, malformed-response, boundary, and
 Miri tests.
+
+## Observation mappings
+
+With `linux-device`, `observation::Observation::create` obtains a zero-initialized
+kernel-owned mapping and an opaque handle from `/dev/harmony`. The object owns
+both the mapping and its descriptor; `bytes` provides exclusive mutable access.
+Applications do not reserve physical pages or discover physical addresses.
+Mappings are limited to 2 MiB each and sixteen live mappings per guest.
+
+The driver records registration and revocation through the observation event
+contract in `hypercall-proto`. Reads occur only while the VM is stopped, after
+the producer's SDK execution boundary. The allocation is ordinary guest RAM, so
+memory snapshots and the recorded SDK event history restore its bytes and handle
+together. No host allocation or independent observation replay log is introduced.
+The kernel's file reference remains alive through every VMA. If revocation
+cannot be delivered, the kernel retains that allocation against the live-region
+limit until VM teardown rather than freeing memory still named by host evidence.
+
+The mapped slice's bounds are exercised under Miri. Allocation, mapping lifetime,
+and cross-process access require the platform's real Linux guest tests.
+
+The PR Miri lane runs every loopback property with four generated cases to fit
+its 15-minute budget. The lane sets `HARMONY_MIRI_PR_SMOKE` at compile time;
+nightly and ordinary local Miri runs retain 16 cases. Native property tests keep
+their 256/512-case budgets.

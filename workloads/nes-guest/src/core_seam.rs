@@ -2,6 +2,17 @@
 
 use crate::ram::{WORK_RAM_LEN, addr};
 
+/// # Safety
+/// A non-null pointer with a length in 1..=65536 must identify that many
+/// exclusively writable bytes for the duration of this call.
+pub unsafe fn initialize_save_ram(memory: *mut u8, length: usize) {
+    if memory.is_null() || !(1..=64 * 1024).contains(&length) {
+        return;
+    }
+    // SAFETY: the caller owns the writable extent, and invalid extents return above.
+    unsafe { std::ptr::write_bytes(memory, 0xff, length) };
+}
+
 pub trait Core {
     fn serialize_size(&mut self) -> usize;
 
@@ -140,6 +151,7 @@ impl Core for MockCore {
 
 #[cfg(test)]
 mod tests {
+    use super::initialize_save_ram;
     use super::*;
     use crate::chord::joypad::RIGHT;
 
@@ -185,5 +197,28 @@ mod tests {
         a.run_frame(RIGHT);
         assert!(a.serialize(&mut buf_a));
         assert_ne!(buf_a, buf_b, "different moment, different bytes");
+    }
+
+    #[test]
+    fn save_ram_initialization_preserves_surrounding_memory() {
+        let mut bytes = [0x5a; 10];
+        // SAFETY: this pointer owns the exclusive eight-byte interior slice.
+        unsafe { initialize_save_ram(bytes[1..9].as_mut_ptr(), 8) };
+        assert_eq!(
+            bytes,
+            [0x5a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x5a]
+        );
+    }
+
+    #[test]
+    fn save_ram_initialization_ignores_absent_or_unbounded_regions() {
+        let mut byte = 0x5a;
+        // SAFETY: null, empty, and excessive extents are never dereferenced.
+        unsafe {
+            initialize_save_ram(std::ptr::null_mut(), 8);
+            initialize_save_ram(&mut byte, 0);
+            initialize_save_ram(&mut byte, 64 * 1024 + 1);
+        }
+        assert_eq!(byte, 0x5a);
     }
 }

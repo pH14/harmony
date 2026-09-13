@@ -34,6 +34,16 @@ validates the changed fixture. If no durable cache exists, the smoke preserves
 a `cache-unavailable.txt` artifact and fails with the builder handoff required
 to make it runnable.
 
+Consonance's OCI platform smoke requires a verified runtime manifest. Its
+scheduled/manual job builds the kernel, runtime, and tiny OCI fixture and runs
+extended replay before publishing artifacts. A PR can consume that exact
+artifact across branches; run the workflow manually on the proposed branch
+when its source key has no qualified artifact yet. A smoke against older
+verified artifacts is recorded as `host-only`. The separate guest qualification
+check requires successful hardware execution with `exact-input` artifacts.
+Neither missing manifests nor file presence alone qualifies this platform.
+PostgreSQL uses the same runtime while retaining its application assertions.
+
 ## Current workflows
 
 | Workflow | Automatic triggers |
@@ -41,7 +51,7 @@ to make it runnable.
 | Checks / Quality | PRs and pushes to main |
 | Checks / Memory safety | Relevant PRs and nightly/manual full suites |
 | Checks / Search evaluation | Relevant PRs and changes on main |
-| Acceptance / OCI | Bounded smoke on relevant PRs and main; deep nightly/manual |
+| Smoke / Consonance platform | Bounded smoke on relevant PRs and main; build and extended replay nightly/manual |
 | Acceptance / Consonance x86 | Bounded smoke on relevant PRs and main; deep nightly/manual |
 | Acceptance / Workload backends | Bounded smoke on relevant PRs and main; deep nightly/manual |
 | Benchmarks / NES | Nightly, with parallel game/case jobs |

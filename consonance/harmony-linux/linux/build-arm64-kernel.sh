@@ -12,10 +12,9 @@ cd "$(dirname "$0")"
 require_linux_aarch64
 require_tools cc make flex bison bc xz gzip patch objdump python3
 
-# The canonical M1 build remains the default. Other profiles need a separate
-# kernel profile with additional userspace/proc/devmem facilities; keeping
-# their object tree and output distinct preserves the sealed M1 artifact
-# byte-for-byte.
+# The standard runtime configuration is the only production profile. The
+# traps-off image remains a deliberate platform negative control with a
+# separate source/object/output path.
 arm64_profile=${ARM64_KERNEL_PROFILE:-minimal}
 case "$arm64_profile" in
     minimal)
@@ -24,12 +23,6 @@ case "$arm64_profile" in
         arm64_output=Image
         arm64_extra_fragment=
         ;;
-    postgres)
-        arm64_source_root=$BUILD_ROOT/arm64-postgres-src
-        arm64_object_root=$BUILD_ROOT/kernel-build-arm64-postgres
-        arm64_output=Image-postgres
-        arm64_extra_fragment=$GUEST_DIR/../../workloads/guest-images/arm64-postgres-config-fragment
-        ;;
     n6-traps-off)
         arm64_source_root=$BUILD_ROOT/arm64-n6-traps-off-src
         arm64_object_root=$BUILD_ROOT/kernel-build-arm64-n6-traps-off
@@ -37,17 +30,15 @@ case "$arm64_profile" in
         arm64_extra_fragment=$LINUX_DIR/arm64-n6-traps-off-config-fragment
         ;;
     *)
-        echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal or postgres)" >&2
+        echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal or n6-traps-off)" >&2
         exit 1
         ;;
 esac
 
-# The arm64 patch stack overlaps itself (0003/0004 modify files 0002 creates), so a
-# per-patch "already applied?" probe cannot certify a previously patched tree — and the
-# x86 recipe patches the shared $KSRC extract with its own stack. Build from a dedicated
-# tree re-extracted pristine on every run, and rebuild the object dir with it. The arm64
-# series lives under patches/arm64/ (the x86 series under patches/x86/), so the two
-# arches never share a patch number or an applier glob (hm-0dst, tribunal F7).
+# The arm64 patch stack overlaps itself (later patches modify files an earlier
+# patch creates), so build from a dedicated pristine source tree on every run.
+# apply-patch-series.sh applies the common transport before the arm64 overlay;
+# the stamp then covers the complete input series.
 kernel_tarball=$DL_DIR/$(basename "$KERNEL_URL")
 if [ ! -f "$kernel_tarball" ]; then
     echo "FAIL: $kernel_tarball missing — run 'make -C consonance/harmony-linux fetch' first (needs network once)" >&2
@@ -64,54 +55,8 @@ mkdir -p "$arm64_source_root"
 tar -xf "$kernel_tarball" -C "$arm64_source_root"
 KSRC=$arm64_source_root/linux-$KERNEL_VERSION
 
-apply_kernel_patch() {
-    patch_file=$1
-    patch_label=$2
-    if [ ! -f "$patch_file" ]; then
-        echo "FAIL: required $patch_label kernel patch is missing: $patch_file" >&2
-        exit 1
-    fi
-    if ! (cd "$KSRC" && patch -p1 --dry-run --force <"$patch_file") >/dev/null 2>&1; then
-        echo "FAIL: $patch_label patch does not apply cleanly to the pristine tree" >&2
-        exit 1
-    fi
-    echo "== arm64 kernel: applying $patch_label patch"
-    (cd "$KSRC" && patch -p1 --force <"$patch_file")
-}
-
-apply_kernel_patch \
-    "$LINUX_DIR/patches/arm64/0002-arm64-harmony-pvclock-exit-count-clocksource.patch" \
-    "harmony pvclock"
-apply_kernel_patch \
-    "$LINUX_DIR/patches/arm64/0003-arm64-harmony-lse-only.patch" \
-    "harmony LSE-only"
-apply_kernel_patch \
-    "$LINUX_DIR/patches/arm64/0004-arm64-harmony-virtual-time-clockevent.patch" \
-    "harmony work clockevent"
-apply_kernel_patch \
-    "$LINUX_DIR/patches/arm64/0005-arm64-harmony-pvclock-from-dt.patch" \
-    "harmony DT-discovered pvclock page"
-apply_kernel_patch \
-    "$LINUX_DIR/patches/arm64/0006-arm64-harmony-lse-only-futex.patch" \
-    "harmony LSE-only futex atomics"
-apply_kernel_patch \
-    "$LINUX_DIR/patches/arm64/0007-arm64-harmony-syscall-tick.patch" \
-    "harmony virtual_time syscall tick"
-apply_kernel_patch \
-    "$LINUX_DIR/patches/arm64/0008-arm64-harmony-fixed-counter-frequency.patch" \
-    "harmony fixed counter frequency"
-apply_kernel_patch \
-    "$LINUX_DIR/patches/arm64/0009-arm64-harmony-fixed-cache-topology.patch" \
-    "harmony fixed cache topology"
-apply_kernel_patch \
-    "$LINUX_DIR/patches/arm64/0010-arm64-harmony-irq-unmask-tick.patch" \
-    "harmony IRQ-unmask tick"
-apply_kernel_patch \
-    "$LINUX_DIR/patches/arm64/0011-arm64-harmony-canonical-pstate.patch" \
-    "harmony canonical PSTATE"
-apply_kernel_patch \
-    "$LINUX_DIR/patches/arm64/0012-arm64-harmony-N6-user-counter-trap-switch.patch" \
-    "harmony N6 user-counter trap switch"
+bash "$LINUX_DIR/apply-patch-series.sh" "$KSRC" \
+    "$LINUX_DIR/patches/common" "$LINUX_DIR/patches/arm64"
 
 mkdir -p "$arm64_object_root" "$ARM64_ART_DIR"
 
@@ -156,27 +101,25 @@ if [ "$arm64_profile" != n6-traps-off ]; then
 else
     assert_off HARMONY_ARM_USER_COUNTER_TRAPS
 fi
-assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES HIGH_RES_TIMERS NO_HZ_COMMON \
+assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES FHANDLE HIGH_RES_TIMERS NO_HZ_COMMON \
     NO_HZ_IDLE NO_HZ_FULL RANDOMIZE_BASE HW_RANDOM \
     TRANSPARENT_HUGEPAGE KSM SUSPEND HIBERNATION \
     ARM_ARCH_TIMER_EVTSTREAM ARM_ARCH_TIMER_OOL_WORKAROUND \
     FSL_ERRATUM_A008585 HISILICON_ERRATUM_161010101 \
     ARM64_ERRATUM_858921 SUN50I_ERRATUM_UNKNOWN1 KVM COMPAT ACPI \
     ARM64_MTE \
-    BPF_SYSCALL BPF_JIT KPROBES FUNCTION_TRACER FTRACE LIVEPATCH \
-    PERF_EVENTS HW_PERF_EVENTS
-case "$arm64_profile" in
-    minimal|n6-traps-off)
-        assert_off BINFMT_SCRIPT PROC_FS FUTEX DEVMEM
-        ;;
-    postgres)
-        assert_y BINFMT_SCRIPT PROC_FS FUTEX MMU SHMEM TMPFS FILE_LOCKING MULTIUSER \
-            SYSVIPC POSIX_MQUEUE NAMESPACES UTS_NS IPC_NS PID_NS NET_NS NET UNIX \
-            INET CGROUPS EPOLL EVENTFD SIGNALFD TIMERFD INOTIFY_USER SECCOMP \
-            DEVMEM
-        assert_off STRICT_DEVMEM
-        ;;
-esac
+    BPF_JIT KPROBES FUNCTION_TRACER FTRACE LIVEPATCH
+assert_off RWSEM_SPIN_ON_OWNER
+# The platform image executes a shell PID 1 and an OCI runtime, so its
+# namespace, cgroup, mount, and seccomp facilities are part of the standard
+# configuration. They are not selected by an application profile.
+assert_y BINFMT_SCRIPT PROC_FS PROC_CHILDREN FUTEX MMU SHMEM TMPFS FILE_LOCKING MULTIUSER \
+    SYSVIPC POSIX_MQUEUE NAMESPACES UTS_NS IPC_NS PID_NS NET_NS NET UNIX \
+    INET CGROUPS CGROUP_SCHED CGROUP_PIDS CGROUP_DEVICE CGROUP_BPF BPF_SYSCALL \
+    EPOLL EVENTFD SIGNALFD \
+    TIMERFD INOTIFY_USER SECCOMP SECCOMP_FILTER HARMONY_DEVICE PERF_EVENTS \
+    HAVE_HW_BREAKPOINT HARMONY_PARK DEVMEM
+assert_off STRICT_DEVMEM
 if ! grep -qxF 'CONFIG_NR_CPUS=2' "$arm64_object_root/.config"; then
     echo "FAIL: CONFIG_NR_CPUS must be the arm64 minimum (2)" >&2
     exit 1

@@ -63,7 +63,8 @@ mod real {
 
     struct Args {
         kernel: PathBuf,
-        initramfs: PathBuf,
+        platform_initramfs: PathBuf,
+        image: PathBuf,
         rom: PathBuf,
         core: PathBuf,
         output: PathBuf,
@@ -87,7 +88,8 @@ mod real {
             I: IntoIterator<Item = OsString>,
         {
             let mut kernel = None;
-            let mut initramfs = None;
+            let mut platform_initramfs = None;
+            let mut image = None;
             let mut rom = None;
             let mut core = None;
             let mut output = None;
@@ -110,7 +112,10 @@ mod real {
                     .ok_or_else(|| format!("missing value after {}", flag.to_string_lossy()))?;
                 match flag.to_string_lossy().as_ref() {
                     "--kernel" => kernel = Some(PathBuf::from(value)),
-                    "--initramfs" => initramfs = Some(PathBuf::from(value)),
+                    "--platform-initramfs" => {
+                        platform_initramfs = Some(PathBuf::from(value));
+                    }
+                    "--image" => image = Some(PathBuf::from(value)),
                     "--rom" => rom = Some(PathBuf::from(value)),
                     "--core" => core = Some(PathBuf::from(value)),
                     "--output" => output = Some(PathBuf::from(value)),
@@ -130,7 +135,8 @@ mod real {
             }
             let parsed = Self {
                 kernel: kernel.ok_or("missing --kernel")?,
-                initramfs: initramfs.ok_or("missing --initramfs")?,
+                platform_initramfs: platform_initramfs.ok_or("missing --platform-initramfs")?,
+                image: image.ok_or("missing --image")?,
                 rom: rom.ok_or("missing --rom")?,
                 core: core.ok_or("missing --core")?,
                 output: output.ok_or("missing --output")?,
@@ -239,9 +245,18 @@ mod real {
         let memory_budget = memory_budget_for_workers(args.memory_budget_mib, args.workers)?;
         fs::create_dir_all(&args.output)?;
         let rom = fs::read(&args.rom)?;
-        let kernel = fs::read(&args.kernel)?;
-        let initramfs = fs::read(&args.initramfs)?;
-        let game = NovaGame::new_consonance(&rom, &kernel, &initramfs);
+        let game = {
+            let kernel = fs::read(&args.kernel)?;
+            let platform_initramfs = fs::read(&args.platform_initramfs)?;
+            let prepared = nes_workload::prepare::stage_and_prepare(
+                args.image
+                    .to_str()
+                    .ok_or("NES OCI image path must be UTF-8")?,
+                &rom,
+            )?;
+            let initramfs = prepared.initramfs(&platform_initramfs);
+            NovaGame::new_consonance(&rom, &kernel, &initramfs)
+        };
         let config = NovaCampaignConfig {
             campaign_seed: args.seed,
             workers: args.workers,
@@ -276,6 +291,8 @@ mod real {
         drop(stream);
         drop(progress);
         drop(checkpoint);
+        let emulator_backend = game.emulator_identity().to_owned();
+        drop(game);
         let best_input = report
             .objective_witness
             .as_ref()
@@ -296,7 +313,7 @@ mod real {
             } else {
                 "consonance_marketing_campaign"
             },
-            "emulator_backend": game.emulator_identity(),
+            "emulator_backend": emulator_backend,
             "campaign_seed": report.campaign_seed,
             "workers": report.workers,
             "memory_budget_mib": args.memory_budget_mib,
@@ -421,8 +438,10 @@ mod real {
             let mut args = [
                 "--kernel",
                 "kernel",
-                "--initramfs",
-                "initramfs",
+                "--platform-initramfs",
+                "platform-initramfs",
+                "--image",
+                "image.oci",
                 "--rom",
                 "rom",
                 "--core",

@@ -831,6 +831,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             return Ok(Err(ControlError::SnapshotWhileArmed));
         }
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+        match vmm.prepare_snapshot_boundary() {
+            Ok(true) => {}
+            Ok(false) | Err(VmmError::Backend(vmm_backend::BackendError::Unsupported { .. })) => {
+                return Ok(Err(ControlError::NotQuiescent));
+            }
+            Err(error) => return Err(error.into()),
+        }
         let vm_state = match vmm.save_vm_state() {
             Ok(s) => s,
             Err(VmmError::ContractViolation(_)) => return Ok(Err(ControlError::NotQuiescent)),
@@ -917,12 +924,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         vm_state: &<B::A as Vendor>::Snapshot,
     ) -> Result<u64, ()> {
         let from = self.current_image;
-        let mut pages: BTreeMap<u64, [u8; 4096]> = self
-            .engine
-            .diff_pages(from, store_id)
-            .map_err(|_| ())?
-            .into_iter()
-            .collect();
+        let mut pages = self.engine.diff_pages(from, store_id).map_err(|_| ())?;
 
         let dirty = {
             let vmm = self.vmm.as_mut().ok_or(())?;
@@ -931,17 +933,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         };
         match dirty {
             Some(gfns) => {
+                let mut included = pages.iter().map(|(gfn, _)| *gfn).collect::<BTreeSet<_>>();
                 for gfn in gfns {
-                    if let std::collections::btree_map::Entry::Vacant(entry) = pages.entry(gfn) {
-                        entry.insert(self.engine.read_page(store_id, gfn).map_err(|_| ())?);
+                    if included.insert(gfn) {
+                        pages.push((gfn, self.engine.read_page(store_id, gfn).map_err(|_| ())?));
                     }
                 }
+                pages.sort_unstable_by_key(|(gfn, _)| *gfn);
             }
             None if from.is_none() => {}
             None => return Err(()),
         }
 
-        let pages: Vec<(u64, [u8; 4096])> = pages.into_iter().collect();
         let bytes = u64::try_from(pages.len())
             .ok()
             .and_then(|count| count.checked_mul(4096))
@@ -1282,7 +1285,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 && self.reseed_schedule.is_empty()
             {
                 let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-                if vmm.take_snapshot_point() {
+                if vmm.take_snapshot_point()? {
                     let vns = vmm.effective_vns().unwrap_or(0);
                     return Ok(Ok(Reply::Stop(StopReason::SnapshotPoint {
                         vtime: Moment(vns),
@@ -2337,6 +2340,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn direct_snapshot_rejects_unsupported_completion_retirement() {
+        let make_vmm = || {
+            let mut backend =
+                MockArm64Backend::with_exits(vec![Exit::Arch(vmm_backend::Arm64Exit::Sysreg {
+                    sysreg: 0x0028_0400,
+                    write: Some(0),
+                })]);
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            Vmm::new(backend, GuestRam::new(RAM).unwrap())
+        };
+        let mut live = make_vmm();
+        assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
+        let mut server = ControlServer::new(live, Box::new(move || Ok(make_vmm())));
+        for _ in 0..2 {
+            assert_eq!(server.snapshot().unwrap(), Err(ControlError::NotQuiescent));
+            assert!(server.vmm.is_some());
+            assert!(server.sdk_snaps.is_empty());
+            assert!(server.latest_snapshot().is_none());
+        }
+    }
+
     fn accumulated_session_server() -> ControlServer<MockArm64Backend> {
         let make_vmm = |exits: Vec<Exit<Arm64>>, seed: u64| {
             let mut backend = MockArm64Backend::with_exits(exits);
@@ -2705,6 +2730,142 @@ mod tests {
             .unwrap(),
             expected_hash
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot materialization and page hashing use mmap-backed production paths"
+    )]
+    fn in_place_restore_merges_dirty_pages_without_duplicate_writes() {
+        let mut s = server_tracked();
+        hello(&mut s);
+        let target = snap(&mut s);
+        let expected_hash = s
+            .handle(&Request::Hash {
+                scope: HashScope::Whole,
+            })
+            .unwrap();
+        s.vmm
+            .as_mut()
+            .unwrap()
+            .apply_effect(&EnvHostEffect::WriteMemory {
+                gpa: 3 * 4096,
+                bytes: vec![0x11],
+            })
+            .unwrap();
+        let current = snap(&mut s);
+        assert_ne!(current, target);
+
+        for (gpa, byte) in [(3 * 4096, 0xA5_u8), (4096, 0x5A_u8), (3 * 4096, 0x3C_u8)] {
+            s.vmm
+                .as_mut()
+                .unwrap()
+                .apply_effect(&EnvHostEffect::XorMemory {
+                    gpa,
+                    bytes: vec![byte],
+                })
+                .unwrap();
+        }
+        s.set_restore_mode(super::RestoreMode::InPlace);
+        assert_eq!(s.handle(&Request::Replay(target)).unwrap(), Ok(Reply::Unit));
+
+        assert_eq!(s.in_place_fallbacks(), 0);
+        assert_eq!(s.last_restore_bytes_written(), 2 * 4096);
+        assert_eq!(
+            s.handle(&Request::Hash {
+                scope: HashScope::Whole,
+            })
+            .unwrap(),
+            expected_hash
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot materialization and page hashing use mmap-backed production paths"
+    )]
+    fn in_place_restore_after_dropping_current_handle_restores_zero_pages() {
+        let mut s = server_tracked();
+        hello(&mut s);
+        let target = snap(&mut s);
+        let expected_hash = s
+            .handle(&Request::Hash {
+                scope: HashScope::Whole,
+            })
+            .unwrap();
+        let current = snap(&mut s);
+        assert_eq!(s.handle(&Request::Drop(current)).unwrap(), Ok(Reply::Unit));
+        assert_eq!(s.current_image, None);
+        s.vmm
+            .as_mut()
+            .unwrap()
+            .apply_effect(&EnvHostEffect::WriteMemory {
+                gpa: 3 * 4096,
+                bytes: vec![0xA5],
+            })
+            .unwrap();
+        assert_eq!(s.vmm.as_ref().unwrap().guest_memory()[3 * 4096], 0xA5);
+
+        s.set_restore_mode(super::RestoreMode::InPlace);
+        assert_eq!(s.handle(&Request::Replay(target)).unwrap(), Ok(Reply::Unit));
+
+        assert_eq!(s.in_place_fallbacks(), 0);
+        assert_eq!(s.last_restore_bytes_written(), RAM as u64);
+        assert_eq!(s.vmm.as_ref().unwrap().guest_memory()[3 * 4096], 0);
+        assert_eq!(
+            s.handle(&Request::Hash {
+                scope: HashScope::Whole,
+            })
+            .unwrap(),
+            expected_hash
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot materialization and page hashing use mmap-backed production paths"
+    )]
+    fn in_place_restore_read_failure_leaves_guest_memory_untouched() {
+        let mut s = server_tracked();
+        hello(&mut s);
+        s.vmm
+            .as_mut()
+            .unwrap()
+            .apply_effect(&EnvHostEffect::WriteMemory {
+                gpa: 2 * 4096,
+                bytes: vec![0x11],
+            })
+            .unwrap();
+        let target = snap(&mut s);
+        let store_id = s.snaps[&target.0];
+        let vm_state = s.engine.vm_state::<vm_state::VmState>(store_id).unwrap();
+
+        s.vmm
+            .as_mut()
+            .unwrap()
+            .apply_effect(&EnvHostEffect::XorMemory {
+                gpa: 4096,
+                bytes: vec![0x5A],
+            })
+            .unwrap();
+        s.vmm
+            .as_mut()
+            .unwrap()
+            .apply_effect(&EnvHostEffect::XorMemory {
+                gpa: 2 * 4096,
+                bytes: vec![0xA5],
+            })
+            .unwrap();
+        let before = s.vmm.as_ref().unwrap().guest_memory().to_vec();
+        s.engine
+            .corrupt_page_for_test(store_id, 2, 0, 0x01)
+            .unwrap();
+
+        assert!(s.restore_in_place(store_id, &vm_state).is_err());
+        assert_eq!(s.vmm.as_ref().unwrap().guest_memory(), before);
     }
 
     #[test]
@@ -4027,6 +4188,9 @@ mod tests {
         fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
             self.0.complete_arch(c)
         }
+        fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
+            self.0.retire_pending_completion()
+        }
         fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
             self.0.save()
         }
@@ -5202,6 +5366,9 @@ mod tests {
         fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
             self.inner.complete_arch(c)
         }
+        fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
+            self.inner.retire_pending_completion()
+        }
         fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
             self.inner.save()
         }
@@ -5783,6 +5950,9 @@ mod tests {
         }
         fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
             self.0.complete_arch(c)
+        }
+        fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
+            self.0.retire_pending_completion()
         }
         fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
             self.0.save()

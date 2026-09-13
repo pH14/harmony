@@ -1,24 +1,51 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use crate::Span;
 use crate::catalog::Fault;
-use crate::codec::{self, Reader};
+use process_proto::{ProcessAction, decode_target, encode_target};
 
 #[must_use]
 pub fn process_target(node: u16, fault: &Fault) -> Vec<u8> {
-    let mut w = node.to_le_bytes().to_vec();
-    codec::write_fault(&mut w, fault);
-    w
+    encode_target(node, &to_process_action(fault))
 }
 
 #[must_use]
 pub fn decode_process_target(b: &[u8]) -> Option<(u16, Fault)> {
-    let mut r = Reader::new(b);
-    let node = r.u16().ok()?;
-    let fault = codec::read_fault(&mut r).ok()?;
-    if !r.at_end() {
-        return None;
+    let (node, action) = decode_target(b)?;
+    Some((node, from_process_action(action)?))
+}
+
+fn to_process_action(fault: &Fault) -> ProcessAction {
+    match fault {
+        Fault::ProcPause(Span(nanos)) => ProcessAction::Pause(*nanos),
+        Fault::ProcKill => ProcessAction::Kill,
+        Fault::ProcRestart => ProcessAction::Restart,
+        Fault::RunHook(id) => ProcessAction::RunHook(*id),
+        Fault::ProcPark { addr, hits, hold } => ProcessAction::Park {
+            addr: *addr,
+            hits: *hits,
+            hold_nanos: hold.0,
+        },
+        _ => unreachable!("process_target received a non-process fault"),
     }
-    Some((node, fault))
+}
+
+fn from_process_action(action: ProcessAction) -> Option<Fault> {
+    Some(match action {
+        ProcessAction::Pause(nanos) => Fault::ProcPause(Span(nanos)),
+        ProcessAction::Kill => Fault::ProcKill,
+        ProcessAction::Restart => Fault::ProcRestart,
+        ProcessAction::RunHook(id) => Fault::RunHook(id),
+        ProcessAction::Park {
+            addr,
+            hits,
+            hold_nanos,
+        } => Fault::ProcPark {
+            addr,
+            hits,
+            hold: Span(hold_nanos),
+        },
+    })
 }
 
 #[cfg(test)]

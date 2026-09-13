@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the **Postgres-on-k3s workload initramfs** — the determinism
+# Build the **Postgres-on-k3s workload OCI layout** — the determinism
 # stress test at full stack height: a single-node lightweight Kubernetes cluster
 # inside the deterministic guest, with a CLIENT pod making calls to a POSTGRES
 # server pod over the in-guest CNI, deterministic-twice).
@@ -8,7 +8,8 @@
 # **What runs (see consonance/harmony-linux/linux/README.md).** One single-vCPU
 # guest boots `k3s` (a lightweight Kubernetes distro: ONE static Go binary that
 # bundles containerd + runc + the flannel/bridge/host-local CNI + kube-proxy +
-# kubectl, with a sqlite datastore). `k3s-init.sh` brings the cluster up, then:
+# kubectl, with a sqlite datastore). The OCI workload entrypoint brings the
+# cluster up, then:
 #   * a `postgres` Pod runs the official `postgres:17` OCI image on a **pre-baked
 #     PGDATA** (build-time initdb, baked here as a hostPath, uid 999) listening on
 #     TCP, fronted by a fixed-ClusterIP `postgres` Service;
@@ -18,24 +19,18 @@
 #     gen_random_uuid()/clock_timestamp() workload, streaming
 #     `row|i|count|sum|uuid|t` to its pod log -> ttyS0.
 #
-# **Why k3s makes progress (the determinism is preemption-driven).**
-# kubelet + containerd + apiserver + scheduler + controller-manager + kube-proxy +
-# flannel are all Go/multi-goroutine services that busy-spin and depend on
-# preemption. Under the V-time VMM the LAPIC timer **preempts** a busy-spinning
-# thread at the seed-deterministic V-time deadline (run_with_deadline) and the idle-HLT
-# resume warps to the next deadline, so the Go schedulers run and the
-# cluster converges — deterministically, because every preemption instant is a
-# pure function of the seed. k3s mints its certs/tokens/SA-keys/object-UIDs from
-# getrandom -> the seeded CRNG and stamps every resource/lease/event from the
-# V-time clock, so two same-seed boots are bit-identical (incl. the workload's
-# "random" UUIDs + wall-clock timestamps).
+# Virtual time advances at modeled exits, including the controlled kernel's
+# syscall, context-switch, and idle-poll ticks. Idle HLT can advance to a timer
+# deadline. Exit-free userspace computation has no general preemption guarantee.
+# K3s reads entropy from the seeded CRNG and time from the virtual clock; the
+# qualification checks actual completion and same-seed serial equality.
 #
 # **No kernel change.** The Kata container-host bzImage already builds in
 # the full k8s surface (BRIDGE/VETH/VXLAN/NF_CONNTRACK/NF_NAT/NF_TABLES/IP_VS/
 # OVERLAY_FS/the iptables + netfilter_xt set + cgroup-v2/namespaces); the
 # determinism overlay disables none of it. The companion kernel is the *unchanged*
 # bzImage. The k3s data dir, sqlite, container rootfs layers and PGDATA all
-# live in the initramfs tmpfs (RAM) -> deterministic VM-memory writes.
+# live in the outer OCI rootfs (RAM at runtime) -> deterministic VM-memory writes.
 #
 # Linux + root only (mounts, cgroup, chroot, the static layout assume a Linux
 # build host; the box is the pinned build environment). See CONTRIBUTING.md.
@@ -46,12 +41,14 @@ cd "$(dirname "$0")/../../consonance/harmony-linux/linux"
 
 # shellcheck source=../../consonance/harmony-linux/linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
+# shellcheck source=versions.lock disable=SC1091
+. "$workload_dir/versions.lock"
 
 require_linux_amd64
-require_tools cc make gzip bzip2 cpio gunzip jq tar chroot mount umount
+require_tools cc make bzip2 python3 jq tar chroot mount umount readelf
 
 if [ "$(id -u)" != "0" ]; then
-    echo "FAIL: build-k3s-image.sh must run as root (the cpio preserves the uid-999" >&2
+    echo "FAIL: build-k3s-image.sh must run as root (the OCI layout preserves the uid-999" >&2
     echo "      PGDATA ownership, and the static layout mirrors the privileged guest" >&2
     echo "      rootfs)." >&2
     exit 1
@@ -62,6 +59,7 @@ K3SROOT=$BUILD_ROOT/k3s-root                    # the assembled guest rootfs
 PG_IMAGE_TAR=$DL_DIR/postgres-image.tar         # the official postgres image
 PAUSE_IMAGE_TAR=$DL_DIR/k3s-pause-image.tar     # the pause/sandbox image (fetch.sh)
 K3S_BIN=$DL_DIR/k3s                             # the pinned k3s binary
+IPTABLES_TARBALL=$DL_DIR/$(basename "$IPTABLES_SOURCE_URL")
 WORKLOAD_N=20                                   # fixed insert/select iterations (matches the other Postgres images)
 PG_CLUSTERIP=10.43.0.100                        # fixed Service ClusterIP (svc CIDR 10.43.0.0/16)
 
@@ -72,14 +70,15 @@ verify_pin() {  # <file> <sha> <hint>
     got=$(sha256_of "$1")
     [ "$got" = "$2" ] || { echo "FAIL: $1 sha256 mismatch (want $2, got $got)" >&2; exit 1; }
 }
-verify_pin "$K3S_BIN" "$K3S_BIN_SHA256" "run 'make -C consonance/harmony-linux fetch' first"
+verify_pin "$K3S_BIN" "$K3S_BIN_SHA256" "run 'make -C workloads/guest-images fetch' first"
+verify_pin "$IPTABLES_TARBALL" "$IPTABLES_SOURCE_SHA256" "run 'make -C workloads/guest-images fetch' first"
 if [ ! -f "$PG_IMAGE_TAR" ] || [ ! -s "$PG_IMAGE_TAR" ]; then
-    echo "FAIL: $PG_IMAGE_TAR missing/empty — run 'make -C consonance/harmony-linux fetch' on the box" >&2
+    echo "FAIL: $PG_IMAGE_TAR missing/empty — run 'make -C workloads/guest-images fetch' on the box" >&2
     echo "      (ctr+network; integrity anchored by $POSTGRES_IMAGE_INDEX_DIGEST)." >&2
     exit 1
 fi
 if [ ! -f "$PAUSE_IMAGE_TAR" ] || [ ! -s "$PAUSE_IMAGE_TAR" ]; then
-    echo "FAIL: $PAUSE_IMAGE_TAR missing/empty — run 'make -C consonance/harmony-linux fetch' on the box" >&2
+    echo "FAIL: $PAUSE_IMAGE_TAR missing/empty — run 'make -C workloads/guest-images fetch' on the box" >&2
     echo "      (ctr; extracted from the pinned k3s air-gap tarball)." >&2
     exit 1
 fi
@@ -99,6 +98,87 @@ set -o pipefail
 grep -qxF 'CONFIG_STATIC=y' "$BBOBJ/.config" || { echo "FAIL: busybox not static" >&2; exit 1; }
 make -C "$BBSRC" O="$BBOBJ" -j"$(nproc)" busybox >/dev/null
 
+# --- 1b. static iptables (the K3s netfilter command surface) ------------------
+# K3s' kube-proxy and Flannel use the legacy xtables API for IPv4. The pinned
+# source can compile every xtables extension into one multi-call executable;
+# this avoids shipping libxtables plugins or a dynamic libc/libmnl/libnftnl
+# closure. A musl compiler is required even on x86: accepting the host glibc
+# linker here would make the OCI layout depend on a host loader or library.
+IPTABLES_SRC=$BUILD_ROOT/iptables-$IPTABLES_VERSION
+IPTABLES_PREFIX=$BUILD_ROOT/iptables-prefix
+IPTABLES_HEADERS=$BUILD_ROOT/iptables-kernel-headers
+rm -rf "$IPTABLES_SRC" "$IPTABLES_PREFIX" "$IPTABLES_HEADERS"
+verify_and_extract "$IPTABLES_TARBALL" "$IPTABLES_SOURCE_SHA256" "$IPTABLES_SRC"
+mkdir -p "$IPTABLES_HEADERS"
+echo "== k3s image: exporting pinned Linux UAPI headers for iptables"
+extract_kernel
+make -s -C "$KSRC" ARCH=x86 INSTALL_HDR_PATH="$IPTABLES_HEADERS" headers_install
+[ -f "$IPTABLES_HEADERS/include/asm/types.h" ] || {
+    echo "FAIL: Linux headers_install did not provide asm/types.h for iptables" >&2
+    exit 1
+}
+[ -f "$IPTABLES_HEADERS/include/linux/version.h" ] || {
+    echo "FAIL: Linux headers_install did not provide linux/version.h for iptables" >&2
+    exit 1
+}
+
+iptables_cc=${HARMONY_K3S_IPTABLES_CC:-${K3S_IPTABLES_CC:-musl-gcc}}
+command -v "$iptables_cc" >/dev/null 2>&1 || {
+    echo "FAIL: K3s iptables needs a musl static compiler (missing $iptables_cc)" >&2
+    echo "      set HARMONY_K3S_IPTABLES_CC to the pinned x86_64 musl-gcc wrapper" >&2
+    exit 1
+}
+iptables_machine=$($iptables_cc -dumpmachine 2>/dev/null || true)
+case "$iptables_machine" in
+    x86_64-*|x86_64|amd64-*) ;;
+    *)
+        echo "FAIL: K3s iptables compiler is not x86_64: $iptables_cc ($iptables_machine)" >&2
+        exit 1
+        ;;
+esac
+iptables_cflags="-O2 -march=x86-64 -mtune=generic -fno-pie -ffile-prefix-map=$IPTABLES_SRC=/usr/src/iptables-$IPTABLES_VERSION"
+iptables_ldflags="-static -fno-pie -no-pie -Wl,--build-id=none"
+iptables_linkflags="$iptables_ldflags -all-static"
+echo "== k3s image: building static iptables $IPTABLES_VERSION ($iptables_cc)"
+(
+    cd "$IPTABLES_SRC"
+    CC="$iptables_cc" CPPFLAGS="-I$IPTABLES_HEADERS/include" \
+        CFLAGS="$iptables_cflags" LDFLAGS="$iptables_ldflags" \
+        ./configure \
+        --prefix="$IPTABLES_PREFIX" \
+        --disable-nftables \
+        --disable-shared \
+        --enable-static \
+        --disable-libnfnetlink \
+        --disable-connlabel \
+        --disable-bpf-compiler \
+        --disable-nfsynproxy \
+        >"$BUILD_ROOT/iptables-configure.log"
+    make -j"$(nproc)" LDFLAGS="$iptables_linkflags" >"$BUILD_ROOT/iptables-build.log"
+    make install LDFLAGS="$iptables_linkflags" >"$BUILD_ROOT/iptables-install.log"
+)
+IPTABLES_MULTI=$IPTABLES_PREFIX/sbin/xtables-legacy-multi
+[ -x "$IPTABLES_MULTI" ] || {
+    echo "FAIL: static iptables multi-call executable was not installed" >&2
+    exit 1
+}
+if readelf -l "$IPTABLES_MULTI" | grep -q ' INTERP '; then
+    echo "FAIL: K3s iptables has a dynamic loader dependency" >&2
+    exit 1
+fi
+if readelf -d "$IPTABLES_MULTI" 2>/dev/null | grep -q ' (NEEDED) '; then
+    echo "FAIL: K3s iptables has a dynamic library dependency" >&2
+    exit 1
+fi
+for applet in iptables iptables-restore iptables-save iptables-legacy \
+    iptables-legacy-restore iptables-legacy-save ip6tables ip6tables-restore \
+    ip6tables-save ip6tables-legacy ip6tables-legacy-restore ip6tables-legacy-save; do
+    "$IPTABLES_PREFIX/sbin/$applet" --version >/dev/null || {
+        echo "FAIL: static iptables applet does not run: $applet" >&2
+        exit 1
+    }
+done
+
 # --- 2. assemble the guest rootfs --------------------------------------------
 echo "== k3s image: assembling rootfs"
 # DEFENSIVE: umount any leaked build-time bind mounts before rm -rf (rm -rf
@@ -110,17 +190,25 @@ mkdir -p "$K3SROOT"/{bin,sbin,etc,proc,sys,dev,tmp,root,run}
 mkdir -p "$K3SROOT/usr/local/bin" "$K3SROOT/sys/fs/cgroup" "$K3SROOT/var/lib" \
          "$K3SROOT/etc/rancher/k3s" "$K3SROOT/var/lib/rancher/k3s/agent/images" \
          "$K3SROOT/var/lib/rancher/k3s/server/manifests" "$K3SROOT/k8s"
-install_libvoidstar "$K3SROOT"
 ln -sf /run "$K3SROOT/var/run"
 
 cp "$BBOBJ/busybox" "$K3SROOT/bin/busybox"
-# /bin/sh is the /init interpreter; the rest let any `sh -c`/PATH lookup the init
-# (or k3s' shell-outs to `ip`, `mount`, ...) does resolve without full coreutils.
+# The workload entrypoint and k3s shell-outs use this generic BusyBox surface;
+# platform mounts and lifecycle operations are outside the image.
 for a in sh mount umount mkdir chmod chown cat echo grep sleep kill nice ln rm cp \
-         true false test sync reboot poweroff head tail env printf cut wc ps sed \
+         true false test sync head tail env printf cut wc ps sed \
          cmp ls id mv touch dd find xargs awk tr sort uniq date hostname dmesg \
          mountpoint nproc seq tee timeout ip; do
     ln -sf busybox "$K3SROOT/bin/$a"
+done
+
+# Install the checked static multi-call executable only after assembling the
+# fresh rootfs; the assembly step above removes any previous K3SROOT.
+install -m 0755 "$IPTABLES_MULTI" "$K3SROOT/bin/xtables-legacy-multi"
+for applet in iptables iptables-restore iptables-save iptables-legacy \
+    iptables-legacy-restore iptables-legacy-save ip6tables ip6tables-restore \
+    ip6tables-save ip6tables-legacy ip6tables-legacy-restore ip6tables-legacy-save; do
+    ln -sf xtables-legacy-multi "$K3SROOT/bin/$applet"
 done
 
 # The k3s binary (one static Go binary). k3s dispatches its bundled tools by
@@ -130,7 +218,8 @@ for t in kubectl crictl ctr; do ln -sf k3s "$K3SROOT/usr/local/bin/$t"; done
 
 # The in-guest flow agent (optional). Built as a static musl binary by
 # a caller-supplied static musl `flow-agent` binary; bake it in when its path is
-# passed via FLOW_AGENT_BIN. `k3s-init.sh` starts it before the client pod (see there). The
+# passed via FLOW_AGENT_BIN. The workload entrypoint starts it before the client
+# pod. The
 # nominal path installs no rules; the FAULT path (gate B) additionally needs `nft`
 # + `tc` in the image — bake those alongside when driving a NetLatency/drop policy.
 if [ -n "${FLOW_AGENT_BIN:-}" ]; then
@@ -299,7 +388,7 @@ EOF
 
 # The postgres Pod + Service are baked into the server manifests dir, which k3s
 # auto-applies once the apiserver is up. The client Pod is applied separately by
-# k3s-init.sh AFTER the postgres pod is Ready (clean sequencing for the gate
+# workload entrypoint AFTER the postgres pod is Ready (clean sequencing for the gate
 # narrative; the client's retry loop makes it robust regardless).
 cat >"$K3SROOT/var/lib/rancher/k3s/server/manifests/postgres.yaml" <<EOF
 apiVersion: v1
@@ -378,17 +467,21 @@ spec:
       hostPath: { path: /k8s/client.sh, type: File }
 EOF
 
-# --- 7. the guest /init ------------------------------------------------------
-install -m 0755 "$workload_dir/k3s-init.sh" "$K3SROOT/k3s-init"
+# --- 7. install the OCI workload entrypoint ----------------------------------
+install -m 0755 "$workload_dir/k3s-workload.sh" \
+    "$K3SROOT/usr/local/bin/k3s-workload.sh"
 
-# --- 8. pack the initramfs (sorted, fixed mtime, gzip -n) ---------------------
+# --- 8. pack the OCI layout --------------------------------------------------
 # **Ownership is PRESERVED** (no --owner=0:0): the guest-side files are root-owned
 # (root created them) while /k8s/pgdata stays owned uid 999 — which the server
 # pod's postgres (uid 999) needs. Ownership is a deterministic function of the
 # image + initdb, so the image stays reproducible.
-echo "== k3s image: packing initramfs"
-mkdir -p "$ART_DIR"   # the artifact dir (consonance/harmony-linux/build) may not exist on a fresh checkout
-find "$K3SROOT" -mindepth 1 -exec touch -hcd @0 {} +
-( cd "$K3SROOT" && find . -mindepth 1 -print0 | LC_ALL=C sort -z \
-    | cpio --null -o -H newc --quiet ) | gzip -n -9 >"$ART_DIR/initramfs-k3s.cpio.gz"
-echo "ok: $ART_DIR/initramfs-k3s.cpio.gz ($(du -h "$ART_DIR/initramfs-k3s.cpio.gz" | cut -f1))"
+OCI_OUT=$ART_DIR/oci-images/k3s.oci
+rm -rf "$OCI_OUT"
+mkdir -p "$(dirname "$OCI_OUT")"
+python3 "$workload_dir/oci-package.py" \
+    --rootfs "$K3SROOT" --architecture amd64 --output "$OCI_OUT" \
+    --entrypoint /usr/local/bin/k3s-workload.sh \
+    --env PATH=/usr/local/bin:/bin:/sbin \
+    --user 0:0 --working-dir /
+echo "ok: $OCI_OUT"

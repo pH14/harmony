@@ -84,6 +84,7 @@ pub struct LiveKvm {
     _kvm: Kvm,
     run: *mut kvm_run,
     mmap_size: usize,
+    cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl LiveKvm {
@@ -131,6 +132,7 @@ impl LiveKvm {
             _kvm: kvm,
             run,
             mmap_size,
+            cancel_run: std::sync::Arc::default(),
         };
         this.vcpu_init()?;
         this.create_vgic()?;
@@ -530,8 +532,15 @@ impl Arm64Kvm for LiveKvm {
     }
 
     fn run(&mut self) -> Result<KvmRunView> {
+        if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(BackendError::Internal("KVM run canceled by host"));
+        }
         self.vcpu.run().map_err(kvm_err)?;
         self.read_run_view()
+    }
+
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        Some(std::sync::Arc::clone(&self.cancel_run))
     }
 }
 
