@@ -32,7 +32,8 @@ replay_run() {
         --argjson applied "$4" --argjson horizons "$5" '{
         run: 1, bug: $bug, stop: "Assertion", state_hash: "abc",
         violations: $violations, sometimes: $sometimes,
-        actions_applied: $applied, guest_horizons: $horizons, check: null
+        actions_applied: $applied, settle_actions: 0, settle_ticks: 0,
+        guest_horizons: $horizons, check: null
     }'
 }
 
@@ -65,7 +66,8 @@ expect fail 'a control replay whose detector stayed silent' \
 expect fail 'a replay answered by a cached prefix' \
     "$(replay_report "${cached}")" sample control 1 7
 
-checked=$(jq '.check = {disturbance_generation:3, run:7,
+checked=$(jq '.settle_actions = 3 | .settle_ticks = 7 | .guest_horizons += 3 |
+    .check = {disturbance_generation:3, run:7,
     start_generation:3, end_generation:3, points:[24], pending_faults:0}' <<<"${clean}")
 expect pass 'continuous check completed after the final recovery' \
     "$(replay_report "${checked}")" discovery control 1 7

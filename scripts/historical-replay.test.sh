@@ -27,7 +27,7 @@ printf x >"${work}/oci-images/pgcic-14.3.oci"
 printf x >"${work}/oci-images/pgcic-14.4.oci"
 printf '[{"Wait":50}]\n' >"${work}/input.json"
 
-run=$(jq -cn '{run:1,bug:false,stop:"Deadline",state_hash:"abc",violations:[],sometimes:[24],actions_applied:1,guest_horizons:1,check:null}')
+run=$(jq -cn '{run:1,bug:false,stop:"Deadline",state_hash:"abc",violations:[],sometimes:[24],actions_applied:1,settle_actions:0,settle_ticks:0,guest_horizons:1,check:null}')
 jq -cn --argjson run "${run}" '{mode:"replay",replays:[$run,$run]}' >"${work}/report.json"
 summary="${work}/summary.md"
 

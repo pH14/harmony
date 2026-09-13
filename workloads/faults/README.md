@@ -92,7 +92,11 @@ after setup. This logical counter is monotonic across target reset and snapshot
 restore; longer waits cost more even when an endpoint is cached. The separate
 `guest_horizons` diagnostic counts action evaluations that enter the guest;
 cache reuse can change the count and reset clears it. Setup, prefix
-reconstruction, and failed actions are outside the logical counter.
+reconstruction, and failed actions are outside the logical counter. Replay
+continues an enabled continuous checker with waits of 10 ms through 40.96 s,
+doubling only while its completed generation is stale or faults remain pending.
+`actions_applied` remains the recorded input prefix, while `settle_actions` and
+`settle_ticks` account for that deterministic validation tail.
 
 ## Running it
 

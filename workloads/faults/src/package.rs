@@ -5,6 +5,16 @@ use std::{error::Error, fs, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[cfg(any(
+    test,
+    all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )
+))]
+use crate::target::FaultObservations;
 use crate::target::{FaultAction, FaultStop};
 
 pub const PACKAGE: &str = "faults";
@@ -57,8 +67,39 @@ pub struct ReplaySummary {
     pub violations: Vec<u32>,
     pub sometimes: Vec<u32>,
     pub actions_applied: u64,
+    pub settle_actions: u64,
+    pub settle_ticks: u64,
     pub guest_horizons: u64,
     pub check: Option<crate::target::CheckEvidence>,
+}
+
+#[cfg(any(
+    test,
+    all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )
+))]
+const REPLAY_SETTLE_TICKS: [u16; 13] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096];
+
+#[cfg(any(
+    test,
+    all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )
+))]
+fn replay_needs_settle(observation: &FaultObservations) -> bool {
+    observation.check.as_ref().is_some_and(|check| {
+        check.run == 0
+            || check.start_generation != check.disturbance_generation
+            || check.end_generation != check.disturbance_generation
+            || check.pending_faults != 0
+    })
 }
 
 #[must_use]
@@ -212,8 +253,8 @@ mod live {
     use serde_json::json;
 
     use super::{
-        Artifacts, BugSummary, Options, ReplaySummary, Report, first_confirmed_bug,
-        replay_confirms_bug, sha256_hex,
+        Artifacts, BugSummary, Options, REPLAY_SETTLE_TICKS, ReplaySummary, Report,
+        first_confirmed_bug, replay_confirms_bug, replay_needs_settle, sha256_hex,
     };
     use crate::{
         bundle::FaultVocabulary,
@@ -377,7 +418,8 @@ mod live {
                     .iter()
                     .take(summary.actions_applied as usize)
                     .map(crate::target::action_ticks)
-                    .sum::<u64>(),
+                    .sum::<u64>()
+                    .saturating_add(summary.settle_ticks),
             );
             report.bug_found |= summary.bug;
             report.replays.push(summary);
@@ -396,11 +438,27 @@ mod live {
         for action in actions {
             target.apply(*action);
         }
+        let actions_applied = target.actions().len() as u64;
+        let mut settle_actions = 0_u64;
+        let mut settle_ticks = 0_u64;
+        for ticks in REPLAY_SETTLE_TICKS {
+            if target.failed() || !replay_needs_settle(target.observation()) {
+                break;
+            }
+            let before = target.actions().len();
+            target.apply(FaultAction::Wait(
+                std::num::NonZeroU16::new(ticks).expect("settle duration"),
+            ));
+            if target.actions().len() == before {
+                break;
+            }
+            settle_actions = settle_actions.saturating_add(1);
+            settle_ticks = settle_ticks.saturating_add(u64::from(ticks));
+        }
         if target.failed() {
             return Err(format!(
-                "the replay failed after {} of {} actions",
-                target.actions().len(),
-                actions.len()
+                "the replay failed after {actions_applied} of {} input actions and {settle_actions} settlement actions",
+                actions.len(),
             )
             .into());
         }
@@ -412,7 +470,9 @@ mod live {
             state_hash: target.state_hash().map(|bytes| sha256_hex(&bytes))?,
             violations: observation.violations.iter().copied().collect(),
             sometimes: observation.sometimes.iter().copied().collect(),
-            actions_applied: target.actions().len() as u64,
+            actions_applied,
+            settle_actions,
+            settle_ticks,
             guest_horizons: target.guest_horizons_run(),
             check: observation.check.clone(),
         };
@@ -448,6 +508,51 @@ mod tests {
             wall_minutes: None,
             output: PathBuf::from("unused"),
         }
+    }
+
+    #[test]
+    fn replay_settlement_waits_for_current_quiescent_check_evidence() {
+        let current = crate::target::CheckEvidence {
+            disturbance_generation: 7,
+            run: 3,
+            start_generation: 7,
+            end_generation: 7,
+            points: vec![11],
+            pending_faults: 0,
+        };
+        let observation = |check| FaultObservations {
+            check: Some(check),
+            ..FaultObservations::default()
+        };
+        assert!(!replay_needs_settle(&observation(current.clone())));
+        for stale in [
+            crate::target::CheckEvidence {
+                run: 0,
+                ..current.clone()
+            },
+            crate::target::CheckEvidence {
+                start_generation: 6,
+                ..current.clone()
+            },
+            crate::target::CheckEvidence {
+                end_generation: 6,
+                ..current.clone()
+            },
+            crate::target::CheckEvidence {
+                pending_faults: 1,
+                ..current
+            },
+        ] {
+            assert!(replay_needs_settle(&observation(stale)));
+        }
+        assert!(!replay_needs_settle(&FaultObservations::default()));
+        assert_eq!(REPLAY_SETTLE_TICKS.first(), Some(&1));
+        assert_eq!(REPLAY_SETTLE_TICKS.last(), Some(&4_096));
+        assert!(
+            REPLAY_SETTLE_TICKS
+                .windows(2)
+                .all(|pair| pair[1] == pair[0] * 2)
+        );
     }
 
     #[test]
@@ -548,6 +653,8 @@ mod tests {
             violations: violations.to_vec(),
             sometimes: vec![24],
             actions_applied: 3,
+            settle_actions: 0,
+            settle_ticks: 0,
             guest_horizons: 3,
         }
     }

@@ -72,7 +72,8 @@ case "${mode}" in
                     and (.replay.bug == true)
                     and (((.replay.violations // []) | index($assertion)) != null)
                     and (((.replay.sometimes // []) | index($evidence)) != null)
-                    and (.replay.guest_horizons == .replay.actions_applied)
+                    and (.replay.guest_horizons == (.replay.actions_applied + .replay.settle_actions))
+                    and (.replay.settle_ticks >= .replay.settle_actions)
                 )' "${report}")
             [[ "${verified}" == true ]] && { echo pass; exit 0; }
 
@@ -107,9 +108,11 @@ case "${mode}" in
         check infra-failure '.mode == "replay"'
         check infra-failure "(.replays | length) == ${repeats}"
         check infra-failure \
-            "all(.replays[]; (.guest_horizons == .actions_applied)\
+            "all(.replays[]; (.guest_horizons == (.actions_applied + .settle_actions))\
                 and (.actions_applied >= 1)\
-                and (.actions_applied <= ${actions}))"
+                and (.actions_applied <= ${actions})\
+                and (.settle_actions >= 0)\
+                and (.settle_ticks >= .settle_actions))"
 
         case "${mode}:${arm}" in
             replay:vulnerable)
