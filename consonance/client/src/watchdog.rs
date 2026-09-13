@@ -311,6 +311,32 @@ mod tests {
         assert!(!cancel.load(Ordering::Acquire));
         assert_eq!(outcome.load(Ordering::Acquire), RUNNING);
     }
+
+    #[test]
+    fn unchanged_virtual_time_expires() {
+        let (done, receiver) = mpsc::channel();
+        let finisher = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            done.send(()).unwrap();
+        });
+        let progress = AtomicU64::new(0);
+        let outcome = AtomicU8::new(RUNNING);
+        let cancel = AtomicBool::new(false);
+        let mut signals = 0;
+        watch(
+            receiver,
+            Duration::from_millis(20),
+            Some(&progress),
+            &outcome,
+            &cancel,
+            || signals += 1,
+        );
+        finisher.join().unwrap();
+        assert!(signals > 0);
+        assert!(cancel.load(Ordering::Acquire));
+        assert_eq!(outcome.load(Ordering::Acquire), EXPIRED);
+    }
+
     #[test]
     fn drop_joins_the_sender_before_returning() {
         let (done, rx) = mpsc::channel();
