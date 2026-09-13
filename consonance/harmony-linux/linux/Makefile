@@ -2,7 +2,7 @@
 # linux/amd64 container (CONTRIBUTING.md). The heavy lifting lives in the
 # *.sh scripts next to this Makefile.
 
-.PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-nova-kernel arm64-nova-image arm64-postgres-kernel arm64-postgres-image arm64-oci-image exec-image postgres-image campaign-image docker-image k3s-image game-image nova-game-image test test-linux clean-artifacts
+.PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-postgres-kernel arm64-postgres-image arm64-oci-image exec-image postgres-image campaign-image docker-image k3s-image game-image nova-game-image test test-linux clean-artifacts
 
 kernel:
 	./build-kernel.sh
@@ -25,12 +25,6 @@ arm64-initramfs:
 	./build-arm64-initramfs.sh
 
 arm64-image: arm64-kernel arm64-initramfs
-
-arm64-nova-kernel:
-	ARM64_KERNEL_PROFILE=nova ./build-arm64-kernel.sh
-
-arm64-nova-image: arm64-nova-kernel
-	../../../workloads/nes-guest/legacy/build-arm64-nova-image.sh
 
 arm64-postgres-kernel:
 	ARM64_KERNEL_PROFILE=postgres ./build-arm64-kernel.sh

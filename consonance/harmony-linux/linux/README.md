@@ -48,7 +48,6 @@ selector is `FAULTLAB=1`; it no longer disables counter confinement.
 make -C consonance/harmony-linux/linux image
 make -C consonance/harmony-linux/linux test
 make -C consonance/harmony-linux/linux arm64-image
-make -C consonance/harmony-linux/linux arm64-nova-image
 make -C consonance/harmony-linux/linux game-image
 make -C consonance/harmony-linux/linux go-runtime-image
 ```
@@ -57,30 +56,23 @@ The x86 image targets Linux/x86 hosts. ARM images target Linux/aarch64 and are
 written under `build/arm64/`. Workload-specific targets reuse the appropriate
 kernel and keep the base artifacts separate.
 
-The `arm64-nova-image` target is a native Linux/aarch64 build for the
-standalone Nova restore oracle. It publishes `Image-nova` and
-`initramfs-nova.cpio.gz` under `build/arm64/`; the kernel profile supplies the
-script, procfs, `/dev/mem`, pagemap, futex, tmpfs, and HugeTLB facilities used
-by `nova-game-init.sh` and the static ARM64 play-agent. The default `Image`
-profile intentionally omits those userspace facilities. The Nova builder also
-writes `initramfs-nova.rom.sha256` beside the archive.
+## External ARM64 kernel profiles
 
-Use a private build root when qualifying Nova on the shared ARM host because
-the native kernel and image builders remove their selected source and object
-directories before rebuilding:
+Workload packages that need an ARM64 profile beyond the built-in platform
+profiles invoke `build-arm64-kernel.sh` with `ARM64_KERNEL_PROFILE=external`.
+The caller supplies `ARM64_KERNEL_PROFILE_NAME` (lowercase letters, digits,
+and hyphens), `ARM64_KERNEL_CONFIG_FRAGMENT`, `ARM64_KERNEL_OUTPUT` (a
+filename basename), and explicit space-separated `ARM64_KERNEL_REQUIRED_Y`
+and `ARM64_KERNEL_REQUIRED_OFF` symbol lists. The lists may be `-` when empty.
 
-```sh
-GUEST_BUILD_ROOT=/tmp/harmony-arm64-nova-qualification \
-  HARMONY_NOVA_ROM="$PWD/workloads/nes/build/nova/nova.nes" \
-  make -C consonance/harmony-linux/linux arm64-nova-image
-```
-
-The ROM is produced by the pinned `workloads/nes/scripts/build-nova-rom.sh`
-recipe, and the image builder compiles the static `aarch64-unknown-linux-musl`
-QuickNES agent with the ARM LSE-only flags unless a target-correct static
-archive or agent is supplied. Preserve the kernel source/config profile,
-artifact hashes, ROM hash, and static-agent provenance with the qualification
-report; the existing generic ARM manifest does not describe this pair.
+The builder derives the source and object roots as
+`$BUILD_ROOT/arm64-$ARM64_KERNEL_PROFILE_NAME-src` and
+`$BUILD_ROOT/kernel-build-arm64-$ARM64_KERNEL_PROFILE_NAME`. It validates the
+required symbols after `olddefconfig`, before compiling or publishing the
+profile image, and then runs the shared ARM64 executable counter and exclusive
+instruction gates. The workload owns the profile name, fragment, required
+symbols, output name, and any image recipe; the platform owns kernel patching,
+common configuration, isolation, and shared gates.
 
 The locked x86 Nix build also produces `initramfs-go-runtime.cpio.gz`, an
 uninstrumented static Go program running directly as `/init`. It exercises
