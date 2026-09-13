@@ -1,7 +1,7 @@
 # etcd v3.5.0–3.5.2 — silent data inconsistency after untimely crash
 
-**Status: documented — current-branch campaign pending.** The execution record below is retained
-as provenance from `origin/pr-289`; it does not mark this branch reproduced.
+**Status: reproduced — current-branch nightly verification passed.** The execution record below
+comes from the locked campaign profile on the current implementation.
 
 ## The bug
 
@@ -85,18 +85,27 @@ replay assertion 1 with evidence point 11; the control must reach point 11 and s
 the identical campaign. A search miss is a regression in the test machinery, not a request to
 tune the workload.
 
-The following campaign record was produced on `origin/pr-289` under that profile:
+The current-branch record at `1e29a19f` comes from
+[historical run 34767756010](https://github.com/pH14/harmony/actions/runs/34767756010):
 
-| arm | bug found | executions | executions to first hit | conclusive checks | kills fired of armed |
-|---|---|---|---|---|---|
-| 3.5.2 | yes | 1495 | 1492 | 5 | 239 of 596 |
-| 3.5.3 | no | 4900 | - | 6 | 724 of 1889 |
+| arm | bug found | executions | first hit | execution ticks | watchdog cutoffs | archive entries | wall time |
+|---|---|---|---|---|---|---|---|
+| 3.5.2 | yes | 2216 | 2213 | 490950 | 14 | 961 | 2363 s |
+| 3.5.3 | no | 5000 | - | 1060688 | 30 | 1724 | 5868 s |
 
-Replaying the vulnerable arm's recorded input three times reproduces assertion 1 with evidence
-point 11 and the same whole-VM state hash every time. Replaying that identical input on the
-control reaches evidence point 11, reports no violation, and likewise repeats exactly. The
-control reaches the oracle at least as often as the vulnerable arm does, so its clean result
-says the fix holds rather than saying the oracle stayed silent.
+The vulnerable arm's 22-action input reproduces assertion 1 with evidence point 11 and the same
+whole-VM state hash as the campaign finding. It combines process kills and restarts, event kills,
+event holds from 40 ms through 2.56 s, interrupts, pauses, and a 1.28 s wait. The campaign sampled
+every adaptive duration from 10 ms through 10.24 s; 574 event-ready executions used at least
+1.28 s. The control campaign also sampled the full range, including 1010 long event-ready
+executions, and reached evidence point 11 without a violation.
+
+Differential replay applies the same 22-action input to 3.5.3, then waits only while the continuous
+check is stale or a fault remains pending. Eight waits totaling 2.55 s produced a completed check
+whose start and end generation both equal the final disturbance generation, with no pending fault.
+The replay reached evidence point 11, reported no violation, used no watchdog cutoff, and passed
+the oracle. The campaign watchdog cutoffs were explicit no-virtual-time-progress failures; all
+other executions continued, and neither arm recorded a non-watchdog execution failure.
 
 The only expected difference between the arms is the upstream etcd fix. Performance experiments
 may add separate profiles later, but they cannot alter the correctness or portability contract

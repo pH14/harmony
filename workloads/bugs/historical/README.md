@@ -47,7 +47,7 @@ reports and uploads the result, so the committed table lags the last CI run.
 <!-- render-historical-bugs:begin -->
 | bug | versions | status | CI | discovery | latest replay | latest control | executions to first hit | replay command |
 |---|---|---|---|---|---|---|---|---|
-| [etcd-3.5-inconsistency](etcd-3.5-inconsistency/README.md) | 3.5.2 / 3.5.3 | documented | runnable | guided | — | — | — | `harmony search --package faults IMAGE-3.5.2.oci --backend consonance --kernel bzImage-faultlab --base-initramfs initramfs.cpio.gz --replay OUT/first-bug-input.json --repeat 1 --ram-mib 1024 --out OUT` |
+| [etcd-3.5-inconsistency](etcd-3.5-inconsistency/README.md) | 3.5.2 / 3.5.3 | reproduced | runnable | guided | — | silent (0/1, discovery) | 2213 | `harmony search --package faults IMAGE-3.5.2.oci --backend consonance --kernel bzImage-faultlab --base-initramfs initramfs.cpio.gz --replay OUT/first-bug-input.json --repeat 1 --ram-mib 1024 --out OUT` |
 | [postgres-cic-corruption](postgres-cic-corruption/README.md) | 14.3 / 14.4 | reproduced | runnable | guided | — | — | — | `harmony search --package faults IMAGE-14.3.oci --backend consonance --kernel bzImage-faultlab --base-initramfs initramfs.cpio.gz --replay OUT/first-bug-input.json --repeat 1 --ram-mib 1024 --knobs "faultlab.churn_rows=20 faultlab.churn_slices=2 faultlab.churn_rounds=1200" --out OUT` |
 <!-- render-historical-bugs:end -->
 

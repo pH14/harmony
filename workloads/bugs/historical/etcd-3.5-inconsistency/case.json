@@ -78,7 +78,7 @@
     "wall_minutes": 300
   },
   "discovery_mode": "guided",
-  "status": "documented",
+  "status": "reproduced",
   "ci": {
     "status": "runnable",
     "image_prefix": "etcd",
