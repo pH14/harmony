@@ -788,8 +788,10 @@ mod xsave_diagnostic {
     const MMIO_VALUE: u8 = 5;
     const XSTATE_BV: std::ops::Range<usize> = 512..520;
     const XCOMP_BV: std::ops::Range<usize> = 520..528;
+    const SSE_MXCSR: std::ops::Range<usize> = 24..28;
     const SSE_XMM0: std::ops::Range<usize> = 160..176;
     const GUEST_XSAVE_GPA: usize = 0x2000;
+    const GUEST_XRSTOR_GPA: usize = 0x3000;
     const GUEST_XSAVE_PAGE_LEN: usize = 0x1000;
     const GUEST_XSAVE_LEN: usize = 0x340;
     const X87_FCW: std::ops::Range<usize> = 0..2;
@@ -799,6 +801,8 @@ mod xsave_diagnostic {
     const X87_ST_SEED: [u8; 10] = [0xA7; 10];
     const X87_ST_ZERO: [u8; 10] = [0; 10];
     const _: () = assert!(GUEST_XSAVE_GPA + GUEST_XSAVE_PAGE_LEN <= RAM_LEN);
+    const _: () = assert!(GUEST_XSAVE_GPA + GUEST_XSAVE_PAGE_LEN <= GUEST_XRSTOR_GPA);
+    const _: () = assert!(GUEST_XRSTOR_GPA + GUEST_XSAVE_PAGE_LEN <= RAM_LEN);
     const ACTIVE_XMM0: [u8; 16] = [
         0xA5, 0x5A, 0x3C, 0xC3, 0x96, 0x69, 0x78, 0x87, 0x12, 0x21, 0x34, 0x43, 0x56, 0x65, 0xAB,
         0xBA,
@@ -832,6 +836,7 @@ mod xsave_diagnostic {
     enum GuestX87Cohort {
         PayloadPreservation,
         ZeroState,
+        XrstorInit,
     }
 
     impl GuestX87Cohort {
@@ -839,6 +844,7 @@ mod xsave_diagnostic {
             match self {
                 Self::PayloadPreservation => "payload-preservation",
                 Self::ZeroState => "zero-state",
+                Self::XrstorInit => "xrstor-init",
             }
         }
 
@@ -846,6 +852,7 @@ mod xsave_diagnostic {
             match self {
                 Self::PayloadPreservation => &X87_ST_SEED,
                 Self::ZeroState => &X87_ST_ZERO,
+                Self::XrstorInit => &X87_ST_ZERO,
             }
         }
 
@@ -853,6 +860,7 @@ mod xsave_diagnostic {
             match self {
                 Self::PayloadPreservation => "8-slots-of-10-bytes-0xa7-with-6-zero-padding-bytes",
                 Self::ZeroState => "8-slots-of-10-zero-bytes-with-6-zero-padding-bytes",
+                Self::XrstorInit => "initial-vm-8-slots-of-10-zero-bytes-with-6-zero-padding-bytes",
             }
         }
 
@@ -874,6 +882,9 @@ mod xsave_diagnostic {
                 (Self::ZeroState, BoundaryObservation::GetSetGet) => {
                     "guest-fninit-zero-get-set-get"
                 }
+                (Self::XrstorInit, BoundaryObservation::Unobserved) => "guest-xrstor-unobserved",
+                (Self::XrstorInit, BoundaryObservation::GetOnly) => "guest-xrstor-get-only",
+                (Self::XrstorInit, BoundaryObservation::GetSetGet) => "guest-xrstor-get-set-get",
                 (_, BoundaryObservation::LegacyGetSetGet) => {
                     panic!("legacy observation has no guest x87 cohort")
                 }
@@ -884,7 +895,21 @@ mod xsave_diagnostic {
             match self {
                 Self::PayloadPreservation => "guest-fninit-comparison.txt",
                 Self::ZeroState => "guest-fninit-zero-comparison.txt",
+                Self::XrstorInit => "guest-xrstor-comparison.txt",
             }
+        }
+
+        fn guest_program(self) -> &'static str {
+            match self {
+                Self::PayloadPreservation | Self::ZeroState => {
+                    "fninit-before-mmio-xsave-after-retirement"
+                }
+                Self::XrstorInit => "xrstor-before-mmio-xsave-after-retirement",
+            }
+        }
+
+        fn uses_xrstor(self) -> bool {
+            matches!(self, Self::XrstorInit)
         }
     }
 
@@ -1019,6 +1044,61 @@ mod xsave_diagnostic {
         let mmio = mmio_program();
         let mut program = Vec::with_capacity(33);
         program.extend_from_slice(&[0xDB, 0xE3]);
+        program.extend_from_slice(&mmio[..mmio.len() - 1]);
+        program.extend_from_slice(&[
+            0x66,
+            0xB8,
+            0x03,
+            0x00,
+            0x00,
+            0x00,
+            0x66,
+            0x31,
+            0xD2,
+            0x67,
+            0x0F,
+            0xAE,
+            0x25,
+            GUEST_XSAVE_GPA as u8,
+            (GUEST_XSAVE_GPA >> 8) as u8,
+            (GUEST_XSAVE_GPA >> 16) as u8,
+            (GUEST_XSAVE_GPA >> 24) as u8,
+            0xF4,
+        ]);
+        program
+    }
+
+    fn xrstor_source_image() -> Vec<u8> {
+        let mut image = vec![0; GUEST_XSAVE_LEN];
+        image[XSTATE_BV].copy_from_slice(&2u64.to_le_bytes());
+        image[XCOMP_BV].copy_from_slice(&0u64.to_le_bytes());
+        image[SSE_MXCSR].copy_from_slice(&0x1f80u32.to_le_bytes());
+        image[SSE_XMM0].copy_from_slice(&ACTIVE_XMM0);
+        image
+    }
+
+    fn guest_xrstor_xsave_program() -> Vec<u8> {
+        let mmio = mmio_program();
+        let mut program = Vec::with_capacity(48);
+        program.extend_from_slice(&[
+            0x66,
+            0xB8,
+            0x03,
+            0x00,
+            0x00,
+            0x00,
+            0x66,
+            0x31,
+            0xD2,
+            0x67,
+            0x0F,
+            0xAE,
+            0x2D,
+            GUEST_XRSTOR_GPA as u8,
+            (GUEST_XRSTOR_GPA >> 8) as u8,
+            (GUEST_XRSTOR_GPA >> 16) as u8,
+            (GUEST_XRSTOR_GPA >> 24) as u8,
+        ]);
         program.extend_from_slice(&mmio[..mmio.len() - 1]);
         program.extend_from_slice(&[
             0x66,
@@ -1210,13 +1290,29 @@ mod xsave_diagnostic {
 
         let mut ram =
             MmapRam::new(RAM_LEN).unwrap_or_else(|e| panic!("guest RAM mmap failed: {e}"));
+        let xrstor_source = cohort
+            .filter(|cohort| cohort.uses_xrstor())
+            .map(|_| xrstor_source_image());
         let program = if observation.guest_program() {
-            guest_fninit_xsave_program()
+            if cohort
+                .expect("guest phase cohort checked above")
+                .uses_xrstor()
+            {
+                guest_xrstor_xsave_program()
+            } else {
+                guest_fninit_xsave_program()
+            }
         } else {
             mmio_program().to_vec()
         };
         ram.as_mut_bytes()[CODE_GPA..CODE_GPA + program.len()].copy_from_slice(&program);
         if observation.guest_program() {
+            if let Some(image) = xrstor_source.as_ref() {
+                let source_page = &mut ram.as_mut_bytes()
+                    [GUEST_XRSTOR_GPA..GUEST_XRSTOR_GPA + GUEST_XSAVE_PAGE_LEN];
+                source_page.fill(0);
+                source_page[..image.len()].copy_from_slice(image);
+            }
             ram.as_mut_bytes()[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_PAGE_LEN].fill(0);
         }
 
@@ -1332,6 +1428,9 @@ mod xsave_diagnostic {
 
         let fd = backend.vcpu.as_raw_fd();
         let mut buffered_images: Vec<(&str, Vec<u8>)> = Vec::new();
+        if let Some(image) = xrstor_source.as_ref() {
+            buffered_images.push(("xrstor-source.bin", image.clone()));
+        }
         let mut raw_before_1 = None;
         let mut raw_before_2 = None;
         let mut canonical_before_1 = None;
@@ -1513,7 +1612,9 @@ mod xsave_diagnostic {
             metadata,
             "guest_program={}",
             if observation.guest_program() {
-                "fninit-before-mmio-xsave-after-retirement"
+                cohort
+                    .expect("guest phase cohort checked above")
+                    .guest_program()
             } else {
                 "mmio-only"
             }
@@ -1546,6 +1647,44 @@ mod xsave_diagnostic {
                 cohort.st_seed().len()
             )
             .expect("metadata write");
+            writeln!(
+                metadata,
+                "guest_instruction={}",
+                if cohort.uses_xrstor() {
+                    "xrstor"
+                } else {
+                    "fninit"
+                }
+            )
+            .expect("metadata write");
+            if cohort.uses_xrstor() {
+                let source = xrstor_source
+                    .as_ref()
+                    .expect("XRSTOR cohort must have a source image");
+                let (source_bv, source_xcomp) = header(source);
+                writeln!(metadata, "xrstor_source_gpa={GUEST_XRSTOR_GPA:#x}")
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_output_gpa={GUEST_XSAVE_GPA:#x}")
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_source_image_len={}", source.len())
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_source_alignment_bytes=64").expect("metadata write");
+                writeln!(metadata, "xrstor_source_output_disjoint=true").expect("metadata write");
+                writeln!(metadata, "xrstor_instruction=67-0f-ae-2d-absolute-disp32")
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_mask_edx_eax=0x0000000000000003")
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_source_format=standard").expect("metadata write");
+                writeln!(metadata, "xrstor_source_xstate_bv={source_bv:#x}")
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_source_xcomp_bv={source_xcomp:#x}")
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_source_mxcsr=0x1f80").expect("metadata write");
+                writeln!(metadata, "xrstor_source_xmm0={:02x?}", &source[SSE_XMM0])
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_source_reserved_bytes_zero=true")
+                    .expect("metadata write");
+            }
         }
         writeln!(
             metadata,
@@ -1708,6 +1847,8 @@ mod xsave_diagnostic {
             .expect("metadata write");
             writeln!(metadata, "guest_xsave_x87_st_payload_len={}", X87_ST.len())
                 .expect("metadata write");
+            writeln!(metadata, "guest_xsave_mxcsr={:02x?}", &image[SSE_MXCSR])
+                .expect("metadata write");
             writeln!(metadata, "guest_xsave_xmm0={:02x?}", &image[SSE_XMM0])
                 .expect("metadata write");
         }
@@ -1757,16 +1898,26 @@ mod xsave_diagnostic {
             assert_eq!(
                 &image[X87_FCW],
                 &[0x7f, 0x03],
-                "{label} guest XSAVE did not retain FNINIT's control word"
+                "{label} guest XSAVE did not retain the expected x87 control word"
             );
             assert!(
                 image[X87_FSW].iter().all(|&byte| byte == 0),
-                "{label} guest XSAVE did not retain FNINIT's status word"
+                "{label} guest XSAVE did not retain the expected x87 status word"
             );
             assert!(
                 image[X87_FTW].iter().all(|&byte| byte == 0),
-                "{label} guest XSAVE did not retain FNINIT's empty x87 tag word"
+                "{label} guest XSAVE did not retain an empty x87 tag word"
             );
+            if cohort
+                .expect("guest phase cohort checked above")
+                .uses_xrstor()
+            {
+                assert_eq!(
+                    &image[SSE_MXCSR],
+                    &[0x80, 0x1f, 0, 0],
+                    "{label} guest XSAVE did not retain XRSTOR's MXCSR"
+                );
+            }
             assert_xmm0_bytes(image, expected_xmm0, "guest XSAVE", label);
         }
 
@@ -1799,11 +1950,7 @@ mod xsave_diagnostic {
         let get_set_get = run_guest_phase(report_root, cohort, BoundaryObservation::GetSetGet);
         let mut comparison = String::new();
         writeln!(comparison, "guest_x87_cohort={}", cohort.name()).expect("comparison write");
-        writeln!(
-            comparison,
-            "guest_program=fninit-before-mmio-xsave-after-retirement"
-        )
-        .expect("comparison write");
+        writeln!(comparison, "guest_program={}", cohort.guest_program()).expect("comparison write");
         writeln!(comparison, "phases=unobserved,get-only,get-set-get").expect("comparison write");
         append_pairwise(
             &mut comparison,
@@ -1923,6 +2070,7 @@ mod xsave_diagnostic {
         run_variant(&report_root, false);
         run_guest_cohort(&report_root, GuestX87Cohort::PayloadPreservation);
         run_guest_cohort(&report_root, GuestX87Cohort::ZeroState);
+        run_guest_cohort(&report_root, GuestX87Cohort::XrstorInit);
     }
 
     const PAE_RAM_LEN: usize = 4 * 1024 * 1024;

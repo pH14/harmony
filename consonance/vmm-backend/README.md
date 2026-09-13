@@ -75,15 +75,20 @@ control. It then runs two sets of three fresh VMs with guest `FNINIT` before the
 MMIO boundary and integer setup followed by guest `XSAVE` before any further
 x87 operation: unobserved, two repeated boundary GETs, and GET/SET/GET. These phases retain
 raw and canonical guest and vCPU images, including restore-BV values, so raw
-presence differences remain visible. Each observation set runs in two separate
-fresh-VM x87 cohorts with the same `XSTATE_BV=3`, restore presence, `FCW=0x037f`,
-zero status, and nonempty tags before `FNINIT`: a payload-preservation cohort
-seeds ten `0xa7` bytes in each ST slot with zero padding, while a zero-state
-cohort seeds ten zero bytes with zero padding. The first cohort records whether
-an owned payload survives the guest's `FNINIT`; the second supplies an
-init-valued x87 witness. Cohorts have separate phase directories and
-comparison files, and each report records its actual seed. The report is
-evidence about the host/KVM path and does not change snapshot semantics.
+presence differences remain visible. The FNINIT observation sets use two
+separate fresh-VM x87 cohorts with the same `XSTATE_BV=3`, restore presence,
+`FCW=0x037f`, zero status, and nonempty tags before `FNINIT`: a
+payload-preservation cohort seeds ten `0xa7` bytes in each ST slot with zero
+padding, while a zero-state cohort seeds ten zero bytes with zero padding. The
+first cohort records whether an owned payload survives the guest's `FNINIT`;
+the second supplies an init-valued x87 witness. A third fresh-VM cohort uses a
+standard-format guest `XRSTOR` source image with mask `0x3`, `XSTATE_BV=2`,
+`XCOMP_BV=0`, `MXCSR=0x1f80`, and the active XMM0 payload. Its 64-byte-aligned
+source and guest `XSAVE` output buffers are disjoint, and it establishes x87
+initialization through the absent x87 presence bit without executing `FNINIT`.
+All cohorts have separate phase directories and comparison files, and each
+report records its actual source image and seed. The report is evidence about
+the host/KVM path and does not change snapshot semantics.
 
 The ignored Linux x86 test
 `kvm_sys::xsave_diagnostic::x86_pae_sregs2_phase_observations` is a bounded
