@@ -797,6 +797,7 @@ mod xsave_diagnostic {
     const X87_FTW: std::ops::Range<usize> = 4..5;
     const X87_ST: std::ops::Range<usize> = 32..160;
     const X87_ST_SEED: [u8; 10] = [0xA7; 10];
+    const X87_ST_ZERO: [u8; 10] = [0; 10];
     const _: () = assert!(GUEST_XSAVE_GPA + GUEST_XSAVE_PAGE_LEN <= RAM_LEN);
     const ACTIVE_XMM0: [u8; 16] = [
         0xA5, 0x5A, 0x3C, 0xC3, 0x96, 0x69, 0x78, 0x87, 0x12, 0x21, 0x34, 0x43, 0x56, 0x65, 0xAB,
@@ -824,6 +825,66 @@ mod xsave_diagnostic {
 
         fn guest_program(self) -> bool {
             !matches!(self, Self::LegacyGetSetGet)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum GuestX87Cohort {
+        PayloadPreservation,
+        ZeroState,
+    }
+
+    impl GuestX87Cohort {
+        fn name(self) -> &'static str {
+            match self {
+                Self::PayloadPreservation => "payload-preservation",
+                Self::ZeroState => "zero-state",
+            }
+        }
+
+        fn st_seed(self) -> &'static [u8; 10] {
+            match self {
+                Self::PayloadPreservation => &X87_ST_SEED,
+                Self::ZeroState => &X87_ST_ZERO,
+            }
+        }
+
+        fn st_seed_description(self) -> &'static str {
+            match self {
+                Self::PayloadPreservation => "8-slots-of-10-bytes-0xa7-with-6-zero-padding-bytes",
+                Self::ZeroState => "8-slots-of-10-zero-bytes-with-6-zero-padding-bytes",
+            }
+        }
+
+        fn phase_label(self, observation: BoundaryObservation) -> &'static str {
+            match (self, observation) {
+                (Self::PayloadPreservation, BoundaryObservation::Unobserved) => {
+                    "guest-fninit-unobserved"
+                }
+                (Self::PayloadPreservation, BoundaryObservation::GetOnly) => {
+                    "guest-fninit-get-only"
+                }
+                (Self::PayloadPreservation, BoundaryObservation::GetSetGet) => {
+                    "guest-fninit-get-set-get"
+                }
+                (Self::ZeroState, BoundaryObservation::Unobserved) => {
+                    "guest-fninit-zero-unobserved"
+                }
+                (Self::ZeroState, BoundaryObservation::GetOnly) => "guest-fninit-zero-get-only",
+                (Self::ZeroState, BoundaryObservation::GetSetGet) => {
+                    "guest-fninit-zero-get-set-get"
+                }
+                (_, BoundaryObservation::LegacyGetSetGet) => {
+                    panic!("legacy observation has no guest x87 cohort")
+                }
+            }
+        }
+
+        fn comparison_file(self) -> &'static str {
+            match self {
+                Self::PayloadPreservation => "guest-fninit-comparison.txt",
+                Self::ZeroState => "guest-fninit-zero-comparison.txt",
+            }
         }
     }
 
@@ -1116,16 +1177,18 @@ mod xsave_diagnostic {
             report_root,
             active_sse,
             BoundaryObservation::LegacyGetSetGet,
+            None,
             label,
         );
     }
 
     fn run_guest_phase(
         report_root: &Path,
+        cohort: GuestX87Cohort,
         observation: BoundaryObservation,
-        label: &'static str,
     ) -> GuestPhaseResult {
-        run_variant_with_observation(report_root, true, observation, label)
+        let label = cohort.phase_label(observation);
+        run_variant_with_observation(report_root, true, observation, Some(cohort), label)
             .expect("guest phase must return a result")
     }
 
@@ -1133,6 +1196,7 @@ mod xsave_diagnostic {
         report_root: &Path,
         active_sse: bool,
         observation: BoundaryObservation,
+        cohort: Option<GuestX87Cohort>,
         label: &'static str,
     ) -> Option<GuestPhaseResult> {
         let report_dir = report_root.join(label);
@@ -1198,13 +1262,23 @@ mod xsave_diagnostic {
             None
         };
         if observation.guest_program() {
+            assert!(cohort.is_some(), "guest phase requires an x87 cohort");
+        } else {
+            assert!(
+                cohort.is_none(),
+                "MMIO-only phase cannot have an x87 cohort"
+            );
+        }
+
+        if observation.guest_program() {
             state.xsave[0..24].fill(0);
             state.xsave[X87_ST].fill(0);
             state.xsave[X87_FCW].copy_from_slice(&[0x7f, 0x03]);
             state.xsave[X87_FSW].fill(0);
             state.xsave[X87_FTW].copy_from_slice(&[0xff]);
+            let st_seed = cohort.expect("guest phase cohort checked above").st_seed();
             for slot in state.xsave[X87_ST].chunks_exact_mut(16) {
-                slot[..X87_ST_SEED.len()].copy_from_slice(&X87_ST_SEED);
+                slot[..st_seed.len()].copy_from_slice(st_seed);
             }
         }
         state.xsave[SSE_XMM0].fill(0);
@@ -1446,19 +1520,32 @@ mod xsave_diagnostic {
         )
         .expect("metadata write");
         if observation.guest_program() {
+            let cohort = cohort.expect("guest phase cohort checked above");
             writeln!(metadata, "pre_guest_xsave_restore_bv=Some(3)").expect("metadata write");
             writeln!(metadata, "pre_guest_xsave_raw_bv=0x3").expect("metadata write");
             writeln!(metadata, "pre_guest_xsave_raw_xcomp_bv=0x0").expect("metadata write");
+            writeln!(metadata, "pre_guest_x87_cohort={}", cohort.name()).expect("metadata write");
             writeln!(metadata, "pre_guest_x87_fcw=[7f, 03]").expect("metadata write");
             writeln!(metadata, "pre_guest_x87_fsw=[00, 00]").expect("metadata write");
             writeln!(metadata, "pre_guest_x87_ftw=[ff]").expect("metadata write");
             writeln!(
                 metadata,
-                "pre_guest_x87_st_seed=8-slots-of-10-bytes-0xa7-with-6-zero-padding-bytes"
+                "pre_guest_x87_st_seed={}",
+                cohort.st_seed_description()
             )
             .expect("metadata write");
-            writeln!(metadata, "pre_guest_x87_st_seed_len={}", X87_ST_SEED.len())
-                .expect("metadata write");
+            writeln!(
+                metadata,
+                "pre_guest_x87_st_seed_bytes={:02x?}",
+                cohort.st_seed()
+            )
+            .expect("metadata write");
+            writeln!(
+                metadata,
+                "pre_guest_x87_st_seed_len={}",
+                cohort.st_seed().len()
+            )
+            .expect("metadata write");
         }
         writeln!(
             metadata,
@@ -1589,6 +1676,7 @@ mod xsave_diagnostic {
         )
         .expect("metadata write");
         if let Some(image) = guest_xsave.as_ref() {
+            let cohort = cohort.expect("guest phase cohort checked above");
             let (guest_bv, guest_xcomp) = header(image);
             writeln!(metadata, "guest_xsave_bv={guest_bv:#x}").expect("metadata write");
             writeln!(metadata, "guest_xsave_xcomp_bv={guest_xcomp:#x}").expect("metadata write");
@@ -1609,7 +1697,13 @@ mod xsave_diagnostic {
                 "guest_xsave_x87_payload_matches_seed={}",
                 image[X87_ST]
                     .chunks_exact(16)
-                    .all(|slot| slot[..10] == X87_ST_SEED)
+                    .all(|slot| slot[..10] == cohort.st_seed()[..])
+            )
+            .expect("metadata write");
+            writeln!(
+                metadata,
+                "guest_xsave_x87_st_seed_bytes={:02x?}",
+                cohort.st_seed()
             )
             .expect("metadata write");
             writeln!(metadata, "guest_xsave_x87_st_payload_len={}", X87_ST.len())
@@ -1699,37 +1793,12 @@ mod xsave_diagnostic {
         }
     }
 
-    #[test]
-    #[ignore = "live Linux x86 KVM XSAVE provenance diagnostic; set XSAVE_RAW_REPORT_DIR"]
-    fn raw_xsave_presence_phases() {
-        assert!(
-            Path::new("/dev/kvm").exists(),
-            "/dev/kvm is required for this ignored hardware diagnostic"
-        );
-        let report_root = PathBuf::from(
-            std::env::var_os("XSAVE_RAW_REPORT_DIR")
-                .expect("XSAVE_RAW_REPORT_DIR must capture complete raw evidence"),
-        );
-        fs::create_dir_all(&report_root)
-            .unwrap_or_else(|e| panic!("create {} failed: {e}", report_root.display()));
-        run_variant(&report_root, true);
-        run_variant(&report_root, false);
-        let unobserved = run_guest_phase(
-            &report_root,
-            BoundaryObservation::Unobserved,
-            "guest-fninit-unobserved",
-        );
-        let get_only = run_guest_phase(
-            &report_root,
-            BoundaryObservation::GetOnly,
-            "guest-fninit-get-only",
-        );
-        let get_set_get = run_guest_phase(
-            &report_root,
-            BoundaryObservation::GetSetGet,
-            "guest-fninit-get-set-get",
-        );
+    fn run_guest_cohort(report_root: &Path, cohort: GuestX87Cohort) {
+        let unobserved = run_guest_phase(report_root, cohort, BoundaryObservation::Unobserved);
+        let get_only = run_guest_phase(report_root, cohort, BoundaryObservation::GetOnly);
+        let get_set_get = run_guest_phase(report_root, cohort, BoundaryObservation::GetSetGet);
         let mut comparison = String::new();
+        writeln!(comparison, "guest_x87_cohort={}", cohort.name()).expect("comparison write");
         writeln!(
             comparison,
             "guest_program=fninit-before-mmio-xsave-after-retirement"
@@ -1832,14 +1901,28 @@ mod xsave_diagnostic {
             &get_set_get,
             |first, second| first.endpoint_xcomp_bv == second.endpoint_xcomp_bv,
         );
-        fs::write(report_root.join("guest-fninit-comparison.txt"), comparison).unwrap_or_else(
-            |e| {
-                panic!(
-                    "write {} failed: {e}",
-                    report_root.join("guest-fninit-comparison.txt").display()
-                )
-            },
+        let comparison_path = report_root.join(cohort.comparison_file());
+        fs::write(&comparison_path, comparison)
+            .unwrap_or_else(|e| panic!("write {} failed: {e}", comparison_path.display()));
+    }
+
+    #[test]
+    #[ignore = "live Linux x86 KVM XSAVE provenance diagnostic; set XSAVE_RAW_REPORT_DIR"]
+    fn raw_xsave_presence_phases() {
+        assert!(
+            Path::new("/dev/kvm").exists(),
+            "/dev/kvm is required for this ignored hardware diagnostic"
         );
+        let report_root = PathBuf::from(
+            std::env::var_os("XSAVE_RAW_REPORT_DIR")
+                .expect("XSAVE_RAW_REPORT_DIR must capture complete raw evidence"),
+        );
+        fs::create_dir_all(&report_root)
+            .unwrap_or_else(|e| panic!("create {} failed: {e}", report_root.display()));
+        run_variant(&report_root, true);
+        run_variant(&report_root, false);
+        run_guest_cohort(&report_root, GuestX87Cohort::PayloadPreservation);
+        run_guest_cohort(&report_root, GuestX87Cohort::ZeroState);
     }
 
     const PAE_RAM_LEN: usize = 4 * 1024 * 1024;
