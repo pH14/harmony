@@ -83,12 +83,12 @@ vulnerable image on demand or on schedule. The campaign must find assertion 1 wi
 11 and reproduce it in the package's fresh deterministic self-replay. A search miss or replay
 mismatch is a regression in the test machinery, not a request to tune the workload.
 
-The current-branch record at `1e29a19f` comes from
-[historical run 34767756010](https://github.com/pH14/harmony/actions/runs/34767756010):
+The current-branch record at `68840c45` comes from
+[historical run 34784000429](https://github.com/pH14/harmony/actions/runs/34784000429):
 
 | arm | bug found | executions | first hit | execution ticks | watchdog cutoffs | archive entries | wall time |
 |---|---|---|---|---|---|---|---|
-| 3.5.2 | yes | 2216 | 2213 | 490950 | 14 | 961 | 2363 s |
+| 3.5.2 | yes | 2216 | 2213 | 490950 | 14 | 961 | 2070 s |
 
 The vulnerable arm's 22-action input reproduces assertion 1 with evidence point 11 and the same
 whole-VM state hash as the campaign finding. It combines process kills and restarts, event kills,
