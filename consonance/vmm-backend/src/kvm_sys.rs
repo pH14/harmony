@@ -796,6 +796,7 @@ mod xsave_diagnostic {
     const X87_FSW: std::ops::Range<usize> = 2..4;
     const X87_FTW: std::ops::Range<usize> = 4..5;
     const X87_ST: std::ops::Range<usize> = 32..160;
+    const X87_ST_SEED: [u8; 128] = [0xA7; 128];
     const _: () = assert!(GUEST_XSAVE_GPA + GUEST_XSAVE_PAGE_LEN <= RAM_LEN);
     const ACTIVE_XMM0: [u8; 16] = [
         0xA5, 0x5A, 0x3C, 0xC3, 0x96, 0x69, 0x78, 0x87, 0x12, 0x21, 0x34, 0x43, 0x56, 0x65, 0xAB,
@@ -1029,6 +1030,26 @@ mod xsave_diagnostic {
             .unwrap_or_else(|e| panic!("write {} failed: {e}", dir.join(name).display()));
     }
 
+    fn fail_with_buffered_error(
+        report_dir: &Path,
+        label: &str,
+        buffered_images: &[(&str, Vec<u8>)],
+        phase: &str,
+        error: impl std::fmt::Display,
+    ) -> ! {
+        for (name, image) in buffered_images {
+            write_image(report_dir, name, image);
+        }
+        let failure = format!("mode={label}\nphase={phase}\nerror={error}\n");
+        fs::write(report_dir.join("failure.txt"), failure).unwrap_or_else(|e| {
+            panic!(
+                "write {} failed while retaining {phase}: {e}",
+                report_dir.join("failure.txt").display()
+            )
+        });
+        panic!("{label} {phase} failed: {error}");
+    }
+
     fn assert_xmm0_bytes(image: &[u8], expected: &[u8; 16], phase: &str, label: &str) {
         assert_eq!(
             &image[SSE_XMM0], expected,
@@ -1171,11 +1192,26 @@ mod xsave_diagnostic {
         state.regs.rbx = 0;
         state.mp_state = MpState::Runnable;
         state.xcr0 = 3;
-        state.xsave_restore_bv = None;
+        state.xsave_restore_bv = if observation.guest_program() {
+            Some(3)
+        } else {
+            None
+        };
+        if observation.guest_program() {
+            state.xsave[X87_ST.start..X87_ST.end].fill(0);
+            state.xsave[X87_FCW].copy_from_slice(&[0x7f, 0x03]);
+            state.xsave[X87_FSW].fill(0);
+            state.xsave[X87_FTW].copy_from_slice(&[0xff]);
+            state.xsave[X87_ST].copy_from_slice(&X87_ST_SEED);
+        }
         state.xsave[SSE_XMM0].fill(0);
         state.xsave[XCOMP_BV].fill(0);
         state.xsave[XSTATE_BV].copy_from_slice(&if active_sse {
-            2u64.to_le_bytes()
+            if observation.guest_program() {
+                3u64.to_le_bytes()
+            } else {
+                2u64.to_le_bytes()
+            }
         } else {
             0u64.to_le_bytes()
         });
@@ -1232,8 +1268,17 @@ mod xsave_diagnostic {
                 // SAFETY: the owned vCPU is stopped at the checked MMIO boundary and the capability
                 // sized buffer is retained until KVM finishes the direct ioctl.
                 raw_get_xsave2(fd, xsave_len)
-            }
-            .unwrap_or_else(|e| panic!("first raw KVM_GET_XSAVE2 failed for {label}: {e}"));
+            };
+            let raw = match raw {
+                Ok(raw) => raw,
+                Err(error) => fail_with_buffered_error(
+                    &report_dir,
+                    label,
+                    &buffered_images,
+                    "first raw KVM_GET_XSAVE2",
+                    error,
+                ),
+            };
             let mut canonical = raw.clone();
             let restore_bv = canonicalize_xsave_with_restore_bv(&mut canonical);
             buffered_images.push(("raw-before-1.bin", raw.clone()));
@@ -1246,8 +1291,17 @@ mod xsave_diagnostic {
                 // SAFETY: the vCPU remains stopped and the second independent buffer has the same
                 // kernel-reported capability size as the first direct read.
                 raw_get_xsave2(fd, xsave_len)
-            }
-            .unwrap_or_else(|e| panic!("second raw KVM_GET_XSAVE2 failed for {label}: {e}"));
+            };
+            let raw = match raw {
+                Ok(raw) => raw,
+                Err(error) => fail_with_buffered_error(
+                    &report_dir,
+                    label,
+                    &buffered_images,
+                    "second raw KVM_GET_XSAVE2",
+                    error,
+                ),
+            };
             let mut canonical = raw.clone();
             let restore_bv = canonicalize_xsave_with_restore_bv(&mut canonical);
             buffered_images.push(("raw-before-2.bin", raw.clone()));
@@ -1269,13 +1323,30 @@ mod xsave_diagnostic {
                 // complete capability-sized image returned by KVM_GET_XSAVE2.
                 raw_set_xsave(fd, before)
             }
-            .unwrap_or_else(|e| panic!("raw KVM_SET_XSAVE failed for {label}: {e}"));
+            .unwrap_or_else(|error| {
+                fail_with_buffered_error(
+                    &report_dir,
+                    label,
+                    &buffered_images,
+                    "raw KVM_SET_XSAVE",
+                    error,
+                )
+            });
             let raw = unsafe {
                 // SAFETY: the vCPU is still stopped after KVM_SET_XSAVE and the output buffer is
                 // capability-sized and exclusively owned by this test.
                 raw_get_xsave2(fd, xsave_len)
-            }
-            .unwrap_or_else(|e| panic!("raw post-SET KVM_GET_XSAVE2 failed for {label}: {e}"));
+            };
+            let raw = match raw {
+                Ok(raw) => raw,
+                Err(error) => fail_with_buffered_error(
+                    &report_dir,
+                    label,
+                    &buffered_images,
+                    "raw post-SET KVM_GET_XSAVE2",
+                    error,
+                ),
+            };
             let mut canonical = raw.clone();
             let restore_bv = canonicalize_xsave_with_restore_bv(&mut canonical);
             buffered_images.push(("raw-after-set.bin", raw.clone()));
@@ -1284,44 +1355,67 @@ mod xsave_diagnostic {
             canonical_restore_bv_after_set = Some(restore_bv);
         }
 
-        backend
-            .retire_pending_completion()
-            .unwrap_or_else(|e| panic!("retire MMIO write completion failed for {label}: {e}"));
-
-        let endpoint = backend
-            .run()
-            .unwrap_or_else(|e| panic!("bounded continuation run failed for {label}: {e}"));
-        let raw_endpoint = unsafe {
-            // SAFETY: the vCPU is stopped after the bounded continuation and the output buffer
-            // is capability-sized.
-            raw_get_xsave2(fd, xsave_len)
+        if let Err(error) = backend.retire_pending_completion() {
+            fail_with_buffered_error(
+                &report_dir,
+                label,
+                &buffered_images,
+                "retire MMIO write completion",
+                error,
+            );
         }
-        .unwrap_or_else(|e| panic!("endpoint raw KVM_GET_XSAVE2 failed for {label}: {e}"));
-        let mut canonical_endpoint = raw_endpoint.clone();
-        let canonical_restore_bv_endpoint =
-            canonicalize_xsave_with_restore_bv(&mut canonical_endpoint);
 
+        let endpoint = match backend.run() {
+            Ok(endpoint) => endpoint,
+            Err(error) => fail_with_buffered_error(
+                &report_dir,
+                label,
+                &buffered_images,
+                "bounded continuation run",
+                error,
+            ),
+        };
         let guest_xsave = observation.guest_program().then(|| {
             ram.as_mut_bytes()[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN].to_vec()
         });
         let mut canonical_guest_xsave = None;
-        let mut guest_restore_bv = None;
-        if let Some(image) = guest_xsave.as_ref() {
+        let guest_restore_bv = if let Some(image) = guest_xsave.as_ref() {
             let mut canonical = image.clone();
-            guest_restore_bv = canonicalize_xsave_with_restore_bv(&mut canonical);
+            let restore_bv = canonicalize_xsave_with_restore_bv(&mut canonical);
             canonical_guest_xsave = Some(canonical);
+            restore_bv
+        } else {
+            None
+        };
+        if let Some(image) = guest_xsave.as_ref() {
+            buffered_images.push(("guest-xsave.bin", image.clone()));
         }
+        if let Some(image) = canonical_guest_xsave.as_ref() {
+            buffered_images.push(("canonical-guest-xsave.bin", image.clone()));
+        }
+        let raw_endpoint = unsafe {
+            // SAFETY: the vCPU is stopped after the bounded continuation and the output buffer
+            // is capability-sized.
+            raw_get_xsave2(fd, xsave_len)
+        };
+        let raw_endpoint = match raw_endpoint {
+            Ok(raw_endpoint) => raw_endpoint,
+            Err(error) => fail_with_buffered_error(
+                &report_dir,
+                label,
+                &buffered_images,
+                "endpoint raw KVM_GET_XSAVE2",
+                error,
+            ),
+        };
+        let mut canonical_endpoint = raw_endpoint.clone();
+        let canonical_restore_bv_endpoint =
+            canonicalize_xsave_with_restore_bv(&mut canonical_endpoint);
         for (name, image) in buffered_images {
             write_image(&report_dir, name, &image);
         }
         write_image(&report_dir, "raw-endpoint.bin", &raw_endpoint);
         write_image(&report_dir, "canonical-endpoint.bin", &canonical_endpoint);
-        if let Some(image) = guest_xsave.as_ref() {
-            write_image(&report_dir, "guest-xsave.bin", image);
-        }
-        if let Some(image) = canonical_guest_xsave.as_ref() {
-            write_image(&report_dir, "canonical-guest-xsave.bin", image);
-        }
 
         let xcr0_endpoint = backend_xcr0_value(&backend);
         let before_1_header = raw_before_1.as_ref().map(|image| header(image));
@@ -1348,6 +1442,17 @@ mod xsave_diagnostic {
             }
         )
         .expect("metadata write");
+        if observation.guest_program() {
+            writeln!(metadata, "pre_guest_xsave_restore_bv=Some(3)").expect("metadata write");
+            writeln!(metadata, "pre_guest_xsave_raw_bv=0x3").expect("metadata write");
+            writeln!(metadata, "pre_guest_xsave_raw_xcomp_bv=0x0").expect("metadata write");
+            writeln!(metadata, "pre_guest_x87_fcw=[7f, 03]").expect("metadata write");
+            writeln!(metadata, "pre_guest_x87_fsw=[00, 00]").expect("metadata write");
+            writeln!(metadata, "pre_guest_x87_ftw=[ff]").expect("metadata write");
+            writeln!(metadata, "pre_guest_x87_st_seed=repeat-0xa7").expect("metadata write");
+            writeln!(metadata, "pre_guest_x87_st_seed_len={}", X87_ST_SEED.len())
+                .expect("metadata write");
+        }
         writeln!(
             metadata,
             "boundary_io_until_continuation={}",

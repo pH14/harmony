@@ -75,8 +75,11 @@ control. It then starts three fresh VMs with guest `FNINIT` before the same
 MMIO boundary and integer setup followed by guest `XSAVE` before any further
 x87 operation: unobserved, two repeated boundary GETs, and GET/SET/GET. These phases retain
 raw and canonical guest and vCPU images, including restore-BV values, so raw
-presence differences remain visible. The report is evidence about the
-host/KVM path and does not change snapshot semantics.
+presence differences remain visible. The new phases seed a known x87 payload
+with restore presence before the guest's `FNINIT`; the report records that
+input separately from the guest's initialized control and tag state. The
+report is evidence about the host/KVM path and does not change snapshot
+semantics.
 
 The ignored Linux x86 test
 `kvm_sys::xsave_diagnostic::x86_pae_sregs2_phase_observations` is a bounded
