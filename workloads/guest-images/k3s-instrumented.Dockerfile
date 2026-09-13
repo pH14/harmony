@@ -10,7 +10,7 @@ ARG GIT_TAG
 RUN apk -U --no-cache add bash git gcc musl-dev file curl ca-certificates jq linux-headers \
     zlib-dev tar zip squashfs-tools coreutils openssl-dev libffi-dev libseccomp libseccomp-dev \
     libseccomp-static make libuv-static sqlite-dev sqlite-static libselinux libselinux-dev \
-    zstd pigz alpine-sdk btrfs-progs-dev btrfs-progs-static gawk yq apparmor-dev
+    zstd pigz alpine-sdk btrfs-progs-dev btrfs-progs-static gawk yq
 
 WORKDIR /go/src/github.com/k3s-io/k3s
 COPY . .
