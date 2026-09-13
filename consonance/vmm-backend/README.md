@@ -193,3 +193,9 @@ CPU state and all RAM before any reference execution. It tests whether a first
 guest FPU transition explains the AMD fresh/reused difference. Production
 construction does not execute this warmup; the original differential remains
 unchanged when the variable is absent.
+
+`XSAVE_ENTRY_LONG_MODE` selects a separate fixed-CPU control with identity-mapped
+64-bit code and XSAVE64/XRSTOR64, matching the shipped Linux execution mode.
+The original entry fixtures use real mode, so their failures alone do not
+establish that the same instruction sequence diverges in 64-bit mode. Both
+sets retain full CPU and RAM comparisons; the mode is recorded in CI evidence.

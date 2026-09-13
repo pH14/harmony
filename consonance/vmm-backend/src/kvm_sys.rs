@@ -882,7 +882,8 @@ mod xsave_diagnostic {
     }
 
     fn entry_fixture(program: &[u8], seed: u64, xcr0: u64) -> EntryFixture {
-        let mut ram = MmapRam::new(RAM_LEN).unwrap();
+        let long_mode = std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some();
+        let mut ram = MmapRam::new(RAM_LEN * 2).unwrap();
         ram.as_mut_bytes()[CODE_GPA..CODE_GPA + program.len()].copy_from_slice(program);
         ram.as_mut_bytes()[GUEST_XRSTOR_GPA + 24..GUEST_XRSTOR_GPA + 28]
             .copy_from_slice(&0x1f80u32.to_le_bytes());
@@ -900,6 +901,23 @@ mod xsave_diagnostic {
         state.sregs.cr0 &= !((1 << 2) | (1 << 3));
         state.sregs.cr4 |= (1 << 9) | (1 << 18);
         state.sregs.cr8 = 7;
+        if long_mode {
+            for (address, entry) in [(0x4000, 0x5003u64), (0x5000, 0x6003), (0x6000, 0x83)] {
+                ram.as_mut_bytes()[address..address + 8].copy_from_slice(&entry.to_le_bytes());
+            }
+            state.sregs.cr0 |= (1 << 31) | 1;
+            state.sregs.cr4 |= 1 << 5;
+            state.sregs.cr3 = 0x4000;
+            state.sregs.efer |= (1 << 8) | (1 << 10);
+            state.sregs.cs.selector = 8;
+            state.sregs.cs.l = 1;
+            state.sregs.cs.db = 0;
+            state.sregs.cs.type_ = 11;
+            state.sregs.cs.s = 1;
+            state.sregs.cs.present = 1;
+            state.sregs.cs.limit = u32::MAX;
+            state.sregs.cs.g = 1;
+        }
         state.xcr0 = xcr0;
         state.xsave_restore_bv = Some(seed);
         backend.restore(&state).unwrap();
@@ -921,6 +939,19 @@ mod xsave_diagnostic {
     fn entry_program(mode: &str, xcr0: u64) -> Vec<u8> {
         if mode == "hlt" {
             return vec![0xf4];
+        }
+        if std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some() {
+            let mut program = vec![0xb8];
+            program.extend_from_slice(&(xcr0 as u32).to_le_bytes());
+            program.extend_from_slice(&[0x31, 0xd2]);
+            if mode == "xrstor" {
+                program.extend_from_slice(&[0x48, 0x0f, 0xae, 0x2c, 0x25]);
+                program.extend_from_slice(&(GUEST_XRSTOR_GPA as u32).to_le_bytes());
+            }
+            program.extend_from_slice(&[0x48, 0x0f, 0xae, 0x24, 0x25]);
+            program.extend_from_slice(&(GUEST_XSAVE_GPA as u32).to_le_bytes());
+            program.push(0xf4);
+            return program;
         }
         let mut program = vec![0x66, 0xb8];
         program.extend_from_slice(&(xcr0 as u32).to_le_bytes());
@@ -1077,6 +1108,12 @@ mod xsave_diagnostic {
                 let directory = root.join(&label);
                 fs::create_dir(&directory).unwrap();
                 let program = entry_program("xrstor", xcr0);
+                let stop_rip = CODE_GPA
+                    + if std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some() {
+                        16
+                    } else {
+                        17
+                    };
                 let mut reference = entry_fixture(&program, seed, xcr0);
                 reference.backend.prepare_snapshot().unwrap();
                 let expected = entry_endpoint(&mut reference, &directory, "reference");
@@ -1087,7 +1124,7 @@ mod xsave_diagnostic {
                         | kvm_bindings::KVM_GUESTDBG_USE_HW_BP,
                     ..Default::default()
                 };
-                debug.arch.debugreg[0] = (CODE_GPA + 17) as u64;
+                debug.arch.debugreg[0] = stop_rip as u64;
                 debug.arch.debugreg[7] = 0x401;
                 interrupted.backend.vcpu.set_guest_debug(&debug).unwrap();
                 // SAFETY: the fixture owns the live vCPU and run mapping; the debug exit is read only after ioctl return.
@@ -1099,7 +1136,7 @@ mod xsave_diagnostic {
                 let reason = unsafe { (*interrupted.backend.run).exit_reason };
                 assert_eq!(reason, kvm_bindings::KVM_EXIT_DEBUG);
                 let stopped = retain_entry(&mut interrupted, &directory, "debug-stop");
-                assert_eq!(stopped.state.regs.rip, (CODE_GPA + 17) as u64);
+                assert_eq!(stopped.state.regs.rip, stop_rip as u64);
                 assert!(
                     stopped.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN]
                         .iter()

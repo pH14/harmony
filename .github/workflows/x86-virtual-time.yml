@@ -680,6 +680,26 @@ jobs:
               -- --ignored --exact --test-threads=1 --nocapture \
               2>&1 | tee snapshot-report/xsave-reentry-warmup.log || failed=1
           exit "$failed"
+      - name: Compare XSAVE in the shipped guest's 64-bit execution mode
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        env:
+          XSAVE_ENTRY_LONG_MODE: "1"
+        run: |
+          set -euo pipefail
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          printf 'fixed_cpu=%s\nmode=64-bit-long-mode\n' "$cpu" > snapshot-report/xsave-long-mode.txt
+          failed=0
+          XSAVE_ENTRY_REPORT_DIR="$PWD/snapshot-report/xsave-entry-long-mode" \
+            timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p vmm-backend --lib \
+              kvm_sys::xsave_diagnostic::snapshot_entry_restores_match_uninterrupted_execution \
+              -- --ignored --exact --test-threads=1 --nocapture \
+              2>&1 | tee snapshot-report/xsave-entry-long-mode.log || failed=1
+          XSAVE_REENTRY_REPORT_DIR="$PWD/snapshot-report/xsave-reentry-long-mode" \
+            timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p vmm-backend --lib \
+              kvm_sys::xsave_diagnostic::snapshot_entry_debug_reentry_preserves_guest_observation \
+              -- --ignored --exact --test-threads=1 --nocapture \
+              2>&1 | tee snapshot-report/xsave-reentry-long-mode.log || failed=1
+          exit "$failed"
       - name: Record AMD stale PAE behavior outside the supported guest contract
         if: ${{ !cancelled() && steps.host.outcome == 'success' && steps.host.outputs.amd_npt == 'true' }}
         continue-on-error: true
