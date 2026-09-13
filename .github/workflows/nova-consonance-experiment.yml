@@ -836,12 +836,28 @@ jobs:
           set -uo pipefail
           report=nested-runtime-report
           status=0
-          timeout -k 10 180 target/release/harmony oci run \
+          timeout -k 10 120 target/release/harmony oci run \
             consonance/harmony-linux/build/oci-images/docker.oci \
-            --seed 20260901 --ram-mib 2048 --timeout 120 --console \
+            --seed 20260901 --ram-mib 2048 --timeout 60 --console \
             --out "$report/runs/docker-trace" -- \
             /bin/sh -x /usr/local/bin/docker-workload.sh \
             2>&1 | tee "$report/console/docker-trace.txt" || status=1
+          # shellcheck disable=SC2016
+          timeout -k 10 360 target/release/harmony oci run \
+            consonance/harmony-linux/build/oci-images/k3s.oci \
+            --seed 20260901 --ram-mib 2048 --timeout 300 --console \
+            --out "$report/runs/k3s-trace" -- /bin/sh -c '
+              /bin/sh -x /usr/local/bin/k3s-workload.sh &
+              workload_pid=$!
+              while /bin/busybox kill -0 "$workload_pid" 2>/dev/null; do
+                /bin/busybox sleep 2
+                /bin/busybox echo DIAGNOSTIC_K3S_LOG
+                /bin/busybox tail -60 /run/k3s.log 2>/dev/null
+                /bin/busybox echo DIAGNOSTIC_PROCESSES
+                /bin/busybox ps
+              done
+              wait "$workload_pid"
+            ' 2>&1 | tee "$report/console/k3s-trace.txt" || status=1
           echo "Diagnostic status=$status; this run is not acceptance evidence"
           exit "$status"
       - uses: actions/upload-artifact@v4
