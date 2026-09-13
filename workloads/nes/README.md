@@ -1,15 +1,15 @@
 # NES workload package
 
-This standalone Rust workspace adapts SMB, Nova, Mega Man 2, Metroid, and Super
-Tilt Bro to Dissonance.
+This standalone Rust workspace adapts SMB, Nova, Mega Man 2, Metroid, Super
+Tilt Bro, and Thwaite to Dissonance.
 It owns game interpretation, controller policies, campaign binaries, and workload
 reporting. Generic archive and campaign mechanisms come from `searcher`; emulator
 and guest execution support comes from `../nes-machine`.
 
-The `smb-*`, `nova-*`, `mm2-*`, `metroid-*`, and `stb-*` binaries provide campaign and replay entry
-points. Set `HARMONY_QUICKNES_CORE` to the pinned QuickNES shared library for
+The `smb-*`, `nova-*`, `mm2-*`, `metroid-*`, `stb-*`, and `thwaite-*` binaries provide campaign
+and replay entry points. Set `HARMONY_QUICKNES_CORE` to the pinned QuickNES shared library for
 native execution. SMB and Nova support native QuickNES and whole-VM Consonance execution.
-Mega Man 2, Metroid, and Super Tilt Bro currently use their native campaigns or
+Mega Man 2, Metroid, Super Tilt Bro, and Thwaite currently use their native campaigns or
 the common `nes-eval` runner; shared CLI dispatch and Consonance execution are
 not implemented for them.
 The Consonance backend uses the `consonance` feature and requires Linux/KVM
@@ -41,6 +41,7 @@ that experiment does not provide SMB acceptance evidence.
 | Mega Man 2/native | All eight independent stage origins pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
 | Super Tilt Bro/native | `search-eval.yml` (bounded checks) and the scheduled/manual `nova-nightly.yml` capability panel build the pinned ROM and evaluate Easy/Fair/Hard AI through the common `nes-eval` runner. Hard retains its victory requirement in the public panel. | Host QuickNES core and the pinned source-built offline UNROM game. |
+| Thwaite/native | `search-eval.yml` builds the pinned ROM and runs the control probe, search, recorded replay, and film through the dedicated `thwaite-campaign` binary: a bounded PR smoke and a manual-dispatch soak. It is not in the `nes-eval` roster or the nightly panel. | Host QuickNES core and the pinned source-built NROM game. |
 
 On Linux/KVM, the shared oracle is invoked as:
 
@@ -61,8 +62,9 @@ cargo test --manifest-path workloads/nes/Cargo.toml
 cargo clippy --manifest-path workloads/nes/Cargo.toml --all-features --all-targets -- -D warnings
 ```
 
-The [Nova](src/nova/README.md), [Mega Man 2](src/mm2/README.md), and
-[Metroid](src/metroid/README.md) READMEs document their input and observation maps. Campaign streams
+The [Nova](src/nova/README.md), [Mega Man 2](src/mm2/README.md),
+[Metroid](src/metroid/README.md), and [Thwaite](src/thwaite/README.md) READMEs
+document their input and observation maps. Campaign streams
 and checkpoints retain their versioned workload identities across crate moves.
 
 The package also owns the pinned Nova source recipe and ROM revision in
@@ -73,6 +75,9 @@ utilities; artifact redistribution terms are recorded in
 
 [Super Tilt Bro](src/stb/README.md) has a separate pinned recipe in
 `scripts/build-stb-rom.sh`, `stb-versions.env`, and `STB-ARTIFACT-LICENSE.md`.
+[Thwaite](src/thwaite/README.md) has one in `scripts/build-thwaite-rom.sh`,
+`thwaite-versions.env`, and `THWAITE-ARTIFACT-LICENSE.md`; its build verifies
+every observed address against the linker debug file upstream already emits.
 New workloads use the execution, observation, input, and qualification contracts
 described above, with minimal game guidance.
 
@@ -88,7 +93,9 @@ runner/engine tests can run in ordinary CI.
 The scheduled/manual public capability panel is registered in
 `benchmarks/search/nightly.json` and reports isolated Nova levels, whole-game
 Nova, and STB in one common roster. It intentionally does not include licensed
-SMB, Mega Man 2, or Metroid. Run the full private evaluation and the separate
+SMB, Mega Man 2, or Metroid. Thwaite is not in that roster either: it runs
+through its own campaign binary and CI action, and joining the common runner
+would need a `nes-eval` case of its own. Run the full private evaluation and the separate
 SMB reference manifest with `benchmarks/search/run-private.sh` on a Linux host
 that already has the caller's asset inventory; those reports remain local.
 

@@ -11,6 +11,7 @@ on:
       - rust-toolchain.toml
       - scripts/build-quicknes-core.sh
       - .github/actions/stb-evaluation/**
+      - .github/actions/thwaite-evaluation/**
       - .github/workflows/search-eval.yml
   push:
     branches: [main]
@@ -24,6 +25,7 @@ on:
       - rust-toolchain.toml
       - scripts/build-quicknes-core.sh
       - .github/actions/stb-evaluation/**
+      - .github/actions/thwaite-evaluation/**
       - .github/workflows/search-eval.yml
   workflow_dispatch:
 permissions:
@@ -154,3 +156,50 @@ jobs:
       - name: Initialize smoke artifact directory
         run: mkdir -p "${STB_ARTIFACT}"
       - uses: ./.github/actions/stb-evaluation
+
+  thwaite-contract:
+    name: Source build, probe, search and replay (thwaite, seed ${{ matrix.seed }})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # Bounded qualification uses one registered seed on every trigger.
+        seed: [1]
+    env:
+      THWAITE_BUILD: workloads/nes/build/thwaite
+      THWAITE_ARTIFACT: workloads/nes/build/thwaite-artifact
+      # A defended hour is the declared objective, not a demonstrated CI
+      # result, so the registered lane soaks an exact budget and reports the
+      # defence its champion reached.
+      THWAITE_EXECUTIONS: "20000"
+      THWAITE_REQUIRE_PERFECT_HOUR: "false"
+      THWAITE_SEED: ${{ matrix.seed }}
+      THWAITE_WORKERS: "2"
+      HARMONY_THWAITE_BUILD_JOBS: "2"
+      HARMONY_QUICKNES_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/thwaite-evaluation
+
+  pr-thwaite-smoke:
+    name: Thwaite source build, search and replay smoke
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      THWAITE_BUILD: workloads/nes/build/thwaite
+      THWAITE_ARTIFACT: workloads/nes/build/thwaite-pr-artifact
+      THWAITE_EXECUTIONS: "4"
+      THWAITE_REQUIRE_PERFECT_HOUR: "false"
+      THWAITE_SEED: "1"
+      THWAITE_WORKERS: "1"
+      THWAITE_WALL_SECONDS: "180"
+      HARMONY_THWAITE_BUILD_JOBS: "2"
+      HARMONY_QUICKNES_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize smoke artifact directory
+        run: mkdir -p "${THWAITE_ARTIFACT}"
+      - uses: ./.github/actions/thwaite-evaluation

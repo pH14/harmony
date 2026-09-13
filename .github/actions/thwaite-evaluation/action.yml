@@ -1,0 +1,189 @@
+name: Thwaite evaluation
+description: Build and qualify the source-built Thwaite workload using the caller Thwaite environment.
+runs:
+  using: composite
+  steps:
+    - name: Install source build and video tools
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends build-essential curl git make python3 python3-pil cc65 ffmpeg jq
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: workloads/nes -> target
+    - name: Reproduce pinned Thwaite and QuickNES
+      shell: bash
+      run: |
+        workloads/nes/scripts/build-thwaite-rom.sh "${THWAITE_BUILD}"
+        scripts/build-quicknes-core.sh "${THWAITE_BUILD}/quicknes_libretro.so"
+    - name: Build campaign and correctness probe
+      shell: bash
+      run: |
+        cargo build --locked --release --manifest-path workloads/nes/Cargo.toml \
+          --bin thwaite-probe --bin thwaite-campaign
+    - name: Verify controls, silo ownership and restored continuations
+      shell: bash
+      run: |
+        mkdir -p "${THWAITE_ARTIFACT}"
+        cp workloads/nes/THWAITE-ARTIFACT-LICENSE.md "${THWAITE_ARTIFACT}/ARTIFACT-LICENSE.md"
+        cp "${THWAITE_BUILD}/UPSTREAM-LICENSE.txt" "${THWAITE_BUILD}/UPSTREAM-README.md" \
+          "${THWAITE_BUILD}/thwaite-versions.env" "${THWAITE_ARTIFACT}/"
+        HARMONY_QUICKNES_CORE="${THWAITE_BUILD}/quicknes_libretro.so" \
+        HARMONY_THWAITE_CORRECTNESS=1 \
+          workloads/nes/target/release/thwaite-probe "${THWAITE_BUILD}/thwaite.nes" \
+          | tee "${THWAITE_ARTIFACT}/control-snapshot-probe.jsonl"
+        python3 - "${THWAITE_ARTIFACT}/control-snapshot-probe.jsonl" <<'PY'
+        import json
+        import sys
+
+        lines = open(sys.argv[1]).read().splitlines()
+        controls = [json.loads(line.removeprefix("control "))
+                    for line in lines if line.startswith("control ")]
+        assert len(controls) == 7, "missing control traces"
+        rows = {row["name"]: row for row in controls}
+        assert set(rows) == {"noop", "a", "b", "up", "down", "left", "right"}
+        before = rows["noop"]["before"]["town"]
+        for row in rows.values():
+            assert row["hold"] == 6
+            assert row["before"]["game_state"] == 2 and row["before"]["num_players"] == 1
+            assert row["before"]["town"] == before, "controls did not start from one genesis"
+            assert row["after"]["town"] is not None
+        after = {name: row["after"]["town"] for name, row in rows.items()}
+        assert after["noop"]["crosshair_x"] == before["crosshair_x"], "neutral input moved the crosshair"
+        assert after["noop"]["crosshair_y"] == before["crosshair_y"], "neutral input moved the crosshair"
+        assert after["noop"]["silo_missiles"] == before["silo_missiles"], "neutral input spent ammunition"
+        # One player fires the left silo with B and the right silo with A.
+        assert after["b"]["silo_missiles"][0] < before["silo_missiles"][0], "B did not fire the left silo"
+        assert after["b"]["silo_missiles"][1] == before["silo_missiles"][1], "B spent right silo ammunition"
+        assert after["a"]["silo_missiles"][1] < before["silo_missiles"][1], "A did not fire the right silo"
+        assert after["a"]["silo_missiles"][0] == before["silo_missiles"][0], "A spent left silo ammunition"
+        assert after["left"]["crosshair_x"] < before["crosshair_x"] < after["right"]["crosshair_x"]
+        assert after["up"]["crosshair_y"] < before["crosshair_y"] < after["down"]["crosshair_y"]
+        assert before["buildings_standing"] == 12 and before["enemy_missiles_in_flight"] == 0
+        assert [line for line in lines if line.startswith("snapshot_restore ")], "no restore evidence"
+        assert [line for line in lines if line.startswith("admission_probe ")], "no probe evidence"
+        assert "clean_reset_exact true" in lines, "clean reset disagreed with the sealed genesis"
+        print("intact genesis, neutral input, aiming and per-silo fire controls verified")
+        PY
+    - name: Search the first hour and verify recorded replay
+      shell: bash
+      run: |
+        stop_flags=()
+        if [[ "${THWAITE_REQUIRE_PERFECT_HOUR}" != true ]]; then
+          stop_flags+=(--fixed-execution-soak)
+        fi
+        search_command=(workloads/nes/target/release/thwaite-campaign \
+          --core "${THWAITE_BUILD}/quicknes_libretro.so" \
+          --rom "${THWAITE_BUILD}/thwaite.nes" \
+          --output "${THWAITE_ARTIFACT}" \
+          --seed "${THWAITE_SEED}" --executions "${THWAITE_EXECUTIONS}" \
+          --workers "${THWAITE_WORKERS}" --action-limit 512 \
+          "${stop_flags[@]}")
+        if [[ -n "${THWAITE_WALL_SECONDS:-}" ]]; then
+          timeout -k 10 "${THWAITE_WALL_SECONDS}" "${search_command[@]}"
+        else
+          "${search_command[@]}"
+        fi
+    - name: Check and describe compact evidence
+      shell: bash
+      run: |
+        # The binary's exit status gates actual replay/render equality. A
+        # required perfect hour is a defence regression: stop after one, or
+        # fail if the fixed ceiling is exhausted. Soaks retain exact budgets.
+        # Keep seeds and search policy fixed; do not retry a losing campaign.
+        jq -e --argjson budget "${THWAITE_EXECUTIONS}" \
+          --argjson seed "${THWAITE_SEED}" --argjson workers "${THWAITE_WORKERS}" \
+          '.campaign_seed == $seed and .workers == $workers and
+           .execution_budget == $budget and .executions > 0 and .executions <= $budget and
+           .execution_budget_exact == (.executions == .execution_budget) and .replay_verified == true and
+           .rendered_endpoint_verified == true and .frames_emulated > 0 and
+           .archive_entries > 0 and .champion_input_actions > 0 and
+           .champion_endpoint.num_players == 1 and .champion_endpoint.practice == false and
+           .render_excerpt == false' \
+          "${THWAITE_ARTIFACT}/run-summary.json" >/dev/null
+        cmp "${THWAITE_ARTIFACT}/campaign-report.json" "${THWAITE_ARTIFACT}/replay-report.json"
+        cmp "${THWAITE_ARTIFACT}/champion-input.json" "${THWAITE_ARTIFACT}/render-input.json"
+        cmp "${THWAITE_ARTIFACT}/champion-observation.json" "${THWAITE_ARTIFACT}/render-observation.json"
+        python3 - "${THWAITE_ARTIFACT}" "${THWAITE_REQUIRE_PERFECT_HOUR}" <<'PY'
+        import json
+        import sys
+        from pathlib import Path
+
+        artifact = Path(sys.argv[1])
+        summary = json.loads((artifact / "run-summary.json").read_text())
+        champion = json.loads((artifact / "champion-observation.json").read_text())
+        tape = json.loads((artifact / "champion-input.json").read_text())
+        if sys.argv[2] == "true":
+            assert summary["perfect_hours"] > 0, "required perfect hour was not found within the execution ceiling"
+            assert summary["mode"] == "qualified_campaign"
+            assert 0 < summary["first_reached"]["first_perfect_level"] <= summary["executions"]
+            assert champion["evidence"]["perfect_levels"] > 0
+        else:
+            assert summary["mode"] == "direct_quicknes_fixed_execution_soak"
+            assert summary["execution_budget_exact"], "fixed-execution soak stopped early"
+        assert champion["frame_count"] == sum(action["hold_frames"] for action in tape["actions"]), "recorded tape and endpoint frames disagree"
+        assert champion["decoded"] == summary["champion_endpoint"]
+        assert champion["evidence"] == summary["champion_evidence"]
+        assert summary["rendered_input_frames"] == champion["frame_count"]
+        assert summary["video"]["frames"] == champion["frame_count"] + summary["render_tail_frames"]
+        # gameState 7 is the source's STATE_GAMEOVER.
+        assert summary["town_lost"] == (champion["decoded"]["game_state"] == 7)
+        # Buildings are only ever lost, so the retained tape and its milestones agree.
+        assert summary["milestones"]["buildings_lost"] >= champion["evidence"]["buildings_lost"]
+        if champion["decoded"]["town"] is not None:
+            standing = champion["decoded"]["town"]["buildings_standing"]
+            assert standing + champion["evidence"]["buildings_lost"] == 12, "town census and losses disagree"
+        PY
+        test -s "${THWAITE_ARTIFACT}/witness.mp4"
+        test "$(ffprobe -v error -count_frames -select_streams v:0 \
+          -show_entries stream=nb_read_frames -of csv=p=0 \
+          "${THWAITE_ARTIFACT}/witness.mp4")" = \
+          "$(jq -r '.video.frames' "${THWAITE_ARTIFACT}/run-summary.json")"
+        test "$(ffprobe -v error -select_streams a:0 \
+          -show_entries stream=codec_type -of csv=p=0 \
+          "${THWAITE_ARTIFACT}/witness.mp4")" = audio
+        (
+          cd "${THWAITE_ARTIFACT}"
+          sha256sum witness.mp4 run-summary.json progress.jsonl \
+            champion-input.json champion-observation.json render-input.json \
+            render-observation.json video.json campaign-report.json replay-report.json \
+            control-snapshot-probe.jsonl ARTIFACT-LICENSE.md UPSTREAM-LICENSE.txt \
+            UPSTREAM-README.md thwaite-versions.env > SHA256SUMS
+        )
+        {
+          echo "## Thwaite — one player, first hour"
+          echo
+          echo "Seed ${THWAITE_SEED}; $(jq -r '.executions' "${THWAITE_ARTIFACT}/run-summary.json")/${THWAITE_EXECUTIONS} executions; ${THWAITE_WORKERS} workers."
+          echo "Perfect hour required: ${THWAITE_REQUIRE_PERFECT_HOUR}."
+          echo "Campaign report/checkpoint replay and rendered endpoint verified."
+          echo "First reached: $(jq -c '.first_reached' "${THWAITE_ARTIFACT}/run-summary.json")."
+          echo "Milestones: $(jq -c '.milestones' "${THWAITE_ARTIFACT}/run-summary.json")."
+          echo "Champion defence: $(jq -c '.champion_evidence' "${THWAITE_ARTIFACT}/run-summary.json"); buildings standing $(jq -r '.champion_endpoint.town.buildings_standing // 0' "${THWAITE_ARTIFACT}/run-summary.json")/12."
+          echo "Frames emulated: $(jq -r '.frames_emulated' "${THWAITE_ARTIFACT}/run-summary.json")."
+          echo "The film contains the full champion plus $(jq -r '.render_tail_frames' "${THWAITE_ARTIFACT}/run-summary.json") neutral frames. Town lost: $(jq -r '.town_lost' "${THWAITE_ARTIFACT}/run-summary.json")."
+        } >>"${GITHUB_STEP_SUMMARY}"
+    - uses: actions/upload-artifact@v4
+      # Explicit list excludes ROMs, cores, snapshots and raw media. Partial
+      # probes/reports remain available to diagnose a failed qualification.
+      if: always()
+      with:
+        name: thwaite-seed-${{ env.THWAITE_SEED }}-${{ github.run_id }}
+        path: |
+          ${{ env.THWAITE_ARTIFACT }}/witness.mp4
+          ${{ env.THWAITE_ARTIFACT }}/run-summary.json
+          ${{ env.THWAITE_ARTIFACT }}/progress.jsonl
+          ${{ env.THWAITE_ARTIFACT }}/champion-input.json
+          ${{ env.THWAITE_ARTIFACT }}/champion-observation.json
+          ${{ env.THWAITE_ARTIFACT }}/render-input.json
+          ${{ env.THWAITE_ARTIFACT }}/render-observation.json
+          ${{ env.THWAITE_ARTIFACT }}/video.json
+          ${{ env.THWAITE_ARTIFACT }}/campaign-report.json
+          ${{ env.THWAITE_ARTIFACT }}/replay-report.json
+          ${{ env.THWAITE_ARTIFACT }}/control-snapshot-probe.jsonl
+          ${{ env.THWAITE_ARTIFACT }}/ARTIFACT-LICENSE.md
+          ${{ env.THWAITE_ARTIFACT }}/UPSTREAM-LICENSE.txt
+          ${{ env.THWAITE_ARTIFACT }}/UPSTREAM-README.md
+          ${{ env.THWAITE_ARTIFACT }}/thwaite-versions.env
+          ${{ env.THWAITE_ARTIFACT }}/SHA256SUMS
+        if-no-files-found: error
+        retention-days: 30

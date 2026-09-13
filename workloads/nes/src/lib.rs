@@ -10,6 +10,8 @@ pub mod package;
 
 pub mod stb;
 
+pub mod thwaite;
+
 pub mod mm2;
 
 pub mod metroid;
