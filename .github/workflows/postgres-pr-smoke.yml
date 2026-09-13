@@ -201,7 +201,7 @@ jobs:
               --base-initramfs guest/initramfs.cpio.gz \
               --fault-agent workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent \
               --seed 1 --workers 1 --executions 4 --actions 4 \
-              --horizon-ms 50 --ram-mib 1024 \
+              --ram-mib 1024 \
               --knobs 'faultlab.churn_rows=20 faultlab.churn_slices=2 faultlab.churn_rounds=20' \
               --wall-minutes 1 --out pg-pr-smoke/search \
             2>&1 | tee pg-pr-smoke.console.txt
@@ -213,8 +213,8 @@ jobs:
           summary = json.loads(Path("pg-pr-smoke/search/campaign-summary.json").read_text())
           if report.get("executions", 0) <= 0:
               raise SystemExit("PostgreSQL smoke admitted no executions")
-          if report.get("horizons_clocked", 0) <= 0:
-              raise SystemExit("PostgreSQL smoke clocked no guest horizons")
+          if report.get("execution_ticks", 0) <= 0:
+              raise SystemExit("PostgreSQL smoke clocked no guest ticks")
           if summary.get("archive_entries", 0) <= 0:
               raise SystemExit("PostgreSQL smoke retained no archive work")
           stream = Path("pg-pr-smoke/search/stream.jsonl").read_text().splitlines()

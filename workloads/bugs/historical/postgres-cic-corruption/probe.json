@@ -6,12 +6,20 @@
     {
       "Hook": 2
     },
-    "Wait",
-    "Wait",
+    {
+      "Wait": 50
+    },
+    {
+      "Wait": 50
+    },
     {
       "Hook": 3
     },
-    "Wait",
-    "Wait"
+    {
+      "Wait": 50
+    },
+    {
+      "Wait": 50
+    }
   ]
 }

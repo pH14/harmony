@@ -16,6 +16,8 @@ in the fault agent's bundle format:
 | `node <name> <argv...>` | one workload process the agent supervises |
 | `hook <id> <argv...>` | a command the search can run at any moment |
 | `setup <argv...>` | runs once, before any node starts |
+| `workload <argv...>` | one continuous client process, launched after initial readiness |
+| `check <argv...>` | an independent oracle, relaunched after each completion |
 | `ready <argv...>` | must pass before setup is sealed and before new hooks launch after a supervised node start |
 
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
@@ -34,12 +36,14 @@ a readiness command keep immediate hook launches.
 
 ## Actions
 
-An input is a list of actions, each running for one fixed horizon of guest
-time ([`target`](src/target.rs)):
+An input records each wait in 10 ms guest ticks. Other actions have a built-in
+500 ms execution window ([`target`](src/target.rs)):
 
 | action | effect |
 |---|---|
-| `Wait` | nothing; the workload runs undisturbed for a horizon |
+| `Wait(ticks)` | the workload runs undisturbed for the recorded positive duration |
+| `EventKill(node, rarity)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
+| `EventPark(node, rarity, hold)` | an instrumented runtime holds a thread at a selected event |
 | `Kill(node)` | the node stays down for the whole horizon |
 | `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
 | `Restart(node)` | the node is killed and comes back inside the horizon |
@@ -47,7 +51,7 @@ time ([`target`](src/target.rs)):
 | `Park(node, addr, hits, hold)` | guest threads are held at an execution place |
 | `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's seal when settling carried it past that start |
 
-Every action but `Interrupt` becomes a standing-fault window on the shared
+Each fault action except `Interrupt` becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the agent's
 standing poll with the windows whose half-open span contains the polling
 moment, so an input is fully described by its encoded window list and one
@@ -75,10 +79,10 @@ over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
 which pairs the sometimes-assertion set with the live-node bitmap and the
 hook-completion count.
 
-The generic `execution_work` counter is the number of successfully applied
-logical horizons after setup. It is monotonic across target reset and snapshot
-restore, so replay and the current search budget charge each accepted action
-once. The separate `guest_horizons` diagnostic measures physical guest runs;
+The generic `execution_work` counter and `report.json`
+`execution_ticks` count the guest ticks requested by successfully applied actions
+after setup. This logical counter is monotonic across target reset and snapshot
+restore; longer waits cost more even when an endpoint is cached. The separate `guest_horizons` diagnostic measures physical guest runs;
 cache reuse can change it and reset clears it. Setup, prefix reconstruction,
 and failed actions are outside the logical counter.
 
@@ -88,7 +92,7 @@ and failed actions are outside the logical counter.
 harmony search --package faults IMAGE.oci --backend consonance \
     --kernel vmlinux --base-initramfs initramfs.cpio.gz \
     --fault-agent fault-agent --seed 1 --workers 8 --executions 100000 \
-    --actions 12 --horizon-ms 500 --ram-mib 1024 --out run/
+    --actions 12 --ram-mib 1024 --out run/
 harmony search --package faults IMAGE.oci --backend consonance \
     --kernel vmlinux --base-initramfs initramfs.cpio.gz \
     --fault-agent fault-agent --replay run/bug-1.json --repeat 10 --out confirm/
@@ -101,7 +105,28 @@ either the bugs found or the replay outcomes.
 The search report and `campaign-summary.json` also record
 `watchdog_cutoffs`, the number of guest action runs ended by the session's
 host watchdog. A completed CLI with such cutoffs remains a measured campaign;
-an outer CLI timeout is an infrastructure failure.
+an outer CLI timeout is an infrastructure failure. The reports also expose
+`execution_failures`; the nightly gate rejects non-watchdog failures. An agent
+runtime error has a separate SDK status and cannot turn a PID 1 exit into bug
+evidence.
+
+The searcher learns wait duration from admitted campaign outcomes and logical
+execution cost. It continues sampling short and long logarithmic durations while
+favoring durations that recently produced useful work. The adapter groups this
+feedback by node liveness and whether hooks, workload, checks, or event faults
+have progressed. Site identities and etcd concepts do not enter the duration
+policy. Choices and feedback state are recorded in the campaign stream; input
+replay executes the recorded durations directly.
+
+Instrumentation actions become available automatically when the staged image
+contains the runtime bridge, nonempty event symbols, and an executable whose
+hash matches its instrumentation attestation. A runtime hello identifies the
+ready nodes in each incarnation; event faults select only those nodes, so mixed
+instrumented and uninstrumented bundles share the same search policy. Backend capabilities determine
+whether host interrupt actions are available. Unsupported alternatives are
+excluded from the alphabet. The continuous client and oracle remain image-owned
+commands; the oracle decides when its observations are conclusive, including
+when some nodes are down.
 
 Every replay run boots a session no earlier run has touched, so no snapshot
 another run cached can stand in for guest execution: each run reaches the
@@ -123,3 +148,12 @@ encoded window list that reproduces it.
 The Consonance backend needs Linux and KVM. The action model, the bundle
 parser, the archive key, the image preparation and the report shapes are
 portable and tested everywhere.
+
+Replay summaries include completed-check provenance automatically for bundles
+with a continuous `check`. The agent records the check run, disturbance
+generations at its start and completion, its reached points, and pending process
+faults. A case can require evidence from a successful check that started and
+finished in the final generation with no outstanding fault. Cumulative reached
+points remain exploration evidence and cannot establish this recovery condition.
+Bundles that use drawn hooks have `check: null`; their evidence comes from those
+hooks instead.

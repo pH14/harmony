@@ -45,7 +45,6 @@ const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 nohlt rdinit=/i
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultConfig {
     pub knobs: Vec<String>,
-    pub horizon_nanos: u64,
     pub ram_mib: u32,
 }
 
@@ -159,7 +158,7 @@ fn branch_config(
 ) -> Result<ServiceConfig, Box<dyn Error>> {
     Ok(ServiceConfig {
         identity: SERVICE_IDENTITY.to_vec(),
-        configuration: encode_windows(&standing_windows(windows, actions))?,
+        configuration: encode_windows(&standing_windows(windows, actions)?)?,
     })
 }
 
@@ -169,7 +168,6 @@ struct Config {
     kernel: Vec<u8>,
     initramfs: Vec<u8>,
     session: SessionConfig,
-    horizon_nanos: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -202,7 +200,7 @@ pub struct FaultTarget {
     action_observations: Vec<FaultObservations>,
     failed: bool,
     watchdog_cutoffs: u64,
-    horizons_clocked: u64,
+    execution_ticks: u64,
     guest_horizons_run: u64,
     root_seal: u64,
 }
@@ -214,7 +212,6 @@ impl FaultTarget {
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
             session: config.session_config(),
-            horizon_nanos: config.horizon_nanos,
         });
         let (observation, root_seal) = with_live(&config, |live| {
             let observation = live.observe(FaultStop::Deadline)?;
@@ -227,7 +224,7 @@ impl FaultTarget {
             observation,
             failed: false,
             watchdog_cutoffs: 0,
-            horizons_clocked: 0,
+            execution_ticks: 0,
             guest_horizons_run: 0,
             root_seal,
         })
@@ -269,8 +266,8 @@ impl FaultTarget {
     }
 
     #[must_use]
-    pub fn horizons_clocked(&self) -> u64 {
-        self.horizons_clocked
+    pub fn execution_ticks(&self) -> u64 {
+        self.execution_ticks
     }
 
     #[must_use]
@@ -384,7 +381,9 @@ impl FaultTarget {
         match result {
             Ok((observation, ran)) => {
                 self.actions.push(action);
-                self.horizons_clocked = self.horizons_clocked.saturating_add(1);
+                self.execution_ticks = self
+                    .execution_ticks
+                    .saturating_add(crate::target::action_ticks(&action));
                 self.guest_horizons_run = self.guest_horizons_run.saturating_add(ran);
                 self.observation = observation.clone();
                 self.action_observations.push(observation);
@@ -456,7 +455,7 @@ impl Live {
             setup,
             windows: ActionWindows {
                 root_seal,
-                horizon_nanos: config.horizon_nanos,
+                horizon_nanos: crate::target::DEFAULT_HORIZON_NANOS,
             },
             snapshots,
             uses: 0,
@@ -539,7 +538,7 @@ impl Live {
             .ok_or("the fault setup snapshot is missing")?;
         for index in start..actions.len() {
             self.branch(last, &actions[..=index])?;
-            let (observation, sealed) = self.run_action(index)?;
+            let (observation, sealed) = self.run_action(actions, index)?;
             let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
             };
@@ -573,7 +572,7 @@ impl Live {
             }
         };
         self.branch(parent, &next)?;
-        let (observation, sealed) = self.run_action(prefix.len())?;
+        let (observation, sealed) = self.run_action(&next, prefix.len())?;
         if let Some((snap, moment)) = sealed {
             self.remember(next, snap, moment)?;
         }
@@ -597,7 +596,9 @@ impl Live {
         let Some(index) = actions.len().checked_sub(1) else {
             return Ok(Vec::new());
         };
-        let Some(perturb) = action_delta(actions[index], self.windows.window(index)).perturb else {
+        let Some(perturb) =
+            action_delta(actions[index], self.windows.window(actions, index)?).perturb
+        else {
             return Ok(Vec::new());
         };
         let fault = fault_policy::HostFault::decode(&perturb.fault)
@@ -609,9 +610,10 @@ impl Live {
 
     fn run_action(
         &mut self,
+        actions: &[FaultAction],
         index: usize,
     ) -> Result<(FaultObservations, Option<(SnapId, u64)>), String> {
-        let deadline = self.windows.deadline(index);
+        let deadline = self.windows.window(actions, index)?.1;
         self.horizons_run = self.horizons_run.saturating_add(1);
         let stop = match self.session.run_until(deadline) {
             Ok(stop) => stop,
@@ -672,6 +674,7 @@ impl Live {
             .map_err(|error| format!("SDK events: {error}"))?;
         let moment = events.last().map_or(0, |(moment, _, _)| *moment);
         let capture = decode_sdk_events(&events)?;
+        capture.check_infrastructure_status()?;
         Ok(FaultObservations::new(moment, &capture, stop))
     }
 }
@@ -692,15 +695,18 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
                 .len()
                 .saturating_mul(size_of::<u32>()),
         )
+        .saturating_add(snapshot.observation.check.as_ref().map_or(0, |check| {
+            check.points.capacity().saturating_mul(size_of::<u32>())
+        }))
 }
 
 #[must_use]
 pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> String {
     format!(
-        "faults-consonance-whole-vm-v1;session={};horizon-nanos={};\
-         action=standing-fault-delta-v1;snapshot=portable-prefix-to-vm-snapshot-v1",
+        "faults-consonance-whole-vm-v2;session={};horizon-nanos={};\
+         action=standing-fault-delta-v2;snapshot=portable-prefix-to-vm-snapshot-v1",
         identity_with_config(kernel, initramfs, &config.session_config()),
-        config.horizon_nanos,
+        crate::target::DEFAULT_HORIZON_NANOS,
     )
 }
 

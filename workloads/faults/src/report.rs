@@ -28,7 +28,7 @@ impl BugReport {
         actions: &[FaultAction],
         observations: &FaultObservations,
     ) -> Result<Self, Box<dyn Error>> {
-        let standing = fault_policy::encode_windows(&standing_windows(windows, actions))?;
+        let standing = fault_policy::encode_windows(&standing_windows(windows, actions)?)?;
         Ok(Self {
             bug,
             execution,
@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(report.horizon_nanos, DEFAULT_HORIZON_NANOS);
         assert_eq!(
             fault_policy::decode_windows(&bytes).expect("the window list decodes"),
-            standing_windows(WINDOWS, &report.actions),
+            standing_windows(WINDOWS, &report.actions).unwrap(),
             "both faulting actions reach the window list"
         );
     }
@@ -178,7 +178,10 @@ mod tests {
                 ..FaultObservations::default()
             },
         };
-        let bugs = [bug(4, FaultAction::Kill(0)), bug(9, FaultAction::Wait)];
+        let bugs = [
+            bug(4, FaultAction::Kill(0)),
+            bug(9, FaultAction::Wait(std::num::NonZeroU16::MIN)),
+        ];
         let windows = ActionWindows {
             root_seal: 7,
             ..WINDOWS

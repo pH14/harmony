@@ -93,8 +93,6 @@ mod search_cli_tests {
                 "1000",
                 "--actions",
                 "12",
-                "--horizon-ms",
-                "500",
                 "--ram-mib",
                 "1024",
                 "--knobs",
