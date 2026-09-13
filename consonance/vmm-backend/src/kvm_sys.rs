@@ -1051,6 +1051,75 @@ mod xsave_diagnostic {
         );
     }
 
+    #[test]
+    #[ignore = "hardware debug exit differential; KVM and XSAVE_REENTRY_REPORT_DIR required"]
+    fn snapshot_entry_debug_reentry_preserves_guest_observation() {
+        let root = PathBuf::from(
+            std::env::var_os("XSAVE_REENTRY_REPORT_DIR").expect("report directory required"),
+        );
+        fs::create_dir(&root).unwrap();
+        let mut failures = Vec::new();
+        for xcr0 in [3, 7] {
+            for seed in [0, 2, 3] {
+                let label = format!("xcr{xcr0}-seed{seed}");
+                let directory = root.join(&label);
+                fs::create_dir(&directory).unwrap();
+                let program = entry_program("xrstor", xcr0);
+                let mut reference = entry_fixture(&program, seed, xcr0);
+                reference.backend.prepare_snapshot().unwrap();
+                let expected = entry_endpoint(&mut reference, &directory, "reference");
+                let mut interrupted = entry_fixture(&program, seed, xcr0);
+                interrupted.backend.prepare_snapshot().unwrap();
+                let mut debug = kvm_bindings::kvm_guest_debug {
+                    control: kvm_bindings::KVM_GUESTDBG_ENABLE
+                        | kvm_bindings::KVM_GUESTDBG_USE_HW_BP,
+                    ..Default::default()
+                };
+                debug.arch.debugreg[0] = (CODE_GPA + 17) as u64;
+                debug.arch.debugreg[7] = 0x401;
+                interrupted.backend.vcpu.set_guest_debug(&debug).unwrap();
+                // SAFETY: the fixture owns the live vCPU and run mapping; the debug exit is read only after ioctl return.
+                assert_eq!(
+                    unsafe { raw_kvm_run(interrupted.backend.vcpu.as_raw_fd()) },
+                    0
+                );
+                // SAFETY: the stopped vCPU's mapped run page is live and the exit reason is initialized by KVM_RUN.
+                let reason = unsafe { (*interrupted.backend.run).exit_reason };
+                assert_eq!(reason, kvm_bindings::KVM_EXIT_DEBUG);
+                let stopped = retain_entry(&mut interrupted, &directory, "debug-stop");
+                assert_eq!(stopped.state.regs.rip, (CODE_GPA + 17) as u64);
+                assert!(
+                    stopped.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN]
+                        .iter()
+                        .all(|byte| *byte == 0)
+                );
+                interrupted
+                    .backend
+                    .vcpu
+                    .set_guest_debug(&Default::default())
+                    .unwrap();
+                let actual = entry_endpoint(&mut interrupted, &directory, "resumed");
+                let report = format!(
+                    "label={label}\nreference_guest_bv={}\nresumed_guest_bv={}\ncomplete_endpoint_equal={}\nram_equal={}\nstate_equal={}\n",
+                    header(&expected.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN]).0,
+                    header(&actual.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN]).0,
+                    expected == actual,
+                    expected.ram == actual.ram,
+                    expected.state == actual.state
+                );
+                fs::write(directory.join("report.txt"), &report).unwrap();
+                println!("{report}");
+                if expected != actual {
+                    failures.push(label);
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "debug reentry differences: {failures:?}"
+        );
+    }
+
     const RAM_LEN: usize = 0x4000;
     const CODE_GPA: usize = 0x1000;
     const MMIO_GPA: u64 = 0xFEE0_0080;

@@ -171,3 +171,18 @@ the guest output itself. `XSAVE_ENTRY_REPORT_DIR` must name a fresh directory;
 raw KVM XSAVE images, state dumps, RAM, and each comparison result are retained.
 The matrix continues through comparison failures to report all seed/mode cases.
 It does not assume raw presence stays constant across actual guest execution.
+
+The additional `snapshot_entry_debug_reentry_preserves_guest_observation`
+diagnostic inserts a hardware execution breakpoint between guest XRSTOR-to-init
+and XSAVE. It retains the stopped and resumed state and compares the complete
+endpoint, including guest RAM, with uninterrupted execution. This intervention
+is not yet qualified as equivalent to arbitrary host interruption. The hardware
+gate runs both this diagnostic and the entry/restore differential on one fixed
+allowed CPU, alongside the original unrestricted differential, to distinguish
+placement effects without replacing first-failure evidence.
+
+The current same-core-type restriction is insufficient for every XSAVE sequence:
+a fixed P-core debug-entry witness changes the guest-written header, and hosted
+AMD reuse can change that header despite equal final modeled CPU state. Snapshot
+consistency remains under investigation; preparation is not a proven universal
+fixed point.
