@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 fn main() -> std::process::ExitCode {
     let result =
@@ -21,9 +24,13 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const PROBE_RAM: usize = 128 * 1024 * 1024;
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
 const PROBE_RAM: usize = 128 * 1024 * 1024;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const PROBE_SEED: u64 = 0x4e4f_5641_5f43_4931;
@@ -31,21 +38,35 @@ const PROBE_SEED: u64 = 0x4e4f_5641_5f43_4931;
 const PROBE_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
     no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
     nox2apic hpet=disable harmony_pvclock rdinit=/init";
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+#[cfg(target_arch = "aarch64")]
 const PROBE_CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-type ProbeVmm = vmm_core::vmm::Vmm<Box<dyn vmm_backend::Backend<A = vmm_backend::X86>>>;
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-type ProbeVmm = vmm_core::vmm::Vmm<Box<dyn vmm_backend::Backend<A = vmm_backend::Arm64>>>;
+#[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
+type ProbeBackend = Box<dyn vmm_backend::Backend<A = vmm_backend::X86>>;
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+type ProbeBackend = Box<dyn vmm_backend::Backend<A = vmm_backend::Arm64>>;
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+type ProbeBackend = vmm_backend::HvfBackend;
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+type ProbeVmm = vmm_core::vmm::Vmm<ProbeBackend>;
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 fn boot_probe(kernel: &[u8], initramfs: &[u8]) -> Result<ProbeVmm, vmm_core::vmm::VmmError> {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     let mut vmm = vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time(
         kernel,
         initramfs,
@@ -53,8 +74,15 @@ fn boot_probe(kernel: &[u8], initramfs: &[u8]) -> Result<ProbeVmm, vmm_core::vmm
         PROBE_CMDLINE,
         PROBE_SEED,
     )?;
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     let mut vmm = vmm_core::vendor::arm64::bringup::boot_selected_control(
+        kernel,
+        initramfs,
+        PROBE_CMDLINE,
+        PROBE_RAM,
+    )?;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let mut vmm = vmm_core::vendor::arm64::bringup::boot_hvf_control(
         kernel,
         initramfs,
         PROBE_CMDLINE,
@@ -64,20 +92,26 @@ fn boot_probe(kernel: &[u8], initramfs: &[u8]) -> Result<ProbeVmm, vmm_core::vmm
     Ok(vmm)
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 struct StdioDuplex {
     input: std::io::Stdin,
     output: std::io::Stdout,
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 impl std::io::Read for StdioDuplex {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
@@ -85,10 +119,13 @@ impl std::io::Read for StdioDuplex {
     }
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 impl std::io::Write for StdioDuplex {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
@@ -100,21 +137,18 @@ impl std::io::Write for StdioDuplex {
     }
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 fn run_control_child() -> Result<(), String> {
     use control_proto::SnapId;
     use std::io::BufReader;
-    use vmm_backend::Backend;
     use vmm_core::control::{ControlServer, RestoreMode, VmmFactory};
-
-    #[cfg(target_arch = "x86_64")]
-    type HostArch = vmm_backend::X86;
-    #[cfg(target_arch = "aarch64")]
-    type HostArch = vmm_backend::Arm64;
 
     let mut args = std::env::args_os().skip(2);
     let (Some(kernel_path), Some(initramfs_path), None) = (args.next(), args.next(), args.next())
@@ -130,7 +164,7 @@ fn run_control_child() -> Result<(), String> {
         .map_err(|error| format!("control child boot: {error:?}"))?;
     let factory_kernel = kernel;
     let factory_initramfs = initramfs;
-    let factory: VmmFactory<Box<dyn Backend<A = HostArch>>> =
+    let factory: VmmFactory<ProbeBackend> =
         Box::new(move || boot_probe(&factory_kernel, &factory_initramfs));
     let mut server = ControlServer::new(live, factory);
     server.set_restore_mode(RestoreMode::Memcpy);
@@ -189,17 +223,23 @@ fn run_control_child() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 type ChildReply = Result<(u32, Result<control_proto::Reply, String>), String>;
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 struct ChildSession {
     child: std::process::Child,
@@ -211,10 +251,13 @@ struct ChildSession {
     pid: u32,
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 impl ChildSession {
     fn spawn(
@@ -392,10 +435,13 @@ impl ChildSession {
     }
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 impl Drop for ChildSession {
     fn drop(&mut self) {
@@ -411,19 +457,25 @@ impl Drop for ChildSession {
     }
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 struct OracleArtifacts {
     directory: std::path::PathBuf,
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 impl OracleArtifacts {
     #[allow(clippy::disallowed_methods)]
@@ -454,10 +506,13 @@ impl OracleArtifacts {
     }
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 impl Drop for OracleArtifacts {
     fn drop(&mut self) {
@@ -465,10 +520,13 @@ impl Drop for OracleArtifacts {
     }
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 fn boot_memory_kib(console: &str) -> Result<(u64, u64), String> {
     let normalized = console.replace('\r', "");
@@ -498,9 +556,14 @@ fn boot_memory_kib(console: &str) -> Result<(u64, u64), String> {
 
 #[cfg(all(
     test,
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+    any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            not(miri)
+        ),
+        all(target_os = "macos", target_arch = "aarch64", not(miri))
+    )
 ))]
 mod tests {
     use super::boot_memory_kib;
@@ -525,10 +588,13 @@ mod tests {
     }
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 fn run() -> Result<(), String> {
     use control_proto::{
@@ -536,11 +602,6 @@ fn run() -> Result<(), String> {
     };
     use environment::input_spec::InputSpec as EnvSpec;
     use std::{fmt::Write as _, time::Instant};
-    #[cfg(target_arch = "aarch64")]
-    use vmm_backend::Arm64 as HostArch;
-    use vmm_backend::Backend;
-    #[cfg(target_arch = "x86_64")]
-    use vmm_backend::X86 as HostArch;
     #[cfg(target_arch = "aarch64")]
     use vmm_core::vendor::arm64::board;
     #[cfg(target_arch = "x86_64")]
@@ -551,7 +612,7 @@ fn run() -> Result<(), String> {
         snapshot::DEFAULT_MAX_CHAIN_LEN,
     };
 
-    type Server = ControlServer<Box<dyn Backend<A = HostArch>>>;
+    type Server = ControlServer<ProbeBackend>;
     #[cfg(target_arch = "x86_64")]
     const RAM: usize = 128 * 1024 * 1024;
     #[cfg(target_arch = "aarch64")]
@@ -1131,7 +1192,7 @@ fn run() -> Result<(), String> {
         server: &mut Server,
         base: SnapId,
         profile: &mut ProbeProfile,
-        cold_factory: &dyn Fn() -> Result<Server, String>,
+        _cold_factory: &dyn Fn() -> Result<Server, String>,
         kernel_path: &std::path::Path,
         initramfs_path: &std::path::Path,
     ) -> Result<(), String> {
@@ -1574,28 +1635,85 @@ fn run() -> Result<(), String> {
             }
             drop(expected_artifact);
             let parent_artifact = export_snapshot(server, edge.parent)?;
-            let mut cold = cold_factory()?;
-            let mut cold_profile = ProbeProfile::new(true);
-            match drive(&mut cold, &Request::Hello(server_caps()), &mut cold_profile)? {
-                Reply::Hello(caps) if caps == server_caps() => {}
-                other => return Err(format!("cold hello returned {other:?}")),
-            }
-            let imported = cold
-                .import_portable_snapshot(parent_artifact.as_slice())
-                .map_err(|error| format!("cold portable import failed: {error}"))?;
+            #[cfg(target_os = "linux")]
+            let (fresh_hash, fresh_state, fresh_artifact, fresh_fallbacks) = {
+                let mut cold = _cold_factory()?;
+                let mut cold_profile = ProbeProfile::new(true);
+                match drive(&mut cold, &Request::Hello(server_caps()), &mut cold_profile)? {
+                    Reply::Hello(caps) if caps == server_caps() => {}
+                    other => return Err(format!("cold hello returned {other:?}")),
+                }
+                let imported = cold
+                    .import_portable_snapshot(parent_artifact.as_slice())
+                    .map_err(|error| format!("cold portable import failed: {error}"))?;
+                let (_, fresh_hash, _) = oracle_action(
+                    &mut cold,
+                    imported.id,
+                    edge.payload.clone(),
+                    false,
+                    &mut cold_profile,
+                )?;
+                let fresh_state = cold
+                    .vmm()
+                    .ok_or("cold oracle VM unavailable")?
+                    .state_blob()
+                    .map_err(|error| format!("fresh state export failed: {error}"))?;
+                let (_, fresh_artifact) = snapshot_current(&mut cold, &mut cold_profile)?;
+                (
+                    fresh_hash,
+                    fresh_state,
+                    fresh_artifact,
+                    cold.in_place_fallbacks(),
+                )
+            };
+            #[cfg(target_os = "macos")]
+            let (fresh_hash, fresh_state, fresh_artifact, fresh_fallbacks) = {
+                let cold_artifacts = OracleArtifacts::new()?;
+                let parent_path = cold_artifacts.file("parent.bin");
+                let fresh_path = cold_artifacts.file("fresh.bin");
+                let fresh_state_path = cold_artifacts.file("fresh-state.bin");
+                std::fs::write(&parent_path, &parent_artifact)
+                    .map_err(|error| format!("cold parent export failed: {error}"))?;
+                let mut cold = ChildSession::spawn(
+                    kernel_path,
+                    initramfs_path,
+                    &parent_path,
+                    &fresh_path,
+                    Some(&fresh_state_path),
+                )?;
+                match cold.request(&Request::Hello(server_caps()))? {
+                    Reply::Hello(caps) if caps == server_caps() => {}
+                    other => return Err(format!("cold child hello returned {other:?}")),
+                }
+                match cold.request(&Request::Branch {
+                    snap: SnapId(1),
+                    env: payload_env(vec![edge.payload.clone(), vec![0, 1]]),
+                })? {
+                    Reply::Unit => {}
+                    other => return Err(format!("cold child branch returned {other:?}")),
+                }
+                child_run_to_boundary(&mut cold)?;
+                let fresh_hash = match cold.request(&Request::Hash {
+                    scope: HashScope::Whole,
+                })? {
+                    Reply::Hash(hash) => hash,
+                    other => return Err(format!("cold child hash returned {other:?}")),
+                };
+                match cold.request(&Request::Snapshot)? {
+                    Reply::Snapshot { id, .. } if id.0 > 1 => {}
+                    Reply::Snapshot { id, .. } => {
+                        return Err(format!("cold child snapshot reused imported id {}", id.0));
+                    }
+                    other => return Err(format!("cold child snapshot returned {other:?}")),
+                }
+                cold.finish()?;
+                let fresh_state = std::fs::read(&fresh_state_path)
+                    .map_err(|error| format!("cold child state was not readable: {error}"))?;
+                let fresh_artifact = std::fs::read(&fresh_path)
+                    .map_err(|error| format!("cold child export was not readable: {error}"))?;
+                (fresh_hash, fresh_state, fresh_artifact, 0)
+            };
             drop(parent_artifact);
-            let (_, fresh_hash, _) = oracle_action(
-                &mut cold,
-                imported.id,
-                edge.payload.clone(),
-                false,
-                &mut cold_profile,
-            )?;
-            let fresh_state = cold
-                .vmm()
-                .ok_or("cold oracle VM unavailable")?
-                .state_blob()
-                .map_err(|error| format!("fresh state export failed: {error}"))?;
             if fresh_state != in_place_state {
                 retain_oracle_mismatch("cold-state", &in_place_state, &fresh_state)?;
                 return Err(format!(
@@ -1604,7 +1722,6 @@ fn run() -> Result<(), String> {
                 ));
             }
             drop(in_place_state);
-            let (_, fresh_artifact) = snapshot_current(&mut cold, &mut cold_profile)?;
             if fresh_artifact != in_place_artifact {
                 retain_oracle_mismatch("cold-portable", &in_place_artifact, &fresh_artifact)?;
                 return Err(format!(
@@ -1613,7 +1730,7 @@ fn run() -> Result<(), String> {
                 ));
             }
             temporary_snapshots.push(in_place_snap);
-            if fresh_hash != replay_hash || cold.in_place_fallbacks() != 0 {
+            if fresh_hash != replay_hash || fresh_fallbacks != 0 {
                 return Err(format!(
                     "restore-oracle in-place/cold mismatch at comparison {}",
                     fresh_equal + 1
@@ -2037,6 +2154,7 @@ fn run() -> Result<(), String> {
     let mut profile = ProbeProfile::new(
         restore_oracle || std::env::var_os("HARMONY_CONSONANCE_PROFILE").is_some(),
     );
+    #[cfg(target_os = "linux")]
     if !std::path::Path::new("/dev/kvm").exists() {
         return Err("/dev/kvm is unavailable on this runner".to_string());
     }
@@ -2049,7 +2167,7 @@ fn run() -> Result<(), String> {
     let live = boot(&kernel, &initramfs).map_err(|error| format!("boot compose: {error:?}"))?;
     let factory_kernel = kernel.clone();
     let factory_initramfs = initramfs.clone();
-    let factory: VmmFactory<Box<dyn Backend<A = HostArch>>> =
+    let factory: VmmFactory<ProbeBackend> =
         Box::new(move || boot(&factory_kernel, &factory_initramfs));
     let mut server = ControlServer::new(live, factory);
     let fresh_components = server
@@ -2142,7 +2260,7 @@ fn run() -> Result<(), String> {
                 .map_err(|error| format!("cold boot compose: {error:?}"))?;
             let cold_kernel = kernel.clone();
             let cold_initramfs = initramfs.clone();
-            let factory: VmmFactory<Box<dyn Backend<A = HostArch>>> =
+            let factory: VmmFactory<ProbeBackend> =
                 Box::new(move || boot(&cold_kernel, &cold_initramfs));
             let mut cold = ControlServer::new(live, factory);
             cold.set_restore_mode(RestoreMode::Memcpy);
@@ -2181,12 +2299,17 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(not(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 )))]
 fn main() -> std::process::ExitCode {
-    eprintln!("kvm_x86_nova_probe requires Linux KVM on x86-64 or arm64 outside Miri");
+    eprintln!(
+        "kvm_x86_nova_probe requires Linux KVM on x86-64 or arm64, or macOS HVF on Apple Silicon, outside Miri"
+    );
     std::process::ExitCode::from(2)
 }

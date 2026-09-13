@@ -15,6 +15,25 @@ covering VMST, guest RAM, service state, and control state. The backend README
 documents the generic KVM restoration invariant; this workload-specific
 validation remains with its tool.
 
+On Apple Silicon macOS the same binary boots the arm64 Nova image through
+Hypervisor.framework. Build it for the native target and pass the arm64
+`Image-nova` and `initramfs-nova.cpio.gz` pair:
+
+```sh
+cargo build --locked --release --target aarch64-apple-darwin \
+  --manifest-path workloads/tools/Cargo.toml --bin kvm_x86_nova_probe
+codesign --force --sign - \
+  --entitlements consonance/vmm-backend/hvf.entitlements.plist \
+  workloads/tools/target/aarch64-apple-darwin/release/kvm_x86_nova_probe
+HARMONY_CONSONANCE_RESTORE_ORACLE=1 \
+  workloads/tools/target/aarch64-apple-darwin/release/kvm_x86_nova_probe \
+  path/to/Image-nova path/to/initramfs-nova.cpio.gz
+```
+
+The HVF path keeps the eight cold controls in separate child processes because
+Hypervisor.framework provides one VM per process; the root server and the D
+source/destination controls retain their existing process identities.
+
 After those controls, the oracle runs one additional comparison at the
 historical comparison-16 edge. A reaches the boundary without an additional
 oracle capture or state read at S, while normal production checkpoints remain
