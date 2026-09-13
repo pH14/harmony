@@ -40,6 +40,7 @@ RUN go mod download "github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK
     && mkdir -p /opt/harmony/symbols \
     && NO_DAPPER=true GIT_TAG="$GIT_TAG" COMMIT="$COMMIT" TREE_STATE=clean DIRTY= \
        STATIC_BUILD=false ANTITHESIS_SYMBOLS_DIR=/opt/harmony/symbols \
+       ANTITHESIS_INSTRUMENT=github.com/k3s-io,k8s.io \
        ANTITHESIS_SYMBOL_PREFIX=k3s-server \
        ./scripts/build \
     && sha256sum bin/k3s bin/cni > /tmp/k3s-build-first.sha256 \
@@ -47,6 +48,7 @@ RUN go mod download "github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK
     && rm -f bin/k3s bin/k3s-* bin/kubectl bin/containerd bin/crictl bin/ctr bin/cni \
     && NO_DAPPER=true GIT_TAG="$GIT_TAG" COMMIT="$COMMIT" TREE_STATE=clean DIRTY= \
        STATIC_BUILD=false ANTITHESIS_SYMBOLS_DIR=/opt/harmony/symbols \
+       ANTITHESIS_INSTRUMENT=github.com/k3s-io,k8s.io \
        ANTITHESIS_SYMBOL_PREFIX=k3s-server \
        ./scripts/build \
     && sha256sum --check /tmp/k3s-build-first.sha256 \
@@ -57,7 +59,9 @@ RUN go mod download "github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK
     && test -s "$1" \
     && shard_dir="$go_cache/antithesis-symbols" \
     && for package_index in \
-         'github.com%k3s-io%k3s%*.pkg'; do \
+         'github.com%k3s-io%k3s%*.pkg' \
+         'github.com%k3s-io%kine%*.pkg' \
+         'k8s.io%kubernetes%*.pkg'; do \
          set -- "$shard_dir"/$package_index; \
          if ! test -s "$1"; then \
            echo "missing instrumented K3s package index matching $package_index in $shard_dir" >&2; \

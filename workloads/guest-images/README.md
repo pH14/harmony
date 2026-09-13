@@ -65,14 +65,15 @@ can load the bridge. Unconfigured instrumented processes yield through
 `/dev/harmony` at the bridge's fixed callback cadence, providing deterministic
 scheduling points during exit-free Go execution.
 
-The instrumented scope uses the toolexec default: the K3s main module and local
-module replacements, excluding downloaded dependencies. The build requires K3s
-coverage shard indexes and symbol tables before packaging. Its Alpine builder
-package closure, cloned helper commits, downloaded charts, Go base image, K3s
-source, and Go modules are pinned or hash checked. A local patch to the pinned
-Antithesis toolexec maps temporary rewrite directories through Go's `-trimpath`;
-the K3s source patch applies the same rule to its temporary CNI build. Two clean
-compilation-cache builds must produce the same server and CNI hashes.
+The instrumented scope includes the K3s ecosystem and Kubernetes packages while
+excluding their generic downloaded dependencies. The build requires coverage
+shard indexes and symbol tables from K3s, Kine, and Kubernetes before packaging.
+Its Alpine builder package closure, cloned helper commits, downloaded charts, Go
+base image, K3s source, and Go modules are pinned or hash checked. A local patch
+to the pinned Antithesis toolexec maps temporary rewrite directories through
+Go's `-trimpath`; the K3s source patch applies the same rule to its temporary CNI
+build. Two clean compilation-cache builds must produce the same server and CNI
+hashes.
 
 The arm64 platform kernel recipe owns its generic namespace and filesystem
 configuration. Workload packages do not select a named platform kernel profile.
