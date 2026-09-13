@@ -789,11 +789,55 @@ mod xsave_diagnostic {
     const XSTATE_BV: std::ops::Range<usize> = 512..520;
     const XCOMP_BV: std::ops::Range<usize> = 520..528;
     const SSE_XMM0: std::ops::Range<usize> = 160..176;
+    const GUEST_XSAVE_GPA: usize = 0x2000;
+    const GUEST_XSAVE_PAGE_LEN: usize = 0x1000;
+    const GUEST_XSAVE_LEN: usize = 0x340;
+    const X87_FCW: std::ops::Range<usize> = 0..2;
+    const X87_FSW: std::ops::Range<usize> = 2..4;
+    const X87_FTW: std::ops::Range<usize> = 4..5;
+    const X87_ST: std::ops::Range<usize> = 32..160;
+    const _: () = assert!(GUEST_XSAVE_GPA + GUEST_XSAVE_PAGE_LEN <= RAM_LEN);
     const ACTIVE_XMM0: [u8; 16] = [
         0xA5, 0x5A, 0x3C, 0xC3, 0x96, 0x69, 0x78, 0x87, 0x12, 0x21, 0x34, 0x43, 0x56, 0x65, 0xAB,
         0xBA,
     ];
     const ZERO_XMM0: [u8; 16] = [0; 16];
+
+    #[derive(Clone, Copy)]
+    enum BoundaryObservation {
+        LegacyGetSetGet,
+        Unobserved,
+        GetOnly,
+        GetSetGet,
+    }
+
+    impl BoundaryObservation {
+        fn name(self) -> &'static str {
+            match self {
+                Self::LegacyGetSetGet => "get-set-get",
+                Self::Unobserved => "unobserved",
+                Self::GetOnly => "get-only",
+                Self::GetSetGet => "get-set-get",
+            }
+        }
+
+        fn guest_program(self) -> bool {
+            !matches!(self, Self::LegacyGetSetGet)
+        }
+    }
+
+    struct GuestPhaseResult {
+        raw_endpoint: Vec<u8>,
+        canonical_endpoint: Vec<u8>,
+        endpoint_bv: u64,
+        endpoint_xcomp_bv: u64,
+        endpoint_restore_bv: Option<u64>,
+        guest_xsave: Vec<u8>,
+        canonical_guest_xsave: Vec<u8>,
+        guest_bv: u64,
+        guest_xcomp_bv: u64,
+        guest_restore_bv: Option<u64>,
+    }
 
     struct MmapRam {
         ptr: *mut libc::c_void,
@@ -909,6 +953,34 @@ mod xsave_diagnostic {
         ]
     }
 
+    fn guest_fninit_xsave_program() -> Vec<u8> {
+        let mmio = mmio_program();
+        let mut program = Vec::with_capacity(33);
+        program.extend_from_slice(&[0xDB, 0xE3]);
+        program.extend_from_slice(&mmio[..mmio.len() - 1]);
+        program.extend_from_slice(&[
+            0x66,
+            0xB8,
+            0x03,
+            0x00,
+            0x00,
+            0x00,
+            0x66,
+            0x31,
+            0xD2,
+            0x67,
+            0x0F,
+            0xAE,
+            0x25,
+            GUEST_XSAVE_GPA as u8,
+            (GUEST_XSAVE_GPA >> 8) as u8,
+            (GUEST_XSAVE_GPA >> 16) as u8,
+            (GUEST_XSAVE_GPA >> 24) as u8,
+            0xF4,
+        ]);
+        program
+    }
+
     fn header(image: &[u8]) -> (u64, u64) {
         assert!(
             image.len() >= XCOMP_BV.end,
@@ -971,20 +1043,97 @@ mod xsave_diagnostic {
         )
     }
 
+    fn range_equal(a: &[u8], b: &[u8], range: std::ops::Range<usize>) -> bool {
+        a[range.clone()] == b[range]
+    }
+
+    fn x87_equal(a: &[u8], b: &[u8]) -> bool {
+        range_equal(a, b, 0..24) && range_equal(a, b, 32..160)
+    }
+
+    fn restore_bv_text(value: Option<Option<u64>>) -> String {
+        value.map_or_else(|| "not-observed".to_owned(), |value| format!("{value:?}"))
+    }
+
+    fn append_pairwise<F>(
+        output: &mut String,
+        key: &str,
+        unobserved: &GuestPhaseResult,
+        get_only: &GuestPhaseResult,
+        get_set_get: &GuestPhaseResult,
+        equal: F,
+    ) where
+        F: Fn(&GuestPhaseResult, &GuestPhaseResult) -> bool,
+    {
+        writeln!(
+            output,
+            "unobserved_vs_get_only_{key}={}",
+            equal(unobserved, get_only)
+        )
+        .expect("comparison write");
+        writeln!(
+            output,
+            "unobserved_vs_get_set_get_{key}={}",
+            equal(unobserved, get_set_get)
+        )
+        .expect("comparison write");
+        writeln!(
+            output,
+            "get_only_vs_get_set_get_{key}={}",
+            equal(get_only, get_set_get)
+        )
+        .expect("comparison write");
+    }
+
     fn run_variant(report_root: &Path, active_sse: bool) {
         let label = if active_sse {
             "active-initialized-sse"
         } else {
             "zero-sse-control"
         };
+        run_variant_with_observation(
+            report_root,
+            active_sse,
+            BoundaryObservation::LegacyGetSetGet,
+            label,
+        );
+    }
+
+    fn run_guest_phase(
+        report_root: &Path,
+        observation: BoundaryObservation,
+        label: &'static str,
+    ) -> GuestPhaseResult {
+        run_variant_with_observation(report_root, true, observation, label)
+            .expect("guest phase must return a result")
+    }
+
+    fn run_variant_with_observation(
+        report_root: &Path,
+        active_sse: bool,
+        observation: BoundaryObservation,
+        label: &'static str,
+    ) -> Option<GuestPhaseResult> {
         let report_dir = report_root.join(label);
-        fs::create_dir_all(&report_dir)
-            .unwrap_or_else(|e| panic!("create {} failed: {e}", report_dir.display()));
+        if observation.guest_program() {
+            fs::create_dir(&report_dir)
+                .unwrap_or_else(|e| panic!("create fresh {} failed: {e}", report_dir.display()));
+        } else {
+            fs::create_dir_all(&report_dir)
+                .unwrap_or_else(|e| panic!("create {} failed: {e}", report_dir.display()));
+        }
 
         let mut ram =
             MmapRam::new(RAM_LEN).unwrap_or_else(|e| panic!("guest RAM mmap failed: {e}"));
-        ram.as_mut_bytes()[CODE_GPA..CODE_GPA + mmio_program().len()]
-            .copy_from_slice(&mmio_program());
+        let program = if observation.guest_program() {
+            guest_fninit_xsave_program()
+        } else {
+            mmio_program().to_vec()
+        };
+        ram.as_mut_bytes()[CODE_GPA..CODE_GPA + program.len()].copy_from_slice(&program);
+        if observation.guest_program() {
+            ram.as_mut_bytes()[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_PAGE_LEN].fill(0);
+        }
 
         let mut backend =
             KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed for {label}: {e}"));
@@ -1039,6 +1188,10 @@ mod xsave_diagnostic {
 
         let cpuid1 = cpuid_words(&backend, 1, 0);
         let cpuid_d0 = cpuid_words(&backend, 0xD, 0);
+        assert_eq!(
+            cpuid_d0[2] as usize, GUEST_XSAVE_LEN,
+            "diagnostic guest CPUID XSAVE size changed"
+        );
         let xcr0_before_run = backend_xcr0_value(&backend);
         assert_eq!(
             xcr0_before_run, 3,
@@ -1065,44 +1218,71 @@ mod xsave_diagnostic {
         );
 
         let fd = backend.vcpu.as_raw_fd();
-        let raw_before_1 = unsafe {
-            // SAFETY: the owned vCPU is stopped at the checked MMIO boundary and the capability
-            // sized buffer is retained until KVM finishes the direct ioctl.
-            raw_get_xsave2(fd, xsave_len)
-        }
-        .unwrap_or_else(|e| panic!("first raw KVM_GET_XSAVE2 failed for {label}: {e}"));
-        let raw_before_2 = unsafe {
-            // SAFETY: the vCPU remains stopped and the second independent buffer has the same
-            // kernel-reported capability size as the first direct read.
-            raw_get_xsave2(fd, xsave_len)
-        }
-        .unwrap_or_else(|e| panic!("second raw KVM_GET_XSAVE2 failed for {label}: {e}"));
-        let mut canonical_before_1 = raw_before_1.clone();
-        let mut canonical_before_2 = raw_before_2.clone();
-        let canonical_restore_bv_1 = canonicalize_xsave_with_restore_bv(&mut canonical_before_1);
-        let canonical_restore_bv_2 = canonicalize_xsave_with_restore_bv(&mut canonical_before_2);
-        write_image(&report_dir, "raw-before-1.bin", &raw_before_1);
-        write_image(&report_dir, "raw-before-2.bin", &raw_before_2);
-        write_image(&report_dir, "canonical-before-1.bin", &canonical_before_1);
-        write_image(&report_dir, "canonical-before-2.bin", &canonical_before_2);
+        let mut buffered_images: Vec<(&str, Vec<u8>)> = Vec::new();
+        let mut raw_before_1 = None;
+        let mut raw_before_2 = None;
+        let mut canonical_before_1 = None;
+        let mut canonical_before_2 = None;
+        let mut canonical_restore_bv_1 = None;
+        let mut canonical_restore_bv_2 = None;
+        let mut raw_after_set = None;
+        let mut canonical_restore_bv_after_set = None;
+        if !matches!(observation, BoundaryObservation::Unobserved) {
+            let raw = unsafe {
+                // SAFETY: the owned vCPU is stopped at the checked MMIO boundary and the capability
+                // sized buffer is retained until KVM finishes the direct ioctl.
+                raw_get_xsave2(fd, xsave_len)
+            }
+            .unwrap_or_else(|e| panic!("first raw KVM_GET_XSAVE2 failed for {label}: {e}"));
+            let mut canonical = raw.clone();
+            let restore_bv = canonicalize_xsave_with_restore_bv(&mut canonical);
+            buffered_images.push(("raw-before-1.bin", raw.clone()));
+            buffered_images.push(("canonical-before-1.bin", canonical.clone()));
+            raw_before_1 = Some(raw);
+            canonical_before_1 = Some(canonical);
+            canonical_restore_bv_1 = Some(restore_bv);
 
-        unsafe {
-            // SAFETY: the stopped vCPU owns the direct KVM XSAVE target and `raw_before_1` has
-            // the complete capability-sized image returned by KVM_GET_XSAVE2.
-            raw_set_xsave(fd, &raw_before_1)
+            let raw = unsafe {
+                // SAFETY: the vCPU remains stopped and the second independent buffer has the same
+                // kernel-reported capability size as the first direct read.
+                raw_get_xsave2(fd, xsave_len)
+            }
+            .unwrap_or_else(|e| panic!("second raw KVM_GET_XSAVE2 failed for {label}: {e}"));
+            let mut canonical = raw.clone();
+            let restore_bv = canonicalize_xsave_with_restore_bv(&mut canonical);
+            buffered_images.push(("raw-before-2.bin", raw.clone()));
+            buffered_images.push(("canonical-before-2.bin", canonical.clone()));
+            raw_before_2 = Some(raw);
+            canonical_before_2 = Some(canonical);
+            canonical_restore_bv_2 = Some(restore_bv);
         }
-        .unwrap_or_else(|e| panic!("raw KVM_SET_XSAVE failed for {label}: {e}"));
-        let raw_after_set = unsafe {
-            // SAFETY: the vCPU is still stopped after KVM_SET_XSAVE and the output buffer is
-            // capability-sized and exclusively owned by this test.
-            raw_get_xsave2(fd, xsave_len)
+
+        if matches!(
+            observation,
+            BoundaryObservation::LegacyGetSetGet | BoundaryObservation::GetSetGet
+        ) {
+            let before = raw_before_1
+                .as_ref()
+                .expect("SET phase requires a preceding XSAVE GET");
+            unsafe {
+                // SAFETY: the stopped vCPU owns the direct KVM XSAVE target and `before` has the
+                // complete capability-sized image returned by KVM_GET_XSAVE2.
+                raw_set_xsave(fd, before)
+            }
+            .unwrap_or_else(|e| panic!("raw KVM_SET_XSAVE failed for {label}: {e}"));
+            let raw = unsafe {
+                // SAFETY: the vCPU is still stopped after KVM_SET_XSAVE and the output buffer is
+                // capability-sized and exclusively owned by this test.
+                raw_get_xsave2(fd, xsave_len)
+            }
+            .unwrap_or_else(|e| panic!("raw post-SET KVM_GET_XSAVE2 failed for {label}: {e}"));
+            let mut canonical = raw.clone();
+            let restore_bv = canonicalize_xsave_with_restore_bv(&mut canonical);
+            buffered_images.push(("raw-after-set.bin", raw.clone()));
+            buffered_images.push(("canonical-after-set.bin", canonical.clone()));
+            raw_after_set = Some(raw);
+            canonical_restore_bv_after_set = Some(restore_bv);
         }
-        .unwrap_or_else(|e| panic!("raw post-SET KVM_GET_XSAVE2 failed for {label}: {e}"));
-        let mut canonical_after_set = raw_after_set.clone();
-        let canonical_restore_bv_after_set =
-            canonicalize_xsave_with_restore_bv(&mut canonical_after_set);
-        write_image(&report_dir, "raw-after-set.bin", &raw_after_set);
-        write_image(&report_dir, "canonical-after-set.bin", &canonical_after_set);
 
         backend
             .retire_pending_completion()
@@ -1120,13 +1300,230 @@ mod xsave_diagnostic {
         let mut canonical_endpoint = raw_endpoint.clone();
         let canonical_restore_bv_endpoint =
             canonicalize_xsave_with_restore_bv(&mut canonical_endpoint);
+
+        let guest_xsave = observation.guest_program().then(|| {
+            ram.as_mut_bytes()[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN].to_vec()
+        });
+        let mut canonical_guest_xsave = None;
+        let mut guest_restore_bv = None;
+        if let Some(image) = guest_xsave.as_ref() {
+            let mut canonical = image.clone();
+            guest_restore_bv = canonicalize_xsave_with_restore_bv(&mut canonical);
+            canonical_guest_xsave = Some(canonical);
+        }
+        for (name, image) in buffered_images {
+            write_image(&report_dir, name, &image);
+        }
         write_image(&report_dir, "raw-endpoint.bin", &raw_endpoint);
         write_image(&report_dir, "canonical-endpoint.bin", &canonical_endpoint);
+        if let Some(image) = guest_xsave.as_ref() {
+            write_image(&report_dir, "guest-xsave.bin", image);
+        }
+        if let Some(image) = canonical_guest_xsave.as_ref() {
+            write_image(&report_dir, "canonical-guest-xsave.bin", image);
+        }
+
+        let xcr0_endpoint = backend_xcr0_value(&backend);
+        let before_1_header = raw_before_1.as_ref().map(|image| header(image));
+        let before_2_header = raw_before_2.as_ref().map(|image| header(image));
+        let after_set_header = raw_after_set.as_ref().map(|image| header(image));
+        let (endpoint_bv, endpoint_xcomp) = header(&raw_endpoint);
+        let guest_header = guest_xsave.as_ref().map(|image| header(image));
+        let mut metadata = String::new();
+        writeln!(
+            metadata,
+            "phase=stopped-at-mmio-write-exit-before-retirement"
+        )
+        .expect("metadata write");
+        writeln!(metadata, "continuation=retire-mmio-then-one-run-to-hlt").expect("metadata write");
+        writeln!(metadata, "mode={label}").expect("metadata write");
+        writeln!(metadata, "boundary_observation={}", observation.name()).expect("metadata write");
+        writeln!(
+            metadata,
+            "guest_program={}",
+            if observation.guest_program() {
+                "fninit-before-mmio-xsave-after-retirement"
+            } else {
+                "mmio-only"
+            }
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "boundary_io_until_continuation={}",
+            match observation {
+                BoundaryObservation::LegacyGetSetGet => "raw-get-get-set-get",
+                BoundaryObservation::Unobserved => "none",
+                BoundaryObservation::GetOnly => "raw-get-get",
+                BoundaryObservation::GetSetGet => "raw-get-get-set-get",
+            }
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "continuation_guest_sequence={}",
+            if observation.guest_program() {
+                "integer-setup,xsave,halt"
+            } else {
+                "halt"
+            }
+        )
+        .expect("metadata write");
+        writeln!(metadata, "xsave_len={xsave_len}").expect("metadata write");
+        writeln!(metadata, "xcr0_before_run={xcr0_before_run:#x}").expect("metadata write");
+        writeln!(metadata, "xcr0_endpoint={xcr0_endpoint:#x}").expect("metadata write");
+        writeln!(metadata, "xcr0_source=KVM_GET_XCRS").expect("metadata write");
+        writeln!(metadata, "cpuid_source=KVM_GET_CPUID2").expect("metadata write");
+        writeln!(metadata, "guest_visible_cpuid1={}", words_hex(cpuid1)).expect("metadata write");
+        writeln!(metadata, "guest_visible_cpuid_d0={}", words_hex(cpuid_d0))
+            .expect("metadata write");
+        writeln!(
+            metadata,
+            "before1_raw_bv={}",
+            before_1_header.map_or_else(
+                || "not-observed".to_owned(),
+                |header| format!("{:#x}", header.0)
+            )
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "before1_raw_xcomp_bv={}",
+            before_1_header.map_or_else(
+                || "not-observed".to_owned(),
+                |header| format!("{:#x}", header.1)
+            )
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "before2_raw_bv={}",
+            before_2_header.map_or_else(
+                || "not-observed".to_owned(),
+                |header| format!("{:#x}", header.0)
+            )
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "before2_raw_xcomp_bv={}",
+            before_2_header.map_or_else(
+                || "not-observed".to_owned(),
+                |header| format!("{:#x}", header.1)
+            )
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "after_set_raw_bv={}",
+            after_set_header.map_or_else(
+                || "not-observed".to_owned(),
+                |header| format!("{:#x}", header.0)
+            )
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "after_set_raw_xcomp_bv={}",
+            after_set_header.map_or_else(
+                || "not-observed".to_owned(),
+                |header| format!("{:#x}", header.1)
+            )
+        )
+        .expect("metadata write");
+        writeln!(metadata, "endpoint_raw_bv={endpoint_bv:#x}").expect("metadata write");
+        writeln!(metadata, "endpoint_raw_xcomp_bv={endpoint_xcomp:#x}").expect("metadata write");
+        writeln!(
+            metadata,
+            "before_reads_equal={}",
+            raw_before_1
+                .as_ref()
+                .zip(raw_before_2.as_ref())
+                .map(|(first, second)| first == second)
+                .map_or("not-observed", |equal| if equal { "true" } else { "false" })
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_before_reads_equal={}",
+            canonical_before_1
+                .as_ref()
+                .zip(canonical_before_2.as_ref())
+                .map(|(first, second)| first == second)
+                .map_or("not-observed", |equal| if equal { "true" } else { "false" })
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_restore_bv_1={}",
+            restore_bv_text(canonical_restore_bv_1)
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_restore_bv_2={}",
+            restore_bv_text(canonical_restore_bv_2)
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_restore_bv_after_set={}",
+            restore_bv_text(canonical_restore_bv_after_set)
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_restore_bv_endpoint={canonical_restore_bv_endpoint:?}"
+        )
+        .expect("metadata write");
+        if let Some(image) = guest_xsave.as_ref() {
+            let (guest_bv, guest_xcomp) = header(image);
+            writeln!(metadata, "guest_xsave_bv={guest_bv:#x}").expect("metadata write");
+            writeln!(metadata, "guest_xsave_xcomp_bv={guest_xcomp:#x}").expect("metadata write");
+            writeln!(metadata, "guest_xsave_restore_bv={guest_restore_bv:?}")
+                .expect("metadata write");
+            writeln!(metadata, "guest_xsave_x87_fcw={:02x?}", &image[X87_FCW])
+                .expect("metadata write");
+            writeln!(metadata, "guest_xsave_x87_fsw={:02x?}", &image[X87_FSW])
+                .expect("metadata write");
+            writeln!(
+                metadata,
+                "guest_xsave_x87_ftw_empty={}",
+                image[X87_FTW].iter().all(|&byte| byte == 0)
+            )
+            .expect("metadata write");
+            writeln!(metadata, "guest_xsave_x87_st_payload_len={}", X87_ST.len())
+                .expect("metadata write");
+            writeln!(metadata, "guest_xsave_xmm0={:02x?}", &image[SSE_XMM0])
+                .expect("metadata write");
+        }
+        writeln!(
+            metadata,
+            "guest_xsave_source={}",
+            if observation.guest_program() {
+                "guest XSAVE immediately after MMIO retirement"
+            } else {
+                "none"
+            }
+        )
+        .expect("metadata write");
+        fs::write(report_dir.join("metadata.txt"), metadata).unwrap_or_else(|e| {
+            panic!(
+                "write {} failed: {e}",
+                report_dir.join("metadata.txt").display()
+            )
+        });
 
         let expected_xmm0 = if active_sse { &ACTIVE_XMM0 } else { &ZERO_XMM0 };
-        assert_xmm0_bytes(&raw_before_1, expected_xmm0, "first boundary read", label);
-        assert_xmm0_bytes(&raw_before_2, expected_xmm0, "second boundary read", label);
-        assert_xmm0_bytes(&raw_after_set, expected_xmm0, "raw SET round trip", label);
+        if let Some(raw) = raw_before_1.as_ref() {
+            assert_xmm0_bytes(raw, expected_xmm0, "first boundary read", label);
+        }
+        if let Some(raw) = raw_before_2.as_ref() {
+            assert_xmm0_bytes(raw, expected_xmm0, "second boundary read", label);
+        }
+        if let Some(raw) = raw_after_set.as_ref() {
+            assert_xmm0_bytes(raw, expected_xmm0, "raw SET round trip", label);
+        }
         assert_xmm0_bytes(
             &raw_endpoint,
             expected_xmm0,
@@ -1142,74 +1539,44 @@ mod xsave_diagnostic {
             2,
             "{label} executed more than the boundary and one continuation"
         );
-        let xcr0_endpoint = backend_xcr0_value(&backend);
+        if let Some(image) = guest_xsave.as_ref() {
+            assert_eq!(
+                &image[X87_FCW],
+                &[0x7f, 0x03],
+                "{label} guest XSAVE did not retain FNINIT's control word"
+            );
+            assert!(
+                image[X87_FSW].iter().all(|&byte| byte == 0),
+                "{label} guest XSAVE did not retain FNINIT's status word"
+            );
+            assert!(
+                image[X87_FTW].iter().all(|&byte| byte == 0),
+                "{label} guest XSAVE did not retain FNINIT's empty x87 tag word"
+            );
+            assert_xmm0_bytes(image, expected_xmm0, "guest XSAVE", label);
+        }
 
-        let (before_bv_1, before_xcomp_1) = header(&raw_before_1);
-        let (before_bv_2, before_xcomp_2) = header(&raw_before_2);
-        let (after_set_bv, after_set_xcomp) = header(&raw_after_set);
-        let (endpoint_bv, endpoint_xcomp) = header(&raw_endpoint);
-        let mut metadata = String::new();
-        writeln!(
-            metadata,
-            "phase=stopped-at-mmio-write-exit-before-retirement"
-        )
-        .expect("metadata write");
-        writeln!(metadata, "continuation=retire-mmio-then-one-run-to-hlt").expect("metadata write");
-        writeln!(metadata, "mode={label}").expect("metadata write");
-        writeln!(metadata, "xsave_len={xsave_len}").expect("metadata write");
-        writeln!(metadata, "xcr0_before_run={xcr0_before_run:#x}").expect("metadata write");
-        writeln!(metadata, "xcr0_endpoint={xcr0_endpoint:#x}").expect("metadata write");
-        writeln!(metadata, "xcr0_source=KVM_GET_XCRS").expect("metadata write");
-        writeln!(metadata, "cpuid_source=KVM_GET_CPUID2").expect("metadata write");
-        writeln!(metadata, "guest_visible_cpuid1={}", words_hex(cpuid1)).expect("metadata write");
-        writeln!(metadata, "guest_visible_cpuid_d0={}", words_hex(cpuid_d0))
-            .expect("metadata write");
-        writeln!(metadata, "before1_raw_bv={before_bv_1:#x}").expect("metadata write");
-        writeln!(metadata, "before1_raw_xcomp_bv={before_xcomp_1:#x}").expect("metadata write");
-        writeln!(metadata, "before2_raw_bv={before_bv_2:#x}").expect("metadata write");
-        writeln!(metadata, "before2_raw_xcomp_bv={before_xcomp_2:#x}").expect("metadata write");
-        writeln!(metadata, "after_set_raw_bv={after_set_bv:#x}").expect("metadata write");
-        writeln!(metadata, "after_set_raw_xcomp_bv={after_set_xcomp:#x}").expect("metadata write");
-        writeln!(metadata, "endpoint_raw_bv={endpoint_bv:#x}").expect("metadata write");
-        writeln!(metadata, "endpoint_raw_xcomp_bv={endpoint_xcomp:#x}").expect("metadata write");
-        writeln!(
-            metadata,
-            "before_reads_equal={}",
-            raw_before_1 == raw_before_2
-        )
-        .expect("metadata write");
-        writeln!(
-            metadata,
-            "canonical_before_reads_equal={}",
-            canonical_before_1 == canonical_before_2
-        )
-        .expect("metadata write");
-        writeln!(
-            metadata,
-            "canonical_restore_bv_1={canonical_restore_bv_1:?}"
-        )
-        .expect("metadata write");
-        writeln!(
-            metadata,
-            "canonical_restore_bv_2={canonical_restore_bv_2:?}"
-        )
-        .expect("metadata write");
-        writeln!(
-            metadata,
-            "canonical_restore_bv_after_set={canonical_restore_bv_after_set:?}"
-        )
-        .expect("metadata write");
-        writeln!(
-            metadata,
-            "canonical_restore_bv_endpoint={canonical_restore_bv_endpoint:?}"
-        )
-        .expect("metadata write");
-        fs::write(report_dir.join("metadata.txt"), metadata).unwrap_or_else(|e| {
-            panic!(
-                "write {} failed: {e}",
-                report_dir.join("metadata.txt").display()
-            )
-        });
+        if observation.guest_program() {
+            Some(GuestPhaseResult {
+                raw_endpoint,
+                canonical_endpoint,
+                endpoint_bv,
+                endpoint_xcomp_bv: endpoint_xcomp,
+                endpoint_restore_bv: canonical_restore_bv_endpoint,
+                guest_xsave: guest_xsave.expect("guest program must capture guest XSAVE"),
+                canonical_guest_xsave: canonical_guest_xsave
+                    .expect("guest program must canonicalize guest XSAVE"),
+                guest_bv: guest_header
+                    .expect("guest program must capture guest XSAVE header")
+                    .0,
+                guest_xcomp_bv: guest_header
+                    .expect("guest program must capture guest XSAVE header")
+                    .1,
+                guest_restore_bv,
+            })
+        } else {
+            None
+        }
     }
 
     #[test]
@@ -1227,6 +1594,132 @@ mod xsave_diagnostic {
             .unwrap_or_else(|e| panic!("create {} failed: {e}", report_root.display()));
         run_variant(&report_root, true);
         run_variant(&report_root, false);
+        let unobserved = run_guest_phase(
+            &report_root,
+            BoundaryObservation::Unobserved,
+            "guest-fninit-unobserved",
+        );
+        let get_only = run_guest_phase(
+            &report_root,
+            BoundaryObservation::GetOnly,
+            "guest-fninit-get-only",
+        );
+        let get_set_get = run_guest_phase(
+            &report_root,
+            BoundaryObservation::GetSetGet,
+            "guest-fninit-get-set-get",
+        );
+        let mut comparison = String::new();
+        writeln!(
+            comparison,
+            "guest_program=fninit-before-mmio-xsave-after-retirement"
+        )
+        .expect("comparison write");
+        writeln!(comparison, "phases=unobserved,get-only,get-set-get").expect("comparison write");
+        append_pairwise(
+            &mut comparison,
+            "guest_xsave_raw_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.guest_xsave == second.guest_xsave,
+        );
+        append_pairwise(
+            &mut comparison,
+            "guest_xsave_canonical_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.canonical_guest_xsave == second.canonical_guest_xsave,
+        );
+        append_pairwise(
+            &mut comparison,
+            "guest_x87_raw_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| x87_equal(&first.guest_xsave, &second.guest_xsave),
+        );
+        append_pairwise(
+            &mut comparison,
+            "guest_x87_canonical_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| x87_equal(&first.canonical_guest_xsave, &second.canonical_guest_xsave),
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_raw_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.raw_endpoint == second.raw_endpoint,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_canonical_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.canonical_endpoint == second.canonical_endpoint,
+        );
+        append_pairwise(
+            &mut comparison,
+            "guest_restore_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.guest_restore_bv == second.guest_restore_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_restore_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_restore_bv == second.endpoint_restore_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "guest_raw_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.guest_bv == second.guest_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "guest_raw_xcomp_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.guest_xcomp_bv == second.guest_xcomp_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_raw_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_bv == second.endpoint_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_raw_xcomp_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_xcomp_bv == second.endpoint_xcomp_bv,
+        );
+        fs::write(report_root.join("guest-fninit-comparison.txt"), comparison).unwrap_or_else(
+            |e| {
+                panic!(
+                    "write {} failed: {e}",
+                    report_root.join("guest-fninit-comparison.txt").display()
+                )
+            },
+        );
     }
 
     const PAE_RAM_LEN: usize = 4 * 1024 * 1024;

@@ -68,11 +68,15 @@ before guest RAM or backend state is changed.
 The ignored Linux x86 test `kvm_sys::xsave_diagnostic::raw_xsave_presence_phases`
 is a bounded XSAVE provenance diagnostic. Set `XSAVE_RAW_REPORT_DIR` and run
 `cargo test --locked --release -p vmm-backend --lib kvm_sys::xsave_diagnostic::raw_xsave_presence_phases -- --ignored --exact --nocapture`
-on a KVM host. It records complete raw `KVM_GET_XSAVE2` images at a stopped
+on a KVM host, using a fresh report directory for each run. It records complete raw `KVM_GET_XSAVE2` images at a stopped
 MMIO boundary, canonicalized copies, a raw SET/GET round trip, and one HLT
 continuation for an initialized SSE case and an otherwise identical zero-SSE
-control. The report is evidence about the host/KVM path and does not change
-snapshot semantics.
+control. It then starts three fresh VMs with guest `FNINIT` before the same
+MMIO boundary and integer setup followed by guest `XSAVE` before any further
+x87 operation: unobserved, two repeated boundary GETs, and GET/SET/GET. These phases retain
+raw and canonical guest and vCPU images, including restore-BV values, so raw
+presence differences remain visible. The report is evidence about the
+host/KVM path and does not change snapshot semantics.
 
 The ignored Linux x86 test
 `kvm_sys::xsave_diagnostic::x86_pae_sregs2_phase_observations` is a bounded
