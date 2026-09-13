@@ -2757,11 +2757,7 @@ mod tests {
         let current = snap(&mut s);
         assert_ne!(current, target);
 
-        for (gpa, byte) in [
-            (3 * 4096, 0xA5_u8),
-            (1 * 4096, 0x5A_u8),
-            (3 * 4096, 0x3C_u8),
-        ] {
+        for (gpa, byte) in [(3 * 4096, 0xA5_u8), (4096, 0x5A_u8), (3 * 4096, 0x3C_u8)] {
             s.vmm
                 .as_mut()
                 .unwrap()
@@ -2851,7 +2847,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .apply_effect(&EnvHostEffect::XorMemory {
-                gpa: 1 * 4096,
+                gpa: 4096,
                 bytes: vec![0x5A],
             })
             .unwrap();
