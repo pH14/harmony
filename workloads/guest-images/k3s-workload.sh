@@ -7,19 +7,11 @@
 # kube-proxy DNAT -> the server pod, all intra-guest), runs the
 # gen_random_uuid()/clock_timestamp() workload, and streams it to ttyS0.
 #
-# **Why this works under the deterministic VMM.**
-# kubelet + containerd + apiserver + scheduler + controller-manager + kube-proxy +
-# flannel are all Go/multi-goroutine services that busy-spin and depend on
-# preemption. The V-time LAPIC timer PREEMPTS a busy-spinning thread at the
-# seed-deterministic V-time deadline (run_with_deadline), the idle-HLT resume warps to the
-# next deadline, and the xAPIC MMIO is routed to the deterministic LAPIC
-# model. So the Go schedulers run, timers/watches/leases fire, and the
-# cluster converges — deterministically, because every preemption instant is a
-# pure function of the seed. We therefore use NORMAL blocking waits (`sleep`-paced
-# readiness polls): the timer now advances even while this init blocks, so a
-# `sleep` actually wakes — this is legitimate sequencing, NOT a
-# preemption-dodging cooperative shim (that is banned; the k8s services run for
-# real, driven by the real preemption primitive).
+# Virtual time advances at modeled exits, including the controlled kernel's
+# syscall, context-switch, and idle-poll ticks. Idle HLT can advance to a timer
+# deadline. Blocking readiness polls use that clock; exit-free userspace
+# computation has no general preemption guarantee. The qualification must
+# establish actual cluster completion and same-seed output equality.
 #
 # **Serial discipline (determinism gate).** k3s' own verbose log is kept in
 # /run/k3s.log (NOT streamed to ttyS0): k8s logs are full of durations/goroutine
@@ -148,7 +140,7 @@ log "starting k3s server ($(k3s --version 2>/dev/null | $BB head -1)) — log ->
 
 # --- start the k3s server (the whole control plane + agent in one process) ----
 # Foreground sub-processes (containerd, kubelet goroutines, apiserver, scheduler,
-# controllers, kube-proxy, flannel) are now driven by V-time preemption. Its
+# controllers, kube-proxy, flannel) use the guest virtual clock. The server's
 # verbose log stays in a file; only our deterministic markers reach ttyS0.
 # runc on the outer OCI rootfs: the default pivot_root EINVALs ("rootfs on a
 # ramdisk-like root whose mount has no parent"). Make containerd's runc-v2

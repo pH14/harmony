@@ -5,19 +5,9 @@
 # **official `postgres` image** runs deterministically in the guest as a real
 # OCI container).
 #
-# Why runc is invoked directly rather than through dockerd:
-# We bake the FULL Docker static stack (dockerd + containerd + containerd-shim +
-# runc) into the rootfs, but the deterministic run drives the container with
-# **`runc` directly** — the same low-level OCI runtime dockerd/containerd invoke
-# under the hood. The reason: under consonance's single-vCPU / V-time model
-# (V-time advances only at VM-exits), the long-running **dockerd daemon
-# busy-spins with no VM-exit** (its Go runtime spin-waits on its containerd over
-# gRPC), which freezes V-time → the LAPIC tick never fires → nothing is ever
-# scheduled → deadlock. runc avoids this entirely: it is NOT a long-running
-# daemon — it sets up the container (namespaces, cgroups, rootfs) and runs to
-# completion, so there is no idle daemon to spin. The container it runs is the
-# identical official-image container docker would run (`docker run` is just
-# dockerd → containerd → runc + image management; we keep the image + runc).
+# The fixture packages the Docker static stack and launches the official image
+# through its bundled runc. The qualification exercises nested OCI execution;
+# it does not start the dockerd daemon.
 #
 # The rootfs is a static busybox + the static Docker bundle + an **OCI bundle**
 # (the official postgres image's rootfs, extracted from the registry export, +

@@ -19,17 +19,11 @@
 #     gen_random_uuid()/clock_timestamp() workload, streaming
 #     `row|i|count|sum|uuid|t` to its pod log -> ttyS0.
 #
-# **Why k3s makes progress (the determinism is preemption-driven).**
-# kubelet + containerd + apiserver + scheduler + controller-manager + kube-proxy +
-# flannel are all Go/multi-goroutine services that busy-spin and depend on
-# preemption. Under the V-time VMM the LAPIC timer **preempts** a busy-spinning
-# thread at the seed-deterministic V-time deadline (run_with_deadline) and the idle-HLT
-# resume warps to the next deadline, so the Go schedulers run and the
-# cluster converges — deterministically, because every preemption instant is a
-# pure function of the seed. k3s mints its certs/tokens/SA-keys/object-UIDs from
-# getrandom -> the seeded CRNG and stamps every resource/lease/event from the
-# V-time clock, so two same-seed boots are bit-identical (incl. the workload's
-# "random" UUIDs + wall-clock timestamps).
+# Virtual time advances at modeled exits, including the controlled kernel's
+# syscall, context-switch, and idle-poll ticks. Idle HLT can advance to a timer
+# deadline. Exit-free userspace computation has no general preemption guarantee.
+# K3s reads entropy from the seeded CRNG and time from the virtual clock; the
+# qualification checks actual completion and same-seed serial equality.
 #
 # **No kernel change.** The Kata container-host bzImage already builds in
 # the full k8s surface (BRIDGE/VETH/VXLAN/NF_CONNTRACK/NF_NAT/NF_TABLES/IP_VS/
