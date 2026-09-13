@@ -71,13 +71,13 @@ is a bounded XSAVE provenance diagnostic. Set `XSAVE_RAW_REPORT_DIR` and run
 on a KVM host, using a fresh report directory for each run. It records complete raw `KVM_GET_XSAVE2` images at a stopped
 MMIO boundary, canonicalized copies, a raw SET/GET round trip, and one HLT
 continuation for an initialized SSE case and an otherwise identical zero-SSE
-control. It then starts three fresh VMs with guest `FNINIT` before the same
+control. It then runs two sets of three fresh VMs with guest `FNINIT` before the same
 MMIO boundary and integer setup followed by guest `XSAVE` before any further
 x87 operation: unobserved, two repeated boundary GETs, and GET/SET/GET. These phases retain
 raw and canonical guest and vCPU images, including restore-BV values, so raw
 presence differences remain visible. Each observation set runs in two separate
 fresh-VM x87 cohorts with the same `XSTATE_BV=3`, restore presence, `FCW=0x037f`,
-zero status, and empty tag word before `FNINIT`: a payload-preservation cohort
+zero status, and nonempty tags before `FNINIT`: a payload-preservation cohort
 seeds ten `0xa7` bytes in each ST slot with zero padding, while a zero-state
 cohort seeds ten zero bytes with zero padding. The first cohort records whether
 an owned payload survives the guest's `FNINIT`; the second supplies an
