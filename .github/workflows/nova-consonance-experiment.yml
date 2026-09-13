@@ -822,6 +822,11 @@ jobs:
               consonance/harmony-linux/dl/k3s-pause-image.tar \
               >nested-runtime-report/workload-inputs.sha256 2>/dev/null || true
           fi
+          sudo chown -R "$(id -u):$(id -g)" nested-runtime-report 2>/dev/null || true
+          if [[ -d consonance/harmony-linux/build/oci-images ]]; then
+            sudo chown -R "$(id -u):$(id -g)" \
+              consonance/harmony-linux/build/oci-images 2>/dev/null || true
+          fi
       - name: Verify workload image layouts
         run: |
           set -euo pipefail

@@ -142,11 +142,14 @@ case "$iptables_machine" in
         exit 1
         ;;
 esac
-iptables_cflags="-O2 -march=x86-64 -mtune=generic -static -fno-pie -no-pie -Wl,--build-id=none -ffile-prefix-map=$IPTABLES_SRC=/usr/src/iptables-$IPTABLES_VERSION"
+iptables_cflags="-O2 -march=x86-64 -mtune=generic -fno-pie -ffile-prefix-map=$IPTABLES_SRC=/usr/src/iptables-$IPTABLES_VERSION"
+iptables_ldflags="-static -fno-pie -no-pie -Wl,--build-id=none"
+iptables_linkflags="$iptables_ldflags -all-static"
 echo "== k3s image: building static iptables $IPTABLES_VERSION ($iptables_cc)"
 (
     cd "$IPTABLES_SRC"
-    CC="$iptables_cc" CPPFLAGS="-I$IPTABLES_HEADERS/include" CFLAGS="$iptables_cflags" \
+    CC="$iptables_cc" CPPFLAGS="-I$IPTABLES_HEADERS/include" \
+        CFLAGS="$iptables_cflags" LDFLAGS="$iptables_ldflags" \
         ./configure \
         --prefix="$IPTABLES_PREFIX" \
         --disable-nftables \
@@ -157,8 +160,8 @@ echo "== k3s image: building static iptables $IPTABLES_VERSION ($iptables_cc)"
         --disable-bpf-compiler \
         --disable-nfsynproxy \
         >"$BUILD_ROOT/iptables-configure.log"
-    make -j"$(nproc)" >"$BUILD_ROOT/iptables-build.log"
-    make install >"$BUILD_ROOT/iptables-install.log"
+    make -j"$(nproc)" LDFLAGS="$iptables_linkflags" >"$BUILD_ROOT/iptables-build.log"
+    make install LDFLAGS="$iptables_linkflags" >"$BUILD_ROOT/iptables-install.log"
 )
 IPTABLES_MULTI=$IPTABLES_PREFIX/sbin/xtables-legacy-multi
 [ -x "$IPTABLES_MULTI" ] || {
