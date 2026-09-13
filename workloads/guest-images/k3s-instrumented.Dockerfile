@@ -41,7 +41,7 @@ RUN go mod download "github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK
        ANTITHESIS_SYMBOL_PREFIX=k3s-server \
        ./scripts/build \
     && sha256sum bin/k3s bin/cni > /tmp/k3s-build-first.sha256 \
-    && rm -rf "$go_cache" /opt/harmony/symbols/* bin/cni \
+    && rm -rf "$go_cache" /opt/harmony/symbols/* bin/k3s bin/cni \
     && NO_DAPPER=true GIT_TAG="$GIT_TAG" COMMIT="$COMMIT" TREE_STATE=clean DIRTY= \
        STATIC_BUILD=false ANTITHESIS_SYMBOLS_DIR=/opt/harmony/symbols \
        ANTITHESIS_INSTRUMENT=github.com,k8s.io,sigs.k8s.io,go.etcd.io,google.golang.org,golang.org \
