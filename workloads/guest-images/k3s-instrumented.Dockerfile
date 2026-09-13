@@ -52,9 +52,13 @@ RUN go mod download "github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK
     && test -x dist/artifacts/k3s \
     && set -- /opt/harmony/symbols/*.sym.tsv \
     && test -s "$1" \
-    && grep -R -F -q '/github.com/k3s-io/kubernetes@' /opt/harmony/symbols \
-    && grep -R -F -q '/github.com/k3s-io/containerd/v2@' /opt/harmony/symbols \
-    && grep -R -F -q '/github.com/k3s-io/kine@' /opt/harmony/symbols \
+    && shard_dir=/root/.cache/go-build/antithesis-symbols \
+    && set -- "$shard_dir"/k8s.io%kubernetes%*.pkg \
+    && test -s "$1" \
+    && set -- "$shard_dir"/github.com%containerd%containerd%v2%*.pkg \
+    && test -s "$1" \
+    && set -- "$shard_dir"/github.com%k3s-io%kine%*.pkg \
+    && test -s "$1" \
     && grep -a -q antithesishq/antithesis-sdk-go/instrumentation bin/k3s \
     && sha256sum bin/k3s > /opt/harmony/instrumented-server.sha256 \
     && mkdir -p /opt/harmony/runtime/usr/lib \
