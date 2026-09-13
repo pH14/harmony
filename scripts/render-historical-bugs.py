@@ -111,16 +111,19 @@ def replay_command(case: dict) -> str:
     version = case.get("arms", {}).get("vulnerable", {}).get("version", "?")
     run = case.get("run", {})
     knobs = " ".join(f"{key}={value}" for key, value in run.get("knobs", {}).items())
-    return (
-        f"`harmony search --package faults IMAGE-{version}.oci "
-        f"--backend consonance "
-        f"--kernel bzImage-{case.get('kernel_profile', '?')} "
-        f"--base-initramfs initramfs.cpio.gz "
-        f"--fault-agent fault-agent --replay OUT/first-bug-input.json --repeat 1 "
-        f"--horizon-ms {run.get('horizon_ms', '?')} "
-        f"--ram-mib {run.get('ram_mib', '?')} "
-        f"--knobs \"{knobs}\" --out OUT`"
-    )
+    command = [
+        "harmony search --package faults",
+        f"IMAGE-{version}.oci",
+        "--backend consonance",
+        f"--kernel bzImage-{case.get('kernel_profile', '?')}",
+        "--base-initramfs initramfs.cpio.gz",
+        "--fault-agent fault-agent --replay OUT/first-bug-input.json --repeat 1",
+        f"--ram-mib {run.get('ram_mib', '?')}",
+    ]
+    if knobs:
+        command.append(f'--knobs "{knobs}"')
+    command.append("--out OUT")
+    return f"`{' '.join(command)}`"
 
 
 def render(cases: list[dict], reports: dict) -> str:

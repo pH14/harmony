@@ -47,8 +47,8 @@ reports and uploads the result, so the committed table lags the last CI run.
 <!-- render-historical-bugs:begin -->
 | bug | versions | status | CI | discovery | latest replay | latest control | executions to first hit | replay command |
 |---|---|---|---|---|---|---|---|---|
-| [etcd-3.5-inconsistency](etcd-3.5-inconsistency/README.md) | 3.5.2 / 3.5.3 | documented | deferred: the instrumented etcd image and workload are on codex/etcd-v35-bug-museum; merge that feature before enabling this case | guided | — | — | — | — |
-| [postgres-cic-corruption](postgres-cic-corruption/README.md) | 14.3 / 14.4 | reproduced | runnable | guided | — | — | — | `harmony search --package faults IMAGE-14.3.oci --backend consonance --kernel bzImage-faultlab --base-initramfs initramfs.cpio.gz --fault-agent fault-agent --replay OUT/first-bug-input.json --repeat 1 --horizon-ms 500 --ram-mib 1024 --knobs "faultlab.churn_rows=20 faultlab.churn_slices=2 faultlab.churn_rounds=1200" --out OUT` |
+| [etcd-3.5-inconsistency](etcd-3.5-inconsistency/README.md) | 3.5.2 / 3.5.3 | documented | runnable | guided | — | — | — | `harmony search --package faults IMAGE-3.5.2.oci --backend consonance --kernel bzImage-faultlab --base-initramfs initramfs.cpio.gz --fault-agent fault-agent --replay OUT/first-bug-input.json --repeat 1 --ram-mib 1024 --out OUT` |
+| [postgres-cic-corruption](postgres-cic-corruption/README.md) | 14.3 / 14.4 | reproduced | runnable | guided | — | — | — | `harmony search --package faults IMAGE-14.3.oci --backend consonance --kernel bzImage-faultlab --base-initramfs initramfs.cpio.gz --fault-agent fault-agent --replay OUT/first-bug-input.json --repeat 1 --ram-mib 1024 --knobs "faultlab.churn_rows=20 faultlab.churn_slices=2 faultlab.churn_rounds=1200" --out OUT` |
 <!-- render-historical-bugs:end -->
 
 The panel runs on the current default-branch build at 06:00 UTC and by manual

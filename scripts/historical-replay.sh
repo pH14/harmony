@@ -15,7 +15,7 @@ set -euo pipefail
 mode=${1:?mode is required}
 input=${2:?input is required}
 
-: "${CASE_ID:?}" "${HORIZON_MS:?}" "${RAM_MIB:?}"
+: "${CASE_ID:?}" "${RAM_MIB:?}"
 : "${VULNERABLE_VERSION:?}" "${CONTROL_VERSION:?}" "${IMAGE_PREFIX:?}"
 : "${SOFTWARE_NAME:?}" "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
 
@@ -95,7 +95,6 @@ replay_arm() {
         --fault-agent "${agent}" \
         --replay "${input}" \
         --repeat "${repeats}" \
-        --horizon-ms "${HORIZON_MS}" \
         --ram-mib "${RAM_MIB}" \
         --knobs "${knobs}" \
         --out "${out}" >"${console}" 2>&1 || status=$?

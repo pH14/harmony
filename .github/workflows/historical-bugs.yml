@@ -144,7 +144,7 @@ jobs:
 
   images:
     name: Build ${{ matrix.id }} workload images
-    needs: [manifest, guest]
+    needs: manifest
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.manifest.outputs.runnable_matrix) }}
@@ -230,7 +230,6 @@ jobs:
           SOFTWARE_NAME: ${{ matrix.software }}
           WORKLOAD_VERSION: ${{ matrix.workload_version }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
-          HORIZON_MS: ${{ matrix.horizon_ms }}
           RAM_MIB: ${{ matrix.ram_mib }}
           SEED: ${{ matrix.seed }}
           WORKERS: ${{ matrix.workers }}
@@ -292,7 +291,6 @@ jobs:
           VULNERABLE_VERSION: ${{ matrix.vulnerable_version }}
           CONTROL_VERSION: ${{ matrix.control_version }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
-          HORIZON_MS: ${{ matrix.horizon_ms }}
           RAM_MIB: ${{ matrix.ram_mib }}
           KNOBS: ${{ matrix.knobs }}
           ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}
@@ -329,7 +327,6 @@ jobs:
           VULNERABLE_VERSION: ${{ matrix.vulnerable_version }}
           CONTROL_VERSION: ${{ matrix.control_version }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
-          HORIZON_MS: ${{ matrix.horizon_ms }}
           RAM_MIB: ${{ matrix.ram_mib }}
           KNOBS: ${{ matrix.knobs }}
           ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}

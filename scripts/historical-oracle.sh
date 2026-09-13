@@ -129,6 +129,18 @@ case "${mode}" in
                 fi
                 check replay-inconclusive \
                     "all(.replays[]; (.sometimes // []) | index(${evidence}) != null)"
+                check infra-failure 'all(.replays[]; has("check"))'
+                exercised='.check.disturbance_generation > 0'
+                [[ "${mode}" == sample ]] && exercised=true
+                check replay-inconclusive \
+                    "all(.replays[]; .check == null or (
+                        .check.run > 0
+                        and (${exercised})
+                        and .check.start_generation == .check.disturbance_generation
+                        and .check.end_generation == .check.disturbance_generation
+                        and .check.pending_faults == 0
+                        and ((.check.points // []) | index(${evidence})) != null
+                    ))"
                 check replay-inconclusive \
                     'all(.replays[]; .bug == false and ((.violations // []) | length) == 0)'
                 if [[ "${mode}" == sample ]]; then

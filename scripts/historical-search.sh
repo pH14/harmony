@@ -9,12 +9,12 @@
 set -euo pipefail
 
 : "${CASE_ID:?}" "${ARM:?}" "${WORKLOAD_VERSION:?}" "${IMAGE_PREFIX:?}"
-: "${SOFTWARE_NAME:?}" "${HORIZON_MS:?}" "${RAM_MIB:?}"
+: "${SOFTWARE_NAME:?}" "${RAM_MIB:?}"
 : "${SEED:?}" "${WORKERS:?}" "${ACTIONS:?}" "${EXECUTIONS:?}" "${WALL_MINUTES:?}"
 : "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
 knobs=${KNOBS-}
 
-for name in HORIZON_MS RAM_MIB SEED WORKERS ACTIONS EXECUTIONS WALL_MINUTES; do
+for name in RAM_MIB SEED WORKERS ACTIONS EXECUTIONS WALL_MINUTES; do
     value=${!name}
     [[ "${value}" =~ ^[1-9][0-9]*$ ]] || {
         echo "historical-search: infra-failure (${name} must be positive)" >&2
@@ -56,7 +56,6 @@ timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
     --workers "${WORKERS}" \
     --executions "${EXECUTIONS}" \
     --actions "${ACTIONS}" \
-    --horizon-ms "${HORIZON_MS}" \
     --ram-mib "${RAM_MIB}" \
     --knobs "${knobs}" \
     --wall-minutes "${WALL_MINUTES}" \
@@ -79,6 +78,7 @@ if [[ ! -s "${report}" ]]; then
 fi
 
 watchdog_cutoffs=0
+execution_failures=0
 for structured in "${report}" "${out}/campaign-summary.json"; do
     [[ -s "${structured}" ]] || continue
     candidate=$(jq -r '
@@ -106,11 +106,31 @@ for structured in "${report}" "${out}/campaign-summary.json"; do
     if (( candidate > watchdog_cutoffs )); then
         watchdog_cutoffs=${candidate}
     fi
+    candidate=$(jq -r '
+        if has("execution_failures") then .execution_failures else 0 end
+    ' "${structured}") || {
+        echo "historical-search: infra-failure (invalid execution failure count in ${structured})" >&2
+        exit 1
+    }
+    [[ "${candidate}" =~ ^[0-9]+$ ]] || {
+        echo "historical-search: infra-failure (execution failure count is not an integer)" >&2
+        exit 1
+    }
+    if (( execution_failures != 0 && candidate != 0 && candidate != execution_failures )); then
+        echo "historical-search: infra-failure (report and summary disagree on execution failures)" >&2
+        exit 1
+    fi
+    if (( candidate > execution_failures )); then
+        execution_failures=${candidate}
+    fi
 done
 
 outcome=pass
 if (( status != 0 )); then
     outcome="fail: infra-failure (CLI exit ${status})"
+    verdict=1
+elif (( execution_failures > watchdog_cutoffs )); then
+    outcome="fail: infra-failure (execution failures ${execution_failures} exceed watchdog cutoffs ${watchdog_cutoffs})"
     verdict=1
 elif ! outcome=$("${oracle}" search "${report}" "${ARM}"); then
     verdict=1
@@ -119,7 +139,7 @@ else
 fi
 
 execution_status=complete
-if (( status != 0 )); then
+if (( status != 0 || execution_failures > watchdog_cutoffs )); then
     execution_status=infra_failure
 elif (( watchdog_cutoffs > 0 )); then
     execution_status=completed_with_watchdog_cutoffs
@@ -140,17 +160,19 @@ jq -n \
     --arg version "${WORKLOAD_VERSION}" --arg image_prefix "${IMAGE_PREFIX}" \
     --arg oracle "${outcome}" --arg execution_status "${execution_status}" \
     --argjson cli_exit_status "${status}" --argjson watchdog_cutoffs "${watchdog_cutoffs}" \
+    --argjson execution_failures "${execution_failures}" \
     --argjson seed "${SEED}" --argjson workers "${WORKERS}" \
     --argjson executions_budget "${EXECUTIONS}" --argjson actions "${ACTIONS}" \
-    --argjson horizon_ms "${HORIZON_MS}" --argjson ram_mib "${RAM_MIB}" \
+    --argjson ram_mib "${RAM_MIB}" \
     --argjson wall_minutes "${WALL_MINUTES}" --arg knobs "${knobs}" \
     --arg reproducer "${reproducer}" \
     '{case_id:$case_id, arm:$arm, software:$software, version:$version,
       image_prefix:$image_prefix, seed:$seed, workers:$workers,
       executions_budget:$executions_budget, actions:$actions,
-      horizon_ms:$horizon_ms, ram_mib:$ram_mib, wall_minutes:$wall_minutes,
+      ram_mib:$ram_mib, wall_minutes:$wall_minutes,
       knobs:$knobs, execution_status:$execution_status,
       cli_exit_status:$cli_exit_status, watchdog_cutoffs:$watchdog_cutoffs,
+      execution_failures:$execution_failures,
       oracle:$oracle,
       reproducer:(if $reproducer == "" then null else $reproducer end)}' \
     /dev/null >"${out}/panel-status.json"
@@ -166,7 +188,8 @@ jq -n \
         ["seed", (.seed | tostring)],
         ["workers", (.workers | tostring)],
         ["executions", (.executions | tostring)],
-        ["horizons clocked", (.horizons_clocked | tostring)],
+        ["execution ticks", (.execution_ticks | tostring)],
+        ["execution failures", (.execution_failures | tostring)],
         ["wall seconds", (.wall_seconds | tostring)],
         ["bug found", (.bug_found | tostring)],
         ["raw findings", ((.bugs // []) | length | tostring)],

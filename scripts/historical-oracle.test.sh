@@ -32,7 +32,7 @@ replay_run() {
         --argjson applied "$4" --argjson horizons "$5" '{
         run: 1, bug: $bug, stop: "Assertion", state_hash: "abc",
         violations: $violations, sometimes: $sometimes,
-        actions_applied: $applied, guest_horizons: $horizons
+        actions_applied: $applied, guest_horizons: $horizons, check: null
     }'
 }
 
@@ -65,9 +65,29 @@ expect fail 'a control replay whose detector stayed silent' \
 expect fail 'a replay answered by a cached prefix' \
     "$(replay_report "${cached}")" sample control 1 7
 
+checked=$(jq '.check = {disturbance_generation:3, run:7,
+    start_generation:3, end_generation:3, points:[24], pending_faults:0}' <<<"${clean}")
+expect pass 'continuous check completed after the final recovery' \
+    "$(replay_report "${checked}")" discovery control 1 7
+for mutation in \
+    '.check.start_generation = 2 | .check.end_generation = 2' \
+    '.check.start_generation = 2' \
+    '.check.disturbance_generation = 4' \
+    '.check.pending_faults = 1' \
+    '.check.points = []' \
+    '.check.run = 0' \
+    '.check.start_generation = 0 | .check.end_generation = 0 | .check.disturbance_generation = 0'; do
+    stale=$(jq "${mutation}" <<<"${checked}")
+    expect fail "continuous check rejects ${mutation}" \
+        "$(replay_report "${stale}")" discovery control 1 7
+done
+missing=$(jq 'del(.check)' <<<"${clean}")
+expect fail 'missing checker provenance is not a legacy fallback' \
+    "$(replay_report "${missing}")" discovery control 1 7
+
 bug() {
     jq -cn --argjson confirmed "$1" --argjson violations "$2" --argjson sometimes "$3" \
-        --argjson replay "${4:-null}" '{execution: 12, actions: ["Wait"],
+        --argjson replay "${4:-null}" '{execution: 12, actions: [{"Wait":50}],
         stop: "Assertion", violations: $violations, sometimes: $sometimes,
         state_hash: "abc", confirmed: $confirmed, replay: $replay}'
 }
