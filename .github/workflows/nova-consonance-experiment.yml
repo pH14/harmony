@@ -894,7 +894,9 @@ jobs:
               console="$report/console/${name}-${repetition}.txt"
               rm -rf "$out"
               echo "== running $name repetition $repetition"
-              if ! timeout -k 10 1200 target/release/harmony oci run "$image" \
+              # Keep the shell watchdog beyond the CLI budget so timeout runs
+              # can persist their partial serial log before the process dies.
+              if ! timeout -k 10 1260 target/release/harmony oci run "$image" \
                 --seed 20260901 --ram-mib 2048 --timeout 1200 --out "$out" \
                 2>&1 | tee "$console"; then
                 echo "FAIL: $name repetition $repetition did not complete" >&2

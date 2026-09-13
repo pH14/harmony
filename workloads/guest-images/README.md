@@ -56,6 +56,13 @@ and retain the privileges needed for nested namespaces, cgroups, network
 devices, and netfilter rules. The ARM PostgreSQL image is built natively with
 its LSE-only binary scans; a native ARM host is required for that recipe.
 
+The K3s image deliberately omits `/usr/lib/libvoidstar.so`. The pinned K3s
+binary includes the Antithesis Go SDK, which probes that path and calls `dlopen`
+when it exists. The workload image is otherwise static and has no dynamic loader,
+so installing the shared compatibility library makes K3s abort during startup;
+the canonical Harmony runtime supplies the deterministic entropy and timing
+surfaces without that SDK bridge.
+
 The arm64 platform kernel recipe owns its generic namespace and filesystem
 configuration. Workload packages do not select a named platform kernel profile.
 

@@ -196,7 +196,6 @@ mkdir -p "$K3SROOT"/{bin,sbin,etc,proc,sys,dev,tmp,root,run}
 mkdir -p "$K3SROOT/usr/local/bin" "$K3SROOT/sys/fs/cgroup" "$K3SROOT/var/lib" \
          "$K3SROOT/etc/rancher/k3s" "$K3SROOT/var/lib/rancher/k3s/agent/images" \
          "$K3SROOT/var/lib/rancher/k3s/server/manifests" "$K3SROOT/k8s"
-install_libvoidstar "$K3SROOT"
 ln -sf /run "$K3SROOT/var/run"
 
 cp "$BBOBJ/busybox" "$K3SROOT/bin/busybox"
