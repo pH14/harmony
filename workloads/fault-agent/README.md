@@ -176,3 +176,8 @@ Final kill reports can still be drained during that interval. A reported kill
 stays pending until the child is reaped; an unexplained closed transport on a
 still-live instrumented node invalidates the execution. This distinguishes a
 runtime exit between polling steps from a malformed protocol reply.
+
+The Linux transport regressions run natively in the quality workflow. They are
+ignored under Miri because the pinned interpreter does not support the socketpair
+nonblocking ioctl. Descriptor inheritance still executes its actual duplication
+and ownership path under Miri, alongside the portable library tests.
