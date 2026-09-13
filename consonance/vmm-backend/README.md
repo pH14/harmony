@@ -157,3 +157,17 @@ Within each CPUID-verified core-type pool, 15,600 complete-state comparisons pas
 across seeds `0`, `2`, and `3`, including repeated restores. Fixed-core guest XSAVE
 and full-VMM continuation tests passed on both types. This supports the tentative
 restriction; it is not a universal hardware or extended-state qualification.
+
+## XSAVE entry differential
+
+`snapshot_entry_restores_match_uninterrupted_execution` compares independently
+prepared initial states, repeated capture, capture-and-continue, cold restore,
+and restore into a vCPU dirtied by another continuation. It covers presence
+seeds 0/2/3 and XCR0 3/7 with HLT, XSAVE, and XRSTOR-to-init followed by XSAVE.
+Every endpoint comparison includes the complete modeled CPU state, raw restore
+presence, RAM (including guest-written XSAVE bytes), and exit counts. A changed
+RBX and nonzero XMM0 are the negative control; the XSAVE case must also distinguish
+the guest output itself. `XSAVE_ENTRY_REPORT_DIR` must name a fresh directory;
+raw KVM XSAVE images, state dumps, RAM, and each comparison result are retained.
+The matrix continues through comparison failures to report all seed/mode cases.
+It does not assume raw presence stays constant across actual guest execution.

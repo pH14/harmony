@@ -876,6 +876,181 @@ mod xsave_diagnostic {
         }
     }
 
+    struct EntryFixture {
+        backend: KvmBackend,
+        ram: MmapRam,
+    }
+
+    fn entry_fixture(program: &[u8], seed: u64, xcr0: u64) -> EntryFixture {
+        let mut ram = MmapRam::new(RAM_LEN).unwrap();
+        ram.as_mut_bytes()[CODE_GPA..CODE_GPA + program.len()].copy_from_slice(program);
+        ram.as_mut_bytes()[GUEST_XRSTOR_GPA + 24..GUEST_XRSTOR_GPA + 28]
+            .copy_from_slice(&0x1f80u32.to_le_bytes());
+        let mut backend = KvmBackend::new().unwrap();
+        // SAFETY: the owned aligned RAM mapping stays fixed and outlives the backend in EntryFixture.
+        unsafe { backend.map_memory(Gpa(0), ram.as_mut_bytes()).unwrap() };
+        backend.set_policy(&diagnostic_policy()).unwrap();
+        let mut state = backend.save().unwrap();
+        state.regs.rip = CODE_GPA as u64;
+        state.regs.rflags = 2 | (1 << 16);
+        state.sregs.cs.base = 0;
+        state.sregs.cs.selector = 0;
+        state.sregs.ds.base = 0;
+        state.sregs.ds.selector = 0;
+        state.sregs.cr0 &= !((1 << 2) | (1 << 3));
+        state.sregs.cr4 |= (1 << 9) | (1 << 18);
+        state.sregs.cr8 = 7;
+        state.xcr0 = xcr0;
+        state.xsave_restore_bv = Some(seed);
+        backend.restore(&state).unwrap();
+        EntryFixture { backend, ram }
+    }
+
+    fn entry_program(mode: &str, xcr0: u64) -> Vec<u8> {
+        if mode == "hlt" {
+            return vec![0xf4];
+        }
+        let mut program = vec![0x66, 0xb8];
+        program.extend_from_slice(&(xcr0 as u32).to_le_bytes());
+        program.extend_from_slice(&[0x66, 0x31, 0xd2]);
+        if mode == "xrstor" {
+            program.extend_from_slice(&[0x67, 0x0f, 0xae, 0x2d]);
+            program.extend_from_slice(&(GUEST_XRSTOR_GPA as u32).to_le_bytes());
+        }
+        program.extend_from_slice(&[0x67, 0x0f, 0xae, 0x25]);
+        program.extend_from_slice(&(GUEST_XSAVE_GPA as u32).to_le_bytes());
+        program.push(0xf4);
+        program
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct EntryEndpoint {
+        state: VcpuState,
+        ram: Vec<u8>,
+        exits: ExitCounts,
+    }
+
+    fn retain_entry(fixture: &mut EntryFixture, directory: &Path, phase: &str) -> EntryEndpoint {
+        let state = fixture.backend.save().unwrap();
+        let path = directory.join(phase);
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("state.txt"), format!("{state:#?}")).unwrap();
+        let length = fixture.backend.xsave2_size.expect("XSAVE2 required");
+        // SAFETY: the fixture owns a stopped vCPU and the ioctl allocates its capability-sized buffer.
+        let raw = unsafe { raw_get_xsave2(fixture.backend.vcpu.as_raw_fd(), length).unwrap() };
+        write_image(&path, "raw-xsave.bin", &raw);
+        write_image(&path, "ram.bin", fixture.ram.as_mut_bytes());
+        EntryEndpoint {
+            state,
+            ram: fixture.ram.as_mut_bytes().to_vec(),
+            exits: fixture.backend.exit_counts(),
+        }
+    }
+
+    fn entry_endpoint(fixture: &mut EntryFixture, directory: &Path, phase: &str) -> EntryEndpoint {
+        fixture.backend.reset_exit_counts();
+        assert!(matches!(
+            fixture.backend.run().unwrap(),
+            Exit::Common(CommonExit::Idle)
+        ));
+        retain_entry(fixture, directory, phase)
+    }
+
+    fn restore_entry(fixture: &mut EntryFixture, saved: &EntryEndpoint) {
+        fixture.ram.as_mut_bytes().copy_from_slice(&saved.ram);
+        fixture.backend.restore(&saved.state).unwrap();
+        fixture.backend.prepare_snapshot().unwrap();
+        fixture.backend.reset_exit_counts();
+    }
+
+    #[test]
+    #[ignore = "bounded raw XSAVE entry differential; KVM and XSAVE_ENTRY_REPORT_DIR required"]
+    fn snapshot_entry_restores_match_uninterrupted_execution() {
+        let root = PathBuf::from(
+            std::env::var_os("XSAVE_ENTRY_REPORT_DIR").expect("report directory required"),
+        );
+        fs::create_dir(&root).unwrap();
+        let mut failures = Vec::new();
+        for xcr0 in [3, 7] {
+            for seed in [0, 2, 3] {
+                for mode in ["hlt", "xsave", "xrstor"] {
+                    let label = format!("xcr{xcr0}-seed{seed}-{mode}");
+                    let directory = root.join(&label);
+                    fs::create_dir(&directory).unwrap();
+                    let program = entry_program(mode, xcr0);
+                    let mut reference = entry_fixture(&program, seed, xcr0);
+                    reference.backend.prepare_snapshot().unwrap();
+                    let initial = retain_entry(&mut reference, &directory, "initial");
+                    let expected = entry_endpoint(&mut reference, &directory, "reference");
+                    let mut source = entry_fixture(&program, seed, xcr0);
+                    source.backend.prepare_snapshot().unwrap();
+                    let saved = retain_entry(&mut source, &directory, "captured");
+                    let repeated = retain_entry(&mut source, &directory, "repeated");
+                    let continued = entry_endpoint(&mut source, &directory, "continued");
+                    let mut cold = entry_fixture(&program, seed, xcr0);
+                    restore_entry(&mut cold, &saved);
+                    let cold_initial = retain_entry(&mut cold, &directory, "cold-initial");
+                    let cold_endpoint = entry_endpoint(&mut cold, &directory, "cold");
+                    let mut poison = saved.state.clone();
+                    poison.regs.rbx ^= 1;
+                    poison.xsave[SSE_XMM0].copy_from_slice(&ACTIVE_XMM0);
+                    let canonical_bv = header(&poison.xsave).0 | 2;
+                    poison.xsave[XSTATE_BV].copy_from_slice(&canonical_bv.to_le_bytes());
+                    poison.xsave_restore_bv = Some(poison.xsave_restore_bv.unwrap() | 2);
+                    source.backend.restore(&poison).unwrap();
+                    let negative = entry_endpoint(&mut source, &directory, "negative");
+                    restore_entry(&mut source, &saved);
+                    let reused_initial = retain_entry(&mut source, &directory, "reused-initial");
+                    let reused = entry_endpoint(&mut source, &directory, "reused");
+                    let checks = [
+                        ("independent-initial", initial == saved),
+                        ("repeated-capture", saved == repeated),
+                        ("captured-continuation", expected == continued),
+                        ("cold-initial", saved == cold_initial),
+                        ("cold-continuation", expected == cold_endpoint),
+                        ("negative-detected", expected != negative),
+                        (
+                            "negative-guest-output-detected",
+                            mode != "xsave"
+                                || expected.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN]
+                                    != negative.ram
+                                        [GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN],
+                        ),
+                        ("reused-initial", saved == reused_initial),
+                        ("reused-continuation", expected == reused),
+                    ];
+                    let mut report = format!(
+                        "label={label}\ninitial_bv={:?}\nendpoint_bv={:?}\n",
+                        initial.state.xsave_restore_bv, expected.state.xsave_restore_bv
+                    );
+                    if mode != "hlt" {
+                        writeln!(
+                            report,
+                            "guest_bv={}",
+                            header(
+                                &expected.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN]
+                            )
+                            .0
+                        )
+                        .unwrap();
+                    }
+                    for (check, passed) in checks {
+                        writeln!(report, "{check}={passed}").unwrap();
+                        if !passed {
+                            failures.push(format!("{label}: {check}"));
+                        }
+                    }
+                    fs::write(directory.join("report.txt"), &report).unwrap();
+                    println!("{report}");
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "entry differential failures: {failures:?}"
+        );
+    }
+
     const RAM_LEN: usize = 0x4000;
     const CODE_GPA: usize = 0x1000;
     const MMIO_GPA: u64 = 0xFEE0_0080;

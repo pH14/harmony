@@ -464,8 +464,8 @@ jobs:
           retention-days: 14
 
   # Bounded snapshot/completion qualification on the runner's built product
-  # tree. Every exact test is required on every replica, including AMD default
-  # NPT hosts, and every test has an independent external wall bound.
+  # tree. Supported-contract tests are required on every replica; AMD stale-PAE
+  # observations remain informational. Every test has an external wall bound.
   snapshot-hardware:
     name: snapshot-hardware replica ${{ matrix.replica }}
     runs-on: ubuntu-24.04
@@ -491,7 +491,7 @@ jobs:
           CARGO_TERM_COLOR: never
         run: |
           set -euo pipefail
-          cargo test --locked --release -p vmm-backend --test kvm_smoke --no-run \
+          cargo test --locked --release -p vmm-backend --lib --test kvm_smoke --no-run \
             2>&1 | tee snapshot-report/build-vmm-backend.log
           cargo test --locked --release -p vmm-core --test x86_cpu_snapshots --no-run \
             2>&1 | tee snapshot-report/build-vmm-core.log
@@ -631,6 +631,17 @@ jobs:
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee snapshot-report/snapshot-preparation.log
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/snapshot-preparation.log
+      - name: Compare XSAVE entry across independent and restored executions
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        env:
+          XSAVE_ENTRY_REPORT_DIR: ${{ github.workspace }}/snapshot-report/xsave-entry
+        run: |
+          set -euo pipefail
+          timeout -k 10 120 cargo test --locked --release -p vmm-backend --lib \
+            kvm_sys::xsave_diagnostic::snapshot_entry_restores_match_uninterrupted_execution \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee snapshot-report/xsave-entry.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/xsave-entry.log
       - name: Record AMD stale PAE behavior outside the supported guest contract
         if: ${{ !cancelled() && steps.host.outcome == 'success' && steps.host.outputs.amd_npt == 'true' }}
         continue-on-error: true
