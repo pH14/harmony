@@ -32,7 +32,7 @@ const WALL_LIMIT: Duration = Duration::from_secs(60);
 const SNAPSHOT_CACHE_LIMIT: usize = 96;
 const SETTLE_STEP_NANOS: u64 = 100_000;
 const SETTLE_ALLOWANCE_NANOS: u64 = 16 * SETTLE_STEP_NANOS;
-const RUN_PROGRESS_QUANTUM_NANOS: u64 = 5_000_000_000;
+const RUN_PROGRESS_QUANTUM_NANOS: u64 = 100_000_000;
 const CONSOLE_TAIL: usize = 1_500;
 const WATCHDOG_CUTOFF: &str = "fault-guest-watchdog-cutoff: ";
 
@@ -72,7 +72,7 @@ impl FaultConfig {
     }
 }
 
-const IDENTITY_TAG: &str = "faults-consonance-execution-v2";
+const IDENTITY_TAG: &str = "faults-consonance-execution-v3";
 
 #[derive(Clone, Debug)]
 struct StandingHandler {
