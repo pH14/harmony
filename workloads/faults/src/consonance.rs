@@ -652,9 +652,9 @@ impl Live {
         index: usize,
     ) -> Result<(FaultObservations, Option<(SnapId, u64)>), String> {
         let (mut progress, deadline) = self.windows.window(actions, index)?;
+        self.horizons_run = self.horizons_run.saturating_add(1);
         let stop = loop {
             let next = next_run_deadline(progress, deadline);
-            self.horizons_run = self.horizons_run.saturating_add(1);
             let stop = match self.session.run_until(next) {
                 Ok(stop) => stop,
                 Err(error) => return Err(self.abandon("run", error.as_ref())),
