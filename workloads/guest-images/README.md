@@ -82,8 +82,9 @@ The scheduled Workload backends acceptance lane runs each nested recipe twice
 through the canonical x86 runtime and compares complete serial logs, application
 and runtime exit statuses, and readiness evidence. The Docker recipe launches
 the official PostgreSQL image with Docker's bundled `runc`; the K3s recipe also
-checks pod-to-PostgreSQL traffic through the guest CNI. The lane requires an
-exact qualified platform artifact and preserves image hashes and run records.
+checks direct pod-to-pod PostgreSQL traffic through the guest CNI. The lane
+requires an exact qualified platform artifact and preserves image hashes and
+run records.
 Run that lane independently on a proposed branch with:
 
 ```sh

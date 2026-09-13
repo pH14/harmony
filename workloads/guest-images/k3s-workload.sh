@@ -193,6 +193,10 @@ wait_for 600 "pod/postgres Ready" \
     || { kc describe pod postgres 2>/dev/null | $BB tail -30; tail_k3s; finish 1; }
 log "POSTGRES_READY the postgres pod is Running and accepting connections"
 
+PG_IP=$(kc get pod postgres -o jsonpath='{.status.podIP}' 2>/dev/null)
+[ -n "$PG_IP" ] || { log "FAIL: postgres pod has no CNI address"; finish 1; }
+$BB sed -i "s/@POSTGRES_POD_IP@/$PG_IP/g" /k8s/client.sh
+
 # 3b. Start the in-guest flow agent for the client->postgres flow,
 # BEFORE the client pod exists, while the CNI is up. The agent asks the host
 # `net_decide` once for this flow and enforces the answer on the intra-guest CNI
@@ -203,7 +207,6 @@ log "POSTGRES_READY the postgres pod is Running and accepting connections"
 # Net channel wired) never aborts the workload — the agent is additive. `PG_IP` is
 # the deterministic sequential-IPAM pod IP resolved above (the workload's server).
 if command -v flow-agent >/dev/null 2>&1; then
-    PG_IP=$(kc get pod postgres -o jsonpath='{.status.podIP}' 2>/dev/null)
     log "FLOWAGENT starting for client->postgres flow (dst=$PG_IP:5432 on cni0)"
     # The agent enforces on the FORWARD path (cni0) filtered to the postgres pod
     # IP:5432. If the host did not enable_net the agent no-ops cleanly (nominal),

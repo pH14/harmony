@@ -12,10 +12,10 @@
 # cluster up, then:
 #   * a `postgres` Pod runs the official `postgres:17` OCI image on a **pre-baked
 #     PGDATA** (build-time initdb, baked here as a hostPath, uid 999) listening on
-#     TCP, fronted by a fixed-ClusterIP `postgres` Service;
-#   * a `client` Pod (the same postgres:17 image, for its `psql`) connects to that
-#     Service **over the cluster CNI** (pod -> ClusterIP -> kube-proxy DNAT -> the
-#     server pod, all intra-guest — NO host networking, pv-net unused) and runs the
+#     TCP;
+#   * a `client` Pod (the same postgres:17 image, for its `psql`) connects
+#     directly to the server Pod IP over the cluster CNI (no host networking or
+#     pv-net) and runs the
 #     gen_random_uuid()/clock_timestamp() workload, streaming
 #     `row|i|count|sum|uuid|t` to its pod log -> ttyS0.
 #
@@ -64,7 +64,6 @@ K3S_RUNTIME=$K3S_BUILD/runtime
 K3S_SYMBOLS=$K3S_BUILD/symbols
 IPTABLES_TARBALL=$DL_DIR/$(basename "$IPTABLES_SOURCE_URL")
 WORKLOAD_N=20                                   # fixed insert/select iterations (matches the other Postgres images)
-PG_CLUSTERIP=10.43.0.100                        # fixed Service ClusterIP (svc CIDR 10.43.0.0/16)
 
 # --- 0. verify the pinned inputs ---------------------------------------------
 echo "== k3s image: verifying pinned inputs"
@@ -358,23 +357,22 @@ rm -rf "$PGSTAGE" "$IMG"        # only PGDATA is baked; the staging rootfs is th
     done
 } >"$K3SROOT/k8s/workload.sql"
 
-# The client pod's command (its hostPath /client.sh). Connects to the postgres
-# Service ClusterIP over the CNI (a short connect-retry covers the brief window
-# between the Service getting endpoints and kube-proxy programming the DNAT),
-# then runs the workload and streams the rows. K8S49 markers bracket the run.
+# The client pod's command (its hostPath /client.sh). The entrypoint replaces
+# the Pod-IP placeholder after PostgreSQL is Ready, then the client connects
+# directly over the CNI and streams the rows. K8S49 markers bracket the run.
 cat >"$K3SROOT/k8s/client.sh" <<EOF
 #!/bin/sh
 set -u
 export PGCONNECT_TIMEOUT=5 LC_ALL=C.UTF-8 PGTZ=UTC
-PGHOST=$PG_CLUSTERIP PGPORT=5432 PGUSER=postgres PGDATABASE=postgres
+PGHOST=@POSTGRES_POD_IP@ PGPORT=5432 PGUSER=postgres PGDATABASE=postgres
 export PGHOST PGPORT PGUSER PGDATABASE
-echo "K8S49: client pod starting; target postgres Service ClusterIP \$PGHOST:\$PGPORT (over the CNI)"
+echo "K8S49: client pod starting; target postgres pod IP \$PGHOST:\$PGPORT (over the CNI)"
 i=0
 until psql -q -c 'SELECT 1' >/dev/null 2>&1; do
     i=\$((i+1)); [ "\$i" -gt 600 ] && { echo "K8S49: postgres unreachable over the CNI after \$i tries"; exit 1; }
     sleep 1
 done
-echo "K8S49: client connected to the postgres pod over the CNI (ClusterIP \$PGHOST)"
+echo "K8S49: client connected to the postgres pod over the CNI (pod IP \$PGHOST)"
 echo "K8S49: workload begin"
 psql -q -At -F '|' -P pager=off -v ON_ERROR_STOP=1 -f /workload.sql
 echo "K8S49: workload end"
@@ -383,7 +381,7 @@ chmod 0755 "$K3SROOT/k8s/client.sh"
 
 # --- 6. the k3s config + the Kubernetes manifests -----------------------------
 # Trim everything the gate doesn't need (the spec): no traefik/servicelb/metrics/
-# local-storage; CoreDNS off (we target the Service ClusterIP directly, no DNS);
+# local-storage; CoreDNS off (the client targets the server Pod IP directly);
 # no network-policy/helm controllers. flannel host-gw: single-node, so all pod
 # traffic is same-subnet on the cni0 bridge — host-gw avoids the vxlan device
 # entirely. A fixed token removes one random input (it would be CRNG-deterministic
@@ -402,8 +400,8 @@ disable:
   - coredns
 EOF
 
-# The postgres Pod + Service are baked into the server manifests dir, which k3s
-# auto-applies once the apiserver is up. The client Pod is applied separately by
+# The postgres Pod is baked into the server manifests dir, which k3s auto-applies
+# once the apiserver is up. The client Pod is applied separately by
 # workload entrypoint AFTER the postgres pod is Ready (clean sequencing for the gate
 # narrative; the client's retry loop makes it robust regardless).
 cat >"$K3SROOT/var/lib/rancher/k3s/server/manifests/postgres.yaml" <<EOF
@@ -445,17 +443,6 @@ spec:
       hostPath: { path: /k8s/pgdata, type: Directory }
     - name: shm
       emptyDir: { medium: Memory, sizeLimit: 256Mi }
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-  namespace: default
-spec:
-  clusterIP: $PG_CLUSTERIP
-  selector: { app: postgres }
-  ports:
-    - { port: 5432, targetPort: 5432, protocol: TCP }
 EOF
 
 cat >"$K3SROOT/k8s/client.yaml" <<EOF
