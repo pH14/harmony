@@ -299,6 +299,7 @@ where
     pub(crate) terminal: Option<TerminalReason>,
     pub(crate) saved_state: Option<VcpuOf<B>>,
     pub(crate) vtime: Option<VtimeWiring>,
+    pub(crate) virtual_time_progress: std::sync::Arc<std::sync::atomic::AtomicU64>,
     pub(crate) virtual_time_trace: Option<LiveVirtualTimeTrace>,
     pub(crate) doorbell_exits: u64,
     pub(crate) deferred_virtual_time_checkpoints: bool,
@@ -344,6 +345,7 @@ where
             terminal: None,
             saved_state: None,
             vtime: None,
+            virtual_time_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             virtual_time_trace: None,
             doorbell_exits: 0,
             deferred_virtual_time_checkpoints: false,
@@ -357,6 +359,10 @@ where
     }
 
     pub fn wire_vtime(&mut self, wiring: VtimeWiring) -> &mut Self {
+        self.virtual_time_progress.store(
+            wiring.virtual_time_vns(),
+            std::sync::atomic::Ordering::Release,
+        );
         self.virtual_time_trace = Some(LiveVirtualTimeTrace::default());
         self.vtime = Some(wiring);
         self
@@ -507,6 +513,8 @@ where
             ));
         };
         vt.advance_virtual_time(delta_vns);
+        self.virtual_time_progress
+            .store(vt.virtual_time_vns(), std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
@@ -699,6 +707,12 @@ where
         self.vtime.as_ref().map(|vt| vt.clock.vns())
     }
 
+    pub fn virtual_time_progress(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicU64>> {
+        self.vtime
+            .as_ref()
+            .map(|_| std::sync::Arc::clone(&self.virtual_time_progress))
+    }
+
     pub(crate) fn can_snapshot(&self) -> bool {
         !self
             .sdk
@@ -729,6 +743,8 @@ where
         vt.cfg = cfg;
         vt.entropy = entropy;
         vt.guest_clock_offset = snap.guest_clock_offset;
+        self.virtual_time_progress
+            .store(snap.vns, std::sync::atomic::Ordering::Release);
         if self
             .pvclock
             .as_ref()
@@ -2545,6 +2561,23 @@ mod tests {
 
         let unbounded = Vmm::new(configured_mock(Vec::new()), GuestRam::new(0x1000).unwrap());
         assert!(unbounded.cancellation_flag().is_none());
+    }
+
+    #[test]
+    fn virtual_time_progress_tracks_wiring_advancement_and_restore() {
+        let mut vmm = Vmm::new(configured_mock(Vec::new()), GuestRam::new(0x1000).unwrap());
+        assert!(vmm.virtual_time_progress().is_none());
+        vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
+        let progress = vmm.virtual_time_progress().unwrap();
+        assert_eq!(progress.load(std::sync::atomic::Ordering::Acquire), 0);
+
+        vmm.advance_virtual_time_vtime(17).unwrap();
+        assert_eq!(progress.load(std::sync::atomic::Ordering::Acquire), 17);
+
+        let mut snapshot = vmm.save_vtime().unwrap().unwrap();
+        snapshot.vns = 4_096;
+        vmm.restore_vtime(&snapshot).unwrap();
+        assert_eq!(progress.load(std::sync::atomic::Ordering::Acquire), 4_096);
     }
 
     fn configured_mock(exits: Vec<Exit<X86>>) -> MockBackend {

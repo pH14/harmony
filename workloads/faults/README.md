@@ -65,11 +65,11 @@ until its hold can finish, allowing another fault to overlap the held thread.
 per evaluator thread. Each portable action prefix maps to a real whole-VM
 snapshot: the session branches its parent under the prefix's window list and
 the host-plane effect its last action stages, runs to the action's deadline,
-and seals the endpoint. Actions cross 100-millisecond guest-time progress
-deadlines before their final endpoint, so a guest that is still advancing
-refreshes the host watchdog while one that cannot advance still times out. An
-endpoint the session cannot seal within its settle allowance has no successor
-and the search records it as dead; one
+and seals the endpoint. The shared session watchdog follows deterministic
+virtual-time progress, so a slowly advancing instrumented guest can finish a
+long action while one stuck at a virtual moment still times out. An endpoint
+the session cannot seal within its settle allowance has no successor and the
+search records it as dead; one
 whose guest stopped for good while settling is recorded with that stop. A
 bounded LRU keeps recent prefixes resident and rebuilds evicted ones from their
 longest cached ancestor.
@@ -91,9 +91,8 @@ The generic `execution_work` counter and `report.json`
 after setup. This logical counter is monotonic across target reset and snapshot
 restore; longer waits cost more even when an endpoint is cached. The separate
 `guest_horizons` diagnostic counts action evaluations that enter the guest;
-internal watchdog progress deadlines do not change it. Cache reuse can change
-the count and reset clears it. Setup, prefix reconstruction, and failed actions
-are outside the logical counter.
+cache reuse can change the count and reset clears it. Setup, prefix
+reconstruction, and failed actions are outside the logical counter.
 
 ## Running it
 

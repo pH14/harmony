@@ -2,7 +2,7 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     mpsc,
 };
 use std::time::Duration;
@@ -10,6 +10,7 @@ use std::time::Duration;
 const RUNNING: u8 = 0;
 const CLAIMED: u8 = 1;
 const EXPIRED: u8 = 2;
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 pub struct Watchdog {
     done: mpsc::Sender<()>,
@@ -20,7 +21,11 @@ pub struct Watchdog {
 
 impl Watchdog {
     #[cfg(not(miri))]
-    pub fn start(budget: Duration, cancel: Arc<AtomicBool>) -> std::io::Result<Self> {
+    pub fn start(
+        budget: Duration,
+        cancel: Arc<AtomicBool>,
+        progress: Arc<AtomicU64>,
+    ) -> std::io::Result<Self> {
         install_signal()?;
         // SAFETY: pthread_self returns the calling thread's live identifier.
         let owner = unsafe { libc::pthread_self() };
@@ -30,7 +35,7 @@ impl Watchdog {
         let thread = std::thread::Builder::new()
             .name("harmony-timeout".into())
             .spawn(move || {
-                watch(receiver, budget, &watched, &cancel, || {
+                watch(receiver, budget, &progress, &watched, &cancel, || {
                     // SAFETY: owner stays alive until this sender has been joined.
                     let _ = unsafe { libc::pthread_kill(owner, libc::SIGUSR1) };
                 });
@@ -62,12 +67,35 @@ impl Drop for Watchdog {
 fn watch(
     done: mpsc::Receiver<()>,
     budget: Duration,
+    progress: &AtomicU64,
     outcome: &AtomicU8,
     cancel: &AtomicBool,
     mut kick: impl FnMut(),
 ) {
-    if done.recv_timeout(budget) != Err(mpsc::RecvTimeoutError::Timeout) {
-        return;
+    let mut observed = progress.load(Ordering::Acquire);
+    let mut remaining = budget;
+    loop {
+        let wait = remaining.min(POLL_INTERVAL);
+        if done.recv_timeout(wait) != Err(mpsc::RecvTimeoutError::Timeout) {
+            return;
+        }
+        let current = progress.load(Ordering::Acquire);
+        if current != observed {
+            observed = current;
+            remaining = budget;
+            continue;
+        }
+        remaining = remaining.saturating_sub(wait);
+        if !remaining.is_zero() {
+            continue;
+        }
+        let current = progress.load(Ordering::Acquire);
+        if current != observed {
+            observed = current;
+            remaining = budget;
+            continue;
+        }
+        break;
     }
     if outcome
         .compare_exchange(RUNNING, EXPIRED, Ordering::AcqRel, Ordering::Acquire)
@@ -143,8 +171,9 @@ mod tests {
             }
             drop(tx);
             let cancel = AtomicBool::new(false);
+            let progress = AtomicU64::new(0);
             let outcome = AtomicU8::new(RUNNING);
-            watch(rx, Duration::ZERO, &outcome, &cancel, || {
+            watch(rx, Duration::ZERO, &progress, &outcome, &cancel, || {
                 panic!("normal completion sent a signal")
             });
             assert!(!cancel.load(Ordering::Acquire));
@@ -156,9 +185,10 @@ mod tests {
     fn expiry_publishes_cancellation_before_signaling() {
         let (tx, rx) = mpsc::channel();
         let cancel = AtomicBool::new(false);
+        let progress = AtomicU64::new(0);
         let outcome = AtomicU8::new(RUNNING);
         let mut signals = 0;
-        watch(rx, Duration::ZERO, &outcome, &cancel, || {
+        watch(rx, Duration::ZERO, &progress, &outcome, &cancel, || {
             assert!(cancel.load(Ordering::Acquire));
             signals += 1;
             tx.send(()).unwrap();
@@ -172,8 +202,9 @@ mod tests {
     fn a_request_that_returns_first_keeps_its_reply_and_the_vm() {
         let (_tx, rx) = mpsc::channel();
         let cancel = AtomicBool::new(false);
+        let progress = AtomicU64::new(0);
         let outcome = AtomicU8::new(CLAIMED);
-        watch(rx, Duration::ZERO, &outcome, &cancel, || {
+        watch(rx, Duration::ZERO, &progress, &outcome, &cancel, || {
             panic!("a claimed run was signaled")
         });
         assert!(!cancel.load(Ordering::Acquire));
@@ -184,13 +215,19 @@ mod tests {
     #[cfg(not(miri))]
     fn only_the_first_of_the_request_and_the_expiry_claims_the_run() {
         let cancel = Arc::new(AtomicBool::new(false));
-        let unexpired = Watchdog::start(Duration::from_secs(60), Arc::clone(&cancel)).unwrap();
+        let progress = Arc::new(AtomicU64::new(0));
+        let unexpired = Watchdog::start(
+            Duration::from_secs(60),
+            Arc::clone(&cancel),
+            Arc::clone(&progress),
+        )
+        .unwrap();
         assert!(unexpired.claim(), "the request returned first");
         assert!(!unexpired.claim(), "the run is claimed only once");
         drop(unexpired);
         assert!(!cancel.load(Ordering::Acquire));
 
-        let expired = Watchdog::start(Duration::ZERO, Arc::clone(&cancel)).unwrap();
+        let expired = Watchdog::start(Duration::ZERO, Arc::clone(&cancel), progress).unwrap();
         for _ in 0..1000 {
             if cancel.load(Ordering::Acquire) {
                 break;
@@ -205,7 +242,9 @@ mod tests {
     #[cfg(not(miri))]
     fn real_signal_cancellation_and_guard_join() {
         let cancel = Arc::new(AtomicBool::new(false));
-        let guard = Watchdog::start(Duration::ZERO, Arc::clone(&cancel)).unwrap();
+        let progress = Arc::new(AtomicU64::new(0));
+        let guard =
+            Watchdog::start(Duration::ZERO, Arc::clone(&cancel), Arc::clone(&progress)).unwrap();
         for _ in 0..1000 {
             if cancel.load(Ordering::Acquire) {
                 break;
@@ -215,8 +254,36 @@ mod tests {
         assert!(cancel.load(Ordering::Acquire));
         drop(guard);
         let canceled = Arc::new(AtomicBool::new(false));
-        drop(Watchdog::start(Duration::from_secs(60), Arc::clone(&canceled)).unwrap());
+        drop(Watchdog::start(Duration::from_secs(60), Arc::clone(&canceled), progress).unwrap());
         assert!(!canceled.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn virtual_time_progress_postpones_expiry() {
+        let (done, receiver) = mpsc::channel();
+        let progress = Arc::new(AtomicU64::new(0));
+        let watched_progress = Arc::clone(&progress);
+        let outcome = Arc::new(AtomicU8::new(RUNNING));
+        let watched_outcome = Arc::clone(&outcome);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let watched_cancel = Arc::clone(&cancel);
+        let thread = std::thread::spawn(move || {
+            watch(
+                receiver,
+                Duration::from_millis(200),
+                &watched_progress,
+                &watched_outcome,
+                &watched_cancel,
+                || panic!("advancing virtual time expired"),
+            );
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        progress.store(1, Ordering::Release);
+        std::thread::sleep(Duration::from_millis(150));
+        done.send(()).unwrap();
+        thread.join().unwrap();
+        assert!(!cancel.load(Ordering::Acquire));
+        assert_eq!(outcome.load(Ordering::Acquire), RUNNING);
     }
     #[test]
     fn drop_joins_the_sender_before_returning() {
