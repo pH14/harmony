@@ -300,6 +300,7 @@ where
     let reason = loop {
         if start.elapsed() > spec.wall_budget {
             filter.push(vmm.serial_output(), &mut stdout);
+            eprintln!("DIAGNOSTIC_TIMEOUT_VCPU: {:?}", vmm.vcpu_record());
             return Err(RunError::WallBudget {
                 budget_s: spec.wall_budget.as_secs(),
                 steps,
@@ -311,6 +312,7 @@ where
             Err(e) => {
                 filter.push(vmm.serial_output(), &mut stdout);
                 if start.elapsed() > spec.wall_budget {
+                    eprintln!("DIAGNOSTIC_TIMEOUT_VCPU: {:?}", vmm.vcpu_record());
                     return Err(RunError::WallBudget {
                         budget_s: spec.wall_budget.as_secs(),
                         steps,
