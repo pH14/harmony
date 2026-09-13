@@ -21,6 +21,7 @@ COPY . .
 
 RUN go mod download "github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
     && sdk_dir="$(go env GOMODCACHE)/github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK_VERSION}" \
+    && go_cache="$(go env GOCACHE)" \
     && test -d "$sdk_dir" \
     && chmod -R u+w "$sdk_dir" \
     && patch -d "$sdk_dir" -p1 < .harmony/antithesis-go-toolexec-reproducible.patch \
@@ -40,7 +41,7 @@ RUN go mod download "github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK
        ANTITHESIS_SYMBOL_PREFIX=k3s-server \
        ./scripts/build \
     && sha256sum bin/k3s bin/cni > /tmp/k3s-build-first.sha256 \
-    && rm -rf /root/.cache/go-build /opt/harmony/symbols/* bin/cni \
+    && rm -rf "$go_cache" /opt/harmony/symbols/* bin/cni \
     && NO_DAPPER=true GIT_TAG="$GIT_TAG" COMMIT="$COMMIT" TREE_STATE=clean DIRTY= \
        STATIC_BUILD=false ANTITHESIS_SYMBOLS_DIR=/opt/harmony/symbols \
        ANTITHESIS_INSTRUMENT=github.com,k8s.io,sigs.k8s.io,go.etcd.io,google.golang.org,golang.org \
@@ -52,13 +53,18 @@ RUN go mod download "github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK
     && test -x dist/artifacts/k3s \
     && set -- /opt/harmony/symbols/*.sym.tsv \
     && test -s "$1" \
-    && shard_dir=/root/.cache/go-build/antithesis-symbols \
-    && set -- "$shard_dir"/k8s.io%kubernetes%*.pkg \
-    && test -s "$1" \
-    && set -- "$shard_dir"/github.com%containerd%containerd%v2%*.pkg \
-    && test -s "$1" \
-    && set -- "$shard_dir"/github.com%k3s-io%kine%*.pkg \
-    && test -s "$1" \
+    && shard_dir="$go_cache/antithesis-symbols" \
+    && for package_index in \
+         'k8s.io%kubernetes%*.pkg' \
+         'github.com%containerd%containerd%v2%*.pkg' \
+         'github.com%k3s-io%kine%*.pkg'; do \
+         set -- "$shard_dir"/$package_index; \
+         if ! test -s "$1"; then \
+           echo "missing instrumented K3s package index matching $package_index in $shard_dir" >&2; \
+           find "$shard_dir" -maxdepth 1 -type f -name '*.pkg' -print | sort | head -100 >&2; \
+           exit 1; \
+         fi; \
+       done \
     && grep -a -q antithesishq/antithesis-sdk-go/instrumentation bin/k3s \
     && sha256sum bin/k3s > /opt/harmony/instrumented-server.sha256 \
     && mkdir -p /opt/harmony/runtime/usr/lib \
