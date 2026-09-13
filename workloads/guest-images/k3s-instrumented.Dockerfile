@@ -65,7 +65,7 @@ RUN go mod download "github.com/antithesishq/antithesis-sdk-go@v${ANTITHESIS_SDK
            exit 1; \
          fi; \
        done \
-    && grep -a -q antithesishq/antithesis-sdk-go/instrumentation bin/k3s \
+    && grep -a -Fq /usr/lib/libvoidstar.so bin/k3s \
     && sha256sum bin/k3s > /opt/harmony/instrumented-server.sha256 \
     && mkdir -p /opt/harmony/runtime/usr/lib \
     && cp /opt/harmony/libvoidstar.so /opt/harmony/runtime/usr/lib/libvoidstar.so \
