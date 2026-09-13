@@ -903,6 +903,18 @@ mod xsave_diagnostic {
         state.xcr0 = xcr0;
         state.xsave_restore_bv = Some(seed);
         backend.restore(&state).unwrap();
+        if std::env::var_os("XSAVE_ENTRY_WARMUP").is_some() {
+            let initial_ram = ram.as_mut_bytes().to_vec();
+            let warmup = entry_program("xrstor", xcr0);
+            ram.as_mut_bytes()[CODE_GPA..CODE_GPA + warmup.len()].copy_from_slice(&warmup);
+            assert!(matches!(
+                backend.run().unwrap(),
+                Exit::Common(CommonExit::Idle)
+            ));
+            ram.as_mut_bytes().copy_from_slice(&initial_ram);
+            backend.restore(&state).unwrap();
+            backend.reset_exit_counts();
+        }
         EntryFixture { backend, ram }
     }
 

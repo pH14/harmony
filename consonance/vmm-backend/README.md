@@ -186,3 +186,10 @@ a fixed P-core debug-entry witness changes the guest-written header, and hosted
 AMD reuse can change that header despite equal final modeled CPU state. Snapshot
 consistency remains under investigation; preparation is not a proven universal
 fixed point.
+
+A separate test-only `XSAVE_ENTRY_WARMUP` arm executes guest XRSTOR-to-init,
+XSAVE, and HLT once in each fresh fixture, then restores the intended initial
+CPU state and all RAM before any reference execution. It tests whether a first
+guest FPU transition explains the AMD fresh/reused difference. Production
+construction does not execute this warmup; the original differential remains
+unchanged when the variable is absent.
