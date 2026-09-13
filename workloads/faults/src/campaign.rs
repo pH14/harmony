@@ -851,14 +851,21 @@ mod tests {
     #[test]
     fn recorded_duration_choices_reach_waits_and_event_holds() {
         let game = game();
-        let run = run(3, vec![]);
+        let run = FaultCampaignRun {
+            vocabulary: FaultVocabulary::new(3, vec![])
+                .unwrap()
+                .with_instrumented_events(true),
+        };
         let mixture = MixtureDraw {
             mixture: DrawMixture::AlphabetOnly,
             weight: 0,
             splice_weight: 0,
         };
         let draw = DurationDraw {
-            context: FaultArchiveKey::default(),
+            context: FaultArchiveKey {
+                event_ready: 1,
+                ..FaultArchiveKey::default()
+            },
             max_duration: NonZeroU64::new(ADAPTIVE_DURATION_MAX_TICKS).unwrap(),
             duration: NonZeroU64::new(256).unwrap(),
         };
