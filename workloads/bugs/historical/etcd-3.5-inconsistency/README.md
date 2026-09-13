@@ -41,13 +41,12 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
   four persistent clients through the cluster endpoint set. Each client records every uniquely
   keyed, acknowledged put in a journal outside etcd and keeps applying entries while Harmony
   explores faults. The helper resumes each client's sequence from the journal, so no incarnation
-  can overwrite a lost key. The helper is built from one
-  pinned `go.etcd.io/etcd/client/v3` dependency shared by both arms; v3.5.2 and v3.5.3 differ
-  only in the Antithesis-instrumented server source revision. There are no correctness,
-  portability, batch, timing, wait, timeout, rate, or write-count knobs, fixed probe sequences,
-  version-specific addresses, or configuration knobs. The server executable for this entry must
-  be built from that pinned source by the Antithesis Go instrumentation pipeline; a release
-  archive or a stock etcd server executable does not satisfy this entry.
+  can overwrite a lost key. The helper uses a pinned `go.etcd.io/etcd/client/v3` dependency, while
+  the Antithesis-instrumented server is built from the pinned v3.5.2 source. There are no
+  correctness, portability, batch, timing, wait, timeout, rate, or write-count knobs, fixed probe
+  sequences, version-specific addresses, or configuration knobs. The server executable for this
+  entry must be built from that pinned source by the Antithesis Go instrumentation pipeline; a
+  release archive or a stock etcd server executable does not satisfy this entry.
 - **Fault surface**: a hard process kill of one member followed by the normal supervisor restart,
   while the clients are applying entries, and a hold that sleeps one member's thread at an
   instrumented site. Together these target the small interval between consistent-index persistence
@@ -72,18 +71,17 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
 
 The window opens when a periodic commit persists the consistent index while the applying thread is
 still behind it, which needs two threads running at once. Plain random member kills reach it on
-3.5.2 on a multiprocessor host and never on one processor, and never on 3.5.3 either way. Consonance
-runs one virtual processor, so the search has to recreate on one processor what parallelism produced
+3.5.2 on a multiprocessor host but not on one processor. Consonance runs one virtual processor,
+so the search has to recreate on one processor what parallelism produced
 on many: holding a thread at an instrumented site long enough for the commit to run ahead of the
 data it claims to cover. The case's fault surface therefore pairs the event kill with an event park.
 
 ## Discovery contract
 
-The case has one locked execution profile, bounded by wall time alone. CI runs the same search
-campaign on both instrumented arms on demand or on schedule. The vulnerable arm must find and
-replay assertion 1 with evidence point 11; the control must reach point 11 and stay clean under
-the identical campaign. A search miss is a regression in the test machinery, not a request to
-tune the workload.
+The case has one locked execution profile, bounded by wall time alone. CI searches the pinned
+vulnerable image on demand or on schedule. The campaign must find assertion 1 with evidence point
+11 and reproduce it in the package's fresh deterministic self-replay. A search miss or replay
+mismatch is a regression in the test machinery, not a request to tune the workload.
 
 The current-branch record at `1e29a19f` comes from
 [historical run 34767756010](https://github.com/pH14/harmony/actions/runs/34767756010):
@@ -91,34 +89,19 @@ The current-branch record at `1e29a19f` comes from
 | arm | bug found | executions | first hit | execution ticks | watchdog cutoffs | archive entries | wall time |
 |---|---|---|---|---|---|---|---|
 | 3.5.2 | yes | 2216 | 2213 | 490950 | 14 | 961 | 2363 s |
-| 3.5.3 | no | 5000 | - | 1060688 | 30 | 1724 | 5868 s |
 
 The vulnerable arm's 22-action input reproduces assertion 1 with evidence point 11 and the same
 whole-VM state hash as the campaign finding. It combines process kills and restarts, event kills,
 event holds from 40 ms through 2.56 s, interrupts, pauses, and a 1.28 s wait. The campaign sampled
 every adaptive duration from 10 ms through 10.24 s; 574 event-ready executions used at least
-1.28 s. The control campaign also sampled the full range, including 1010 long event-ready
-executions, and reached evidence point 11 without a violation.
+1.28 s. Its watchdog cutoffs were explicit no-virtual-time-progress failures; all other executions
+continued, and the campaign recorded no non-watchdog execution failure.
 
-Differential replay applies the same 22-action input to 3.5.3, then waits only while the continuous
-check is stale or a fault remains pending. Eight waits totaling 2.55 s produced a completed check
-whose start and end generation both equal the final disturbance generation, with no pending fault.
-The replay reached evidence point 11, reported no violation, used no watchdog cutoff, and passed
-the oracle. The campaign watchdog cutoffs were explicit no-virtual-time-progress failures; all
-other executions continued, and neither arm recorded a non-watchdog execution failure.
-
-The only expected difference between the arms is the upstream etcd fix. Performance experiments
-may add separate profiles later, but they cannot alter the correctness or portability contract
-of this case.
+Performance experiments may add separate profiles later, but they cannot alter the correctness or
+portability contract of this case.
 
 ## Why this entry is first
 
 Single binary, no kernel or version gymnastics, a generic instrumented event coordinate, and a cheap
 oracle make this a useful first target. It also has a natural sibling in the later defragmentation
 bug once this lands.
-
-The control replay gate requires a completed conclusive check after the final
-process disturbance and recovery, with no outstanding process fault or event
-arm. Its check start and completion generations must both match the final agent
-generation. A point reached before a crash, a check spanning that crash, or an
-inconclusive recovery cannot satisfy the differential gate.

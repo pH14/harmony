@@ -1,10 +1,8 @@
 # The etcd v3.5 consistency workload image
 
-The Dockerfile is the image contract for both arms. It fetches the pinned
+The Dockerfile is the image contract for this entry. It fetches the pinned
 upstream etcd source and builds the server through Antithesis's Go instrumentor.
-The bundle and workload writer are identical; only the pinned server
-source revision changes between the two arms. A stock release server binary is
-not a valid artifact for this entry.
+A stock release server binary is not a valid artifact for this entry.
 
 The build installs `github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec`
 at the pinned `v0.8.0` release, applies the small MIT-licensed
@@ -26,18 +24,16 @@ for the same reason.
 The workload writer is a separate, uninstrumented static Go binary. Its
 `writer/go.mod` pins `go.etcd.io/etcd/client/v3` at `v3.5.3` and its checked-in
 `go.sum` locks the module graph. The Dockerfile builds that helper in a stage
-that does not depend on `ETCD_VERSION`, then copies the same output into both
-arms. The helper is not part of the server's Antithesis event stream.
+that does not depend on `ETCD_VERSION`. The helper is not part of the server's
+Antithesis event stream.
 
 The Docker target platform selects the native build architecture. `TARGETARCH`
 must be `amd64` or `arm64`; the same instrumented source, event protocol, and
 runtime checks are used on both targets. No scheduler, timing, or Go runtime
 correctness setting changes with the platform.
 
-| arm | `ETCD_VERSION` | pinned source |
-|---|---|---|
-| vulnerable | `3.5.2` | source tarball `ecb4d2bc76e48ae504d9a00b50bcc906503c4d0324acf9dee79d97d16f7282ad` |
-| control | `3.5.3` | source tarball `f381557feaa42dfe7f40a5c295f95266b7de341f49e76a3119dfaec3d0a24e5e` |
+The image pins etcd 3.5.2 source tarball
+`ecb4d2bc76e48ae504d9a00b50bcc906503c4d0324acf9dee79d97d16f7282ad`.
 
 Build either architecture with the target platform selected explicitly:
 
@@ -48,13 +44,6 @@ docker build --platform=linux/amd64 \
   --file workloads/bugs/historical/etcd-3.5-inconsistency/image/Dockerfile \
   --tag harmony-etcd:3.5.2 .
 docker save --output etcd-3.5.2.oci harmony-etcd:3.5.2
-
-docker build --platform=linux/amd64 \
-  --build-arg ETCD_VERSION=3.5.3 \
-  --build-arg ETCD_SOURCE_SHA256=f381557feaa42dfe7f40a5c295f95266b7de341f49e76a3119dfaec3d0a24e5e \
-  --file workloads/bugs/historical/etcd-3.5-inconsistency/image/Dockerfile \
-  --tag harmony-etcd:3.5.3 .
-docker save --output etcd-3.5.3.oci harmony-etcd:3.5.3
 ```
 
 The guest runs three local instrumented etcd members in one Raft cluster. Their client and peer

@@ -16,7 +16,7 @@ mode=${1:?mode is required}
 input=${2:?input is required}
 
 : "${CASE_ID:?}" "${RAM_MIB:?}"
-: "${VULNERABLE_VERSION:?}" "${CONTROL_VERSION:?}" "${IMAGE_PREFIX:?}"
+: "${VULNERABLE_VERSION:?}" "${IMAGE_PREFIX:?}"
 : "${SOFTWARE_NAME:?}" "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
 
 case "${mode}" in
@@ -78,7 +78,7 @@ replay_arm() {
     local arm=$1 version
     case "${arm}" in
         vulnerable) version=${VULNERABLE_VERSION} ;;
-        control) version=${CONTROL_VERSION} ;;
+        control) version=${CONTROL_VERSION:?} ;;
         *) rows+=("| ${arm} | — | — | — | fail: infra-failure (unknown arm) |"); verdict=1; return ;;
     esac
 

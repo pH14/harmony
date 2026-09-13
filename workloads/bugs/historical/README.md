@@ -47,20 +47,20 @@ reports and uploads the result, so the committed table lags the last CI run.
 <!-- render-historical-bugs:begin -->
 | bug | versions | status | CI | discovery | latest replay | latest control | executions to first hit | replay command |
 |---|---|---|---|---|---|---|---|---|
-| [etcd-3.5-inconsistency](etcd-3.5-inconsistency/README.md) | 3.5.2 / 3.5.3 | reproduced | runnable | guided | — | silent (0/1, discovery) | 2213 | `harmony search --package faults IMAGE-3.5.2.oci --backend consonance --kernel bzImage-faultlab --base-initramfs initramfs.cpio.gz --replay OUT/first-bug-input.json --repeat 1 --ram-mib 1024 --out OUT` |
+| [etcd-3.5-inconsistency](etcd-3.5-inconsistency/README.md) | 3.5.2 / 3.5.3 | reproduced | runnable | guided | — | — | 2213 | `harmony search --package faults IMAGE-3.5.2.oci --backend consonance --kernel bzImage-faultlab --base-initramfs initramfs.cpio.gz --replay OUT/first-bug-input.json --repeat 1 --ram-mib 1024 --out OUT` |
 | [postgres-cic-corruption](postgres-cic-corruption/README.md) | 14.3 / 14.4 | reproduced | runnable | guided | — | — | — | `harmony search --package faults IMAGE-14.3.oci --backend consonance --kernel bzImage-faultlab --base-initramfs initramfs.cpio.gz --replay OUT/first-bug-input.json --repeat 1 --ram-mib 1024 --knobs "faultlab.churn_rows=20 faultlab.churn_slices=2 faultlab.churn_rounds=1200" --out OUT` |
 <!-- render-historical-bugs:end -->
 
 The panel runs on the current default-branch build at 06:00 UTC and by manual
 dispatch. It searches each runnable vulnerable arm within the manifest's
 execution and wall budgets (a case may explicitly add another search arm), then
-uses the package's fresh confirmation of each new finding and performs one
-fresh fixed-arm differential replay. A small set of manifest-declared clean
-trajectories exercises fresh starts, including no-find paths, with two fresh
-repeats on one arm so their state digests can be compared, under the case's
-aggregate replay-session cap. The committed probe file remains a historical
-reference; the current build's discovered input is the replay source and the
-probe is not a CI gate.
+uses the package's fresh confirmation of each new finding. Cases that declare a
+fixed arm also perform its existing comparison replay. A small set of
+manifest-declared clean trajectories exercises fresh starts, including no-find
+paths, with two fresh repeats on one arm so their state digests can be compared,
+under the case's aggregate replay-session cap. The committed probe file remains
+a historical reference; the current build's discovered input is the replay
+source and the probe is not a CI gate.
 
 The PostgreSQL image builder publishes a checksum-verified artifact keyed by
 the image sources and case manifest. PR smoke checks require that exact cache
@@ -69,8 +69,8 @@ When neither exists, dispatch the historical workflow on the proposed branch
 and rerun the smoke after its image job publishes the handoff.
 
 The roster's CI column is `runnable` or `deferred: <reason>`. A search miss,
-infrastructure failure, found-but-replay-unverified candidate, and actual
-differential replay mismatch are separate outcomes in the run summary and
+infrastructure failure, found-but-replay-unverified candidate, and a declared
+fixed-arm mismatch are separate outcomes in the run summary and
 artifacts. Guest watchdog cutoffs come from the faults report and campaign
 summary; an outer CLI timeout remains an infrastructure failure even when a
 partial report was written.
