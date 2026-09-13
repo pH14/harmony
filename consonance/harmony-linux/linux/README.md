@@ -42,6 +42,28 @@ The fault-library profile additionally enables `CONFIG_HARMONY_PARK` for task
 parking. `x86-faultlab-config-fragment` records its configuration. The build
 selector is `FAULTLAB=1`; it no longer disables counter confinement.
 
+## Supported x86 guest lifecycle
+
+The supported workload guest is the shipped 64-bit Linux kernel and its
+initramfs. Kernel replacement through either kexec syscall or kexec handover
+is disabled, alongside modules, suspend, and hibernation. The kernel builder
+checks the resolved configuration before compiling or publishing an image;
+an older cached image does not qualify a changed configuration.
+
+Snapshot continuation relies on Linux's architectural page-table update and
+translation-invalidation rules. It does not promise persistence of stale
+32-bit PAE translations after software changes the PDPT without the required
+synchronization. AMD NPT permits those cached entries to be discarded and
+reloaded; the synthetic stale-PDPTR tests remain backend diagnostics for that
+limitation. Disabling kexec prevents replacing this kernel through its normal
+kernel-loading interfaces; it is not a CPU mode firewall. The 64-bit loader
+entry alone does not constrain arbitrary supplied kernels or imported CPU
+states to remain in long mode. Compatibility-mode userspace under long-mode
+paging is distinct from legacy 32-bit PAE paging.
+
+These constraints define the Linux guest qualification scope, not a claim
+that the generic backend's AMD PAE continuation failure is fixed.
+
 ## Entry points
 
 ```sh

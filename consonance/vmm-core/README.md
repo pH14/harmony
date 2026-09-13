@@ -161,3 +161,30 @@ before entering the snapshot store. Invalid engine state, XSAVE provenance,
 device records, and clock wiring are rejected before changing the destination
 execution. Import requires a live validation target. This preflight does not
 replace backend validation or make host ioctl failures transactional.
+
+
+## Publishing prepared snapshot boundaries
+
+The x86 Linux composition prepares its initial CPU state before publishing the
+VM. The VMM prepares each fully serviced exit before checkpoint hashing, and
+full-memory and control-server restores prepare after installing RAM and CPU
+state. `Vmm::prepare_snapshot` is explicit for low-level callers that construct
+or restore CPU state separately from memory; call it only once the complete
+boundary is installed. Snapshot reads and hash reads do not enter KVM.
+
+KVM preparation round-trips FPU state without executing a guest instruction,
+while preserving modeled RAM, CPU fields other than hardware XSAVE presence,
+and execution accounting. The complete raw XSAVE presence value remains part
+of identity. The tentative execution requirement is one qualified host core type
+for related boots and restores; see the backend README for affinity admission and
+its limits. Cross-type migration is not supported. Cross-host and broader XSAVE
+state qualification remain follow-up work.
+
+The shipped Linux guest follows architectural page-table update and invalidation
+rules and cannot replace its kernel through kexec. Required PAE continuation
+coverage reloads CR3 after a guest-authored PDPT update, comparing reference,
+captured, cold-restored, and reused-restored endpoints. Intel's cached-PDPTR
+preservation regression remains required. AMD NPT fixtures that rely on stale
+PDPTR persistence without invalidation remain recorded informational diagnostics;
+they do not define the supported Linux guest contract. Arbitrary supplied kernels
+are not confined to that contract by their initial long-mode entry.

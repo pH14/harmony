@@ -773,6 +773,12 @@ where
         Ok(())
     }
 
+    pub fn prepare_snapshot(&mut self) -> Result<(), VmmError> {
+        self.backend.prepare_snapshot()?;
+        self.saved_state = None;
+        Ok(())
+    }
+
     pub fn save_vm_state(&self) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
         let vcpu = match &self.saved_state {
             Some(s) => s.clone(),
@@ -926,6 +932,7 @@ where
         }
         self.restore_vm_state(vm_state)?;
         self.restore_guest_memory(memory)?;
+        self.prepare_snapshot()?;
         Ok(())
     }
 
@@ -1011,6 +1018,9 @@ where
         self.pvclock_refresh()?;
         <B::A as Vendor>::post_exit(self)?;
         let next = <B::A as Vendor>::finish_exit(self)?;
+        if next.is_none() {
+            self.prepare_snapshot()?;
+        }
         if trace_started {
             let event_index = self
                 .virtual_time_trace
@@ -5768,6 +5778,7 @@ mod tests {
         current_continuations: VecDeque<Exit<X86>>,
         ordinary_runs: usize,
         finish_runs: usize,
+        preparation_runs: usize,
         mapped: Vec<(Gpa, usize)>,
     }
 
@@ -5785,6 +5796,7 @@ mod tests {
                 current_continuations: VecDeque::new(),
                 ordinary_runs: 0,
                 finish_runs: 0,
+                preparation_runs: 0,
                 mapped: Vec::new(),
             }
         }
@@ -5872,6 +5884,14 @@ mod tests {
             self.inner.retire_pending_completion()
         }
 
+        fn prepare_snapshot(&mut self) -> vmm_backend::Result<()> {
+            if !self.current_continuations.is_empty() || self.inner.has_pending() {
+                return Err(vmm_backend::BackendError::PendingCompletion);
+            }
+            self.preparation_runs += 1;
+            self.inner.prepare_snapshot()
+        }
+
         fn save(&self) -> vmm_backend::Result<VcpuState> {
             if !self.current_continuations.is_empty() || self.inner.has_pending() {
                 return Err(vmm_backend::BackendError::PendingCompletion);
@@ -5953,6 +5973,29 @@ mod tests {
             size: 4,
             write: Some(value),
         })
+    }
+
+    #[test]
+    fn snapshot_preparation_follows_completion_and_reads_do_not_repeat_it() {
+        let mut vmm = boxed_continuation_vmm(
+            vec![apic_read(lapic::APIC_VERSION)],
+            vec![vec![apic_write(lapic::APIC_TPR, 0x20)]],
+            7,
+        );
+        vmm.wire_snapshot_hashing();
+        assert_eq!(vmm.step().unwrap(), Step::Continued);
+        assert_eq!(vmm.backend.preparation_runs, 1);
+        assert_eq!(vmm.backend.ordinary_runs, 1);
+        assert_eq!(vmm.backend.finish_runs, 1);
+        let counts = vmm.exit_counts();
+        let time = vmm.effective_vns();
+        let state = vmm.save_vm_state().unwrap();
+        let hash = vmm.state_hash().unwrap();
+        assert_eq!(vmm.save_vm_state().unwrap(), state);
+        assert_eq!(vmm.state_hash().unwrap(), hash);
+        assert_eq!(vmm.backend.preparation_runs, 1);
+        assert_eq!(vmm.exit_counts(), counts);
+        assert_eq!(vmm.effective_vns(), time);
     }
 
     #[test]

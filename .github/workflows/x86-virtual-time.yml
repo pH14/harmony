@@ -551,6 +551,7 @@ jobs:
         env:
           CARGO_TERM_COLOR: never
           AMD_NPT: ${{ steps.host.outputs.amd_npt }}
+          CPU_VENDOR: ${{ steps.host.outputs.vendor }}
         run: |
           set -euo pipefail
           mkdir -p snapshot-report
@@ -606,16 +607,14 @@ jobs:
           run_exact vmm-backend kvm_smoke serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu mmio-backend || failed=1
           run_exact vmm-core x86_cpu_snapshots live_kvm::mmio_rmw_finishes_before_full_vmm_snapshot mmio-full-vmm \
             "MMIO_CONTINUATION_REPORT_DIR=$PWD/snapshot-report/mmio-full-vmm" || failed=1
-          run_exact vmm-core x86_cpu_snapshots live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore pae-full-vmm || failed=1
+          run_exact vmm-core x86_cpu_snapshots live_kvm::pae_pdpt_reload_preserves_snapshot_continuation pae-reload \
+            "PAE_RELOAD_REPORT_DIR=$PWD/snapshot-report/pae-reload" || failed=1
+          if [[ "$CPU_VENDOR" == GenuineIntel ]]; then
+            run_exact vmm-core x86_cpu_snapshots live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore pae-full-vmm || failed=1
+          fi
           run_exact vmm-backend kvm_smoke resume_flag_preserves_instruction_breakpoint_continuation resume-flag || failed=1
           run_exact vmm-core x86_cpu_snapshots live_kvm::xsave_guest_bytes_survive_cold_continuation xsave \
             "XSAVE_CONTINUATION_REPORT_DIR=$PWD/snapshot-report/xsave" || failed=1
-          if [[ "$AMD_NPT" == true ]]; then
-            run_exact vmm-core x86_cpu_snapshots live_kvm::amd_default_npt_pae_guest_write_observations npt-guest-write \
-              "NPT_REPORT_DIR=$PWD/snapshot-report/npt-guest-write" || failed=1
-          else
-            printf '%s\n' 'NPT_STATUS=not-required-on-non-amd-or-npt-disabled-host' > snapshot-report/npt-status.txt
-          fi
           run_exact vmm-core x86_cpu_snapshots live_kvm::xsave_live_registers_survive_cold_continuation xsave-live \
             "XSAVE_LIVE_REGISTERS_REPORT_DIR=$PWD/snapshot-report/xsave-live" || failed=1
           if [[ "$failed" -ne 0 ]]; then
@@ -623,6 +622,38 @@ jobs:
             exit 1
           fi
           printf '%s\n' 'SNAPSHOT_GATE_STATUS=passed' | tee snapshot-report/required-tests.status
+      - name: Require snapshot preparation to preserve complete state
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          timeout -k 10 120 cargo test --locked --release -p vmm-backend --lib \
+            kvm_sys::xsave_diagnostic::snapshot_preparation_preserves_complete_state \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee snapshot-report/snapshot-preparation.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/snapshot-preparation.log
+      - name: Record AMD stale PAE behavior outside the supported guest contract
+        if: ${{ !cancelled() && steps.host.outcome == 'success' && steps.host.outputs.amd_npt == 'true' }}
+        continue-on-error: true
+        env:
+          NPT_REPORT_DIR: ${{ github.workspace }}/snapshot-report/npt-guest-write
+        run: |
+          set -euo pipefail
+          failed=0
+          for name in pae_cached_pdptrs_survive_full_vmm_snapshot_restore amd_default_npt_pae_guest_write_observations; do
+            set +e
+            timeout -k 10 60 cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
+              "live_kvm::$name" -- --ignored --exact --test-threads=1 --nocapture \
+              2>&1 | tee "snapshot-report/$name.log"
+            pipeline_status=("${PIPESTATUS[@]}")
+            set -e
+            printf 'CARGO_EXIT=%s\nTEE_EXIT=%s\n' "${pipeline_status[0]}" "${pipeline_status[1]}" \
+              > "snapshot-report/$name.status"
+            if [[ "${pipeline_status[0]}" -ne 0 || "${pipeline_status[1]}" -ne 0 ]]; then
+              failed=1
+            fi
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "snapshot-report/$name.log" || failed=1
+          done
+          exit "$failed"
       - name: Record PAE SREGS2 phase diagnostic (informational)
         if: ${{ !cancelled() && steps.host.outcome == 'success' && (steps.host.outputs.amd_npt == 'true' || steps.host.outputs.intel_ept == 'true') }}
         continue-on-error: true

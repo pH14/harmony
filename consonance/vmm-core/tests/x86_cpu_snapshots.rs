@@ -156,6 +156,19 @@ fn guest_ram_image_with_guest_pdpt_write() -> GuestRam {
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn guest_ram_image_with_pdpt_reload() -> GuestRam {
+    let mut ram = guest_ram_image_with_guest_pdpt_write();
+    let bytes = ram.as_mut_bytes();
+    let reload_cr3 = [0x0f, 0x20, 0xd8, 0x0f, 0x22, 0xd8];
+    for base in [CODE_GPA, REMAPPED_CODE_GPA] {
+        let start = base + GUEST_PDPT_WRITE_LEN;
+        bytes.copy_within(start..start + BASE_PROGRAM_LEN, start + reload_cr3.len());
+        put_bytes(bytes, start, &reload_cr3);
+    }
+    ram
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn code_segment() -> vmm_backend::Segment {
     vmm_backend::Segment {
         base: 0,
@@ -994,6 +1007,76 @@ mod live_kvm {
             state_hash: vmm.state_hash().expect("hash guest-authored endpoint"),
             effective_vns: vmm.effective_vns(),
         }
+    }
+
+    #[test]
+    #[ignore = "live x86 KVM; guest-authored PDPT update with architectural CR3 reload"]
+    fn pae_pdpt_reload_preserves_snapshot_continuation() {
+        require_kvm();
+        let fresh = || {
+            let backend = KvmBackend::new().unwrap();
+            let mut vmm = compose(
+                guest_ram_image_with_pdpt_reload(),
+                backend,
+                install_pae_entry,
+            );
+            wire_snapshot_path(&mut vmm);
+            vmm
+        };
+        let mut reference = fresh();
+        run_guest_pdpt_warmup(&mut reference);
+        let expected = run_guest_pdpt_endpoint(&mut reference);
+        assert_eq!(expected.serial, [WARMUP_MARKER, 0x99]);
+
+        let mut source = fresh();
+        run_guest_pdpt_warmup(&mut source);
+        let counts = source.exit_counts();
+        let time = source.effective_vns();
+        let saved = capture_full_vmm(&source);
+        assert_eq!(saved.state.sregs.pdptrs[0], PDPT_B_ENTRY);
+        assert_eq!(
+            saved.memory[PDPT_GPA..PDPT_GPA + 8],
+            PDPT_B_ENTRY.to_le_bytes()
+        );
+        assert_eq!(
+            saved.state.regs.rip,
+            (WARMUP_RIP + GUEST_PDPT_WRITE_LEN + 6) as u64
+        );
+        assert!(capture_full_vmm(&source) == saved);
+        assert_eq!(source.exit_counts(), counts);
+        assert_eq!(source.effective_vns(), time);
+        let observed = run_guest_pdpt_endpoint(&mut source);
+        let report = report_root("PAE_RELOAD_REPORT_DIR");
+        retain_endpoint(report.as_deref(), "reference", &expected, &[]);
+        retain_endpoint(report.as_deref(), "captured", &observed, &[]);
+        assert!(
+            observed == expected,
+            "PAE reload endpoint differs: serial={} memory={} state={} blob={} hash={} vtime={}",
+            observed.serial == expected.serial,
+            observed.memory == expected.memory,
+            observed.encoded_state == expected.encoded_state,
+            observed.state_blob == expected.state_blob,
+            observed.state_hash == expected.state_hash,
+            observed.effective_vns == expected.effective_vns
+        );
+
+        let mut cold = fresh();
+        cold.restore_snapshot(&saved.memory, &saved.state).unwrap();
+        assert!(capture_full_vmm(&cold) == saved);
+        let cold_endpoint = run_guest_pdpt_endpoint(&mut cold);
+        retain_endpoint(report.as_deref(), "cold", &cold_endpoint, &[]);
+        assert!(cold_endpoint == expected);
+
+        source
+            .restore_snapshot(&saved.memory, &saved.state)
+            .unwrap();
+        assert!(capture_full_vmm(&source) == saved);
+        let reused_endpoint = run_guest_pdpt_endpoint(&mut source);
+        retain_endpoint(report.as_deref(), "reused", &reused_endpoint, &[]);
+        assert!(reused_endpoint == expected);
+        println!(
+            "PAE_RELOAD_ORACLE_OK original=99 captured=99 cold=99 reused=99 complete_state_equal=true"
+        );
     }
 
     #[test]

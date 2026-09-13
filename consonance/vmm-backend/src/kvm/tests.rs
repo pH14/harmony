@@ -1051,3 +1051,47 @@ fn event_restore_preserves_pending_and_clears_displaced_exceptions() {
         assert_eq!(restored, event);
     }
 }
+
+#[test]
+fn snapshot_preparation_requires_interruption_and_clears_its_request() {
+    for outcome in 0..3 {
+        let run = SynRun::new();
+        let mut entered = false;
+        let result = prepare_snapshot_run(run.page(), 7, || {
+            entered = true;
+            assert_eq!(run.page().immediate_exit(), 1);
+            // SAFETY: the synthetic run page is owned and initialized for the entire test.
+            assert_eq!(unsafe { (*run.run()).cr8 }, 7);
+            match outcome {
+                0 => Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+                1 => Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+                _ => Ok(()),
+            }
+        });
+        assert!(entered);
+        assert_eq!(result.is_ok(), outcome == 0);
+        assert_eq!(run.page().immediate_exit(), 0);
+    }
+}
+
+#[test]
+fn snapshot_preparation_rejects_run_inputs_before_entering() {
+    for field in 0..3 {
+        let run = SynRun::new();
+        // SAFETY: all three fields are initialized members of the owned synthetic run page.
+        unsafe {
+            match field {
+                0 => (*run.run()).kvm_valid_regs = 1,
+                1 => (*run.run()).kvm_dirty_regs = 1,
+                _ => (*run.run()).immediate_exit = 1,
+            }
+        }
+        assert!(matches!(
+            prepare_snapshot_run(run.page(), 7, || panic!("must not enter with armed inputs")),
+            Err(BackendError::InvalidState)
+        ));
+        // SAFETY: the run page remains owned and live after the rejected preparation.
+        assert_eq!(unsafe { (*run.run()).cr8 }, 0);
+        assert_eq!(run.page().immediate_exit(), u8::from(field == 2));
+    }
+}

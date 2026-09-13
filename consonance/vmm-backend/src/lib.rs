@@ -34,6 +34,8 @@ mod hvf;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod kvm_affinity;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm_sys;
 
 pub use arch::arm64::{

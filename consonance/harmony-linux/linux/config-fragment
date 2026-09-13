@@ -110,6 +110,10 @@ CONFIG_HARMONY_DEVICE=y
 # The guest never sleeps or hibernates; poweroff is the only transition.
 # CONFIG_SUSPEND is not set
 # CONFIG_HIBERNATION is not set
+# Kernel replacement is outside the supported guest lifecycle.
+# CONFIG_KEXEC is not set
+# CONFIG_KEXEC_FILE is not set
+# CONFIG_KEXEC_HANDOVER is not set
 # ACPI so `poweroff -f` actually powers the (QEMU) machine off and the boot
 # gate can observe QEMU exiting. PCI is required with it: QEMU's DSDT
 # declares PCI config-space operation regions, and without the PCI region

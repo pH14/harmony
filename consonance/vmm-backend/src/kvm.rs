@@ -125,7 +125,6 @@ impl RunPage {
         unsafe { (*self.run).ready_for_interrupt_injection }
     }
 
-    #[cfg(test)]
     pub(crate) fn immediate_exit(&self) -> u8 {
         // SAFETY: `run` is a valid `kvm_run` (constructor contract); this is a
         // plain, always-initialized top-level field.
@@ -137,6 +136,16 @@ impl RunPage {
         unsafe {
             (*self.run).immediate_exit = u8::from(on);
         }
+    }
+
+    pub(crate) fn set_cr8(&self, cr8: u64) {
+        // SAFETY: the run page is live and exclusively owned while the vCPU is stopped.
+        unsafe { (*self.run).cr8 = cr8 };
+    }
+
+    fn sync_regs_requested(&self) -> bool {
+        // SAFETY: both fields are initialized top-level members of the live run page.
+        unsafe { (*self.run).kvm_valid_regs != 0 || (*self.run).kvm_dirty_regs != 0 }
     }
 
     fn set_request_interrupt_window(&self, on: bool) {
@@ -291,6 +300,26 @@ pub(crate) fn apply_complete_ok(page: RunPage, pending: Pending) -> Result<()> {
             Ok(())
         }
         _ => Err(BackendError::BadCompletion),
+    }
+}
+
+pub(crate) fn prepare_snapshot_run<F>(page: RunPage, cr8: u64, mut enter: F) -> Result<()>
+where
+    F: FnMut() -> std::result::Result<(), std::io::Error>,
+{
+    if page.immediate_exit() != 0 || page.sync_regs_requested() {
+        return Err(BackendError::InvalidState);
+    }
+    page.set_cr8(cr8);
+    page.set_immediate_exit(true);
+    let result = enter();
+    page.set_immediate_exit(false);
+    match result {
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(()),
+        Err(error) => Err(BackendError::Io(error)),
+        Ok(()) => Err(BackendError::Internal(
+            "snapshot preparation did not return without guest entry",
+        )),
     }
 }
 

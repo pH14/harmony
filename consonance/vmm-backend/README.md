@@ -118,3 +118,42 @@ proof or a change to restore semantics.
 The x86 workflow runs this as a continue-on-error informational step on every
 supported NPT/EPT host, including when the required snapshot gate fails, and
 keeps its report with the existing snapshot artifacts.
+
+
+## Preparing x86 KVM snapshot boundaries
+
+`Backend::prepare_snapshot` reconciles backend execution state before a logical
+boundary is published. The default implementation is inert. KVM uses a guarded
+`KVM_RUN` with `immediate_exit` after all userspace I/O completions have retired.
+It requires `EINTR`, refuses staged/queued completions and armed synchronized
+register inputs, and clears its immediate-exit request on success or error.
+It mirrors CR8 from the current CPU state into the shared run page before entry;
+restore also synchronizes that field, preventing a stale run page from replacing
+restored CR8. This path does not inject queued interrupts or count a guest exit.
+
+The FPU load/save round-trip makes captured XSAVE presence bits reflect the
+hardware representation. No bits are removed from snapshot identity. `save()`
+and hashing remain reads; callers prepare a boundary explicitly after restoring
+RAM and CPU state or servicing an exit. Pending CPU events remain present;
+unretired userspace instruction completion is a different condition and must
+not be consumed by preparation. KVM may refresh shared run-page output metadata.
+The tentative supported execution requirement is a single host core type for all
+related boots, forks, and restores. On hybrid Intel Linux hosts, launch the worker
+under `taskset -c <pool>` or a cpuset containing only P-cores or only E-cores.
+Choose the same pool type for every process participating in a snapshot lineage.
+The backend checks the creating thread's affinity against Linux's `cpu_core/cpus`
+and `cpu_atom/cpus` masks and rejects mixed or uncovered masks when those masks
+are exposed. It does not choose a pool or change caller affinity. Preserve that
+affinity for the backend lifetime; externally changing affinity or CPU topology
+requires stopping and requalifying the worker. The check is admission-time only.
+Hosts that hide hybrid topology, including nested VMs, require operator
+qualification of the underlying scheduling placement; absent masks do not prove
+homogeneity. Snapshot data does not yet encode a host core-type admission token,
+so cross-process and cross-host compatibility remain deployment requirements.
+
+On the measured Core Ultra 9 285HX, preparation on a P-core retained presence `2`,
+while moving the same vCPU to an E-core changed it to `3` with no guest instruction.
+Within each CPUID-verified core-type pool, 15,600 complete-state comparisons passed
+across seeds `0`, `2`, and `3`, including repeated restores. Fixed-core guest XSAVE
+and full-VMM continuation tests passed on both types. This supports the tentative
+restriction; it is not a universal hardware or extended-state qualification.

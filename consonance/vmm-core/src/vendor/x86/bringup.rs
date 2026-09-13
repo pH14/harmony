@@ -61,6 +61,7 @@ fn compose_linux_seeded<B: Backend<A = X86>>(
     let mut state = backend.save()?;
     apply_linux_entry(&mut state, &entry_state);
     backend.restore(&state)?;
+    backend.prepare_snapshot()?;
 
     let lapic = lapic::Lapic::new(lapic::LapicConfig {
         apic_id: BSP_APIC_ID,

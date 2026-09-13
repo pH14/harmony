@@ -66,6 +66,7 @@ pub struct KvmBackend {
 
 impl KvmBackend {
     pub fn new() -> Result<KvmBackend> {
+        crate::kvm_affinity::check_host_affinity()?;
         let kvm = Kvm::new().map_err(kvm_err)?;
         if !kvm.check_extension(Cap::ImmediateExit) {
             return Err(BackendError::Capability {
@@ -681,6 +682,28 @@ impl Backend for KvmBackend {
         self.finish_staged_exit()
     }
 
+    fn prepare_snapshot(&mut self) -> Result<()> {
+        if !self.configured() {
+            return Err(BackendError::NotConfigured);
+        }
+        if self.pending != Pending::None || self.completion_staged || self.completion_exit.is_some()
+        {
+            return Err(BackendError::PendingCompletion);
+        }
+        // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
+        let sregs = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
+        let fd = self.vcpu.as_raw_fd();
+        prepare_snapshot_run(self.run_page(), sregs.cr8, || {
+            // SAFETY: the owned vCPU has no pending completion; the mapped run page requests immediate exit.
+            let rc = unsafe { raw_kvm_run(fd) };
+            if rc < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        })
+    }
+
     fn save(&self) -> Result<VcpuState> {
         let regs = self.vcpu.get_regs().map_err(kvm_err)?;
         // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_sregs2` writes a full
@@ -747,6 +770,7 @@ impl Backend for KvmBackend {
         self.restore_xsave(&xsave)?;
         self.restore_msrs(state)?;
 
+        self.run_page().set_cr8(state.sregs.cr8);
         self.pending_irq = None;
         self.accepted_irq.clear();
         self.readiness_current = false;
@@ -781,6 +805,76 @@ mod xsave_diagnostic {
     use std::fmt::Write as _;
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    #[ignore = "live x86 KVM snapshot preparation; requires /dev/kvm"]
+    fn snapshot_preparation_preserves_complete_state() {
+        for restore_bv in [0, 2, 3] {
+            let mut ram = MmapRam::new(RAM_LEN).unwrap();
+            ram.as_mut_bytes()[CODE_GPA] = 0xf4;
+            let mut backend = KvmBackend::new().unwrap();
+            // SAFETY: the aligned owned RAM mapping outlives the backend and remains fixed during entry.
+            unsafe { backend.map_memory(Gpa(0), ram.as_mut_bytes()).unwrap() };
+            backend.set_policy(&diagnostic_policy()).unwrap();
+            let mut state = backend.save().unwrap();
+            state.regs.rip = CODE_GPA as u64;
+            state.regs.rflags = 2 | (1 << 16);
+            state.sregs.cs.base = 0;
+            state.sregs.cs.selector = 0;
+            state.sregs.cr4 |= (1 << 9) | (1 << 18);
+            state.sregs.cr8 = 7;
+            state.xcr0 = 3;
+            state.xsave_restore_bv = Some(restore_bv);
+            backend.restore(&state).unwrap();
+            backend.pending_irq = Some(0x40);
+            let before = backend.save().unwrap();
+            let memory = ram.as_mut_bytes().to_vec();
+            let counts = backend.exit_counts();
+            let readiness = backend.readiness_current;
+            backend.prepare_snapshot().unwrap();
+            let after = backend.save().unwrap();
+            let mut without_presence_change = after.clone();
+            without_presence_change.xsave_restore_bv = before.xsave_restore_bv;
+            assert_eq!(without_presence_change, before);
+            assert_eq!(ram.as_mut_bytes(), memory);
+            assert_eq!(backend.exit_counts(), counts);
+            assert_eq!(backend.pending_irq, Some(0x40));
+            assert_eq!(backend.readiness_current, readiness);
+            backend.prepare_snapshot().unwrap();
+            assert_eq!(backend.save().unwrap(), after);
+            assert_eq!(ram.as_mut_bytes(), memory);
+            println!(
+                "SNAPSHOT_PREPARATION seed_bv={restore_bv} observed_bv={:?} complete_state_equal=true ram_equal=true counts_equal=true",
+                after.xsave_restore_bv
+            );
+
+            backend.pending = Pending::IoIn {
+                data_offset: 0,
+                size: 1,
+            };
+            assert!(matches!(
+                backend.prepare_snapshot(),
+                Err(BackendError::PendingCompletion)
+            ));
+            assert_eq!(backend.save().unwrap(), after);
+            backend.pending = Pending::None;
+            backend.completion_staged = true;
+            assert!(matches!(
+                backend.prepare_snapshot(),
+                Err(BackendError::PendingCompletion)
+            ));
+            assert_eq!(backend.save().unwrap(), after);
+            backend.completion_staged = false;
+            backend.pending_irq = None;
+            assert!(matches!(
+                backend.run().unwrap(),
+                Exit::Common(CommonExit::Idle)
+            ));
+            let continued = backend.save().unwrap();
+            assert_eq!(continued.xsave_restore_bv, after.xsave_restore_bv);
+            assert_eq!(continued.xsave, after.xsave);
+        }
+    }
 
     const RAM_LEN: usize = 0x4000;
     const CODE_GPA: usize = 0x1000;

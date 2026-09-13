@@ -508,6 +508,7 @@ pub fn vmm_backend::Arm64KvmBackend<K>::exit_counts(&self) -> vmm_backend::ExitC
 pub fn vmm_backend::Arm64KvmBackend<K>::finish_exit(&mut self) -> vmm_backend::Result<core::option::Option<vmm_backend::Exit<Self::A>>>
 pub fn vmm_backend::Arm64KvmBackend<K>::inject(&mut self, vmm_backend::arch::arm64::Arm64Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::Arm64KvmBackend<K>::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::Arm64KvmBackend<K>::prepare_snapshot(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::reset_exit_counts(&mut self)
 pub fn vmm_backend::Arm64KvmBackend<K>::restore(&mut self, &vmm_backend::Arm64VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::retire_pending_completion(&mut self) -> vmm_backend::Result<()>
@@ -657,6 +658,7 @@ pub fn vmm_backend::KvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn vmm_backend::KvmBackend::finish_exit(&mut self) -> vmm_backend::Result<core::option::Option<vmm_backend::Exit<vmm_backend::arch::x86::X86>>>
 pub fn vmm_backend::KvmBackend::inject(&mut self, vmm_backend::arch::x86::Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::KvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::prepare_snapshot(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::KvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::retire_pending_completion(&mut self) -> vmm_backend::Result<()>
@@ -709,6 +711,7 @@ pub fn vmm_backend::MockArm64Backend::exit_counts(&self) -> vmm_backend::ExitCou
 pub fn vmm_backend::MockArm64Backend::finish_exit(&mut self) -> vmm_backend::Result<core::option::Option<vmm_backend::Exit<Self::A>>>
 pub fn vmm_backend::MockArm64Backend::inject(&mut self, vmm_backend::arch::arm64::Arm64Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::MockArm64Backend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockArm64Backend::prepare_snapshot(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::reset_exit_counts(&mut self)
 pub fn vmm_backend::MockArm64Backend::restore(&mut self, &vmm_backend::Arm64VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::retire_pending_completion(&mut self) -> vmm_backend::Result<()>
@@ -754,6 +757,7 @@ pub fn vmm_backend::MockBackend::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn vmm_backend::MockBackend::finish_exit(&mut self) -> vmm_backend::Result<core::option::Option<vmm_backend::Exit<Self::A>>>
 pub fn vmm_backend::MockBackend::inject(&mut self, vmm_backend::arch::x86::Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::MockBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::prepare_snapshot(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::MockBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::retire_pending_completion(&mut self) -> vmm_backend::Result<()>
@@ -958,6 +962,7 @@ pub fn vmm_backend::Backend::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn vmm_backend::Backend::finish_exit(&mut self) -> vmm_backend::Result<core::option::Option<vmm_backend::Exit<Self::A>>>
 pub fn vmm_backend::Backend::inject(&mut self, <Self::A as vmm_backend::arch::Arch>::Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::Backend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::prepare_snapshot(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::Backend::reset_exit_counts(&mut self)
 pub fn vmm_backend::Backend::restore(&mut self, &<Self::A as vmm_backend::arch::Arch>::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::Backend::retire_pending_completion(&mut self) -> vmm_backend::Result<()>
@@ -981,6 +986,7 @@ pub fn vmm_backend::KvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn vmm_backend::KvmBackend::finish_exit(&mut self) -> vmm_backend::Result<core::option::Option<vmm_backend::Exit<vmm_backend::arch::x86::X86>>>
 pub fn vmm_backend::KvmBackend::inject(&mut self, vmm_backend::arch::x86::Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::KvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::prepare_snapshot(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::KvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::retire_pending_completion(&mut self) -> vmm_backend::Result<()>
@@ -1004,6 +1010,7 @@ pub fn vmm_backend::MockArm64Backend::exit_counts(&self) -> vmm_backend::ExitCou
 pub fn vmm_backend::MockArm64Backend::finish_exit(&mut self) -> vmm_backend::Result<core::option::Option<vmm_backend::Exit<Self::A>>>
 pub fn vmm_backend::MockArm64Backend::inject(&mut self, vmm_backend::arch::arm64::Arm64Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::MockArm64Backend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockArm64Backend::prepare_snapshot(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::reset_exit_counts(&mut self)
 pub fn vmm_backend::MockArm64Backend::restore(&mut self, &vmm_backend::Arm64VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::retire_pending_completion(&mut self) -> vmm_backend::Result<()>
@@ -1027,6 +1034,7 @@ pub fn vmm_backend::MockBackend::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn vmm_backend::MockBackend::finish_exit(&mut self) -> vmm_backend::Result<core::option::Option<vmm_backend::Exit<Self::A>>>
 pub fn vmm_backend::MockBackend::inject(&mut self, vmm_backend::arch::x86::Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::MockBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::prepare_snapshot(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::MockBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::retire_pending_completion(&mut self) -> vmm_backend::Result<()>
@@ -1050,6 +1058,7 @@ pub fn alloc::boxed::Box<B>::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn alloc::boxed::Box<B>::finish_exit(&mut self) -> vmm_backend::Result<core::option::Option<vmm_backend::Exit<Self::A>>>
 pub fn alloc::boxed::Box<B>::inject(&mut self, <Self::A as vmm_backend::arch::Arch>::Injection) -> vmm_backend::Result<()>
 pub unsafe fn alloc::boxed::Box<B>::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::prepare_snapshot(&mut self) -> vmm_backend::Result<()>
 pub fn alloc::boxed::Box<B>::reset_exit_counts(&mut self)
 pub fn alloc::boxed::Box<B>::restore(&mut self, &<Self::A as vmm_backend::arch::Arch>::VcpuState) -> vmm_backend::Result<()>
 pub fn alloc::boxed::Box<B>::retire_pending_completion(&mut self) -> vmm_backend::Result<()>
@@ -1073,6 +1082,7 @@ pub fn vmm_backend::Arm64KvmBackend<K>::exit_counts(&self) -> vmm_backend::ExitC
 pub fn vmm_backend::Arm64KvmBackend<K>::finish_exit(&mut self) -> vmm_backend::Result<core::option::Option<vmm_backend::Exit<Self::A>>>
 pub fn vmm_backend::Arm64KvmBackend<K>::inject(&mut self, vmm_backend::arch::arm64::Arm64Injection) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::Arm64KvmBackend<K>::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::Arm64KvmBackend<K>::prepare_snapshot(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::reset_exit_counts(&mut self)
 pub fn vmm_backend::Arm64KvmBackend<K>::restore(&mut self, &vmm_backend::Arm64VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::retire_pending_completion(&mut self) -> vmm_backend::Result<()>

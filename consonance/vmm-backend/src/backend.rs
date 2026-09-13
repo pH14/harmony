@@ -62,6 +62,10 @@ pub trait Backend {
         Ok(None)
     }
 
+    fn prepare_snapshot(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     fn save(&self) -> Result<<Self::A as Arch>::VcpuState>;
 
     fn validate_restore_state(&self, _state: &<Self::A as Arch>::VcpuState) -> Result<()> {
@@ -140,6 +144,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn finish_exit(&mut self) -> Result<Option<Exit<Self::A>>> {
         (**self).finish_exit()
+    }
+
+    fn prepare_snapshot(&mut self) -> Result<()> {
+        (**self).prepare_snapshot()
     }
 
     fn save(&self) -> Result<<Self::A as Arch>::VcpuState> {

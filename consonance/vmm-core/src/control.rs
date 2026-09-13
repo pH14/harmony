@@ -1023,6 +1023,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let vmm = self.vmm.as_mut().ok_or(())?;
         vmm.write_guest_pages(&pages).map_err(|_| ())?;
         vmm.restore_vm_state(vm_state).map_err(|_| ())?;
+        vmm.prepare_snapshot().map_err(|_| ())?;
         Ok(bytes)
     }
 
@@ -1189,7 +1190,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     .as_mut()
                     .expect("use_remap checked is_some");
                 let mut fresh = factory(mapping)?;
-                let result = fresh.restore_vm_state(&vm_state);
+                let result = fresh
+                    .restore_vm_state(&vm_state)
+                    .and_then(|()| fresh.prepare_snapshot());
                 (fresh, result)
             } else {
                 let mut fresh = (self.factory)()?;
