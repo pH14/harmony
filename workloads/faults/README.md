@@ -63,7 +63,7 @@ branch installs it.
 per evaluator thread. Each portable action prefix maps to a real whole-VM
 snapshot: the session branches its parent under the prefix's window list and
 the host-plane effect its last action stages, runs to the action's deadline,
-and seals the endpoint. Long waits cross five-second guest-time progress
+and seals the endpoint. Actions cross 100-millisecond guest-time progress
 deadlines before their final endpoint, so a guest that is still advancing
 refreshes the host watchdog while one that cannot advance still times out. An
 endpoint the session cannot seal within its settle allowance has no successor
