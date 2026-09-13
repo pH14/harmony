@@ -30,13 +30,17 @@ conflicts are rejected. Platform and external mount destinations must have
 symlink-free paths in the staged image, so image aliases cannot redirect a
 mount over platform control files. External files and the execution specification are
 read-only mounts; `/dev/harmony` and the supervisor-only `/dev/harmony-park`
-are the only Harmony device mounts. Guest startup invokes the pinned
+are the only Harmony device mounts. The container also receives the guest
+kernel's `/dev/kmsg` log observer as a read-only bind with read-only device
+policy access. Guest startup invokes the pinned
 `/usr/bin/runc` once with the initramfs `--no-pivot` arrangement. The outer
 guest root is made recursively private before launch; the container uses
 `rslave` propagation, as required by this runtime mode.
-The generated device policy contains four numeric placeholders. Platform PID 1
-resolves them from the two kernel-created character devices before invoking
-`runc`, allowing read/write access to their exact major/minor pairs.
+The generated device policy contains four numeric placeholders for the two
+kernel-created Harmony character devices and a fixed read-only rule for
+`/dev/kmsg` (character major 1, minor 11). Platform PID 1 resolves the
+placeholders before invoking `runc`, allowing read/write access to the exact
+Harmony major/minor pairs while keeping kernel-log access read-only.
 Each container has a private cgroup namespace with a writable cgroup v2 mount.
 The supervisor first creates a delegated child below the cgroup holding the
 device policy, then enters a new cgroup namespace rooted at that child and
