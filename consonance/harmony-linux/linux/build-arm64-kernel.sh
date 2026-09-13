@@ -109,6 +109,7 @@ assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES FHANDLE HIGH_RES_TIMERS NO_HZ_C
     ARM64_ERRATUM_858921 SUN50I_ERRATUM_UNKNOWN1 KVM COMPAT ACPI \
     ARM64_MTE \
     BPF_JIT KPROBES FUNCTION_TRACER FTRACE LIVEPATCH
+assert_off RWSEM_SPIN_ON_OWNER
 # The platform image executes a shell PID 1 and an OCI runtime, so its
 # namespace, cgroup, mount, and seccomp facilities are part of the standard
 # configuration. They are not selected by an application profile.

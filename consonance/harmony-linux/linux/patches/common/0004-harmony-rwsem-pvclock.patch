@@ -1,0 +1,24 @@
+Disable rwsem optimistic owner spinning with Harmony virtual clocks
+
+Linux's reader-owner rwsem optimistic spin loop uses sched_clock() for its
+timeout. Harmony virtual clocks stop advancing during exit-free spinning, so
+the loop can fail to reach its timeout and stall the outer runtime. Keep
+contended rwsems on Linux's existing blocking and wakeup path; disable only
+this optional owner-spin optimization in either Harmony virtual-clock kernel.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/kernel/Kconfig.locks
++++ b/kernel/Kconfig.locks
+@@ -230,7 +230,7 @@ config MUTEX_SPIN_ON_OWNER
+ 
+ config RWSEM_SPIN_ON_OWNER
+        def_bool y
+-       depends on SMP && ARCH_SUPPORTS_ATOMIC_RMW
++       depends on SMP && ARCH_SUPPORTS_ATOMIC_RMW && !HARMONY_PVCLOCK && !HARMONY_ARM_PVCLOCK
+ 
+ config LOCK_SPIN_ON_OWNER
+        def_bool y

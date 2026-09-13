@@ -22,6 +22,11 @@ the supported execution contract. This keeps privileged payloads inside the
 delegated cgroup view rather than exposing its device-policy ancestor through
 filesystem or namespace handles.
 
+The common kernel policy disables `RWSEM_SPIN_ON_OWNER` when either Harmony
+virtual clock is compiled in. Its reader-owner optimistic-spin timeout uses
+`sched_clock()`, which remains frozen during exit-free spinning. Contended
+rwsems use Linux's existing blocking and wakeup path.
+
 ## Canonical artifacts
 
 The x86 build publishes `build/x86_64/bzImage` and
