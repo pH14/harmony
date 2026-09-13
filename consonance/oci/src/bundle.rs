@@ -16,6 +16,7 @@ pub const EXECUTION_DESTINATION: &str = execution_proto::EXECUTION_PATH;
 pub const SUPERVISOR_PATH: &str = "/usr/lib/harmony/supervisor";
 pub const PARK_DEVICE: &str = "/dev/harmony-park";
 pub const HARMONY_DEVICE: &str = "/dev/harmony";
+const KERNEL_LOG_DEVICE: &str = "/dev/kmsg";
 pub const MAX_EXTERNAL_INPUTS: usize = 256;
 pub const MAX_EXTERNAL_INPUT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_EXTERNAL_INPUT_PATH_BYTES: usize = 4096;
@@ -146,6 +147,7 @@ pub fn prepare(
         EXECUTION_DESTINATION,
         HARMONY_DEVICE,
         PARK_DEVICE,
+        KERNEL_LOG_DEVICE,
     ] {
         validate_mount_path(&image.rootfs, destination)?;
     }
@@ -355,6 +357,12 @@ fn runc_spec(external_inputs: &[ValidatedExternalInput]) -> serde_json::Value {
             "source": PARK_DEVICE,
             "options": ["bind"]
         }),
+        json!({
+            "destination": KERNEL_LOG_DEVICE,
+            "type": "bind",
+            "source": KERNEL_LOG_DEVICE,
+            "options": ["bind", "ro"]
+        }),
     ];
     for input in external_inputs {
         mounts.push(json!({
@@ -385,7 +393,8 @@ fn runc_spec(external_inputs: &[ValidatedExternalInput]) -> serde_json::Value {
             "resources": {
                 "devices": [
                     { "allow": true, "type": "c", "major": "HARMONY_SDK_MAJOR", "minor": "HARMONY_SDK_MINOR", "access": "rw" },
-                    { "allow": true, "type": "c", "major": "HARMONY_PARK_MAJOR", "minor": "HARMONY_PARK_MINOR", "access": "rw" }
+                    { "allow": true, "type": "c", "major": "HARMONY_PARK_MAJOR", "minor": "HARMONY_PARK_MINOR", "access": "rw" },
+                    { "allow": true, "type": "c", "major": 1, "minor": 11, "access": "r" }
                 ]
             },
             "namespaces": [
@@ -667,6 +676,25 @@ mod tests {
         assert!(text.contains("/dev/harmony"));
         assert!(text.contains("/dev/harmony-park"));
         assert!(!text.contains("/dev/mem"));
+
+        let config = runc_spec(&[]);
+        let mounts = config["mounts"].as_array().unwrap();
+        let kmsg = mounts
+            .iter()
+            .find(|mount| mount["destination"] == KERNEL_LOG_DEVICE)
+            .unwrap();
+        assert_eq!(kmsg["type"], "bind");
+        assert_eq!(kmsg["source"], KERNEL_LOG_DEVICE);
+        assert_eq!(kmsg["options"], json!(["bind", "ro"]));
+
+        let devices = config["linux"]["resources"]["devices"].as_array().unwrap();
+        assert!(devices.iter().any(|device| {
+            device["type"] == "c"
+                && device["major"] == 1
+                && device["minor"] == 11
+                && device["access"] == "r"
+                && device["allow"] == true
+        }));
     }
 
     #[test]
@@ -746,6 +774,14 @@ mod tests {
         assert!(matches!(
             prepare(&staged, &LaunchRequest::default()),
             Err(BundleError::MountSymlink { .. })
+        ));
+
+        let staged = image();
+        std::fs::create_dir(staged.rootfs.join("dev")).unwrap();
+        std::os::unix::fs::symlink("/dev/null", staged.rootfs.join("dev/kmsg")).unwrap();
+        assert!(matches!(
+            prepare(&staged, &LaunchRequest::default()),
+            Err(BundleError::MountSymlink { path }) if path == KERNEL_LOG_DEVICE
         ));
     }
 
