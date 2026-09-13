@@ -1649,7 +1649,10 @@ fn boot_memory_kib(console: &str) -> Result<(u64, u64), String> {
     )
 ))]
 mod tests {
-    use super::boot_memory_kib;
+    use super::{
+        OracleHistoryEdgeMetadata, OracleHistoryMetadata, OracleHistoryReplayMetadata,
+        boot_memory_kib, render_in_place_history_metadata, write_oracle_failure_file,
+    };
 
     #[test]
     fn boot_memory_accepts_plain_and_kernel_timestamped_reports() {
@@ -1669,6 +1672,398 @@ mod tests {
         assert!(boot_memory_kib("[ 0.1] Memory: bad/2K available\n").is_err());
         assert!(boot_memory_kib("[ 0.1] Memory: 1K/2 available\n").is_err());
     }
+
+    #[test]
+    fn oracle_history_metadata_binds_edges_to_replays_and_artifacts() {
+        let expected_hash = [0xabu8; 32];
+        let replay_hash = [0xcdu8; 32];
+        let edges = vec![
+            OracleHistoryEdgeMetadata {
+                edge_index: 0,
+                parent_snapshot_id: 3,
+                child_snapshot_id: 101,
+                payload: vec![0x41, 1],
+                expected_hash: [0x11; 32],
+            },
+            OracleHistoryEdgeMetadata {
+                edge_index: 1,
+                parent_snapshot_id: 101,
+                child_snapshot_id: 202,
+                payload: vec![0x42, 7],
+                expected_hash,
+            },
+            OracleHistoryEdgeMetadata {
+                edge_index: 2,
+                parent_snapshot_id: 101,
+                child_snapshot_id: 303,
+                payload: vec![0, 255],
+                expected_hash: [0x22; 32],
+            },
+        ];
+        let replay_sequence = [
+            ("initial-tree-build", None, 0),
+            ("initial-tree-build", None, 1),
+            ("pre-tree-replay", None, 1),
+            ("tree-build", None, 2),
+            ("history-replay", Some(1), 2),
+            ("history-replay", Some(2), 1),
+        ]
+        .map(
+            |(phase, comparison, edge_index)| OracleHistoryReplayMetadata {
+                phase,
+                comparison,
+                edge_index,
+            },
+        );
+        let metadata = render_in_place_history_metadata(&OracleHistoryMetadata {
+            root_snapshot_id: 3,
+            tree_seed: 5,
+            failing_comparison: 2,
+            failing_edge_index: 1,
+            failing_parent_snapshot_id: 101,
+            failing_child_snapshot_id: 202,
+            failing_payload: &[0x42, 7],
+            expected_hash: &expected_hash,
+            replay_hash: &replay_hash,
+            root_artifact: b"root",
+            parent_artifact: b"parent",
+            expected_endpoint: b"expected",
+            actual_endpoint: b"actual",
+            edges: &edges,
+            replay_sequence: &replay_sequence,
+        });
+        let parsed: serde_json::Value =
+            serde_json::from_str(&metadata).expect("valid failure JSON");
+        assert_eq!(parsed["report_version"], 1);
+        assert_eq!(parsed["tree_seed"], 5);
+        assert_eq!(parsed["root_snapshot_id"], 3);
+        assert_eq!(parsed["failing_comparison"], 2);
+        assert_eq!(parsed["failing_edge_index"], 1);
+        assert_eq!(parsed["failing_parent_snapshot_id"], 101);
+        assert_eq!(parsed["failing_child_snapshot_id"], 202);
+        assert_eq!(parsed["failing_payload"], serde_json::json!([66, 7]));
+        assert_eq!(parsed["expected_hash"], "ab".repeat(32));
+        assert_eq!(parsed["replay_hash"], "cd".repeat(32));
+        assert_eq!(
+            parsed["edge_table"],
+            serde_json::json!([
+                {"edge_index": 0, "parent_snapshot_id": 3, "child_snapshot_id": 101,
+                 "payload": [65, 1], "expected_hash": "11".repeat(32)},
+                {"edge_index": 1, "parent_snapshot_id": 101, "child_snapshot_id": 202,
+                 "payload": [66, 7], "expected_hash": "ab".repeat(32)},
+                {"edge_index": 2, "parent_snapshot_id": 101, "child_snapshot_id": 303,
+                 "payload": [0, 255], "expected_hash": "22".repeat(32)}
+            ])
+        );
+        assert_eq!(
+            parsed["replay_sequence"],
+            serde_json::json!([
+                {"phase": "initial-tree-build", "comparison": null, "edge_index": 0},
+                {"phase": "initial-tree-build", "comparison": null, "edge_index": 1},
+                {"phase": "pre-tree-replay", "comparison": null, "edge_index": 1},
+                {"phase": "tree-build", "comparison": null, "edge_index": 2},
+                {"phase": "history-replay", "comparison": 1, "edge_index": 2},
+                {"phase": "history-replay", "comparison": 2, "edge_index": 1}
+            ])
+        );
+        assert_eq!(
+            parsed["artifact_bindings"]["root"],
+            serde_json::json!({
+                "file": "in-place-history-root.bin", "bytes": 4,
+                "sha256": "4813494d137e1631bba301d5acab6e7bb7aa74ce1185d456565ef51d737677b2"
+            })
+        );
+        assert_eq!(
+            parsed["artifact_bindings"]["parent"],
+            serde_json::json!({
+                "file": "in-place-history-parent.bin", "bytes": 6,
+                "sha256": "e47125968b3b71049fbc4802d1e40a71ea1359decfabacf70b34588037d4ff0c"
+            })
+        );
+        assert_eq!(
+            parsed["artifact_bindings"]["expected_endpoint"],
+            serde_json::json!({
+                "file": "in-place-history-expected.bin", "bytes": 8,
+                "sha256": "cea23dd4b87e8b00d19fb9ccaaef93e97353c7353e2070f3baf05aeb3995dff4"
+            })
+        );
+        assert_eq!(
+            parsed["artifact_bindings"]["actual_endpoint"],
+            serde_json::json!({
+                "file": "in-place-history-actual.bin", "bytes": 6,
+                "sha256": "e5c6fde86910ded72db5cc7afc32f850440d4ef7caa5dbb69f5bdc0d3e39cb3b"
+            })
+        );
+    }
+
+    #[test]
+    fn oracle_failure_files_reject_collisions_without_replacing_bytes() {
+        let temporary = tempfile::tempdir().expect("create collision test directory");
+        let directory = temporary.path();
+        write_oracle_failure_file(directory, "collision.bin", b"first")
+            .expect("create initial collision test file");
+        let error = write_oracle_failure_file(directory, "collision.bin", b"second")
+            .expect_err("collision should fail closed");
+        assert!(error.contains("cannot create"));
+        assert_eq!(
+            std::fs::read(directory.join("collision.bin")).unwrap(),
+            b"first"
+        );
+    }
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+#[derive(Clone)]
+struct OracleHistoryEdgeMetadata {
+    edge_index: usize,
+    parent_snapshot_id: u64,
+    child_snapshot_id: u64,
+    payload: Vec<u8>,
+    expected_hash: [u8; 32],
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+#[derive(Clone, Copy)]
+struct OracleHistoryReplayMetadata {
+    phase: &'static str,
+    comparison: Option<u64>,
+    edge_index: usize,
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+struct OracleHistoryMetadata<'a> {
+    root_snapshot_id: u64,
+    tree_seed: u64,
+    failing_comparison: u64,
+    failing_edge_index: usize,
+    failing_parent_snapshot_id: u64,
+    failing_child_snapshot_id: u64,
+    failing_payload: &'a [u8],
+    expected_hash: &'a [u8; 32],
+    replay_hash: &'a [u8; 32],
+    root_artifact: &'a [u8],
+    parent_artifact: &'a [u8],
+    expected_endpoint: &'a [u8],
+    actual_endpoint: &'a [u8],
+    edges: &'a [OracleHistoryEdgeMetadata],
+    replay_sequence: &'a [OracleHistoryReplayMetadata],
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn write_oracle_failure_file(
+    directory: &std::path::Path,
+    name: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let path = directory.join(name);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("oracle report cannot create {path:?}: {error}"))?;
+    std::io::Write::write_all(&mut file, bytes)
+        .map_err(|error| format!("oracle report cannot write {path:?}: {error}"))
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn render_in_place_history_metadata(metadata: &OracleHistoryMetadata<'_>) -> String {
+    use std::fmt::Write as _;
+
+    let bytes_json = |bytes: &[u8]| {
+        let mut json = String::from("[");
+        for (index, byte) in bytes.iter().enumerate() {
+            if index != 0 {
+                json.push(',');
+            }
+            write!(json, "{byte}").expect("writing bytes to a String cannot fail");
+        }
+        json.push(']');
+        json
+    };
+    let hash_hex =
+        |hash: &[u8; 32]| -> String { hash.iter().map(|byte| format!("{byte:02x}")).collect() };
+    let sha256 = |bytes: &[u8]| {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(bytes))
+    };
+    let mut output = String::new();
+    output.push_str("{\n  \"kind\": \"in-place-history-failure\",\n  \"report_version\": 1,\n");
+    output.push_str(
+        "  \"branch_protocol\": {\"payload_suffix\": [0, 1], \"tree_build_seals\": true, \"pre_tree_replay_seals\": false, \"history_replay_seals\": false},\n",
+    );
+    writeln!(output, "  \"tree_seed\": {},", metadata.tree_seed).expect("String write cannot fail");
+    writeln!(
+        output,
+        "  \"root_snapshot_id\": {},",
+        metadata.root_snapshot_id
+    )
+    .expect("String write cannot fail");
+    writeln!(
+        output,
+        "  \"failing_comparison\": {},",
+        metadata.failing_comparison
+    )
+    .expect("String write cannot fail");
+    writeln!(
+        output,
+        "  \"failing_edge_index\": {},",
+        metadata.failing_edge_index
+    )
+    .expect("String write cannot fail");
+    writeln!(
+        output,
+        "  \"failing_parent_snapshot_id\": {},",
+        metadata.failing_parent_snapshot_id
+    )
+    .expect("String write cannot fail");
+    writeln!(
+        output,
+        "  \"failing_child_snapshot_id\": {},",
+        metadata.failing_child_snapshot_id
+    )
+    .expect("String write cannot fail");
+    writeln!(
+        output,
+        "  \"failing_payload\": {},",
+        bytes_json(metadata.failing_payload)
+    )
+    .expect("String write cannot fail");
+    writeln!(
+        output,
+        "  \"expected_hash\": \"{}\",",
+        hash_hex(metadata.expected_hash)
+    )
+    .expect("String write cannot fail");
+    writeln!(
+        output,
+        "  \"replay_hash\": \"{}\",",
+        hash_hex(metadata.replay_hash)
+    )
+    .expect("String write cannot fail");
+    output.push_str("  \"snapshots\": {\n");
+    writeln!(
+        output,
+        "    \"root\": {{\"file\": \"in-place-history-root.bin\", \"id\": {}, \"meaning\": \"stored root/base snapshot\"}},",
+        metadata.root_snapshot_id
+    )
+    .expect("String write cannot fail");
+    writeln!(
+        output,
+        "    \"parent\": {{\"file\": \"in-place-history-parent.bin\", \"id\": {}, \"meaning\": \"stored failing parent snapshot\"}},",
+        metadata.failing_parent_snapshot_id
+    )
+    .expect("String write cannot fail");
+    writeln!(
+        output,
+        "    \"expected_child\": {{\"file\": \"in-place-history-expected.bin\", \"id\": {}, \"meaning\": \"stored expected child snapshot exported as the expected endpoint\"}}\n  }},",
+        metadata.failing_child_snapshot_id
+    )
+    .expect("String write cannot fail");
+    output.push_str(
+        "  \"artifact_bindings\": {\n    \"root\": {\"file\": \"in-place-history-root.bin\", \"bytes\": ",
+    );
+    writeln!(
+        output,
+        "{}, \"sha256\": \"{}\"}},",
+        metadata.root_artifact.len(),
+        sha256(metadata.root_artifact)
+    )
+    .expect("String write cannot fail");
+    writeln!(
+        output,
+        "    \"parent\": {{\"file\": \"in-place-history-parent.bin\", \"bytes\": {}, \"sha256\": \"{}\"}},",
+        metadata.parent_artifact.len(),
+        sha256(metadata.parent_artifact)
+    )
+    .expect("String write cannot fail");
+    writeln!(
+        output,
+        "    \"expected_endpoint\": {{\"file\": \"in-place-history-expected.bin\", \"bytes\": {}, \"sha256\": \"{}\"}},",
+        metadata.expected_endpoint.len(),
+        sha256(metadata.expected_endpoint)
+    )
+    .expect("String write cannot fail");
+    writeln!(
+        output,
+        "    \"actual_endpoint\": {{\"file\": \"in-place-history-actual.bin\", \"bytes\": {}, \"sha256\": \"{}\"}}\n  }},",
+        metadata.actual_endpoint.len(),
+        sha256(metadata.actual_endpoint)
+    )
+    .expect("String write cannot fail");
+    output.push_str(
+        "  \"endpoint_pair\": {\"expected_file\": \"in-place-history-expected.bin\", \"actual_file\": \"in-place-history-actual.bin\", \"actual_meaning\": \"current failing in-place replay endpoint captured before diagnostics\"},\n  \"replay_hash_meaning\": \"whole-state hash returned by the failing replay before retention; it is not an assertion about actual_endpoint\",\n  \"edge_table\": [\n",
+    );
+    for (index, edge) in metadata.edges.iter().enumerate() {
+        if index != 0 {
+            output.push_str(",\n");
+        }
+        write!(
+            output,
+            "    {{\"edge_index\": {}, \"parent_snapshot_id\": {}, \"child_snapshot_id\": {}, \"payload\": {}, \"expected_hash\": \"{}\"}}",
+            edge.edge_index,
+            edge.parent_snapshot_id,
+            edge.child_snapshot_id,
+            bytes_json(&edge.payload),
+            hash_hex(&edge.expected_hash)
+        )
+        .expect("String write cannot fail");
+    }
+    output.push_str("\n  ],\n  \"replay_sequence\": [\n");
+    for (index, replay) in metadata.replay_sequence.iter().enumerate() {
+        if index != 0 {
+            output.push_str(",\n");
+        }
+        match replay.comparison {
+            Some(comparison) => write!(
+                output,
+                "    {{\"phase\": \"{}\", \"comparison\": {}, \"edge_index\": {}}}",
+                replay.phase, comparison, replay.edge_index
+            ),
+            None => write!(
+                output,
+                "    {{\"phase\": \"{}\", \"comparison\": null, \"edge_index\": {}}}",
+                replay.phase, replay.edge_index
+            ),
+        }
+        .expect("String write cannot fail");
+    }
+    output.push_str("\n  ]\n}\n");
+    output
 }
 
 #[cfg(any(
@@ -2185,6 +2580,80 @@ fn run() -> Result<(), String> {
         Ok(())
     }
 
+    struct InPlaceHistoryFailure<'a> {
+        server: &'a Server,
+        root: SnapId,
+        parent: SnapId,
+        child: SnapId,
+        payload: &'a [u8],
+        expected_hash: &'a [u8; 32],
+        actual_hash: &'a [u8; 32],
+        expected_endpoint: &'a [u8],
+        actual_endpoint: &'a [u8],
+        tree_seed: u64,
+        comparison: u64,
+        edge_index: usize,
+        edges: &'a [OracleHistoryEdgeMetadata],
+        replay_sequence: &'a [OracleHistoryReplayMetadata],
+    }
+
+    fn retain_in_place_history_failure(failure: InPlaceHistoryFailure<'_>) -> Result<(), String> {
+        let InPlaceHistoryFailure {
+            server,
+            root,
+            parent,
+            child,
+            payload,
+            expected_hash,
+            actual_hash,
+            expected_endpoint,
+            actual_endpoint,
+            tree_seed,
+            comparison,
+            edge_index,
+            edges,
+            replay_sequence,
+        } = failure;
+        let Some(directory) = std::env::var_os("HARMONY_CONSONANCE_ORACLE_REPORT_DIR") else {
+            return Ok(());
+        };
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| format!("oracle report directory cannot be created: {error}"))?;
+        write_oracle_failure_file(
+            &directory,
+            "in-place-history-expected.bin",
+            expected_endpoint,
+        )?;
+        write_oracle_failure_file(&directory, "in-place-history-actual.bin", actual_endpoint)?;
+        let root_artifact = export_snapshot(server, root)?;
+        write_oracle_failure_file(&directory, "in-place-history-root.bin", &root_artifact)?;
+        let parent_artifact = export_snapshot(server, parent)?;
+        write_oracle_failure_file(&directory, "in-place-history-parent.bin", &parent_artifact)?;
+        let metadata = render_in_place_history_metadata(&OracleHistoryMetadata {
+            root_snapshot_id: root.0,
+            tree_seed,
+            failing_comparison: comparison,
+            failing_edge_index: edge_index,
+            failing_parent_snapshot_id: parent.0,
+            failing_child_snapshot_id: child.0,
+            failing_payload: payload,
+            expected_hash,
+            replay_hash: actual_hash,
+            root_artifact: &root_artifact,
+            parent_artifact: &parent_artifact,
+            expected_endpoint,
+            actual_endpoint,
+            edges,
+            replay_sequence,
+        });
+        write_oracle_failure_file(
+            &directory,
+            "in-place-history-failure.json",
+            metadata.as_bytes(),
+        )
+    }
+
     fn snapshot_current(
         server: &mut Server,
         profile: &mut ProbeProfile,
@@ -2515,6 +2984,11 @@ fn run() -> Result<(), String> {
                 server.vmm().ok_or("oracle VM unavailable")?.sdk_snapshot()
             ),
         });
+        let mut replay_sequence = vec![OracleHistoryReplayMetadata {
+            phase: "initial-tree-build",
+            comparison: None,
+            edge_index: 0,
+        }];
         let action_b = vec![0x42, 7];
         let (s2, s2_hash, initial) = oracle_action(server, s1, action_b.clone(), true, profile)?;
         let s2 = s2.ok_or("restore-oracle action B did not seal S2")?;
@@ -2534,10 +3008,20 @@ fn run() -> Result<(), String> {
                 server.vmm().ok_or("oracle VM unavailable")?.sdk_snapshot()
             ),
         });
+        replay_sequence.push(OracleHistoryReplayMetadata {
+            phase: "initial-tree-build",
+            comparison: None,
+            edge_index: 1,
+        });
         let (_, replay_b_hash, _) = oracle_action(server, s1, action_b, false, profile)?;
         if replay_b_hash != s2_hash {
             return Err("restore-oracle S1 + B did not reproduce S2".to_string());
         }
+        replay_sequence.push(OracleHistoryReplayMetadata {
+            phase: "pre-tree-replay",
+            comparison: None,
+            edge_index: 1,
+        });
         let mut equal = 1u64;
         let mut fresh_equal = 0usize;
         let mut full_state_equal = 0usize;
@@ -2554,6 +3038,7 @@ fn run() -> Result<(), String> {
         let mut rng = tree_seed;
         while edges.len() < 50 {
             let word = oracle_word(&mut rng);
+            let edge_index = edges.len();
             let parent = nodes[(word as usize) % nodes.len()];
             let payload = oracle_payload(word.rotate_left(17));
             let (child, hash, initial) =
@@ -2575,18 +3060,55 @@ fn run() -> Result<(), String> {
                     server.vmm().ok_or("oracle VM unavailable")?.sdk_snapshot()
                 ),
             });
+            replay_sequence.push(OracleHistoryReplayMetadata {
+                phase: "tree-build",
+                comparison: None,
+                edge_index,
+            });
         }
 
         while equal < 200 {
             let word = oracle_word(&mut rng);
-            let edge = &edges[(word as usize) % edges.len()];
+            let edge_index = (word as usize) % edges.len();
+            replay_sequence.push(OracleHistoryReplayMetadata {
+                phase: "history-replay",
+                comparison: Some(equal),
+                edge_index,
+            });
+            let edge = &edges[edge_index];
             let (_, replay_hash, initial) =
                 oracle_action(server, edge.parent, edge.payload.clone(), false, profile)?;
             if replay_hash != edge.hash {
                 if std::env::var_os("HARMONY_CONSONANCE_ORACLE_REPORT_DIR").is_some() {
                     let expected = export_snapshot(server, edge.child)?;
                     let (_, actual) = snapshot_current(server, profile)?;
-                    retain_oracle_mismatch("in-place-history", &expected, &actual)?;
+                    let edge_table = edges
+                        .iter()
+                        .enumerate()
+                        .map(|(edge_index, edge)| OracleHistoryEdgeMetadata {
+                            edge_index,
+                            parent_snapshot_id: edge.parent.0,
+                            child_snapshot_id: edge.child.0,
+                            payload: edge.payload.clone(),
+                            expected_hash: edge.hash,
+                        })
+                        .collect::<Vec<_>>();
+                    retain_in_place_history_failure(InPlaceHistoryFailure {
+                        server,
+                        root: base,
+                        parent: edge.parent,
+                        child: edge.child,
+                        payload: &edge.payload,
+                        expected_hash: &edge.hash,
+                        actual_hash: &replay_hash,
+                        expected_endpoint: &expected,
+                        actual_endpoint: &actual,
+                        tree_seed,
+                        comparison: equal,
+                        edge_index,
+                        edges: &edge_table,
+                        replay_sequence: &replay_sequence,
+                    })?;
                 }
                 let actual = server
                     .vmm()

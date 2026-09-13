@@ -74,6 +74,19 @@ For extended qualification, `HARMONY_CONSONANCE_ORACLE_TREE_SEED` selects a
 fixed decimal seed for tree construction and edge replay. Leaving it unset
 preserves the historical sequence; every success report records the seed.
 
+If an in-place history comparison fails, the report directory also receives
+`in-place-history-root.bin` and `in-place-history-parent.bin`, which are exports
+of the stored root/base and failing parent snapshots identified in
+`in-place-history-failure.json`. The existing
+`in-place-history-expected.bin` and `in-place-history-actual.bin` files retain
+the first failing endpoint pair. The JSON records the tree seed, stable snapshot
+IDs, failing edge and comparison, payload, expected and replay hashes, and the
+ordered setup/tree/replay sequence through the failure. The root/base and parent
+files describe stored snapshots; they are not live backend state captured before
+the restore. These files are written only on the failure path, before any fresh
+diagnostic restore changes the VM, and a filename collision is reported as an
+error.
+
 The qualified D source snapshot and its continuation evidence can be exported
 as an opt-in directory bundle. Set an explicit, operator-declared source commit
 identity when exporting; this metadata records the claimed source identity and
