@@ -52,12 +52,12 @@ def validate(path: Path, case: dict) -> dict:
         require(case, path, "arms", arm, "version")
     for key in ("assertion", "evidence"):
         require(case, path, "oracle", key)
-    for key in ("horizon_ms", "ram_mib"):
+    for key in ("ram_mib",):
         require(case, path, "run", key)
     for key in ("seed", "workers", "actions", "wall_minutes"):
         require(case, path, "search", key)
     for group, keys in (
-        ("run", ("horizon_ms", "ram_mib")),
+        ("run", ("ram_mib",)),
         ("search", ("seed", "workers", "actions", "wall_minutes")),
     ):
         for key in keys:
@@ -135,7 +135,6 @@ def validate(path: Path, case: dict) -> dict:
         "control_version": case["arms"]["control"]["version"],
         "oracle_assertion": case["oracle"]["assertion"],
         "oracle_evidence": case["oracle"]["evidence"],
-        "horizon_ms": case["run"]["horizon_ms"],
         "ram_mib": case["run"]["ram_mib"],
         "seed": case["search"]["seed"],
         "workers": case["search"]["workers"],

@@ -20,6 +20,8 @@ pub struct Bundle {
     pub hooks: Vec<HookSpec>,
     pub ready: Option<Vec<String>>,
     pub setup: Option<Vec<String>>,
+    pub workload: Option<Vec<String>>,
+    pub check: Option<Vec<String>>,
 }
 
 impl Bundle {
@@ -52,6 +54,10 @@ pub enum BundleError {
     DuplicateReady { line: usize },
     #[error("line {line}: a second setup command")]
     DuplicateSetup { line: usize },
+    #[error("line {line}: a second workload command")]
+    DuplicateWorkload { line: usize },
+    #[error("line {line}: a second check command")]
+    DuplicateCheck { line: usize },
     #[error("line {line}: unterminated quote")]
     UnterminatedQuote { line: usize },
     #[error("line {line}: more than {MAX_NODES} nodes")]
@@ -104,6 +110,34 @@ pub fn parse_bundle(text: &str) -> Result<Bundle, BundleError> {
                     return Err(BundleError::DuplicateSetup { line });
                 }
                 bundle.setup = Some(argv);
+            }
+            "workload" => {
+                let argv: Vec<String> = words.collect();
+                if argv.is_empty() {
+                    return Err(BundleError::Incomplete {
+                        line,
+                        item: "workload",
+                        need: 1,
+                    });
+                }
+                if bundle.workload.is_some() {
+                    return Err(BundleError::DuplicateWorkload { line });
+                }
+                bundle.workload = Some(argv);
+            }
+            "check" => {
+                let argv: Vec<String> = words.collect();
+                if argv.is_empty() {
+                    return Err(BundleError::Incomplete {
+                        line,
+                        item: "check",
+                        need: 1,
+                    });
+                }
+                if bundle.check.is_some() {
+                    return Err(BundleError::DuplicateCheck { line });
+                }
+                bundle.check = Some(argv);
             }
             _ => return Err(BundleError::UnknownItem { line, word: item }),
         }
@@ -276,6 +310,43 @@ ready /usr/bin/etcdctl endpoint health
             Err(BundleError::Incomplete {
                 line: 1,
                 item: "setup",
+                need: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn workload_and_check_commands_are_kept_whole_and_declared_once() {
+        let bundle = parse_bundle(
+            r#"node a /a
+workload /bin/sh -c "run forever"
+check /bin/check --json
+"#,
+        )
+        .unwrap();
+        assert_eq!(bundle.workload.unwrap(), ["/bin/sh", "-c", "run forever"]);
+        assert_eq!(bundle.check.unwrap(), ["/bin/check", "--json"]);
+        assert_eq!(
+            parse_bundle("node a /a\nworkload /a\nworkload /b\n"),
+            Err(BundleError::DuplicateWorkload { line: 3 })
+        );
+        assert_eq!(
+            parse_bundle("node a /a\ncheck /a\ncheck /b\n"),
+            Err(BundleError::DuplicateCheck { line: 3 })
+        );
+        assert_eq!(
+            parse_bundle("node a /a\nworkload\n"),
+            Err(BundleError::Incomplete {
+                line: 2,
+                item: "workload",
+                need: 1,
+            })
+        );
+        assert_eq!(
+            parse_bundle("node a /a\ncheck\n"),
+            Err(BundleError::Incomplete {
+                line: 2,
+                item: "check",
                 need: 1,
             })
         );

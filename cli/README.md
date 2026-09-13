@@ -33,8 +33,8 @@ with `--fault-agent` or `HARMONY_FAULT_AGENT`. Installed artifacts are
 discovered through `HARMONY_GUEST_DIR`. Preparation injects the agent into the
 staged image; its commands execute inside the guest.
 
-`--horizon-ms` sets the guest time one fault action runs for and `--ram-mib` the
-guest RAM. `--knobs "k=v k=v"` adds guest command-line words, `--places FILE`
+Wait durations adapt automatically to campaign feedback and are recorded in each
+input for replay. `--ram-mib` sets guest RAM. `--knobs "k=v k=v"` adds guest command-line words, `--places FILE`
 lists the execution places the park action may hold a node at, and
 `--wall-minutes` bounds a search in host time. `--replay INPUT.json --repeat N`
 runs a recorded action list, such as a search's own `bug-1.json`, instead of

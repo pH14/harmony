@@ -32,6 +32,7 @@ const WALL_LIMIT: Duration = Duration::from_secs(60);
 const SNAPSHOT_CACHE_LIMIT: usize = 96;
 const SETTLE_STEP_NANOS: u64 = 100_000;
 const SETTLE_ALLOWANCE_NANOS: u64 = 16 * SETTLE_STEP_NANOS;
+const RUN_PROGRESS_QUANTUM_NANOS: u64 = 100_000_000;
 const CONSOLE_TAIL: usize = 1_500;
 const WATCHDOG_CUTOFF: &str = "fault-guest-watchdog-cutoff: ";
 
@@ -45,7 +46,6 @@ const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 nohlt rdinit=/i
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultConfig {
     pub knobs: Vec<String>,
-    pub horizon_nanos: u64,
     pub ram_mib: u32,
 }
 
@@ -72,7 +72,7 @@ impl FaultConfig {
     }
 }
 
-const IDENTITY_TAG: &str = "faults-consonance-execution-v1";
+const IDENTITY_TAG: &str = "faults-consonance-execution-v3";
 
 #[derive(Clone, Debug)]
 struct StandingHandler {
@@ -159,7 +159,7 @@ fn branch_config(
 ) -> Result<ServiceConfig, Box<dyn Error>> {
     Ok(ServiceConfig {
         identity: SERVICE_IDENTITY.to_vec(),
-        configuration: encode_windows(&standing_windows(windows, actions))?,
+        configuration: encode_windows(&standing_windows(windows, actions)?)?,
     })
 }
 
@@ -169,7 +169,6 @@ struct Config {
     kernel: Vec<u8>,
     initramfs: Vec<u8>,
     session: SessionConfig,
-    horizon_nanos: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -202,7 +201,7 @@ pub struct FaultTarget {
     action_observations: Vec<FaultObservations>,
     failed: bool,
     watchdog_cutoffs: u64,
-    horizons_clocked: u64,
+    execution_ticks: u64,
     guest_horizons_run: u64,
     root_seal: u64,
 }
@@ -214,7 +213,6 @@ impl FaultTarget {
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
             session: config.session_config(),
-            horizon_nanos: config.horizon_nanos,
         });
         let (observation, root_seal) = with_live(&config, |live| {
             let observation = live.observe(FaultStop::Deadline)?;
@@ -227,7 +225,7 @@ impl FaultTarget {
             observation,
             failed: false,
             watchdog_cutoffs: 0,
-            horizons_clocked: 0,
+            execution_ticks: 0,
             guest_horizons_run: 0,
             root_seal,
         })
@@ -269,8 +267,8 @@ impl FaultTarget {
     }
 
     #[must_use]
-    pub fn horizons_clocked(&self) -> u64 {
-        self.horizons_clocked
+    pub fn execution_ticks(&self) -> u64 {
+        self.execution_ticks
     }
 
     #[must_use]
@@ -333,7 +331,32 @@ impl FaultTarget {
                 }
                 Err(observation) => Ok(Some(observation)),
             }
-        })?;
+        });
+        self.finish_restore(snapshot, rebuilt)
+    }
+
+    fn finish_restore(
+        &mut self,
+        snapshot: &FaultSnapshot,
+        rebuilt: Result<Option<FaultObservations>, String>,
+    ) -> Result<(), Box<dyn Error>> {
+        self.action_observations.clear();
+        self.watchdog_cutoffs = 0;
+        let rebuilt = match rebuilt {
+            Ok(rebuilt) => rebuilt,
+            Err(error) if error.starts_with(WATCHDOG_CUTOFF) => {
+                self.actions.clear();
+                self.observation = FaultObservations::default();
+                self.failed = true;
+                self.watchdog_cutoffs = 1;
+                self.action_observations.push(FaultObservations {
+                    watchdog_cutoff: true,
+                    ..FaultObservations::default()
+                });
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        };
         self.actions.clone_from(&snapshot.actions);
         self.observation = match rebuilt {
             None => snapshot.observation.clone(),
@@ -372,10 +395,10 @@ impl FaultTarget {
     }
 
     pub fn apply(&mut self, action: FaultAction) {
-        self.action_observations.clear();
         if self.failed || !self.observation.stop.is_continuable() {
             return;
         }
+        self.action_observations.clear();
         let result = with_live(&self.config, |live| {
             let before = live.horizons_run;
             let observation = live.advance(&self.actions, action)?;
@@ -384,7 +407,9 @@ impl FaultTarget {
         match result {
             Ok((observation, ran)) => {
                 self.actions.push(action);
-                self.horizons_clocked = self.horizons_clocked.saturating_add(1);
+                self.execution_ticks = self
+                    .execution_ticks
+                    .saturating_add(crate::target::action_ticks(&action));
                 self.guest_horizons_run = self.guest_horizons_run.saturating_add(ran);
                 self.observation = observation.clone();
                 self.action_observations.push(observation);
@@ -430,6 +455,18 @@ fn with_live<T>(
     })
 }
 
+fn session_failure(what: &str, error: &(dyn Error + 'static)) -> String {
+    let message = format!("{what}: {error}");
+    if matches!(
+        error.downcast_ref::<SessionError>(),
+        Some(SessionError::Hung(_) | SessionError::Abandoned)
+    ) {
+        format!("{WATCHDOG_CUTOFF}{message}")
+    } else {
+        message
+    }
+}
+
 impl Live {
     fn boot(config: &Config) -> Result<Self, String> {
         let mut session = Session::new_with_config_and_payloads(
@@ -456,7 +493,7 @@ impl Live {
             setup,
             windows: ActionWindows {
                 root_seal,
-                horizon_nanos: config.horizon_nanos,
+                horizon_nanos: crate::target::DEFAULT_HORIZON_NANOS,
             },
             snapshots,
             uses: 0,
@@ -465,7 +502,7 @@ impl Live {
         })
     }
 
-    fn abandon(&mut self, what: &str, error: &dyn std::fmt::Display) -> String {
+    fn abandon(&mut self, what: &str, error: &(dyn Error + 'static)) -> String {
         self.abandoned = true;
         let tail = self.session.console_tail().unwrap_or_default();
         let start = tail.len().saturating_sub(CONSOLE_TAIL);
@@ -473,7 +510,7 @@ impl Live {
             "fault guest abandoned during {what}: {error}\nconsole tail:\n{}",
             String::from_utf8_lossy(&tail[start..])
         );
-        format!("{what}: {error}")
+        session_failure(what, error)
     }
 
     fn replay(&mut self, snapshot: SnapId) -> Result<(), String> {
@@ -539,7 +576,7 @@ impl Live {
             .ok_or("the fault setup snapshot is missing")?;
         for index in start..actions.len() {
             self.branch(last, &actions[..=index])?;
-            let (observation, sealed) = self.run_action(index)?;
+            let (observation, sealed) = self.run_action(actions, index)?;
             let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
             };
@@ -573,7 +610,7 @@ impl Live {
             }
         };
         self.branch(parent, &next)?;
-        let (observation, sealed) = self.run_action(prefix.len())?;
+        let (observation, sealed) = self.run_action(&next, prefix.len())?;
         if let Some((snap, moment)) = sealed {
             self.remember(next, snap, moment)?;
         }
@@ -597,7 +634,9 @@ impl Live {
         let Some(index) = actions.len().checked_sub(1) else {
             return Ok(Vec::new());
         };
-        let Some(perturb) = action_delta(actions[index], self.windows.window(index)).perturb else {
+        let Some(perturb) =
+            action_delta(actions[index], self.windows.window(actions, index)?).perturb
+        else {
             return Ok(Vec::new());
         };
         let fault = fault_policy::HostFault::decode(&perturb.fault)
@@ -609,24 +648,22 @@ impl Live {
 
     fn run_action(
         &mut self,
+        actions: &[FaultAction],
         index: usize,
     ) -> Result<(FaultObservations, Option<(SnapId, u64)>), String> {
-        let deadline = self.windows.deadline(index);
+        let (mut progress, deadline) = self.windows.window(actions, index)?;
         self.horizons_run = self.horizons_run.saturating_add(1);
-        let stop = match self.session.run_until(deadline) {
-            Ok(stop) => stop,
-            Err(error) => {
-                let watchdog = matches!(
-                    error.downcast_ref::<SessionError>(),
-                    Some(SessionError::Hung(_) | SessionError::Abandoned)
-                );
-                let message = self.abandon("run", &error);
-                return Err(if watchdog {
-                    format!("{WATCHDOG_CUTOFF}{message}")
-                } else {
-                    message
-                });
+        let stop = loop {
+            let next = next_run_deadline(progress, deadline);
+            let stop = match self.session.run_until(next) {
+                Ok(stop) => stop,
+                Err(error) => return Err(self.abandon("run", error.as_ref())),
+            };
+            if matches!(stop, StopReason::Deadline { .. }) && next < deadline {
+                progress = next;
+                continue;
             }
+            break stop;
         };
         if let StopReason::Crash { vtime, info } = &stop {
             let tail = self.session.console_tail().unwrap_or_default();
@@ -655,7 +692,7 @@ impl Live {
                     Some(SessionError::Settle { allowance }) => {
                         eprintln!("fault endpoint never sealed within {allowance} ns of settling");
                     }
-                    _ => return Err(self.abandon("seal", &error)),
+                    _ => return Err(self.abandon("seal", error.as_ref())),
                 },
             }
         }
@@ -672,8 +709,15 @@ impl Live {
             .map_err(|error| format!("SDK events: {error}"))?;
         let moment = events.last().map_or(0, |(moment, _, _)| *moment);
         let capture = decode_sdk_events(&events)?;
+        capture.check_infrastructure_status()?;
         Ok(FaultObservations::new(moment, &capture, stop))
     }
+}
+
+fn next_run_deadline(progress: u64, deadline: u64) -> u64 {
+    progress
+        .saturating_add(RUN_PROGRESS_QUANTUM_NANOS)
+        .min(deadline)
 }
 
 #[must_use]
@@ -692,15 +736,18 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
                 .len()
                 .saturating_mul(size_of::<u32>()),
         )
+        .saturating_add(snapshot.observation.check.as_ref().map_or(0, |check| {
+            check.points.capacity().saturating_mul(size_of::<u32>())
+        }))
 }
 
 #[must_use]
 pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> String {
     format!(
-        "faults-consonance-whole-vm-v1;session={};horizon-nanos={};\
-         action=standing-fault-delta-v1;snapshot=portable-prefix-to-vm-snapshot-v1",
+        "faults-consonance-whole-vm-v2;session={};horizon-nanos={};\
+         action=standing-fault-delta-v2;snapshot=portable-prefix-to-vm-snapshot-v1",
         identity_with_config(kernel, initramfs, &config.session_config()),
-        config.horizon_nanos,
+        crate::target::DEFAULT_HORIZON_NANOS,
     )
 }
 
@@ -717,6 +764,120 @@ pub fn from_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unbooted_target() -> FaultTarget {
+        FaultTarget {
+            config: Arc::new(Config {
+                key: [0; 32],
+                kernel: Vec::new(),
+                initramfs: Vec::new(),
+                session: FaultConfig {
+                    knobs: Vec::new(),
+                    ram_mib: DEFAULT_RAM_MIB,
+                }
+                .session_config(),
+            }),
+            actions: Vec::new(),
+            observation: FaultObservations::default(),
+            action_observations: Vec::new(),
+            failed: false,
+            watchdog_cutoffs: 0,
+            execution_ticks: 17,
+            guest_horizons_run: 0,
+            root_seal: 0,
+        }
+    }
+
+    #[test]
+    fn long_runs_refresh_the_watchdog_at_bounded_progress_deadlines() {
+        let start = 7;
+        let deadline = start + RUN_PROGRESS_QUANTUM_NANOS * 2 + 11;
+        let mut progress = start;
+        let mut steps = 0;
+        while progress < deadline {
+            let next = next_run_deadline(progress, deadline);
+            assert!(next > progress);
+            assert!(next - progress <= RUN_PROGRESS_QUANTUM_NANOS);
+            progress = next;
+            steps += 1;
+        }
+        assert_eq!(progress, deadline);
+        assert_eq!(steps, 3);
+        assert_eq!(next_run_deadline(deadline, deadline), deadline);
+    }
+
+    #[test]
+    fn reconstruction_cutoff_discards_stale_evidence_and_allows_a_later_restore() {
+        let mut target = unbooted_target();
+        let snapshot = FaultSnapshot {
+            actions: vec![FaultAction::Wait(std::num::NonZeroU16::new(32768).unwrap())],
+            observation: FaultObservations {
+                ticks: 123,
+                ..FaultObservations::default()
+            },
+            failed: false,
+        };
+        target.observation.stop = FaultStop::Crash;
+        target.action_observations.push(target.observation.clone());
+        target
+            .finish_restore(&snapshot, Err(format!("{WATCHDOG_CUTOFF}run: expired")))
+            .unwrap();
+        assert!(target.failed());
+        assert!(!target.found_bug());
+        assert!(target.snapshot().is_none());
+        assert!(target.actions.is_empty());
+        assert_eq!(target.watchdog_cutoffs(), 1);
+        target.apply(FaultAction::Kill(0));
+        assert_eq!(target.execution_ticks(), 17);
+        assert_eq!(target.last_action_observations().len(), 1);
+        assert!(target.last_action_observations()[0].watchdog_cutoff);
+        assert!(!target.last_action_observations()[0].is_bug());
+        assert_eq!(target.last_action_observations()[0].ticks, 0);
+        target.finish_restore(&snapshot, Ok(None)).unwrap();
+        assert!(!target.failed());
+        assert_eq!(target.watchdog_cutoffs(), 0);
+        assert_eq!(target.observation(), &snapshot.observation);
+        assert_eq!(target.snapshot().unwrap().actions, snapshot.actions);
+        assert!(!target.last_action_observations()[0].watchdog_cutoff);
+    }
+
+    #[test]
+    fn run_and_seal_watchdogs_share_the_recoverable_classification() {
+        let snapshot = FaultSnapshot {
+            actions: Vec::new(),
+            observation: FaultObservations::default(),
+            failed: false,
+        };
+        for phase in ["run", "seal"] {
+            for error in [SessionError::Hung(WALL_LIMIT), SessionError::Abandoned] {
+                let mut target = unbooted_target();
+                target
+                    .finish_restore(&snapshot, Err(session_failure(phase, &error)))
+                    .unwrap();
+                assert!(target.failed());
+                assert_eq!(target.watchdog_cutoffs(), 1);
+                assert!(target.last_action_observations()[0].watchdog_cutoff);
+            }
+            assert!(
+                !session_failure(phase, &SessionError::Unboundable).starts_with(WATCHDOG_CUTOFF)
+            );
+        }
+    }
+
+    #[test]
+    fn other_reconstruction_errors_remain_fatal() {
+        let mut target = unbooted_target();
+        let snapshot = FaultSnapshot {
+            actions: Vec::new(),
+            observation: FaultObservations::default(),
+            failed: false,
+        };
+        let error = target
+            .finish_restore(&snapshot, Err("replay: invalid snapshot".into()))
+            .unwrap_err();
+        assert_eq!(error.to_string(), "replay: invalid snapshot");
+        assert_eq!(target.watchdog_cutoffs(), 0);
+    }
 
     #[test]
     fn the_factory_serves_the_nominal_service_the_setup_point_was_sealed_under() {

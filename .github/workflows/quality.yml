@@ -203,6 +203,8 @@ jobs:
       # gated here even though the guest-image repro that installs the .so is box-only.
       - name: consonance/harmony-linux/libvoidstar ABI (C subtree, out-of-workspace)
         run: make -C consonance/harmony-linux test-libvoidstar
+      - name: Fault workload instrumentation runtime
+        run: make -C workloads/fault-agent/runtime check
       # Dissonance's standalone workspace is checked independently of the root.
       - name: Dissonance search core gates
         run: |

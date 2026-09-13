@@ -26,15 +26,15 @@ printf x >"${work}/guest/bzImage-faultlab"
 printf x >"${work}/guest/initramfs.cpio.gz"
 printf x >"${work}/oci-images/pgcic-14.3.oci"
 printf x >"${work}/oci-images/pgcic-14.4.oci"
-printf '["Wait"]\n' >"${work}/input.json"
+printf '[{"Wait":50}]\n' >"${work}/input.json"
 
-run=$(jq -cn '{run:1,bug:false,stop:"Deadline",state_hash:"abc",violations:[],sometimes:[24],actions_applied:1,guest_horizons:1}')
+run=$(jq -cn '{run:1,bug:false,stop:"Deadline",state_hash:"abc",violations:[],sometimes:[24],actions_applied:1,guest_horizons:1,check:null}')
 jq -cn --argjson run "${run}" '{mode:"replay",replays:[$run,$run]}' >"${work}/report.json"
 summary="${work}/summary.md"
 
 (
     cd "${work}"
-    export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL HORIZON_MS=500 RAM_MIB=128
+    export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
     export VULNERABLE_VERSION=14.3 CONTROL_VERSION=14.4 IMAGE_PREFIX=pgcic
     export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 REPLAY_ARMS=vulnerable
     export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
@@ -45,7 +45,7 @@ grep -q 'Replay cap: 2 sessions; requested: 2.' "${summary}"
 
 if (
     cd "${work}"
-    export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL HORIZON_MS=500 RAM_MIB=128
+    export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
     export VULNERABLE_VERSION=14.3 CONTROL_VERSION=14.4 IMAGE_PREFIX=pgcic
     export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 REPLAY_ARMS=vulnerable
     export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
@@ -59,7 +59,7 @@ grep -q 'fail: infra-failure (CLI exit 23)' "${work}/reports/pgcic.vulnerable.sa
 
 if (
     cd "${work}"
-    export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL HORIZON_MS=500 RAM_MIB=128
+    export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
     export VULNERABLE_VERSION=14.3 CONTROL_VERSION=14.4 IMAGE_PREFIX=pgcic
     export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 REPLAY_ARMS=vulnerable,control
     export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=3 REPLAY_TIMEOUT_SECONDS=10

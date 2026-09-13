@@ -811,6 +811,7 @@ mod tests {
         let portable = serde_json::from_value(serde_json::json!(bytes))
             .expect("shared-state wire representation");
         CampaignJobResult {
+            preparation_failure: None,
             actions: vec![CampaignActionResult {
                 action: ButtonChord::new(0x81, 3),
                 observations: vec![observation.clone()],

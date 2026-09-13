@@ -48,6 +48,7 @@ fn a_campaign_of_answers_drives_the_expected_signals() {
         supervisor.tick(&decode(&body), &[]),
         [Action::Stop(1), Action::RunHook(1)]
     );
+    supervisor.note_hook_started();
 
     assert!(supervisor.tick(&decode(&body), &[]).is_empty());
 
@@ -76,8 +77,10 @@ fn a_hook_window_touching_the_previous_one_launches_the_hook_again() {
     let mut supervisor = Supervisor::new(1);
     let first = answer(20, &[process(0, &Fault::RunHook(1), (15, 40))]);
     assert_eq!(supervisor.tick(&decode(&first), &[]), [Action::RunHook(1)]);
+    supervisor.note_hook_started();
     let second = answer(45, &[process(0, &Fault::RunHook(1), (40, 65))]);
     assert_eq!(supervisor.tick(&decode(&second), &[]), [Action::RunHook(1)]);
+    supervisor.note_hook_started();
     assert!(supervisor.tick(&decode(&second), &[]).is_empty());
     assert_eq!(supervisor.counters().hooks_started, 2);
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::faults::{ActiveFaults, Park};
+use crate::evidence::CheckEvidence;
+use crate::faults::{ActiveFaults, EventKillWindow, EventPark, Park};
 use crate::regs::RegisterSnapshot;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -12,6 +13,10 @@ pub enum Action {
     RunHook(u32),
     Park(u16, Park),
     Unpark(u16),
+    ArmEventKill(u16, u8),
+    DisarmEventKill(u16),
+    ArmEventPark(u16, EventPark),
+    DisarmEventPark(u16),
 }
 
 impl Action {
@@ -28,6 +33,15 @@ impl Action {
                 park.addr, park.hits, park.hold_nanos
             ),
             Action::Unpark(node) => format!("unpark node {node}"),
+            Action::ArmEventKill(node, rarity) => {
+                format!("arm event kill node {node} rarity {rarity}")
+            }
+            Action::DisarmEventKill(node) => format!("disarm event kill node {node}"),
+            Action::ArmEventPark(node, park) => format!(
+                "arm event park node {node} rarity {} hold {}",
+                park.rarity, park.hold_nanos
+            ),
+            Action::DisarmEventPark(node) => format!("disarm event park node {node}"),
         }
     }
 }
@@ -41,6 +55,22 @@ pub struct Counters {
     pub restarts: u64,
     pub sometimes: u64,
     pub parked: u64,
+    pub event_kill_fires: u64,
+    pub event_kill_site: u64,
+    pub event_park_fires: u64,
+    pub workload_started: u64,
+    pub workload_finished: u64,
+    pub checks_started: u64,
+    pub checks_finished: u64,
+    pub infrastructure_error: u64,
+    pub event_ready: u64,
+    pub disturbance_generation: u64,
+    pub check_enabled: u64,
+    pub completed_check_run: u64,
+    pub completed_check_start_generation: u64,
+    pub completed_check_end_generation: u64,
+    pub completed_check_points: u64,
+    pub pending_faults: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -48,6 +78,7 @@ struct NodeState {
     alive: bool,
     paused: bool,
     expected_down: bool,
+    event_kill_death: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +86,8 @@ pub struct Supervisor {
     nodes: Vec<NodeState>,
     previous: ActiveFaults,
     counters: Counters,
+    event_kill_armed: Vec<EventKillWindow>,
+    event_kill_fired: Vec<EventKillWindow>,
 }
 
 impl Supervisor {
@@ -66,26 +99,35 @@ impl Supervisor {
                     alive: true,
                     paused: false,
                     expected_down: false,
+                    event_kill_death: false,
                 };
                 node_count
             ],
             previous: ActiveFaults::new(),
             counters: Counters::default(),
+            event_kill_armed: Vec::new(),
+            event_kill_fired: Vec::new(),
         }
     }
 
     pub fn tick(&mut self, active: &ActiveFaults, deaths: &[u16]) -> Vec<Action> {
         self.counters.ticks += 1;
         for &node in deaths {
-            let Some(state) = self.nodes.get_mut(usize::from(node)) else {
-                continue;
+            let natural = {
+                let Some(state) = self.nodes.get_mut(usize::from(node)) else {
+                    continue;
+                };
+                if !state.alive {
+                    continue;
+                }
+                let natural = !state.expected_down && !state.event_kill_death;
+                state.alive = false;
+                state.paused = false;
+                state.event_kill_death = false;
+                natural
             };
-            if !state.alive {
-                continue;
-            }
-            state.alive = false;
-            state.paused = false;
-            if !state.expected_down {
+            if natural {
+                self.bump_disturbance(1);
                 self.counters.unexpected_deaths += 1;
             }
         }
@@ -95,6 +137,10 @@ impl Supervisor {
             let node = index as u16;
             let was = self.previous.node(node);
             let now = active.node(node);
+            let was_event_kill = self.previous.event_kill(node);
+            let now_event_kill = active.event_kill(node);
+            let now_event_kill_can_arm =
+                now_event_kill.is_some_and(|window| self.event_kill_can_arm(window));
             let state = &mut self.nodes[index];
 
             if (now.kill && !was.kill) || (now.restart && !was.restart) {
@@ -120,19 +166,52 @@ impl Supervisor {
             } else if was.park.is_some() {
                 actions.push(Action::Unpark(node));
             }
+            if state.alive {
+                match (was_event_kill, now_event_kill) {
+                    (None, Some(window)) => {
+                        if now_event_kill_can_arm {
+                            actions.push(Action::ArmEventKill(node, window.rarity));
+                        }
+                    }
+                    (Some(_), None) => actions.push(Action::DisarmEventKill(node)),
+                    (Some(previous), Some(window)) if previous != window => {
+                        actions.push(Action::DisarmEventKill(node));
+                        if now_event_kill_can_arm {
+                            actions.push(Action::ArmEventKill(node, window.rarity));
+                        }
+                    }
+                    _ => {}
+                }
+                match (was.event_park, now.event_park) {
+                    (None, Some(park)) => actions.push(Action::ArmEventPark(node, park)),
+                    (Some(_), None) => actions.push(Action::DisarmEventPark(node)),
+                    (Some(previous), Some(park)) if previous != park => {
+                        actions.push(Action::DisarmEventPark(node));
+                        actions.push(Action::ArmEventPark(node, park));
+                    }
+                    _ => {}
+                }
+            }
             if !now.restart && was.restart && !now.kill && !state.alive {
                 actions.push(Action::Start(node));
                 state.alive = true;
                 state.paused = false;
                 state.expected_down = false;
                 self.counters.restarts += 1;
+                if let Some(window) = now_event_kill
+                    && now_event_kill_can_arm
+                {
+                    actions.push(Action::ArmEventKill(node, window.rarity));
+                }
+                if let Some(park) = now.event_park {
+                    actions.push(Action::ArmEventPark(node, park));
+                }
             }
         }
 
         for window in active.hooks() {
             if self.previous.hooks().binary_search(window).is_err() {
                 actions.push(Action::RunHook(window.id));
-                self.counters.hooks_started += 1;
             }
         }
 
@@ -146,18 +225,177 @@ impl Supervisor {
             self.nodes[index].alive = true;
             self.nodes[index].paused = false;
             self.counters.restarts += 1;
+            if let Some(window) = active.event_kill(node)
+                && self.event_kill_can_arm(window)
+            {
+                actions.push(Action::ArmEventKill(node, window.rarity));
+            }
+            if let Some(park) = active.node(node).event_park {
+                actions.push(Action::ArmEventPark(node, park));
+            }
         }
 
+        self.counters.pending_faults = active.pending_process_faults(&self.event_kill_fired);
         self.previous = active.clone();
+        for state in &mut self.nodes {
+            state.event_kill_death = false;
+        }
         actions
+    }
+
+    pub fn note_hook_started(&mut self) {
+        self.counters.hooks_started += 1;
     }
 
     pub fn note_hook_finished(&mut self) {
         self.counters.hooks_finished += 1;
     }
 
+    pub fn note_process_transition(&mut self) {
+        self.bump_disturbance(1);
+    }
+
+    pub fn note_event_kill_armed(&mut self, node: u16, rarity: u8, start: u64) {
+        if usize::from(node) >= self.nodes.len() || rarity >= fault_policy::EVENT_RARITY_LIMIT {
+            return;
+        }
+        let window = EventKillWindow {
+            node,
+            rarity,
+            start,
+        };
+        if self.event_kill_fired.binary_search(&window).is_ok() {
+            return;
+        }
+        if let Err(at) = self.event_kill_armed.binary_search(&window) {
+            self.event_kill_armed.insert(at, window);
+        }
+    }
+
+    pub fn note_event_kill_disarmed(&mut self, node: u16, rarity: u8, start: u64) {
+        let window = EventKillWindow {
+            node,
+            rarity,
+            start,
+        };
+        if let Ok(at) = self.event_kill_armed.binary_search(&window) {
+            self.event_kill_armed.remove(at);
+        }
+    }
+
+    pub fn note_event_kill(&mut self, node: u16, rarity: u8, start: u64, site: u64) -> bool {
+        if usize::from(node) >= self.nodes.len() || rarity >= fault_policy::EVENT_RARITY_LIMIT {
+            return false;
+        }
+        let window = EventKillWindow {
+            node,
+            rarity,
+            start,
+        };
+        let Ok(at) = self.event_kill_armed.binary_search(&window) else {
+            return false;
+        };
+        if self.event_kill_fired.binary_search(&window).is_ok() {
+            return false;
+        }
+        self.event_kill_armed.remove(at);
+        self.bump_disturbance(1);
+        self.counters.event_kill_fires = self.counters.event_kill_fires.saturating_add(1);
+        self.counters.event_kill_site = site;
+        if self.event_kill_fired.binary_search(&window).is_err() {
+            let at = self
+                .event_kill_fired
+                .binary_search(&window)
+                .unwrap_or_else(|at| at);
+            self.event_kill_fired.insert(at, window);
+        }
+        if let Some(state) = self.nodes.get_mut(usize::from(node)) {
+            state.event_kill_death = true;
+        }
+        true
+    }
+
+    #[must_use]
+    pub fn event_kill_start(&self, node: u16, rarity: u8) -> Option<u64> {
+        self.previous
+            .event_kill(node)
+            .filter(|window| window.rarity == rarity)
+            .map(|window| window.start)
+    }
+
+    fn event_kill_can_arm(&self, window: EventKillWindow) -> bool {
+        self.event_kill_fired.binary_search(&window).is_err()
+    }
+
+    pub fn note_event_parked(&mut self, fires: u64) {
+        self.counters.event_park_fires = self.counters.event_park_fires.saturating_add(fires);
+        self.bump_disturbance(fires);
+    }
+
+    pub fn note_workload_started(&mut self) {
+        self.counters.workload_started = self.counters.workload_started.saturating_add(1);
+    }
+
+    pub fn note_workload_finished(&mut self) {
+        self.counters.workload_finished = self.counters.workload_finished.saturating_add(1);
+    }
+
+    pub fn note_check_started(&mut self) {
+        self.counters.checks_started = self.counters.checks_started.saturating_add(1);
+    }
+
+    pub fn note_check_finished(&mut self) {
+        self.counters.checks_finished = self.counters.checks_finished.saturating_add(1);
+    }
+
+    pub fn note_check_completed(&mut self, evidence: CheckEvidence) {
+        self.counters.completed_check_run = evidence.run;
+        self.counters.completed_check_start_generation = evidence.start_generation;
+        self.counters.completed_check_end_generation = evidence.end_generation;
+        self.counters.completed_check_points = evidence.points;
+    }
+
+    pub fn set_check_enabled(&mut self, enabled: bool) {
+        self.counters.check_enabled = u64::from(enabled);
+    }
+
+    #[must_use]
+    pub fn disturbance_generation(&self) -> u64 {
+        self.counters.disturbance_generation
+    }
+
+    #[must_use]
+    pub fn pending_faults(&self) -> u64 {
+        self.counters.pending_faults
+    }
+
+    pub fn set_pending_faults(&mut self, pending: u64) {
+        self.counters.pending_faults = pending;
+    }
+
+    pub fn note_infrastructure_error(&mut self) -> bool {
+        if self.counters.infrastructure_error != 0 {
+            return false;
+        }
+        self.counters.infrastructure_error = 1;
+        true
+    }
+
+    pub fn note_event_ready(&mut self, node: u16, ready: bool) {
+        if node >= 64 {
+            return;
+        }
+        let bit = 1_u64 << node;
+        if ready {
+            self.counters.event_ready |= bit;
+        } else {
+            self.counters.event_ready &= !bit;
+        }
+    }
+
     pub fn note_parked(&mut self) {
         self.counters.parked += 1;
+        self.bump_disturbance(1);
     }
 
     pub fn note_sometimes(&mut self, id: u32) {
@@ -193,6 +431,34 @@ impl Supervisor {
             unexpected_deaths: self.counters.unexpected_deaths,
             restarts: self.counters.restarts,
             parked: self.counters.parked,
+            event_kill_fires: self.counters.event_kill_fires,
+            event_kill_site: self.counters.event_kill_site,
+            event_park_fires: self.counters.event_park_fires,
+            workload_started: self.counters.workload_started,
+            workload_finished: self.counters.workload_finished,
+            checks_started: self.counters.checks_started,
+            checks_finished: self.counters.checks_finished,
+            infrastructure_error: self.counters.infrastructure_error,
+            event_ready: self.counters.event_ready,
+            disturbance_generation: self.counters.disturbance_generation,
+            check_enabled: self.counters.check_enabled,
+            completed_check_run: self.counters.completed_check_run,
+            completed_check_start_generation: self.counters.completed_check_start_generation,
+            completed_check_end_generation: self.counters.completed_check_end_generation,
+            completed_check_points: self.counters.completed_check_points,
+            pending_faults: self.counters.pending_faults,
+        }
+    }
+
+    fn bump_disturbance(&mut self, amount: u64) {
+        if amount == 0 {
+            return;
+        }
+        if let Some(next) = self.counters.disturbance_generation.checked_add(amount) {
+            self.counters.disturbance_generation = next;
+        } else {
+            self.counters.disturbance_generation = u64::MAX;
+            self.counters.infrastructure_error = 1;
         }
     }
 }
@@ -200,6 +466,7 @@ impl Supervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evidence::CheckCapture;
     use fault_policy::{Fault, Span};
 
     fn active(faults: &[(u16, Fault)]) -> ActiveFaults {
@@ -320,6 +587,105 @@ mod tests {
     }
 
     #[test]
+    fn event_windows_arm_and_disarm_on_edges() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[
+            (0, Fault::ProcEventKill { rarity: 2 }),
+            (
+                0,
+                Fault::ProcEventPark {
+                    rarity: 3,
+                    hold: Span(8),
+                },
+            ),
+        ]);
+        assert_eq!(
+            sup.tick(&event, &[]),
+            [
+                Action::ArmEventKill(0, 2),
+                Action::ArmEventPark(
+                    0,
+                    EventPark {
+                        rarity: 3,
+                        hold_nanos: 8,
+                    },
+                ),
+            ]
+        );
+        assert_eq!(
+            sup.tick(&ActiveFaults::new(), &[]),
+            [Action::DisarmEventKill(0), Action::DisarmEventPark(0)]
+        );
+    }
+
+    #[test]
+    fn an_event_kill_report_is_required_to_avoid_unexpected_death() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 0 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
+        assert_eq!(
+            sup.tick(&event, &[0]),
+            [Action::Start(0), Action::ArmEventKill(0, 0)]
+        );
+        assert_eq!(sup.counters().unexpected_deaths, 1);
+
+        let mut sup = Supervisor::new(1);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
+        sup.note_event_kill_armed(0, 0, 0);
+        assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
+        assert_eq!(sup.tick(&event, &[0]), [Action::Start(0)]);
+        assert_eq!(sup.counters().unexpected_deaths, 0);
+        assert_eq!(sup.counters().event_kill_fires, 1);
+        assert_eq!(sup.counters().event_kill_site, 0xfeed);
+    }
+
+    #[test]
+    fn restarting_a_node_rearms_an_event_fault_that_stayed_active() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 1 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 1)]);
+        assert_eq!(
+            sup.tick(&event, &[0]),
+            [Action::Start(0), Action::ArmEventKill(0, 1)]
+        );
+    }
+
+    #[test]
+    fn a_report_for_an_obsolete_arm_does_not_credit_the_current_incarnation() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 4 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 4)]);
+        assert!(!sup.note_event_kill(0, 4, 9, 0x10));
+        assert_eq!(
+            sup.tick(&event, &[0]),
+            [Action::Start(0), Action::ArmEventKill(0, 4)]
+        );
+        assert_eq!(sup.counters().event_kill_fires, 0);
+        assert_eq!(sup.counters().unexpected_deaths, 1);
+        assert_eq!(sup.counters().disturbance_generation, 1);
+    }
+
+    #[test]
+    fn an_acknowledged_old_window_is_valid_after_the_current_window_changes() {
+        let mut sup = Supervisor::new(1);
+        let first = active(&[(0, Fault::ProcEventKill { rarity: 4 })]);
+        assert_eq!(sup.tick(&first, &[]), [Action::ArmEventKill(0, 4)]);
+        sup.note_event_kill_armed(0, 4, 0);
+
+        let mut second = ActiveFaults::new();
+        second.insert(0, &Fault::ProcEventKill { rarity: 4 }, 1);
+        assert_eq!(
+            sup.tick(&second, &[]),
+            [Action::DisarmEventKill(0), Action::ArmEventKill(0, 4)]
+        );
+        assert!(sup.note_event_kill(0, 4, 0, 0x10));
+        assert_eq!(sup.counters().event_kill_fires, 1);
+        assert_eq!(sup.counters().disturbance_generation, 1);
+        assert!(!sup.note_event_kill(0, 4, 0, 0x10));
+        assert_eq!(sup.counters().disturbance_generation, 1);
+    }
+
+    #[test]
     fn hooks_launch_once_per_window_and_ids_are_ascending() {
         let mut sup = Supervisor::new(1);
         let two = active(&[(0, Fault::RunHook(4)), (0, Fault::RunHook(1))]);
@@ -331,7 +697,28 @@ mod tests {
         let next = active(&[(0, Fault::RunHook(4)), (0, Fault::RunHook(7))]);
         assert_eq!(sup.tick(&next, &[]), [Action::RunHook(7)]);
         assert_eq!(sup.tick(&two, &[]), [Action::RunHook(1)]);
+        assert_eq!(sup.counters().hooks_started, 0);
+        for _ in 0..4 {
+            sup.note_hook_started();
+        }
         assert_eq!(sup.counters().hooks_started, 4);
+    }
+
+    #[test]
+    fn a_requested_hook_is_not_counted_until_it_is_started() {
+        let mut sup = Supervisor::new(1);
+        assert_eq!(
+            sup.tick(&active(&[(0, Fault::RunHook(1))]), &[]),
+            [Action::RunHook(1)]
+        );
+        assert_eq!(sup.counters().hooks_started, 0);
+        assert_eq!(sup.counters().hooks_finished, 0);
+
+        sup.note_hook_started();
+        assert_eq!(sup.counters().hooks_started, 1);
+        assert_eq!(sup.counters().hooks_finished, 0);
+        sup.note_hook_finished();
+        assert_eq!(sup.counters().hooks_finished, 1);
     }
 
     #[test]
@@ -340,9 +727,11 @@ mod tests {
         let mut first = ActiveFaults::new();
         first.insert(0, &Fault::RunHook(2), 0);
         assert_eq!(sup.tick(&first, &[]), [Action::RunHook(2)]);
+        sup.note_hook_started();
         let mut second = ActiveFaults::new();
         second.insert(0, &Fault::RunHook(2), 500);
         assert_eq!(sup.tick(&second, &[]), [Action::RunHook(2)]);
+        sup.note_hook_started();
         assert_eq!(sup.tick(&second, &[]), []);
         assert_eq!(sup.counters().hooks_started, 2);
     }
@@ -389,6 +778,8 @@ mod tests {
     fn the_snapshot_reports_every_register() {
         let mut sup = Supervisor::new(2);
         sup.tick(&active(&[(1, Fault::RunHook(2))]), &[0]);
+        assert_eq!(sup.counters().hooks_started, 0);
+        sup.note_hook_started();
         sup.note_hook_finished();
         sup.note_sometimes(3);
         let snap = sup.snapshot();
@@ -399,6 +790,150 @@ mod tests {
         assert_eq!(snap.sometimes, 1 << 3);
         assert_eq!(snap.unexpected_deaths, 1);
         assert_eq!(snap.restarts, 1);
+    }
+
+    #[test]
+    fn event_and_lifecycle_counters_only_advance_on_runtime_progress() {
+        let mut sup = Supervisor::new(1);
+        sup.note_event_parked(2);
+        sup.note_workload_started();
+        sup.note_workload_finished();
+        sup.note_check_started();
+        sup.note_check_finished();
+        let snap = sup.snapshot();
+        assert_eq!(snap.event_park_fires, 2);
+        assert_eq!(snap.disturbance_generation, 2);
+        assert_eq!(snap.workload_started, 1);
+        assert_eq!(snap.workload_finished, 1);
+        assert_eq!(snap.checks_started, 1);
+        assert_eq!(snap.checks_finished, 1);
+    }
+
+    #[test]
+    fn pending_faults_drop_after_the_canonical_event_report() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 0 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
+        sup.note_event_kill_armed(0, 0, 0);
+        assert_eq!(sup.snapshot().pending_faults, 1);
+        assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
+        assert_eq!(sup.tick(&event, &[]), []);
+        assert_eq!(sup.snapshot().pending_faults, 0);
+        assert_eq!(sup.snapshot().disturbance_generation, 1);
+    }
+
+    #[test]
+    fn rejected_event_reports_do_not_advance_disturbance_generation() {
+        let mut sup = Supervisor::new(1);
+        sup.note_process_transition();
+        assert!(!sup.note_event_kill(0, 9, 3, 0xfeed));
+        sup.note_event_parked(2);
+        assert_eq!(sup.snapshot().disturbance_generation, 3);
+    }
+
+    #[test]
+    fn stale_pre_fault_check_provenance_remains_distinct_in_the_snapshot() {
+        let mut sup = Supervisor::new(1);
+        sup.set_check_enabled(true);
+        sup.note_process_transition();
+        let mut capture = CheckCapture::new(1, sup.disturbance_generation());
+        capture.note_success(7);
+        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        sup.note_process_transition();
+        let snap = sup.snapshot();
+        assert_eq!(snap.completed_check_start_generation, 1);
+        assert_eq!(snap.completed_check_end_generation, 1);
+        assert_eq!(snap.completed_check_points, 1 << 7);
+        assert_eq!(snap.disturbance_generation, 2);
+        assert_ne!(
+            snap.completed_check_end_generation,
+            snap.disturbance_generation
+        );
+    }
+
+    #[test]
+    fn a_check_spanning_a_disturbance_publishes_both_generations() {
+        let mut sup = Supervisor::new(1);
+        sup.note_process_transition();
+        let mut capture = CheckCapture::new(2, sup.disturbance_generation());
+        capture.note_success(7);
+        sup.note_process_transition();
+        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        let snap = sup.snapshot();
+        assert_eq!(snap.completed_check_start_generation, 1);
+        assert_eq!(snap.completed_check_end_generation, 2);
+        assert_eq!(snap.disturbance_generation, 2);
+    }
+
+    #[test]
+    fn a_late_standing_event_advances_past_completed_check_provenance() {
+        let mut sup = Supervisor::new(1);
+        sup.note_process_transition();
+        let mut capture = CheckCapture::new(3, sup.disturbance_generation());
+        capture.note_success(7);
+        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        sup.note_process_transition();
+        let snap = sup.snapshot();
+        assert_eq!(snap.completed_check_end_generation, 1);
+        assert_eq!(snap.disturbance_generation, 2);
+    }
+
+    #[test]
+    fn a_check_after_recovery_captures_the_current_generation() {
+        let mut sup = Supervisor::new(1);
+        sup.note_process_transition();
+        sup.note_process_transition();
+        let mut capture = CheckCapture::new(4, sup.disturbance_generation());
+        capture.note_success(7);
+        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        let snap = sup.snapshot();
+        assert_eq!(snap.completed_check_start_generation, 2);
+        assert_eq!(snap.completed_check_end_generation, 2);
+        assert_eq!(snap.disturbance_generation, 2);
+    }
+
+    #[test]
+    fn a_pending_event_arm_excludes_completed_check_provenance() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, Fault::ProcEventKill { rarity: 0 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
+        sup.note_event_kill_armed(0, 0, 0);
+        let mut capture = CheckCapture::new(5, sup.disturbance_generation());
+        capture.note_success(7);
+        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        assert_eq!(sup.snapshot().pending_faults, 1);
+        assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
+        assert_eq!(sup.tick(&event, &[]), []);
+        assert_eq!(sup.snapshot().pending_faults, 0);
+    }
+
+    #[test]
+    fn infrastructure_error_is_reported_once() {
+        let mut sup = Supervisor::new(1);
+        assert!(sup.note_infrastructure_error());
+        assert!(!sup.note_infrastructure_error());
+        assert_eq!(sup.snapshot().infrastructure_error, 1);
+    }
+
+    #[test]
+    fn disturbance_generation_overflow_is_an_infrastructure_error() {
+        let mut sup = Supervisor::new(1);
+        sup.counters.disturbance_generation = u64::MAX;
+        sup.note_process_transition();
+        assert_eq!(sup.snapshot().disturbance_generation, u64::MAX);
+        assert_eq!(sup.snapshot().infrastructure_error, 1);
+    }
+
+    #[test]
+    fn event_ready_is_a_per_node_bitmap() {
+        let mut sup = Supervisor::new(3);
+        sup.note_event_ready(0, true);
+        sup.note_event_ready(2, true);
+        assert_eq!(sup.snapshot().event_ready, 0b101);
+        sup.note_event_ready(0, false);
+        assert_eq!(sup.snapshot().event_ready, 0b100);
+        sup.note_event_ready(64, true);
+        assert_eq!(sup.snapshot().event_ready, 0b100);
     }
 
     #[test]
@@ -421,5 +956,28 @@ mod tests {
             "park node 0 at 0x4b0e86 hit 28 hold 2000000"
         );
         assert_eq!(Action::Unpark(0).describe(), "unpark node 0");
+        assert_eq!(
+            Action::ArmEventKill(0, 3).describe(),
+            "arm event kill node 0 rarity 3"
+        );
+        assert_eq!(
+            Action::DisarmEventKill(0).describe(),
+            "disarm event kill node 0"
+        );
+        assert_eq!(
+            Action::ArmEventPark(
+                0,
+                EventPark {
+                    rarity: 2,
+                    hold_nanos: 4,
+                }
+            )
+            .describe(),
+            "arm event park node 0 rarity 2 hold 4"
+        );
+        assert_eq!(
+            Action::DisarmEventPark(0).describe(),
+            "disarm event park node 0"
+        );
     }
 }
