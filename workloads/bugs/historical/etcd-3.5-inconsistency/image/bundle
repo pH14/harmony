@@ -1,0 +1,7 @@
+setup /opt/harmony/setup.sh
+node member-1 /opt/harmony/node.sh member-1 /tmp/etcd/data/member-1 2379 2380
+node member-2 /opt/harmony/node.sh member-2 /tmp/etcd/data/member-2 2381 2382
+node member-3 /opt/harmony/node.sh member-3 /tmp/etcd/data/member-3 2383 2384
+ready /opt/harmony/ready.sh
+workload /opt/harmony/etcd-writer
+check /opt/harmony/etcd-oracle check /tmp/etcd/journal/acked http://127.0.0.1:2379 http://127.0.0.1:2381 http://127.0.0.1:2383

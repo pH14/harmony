@@ -12,14 +12,14 @@ runnable=$(python3 "${manifest}" --runnable-matrix)
 search=$(python3 "${manifest}" --search-matrix)
 
 test "$(jq '.include | length' <<<"${all}")" -eq 2
-test "$(jq -r '[.include[] | select(.ci_status == "runnable")] | length' <<<"${all}")" -eq 1
+test "$(jq -r '[.include[] | select(.ci_status == "runnable")] | length' <<<"${all}")" -eq 2
 test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .search_timeout_minutes' <<<"${all}")" -eq 170
 test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .search_timeout_minutes' <<<"${all}")" -eq 320
-test "$(jq '.include | length' <<<"${runnable}")" -eq 1
-test "$(jq -r '.include[0].id' <<<"${runnable}")" = postgres-cic-corruption
-test "$(jq '.include | length' <<<"${search}")" -eq 1
-test "$(jq -r '.include[0].arm' <<<"${search}")" = vulnerable
-test "$(jq -r '.include[0].planned_replay_sessions' <<<"${search}")" -eq 3
+test "$(jq '.include | length' <<<"${runnable}")" -eq 2
+test "$(jq -r '[.include[].id] | sort | join(",")' <<<"${runnable}")" = etcd-3.5-inconsistency,postgres-cic-corruption
+test "$(jq '.include | length' <<<"${search}")" -eq 3
+test "$(jq -r '[.include[] | select(.id == "postgres-cic-corruption") | .arm] | .[0]' <<<"${search}")" = vulnerable
+test "$(jq -r '[.include[] | select(.id == "etcd-3.5-inconsistency") | .planned_replay_sessions] | unique | .[0]' <<<"${search}")" -eq 1
 
 python3 - "${manifest}" <<'PY'
 import copy

@@ -9,7 +9,7 @@
     "postmortem": "https://github.com/etcd-io/etcd/blob/main/Documentation/postmortems/v3.5-data-inconsistency.md"
   },
   "versions": {
-    "affected": "3.5.2",
+    "affected": "3.5.0-3.5.2",
     "fixed": "3.5.3"
   },
   "arms": {
@@ -22,18 +22,51 @@
       "source_sha256": "f381557feaa42dfe7f40a5c295f95266b7de341f49e76a3119dfaec3d0a24e5e"
     }
   },
+  "image": {
+    "context": ".",
+    "dockerfile": "workloads/bugs/historical/etcd-3.5-inconsistency/image/Dockerfile",
+    "build_args": {
+      "vulnerable": {
+        "ETCD_VERSION": "3.5.2",
+        "ETCD_SOURCE_SHA256": "ecb4d2bc76e48ae504d9a00b50bcc906503c4d0324acf9dee79d97d16f7282ad"
+      },
+      "control": {
+        "ETCD_VERSION": "3.5.3",
+        "ETCD_SOURCE_SHA256": "f381557feaa42dfe7f40a5c295f95266b7de341f49e76a3119dfaec3d0a24e5e"
+      }
+    }
+  },
+  "instrumentation": {
+    "tool": "github.com/antithesishq/antithesis-sdk-go/tools/antithesis-go-toolexec",
+    "version": "0.8.0",
+    "license": "MIT"
+  },
   "kernel_profile": "faultlab",
   "oracle": {
     "assertion": 1,
     "evidence": 11,
     "kind": "always",
     "source": "the agent's continuous check, not a drawn hook",
-    "detector": "client journal versus serializable reads from every recovered etcd member",
-    "fires_on": "an acknowledged key is missing or has a different value on any recovered member",
-    "silent_when": ["a member is down", "the journal is empty", "a local member read is inconclusive"]
+    "journal_format": "key\\tvalue\\tPutResponse.Header.Revision\\n",
+    "detector": "revision-fenced client journal versus serializable reads from every recovered etcd member",
+    "fires_on": "an acknowledged key is missing or has a different value after the member read revision reaches its journaled acknowledgement revision",
+    "silent_when": [
+      "a member is down",
+      "the journal is empty",
+      "a member read is below an acknowledged revision fence",
+      "a local member read is inconclusive"
+    ]
   },
+  "actions": [
+    "Wait",
+    "Kill",
+    "EventKill",
+    "EventPark",
+    "Pause",
+    "Restart",
+    "Interrupt"
+  ],
   "run": {
-    "horizon_ms": 500,
     "ram_mib": 1024,
     "knobs": {}
   },
@@ -41,13 +74,19 @@
     "seed": 1,
     "workers": 4,
     "actions": 48,
-    "executions": 0,
+    "executions": 5000,
     "wall_minutes": 300
   },
   "discovery_mode": "guided",
   "status": "documented",
   "ci": {
-    "status": "deferred",
-    "reason": "the instrumented etcd image and workload are on codex/etcd-v35-bug-museum; merge that feature before enabling this case"
+    "status": "runnable",
+    "image_prefix": "etcd",
+    "search_arms": [
+      "vulnerable",
+      "control"
+    ],
+    "replay_max_sessions": 1,
+    "replay_timeout_seconds": 1800
   }
 }
