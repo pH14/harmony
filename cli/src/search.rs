@@ -38,8 +38,6 @@ pub struct Args {
     base_initramfs: Option<PathBuf>,
     #[arg(long)]
     image: Option<PathBuf>,
-    #[arg(long, default_value_t = 500)]
-    horizon_ms: u64,
     #[arg(long, default_value_t = 1024)]
     ram_mib: u32,
     #[arg(long)]
@@ -96,7 +94,10 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
         }
         (Package::Faults, Backend::Consonance) => {
             let faults = faults_options(&args)?;
-            let replay = read_replay(args.replay.as_deref(), faults.horizon_nanos())?;
+            let replay = read_replay(
+                args.replay.as_deref(),
+                faults_workload::target::DEFAULT_HORIZON_NANOS,
+            )?;
             run_faults_consonance(
                 &args.input,
                 args.kernel,
@@ -123,10 +124,8 @@ fn read_replay(
         && recorded_horizon != horizon_nanos
     {
         return Err(format!(
-            "{} was recorded with {} ms action windows; pass --horizon-ms {}",
-            path.display(),
-            recorded_horizon / 1_000_000,
-            recorded_horizon / 1_000_000
+            "{} uses an incompatible action duration format ({recorded_horizon} ns)",
+            path.display()
         )
         .into());
     }
@@ -143,7 +142,6 @@ fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error
         workers: args.workers,
         executions: args.executions,
         actions: args.actions,
-        horizon_ms: args.horizon_ms,
         ram_mib: args.ram_mib,
         knobs: args
             .knobs
@@ -253,8 +251,8 @@ fn run_faults_consonance(
             }
         };
         println!(
-            "bug_found   {}  executions {}  horizons {}",
-            report.bug_found, report.executions, report.horizons_clocked
+            "bug_found   {}  executions {}  guest_ticks {}",
+            report.bug_found, report.executions, report.execution_ticks
         );
         Ok(())
     }
@@ -296,7 +294,6 @@ mod tests {
             kernel: None,
             base_initramfs: None,
             image: None,
-            horizon_ms: 500,
             ram_mib: 1024,
             knobs: None,
             places: None,
@@ -360,12 +357,10 @@ mod tests {
     #[test]
     fn fault_flags_become_the_package_run_bounds() {
         let mut args = args(Package::Faults, Backend::Consonance);
-        args.horizon_ms = 250;
         args.ram_mib = 2048;
         args.knobs = Some("faultlab.puts=20  faultlab.keys=4".to_owned());
         args.wall_minutes = Some(30);
         let options = faults_options(&args).expect("options");
-        assert_eq!(options.horizon_ms, 250);
         assert_eq!(options.ram_mib, 2048);
         assert_eq!(options.knobs, ["faultlab.puts=20", "faultlab.keys=4"]);
         assert_eq!(options.wall_minutes, Some(30));
@@ -424,7 +419,9 @@ mod tests {
         let mismatch = read_replay(Some(file.path()), 500_000_000)
             .expect_err("a recorded horizon the run does not match is refused");
         assert!(
-            mismatch.to_string().contains("--horizon-ms 250"),
+            mismatch
+                .to_string()
+                .contains("incompatible action duration format"),
             "{mismatch}"
         );
     }

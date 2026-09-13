@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, io::Write, path::PathBuf, sync::OnceLock};
+use std::{error::Error, io::Write, num::NonZeroU64, path::PathBuf, sync::OnceLock};
 
 use searcher::{
     search::{
@@ -13,6 +13,7 @@ use searcher::{
             TargetExecution, WorkloadPolicies, postcard_result_sha256, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        duration::{DurationDraw, DurationRequest},
         rollout::{ExecutionDisposition, Outcome},
     },
     target::ExitKind,
@@ -32,8 +33,8 @@ use crate::{
     target::{FaultAction, FaultObservations, FaultSnapshot, MAX_FAULT_ACTIONS},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v1";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-checkpoint-v1";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v2";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-checkpoint-v2";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 
 const VOCABULARY_FIELD: &str = "action_vocabulary";
@@ -299,11 +300,11 @@ impl Reporting for FaultWorkload {
     }
 
     fn action_cost_unit(&self) -> &'static str {
-        "logical_actions"
+        "guest_ticks"
     }
 
     fn execution_work_unit(&self) -> &'static str {
-        "horizons"
+        "guest_ticks"
     }
 
     fn result_sha256(&self, result: &FaultCampaignJobResult) -> Result<String, Box<dyn Error>> {
@@ -318,7 +319,7 @@ impl Reporting for FaultWorkload {
         FaultArchiveReport {
             seed: state.seed,
             root_seal: self.root_seal.get().copied().unwrap_or_default(),
-            horizon_nanos: self.config.horizon_nanos,
+            horizon_nanos: crate::target::DEFAULT_HORIZON_NANOS,
             executions: state.executions,
             milestones: evidence.aggregate,
             progress_watermark: evidence.watermark,
@@ -343,7 +344,7 @@ impl InputPolicy for FaultWorkload {
     }
 
     fn max_action_cost(&self) -> u64 {
-        1
+        u64::from(u16::MAX)
     }
 
     fn policies(&self, run: &FaultCampaignRun) -> WorkloadPolicies {
@@ -359,7 +360,7 @@ impl InputPolicy for FaultWorkload {
             (IMAGE_FIELD.to_owned(), self.identity.clone()),
             (
                 HORIZON_FIELD.to_owned(),
-                self.config.horizon_nanos.to_string(),
+                crate::target::DEFAULT_HORIZON_NANOS.to_string(),
             ),
             (VOCABULARY_FIELD.to_owned(), run.vocabulary.identifier()),
         ])
@@ -407,6 +408,88 @@ impl InputPolicy for FaultWorkload {
         Ok(((), None))
     }
 
+    fn duration_request(
+        &self,
+        _run: &FaultCampaignRun,
+        parent: FaultArchiveKey,
+        remaining_work: Option<NonZeroU64>,
+    ) -> Option<DurationRequest<FaultArchiveKey>> {
+        Some(DurationRequest {
+            context: FaultArchiveKey {
+                alive: parent.alive,
+                event_ready: parent.event_ready,
+                hooks_running: u64::from(parent.hooks_running > 0),
+                parked: u64::from(parent.parked > 0),
+                event_kill_fires: u64::from(parent.event_kill_fires > 0),
+                event_park_fires: u64::from(parent.event_park_fires > 0),
+                workload_running: parent.workload_running,
+                checks_finished: u64::from(parent.checks_finished > 0),
+                ..FaultArchiveKey::default()
+            },
+            max_duration: NonZeroU64::new(remaining_work.map_or(u64::from(u16::MAX), |work| {
+                work.get().min(u64::from(u16::MAX))
+            }))?,
+        })
+    }
+
+    fn expand_suffix_duration(
+        &self,
+        run: &FaultCampaignRun,
+        _state: &(),
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        mutation_seed: u64,
+        draw: DurationDraw<FaultArchiveKey>,
+    ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
+        let ticks = std::num::NonZeroU16::new(u16::try_from(draw.duration.get())?)
+            .ok_or("wait duration must be positive")?;
+        let mut suffix = draw_suffix(
+            shape,
+            mixture.mixture,
+            mixture.weight,
+            mutation_seed,
+            |_| Ok(None),
+            |rand| sample_action(rand, &run.vocabulary, draw.context.event_ready),
+        )?;
+        for action in &mut suffix {
+            if matches!(action, FaultAction::Wait(_)) {
+                *action = FaultAction::Wait(ticks);
+            }
+        }
+        Ok(suffix)
+    }
+
+    fn expand_suffix_recorded_duration(
+        &self,
+        run: &FaultCampaignRun,
+        state: &(),
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        _before: Option<&()>,
+        mutation_seed: u64,
+        draw: Option<DurationDraw<FaultArchiveKey>>,
+    ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
+        self.expand_suffix_duration(
+            run,
+            state,
+            shape,
+            mixture,
+            mutation_seed,
+            draw.ok_or("fault campaign is missing its duration choice")?,
+        )
+    }
+
+    fn duration_of_action(
+        &self,
+        _run: &FaultCampaignRun,
+        action: &FaultAction,
+    ) -> Option<NonZeroU64> {
+        match action {
+            FaultAction::Wait(ticks) => NonZeroU64::new(u64::from(ticks.get())),
+            _ => None,
+        }
+    }
+
     fn expand_suffix(
         &self,
         run: &FaultCampaignRun,
@@ -421,7 +504,7 @@ impl InputPolicy for FaultWorkload {
             mixture.weight,
             mutation_seed,
             |_| Ok(None),
-            |rand| sample_action(rand, &run.vocabulary),
+            |rand| sample_action(rand, &run.vocabulary, 0),
         )
     }
 }
@@ -452,7 +535,7 @@ impl TargetExecution for FaultWorkload {
     }
 
     fn execution_work(&self, target: &FaultTarget) -> u64 {
-        target.horizons_clocked()
+        target.execution_ticks()
     }
 
     fn action_cost_fn(&self) -> fn(&FaultAction) -> u64 {
@@ -658,12 +741,11 @@ pub fn run_fault_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{consonance::DEFAULT_RAM_MIB, target::DEFAULT_HORIZON_NANOS};
+    use crate::consonance::DEFAULT_RAM_MIB;
 
     fn config(knobs: &[&str]) -> FaultConfig {
         FaultConfig {
             knobs: knobs.iter().map(|knob| (*knob).to_owned()).collect(),
-            horizon_nanos: DEFAULT_HORIZON_NANOS,
             ram_mib: DEFAULT_RAM_MIB,
         }
     }
@@ -676,6 +758,102 @@ mod tests {
         FaultCampaignRun {
             vocabulary: FaultVocabulary::new(nodes, hooks).expect("vocabulary"),
         }
+    }
+
+    #[test]
+    fn wait_contexts_pool_sites_but_separate_lifecycle_states() {
+        let game = game();
+        let run = run(3, vec![]);
+        let parent = FaultArchiveKey {
+            alive: 7,
+            event_kill_site: 41,
+            ..FaultArchiveKey::default()
+        };
+        let request = game.duration_request(&run, parent, None).unwrap();
+        let other_site = FaultArchiveKey {
+            event_kill_site: 999,
+            sometimes: 12,
+            ..parent
+        };
+        assert_eq!(
+            request.context,
+            game.duration_request(&run, other_site, None)
+                .unwrap()
+                .context
+        );
+        let down = FaultArchiveKey { alive: 3, ..parent };
+        assert_ne!(
+            request.context,
+            game.duration_request(&run, down, None).unwrap().context
+        );
+        assert_eq!(
+            game.duration_request(&run, parent, NonZeroU64::new(16))
+                .unwrap()
+                .max_duration
+                .get(),
+            16
+        );
+    }
+
+    #[test]
+    fn recorded_wait_choices_survive_suffix_reconstruction() {
+        let game = game();
+        let run = run(3, vec![]);
+        let mixture = MixtureDraw {
+            mixture: DrawMixture::AlphabetOnly,
+            weight: 0,
+            splice_weight: 0,
+        };
+        let draw = DurationDraw {
+            context: FaultArchiveKey::default(),
+            max_duration: NonZeroU64::new(u64::from(u16::MAX)).unwrap(),
+            duration: NonZeroU64::new(8192).unwrap(),
+        };
+        let mut waits = 0;
+        for seed in 0..128 {
+            let suffix = game
+                .expand_suffix_duration(&run, &(), SuffixShape::OneOrTwo, mixture, seed, draw)
+                .unwrap();
+            let replay = game
+                .expand_suffix_recorded_duration(
+                    &run,
+                    &(),
+                    SuffixShape::OneOrTwo,
+                    mixture,
+                    None,
+                    seed,
+                    Some(draw),
+                )
+                .unwrap();
+            assert_eq!(suffix, replay);
+            for action in suffix {
+                if let FaultAction::Wait(ticks) = action {
+                    assert_eq!(ticks.get(), 8192);
+                    waits += 1;
+                }
+            }
+        }
+        assert!(waits > 0);
+        assert!(
+            game.expand_suffix_recorded_duration(
+                &run,
+                &(),
+                SuffixShape::OneOrTwo,
+                mixture,
+                None,
+                1,
+                None
+            )
+            .is_err()
+        );
+        let out_of_range = DurationDraw {
+            duration: NonZeroU64::new(65536).unwrap(),
+            ..draw
+        };
+        assert!(
+            game.expand_suffix_duration(&run, &(), SuffixShape::OneOrTwo, mixture, 1, out_of_range)
+                .is_err()
+        );
     }
 
     #[test]
@@ -726,22 +904,12 @@ mod tests {
         let policies = game.policies(&run(1, vec![1, 2]));
         let tuned = FaultWorkload::new(b"kernel", b"initramfs", &config(&["faultlab.puts=20"]));
         assert!(tuned.resolve_recorded(&policies).is_err());
-        let short = FaultWorkload::new(
-            b"kernel",
-            b"initramfs",
-            &FaultConfig {
-                horizon_nanos: 100_000_000,
-                ..config(&[])
-            },
-        );
-        assert!(short.resolve_recorded(&policies).is_err());
-        assert_eq!(
-            game.workload_identity_sha256(),
-            short.workload_identity_sha256()
-        );
+        let mut different_timing = policies.clone();
+        different_timing.insert(HORIZON_FIELD.to_owned(), "100000000".to_owned());
+        assert!(game.resolve_recorded(&different_timing).is_err());
         assert_eq!(
             policies.get(HORIZON_FIELD).map(String::as_str),
-            Some("2000000000")
+            Some("500000000")
         );
     }
 }

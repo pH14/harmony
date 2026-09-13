@@ -2,13 +2,15 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v1";
+pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v4";
 pub const MAX_NODES: u16 = 64;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultVocabulary {
     nodes: u16,
     hooks: Vec<u32>,
+    instrumented_events: bool,
+    interrupt_injection: bool,
     places: Vec<u64>,
     places_digest: Option<(u64, u64)>,
 }
@@ -62,9 +64,17 @@ impl FaultVocabulary {
         Ok(Self {
             nodes,
             hooks: sorted,
+            instrumented_events: false,
+            interrupt_injection: compiled_backend_supports_interrupts(),
             places: Vec::new(),
             places_digest: None,
         })
+    }
+
+    #[must_use]
+    pub(crate) fn with_instrumented_events(mut self, enabled: bool) -> Self {
+        self.instrumented_events = enabled;
+        self
     }
 
     pub fn with_places(mut self, mut places: Vec<u64>) -> Result<Self, String> {
@@ -87,6 +97,7 @@ impl FaultVocabulary {
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut nodes = 0_u16;
         let mut hooks = Vec::new();
+        let mut lifecycle = std::collections::BTreeSet::new();
         for (number, line) in text.lines().enumerate() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -112,7 +123,16 @@ impl FaultVocabulary {
                         format!("bundle line {line_number}: hook id {id:?} is not a u32: {error}")
                     })?);
                 }
-                "ready" | "setup" => {}
+                "ready" | "setup" | "workload" | "check" => {
+                    if fields.next().is_none() {
+                        return Err(format!(
+                            "bundle line {line_number}: {keyword} has no command"
+                        ));
+                    }
+                    if !lifecycle.insert(keyword) {
+                        return Err(format!("bundle line {line_number}: duplicate {keyword}"));
+                    }
+                }
                 other => {
                     return Err(format!(
                         "bundle line {line_number}: unknown keyword {other:?}"
@@ -134,6 +154,16 @@ impl FaultVocabulary {
     }
 
     #[must_use]
+    pub fn instrumented_events(&self) -> bool {
+        self.instrumented_events
+    }
+
+    #[must_use]
+    pub fn interrupt_injection(&self) -> bool {
+        self.interrupt_injection
+    }
+
+    #[must_use]
     pub fn places(&self) -> &[u64] {
         &self.places
     }
@@ -149,12 +179,25 @@ impl FaultVocabulary {
         let (count, digest) = self
             .places_digest
             .unwrap_or_else(|| (self.places.len() as u64, digest_places(&self.places)));
+        let events = if self.instrumented_events {
+            "antithesis"
+        } else {
+            "none"
+        };
+        let interrupts = if self.interrupt_injection {
+            "enabled"
+        } else {
+            "none"
+        };
         if count == 0 {
-            return format!("{VOCABULARY_FORMAT};nodes={};hooks={hooks}", self.nodes);
+            return format!(
+                "{VOCABULARY_FORMAT};nodes={};hooks={hooks};events={events};interrupts={interrupts}",
+                self.nodes,
+            );
         }
         format!(
-            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};places={count}/{digest:016x}",
-            self.nodes
+            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};events={events};interrupts={interrupts};places={count}/{digest:016x}",
+            self.nodes,
         )
     }
 
@@ -175,6 +218,30 @@ impl FaultVocabulary {
             .next()
             .and_then(|field| field.strip_prefix("hooks="))
             .ok_or("fault vocabulary has no hook list")?;
+        let instrumented_events = match fields
+            .next()
+            .and_then(|field| field.strip_prefix("events="))
+            .ok_or("fault vocabulary has no instrumented-event capability")?
+        {
+            "none" => false,
+            "antithesis" => true,
+            _ => return Err("fault vocabulary has an unknown event capability".to_owned()),
+        };
+        let interrupt_injection = match fields
+            .next()
+            .and_then(|field| field.strip_prefix("interrupts="))
+            .ok_or("fault vocabulary has no interrupt capability")?
+        {
+            "none" => false,
+            "enabled" => true,
+            _ => return Err("fault vocabulary has an unknown interrupt capability".to_owned()),
+        };
+        if interrupt_injection != compiled_backend_supports_interrupts() {
+            return Err(format!(
+                "fault vocabulary interrupt capability ({interrupt_injection}) does not match the compiled backend ({})",
+                compiled_backend_supports_interrupts()
+            ));
+        }
         let places_digest = match fields.next() {
             None => None,
             Some(field) => {
@@ -204,10 +271,20 @@ impl FaultVocabulary {
                 })
                 .collect::<Result<Vec<_>, _>>()?
         };
-        let mut vocabulary = Self::new(nodes, hooks)?;
+        let mut vocabulary = Self::new(nodes, hooks)?.with_instrumented_events(instrumented_events);
+        vocabulary.interrupt_injection = interrupt_injection;
         vocabulary.places_digest = places_digest;
         Ok(vocabulary)
     }
+}
+
+#[must_use]
+pub const fn compiled_backend_supports_interrupts() -> bool {
+    cfg!(all(
+        feature = "consonance",
+        target_os = "linux",
+        target_arch = "x86_64"
+    ))
 }
 
 #[cfg(test)]
@@ -241,7 +318,14 @@ ready /usr/local/pgsql/bin/pg_isready
             .expect("places");
         assert_eq!(vocabulary.places(), [0x47eca0, 0x4b0e86]);
         let identifier = vocabulary.identifier();
-        assert!(identifier.starts_with("faultlab_bundle_v1;nodes=1;hooks=1,2;places=2/"));
+        let interrupts = if compiled_backend_supports_interrupts() {
+            "enabled"
+        } else {
+            "none"
+        };
+        assert!(identifier.starts_with(&format!(
+            "faultlab_bundle_v4;nodes=1;hooks=1,2;events=none;interrupts={interrupts};places=2/",
+        )));
         let resolved = FaultVocabulary::from_identifier(&identifier).expect("resolve");
         assert_eq!(resolved.identifier(), identifier);
         assert!(resolved.places().is_empty());
@@ -260,6 +344,22 @@ ready /usr/local/pgsql/bin/pg_isready
             [0x4b0e86, 0x47eca0]
         );
         assert!(parse_places("0x4b0e86\nnope\n").is_err());
+    }
+
+    #[test]
+    fn workload_and_check_commands_are_lifecycle_not_search_actions() {
+        let vocabulary =
+            FaultVocabulary::parse("node a /a\nworkload /load\ncheck /check\n").unwrap();
+        assert_eq!(vocabulary.nodes(), 1);
+        assert!(vocabulary.hooks().is_empty());
+        for extra in [
+            "check",
+            "workload",
+            "check /one\ncheck /two",
+            "workload /one\nworkload /two",
+        ] {
+            assert!(FaultVocabulary::parse(&format!("node a /a\n{extra}\n")).is_err());
+        }
     }
 
     #[test]
@@ -342,27 +442,50 @@ ready /usr/local/pgsql/bin/pg_isready
             postgres.identifier(),
             "two workloads never record the same alphabet"
         );
-        assert_eq!(etcd.identifier(), "faultlab_bundle_v1;nodes=1;hooks=1,2");
+        let interrupts = if compiled_backend_supports_interrupts() {
+            "enabled"
+        } else {
+            "none"
+        };
+        assert_eq!(
+            etcd.identifier(),
+            format!("faultlab_bundle_v4;nodes=1;hooks=1,2;events=none;interrupts={interrupts}")
+        );
+        assert_ne!(
+            etcd.identifier(),
+            etcd.clone().with_instrumented_events(true).identifier()
+        );
     }
 
     #[test]
     fn an_unrecognized_identifier_is_refused() {
         for identifier in [
             "faultlab_bundle_v0;nodes=1;hooks=1",
-            "faultlab_bundle_v1;nodes=1",
-            "faultlab_bundle_v1;nodes=0;hooks=1",
-            "faultlab_bundle_v1;nodes=x;hooks=1",
-            "faultlab_bundle_v1;nodes=1;hooks=1;extra=2",
-            "faultlab_bundle_v1;nodes=1;hooks=one",
+            "faultlab_bundle_v1;nodes=1;hooks=1",
+            "faultlab_bundle_v2;nodes=1",
+            "faultlab_bundle_v4;nodes=0;hooks=1;events=none;interrupts=enabled",
+            "faultlab_bundle_v4;nodes=x;hooks=1;events=none;interrupts=enabled",
+            "faultlab_bundle_v4;nodes=1;hooks=1;events=other;interrupts=enabled",
+            "faultlab_bundle_v4;nodes=1;hooks=1;events=none;interrupts=other",
+            "faultlab_bundle_v4;nodes=1;hooks=1;events=none;interrupts=enabled;extra=2",
+            "faultlab_bundle_v4;nodes=1;hooks=one;events=none;interrupts=enabled",
         ] {
             assert!(
                 FaultVocabulary::from_identifier(identifier).is_err(),
                 "{identifier} must be refused"
             );
         }
-        let no_hooks =
-            FaultVocabulary::from_identifier("faultlab_bundle_v1;nodes=2;hooks=").expect("resolve");
+        let interrupts = if compiled_backend_supports_interrupts() {
+            "enabled"
+        } else {
+            "none"
+        };
+        let no_hooks = FaultVocabulary::from_identifier(&format!(
+            "faultlab_bundle_v4;nodes=2;hooks=;events=antithesis;interrupts={interrupts}"
+        ))
+        .expect("resolve");
         assert_eq!(no_hooks.nodes(), 2);
         assert!(no_hooks.hooks().is_empty());
+        assert!(no_hooks.instrumented_events());
     }
 }
