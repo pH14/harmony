@@ -116,14 +116,20 @@ pub fn execute_job<G: Workload + ?Sized>(
     workload.reset(target);
     workload.restore(target, origin_snapshot)?;
     let mut replay_milestones = parent_milestones;
-    for action in replay {
-        workload.apply_action(target, action, &mut replay_milestones)?;
-        if workload
-            .rollout_outcome(run, target)?
-            .disposition
-            .is_terminal()
-        {
-            break;
+    if !workload
+        .rollout_outcome(run, target)?
+        .disposition
+        .is_terminal()
+    {
+        for action in replay {
+            workload.apply_action(target, action, &mut replay_milestones)?;
+            if workload
+                .rollout_outcome(run, target)?
+                .disposition
+                .is_terminal()
+            {
+                break;
+            }
         }
     }
     execute_suffix(
@@ -152,7 +158,13 @@ pub fn execute_suffix<G: Workload + ?Sized>(
     let parent_outcome = target.outcome()?;
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
-        return Ok(CampaignJobResult { actions });
+        return Ok(CampaignJobResult {
+            preparation_failure: parent_outcome
+                .disposition
+                .is_failed()
+                .then(|| target.observations()),
+            actions,
+        });
     }
     for action in suffix {
         if length >= max_actions {
@@ -194,5 +206,8 @@ pub fn execute_suffix<G: Workload + ?Sized>(
             break;
         }
     }
-    Ok(CampaignJobResult { actions })
+    Ok(CampaignJobResult {
+        preparation_failure: None,
+        actions,
+    })
 }

@@ -258,7 +258,10 @@ pub(super) fn execute_suffix<M: Machine<Portable = machine::SharedState>>(
     };
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
-        return Ok(CampaignJobResult { actions });
+        return Ok(CampaignJobResult {
+            preparation_failure: None,
+            actions,
+        });
     }
     for action in suffix {
         if length >= max_actions {
@@ -330,7 +333,10 @@ pub(super) fn execute_suffix<M: Machine<Portable = machine::SharedState>>(
             break;
         }
     }
-    Ok(CampaignJobResult { actions })
+    Ok(CampaignJobResult {
+        preparation_failure: None,
+        actions,
+    })
 }
 
 fn update_first_inputs(
@@ -817,6 +823,7 @@ mod tests {
         let portable = serde_json::from_value(serde_json::json!(bytes))
             .expect("shared-state wire representation");
         CampaignJobResult {
+            preparation_failure: None,
             actions: vec![CampaignActionResult {
                 action: ButtonChord::new(0x81, 3),
                 observations: vec![observation.clone()],

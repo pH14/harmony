@@ -478,17 +478,18 @@ pub enum SessionError {
     Portable(String),
     #[error("guest stopped before the expected snapshot point: {0:?}")]
     Stop(StopReason),
-    #[error("guest ran for more than {0:?} of host time without exiting")]
+    #[error("guest made no virtual-time progress for more than {0:?} of host time")]
     Hung(Duration),
     #[error("session was abandoned after a guest hang and cannot run again")]
     Abandoned,
-    #[error("backend cannot be interrupted mid-run, so its runs cannot be wall-clock bounded")]
+    #[error("backend cannot provide cancellation and virtual-time progress for a host-time bound")]
     Unboundable,
 }
 
 type CancelLatch = Arc<std::sync::atomic::AtomicBool>;
+type ProgressClock = Arc<std::sync::atomic::AtomicU64>;
 
-type GuardedRun = (Duration, CancelLatch);
+type GuardedRun = (Duration, CancelLatch, ProgressClock);
 
 #[cfg_attr(
     not(all(
@@ -502,6 +503,7 @@ fn guarded_run_plan(
     abandoned: bool,
     wall_limit: Option<Duration>,
     cancel: Option<CancelLatch>,
+    progress: Option<ProgressClock>,
 ) -> Result<Option<GuardedRun>, Box<dyn Error>> {
     if abandoned {
         return Err(SessionError::Abandoned.into());
@@ -510,7 +512,8 @@ fn guarded_run_plan(
         return Ok(None);
     };
     let cancel = cancel.ok_or(SessionError::Unboundable)?;
-    Ok(Some((limit, cancel)))
+    let progress = progress.ok_or(SessionError::Unboundable)?;
+    Ok(Some((limit, cancel, progress)))
 }
 
 #[cfg_attr(
@@ -1424,35 +1427,46 @@ mod tests {
     fn an_unbounded_session_runs_every_request_unguarded() {
         let latch = Arc::new(std::sync::atomic::AtomicBool::new(false));
         assert!(
-            guarded_run_plan(false, None, Some(latch))
+            guarded_run_plan(false, None, Some(latch), None)
                 .unwrap()
                 .is_none()
         );
-        assert!(guarded_run_plan(false, None, None).unwrap().is_none());
+        assert!(guarded_run_plan(false, None, None, None).unwrap().is_none());
     }
 
     #[test]
-    fn a_bounded_session_arms_the_backend_latch() {
+    fn a_bounded_session_arms_the_backend_latch_and_progress_clock() {
         let latch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let progress = Arc::new(std::sync::atomic::AtomicU64::new(7));
         let limit = Duration::from_secs(30);
-        let (armed, armed_latch) = guarded_run_plan(false, Some(limit), Some(Arc::clone(&latch)))
-            .expect("a latched backend can be bounded")
-            .expect("the bound is armed");
+        let (armed, armed_latch, armed_progress) = guarded_run_plan(
+            false,
+            Some(limit),
+            Some(Arc::clone(&latch)),
+            Some(Arc::clone(&progress)),
+        )
+        .expect("a progressing latched backend can be bounded")
+        .expect("the bound is armed");
         assert_eq!(armed, limit);
         assert!(Arc::ptr_eq(&armed_latch, &latch));
+        assert!(Arc::ptr_eq(&armed_progress, &progress));
     }
 
     #[test]
-    fn a_backend_without_a_latch_reports_the_bound_it_cannot_honor() {
-        let error = guarded_run_plan(false, Some(Duration::from_secs(30)), None)
-            .expect_err("an unbounded backend cannot take a bound");
-        assert!(
-            matches!(
-                error.downcast_ref::<SessionError>(),
-                Some(SessionError::Unboundable)
-            ),
-            "{error}"
-        );
+    fn a_backend_without_both_liveness_signals_cannot_honor_the_bound() {
+        let latch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let progress = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        for (cancel, progress) in [(None, Some(progress)), (Some(latch), None)] {
+            let error = guarded_run_plan(false, Some(Duration::from_secs(30)), cancel, progress)
+                .expect_err("an unobservable backend cannot take a bound");
+            assert!(
+                matches!(
+                    error.downcast_ref::<SessionError>(),
+                    Some(SessionError::Unboundable)
+                ),
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -1462,7 +1476,7 @@ mod tests {
             (Some(Duration::from_secs(30)), Some(Arc::clone(&latch))),
             (None, None),
         ] {
-            let error = guarded_run_plan(true, wall_limit, cancel)
+            let error = guarded_run_plan(true, wall_limit, cancel, None)
                 .expect_err("an abandoned session runs nothing");
             assert!(
                 matches!(

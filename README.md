@@ -70,6 +70,9 @@ See [CLI documentation](cli/README.md) for prerequisites and run artifacts.
 Component details live in READMEs beside their code. Development setup and
 repository checks live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
+Before filing a GitHub issue, ask: **“If we discarded this branch today,
+would this still need attention?”** If not, keep the finding in the current task.
+
 ## Repository map
 
 - [`consonance/`](consonance/README.md) contains the deterministic VMM, machine

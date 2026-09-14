@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: MIT
+# Compatibility patch for the MIT-licensed Antithesis SDK Go v0.8.0.
+# The upstream cgo handler is architecture-neutral on these targets; its
+# build constraints are the only reason it excludes Linux arm64.
+diff --git a/internal/voidstar_handler.go b/internal/voidstar_handler.go
+--- a/internal/voidstar_handler.go
++++ b/internal/voidstar_handler.go
+@@ -1 +1 @@
+-//go:build !no_antithesis_sdk && linux && amd64 && cgo
++//go:build !no_antithesis_sdk && linux && (amd64 || arm64) && cgo
+diff --git a/internal/voidstar_handler_no_cgo.go b/internal/voidstar_handler_no_cgo.go
+--- a/internal/voidstar_handler_no_cgo.go
++++ b/internal/voidstar_handler_no_cgo.go
+@@ -1 +1 @@
+-//go:build !no_antithesis_sdk && linux && amd64 && !cgo
++//go:build !no_antithesis_sdk && linux && (amd64 || arm64) && !cgo
+diff --git a/internal/voidstar_handler_noop.go b/internal/voidstar_handler_noop.go
+--- a/internal/voidstar_handler_noop.go
++++ b/internal/voidstar_handler_noop.go
+@@ -1 +1 @@
+-//go:build !no_antithesis_sdk && (!linux || !amd64)
++//go:build !no_antithesis_sdk && (!linux || (!amd64 && !arm64))
+diff --git a/internal/emit_cgo_test.go b/internal/emit_cgo_test.go
+--- a/internal/emit_cgo_test.go
++++ b/internal/emit_cgo_test.go
+@@ -1 +1 @@
+-//go:build !no_antithesis_sdk && linux && amd64 && cgo
++//go:build !no_antithesis_sdk && linux && (amd64 || arm64) && cgo
+diff --git a/internal/emit_no_cgo_test.go b/internal/emit_no_cgo_test.go
+--- a/internal/emit_no_cgo_test.go
++++ b/internal/emit_no_cgo_test.go
+@@ -1 +1 @@
+-//go:build !no_antithesis_sdk && linux && amd64 && !cgo
++//go:build !no_antithesis_sdk && linux && (amd64 || arm64) && !cgo

@@ -64,7 +64,7 @@ pub type SmbCampaignJobRecord = CampaignJobRecord<EmpiricalStepCheckpoint>;
 pub type SmbCampaignSkipRecord = CampaignSkipRecord<EmpiricalStepCheckpoint>;
 pub type SmbCampaignStreamRecord = CampaignStreamRecord<EmpiricalStepCheckpoint>;
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v2";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v3";
 
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v3";
 pub const CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-consonance-snapshot-checkpoint-v1";
