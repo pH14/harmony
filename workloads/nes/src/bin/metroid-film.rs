@@ -56,10 +56,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input_path = PathBuf::from(args.next().ok_or(USAGE)?);
     let video = PathBuf::from(args.next().ok_or(USAGE)?);
     let mut intervention = None;
-    // A tape recorded under one terminal predicate replays under that same
-    // predicate; the default stops at the BCD borrow value, which a tape
-    // recorded before that policy existed runs straight through.
-    let mut terminal_policy = MetroidTerminalPolicy::default();
+    // A tape carries no policy header, and the recorded tapes this replays
+    // predate the BCD-borrow predicate, so replaying under it would stop a
+    // historical tape early. A newer tape names its own policy.
+    let mut terminal_policy = MetroidTerminalPolicy::Legacy;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--set-resources" => {
@@ -86,6 +86,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core_path)?));
     let input: MetroidInput = serde_json::from_slice(&fs::read(&input_path)?)?;
 
+    // Checked before any output file exists, so a rejected point leaves none.
+    if let Some(point) = &intervention
+        && !(1..=input.actions.len()).contains(&point.after)
+    {
+        return Err(format!(
+            "the intervention point {} is outside the tape's {} actions",
+            point.after,
+            input.actions.len()
+        )
+        .into());
+    }
+
     let mut target = MetroidTarget::from_rom_bytes_capturing(&rom, &core_path, &core_sha256)?
         .with_terminal_policy(terminal_policy);
 
@@ -111,20 +123,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     film.write(&opening, &target.drain_audio())?;
     drop(opening);
 
-    // An intervention point past the end of the tape would produce an
-    // unmodified film that still looks like the intervened run.
-    if let Some(point) = &intervention
-        && !(1..=input.actions.len()).contains(&point.after)
-    {
-        return Err(format!(
-            "the intervention point {} is outside the tape's {} actions",
-            point.after,
-            input.actions.len()
-        )
-        .into());
-    }
-
     let mut applied = 0_usize;
+    let mut intervened = false;
     for action in &input.actions {
         if target.is_dead() || target.is_victory() || target.exit_kind() != ExitKind::Ok {
             break;
@@ -136,6 +136,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             && point.after == applied
         {
             target.diagnostic_set_resources(point.health, point.missiles)?;
+            intervened = true;
         }
         if applied.is_multiple_of(250) {
             eprintln!(
@@ -172,11 +173,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             "terminal_policy": terminal_policy.identifier(),
             "actions_applied": applied,
             "actions_recorded": input.actions.len(),
+            "intervention_applied": intervened,
             "endpoint": target.mechanical_state(),
             "victory": target.is_victory(),
             "dead": target.is_dead(),
         })
     );
+    // The run ended before the requested point, so this film is the unintervened
+    // run. The report above says where it stopped.
+    if intervention.is_some() && !intervened {
+        return Err(format!(
+            "the run ended after {applied} actions, before the intervention point"
+        )
+        .into());
+    }
     Ok(())
 }
 
