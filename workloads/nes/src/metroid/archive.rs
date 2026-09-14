@@ -40,7 +40,7 @@ pub const KEY_POLICY_IDENTIFIER: &str = if cfg!(feature = "metroid-retention-pro
 } else if cfg!(feature = "metroid-refined-archive") {
     "metroid_items_tanks_spatial_8_raw_pose_selection_32_legacy_progress_v9"
 } else {
-    "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8"
+    "metroid_items_tanks_less_boss_award_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v9"
 };
 /// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
@@ -467,6 +467,21 @@ mod tests {
             equipment,
             ..MetroidMechanicalState::default()
         }
+    }
+
+    #[test]
+    fn a_boss_kill_does_not_relabel_every_map_cell_as_holding_more_tanks() {
+        let mut collected = state(100, 300, 0);
+        collected.missile_capacity = 30;
+        let mut killed = state(100, 300, 0);
+        killed.missile_capacity = 30 + 75;
+        killed.bosses = 1;
+
+        assert_eq!(collected.collectibles(), 6);
+        assert_eq!(killed.collectibles(), 6);
+        // The kill still counts, through the item term.
+        assert_eq!(killed.items(), collected.items() + 1);
+        assert_eq!(archive_key(killed).tanks, archive_key(collected).tanks);
     }
 
     #[test]

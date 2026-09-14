@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     mm2::target::{
-        BOSS_DAMAGE_BUCKET, ButtonChord, ENEMY_DAMAGE_BUCKET, MENU_CLOSED, Mm2Input,
-        Mm2MechanicalState, Mm2Observations, Mm2Snapshot, preference_tuple,
+        BOSS_DAMAGE_BUCKET, BOSS_PHASE_DEFEATED, ButtonChord, ENEMY_DAMAGE_BUCKET, MENU_CLOSED,
+        Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, preference_tuple,
     },
     search::{
         archive::{
@@ -25,8 +25,7 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 /// Largest bounded input horizon accepted by a Mega Man 2 campaign.
 pub const MAX_MM2_ACTIONS: usize = 8_192;
 /// Recorded archive-key and per-location preference policy.
-pub const KEY_POLICY_IDENTIFIER: &str =
-    "mm2_location_boss_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v18";
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_location_boss_bar_loaded_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v19";
 /// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 /// Recorded controller hold distribution.
@@ -313,12 +312,17 @@ pub struct Mm2ArchiveReport {
 }
 
 /// Decode milestones from one state relative to the sealed genesis stage.
+///
+/// A robot master grants a weapon when it dies; a Wily boss grants nothing, so
+/// the weapon award alone reports a cleared castle stage as a failure. The
+/// defeated phase covers both.
 #[must_use]
 pub fn milestones(state: Mm2MechanicalState, genesis_weapons: u8) -> Mm2Milestones {
     Mm2Milestones {
         max_screen: state.screen,
         reached_boss: state.boss_health != 0,
-        defeated_boss: state.weapons_obtained & !genesis_weapons != 0,
+        defeated_boss: state.weapons_obtained & !genesis_weapons != 0
+            || state.boss_phase >= BOSS_PHASE_DEFEATED,
     }
 }
 
@@ -410,6 +414,21 @@ mod tests {
             weapons_obtained: weapons,
             ..Mm2MechanicalState::default()
         }
+    }
+
+    #[test]
+    fn a_wily_boss_that_grants_no_weapon_still_reports_as_defeated() {
+        let genesis = 0x40;
+        let mut cleared = state(100, 28, genesis);
+        cleared.boss_phase = BOSS_PHASE_DEFEATED;
+        assert!(milestones(cleared, genesis).defeated_boss);
+
+        let mut alive = state(100, 28, genesis);
+        alive.boss_phase = BOSS_PHASE_DEFEATED - 1;
+        assert!(!milestones(alive, genesis).defeated_boss);
+
+        // A robot master still reports through the weapon it grants.
+        assert!(milestones(state(100, 28, genesis | 0x01), genesis).defeated_boss);
     }
 
     #[test]

@@ -85,9 +85,13 @@ pub const STARTING_HEALTH_TENTHS: u16 = 300;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MetroidTerminalPolicy {
     /// The historical predicate considers only zero health.
-    #[default]
     Legacy,
     /// Reject the intermediate BCD borrow value exposed during lethal damage.
+    ///
+    /// An underflowed endpoint reads as several thousand health, which is the
+    /// last term of the archive preference, so it takes the single slot at its
+    /// location from every legitimate endpoint beside it.
+    #[default]
     BcdUnderflow,
 }
 
@@ -194,9 +198,17 @@ impl MetroidMechanicalState {
     /// Missile and energy tanks collected. Missile capacity rises by a
     /// fixed step per tank, so the capacity counts them without naming any
     /// one tank.
+    ///
+    /// Killing Kraid or Ridley also raises capacity, by fifteen tanks' worth,
+    /// which is not a tank anyone collected. `items()` already credits the
+    /// kill, so the award comes back off here.
     #[must_use]
     pub fn collectibles(self) -> u8 {
-        (self.missile_capacity / MISSILE_TANK_STEP).saturating_add(self.energy_tanks)
+        let awarded = u16::from(BOSS_MISSILE_AWARD) * u16::from(self.bosses);
+        let from_tanks = u16::from(self.missile_capacity).saturating_sub(awarded);
+        u8::try_from(from_tanks / u16::from(MISSILE_TANK_STEP))
+            .unwrap_or(u8::MAX)
+            .saturating_add(self.energy_tanks)
     }
 
     /// Whether the game has reached its ending.
@@ -230,6 +242,9 @@ impl MetroidMechanicalState {
 
 /// Missile capacity granted per missile tank.
 const MISSILE_TANK_STEP: u8 = 5;
+
+/// Missile capacity granted for defeating Kraid or Ridley.
+const BOSS_MISSILE_AWARD: u8 = 75;
 
 /// Decode two binary-coded decimal digits.
 fn bcd(byte: u8) -> u16 {
@@ -478,7 +493,7 @@ impl MetroidTarget {
             observation,
             failed: false,
             genesis_prefix,
-            terminal_policy: MetroidTerminalPolicy::Legacy,
+            terminal_policy: MetroidTerminalPolicy::default(),
         })
     }
 
@@ -1090,6 +1105,20 @@ mod observation_tests {
         let mut malformed = before.clone();
         malformed[112] ^= 1;
         assert!(resource_ram_payload(&malformed, false).is_none());
+    }
+
+    #[test]
+    fn the_default_terminal_policy_rejects_the_bcd_borrow_value() {
+        assert_eq!(
+            MetroidTerminalPolicy::default(),
+            MetroidTerminalPolicy::BcdUnderflow
+        );
+        let underflowed = MetroidMechanicalState {
+            health: 9990,
+            ..MetroidMechanicalState::default()
+        };
+        assert!(MetroidTerminalPolicy::default().is_dead(underflowed));
+        assert!(!MetroidTerminalPolicy::Legacy.is_dead(underflowed));
     }
 
     #[test]
