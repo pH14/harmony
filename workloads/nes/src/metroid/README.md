@@ -16,13 +16,16 @@ source addresses and meanings are documented beside their constants in
 identifier is `death_or_ending_v2`, correcting the prototype's stale
 `death_only_v1` label without changing that prototype's predicate.
 
-The opt-in `metroid_terminal: death_or_bcd_underflow_or_ending_v3` evaluation
+The default `metroid_terminal: death_or_bcd_underflow_or_ending_v3` evaluation
 policy also marks decoded health >=8000 as terminal. The damage routine stores
 a BCD subtraction before testing borrow and clearing lethal damage; a frame
 boundary can expose this intermediate value. A verified development endpoint
-reported 9800 and died under every one-frame controller mask. Raw health remains
-unchanged for replay inspection. Historical v2 is still the default; stream
-headers distinguish the policies and reject a mismatched replay context.
+reported 9800 and died under every one-frame controller mask. Six energy tanks
+cap normal health at 6999, so an underflowed reading is the largest health any
+endpoint can report and takes the single slot at its location from every
+legitimate endpoint beside it. Raw health remains unchanged for replay
+inspection. Historical v2 is still selectable; stream headers distinguish the
+policies and reject a mismatched replay context.
 This correction is independent of the optional archive-key refinement.
 
 ## Experimental scoped progress retention
@@ -60,7 +63,10 @@ records the source counterexamples and the unrun native qualification gate.
 16-pixel positions through 32-pixel cells, 128-pixel regions, map cells, and
 inventory counts. Posture and door-transition state distinguish possible
 continuations. Health and missile stock are same-slot preference, not extra
-spatial slots. Item and tank counts describe discovered capabilities; no
+spatial slots. The key's tank count subtracts the 75 missiles each boss kill
+awards, so a kill does not relabel every map cell the killer reaches as holding
+fifteen more tanks than the cells beside it. Item and tank counts describe
+discovered capabilities; no
 particular item, room, door target, or route is supplied. Coverage and pickup
 counters are reporting evidence across explored branches, not proof that one
 trajectory achieved their union. The inherited count representation and
