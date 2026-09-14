@@ -62,8 +62,9 @@ extract_runc_source
 rm -rf "$KSRC"
 extract_kernel
 rm -rf "$kernel_headers"
-mkdir -p "$kernel_headers"
-make -C "$KSRC" ARCH=arm64 INSTALL_HDR_PATH="$kernel_headers" headers_install >/dev/null
+kernel_headers_obj=$BUILD_ROOT/kernel-headers-obj-arm64-runc
+mkdir -p "$kernel_headers" "$kernel_headers_obj"
+make -C "$KSRC" O="$kernel_headers_obj" ARCH=arm64 INSTALL_HDR_PATH="$kernel_headers" headers_install >/dev/null
 [ -d "$kernel_headers/include/linux" ] || {
     echo "FAIL: kernel headers were not exported to $kernel_headers" >&2
     exit 1

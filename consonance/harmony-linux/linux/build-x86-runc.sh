@@ -20,8 +20,9 @@ extract_runc_source
 extract_musl
 extract_kernel
 kernel_headers=$BUILD_ROOT/kernel-headers-x86-runc
-mkdir -p "$kernel_headers"
-make -C "$KSRC" ARCH=x86 INSTALL_HDR_PATH="$kernel_headers" headers_install >/dev/null
+kernel_headers_obj=$BUILD_ROOT/kernel-headers-obj-x86-runc
+mkdir -p "$kernel_headers" "$kernel_headers_obj"
+make -C "$KSRC" O="$kernel_headers_obj" ARCH=x86 INSTALL_HDR_PATH="$kernel_headers" headers_install >/dev/null
 musl_source=$BUILD_ROOT/musl-x86-runc
 musl_prefix=$BUILD_ROOT/musl-x86-runc-prefix
 rm -rf "$musl_source" "$musl_prefix"

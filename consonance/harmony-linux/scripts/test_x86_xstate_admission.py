@@ -348,6 +348,41 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(a.Rejected, "not a directory"):
             a.inventory_initramfs(archive)
 
+    def test_text_relocations_rejected(self):
+        for tag, value in ((22, 0), (30, 4)):
+            with self.subTest(tag=tag):
+                data = bytearray(fixture(soname="libfixture.so"))
+                struct.pack_into("<qQ", data, 0x1200, tag, value)
+                self.binary.write_bytes(data)
+                report, contents = self.scan()
+                self.assertTrue(report["artifacts"]["/unexecutable"]["text_relocations"])
+                self.assertFalse(self.admitted(report, contents, self.baseline(report)))
+                self.assertIn("text relocations", report["errors"][0])
+
+    def test_tlsdesc_requires_distinct_closure_proof(self):
+        self.binary.write_bytes(fixture(b"\x0f\xae\x27\xc3"))
+        report, data = self.scan()
+        baseline = self.baseline(report)
+        region = {"kind": "reviewed-unused-tlsdesc", "start": 0x400000, "size": 3,
+                  "sha256": a.digest(b"\x0f\xae\x27"), "incoming_reference_evidence": self.ref,
+                  "eager_binding_evidence": self.ref}
+        baseline["artifacts"]["/unexecutable"]["resolver_regions"] = [region]
+        self.assertFalse(self.admitted(report, data, baseline))
+        region["tlsdesc_closure_evidence"] = {"file": "proof.md", "sha256": "wrong"}
+        self.assertFalse(self.admitted(report, data, baseline))
+        region["tlsdesc_closure_evidence"] = self.ref
+        self.assertTrue(self.admitted(report, data, baseline))
+        region["sha256"] = "wrong"
+        self.assertFalse(self.admitted(report, data, baseline))
+
+    def test_newc_kernel_symlink_terminator(self):
+        records = a.parse_newc(newc([("link", stat.S_IFLNK | 0o777, b"/bin/app\0", (0, 0))]))
+        item, _ = records[0]
+        self.assertEqual(item["target"], "/bin/app")
+        self.assertEqual(item["sha256"], a.digest(b"/bin/app\0"))
+        with self.assertRaisesRegex(a.Rejected, "symlink target"):
+            a.parse_newc(newc([("link", stat.S_IFLNK | 0o777, b"/bin/app\0extra", (0, 0))]))
+
     def test_malformed_baseline(self):
         report, data = self.scan()
         self.assertFalse(self.admitted(report, data, [],))

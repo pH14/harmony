@@ -164,6 +164,7 @@ def elf(data):
         "segments": segments, "interpreter": interpreter,
         "executable_stack": executable_stack,
         "dynamic": seen_dynamic,
+        "text_relocations": 22 in tags or any(v & 4 for v in tags.get(30, [])),
         "needed": [string(v) for v in tags.get(1, [])],
         "soname": string(tags[14][0]) if 14 in tags else None,
         "rpath": [string(v) for v in tags.get(15, [])],
@@ -418,10 +419,10 @@ def parse_newc(data):
         if kind == stat.S_IFREG:
             item.update(size=size, sha256=digest(content))
         elif kind == stat.S_IFLNK:
-            target = content.decode("utf-8")
+            target = (content[:-1] if content.endswith(b"\0") else content).decode("utf-8")
             if not target or "\0" in target:
                 raise Rejected("invalid newc symlink target")
-            item["target"] = target
+            item.update(target=target, size=size, sha256=digest(content))
         entries.append((item, content))
 
 
@@ -515,6 +516,8 @@ def verify(report, contents, baseline, baseline_dir):
             if record["needed"] or record["interpreter"]:
                 if item.get("dependencies") != record["dependencies"] or item.get("transitive_dependencies") != record["transitive_dependencies"]:
                     raise Rejected(f"unreviewed dependency graph: {name}")
+            if record["text_relocations"]:
+                raise Rejected(f"ELF text relocations: {name}")
             if record["executable_stack"]:
                 raise Rejected(f"executable ELF stack: {name}")
             if record["writable_executable_segments"]:
@@ -534,7 +537,7 @@ def verify(report, contents, baseline, baseline_dir):
                 evidence(selector.get("control_flow_evidence"), baseline_dir)
             regions = item.get("resolver_regions", [])
             for region in regions:
-                if region.get("kind") != "reviewed-eager-resolver" or type(region.get("start")) is not int or type(region.get("size")) is not int or region["size"] <= 0:
+                if region.get("kind") not in ("reviewed-eager-resolver", "reviewed-unused-tlsdesc") or type(region.get("start")) is not int or type(region.get("size")) is not int or region["size"] <= 0:
                     raise Rejected(f"invalid reviewed resolver region: {name}")
                 start, size = region["start"], region["size"]
                 segments = [s for s in record["segments"] if s["flags"] & 1 and s["address"] <= start and start + size <= s["address"] + s["size"]]
@@ -544,7 +547,10 @@ def verify(report, contents, baseline, baseline_dir):
                 if digest(data) != region.get("sha256"):
                     raise Rejected(f"resolver region bytes differ: {name}")
                 evidence(region.get("incoming_reference_evidence"), baseline_dir)
-                evidence(region.get("eager_binding_evidence"), baseline_dir)
+                if region["kind"] == "reviewed-eager-resolver":
+                    evidence(region.get("eager_binding_evidence"), baseline_dir)
+                else:
+                    evidence(region.get("tlsdesc_closure_evidence"), baseline_dir)
             for site in record["sites"]:
                 if site["mnemonic"] in SAVE:
                     covering = [r for r in regions if r["start"] <= site["address"] and site["address"] + len(bytes.fromhex(site["bytes"])) <= r["start"] + r["size"]]

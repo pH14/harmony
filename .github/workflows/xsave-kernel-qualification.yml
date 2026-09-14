@@ -8,6 +8,8 @@ on:
       - ".github/workflows/xsave-kernel-qualification.yml"
       - "consonance/harmony-linux/linux/patches/**"
       - "consonance/harmony-linux/linux/*allowlist*.txt"
+      - "consonance/harmony-linux/linux/build-xsave-qualification-fixture.sh"
+      - "consonance/harmony-linux/linux/xsave-guest-check.c"
 permissions:
   contents: read
 concurrency:

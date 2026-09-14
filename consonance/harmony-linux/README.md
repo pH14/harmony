@@ -100,10 +100,22 @@ on hosted AMD, hosted Intel, and ms02, including independently checked
 MXCSR-only data. The D4 site inventory supports the fixed-layout kernel patch
 in `linux/patches/x86/0008-x86-harmony-canonical-xsave.patch`.
 
-The patched kernel passes the native ms02 functional fixture and one pair of
-independent boots: the complete 256 MiB RAM and modeled state match at the
-guest-requested shutdown endpoint. Debug interventions and hosted Linux
-qualification remain required; this pair does not close them.
+The gated Nix kernel passes the native ms02 functional fixture, independent
+paired boots, and six one-shot debug interventions around the core and signal
+save boundaries. Complete 256 MiB RAM and modeled state match at the
+guest-requested shutdown endpoint without masking. Hosted AMD/Intel Linux
+qualification remains required. These results qualify neither arbitrary images
+nor arbitrary imported CPU events.
+
+The exact GCC13 save paths overwrite raw bitmap register aliases and clear the
+owned stack byte before restoring interrupts on success. A conditional signal
+checked-access failure can retain the raw bitmap in EDX. Within the controlled
+boot, successful mask-7 plain XSAVE has already written both possible buffer
+pages; one vCPU, disabled local IRQs, fixed mappings, absent PKU and ordinary
+healthy memory exclude a subsequent ordinary access fault. Initial XSAVE faults
+precede the bitmap read. This argument excludes external guest NMI/MCE injection
+and arbitrary imported pending events; the generic backend can represent them.
+Actual save-boundary fault/retry coverage remains a separate obligation.
 
 The proposed guest contract compares identity at guest-initiated exits; debug
 stops are interventions, not comparison points. Patched save/canonicalize
@@ -251,3 +263,22 @@ concatenated archives, sockets/FIFOs and other unsupported types fail closed.
 Newc carries no extended attributes; this mode records empty xattrs instead of
 claiming metadata from the host staging tree. Existing directory modes retain
 their prior filesystem inventory semantics.
+
+ELF inventory records `text_relocations` when DT_TEXTREL or DF_TEXTREL is set.
+Verification rejects those images: the controlled policy does not admit loader
+relocations that require modifying executable/text pages. This complements,
+and does not replace, runtime no-code-mutation and no-W+X obligations.
+
+A separate `reviewed-unused-tlsdesc` region kind requires exact `start`, `size`,
+region `sha256`, `incoming_reference_evidence`, and `tlsdesc_closure_evidence`.
+This exception is specifically for TLS descriptor save wrappers proven unused
+by the entire digest-bound closed ELF tree and its controlled loading paths.
+It cannot borrow an eager-binding proof: eager binding does not establish that
+TLS descriptor wrappers are unreachable. `reviewed-eager-resolver` retains its
+separate mandatory `eager_binding_evidence` for ordinary PLT resolver exclusion.
+Neither kind is an unrestricted manual exemption or an automatically generated
+approval; changes to the closed tree require fresh closure review.
+
+Kernel gen_init_cpio symlink bodies may contain one terminal NUL. The archive
+adapter accepts that encoding as well as nonterminated bodies, rejects embedded
+NULs, and records raw content size/SHA256 alongside the guest symlink target.

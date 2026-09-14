@@ -74,12 +74,17 @@ for function in ("save_fpregs_to_fpstate", "copy_fpstate_to_sigframe"):
     # The dedicated Harmony branch follows the generic signal branch in this
     # pinned source. A missing runtime hit fails qualification, not skips it.
     for index in saves[-1:]:
-        masked = next((i for i in range(index + 1, min(index + 80, len(lines)))
-                       if re.search(r"\band\s+\$0x7,", lines[i][2])), None)
-        stored = next((i for i in range(masked + 1, min(masked + 8, len(lines)))
-                       if re.search(r"\bmov\s+%[a-z]+,-0x[0-9a-f]+\(%rbp\)", lines[i][2])), None) if masked is not None else None
-        if stored is None:
-            raise SystemExit("FAIL: bitmap stack store shape requires review: " + function)
+        register, low = ("eax", "al") if function == "save_fpregs_to_fpstate" else ("edx", "dl")
+        candidates = []
+        for masked in range(index + 1, min(index + 80, len(lines) - 2)):
+            if not re.search(r"\band\s+\$0x7,%" + register + r"$", lines[masked][2]):
+                continue
+            store = re.search(r"\bmov\s+%" + low + r",(-0x[0-9a-f]+\(%rbp\)|0x3\(%rsp\))$", lines[masked + 1][2])
+            if store and re.search(r"\bmovzbl\s+" + re.escape(store[1]) + r",%eax$", lines[masked + 2][2]):
+                candidates.append(masked + 1)
+        if len(candidates) != 1:
+            raise SystemExit("FAIL: bitmap mask/store/reload shape requires review: " + function)
+        stored = candidates[0]
         for position, label in ((index, "before-save"), (index + 1, "after-save"), (stored + 1, "after-bitmap-spill")):
             if position >= len(lines):
                 raise SystemExit("FAIL: missing successor instruction")
