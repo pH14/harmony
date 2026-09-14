@@ -2,7 +2,10 @@
 
 use std::{error::Error, path::Path};
 
-use machine::{Machine, MachineError, SnapId, StopConditions, nes, quicknes::QuickNesMachine};
+use machine::{
+    Machine, MachineError, SnapId, StopConditions, nes,
+    quicknes::{QuickNesMachine, VideoFrame},
+};
 use serde::{Deserialize, Serialize};
 
 use super::progress::{BossDefeats, TourianEvents};
@@ -148,6 +151,16 @@ impl MetroidMechanicalState {
 }
 
 const MISSILE_TANK_STEP: u8 = 5;
+const MAX_ENERGY_TANKS: u8 = 6;
+const CARTRIDGE_RAM_SIZE: usize = 8192;
+
+fn health_cap(energy_tanks: u8) -> u16 {
+    (u16::from(energy_tanks) + 1) * 1000 - 1
+}
+
+fn to_bcd(value: u16) -> u8 {
+    u8::try_from((value / 10) * 16 + value % 10).unwrap_or(u8::MAX)
+}
 const BOSS_MISSILE_AWARD: u8 = 75;
 const BCD_BORROW_HEALTH: u16 = 8000;
 
@@ -313,6 +326,26 @@ impl MetroidTarget {
         Self::from_rom_bytes_after(rom, core_path, core_sha256, &power_on_walk())
     }
 
+    pub fn from_rom_bytes_capturing(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        let image = nes::with_cartridge_ram(rom)?;
+        let mut machine = QuickNesMachine::from_rom_bytes(&image, core_path, core_sha256)?;
+        machine.set_video_capture(true);
+        machine.set_audio_capture(true);
+        Self::from_machine(machine, &power_on_walk())
+    }
+
+    pub fn drain_frames(&mut self) -> Vec<VideoFrame> {
+        self.machine.take_video_frames()
+    }
+
+    pub fn drain_audio(&mut self) -> Vec<i16> {
+        self.machine.take_audio_samples()
+    }
+
     pub fn from_rom_bytes_after(
         rom: &[u8],
         core_path: &Path,
@@ -427,6 +460,89 @@ impl MetroidTarget {
     #[must_use]
     pub fn execution_work(&self) -> u64 {
         self.execution_work
+    }
+
+    #[must_use]
+    pub fn frames_clocked(&self) -> u64 {
+        self.machine.now().0
+    }
+
+    pub fn diagnostic_set_resources(
+        &mut self,
+        health: u16,
+        missiles: u8,
+    ) -> Result<(), Box<dyn Error>> {
+        let state = self.mechanical_state();
+        if self.failed
+            || !state.in_play()
+            || self.is_dead()
+            || self.is_victory()
+            || state.energy_tanks > MAX_ENERGY_TANKS
+            || state.health == 0
+            || state.health > health_cap(state.energy_tanks)
+            || state.missiles > state.missile_capacity
+            || health == 0
+            || health > health_cap(state.energy_tanks)
+            || missiles > state.missile_capacity
+        {
+            return Err("resource intervention exceeds the live state's earned capacities".into());
+        }
+        let wram = self.machine.read_wram()?;
+        let cartridge = self.cartridge()?;
+        if decode_state(&wram, &cartridge)? != state || wram != self.current_wram {
+            return Err("resource intervention requires a consistent paused boundary".into());
+        }
+        let before = self
+            .snapshot()
+            .ok_or("resource intervention snapshot failed")?;
+        let clock = self.frames_clocked();
+        let mut expected_wram = wram;
+        expected_wram[HEALTH_LOW] = to_bcd(health % 100);
+        expected_wram[HEALTH_HIGH] = to_bcd(health / 100);
+        let mut expected_cartridge = cartridge.clone();
+        expected_cartridge[MISSILES] = missiles;
+        let changes = [
+            (wram[HEALTH_LOW], expected_wram[HEALTH_LOW]),
+            (wram[HEALTH_HIGH], expected_wram[HEALTH_HIGH]),
+            (cartridge[MISSILES], missiles),
+        ];
+        let applied = (|| -> Result<(), Box<dyn Error>> {
+            self.machine
+                .poke_wram(HEALTH_LOW, expected_wram[HEALTH_LOW]);
+            self.machine
+                .poke_wram(HEALTH_HIGH, expected_wram[HEALTH_HIGH]);
+            self.machine.write_save_ram(MISSILES, &[missiles])?;
+            if self.machine.read_wram()? != expected_wram
+                || self.cartridge()? != expected_cartridge
+                || self.frames_clocked() != clock
+            {
+                return Err("resource intervention changed another RAM byte or the clock".into());
+            }
+            let mut expected_state = state;
+            expected_state.health = health;
+            expected_state.missiles = missiles;
+            if decode_state(&expected_wram, &expected_cartridge)? != expected_state {
+                return Err("resource intervention changed another mechanical field".into());
+            }
+            let after = self.snapshot().ok_or("intervened snapshot failed")?;
+            if !only_resource_bytes_changed(&before.emulator_state, &after.emulator_state, &changes)
+            {
+                return Err("resource intervention changed unexpected serialized bytes".into());
+            }
+            self.current_wram = expected_wram;
+            self.observation.decoded = expected_state;
+            self.action_observations = vec![self.observation.clone()];
+            Ok(())
+        })();
+        if let Err(error) = applied {
+            self.machine.poke_wram(HEALTH_LOW, wram[HEALTH_LOW]);
+            self.machine.poke_wram(HEALTH_HIGH, wram[HEALTH_HIGH]);
+            self.machine
+                .write_save_ram(MISSILES, &[cartridge[MISSILES]])?;
+            self.restore(&before)?;
+            return Err(error);
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -624,6 +740,70 @@ fn decode_action_observations(
     Ok((observations, prior_wram))
 }
 
+fn resource_ram_payload(bytes: &[u8], cartridge: bool) -> Option<usize> {
+    if bytes.get(..8)? != b"HQNESST2"
+        || bytes.get(120..128)? != b"NESS\xff\xff\xff\xff"
+        || u64::from_le_bytes(bytes.get(112..120)?.try_into().ok()?) != (bytes.len() - 120) as u64
+    {
+        return None;
+    }
+    let mut offset = 128_usize;
+    let mut found = None;
+    while offset < bytes.len() {
+        let end = offset.checked_add(8)?;
+        let tag = bytes.get(offset..offset.checked_add(4)?)?;
+        let size = usize::try_from(u32::from_le_bytes(
+            bytes.get(offset + 4..end)?.try_into().ok()?,
+        ))
+        .ok()?;
+        let next = end.checked_add(size)?;
+        if next > bytes.len() {
+            return None;
+        }
+        let matches = if cartridge {
+            tag == b"SRAM"
+        } else {
+            tag == b"LRAM" || tag == b"WRAM"
+        };
+        if matches {
+            if found.is_some()
+                || size
+                    != if cartridge {
+                        CARTRIDGE_RAM_SIZE
+                    } else {
+                        WRAM_SIZE
+                    }
+            {
+                return None;
+            }
+            found = Some(end);
+        }
+        offset = next;
+    }
+    found
+}
+
+fn only_resource_bytes_changed(before: &[u8], after: &[u8], changes: &[(u8, u8)]) -> bool {
+    if before.len() != after.len() || changes.len() != 3 {
+        return false;
+    }
+    let mut expected = before.to_vec();
+    for (index, &(old, new)) in changes.iter().enumerate() {
+        if old == new {
+            continue;
+        }
+        let Some(payload) = resource_ram_payload(before, index == 2) else {
+            return false;
+        };
+        let address = payload + [HEALTH_LOW, HEALTH_HIGH, MISSILES][index];
+        if expected[address] != old {
+            return false;
+        }
+        expected[address] = new;
+    }
+    expected == after
+}
+
 fn samus_screen(wram: &[u8]) -> Result<(u8, u8), MachineError> {
     let direction = read_byte(wram, SCROLL_DIRECTION)?;
     let map_x = read_byte(wram, MAP_X)?;
@@ -667,6 +847,75 @@ pub fn spatial_bucket(state: MetroidMechanicalState) -> (u8, u8, u8, u8, u8, u8,
 mod observation_tests {
     use super::*;
     use crate::metroid::progress::NamedProgress;
+
+    fn resource_fixture() -> MetroidTarget {
+        let mut machine = QuickNesMachine::loopback_for_tests(&[0]).unwrap();
+        machine.write_save_ram(0, &[0; CARTRIDGE_RAM_SIZE]).unwrap();
+        machine.poke_wram(GAME_MODE, GAME_MODE_PLAYING);
+        machine.poke_wram(HEALTH_HIGH, 3);
+        machine.write_save_ram(ENERGY_TANKS, &[1]).unwrap();
+        machine.write_save_ram(MISSILE_CAPACITY, &[20]).unwrap();
+        let mut target = MetroidTarget::from_machine(machine, &[]).unwrap();
+        target.diagnostic_set_resources(79, 0).unwrap();
+        target
+    }
+
+    #[test]
+    fn resource_intervention_preserves_noop_and_rejects_unserialized_changes() {
+        let mut target = resource_fixture();
+        let before = target.snapshot().unwrap();
+        let clock = target.frames_clocked();
+        target.diagnostic_set_resources(79, 0).unwrap();
+        assert_eq!(target.snapshot().unwrap(), before);
+        target.diagnostic_set_resources(1999, 0).unwrap();
+        let mut expected = before.state();
+        expected.health = 1999;
+        assert_eq!(target.mechanical_state(), expected);
+        assert_eq!(target.frames_clocked(), clock);
+        target.restore(&before).unwrap();
+        assert!(target.diagnostic_set_resources(1999, 20).is_err());
+        assert_eq!(target.snapshot().unwrap(), before);
+        assert_eq!(target.cartridge().unwrap()[MISSILES], 0);
+        for (health, missiles) in [(0, 0), (2000, 0), (1999, 21)] {
+            assert!(target.diagnostic_set_resources(health, missiles).is_err());
+            assert_eq!(target.snapshot().unwrap(), before);
+        }
+        target.machine.poke_wram(HEALTH_LOW, 0);
+        target.machine.poke_wram(HEALTH_HIGH, 0x20);
+        target.current_wram = target.machine.read_wram().unwrap();
+        target.observation.decoded.health = 2000;
+        let invalid = target.snapshot().unwrap();
+        assert!(target.diagnostic_set_resources(1999, 0).is_err());
+        assert_eq!(target.snapshot().unwrap(), invalid);
+    }
+
+    #[test]
+    fn resource_snapshot_guard_rejects_extra_missing_or_malformed_bytes() {
+        let mut target = resource_fixture();
+        let before = target.snapshot().unwrap().emulator_state;
+        target.diagnostic_set_resources(1999, 0).unwrap();
+        let after = target.snapshot().unwrap().emulator_state;
+        let changes = [(0x79, 0x99), (0, 0x19), (0, 0)];
+        assert!(only_resource_bytes_changed(&before, &after, &changes));
+        assert!(!only_resource_bytes_changed(&before, &before, &changes));
+        assert!(!only_resource_bytes_changed(
+            &before,
+            &after[..after.len() - 1],
+            &changes
+        ));
+        let mut wrong_address = after.clone();
+        let payload = resource_ram_payload(&before, false).unwrap();
+        wrong_address[payload + HEALTH_HIGH] = 0;
+        wrong_address[payload + HEALTH_HIGH + 1] = 0x19;
+        assert!(!only_resource_bytes_changed(
+            &before,
+            &wrong_address,
+            &changes
+        ));
+        let mut malformed = before.clone();
+        malformed[112] ^= 1;
+        assert!(resource_ram_payload(&malformed, false).is_none());
+    }
 
     #[test]
     fn the_default_terminal_policy_rejects_the_bcd_borrow_value() {

@@ -18,6 +18,16 @@ The Consonance backend uses the `consonance` feature and requires Linux/KVM
 and matching guest artifacts; `harmony search --package nes --backend
 consonance ROM` selects it through the shared CLI.
 
+`src/film.rs` renders a recorded tape to an H.264 MP4 with game audio: it
+streams RGB frames into FFmpeg, muxes the raw PCM track back in, and writes a
+four-times-faster copy beside the film. `smb-film`, `metroid-film` and
+`mm2-film` drive the same target the searcher drives, so the film is the
+recorded run rather than a re-derivation of it, and each needs `ffmpeg` on the
+path. `metroid-map-probe` and `mm2-energy-probe` replay a tape and print one
+line per action endpoint, for state the campaign report sums away: the map cell
+a Metroid route crossed, and the per-weapon Mega Man 2 meters behind the decoded
+sum.
+
 Campaign recordings use the current Dissonance schedule policy version 3 and
 bounded progress policy. Replay rejects recordings from superseded policy
 namespaces before constructing a replay target.

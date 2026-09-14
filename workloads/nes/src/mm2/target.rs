@@ -4,7 +4,7 @@ use std::{error::Error, io::Write, path::Path};
 
 use machine::{
     Machine, MachineError, SnapId, StopConditions, nes,
-    quicknes::{QUICKNES_AUDIO_CHANNELS, QUICKNES_AUDIO_SAMPLE_RATE, QuickNesMachine},
+    quicknes::{QUICKNES_AUDIO_CHANNELS, QUICKNES_AUDIO_SAMPLE_RATE, QuickNesMachine, VideoFrame},
 };
 use serde::{Deserialize, Serialize};
 
@@ -587,6 +587,31 @@ impl Mm2Target {
         let state = self.observation.decoded;
         state.weapons_obtained & !self.genesis_weapons != 0
             || state.stage > self.genesis_observation.decoded.stage
+    }
+
+    pub fn start_capturing(&mut self) {
+        self.machine.set_video_capture(true);
+        self.machine.set_audio_capture(true);
+    }
+
+    pub fn drain_frames(&mut self) -> Vec<VideoFrame> {
+        self.machine.take_video_frames()
+    }
+
+    pub fn drain_audio(&mut self) -> Vec<i16> {
+        self.machine.take_audio_samples()
+    }
+
+    pub fn diagnostic_weapon_energies(&self) -> Result<Vec<u8>, MachineError> {
+        let wram = self.machine.read_wram()?;
+        (WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES)
+            .map(|index| read_byte(&wram, index))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn frames_clocked(&self) -> u64 {
+        self.machine.now().0
     }
 
     #[must_use]

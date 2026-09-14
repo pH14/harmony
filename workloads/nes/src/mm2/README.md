@@ -48,6 +48,15 @@ same band, and a screen count cannot say which end of a shaft the archive sits
 at or which end the selector draws. Both read only cached active endpoints, so
 they are lower bounds where snapshots are missing.
 
+`mm2-film` replays a stage prefix and a searched tape to video, starting the
+capture at stage genesis: the capture buffers are bounded, and a chain prefix
+long enough to reach a castle stage would overflow them during construction.
+`mm2-energy-probe` prints the twelve weapon-energy bytes at each action
+endpoint, the last of which is the energy-tank count rather than a meter. The
+decoded state keeps only their sum, which cannot say whether the one weapon a
+wall needs still has ammunition. Both stop once a boss is down, because the
+target refuses actions from there.
+
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md).
 The source lineage and discarded search claims are listed in the
 [synthesis record](../../../../benchmarks/search/SYNTHESIS.md).

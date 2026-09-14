@@ -91,6 +91,25 @@ for paired search comparisons and full small-campaign replay. `metroid-campaign`
 also exposes the native experiment command. The source lineage is documented in
 [the synthesis record](../../../../benchmarks/search/SYNTHESIS.md).
 
+`metroid-film` replays a recorded tape to video. A tape carries no policy
+header and the recorded tapes predate the BCD-borrow predicate, so it defaults
+to the historical one and takes `--terminal-policy` to name another.
+`--set-resources HEALTH,MISSILES@ACTIONS` repeats a bounded resource
+intervention at that action count, so an input searched from an intervened root
+plays back as the searcher saw it. `MetroidTarget::diagnostic_set_resources`
+writes only the two health bytes and the missile count, at a paused live
+boundary, within the endpoint's own earned capacities. It verifies that no other
+RAM byte, mechanical field, serialized byte or the frame clock moved, and rolls
+both regions back when any check fails. It is a standalone diagnostic, never a
+search action and never a generated witness, so a replay must record and repeat
+it. The intervention point is validated before any output file exists, and a run
+that ends before the point is reported as the unintervened run.
+
+`metroid-map-probe` replays a tape and prints the map cell and resources at each
+action endpoint. A campaign report names the areas a run entered and counts the
+map cells it observed; neither says which cells a route crossed, so neither can
+say which neighbour of a reached cell was never opened.
+
 ## Named milestone evaluation
 
 `workload_diagnostics.named_progress` reports Morph Ball, Bombs, Long Beam,
