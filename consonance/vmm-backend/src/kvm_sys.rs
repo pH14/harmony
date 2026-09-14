@@ -1125,6 +1125,86 @@ mod xsave_diagnostic {
     }
 
     #[test]
+    #[ignore = "requires Linux KVM with AVX and a fresh XSAVE_MXCSR_REPORT_DIR"]
+    fn ymm_without_sse_uabi_mxcsr_bytes_survive_capture_and_restore() {
+        assert!(std::env::var_os("XSAVE_ENTRY_WARMUP").is_none());
+        let root =
+            PathBuf::from(std::env::var_os("XSAVE_MXCSR_REPORT_DIR").expect("report directory"));
+        fs::create_dir(&root).unwrap();
+        let program = if std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some() {
+            [0x0f, 0xae, 0x1c, 0x25, 0x00, 0x20, 0x00, 0x00, 0xf4]
+        } else {
+            [0x67, 0x0f, 0xae, 0x1d, 0x00, 0x20, 0x00, 0x00, 0xf4]
+        };
+        let mut original = entry_fixture(&program, 0, 7);
+        let mut state = original.backend.save().unwrap();
+        state.xsave[XSTATE_BV].copy_from_slice(&4u64.to_le_bytes());
+        state.xsave[SSE_MXCSR].copy_from_slice(&0x3f80u32.to_le_bytes());
+        state.xsave[576] = 0x5a;
+        state.xsave_restore_bv = Some(4);
+        original.backend.restore(&state).unwrap();
+        let saved = retain_entry(&mut original, &root, "captured");
+        assert_eq!(saved.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
+        let continued = entry_endpoint(&mut original, &root, "continued");
+        let mut cold = entry_fixture(&program, 0, 7);
+        restore_entry(&mut cold, &saved);
+        let restored = entry_endpoint(&mut cold, &root, "restored");
+        assert_eq!(restored.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
+        assert_eq!(continued.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
+        fs::write(
+            root.join("guest-mxcsr.txt"),
+            format!(
+                "continued={:02x?} restored={:02x?}\n",
+                &continued.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + 4],
+                &restored.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + 4]
+            ),
+        )
+        .unwrap();
+        assert_eq!(continued.ram, restored.ram);
+    }
+
+    #[test]
+    #[ignore = "requires Linux KVM AVX, long mode and a fresh XSAVE_MXCSR_REPORT_DIR"]
+    fn natural_avx_mxcsr_survives_capture_and_restore() {
+        assert!(std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some());
+        assert!(std::env::var_os("XSAVE_ENTRY_WARMUP").is_none());
+        let root =
+            PathBuf::from(std::env::var_os("XSAVE_MXCSR_REPORT_DIR").expect("report directory"));
+        fs::create_dir(&root).unwrap();
+        let program = [
+            0xc5, 0xfd, 0x76, 0xc0, 0xc5, 0xf0, 0x57, 0xc9, 0xc4, 0xe3, 0x7d, 0x18, 0xc1, 0x00,
+            0x0f, 0xae, 0x14, 0x25, 0x1c, 0x30, 0x00, 0x00, 0xe6, 0x80, 0x0f, 0xae, 0x1c, 0x25,
+            0x00, 0x20, 0x00, 0x00, 0xf4,
+        ];
+        let mut original = entry_fixture(&program, 0, 7);
+        original.ram.as_mut_bytes()[0x301c..0x3020].copy_from_slice(&0x3f80u32.to_le_bytes());
+        let exit = original.backend.run().unwrap();
+        assert!(matches!(
+            exit,
+            Exit::Arch(X86Exit::Io {
+                port: 0x80,
+                size: 1,
+                write: Some(0),
+            })
+        ));
+        original.backend.prepare_snapshot().unwrap();
+        let saved = retain_entry(&mut original, &root, "captured");
+        assert_eq!(saved.state.regs.rip, CODE_GPA as u64 + 24);
+        assert_eq!(saved.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
+        let continued = entry_endpoint(&mut original, &root, "continued");
+        let mut cold = entry_fixture(&program, 0, 7);
+        restore_entry(&mut cold, &saved);
+        let restored = entry_endpoint(&mut cold, &root, "restored");
+        for endpoint in [&continued, &restored] {
+            assert_eq!(
+                endpoint.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + 4],
+                0x3f80u32.to_le_bytes()
+            );
+        }
+        assert_eq!(continued.ram, restored.ram);
+    }
+
+    #[test]
     #[ignore = "bounded raw XSAVE entry differential; KVM and XSAVE_ENTRY_REPORT_DIR required"]
     fn snapshot_entry_restores_match_uninterrupted_execution() {
         let root = PathBuf::from(

@@ -180,7 +180,9 @@ pub fn canonicalize_xsave(image: &mut [u8]) {
         bv &= !1;
     }
     if bv & 2 == 0 {
-        image[SSE_MXCSR].copy_from_slice(&SSE_INIT_MXCSR);
+        if bv & 4 == 0 {
+            image[SSE_MXCSR].copy_from_slice(&SSE_INIT_MXCSR);
+        }
         image[SSE_XMM].fill(0);
     } else if sse_init(image) {
         bv &= !2;
@@ -296,6 +298,24 @@ mod tests {
         assert_eq!(canonicalize_xsave_with_restore_bv(&mut image), Some(0x3));
         assert_eq!(image, before);
         assert_eq!(restore_xsave_image(&image, Some(0x3)).unwrap(), before);
+    }
+
+    #[test]
+    fn ymm_presence_preserves_mxcsr_without_sse_presence() {
+        let mut image = init_image(4);
+        image[SSE_MXCSR].copy_from_slice(&0x3f80u32.to_le_bytes());
+        image[576] = 0x5a;
+        let original = image.clone();
+        let restore_bv = canonicalize_xsave_with_restore_bv(&mut image);
+        assert_eq!(restore_bv, Some(4));
+        assert_eq!(image, original);
+        assert_eq!(restore_xsave_image(&image, restore_bv).unwrap(), original);
+        canonicalize_xsave(&mut image);
+        assert_eq!(image, original);
+        assert!(matches!(
+            restore_xsave_image(&image, Some(0)),
+            Err(BackendError::InvalidState)
+        ));
     }
 
     #[test]

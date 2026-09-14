@@ -264,3 +264,27 @@ The debug exit remains outside modeled exit counts and virtual time; an
 unexpected debug exit fails. The diagnostic stores hit addresses only on the
 host and does not rewrite guest registers or RAM. Default builds omit this
 interface and dispatch branch.
+
+Host standard-XSAVE normalization treats MXCSR separately from XMM registers:
+Linux's KVM UABI materializes MXCSR when either SSE or YMM is present. With
+SSE absent and YMM present, XMM bytes normalize to init while nondefault MXCSR
+is preserved. The original restore bitmap remains separately bound. This does
+not assert that raw guest XSAVE buffers with both bits absent are returned
+unchanged by the host UABI.
+
+The ignored `ymm_without_sse_uabi_mxcsr_bytes_survive_capture_and_restore` KVM regression
+round trips a valid YMM-present/SSE-absent state with MXCSR=0x3f80, captures raw
+KVM images, checks capture/restore byte preservation, and compares guest STMXCSR
+after continued and cold-restored runs. The guest value is reported, not assumed
+to match the imported MXCSR: a host may retain nondefault bytes in its KVM UABI
+yet initialize live MXCSR on guest entry when SSE presence is absent.
+It requires AVX, a fresh `XSAVE_MXCSR_REPORT_DIR`, and no XSAVE_ENTRY_WARMUP
+setting. `XSAVE_ENTRY_LONG_MODE=1` selects the production-mode SIB-addressed
+STMXCSR instruction; otherwise it uses the fixture's 16-bit real mode. This is a valid-state KVM round trip,
+not a claim that every host naturally emits that presence bitmap.
+
+`natural_avx_mxcsr_survives_capture_and_restore` requires long mode. The guest
+sets nonzero YMM upper lanes with zero XMM lanes, loads MXCSR=0x3f80, and stops
+at completed port I/O before capture. Both continued and cold-restored STMXCSR
+results must equal 0x3f80. The observed raw presence bitmap is retained rather
+than asserted to exclude SSE on every host.
