@@ -38,6 +38,15 @@ process, and owns signals and the final VM terminal. PostgreSQL benchmark
 variants share `postgres-workload.sh`; the campaign, ordering, and UUID
 supervisors remain separate payloads so their fault behavior is preserved.
 
+The x86 PostgreSQL ledger fixture uses PostgreSQL's built-in UUID generation
+and disables JIT. It omits the unused uuid-ossp, XML2, SELinux and LLVM JIT
+providers, their extension installation files, and LLVM bitcode. It retains
+PL/pgSQL for the template databases created by `initdb`. The image does not
+create an `ld.so.cache`; its recorded glibc loader resolves libraries through
+its default directories. Adding an extension or provider requires rebuilding
+and reviewing the complete ELF dependency inventory before qualification.
+
+
 The Docker and K3s recipes retain nested container software and their
 application setup. K3s also builds pinned iptables 1.8.11 from source with a
 musl static compiler and packages the `iptables`, `iptables-restore`, and

@@ -2,6 +2,9 @@
 name: Diagnostic / G1 kernel XSAVE qualification
 on:
   workflow_dispatch: {}
+  push:
+    branches: [codex/consolidate-stopped-snapshots]
+    paths: [".github/workflows/xsave-kernel-qualification.yml"]
 permissions:
   contents: read
 concurrency:

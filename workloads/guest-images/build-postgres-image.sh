@@ -23,7 +23,7 @@ cd "$repo_root/consonance/harmony-linux/linux"
 . "$workload_dir/versions.lock"
 
 require_linux_amd64
-require_tools cc make bzip2 dpkg-deb python3 setpriv ldd ldconfig
+require_tools cc make bzip2 dpkg-deb python3 setpriv ldd
 
 if [ "$(id -u)" != "0" ]; then
     echo "FAIL: build-postgres-image.sh must run as root (the OCI image preserves uid-70 ownership)." >&2
@@ -112,6 +112,16 @@ cp -a "$PG_STAGE/usr/lib/postgresql/$PGV" "$PGROOT/usr/lib/postgresql/"
 cp -a "$PG_STAGE/usr/share/postgresql/$PGV" "$PGROOT/usr/share/postgresql/"
 cp -a "$PG_STAGE/usr/lib/x86_64-linux-gnu/." "$PGROOT/usr/lib/x86_64-linux-gnu/" 2>/dev/null || true
 rm -rf "$PGROOT/usr/lib/postgresql/$PGV/lib/bitcode"   # jit=off → no LLVM bitcode
+# The controlled ledger workload uses core UUID generation and no optional
+# providers. Keep plpgsql, which initdb installs in the template databases.
+for provider in uuid-ossp sepgsql pgxml llvmjit; do
+    rm -f "$PGROOT/usr/lib/postgresql/$PGV/lib/$provider.so"
+done
+rm -f "$PGROOT/usr/lib/postgresql/$PGV/lib/llvmjit_types.bc"
+for extension in uuid-ossp xml2; do
+    rm -f "$PGROOT/usr/share/postgresql/$PGV/extension/$extension.control" \
+        "$PGROOT/usr/share/postgresql/$PGV/extension/$extension"--*.sql
+done
 
 # Debian's postgres is built --with-system-tzdata: ship the zoneinfo DB. glibc's
 # C.UTF-8 is file-backed here (not built-in): ship the locale archive + dir.
@@ -125,7 +135,8 @@ fi
 printf 'root:x:0:0:root:/root:/bin/sh\npostgres:x:%s:%s:postgres:/var/lib/postgresql:/bin/sh\n' "$PG_UID" "$PG_UID" >"$PGROOT/etc/passwd"
 printf 'root:x:0:\npostgres:x:%s:\n' "$PG_UID" >"$PGROOT/etc/group"
 printf 'passwd: files\ngroup: files\n' >"$PGROOT/etc/nsswitch.conf"
-ldconfig -r "$PGROOT" 2>/dev/null || true   # ld.so.cache for deterministic lib resolution
+# Use the recorded loader's default directories, without a host-generated cache.
+rm -f "$PGROOT/etc/ld.so.cache"
 
 # --- 3. bake PGDATA: initdb ONCE at build time into the OCI rootfs ------------
 # The data directory keeps initdb's 0700 + uid-70 (postgres requires both).
