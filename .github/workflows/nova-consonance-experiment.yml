@@ -262,6 +262,18 @@ jobs:
             cat nova-consonance-report/campaign-summary.json
             printf '\140\140\140\n'
           } >>"${GITHUB_STEP_SUMMARY}"
+      - name: Retain exact NES image for failed admission or execution review
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: nova-consonance-campaign-${{ github.run_id }}-${{ matrix.replica }}-nes-review
+          path: |
+            consonance/harmony-linux/build/nes.oci
+            consonance/harmony-linux/build/nes.oci.sha256
+            consonance/harmony-linux/build/nes-build-provenance
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -739,6 +751,18 @@ jobs:
           if summary.get("best_input_actions", 0) <= 0:
               raise SystemExit("Consonance Nova smoke produced no action input")
           PY
+      - name: Retain exact NES image for failed admission or execution review
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: nova-consonance-pr-smoke-${{ github.run_id }}-nes-review
+          path: |
+            consonance/harmony-linux/build/nes.oci
+            consonance/harmony-linux/build/nes.oci.sha256
+            consonance/harmony-linux/build/nes-build-provenance
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         if: always()
         with:

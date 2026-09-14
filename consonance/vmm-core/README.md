@@ -116,7 +116,9 @@ lands on its final access; deferred hash consumers use
 `Vmm::arm_checkpoint_hash_preimage` enables one bounded retained record for
 the most recent synchronous checkpoint. The record returned by
 `take_checkpoint_hash_preimage` contains the completed trace event index, the
-published state hash, and the exact state-blob suffix used to compute it. It
+published state hash, exact state-blob suffix, RAM length, and the SHA256 digest
+of the `MEM\0 || length_le64 || RAM` prefix. The memory digest reuses a cloned
+hash context before appending the suffix; it adds no RAM traversal. It
 reuses the checkpoint's existing backend save and does not copy guest RAM or
 perform another CPU read; calling the arm method again clears the prior
 record. The feature is disabled by default and captures only completed
@@ -197,3 +199,17 @@ one hit for each variant, and retains complete unmasked shutdown RAM and
 modeled-state artifacts under `G1_REPORT_DIR`. Addresses must be verified
 against the exact tested vmlinux and bzImage hashes. This seam is for native
 qualification and is absent from the default interface.
+
+The ordinary sequential `x2_same_seed_boots_one_normalized_log` test caches boot0
+checkpoint suffixes and memory-prefix digests (at most32MiB/8192 records). With
+`X2_ORIGINAL_WITNESS_REPORT` naming a fresh directory, its first later checkpoint
+mismatch retains actual RAM once plus both exact suffixes and event/hash metadata.
+The observer drains completed checkpoints before handling terminal returns and
+does not recapture CPU state or advance the guest for evidence. The original
+RAM is unavailable; equal memory digests establish equivalence only at digest
+strength. With matching digests, the retained actual RAM must reconstruct both
+the actual hash and the original hash using their respective suffixes. Event
+misalignment or differing memory prevents suffix-only attribution. Full suffix
+bytes remain available for independent field-level inspection; suffix-only does
+not itself mean restore-bitmap-only. The workflow retains this original witness
+separately from any fresh paired reproduction. No retry changes acceptance.

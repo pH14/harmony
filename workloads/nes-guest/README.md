@@ -74,3 +74,13 @@ must audit its linked executable, including IFUNC and internal save paths;
 static linking alone does not establish the proposed instruction admission
 contract. Exact executable inspection remains outstanding for the current
 OCI build.
+
+The builder also retains `nes-build-provenance` beside the OCI layout, outside
+the guest image. It contains the existing BusyBox unstripped companion and
+configuration/link records when available, source-file hashes, toolchain
+versions, and hashes of the packaged executables and QuickNES archive. The
+host compiler's libc archive is recorded as a candidate; the retained link
+record determines the actual linkage. Nova's two A–E jobs upload this directory
+and the exact ROM-free OCI layout only on failure, for separate admission
+review. These diagnostics neither approve changed bytes nor retain a ROM or
+snapshot RAM.

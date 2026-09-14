@@ -84,6 +84,7 @@ jobs:
         run: cargo test --locked --release -p vmm-core --test x86_kvm_linux_virtual_time --no-run
       - name: Compare two complete same-seed Linux execution logs
         env:
+          X2_ORIGINAL_WITNESS_REPORT: ${{ github.workspace }}/linux-consistency-report/original-sequential-witness
           X2_BOOTS: "2"
           X2_WALL_SECS: "55"
         run: |

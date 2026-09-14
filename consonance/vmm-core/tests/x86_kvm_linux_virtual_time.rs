@@ -99,6 +99,15 @@ fn run_boot_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(
     stream: bool,
     max_steps: u64,
 ) -> BootRun {
+    run_boot_observed(vmm, stream, max_steps, &mut |_| {})
+}
+
+fn run_boot_observed<B: vmm_backend::Backend<A = vmm_backend::X86>>(
+    vmm: &mut Vmm<B>,
+    stream: bool,
+    max_steps: u64,
+    observer: &mut impl FnMut(&mut Vmm<B>),
+) -> BootRun {
     let wall_budget = Duration::from_secs(env_u64("X2_WALL_SECS", DEFAULT_WALL_SECS));
     #[allow(clippy::disallowed_methods)]
     let start = Instant::now();
@@ -112,7 +121,11 @@ fn run_boot_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(
     let mut calibration_emitted = 0usize;
     let stderr = std::io::stderr();
     while steps < max_steps {
-        match vmm.step() {
+        let step = vmm.step();
+        if step.is_ok() {
+            observer(vmm);
+        }
+        match step {
             Ok(Step::Continued) => {}
             Ok(Step::Terminal(r)) => {
                 reason = Some(r);
@@ -203,10 +216,179 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn boot_once(kernel: &[u8], initramfs: &[u8], stream: bool) -> BootRun {
+fn boot_once(
+    kernel: &[u8],
+    initramfs: &[u8],
+    stream: bool,
+    boot: u64,
+    witness: &mut OriginalWitness,
+) -> BootRun {
     let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
         .expect("boot_linux_stock_virtual_time");
-    run_boot(&mut vmm, stream)
+    vmm.arm_checkpoint_hash_preimage();
+    run_boot_observed(
+        &mut vmm,
+        stream,
+        env_u64("X2_MAX_STEPS", DEFAULT_MAX_STEPS),
+        &mut |vmm| witness.observe(vmm, boot),
+    )
+}
+
+#[derive(Clone)]
+struct WitnessRecord {
+    preimage: vmm_core::vmm::CheckpointHashPreimage,
+    context: NormalizedEvent,
+}
+
+struct OriginalWitness {
+    root: Option<PathBuf>,
+    reference: std::collections::BTreeMap<u64, WitnessRecord>,
+    retained: bool,
+    bytes: usize,
+}
+
+impl OriginalWitness {
+    fn new(root: Option<PathBuf>) -> Self {
+        if let Some(root) = &root {
+            std::fs::create_dir(root).expect("fresh original witness directory");
+        }
+        Self {
+            root,
+            reference: Default::default(),
+            retained: false,
+            bytes: 0,
+        }
+    }
+
+    fn observe<B: vmm_backend::Backend<A = vmm_backend::X86>>(
+        &mut self,
+        vmm: &mut Vmm<B>,
+        boot: u64,
+    ) {
+        let Some(preimage) = vmm.take_checkpoint_hash_preimage() else {
+            return;
+        };
+        let context = vmm
+            .virtual_time_trace()
+            .unwrap()
+            .normalized_log()
+            .events
+            .iter()
+            .find(|event| event.event_index == preimage.event_index)
+            .expect("checkpoint event exists")
+            .clone();
+        self.record(boot, preimage, context, vmm.guest_memory());
+    }
+
+    fn record(
+        &mut self,
+        boot: u64,
+        preimage: vmm_core::vmm::CheckpointHashPreimage,
+        context: NormalizedEvent,
+        memory: &[u8],
+    ) {
+        assert_eq!(context.event_index, preimage.event_index);
+        assert_eq!(context.state_hash, Some(preimage.state_hash));
+        if boot == 0 {
+            self.bytes += preimage.state_blob_suffix.len();
+            assert!(
+                self.bytes <= 32 * 1024 * 1024 && self.reference.len() < 8192,
+                "original witness reference limit exceeded"
+            );
+            assert!(
+                self.reference
+                    .insert(preimage.event_index, WitnessRecord { preimage, context })
+                    .is_none()
+            );
+            return;
+        }
+        if self.retained {
+            return;
+        }
+        let reference = self.reference.get(&preimage.event_index);
+        if reference.is_some_and(|record| record.context == context) {
+            return;
+        }
+        self.retained = true;
+        let Some(root) = &self.root else {
+            eprintln!(
+                "[x2] original checkpoint witness unavailable: X2_ORIGINAL_WITNESS_REPORT unset"
+            );
+            return;
+        };
+        retain_original_witness(root, boot, reference, &preimage, &context, memory)
+            .expect("retain original sequential witness");
+    }
+}
+
+fn memory_prefix(memory: &[u8]) -> sha2::Sha256 {
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"MEM\0");
+    hash.update((memory.len() as u64).to_le_bytes());
+    hash.update(memory);
+    hash
+}
+
+fn retain_original_witness(
+    root: &std::path::Path,
+    boot: u64,
+    reference: Option<&WitnessRecord>,
+    actual: &vmm_core::vmm::CheckpointHashPreimage,
+    context: &NormalizedEvent,
+    memory: &[u8],
+) -> Result<(), String> {
+    use sha2::Digest;
+    let prefix = memory_prefix(memory);
+    let prefix_digest: [u8; 32] = prefix.clone().finalize().into();
+    if actual.memory_length != memory.len() || prefix_digest != actual.memory_prefix_hash {
+        return Err("actual stopped RAM differs from retained checkpoint memory digest".into());
+    }
+    let reconstruct = |suffix: &[u8]| -> [u8; 32] {
+        let mut hash = prefix.clone();
+        hash.update(suffix);
+        hash.finalize().into()
+    };
+    if reconstruct(&actual.state_blob_suffix) != actual.state_hash {
+        return Err("actual checkpoint hash reconstruction failed".into());
+    }
+    let mut report = format!(
+        "kind=original-sequential-witness\nboot={boot}\nevent={}\noriginal_ram=unavailable\nram_equivalence=cryptographic-digest-strength-only\nactual_state_hash={}\nactual_memory_prefix_hash={}\nmemory_bytes={}\nactual_event={context:?}\n",
+        actual.event_index,
+        hex(&actual.state_hash),
+        hex(&prefix_digest),
+        memory.len()
+    );
+    if let Some(reference) = reference {
+        let mut left = reference.context.clone();
+        left.state_hash = None;
+        let mut right = context.clone();
+        right.state_hash = None;
+        let aligned = left == right;
+        let same_memory = reference.preimage.memory_length == memory.len()
+            && reference.preimage.memory_prefix_hash == prefix_digest;
+        let original_reconstructed = same_memory
+            && reconstruct(&reference.preimage.state_blob_suffix) == reference.preimage.state_hash;
+        if same_memory && !original_reconstructed {
+            return Err("original hash reconstruction failed with matching memory digest".into());
+        }
+        writeln!(report, "event_context_equal={aligned}\nmemory_digest_equal={same_memory}\noriginal_hash_reconstructed={original_reconstructed}\noriginal_state_hash={}\noriginal_memory_prefix_hash={}\noriginal_event={:?}\nsuffix_only_attribution={}\n", hex(&reference.preimage.state_hash), hex(&reference.preimage.memory_prefix_hash), reference.context, aligned && same_memory && original_reconstructed).unwrap();
+        std::fs::write(
+            root.join("original-state-suffix.bin"),
+            &reference.preimage.state_blob_suffix,
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        report.push_str("event_context_equal=false\noriginal_checkpoint=unavailable\nsuffix_only_attribution=false\n");
+    }
+    std::fs::write(root.join("actual-memory.bin"), memory).map_err(|e| e.to_string())?;
+    std::fs::write(
+        root.join("actual-state-suffix.bin"),
+        &actual.state_blob_suffix,
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::write(root.join("report.txt"), report).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn report_run(tag: &str, run: &BootRun) {
@@ -424,7 +606,8 @@ fn x2_same_seed_boots_one_normalized_log() {
     assert!(boots >= 2, "determinism requires at least two boots");
     eprintln!("[x2] cmdline: {CMDLINE}");
 
-    let reference = boot_once(&kernel, &initramfs, true);
+    let mut witness = OriginalWitness::new(report_root("X2_ORIGINAL_WITNESS_REPORT"));
+    let reference = boot_once(&kernel, &initramfs, true, 0, &mut witness);
     report_run("boot 0", &reference);
     assert!(
         reference.clean()
@@ -441,7 +624,7 @@ fn x2_same_seed_boots_one_normalized_log() {
 
     let mut divergences = Vec::new();
     for i in 1..boots {
-        let run = boot_once(&kernel, &initramfs, false);
+        let run = boot_once(&kernel, &initramfs, false, i, &mut witness);
         report_run(&format!("boot {i}"), &run);
         assert!(
             run.clean()
@@ -1208,5 +1391,144 @@ fn x2_paired_boots_retain_first_checkpoint_difference() {
                 panic!("paired boots reached different terminal/checkpoint boundaries");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod original_witness_tests {
+    use super::*;
+    use sha2::Digest;
+
+    fn record(memory: &[u8], suffix: &[u8], event_index: u64) -> WitnessRecord {
+        let prefix = memory_prefix(memory);
+        let memory_prefix_hash = prefix.clone().finalize().into();
+        let mut hash = prefix;
+        hash.update(suffix);
+        let state_hash = hash.finalize().into();
+        WitnessRecord {
+            preimage: vmm_core::vmm::CheckpointHashPreimage {
+                event_index,
+                state_hash,
+                state_blob_suffix: suffix.to_vec(),
+                memory_prefix_hash,
+                memory_length: memory.len(),
+            },
+            context: NormalizedEvent {
+                event_index,
+                class: vmm_core::virtual_time::NormalizedEventClass::Terminal,
+                payload_digest: [0; 32],
+                vns_after: 7,
+                interrupts: Vec::new(),
+                state_hash: Some(state_hash),
+            },
+        }
+    }
+
+    #[test]
+    fn original_observer_collects_the_terminal_checkpoint_before_break() {
+        use vmm_backend::{
+            Backend, CommonExit, CpuidModel, Exit, MockBackend, MsrFilter, X86Exit, X86Policy,
+        };
+        let mut exits = (0..255)
+            .map(|value| {
+                Exit::Arch(X86Exit::Io {
+                    port: 0x0ca2,
+                    size: 4,
+                    write: Some(value),
+                })
+            })
+            .collect::<Vec<_>>();
+        exits.push(Exit::Common(CommonExit::Shutdown));
+        let mut backend = MockBackend::with_exits(exits);
+        backend
+            .set_policy(&X86Policy {
+                cpuid: CpuidModel::default(),
+                msr_filter: MsrFilter::default(),
+            })
+            .unwrap();
+        let mut vmm = Vmm::new(backend, vmm_core::vmm::GuestRam::new(0x2000).unwrap());
+        vmm.wire_vtime(
+            vmm_core::vmm::VtimeWiring::new_virtual_time(
+                vmm_core::vendor::x86::contract_vclock_config(),
+                7,
+            )
+            .unwrap(),
+        );
+        vmm.arm_checkpoint_hash_preimage();
+        let mut witness = OriginalWitness::new(None);
+        let run = run_boot_observed(&mut vmm, false, 256, &mut |vmm| witness.observe(vmm, 0));
+        assert_eq!(run.reason, Some(TerminalReason::Shutdown));
+        assert_eq!(witness.reference.len(), 1);
+        assert_eq!(
+            witness.reference[&255].preimage.state_hash,
+            run.log.events[255].state_hash.unwrap()
+        );
+    }
+
+    #[test]
+    fn same_memory_reconstructs_original_hash_and_retains_only_first_witness() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("witness");
+        let mut witness = OriginalWitness::new(Some(root.clone()));
+        let original = record(b"memory", b"VCPU-XSRB-0", 255);
+        witness.record(0, original.preimage, original.context, b"memory");
+        let actual = record(b"memory", b"VCPU-XSRB-2", 255);
+        witness.record(1, actual.preimage, actual.context, b"memory");
+        let report = std::fs::read_to_string(root.join("report.txt")).unwrap();
+        assert!(report.contains("original_hash_reconstructed=true"));
+        assert!(report.contains("suffix_only_attribution=true"));
+        assert!(report.contains("original_ram=unavailable"));
+        let later = record(b"different", b"other", 255);
+        witness.record(2, later.preimage, later.context, b"different");
+        assert_eq!(
+            std::fs::read(root.join("actual-memory.bin")).unwrap(),
+            b"memory"
+        );
+        assert_eq!(std::fs::read_dir(root).unwrap().count(), 4);
+    }
+
+    #[test]
+    fn different_memory_and_unaligned_event_refuse_suffix_only_attribution() {
+        for (memory, index) in [(&b"changed"[..], 255), (&b"memory"[..], 511)] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("witness");
+            let mut witness = OriginalWitness::new(Some(root.clone()));
+            let original = record(b"memory", b"original", 255);
+            witness.record(0, original.preimage, original.context, b"memory");
+            let actual = record(memory, b"actual", index);
+            witness.record(1, actual.preimage, actual.context, memory);
+            assert!(
+                std::fs::read_to_string(root.join("report.txt"))
+                    .unwrap()
+                    .contains("suffix_only_attribution=false")
+            );
+        }
+    }
+
+    #[test]
+    fn mutated_stopped_ram_is_rejected_before_any_artifact_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let actual = record(b"original", b"suffix", 255);
+        assert!(
+            retain_original_witness(
+                temp.path(),
+                1,
+                None,
+                &actual.preimage,
+                &actual.context,
+                b"changed"
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "original witness reference limit exceeded")]
+    fn reference_cache_limit_is_explicit() {
+        let mut witness = OriginalWitness::new(None);
+        witness.bytes = 32 * 1024 * 1024;
+        let original = record(b"memory", b"suffix", 255);
+        witness.record(0, original.preimage, original.context, b"memory");
     }
 }

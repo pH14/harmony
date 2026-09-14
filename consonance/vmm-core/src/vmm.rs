@@ -110,7 +110,11 @@ pub struct CheckpointHashPreimage {
     pub event_index: u64,
     pub state_hash: [u8; 32],
     pub state_blob_suffix: Vec<u8>,
+    pub memory_prefix_hash: [u8; 32],
+    pub memory_length: usize,
 }
+
+type StateHashPreimage = ([u8; 32], Vec<u8>, [u8; 32]);
 
 pub enum RamBacking {
     Owned(GuestRam),
@@ -1036,12 +1040,14 @@ where
                 *checkpoint_due && next.is_none(),
                 self.deferred_virtual_time_checkpoints,
             ) {
-                let (hash, suffix) = self.state_hash_preimage()?;
+                let (hash, suffix, memory_prefix_hash) = self.state_hash_preimage()?;
                 if self.checkpoint_hash_preimage_armed {
                     self.checkpoint_hash_preimage = Some(CheckpointHashPreimage {
                         event_index,
                         state_hash: hash,
                         state_blob_suffix: suffix,
+                        memory_prefix_hash,
+                        memory_length: self.ram.as_bytes().len(),
                     });
                 }
                 Some(hash)
@@ -1172,17 +1178,18 @@ where
     }
 
     pub fn state_hash(&self) -> Result<[u8; 32], VmmError> {
-        self.state_hash_preimage().map(|(hash, _)| hash)
+        self.state_hash_preimage().map(|(hash, _, _)| hash)
     }
 
-    fn state_hash_preimage(&self) -> Result<([u8; 32], Vec<u8>), VmmError> {
+    fn state_hash_preimage(&self) -> Result<StateHashPreimage, VmmError> {
         let mut hasher = Sha256::new();
         hasher.update(b"MEM\0");
         hasher.update((self.ram.as_bytes().len() as u64).to_le_bytes());
         hasher.update(self.ram.as_bytes());
+        let memory_prefix_hash = hasher.clone().finalize().into();
         let suffix = self.state_blob_suffix()?;
         hasher.update(&suffix);
-        Ok((hasher.finalize().into(), suffix))
+        Ok((hasher.finalize().into(), suffix, memory_prefix_hash))
     }
 
     pub fn state_components(&self) -> Vec<(&'static str, [u8; 32])> {
@@ -6270,6 +6277,11 @@ mod tests {
         expected.update(b"MEM\0");
         expected.update((armed.guest_memory().len() as u64).to_le_bytes());
         expected.update(armed.guest_memory());
+        assert_eq!(retained.memory_length, armed.guest_memory().len());
+        assert_eq!(
+            retained.memory_prefix_hash,
+            <[u8; 32]>::from(expected.clone().finalize())
+        );
         expected.update(&retained.state_blob_suffix);
         let expected: [u8; 32] = expected.finalize().into();
         assert_eq!(retained.state_hash, expected);
@@ -6294,6 +6306,35 @@ mod tests {
         }
         assert_eq!(disabled.backend.save_calls.get(), 1);
         assert!(disabled.take_checkpoint_hash_preimage().is_none());
+    }
+
+    #[test]
+    fn terminal_checkpoint_retains_memory_digest_before_consumer_stops() {
+        let mut exits = (0..255).map(report_out).collect::<Vec<_>>();
+        exits.push(Exit::Common(CommonExit::Shutdown));
+        let mut vmm = Vmm::new(configured_mock(exits), GuestRam::new(0x2000).unwrap());
+        vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 7).unwrap());
+        vmm.arm_checkpoint_hash_preimage();
+        for _ in 0..255 {
+            assert_eq!(vmm.step().unwrap(), Step::Continued);
+        }
+        assert_eq!(
+            vmm.step().unwrap(),
+            Step::Terminal(TerminalReason::Shutdown)
+        );
+        let retained = vmm
+            .take_checkpoint_hash_preimage()
+            .expect("terminal checkpoint retained");
+        assert_eq!(retained.event_index, 255);
+        assert_eq!(retained.memory_length, vmm.guest_memory().len());
+        let mut prefix = Sha256::new();
+        prefix.update(b"MEM\0");
+        prefix.update((vmm.guest_memory().len() as u64).to_le_bytes());
+        prefix.update(vmm.guest_memory());
+        assert_eq!(
+            retained.memory_prefix_hash,
+            <[u8; 32]>::from(prefix.finalize())
+        );
     }
 
     #[test]
