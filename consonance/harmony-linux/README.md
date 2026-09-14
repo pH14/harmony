@@ -122,8 +122,7 @@ ABI header rewriting need separate treatment. Disabling local interrupts alone
 does not settle the LBR/NMI path or fault-safe user-memory writes. Final guest
 configuration and executable disassembly must bind the audit to shipped bytes.
 
-The canonical x86 NES build currently uses static GNU libc; static linking
-alone does not establish the absence of internal XSAVE or IFUNC save paths.
-The current image pipeline does not yet enforce the proposed full dependency
+Static linking alone does not establish the absence of internal XSAVE or
+IFUNC save paths. The current image pipeline does not yet enforce the proposed full dependency
 instruction admission, eager-binding, or generated-code policy. Source review
 and synthetic success cannot substitute for those artifact-level checks.

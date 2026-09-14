@@ -68,3 +68,9 @@ and the pinned Nova ROM. It consumes these four inputs through the commands
 in `workloads/tools/README.md`. There is no workload-specific kernel profile
 or Nova initramfs; the oracle prepares the workload through the same OCI
 assembly used by the execution package.
+
+The canonical x86 agent uses static GNU libc. Snapshot XSAVE qualification
+must audit its linked executable, including IFUNC and internal save paths;
+static linking alone does not establish the proposed instruction admission
+contract. Exact executable inspection remains outstanding for the current
+OCI build.
