@@ -16,7 +16,7 @@ use crate::target::{FaultAction, FaultObservations};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
-pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_lifecycle_events_v5";
+pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_lifecycle_events_v6";
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_guest_ticks";
 pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
@@ -28,11 +28,11 @@ pub struct FaultArchiveGroup {
     hooks_running: u64,
     alive: u64,
     parked: u64,
-    restarts: u64,
     event_ready: u64,
     event_kill_fires: u64,
     event_park_fires: u64,
     checks_finished: u64,
+    checks_running: bool,
     workload_running: bool,
 }
 
@@ -43,11 +43,11 @@ pub struct FaultArchiveKey {
     pub hooks_running: u64,
     pub alive: u64,
     pub parked: u64,
-    pub restarts: u64,
     pub event_ready: u64,
     pub event_kill_fires: u64,
     pub event_park_fires: u64,
     pub checks_finished: u64,
+    pub checks_running: bool,
     pub workload_running: bool,
 }
 
@@ -65,11 +65,11 @@ impl ArchiveKey for FaultArchiveKey {
             hooks_running: self.hooks_running,
             alive: self.alive,
             parked: self.parked,
-            restarts: self.restarts,
             event_ready: self.event_ready,
             event_kill_fires: self.event_kill_fires,
             event_park_fires: self.event_park_fires,
             checks_finished: self.checks_finished,
+            checks_running: self.checks_running,
             workload_running: self.workload_running,
         };
         match depth {
@@ -106,11 +106,11 @@ pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
             .min(HOOKS_FINISHED_KEY_CAP),
         alive: observations.alive,
         parked: observations.parked.min(HOOKS_FINISHED_KEY_CAP),
-        restarts: observations.restarts.min(HOOKS_FINISHED_KEY_CAP),
         event_ready: observations.event_ready,
         event_kill_fires: observations.event_kill_fires.min(HOOKS_FINISHED_KEY_CAP),
         event_park_fires: observations.event_park_fires.min(HOOKS_FINISHED_KEY_CAP),
         checks_finished: observations.checks_finished.min(HOOKS_FINISHED_KEY_CAP),
+        checks_running: observations.checks_started > observations.checks_finished,
         workload_running: observations.workload_started > observations.workload_finished,
     }
 }
@@ -367,20 +367,20 @@ mod tests {
     }
 
     #[test]
-    fn restart_progress_opens_cells_up_to_the_cap() {
-        let restarted = |restarts| {
-            archive_key(&FaultObservations {
-                restarts,
-                alive: 0b111,
-                ..FaultObservations::default()
-            })
-        };
-        assert_ne!(restarted(0), restarted(1));
-        assert_ne!(
-            restarted(HOOKS_FINISHED_KEY_CAP - 1),
-            restarted(HOOKS_FINISHED_KEY_CAP)
-        );
-        assert_eq!(restarted(HOOKS_FINISHED_KEY_CAP), restarted(100));
+    fn an_in_flight_check_opens_its_own_cell() {
+        let completed = archive_key(&FaultObservations {
+            checks_started: 1,
+            checks_finished: 1,
+            ..FaultObservations::default()
+        });
+        let running = archive_key(&FaultObservations {
+            checks_started: 2,
+            checks_finished: 1,
+            ..FaultObservations::default()
+        });
+        assert_ne!(completed, running);
+        assert!(!completed.checks_running);
+        assert!(running.checks_running);
     }
 
     #[test]

@@ -81,10 +81,10 @@ with the boot that reaches setup.
 
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
-which captures assertion, liveness, bounded restart progress, and event-firing
-state. The raw instrumented site reported by an event kill remains diagnostic
-evidence; it is not archive novelty because a large instrumented binary can
-report a distinct address at nearly every endpoint.
+which captures assertion, liveness, in-flight work, and event-firing state. The
+raw instrumented site reported by an event kill remains diagnostic evidence; it
+is not archive novelty because a large instrumented binary can report a
+distinct address at nearly every endpoint.
 
 The generic `execution_work` counter and `report.json`
 `execution_ticks` count the guest ticks requested by successfully applied actions
