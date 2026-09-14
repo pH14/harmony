@@ -39,7 +39,7 @@
       }
     }
   },
-  "kernel_profile": "task-park",
+  "kernel_profile": "faultlab",
   "nodes": [
     {
       "id": 0,
