@@ -3,7 +3,7 @@
 //! Mega Man 2 implementation of the game-neutral campaign interface.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     io::Write,
     path::{Path, PathBuf},
@@ -22,7 +22,7 @@ use crate::{
             progress_watermark, sample_chord,
         },
         target::{
-            ButtonChord, Mm2Input, Mm2Observations, Mm2Snapshot, Mm2Stage, Mm2Target,
+            ButtonChord, ITEM_METERS, Mm2Input, Mm2Observations, Mm2Snapshot, Mm2Stage, Mm2Target,
             power_on_walk, preference_tuple, walk_to_stage_select,
         },
     },
@@ -512,11 +512,28 @@ impl CampaignTypes for Mm2Game {
 
 impl Reporting for Mm2Game {
     fn retained_diagnostics<'a>(
-        snapshots: impl Iterator<Item = Option<&'a Mm2Snapshot>>,
+        snapshots: impl Iterator<Item = (Option<&'a Mm2Snapshot>, u64)>,
     ) -> Option<serde_json::Value> {
         let (mut active, mut missing) = (0_u64, 0_u64);
         let (mut weapons, mut stage, mut screen) = (0, 0, 0);
-        for snapshot in snapshots {
+        // A stall is usually a resource the frontier no longer carries, and the
+        // maximum over every screen hides that: the stage entrance always holds
+        // a full meter. Keeping the best per screen lets the deepest one be
+        // read out once the pass is done.
+        let mut item_bands = vec![[0_u8; ITEM_METERS]; 256];
+        let mut health = vec![0_u8; 256];
+        let mut energy = vec![0_u16; 256];
+        // Where the live archive sits. A stall reads the same either way in the
+        // maxima: a screen holding one charged endpoint and a screen holding a
+        // hundred thousand spent ones both report a band.
+        let mut entries = vec![0_u64; 256];
+        let mut charged = vec![0_u64; 256];
+        let mut selected = vec![0_u64; 256];
+        let mut charged_selected = vec![0_u64; 256];
+        // A screen is a shaft or a corridor, and a per-screen count cannot say
+        // which end of it the archive sits at or which end the selector draws.
+        let mut rows = BTreeMap::<(u8, u8), [u64; 2]>::new();
+        for (snapshot, selections) in snapshots {
             active += 1;
             let Some(snapshot) = snapshot else {
                 missing += 1;
@@ -526,11 +543,49 @@ impl Reporting for Mm2Game {
             weapons |= state.weapons_obtained;
             stage = stage.max(state.stage);
             screen = screen.max(state.screen);
+            let here = usize::from(state.screen);
+            for (item, band) in item_bands[here].iter_mut().enumerate() {
+                *band = (*band).max((state.item_charges >> (2 * item)) & 3);
+            }
+            health[here] = health[here].max(state.health);
+            energy[here] = energy[here].max(state.weapon_energy);
+            entries[here] += 1;
+            // Endpoints whose Item 1 meter is in one of its two upper bands,
+            // which is four summons or more. A screen crowded with endpoints
+            // that all spent the item reads the same in the maxima as one
+            // holding a single charged endpoint.
+            let holds = state.item_charges & 3 >= 2;
+            charged[here] += u64::from(holds);
+            selected[here] = selected[here].saturating_add(selections);
+            if holds {
+                charged_selected[here] = charged_selected[here].saturating_add(selections);
+            }
+            let row = rows.entry((state.screen, state.y / 16)).or_default();
+            *row = [row[0] + 1, row[1].saturating_add(selections)];
         }
+        let deepest = usize::from(screen);
         Some(serde_json::json!({
             "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
             "active_entries": active, "missing_snapshots": missing,
-            "weapons_union": weapons, "max_stage": stage, "max_screen": screen
+            "weapons_union": weapons, "max_stage": stage, "max_screen": screen,
+            "deepest_screen_item_bands": item_bands[deepest],
+            "deepest_screen_max_health": health[deepest],
+            "deepest_screen_max_weapon_energy": energy[deepest],
+            "live_entries_by_screen": entries
+                .iter()
+                .enumerate()
+                .filter(|(_, count)| **count > 0)
+                .map(|(here, count)| {
+                    (here.to_string(), [*count, charged[here], u64::from(health[here]), u64::from(energy[here]), selected[here], charged_selected[here]])
+                })
+                .collect::<BTreeMap<_, _>>(),
+            "live_entries_by_screen_format": "screen -> [entries, entries still holding two or more Item 1 summons, max health, max summed energy, selections, selections of those charged entries]",
+            "live_entries_by_screen_row": rows
+                .iter()
+                .map(|((here, row), best)| (format!("{here}:{row}"), *best))
+                .collect::<BTreeMap<_, _>>(),
+            "live_entries_by_screen_row_format": "screen:16-pixel row from the top -> [entries, selections]",
+            "temporary_screen_table_bytes": 256 * (ITEM_METERS + 3)
         }))
     }
 

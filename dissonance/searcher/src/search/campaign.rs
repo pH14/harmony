@@ -323,10 +323,11 @@ pub trait Reporting: CampaignTypes {
     fn diagnostics(_evidence: &Self::Evidence) -> Option<serde_json::Value> {
         None
     }
-    /// Optional final census over cached active endpoints. Missing snapshots
-    /// must be counted explicitly. No reconstruction or search feedback is allowed.
+    /// Optional final census over cached active endpoints, each with the
+    /// number of times the selector drew it. Missing snapshots must be counted
+    /// explicitly. No reconstruction or search feedback is allowed.
     fn retained_diagnostics<'a>(
-        _snapshots: impl Iterator<Item = Option<&'a Self::Snapshot>>,
+        _snapshots: impl Iterator<Item = (Option<&'a Self::Snapshot>, u64)>,
     ) -> Option<serde_json::Value>
     where
         Self::Snapshot: 'a,

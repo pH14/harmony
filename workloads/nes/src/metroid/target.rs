@@ -8,7 +8,10 @@
 
 use std::{error::Error, path::Path};
 
-use machine::{Machine, MachineError, SnapId, StopConditions, nes, quicknes::QuickNesMachine};
+use machine::{
+    Machine, MachineError, SnapId, StopConditions, nes,
+    quicknes::{QuickNesMachine, VideoFrame},
+};
 use serde::{Deserialize, Serialize};
 
 use super::progress::{BossDefeats, TourianEvents};
@@ -420,6 +423,30 @@ impl MetroidTarget {
         core_sha256: &str,
     ) -> Result<Self, MachineError> {
         Self::from_rom_bytes_after(rom, core_path, core_sha256, &power_on_walk())
+    }
+
+    /// Load the ROM as [`Self::from_rom_bytes_headless`] does, with the core's
+    /// video and audio planes enabled so a replay can be filmed.
+    pub fn from_rom_bytes_capturing(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        let image = nes::with_cartridge_ram(rom)?;
+        let mut machine = QuickNesMachine::from_rom_bytes(&image, core_path, core_sha256)?;
+        machine.set_video_capture(true);
+        machine.set_audio_capture(true);
+        Self::from_machine(machine, &power_on_walk())
+    }
+
+    /// Take the video frames emulated since the last drain, in emulation order.
+    pub fn drain_frames(&mut self) -> Vec<VideoFrame> {
+        self.machine.take_video_frames()
+    }
+
+    /// Take the interleaved stereo samples emulated since the last drain.
+    pub fn drain_audio(&mut self) -> Vec<i16> {
+        self.machine.take_audio_samples()
     }
 
     /// Load the ROM, run `prefix` from power-on, and seal genesis at the

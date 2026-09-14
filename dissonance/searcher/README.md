@@ -346,7 +346,10 @@ Retention lifecycle diagnostics reuse existing selector exposure vectors and add
 only fixed counters, reported by `retention_diagnostic_memory_bytes`. Existing
 vectors remain covered by archive metadata charging. Measured process RSS also
 includes workload-owned audit storage. The final census reads only cached
-active endpoints; missing payloads are counted and never reconstructed.
+active endpoints; missing payloads are counted and never reconstructed. Each
+endpoint is offered with the number of times the selector drew it, so a workload
+census can separate a place the selector never went from one it went to and got
+nothing from.
 The final `retention_context_census` separately counts active retained keys,
 including keys whose snapshot payload is missing. It excludes historical
 snapshot anchors and reports same/distinct-context pairs per slot. Its temporary

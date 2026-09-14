@@ -4371,11 +4371,18 @@ where
 
     /// Cached endpoints of active entries, for a final reporting-only census.
     /// Missing snapshots remain visible; diagnostics must not reconstruct them.
-    pub(crate) fn retained_snapshots(&self) -> impl Iterator<Item = Option<&S>> {
+    ///
+    /// Each entry comes with the number of times the selector drew it. A census
+    /// that reports where endpoints sit cannot say whether the selector ever
+    /// went there; the count can.
+    pub(crate) fn retained_snapshots(&self) -> impl Iterator<Item = (Option<&S>, u64)> {
         self.entries
             .iter()
             .zip(&self.active)
-            .filter_map(|(entry, active)| active.then_some(entry.snapshot.as_deref()))
+            .enumerate()
+            .filter_map(|(id, (entry, active))| {
+                active.then_some((entry.snapshot.as_deref(), self.selected[id]))
+            })
     }
 
     /// Final reporting-only census of active keys, independent of snapshot

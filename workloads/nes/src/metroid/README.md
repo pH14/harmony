@@ -110,6 +110,24 @@ input, **not** cumulative emulator work. Cartridge RAM is read after a held
 controller action, so this is not an exact within-action pickup timestamp.
 The finite vocabulary bounds observer memory and the number of saved tapes.
 These fields do not change keys, rewards, input draws or champion ordering.
+
+`retained_diagnostics.live_entries_by_map_cell` is the end-of-run census of the
+live archive by map cell: `area:map_x:map_y` to
+`[entries, max health, max missiles, equipment union, selections]`. A milestone
+list says the run reached something; this says where the archive still sits,
+what the endpoints in each cell can do, and how often the selector drew there. A
+cell whose equipment union lacks an item the route out of it needs is covered by
+endpoints that can never leave, and the selection count separates a cell the
+selector never drew from one it drew and got nothing from. It reads only cached
+active endpoints, so it is a lower bound where snapshots are missing.
+
+`retained_diagnostics.live_entries_by_map_cell_and_equipment` splits the same
+census by the equipment byte: `area:map_x:map_y:equipment bits` to
+`[entries, selections]`. Endpoints holding different equipment in one cell sit in
+different archive classes and are drawn separately, so a cell's own totals cannot
+say whether the endpoints that can open the next door are the ones the selector
+goes back to.
+
 The common evaluator can opt into `stop_after_milestone` with one existing name,
 such as `energy_tank`. That criterion stops new campaign reservations after its
 first admitted observation and preserves normal drain, export and replay. Its

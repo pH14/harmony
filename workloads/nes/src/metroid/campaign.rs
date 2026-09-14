@@ -3,7 +3,7 @@
 //! Metroid implementation of the game-neutral campaign interface.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     io::Write,
     path::{Path, PathBuf},
@@ -735,13 +735,26 @@ impl Reporting for MetroidGame {
     }
 
     fn retained_diagnostics<'a>(
-        snapshots: impl Iterator<Item = Option<&'a MetroidSnapshot>>,
+        snapshots: impl Iterator<Item = (Option<&'a MetroidSnapshot>, u64)>,
     ) -> Option<serde_json::Value> {
         let (mut active, mut missing) = (0_u64, 0_u64);
         let (mut equipment, mut bosses, mut missiles, mut tanks) = (0, 0, 0, 0);
         let mut maps = MapCoverage::default();
         let (mut underflows, mut health) = (0_u64, 0_u16);
-        for snapshot in snapshots {
+        // A boss is lost for want of missiles, and the maximum over the whole
+        // world hides that: a cell beside the missile pickup always holds a
+        // full load. Per area, the best a cached endpoint still carries.
+        let mut areas = [[0_u8; 2]; 256];
+        // Where the live archive actually sits. A count alone says the search
+        // covered the map; per cell it says where the endpoints pile up and
+        // which neighbours of a covered cell were never reached.
+        let mut cells = BTreeMap::<(u8, u8, u8), [u64; 5]>::new();
+        // A cell's totals merge lineages that hold different equipment, and
+        // those sit in different classes and are drawn separately. Splitting by
+        // equipment says whether the endpoints that can open the next door are
+        // the ones the selector goes back to.
+        let mut kit = BTreeMap::<(u8, u8, u8, u8), [u64; 2]>::new();
+        for (snapshot, selections) in snapshots {
             active += 1;
             let Some(snapshot) = snapshot else {
                 missing += 1;
@@ -755,6 +768,22 @@ impl Reporting for MetroidGame {
             missiles = missiles.max(state.missile_capacity);
             tanks = tanks.max(state.energy_tanks);
             maps.observe(state.area, state.map_x, state.map_y);
+            let area = &mut areas[usize::from(state.area)];
+            *area = [area[0].max(state.missiles), area[1].max(state.energy_tanks)];
+            let cell = cells
+                .entry((state.area, state.map_x, state.map_y))
+                .or_default();
+            *cell = [
+                cell[0] + 1,
+                cell[1].max(u64::from(state.health)),
+                cell[2].max(u64::from(state.missiles)),
+                cell[3].max(u64::from(state.equipment)),
+                cell[4].saturating_add(selections),
+            ];
+            let held = kit
+                .entry((state.area, state.map_x, state.map_y, state.equipment))
+                .or_default();
+            *held = [held[0] + 1, held[1].saturating_add(selections)];
         }
         Some(serde_json::json!({
             "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
@@ -762,7 +791,25 @@ impl Reporting for MetroidGame {
             "underflow_endpoints_cached": underflows, "max_health_cached": health,
             "equipment_union": equipment, "max_bosses": bosses,
             "max_missile_capacity": missiles, "max_energy_tanks": tanks,
-            "map_cells_retained_cached": maps.count(), "temporary_bitmap_bytes": 32768
+            "max_missiles_and_tanks_held_by_area": areas
+                .iter()
+                .enumerate()
+                .filter(|(_, best)| *best != &[0, 0])
+                .map(|(area, best)| (area.to_string(), *best))
+                .collect::<BTreeMap<_, _>>(),
+            "map_cells_retained_cached": maps.count(), "temporary_bitmap_bytes": 32768,
+            "live_entries_by_map_cell": cells
+                .iter()
+                .map(|((area, x, y), best)| (format!("{area}:{x}:{y}"), *best))
+                .collect::<BTreeMap<_, _>>(),
+            "live_entries_by_map_cell_format": "area:map_x:map_y -> [entries, max health, max missiles, equipment union, selections]",
+            "live_entries_by_map_cell_and_equipment": kit
+                .iter()
+                .map(|((area, x, y, equipment), best)| {
+                    (format!("{area}:{x}:{y}:{equipment}"), *best)
+                })
+                .collect::<BTreeMap<_, _>>(),
+            "live_entries_by_map_cell_and_equipment_format": "area:map_x:map_y:equipment bits -> [entries, selections]"
         }))
     }
 

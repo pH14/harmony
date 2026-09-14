@@ -69,6 +69,20 @@ replaying the ordinary award/menu transition and next-stage entry with the
 awarded inventory retained. The R03b Metal qualification records this case
 for both policies, with twice-replayed Heat entry at full health.
 
+`retained_diagnostics` carries the end-of-run census of the live archive.
+`live_entries_by_screen` maps a screen to
+`[entries, entries still holding two or more Item 1 summons, max health,
+max summed energy, selections, selections of those charged entries]`, and
+`live_entries_by_screen_row` maps
+`screen:16-pixel row from the top` to `[entries, selections]`. The maxima alone
+hide a stall: a screen holding one charged endpoint and a screen holding a
+hundred thousand spent ones report the same band, and a screen count cannot say
+which end of a shaft the archive sits at or which end the selector draws. The
+charged selection count separates a screen whose charged endpoints are never
+drawn from one where they are drawn and go nowhere. All
+read only cached active endpoints, so they are lower bounds where snapshots are
+missing.
+
 ### Experimental local terminal retry
 
 `Mm2Game::with_local_terminal_retry(true)` opts into the shared bounded

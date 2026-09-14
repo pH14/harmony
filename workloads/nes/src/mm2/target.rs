@@ -10,7 +10,7 @@ use std::{error::Error, io::Write, path::Path};
 
 use machine::{
     Machine, MachineError, SnapId, StopConditions, nes,
-    quicknes::{QUICKNES_AUDIO_CHANNELS, QUICKNES_AUDIO_SAMPLE_RATE, QuickNesMachine},
+    quicknes::{QUICKNES_AUDIO_CHANNELS, QUICKNES_AUDIO_SAMPLE_RATE, QuickNesMachine, VideoFrame},
 };
 use serde::{Deserialize, Serialize};
 
@@ -62,6 +62,10 @@ const PLAYER_Y: usize = 0x4a0;
 const PLAYER_HEALTH: usize = 0x6c0;
 const WEAPON_ENERGY: usize = 0x9c;
 const WEAPON_ENERGY_BYTES: usize = 12;
+/// Offset of Item 1's meter within the weapon-energy block; Items 2 and 3
+/// follow it.
+const FIRST_ITEM_METER: usize = 8;
+pub(crate) const ITEM_METERS: usize = 3;
 const OBJECT_ID_TABLE: usize = 0x400;
 const OBJECT_FLAG_TABLE: usize = 0x420;
 const OBJECT_SLOTS: usize = 0x20;
@@ -241,6 +245,13 @@ pub struct Mm2MechanicalState {
     /// item changes the world without moving the player, so the spent meter
     /// is the only trace of it.
     pub equipped_energy: u8,
+    /// Weapons and items whose meter still holds a shot. A route can need one
+    /// particular weapon, and the sum cannot report whether that one is spent.
+    pub usable_weapons: u8,
+    /// The three item meters in four bands each, two bits per item, Item 1
+    /// lowest. Items are the only way past walls with no reachable platform,
+    /// and each is spent by ordinary play well before the wall that needs it.
+    pub item_charges: u8,
     /// Summoned item platforms alive on screen. A platform carries the
     /// player only while it lives, so a state with one under way differs
     /// from the same position after it has faded.
@@ -331,6 +342,19 @@ impl Mm2MechanicalState {
     }
 }
 
+/// Band one item meter by how many summons it still affords. A summon costs
+/// two energy, so a full meter is fourteen of them. The bands are wide so that
+/// a single summon rarely splits a location while running the meter dry always
+/// does.
+fn charge_band(energy: u8) -> u8 {
+    match energy {
+        0 => 0,
+        1..=8 => 1,
+        9..=18 => 2,
+        _ => 3,
+    }
+}
+
 /// Decode the mechanical state from work RAM.
 pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
     Ok(Mm2MechanicalState {
@@ -347,6 +371,13 @@ pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
             0 => 0,
             weapon => read_byte(wram, WEAPON_ENERGY + usize::from(weapon) - 1)?,
         },
+        usable_weapons: (WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES)
+            .map(|index| Ok(u8::from(read_byte(wram, index)? > 0)))
+            .sum::<Result<u8, MachineError>>()?,
+        item_charges: (0..ITEM_METERS).try_fold(0_u8, |packed, item| {
+            let energy = read_byte(wram, WEAPON_ENERGY + FIRST_ITEM_METER + item)?;
+            Ok(packed | (charge_band(energy) << (2 * item)))
+        })?,
         platforms: live_platforms(wram)?,
         lives: read_byte(wram, LIVES)?,
         player_state: read_byte(wram, PLAYER_STATE)?,
@@ -645,6 +676,70 @@ impl Mm2Target {
         )
     }
 
+    /// Refill the named weapon and item meters at a paused live boundary, for
+    /// standalone causal diagnostics. An empty list refills all of them.
+    /// Refilling one meter asks which ammunition a stalled route needs, which
+    /// refilling all twelve cannot answer. This is never a search action or a
+    /// generated witness: a replay must record and repeat the operation. All
+    /// other machine bytes and the physical clock stay fixed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a named meter is outside the meter block, when the
+    /// target is dead or failed, or when the write disturbs any other byte.
+    pub fn diagnostic_refill_weapons(&mut self, chosen: &[usize]) -> Result<(), Box<dyn Error>> {
+        if self.failed || self.is_dead() {
+            return Err("weapon refill needs a live target".into());
+        }
+        if chosen.iter().any(|index| *index >= WEAPON_ENERGY_BYTES) {
+            return Err("weapon refill names a meter outside the meter block".into());
+        }
+        let wram = self.machine.read_wram()?;
+        if wram != self.current_wram {
+            return Err("weapon refill requires a consistent paused boundary".into());
+        }
+        let clock = self.frames_clocked();
+        let meters = WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES;
+        let mut expected = wram;
+        for (index, meter) in expected[meters.clone()].iter_mut().enumerate() {
+            if !chosen.is_empty() && !chosen.contains(&index) {
+                continue;
+            }
+            *meter = FULL_HEALTH;
+            self.machine.poke_wram(WEAPON_ENERGY + index, FULL_HEALTH);
+        }
+        if self.machine.read_wram()? != expected || self.frames_clocked() != clock {
+            for (index, meter) in wram[meters].iter().enumerate() {
+                self.machine.poke_wram(WEAPON_ENERGY + index, *meter);
+            }
+            return Err("weapon refill changed another RAM byte or the clock".into());
+        }
+        self.current_wram = expected;
+        self.observation.decoded = decode_state(&expected)?;
+        self.action_observations = vec![self.observation.clone()];
+        Ok(())
+    }
+
+    /// Turn on the core's video and audio planes so a replay can be filmed.
+    ///
+    /// The capture buffers are bounded, so a chain prefix long enough to reach
+    /// a castle stage would overflow them during construction. Filming starts
+    /// at stage genesis instead, once the caller can drain every action.
+    pub fn start_capturing(&mut self) {
+        self.machine.set_video_capture(true);
+        self.machine.set_audio_capture(true);
+    }
+
+    /// Take the video frames emulated since the last drain, in emulation order.
+    pub fn drain_frames(&mut self) -> Vec<VideoFrame> {
+        self.machine.take_video_frames()
+    }
+
+    /// Take the interleaved stereo samples emulated since the last drain.
+    pub fn drain_audio(&mut self) -> Vec<i16> {
+        self.machine.take_audio_samples()
+    }
+
     fn from_machine(
         mut machine: QuickNesMachine,
         prefix: &[ButtonChord],
@@ -783,6 +878,16 @@ impl Mm2Target {
     #[must_use]
     pub fn genesis_weapons(&self) -> u8 {
         self.genesis_weapons
+    }
+
+    /// The twelve per-weapon energy meters. The decoded state keeps only their
+    /// sum, which cannot say whether the one weapon a wall needs still has
+    /// ammunition. Reads captured RAM and advances no emulator frames.
+    pub fn diagnostic_weapon_energies(&self) -> Result<Vec<u8>, MachineError> {
+        let wram = self.machine.read_wram()?;
+        (WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES)
+            .map(|index| read_byte(&wram, index))
+            .collect()
     }
 
     /// Total deterministic frames this instance has emulated.
