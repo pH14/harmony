@@ -11,7 +11,6 @@ use environment::{
 };
 use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, RestoreMode, VmmFactory, server_caps};
-use vmm_core::vmm::Vmm;
 
 use crate::watchdog::Watchdog;
 

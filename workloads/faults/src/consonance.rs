@@ -669,14 +669,17 @@ impl Live {
             let (snapshot, at) = self
                 .session
                 .snapshot()
-                .map_err(|error| self.abandon("snapshot", &error))?;
+                .map_err(|error| self.abandon("snapshot", error.as_ref()))?;
             Some((snapshot, at))
         } else {
             None
         };
         let observation = match self.observe(stop) {
             Ok(observation) => observation,
-            Err(error) => return Err(self.abandon("observe", &error)),
+            Err(error) => {
+                let error: Box<dyn Error> = error.into();
+                return Err(self.abandon("observe", error.as_ref()));
+            }
         };
         Ok((observation, snap))
     }
@@ -797,17 +800,18 @@ mod tests {
     }
 
     #[test]
-    fn run_and_seal_watchdogs_share_the_recoverable_classification() {
+    fn run_and_snapshot_watchdogs_share_the_recoverable_classification() {
         let snapshot = FaultSnapshot {
             actions: Vec::new(),
             observation: FaultObservations::default(),
             failed: false,
         };
-        for phase in ["run", "seal"] {
+        for phase in ["run", "snapshot"] {
             for error in [SessionError::Hung(WALL_LIMIT), SessionError::Abandoned] {
+                let error: Box<dyn Error> = Box::new(error);
                 let mut target = unbooted_target();
                 target
-                    .finish_restore(&snapshot, Err(session_failure(phase, &error)))
+                    .finish_restore(&snapshot, Err(session_failure(phase, error.as_ref())))
                     .unwrap();
                 assert!(target.failed());
                 assert_eq!(target.watchdog_cutoffs(), 1);
@@ -817,6 +821,12 @@ mod tests {
                 !session_failure(phase, &SessionError::Unboundable).starts_with(WATCHDOG_CUTOFF)
             );
         }
+    }
+
+    #[test]
+    fn observation_strings_do_not_become_typed_watchdog_errors() {
+        let error: Box<dyn Error> = SessionError::Hung(WALL_LIMIT).to_string().into();
+        assert!(!session_failure("observe", error.as_ref()).starts_with(WATCHDOG_CUTOFF));
     }
 
     #[test]
