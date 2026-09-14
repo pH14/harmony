@@ -18,21 +18,19 @@ require_tools cc make flex bison bc xz gzip
 # Each profile variable names one published artifact and one reviewed
 # counter-opcode baseline, so a build that claimed both would publish a kernel
 # under a label that does not describe it.
-if [ -n "${N6_TRAPS_OFF:-}" ] && [ -n "${FAULTLAB:-}" ]; then
-    echo "FAIL: N6_TRAPS_OFF and FAULTLAB select different kernels; set one" >&2
+if [ -n "${N6_TRAPS_OFF:-}" ] && [ -n "${TASK_PARK_PROFILE:-}" ]; then
+    echo "FAIL: N6_TRAPS_OFF and TASK_PARK_PROFILE select different kernels; set one" >&2
     exit 1
 fi
 
 extract_kernel
 
-# Apply every numbered harmony guest-kernel diff in lexical order. These are
-# Linux GPL-2.0 patches under the repository's kernel-patch exception. The patch
-# directory is arch-scoped (patches/x86/, patches/arm64/) so each vendor's series
-# applies independently and the two arches never collide on patch numbers — the
-# x86 build consumes patches/x86/ only; the arm64 build (build-arm64-kernel.sh)
-# consumes patches/arm64/ (hm-0dst, tribunal F7).
-# Record the complete series: later patches can change earlier patch context.
-bash "$LINUX_DIR/apply-patch-series.sh" "$KSRC" "$LINUX_DIR/patches/x86"
+# Apply the architecture-independent transport first, then the x86 overlay.
+# Each directory is ordered lexically by apply-patch-series.sh and the stamp
+# records both directory and file names, so a changed common or arch patch
+# cannot be mistaken for an already prepared source tree.
+bash "$LINUX_DIR/apply-patch-series.sh" "$KSRC" \
+    "$LINUX_DIR/patches/common" "$LINUX_DIR/patches/x86"
 
 mkdir -p "$KOBJ" "$ART_DIR"
 
@@ -50,7 +48,7 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 allnoconfig
     "$LINUX_DIR"/kata/x86_64/*.conf \
     "$LINUX_DIR/config-fragment" \
     ${N6_TRAPS_OFF:+"$LINUX_DIR/x86-n6-traps-off-config-fragment"} \
-    ${FAULTLAB:+"$LINUX_DIR/x86-faultlab-config-fragment"})
+    ${TASK_PARK_PROFILE:+"$LINUX_DIR/x86-task-park-config-fragment"})
 make -C "$KSRC" O="$KOBJ" ARCH=x86_64 olddefconfig
 
 # merge_config only warns when a fragment symbol cannot take effect; assert the ones
@@ -79,16 +77,19 @@ assert_off() {
 # harmony_pvclock kernel parameter, so one image serves as both the page-on
 # and page-off measurement arm.
 assert_y 64BIT PRINTK TTY SERIAL_8250 SERIAL_8250_CONSOLE BINFMT_ELF \
-    BINFMT_SCRIPT BLK_DEV_INITRD RD_GZIP PROC_FS SYSFS DEVTMPFS ACPI PCI \
+    BINFMT_SCRIPT BLK_DEV_INITRD RD_GZIP PROC_FS PROC_CHILDREN SYSFS DEVTMPFS ACPI PCI \
     HZ_PERIODIC HZ_100 FUTEX POSIX_TIMERS KERNEL_GZIP X86_IOPL_IOPERM DEVMEM \
-    HARMONY_PVCLOCK HARMONY_DEVICE NAMESPACES NET_NS NET UNIX INET SYSCTL \
-    NETDEVICES VETH NET_SCHED NET_SCH_NETEM
+    HARMONY_PVCLOCK HARMONY_DEVICE HARMONY_PARK NAMESPACES UTS_NS IPC_NS PID_NS \
+    NET_NS NET UNIX INET SYSCTL NETDEVICES VETH NET_SCHED NET_SCH_NETEM \
+    CGROUPS CGROUP_SCHED CGROUP_PIDS CGROUP_DEVICE CGROUP_BPF BPF_SYSCALL TMPFS UNIX98_PTYS SECCOMP \
+    SECCOMP_FILTER
+assert_off BPF_JIT FHANDLE
 if [ -n "${N6_TRAPS_OFF:-}" ]; then
     assert_off HARMONY_USER_COUNTER_TRAPS
 else
     assert_y HARMONY_USER_COUNTER_TRAPS
 fi
-if [ -n "${FAULTLAB:-}" ]; then
+if [ -n "${TASK_PARK_PROFILE:-}" ]; then
     assert_y SMP HARMONY_PARK HAVE_HW_BREAKPOINT
 fi
 # (HPET_TIMER is not in this list: it is def_bool y on x86-64 with no prompt;
@@ -106,6 +107,7 @@ fi
 assert_off NUMA CPU_FREQ MODULES TRANSPARENT_HUGEPAGE KSM SUSPEND \
     HIBERNATION X86_PM_TIMER HIGH_RES_TIMERS RANDOMIZE_BASE \
     LOCALVERSION_AUTO HW_RANDOM NO_HZ_COMMON NO_HZ_FULL NO_HZ_IDLE TICK_ONESHOT
+assert_off RWSEM_SPIN_ON_OWNER
 # Empty version suffix: git/build state must not leak into the bytes.
 if ! grep -qxF 'CONFIG_LOCALVERSION=""' "$KOBJ/.config"; then
     echo "FAIL: CONFIG_LOCALVERSION must be empty (reproducibility)" >&2
@@ -127,7 +129,7 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 # The scan runs on `$KOBJ/vmlinux` (built above) and MUST pass BEFORE the image
 # is published to the canonical `$ART_DIR/bzImage` (cross-model r21 P2): with
 # `set -e`, a failed scan aborts here, so a REJECTED kernel never reaches the
-# path campaign-runner consumes. (Publishing first, then scanning, would leave
+# path used by the guest runner. (Publishing first, then scanning, would leave
 # the rejected artifact at the canonical path on failure.) Proven locally by
 # `test-publish-gate.sh` with a planted rejection.
 # Site offsets are toolchain-dependent, so each build toolchain carries its
@@ -137,15 +139,15 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 echo "== kernel: counter-opcode scan (rdtsc/rdtscp + rdrand/rdseed reachability gate)"
 rdtsc_allowlist=${HARMONY_RDTSC_ALLOWLIST:-$LINUX_DIR/rdtsc-allowlist.txt}
 rdrand_allowlist=${HARMONY_RDRAND_ALLOWLIST:-$LINUX_DIR/rdrand-allowlist.txt}
-# The fault-library kernel carries the task park's system-call poll, so its
+# The task-park profile carries the system-call poll, so its
 # counter-read sites sit at other offsets than the other kernels' and it
 # carries its own reviewed baseline. That baseline belongs to the profile, so it wins over an
 # environment selection, which names a list captured from another
 # configuration and would scan this kernel against the wrong function set.
-if [ -n "${FAULTLAB:-}" ]; then
-    rdtsc_allowlist=$LINUX_DIR/rdtsc-allowlist-faultlab.txt
-    rdrand_allowlist=$LINUX_DIR/rdrand-allowlist-faultlab.txt
-    echo "== kernel: fault-library profile scans against its own baseline"
+if [ -n "${TASK_PARK_PROFILE:-}" ]; then
+    rdtsc_allowlist=$LINUX_DIR/rdtsc-allowlist-task-park.txt
+    rdrand_allowlist=$LINUX_DIR/rdrand-allowlist-task-park.txt
+    echo "== kernel: task-park profile scans against its own baseline"
 fi
 bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" \
     "$rdtsc_allowlist" "$rdrand_allowlist"
@@ -154,8 +156,10 @@ bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" \
 kernel_output=bzImage
 if [ -n "${N6_TRAPS_OFF:-}" ]; then
     kernel_output=bzImage-n6-traps-off
-elif [ -n "${FAULTLAB:-}" ]; then
-    kernel_output=bzImage-faultlab
+elif [ -n "${TASK_PARK_PROFILE:-}" ]; then
+    kernel_output=bzImage-task-park
 fi
+mkdir -p "$ART_DIR/x86_64"
 install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/$kernel_output"
+install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/x86_64/$kernel_output"
 echo "ok: $ART_DIR/$kernel_output"

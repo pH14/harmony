@@ -23,6 +23,11 @@ fn vmm(exits: Vec<Exit<X86>>, _work_at: u64, seed: u64) -> Vmm<MockBackend> {
     v
 }
 
+fn settled_state(vmm: &mut Vmm<MockBackend>) -> Result<VmState, vmm_core::vmm::VmmError> {
+    assert!(vmm.prepare_snapshot_boundary()?);
+    vmm.save_vm_state()
+}
+
 fn booted_image() -> Vec<u8> {
     let mut mem = vec![0u8; RAM];
     mem[..13].copy_from_slice(b"GUEST_BOOTED\n");
@@ -41,7 +46,7 @@ fn snapshot_then_restore_round_trips_a_running_vm() {
     assert_eq!(a.step().unwrap(), Step::Continued);
 
     let mut eng = SnapshotEngine::new(RAM);
-    let vm_state = a.save_vm_state().unwrap();
+    let vm_state = settled_state(&mut a).unwrap();
     let blob = vm_state.encode().unwrap();
     let snap = eng.snapshot_base(a.guest_memory(), &blob).unwrap();
 
@@ -53,7 +58,7 @@ fn snapshot_then_restore_round_trips_a_running_vm() {
     b.restore_snapshot(mapping.as_slice(), &decoded).unwrap();
 
     assert_eq!(b.guest_memory(), a.guest_memory());
-    assert_eq!(b.save_vm_state().unwrap(), vm_state);
+    assert_eq!(settled_state(&mut b).unwrap(), vm_state);
 
     let mut b2 = vmm(vec![Exit::Common(CommonExit::Idle)], 9999, 0x0000);
     b2.restore_snapshot(eng.materialize(snap).unwrap().as_slice(), &decoded)
@@ -89,8 +94,7 @@ fn non_quiescent_in_flight_events_round_trip_through_the_engine() {
     assert_eq!(a.step().unwrap(), Step::Continued);
 
     let mut eng = SnapshotEngine::new(RAM);
-    let vm_state = a
-        .save_vm_state()
+    let vm_state = settled_state(&mut a)
         .expect("a non-quiescent (interrupt-in-flight) point is now snapshottable");
     let snap = eng
         .snapshot_base(a.guest_memory(), &vm_state.encode().unwrap())
@@ -103,7 +107,7 @@ fn non_quiescent_in_flight_events_round_trip_through_the_engine() {
     )
     .unwrap();
     assert_eq!(
-        b.save_vm_state().unwrap(),
+        settled_state(&mut b).unwrap(),
         vm_state,
         "the full vm_state (incl. the in-flight events) round-trips through the engine"
     );
@@ -159,8 +163,7 @@ fn rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
     );
 
     let mut eng = SnapshotEngine::new(RAM);
-    let vm_state = a
-        .save_vm_state()
+    let vm_state = settled_state(&mut a)
         .expect("a genuine in-flight (previously-rejected) point is now snapshottable");
     let snap = eng
         .snapshot_base(a.guest_memory(), &vm_state.encode().unwrap())
@@ -179,7 +182,7 @@ fn rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
         "restored full state_hash == source at the genuine in-flight point"
     );
     assert_eq!(
-        b.save_vm_state().unwrap(),
+        settled_state(&mut b).unwrap(),
         vm_state,
         "the full in-flight events round-trip through the engine"
     );
@@ -251,7 +254,7 @@ fn snapshot_hashing_makes_restore_reproduce_the_state_hash() {
     let hash_a = a.state_hash().unwrap();
 
     let mut eng = SnapshotEngine::new(RAM);
-    let blob = a.save_vm_state().unwrap().encode().unwrap();
+    let blob = settled_state(&mut a).unwrap().encode().unwrap();
     let snap = eng.snapshot_base(a.guest_memory(), &blob).unwrap();
 
     let mut b = vmm(vec![], 1, 0x99);
@@ -296,7 +299,7 @@ fn snapshot_hashing_round_trips_at_a_residual_events_point() {
     let hash_a = a.state_hash().unwrap();
 
     let mut eng = SnapshotEngine::new(RAM);
-    let blob = a.save_vm_state().unwrap().encode().unwrap();
+    let blob = settled_state(&mut a).unwrap().encode().unwrap();
     let snap = eng.snapshot_base(a.guest_memory(), &blob).unwrap();
 
     let mut b = vmm(vec![], 9999, 0);
@@ -329,14 +332,14 @@ fn derive_captures_only_pages_dirtied_since_the_parent() {
     a.step().unwrap();
 
     let mut eng = SnapshotEngine::new(RAM);
-    let blob = a.save_vm_state().unwrap().encode().unwrap();
+    let blob = settled_state(&mut a).unwrap().encode().unwrap();
     let base = eng.snapshot_base(a.guest_memory(), &blob).unwrap();
 
     let mut dirtied = booted_image();
     dirtied[4096..2 * 4096].fill(0xCC);
     a.restore_guest_memory(&dirtied).unwrap();
     a.step().unwrap();
-    let blob2 = a.save_vm_state().unwrap().encode().unwrap();
+    let blob2 = settled_state(&mut a).unwrap().encode().unwrap();
     let child = eng
         .snapshot_derive(base, a.guest_memory(), Some(&[1]), &blob2)
         .unwrap();
@@ -357,7 +360,7 @@ fn n_branches_share_one_boot_image_and_fork_entropy() {
     boot.step().unwrap();
 
     let mut eng = SnapshotEngine::new(RAM);
-    let boot_blob = boot.save_vm_state().unwrap().encode().unwrap();
+    let boot_blob = settled_state(&mut boot).unwrap().encode().unwrap();
     let base = eng.snapshot_base(boot.guest_memory(), &boot_blob).unwrap();
     let unique_after_base = eng.store_stats().stored_unique_pages;
     assert_eq!(unique_after_base, 2, "base interned 2 non-zero pages");

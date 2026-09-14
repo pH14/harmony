@@ -31,8 +31,8 @@ CONFIG_KERNEL_GZIP=y
 # CONFIG_KERNEL_XZ is not set
 
 ## CPU / topology
-# SMP=y (kept from the Kata base) so the cpuset cgroup-v2 controller exists â k3s/
-# kubelet hard-require it. maxcpus=1 keeps exactly ONE online vCPU (the determinism
+# SMP=y (kept from the Kata base) so the cpuset cgroup-v2 controller exists for
+# container scheduling. maxcpus=1 keeps exactly ONE online vCPU (the determinism
 # lever: no second CPU to race or IPI); the VMM exposes a single vCPU regardless.
 # Documented README.md follow-on (CPUSETS), determinism re-validated via r2.
 CONFIG_SMP=y
@@ -88,6 +88,10 @@ CONFIG_HARMONY_PVCLOCK=y
 # driver owns the fixed doorbell pages and stamps pid/comm/userspace-RIP into
 # Antithesis JSON before emitting it at the synchronous write(2) Moment.
 CONFIG_HARMONY_DEVICE=y
+# The platform supervisor uses the kernel-owned parking device for bounded
+# process control. Keep it in the standard runtime image; test profiles may
+# still alter unrelated determinism controls without becoming dependencies.
+CONFIG_HARMONY_PARK=y
 
 ## Entropy / randomness
 # No hardware RNG drivers — entropy must come from our hypercall channel.
@@ -121,6 +125,7 @@ CONFIG_PCI=y
 ## Kernel/userspace surface the image actually needs
 # Everything is built in; no module loader, no runtime code variability.
 # CONFIG_MODULES is not set
+# CONFIG_FHANDLE is not set
 # printk + 8250 serial console: the only output channel (console=ttyS0).
 CONFIG_PRINTK=y
 CONFIG_TTY=y
@@ -140,6 +145,10 @@ CONFIG_RD_GZIP=y
 # CONFIG_RD_ZSTD is not set
 # /proc, /sys, /dev for the init script.
 CONFIG_PROC_FS=y
+CONFIG_PROC_CHILDREN=y
+CONFIG_CGROUP_BPF=y
+CONFIG_BPF_SYSCALL=y
+# CONFIG_BPF_JIT is not set
 CONFIG_SYSFS=y
 CONFIG_DEVTMPFS=y
 # The package-neutral guest network substrate is built in so workloads can
@@ -175,7 +184,7 @@ CONFIG_POSIX_TIMERS=y
 # userspace port I/O for applications (docs/ARCHITECTURE.md). Determinism-neutral:
 # syscall availability changes nothing unless called, and the doorbell OUT is
 # the same deterministic port exit the VMM already services; the task-86
-# campaign 25/25 replay gate re-validates the rebuilt kernel. Asserted in
+# replay gate re-validates the rebuilt kernel. Asserted in
 # build-kernel.sh so a Kata-side regression cannot silently drop it.
 CONFIG_X86_IOPL_IOPERM=y
 # /dev/mem itself (same smoke, next layer down): the doorbell transport maps

@@ -116,7 +116,7 @@ def replay_command(case: dict) -> str:
         f"--backend consonance "
         f"--kernel bzImage-{case.get('kernel_profile', '?')} "
         f"--base-initramfs initramfs.cpio.gz "
-        f"--fault-agent fault-agent --replay OUT/first-bug-input.json --repeat 1 "
+        f"--replay OUT/first-bug-input.json --repeat 1 "
         f"--horizon-ms {run.get('horizon_ms', '?')} "
         f"--ram-mib {run.get('ram_mib', '?')} "
         f"--knobs \"{knobs}\" --out OUT`"

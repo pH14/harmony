@@ -1,8 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # /init of the **exec-capable** guest image. Unlike the minimal
-# `init.sh` (which announces readiness and powers off) or the Postgres workload
-# image (which drives postgres to a terminal), this image hands the serial console
+# `init.sh` (which announces readiness and powers off) or a workload image
+# serial-console fixture, this image hands the serial console
 # to an interactive **root shell** and keeps it running — so the `exec`
 # improvisation channel has a shell reading ttyS0 to inject commands into.
 #

@@ -50,7 +50,7 @@ impl FaultVocabulary {
         }
         if nodes > MAX_NODES {
             return Err(format!(
-                "a fault bundle declares {nodes} nodes; the guest agent supervises at most {MAX_NODES}"
+                "a fault bundle declares {nodes} nodes; the platform supervisor supervises at most {MAX_NODES}"
             ));
         }
         let mut sorted = hooks.clone();
@@ -293,7 +293,7 @@ ready /usr/local/pgsql/bin/pg_isready
     }
 
     #[test]
-    fn a_bundle_past_the_agent_node_limit_is_refused() {
+    fn a_bundle_past_the_supervisor_node_limit_is_refused() {
         let nodes = |count: u16| {
             (0..count)
                 .map(|index| format!("node n{index} /bin/true\n"))

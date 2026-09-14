@@ -7,7 +7,7 @@
 # consonance/harmony-linux/build/initramfs-bridge.cpio.gz.
 #
 # The companion kernel must be built from THIS tree: `/dev/harmony` comes from
-# the char-device patch (patches/x86/0002-x86-harmony-character-device.patch,
+# the char-device patch (patches/common/0001-harmony-character-device.patch,
 # CONFIG_HARMONY_DEVICE=y in config-fragment), both landed 2026-07-20 in PR #133.
 # Every bzImage built before that date — including the content-pinned PR-44
 # kernel the CI gates boot — has no such device, so:
@@ -16,7 +16,7 @@
 #   consonance/harmony-linux/linux/build-bridge-image.sh
 #
 # Run (box-only — needs stock KVM):
-#   taskset -c <leased-core> campaign-runner box --kernel bzImage \
+#   taskset -c <leased-core> harmony-runner box --kernel bzImage \
 #       --initramfs initramfs-bridge.cpio.gz --ready-marker BRIDGE_DONE \
 #       --seeds 4 --runs 2 --deadline-delta 20000000
 # then read the `BRIDGE_*` serial lines. Note the F10 ordering: the probe fires

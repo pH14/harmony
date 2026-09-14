@@ -7,9 +7,6 @@ license = "AGPL-3.0-or-later"
 [workspace]
 
 [dependencies]
-vmm-core = { version = "=0.1.0", path = "../../consonance/vmm-core" }
-vmm-backend = { version = "=0.1.0", path = "../../consonance/vmm-backend" }
+consonance-client = { version = "=0.1.0", path = "../../consonance/client", features = ["in-process"] }
 control-proto = { version = "=0.1.0", path = "../../consonance/control-proto" }
-environment = { version = "=0.1.0", path = "../../consonance/environment" }
-vtime = { path = "../../consonance/vtime", version = "0.1.0" }
-sha2 = "0.10"
+nes-workload = { path = "../nes", version = "=0.1.0" }

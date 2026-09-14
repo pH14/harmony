@@ -601,6 +601,7 @@ pub fn vmm_backend::FakeKvm::reg(&self, u64) -> core::option::Option<u64>
 pub fn vmm_backend::FakeKvm::set_accept_irqs(&mut self, bool) -> &mut Self
 pub fn vmm_backend::FakeKvm::set_dirty_bitmap(&mut self, u32, alloc::vec::Vec<u64>) -> &mut Self
 impl vmm_backend::Arm64Kvm for vmm_backend::FakeKvm
+pub fn vmm_backend::FakeKvm::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::FakeKvm::complete_mmio_exit(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::get_dirty_log(&mut self, u32, u64) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::FakeKvm::get_mp_state(&self) -> vmm_backend::Result<vmm_backend::MpState>
@@ -897,6 +898,7 @@ impl vmm_backend::arch::ArchExit for vmm_backend::arch::x86::X86Exit
 pub fn vmm_backend::arch::x86::X86Exit::reason(&self) -> vmm_backend::ExitReason
 pub fn vmm_backend::arch::x86::X86Exit::stages_completion(&self) -> bool
 pub trait vmm_backend::Arm64Kvm
+pub fn vmm_backend::Arm64Kvm::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::Arm64Kvm::complete_mmio_exit(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64Kvm::get_dirty_log(&mut self, u32, u64) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::Arm64Kvm::get_mp_state(&self) -> vmm_backend::Result<vmm_backend::MpState>
@@ -915,6 +917,7 @@ pub fn vmm_backend::Arm64Kvm::set_vgic_attr(&mut self, u32, u64, bool, u64) -> v
 pub fn vmm_backend::Arm64Kvm::vcpu_init(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64Kvm::write_mmio_data(&mut self, [u8; 8]) -> vmm_backend::Result<()>
 impl vmm_backend::Arm64Kvm for vmm_backend::FakeKvm
+pub fn vmm_backend::FakeKvm::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_backend::FakeKvm::complete_mmio_exit(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::get_dirty_log(&mut self, u32, u64) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::FakeKvm::get_mp_state(&self) -> vmm_backend::Result<vmm_backend::MpState>

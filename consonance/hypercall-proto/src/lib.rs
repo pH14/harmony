@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![no_std]
 
+pub mod observation;
+
 #[cfg(feature = "host")]
 extern crate std;
 

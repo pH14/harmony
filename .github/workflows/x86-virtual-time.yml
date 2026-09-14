@@ -194,7 +194,7 @@ jobs:
       - name: Stage N6 guest images
         run: |
           mkdir -p consonance/harmony-linux/build
-          for name in bzImage bzImage-faultlab bzImage-n6-traps-off initramfs-n6.cpio.gz initramfs-n6-traps-off.cpio.gz; do
+          for name in bzImage bzImage-task-park bzImage-n6-traps-off initramfs-n6.cpio.gz initramfs-n6-traps-off.cpio.gz; do
             cp "nix-guest-output/x86_64/$name" consonance/harmony-linux/build/
           done
           (cd nix-guest-output && sha256sum -c guest-image-report.txt)
@@ -246,7 +246,7 @@ jobs:
       - name: Stage Go guest images
         run: |
           mkdir -p consonance/harmony-linux/build
-          for name in bzImage bzImage-faultlab bzImage-n6-traps-off initramfs-go-runtime.cpio.gz; do
+          for name in bzImage bzImage-task-park bzImage-n6-traps-off initramfs-go-runtime.cpio.gz; do
             cp "nix-guest-output/x86_64/$name" consonance/harmony-linux/build/
           done
           (cd nix-guest-output && sha256sum -c guest-image-report.txt)

@@ -56,32 +56,6 @@ pub fn copy_work_ram(core_ram: &[u8], out: &mut [u8]) -> bool {
     true
 }
 
-pub const HUGE_PAGE: usize = 2 << 20;
-
-pub fn validate_billboard_len(len: usize) -> Result<(), String> {
-    if len == 0 || len > HUGE_PAGE {
-        return Err(format!("billboard len {len} must be in 1..={HUGE_PAGE}"));
-    }
-    Ok(())
-}
-
-pub fn pagemap_offset(vaddr: u64) -> u64 {
-    (vaddr / 4096) * 8
-}
-
-pub fn decode_pagemap_entry(entry: u64, vaddr: u64) -> Result<u64, String> {
-    if entry & (1 << 63) == 0 {
-        return Err("billboard page not present after touch".to_string());
-    }
-    let pfn = entry & ((1 << 55) - 1);
-    if pfn == 0 {
-        return Err("pagemap PFN is zero (need root/CAP_SYS_ADMIN to read PFNs)".to_string());
-    }
-    pfn.checked_mul(4096)
-        .and_then(|base| base.checked_add(vaddr % 4096))
-        .ok_or_else(|| format!("pagemap PFN {pfn:#x} overflows a u64 GPA — corrupt entry"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,54 +119,5 @@ mod tests {
 
         assert!(!copy_work_ram(&src, &mut vec![0u8; WORK_RAM_LEN - 1]));
         assert!(!copy_work_ram(&[], &mut out));
-    }
-
-    #[test]
-    fn billboard_len_bounds_are_enforced() {
-        assert_eq!(HUGE_PAGE, 2 * 1024 * 1024);
-        assert!(validate_billboard_len(0).is_err());
-        assert!(validate_billboard_len(1).is_ok());
-        assert!(validate_billboard_len(HUGE_PAGE).is_ok());
-        assert!(validate_billboard_len(HUGE_PAGE + 1).is_err());
-    }
-
-    #[test]
-    fn pagemap_offset_is_eight_bytes_per_page() {
-        assert_eq!(pagemap_offset(0), 0);
-        assert_eq!(pagemap_offset(4095), 0);
-        assert_eq!(pagemap_offset(4096), 8);
-        assert_eq!(pagemap_offset(0x2000_1234), (0x2000_1234u64 / 4096) * 8);
-    }
-
-    #[test]
-    fn pagemap_entries_decode_present_pfn_and_offset() {
-        let present = 1u64 << 63;
-        assert_eq!(
-            decode_pagemap_entry(present | 0x1234, 0x7000_0000),
-            Ok(0x1234 * 4096)
-        );
-        assert_eq!(
-            decode_pagemap_entry(present | 0x1234, 0x7000_0123),
-            Ok(0x1234 * 4096 + 0x123)
-        );
-        assert!(decode_pagemap_entry(0x1234, 0x7000_0000).is_err());
-        assert!(decode_pagemap_entry(present, 0x7000_0000).is_err());
-        assert_eq!(
-            decode_pagemap_entry(present | (1 << 61) | (1 << 55) | 7, 0),
-            Ok(7 * 4096)
-        );
-    }
-
-    #[test]
-    fn oversized_pfns_are_rejected_not_overflowed() {
-        let present = 1u64 << 63;
-        let max_pfn = (1u64 << 55) - 1;
-        let err = decode_pagemap_entry(present | max_pfn, 0x123).unwrap_err();
-        assert!(err.contains("overflows"), "got: {err}");
-        let largest_ok = u64::MAX / 4096;
-        assert_eq!(
-            decode_pagemap_entry(present | largest_ok, 0),
-            Ok(largest_ok * 4096)
-        );
     }
 }

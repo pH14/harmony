@@ -35,13 +35,19 @@ mod real {
     use std::{error::Error, fs, path::PathBuf};
     pub fn run() -> Result<(), Box<dyn Error>> {
         let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-        let [rom, core, kernel, base] = args.as_slice() else {
-            return Err("usage: nes-backend-oracle ROM CORE KERNEL NES_BASE_INITRAMFS".into());
+        let [rom, core, kernel, platform, image] = args.as_slice() else {
+            return Err(
+                "usage: nes-backend-oracle ROM CORE KERNEL PLATFORM_INITRAMFS NES_OCI_IMAGE".into(),
+            );
         };
         let rom = fs::read(rom)?;
         let hash = format!("{:x}", Sha256::digest(fs::read(core)?));
-        let image = nes_workload::prepare::prepare(&rom, &fs::read(base)?)?;
-        let vm = ConsonanceMachine::new(&fs::read(kernel)?, &image)?;
+        let prepared = nes_workload::prepare::stage_and_prepare(
+            image.to_str().ok_or("NES OCI image path must be UTF-8")?,
+            &rom,
+        )?;
+        let initramfs = prepared.initramfs(&fs::read(platform)?);
+        let vm = ConsonanceMachine::new(&fs::read(kernel)?, &initramfs)?;
         if !vm.starts_at_power_on() {
             return Err("oracle requires a generic power-on NES image".into());
         }

@@ -132,14 +132,19 @@ fn main() -> std::process::ExitCode {
         }
     };
     let image = guest_image();
-    let mut vmm =
-        match vmm_core::vendor::arm64::bringup::boot_selected_control(&image, &[], "", GUEST_RAM) {
-            Ok(vmm) => vmm,
-            Err(error) => {
-                eprintln!("KVM arm64 doorbell benchmark setup failed: {error:?}");
-                return std::process::ExitCode::FAILURE;
-            }
-        };
+    let mut vmm = match vmm_core::vendor::arm64::bringup::boot_selected_control(
+        &image,
+        &[],
+        "",
+        GUEST_RAM,
+        0,
+    ) {
+        Ok(vmm) => vmm,
+        Err(error) => {
+            eprintln!("KVM arm64 doorbell benchmark setup failed: {error:?}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     if let Err(error) = vmm.reseed_entropy(seed) {
         eprintln!("KVM arm64 doorbell benchmark seed setup failed: {error}");
         return std::process::ExitCode::FAILURE;

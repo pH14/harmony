@@ -49,9 +49,9 @@ TARGETS = (
         "paths": ("workloads/nes-guest/**",),
     },
     {
-        "name": "fault-agent",
-        "command": "--manifest-path workloads/fault-agent/Cargo.toml --lib --bins",
-        "paths": ("workloads/fault-agent/**",),
+        "name": "harmony-supervisor",
+        "command": "--manifest-path consonance/harmony-linux/supervisor/Cargo.toml --lib --bins",
+        "paths": ("consonance/harmony-linux/supervisor/**",),
     },
 )
 

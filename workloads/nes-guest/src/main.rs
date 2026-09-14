@@ -132,6 +132,7 @@ mod real {
         nova::{NovaAgent, NovaChannel},
         regs,
     };
+    use hypercall_doorbell::observation::Observation;
 
     const DEFAULT_CORE: &str = "/opt/harmony/fceumm_libretro.so";
     const DEFAULT_ROM: &str = "/opt/harmony/smb.nes";
@@ -255,14 +256,16 @@ mod real {
         let mut agent = Agent::new(core, cfg).map_err(|e| e.to_string())?;
         let layout = agent.layout();
 
-        let (gpa, billboard) = pinned::alloc(layout.total_len())?;
+        let mut observation = Observation::create(layout.total_len())
+            .map_err(|error| format!("billboard observation: {error}"))?;
         println!(
-            "play-agent: billboard gpa={gpa:#x} len={}",
+            "play-agent: billboard handle={} len={}",
+            observation.handle(),
             layout.total_len()
         );
 
         let sealed = agent
-            .prime_billboard(billboard)
+            .prime_billboard(observation.bytes())
             .map_err(|e| e.to_string())?;
         if !sealed.in_gameplay() {
             return Err(format!(
@@ -281,7 +284,11 @@ mod real {
             .map_err(|e| format!("sdk init: {e:?}"))?;
         let mut harness = SdkHarness { sdk };
 
-        Harness::state_set(&mut harness, regs::REG_BILLBOARD_GPA, gpa)?;
+        Harness::state_set(
+            &mut harness,
+            regs::REG_BILLBOARD_HANDLE,
+            u64::from(observation.handle()),
+        )?;
         Harness::state_set(
             &mut harness,
             regs::REG_BILLBOARD_LEN,
@@ -295,7 +302,7 @@ mod real {
         let mut frame: u64 = 0;
         loop {
             agent
-                .step(&mut harness, billboard)
+                .step(&mut harness, observation.bytes())
                 .map_err(|e| e.to_string())?;
             frame += 1;
             if args.frames != 0 && frame >= args.frames {
@@ -306,7 +313,7 @@ mod real {
     }
 
     fn run_nes(args: &Args) -> Result<(), String> {
-        use harmony_play_agent::payload::{CATALOG, NesAgent, REG_GPA, REG_LEN};
+        use harmony_play_agent::payload::{CATALOG, NesAgent, REG_HANDLE, REG_LEN};
         let core_path = args
             .core
             .clone()
@@ -315,25 +322,26 @@ mod real {
         let rom = std::fs::read(rom_path).map_err(|e| format!("NES ROM: {e}"))?;
         let core = retro::LibretroCore::load(&core_path, rom_path, &rom)?;
         let mut agent = NesAgent::new(core)?;
-        let (gpa, bytes) = pinned::alloc(agent.layout().total_len())?;
-        agent.prime(bytes)?;
+        let mut observation = Observation::create(agent.layout().total_len())
+            .map_err(|error| format!("NES observation: {error}"))?;
+        agent.prime(observation.bytes())?;
         let sdk = harmony_sdk::Sdk::init(doorbell::open()?, CATALOG)
             .map_err(|e| format!("NES SDK: {e:?}"))?;
         let mut channel = SdkHarness { sdk };
         channel
             .sdk
-            .state_set(REG_GPA, gpa)
-            .map_err(|e| format!("NES GPA: {e:?}"))?;
+            .state_set(REG_HANDLE, u64::from(observation.handle()))
+            .map_err(|e| format!("NES observation handle: {e:?}"))?;
         channel
             .sdk
-            .state_set(REG_LEN, bytes.len() as u64)
+            .state_set(REG_LEN, observation.bytes().len() as u64)
             .map_err(|e| format!("NES length: {e:?}"))?;
         channel
             .sdk
             .setup_complete()
             .map_err(|e| format!("NES setup: {e:?}"))?;
         loop {
-            agent.run_chord(&mut channel, bytes)?;
+            agent.run_chord(&mut channel, observation.bytes())?;
         }
     }
 
@@ -364,9 +372,10 @@ mod real {
 
         let mut agent = NovaAgent::new(core).map_err(|e| e.to_string())?;
         let layout = agent.layout();
-        let (gpa, billboard) = pinned::alloc(layout.total_len())?;
+        let mut observation = Observation::create(layout.total_len())
+            .map_err(|error| format!("Nova observation: {error}"))?;
         let sealed = agent
-            .prime_billboard(billboard)
+            .prime_billboard(observation.bytes())
             .map_err(|e| e.to_string())?;
         if sealed.health == 0 || sealed.x == 0 || sealed.y == 0 {
             return Err(format!("Nova seal-point vacuity check failed: {sealed:?}"));
@@ -378,13 +387,16 @@ mod real {
         let mut channel = SdkHarness { sdk };
         channel
             .sdk
-            .state_set(harmony_play_agent::nova::regs::REG_BILLBOARD_GPA, gpa)
-            .map_err(|e| format!("Nova billboard GPA: {e:?}"))?;
+            .state_set(
+                harmony_play_agent::nova::regs::REG_BILLBOARD_HANDLE,
+                u64::from(observation.handle()),
+            )
+            .map_err(|e| format!("Nova billboard handle: {e:?}"))?;
         channel
             .sdk
             .state_set(
                 harmony_play_agent::nova::regs::REG_BILLBOARD_LEN,
-                layout.total_len() as u64,
+                observation.bytes().len() as u64,
             )
             .map_err(|e| format!("Nova billboard length: {e:?}"))?;
         agent
@@ -395,13 +407,14 @@ mod real {
             .setup_complete()
             .map_err(|e| format!("Nova setup_complete: {e:?}"))?;
         println!(
-            "play-agent: Nova setup sealed; awaiting two-byte payload chords (billboard={gpa:#x}+{})",
+            "play-agent: Nova setup sealed; awaiting two-byte payload chords (billboard handle={}+{})",
+            observation.handle(),
             layout.total_len()
         );
 
         loop {
             let state = agent
-                .run_chord(&mut channel, billboard)
+                .run_chord(&mut channel, observation.bytes())
                 .map_err(|e| e.to_string())?;
             println!(
                 "play-agent: Nova chord complete frame={} level={} x={} y={} health={}",
@@ -651,14 +664,23 @@ mod real {
                 let get_memory_size: GetMemorySizeFn =
                     unsafe { sym(handle, "retro_get_memory_size")? };
 
-                Ok(LibretroCore {
+                let core = LibretroCore {
                     run,
                     serialize_size,
                     serialize,
                     get_memory_data,
                     get_memory_size,
                     _rom: rom,
-                })
+                };
+                // SAFETY: the loaded core owns the reported writable save RAM,
+                // and no core call or other access races with initialization.
+                unsafe {
+                    harmony_play_agent::core_seam::initialize_save_ram(
+                        (core.get_memory_data)(RETRO_MEMORY_SAVE_RAM).cast::<u8>(),
+                        (core.get_memory_size)(RETRO_MEMORY_SAVE_RAM),
+                    );
+                }
+                Ok(core)
             }
         }
 
@@ -753,62 +775,6 @@ mod real {
             }
         }
     }
-
-    mod pinned {
-        use harmony_play_agent::glue::{self, HUGE_PAGE};
-        use std::io::{Read, Seek, SeekFrom};
-
-        pub fn alloc(len: usize) -> Result<(u64, &'static mut [u8]), String> {
-            glue::validate_billboard_len(len)?;
-            // SAFETY: anonymous private hugetlb mapping of one huge page; the
-            // result is checked against MAP_FAILED before use.
-            let ptr = unsafe {
-                libc::mmap(
-                    std::ptr::null_mut(),
-                    HUGE_PAGE,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_HUGETLB,
-                    -1,
-                    0,
-                )
-            };
-            if ptr == libc::MAP_FAILED {
-                return Err(format!(
-                    "mmap(MAP_HUGETLB) failed: {} — did init reserve a hugepage \
-                     (echo 2 > /proc/sys/vm/nr_hugepages)?",
-                    std::io::Error::last_os_error()
-                ));
-            }
-            // SAFETY: `ptr` is a valid writable mapping of HUGE_PAGE bytes.
-            unsafe { std::ptr::write_bytes(ptr.cast::<u8>(), 0, HUGE_PAGE) };
-            // SAFETY: mlock over the mapping just created; result checked.
-            if unsafe { libc::mlock(ptr, HUGE_PAGE) } != 0 {
-                return Err(format!(
-                    "mlock billboard: {}",
-                    std::io::Error::last_os_error()
-                ));
-            }
-
-            let gpa = translate(ptr as u64)?;
-            // SAFETY: the mapping is valid for HUGE_PAGE bytes and
-            // glue::validate_billboard_len proved len <= HUGE_PAGE above; it
-            // is never unmapped (leaked for the process's life) and
-            // exclusively owned by the agent.
-            let slice = unsafe { std::slice::from_raw_parts_mut(ptr.cast::<u8>(), len) };
-            Ok((gpa, slice))
-        }
-
-        fn translate(vaddr: u64) -> Result<u64, String> {
-            let mut f = std::fs::File::open("/proc/self/pagemap")
-                .map_err(|e| format!("/proc/self/pagemap: {e}"))?;
-            f.seek(SeekFrom::Start(glue::pagemap_offset(vaddr)))
-                .map_err(|e| format!("pagemap seek: {e}"))?;
-            let mut entry = [0u8; 8];
-            f.read_exact(&mut entry)
-                .map_err(|e| format!("pagemap read: {e}"))?;
-            glue::decode_pagemap_entry(u64::from_le_bytes(entry), vaddr)
-        }
-    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -817,7 +783,7 @@ mod real {
 
     pub fn run(_args: &Args) -> Result<(), String> {
         Err(
-            "the libretro core, billboard pinning, and doorbell are only available on \
+            "the libretro core, observation mapping, and doorbell are only available on \
              Linux (the guest); use --smoke on the dev host"
                 .to_string(),
         )

@@ -64,7 +64,7 @@ pub mod regs {
     pub const REG_AVAILABLE: u32 = 8;
     pub const REG_COLLECTIBLES: u32 = 9;
     pub const REG_FRAME: u32 = 10;
-    pub const REG_BILLBOARD_GPA: u32 = 11;
+    pub const REG_BILLBOARD_HANDLE: u32 = 11;
     pub const REG_BILLBOARD_LEN: u32 = 12;
     pub const REG_X: u32 = 13;
     pub const REG_Y: u32 = 14;
@@ -87,7 +87,7 @@ pub mod regs {
         Point::state(REG_AVAILABLE, "nova_available"),
         Point::state(REG_COLLECTIBLES, "nova_collectibles"),
         Point::state(REG_FRAME, "nova_frame"),
-        Point::state(REG_BILLBOARD_GPA, "nova_billboard_gpa"),
+        Point::state(REG_BILLBOARD_HANDLE, "nova_billboard_handle"),
         Point::state(REG_BILLBOARD_LEN, "nova_billboard_len"),
         Point::state(REG_X, "nova_x"),
         Point::state(REG_Y, "nova_y"),

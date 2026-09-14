@@ -1,0 +1,15 @@
+[package]
+name = "guest-image"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Deterministic cpio helpers shared by Harmony guest image producers"
+
+[dependencies]
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -30,7 +30,10 @@ class MiriScopeTests(unittest.TestCase):
         self.assertEqual(self.names(["consonance/snapshot-store/src/lib.rs"]), {"snapshot-store"})
         self.assertEqual(self.names(["workloads/nes-machine/src/lib.rs"]), {"machine"})
         self.assertEqual(self.names(["workloads/nes-guest/src/lib.rs"]), {"nes-guest"})
-        self.assertEqual(self.names(["workloads/fault-agent/src/lib.rs"]), {"fault-agent"})
+        self.assertEqual(
+            self.names(["consonance/harmony-linux/supervisor/src/lib.rs"]),
+            {"harmony-supervisor"},
+        )
 
     def test_dependency_and_toolchain_changes_select_every_target(self) -> None:
         names = self.names(["workloads/nes-guest/Cargo.toml"])

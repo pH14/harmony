@@ -13,7 +13,7 @@
 # "Environment"); the pure *brain* (chord decode, RAM-map decode, billboard
 # layout, the frame loop over the mock-core seam) is nonetheless target-agnostic
 # so it builds and is unit-tested on the macOS dev host, and only the libretro
-# C-ABI FFI + the billboard pinning (hugetlb/pagemap/mlock) are Linux.
+# C-ABI FFI + the kernel-owned observation and device interfaces are Linux.
 [package]
 name = "harmony-play-agent"
 version = "0.1.0"
@@ -49,13 +49,12 @@ nes-protocol = { path = "../nes-protocol", version = "=0.1.0" }
 harmony-sdk = { path = "../../consonance/harmony-linux/sdk", version = "0.1.0" }
 # The guest-side hypercall client + Transport trait the SDK is generic over.
 hypercall-proto = { path = "../../consonance/hypercall-proto", version = "0.1.0", default-features = false, features = ["guest"] }
-# Architecture-native guest doorbell: x86 stays on the kernel-owned
-# `/dev/harmony` ioctl while arm64 uses the board's MMIO doorbell.
+# Kernel-owned guest transport over the platform-provided `/dev/harmony` ABI.
 hypercall-doorbell = { path = "../../consonance/hypercall-doorbell", version = "0.1.0", features = ["linux-device"] }
 clap = { version = "4", features = ["derive"] }
 
-# Guest-resident Linux glue: the libretro dlopen FFI, the `/dev/harmony` ioctl
-# transport, and the billboard's hugetlb + pagemap + mlock pinning. Only referenced
+# Guest-resident Linux glue: the libretro dlopen FFI and the `/dev/harmony`
+# transport. Only referenced
 # under `cfg(target_os = "linux")` (guest harmony-linux code — the
 # no-cfg(target_os) rule is waived per the task's Environment note); on the macOS
 # dev host the bin builds without it.

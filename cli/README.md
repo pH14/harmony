@@ -12,26 +12,28 @@ to the artifact directory when using an external build.
 harmony search --package nes smb.nes --core quicknes_libretro.so
 harmony search --package nes --backend native smb.nes --core quicknes_libretro.so
 harmony search --package nes --backend consonance smb.nes \
-  --kernel bzImage --base-initramfs initramfs-nes.cpio.gz
+  --kernel bzImage --base-initramfs initramfs-oci.cpio.gz \
+  --image nes.oci
 harmony search --package faults foo.oci --kernel bzImage \
-  --base-initramfs initramfs.cpio.gz --fault-agent fault-agent --out run
+  --base-initramfs initramfs.cpio.gz --out run
 ```
 
 NES identifies SMB or Nova by ROM hash and defaults to `native`. Supply the
 pinned host QuickNES library with `--core` or `HARMONY_QUICKNES_CORE`. Consonance
-execution uses a controlled kernel and the ROM-free image produced by
-[`build-base-image.sh`](../workloads/nes-guest/build-base-image.sh); preparation
-adds the ROM and launch command. It requires a supported Linux KVM host.
+execution uses a controlled kernel, the platform runtime initramfs, and an OCI
+image containing the static play-agent and QuickNES core. Preparation adds the
+ROM as a validated read-only external input and launches the generic payload
+through the platform supervisor. Pass the image with `--image` or
+`HARMONY_NES_IMAGE`; it requires a supported Linux KVM host.
 
 The faults package defaults to `consonance`. Its OCI image supplies
 `/etc/harmony/bundle`, which names the workload's nodes, hooks, setup and
-readiness commands in the [bundle format](../workloads/fault-agent/README.md),
-plus the executables those lines run. Every node and the fault agent execute
-inside one VM on one virtual CPU. Supply the controlled kernel with `--kernel`,
-the Linux base image with `--base-initramfs`, and the static musl fault agent
-with `--fault-agent` or `HARMONY_FAULT_AGENT`. Installed artifacts are
-discovered through `HARMONY_GUEST_DIR`. Preparation injects the agent into the
-staged image; its commands execute inside the guest.
+readiness commands in the platform supervisor's bundle format, plus the
+executables those lines run. Every node and hook execute inside one VM on one
+virtual CPU. Supply the controlled kernel with `--kernel` and the Linux base
+image with `--base-initramfs`. The platform runtime provides the supervisor and
+its SDK devices; installed kernel and base-image artifacts are discovered
+through `HARMONY_GUEST_DIR`.
 
 `--horizon-ms` sets the guest time one fault action runs for and `--ram-mib` the
 guest RAM. `--knobs "k=v k=v"` adds guest command-line words, `--places FILE`
@@ -57,15 +59,18 @@ harmony oci run alpine:3 --seed 7 --timeout 60 --out run-7 -- /bin/echo hello
 `oci run` accepts a registry image, OCI layout, or Docker image archive. It writes
 `serial.log` and `run.json` on completion. `--console` streams the full boot log.
 On timeout it preserves the partial serial log and returns an error without a
-successful run digest.
+successful run digest. `run.json` records separate application, supervisor, and
+runtime exit statuses: an application status is present only after the
+supervisor has observed the application process return, while a runtime status
+also covers a `runc` startup failure.
 
-On Linux x86, the timeout watchdog sets a host cancellation latch and interrupts
-the owning KVM thread with reserved SIGUSR1. It repeats the interrupt after expiry
-until the driver returns, covering a signal arriving just before KVM_RUN. It sends
-no signals before expiry; canceled executions are abandoned. The timeout is a host
-resource limit, not guest virtual time or replay state. The mechanism itself lives
-in [`consonance-client`](../consonance/client/README.md), which the neutral session
-also uses for its own host bound.
+On Linux x86 and arm64, the timeout watchdog sets a host cancellation latch and
+interrupts the owning KVM thread with reserved SIGUSR1. It repeats the interrupt
+after expiry until the driver returns, covering a signal arriving just before
+KVM_RUN. It sends no signals before expiry; canceled executions are abandoned.
+The timeout is a host resource limit, not guest virtual time or replay state. The
+mechanism itself lives in [`consonance-client`](../consonance/client/README.md),
+which the neutral session also uses for its own host bound.
 
 The CLI enables `harmony_pvclock` so the kernel uses virtual timing for entropy
 mixing as well as timekeeping. The stock x86 virtual-time boot supplies Linux's `SETUP_RNG_SEED` record from the

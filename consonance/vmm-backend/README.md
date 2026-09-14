@@ -21,9 +21,14 @@ exits remain pending until the matching completion method is called; resuming
 with an unserviced completion is an error. PIO/MMIO stores have no value to
 complete, but KVM retains their fast-path callback until the next entry, so the
 backend marks them staged and retires them with an immediate-exit entry before
-an in-place restore. Exit counters and capability flags are exposed for the
+snapshot capture or an in-place restore. Completion retirement runs no guest
+instructions and adds no modeled exit or virtual time. Exit counters and capability flags are exposed for the
 VMM's reports. Virtual-time policy, device models, snapshot formats, and
 entropy live above this crate.
+
+Both Linux KVM backends expose a cancellation latch for the session watchdog.
+The watchdog interrupts a blocked KVM run with a signal and sets the latch;
+the backend refuses subsequent guest entry after cancellation.
 
 The `contract-tests` feature exposes the shared backend contract exam, and the
 `mock` feature enables portable fixtures:

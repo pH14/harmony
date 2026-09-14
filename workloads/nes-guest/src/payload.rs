@@ -3,10 +3,10 @@
 use crate::{core_seam::Core, nova::NovaChannel};
 use nes_protocol::{MAX_HOLD_FRAMES, NovaBillboardLayout};
 
-pub const REG_GPA: u32 = 1;
+pub const REG_HANDLE: u32 = 1;
 pub const REG_LEN: u32 = 2;
 pub const CATALOG: &[harmony_sdk::Point] = &[
-    harmony_sdk::Point::state(REG_GPA, "nes.publication.gpa"),
+    harmony_sdk::Point::state(REG_HANDLE, "nes.publication.handle"),
     harmony_sdk::Point::state(REG_LEN, "nes.publication.len"),
 ];
 

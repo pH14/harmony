@@ -48,3 +48,12 @@ by platform and require the corresponding KVM or Hypervisor.framework host.
 cargo test -p vmm-core
 cargo clippy -p vmm-core --all-targets -- -D warnings
 ```
+
+SDK snapshot points retire the completed exit before reporting the boundary.
+Snapshot capture also retires any remaining backend completion and clears cached
+CPU registers before sealing. If the backend cannot retire a staged completion,
+SDK boundary handling returns that error and preserves the pending point; a
+direct snapshot reports `NotQuiescent`.
+Low-level state capture rejects staged completions; read-only state hashes do
+not retire instructions. This keeps KVM's pending I/O callback out of snapshots
+without counting the completion twice after restore.

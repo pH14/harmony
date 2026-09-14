@@ -63,6 +63,7 @@ name = "fault-policy"
 version = "0.1.0"
 dependencies = [
  "environment",
+ "process-proto",
  "proptest",
  "thiserror",
 ]
@@ -140,6 +141,10 @@ checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "process-proto"
+version = "0.1.0"
 
 [[package]]
 name = "proptest"

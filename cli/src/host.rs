@@ -34,7 +34,7 @@ impl Isa {
     pub fn guest_dir_name(self) -> &'static str {
         match self {
             Isa::X86_64 => "x86_64",
-            Isa::Arm64 => "arm64",
+            Isa::Arm64 => "aarch64",
             Isa::Other => "unsupported",
         }
     }
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn guest_dir_names() {
         assert_eq!(Isa::X86_64.guest_dir_name(), "x86_64");
-        assert_eq!(Isa::Arm64.guest_dir_name(), "arm64");
+        assert_eq!(Isa::Arm64.guest_dir_name(), "aarch64");
         assert_eq!(Isa::Other.guest_dir_name(), "unsupported");
     }
 
