@@ -260,4 +260,34 @@ mod tests {
         invalid[8..16].copy_from_slice(&2_u64.to_le_bytes());
         assert_eq!(decode_report(&invalid), Err(ProtocolError::InvalidVersion));
     }
+
+    #[test]
+    fn protocol_errors_describe_the_failed_contract() {
+        let cases = [
+            (ProtocolError::WrongSize, "event frame has the wrong size"),
+            (
+                ProtocolError::UnknownCommand,
+                "event frame has an unknown command",
+            ),
+            (
+                ProtocolError::MismatchedReply,
+                "event reply does not acknowledge the request",
+            ),
+            (
+                ProtocolError::InvalidArmed,
+                "event reply has an invalid armed flag",
+            ),
+            (
+                ProtocolError::InvalidRarity,
+                "event report has an invalid rarity",
+            ),
+            (
+                ProtocolError::InvalidVersion,
+                "event hello has an unsupported protocol version",
+            ),
+        ];
+        for (error, message) in cases {
+            assert_eq!(error.to_string(), message);
+        }
+    }
 }
