@@ -991,11 +991,17 @@ mod xsave_diagnostic {
     }
 
     fn entry_endpoint(fixture: &mut EntryFixture, directory: &Path, phase: &str) -> EntryEndpoint {
+        if let Some(path) = std::env::var_os("XSAVE_TRACE_MARKER") {
+            fs::write(path, format!("XSAVE_PHASE_BEGIN {phase}\n")).unwrap();
+        }
         fixture.backend.reset_exit_counts();
         assert!(matches!(
             fixture.backend.run().unwrap(),
             Exit::Common(CommonExit::Idle)
         ));
+        if let Some(path) = std::env::var_os("XSAVE_TRACE_MARKER") {
+            fs::write(path, format!("XSAVE_PHASE_END {phase}\n")).unwrap();
+        }
         retain_entry(fixture, directory, phase)
     }
 
@@ -1014,10 +1020,25 @@ mod xsave_diagnostic {
         );
         fs::create_dir(&root).unwrap();
         let mut failures = Vec::new();
+        let selected = std::env::var("XSAVE_ENTRY_CASE").ok();
+        if let Some(selected) = &selected {
+            assert!(
+                [3, 7]
+                    .into_iter()
+                    .any(
+                        |xcr0| [0, 2, 3].into_iter().any(|seed| ["hlt", "xsave", "xrstor"]
+                            .into_iter()
+                            .any(|mode| *selected == format!("xcr{xcr0}-seed{seed}-{mode}")))
+                    )
+            );
+        }
         for xcr0 in [3, 7] {
             for seed in [0, 2, 3] {
                 for mode in ["hlt", "xsave", "xrstor"] {
                     let label = format!("xcr{xcr0}-seed{seed}-{mode}");
+                    if selected.as_ref().is_some_and(|selected| selected != &label) {
+                        continue;
+                    }
                     let directory = root.join(&label);
                     fs::create_dir(&directory).unwrap();
                     let program = entry_program(mode, xcr0);

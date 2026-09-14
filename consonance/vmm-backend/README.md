@@ -199,3 +199,11 @@ unchanged when the variable is absent.
 The original entry fixtures use real mode, so their failures alone do not
 establish that the same instruction sequence diverges in 64-bit mode. Both
 sets retain full CPU and RAM comparisons; the mode is recorded in CI evidence.
+
+D1 selects one exact cohort with `XSAVE_ENTRY_CASE` and records a scoped tracefs
+instance using `tests/xsave-exit-trace.sh`. Phase markers bracket each actual
+guest run so in-kernel `kvm:kvm_exit` events can be assigned to reference, cold,
+and reused execution. The trace includes the event format, guest RIP and exit
+reason; missing tracing support is an unavailable diagnostic, not confirmation
+of the proposed hidden nested-page fault. The trace instance is removed after
+its contents are retained, including when the raw oracle fails.

@@ -71,3 +71,34 @@ initramfs hash is recorded in deterministic campaign streams.
 Cold Nix guest builds fetch the pinned BusyBox archive from the Buildroot mirror
 with the upstream URL as fallback. Both locations use the same locked SHA-256;
 the mirror choice leaves the guest source version and bytes unchanged.
+
+## XSAVE consistency qualification in progress
+
+The September 14 workstream keeps AVX and targets deterministic guest-owned
+XSAVE buffers on hosted AMD as well as Intel. The broad snapshot integration
+goal remains open; this work does not qualify arbitrary supplied workloads.
+
+Qualification proceeds through a traced fixed-CPU reuse cohort (D1), a
+bare-metal AMD attribution run (D2), synthetic whole-buffer canonicalization
+with init/SSE-active/AVX-active states (D3), and an inventory of kernel save
+sites, XGETBV(1), signal-frame handling, and userspace loader behavior (D4).
+Nested-page-fault interference in the reuse fixture is a hypothesis until the
+exit trace establishes it. No guest canonicalizer is shipped before D3 and D4.
+
+The proposed guest contract compares identity at guest-initiated exits; debug
+stops are interventions, not comparison points. Patched save/canonicalize
+sequences must exclude guest interrupt handlers. Admitted executable code,
+including shared libraries and dlopen dependencies, must exclude XSAVE-family
+instructions and XGETBV(1) outside the patched kernel. XGETBV(0) needs a proven
+zero selector. JITs, generated code, and writable executable mappings are
+outside that controlled admission scope. These are requirements to implement
+and verify, not claims about the current image or scan.
+
+The primary path adapts whole-buffer canonicalization to each audited save
+layout and fault path, disables modified-save optimizations, and uses eager
+dynamic binding in admitted workloads. Disabling XSAVE/AVX is a fallback only
+if a correct synthetic canonicalizer exposes actual register-value corruption.
+Raw restore presence stays in the restore path and diagnostics. Removing it
+from logical identity requires the kernel audit and admission argument, not
+merely matching boot tests. Real-Linux paired boots and interrupted runs must
+then agree in complete RAM and modeled state on every qualification host.
