@@ -67,6 +67,13 @@ trajectory achieved their union. The inherited count representation and
 lexicographic resource preference are policy tradeoffs, not true capability
 or resource dominance.
 
+The pooled group's field declaration order is the frontier selectors' strongest
+ranking term, so a field near the front decides which places the selector draws
+from. Items and tanks lead because they are progress. The area byte is last: the
+five areas are connected in both directions and the two boss areas are numbered
+either side of the endgame area, so ranking by that byte parks the search in the
+higher-numbered boss area and leaves the other undeveloped.
+
 The legacy primary progress watermark records equipment bit count **plus boss
 defeats**, and missile capacity.
 The `milestones.tanks` field combines missile capacity divided by five
@@ -256,11 +263,11 @@ produce no prefix sidecar. This permits checking the actual one-to-six-action
 job horizon without replacing the frozen 24-action diagnostic bank.
 
 The opt-in Cargo feature `metroid-refined-archive` builds a separate experimental
-v9 key policy. It uses 8-pixel retention positions and raw pose, while preserving
+key policy. It uses 8-pixel retention positions and raw pose, while preserving
 the existing 32-pixel selection cells, 128-pixel regions, map groups, progress
 ordering, resource preference and one representative per retention slot. The
-default build retains v8 semantics and serialization. Streams record distinct
-key-policy identifiers and reject replay under the other build's policy.
+default build retains its own positions, pose and serialization. Streams record
+distinct key-policy identifiers and reject replay under the other build's policy.
 The key's serialized field layout is unchanged; the recorded policy identifies
 the position/pose interpretation. Archive imports already re-derive keys from
 reconstructed states rather than copying the old key identity.

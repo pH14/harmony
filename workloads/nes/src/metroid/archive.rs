@@ -27,20 +27,20 @@ pub const MAX_METROID_ACTIONS: usize = 8_192;
 /// Recorded archive-key and per-location preference policy.
 pub const KEY_POLICY_IDENTIFIER: &str = if cfg!(feature = "metroid-retention-progress") {
     if cfg!(feature = "metroid-refined-archive") {
-        "metroid_items_tanks_spatial_8_raw_pose_motion_context_scoped_progress_selection_32_v13"
+        "metroid_items_tanks_spatial_8_raw_pose_motion_context_scoped_progress_selection_32_area_last_v14"
     } else {
-        "metroid_items_tanks_spatial_16_posture_motion_context_scoped_progress_selection_32_v12"
+        "metroid_items_tanks_spatial_16_posture_motion_context_scoped_progress_selection_32_area_last_v13"
     }
 } else if cfg!(feature = "metroid-motion-context") {
     if cfg!(feature = "metroid-refined-archive") {
-        "metroid_items_tanks_spatial_8_raw_pose_motion_context_selection_32_legacy_progress_v11"
+        "metroid_items_tanks_spatial_8_raw_pose_motion_context_selection_32_legacy_progress_area_last_v12"
     } else {
-        "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_v10"
+        "metroid_items_tanks_spatial_16_posture_motion_context_selection_32_legacy_progress_area_last_v11"
     }
 } else if cfg!(feature = "metroid-refined-archive") {
-    "metroid_items_tanks_spatial_8_raw_pose_selection_32_legacy_progress_v9"
+    "metroid_items_tanks_spatial_8_raw_pose_selection_32_legacy_progress_area_last_v10"
 } else {
-    "metroid_items_tanks_less_boss_award_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v9"
+    "metroid_items_tanks_less_boss_award_map_spatial_16_posture_door_area_last_preference_missiles_first_ridley_bit1_v10"
 };
 /// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
@@ -59,17 +59,24 @@ pub type MetroidArchive =
 /// One representative per position holds the place, whichever route reached
 /// it; a count of cells a route has crossed would rank a route that swept
 /// one corridor above a route that went straight to an exit.
+///
+/// The area byte sits last because its numeric order is not a progress
+/// order. The five areas are connected in both directions, and the two
+/// boss areas are numbered either side of the endgame area, so ranking by
+/// the byte parks the search in whichever area happens to number highest
+/// and abandons the other. With the byte last the map row and column
+/// decide the rank, and both boss areas develop.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct MetroidArchiveGroup {
     items: u8,
     tanks: u8,
-    area: u8,
     map_x: u8,
     map_y: u8,
     x: u8,
     y: u8,
     posture: u8,
     door: u8,
+    area: u8,
 }
 
 /// Quality-diversity key for one Metroid endpoint.
@@ -454,6 +461,28 @@ mod tests {
             left
         );
         assert!(KEY_POLICY_IDENTIFIER.contains("motion_context"));
+    }
+
+    #[test]
+    fn the_area_byte_does_not_rank_one_boss_area_over_the_other() {
+        let kraid = archive_key(MetroidMechanicalState {
+            area: 0x12,
+            map_x: 1,
+            map_y: 9,
+            ..MetroidMechanicalState::default()
+        });
+        let ridley = archive_key(MetroidMechanicalState {
+            area: 0x14,
+            map_x: 0,
+            map_y: 0,
+            ..MetroidMechanicalState::default()
+        });
+        assert_eq!(
+            MetroidArchiveKey::progress_cmp(kraid.group(0), ridley.group(0)),
+            Ordering::Equal
+        );
+        assert!(kraid.group(0) > ridley.group(0));
+        assert!(KEY_POLICY_IDENTIFIER.contains("area_last"));
     }
 
     fn state(x: u8, health: u16, equipment: u8) -> MetroidMechanicalState {
