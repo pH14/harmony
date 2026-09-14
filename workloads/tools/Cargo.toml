@@ -10,6 +10,8 @@ license = "AGPL-3.0-or-later"
 arm-sha2-asm = ["sha2/asm"]
 
 [dependencies]
+consonance-client = { version = "=0.1.0", path = "../../consonance/client", features = ["in-process"] }
+nes-workload = { path = "../nes", version = "=0.1.0" }
 vmm-core = { version = "=0.1.0", path = "../../consonance/vmm-core" }
 vmm-backend = { version = "=0.1.0", path = "../../consonance/vmm-backend" }
 control-proto = { version = "=0.1.0", path = "../../consonance/control-proto" }

@@ -14,7 +14,22 @@ fn main() -> std::process::ExitCode {
         Some(value) if value == std::ffi::OsStr::new("--verify-d-bundle") => {
             d_bundle::run_verify_d_bundle()
         }
-        _ => run(),
+        _ => {
+            #[cfg(target_os = "linux")]
+            if std::env::var_os("HARMONY_CONSONANCE_RESTORE_ORACLE").is_none()
+                && std::env::args_os().nth(1).as_deref()
+                    != Some(std::ffi::OsStr::new("--replay-in-place-history"))
+            {
+                return match run_session() {
+                    Ok(()) => std::process::ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("NOVA_CONSONANCE_PROBE_FAIL: {error}");
+                        std::process::ExitCode::FAILURE
+                    }
+                };
+            }
+            run()
+        }
     };
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -33,7 +48,10 @@ fn main() -> std::process::ExitCode {
     all(target_os = "macos", target_arch = "aarch64")
 ))]
 const PROBE_RAM: usize = 128 * 1024 * 1024;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 const PROBE_SEED: u64 = 0x4e4f_5641_5f43_4931;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const PROBE_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
@@ -76,6 +94,31 @@ type ProbeServer = vmm_core::control::ControlServer<ProbeBackend>;
     ),
     all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
+fn prepare_probe_initramfs(
+    platform_path: &std::ffi::OsStr,
+    image_path: &std::ffi::OsStr,
+    rom_path: &std::ffi::OsStr,
+) -> Result<Vec<u8>, String> {
+    let platform = std::fs::read(platform_path)
+        .map_err(|error| format!("cannot read platform initramfs {platform_path:?}: {error}"))?;
+    let rom = std::fs::read(rom_path)
+        .map_err(|error| format!("cannot read Nova ROM {rom_path:?}: {error}"))?;
+    let image = image_path
+        .to_str()
+        .ok_or("NES OCI image path must be UTF-8")?;
+    let prepared = nes_workload::prepare::stage_and_prepare(image, &rom)
+        .map_err(|error| format!("prepare NES OCI execution: {error}"))?;
+    Ok(prepared.initramfs(&platform))
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
 fn boot_probe(kernel: &[u8], initramfs: &[u8]) -> Result<ProbeVmm, vmm_core::vmm::VmmError> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     let mut vmm = vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time(
@@ -91,6 +134,7 @@ fn boot_probe(kernel: &[u8], initramfs: &[u8]) -> Result<ProbeVmm, vmm_core::vmm
         initramfs,
         PROBE_CMDLINE,
         PROBE_RAM,
+        PROBE_SEED,
     )?;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     let mut vmm = vmm_core::vendor::arm64::bringup::boot_hvf_control(
@@ -100,6 +144,7 @@ fn boot_probe(kernel: &[u8], initramfs: &[u8]) -> Result<ProbeVmm, vmm_core::vmm
         PROBE_RAM,
     )?;
     vmm.wire_snapshot_hashing();
+    vmm.defer_virtual_time_checkpoint_hashes()?;
     Ok(vmm)
 }
 
@@ -112,25 +157,11 @@ fn boot_probe(kernel: &[u8], initramfs: &[u8]) -> Result<ProbeVmm, vmm_core::vmm
     all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 fn latest_frame(events: &[(u64, u32, Vec<u8>)]) -> Option<u64> {
-    const SDK_NS_SHIFT: u32 = 24;
-    const SDK_NS_STATE: u8 = 2;
-    const SDK_STATE_SET: u8 = 0;
-    const SDK_STATE_MAX: u8 = 1;
-    const REG_FRAME: u32 = 10;
-    let event_id = (u32::from(SDK_NS_STATE) << SDK_NS_SHIFT) | REG_FRAME;
-    let mut frame = None;
-    for &(_, id, ref bytes) in events {
-        if id != event_id || bytes.len() != 9 {
-            continue;
-        }
-        let value = u64::from_le_bytes(bytes[1..9].try_into().ok()?);
-        match bytes[0] {
-            SDK_STATE_SET => frame = Some(value),
-            SDK_STATE_MAX => frame = Some(frame.unwrap_or(0).max(value)),
-            _ => {}
-        }
-    }
-    frame
+    const FRAME_COMPLETE_EVENT_ID: u32 = (4 << 24) | 1;
+    events.iter().rev().find_map(|(_, id, bytes)| {
+        (*id == FRAME_COMPLETE_EVENT_ID && bytes.len() == 8)
+            .then(|| u64::from_le_bytes(bytes.as_slice().try_into().expect("checked frame length")))
+    })
 }
 
 #[cfg(any(
@@ -951,18 +982,30 @@ expected_endpoint_portable_sha256={}\n\
         };
 
         let mut args = std::env::args_os().skip(2);
-        let (Some(kernel_path), Some(initramfs_path), Some(bundle_path), None) =
-            (args.next(), args.next(), args.next(), args.next())
+        let (
+            Some(kernel_path),
+            Some(initramfs_path),
+            Some(image_path),
+            Some(rom_path),
+            Some(bundle_path),
+            None,
+        ) = (
+            args.next(),
+            args.next(),
+            args.next(),
+            args.next(),
+            args.next(),
+            args.next(),
+        )
         else {
             return Err(
-                "usage: kvm_x86_nova_probe --verify-d-bundle <bzImage> <initramfs-nova.cpio.gz> <bundle-dir>"
+                "usage: kvm_x86_nova_probe --verify-d-bundle <bzImage> <platform-initramfs> <nes.oci> <nova.nes> <bundle-dir>"
                     .to_owned(),
             );
         };
         let kernel = std::fs::read(&kernel_path)
             .map_err(|error| format!("cannot read {kernel_path:?}: {error}"))?;
-        let initramfs = std::fs::read(&initramfs_path)
-            .map_err(|error| format!("cannot read {initramfs_path:?}: {error}"))?;
+        let initramfs = prepare_probe_initramfs(&initramfs_path, &image_path, &rom_path)?;
         let bundle = d_bundle_read(std::path::Path::new(&bundle_path), &kernel, &initramfs)?;
         let source_compare = compare_portable_execution_state(
             &bundle.source_snapshot,
@@ -1234,14 +1277,20 @@ fn run_control_child() -> Result<(), String> {
     use vmm_core::control::{ControlServer, RestoreMode, VmmFactory};
 
     let mut args = std::env::args_os().skip(2);
-    let (Some(kernel_path), Some(initramfs_path), None) = (args.next(), args.next(), args.next())
-    else {
-        return Err("control child requires <bzImage> <initramfs-nova.cpio.gz>".to_owned());
+    let (Some(kernel_path), Some(initramfs_path), Some(image_path), Some(rom_path), None) = (
+        args.next(),
+        args.next(),
+        args.next(),
+        args.next(),
+        args.next(),
+    ) else {
+        return Err(
+            "control child requires <bzImage> <platform-initramfs> <nes.oci> <nova.nes>".to_owned(),
+        );
     };
     let kernel = std::fs::read(&kernel_path)
         .map_err(|error| format!("control child cannot read {kernel_path:?}: {error}"))?;
-    let initramfs = std::fs::read(&initramfs_path)
-        .map_err(|error| format!("control child cannot read {initramfs_path:?}: {error}"))?;
+    let initramfs = prepare_probe_initramfs(&initramfs_path, &image_path, &rom_path)?;
 
     let live = boot_probe(&kernel, &initramfs)
         .map_err(|error| format!("control child boot: {error:?}"))?;
@@ -1346,6 +1395,8 @@ impl ChildSession {
     fn spawn(
         kernel: &std::path::Path,
         initramfs: &std::path::Path,
+        image: &std::path::Path,
+        rom: &std::path::Path,
         import: &std::path::Path,
         export: &std::path::Path,
         state: Option<&std::path::Path>,
@@ -1360,6 +1411,8 @@ impl ChildSession {
             .arg("--control-child")
             .arg(kernel)
             .arg(initramfs)
+            .arg(image)
+            .arg(rom)
             .env("HARMONY_PORTABLE_IMPORT", import)
             .env("HARMONY_PORTABLE_EXPORT", export)
             .env("HARMONY_PORTABLE_EXPORT_HANDLE", "last")
@@ -1751,6 +1804,28 @@ mod tests {
             Ok(_) => panic!("malformed history fixture should fail preflight"),
             Err(error) => error,
         }
+    }
+
+    #[test]
+    fn frame_evidence_uses_canonical_lifecycle_events() {
+        let events = vec![
+            (0, (2 << 24) | 10, vec![0; 9]),
+            (1, (4 << 24) | 1, 17u64.to_le_bytes().to_vec()),
+            (2, (4 << 24) | 1, 29u64.to_le_bytes().to_vec()),
+        ];
+        assert_eq!(super::latest_frame(&events), Some(29));
+        assert_eq!(super::latest_frame(&events[..1]), None);
+    }
+
+    #[test]
+    fn frame_evidence_ignores_neighbor_and_malformed_events() {
+        let events = vec![
+            (0, (4 << 24) | 1, 17u64.to_le_bytes().to_vec()),
+            (1, 4 << 24, 29u64.to_le_bytes().to_vec()),
+            (2, (4 << 24) | 1, vec![0; 7]),
+            (3, (4 << 24) | 1, vec![0; 9]),
+        ];
+        assert_eq!(super::latest_frame(&events), Some(17));
     }
 
     #[test]
@@ -3695,6 +3770,8 @@ fn run() -> Result<(), String> {
         initramfs: &'a [u8],
         kernel_path: &'a std::path::Path,
         initramfs_path: &'a std::path::Path,
+        image_path: &'a std::path::Path,
+        rom_path: &'a std::path::Path,
     }
 
     fn run_restore_oracle(
@@ -4238,6 +4315,8 @@ fn run() -> Result<(), String> {
                 let mut cold = ChildSession::spawn(
                     images.kernel_path,
                     images.initramfs_path,
+                    images.image_path,
+                    images.rom_path,
                     &parent_path,
                     &fresh_path,
                     Some(&fresh_state_path),
@@ -4414,6 +4493,8 @@ fn run() -> Result<(), String> {
         let mut source = ChildSession::spawn(
             images.kernel_path,
             images.initramfs_path,
+            images.image_path,
+            images.rom_path,
             &parent_path,
             &source_path,
             None,
@@ -4475,6 +4556,8 @@ fn run() -> Result<(), String> {
         let mut destination = ChildSession::spawn(
             images.kernel_path,
             images.initramfs_path,
+            images.image_path,
+            images.rom_path,
             &source_path,
             &destination_path,
             Some(&destination_state_path),
@@ -4735,6 +4818,8 @@ fn run() -> Result<(), String> {
     fn run_in_place_history_replay(
         kernel_path: std::ffi::OsString,
         initramfs_path: std::ffi::OsString,
+        image_path: std::ffi::OsString,
+        rom_path: std::ffi::OsString,
         report_directory: std::ffi::OsString,
     ) -> Result<(), String> {
         let report_directory = std::path::PathBuf::from(report_directory);
@@ -4745,8 +4830,7 @@ fn run() -> Result<(), String> {
         }
         let kernel = std::fs::read(&kernel_path)
             .map_err(|error| format!("cannot read replay kernel {kernel_path:?}: {error}"))?;
-        let initramfs = std::fs::read(&initramfs_path)
-            .map_err(|error| format!("cannot read replay initramfs {initramfs_path:?}: {error}"))?;
+        let initramfs = prepare_probe_initramfs(&initramfs_path, &image_path, &rom_path)?;
         let live = boot_probe(&kernel, &initramfs)
             .map_err(|error| format!("replay boot compose: {error:?}"))?;
         let factory_kernel = kernel.clone();
@@ -4895,18 +4979,42 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next();
     if first.as_deref() == Some(std::ffi::OsStr::new("--replay-in-place-history")) {
-        let (Some(kernel_path), Some(initramfs_path), Some(report_directory), None) =
-            (args.next(), args.next(), args.next(), args.next())
+        let (
+            Some(kernel_path),
+            Some(initramfs_path),
+            Some(image_path),
+            Some(rom_path),
+            Some(report_directory),
+            None,
+        ) = (
+            args.next(),
+            args.next(),
+            args.next(),
+            args.next(),
+            args.next(),
+            args.next(),
+        )
         else {
             return Err(
-                "usage: kvm_x86_nova_probe --replay-in-place-history <bzImage> <initramfs-nova.cpio.gz> <report-dir>"
+                "usage: kvm_x86_nova_probe --replay-in-place-history <bzImage> <platform-initramfs> <nes.oci> <nova.nes> <report-dir>"
                     .to_owned(),
             );
         };
-        return run_in_place_history_replay(kernel_path, initramfs_path, report_directory);
+        return run_in_place_history_replay(
+            kernel_path,
+            initramfs_path,
+            image_path,
+            rom_path,
+            report_directory,
+        );
     }
-    let (Some(kernel_path), Some(initramfs_path), None) = (first, args.next(), args.next()) else {
-        return Err("usage: kvm_x86_nova_probe <bzImage> <initramfs-nova.cpio.gz>".to_string());
+    let (Some(kernel_path), Some(initramfs_path), Some(image_path), Some(rom_path), None) =
+        (first, args.next(), args.next(), args.next(), args.next())
+    else {
+        return Err(
+            "usage: kvm_x86_nova_probe <bzImage> <platform-initramfs> <nes.oci> <nova.nes>"
+                .to_string(),
+        );
     };
     let restore_oracle = std::env::var_os("HARMONY_CONSONANCE_RESTORE_ORACLE").is_some();
     let mut profile = ProbeProfile::new(
@@ -4918,8 +5026,7 @@ fn run() -> Result<(), String> {
     }
     let kernel = std::fs::read(&kernel_path)
         .map_err(|error| format!("cannot read {kernel_path:?}: {error}"))?;
-    let initramfs = std::fs::read(&initramfs_path)
-        .map_err(|error| format!("cannot read {initramfs_path:?}: {error}"))?;
+    let initramfs = prepare_probe_initramfs(&initramfs_path, &image_path, &rom_path)?;
 
     let boot = |kernel: &[u8], initramfs: &[u8]| boot_probe(kernel, initramfs);
     let live = boot(&kernel, &initramfs).map_err(|error| format!("boot compose: {error:?}"))?;
@@ -4937,6 +5044,7 @@ fn run() -> Result<(), String> {
         server.set_remap_factory(Box::new(move |mapping| {
             let mut vmm = compose_stock_virtual_time_restore_target(mapping, SEED)?;
             vmm.wire_snapshot_hashing();
+            vmm.defer_virtual_time_checkpoint_hashes()?;
             Ok(vmm)
         }));
     }
@@ -4989,10 +5097,23 @@ fn run() -> Result<(), String> {
     let setup_stats = server
         .snapshot_stats(base)
         .ok_or("setup snapshot statistics are unavailable")?;
+    let observation_handle = u32::try_from(latest_register(&setup_events, 1)?)
+        .map_err(|_| "observation handle exceeds u32".to_owned())?;
+    let observation_length = u32::try_from(latest_register(&setup_events, 2)?)
+        .map_err(|_| "observation length exceeds u32".to_owned())?;
+    if observation_handle == 0 || observation_length == 0 {
+        return Err("setup observation is empty".to_owned());
+    }
+    let observation =
+        consonance_client::session::observation_descriptor(&setup_events, observation_handle)
+            .map_err(|error| format!("setup observation: {error}"))?;
+    let observation_gpa = observation
+        .range(0, observation_length)
+        .map_err(|error| format!("setup observation range: {error}"))?;
     profile.set_setup(
         setup_stats.owned_pages,
-        latest_register(&setup_events, 11)?,
-        latest_register(&setup_events, 12)?,
+        observation_gpa,
+        u64::from(observation_length),
     );
     let fresh_by_label: std::collections::BTreeMap<_, _> =
         fresh_components.iter().copied().collect();
@@ -5034,6 +5155,8 @@ fn run() -> Result<(), String> {
                 initramfs: &initramfs,
                 kernel_path: std::path::Path::new(&kernel_path),
                 initramfs_path: std::path::Path::new(&initramfs_path),
+                image_path: std::path::Path::new(&image_path),
+                rom_path: std::path::Path::new(&rom_path),
             },
         )?;
     }
@@ -5074,4 +5197,404 @@ fn main() -> std::process::ExitCode {
         "kvm_x86_nova_probe requires Linux KVM on x86-64 or arm64, or macOS HVF on Apple Silicon, outside Miri"
     );
     std::process::ExitCode::from(2)
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+fn run_session() -> Result<(), String> {
+    use consonance_client::session::{SdkEvent, Session, SessionConfig};
+    use nes_workload::prepare::stage_and_prepare;
+    use std::{fs, path::PathBuf};
+
+    const RAM: usize = 128 * 1024 * 1024;
+    const SEED: u64 = 0x4e4f_5641_5f43_4931;
+    #[cfg(target_arch = "x86_64")]
+    const RUN_BUDGET: u64 = 2_000_000_000;
+    #[cfg(target_arch = "aarch64")]
+    const RUN_BUDGET: u64 = 20_000_000_000;
+    #[cfg(target_arch = "x86_64")]
+    const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
+        no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
+        nox2apic hpet=disable harmony_pvclock rdinit=/init";
+    #[cfg(target_arch = "aarch64")]
+    const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
+    const HANDLE_REGISTER: u32 = 1;
+    const LENGTH_REGISTER: u32 = 2;
+    const OBSERVATION_FRAME_OFFSET: usize = 8;
+    const SDK_NAMESPACE_SHIFT: u32 = 24;
+    const SDK_STATE_NAMESPACE: u8 = 2;
+    const SDK_STATE_SET: u8 = 0;
+    const SDK_STATE_MAX: u8 = 1;
+
+    #[derive(Default)]
+    struct ProbeProfile {
+        enabled: bool,
+        branches: u64,
+        runs: u64,
+        snapshots: u64,
+        reads: u64,
+        sdk_events: u64,
+        restore_calls: u64,
+        restore_bytes: u64,
+        in_place_fallbacks: u64,
+        dirty_pages: u64,
+        setup_owned_pages: Option<u64>,
+        observation: Option<(u32, u64)>,
+        actions: u64,
+        frames: u64,
+        doorbell_exits: u64,
+        touched_pages: u64,
+        last_frame: Option<u64>,
+    }
+
+    impl ProbeProfile {
+        fn new(enabled: bool) -> Self {
+            Self {
+                enabled,
+                ..Self::default()
+            }
+        }
+
+        fn branch(&mut self, session: &Session, before: (u64, u64)) {
+            if !self.enabled {
+                return;
+            }
+            let after = session.last_restore_stats();
+            self.branches = self.branches.saturating_add(1);
+            self.restore_calls = self.restore_calls.saturating_add(1);
+            self.restore_bytes = self
+                .restore_bytes
+                .saturating_add(after.0.saturating_sub(before.0));
+            self.in_place_fallbacks = self
+                .in_place_fallbacks
+                .saturating_add(after.1.saturating_sub(before.1));
+        }
+
+        fn run(&mut self) {
+            if self.enabled {
+                self.runs = self.runs.saturating_add(1);
+            }
+        }
+
+        fn sdk_events(&mut self) {
+            if self.enabled {
+                self.sdk_events = self.sdk_events.saturating_add(1);
+            }
+        }
+
+        fn read(&mut self) {
+            if self.enabled {
+                self.reads = self.reads.saturating_add(1);
+            }
+        }
+
+        fn action(
+            &mut self,
+            frames: u64,
+            doorbell_exits: u64,
+            touched_pages: Option<u64>,
+            frame: Option<u64>,
+        ) {
+            if !self.enabled {
+                return;
+            }
+            self.actions = self.actions.saturating_add(1);
+            self.frames = self.frames.saturating_add(frames);
+            self.doorbell_exits = self.doorbell_exits.saturating_add(doorbell_exits);
+            self.touched_pages = self
+                .touched_pages
+                .saturating_add(touched_pages.unwrap_or(0));
+            if frame.is_some() {
+                self.last_frame = frame;
+            }
+        }
+
+        fn set_setup(&mut self, owned_pages: u64, handle: u32, length: u64) {
+            if self.enabled {
+                self.setup_owned_pages = Some(owned_pages);
+                self.observation = Some((handle, length));
+            }
+        }
+
+        fn render(&self) -> Option<String> {
+            self.enabled.then(|| {
+                format!(
+                    "consonance-probe-profile branches={} runs={} snapshots={} reads={} sdk_events={} restore_calls={} restore_bytes={} in_place_fallbacks={} dirty_pages={} setup_owned_pages={} observation={} actions={} frames={} doorbell_exits={} touched_pages={}",
+                    self.branches,
+                    self.runs,
+                    self.snapshots,
+                    self.reads,
+                    self.sdk_events,
+                    self.restore_calls,
+                    self.restore_bytes,
+                    self.in_place_fallbacks,
+                    self.dirty_pages,
+                    self.setup_owned_pages.unwrap_or(0),
+                    self.observation.map_or_else(
+                        || "none".to_owned(),
+                        |(handle, length)| format!("handle={handle}+{length:#x}"),
+                    ),
+                    self.actions,
+                    self.frames,
+                    self.doorbell_exits,
+                    self.touched_pages,
+                )
+            })
+        }
+    }
+
+    fn latest_register(events: &[SdkEvent], register: u32) -> Result<u64, String> {
+        let event_id = (u32::from(SDK_STATE_NAMESPACE) << SDK_NAMESPACE_SHIFT) | register;
+        let mut value = None;
+        for (_, id, bytes) in events {
+            if *id != event_id || bytes.len() != 9 {
+                continue;
+            }
+            let next = u64::from_le_bytes(
+                bytes[1..9]
+                    .try_into()
+                    .map_err(|_| "SDK state payload is malformed".to_owned())?,
+            );
+            match bytes[0] {
+                SDK_STATE_SET => value = Some(next),
+                SDK_STATE_MAX => value = Some(value.unwrap_or(0).max(next)),
+                _ => {}
+            }
+        }
+        value.ok_or_else(|| format!("SDK register {register} is absent"))
+    }
+
+    fn sdk_events(
+        session: &mut Session,
+        profile: &mut ProbeProfile,
+    ) -> Result<Vec<SdkEvent>, String> {
+        let events = session
+            .sdk_events()
+            .map_err(|error| format!("SDK event fetch: {error}"))?;
+        profile.sdk_events();
+        Ok(events)
+    }
+
+    fn read_observation(
+        session: &mut Session,
+        profile: &mut ProbeProfile,
+        handle: u32,
+        length: u32,
+    ) -> Result<Vec<u8>, String> {
+        let bytes = session
+            .read_observation(handle, 0, length)
+            .map_err(|error| format!("observation read: {error}"))?;
+        profile.read();
+        Ok(bytes)
+    }
+
+    fn observation_frame(observation: &[u8]) -> Result<u64, String> {
+        let frame = observation
+            .get(OBSERVATION_FRAME_OFFSET..OBSERVATION_FRAME_OFFSET + 4)
+            .ok_or_else(|| "observation header is truncated".to_owned())?;
+        let frame: [u8; 4] = frame
+            .try_into()
+            .map_err(|_| "observation frame field is malformed".to_owned())?;
+        Ok(u64::from(u32::from_le_bytes(frame)))
+    }
+
+    fn branch(
+        session: &mut Session,
+        profile: &mut ProbeProfile,
+        parent: control_proto::SnapId,
+        payload: Vec<u8>,
+    ) -> Result<(), String> {
+        let before = session.last_restore_stats();
+        session
+            .branch_payloads(parent, vec![payload, vec![0, 1]])
+            .map_err(|error| format!("branch: {error}"))?;
+        profile.branch(session, before);
+        Ok(())
+    }
+
+    fn run_to_snapshot(
+        session: &mut Session,
+        profile: &mut ProbeProfile,
+        parent: control_proto::SnapId,
+    ) -> Result<u64, String> {
+        let floor = session
+            .snapshot_time(parent)
+            .ok_or_else(|| "snapshot handle has no V-time".to_owned())?;
+        profile.run();
+        session
+            .run_to_snapshot(floor)
+            .map_err(|error| with_console(session, format!("run: {error}")))
+    }
+
+    fn with_console(session: &mut Session, error: String) -> String {
+        let Ok(console) = session.console_tail() else {
+            return error;
+        };
+        if console.is_empty() {
+            return error;
+        }
+        format!(
+            "{error}; guest console:\n{}",
+            String::from_utf8_lossy(&console)
+        )
+    }
+
+    fn endpoint(
+        session: &mut Session,
+        profile: &mut ProbeProfile,
+        parent: control_proto::SnapId,
+        observation_handle: u32,
+        observation_length: u32,
+    ) -> Result<([u8; 32], Vec<u8>), String> {
+        let before_faults = profile
+            .enabled
+            .then(consonance_client::session::host_minor_faults)
+            .flatten();
+        let before_frame = profile.last_frame;
+        let before_exits = session.doorbell_exits();
+        branch(session, profile, parent, vec![0x81, 12])?;
+        let at = run_to_snapshot(session, profile, parent)?;
+        let events = sdk_events(session, profile)?;
+        let observation =
+            read_observation(session, profile, observation_handle, observation_length)?;
+        let frame = observation_frame(&observation)?;
+        let hash = session
+            .state_hash()
+            .map_err(|error| format!("whole-state hash: {error}"))?;
+        let after_faults =
+            before_faults.and_then(|_| consonance_client::session::host_minor_faults());
+        let touched_pages =
+            before_faults.and_then(|before| after_faults.map(|after| after.saturating_sub(before)));
+        let frames = before_frame.map_or(frame, |before| frame.saturating_sub(before));
+        profile.action(
+            frames,
+            session.doorbell_exits().saturating_sub(before_exits),
+            touched_pages,
+            Some(frame),
+        );
+        Ok((
+            hash,
+            format!("{at}:{events:?}:{observation:?}").into_bytes(),
+        ))
+    }
+
+    fn bytes_hex(bytes: &[u8; 32]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    let mut args = std::env::args_os().skip(1);
+    let (Some(kernel_path), Some(platform_initramfs_path), Some(image_path), Some(rom_path), None) = (
+        args.next(),
+        args.next(),
+        args.next(),
+        args.next(),
+        args.next(),
+    ) else {
+        return Err(
+            "usage: kvm_x86_nova_probe <bzImage> <platform-initramfs> <nes.oci> <nova.nes>"
+                .to_owned(),
+        );
+    };
+    if !std::path::Path::new("/dev/kvm").exists() {
+        return Err("/dev/kvm is unavailable on this runner".to_owned());
+    }
+    let kernel =
+        fs::read(&kernel_path).map_err(|error| format!("cannot read {kernel_path:?}: {error}"))?;
+    let platform_initramfs = fs::read(&platform_initramfs_path)
+        .map_err(|error| format!("cannot read {platform_initramfs_path:?}: {error}"))?;
+    let rom = fs::read(&rom_path)
+        .map_err(|error| format!("cannot read Nova ROM {rom_path:?}: {error}"))?;
+    let image_path = PathBuf::from(image_path);
+    let prepared = stage_and_prepare(
+        image_path
+            .to_str()
+            .ok_or("NES OCI image path must be UTF-8")?,
+        &rom,
+    )
+    .map_err(|error| format!("prepare NES OCI execution: {error}"))?;
+    let initramfs = prepared.initramfs(&platform_initramfs);
+    let config = SessionConfig::new(RAM, SEED, RUN_BUDGET, CMDLINE)
+        .with_identity_tag(prepared.identity_hex())
+        .with_deferred_virtual_time_checkpoint_hashes();
+    let setup_payloads = vec![vec![0, 1]; 16];
+    let mut session =
+        Session::new_with_config_and_payloads(&kernel, &initramfs, config, setup_payloads)
+            .map_err(|error| format!("Consonance session: {error}"))?;
+    let mut profile = ProbeProfile::new(std::env::var_os("HARMONY_CONSONANCE_PROFILE").is_some());
+    let (base, setup_vtime) = session.setup_handle();
+    let setup_events = sdk_events(&mut session, &mut profile)?;
+    let observation_handle = u32::try_from(latest_register(&setup_events, HANDLE_REGISTER)?)
+        .map_err(|_| "observation handle exceeds u32".to_owned())?;
+    if observation_handle == 0 {
+        return Err("observation handle is zero".to_owned());
+    }
+    let observation_length = u32::try_from(latest_register(&setup_events, LENGTH_REGISTER)?)
+        .map_err(|_| "observation length exceeds u32".to_owned())?;
+    if observation_length == 0 {
+        return Err("observation length is zero".to_owned());
+    }
+    let setup_observation = read_observation(
+        &mut session,
+        &mut profile,
+        observation_handle,
+        observation_length,
+    )?;
+    if setup_observation.is_empty() {
+        return Err("setup observation is empty".to_owned());
+    }
+    profile.last_frame = Some(observation_frame(&setup_observation)?);
+    let setup_console = session
+        .console_tail()
+        .map_err(|error| format!("guest console: {error}"))?;
+    let setup_console = String::from_utf8_lossy(&setup_console);
+    let (mem_total_kib, boot_available_kib) = boot_memory_kib(&setup_console)
+        .map_err(|error| format!("{error}\n--- guest console ---\n{setup_console}"))?;
+    println!(
+        "NOVA_CONSONANCE_SETUP_MEMORY_OK mem_total_kib={mem_total_kib} boot_available_kib={boot_available_kib} observation_len={observation_length}"
+    );
+    let owned_pages = session
+        .snapshot_owned_pages(base)
+        .ok_or_else(|| "setup snapshot statistics are unavailable".to_owned())?;
+    profile.set_setup(
+        owned_pages,
+        observation_handle,
+        u64::from(observation_length),
+    );
+    println!(
+        "NOVA_CONSONANCE_STATE_INVENTORY arch={} image_identity={}",
+        std::env::consts::ARCH,
+        bytes_hex(&session.image_identity()),
+    );
+
+    let first = endpoint(
+        &mut session,
+        &mut profile,
+        base,
+        observation_handle,
+        observation_length,
+    )?;
+    let second = endpoint(
+        &mut session,
+        &mut profile,
+        base,
+        observation_handle,
+        observation_length,
+    )?;
+    if first != second {
+        return Err("same-seed Nova branches produced different endpoint evidence".to_owned());
+    }
+    println!(
+        "NOVA_CONSONANCE_PROBE_OK setup_vtime={} base_snapshot={} endpoint_hash={} sdk_evidence_bytes={}",
+        setup_vtime,
+        base.0,
+        bytes_hex(&first.0),
+        first.1.len(),
+    );
+    if let Some(line) = profile.render() {
+        eprintln!("{line}");
+    }
+    Ok(())
 }

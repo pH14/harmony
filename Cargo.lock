@@ -197,6 +197,7 @@ version = "0.1.0"
 dependencies = [
  "control-proto",
  "environment",
+ "hypercall-proto",
  "libc",
  "serde",
  "serde_json",
@@ -288,6 +289,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution-proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -298,6 +308,7 @@ name = "fault-policy"
 version = "0.1.0"
 dependencies = [
  "environment",
+ "process-proto",
  "thiserror",
 ]
 
@@ -309,7 +320,6 @@ dependencies = [
  "control-proto",
  "environment",
  "fault-policy",
- "guest-image",
  "oci-support",
  "searcher",
  "serde",
@@ -375,6 +385,7 @@ dependencies = [
 name = "guest-image"
 version = "0.1.0"
 dependencies = [
+ "tempfile",
  "thiserror",
 ]
 
@@ -511,11 +522,14 @@ version = "0.1.0"
 dependencies = [
  "guest-image",
  "machine",
+ "oci-support",
  "postcard",
  "searcher",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -531,7 +545,12 @@ dependencies = [
 name = "oci-support"
 version = "0.1.0"
 dependencies = [
+ "consonance-client",
+ "control-proto",
+ "environment",
+ "execution-proto",
  "guest-image",
+ "process-proto",
  "serde",
  "serde_json",
  "sha2",
@@ -580,6 +599,10 @@ checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "process-proto"
+version = "0.1.0"
 
 [[package]]
 name = "proptest"

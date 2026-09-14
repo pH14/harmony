@@ -40,6 +40,10 @@ reads the vCPU. Completed MMIO reads and eagerly completed MMIO writes remain
 capturable; placeholder ARM64 sysreg exits remain uncapturable while their
 completion is pending.
 
+Both Linux KVM backends expose a cancellation latch for the session watchdog.
+The watchdog interrupts a blocked KVM run with a signal and sets the latch;
+the backend refuses subsequent guest entry after cancellation.
+
 The `contract-tests` feature exposes the shared backend contract exam, and the
 `mock` feature enables portable fixtures:
 

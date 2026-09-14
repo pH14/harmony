@@ -131,7 +131,7 @@ fn traps_off_fails_before_both_production_profiles_are_credited() {
     );
 
     let initramfs = artifact("initramfs-n6.cpio.gz");
-    for profile in ["bzImage", "bzImage-faultlab"] {
+    for profile in ["bzImage", "bzImage-task-park"] {
         sweep_profile(profile, &initramfs, &report_root);
     }
     eprintln!("N6_X86_REPORT_DIR={}", report_root.display());

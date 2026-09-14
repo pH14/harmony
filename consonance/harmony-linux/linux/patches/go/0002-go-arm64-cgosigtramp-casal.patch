@@ -1,0 +1,16 @@
+--- a/src/runtime/sys_linux_arm64.s
++++ b/src/runtime/sys_linux_arm64.s
+@@ -551,11 +551,9 @@
+ 	// Lock sigprofCallersUse (cas from 0 to 1).
+ 	MOVW	$1, R7
+ 	MOVD	$runtime·sigprofCallersUse(SB), R8
+-load_store_loop:
+-	LDAXRW	(R8), R9
++	MOVW	$0, R9
++	CASALW	R9, (R8), R7
+ 	CBNZW	R9, sigtramp // Skip stack trace if already locked.
+-	STLXRW	R7, (R8), R9
+-	CBNZ	R9, load_store_loop
+ 
+ 	// Jump to the traceback function in runtime/cgo.
+ 	// It will call back to sigprofNonGo, which will ignore the

@@ -26,6 +26,7 @@ from typing import Callable, Sequence
 
 # Game titles and ROM identifiers.
 GAME_NAMES = [
+    r"nes",
     r"mario",
     r"super\s+mario\s+bros",
     r"smb",
@@ -52,6 +53,8 @@ SYSTEM_NAMES = [
     r"cockroach(?:db)?",
     r"foundationdb",
     r"k3s",
+    r"faultlab",
+    r"fault[-_ ]library",
 ]
 
 WORKLOAD_NAMES = GAME_NAMES + EMULATOR_NAMES + SYSTEM_NAMES
@@ -168,22 +171,9 @@ def _in_dirs(path: str, prefixes: Sequence[str]) -> bool:
     return any(_in_dir(path, p) for p in prefixes)
 
 
-CONSONANCE_CORE_DIRS = [
-    "consonance/client",
-    "consonance/control-proto",
-    "consonance/environment",
-    "consonance/gicv3",
-    "consonance/hypercall-doorbell",
-    "consonance/hypercall-proto",
-    "consonance/lapic",
-    "consonance/snapshot-store",
-    "consonance/telemetry",
-    "consonance/unison",
-    "consonance/vm-state",
-    "consonance/vmm-backend",
-    "consonance/vmm-core",
-    "consonance/vtime",
-]
+def _consonance_core(path: str) -> bool:
+    return _in_dir(path, "consonance") and not _in_dir(path, "consonance/harmony-linux")
+
 
 SEARCHER_DIRS = [
     "dissonance/searcher",
@@ -192,10 +182,7 @@ SEARCHER_DIRS = [
 # The guest Linux platform: the SDK and the platform build scripts.
 # Workload-specific image recipes should live under workloads/, not here.
 GUEST_LINUX_DIRS = [
-    "consonance/harmony-linux/sdk",
-    "consonance/harmony-linux/linux",
-    "consonance/harmony-linux/libvoidstar",
-    "consonance/harmony-linux/scripts",
+    "consonance/harmony-linux",
     "harmony-linux",
 ]
 
@@ -273,7 +260,7 @@ RULES: list[Rule] = [
             "fragments belong in workloads/, not in consonance/. Move the code there."
         ),
         pattern=WORKLOAD_NAME_RE,
-        scope_fn=lambda p: _in_dirs(p, CONSONANCE_CORE_DIRS),
+        scope_fn=_consonance_core,
         file_filter=_is_lintable,
     ),
     Rule(
@@ -441,7 +428,7 @@ def check_numbered_names(repo_root: Path, files: list[str]) -> list[Violation]:
 
 MISPLACED_WORKLOAD_FILE_RE = re.compile(
     r"(?:^|[-_/])"
-    r"(?:game|nes|nova|smb|mario|metroid|tetanes|tetris|postgres|etcd|cockroach|k3s|docker)"
+    r"(?:game|nes|nova|smb|mario|metroid|tetanes|tetris|postgres|etcd|cockroach|k3s|docker|faultlab|fault[-_]library)"
     r"(?:[-_./]|$)",
     re.IGNORECASE,
 )

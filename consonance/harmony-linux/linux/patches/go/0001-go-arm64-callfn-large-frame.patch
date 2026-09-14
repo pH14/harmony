@@ -1,0 +1,74 @@
+--- a/src/runtime/asm_arm64.s
++++ b/src/runtime/asm_arm64.s
+@@ -539,6 +539,62 @@
+ 	BL	callRet<>(SB);			\
+ 	RET
+ 
++#define CALLFN_LARGE(NAME,MAXSIZE)			\
++TEXT NAME(SB), WRAPPER, $MAXSIZE-48;		\
++	NO_LOCAL_POINTERS;			\
++	/* copy arguments to stack */		\
++	MOVD	$(MAXSIZE+40), R27; \
++	MOVD	(RSP)(R27), R3;			\
++	MOVD	$(MAXSIZE+48), R27; \
++	MOVWU	(RSP)(R27), R4;		\
++	ADD	$8, RSP, R5;			\
++	BIC	$0xf, R4, R6;			\
++	CBZ	R6, 6(PC);			\
++	/* if R6=(argsize&~15) != 0 */		\
++	ADD	R6, R5, R6;			\
++	/* copy 16 bytes a time */		\
++	LDP.P	16(R3), (R7, R8);		\
++	STP.P	(R7, R8), 16(R5);		\
++	CMP	R5, R6;				\
++	BNE	-3(PC);				\
++	AND	$0xf, R4, R6;			\
++	CBZ	R6, 6(PC);			\
++	/* if R6=(argsize&15) != 0 */		\
++	ADD	R6, R5, R6;			\
++	/* copy 1 byte a time for the rest */	\
++	MOVBU.P	1(R3), R7;			\
++	MOVBU.P	R7, 1(R5);			\
++	CMP	R5, R6;				\
++	BNE	-3(PC);				\
++	/* set up argument registers */		\
++	MOVD	$(MAXSIZE+64), R27; \
++	MOVD	(RSP)(R27), R20;		\
++	CALL	·unspillArgs(SB);		\
++	/* call function */			\
++	MOVD	$(MAXSIZE+32), R27; \
++	MOVD	(RSP)(R27), R26;			\
++	MOVD	(R26), R20;			\
++	PCDATA	$PCDATA_StackMapIndex, $0;	\
++	BL	(R20);				\
++	/* copy return values back */		\
++	MOVD	$(MAXSIZE+64), R27; \
++	MOVD	(RSP)(R27), R20;		\
++	CALL	·spillArgs(SB);		\
++	MOVD	$(MAXSIZE+24), R27; \
++	MOVD	(RSP)(R27), R7;		\
++	MOVD	$(MAXSIZE+40), R27; \
++	MOVD	(RSP)(R27), R3;			\
++	MOVD	$(MAXSIZE+48), R27; \
++	MOVWU	(RSP)(R27), R4;			\
++	MOVD	$(MAXSIZE+52), R27; \
++	MOVWU	(RSP)(R27), R6;		\
++	ADD	$8, RSP, R5;			\
++	ADD	R6, R5; 			\
++	ADD	R6, R3;				\
++	SUB	R6, R4;				\
++	BL	callRet<>(SB);			\
++	RET
++
+ // callRet copies return values back at the end of call*. This is a
+ // separate function so it can allocate stack space for the arguments
+ // to reflectcallmove. It does not follow the Go ABI; it expects its
+@@ -574,7 +630,7 @@
+ CALLFN(·call16777216, 16777216)
+ CALLFN(·call33554432, 33554432)
+ CALLFN(·call67108864, 67108864)
+-CALLFN(·call134217728, 134217728)
++CALLFN_LARGE(·call134217728, 134217728)
+ CALLFN(·call268435456, 268435456)
+ CALLFN(·call536870912, 536870912)
+ CALLFN(·call1073741824, 1073741824)

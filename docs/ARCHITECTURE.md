@@ -142,10 +142,11 @@ host/guest codec code validates publication versions and region bounds. Native
 emulator snapshots and whole-VM snapshots retain distinct execution identities.
 
 `workloads/fault-policy` owns the fault decision catalog, its wire forms, and the
-standing-fault codec the host and guest share. `workloads/fault-agent` is the
-in-guest supervisor that enforces those faults, and `workloads/faults` is the
-package that searches over them. A distributed workload puts its agent, nodes,
-message paths, and files inside one VM on one virtual CPU, so whole-VM snapshots
+standing-fault codec the host and guest share. `consonance/harmony-linux/supervisor`
+is the in-guest platform supervisor that enforces those faults, and
+`workloads/faults` is the package that searches over them. A distributed workload
+places its nodes, message paths, and files inside one VM on one virtual CPU, so
+whole-VM snapshots
 preserve the entire experiment.
 
 The CLI selects a package and backend at campaign startup. Packages prepare the

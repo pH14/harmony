@@ -9,6 +9,7 @@ description = "Fault catalog, policy, and deterministic fault-aware environment 
 
 [dependencies]
 environment = { version = "=0.1.0", path = "../../consonance/environment" }
+process-proto = { version = "=0.1.0", path = "../../consonance/process-proto" }
 thiserror = "2"
 
 [dev-dependencies]

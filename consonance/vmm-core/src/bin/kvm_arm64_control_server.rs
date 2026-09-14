@@ -18,7 +18,7 @@ fn main() -> std::process::ExitCode {
         (args.next(), args.next(), args.next())
     else {
         eprintln!(
-            "usage: kvm_arm64_control_server <Image-game> <initramfs-game.cpio.gz> \
+            "usage: kvm_arm64_control_server <Image> <initramfs.cpio.gz> \
              <socket> [max-sessions]"
         );
         return std::process::ExitCode::from(2);
@@ -35,7 +35,7 @@ fn main() -> std::process::ExitCode {
     };
     if args.next().is_some() {
         eprintln!(
-            "usage: kvm_arm64_control_server <Image-game> <initramfs-game.cpio.gz> \
+            "usage: kvm_arm64_control_server <Image> <initramfs.cpio.gz> \
              <socket> [max-sessions]"
         );
         return std::process::ExitCode::from(2);
@@ -75,7 +75,7 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::FAILURE;
             }
         };
-        let live = match bringup::boot_selected_control(&image, &initramfs, BOOTARGS, RAM) {
+        let live = match bringup::boot_selected_control(&image, &initramfs, BOOTARGS, RAM, 0) {
             Ok(vmm) => vmm,
             Err(error) => {
                 eprintln!("KVM session {session} composition failed: {error:?}");
@@ -85,7 +85,7 @@ fn main() -> std::process::ExitCode {
         let factory_image = image.clone();
         let factory_initramfs = initramfs.clone();
         let factory = Box::new(move || {
-            bringup::boot_selected_control(&factory_image, &factory_initramfs, BOOTARGS, RAM)
+            bringup::boot_selected_control(&factory_image, &factory_initramfs, BOOTARGS, RAM, 0)
         });
         let mut server = ControlServer::new(live, factory);
         if let Some(path) = std::env::var_os("HARMONY_PORTABLE_IMPORT") {

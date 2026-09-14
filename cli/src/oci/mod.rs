@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use oci_support::{bundle, cache, image};
+use oci_support::{bundle, image};
 mod runner;
 
 use crate::host::{HostReport, MatrixCell};
@@ -37,11 +37,7 @@ pub struct RunArgs {
     pub cmd: Vec<String>,
 }
 
-pub const BASE_INITRAMFS: &[&str] = &[
-    "initramfs-oci.cpio.gz",
-    "initramfs-docker.cpio.gz",
-    "initramfs-postgres.cpio.gz",
-];
+pub const BASE_INITRAMFS: &[&str] = &["initramfs-oci.cpio.gz"];
 
 pub use runner::{HOST_SUPPORTED, SUPPORTED_HOSTS};
 
@@ -55,8 +51,8 @@ pub fn select_base_initramfs(installed: &[PathBuf]) -> Option<&PathBuf> {
 
 pub fn missing_base_initramfs() -> String {
     format!(
-        "no container-capable guest initramfs found (looked for {}); build one with \
-         `make -C consonance/harmony-linux <arm64-oci-image|docker-image>`",
+        "no container-capable guest initramfs found (looked for {}); build the \
+         platform runtime artifact",
         BASE_INITRAMFS.join(", ")
     )
 }
@@ -73,10 +69,15 @@ struct RunRecord {
     base_initramfs_sha256: String,
     rootfs_segment_sha256: String,
     control_segment_sha256: String,
+    execution_identity: String,
+    execution_json_sha256: String,
     guest_ram_mib: usize,
     steps: u64,
     terminal: String,
     container_rc: Option<i32>,
+    supervisor_failure_rc: Option<i32>,
+    runtime_rc: Option<i32>,
+    startup_rc: Option<i32>,
     serial_sha256: String,
 }
 
@@ -111,11 +112,8 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let kernel = std::fs::read(kernel_path)?;
     let base = std::fs::read(base_path)?;
 
-    let (rootfs_segment, config) = rootfs_segment_for(&args.image)?;
-    let control_segment = bundle::build_control_segment(&config, &args.cmd)?;
-    let mut initramfs = base.clone();
-    initramfs.extend_from_slice(&rootfs_segment);
-    initramfs.extend_from_slice(&control_segment);
+    let prepared = prepare_for(&args.image, &bundle::LaunchRequest::new(args.cmd.clone()))?;
+    let initramfs = prepared.initramfs(&base);
 
     let spec = runner::RunSpec {
         kernel: &kernel,
@@ -136,6 +134,7 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
         Err(error) => {
             #[cfg(any(
                 all(target_os = "linux", target_arch = "x86_64"),
+                all(target_os = "linux", target_arch = "aarch64"),
                 all(target_os = "macos", target_arch = "aarch64")
             ))]
             if let runner::RunError::WallBudget { serial, .. } = &error {
@@ -154,6 +153,10 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
 
     let container_rc = parse_container_rc(&outcome.serial);
+    let supervisor_failure_rc = parse_supervisor_failure_rc(&outcome.serial);
+    let runtime_rc = parse_runtime_rc(&outcome.serial);
+    let startup_rc = parse_startup_rc(&outcome.serial);
+    let execution_json = prepared.execution.to_vec()?;
     let record = RunRecord {
         image: args.image.clone(),
         seed: args.seed,
@@ -163,12 +166,17 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
         kernel_sha256: hex(&Sha256::digest(&kernel)),
         base_initramfs: base_path.display().to_string(),
         base_initramfs_sha256: hex(&Sha256::digest(&base)),
-        rootfs_segment_sha256: hex(&Sha256::digest(&rootfs_segment)),
-        control_segment_sha256: hex(&Sha256::digest(&control_segment)),
+        rootfs_segment_sha256: hex(&Sha256::digest(&prepared.rootfs_segment)),
+        control_segment_sha256: hex(&Sha256::digest(&prepared.control_segment)),
+        execution_identity: prepared.identity_hex(),
+        execution_json_sha256: hex(&Sha256::digest(&execution_json)),
         guest_ram_mib: args.ram_mib,
         steps: outcome.steps,
         terminal: outcome.reason.clone(),
         container_rc,
+        supervisor_failure_rc,
+        runtime_rc,
+        startup_rc,
         serial_sha256: hex(&Sha256::digest(&outcome.serial)),
     };
 
@@ -184,9 +192,14 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
     )?;
 
     println!("digest      {}", record.serial_sha256);
-    match container_rc {
-        Some(rc) => println!("container   exited rc={rc}"),
-        None => println!("container   no exit marker (terminal: {})", record.terminal),
+    match (container_rc, supervisor_failure_rc, runtime_rc, startup_rc) {
+        (Some(rc), _, _, _) => println!("container   exited rc={rc}"),
+        (None, Some(rc), _, _) => println!("supervisor  setup failed rc={rc}"),
+        (None, None, Some(rc), _) => println!("runtime     exited rc={rc}"),
+        (None, None, None, Some(rc)) => println!("startup     failed rc={rc}"),
+        (None, None, None, None) => {
+            println!("container   no exit marker (terminal: {})", record.terminal)
+        }
     }
     println!("artifact    {}", out_dir.display());
     Ok(match container_rc {
@@ -195,37 +208,37 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
     })
 }
 
-fn rootfs_segment_for(
+fn prepare_for(
     image: &str,
-) -> Result<(Vec<u8>, image::RuntimeConfig), Box<dyn std::error::Error>> {
-    let key = if std::path::Path::new(image).exists() {
-        None
-    } else {
-        image::ensure_local(image);
-        cache::key(image)
-    };
-    let cache_dir = cache::dir();
-    if let (Some(key), Some(dir)) = (&key, &cache_dir)
-        && let Some((segment, config)) = cache::load(dir, key)
-    {
-        eprintln!("staging {image} (cached segment) ...");
-        return Ok((segment, config));
-    }
+    request: &bundle::LaunchRequest,
+) -> Result<bundle::PreparedExecution, Box<dyn std::error::Error>> {
     eprintln!("staging {image} ...");
     let staging = tempfile::tempdir()?;
     let staged = image::stage(image, staging.path())?;
-    let segment = bundle::build_rootfs_segment(&staged.rootfs, &staged.owners)?;
-    if let (Some(key), Some(dir)) = (&key, &cache_dir) {
-        cache::store(dir, key, &segment, &staged.config);
-    }
-    Ok((segment, staged.config))
+    Ok(bundle::prepare(&staged, request)?)
 }
 
 fn parse_container_rc(serial: &[u8]) -> Option<i32> {
+    parse_marker(serial, "HARMONY_OCI_APP_EXIT rc=")
+}
+
+fn parse_supervisor_failure_rc(serial: &[u8]) -> Option<i32> {
+    parse_marker(serial, "HARMONY_OCI_SUPERVISOR_FAILURE rc=")
+}
+
+fn parse_runtime_rc(serial: &[u8]) -> Option<i32> {
+    parse_marker(serial, "HARMONY_OCI_RUNTIME_EXIT rc=")
+}
+
+fn parse_startup_rc(serial: &[u8]) -> Option<i32> {
+    parse_marker(serial, "HARMONY_OCI_STARTUP_EXIT rc=")
+}
+
+fn parse_marker(serial: &[u8], marker: &str) -> Option<i32> {
     let text = String::from_utf8_lossy(serial);
     text.lines()
         .rev()
-        .find_map(|l| l.trim().strip_prefix("HARMONY_OCI_EXIT rc="))
+        .find_map(|line| line.trim().strip_prefix(marker))
         .and_then(|rc| rc.trim().parse().ok())
 }
 
@@ -238,9 +251,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base_initramfs_follows_preference_order() {
+    fn base_initramfs_requires_the_platform_runtime_name() {
         let dir = std::path::Path::new("/g");
-        let installed: Vec<PathBuf> = ["initramfs-postgres.cpio.gz", "initramfs-oci.cpio.gz"]
+        let installed: Vec<PathBuf> = ["initramfs-oci.cpio.gz", "initramfs-alternate.cpio.gz"]
             .iter()
             .map(|n| dir.join(n))
             .collect();
@@ -248,11 +261,8 @@ mod tests {
             select_base_initramfs(&installed),
             Some(&dir.join("initramfs-oci.cpio.gz"))
         );
-        let only_postgres = vec![dir.join("initramfs-postgres.cpio.gz")];
-        assert_eq!(
-            select_base_initramfs(&only_postgres),
-            Some(&dir.join("initramfs-postgres.cpio.gz"))
-        );
+        let workload_runtime = vec![dir.join("initramfs-alternate.cpio.gz")];
+        assert_eq!(select_base_initramfs(&workload_runtime), None);
     }
 
     #[test]
@@ -268,9 +278,65 @@ mod tests {
 
     #[test]
     fn container_rc_parses_last_marker() {
-        let serial = b"noise\nHARMONY_OCI_EXIT rc=3\ntail\nHARMONY_OCI_EXIT rc=0\n";
+        let serial = b"noise\nHARMONY_OCI_APP_EXIT rc=3\ntail\nHARMONY_OCI_APP_EXIT rc=0\n";
         assert_eq!(super::parse_container_rc(serial), Some(0));
+        assert_eq!(
+            super::parse_container_rc(b"HARMONY_OCI_APP_EXIT rc=127\n"),
+            Some(127)
+        );
         assert_eq!(super::parse_container_rc(b"no marker"), None);
+    }
+
+    #[test]
+    fn application_and_supervisor_failure_127_markers_are_distinct() {
+        let application = b"HARMONY_OCI_APP_EXIT rc=127\nHARMONY_OCI_RUNTIME_EXIT rc=127\n";
+        assert_eq!(super::parse_container_rc(application), Some(127));
+        assert_eq!(super::parse_supervisor_failure_rc(application), None);
+
+        let supervisor =
+            b"HARMONY_OCI_SUPERVISOR_FAILURE rc=127\nHARMONY_OCI_RUNTIME_EXIT rc=127\n";
+        assert_eq!(super::parse_container_rc(supervisor), None);
+        assert_eq!(super::parse_supervisor_failure_rc(supervisor), Some(127));
+    }
+
+    #[test]
+    fn runtime_and_startup_markers_parse_separately() {
+        assert_eq!(
+            super::parse_runtime_rc(b"HARMONY_OCI_RUNTIME_EXIT rc=1\n"),
+            Some(1)
+        );
+        assert_eq!(
+            super::parse_startup_rc(b"HARMONY_OCI_STARTUP_EXIT rc=125\n"),
+            Some(125)
+        );
+        assert_eq!(super::parse_runtime_rc(b"unrelated output\n"), None);
+        assert_eq!(
+            super::parse_runtime_rc(b"HARMONY_OCI_RUNTIME_EXIT rc=0\n"),
+            Some(0)
+        );
+        assert_eq!(
+            super::parse_runtime_rc(b"HARMONY_OCI_RUNTIME_EXIT rc=127\n"),
+            Some(127)
+        );
+    }
+
+    #[test]
+    fn platform_init_has_one_fixed_launch_and_separate_failure_markers() {
+        let init = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../consonance/harmony-linux/runtime/init.sh"
+        ));
+        assert_eq!(
+            init.matches("/usr/bin/runc run --no-pivot --bundle")
+                .count(),
+            1
+        );
+        assert!(init.contains("[ -x \"$RUNC\" ] || startup_failure 127"));
+        assert!(init.contains("HARMONY_OCI_STARTUP_EXIT"));
+        assert!(init.contains("HARMONY_OCI_RUNTIME_EXIT rc=$runc_status"));
+        assert!(!init.contains("HARMONY_OCI_APP_EXIT rc=$runc_status"));
+        assert!(!init.contains("chroot"));
+        assert!(!init.contains("runc --version"));
     }
 
     #[test]

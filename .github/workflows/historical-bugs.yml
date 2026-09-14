@@ -67,74 +67,59 @@ jobs:
           } >>"${GITHUB_STEP_SUMMARY}"
 
   guest:
-    name: Build the faultlab kernel and base initramfs
+    name: Build the canonical platform runtime
     needs: manifest
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
+      - uses: Swatinem/rust-cache@v2
+      - name: Compute platform source key
+        id: source
+        run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v4
-        id: guest-cache
+        id: runtime
         with:
-          path: nix-guest-output
-          key: guest-faultlab-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/**') }}
-      - name: Build guest images
-        if: steps.guest-cache.outputs.cache-hit != 'true'
+          path: consonance/harmony-linux/build/x86_64
+          key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
+      - name: Build exact platform artifacts
+        if: steps.runtime.outputs.cache-hit != 'true'
+        env:
+          HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
+          HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
         run: |
-          set -euo pipefail
-          mkdir -p nix-guest-output
-          nix run .#guest-images -- --output "${PWD}/nix-guest-output"
-      - name: Verify the guest manifest
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential flex bison libelf-dev libssl-dev bc cpio kmod bzip2 wget python3
+          rustup toolchain install nightly-2026-06-16 --profile minimal --component rust-src --target x86_64-unknown-linux-musl
+          make -C consonance/harmony-linux fetch
+          consonance/harmony-linux/scripts/build-platform-runtime.sh
+      - name: Verify exact platform inputs
         run: |
-          set -euo pipefail
-          (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
-          test -s nix-guest-output/x86_64/bzImage-faultlab
-          test -s nix-guest-output/x86_64/initramfs.cpio.gz
-      - uses: actions/cache/save@v4
-        if: steps.guest-cache.outputs.cache-hit != 'true'
-        with:
-          path: nix-guest-output
-          key: ${{ steps.guest-cache.outputs.cache-primary-key }}
+          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
+            --artifacts consonance/harmony-linux/build/x86_64 --output platform-provenance.json
+          python3 -c 'import json; assert json.load(open("platform-provenance.json"))["scope"] == "exact-input"'
       - uses: actions/upload-artifact@v4
         with:
           name: historical-guest-${{ github.run_id }}
           path: |
-            nix-guest-output/x86_64/bzImage-faultlab
-            nix-guest-output/x86_64/initramfs.cpio.gz
+            consonance/harmony-linux/build/x86_64/bzImage
+            consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
           if-no-files-found: error
           retention-days: 1
 
   tools:
-    name: Build Harmony and the static fault agent
+    name: Build Harmony
     needs: manifest
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
     steps:
       - uses: actions/checkout@v4
-      - name: Install the musl toolchain
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends musl-tools
-          rustup target add x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-            workloads/fault-agent -> target
       - name: Build tools
         run: |
-          set -euo pipefail
           cargo build --locked --release -p harmony-cli
-          cargo build --locked --release --manifest-path workloads/fault-agent/Cargo.toml \
-            --target x86_64-unknown-linux-musl
           mkdir -p tools
           cp target/release/harmony tools/harmony
-          cp workloads/fault-agent/target/x86_64-unknown-linux-musl/release/fault-agent tools/fault-agent
-          file tools/fault-agent | grep -Eiq 'static'
       - uses: actions/upload-artifact@v4
         with:
           name: historical-tools-${{ github.run_id }}
@@ -186,6 +171,14 @@ jobs:
         with:
           path: oci-images
           key: pgcic-oci-v1-${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**', 'workloads/bugs/historical/postgres-cic-corruption/case.json') }}
+      - name: Publish the exact PostgreSQL smoke image handoff
+        if: matrix.id == 'postgres-cic-corruption'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgcic-oci-v1-${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**', 'workloads/bugs/historical/postgres-cic-corruption/case.json') }}
+          path: oci-images
+          if-no-files-found: error
+          retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
           name: historical-images-${{ matrix.id }}-${{ github.run_id }}
@@ -218,10 +211,10 @@ jobs:
       - name: Grant nested KVM access
         run: |
           set -euo pipefail
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
           test -r /dev/kvm
+          test -w /dev/kvm
       - name: Run current-build discovery campaign
         env:
           CASE_DIR: ${{ matrix.dir }}
@@ -280,10 +273,10 @@ jobs:
       - name: Grant nested KVM access
         run: |
           set -euo pipefail
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
           test -r /dev/kvm
+          test -w /dev/kvm
       - name: Replay the first current-build finding on the fixed arm
         env:
           CASE_DIR: ${{ matrix.dir }}

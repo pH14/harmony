@@ -13,7 +13,7 @@ on:
       - consonance/snapshot-store/**
       - workloads/nes-machine/**
       - workloads/nes-guest/**
-      - workloads/fault-agent/**
+      - consonance/harmony-linux/**
       - '**/Cargo.toml'
       - '**/Cargo.lock'
       - rust-toolchain
@@ -73,6 +73,7 @@ jobs:
       matrix: ${{ fromJSON(needs.miri-scope.outputs.matrix) }}
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
+      HARMONY_MIRI_PR_SMOKE: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned nightly + Miri
@@ -175,9 +176,5 @@ jobs:
       - name: miri — workloads/nes-guest (lib + agent + bin unit tests, out-of-workspace manifest)
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path workloads/nes-guest/Cargo.toml --lib --test agent --bins
 
-      # workloads/fault-agent carries unsafe (the /dev/harmony ioctl, the park
-      # ioctls, and process-group signalling), so it runs under Miri like the
-      # other guest manifests. The transport is cfg-gated to x86-64 Linux;
-      # --bins still compiles the Miri-safe entry point.
-      - name: miri — workloads/fault-agent (out-of-workspace manifest)
-        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path workloads/fault-agent/Cargo.toml --lib --bins
+      - name: miri — platform supervisor portable logic
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path consonance/harmony-linux/supervisor/Cargo.toml --lib --bins

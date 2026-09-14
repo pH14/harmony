@@ -1,0 +1,23 @@
+[package]
+name = "oci-support"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+execution-proto = { path = "../execution-proto", version = "=0.1.0" }
+guest-image = { path = "../guest-image", version = "=0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+
+[dev-dependencies]
+consonance-client = { path = "../client", version = "=0.1.0", features = ["in-process"] }
+control-proto = { path = "../control-proto", version = "=0.1.0" }
+environment = { path = "../environment", version = "=0.1.0" }
+process-proto = { path = "../process-proto", version = "=0.1.0" }
+
+[lints]
+workspace = true

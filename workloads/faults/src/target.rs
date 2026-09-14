@@ -8,7 +8,7 @@ use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_HORIZON_NANOS: u64 = 2_000_000_000;
-pub const AGENT_TICK_NANOS: u64 = 10_000_000;
+pub const SUPERVISOR_TICK_NANOS: u64 = 10_000_000;
 const RESTART_DOWN_DIVISOR: u64 = 4;
 pub const MAX_FAULT_ACTIONS: usize = 256;
 
@@ -114,9 +114,9 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
         },
         FaultAction::Pause(node, ticks) => {
             let held = u64::from(ticks)
-                .saturating_mul(AGENT_TICK_NANOS)
-                .min(horizon.saturating_sub(AGENT_TICK_NANOS))
-                .max(AGENT_TICK_NANOS);
+                .saturating_mul(SUPERVISOR_TICK_NANOS)
+                .min(horizon.saturating_sub(SUPERVISOR_TICK_NANOS))
+                .max(SUPERVISOR_TICK_NANOS);
             ActionDelta {
                 standing: Some(standing(
                     process_target(node, &Fault::ProcPause(Span(held))),
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn pause_lifts_inside_its_own_horizon() {
         let short = ActionWindows {
-            horizon_nanos: 5 * AGENT_TICK_NANOS,
+            horizon_nanos: 5 * SUPERVISOR_TICK_NANOS,
             ..WINDOWS
         };
         for windows in [WINDOWS, short] {
@@ -423,7 +423,10 @@ mod tests {
                 assert_eq!(fault.start, start);
                 assert_eq!(fault.end, start + held);
                 assert!(fault.end < end, "a pause must lift before the horizon");
-                assert!(held >= AGENT_TICK_NANOS, "a pause must span a whole tick");
+                assert!(
+                    held >= SUPERVISOR_TICK_NANOS,
+                    "a pause must span a whole tick"
+                );
             }
         }
     }
@@ -449,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn hook_targets_the_agent_rather_than_a_node() {
+    fn hook_targets_the_supervisor_rather_than_a_node() {
         let fault = action_delta(FaultAction::Hook(9), WINDOWS.window(0))
             .standing
             .expect("hook installs a standing fault");

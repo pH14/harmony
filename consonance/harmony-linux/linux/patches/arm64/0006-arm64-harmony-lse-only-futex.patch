@@ -1,6 +1,6 @@
 arm64: make Harmony futex atomics LSE-only
 
-The game payload needs FUTEX, but arm64's futex user-access helpers contain
+The static guest payload needs FUTEX, but arm64's futex user-access helpers contain
 dedicated LL/SC loops outside the ordinary atomic alternative framework.  They
 therefore survive HARMONY_ARM_LSE_ONLY and fail the executable-image gate.
 

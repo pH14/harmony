@@ -31,11 +31,10 @@ esac
 }
 
 harmony=${PWD}/tools/harmony
-agent=${PWD}/tools/fault-agent
-kernel=${PWD}/guest/bzImage-faultlab
-base_initramfs=${PWD}/guest/initramfs.cpio.gz
-chmod +x "${harmony}" "${agent}"
-test -x "${harmony}" && test -x "${agent}" && test -s "${kernel}" && test -s "${base_initramfs}"
+kernel=${PWD}/guest/bzImage
+base_initramfs=${PWD}/guest/initramfs-oci.cpio.gz
+chmod +x "${harmony}"
+test -x "${harmony}" && test -s "${kernel}" && test -s "${base_initramfs}"
 
 oracle=$(dirname "$0")/historical-oracle.sh
 knobs=${KNOBS:-}
@@ -92,7 +91,6 @@ replay_arm() {
         --backend consonance \
         --kernel "${kernel}" \
         --base-initramfs "${base_initramfs}" \
-        --fault-agent "${agent}" \
         --replay "${input}" \
         --repeat "${repeats}" \
         --horizon-ms "${HORIZON_MS}" \

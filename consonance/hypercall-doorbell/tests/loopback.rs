@@ -15,7 +15,16 @@ use proptest::prelude::*;
 const FRAME_MAGIC: u32 = 0x3150_4348;
 
 fn config(native_cases: u32) -> ProptestConfig {
-    let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { native_cases });
+    let cases = if cfg!(miri) {
+        if option_env!("HARMONY_MIRI_PR_SMOKE").is_some() {
+            4
+        } else {
+            16
+        }
+    } else {
+        native_cases
+    };
+    let mut cfg = ProptestConfig::with_cases(cases);
     if cfg!(miri) {
         cfg.failure_persistence = None;
     }

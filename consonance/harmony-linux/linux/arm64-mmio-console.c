@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -22,8 +23,10 @@ static int write_all(volatile uint8_t *uart, const uint8_t *bytes, size_t len)
 int main(void)
 {
     int fd = open("/dev/mem", O_RDWR | O_SYNC | O_CLOEXEC);
-    if (fd < 0)
+    if (fd < 0) {
+        perror("platform console open");
         return 1;
+    }
 
     void *mapping = mmap(NULL, PL011_PAGE, PROT_READ | PROT_WRITE, MAP_SHARED,
                          fd, PL011_BASE);
@@ -31,8 +34,10 @@ int main(void)
     if (close(fd) != 0 && mapping != MAP_FAILED)
         return 1;
     errno = saved_errno;
-    if (mapping == MAP_FAILED)
+    if (mapping == MAP_FAILED) {
+        perror("platform console mmap");
         return 1;
+    }
 
     uint8_t buffer[4096];
     int status = 0;

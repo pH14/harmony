@@ -71,4 +71,4 @@ This is a focused runtime and virtual-clock probe. It demonstrates ordinary Go
 startup, scheduler/goroutine/channel activity, fixed-content computation,
 `time.Sleep`, timers, and the amd64 `cputicks` path. It does not establish
 correctness for arbitrary Go programs, the Go standard library as a whole, or
-etcd.
+another long-running service.

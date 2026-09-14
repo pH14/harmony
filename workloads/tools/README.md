@@ -5,6 +5,24 @@ workloads. Build with `cargo build --manifest-path workloads/tools/Cargo.toml
 --release`. The execution core remains independently buildable; tool-specific
 startup and evidence conventions live here.
 
+The `kvm_x86_nova_probe` accepts four required execution inputs:
+
+```sh
+cargo run --release --manifest-path workloads/tools/Cargo.toml \
+  --bin kvm_x86_nova_probe -- \
+  bzImage initramfs-oci.cpio.gz nes.oci nova.nes
+```
+
+Every mode prepares the generic NES OCI image and external ROM through
+`nes-workload`. Ordinary Linux probes construct `consonance-client::Session`
+and read the kernel-owned observation through `Session::read_observation`.
+The bounded full-state restore oracle uses `ControlServer` directly to inspect
+raw VMM state and portable artifacts, using the same prepared execution,
+128 MiB RAM, command line, seed, and deferred checkpoint hashing configuration.
+Its observation descriptor resolves the published handle to guest memory;
+frame evidence comes from the SDK frame-complete lifecycle event, so boundary
+checks do not add observation reads. Apple Silicon uses the direct server path.
+
 Native AArch64 ARM oracle builds may opt into the host SHA-256 backend with
 `--features arm-sha2-asm`. For example, append that feature to the
 `workload-tools` build command when running the Nova oracle on an ARM host.
@@ -24,9 +42,9 @@ covering VMST, guest RAM, service state, and control state. The backend README
 documents the generic KVM restoration invariant; this workload-specific
 validation remains with its tool.
 
-On Apple Silicon macOS the same binary boots the arm64 Nova image through
-Hypervisor.framework. Build it for the native target and pass the arm64
-`Image-nova` and `initramfs-nova.cpio.gz` pair:
+On Apple Silicon macOS the same binary boots the arm64 platform runtime and
+NES OCI execution through Hypervisor.framework. Build it for the native target
+and pass the arm64 kernel, platform initramfs, NES OCI image, and Nova ROM:
 
 ```sh
 cargo build --locked --release --target aarch64-apple-darwin \
@@ -36,7 +54,7 @@ codesign --force --sign - \
   workloads/tools/target/aarch64-apple-darwin/release/kvm_x86_nova_probe
 HARMONY_CONSONANCE_RESTORE_ORACLE=1 \
   workloads/tools/target/aarch64-apple-darwin/release/kvm_x86_nova_probe \
-  path/to/Image-nova path/to/initramfs-nova.cpio.gz
+  path/to/Image path/to/initramfs-oci.cpio.gz path/to/nes.oci path/to/nova.nes
 ```
 
 The HVF path keeps the eight cold controls in separate child processes because
@@ -114,7 +132,7 @@ cargo build --locked --release --manifest-path workloads/tools/Cargo.toml \
   --bin kvm_x86_nova_probe
 workloads/tools/target/release/kvm_x86_nova_probe \
   --replay-in-place-history path/to/bzImage \
-  path/to/initramfs-nova.cpio.gz path/to/restore-artifacts
+  path/to/initramfs-oci.cpio.gz path/to/nes.oci path/to/nova.nes path/to/restore-artifacts
 ```
 
 The mode is diagnostic and leaves the ordinary restore oracle unchanged. The
@@ -129,7 +147,7 @@ as an opt-in directory bundle. Set an explicit, operator-declared source commit
 identity when exporting; this metadata records the claimed source identity and
 does not replace binding the built executable to an immutable source archive
 during qualification. The bundle also records the build feature set, ISA,
-kernel/initramfs SHA-256 digests, exact D branch payload, source boundary
+kernel and composed-initramfs SHA-256 digests, exact D branch payload, source boundary
 evidence, and expected continuation time, ordered SDK events, raw state, hash,
 and portable snapshot:
 
@@ -138,8 +156,13 @@ HARMONY_CONSONANCE_SOURCE_COMMIT=$(git rev-parse HEAD) \
 HARMONY_CONSONANCE_D_BUNDLE_EXPORT_DIR=/path/to/d-bundle \
 HARMONY_CONSONANCE_RESTORE_ORACLE=1 \
   workloads/tools/target/release/kvm_x86_nova_probe \
-  path/to/bzImage path/to/initramfs-nova.cpio.gz
+  path/to/bzImage path/to/initramfs-oci.cpio.gz path/to/nes.oci path/to/nova.nes
 ```
+
+The composed initramfs digest binds the platform runtime, OCI workload, and
+external ROM bytes. Qualification provenance should additionally record all
+four original input digests. D children and replay/verification modes prepare
+the same four inputs; the verifier checks the composed digest before booting.
 
 Verify that bundle on a second host with the same ISA using the explicit CLI
 mode. The verifier checks metadata, image digests, file digests, and portable
@@ -152,7 +175,7 @@ state with zero in-place fallbacks:
 HARMONY_CONSONANCE_SOURCE_COMMIT=$(git rev-parse HEAD) \
   workloads/tools/target/release/kvm_x86_nova_probe \
   --verify-d-bundle \
-  path/to/bzImage path/to/initramfs-nova.cpio.gz \
+  path/to/bzImage path/to/initramfs-oci.cpio.gz path/to/nes.oci path/to/nova.nes \
   /path/to/d-bundle
 ```
 

@@ -18,11 +18,8 @@ exclude = [
   "workloads/nes-machine",
   "workloads/nes-protocol",
   "workloads/nes-guest",
-  "workloads/guest-image",
-  "workloads/fault-agent",
   "workloads/fault-policy",
   "workloads/faults",
-  "workloads/oci",
 ]
 
 [workspace.package]

@@ -834,6 +834,10 @@ pub trait Arm64Kvm {
     fn complete_mmio_exit(&mut self) -> Result<()>;
 
     fn run(&mut self) -> Result<KvmRunView>;
+
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        None
+    }
 }
 
 pub struct Arm64KvmBackend<K: Arm64Kvm> {
@@ -1112,6 +1116,10 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         self.enter_guest()
     }
 
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        self.kvm.cancellation_flag()
+    }
+
     fn inject(&mut self, event: crate::arch::arm64::Arm64Injection) -> Result<()> {
         match event {
             crate::arch::arm64::Arm64Injection::Interrupt { intid } => {
@@ -1232,6 +1240,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 pub struct FakeKvm {
     #[cfg(test)]
     state_reads: std::sync::atomic::AtomicUsize,
+    cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     regs: std::collections::BTreeMap<u64, u64>,
     regs32: std::collections::BTreeMap<u64, u32>,
     regs128: std::collections::BTreeMap<u64, [u8; 16]>,
@@ -1291,6 +1300,10 @@ impl FakeKvm {
 
 #[cfg(any(test, feature = "mock"))]
 impl Arm64Kvm for FakeKvm {
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        self.cancellation.clone()
+    }
+
     fn vcpu_init(&mut self) -> Result<()> {
         self.calls.push("vcpu_init");
         self.init_features = vcpu_init_features();
@@ -1538,6 +1551,24 @@ impl Arm64Kvm for FakeKvm {
 mod tests {
     use super::*;
     use crate::arch::arm64::{Arm64CoreRegs, Arm64Policy, Arm64SimdFpState, IdRegModel};
+
+    #[test]
+    fn backend_exposes_the_kvm_cancellation_latch() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let latch = Arc::new(AtomicBool::new(false));
+        let backend = Arm64KvmBackend::new(FakeKvm {
+            cancellation: Some(Arc::clone(&latch)),
+            ..FakeKvm::default()
+        });
+        let exposed = Backend::cancellation_flag(&backend).expect("cancellation latch");
+        assert!(Arc::ptr_eq(&exposed, &latch));
+        exposed.store(true, Ordering::Release);
+        assert!(latch.load(Ordering::Acquire));
+        assert!(Backend::cancellation_flag(&Arm64KvmBackend::new(FakeKvm::new())).is_none());
+    }
 
     fn mmio_store(gpa: u64, value: u64, len: u32) -> KvmRunView {
         KvmRunView {
