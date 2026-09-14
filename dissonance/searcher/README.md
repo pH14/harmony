@@ -101,6 +101,63 @@ cargo test --manifest-path dissonance/searcher/Cargo.toml
 cargo clippy --manifest-path dissonance/searcher/Cargo.toml --all-targets -- -D warnings
 ```
 
+## Adaptive duration policy
+
+Campaigns can ask the generic searcher for a duration choice through
+`InputPolicy::duration_request`. The workload supplies a typed context and a
+positive maximum in its own stable logical unit. `expand_suffix_duration`
+embeds the choice in actions, and `duration_of_action` identifies an action
+that actually carried that choice. The searcher owns the policy and does not
+interpret the unit or the context.
+
+The policy keeps at most 256 contexts. Contexts enter a FIFO admission order
+only when an applied duration receives positive execution work and the job is
+admitted; all updates happen at ordered job admission.
+Each retained context keeps only its most recent 128 observations. This keeps
+memory bounded and lets old preferences expire. A suffix that does no work or
+does not apply its selected duration produces no observation. The observation
+is useful only when the action carrying that duration is itself retained or
+reaches an objective. Retention caused by another action in the same suffix
+does not give the duration credit.
+
+If a parent is already in the failed execution state when a generic rollout is
+prepared, the job result carries one preparation-failure observation vector and
+no actions. Admission counts that result as one execution failure, gives the
+observations to the workload's evaluation hook, and continues the campaign.
+Preparation failures do not create candidates, objectives, or duration
+observations. A nonfailed terminal parent still produces an empty result with
+no preparation-failure report.
+
+Choices are powers of two from one through the greatest power of two that fits
+the requested bound. Half of draws explore scales uniformly. The other half
+selects the greatest observed useful-outcome count per unit of logical work,
+breaking ties with the seeded generator. With no useful observations both
+halves explore. The exploration share and history sizes are fixed algorithm
+constants, not workload knobs. Scores use integer cross-products and logical
+work, never host timings. A maximum of one admits only a duration of one.
+Changing duration or cost units requires a new workload policy identity and
+history.
+
+Ordinary non-splice jobs record the duration draw, the touched context history
+at draw time, the admission sequence at which it was selected, and that
+context's history immediately before and after ordered admission. Replay
+reconstructs the recorded reservation work and context history from the
+bounded admission window, verifies the choice against that state, replays the
+recorded action expansion, and checks those bounded context checkpoints. It
+does not serialize the complete context table for every job.
+Full policy checkpoints contain the policy identity, FIFO context order, and
+bounded histories; decoding rejects oversized context or observation arrays.
+Deterministic continuation still requires the same seed, workload identity,
+stable units, and ordered admission. The policy contains no wall-clock or
+workload-specific vocabulary.
+
+The unit tests cover bounded logarithmic draws, delayed outcomes, changing
+phases, continued exploration, logical work comparisons, invalid observations,
+and checkpoint decoding. The `tests/adaptive_campaign.rs` fixture runs the
+generic policy through a two-worker campaign with short and long contexts,
+ordered feedback, exact replay, and planted draw, checkpoint, and remaining
+work changes that replay rejects. It does not measure a workload speedup.
+
 ## Search evaluation policies
 
 Selector identifiers describe the generic hierarchy and retain their exact

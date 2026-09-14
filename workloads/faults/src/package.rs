@@ -5,6 +5,16 @@ use std::{error::Error, fs, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[cfg(any(
+    test,
+    all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )
+))]
+use crate::target::FaultObservations;
 use crate::target::{FaultAction, FaultStop};
 
 pub const PACKAGE: &str = "faults";
@@ -14,7 +24,6 @@ pub struct Options {
     pub workers: u32,
     pub executions: u64,
     pub actions: usize,
-    pub horizon_ms: u64,
     pub ram_mib: u32,
     pub knobs: Vec<String>,
     pub places: Vec<u64>,
@@ -23,17 +32,12 @@ pub struct Options {
 }
 
 impl Options {
-    #[must_use]
-    pub fn horizon_nanos(&self) -> u64 {
-        self.horizon_ms.saturating_mul(1_000_000)
-    }
-
     pub fn validate(&self) -> Result<(), Box<dyn Error>> {
         if self.workers == 0 || self.actions == 0 || self.executions == 0 {
             return Err("workers, actions, and executions must be positive".into());
         }
-        if self.horizon_ms == 0 || self.ram_mib == 0 {
-            return Err("--horizon-ms and --ram-mib must be positive".into());
+        if self.ram_mib == 0 {
+            return Err("--ram-mib must be positive".into());
         }
         if self.output.exists() && fs::read_dir(&self.output)?.next().is_some() {
             return Err("search output directory must be empty; choose a new --out path".into());
@@ -63,7 +67,39 @@ pub struct ReplaySummary {
     pub violations: Vec<u32>,
     pub sometimes: Vec<u32>,
     pub actions_applied: u64,
+    pub settle_actions: u64,
+    pub settle_ticks: u64,
     pub guest_horizons: u64,
+    pub check: Option<crate::target::CheckEvidence>,
+}
+
+#[cfg(any(
+    test,
+    all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )
+))]
+const REPLAY_SETTLE_TICKS: [u16; 13] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096];
+
+#[cfg(any(
+    test,
+    all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )
+))]
+fn replay_needs_settle(observation: &FaultObservations) -> bool {
+    observation.check.as_ref().is_some_and(|check| {
+        check.run == 0
+            || check.start_generation != check.disturbance_generation
+            || check.end_generation != check.disturbance_generation
+            || check.pending_faults != 0
+    })
 }
 
 #[must_use]
@@ -103,10 +139,11 @@ pub struct Report {
     pub first_bug_execution: Option<u64>,
     pub bugs: Vec<BugSummary>,
     pub replays: Vec<ReplaySummary>,
-    pub horizons_clocked: u64,
+    pub execution_ticks: u64,
     pub wall_seconds: u64,
     #[serde(default)]
     pub watchdog_cutoffs: u64,
+    pub execution_failures: u64,
 }
 
 impl Report {
@@ -120,16 +157,17 @@ impl Report {
             identity,
             seed: options.seed,
             workers: options.workers,
-            horizon_ms: options.horizon_ms,
+            horizon_ms: crate::target::DEFAULT_HORIZON_NANOS / 1_000_000,
             ram_mib: options.ram_mib,
             executions: 0,
             bug_found: false,
             first_bug_execution: None,
             bugs: Vec::new(),
             replays: Vec::new(),
-            horizons_clocked: 0,
+            execution_ticks: 0,
             wall_seconds: 0,
             watchdog_cutoffs: 0,
+            execution_failures: 0,
         }
     }
 
@@ -172,6 +210,22 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
     if actions.is_empty() {
         return Err("the recorded input names no actions".into());
     }
+    if actions.len() > crate::target::MAX_FAULT_ACTIONS {
+        return Err("recorded input exceeds the action bound".into());
+    }
+    for action in &actions {
+        match action {
+            FaultAction::EventKill { rarity, .. } | FaultAction::EventPark { rarity, .. }
+                if *rarity >= 64 =>
+            {
+                return Err("event rarity exceeds the runtime hash width".into());
+            }
+            FaultAction::EventPark { hold_us: 0, .. } => {
+                return Err("event park hold must be positive".into());
+            }
+            _ => {}
+        }
+    }
     Ok(RecordedActions {
         actions,
         horizon_nanos,
@@ -199,8 +253,8 @@ mod live {
     use serde_json::json;
 
     use super::{
-        Artifacts, BugSummary, Options, ReplaySummary, Report, first_confirmed_bug,
-        replay_confirms_bug, sha256_hex,
+        Artifacts, BugSummary, Options, REPLAY_SETTLE_TICKS, ReplaySummary, Report,
+        first_confirmed_bug, replay_confirms_bug, replay_needs_settle, sha256_hex,
     };
     use crate::{
         bundle::FaultVocabulary,
@@ -222,7 +276,6 @@ mod live {
     fn config(options: &Options) -> FaultConfig {
         FaultConfig {
             knobs: options.knobs.clone(),
-            horizon_nanos: options.horizon_nanos(),
             ram_mib: options.ram_mib,
         }
     }
@@ -285,7 +338,7 @@ mod live {
             "workers": campaign_report.campaign.workers,
             "execution_budget": campaign_report.campaign.execution_budget,
             "executions": campaign_report.campaign.executions_completed,
-            "horizons": campaign_report.campaign.execution_work,
+            "execution_ticks": campaign_report.campaign.execution_work,
             "stream_sha256": campaign_report.campaign.stream_sha256,
             "archive_entries": archive.entries.len(),
             "progress": archive.progress_watermark,
@@ -294,13 +347,14 @@ mod live {
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),
             "watchdog_cutoffs": archive.watchdog_cutoffs,
+            "execution_failures": campaign_report.campaign.execution_failures,
         });
         std::fs::write(
             options.output.join("campaign-summary.json"),
             serde_json::to_vec_pretty(&summary)?,
         )?;
         report.executions = campaign_report.campaign.executions_completed;
-        report.horizons_clocked = campaign_report.campaign.execution_work;
+        report.execution_ticks = campaign_report.campaign.execution_work;
         for bug in &written {
             let violations: Vec<u32> = bug.observations.violations.iter().copied().collect();
             let witness = match replay_once(artifacts, &config, &bug.actions) {
@@ -337,6 +391,7 @@ mod live {
         report.bug_found = report.first_bug_execution.is_some();
         report.wall_seconds = started.elapsed().as_secs();
         report.watchdog_cutoffs = archive.watchdog_cutoffs;
+        report.execution_failures = campaign_report.campaign.execution_failures;
         report.write(&options.output)?;
         Ok(report)
     }
@@ -358,9 +413,14 @@ mod live {
         for run in 1..=repeat {
             let mut summary = replay_once(artifacts, &config, actions)?;
             summary.run = run;
-            report.horizons_clocked = report
-                .horizons_clocked
-                .saturating_add(summary.guest_horizons);
+            report.execution_ticks = report.execution_ticks.saturating_add(
+                actions
+                    .iter()
+                    .take(summary.actions_applied as usize)
+                    .map(crate::target::action_ticks)
+                    .sum::<u64>()
+                    .saturating_add(summary.settle_ticks),
+            );
             report.bug_found |= summary.bug;
             report.replays.push(summary);
         }
@@ -378,11 +438,27 @@ mod live {
         for action in actions {
             target.apply(*action);
         }
+        let actions_applied = target.actions().len() as u64;
+        let mut settle_actions = 0_u64;
+        let mut settle_ticks = 0_u64;
+        for ticks in REPLAY_SETTLE_TICKS {
+            if target.failed() || !replay_needs_settle(target.observation()) {
+                break;
+            }
+            let before = target.actions().len();
+            target.apply(FaultAction::Wait(
+                std::num::NonZeroU16::new(ticks).expect("settle duration"),
+            ));
+            if target.actions().len() == before {
+                break;
+            }
+            settle_actions = settle_actions.saturating_add(1);
+            settle_ticks = settle_ticks.saturating_add(u64::from(ticks));
+        }
         if target.failed() {
             return Err(format!(
-                "the replay failed after {} of {} actions",
-                target.horizons_clocked(),
-                actions.len()
+                "the replay failed after {actions_applied} of {} input actions and {settle_actions} settlement actions",
+                actions.len(),
             )
             .into());
         }
@@ -394,8 +470,11 @@ mod live {
             state_hash: target.state_hash().map(|bytes| sha256_hex(&bytes))?,
             violations: observation.violations.iter().copied().collect(),
             sometimes: observation.sometimes.iter().copied().collect(),
-            actions_applied: target.horizons_clocked(),
+            actions_applied,
+            settle_actions,
+            settle_ticks,
             guest_horizons: target.guest_horizons_run(),
+            check: observation.check.clone(),
         };
         Ok(summary)
     }
@@ -423,7 +502,6 @@ mod tests {
             workers: 2,
             executions: 10,
             actions: 4,
-            horizon_ms: 500,
             ram_mib: 1024,
             knobs: Vec::new(),
             places: Vec::new(),
@@ -433,15 +511,47 @@ mod tests {
     }
 
     #[test]
-    fn a_horizon_in_milliseconds_becomes_guest_nanoseconds() {
-        assert_eq!(options().horizon_nanos(), 500_000_000);
-        assert_eq!(
-            Options {
-                horizon_ms: u64::MAX,
-                ..options()
-            }
-            .horizon_nanos(),
-            u64::MAX
+    fn replay_settlement_waits_for_current_quiescent_check_evidence() {
+        let current = crate::target::CheckEvidence {
+            disturbance_generation: 7,
+            run: 3,
+            start_generation: 7,
+            end_generation: 7,
+            points: vec![11],
+            pending_faults: 0,
+        };
+        let observation = |check| FaultObservations {
+            check: Some(check),
+            ..FaultObservations::default()
+        };
+        assert!(!replay_needs_settle(&observation(current.clone())));
+        for stale in [
+            crate::target::CheckEvidence {
+                run: 0,
+                ..current.clone()
+            },
+            crate::target::CheckEvidence {
+                start_generation: 6,
+                ..current.clone()
+            },
+            crate::target::CheckEvidence {
+                end_generation: 6,
+                ..current.clone()
+            },
+            crate::target::CheckEvidence {
+                pending_faults: 1,
+                ..current
+            },
+        ] {
+            assert!(replay_needs_settle(&observation(stale)));
+        }
+        assert!(!replay_needs_settle(&FaultObservations::default()));
+        assert_eq!(REPLAY_SETTLE_TICKS.first(), Some(&1));
+        assert_eq!(REPLAY_SETTLE_TICKS.last(), Some(&4_096));
+        assert!(
+            REPLAY_SETTLE_TICKS
+                .windows(2)
+                .all(|pair| pair[1] == pair[0] * 2)
         );
     }
 
@@ -458,10 +568,6 @@ mod tests {
             },
             Options {
                 actions: 0,
-                ..options()
-            },
-            Options {
-                horizon_ms: 0,
                 ..options()
             },
             Options {
@@ -483,6 +589,26 @@ mod tests {
         assert!(options.validate().is_ok(), "an empty directory is accepted");
         std::fs::write(directory.path().join("report.json"), b"{}").expect("write");
         assert!(options.validate().is_err());
+    }
+
+    #[test]
+    fn checked_in_historical_inputs_use_the_current_action_encoding() {
+        for text in [
+            include_str!("../../bugs/historical/postgres-cic-corruption/probe.json"),
+            include_str!("../../bugs/historical/postgres-cic-corruption/samples/quiet-wait.json"),
+        ] {
+            let input = parse_recorded_input(text).unwrap();
+            assert!(
+                input
+                    .actions
+                    .iter()
+                    .any(|action| matches!(action, FaultAction::Wait(_)))
+            );
+            assert!(input.actions.iter().all(|action| match action {
+                FaultAction::Wait(ticks) => ticks.get() == 50,
+                _ => true,
+            }));
+        }
     }
 
     #[test]
@@ -519,6 +645,7 @@ mod tests {
 
     fn replay_summary(bug: bool, stop: FaultStop, violations: &[u32]) -> ReplaySummary {
         ReplaySummary {
+            check: None,
             run: 1,
             bug,
             stop,
@@ -526,6 +653,8 @@ mod tests {
             violations: violations.to_vec(),
             sometimes: vec![24],
             actions_applied: 3,
+            settle_actions: 0,
+            settle_ticks: 0,
             guest_horizons: 3,
         }
     }

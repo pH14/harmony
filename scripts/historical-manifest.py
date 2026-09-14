@@ -48,16 +48,22 @@ def validate(path: Path, case: dict) -> dict:
         raise SystemExit(f"{path}: id must be a non-empty string")
     if Path(case["id"]).name != case["id"] or case["id"] in {".", ".."}:
         raise SystemExit(f"{path}: id must be one path component")
-    for arm in ("vulnerable", "control"):
+    arms = case["arms"]
+    if not isinstance(arms, dict) or "vulnerable" not in arms:
+        raise SystemExit(f"{path}: arms must contain vulnerable")
+    unknown_arms = set(arms) - VALID_ARMS
+    if unknown_arms:
+        raise SystemExit(f"{path}: arms contains unknown entries: {sorted(unknown_arms)}")
+    for arm in arms:
         require(case, path, "arms", arm, "version")
     for key in ("assertion", "evidence"):
         require(case, path, "oracle", key)
-    for key in ("horizon_ms", "ram_mib"):
+    for key in ("ram_mib",):
         require(case, path, "run", key)
     for key in ("seed", "workers", "actions", "wall_minutes"):
         require(case, path, "search", key)
     for group, keys in (
-        ("run", ("horizon_ms", "ram_mib")),
+        ("run", ("ram_mib",)),
         ("search", ("seed", "workers", "actions", "wall_minutes")),
     ):
         for key in keys:
@@ -90,12 +96,12 @@ def validate(path: Path, case: dict) -> dict:
     if (
         not isinstance(search_arms, list)
         or not search_arms
-        or any(not isinstance(arm, str) or arm not in VALID_ARMS for arm in search_arms)
+        or any(not isinstance(arm, str) or arm not in arms for arm in search_arms)
         or len({arm for arm in search_arms if isinstance(arm, str)}) != len(search_arms)
         or "vulnerable" not in search_arms
     ):
         raise SystemExit(
-            f"{path}: ci.search_arms must include vulnerable and contain unique valid arms"
+            f"{path}: ci.search_arms must include vulnerable and contain unique declared arms"
         )
     prefix = ci.get("image_prefix", case["id"])
     if not isinstance(prefix, str) or not prefix:
@@ -113,12 +119,16 @@ def validate(path: Path, case: dict) -> dict:
         if state == "runnable" and not sample_path.is_file():
             raise SystemExit(f"{path}: sample does not exist: {sample['path']}")
         sample_paths.append(sample["path"])
-    for key in ("replay_max_sessions", "replay_timeout_seconds"):
-        value = ci.get(key, 2 if key == "replay_max_sessions" else 1800)
+    planned_replay_sessions = (1 if "control" in arms else 0) + 2 * len(sample_paths)
+    replay_max_sessions = ci.get("replay_max_sessions", max(planned_replay_sessions, 1))
+    replay_timeout_seconds = ci.get("replay_timeout_seconds", 1800)
+    for key, value in (
+        ("replay_max_sessions", replay_max_sessions),
+        ("replay_timeout_seconds", replay_timeout_seconds),
+    ):
         if not isinstance(value, int) or value <= 0:
             raise SystemExit(f"{path}: ci.{key} must be a positive integer")
-    planned_replay_sessions = 1 + 2 * len(sample_paths)
-    if state == "runnable" and ci.get("replay_max_sessions", 2) < planned_replay_sessions:
+    if state == "runnable" and replay_max_sessions < planned_replay_sessions:
         raise SystemExit(
             f"{path}: ci.replay_max_sessions is below the planned aggregate "
             f"replay count ({planned_replay_sessions})"
@@ -132,10 +142,9 @@ def validate(path: Path, case: dict) -> dict:
         "ci_reason": ci.get("reason", ""),
         "image_prefix": prefix,
         "vulnerable_version": case["arms"]["vulnerable"]["version"],
-        "control_version": case["arms"]["control"]["version"],
+        "control_version": case["arms"].get("control", {}).get("version", ""),
         "oracle_assertion": case["oracle"]["assertion"],
         "oracle_evidence": case["oracle"]["evidence"],
-        "horizon_ms": case["run"]["horizon_ms"],
         "ram_mib": case["run"]["ram_mib"],
         "seed": case["search"]["seed"],
         "workers": case["search"]["workers"],
@@ -147,8 +156,8 @@ def validate(path: Path, case: dict) -> dict:
             f"{key}={value}" for key, value in case.get("run", {}).get("knobs", {}).items()
         ),
         "sample_paths": sample_paths,
-        "replay_max_sessions": case.get("ci", {}).get("replay_max_sessions", 2),
-        "replay_timeout_seconds": case.get("ci", {}).get("replay_timeout_seconds", 1800),
+        "replay_max_sessions": replay_max_sessions,
+        "replay_timeout_seconds": replay_timeout_seconds,
         "search_arms": search_arms,
         "planned_replay_sessions": planned_replay_sessions,
     }
@@ -167,10 +176,18 @@ def main() -> int:
         action="store_true",
         help="emit a case-by-arm GitHub matrix JSON object",
     )
+    parser.add_argument(
+        "--replay-matrix",
+        action="store_true",
+        help="emit runnable cases with a declared control or clean samples",
+    )
     parser.add_argument("--check", action="store_true", help="validate manifests without output")
     args = parser.parse_args()
     entries = [validate(path, case) for path, case in cases()]
-    if sum(bool(value) for value in (args.matrix, args.runnable_matrix, args.search_matrix)) > 1:
+    if sum(
+        bool(value)
+        for value in (args.matrix, args.runnable_matrix, args.search_matrix, args.replay_matrix)
+    ) > 1:
         parser.error("choose only one matrix mode")
     if args.matrix or args.runnable_matrix:
         selected = entries if args.matrix else [entry for entry in entries if entry["ci_status"] == "runnable"]
@@ -190,6 +207,14 @@ def main() -> int:
                     }
                 )
         json.dump({"include": search_entries}, sys.stdout, separators=(",", ":"))
+        sys.stdout.write("\n")
+    elif args.replay_matrix:
+        replay_entries = [
+            entry
+            for entry in entries
+            if entry["ci_status"] == "runnable" and entry["planned_replay_sessions"] > 0
+        ]
+        json.dump({"include": replay_entries}, sys.stdout, separators=(",", ":"))
         sys.stdout.write("\n")
     elif not args.check:
         for entry in entries:

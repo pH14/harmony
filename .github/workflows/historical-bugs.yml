@@ -38,6 +38,7 @@ jobs:
       matrix: ${{ steps.read.outputs.matrix }}
       runnable_matrix: ${{ steps.read.outputs.runnable_matrix }}
       search_matrix: ${{ steps.read.outputs.search_matrix }}
+      replay_matrix: ${{ steps.read.outputs.replay_matrix }}
     steps:
       - uses: actions/checkout@v4
       - name: Validate and expand case manifests
@@ -48,10 +49,12 @@ jobs:
           matrix=$(python3 scripts/historical-manifest.py --matrix)
           runnable_matrix=$(python3 scripts/historical-manifest.py --runnable-matrix)
           search_matrix=$(python3 scripts/historical-manifest.py --search-matrix)
+          replay_matrix=$(python3 scripts/historical-manifest.py --replay-matrix)
           {
             printf 'matrix=%s\n' "${matrix}"
             printf 'runnable_matrix=%s\n' "${runnable_matrix}"
             printf 'search_matrix=%s\n' "${search_matrix}"
+            printf 'replay_matrix=%s\n' "${replay_matrix}"
           } >>"${GITHUB_OUTPUT}"
       - name: Summarize runnable and deferred cases
         run: |
@@ -129,7 +132,7 @@ jobs:
 
   images:
     name: Build ${{ matrix.id }} workload images
-    needs: [manifest, guest]
+    needs: manifest
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.manifest.outputs.runnable_matrix) }}
@@ -137,7 +140,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Build both pinned arms
+      - name: Build declared workload images
         env:
           CASE_DIR: ${{ matrix.dir }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
@@ -147,7 +150,8 @@ jobs:
           context=$(jq -er .image.context "${case_json}")
           dockerfile=$(jq -er .image.dockerfile "${case_json}")
           mkdir -p oci-images
-          for arm in vulnerable control; do
+          mapfile -t arms < <(jq -r '.arms | keys[]' "${case_json}")
+          for arm in "${arms[@]}"; do
             version=$(jq -er --arg arm "${arm}" '.arms[$arm].version' "${case_json}")
             mapfile -t build_args < <(jq -r --arg arm "${arm}" \
               '.image.build_args[$arm] // {} | to_entries[] | "\(.key)=\(.value)"' "${case_json}")
@@ -223,7 +227,6 @@ jobs:
           SOFTWARE_NAME: ${{ matrix.software }}
           WORKLOAD_VERSION: ${{ matrix.workload_version }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
-          HORIZON_MS: ${{ matrix.horizon_ms }}
           RAM_MIB: ${{ matrix.ram_mib }}
           SEED: ${{ matrix.seed }}
           WORKERS: ${{ matrix.workers }}
@@ -248,7 +251,7 @@ jobs:
     if: always()
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.manifest.outputs.runnable_matrix) }}
+      matrix: ${{ fromJSON(needs.manifest.outputs.replay_matrix) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -278,6 +281,7 @@ jobs:
           test -r /dev/kvm
           test -w /dev/kvm
       - name: Replay the first current-build finding on the fixed arm
+        if: matrix.control_version != ''
         env:
           CASE_DIR: ${{ matrix.dir }}
           CASE_ID: ${{ matrix.id }}
@@ -285,7 +289,6 @@ jobs:
           VULNERABLE_VERSION: ${{ matrix.vulnerable_version }}
           CONTROL_VERSION: ${{ matrix.control_version }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
-          HORIZON_MS: ${{ matrix.horizon_ms }}
           RAM_MIB: ${{ matrix.ram_mib }}
           KNOBS: ${{ matrix.knobs }}
           ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}
@@ -303,7 +306,7 @@ jobs:
             exit 1
           fi
           input="reports/${CASE_ID}.vulnerable.search/first-bug-input.json"
-          if [[ -s "${input}" ]]; then
+          if [[ -n "${CONTROL_VERSION}" && -s "${input}" ]]; then
             scripts/historical-replay.sh discovery "${input}"
           else
             mkdir -p "reports/${CASE_ID}.control.discovery"
@@ -322,7 +325,6 @@ jobs:
           VULNERABLE_VERSION: ${{ matrix.vulnerable_version }}
           CONTROL_VERSION: ${{ matrix.control_version }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
-          HORIZON_MS: ${{ matrix.horizon_ms }}
           RAM_MIB: ${{ matrix.ram_mib }}
           KNOBS: ${{ matrix.knobs }}
           ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}

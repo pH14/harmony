@@ -16,7 +16,9 @@ in the platform supervisor's bundle format:
 | `node <name> <argv...>` | one workload process the supervisor supervises |
 | `hook <id> <argv...>` | a command the search can run at any moment |
 | `setup <argv...>` | runs once, before any node starts |
-| `ready <argv...>` | must pass before the run's setup point is sealed |
+| `ready <argv...>` | must pass before setup is sealed and before new hooks launch after a supervised node start |
+| `workload <argv...>` | one long-lived workload driver started after initial readiness |
+| `check <argv...>` | a short-lived oracle command run continuously after initial readiness |
 
 [`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
 alphabet, and passes the image to the canonical OCI preparation API with
@@ -26,14 +28,23 @@ supervisor, SDK devices, and bundle path. The supervisor runs setup and
 readiness commands with the resolved image credentials before it publishes the
 setup point, then owns the node process groups and hook launches.
 
+After setup, readiness probes run asynchronously while standing-fault polling
+continues. The configured command decides readiness, including whether it can
+operate with some nodes down. Already-running hooks continue reporting their
+assertions across restarts; readiness only gates new launches. Bundles without
+a readiness command keep immediate hook launches.
+
 ## Actions
 
-An input is a list of actions, each running for one fixed horizon of guest
-time ([`target`](src/target.rs)):
+An input records adaptive durations in 10 ms guest ticks. Waits and instrumented
+event holds range from 10 ms through 10.24 seconds. Other actions have a built-in
+500 ms execution window ([`target`](src/target.rs)):
 
 | action | effect |
 |---|---|
-| `Wait` | nothing; the workload runs undisturbed for a horizon |
+| `Wait(ticks)` | the workload runs undisturbed for the recorded positive duration |
+| `EventKill(node, rarity)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
+| `EventPark(node, rarity, hold)` | an instrumented runtime holds a thread at a selected event for the recorded adaptive duration |
 | `Kill(node)` | the node stays down for the whole horizon |
 | `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
 | `Restart(node)` | the node is killed and comes back inside the horizon |
@@ -41,20 +52,24 @@ time ([`target`](src/target.rs)):
 | `Park(node, addr, hits, hold)` | guest threads are held at an execution place |
 | `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's seal when settling carried it past that start |
 
-Every action but `Interrupt` becomes a standing-fault window on the shared
+Each fault action except `Interrupt` becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
 moment, so an input is fully described by its encoded window list and one
-branch installs it.
+branch installs it. An event-park window remains active across later actions
+until its hold can finish, allowing another fault to overlap the held thread.
 
 ## Execution
 
 [`consonance`](src/consonance.rs) drives one `consonance_client::session::Session`
 per evaluator thread. Each portable action prefix maps to a real whole-VM
 snapshot: the session branches its parent under the prefix's window list and
-the host-plane effect its last action stages, runs to the action's horizon
-deadline, and seals the endpoint. An endpoint the session cannot seal within
-its settle allowance has no successor and the search records it as dead; one
+the host-plane effect its last action stages, runs to the action's deadline,
+and seals the endpoint. The shared session watchdog follows deterministic
+virtual-time progress, so a slowly advancing instrumented guest can finish a
+long action while one stuck at a virtual moment still times out. An endpoint
+the session cannot seal within its settle allowance has no successor and the
+search records it as dead; one
 whose guest stopped for good while settling is recorded with that stop. A
 bounded LRU keeps recent prefixes resident and rebuilds evicted ones from their
 longest cached ancestor.
@@ -66,15 +81,22 @@ with the boot that reaches setup.
 
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
-which pairs the sometimes-assertion set with the live-node bitmap and the
-hook-completion count.
+which captures assertion, liveness, in-flight work, and event-firing state. The
+raw instrumented site reported by an event kill remains diagnostic evidence; it
+is not archive novelty because a large instrumented binary can report a
+distinct address at nearly every endpoint.
 
-The generic `execution_work` counter is the number of successfully applied
-logical horizons after setup. It is monotonic across target reset and snapshot
-restore, so replay and the current search budget charge each accepted action
-once. The separate `guest_horizons` diagnostic measures physical guest runs;
-cache reuse can change it and reset clears it. Setup, prefix reconstruction,
-and failed actions are outside the logical counter.
+The generic `execution_work` counter and `report.json`
+`execution_ticks` count the guest ticks requested by successfully applied actions
+after setup. This logical counter is monotonic across target reset and snapshot
+restore; longer waits cost more even when an endpoint is cached. The separate
+`guest_horizons` diagnostic counts action evaluations that enter the guest;
+cache reuse can change the count and reset clears it. Setup, prefix
+reconstruction, and failed actions are outside the logical counter. Replay
+continues an enabled continuous checker with waits of 10 ms through 40.96 s,
+doubling only while its completed generation is stale or faults remain pending.
+`actions_applied` remains the recorded input prefix, while `settle_actions` and
+`settle_ticks` account for that deterministic validation tail.
 
 ## Running it
 
@@ -82,7 +104,7 @@ and failed actions are outside the logical counter.
 harmony search --package faults IMAGE.oci --backend consonance \
     --kernel vmlinux --base-initramfs initramfs.cpio.gz \
     --seed 1 --workers 8 --executions 100000 \
-    --actions 12 --horizon-ms 500 --ram-mib 1024 --out run/
+    --actions 12 --ram-mib 1024 --out run/
 harmony search --package faults IMAGE.oci --backend consonance \
     --kernel vmlinux --base-initramfs initramfs.cpio.gz \
     --replay run/bug-1.json --repeat 10 --out confirm/
@@ -94,8 +116,35 @@ either the bugs found or the replay outcomes.
 
 The search report and `campaign-summary.json` also record
 `watchdog_cutoffs`, the number of guest action runs ended by the session's
-host watchdog. A completed CLI with such cutoffs remains a measured campaign;
-an outer CLI timeout is an infrastructure failure.
+host watchdog, including cutoffs while reconstructing an evicted prefix. A
+reconstruction cutoff ends that preparation attempt, counts one execution failure
+and one watchdog cutoff, and leaves the worker available for later jobs. It
+produces no suffix action, retained candidate, oracle evidence, or duration
+feedback. Other reconstruction errors still fail the campaign. A completed CLI
+with such cutoffs remains a measured campaign;
+an outer CLI timeout is an infrastructure failure. The reports also expose
+`execution_failures`; the nightly gate rejects non-watchdog failures. A supervisor
+runtime error has a separate SDK status and cannot turn a PID 1 exit into bug
+evidence.
+
+The searcher learns the duration of waits and instrumented event holds from
+admitted campaign outcomes and logical execution cost. It continues sampling
+short and long logarithmic durations while favoring durations whose own action
+recently produced useful work. The adapter groups this feedback by node liveness
+and whether hooks, workload, checks, or event faults have progressed. Site
+identities and workload-specific concepts do not enter the duration policy.
+Choices and feedback state are recorded in the campaign stream; input replay
+executes the recorded durations directly.
+
+Instrumentation actions become available automatically when the staged image
+contains the runtime bridge, nonempty event symbols, and an executable whose
+hash matches its instrumentation attestation. A runtime hello identifies the
+ready nodes in each incarnation; event faults select only those nodes, so mixed
+instrumented and uninstrumented bundles share the same search policy. Backend capabilities determine
+whether host interrupt actions are available. Unsupported alternatives are
+excluded from the alphabet. The continuous client and oracle remain image-owned
+commands; the oracle decides when its observations are conclusive, including
+when some nodes are down.
 
 Every replay run boots a session no earlier run has touched, so no snapshot
 another run cached can stand in for guest execution: each run reaches the
@@ -117,3 +166,12 @@ encoded window list that reproduces it.
 The Consonance backend needs Linux and KVM. The action model, the bundle
 parser, the archive key, the image preparation and the report shapes are
 portable and tested everywhere.
+
+Replay summaries include completed-check provenance automatically for bundles
+with a continuous `check`. The supervisor records the check run, disturbance
+generations at its start and completion, its reached points, and pending process
+faults. A case can require evidence from a successful check that started and
+finished in the final generation with no outstanding fault. Cumulative reached
+points remain exploration evidence and cannot establish this recovery condition.
+Bundles that use drawn hooks have `check: null`; their evidence comes from those
+hooks instead.

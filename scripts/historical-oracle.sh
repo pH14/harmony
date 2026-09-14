@@ -72,7 +72,8 @@ case "${mode}" in
                     and (.replay.bug == true)
                     and (((.replay.violations // []) | index($assertion)) != null)
                     and (((.replay.sometimes // []) | index($evidence)) != null)
-                    and (.replay.guest_horizons == .replay.actions_applied)
+                    and (.replay.guest_horizons == (.replay.actions_applied + .replay.settle_actions))
+                    and (.replay.settle_ticks >= .replay.settle_actions)
                 )' "${report}")
             [[ "${verified}" == true ]] && { echo pass; exit 0; }
 
@@ -107,9 +108,11 @@ case "${mode}" in
         check infra-failure '.mode == "replay"'
         check infra-failure "(.replays | length) == ${repeats}"
         check infra-failure \
-            "all(.replays[]; (.guest_horizons == .actions_applied)\
+            "all(.replays[]; (.guest_horizons == (.actions_applied + .settle_actions))\
                 and (.actions_applied >= 1)\
-                and (.actions_applied <= ${actions}))"
+                and (.actions_applied <= ${actions})\
+                and (.settle_actions >= 0)\
+                and (.settle_ticks >= .settle_actions))"
 
         case "${mode}:${arm}" in
             replay:vulnerable)
@@ -129,6 +132,18 @@ case "${mode}" in
                 fi
                 check replay-inconclusive \
                     "all(.replays[]; (.sometimes // []) | index(${evidence}) != null)"
+                check infra-failure 'all(.replays[]; has("check"))'
+                exercised='.check.disturbance_generation > 0'
+                [[ "${mode}" == sample ]] && exercised=true
+                check replay-inconclusive \
+                    "all(.replays[]; .check == null or (
+                        .check.run > 0
+                        and (${exercised})
+                        and .check.start_generation == .check.disturbance_generation
+                        and .check.end_generation == .check.disturbance_generation
+                        and .check.pending_faults == 0
+                        and ((.check.points // []) | index(${evidence})) != null
+                    ))"
                 check replay-inconclusive \
                     'all(.replays[]; .bug == false and ((.violations // []) | length) == 0)'
                 if [[ "${mode}" == sample ]]; then

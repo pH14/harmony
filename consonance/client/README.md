@@ -52,19 +52,19 @@ changes neither guest state nor the normalized event sequence, and stays
 outside the session identity; a composition root that wants the hashes installs
 them afterwards with `Vmm::checkpoint_virtual_time_trace_at`.
 
-`SessionConfig::wall_limit` bounds one run in host time. A guest spinning on a
-frozen virtual clock takes no exit, so it never reaches its virtual-time
-deadline and only the host clock notices it; past the bound the run is
-abandoned through the backend's cancellation latch and reported as
-`SessionError::Hung`. A canceled VM cannot be entered again, so every later
-request on that session reports `SessionError::Abandoned`. A backend with no
-cancellation latch can honor no such bound and reports
-`SessionError::Unboundable` on the first run rather than running unbounded. The
-limit is a host resource bound, so it is deliberately outside the session
-identity and the image identity. The `watchdog` module owns the mechanism — it
+`SessionConfig::wall_limit` bounds the uninterrupted host time in which one run
+makes no deterministic virtual-time progress. A slowly advancing instrumented
+guest can take longer than the bound in total, while a guest spinning at one
+virtual moment is abandoned through the backend's cancellation latch and
+reported as `SessionError::Hung`. A canceled VM cannot be entered again, so
+every later request on that session reports `SessionError::Abandoned`. A
+backend without both a cancellation latch and the in-process virtual-time
+progress clock reports `SessionError::Unboundable` on the first bounded run.
+The limit is a host resource bound, so it is deliberately outside the session
+identity and the image identity. The `watchdog` module owns the mechanism and
 reserves SIGUSR1 process-wide, so every composition that arms a host bound
-shares this one guard. A request that returns just before the bound expires
-claims the run and keeps its reply.
+shares this one guard. A request that returns as the bound expires claims the
+run and keeps its reply.
 
 `SparseSnapshot` is the explicit `consonance-whole-vm-v2` archive shape used
 by adapters that need page and sidecar sharing across related checkpoints.
