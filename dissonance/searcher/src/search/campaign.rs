@@ -156,6 +156,14 @@ pub trait Reporting: CampaignTypes {
     fn diagnostics(_evidence: &Self::Evidence) -> Option<serde_json::Value> {
         None
     }
+    fn retained_diagnostics<'a>(
+        _snapshots: impl Iterator<Item = (Option<&'a Self::Snapshot>, u64)>,
+    ) -> Option<serde_json::Value>
+    where
+        Self::Snapshot: 'a,
+    {
+        None
+    }
     fn merge_witness_diagnostics(
         _evidence: &mut Self::Evidence,
         _observations: &[Self::Observations],
@@ -2064,6 +2072,8 @@ pub struct CampaignProgressRecord<K> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workload_diagnostics: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_diagnostics: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub milestones: Option<serde_json::Value>,
@@ -2133,6 +2143,7 @@ fn write_live_progress<G: Workload>(
     coordinator_profile: &LiveCoordinatorProfile,
     draw_state_memory_bytes: usize,
     telemetry_started: Instant,
+    final_census: bool,
     sink: &mut dyn Write,
 ) -> Result<(), Box<dyn Error>> {
     let sequence = core.sequence;
@@ -2147,6 +2158,9 @@ fn write_live_progress<G: Workload>(
         .unwrap_or((None, 0, 0));
     let line = serde_json::to_string(&CampaignProgressRecord {
         workload_diagnostics: G::diagnostics(&core.evidence),
+        retained_diagnostics: final_census
+            .then(|| G::retained_diagnostics(core.archive.retained_snapshots()))
+            .flatten(),
         coordinator: coordinator_profile
             .enabled
             .then(|| serde_json::to_value(coordinator_profile))
@@ -2986,6 +3000,7 @@ where
                             &coordinator_profile,
                             draw_state_memory_bytes,
                             telemetry_started,
+                            false,
                             sink,
                         )?;
                         if coordinator_profile.enabled {
@@ -3112,6 +3127,7 @@ where
                 .draw_state_memory_bytes(&draw_state)
                 .saturating_add(duration_policies.memory_bytes()),
             telemetry_started,
+            true,
             sink,
         )?;
     }

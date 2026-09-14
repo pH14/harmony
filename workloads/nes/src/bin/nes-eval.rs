@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use nes_workload::{
-    metroid::campaign::{MetroidCampaignRun, MetroidGame},
+    metroid::{
+        campaign::{MetroidCampaignRun, MetroidGame},
+        target::MetroidTerminalPolicy,
+    },
     mm2::{
         campaign::{Mm2CampaignRun, Mm2Game},
         target::Mm2Stage,
@@ -85,6 +88,8 @@ struct Request {
     stage: Option<u8>,
     #[serde(default)]
     ai: Option<String>,
+    #[serde(default)]
+    metroid_terminal: Option<String>,
 }
 
 struct StreamDigest {
@@ -437,7 +442,12 @@ fn main() -> Result<()> {
             started,
         ),
         "metroid" => evaluate(
-            MetroidGame::new(&rom, p, h).with_milestone_input_dir(out.join("milestone-inputs")),
+            MetroidGame::new(&rom, p, h)
+                .with_milestone_input_dir(out.join("milestone-inputs"))
+                .with_terminal_policy(match request.metroid_terminal.as_deref() {
+                    Some(identifier) => MetroidTerminalPolicy::parse(identifier)?,
+                    None => MetroidTerminalPolicy::default(),
+                }),
             MetroidCampaignRun,
             &request,
             &out,

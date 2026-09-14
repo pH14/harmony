@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     io::Write,
     path::{Path, PathBuf},
@@ -22,7 +22,7 @@ use crate::{
         progress::NamedProgress,
         target::{
             ButtonChord, MetroidInput, MetroidObservations, MetroidSnapshot, MetroidTarget,
-            power_on_walk, preference_tuple,
+            MetroidTerminalPolicy, power_on_walk, preference_tuple,
         },
     },
     search::{
@@ -50,7 +50,6 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_select_taps_no_start_v1";
-const TERMINAL_POLICY_IDENTIFIER: &str = "death_or_ending_v2";
 
 type MetroidPreference = (u8, u8, u16, u8);
 type MetroidChampionKey = (MetroidProgressWatermark, MetroidPreference);
@@ -66,6 +65,7 @@ pub struct MetroidGame {
     identity: String,
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
+    terminal_policy: MetroidTerminalPolicy,
 }
 
 impl MetroidGame {
@@ -103,7 +103,14 @@ impl MetroidGame {
             identity,
             champion_input_path: None,
             milestone_input_dir: None,
+            terminal_policy: MetroidTerminalPolicy::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_terminal_policy(mut self, policy: MetroidTerminalPolicy) -> Self {
+        self.terminal_policy = policy;
+        self
     }
 
     #[must_use]
@@ -458,6 +465,74 @@ impl Reporting for MetroidGame {
             "observation_filter": "live gameplay observations supplied to this accumulator"
         }))
     }
+    fn retained_diagnostics<'a>(
+        snapshots: impl Iterator<Item = (Option<&'a MetroidSnapshot>, u64)>,
+    ) -> Option<serde_json::Value> {
+        let (mut active, mut missing) = (0_u64, 0_u64);
+        let (mut equipment, mut bosses, mut missiles, mut tanks) = (0, 0, 0, 0);
+        let (mut underflows, mut health) = (0_u64, 0_u16);
+        let mut maps = MapCoverage::default();
+        let mut areas = [[0_u8; 2]; 256];
+        let mut cells = BTreeMap::<(u8, u8, u8), [u64; 5]>::new();
+        let mut kit = BTreeMap::<(u8, u8, u8, u8), [u64; 2]>::new();
+        for (snapshot, selections) in snapshots {
+            active += 1;
+            let Some(snapshot) = snapshot else {
+                missing += 1;
+                continue;
+            };
+            let state = snapshot.state();
+            underflows += u64::from(state.health >= 8000);
+            health = health.max(state.health);
+            equipment |= state.equipment;
+            bosses = bosses.max(state.bosses);
+            missiles = missiles.max(state.missile_capacity);
+            tanks = tanks.max(state.energy_tanks);
+            maps.observe(state.area, state.map_x, state.map_y);
+            let area = &mut areas[usize::from(state.area)];
+            *area = [area[0].max(state.missiles), area[1].max(state.energy_tanks)];
+            let cell = cells
+                .entry((state.area, state.map_x, state.map_y))
+                .or_default();
+            *cell = [
+                cell[0] + 1,
+                cell[1].max(u64::from(state.health)),
+                cell[2].max(u64::from(state.missiles)),
+                cell[3] | u64::from(state.equipment),
+                cell[4].saturating_add(selections),
+            ];
+            let held = kit
+                .entry((state.area, state.map_x, state.map_y, state.equipment))
+                .or_default();
+            *held = [held[0] + 1, held[1].saturating_add(selections)];
+        }
+        Some(serde_json::json!({
+            "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
+            "active_entries": active, "missing_snapshots": missing,
+            "underflow_endpoints_cached": underflows, "max_health_cached": health,
+            "equipment_union": equipment, "max_bosses": bosses,
+            "max_missile_capacity": missiles, "max_energy_tanks": tanks,
+            "max_missiles_and_tanks_held_by_area": areas
+                .iter()
+                .enumerate()
+                .filter(|(_, best)| *best != &[0, 0])
+                .map(|(area, best)| (area.to_string(), *best))
+                .collect::<BTreeMap<_, _>>(),
+            "map_cells_retained_cached": maps.count(), "temporary_bitmap_bytes": 32768,
+            "live_entries_by_map_cell": cells
+                .iter()
+                .map(|((area, x, y), best)| (format!("{area}:{x}:{y}"), *best))
+                .collect::<BTreeMap<_, _>>(),
+            "live_entries_by_map_cell_format": "area:map_x:map_y -> [entries, max health, max missiles, equipment union, selections]",
+            "live_entries_by_map_cell_and_equipment": kit
+                .iter()
+                .map(|((area, x, y, equipment), best)| {
+                    (format!("{area}:{x}:{y}:{equipment}"), *best)
+                })
+                .collect::<BTreeMap<_, _>>(),
+            "live_entries_by_map_cell_and_equipment_format": "area:map_x:map_y:equipment bits -> [entries, selections]"
+        }))
+    }
     fn merge_witness_diagnostics(
         evidence: &mut MetroidCampaignEvidence,
         observations: &[MetroidObservations],
@@ -553,7 +628,7 @@ impl InputPolicy for MetroidGame {
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
-            (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
+            (TERMINAL_POLICY_FIELD, self.terminal_policy.identifier()),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -667,6 +742,7 @@ impl TargetExecution for MetroidGame {
             &self.core_sha256,
             &self.prefix,
         )
+        .map(|target| target.with_terminal_policy(self.terminal_policy))
         .map_err(|error| error.to_string())
     }
 
@@ -987,6 +1063,66 @@ mod tests {
         }
         assert!(directory.join("ridley_area.json").is_file());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn the_census_separates_a_cell_never_drawn_from_one_drawn_without_result() {
+        use crate::metroid::target::MetroidMechanicalState;
+
+        let at = |map_x, map_y, equipment, health| MetroidMechanicalState {
+            area: 0x11,
+            map_x,
+            map_y,
+            equipment,
+            health,
+            ..MetroidMechanicalState::default()
+        };
+        let cached = [
+            (at(3, 4, 0b0001, 100), 7),
+            (at(3, 4, 0b0100, 250), 0),
+            (at(9, 1, 0b0001, 300), 0),
+        ]
+        .map(|(state, selections)| (MetroidSnapshot::for_census_tests(state), selections));
+        let census = MetroidGame::retained_diagnostics(
+            cached
+                .iter()
+                .map(|(snapshot, selections)| (Some(snapshot), *selections))
+                .chain(std::iter::once((None, 5))),
+        )
+        .expect("census");
+
+        assert_eq!(census["active_entries"], 4);
+        assert_eq!(census["missing_snapshots"], 1);
+        let cells = &census["live_entries_by_map_cell"];
+        assert_eq!(cells["17:3:4"], serde_json::json!([2, 250, 0, 0b0101, 7]));
+        assert_eq!(cells["17:9:1"], serde_json::json!([1, 300, 0, 0b0001, 0]));
+        let kit = &census["live_entries_by_map_cell_and_equipment"];
+        assert_eq!(kit["17:3:4:1"], serde_json::json!([1, 7]));
+        assert_eq!(kit["17:3:4:4"], serde_json::json!([1, 0]));
+    }
+
+    #[test]
+    fn terminal_semantics_require_a_matching_replay_context() {
+        let legacy = MetroidGame::new(&[0], Path::new("unused"), "test")
+            .with_terminal_policy(MetroidTerminalPolicy::Legacy);
+        let corrected = MetroidGame::new(&[0], Path::new("unused"), "test")
+            .with_terminal_policy(MetroidTerminalPolicy::BcdUnderflow);
+        let old = legacy.policies(&MetroidCampaignRun);
+        let new = corrected.policies(&MetroidCampaignRun);
+        assert!(legacy.resolve_recorded(&old).is_ok());
+        assert!(corrected.resolve_recorded(&new).is_ok());
+        assert!(corrected.resolve_recorded(&old).is_err());
+        assert!(legacy.resolve_recorded(&new).is_err());
+        assert_eq!(
+            old.iter().filter(|(k, v)| new.get(*k) != Some(*v)).count(),
+            1
+        );
+        let unset = MetroidGame::new(&[0], Path::new("unused"), "test");
+        assert!(
+            corrected
+                .resolve_recorded(&unset.policies(&MetroidCampaignRun))
+                .is_ok()
+        );
     }
 
     #[test]

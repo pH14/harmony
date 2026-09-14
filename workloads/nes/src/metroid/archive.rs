@@ -21,8 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str =
-    "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_less_boss_award_map_spatial_16_posture_door_area_last_preference_missiles_first_ridley_bit1_v10";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -34,13 +33,13 @@ pub type MetroidArchive =
 pub struct MetroidArchiveGroup {
     items: u8,
     tanks: u8,
-    area: u8,
     map_x: u8,
     map_y: u8,
     x: u8,
     y: u8,
     posture: u8,
     door: u8,
+    area: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -284,6 +283,42 @@ pub fn sample_chord(rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Err
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_area_byte_does_not_rank_one_boss_area_over_the_other() {
+        let kraid = archive_key(MetroidMechanicalState {
+            area: 0x12,
+            map_x: 1,
+            map_y: 9,
+            ..MetroidMechanicalState::default()
+        });
+        let ridley = archive_key(MetroidMechanicalState {
+            area: 0x14,
+            map_x: 0,
+            map_y: 0,
+            ..MetroidMechanicalState::default()
+        });
+        assert_eq!(
+            MetroidArchiveKey::progress_cmp(kraid.group(0), ridley.group(0)),
+            Ordering::Equal
+        );
+        assert!(kraid.group(0) > ridley.group(0));
+        assert!(KEY_POLICY_IDENTIFIER.contains("area_last"));
+    }
+
+    #[test]
+    fn a_boss_kill_does_not_relabel_every_map_cell_as_holding_more_tanks() {
+        let mut collected = state(100, 300, 0);
+        collected.missile_capacity = 30;
+        let mut killed = state(100, 300, 0);
+        killed.missile_capacity = 30 + 75;
+        killed.bosses = 1;
+
+        assert_eq!(collected.collectibles(), 6);
+        assert_eq!(killed.collectibles(), 6);
+        assert_eq!(killed.items(), collected.items() + 1);
+        assert_eq!(archive_key(killed).tanks, archive_key(collected).tanks);
+    }
 
     fn state(x: u8, health: u16, equipment: u8) -> MetroidMechanicalState {
         MetroidMechanicalState {

@@ -3001,6 +3001,16 @@ where
         self.active_count
     }
 
+    pub(crate) fn retained_snapshots(&self) -> impl Iterator<Item = (Option<&S>, u64)> {
+        self.entries
+            .iter()
+            .zip(&self.active)
+            .enumerate()
+            .filter_map(|(id, (entry, active))| {
+                active.then_some((entry.snapshot.as_deref(), self.selected[id]))
+            })
+    }
+
     #[must_use]
     pub fn resident_snapshot_count(&self) -> usize {
         self.resident_snapshots
@@ -4451,6 +4461,41 @@ mod tests {
             assert!(archive.deactivate(index));
         }
         archive
+    }
+
+    #[test]
+    fn the_final_census_offers_active_endpoints_with_their_selection_counts() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        for index in 0_u16..3 {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: index.to_be_bytes().to_vec(),
+                        key: FlatKey([index, index, 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+        let draw = SelectorDraw {
+            path: SelectorPath::HierarchyWalk,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        for _ in 0..4 {
+            archive.record_selection(1, &draw);
+        }
+        assert!(archive.deactivate(2));
+        let census: Vec<_> = archive
+            .retained_snapshots()
+            .map(|(snapshot, selections)| (snapshot.is_some(), selections))
+            .collect();
+        assert_eq!(census, vec![(true, 0), (true, 4)]);
     }
 
     #[test]

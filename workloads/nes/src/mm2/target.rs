@@ -4,7 +4,7 @@ use std::{error::Error, io::Write, path::Path};
 
 use machine::{
     Machine, MachineError, SnapId, StopConditions, nes,
-    quicknes::{QUICKNES_AUDIO_CHANNELS, QUICKNES_AUDIO_SAMPLE_RATE, QuickNesMachine},
+    quicknes::{QUICKNES_AUDIO_CHANNELS, QUICKNES_AUDIO_SAMPLE_RATE, QuickNesMachine, VideoFrame},
 };
 use serde::{Deserialize, Serialize};
 
@@ -51,7 +51,7 @@ const BOSS_PHASE: usize = 0xb1;
 
 const BOSS_PHASE_FIGHTING: u8 = 0x02;
 const BOSS_PHASE_NONE: u8 = 0x00;
-const BOSS_PHASE_DEFEATED: u8 = 0xfe;
+pub const BOSS_PHASE_DEFEATED: u8 = 0xfe;
 pub const FULL_BOSS_HEALTH: u8 = 28;
 
 const PLAYER_STATE_STANDING: u8 = 0x03;
@@ -199,7 +199,7 @@ impl Mm2MechanicalState {
     pub fn boss_damage(self) -> u8 {
         if self.boss_phase >= BOSS_PHASE_DEFEATED {
             FULL_BOSS_HEALTH
-        } else if self.boss_phase >= BOSS_PHASE_FIGHTING {
+        } else if self.boss_phase >= BOSS_PHASE_FIGHTING && self.boss_health > 0 {
             FULL_BOSS_HEALTH.saturating_sub(self.boss_health)
         } else {
             0
@@ -337,6 +337,22 @@ pub struct Mm2Snapshot {
 }
 
 impl Mm2Snapshot {
+    #[cfg(test)]
+    pub(crate) fn for_census_tests(decoded: Mm2MechanicalState) -> Self {
+        Self {
+            emulator_state: Vec::new(),
+            observation: Mm2Observations {
+                frame_count: 0,
+                decoded,
+                changed_indices: Vec::new(),
+                dead: false,
+                fall_run: 0,
+                log_line: String::new(),
+            },
+            failed: false,
+        }
+    }
+
     #[must_use]
     pub fn state(&self) -> Mm2MechanicalState {
         self.observation.decoded
@@ -571,6 +587,31 @@ impl Mm2Target {
         let state = self.observation.decoded;
         state.weapons_obtained & !self.genesis_weapons != 0
             || state.stage > self.genesis_observation.decoded.stage
+    }
+
+    pub fn start_capturing(&mut self) {
+        self.machine.set_video_capture(true);
+        self.machine.set_audio_capture(true);
+    }
+
+    pub fn drain_frames(&mut self) -> Vec<VideoFrame> {
+        self.machine.take_video_frames()
+    }
+
+    pub fn drain_audio(&mut self) -> Vec<i16> {
+        self.machine.take_audio_samples()
+    }
+
+    pub fn diagnostic_weapon_energies(&self) -> Result<Vec<u8>, MachineError> {
+        let wram = self.machine.read_wram()?;
+        (WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES)
+            .map(|index| read_byte(&wram, index))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn frames_clocked(&self) -> u64 {
+        self.machine.now().0
     }
 
     #[must_use]
@@ -1060,6 +1101,20 @@ mod tests {
         prior[0x6d1] = 0x10;
         current[0x6d1] = ENEMY_HEALTH_IDLE;
         assert_eq!(enemy_damage_between(&prior, &current), ENEMY_HIT_CAP);
+    }
+
+    #[test]
+    fn a_boss_on_screen_without_a_loaded_meter_takes_no_damage() {
+        let mut wram = vec![0_u8; WRAM_SIZE];
+        wram[0xb1] = BOSS_PHASE_FIGHTING;
+        wram[0x6c1] = 0;
+        let approaching = decode_state(&wram).expect("decode");
+        assert_eq!(approaching.boss_damage(), 0);
+        assert!(approaching.boss_fight_underway());
+        wram[0x6c1] = FULL_BOSS_HEALTH;
+        assert_eq!(decode_state(&wram).expect("decode").boss_damage(), 0);
+        wram[0x6c1] = FULL_BOSS_HEALTH - 4;
+        assert_eq!(decode_state(&wram).expect("decode").boss_damage(), 4);
     }
 
     #[test]

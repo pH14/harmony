@@ -3,7 +3,7 @@
 use nes_workload::{
     metroid::{
         progress::{NamedProgress, area_name},
-        target::{MetroidInput, MetroidTarget},
+        target::{MetroidInput, MetroidTarget, MetroidTerminalPolicy},
     },
     mm2::target::{Mm2Stage, Mm2Target},
     target::{ExitKind, Target},
@@ -41,7 +41,8 @@ fn replay(
     if game != "metroid" {
         return Err("game must be metroid or mm2".into());
     }
-    let mut target = MetroidTarget::from_rom_bytes_headless(rom, core, core_hash)?;
+    let mut target = MetroidTarget::from_rom_bytes_headless(rom, core, core_hash)?
+        .with_terminal_policy(MetroidTerminalPolicy::Legacy);
     let setup_frames: u64 = target
         .genesis_prefix()
         .iter()
@@ -76,6 +77,7 @@ fn replay(
     }
     Ok(json!({
         "origin": "ordinary new-game genesis followed by retained searched gameplay tape",
+        "terminal_policy": MetroidTerminalPolicy::Legacy.identifier(),
         "scope": "one replayed trajectory; first_seen.execution counts tape actions, not search work",
         "named_progress": progress, "observed_map_cells": area_cells,
         "endpoint": target.mechanical_state(), "route_frames": target.observe().frame_count,

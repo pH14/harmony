@@ -16,16 +16,46 @@ source addresses and meanings are documented beside their constants in
 identifier is `death_or_ending_v2`, correcting the prototype's stale
 `death_only_v1` label without changing that prototype's predicate.
 
+The default terminal policy is `death_or_bcd_underflow_or_ending_v3`, which also
+marks decoded health >=8000 as terminal. The damage routine stores a BCD
+subtraction before testing borrow and clearing lethal damage, and a frame
+boundary can expose that intermediate value. Six energy tanks cap normal health
+at 6999, so an underflowed reading is the largest health any endpoint can
+report; because health is the last term of the archive preference, that endpoint
+takes the single slot at its location from every legitimate endpoint beside it.
+Raw health stays unchanged for replay inspection. Decoding stops at the first
+frame the policy calls terminal while the action itself runs to its end, so a
+terminal endpoint holds an observation and an emulator state from different
+frames. The search neither admits nor snapshots a terminal endpoint, so this
+only reaches replay tools, and only when one is pointed at a policy its tape
+was not recorded under. The historical
+`death_or_ending_v2` predicate is still selectable, through the evaluator's
+`metroid_terminal` request field and `MetroidGame::with_terminal_policy`. Stream
+headers carry the chosen identifier and reject a mismatched replay context.
+Recorded tapes made before this policy existed replay under the historical
+predicate: `nes-progress` names it, and `metroid-film` defaults to it.
+
 `archive.rs` records the experimental adapter policy explicitly. It pools
 16-pixel positions through 32-pixel cells, 128-pixel regions, map cells, and
 inventory counts. Posture and door-transition state distinguish possible
 continuations. Health and missile stock are same-slot preference, not extra
-spatial slots. Item and tank counts describe discovered capabilities; no
+spatial slots. The key's tank count subtracts the 75 missiles each boss kill
+awards, so a kill does not relabel every map cell the killer reaches as holding
+fifteen more tanks than the cells beside it; the kill still counts through the
+item term. Item and tank counts describe discovered capabilities; no
 particular item, room, door target, or route is supplied. Coverage and pickup
 counters are reporting evidence across explored branches, not proof that one
 trajectory achieved their union. The inherited count representation and
 lexicographic resource preference are policy tradeoffs, not true capability
 or resource dominance.
+
+The pooled group's field declaration order is the frontier selectors' strongest
+ranking term, so a field near the front decides which places the selector draws
+from. Items and tanks lead because they are progress. The area byte is last: the
+five areas are connected in both directions and the two boss areas are numbered
+either side of the endgame area, so ranking by that byte parks the search in the
+higher-numbered boss area and leaves the other undeveloped. With the byte last
+the map row and column decide the rank.
 
 The legacy primary progress watermark records equipment bit count **plus boss
 defeats**, and missile capacity.
@@ -44,10 +74,48 @@ logical budget and included in process RSS. The counter never enters archive
 keys, input selection, rewards, or deterministic reports; it remains cumulative
 when the archive's novelty ledger is compacted.
 
+The last progress record of a run carries `retained_diagnostics`, the
+end-of-run census of the live archive.
+`live_entries_by_map_cell` maps `area:map_x:map_y` to
+`[entries, max health, max missiles, equipment union, selections]`. A milestone
+list says the run reached something; this says where the archive still sits,
+what the endpoints in each cell can do, and how often the selector drew there. A
+cell whose equipment union lacks an item the route out of it needs is covered by
+endpoints that can never leave, and the selection count separates a cell the
+selector never drew from one it drew and got nothing from.
+`live_entries_by_map_cell_and_equipment` splits the same census by the equipment
+byte, mapping `area:map_x:map_y:equipment bits` to `[entries, selections]`.
+Endpoints holding different equipment in one cell sit in different archive
+classes and are drawn separately, so a cell's own totals cannot say whether the
+endpoints that can open the next door are the ones the selector goes back to.
+Both read only cached active endpoints, so they are lower bounds where snapshots
+are missing.
+
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md)
 for paired search comparisons and full small-campaign replay. `metroid-campaign`
 also exposes the native experiment command. The source lineage is documented in
 [the synthesis record](../../../../benchmarks/search/SYNTHESIS.md).
+
+`metroid-film` replays a recorded tape to video. A tape carries no policy
+header and the recorded tapes predate the BCD-borrow predicate, so it defaults
+to the historical one and takes `--terminal-policy` to name another.
+`--set-resources HEALTH,MISSILES@ACTIONS` repeats a bounded resource
+intervention at that action count, so an input searched from an intervened root
+plays back as the searcher saw it. `MetroidTarget::diagnostic_set_resources`
+writes only the two health bytes and the missile count, at a paused live
+boundary, within the endpoint's own earned capacities. It verifies that no other
+RAM byte, mechanical field, serialized byte or the frame clock moved, and rolls
+both regions back when any check fails. It is a standalone diagnostic, never a
+search action and never a generated witness, so a replay must record and repeat
+it. The intervention point is validated before any output file exists, and a run
+that ends before the point is reported as the unintervened run.
+
+`metroid-map-probe` replays a tape and prints the map cell and resources at each
+action endpoint. Like `metroid-film` it defaults to the historical terminal
+predicate and takes `--terminal-policy`, so a recorded tape is not stopped early
+by a predicate it was never recorded under. A campaign report names the areas a run entered and counts the
+map cells it observed; neither says which cells a route crossed, so neither can
+say which neighbour of a reached cell was never opened.
 
 ## Named milestone evaluation
 

@@ -2,7 +2,10 @@
 
 use std::{error::Error, path::Path};
 
-use machine::{Machine, MachineError, SnapId, StopConditions, nes, quicknes::QuickNesMachine};
+use machine::{
+    Machine, MachineError, SnapId, StopConditions, nes,
+    quicknes::{QuickNesMachine, VideoFrame},
+};
 use serde::{Deserialize, Serialize};
 
 use super::progress::{BossDefeats, TourianEvents};
@@ -40,6 +43,36 @@ pub const POSTURE_OTHER: u8 = 2;
 const HEALTH_HIGH: usize = 0x107;
 const HEALTH_LOW: usize = 0x106;
 pub const STARTING_HEALTH_TENTHS: u16 = 300;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MetroidTerminalPolicy {
+    Legacy,
+    #[default]
+    BcdUnderflow,
+}
+
+impl MetroidTerminalPolicy {
+    #[must_use]
+    pub fn identifier(self) -> &'static str {
+        match self {
+            Self::Legacy => "death_or_ending_v2",
+            Self::BcdUnderflow => "death_or_bcd_underflow_or_ending_v3",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
+        match value {
+            "death_or_ending_v2" => Ok(Self::Legacy),
+            "death_or_bcd_underflow_or_ending_v3" => Ok(Self::BcdUnderflow),
+            _ => Err("unknown Metroid terminal policy".into()),
+        }
+    }
+
+    #[must_use]
+    pub fn is_dead(self, state: MetroidMechanicalState) -> bool {
+        state.is_dead() || (self == Self::BcdUnderflow && state.health >= BCD_BORROW_HEALTH)
+    }
+}
 
 pub const CARTRIDGE_RAM_BASE: u64 = 0x6000;
 const EQUIPMENT: usize = 0x878;
@@ -85,7 +118,11 @@ impl MetroidMechanicalState {
 
     #[must_use]
     pub fn collectibles(self) -> u8 {
-        (self.missile_capacity / MISSILE_TANK_STEP).saturating_add(self.energy_tanks)
+        let awarded = u16::from(BOSS_MISSILE_AWARD) * u16::from(self.bosses);
+        let from_tanks = u16::from(self.missile_capacity).saturating_sub(awarded);
+        u8::try_from(from_tanks / u16::from(MISSILE_TANK_STEP))
+            .unwrap_or(u8::MAX)
+            .saturating_add(self.energy_tanks)
     }
 
     #[must_use]
@@ -114,6 +151,18 @@ impl MetroidMechanicalState {
 }
 
 const MISSILE_TANK_STEP: u8 = 5;
+const MAX_ENERGY_TANKS: u8 = 6;
+const CARTRIDGE_RAM_SIZE: usize = 8192;
+
+fn health_cap(energy_tanks: u8) -> u16 {
+    (u16::from(energy_tanks) + 1) * 1000 - 1
+}
+
+fn to_bcd(value: u16) -> u8 {
+    u8::try_from((value / 10) * 16 + value % 10).unwrap_or(u8::MAX)
+}
+const BOSS_MISSILE_AWARD: u8 = 75;
+const BCD_BORROW_HEALTH: u16 = 8000;
 
 fn bcd(byte: u8) -> u16 {
     u16::from(byte >> 4) * 10 + u16::from(byte & 0x0f)
@@ -188,6 +237,24 @@ pub struct MetroidSnapshot {
 }
 
 impl MetroidSnapshot {
+    #[cfg(test)]
+    pub(crate) fn for_census_tests(decoded: MetroidMechanicalState) -> Self {
+        Self {
+            emulator_state: Vec::new(),
+            observation: MetroidObservations {
+                frame_count: 0,
+                decoded,
+                boss_defeats: BossDefeats::default(),
+                mother_brain_status: 0,
+                tourian_events: TourianEvents::default(),
+                changed_indices: Vec::new(),
+                dead: false,
+                log_line: String::new(),
+            },
+            failed: false,
+        }
+    }
+
     #[must_use]
     pub fn state(&self) -> MetroidMechanicalState {
         self.observation.decoded
@@ -247,6 +314,7 @@ pub struct MetroidTarget {
     failed: bool,
     genesis_prefix: Vec<ButtonChord>,
     execution_work: u64,
+    terminal_policy: MetroidTerminalPolicy,
 }
 
 impl MetroidTarget {
@@ -256,6 +324,26 @@ impl MetroidTarget {
         core_sha256: &str,
     ) -> Result<Self, MachineError> {
         Self::from_rom_bytes_after(rom, core_path, core_sha256, &power_on_walk())
+    }
+
+    pub fn from_rom_bytes_capturing(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        let image = nes::with_cartridge_ram(rom)?;
+        let mut machine = QuickNesMachine::from_rom_bytes(&image, core_path, core_sha256)?;
+        machine.set_video_capture(true);
+        machine.set_audio_capture(true);
+        Self::from_machine(machine, &power_on_walk())
+    }
+
+    pub fn drain_frames(&mut self) -> Vec<VideoFrame> {
+        self.machine.take_video_frames()
+    }
+
+    pub fn drain_audio(&mut self) -> Vec<i16> {
+        self.machine.take_audio_samples()
     }
 
     pub fn from_rom_bytes_after(
@@ -323,7 +411,17 @@ impl MetroidTarget {
             failed: false,
             genesis_prefix,
             execution_work: 0,
+            terminal_policy: MetroidTerminalPolicy::default(),
         })
+    }
+
+    #[must_use]
+    pub fn with_terminal_policy(mut self, policy: MetroidTerminalPolicy) -> Self {
+        self.terminal_policy = policy;
+        self.observation.dead = policy.is_dead(self.observation.decoded);
+        self.genesis_observation.dead = policy.is_dead(self.genesis_observation.decoded);
+        self.action_observations = vec![self.observation.clone()];
+        self
     }
 
     #[must_use]
@@ -362,6 +460,89 @@ impl MetroidTarget {
     #[must_use]
     pub fn execution_work(&self) -> u64 {
         self.execution_work
+    }
+
+    #[must_use]
+    pub fn frames_clocked(&self) -> u64 {
+        self.machine.now().0
+    }
+
+    pub fn diagnostic_set_resources(
+        &mut self,
+        health: u16,
+        missiles: u8,
+    ) -> Result<(), Box<dyn Error>> {
+        let state = self.mechanical_state();
+        if self.failed
+            || !state.in_play()
+            || self.is_dead()
+            || self.is_victory()
+            || state.energy_tanks > MAX_ENERGY_TANKS
+            || state.health == 0
+            || state.health > health_cap(state.energy_tanks)
+            || state.missiles > state.missile_capacity
+            || health == 0
+            || health > health_cap(state.energy_tanks)
+            || missiles > state.missile_capacity
+        {
+            return Err("resource intervention exceeds the live state's earned capacities".into());
+        }
+        let wram = self.machine.read_wram()?;
+        let cartridge = self.cartridge()?;
+        if decode_state(&wram, &cartridge)? != state || wram != self.current_wram {
+            return Err("resource intervention requires a consistent paused boundary".into());
+        }
+        let before = self
+            .snapshot()
+            .ok_or("resource intervention snapshot failed")?;
+        let clock = self.frames_clocked();
+        let mut expected_wram = wram;
+        expected_wram[HEALTH_LOW] = to_bcd(health % 100);
+        expected_wram[HEALTH_HIGH] = to_bcd(health / 100);
+        let mut expected_cartridge = cartridge.clone();
+        expected_cartridge[MISSILES] = missiles;
+        let changes = [
+            (wram[HEALTH_LOW], expected_wram[HEALTH_LOW]),
+            (wram[HEALTH_HIGH], expected_wram[HEALTH_HIGH]),
+            (cartridge[MISSILES], missiles),
+        ];
+        let applied = (|| -> Result<(), Box<dyn Error>> {
+            self.machine
+                .poke_wram(HEALTH_LOW, expected_wram[HEALTH_LOW]);
+            self.machine
+                .poke_wram(HEALTH_HIGH, expected_wram[HEALTH_HIGH]);
+            self.machine.write_save_ram(MISSILES, &[missiles])?;
+            if self.machine.read_wram()? != expected_wram
+                || self.cartridge()? != expected_cartridge
+                || self.frames_clocked() != clock
+            {
+                return Err("resource intervention changed another RAM byte or the clock".into());
+            }
+            let mut expected_state = state;
+            expected_state.health = health;
+            expected_state.missiles = missiles;
+            if decode_state(&expected_wram, &expected_cartridge)? != expected_state {
+                return Err("resource intervention changed another mechanical field".into());
+            }
+            let after = self.snapshot().ok_or("intervened snapshot failed")?;
+            if !only_resource_bytes_changed(&before.emulator_state, &after.emulator_state, &changes)
+            {
+                return Err("resource intervention changed unexpected serialized bytes".into());
+            }
+            self.current_wram = expected_wram;
+            self.observation.decoded = expected_state;
+            self.action_observations = vec![self.observation.clone()];
+            Ok(())
+        })();
+        if let Err(error) = applied {
+            self.machine.poke_wram(HEALTH_LOW, wram[HEALTH_LOW]);
+            self.machine.poke_wram(HEALTH_HIGH, wram[HEALTH_HIGH]);
+            self.machine
+                .write_save_ram(MISSILES, &[cartridge[MISSILES]])?;
+            self.restore(&before)?;
+            return Err(error);
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -447,8 +628,13 @@ impl Target for MetroidTarget {
             self.failed = true;
             return;
         };
-        match decode_action_observations(&frames, &cartridge, &self.observation, self.current_wram)
-        {
+        match decode_action_observations(
+            &frames,
+            &cartridge,
+            &self.observation,
+            self.current_wram,
+            self.terminal_policy,
+        ) {
             Ok((observations, wram)) => {
                 if let Some(last) = observations.last() {
                     self.observation = last.clone();
@@ -509,6 +695,7 @@ impl Target for MetroidTarget {
             .read_wram()
             .map_err(|error| error.to_string())?;
         self.observation = snapshot.observation.clone();
+        self.observation.dead = self.terminal_policy.is_dead(self.observation.decoded);
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
         Ok(())
@@ -520,6 +707,7 @@ fn decode_action_observations(
     cartridge: &[u8],
     initial: &MetroidObservations,
     mut prior_wram: [u8; WRAM_SIZE],
+    policy: MetroidTerminalPolicy,
 ) -> Result<(Vec<MetroidObservations>, [u8; WRAM_SIZE]), MachineError> {
     let boss_defeats = decode_boss_defeats(cartridge)?;
     let mut prior_state = initial.decoded;
@@ -530,24 +718,90 @@ fn decode_action_observations(
         let frame_count = initial.frame_count + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
         tourian_events.observe(state, wram[0x98]);
         let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
-            || state.is_dead() != prior_state.is_dead();
+            || policy.is_dead(state) != policy.is_dead(prior_state);
         if boundary || offset + 1 == frames.len() {
-            observations.push(MetroidTarget::make_observation(
+            let mut observation = MetroidTarget::make_observation(
                 frame_count,
                 state,
                 wram,
                 &prior_wram,
                 boss_defeats,
                 tourian_events,
-            ));
+            );
+            observation.dead = policy.is_dead(state);
+            observations.push(observation);
             prior_wram = *wram;
         }
         prior_state = state;
-        if state.is_dead() {
+        if policy.is_dead(state) {
             break;
         }
     }
     Ok((observations, prior_wram))
+}
+
+fn resource_ram_payload(bytes: &[u8], cartridge: bool) -> Option<usize> {
+    if bytes.get(..8)? != b"HQNESST2"
+        || bytes.get(120..128)? != b"NESS\xff\xff\xff\xff"
+        || u64::from_le_bytes(bytes.get(112..120)?.try_into().ok()?) != (bytes.len() - 120) as u64
+    {
+        return None;
+    }
+    let mut offset = 128_usize;
+    let mut found = None;
+    while offset < bytes.len() {
+        let end = offset.checked_add(8)?;
+        let tag = bytes.get(offset..offset.checked_add(4)?)?;
+        let size = usize::try_from(u32::from_le_bytes(
+            bytes.get(offset + 4..end)?.try_into().ok()?,
+        ))
+        .ok()?;
+        let next = end.checked_add(size)?;
+        if next > bytes.len() {
+            return None;
+        }
+        let matches = if cartridge {
+            tag == b"SRAM"
+        } else {
+            tag == b"LRAM" || tag == b"WRAM"
+        };
+        if matches {
+            if found.is_some()
+                || size
+                    != if cartridge {
+                        CARTRIDGE_RAM_SIZE
+                    } else {
+                        WRAM_SIZE
+                    }
+            {
+                return None;
+            }
+            found = Some(end);
+        }
+        offset = next;
+    }
+    found
+}
+
+fn only_resource_bytes_changed(before: &[u8], after: &[u8], changes: &[(u8, u8)]) -> bool {
+    if before.len() != after.len() || changes.len() != 3 {
+        return false;
+    }
+    let mut expected = before.to_vec();
+    for (index, &(old, new)) in changes.iter().enumerate() {
+        if old == new {
+            continue;
+        }
+        let Some(payload) = resource_ram_payload(before, index == 2) else {
+            return false;
+        };
+        let address = payload + [HEALTH_LOW, HEALTH_HIGH, MISSILES][index];
+        if expected[address] != old {
+            return false;
+        }
+        expected[address] = new;
+    }
+    expected == after
 }
 
 fn samus_screen(wram: &[u8]) -> Result<(u8, u8), MachineError> {
@@ -594,6 +848,161 @@ mod observation_tests {
     use super::*;
     use crate::metroid::progress::NamedProgress;
 
+    fn resource_fixture() -> MetroidTarget {
+        let mut machine = QuickNesMachine::loopback_for_tests(&[0]).unwrap();
+        machine.write_save_ram(0, &[0; CARTRIDGE_RAM_SIZE]).unwrap();
+        machine.poke_wram(GAME_MODE, GAME_MODE_PLAYING);
+        machine.poke_wram(HEALTH_HIGH, 3);
+        machine.write_save_ram(ENERGY_TANKS, &[1]).unwrap();
+        machine.write_save_ram(MISSILE_CAPACITY, &[20]).unwrap();
+        let mut target = MetroidTarget::from_machine(machine, &[]).unwrap();
+        target.diagnostic_set_resources(79, 0).unwrap();
+        target
+    }
+
+    #[test]
+    fn resource_intervention_preserves_noop_and_rejects_unserialized_changes() {
+        let mut target = resource_fixture();
+        let before = target.snapshot().unwrap();
+        let clock = target.frames_clocked();
+        target.diagnostic_set_resources(79, 0).unwrap();
+        assert_eq!(target.snapshot().unwrap(), before);
+        target.diagnostic_set_resources(1999, 0).unwrap();
+        let mut expected = before.state();
+        expected.health = 1999;
+        assert_eq!(target.mechanical_state(), expected);
+        assert_eq!(target.frames_clocked(), clock);
+        target.restore(&before).unwrap();
+        assert!(target.diagnostic_set_resources(1999, 20).is_err());
+        assert_eq!(target.snapshot().unwrap(), before);
+        assert_eq!(target.cartridge().unwrap()[MISSILES], 0);
+        for (health, missiles) in [(0, 0), (2000, 0), (1999, 21)] {
+            assert!(target.diagnostic_set_resources(health, missiles).is_err());
+            assert_eq!(target.snapshot().unwrap(), before);
+        }
+        target.machine.poke_wram(HEALTH_LOW, 0);
+        target.machine.poke_wram(HEALTH_HIGH, 0x20);
+        target.current_wram = target.machine.read_wram().unwrap();
+        target.observation.decoded.health = 2000;
+        let invalid = target.snapshot().unwrap();
+        assert!(target.diagnostic_set_resources(1999, 0).is_err());
+        assert_eq!(target.snapshot().unwrap(), invalid);
+    }
+
+    #[test]
+    fn resource_snapshot_guard_rejects_extra_missing_or_malformed_bytes() {
+        let mut target = resource_fixture();
+        let before = target.snapshot().unwrap().emulator_state;
+        target.diagnostic_set_resources(1999, 0).unwrap();
+        let after = target.snapshot().unwrap().emulator_state;
+        let changes = [(0x79, 0x99), (0, 0x19), (0, 0)];
+        assert!(only_resource_bytes_changed(&before, &after, &changes));
+        assert!(!only_resource_bytes_changed(&before, &before, &changes));
+        assert!(!only_resource_bytes_changed(
+            &before,
+            &after[..after.len() - 1],
+            &changes
+        ));
+        let mut wrong_address = after.clone();
+        let payload = resource_ram_payload(&before, false).unwrap();
+        wrong_address[payload + HEALTH_HIGH] = 0;
+        wrong_address[payload + HEALTH_HIGH + 1] = 0x19;
+        assert!(!only_resource_bytes_changed(
+            &before,
+            &wrong_address,
+            &changes
+        ));
+        let mut malformed = before.clone();
+        malformed[112] ^= 1;
+        assert!(resource_ram_payload(&malformed, false).is_none());
+    }
+
+    #[test]
+    fn the_default_terminal_policy_rejects_the_bcd_borrow_value() {
+        assert_eq!(
+            MetroidTerminalPolicy::default(),
+            MetroidTerminalPolicy::BcdUnderflow
+        );
+        let underflowed = MetroidMechanicalState {
+            health: 9990,
+            ..MetroidMechanicalState::default()
+        };
+        assert!(MetroidTerminalPolicy::default().is_dead(underflowed));
+        assert!(!MetroidTerminalPolicy::Legacy.is_dead(underflowed));
+    }
+
+    #[test]
+    fn terminal_policy_identifiers_are_strict() {
+        for policy in [
+            MetroidTerminalPolicy::Legacy,
+            MetroidTerminalPolicy::BcdUnderflow,
+        ] {
+            assert_eq!(
+                MetroidTerminalPolicy::parse(policy.identifier()).unwrap(),
+                policy
+            );
+        }
+        assert!(MetroidTerminalPolicy::parse("death_or_ending_v999").is_err());
+    }
+
+    #[test]
+    fn bcd_underflow_is_terminal_without_rewriting_raw_health() {
+        let cartridge = [0; 8192];
+        let mut start = [0; WRAM_SIZE];
+        start[GAME_MODE] = GAME_MODE_PLAYING;
+        start[HEALTH_LOW] = 0x37;
+        let initial = MetroidTarget::make_observation(
+            0,
+            decode_state(&start, &cartridge).unwrap(),
+            &start,
+            &start,
+            BossDefeats::default(),
+            TourianEvents::default(),
+        );
+        let mut underflow = start;
+        underflow[HEALTH_LOW] = 0;
+        underflow[HEALTH_HIGH] = 0x98;
+        let mut cleared = underflow;
+        cleared[HEALTH_HIGH] = 0;
+        let (legacy, _) = decode_action_observations(
+            &[underflow],
+            &cartridge,
+            &initial,
+            start,
+            MetroidTerminalPolicy::Legacy,
+        )
+        .unwrap();
+        assert!(!legacy[0].dead);
+        let (corrected, stopped_wram) = decode_action_observations(
+            &[underflow, cleared],
+            &cartridge,
+            &initial,
+            start,
+            MetroidTerminalPolicy::BcdUnderflow,
+        )
+        .unwrap();
+        assert_eq!(corrected.len(), 1);
+        assert!(corrected[0].dead);
+        assert_eq!(corrected[0].frame_count, 1);
+        assert_eq!(corrected[0].decoded.health, 9800);
+        assert_eq!(stopped_wram, underflow);
+        assert_ne!(stopped_wram, cleared);
+        for (high, low) in [(0x69, 0x99), (0x19, 0x99), (0, 0x12)] {
+            let mut live = start;
+            live[HEALTH_HIGH] = high;
+            live[HEALTH_LOW] = low;
+            let (observations, _) = decode_action_observations(
+                &[live],
+                &cartridge,
+                &initial,
+                start,
+                MetroidTerminalPolicy::BcdUnderflow,
+            )
+            .unwrap();
+            assert!(!observations[0].dead, "valid health was rejected");
+        }
+    }
+
     #[test]
     fn transient_escape_survives_stationary_held_action_without_extra_events() {
         let cartridge = [0; 8192];
@@ -618,8 +1027,14 @@ mod observation_tests {
                     frame
                 })
                 .collect();
-            let (observations, _) =
-                decode_action_observations(&frames, &cartridge, &initial, wram).unwrap();
+            let (observations, _) = decode_action_observations(
+                &frames,
+                &cartridge,
+                &initial,
+                wram,
+                MetroidTerminalPolicy::Legacy,
+            )
+            .unwrap();
             let mut progress = NamedProgress::default();
             if expected {
                 assert_eq!(observations.len(), 1);
