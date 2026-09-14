@@ -89,6 +89,8 @@ struct Request {
     stage: Option<u8>,
     #[serde(default)]
     ai: Option<String>,
+    #[serde(default)]
+    film: bool,
 }
 
 struct StreamDigest {
@@ -173,7 +175,7 @@ fn replay_witness<G: Workload>(game: &G, run: &G::Run, input: &Input<G::Action>)
     )
 }
 
-fn evaluate<G: Workload>(
+fn evaluate<G: Workload + nes_workload::film::FilmSource>(
     game: G,
     run: G::Run,
     request: &Request,
@@ -232,7 +234,7 @@ where
     };
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
+        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "film":request.film, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
     )?;
     let mut stream = StreamDigest {
         file: if full {
@@ -328,6 +330,17 @@ where
         }
     }
     let verification_seconds = verify_started.elapsed().as_secs_f64();
+    let film = if request.film {
+        phase(out, "film", started)?;
+        Some(nes_workload::film::render_witness_film(
+            &game,
+            &witness,
+            out,
+            nes_workload::film::RENDER_TAIL_FRAMES,
+        )?)
+    } else {
+        None
+    };
     let solved = objective_within_budget(report.work_to_first_objective, request.frames);
     write_json(
         &out.join("result.json"),
@@ -340,7 +353,7 @@ where
             "progress":value["archive"]["progress_watermark"], "milestones":value["archive"]["milestones"], "frames_per_second": report.execution_work as f64 / search_seconds,
             "export_seconds":export_seconds, "verification_seconds":verification_seconds,
             "witness_replays":2, "campaign_replay":full,
-            "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses,
+            "verification":request.verification, "witness":first, "milestone_witnesses":milestone_witnesses, "film":film,
             "stream_sha256":format!("{:x}",stream.digest.finalize()), "stream_bytes_generated":stream.bytes, "stream_retained":full,
             "stop_reason":if solved {"victory"} else if report.executions_completed >= request.executions {"execution_limit"} else if request.frames.is_some_and(|limit| report.execution_work >= limit) {"frame_limit"} else {"wall_limit"}
         }),

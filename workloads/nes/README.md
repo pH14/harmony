@@ -85,7 +85,10 @@ described above, with minimal game guidance.
 
 [`benchmarks/search`](../../benchmarks/search/README.md) supplies one compact
 native `nes-eval` runner for SMB, Nova, Mega Man 2, Metroid, Super Tilt Bro, and
-Thwaite.
+Thwaite. A case may set `film` to render its retained witness tape through the
+shared [`film`](src/film.rs) step; the export then publishes the film with the
+game's artifact notice. Nova, Super Tilt Bro, Mega Man 2 and Thwaite can render;
+SMB and Metroid have no renderer and say so.
 ROM/core hashes, origin definitions, complete adapter policy identities,
 resource budgets, verification, and immutable export are shared across games.
 Licensed ROMs stay in a private host inventory. Source-built games and generic

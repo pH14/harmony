@@ -919,6 +919,22 @@ pub fn replay_metroid_campaign_checkpointed(
     replay_campaign_checkpointed(game, stream_bytes, origin_report, origin_checkpoint)
 }
 
+impl crate::film::FilmSource for MetroidGame {
+    fn render_film(
+        &self,
+        _input: &MetroidInput,
+        _tail_frames: u32,
+        _video: &mut dyn Write,
+        _audio: &mut dyn Write,
+    ) -> Result<crate::film::FilmMetadata, Box<dyn Error>> {
+        Err("this workload has no film renderer".into())
+    }
+
+    fn film_action_frames(&self, _input: &MetroidInput) -> u64 {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

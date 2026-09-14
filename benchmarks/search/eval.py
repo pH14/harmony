@@ -22,6 +22,12 @@ import sys
 import time
 
 SCHEMA = 'harmony-search-eval-v1'
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ARTIFACT_NOTICES = {
+    'nova': 'workloads/nes/NOVA-ARTIFACT-LICENSE.md',
+    'stb': 'workloads/nes/STB-ARTIFACT-LICENSE.md',
+    'thwaite': 'workloads/nes/THWAITE-ARTIFACT-LICENSE.md',
+}
 ALLOWED_SEARCH = {'seed','workers','executions','frames','actions','memory_mib','window','result_slots','wall_seconds','selector','suffix','mixture','verification'}
 
 
@@ -139,7 +145,7 @@ def expand_suite(suite, selected=None):
         settings={**suite['search'],**case.get('search',{})}
         if set(settings)-ALLOWED_SEARCH: raise ValueError('unknown search settings')
         for seed,workers,memory in itertools.product(suite['seeds'],suite['workers'],suite['memory_mib']):
-            request={**settings,**{k:case[k] for k in ('game','level','stage','ai','whole_game') if k in case},'seed':seed,'workers':workers,'memory_mib':memory}
+            request={**settings,**{k:case[k] for k in ('game','level','stage','ai','whole_game','film') if k in case},'seed':seed,'workers':workers,'memory_mib':memory}
             for field in ('seed','workers','memory_mib','executions','actions','window','wall_seconds'):
                 val=request[field]
                 if type(val) is not int or val<0 or (field!='seed' and val==0): raise ValueError('invalid '+field)
@@ -368,7 +374,7 @@ def compare(base, candidate):
             continue
         if a['identity']['policies'] != b['identity']['policies']:
             raise ValueError('adapter policy changed: ' + cell)
-        for key in ('game', 'level', 'stage', 'ai', 'whole_game', 'seed', 'workers', 'memory_mib', 'window', 'actions', 'executions', 'frames', 'wall_seconds', 'rom_sha256', 'core_sha256', 'verification'):
+        for key in ('game', 'level', 'stage', 'ai', 'whole_game', 'film', 'seed', 'workers', 'memory_mib', 'window', 'actions', 'executions', 'frames', 'wall_seconds', 'rom_sha256', 'core_sha256', 'verification'):
             if a['search_request'].get(key) != b['search_request'].get(key):
                 raise ValueError('comparison changed ' + key + ': ' + cell)
         row = {'cell': cell, 'comparable': True, 'baseline_status': a['status'], 'candidate_status': b['status'],
@@ -609,7 +615,8 @@ def export(matrix, out):
     # Explicit allowlist. Verify every path before creating a partial public export.
     for item in results:
         for name in ('summary.json', 'resources.jsonl', 'campaign/identity.json', 'campaign/result.json',
-                     'campaign/campaign.json', 'campaign/progress.jsonl', 'campaign/witness-input.json', 'campaign/victory-input.json'):
+                     'campaign/campaign.json', 'campaign/progress.jsonl', 'campaign/witness-input.json', 'campaign/victory-input.json',
+                     'campaign/film.json', 'campaign/witness.mp4'):
             relative = Path(item['cell']) / name
             source = matrix / relative
             if source.resolve() != matrix.resolve() / relative:
@@ -623,6 +630,18 @@ def export(matrix, out):
             if source.resolve() != matrix.resolve() / relative:
                 raise ValueError('export refuses symlinks: ' + str(relative))
             if source.is_file(): sources.append((source, relative))
+    # A published film carries the game's own licence, so its notice travels with it.
+    for item in results:
+        if not (matrix / item['cell'] / 'campaign' / 'witness.mp4').is_file():
+            continue
+        game = item.get('search_request', {}).get('game')
+        notice = ARTIFACT_NOTICES.get(game)
+        if notice is None:
+            raise ValueError('a filmed game must register an artifact notice: ' + str(game))
+        source = REPO_ROOT / notice
+        if not source.is_file():
+            raise ValueError('missing artifact notice: ' + notice)
+        sources.append((source, Path(item['cell']) / 'campaign' / 'ARTIFACT-LICENSE.md'))
     for name in ('results.json', 'suite.json', 'matrix.json'):
         source = matrix / name
         if source.resolve() != matrix.resolve() / name:

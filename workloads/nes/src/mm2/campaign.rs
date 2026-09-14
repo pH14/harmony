@@ -843,6 +843,37 @@ pub fn replay_mm2_campaign_checkpointed(
     replay_campaign_checkpointed(game, stream_bytes, origin_report, origin_checkpoint)
 }
 
+impl crate::film::FilmSource for Mm2Game {
+    fn render_film(
+        &self,
+        input: &Mm2Input,
+        tail_frames: u32,
+        video: &mut dyn Write,
+        audio: &mut dyn Write,
+    ) -> Result<crate::film::FilmMetadata, Box<dyn Error>> {
+        let mut target = self
+            .new_target()
+            .map_err(|error| -> Box<dyn Error> { error.into() })?;
+        let rendered = target.render_input(input, tail_frames, video, audio)?;
+        Ok(crate::film::FilmMetadata {
+            width: rendered.width,
+            height: rendered.height,
+            frames: rendered.frames,
+            audio_sample_rate: rendered.audio_sample_rate,
+            audio_channels: rendered.audio_channels,
+            audio_frames: rendered.audio_frames,
+        })
+    }
+
+    fn film_action_frames(&self, input: &Mm2Input) -> u64 {
+        input
+            .actions
+            .iter()
+            .map(|action| u64::from(action.bounded_hold_frames()))
+            .sum()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

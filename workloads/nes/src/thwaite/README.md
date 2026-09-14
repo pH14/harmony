@@ -202,9 +202,16 @@ the cost of each additional hour grows roughly eightfold, so the full campaign
 is an open problem for this policy rather than a budget away. The case is not
 marked `require_solved`: no run has survived all 35 hours.
 
-The standalone `thwaite-campaign` binary remains the way to render a film and
-to check replay, checkpoint and rendered-endpoint equality directly; it is not
-wired into CI.
+The case sets `"film": true`, so the runner renders the retained witness tape
+into `witness.mp4` after verifying it, and the export publishes the film beside
+the [artifact notice](../../THWAITE-ARTIFACT-LICENSE.md) that its GPL-3.0-or-later
+licence requires. Film rendering is a shared `nes-eval` step
+([`film.rs`](../film.rs)), not a Thwaite lane: any roster case whose game can
+render may opt in, and Nova, Super Tilt Bro and Mega Man 2 already can.
+
+The standalone `thwaite-campaign` binary remains a direct way to render a film
+and to check replay, checkpoint and rendered-endpoint equality outside the
+roster.
 
 To reproduce one CI campaign locally after the source build, from the repository
 root:
