@@ -50,7 +50,8 @@ if [ "$runtime_arch" = aarch64 ]; then
     ./build-arm64-runc.sh
     runc_binary=$AARCH64_ART_DIR/runc
 else
-    runc_binary=$(extract_runc "$runtime_arch")
+    ./build-x86-runc.sh
+    runc_binary=$X86_64_ART_DIR/runc
 fi
 verify_static_runc "$runc_binary" "$runtime_arch"
 if [ "$runtime_arch" = aarch64 ]; then

@@ -188,3 +188,11 @@ preservation regression remains required. AMD NPT fixtures that rely on stale
 PDPTR persistence without invalidation remain recorded informational diagnostics;
 they do not define the supported Linux guest contract. Arbitrary supplied kernels
 are not confined to that contract by their initial long-mode entry.
+
+The non-default `xsave-diagnostics` feature forwards the backend's one-shot
+execution-breakpoint diagnostic. The ignored `x86_kvm_xsave_kernel` paired
+endpoint test accepts comma-separated hexadecimal `G1_DEBUG_RIPS`, requires
+one hit for each variant, and retains complete unmasked shutdown RAM and
+modeled-state artifacts under `G1_REPORT_DIR`. Addresses must be verified
+against the exact tested vmlinux and bzImage hashes. This seam is for native
+qualification and is absent from the default interface.

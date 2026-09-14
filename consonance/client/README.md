@@ -91,3 +91,9 @@ lifetime. Unknown, revoked, malformed, and out-of-bounds observations fail befor
 a guest-memory read. Large observations are fetched in chunks within the control
 protocol's read limit while the guest remains stopped. Workload adapters own
 interpretation of the returned bytes.
+
+The default x86 command line preserves AVX while disabling XSAVEOPT and XSAVES
+selection, and passes `LD_BIND_NOW=1` to PID 1 before its libc startup. Custom
+command lines used for XSAVE qualification must retain those settings. The
+kernel, pinned runtime re-execution, and admitted workload environment have
+separate checks; default boot arguments alone do not certify an arbitrary image.

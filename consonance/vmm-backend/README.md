@@ -256,3 +256,11 @@ creates stage-2 read mappings and does not break CoW or set accessed bits, so th
 paired exit traces must establish whether the XSAVE write fault disappeared;
 successful prefault completion alone does not establish that result. Bounded CI
 retains the single-cohort trace and all restore/debug-entry prefault cohorts.
+
+The non-default `xsave-diagnostics` feature exposes a one-shot hardware
+execution breakpoint for native guest-kernel tests. KVM verifies the debug
+exit RIP, disables debug controls, and resumes through ordinary entry handling.
+The debug exit remains outside modeled exit counts and virtual time; an
+unexpected debug exit fails. The diagnostic stores hit addresses only on the
+host and does not rewrite guest registers or RAM. Default builds omit this
+interface and dispatch branch.

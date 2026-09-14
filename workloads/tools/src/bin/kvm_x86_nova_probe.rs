@@ -56,7 +56,7 @@ const PROBE_SEED: u64 = 0x4e4f_5641_5f43_4931;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const PROBE_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
     no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
-    nox2apic hpet=disable harmony_pvclock rdinit=/init";
+    nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
 #[cfg(target_arch = "aarch64")]
 const PROBE_CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
 
@@ -5218,7 +5218,7 @@ fn run_session() -> Result<(), String> {
     #[cfg(target_arch = "x86_64")]
     const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
         no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
-        nox2apic hpet=disable harmony_pvclock rdinit=/init";
+        nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
     #[cfg(target_arch = "aarch64")]
     const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
     const HANDLE_REGISTER: u32 = 1;

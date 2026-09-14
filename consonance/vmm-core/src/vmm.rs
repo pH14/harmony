@@ -1236,6 +1236,18 @@ where
         &self.idle_landings
     }
 
+    #[cfg(feature = "xsave-diagnostics")]
+    pub fn diagnostic_breakpoint(&mut self, rip: u64) -> Result<(), VmmError> {
+        self.backend
+            .diagnostic_breakpoint(rip)
+            .map_err(VmmError::from)
+    }
+
+    #[cfg(feature = "xsave-diagnostics")]
+    pub fn diagnostic_debug_hits(&self) -> Vec<u64> {
+        self.backend.diagnostic_debug_hits()
+    }
+
     pub fn serial(&self) -> &[u8] {
         <B::A as Vendor>::serial_capture(&self.devices)
     }

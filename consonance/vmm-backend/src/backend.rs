@@ -34,6 +34,18 @@ pub trait Backend {
         })
     }
 
+    #[cfg(feature = "xsave-diagnostics")]
+    fn diagnostic_breakpoint(&mut self, _rip: u64) -> Result<()> {
+        Err(crate::error::BackendError::Unsupported {
+            what: "diagnostic_breakpoint",
+        })
+    }
+
+    #[cfg(feature = "xsave-diagnostics")]
+    fn diagnostic_debug_hits(&self) -> Vec<u64> {
+        Vec::new()
+    }
+
     fn run(&mut self) -> Result<Exit<Self::A>>;
 
     fn inject(&mut self, event: <Self::A as Arch>::Injection) -> Result<()>;
@@ -100,6 +112,16 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
         (**self).drain_dirty_pages()
+    }
+
+    #[cfg(feature = "xsave-diagnostics")]
+    fn diagnostic_breakpoint(&mut self, rip: u64) -> Result<()> {
+        (**self).diagnostic_breakpoint(rip)
+    }
+
+    #[cfg(feature = "xsave-diagnostics")]
+    fn diagnostic_debug_hits(&self) -> Vec<u64> {
+        (**self).diagnostic_debug_hits()
     }
 
     fn run(&mut self) -> Result<Exit<Self::A>> {

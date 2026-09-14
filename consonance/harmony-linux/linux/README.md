@@ -50,8 +50,13 @@ supervisor through `HARMONY_RUNTIME_INIT` and `HARMONY_RUNTIME_SUPERVISOR`.
 It fails when a required input is missing. Every ARM executable must satisfy
 the existing LSE and counter reachability gates.
 
-The arm64 runtime uses `build-arm64-runc.sh` to build runc 1.5.0 from the
-source and Go bootstrap pins in `versions.lock`. The script exports UAPI
+Both architectures build runc 1.5.0 from the verified source and Go 1.25.0
+pins in `versions.lock`. Internal re-execution preserves `LD_BIND_NOW=1`
+before child startup even when the runtime constructs a minimal environment.
+Each build tests that command environment and emits `runc-build.manifest`.
+The x86 builder, `build-x86-runc.sh`, uses pinned musl 1.2.6 for static linking.
+
+The arm64 runtime uses `build-arm64-runc.sh`. The script exports UAPI
 headers from the pinned kernel, builds a fresh LSE-only musl toolchain, applies
 the two Go runtime patches under `patches/go`, and publishes the scan-checked
 binary as `build/aarch64/runc`. Its vendored build uses Go 1.25.0 locally with
@@ -81,6 +86,30 @@ paging is distinct from legacy 32-bit PAE paging.
 These constraints define the Linux guest qualification scope, not a claim
 that the generic backend's AMD PAE continuation failure is fixed.
 
+
+## Fixed x86 XSAVE layout
+
+The Harmony kernel patch series requires the guest CPUID contract's standard
+832-byte FP/SSE/AVX layout and rejects a different enabled mask or optimized
+save features at boot. Kernel saves materialize absent components, normalize
+reserved bytes, and clear presence bits only for initialized payloads. MXCSR
+is captured independently of the SSE presence bit and remains independent in
+ptrace and signal import/export. The existing legacy signal-frame epilog
+sets FP/SSE bits only after those components have been materialized.
+
+Save and normalization run with local IRQs disabled. This does not by itself
+exclude NMIs or prove equality of every kernel stack byte. Whole-RAM snapshot
+qualification still requires the paired Linux endpoint oracle. Present x87
+register payload is retained even when its tag is empty; FNINIT after active
+x87 use is a separate diagnostic case and must not be treated as padding.
+
+Run the exact patch helper's buffer, mask, MXCSR, and checked-fault model with
+`consonance/harmony-linux/linux/test-xsave-canonical.sh`. On native Linux,
+compile `xsave-guest-check.c` as a static binary and run it inside the patched
+guest to exercise ptrace, signal MXCSR roundtrips, and all eight x87 payload
+slots. The ignored `vmm-core` test `g1_kernel_xsave_functional` boots these
+artifacts with `G1_KERNEL` and `G1_INITRAMFS`; use a release test build on a
+KVM host. These checks supplement the endpoint oracle; they do not replace it.
 
 ## Direct platform fixtures
 

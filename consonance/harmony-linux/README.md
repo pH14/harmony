@@ -95,8 +95,15 @@ with none in the reused run. In run 34840365313, host page materialization,
 disabling fixture dirty logging, and prefaulting removed those exits on AMD
 EPYC 7763, yet all six XRSTOR reuse cohorts still diverged. The traced
 page-fault asymmetry is therefore insufficient to explain the counterexample.
-Attribution of any outer-hypervisor contribution remains open. No guest canonicalizer is shipped before D3
-and D4.
+Attribution of any outer-hypervisor contribution remains open. D3 now passes
+on hosted AMD, hosted Intel, and ms02, including independently checked
+MXCSR-only data. The D4 site inventory supports the fixed-layout kernel patch
+in `linux/patches/x86/0008-x86-harmony-canonical-xsave.patch`.
+
+The patched kernel passes the native ms02 functional fixture and one pair of
+independent boots: the complete 256 MiB RAM and modeled state match at the
+guest-requested shutdown endpoint. Debug interventions and hosted Linux
+qualification remain required; this pair does not close them.
 
 The proposed guest contract compares identity at guest-initiated exits; debug
 stops are interventions, not comparison points. Patched save/canonicalize
@@ -126,6 +133,64 @@ does not settle the LBR/NMI path or fault-safe user-memory writes. Final guest
 configuration and executable disassembly must bind the audit to shipped bytes.
 
 Static linking alone does not establish the absence of internal XSAVE or
-IFUNC save paths. The current image pipeline does not yet enforce the proposed full dependency
-instruction admission, eager-binding, or generated-code policy. Source review
+IFUNC save paths. The OCI pipeline now forces eager binding for supervisor and workload startup,
+and the patched runc preserves it across internal re-execution. The image
+pipeline does not yet enforce the full dependency instruction admission or
+generated-code policy. Source review
 and synthetic success cannot substitute for those artifact-level checks.
+
+### Controlled x86 userspace admission
+
+`scripts/x86-xstate-admission.py inventory ROOTFS --output candidate.json`
+produces an inventory, never an approval. Run it on the complete unpacked
+runtime and workload rootfs trees with GNU `objdump` available (`--objdump`
+selects its executable). Every regular file is read and hashed, including ELF
+files without execute permissions, shared libraries, and possible `dlopen`
+inputs. Symlink paths are interpreted inside the guest root. DT_NEEDED edges record the resolved ELF digest and traversed symlinks.
+Dynamic PT_INTERP executables are unsupported and rejected until their loader
+semantics are modeled; musl loader configuration with dependencies is also rejected. Missing
+or unsupported dependencies fail; DT_RPATH, loader caches, and glibc-hwcaps
+search with dynamic dependencies are currently unsupported and rejected.
+
+`scripts/x86-xstate-admission.py verify ROOTFS --baseline reviewed.json --output result.json`
+requires a human-reviewed baseline. There is no baseline generator or bundled
+approval of the current glibc artifacts. A baseline has `version: 1`, a named
+`reviewed_by`, the inventory's `rootfs_sha256`, an exact copy of its
+`required_scope` as `scope`, `scope_evidence`, and an `artifacts` object keyed
+by every inventory ELF path. Each artifact records `sha256` and
+`review_evidence`. Evidence references are objects with a relative `file` and
+its `sha256`; referenced nonempty files must stay inside the baseline directory.
+The complete file/mode/uid/gid/xattr/symlink manifest, including root-directory metadata, is digest-bound, so changes to scripts
+and non-ELF inputs also invalidate review.
+
+Executable PT_LOAD bytes are disassembled to inventory XSAVE-family saves,
+restores, FXSAVE/FXRSTOR, and XGETBV. Writable executable PT_LOAD segments are
+rejected, as are executable PT_GNU_STACK declarations. Every XGETBV requires an adjacent ECX-zero instruction with no
+observed direct branch to the XGETBV, plus an artifact `xgetbv` entry recording
+`address`, `selector: 0`, and `control_flow_evidence`. More complex valid ECX-zero
+sequences currently fail closed. Review must establish no alternate/indirect
+entry bypasses that initialization.
+
+Forbidden saves require an explicit artifact `resolver_regions` entry with
+`kind: reviewed-eager-resolver`, virtual `start`, byte `size`, region `sha256`,
+`incoming_reference_evidence`, and `eager_binding_evidence`. Every instruction
+must fit entirely inside exactly one such reviewed region. Evidence must prove
+all incoming references and why startup eager binding makes those paths
+unreachable for that exact ELF and controlled execution. Symbol names alone
+provide no exception. This infrastructure validates the evidence bindings; it
+does not automatically prove the assertions in human-written evidence.
+
+Static admission is conditional on immutable reviewed inputs, trusted controlled
+workloads, LD_BIND_NOW=1 before every process startup, no loader environment
+overrides, no generated/JIT code, and no writable executable memory. These are
+reviewed deployment obligations, not runtime enforcement supplied by the
+scanner. Dynamic default search paths and indirect entry points require review.
+Linear disassembly is not a proof against intentionally overlapping instruction
+streams or arbitrary binaries. Scan every ELF in each complete controlled tree;
+review any explicit loading and execution paths and their environment separately.
+
+Run `python3 scripts/test_x86_xstate_admission.py -v` on a host with GNU objdump;
+`OBJDUMP` selects a non-default executable. The fixtures exercise actual x86
+instruction decoding, changed ELF hashes, missing dependencies, non-executable
+ELF discovery, symlink resolution, selector failures, W+X segments, read errors,
+changed review evidence, ownership/xattr mutations, unreadable xattrs, and unsupported loader configurations.

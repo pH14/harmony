@@ -117,7 +117,10 @@ rm -rf "$PGROOT/usr/lib/postgresql/$PGV/lib/bitcode"   # jit=off → no LLVM bit
 # C.UTF-8 is file-backed here (not built-in): ship the locale archive + dir.
 mkdir -p "$PGROOT/usr/share" "$PGROOT/usr/lib/locale"
 cp -a /usr/share/zoneinfo "$PGROOT/usr/share/"
-cp -a /usr/lib/locale/locale-archive /usr/lib/locale/C.utf8 "$PGROOT/usr/lib/locale/"
+cp -a /usr/lib/locale/C.utf8 "$PGROOT/usr/lib/locale/"
+if [ -f /usr/lib/locale/locale-archive ]; then
+    cp -a /usr/lib/locale/locale-archive "$PGROOT/usr/lib/locale/"
+fi
 
 printf 'root:x:0:0:root:/root:/bin/sh\npostgres:x:%s:%s:postgres:/var/lib/postgresql:/bin/sh\n' "$PG_UID" "$PG_UID" >"$PGROOT/etc/passwd"
 printf 'root:x:0:\npostgres:x:%s:\n' "$PG_UID" >"$PGROOT/etc/group"

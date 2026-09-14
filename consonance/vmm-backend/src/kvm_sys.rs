@@ -61,6 +61,10 @@ pub struct KvmBackend {
     readiness_current: bool,
     accepted_irq: VecDeque<u8>,
     counts: ExitCounts,
+    #[cfg(feature = "xsave-diagnostics")]
+    diagnostic_rip: Option<u64>,
+    #[cfg(feature = "xsave-diagnostics")]
+    diagnostic_hits: Vec<u64>,
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -109,6 +113,10 @@ impl KvmBackend {
             readiness_current: true,
             accepted_irq: VecDeque::new(),
             counts: ExitCounts::default(),
+            #[cfg(feature = "xsave-diagnostics")]
+            diagnostic_rip: None,
+            #[cfg(feature = "xsave-diagnostics")]
+            diagnostic_hits: Vec::new(),
             cancel_run: std::sync::Arc::default(),
         })
     }
@@ -197,6 +205,25 @@ impl KvmBackend {
             }
             self.completion_staged = false;
             self.readiness_current = true;
+            #[cfg(feature = "xsave-diagnostics")]
+            {
+                let reason = self.run_page().exit_reason();
+                if reason == kvm_bindings::KVM_EXIT_DEBUG {
+                    let expected = self
+                        .diagnostic_rip
+                        .take()
+                        .ok_or(BackendError::Internal("unexpected diagnostic debug exit"))?;
+                    let regs = self.vcpu.get_regs().map_err(kvm_err)?;
+                    if regs.rip != expected {
+                        return Err(BackendError::Internal("diagnostic breakpoint RIP mismatch"));
+                    }
+                    self.vcpu
+                        .set_guest_debug(&Default::default())
+                        .map_err(kvm_err)?;
+                    self.diagnostic_hits.push(regs.rip);
+                    continue;
+                }
+            }
             match decode_exit(self.run_page())? {
                 Some((exit, pending)) => {
                     self.counts.bump(exit.reason());
@@ -594,6 +621,27 @@ impl Backend for KvmBackend {
         gfns.sort_unstable();
         gfns.dedup();
         Ok(gfns)
+    }
+
+    #[cfg(feature = "xsave-diagnostics")]
+    fn diagnostic_breakpoint(&mut self, rip: u64) -> Result<()> {
+        if self.diagnostic_rip.is_some() || !self.diagnostic_hits.is_empty() {
+            return Err(BackendError::Internal("diagnostic breakpoint already used"));
+        }
+        let mut debug = kvm_bindings::kvm_guest_debug {
+            control: kvm_bindings::KVM_GUESTDBG_ENABLE | kvm_bindings::KVM_GUESTDBG_USE_HW_BP,
+            ..Default::default()
+        };
+        debug.arch.debugreg[0] = rip;
+        debug.arch.debugreg[7] = 0x401;
+        self.vcpu.set_guest_debug(&debug).map_err(kvm_err)?;
+        self.diagnostic_rip = Some(rip);
+        Ok(())
+    }
+
+    #[cfg(feature = "xsave-diagnostics")]
+    fn diagnostic_debug_hits(&self) -> Vec<u64> {
+        self.diagnostic_hits.clone()
     }
 
     fn run(&mut self) -> Result<Exit<X86>> {

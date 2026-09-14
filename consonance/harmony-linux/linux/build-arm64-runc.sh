@@ -11,7 +11,6 @@ cd "$(dirname "$0")"
 require_linux_aarch64
 require_tools cc make objdump patch python3 readelf rsync tar
 
-runc_source_tarball=$DL_DIR/$(basename "$RUNC_SOURCE_URL")
 go_bootstrap_tarball=$DL_DIR/$(basename "$GO_BOOTSTRAP_URL")
 runc_source=$BUILD_ROOT/runc-$RUNC_VERSION
 go_pristine=$BUILD_ROOT/go-$GO_BOOTSTRAP_VERSION
@@ -55,8 +54,7 @@ done
 
 # Re-extract the source from the verified archive so no prior source mutation
 # can enter the build. verify_and_extract checks the archive before extraction.
-rm -rf "$runc_source"
-verify_and_extract "$runc_source_tarball" "$RUNC_SOURCE_SHA256" "$runc_source"
+extract_runc_source
 
 # The runc cgo surface includes Linux UAPI headers. Export headers from the
 # same pinned kernel source used by the platform build and make their location
@@ -78,6 +76,8 @@ build_arm64_musl
     exit 1
 }
 
+export GOCACHE="$BUILD_ROOT/go-build-cache"
+export GOPATH="$BUILD_ROOT/go-workspace"
 export GOROOT=$go_toolchain
 export PATH=$GOROOT/bin:$PATH
 export GOOS=linux
@@ -96,6 +96,10 @@ export GOFLAGS=
 rm -f "$runc_output"
 (
     cd "$runc_source"
+    go test -p=4 -mod=vendor -trimpath -buildvcs=false \
+        -tags 'netgo osusergo urfave_cli_no_docs' \
+        -ldflags '-linkmode external -extldflags -static -buildid=' \
+        ./libcontainer -run '^TestHarmonyReexecEagerBinding$' -count=1
     go build -p=4 -mod=vendor -trimpath -buildvcs=false \
         -tags 'netgo osusergo urfave_cli_no_docs' \
         -ldflags '-linkmode external -extldflags -static -buildid=' \
@@ -109,4 +113,13 @@ python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" "$runc_output"
 mkdir -p "$ARM64_ART_DIR"
 install -m 0755 "$runc_output" "$ARM64_ART_DIR/runc"
 sha256_of "$ARM64_ART_DIR/runc" >"$ARM64_ART_DIR/runc.sha256"
+{
+    printf 'runc_source_sha256=%s\ngo_bootstrap_sha256=%s\nmusl_source_sha256=%s\nkernel_source_sha256=%s\n' \
+        "$RUNC_SOURCE_SHA256" "$GO_BOOTSTRAP_SHA256" "$MUSL_SHA256" "$KERNEL_SHA256"
+    printf 'go_version=%s\nc_compiler=%s\n' "$(go version)" "$(cc --version | head -1)"
+    for runtime_patch in "$LINUX_DIR"/patches/{runc,go,musl}/*.patch; do
+        printf 'patch_%s=%s\n' "$(basename "$runtime_patch")" "$(sha256_of "$runtime_patch")"
+    done
+    printf 'runc_sha256=%s\n' "$(sha256_of "$ARM64_ART_DIR/runc")"
+} >"$ARM64_ART_DIR/runc-build.manifest"
 echo "ok: $ARM64_ART_DIR/runc"

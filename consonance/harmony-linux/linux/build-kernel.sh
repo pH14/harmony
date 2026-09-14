@@ -163,4 +163,5 @@ fi
 mkdir -p "$ART_DIR/x86_64"
 install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/$kernel_output"
 install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/x86_64/$kernel_output"
+install -m 0644 "$KOBJ/vmlinux" "$ART_DIR/x86_64/$kernel_output.vmlinux"
 echo "ok: $ART_DIR/$kernel_output"
