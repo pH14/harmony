@@ -152,3 +152,9 @@ locked Cargo dependencies before using its dumps for review.
 
 The quality workflow runs the Python composition mutation tests. Candidate
 reports still require explicit reviewer evidence before admission verification.
+
+The `admission` module writes candidate manifests from the same OCI preparation
+API used for execution. The `prepare-admission` example retains its exact default
+Linux x86 session format. The tools probe reuses the writer for a separately
+named Nova A–E scope; see `workloads/tools/README.md`. Neither writer approves
+its output or substitutes for component and composition review.

@@ -10,6 +10,10 @@
 ))]
 fn main() -> std::process::ExitCode {
     let result = match std::env::args_os().nth(1).as_deref() {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        Some(value) if value == std::ffi::OsStr::new("--prepare-admission") => {
+            prepare_oracle_admission()
+        }
         Some(value) if value == std::ffi::OsStr::new("--control-child") => run_control_child(),
         Some(value) if value == std::ffi::OsStr::new("--verify-d-bundle") => {
             d_bundle::run_verify_d_bundle()
@@ -48,15 +52,90 @@ fn main() -> std::process::ExitCode {
     all(target_os = "macos", target_arch = "aarch64")
 ))]
 const PROBE_RAM: usize = 128 * 1024 * 1024;
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "macos", target_arch = "aarch64")
 ))]
 const PROBE_SEED: u64 = 0x4e4f_5641_5f43_4931;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const PROBE_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
     no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
     nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn oracle_setup_payloads() -> Vec<Vec<u8>> {
+    vec![vec![0, 1]; 16]
+}
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn oracle_default_tree_seed() -> u64 {
+    PROBE_SEED ^ 0x4954_454d_325f_5452
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const ORACLE_RUN_BUDGET: u64 = 2_000_000_000;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn oracle_admission_session() -> consonance_client::session::SessionConfig {
+    consonance_client::session::SessionConfig::new(
+        PROBE_RAM,
+        PROBE_SEED,
+        ORACLE_RUN_BUDGET,
+        PROBE_CMDLINE,
+    )
+    .with_deferred_virtual_time_checkpoint_hashes()
+}
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn prepare_oracle_admission() -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    if std::env::var_os("HARMONY_CONSONANCE_ORACLE_TREE_SEED").is_some() {
+        return Err("admission candidate requires the default A–E tree seed".into());
+    }
+    let supplied: Vec<String> = std::env::args().skip(2).collect();
+    if supplied.len() != 5 {
+        return Err(
+            "usage: kvm_x86_nova_probe --prepare-admission KERNEL PLATFORM OCI ROM OUTPUT".into(),
+        );
+    }
+    let args = vec![
+        "nes".into(),
+        supplied[0].clone(),
+        supplied[1].clone(),
+        supplied[2].clone(),
+        supplied[4].clone(),
+        supplied[3].clone(),
+    ];
+    let executable = std::fs::read(std::env::current_exe().map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let oracle = serde_json::json!({
+        "version": 1,
+        "backend": "boot_linux_stock_virtual_time",
+        "control": "direct-ControlServer-A-E",
+        "restore_mode": "in-place-with-remap-factory",
+        "deadline_kind": "absolute-vtime",
+        "setup_payloads": oracle_setup_payloads(),
+        "tree_seed": oracle_default_tree_seed(),
+        "source_sha256": format!("{:x}", Sha256::digest(include_bytes!("kvm_x86_nova_probe.rs"))),
+        "executable_sha256": format!("{:x}", Sha256::digest(executable)),
+    });
+    let session_json =
+        serde_json::to_vec(&oracle_admission_session()).map_err(|e| e.to_string())?;
+    nes_workload::admission::dump(&args, &session_json, Some(oracle))
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(target_arch = "aarch64")]
 const PROBE_CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
 
@@ -121,13 +200,16 @@ fn prepare_probe_initramfs(
 ))]
 fn boot_probe(kernel: &[u8], initramfs: &[u8]) -> Result<ProbeVmm, vmm_core::vmm::VmmError> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    let mut vmm = vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time(
-        kernel,
-        initramfs,
-        PROBE_RAM,
-        PROBE_CMDLINE,
-        PROBE_SEED,
-    )?;
+    let mut vmm = {
+        let config = oracle_admission_session();
+        vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time(
+            kernel,
+            initramfs,
+            config.ram_bytes,
+            &config.cmdline,
+            config.seed,
+        )?
+    };
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     let mut vmm = vmm_core::vendor::arm64::bringup::boot_selected_control(
         kernel,
@@ -3146,9 +3228,9 @@ fn run() -> Result<(), String> {
     const RAM_GPA_BASE: u64 = 0;
     #[cfg(target_arch = "aarch64")]
     const RAM_GPA_BASE: u64 = board::RAM_BASE;
-    const SEED: u64 = 0x4e4f_5641_5f43_4931;
+    const SEED: u64 = PROBE_SEED;
     #[cfg(target_arch = "x86_64")]
-    const DEADLINE: u64 = 2_000_000_000;
+    const DEADLINE: u64 = ORACLE_RUN_BUDGET;
     #[cfg(target_arch = "aarch64")]
     const DEADLINE: u64 = 20_000_000_000;
     #[derive(Clone, Copy)]
@@ -4081,7 +4163,7 @@ fn run() -> Result<(), String> {
             Ok(value) => value
                 .parse::<u64>()
                 .map_err(|error| format!("invalid oracle tree seed: {error}"))?,
-            Err(std::env::VarError::NotPresent) => SEED ^ 0x4954_454d_325f_5452,
+            Err(std::env::VarError::NotPresent) => oracle_default_tree_seed(),
             Err(error) => return Err(format!("invalid oracle tree seed: {error}")),
         };
         let mut rng = tree_seed;
@@ -5058,7 +5140,7 @@ fn run() -> Result<(), String> {
         Reply::Snapshot { id, .. } => id,
         other => return Err(format!("genesis snapshot returned {other:?}")),
     };
-    let bootstrap = payload_env(vec![vec![0, 1]; 16]);
+    let bootstrap = payload_env(oracle_setup_payloads());
     match drive(
         &mut server,
         &Request::Branch {
@@ -5210,7 +5292,7 @@ fn run_session() -> Result<(), String> {
     use std::{fs, path::PathBuf};
 
     const RAM: usize = 128 * 1024 * 1024;
-    const SEED: u64 = 0x4e4f_5641_5f43_4931;
+    const SEED: u64 = PROBE_SEED;
     #[cfg(target_arch = "x86_64")]
     const RUN_BUDGET: u64 = 2_000_000_000;
     #[cfg(target_arch = "aarch64")]

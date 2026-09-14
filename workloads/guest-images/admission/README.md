@@ -1,9 +1,10 @@
 # Controlled x86 execution admission
 
 These reviewed baselines bind the exact platform, NES/Nova and bare-PostgreSQL
-artifacts retained in `proofs/`. They support only the serialized default Linux
-x86_64 KVM sessions in the composition manifests. They do not qualify custom
-campaign/fault configurations, arbitrary OCI images, SQL, ROMs, or code changes.
+artifacts retained in `proofs/`. They support the serialized default Linux
+x86_64 KVM sessions and the separately reviewed Nova A–E oracle composition.
+They do not qualify other campaign/fault configurations, arbitrary OCI images,
+SQL, ROMs, or guest code changes.
 
 The primary-agent review accepts the exact ECX-zero instruction chains under
 normal trusted program control flow; it does not infer arbitrary indirect-entry
@@ -31,5 +32,13 @@ python3 workloads/guest-images/verify-prepared-admission.py verify DUMP \
 Use `postgres-composition.json` for the exact PostgreSQL dump. A changed input
 or proof must fail verification until reviewed. A successful static admission
 result is distinct from kernel/endpoint qualification and does not settle raw
-restore-bitmap membership in snapshot identity. Hosted Intel, bare-metal AMD,
-and broader runtime qualification remain recorded in the component README/PR.
+restore-bitmap membership in snapshot identity. Runtime host qualification and
+remaining bare-metal AMD attribution are recorded in the component README/PR.
+
+`nova-oracle-composition.json` reviews the fixed A–E guest inputs and controls.
+Its guest composition digest excludes only host executable/source provenance;
+each actual candidate still binds those hashes and verification requires the
+actual executable. Both Nova CI A–E paths run `verify-nova-oracle-admission.sh`
+immediately before execution using the same executable and input paths. The
+gate requires oracle mode and forbids a tree-seed override. A host-only rebuild
+can reuse this guest review; changed guest bytes/configuration cannot.

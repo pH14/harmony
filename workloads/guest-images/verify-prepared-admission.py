@@ -18,6 +18,56 @@ SPEC.loader.exec_module(a)
 FILES = {"session-config.json", "kernel.bin", "platform.cpio.gz", "rootfs.cpio.gz", "control.cpio.gz", "execution.json", "image-runtime-config.json", "image-inputs.json", "composed-initramfs.bin"}
 COMPONENTS = ["platform.cpio.gz", "rootfs.cpio.gz", "control.cpio.gz"]
 
+ORACLE_SCOPE = "nova-ae-linux-x86_64-kvm-oracle-v1"
+ORACLE_SEED = 0x4e4f56415f434931
+ORACLE_CMDLINE = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init"
+
+
+def inspect_engine(manifest, session):
+    scope = manifest.get("engine_scope")
+    if scope == "default-linux-x86_64-kvm-session":
+        if "oracle" in manifest:
+            raise a.Rejected("oracle metadata cannot use default-session scope")
+        return
+    if scope != ORACLE_SCOPE or manifest.get("mode") != "nes":
+        raise a.Rejected("unsupported engine/default session scope")
+    expected_session = {"ram_bytes": 134217728, "seed": ORACLE_SEED,
+                        "run_budget": 2000000000, "cmdline": ORACLE_CMDLINE,
+                        "identity_tag": "", "wall_limit": None,
+                        "defer_virtual_time_checkpoint_hashes": True}
+    if session != expected_session:
+        raise a.Rejected("unsupported Nova A–E oracle configuration")
+    expected = {"version": 1, "backend": "boot_linux_stock_virtual_time",
+                "control": "direct-ControlServer-A-E",
+                "restore_mode": "in-place-with-remap-factory",
+                "deadline_kind": "absolute-vtime", "setup_payloads": [[0, 1]] * 16,
+                "tree_seed": ORACLE_SEED ^ 0x4954454d325f5452}
+    oracle = manifest.get("oracle")
+    if not isinstance(oracle, dict) or set(oracle) != set(expected) | {"source_sha256", "executable_sha256"}:
+        raise a.Rejected("unsupported Nova A–E oracle metadata")
+    if any(oracle[k] != v for k, v in expected.items()):
+        raise a.Rejected("unsupported Nova A–E oracle controls")
+    for key in ("source_sha256", "executable_sha256"):
+        value = oracle[key]
+        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+            raise a.Rejected("invalid Nova A–E oracle digest")
+
+
+def oracle_composition_digest(manifest):
+    boundary = dict(manifest)
+    boundary["oracle"] = {key: value for key, value in manifest["oracle"].items()
+                          if key not in ("source_sha256", "executable_sha256")}
+    return a.digest(json.dumps(boundary, sort_keys=True, separators=(",", ":")).encode())
+
+
+def verify_oracle_executable(report, executable):
+    if report["engine_scope"] != ORACLE_SCOPE:
+        return
+    if executable is None or executable.is_symlink() or not executable.is_file():
+        raise a.Rejected("Nova A–E verification requires the actual oracle executable")
+    if a.digest(a.bounded_read(executable)) != report["oracle"]["executable_sha256"]:
+        raise a.Rejected("Nova A–E oracle executable differs from candidate")
+
 
 def archive_entries(data):
     with gzip.GzipFile(fileobj=io.BytesIO(data)) as source:
@@ -63,9 +113,8 @@ def inspect_dump(directory):
         if manifest["files"][name] != {"size": len(data), "sha256": a.digest(data)}:
             raise a.Rejected(f"dump file hash/size differs: {name}")
         blobs[name] = data
-    if manifest.get("engine_scope") != "default-linux-x86_64-kvm-session":
-        raise a.Rejected("unsupported engine/default session scope")
     session = json.loads(blobs["session-config.json"])
+    inspect_engine(manifest, session)
     tokens = session["cmdline"].split()
     if [token for token in tokens if token.startswith("LD_BIND_NOW=")] != ["LD_BIND_NOW=1"] or not {"noxsaveopt", "noxsaves", "rdinit=/init"}.issubset(tokens):
         raise a.Rejected("required pre-PID1 binding/kernel configuration is absent")
@@ -143,7 +192,10 @@ def inspect_dump(directory):
         raise a.Rejected("unsupported NES argv")
     if manifest["mode"] == "postgres" and execution["argv"] != ["/usr/local/bin/postgres-workload.sh"]:
         raise a.Rejected("unsupported PostgreSQL argv")
-    return {"version": 1, "admitted": False, "manifest_sha256": a.digest(raw_manifest), "prepared_identity": manifest["prepared_identity"], "execution": execution, "session_config": session, "runtime_config": config, "limitations": ["Controlled trusted code only; writable OCI root is not runtime immutability enforcement.", "Each independent archive is parsed separately; no general concatenated-archive overlay support."]}, encode_newc(root_entries)
+    report = {"version": 1, "admitted": False, "manifest_sha256": a.digest(raw_manifest), "prepared_identity": manifest["prepared_identity"], "execution": execution, "session_config": session, "engine_scope": manifest["engine_scope"], "oracle": manifest.get("oracle"), "runtime_config": config, "limitations": ["Controlled trusted code only; writable OCI root is not runtime immutability enforcement.", "Each independent archive is parsed separately; no general concatenated-archive overlay support."]}
+    if manifest["engine_scope"] == ORACLE_SCOPE:
+        report["composition_sha256"] = oracle_composition_digest(manifest)
+    return report, encode_newc(root_entries)
 
 
 def main():
@@ -153,6 +205,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--objdump", default="objdump")
+    parser.add_argument("--oracle-executable", type=Path)
     args = parser.parse_args()
     created = False
     try:
@@ -168,12 +221,18 @@ def main():
             scans[name] = a.inventory_initramfs(path, args.objdump)
             (args.output / (name + "-candidate.json")).write_text(json.dumps(scans[name][0], indent=2))
         if args.mode == "verify":
+            verify_oracle_executable(report, args.oracle_executable)
             if args.baseline is None:
                 raise a.Rejected("explicit reviewed composition baseline required")
             baseline = json.loads(a.bounded_read(args.baseline))
             if baseline.get("version") != 1 or not isinstance(baseline.get("reviewed_by"), str) or not baseline["reviewed_by"].strip():
                 raise a.Rejected("composition baseline requires version1 and named reviewer")
-            if baseline.get("manifest_sha256") != report["manifest_sha256"]:
+            if report["engine_scope"] == ORACLE_SCOPE and baseline.get("engine_scope") != ORACLE_SCOPE:
+                raise a.Rejected("explicit reviewed Nova A–E oracle scope required")
+            if report["engine_scope"] == ORACLE_SCOPE:
+                if baseline.get("composition_sha256") != report["composition_sha256"]:
+                    raise a.Rejected("oracle guest composition/configuration differs from review")
+            elif baseline.get("manifest_sha256") != report["manifest_sha256"]:
                 raise a.Rejected("composition differs from reviewed manifest")
             a.evidence(baseline.get("composition_evidence"), args.baseline.parent)
             for name in ("platform", "workload"):

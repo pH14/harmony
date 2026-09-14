@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub use searcher::{search, target};
+pub mod admission;
 pub mod nes_backend;
 pub mod nova;
 pub mod prepare;

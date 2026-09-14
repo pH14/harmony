@@ -188,3 +188,73 @@ The export is performed only after the existing D comparison succeeds, and
 the ordinary oracle does not create a bundle unless its export variable is
 set. A different ISA or unsupported KVM/HVF state contract produces an
 explicit verification error.
+
+### Candidate admission for the Linux x86 Nova A–E oracle
+
+The default-session admission dump does not describe the direct `ControlServer`
+A–E oracle. Before reviewing that execution, build the probe and export its named
+candidate without booting a VM:
+
+```sh
+workloads/tools/target/release/kvm_x86_nova_probe --prepare-admission \
+  KERNEL PLATFORM NES_OCI NOVA_ROM NEW_DUMP_DIRECTORY
+python3 workloads/guest-images/verify-prepared-admission.py inventory \
+  NEW_DUMP_DIRECTORY --output NEW_INVENTORY_DIRECTORY
+```
+
+The scope is `nova-ae-linux-x86_64-kvm-oracle-v1`. Boot and dump share RAM,
+command line and seed configuration; the actual A–E run and dump also share the
+setup payloads, default tree seed and x86 deadline constant. Compared with
+`SessionConfig::default()`, the seed is `0x4e4f56415f434931` and deferred
+checkpoint hashing is enabled. RAM remains 128 MiB and the command line is
+unchanged. The oracle uses direct `ControlServer`, in-place restoration with a
+remap factory, and an absolute virtual-time deadline; its serialized session
+fields describe those boot parameters, not construction of a default Session.
+
+The manifest binds the exact kernel, composed platform/rootfs/control bytes,
+ROM, execution environment, oracle source file and executable. The executable
+hash covers its compiled dependencies; the source-file hash alone does not
+identify the complete transitive build source. Keep compiler and dependency
+source provenance as separate review evidence. A rebuilt executable requires a
+new candidate and same-executable verification. Host source changes remain
+subject to normal PR review; they do not by themselves invalidate guest approval.
+
+Inventory never approves a candidate. Verification requires a separately
+reviewed composition baseline naming the same engine scope, the exact candidate
+guest composition/configuration digest, reviewed component baselines, and the
+executable that will run:
+
+```sh
+python3 workloads/guest-images/verify-prepared-admission.py verify \
+  NEW_DUMP_DIRECTORY --output NEW_VERIFICATION_DIRECTORY \
+  --baseline workloads/guest-images/admission/nova-oracle-composition.json \
+  --oracle-executable workloads/tools/target/release/kvm_x86_nova_probe
+```
+
+The oracle baseline uses `composition_sha256` from the inventory report. It is
+SHA-256 of the candidate manifest serialized with sorted keys and compact JSON
+separators after removing only `oracle.source_sha256` and
+`oracle.executable_sha256`. All guest inputs, configuration and control metadata
+remain covered. The complete `manifest_sha256` still identifies the candidate
+and its host provenance. Default-session baselines retain their existing exact
+manifest binding.
+
+The checked-in `workloads/guest-images/admission/nova-oracle-composition.json`
+contains a separately reviewed oracle scope. It covers its exact guest bytes and
+configuration; newly published kernel/platform bytes are not assumed equivalent
+and fail pending review if their composition differs. Default-session baselines
+cannot approve the oracle scope.
+
+Both Nova A–E CI runs call
+`workloads/guest-images/verify-nova-oracle-admission.sh` immediately before the
+oracle. The gate asserts `HARMONY_CONSONANCE_RESTORE_ORACLE=1`, rejects even an
+empty tree-seed override, dumps the actual built executable and input array, and
+verifies the reviewed baseline against that executable. The same executable and
+input array then run with the existing timeout (240 seconds in PR smoke,
+600 seconds in the extended job). A failed dump or verification stops execution.
+
+The gate creates large composition archives in a temporary directory, retains
+only JSON metadata and logs under the uploaded report, and removes its temporary
+files on exit. It does not enforce filesystem immutability between verification
+and execution or gate unrelated probe invocations. Trusted code, no runtime code
+mutation and the component admission constraints remain review obligations.

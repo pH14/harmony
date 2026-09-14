@@ -161,12 +161,17 @@ jobs:
           HARMONY_CONSONANCE_RESTORE_ORACLE: "1"
           HARMONY_CONSONANCE_ORACLE_REPORT_DIR: ${{ github.workspace }}/nova-consonance-report/restore-artifacts
         run: |
-          timeout -k 10 600 \
-            workloads/tools/target/release/kvm_x86_nova_probe \
-              consonance/harmony-linux/build/x86_64/bzImage \
-              consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
-              consonance/harmony-linux/build/nes.oci \
-              "${NOVA_BUILD}/nova.nes" \
+          set -euo pipefail
+          oracle=workloads/tools/target/release/kvm_x86_nova_probe
+          oracle_inputs=(
+            consonance/harmony-linux/build/x86_64/bzImage
+            consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
+            consonance/harmony-linux/build/nes.oci
+            "${NOVA_BUILD}/nova.nes"
+          )
+          workloads/guest-images/verify-nova-oracle-admission.sh \
+            "$oracle" "${oracle_inputs[@]}" nova-consonance-report/oracle-admission
+          timeout -k 10 600 "$oracle" "${oracle_inputs[@]}" \
             2>&1 | tee nova-consonance-report/restore-oracle.txt
           grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 fresh_equal=8 full_state_equal=8 a_controls=1 b1_controls=1 b3_controls=1 b3_captures=3 c_controls=1 d_controls=1 d_processes=2 d_source_pid=[0-9]+ d_destination_pid=[0-9]+ e_controls=50 e_reordered_positions=[1-9][0-9]* .* fallbacks=0$' \
             nova-consonance-report/restore-oracle.txt
@@ -688,12 +693,17 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-          timeout -k 10 240 \
-            workloads/tools/target/release/kvm_x86_nova_probe \
-              consonance/harmony-linux/build/x86_64/bzImage \
-              consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
-              consonance/harmony-linux/build/nes.oci \
-              workloads/nes/build/nova/nova.nes \
+          set -euo pipefail
+          oracle=workloads/tools/target/release/kvm_x86_nova_probe
+          oracle_inputs=(
+            consonance/harmony-linux/build/x86_64/bzImage
+            consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
+            consonance/harmony-linux/build/nes.oci
+            workloads/nes/build/nova/nova.nes
+          )
+          workloads/guest-images/verify-nova-oracle-admission.sh \
+            "$oracle" "${oracle_inputs[@]}" nova-consonance-pr-smoke/oracle-admission
+          timeout -k 10 240 "$oracle" "${oracle_inputs[@]}" \
             2>&1 | tee nova-consonance-pr-smoke/restore-oracle.txt
           grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 fresh_equal=8 full_state_equal=8 a_controls=1 b1_controls=1 b3_controls=1 b3_captures=3 c_controls=1 d_controls=1 d_processes=2 d_source_pid=[0-9]+ d_destination_pid=[0-9]+ e_controls=50 e_reordered_positions=[1-9][0-9]* .* fallbacks=0$' \
             nova-consonance-pr-smoke/restore-oracle.txt
