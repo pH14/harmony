@@ -135,8 +135,9 @@ It mirrors CR8 from the current CPU state into the shared run page before entry;
 restore also synchronizes that field, preventing a stale run page from replacing
 restored CR8. This path does not inject queued interrupts or count a guest exit.
 
-The FPU load/save round-trip makes captured XSAVE presence bits reflect the
-hardware representation. No bits are removed from snapshot identity. `save()`
+The immediate-exit operation does not guarantee stable XSAVE presence bits,
+either across repeated preparation or subsequent guest entry. No bits are
+removed from snapshot identity; the raw-bitmap identity problem remains open. `save()`
 and hashing remain reads; callers prepare a boundary explicitly after restoring
 RAM and CPU state or servicing an exit. Pending CPU events remain present;
 unretired userspace instruction completion is a different condition and must
@@ -296,3 +297,12 @@ Compacted save includes SSE presence for nondefault MXCSR. On ms02, host boot
 metadata confirms compacted FPU format; the natural test reports presence 6.
 The imported presence-4 case therefore does not establish naturally occurring
 register-value corruption. The precise host restore instruction was not traced.
+
+Snapshot preparation hardware coverage separates required state preservation
+preservation from raw presence characterization. The required test compares CPU
+state excluding only raw presence, RAM, exit counts, readiness, pending events
+and CR8 after each preparation. Raw transitions are printed explicitly. A
+separate informational diagnostic retains repeated-preparation and post-HLT
+raw-bitmap stability failures; these failures are not passes. Raw entry and
+reentry characterization remains recorded on every CI host, while obsolete
+XRSTOR warmup CI cohorts are retired. Production preparation is unchanged.

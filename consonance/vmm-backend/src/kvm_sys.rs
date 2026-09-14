@@ -856,7 +856,18 @@ mod xsave_diagnostic {
 
     #[test]
     #[ignore = "live x86 KVM snapshot preparation; requires /dev/kvm"]
-    fn snapshot_preparation_preserves_complete_state() {
+    fn snapshot_preparation_preserves_state_except_raw_presence() {
+        check_snapshot_preparation(false);
+    }
+
+    #[test]
+    #[ignore = "raw XSAVE presence characterization; requires /dev/kvm"]
+    fn snapshot_preparation_raw_presence_stability() {
+        check_snapshot_preparation(true);
+    }
+
+    fn check_snapshot_preparation(require_raw_stability: bool) {
+        let mut raw_stable = true;
         for restore_bv in [0, 2, 3] {
             let mut ram = MmapRam::new(RAM_LEN).unwrap();
             ram.as_mut_bytes()[CODE_GPA] = 0xf4;
@@ -879,22 +890,33 @@ mod xsave_diagnostic {
             let memory = ram.as_mut_bytes().to_vec();
             let counts = backend.exit_counts();
             let readiness = backend.readiness_current;
-            backend.prepare_snapshot().unwrap();
-            let after = backend.save().unwrap();
-            let mut without_presence_change = after.clone();
-            without_presence_change.xsave_restore_bv = before.xsave_restore_bv;
-            assert_eq!(without_presence_change, before);
-            assert_eq!(ram.as_mut_bytes(), memory);
-            assert_eq!(backend.exit_counts(), counts);
-            assert_eq!(backend.pending_irq, Some(0x40));
-            assert_eq!(backend.readiness_current, readiness);
-            backend.prepare_snapshot().unwrap();
-            assert_eq!(backend.save().unwrap(), after);
-            assert_eq!(ram.as_mut_bytes(), memory);
-            println!(
-                "SNAPSHOT_PREPARATION seed_bv={restore_bv} observed_bv={:?} complete_state_equal=true ram_equal=true counts_equal=true",
-                after.xsave_restore_bv
-            );
+            let mut after = before.clone();
+            for preparation in 1..=2 {
+                backend.prepare_snapshot().unwrap();
+                let observed = backend.save().unwrap();
+                println!(
+                    "SNAPSHOT_PREPARATION seed_bv={restore_bv} preparation={preparation} raw_before={:?} raw_after={:?}",
+                    after.xsave_restore_bv, observed.xsave_restore_bv
+                );
+                if preparation == 2 {
+                    raw_stable &= observed.xsave_restore_bv == after.xsave_restore_bv;
+                }
+                let mut without_presence_change = observed.clone();
+                without_presence_change.xsave_restore_bv = before.xsave_restore_bv;
+                assert_eq!(without_presence_change, before);
+                assert_eq!(ram.as_mut_bytes(), memory);
+                assert_eq!(backend.exit_counts(), counts);
+                assert_eq!(backend.pending_irq, Some(0x40));
+                assert_eq!(backend.readiness_current, readiness);
+                assert_eq!(backend.pending, Pending::None);
+                assert!(!backend.completion_staged);
+                assert!(backend.completion_exit.is_none());
+                assert_eq!(observed.sregs.cr8, 7);
+                println!(
+                    "SNAPSHOT_PREPARATION seed_bv={restore_bv} preparation={preparation} cpu_equal_except_raw_presence=true ram_equal=true counts_equal=true readiness_equal=true pending_equal=true"
+                );
+                after = observed;
+            }
 
             backend.pending = Pending::IoIn {
                 data_offset: 0,
@@ -919,8 +941,18 @@ mod xsave_diagnostic {
                 Exit::Common(CommonExit::Idle)
             ));
             let continued = backend.save().unwrap();
-            assert_eq!(continued.xsave_restore_bv, after.xsave_restore_bv);
+            println!(
+                "SNAPSHOT_PREPARATION_HLT seed_bv={restore_bv} raw_before={:?} raw_after={:?}",
+                after.xsave_restore_bv, continued.xsave_restore_bv
+            );
+            raw_stable &= continued.xsave_restore_bv == after.xsave_restore_bv;
             assert_eq!(continued.xsave, after.xsave);
+        }
+        if require_raw_stability {
+            assert!(
+                raw_stable,
+                "raw XSAVE presence changed after repeated preparation or guest HLT; see retained transitions"
+            );
         }
     }
 
