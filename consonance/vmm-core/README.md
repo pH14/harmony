@@ -213,3 +213,15 @@ misalignment or differing memory prevents suffix-only attribution. Full suffix
 bytes remain available for independent field-level inspection; suffix-only does
 not itself mean restore-bitmap-only. The workflow retains this original witness
 separately from any fresh paired reproduction. No retry changes acceptance.
+
+The required MMIO full-snapshot fixture creates active XMM0 data with a guest
+PCMPEQD before the LAPIC read/modify/write. It checks the captured value and a
+subsequent guest MOVDQU store, while retaining exact RAM, CPU, serialized state
+and hash comparisons and the MMIO completion/timing assertions. There is no
+extra guest exit, warmup or host restore-bitmap forcing. The original init-only
+program remains an informational characterization using the same exercise.
+
+Init-valued SSE data can retain identical RAM and CPU values while KVM changes
+raw presence across restoration. The informational init-only fixture preserves
+that counterexample; the active-data fixture does not resolve general raw
+identity or the earlier Linux witness. Informational failures remain failures.

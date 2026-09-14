@@ -687,6 +687,18 @@ jobs:
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee snapshot-report/snapshot-preparation.log
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/snapshot-preparation.log
+      - name: Record original init-state MMIO snapshot characterization
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          MMIO_INIT_REPORT_DIR: ${{ github.workspace }}/snapshot-report/mmio-init-presence
+        run: |
+          set -euo pipefail
+          timeout -k 10 120 cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
+            live_kvm::mmio_init_presence_snapshot_characterization \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee snapshot-report/mmio-init-presence.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/mmio-init-presence.log
       - name: Record raw preparation and post-HLT presence stability
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}
         continue-on-error: true

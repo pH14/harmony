@@ -446,10 +446,36 @@ mod live_kvm {
         compose(guest_ram_image_with_guest_pdpt_write(), backend, configure)
     }
 
-    fn mmio_guest_ram() -> GuestRam {
+    const MMIO_XMM_OUTPUT_GPA: usize = 0x2000;
+    const MMIO_XMM_SEED: [u8; 4] = [0x66, 0x0f, 0x76, 0xc0];
+    const MMIO_XMM_STORE: [u8; 9] = [0xf3, 0x67, 0x0f, 0x7f, 0x05, 0x00, 0x20, 0x00, 0x00];
+
+    fn mmio_boundary_rip(active_xmm: bool) -> u64 {
+        (MMIO_CODE_GPA + 9 + if active_xmm { MMIO_XMM_SEED.len() } else { 0 }) as u64
+    }
+
+    fn assert_mmio_xmm(capture: &MmioCapture, active_xmm: bool, stored: bool) {
+        if active_xmm {
+            assert_eq!(&capture.state.xsave.0[160..176], &[0xff; 16]);
+            assert_eq!(
+                &capture.memory[MMIO_XMM_OUTPUT_GPA..MMIO_XMM_OUTPUT_GPA + 16],
+                &[if stored { 0xff } else { 0 }; 16]
+            );
+        }
+    }
+
+    fn mmio_guest_ram(active_xmm: bool) -> GuestRam {
         let mut ram = GuestRam::new(MMIO_RAM_LEN).expect("allocate MMIO guest RAM");
-        ram.as_mut_bytes()[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()]
-            .copy_from_slice(&MMIO_PROGRAM);
+        let mut program = Vec::new();
+        if active_xmm {
+            program.extend_from_slice(&MMIO_XMM_SEED);
+        }
+        program.extend_from_slice(&MMIO_PROGRAM[..9]);
+        if active_xmm {
+            program.extend_from_slice(&MMIO_XMM_STORE);
+        }
+        program.extend_from_slice(&MMIO_PROGRAM[9..]);
+        ram.as_mut_bytes()[MMIO_CODE_GPA..MMIO_CODE_GPA + program.len()].copy_from_slice(&program);
         ram
     }
 
@@ -468,9 +494,25 @@ mod live_kvm {
         backend.restore(&state).expect("restore MMIO entry state");
     }
 
-    fn fresh_mmio_vmm() -> Vmm<KvmBackend> {
+    fn install_active_mmio_entry<B: Backend<A = X86>>(backend: &mut B) {
+        install_mmio_entry(backend);
+        let mut state = backend.save().expect("save active MMIO entry");
+        state.sregs.cr0 &= !((1 << 2) | (1 << 3));
+        state.sregs.cr4 |= (1 << 9) | (1 << 18);
+        state.xcr0 = 3;
+        backend
+            .restore(&state)
+            .expect("enable guest SSE instructions");
+    }
+
+    fn fresh_mmio_vmm(active_xmm: bool) -> Vmm<KvmBackend> {
         let backend = KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
-        let mut vmm = compose(mmio_guest_ram(), backend, install_mmio_entry::<KvmBackend>);
+        let configure = if active_xmm {
+            install_active_mmio_entry::<KvmBackend>
+        } else {
+            install_mmio_entry::<KvmBackend>
+        };
+        let mut vmm = compose(mmio_guest_ram(active_xmm), backend, configure);
         wire_snapshot_path(&mut vmm);
         vmm.wire_lapic(
             lapic::Lapic::new(lapic::LapicConfig {
@@ -657,9 +699,13 @@ mod live_kvm {
         read_u32(lapic_flag.checked_add(1 + 16).expect("TPR offset overflow"))
     }
 
-    fn capture_mmio_boundary(vmm: &Vmm<KvmBackend>, before_vns: u64) -> MmioCapture {
+    fn capture_mmio_boundary(
+        vmm: &Vmm<KvmBackend>,
+        before_vns: u64,
+        active_xmm: bool,
+    ) -> MmioCapture {
         let live = vmm.vcpu_record().expect("read MMIO boundary vCPU");
-        assert_eq!(live.regs.rip, (MMIO_CODE_GPA + 9) as u64);
+        assert_eq!(live.regs.rip, mmio_boundary_rip(active_xmm));
         assert_eq!(
             live.regs.rbx, 0,
             "INC BX must remain unretired at the boundary"
@@ -712,10 +758,11 @@ mod live_kvm {
             "the ADD read/modify/write must save LAPIC TPR = 5"
         );
         assert_eq!(capture.moment, Some(before_vns + 2 * cost));
+        assert_mmio_xmm(&capture, active_xmm, false);
         capture
     }
 
-    fn continue_to_hlt(vmm: &mut Vmm<KvmBackend>) -> MmioCapture {
+    fn continue_to_hlt(vmm: &mut Vmm<KvmBackend>, active_xmm: bool) -> MmioCapture {
         assert_eq!(
             vmm.step().expect("run INC BX and HLT"),
             Step::Terminal(TerminalReason::Idle),
@@ -724,16 +771,33 @@ mod live_kvm {
         let endpoint = capture_full_vmm(vmm);
         let live = vmm.vcpu_record().expect("read MMIO endpoint vCPU");
         assert_eq!(live.regs.rbx, 1, "INC BX must retire exactly once");
+        assert_mmio_xmm(&endpoint, active_xmm, true);
         endpoint
     }
 
     #[test]
     #[ignore = "live KVM; run with --ignored on a Linux x86-64 /dev/kvm host"]
     fn mmio_rmw_finishes_before_full_vmm_snapshot() {
-        require_kvm();
-        let report = report_root("MMIO_CONTINUATION_REPORT_DIR");
+        exercise_mmio_snapshot(true, "MMIO_CONTINUATION_REPORT_DIR");
+    }
 
-        let mut uninterrupted = fresh_mmio_vmm();
+    #[test]
+    #[ignore = "raw init-state presence characterization; requires /dev/kvm"]
+    fn mmio_init_presence_snapshot_characterization() {
+        exercise_mmio_snapshot(false, "MMIO_INIT_REPORT_DIR");
+    }
+
+    fn exercise_mmio_snapshot(active_xmm: bool, report_env: &str) {
+        require_kvm();
+        let program_len = MMIO_PROGRAM.len()
+            + if active_xmm {
+                MMIO_XMM_SEED.len() + MMIO_XMM_STORE.len()
+            } else {
+                0
+            };
+        let report = report_root(report_env);
+
+        let mut uninterrupted = fresh_mmio_vmm(active_xmm);
         let before_vns = uninterrupted
             .effective_vns()
             .expect("MMIO fixture wires virtual time");
@@ -741,15 +805,15 @@ mod live_kvm {
             uninterrupted.step().expect("service ADD MMIO"),
             Step::Continued
         );
-        let uninterrupted_endpoint = continue_to_hlt(&mut uninterrupted);
+        let uninterrupted_endpoint = continue_to_hlt(&mut uninterrupted, active_xmm);
         retain_capture(
             report.as_deref(),
             "original-endpoint",
             &uninterrupted_endpoint,
-            &uninterrupted_endpoint.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()],
+            &uninterrupted_endpoint.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + program_len],
         );
 
-        let mut save_and_continue = fresh_mmio_vmm();
+        let mut save_and_continue = fresh_mmio_vmm(active_xmm);
         let save_before_vns = save_and_continue
             .effective_vns()
             .expect("save/continue fixture wires virtual time");
@@ -758,12 +822,12 @@ mod live_kvm {
             save_and_continue.step().expect("service saved ADD MMIO"),
             Step::Continued
         );
-        let save_stop = capture_mmio_boundary(&save_and_continue, save_before_vns);
+        let save_stop = capture_mmio_boundary(&save_and_continue, save_before_vns, active_xmm);
         retain_capture(
             report.as_deref(),
             "save-and-continue-stop",
             &save_stop,
-            &save_stop.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()],
+            &save_stop.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + program_len],
         );
         let counts = save_and_continue.exit_counts();
         let time = save_and_continue.effective_vns();
@@ -773,11 +837,12 @@ mod live_kvm {
             .regs
             .rbx;
         let repeated = capture_full_vmm(&save_and_continue);
+        assert_mmio_xmm(&repeated, active_xmm, false);
         retain_capture(
             report.as_deref(),
             "save-and-continue-stop-repeat",
             &repeated,
-            &repeated.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()],
+            &repeated.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + program_len],
         );
         record_capture_mismatch(
             report.as_deref(),
@@ -800,26 +865,27 @@ mod live_kvm {
             bx
         );
         assert_eq!(bx, 0, "repeated capture must not retire INC BX");
-        let save_and_continue_endpoint = continue_to_hlt(&mut save_and_continue);
+        let save_and_continue_endpoint = continue_to_hlt(&mut save_and_continue, active_xmm);
         retain_capture(
             report.as_deref(),
             "save-and-continue-endpoint",
             &save_and_continue_endpoint,
-            &save_and_continue_endpoint.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()],
+            &save_and_continue_endpoint.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + program_len],
         );
 
-        let mut cold = fresh_mmio_vmm();
+        let mut cold = fresh_mmio_vmm(active_xmm);
         cold.restore_snapshot(&save_stop.memory, &save_stop.state)
             .expect("restore full MMIO VM snapshot");
         let cold_stop = capture_full_vmm(&cold);
+        assert_mmio_xmm(&cold_stop, active_xmm, false);
         retain_capture(
             report.as_deref(),
             "cold-stop",
             &cold_stop,
-            &cold_stop.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()],
+            &cold_stop.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + program_len],
         );
         let cold_live = cold.vcpu_record().expect("read cold MMIO boundary vCPU");
-        assert_eq!(cold_live.regs.rip, (MMIO_CODE_GPA + 9) as u64);
+        assert_eq!(cold_live.regs.rip, mmio_boundary_rip(active_xmm));
         assert_eq!(cold_live.regs.rbx, 0);
         assert_eq!(
             lapic_tpr(&cold_stop.state),
@@ -836,12 +902,12 @@ mod live_kvm {
             cold_stop, save_stop,
             "cold restore reproduces the MMIO stop"
         );
-        let cold_endpoint = continue_to_hlt(&mut cold);
+        let cold_endpoint = continue_to_hlt(&mut cold, active_xmm);
         retain_capture(
             report.as_deref(),
             "cold-endpoint",
             &cold_endpoint,
-            &cold_endpoint.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + MMIO_PROGRAM.len()],
+            &cold_endpoint.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + program_len],
         );
 
         record_capture_mismatch(
