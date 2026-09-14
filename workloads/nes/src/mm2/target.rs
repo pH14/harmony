@@ -51,7 +51,7 @@ const BOSS_PHASE: usize = 0xb1;
 
 const BOSS_PHASE_FIGHTING: u8 = 0x02;
 const BOSS_PHASE_NONE: u8 = 0x00;
-const BOSS_PHASE_DEFEATED: u8 = 0xfe;
+pub const BOSS_PHASE_DEFEATED: u8 = 0xfe;
 pub const FULL_BOSS_HEALTH: u8 = 28;
 
 const PLAYER_STATE_STANDING: u8 = 0x03;
@@ -199,7 +199,7 @@ impl Mm2MechanicalState {
     pub fn boss_damage(self) -> u8 {
         if self.boss_phase >= BOSS_PHASE_DEFEATED {
             FULL_BOSS_HEALTH
-        } else if self.boss_phase >= BOSS_PHASE_FIGHTING {
+        } else if self.boss_phase >= BOSS_PHASE_FIGHTING && self.boss_health > 0 {
             FULL_BOSS_HEALTH.saturating_sub(self.boss_health)
         } else {
             0
@@ -1060,6 +1060,20 @@ mod tests {
         prior[0x6d1] = 0x10;
         current[0x6d1] = ENEMY_HEALTH_IDLE;
         assert_eq!(enemy_damage_between(&prior, &current), ENEMY_HIT_CAP);
+    }
+
+    #[test]
+    fn a_boss_on_screen_without_a_loaded_meter_takes_no_damage() {
+        let mut wram = vec![0_u8; WRAM_SIZE];
+        wram[0xb1] = BOSS_PHASE_FIGHTING;
+        wram[0x6c1] = 0;
+        let approaching = decode_state(&wram).expect("decode");
+        assert_eq!(approaching.boss_damage(), 0);
+        assert!(approaching.boss_fight_underway());
+        wram[0x6c1] = FULL_BOSS_HEALTH;
+        assert_eq!(decode_state(&wram).expect("decode").boss_damage(), 0);
+        wram[0x6c1] = FULL_BOSS_HEALTH - 4;
+        assert_eq!(decode_state(&wram).expect("decode").boss_damage(), 4);
     }
 
     #[test]

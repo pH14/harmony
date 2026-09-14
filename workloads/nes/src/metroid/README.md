@@ -16,11 +16,28 @@ source addresses and meanings are documented beside their constants in
 identifier is `death_or_ending_v2`, correcting the prototype's stale
 `death_only_v1` label without changing that prototype's predicate.
 
+The default terminal policy is `death_or_bcd_underflow_or_ending_v3`, which also
+marks decoded health >=8000 as terminal. The damage routine stores a BCD
+subtraction before testing borrow and clearing lethal damage, and a frame
+boundary can expose that intermediate value. Six energy tanks cap normal health
+at 6999, so an underflowed reading is the largest health any endpoint can
+report; because health is the last term of the archive preference, that endpoint
+takes the single slot at its location from every legitimate endpoint beside it.
+Raw health stays unchanged for replay inspection. The historical
+`death_or_ending_v2` predicate is still selectable, through the evaluator's
+`metroid_terminal` request field and `MetroidGame::with_terminal_policy`. Stream
+headers carry the chosen identifier and reject a mismatched replay context.
+Recorded tapes made before this policy existed replay under the historical
+predicate: `nes-progress` names it, and `metroid-film` defaults to it.
+
 `archive.rs` records the experimental adapter policy explicitly. It pools
 16-pixel positions through 32-pixel cells, 128-pixel regions, map cells, and
 inventory counts. Posture and door-transition state distinguish possible
 continuations. Health and missile stock are same-slot preference, not extra
-spatial slots. Item and tank counts describe discovered capabilities; no
+spatial slots. The key's tank count subtracts the 75 missiles each boss kill
+awards, so a kill does not relabel every map cell the killer reaches as holding
+fifteen more tanks than the cells beside it; the kill still counts through the
+item term. Item and tank counts describe discovered capabilities; no
 particular item, room, door target, or route is supplied. Coverage and pickup
 counters are reporting evidence across explored branches, not proof that one
 trajectory achieved their union. The inherited count representation and

@@ -22,7 +22,7 @@ use crate::{
         progress::NamedProgress,
         target::{
             ButtonChord, MetroidInput, MetroidObservations, MetroidSnapshot, MetroidTarget,
-            power_on_walk, preference_tuple,
+            MetroidTerminalPolicy, power_on_walk, preference_tuple,
         },
     },
     search::{
@@ -50,7 +50,6 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_select_taps_no_start_v1";
-const TERMINAL_POLICY_IDENTIFIER: &str = "death_or_ending_v2";
 
 type MetroidPreference = (u8, u8, u16, u8);
 type MetroidChampionKey = (MetroidProgressWatermark, MetroidPreference);
@@ -66,6 +65,7 @@ pub struct MetroidGame {
     identity: String,
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
+    terminal_policy: MetroidTerminalPolicy,
 }
 
 impl MetroidGame {
@@ -103,7 +103,14 @@ impl MetroidGame {
             identity,
             champion_input_path: None,
             milestone_input_dir: None,
+            terminal_policy: MetroidTerminalPolicy::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_terminal_policy(mut self, policy: MetroidTerminalPolicy) -> Self {
+        self.terminal_policy = policy;
+        self
     }
 
     #[must_use]
@@ -553,7 +560,7 @@ impl InputPolicy for MetroidGame {
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
-            (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
+            (TERMINAL_POLICY_FIELD, self.terminal_policy.identifier()),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -667,6 +674,7 @@ impl TargetExecution for MetroidGame {
             &self.core_sha256,
             &self.prefix,
         )
+        .map(|target| target.with_terminal_policy(self.terminal_policy))
         .map_err(|error| error.to_string())
     }
 
@@ -987,6 +995,30 @@ mod tests {
         }
         assert!(directory.join("ridley_area.json").is_file());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn terminal_semantics_require_a_matching_replay_context() {
+        let legacy = MetroidGame::new(&[0], Path::new("unused"), "test")
+            .with_terminal_policy(MetroidTerminalPolicy::Legacy);
+        let corrected = MetroidGame::new(&[0], Path::new("unused"), "test")
+            .with_terminal_policy(MetroidTerminalPolicy::BcdUnderflow);
+        let old = legacy.policies(&MetroidCampaignRun);
+        let new = corrected.policies(&MetroidCampaignRun);
+        assert!(legacy.resolve_recorded(&old).is_ok());
+        assert!(corrected.resolve_recorded(&new).is_ok());
+        assert!(corrected.resolve_recorded(&old).is_err());
+        assert!(legacy.resolve_recorded(&new).is_err());
+        assert_eq!(
+            old.iter().filter(|(k, v)| new.get(*k) != Some(*v)).count(),
+            1
+        );
+        let unset = MetroidGame::new(&[0], Path::new("unused"), "test");
+        assert!(
+            corrected
+                .resolve_recorded(&unset.policies(&MetroidCampaignRun))
+                .is_ok()
+        );
     }
 
     #[test]

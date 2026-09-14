@@ -21,8 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str =
-    "metroid_items_tanks_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v8";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_less_boss_award_area_map_spatial_16_posture_door_preference_missiles_first_ridley_bit1_v9";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -284,6 +283,20 @@ pub fn sample_chord(rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Err
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_boss_kill_does_not_relabel_every_map_cell_as_holding_more_tanks() {
+        let mut collected = state(100, 300, 0);
+        collected.missile_capacity = 30;
+        let mut killed = state(100, 300, 0);
+        killed.missile_capacity = 30 + 75;
+        killed.bosses = 1;
+
+        assert_eq!(collected.collectibles(), 6);
+        assert_eq!(killed.collectibles(), 6);
+        assert_eq!(killed.items(), collected.items() + 1);
+        assert_eq!(archive_key(killed).tanks, archive_key(collected).tanks);
+    }
 
     fn state(x: u8, health: u16, equipment: u8) -> MetroidMechanicalState {
         MetroidMechanicalState {
