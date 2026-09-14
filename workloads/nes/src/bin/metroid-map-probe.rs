@@ -3,15 +3,25 @@
 use std::{env, error::Error, fs, path::PathBuf};
 
 use nes_workload::{
-    metroid::target::{MetroidInput, MetroidTarget},
+    metroid::target::{MetroidInput, MetroidTarget, MetroidTerminalPolicy},
     target::{ExitKind, Target},
 };
 use sha2::{Digest, Sha256};
 
-const USAGE: &str = "usage: metroid-map-probe <input.json>";
+const USAGE: &str = "usage: metroid-map-probe <input.json> [--terminal-policy IDENTIFIER]";
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let input_path = PathBuf::from(env::args().nth(1).ok_or(USAGE)?);
+    let mut args = env::args().skip(1);
+    let input_path = PathBuf::from(args.next().ok_or(USAGE)?);
+    let mut terminal_policy = MetroidTerminalPolicy::Legacy;
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--terminal-policy" => {
+                terminal_policy = MetroidTerminalPolicy::parse(&args.next().ok_or(USAGE)?)?;
+            }
+            _ => return Err(USAGE.into()),
+        }
+    }
     let rom = fs::read(PathBuf::from(
         env::var_os("HARMONY_METROID_ROM")
             .ok_or("HARMONY_METROID_ROM must name the external Metroid ROM")?,
@@ -22,8 +32,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core_path)?));
     let input: MetroidInput = serde_json::from_slice(&fs::read(&input_path)?)?;
-    let mut target = MetroidTarget::from_rom_bytes_headless(&rom, &core_path, &core_sha256)?;
+    let mut target = MetroidTarget::from_rom_bytes_headless(&rom, &core_path, &core_sha256)?
+        .with_terminal_policy(terminal_policy);
 
+    println!("# terminal_policy {}", terminal_policy.identifier());
     println!(
         "action frames area map_x map_y x y mode pose health equipment missiles capacity tanks bosses"
     );

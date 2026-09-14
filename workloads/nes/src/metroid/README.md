@@ -106,7 +106,9 @@ it. The intervention point is validated before any output file exists, and a run
 that ends before the point is reported as the unintervened run.
 
 `metroid-map-probe` replays a tape and prints the map cell and resources at each
-action endpoint. A campaign report names the areas a run entered and counts the
+action endpoint. Like `metroid-film` it defaults to the historical terminal
+predicate and takes `--terminal-policy`, so a recorded tape is not stopped early
+by a predicate it was never recorded under. A campaign report names the areas a run entered and counts the
 map cells it observed; neither says which cells a route crossed, so neither can
 say which neighbour of a reached cell was never opened.
 
