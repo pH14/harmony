@@ -122,9 +122,7 @@
   "discovery_mode": "guided",
   "status": "reproduced",
   "ci": {
-    "status": "runnable",
-    "image_prefix": "pgcic",
-    "replay_max_sessions": 3,
-    "replay_timeout_seconds": 1800
+    "status": "deferred",
+    "reason": "temporary etcd witness diagnostic"
   }
 }

@@ -1,0 +1,118 @@
+{
+  "actions": [
+    {
+      "Restart": 2
+    },
+    {
+      "EventPark": {
+        "node": 0,
+        "rarity": 13,
+        "hold_us": 40000
+      }
+    },
+    {
+      "Interrupt": 48
+    },
+    {
+      "EventPark": {
+        "node": 0,
+        "rarity": 39,
+        "hold_us": 2560000
+      }
+    },
+    {
+      "Pause": [
+        0,
+        25
+      ]
+    },
+    {
+      "EventPark": {
+        "node": 2,
+        "rarity": 53,
+        "hold_us": 1280000
+      }
+    },
+    {
+      "Kill": 1
+    },
+    {
+      "EventPark": {
+        "node": 2,
+        "rarity": 58,
+        "hold_us": 2560000
+      }
+    },
+    {
+      "EventPark": {
+        "node": 0,
+        "rarity": 16,
+        "hold_us": 2560000
+      }
+    },
+    {
+      "EventPark": {
+        "node": 0,
+        "rarity": 5,
+        "hold_us": 2560000
+      }
+    },
+    {
+      "Restart": 2
+    },
+    {
+      "Restart": 2
+    },
+    {
+      "EventKill": {
+        "node": 0,
+        "rarity": 8
+      }
+    },
+    {
+      "Restart": 1
+    },
+    {
+      "Restart": 1
+    },
+    {
+      "EventPark": {
+        "node": 2,
+        "rarity": 17,
+        "hold_us": 160000
+      }
+    },
+    {
+      "EventPark": {
+        "node": 1,
+        "rarity": 4,
+        "hold_us": 160000
+      }
+    },
+    {
+      "Interrupt": 32
+    },
+    {
+      "EventKill": {
+        "node": 2,
+        "rarity": 44
+      }
+    },
+    {
+      "Wait": 128
+    },
+    {
+      "EventPark": {
+        "node": 2,
+        "rarity": 41,
+        "hold_us": 1280000
+      }
+    },
+    {
+      "Pause": [
+        2,
+        25
+      ]
+    }
+  ]
+}
