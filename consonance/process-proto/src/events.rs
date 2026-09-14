@@ -199,6 +199,16 @@ mod tests {
             decode_reply(command, &wrong),
             Err(ProtocolError::MismatchedReply)
         );
+        let park = Command::ArmPark {
+            rarity: 4,
+            hold_nanos: 17,
+        };
+        let mut wrong = encode_command(park);
+        wrong[16] = 18;
+        assert_eq!(
+            decode_reply(park, &wrong),
+            Err(ProtocolError::MismatchedReply)
+        );
     }
 
     #[test]

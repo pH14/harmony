@@ -398,6 +398,30 @@ mod tests {
     }
 
     #[test]
+    fn event_park_requires_valid_rarity_and_positive_hold() {
+        assert_eq!(
+            ProcessAction::decode(
+                &ProcessAction::EventPark {
+                    rarity: events::EVENT_RARITY_LIMIT,
+                    hold_nanos: 1,
+                }
+                .encode()
+            ),
+            None
+        );
+        assert_eq!(
+            ProcessAction::decode(
+                &ProcessAction::EventPark {
+                    rarity: 0,
+                    hold_nanos: 0,
+                }
+                .encode()
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn standing_windows_round_trip_and_filter_process_class() {
         let windows = [
             Window {
