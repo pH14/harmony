@@ -44,6 +44,14 @@ trajectory achieved their union. The inherited count representation and
 lexicographic resource preference are policy tradeoffs, not true capability
 or resource dominance.
 
+The pooled group's field declaration order is the frontier selectors' strongest
+ranking term, so a field near the front decides which places the selector draws
+from. Items and tanks lead because they are progress. The area byte is last: the
+five areas are connected in both directions and the two boss areas are numbered
+either side of the endgame area, so ranking by that byte parks the search in the
+higher-numbered boss area and leaves the other undeveloped. With the byte last
+the map row and column decide the rank.
+
 The legacy primary progress watermark records equipment bit count **plus boss
 defeats**, and missile capacity.
 The `milestones.tanks` field combines missile capacity divided by five
