@@ -16,7 +16,7 @@ use crate::target::{FaultAction, FaultObservations};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
-pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_lifecycle_events_v4";
+pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_lifecycle_events_v5";
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_guest_ticks";
 pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
@@ -28,6 +28,7 @@ pub struct FaultArchiveGroup {
     hooks_running: u64,
     alive: u64,
     parked: u64,
+    restarts: u64,
     event_ready: u64,
     event_kill_fires: u64,
     event_park_fires: u64,
@@ -42,6 +43,7 @@ pub struct FaultArchiveKey {
     pub hooks_running: u64,
     pub alive: u64,
     pub parked: u64,
+    pub restarts: u64,
     pub event_ready: u64,
     pub event_kill_fires: u64,
     pub event_park_fires: u64,
@@ -63,6 +65,7 @@ impl ArchiveKey for FaultArchiveKey {
             hooks_running: self.hooks_running,
             alive: self.alive,
             parked: self.parked,
+            restarts: self.restarts,
             event_ready: self.event_ready,
             event_kill_fires: self.event_kill_fires,
             event_park_fires: self.event_park_fires,
@@ -103,6 +106,7 @@ pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
             .min(HOOKS_FINISHED_KEY_CAP),
         alive: observations.alive,
         parked: observations.parked.min(HOOKS_FINISHED_KEY_CAP),
+        restarts: observations.restarts.min(HOOKS_FINISHED_KEY_CAP),
         event_ready: observations.event_ready,
         event_kill_fires: observations.event_kill_fires.min(HOOKS_FINISHED_KEY_CAP),
         event_park_fires: observations.event_park_fires.min(HOOKS_FINISHED_KEY_CAP),
@@ -360,6 +364,23 @@ mod tests {
             100,
             "the milestone keeps the true count"
         );
+    }
+
+    #[test]
+    fn restart_progress_opens_cells_up_to_the_cap() {
+        let restarted = |restarts| {
+            archive_key(&FaultObservations {
+                restarts,
+                alive: 0b111,
+                ..FaultObservations::default()
+            })
+        };
+        assert_ne!(restarted(0), restarted(1));
+        assert_ne!(
+            restarted(HOOKS_FINISHED_KEY_CAP - 1),
+            restarted(HOOKS_FINISHED_KEY_CAP)
+        );
+        assert_eq!(restarted(HOOKS_FINISHED_KEY_CAP), restarted(100));
     }
 
     #[test]
