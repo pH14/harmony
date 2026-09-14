@@ -104,9 +104,10 @@ The gated Nix kernel passes the native ms02 functional fixture, independent
 paired boots, and six one-shot debug interventions around the core and signal
 save boundaries. Complete 256 MiB RAM and modeled state match at the
 guest-requested shutdown endpoint without masking. Hosted run 34857658287
-also passes the original functional/pair/six-intervention fixture on two AMD
-EPYC 7763 hosts under Hyper-V. Hosted Intel and the expanded signal-fault
-fixture's hosted qualification remain required. These results qualify neither arbitrary images
+also passes the original fixture on AMD EPYC 7763 under Hyper-V. Expanded run
+34861414443 passes the functional, real signal-fault, paired and six-intervention
+checks on hosted Intel Xeon 8370C and AMD EPYC 9V74. Bare-metal AMD attribution
+and qualification remain pending. These results qualify neither arbitrary images
 nor arbitrary imported CPU events.
 
 The exact GCC13 save paths overwrite raw bitmap register aliases and clear the

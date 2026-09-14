@@ -157,6 +157,15 @@ PY
     echo "== platform negative control: changed one patch byte"
 fi
 
+if [ "$oci_runtime" -eq 1 ]; then
+    : "${HARMONY_NIX_RUNTIME_MANIFEST:?--oci-runtime requires HARMONY_NIX_RUNTIME_MANIFEST}"
+    python3 "$guest/scripts/nix-runtime-artifacts.py" payload-verify --repo "$repo" \
+        --input "$HARMONY_NIX_RUNTIME_MANIFEST" --architecture "$host_arch" \
+        --init "$HARMONY_NIX_RUNTIME_INIT" --supervisor "$HARMONY_NIX_RUNTIME_SUPERVISOR"
+fi
+
+build_source_digest=$(python3 "$guest/scripts/runtime-artifacts.py" source-key --repo "$repo" --architecture "$host_arch")
+
 if [ "$host_arch" = aarch64 ]; then
     echo "== platform: build standard ARM kernel and fixture initramfs"
     (cd "$linux_dir" && ./build-arm64-kernel.sh && ./build-arm64-initramfs.sh)
@@ -274,6 +283,18 @@ done < <(find "$stage" -mindepth 2 -type f -print0)
     find . -mindepth 2 -type f -print0 | LC_ALL=C sort -z \
         | sed -z 's#^\./##' | xargs -0 sha256sum >MANIFEST.sha256
 )
+if [ "$oci_runtime" -eq 1 ]; then
+    [ "$build_source_digest" = "$(python3 "$guest/scripts/runtime-artifacts.py" source-key --repo "$repo" --architecture "$host_arch")" ] || {
+        echo "FAIL: copied platform source changed during build" >&2
+        exit 1
+    }
+    python3 "$guest/scripts/nix-runtime-artifacts.py" payload-verify --repo "$repo" \
+        --input "$HARMONY_NIX_RUNTIME_MANIFEST" --architecture "$host_arch" \
+        --init "$HARMONY_NIX_RUNTIME_INIT" --supervisor "$HARMONY_NIX_RUNTIME_SUPERVISOR"
+    cp "$HARMONY_NIX_RUNTIME_MANIFEST" "$stage/runtime-payloads.json"
+    python3 "$guest/scripts/nix-runtime-artifacts.py" record --repo "$repo" \
+        --input "$stage" --architecture "$host_arch"
+fi
 cp -a "$stage/." "$output/"
 echo "PASS: Nix-locked platform artifacts built offline"
 cat "$output/MANIFEST.sha256"

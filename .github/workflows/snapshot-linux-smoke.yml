@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: snapshot-linux-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
@@ -39,79 +40,45 @@ jobs:
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
-      - name: Restore the locked x86 guest artifacts
-        id: guest-cache
+      - name: Compute shared platform source key
+        id: source
+        run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
+      - name: Restore exact qualified platform
+        id: exact
         uses: actions/cache/restore@v4
         with:
-          path: nix-guest-output
-          key: guest-x86_64-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/linux/**', 'consonance/harmony-linux/nix/**', 'consonance/harmony-linux/libvoidstar/**') }}
-          restore-keys: |
-            guest-x86_64-v1-
-      - name: Verify and record guest cache provenance
+          path: consonance/harmony-linux/build/x86_64
+          key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
+      - name: Locate exact qualification handoff
+        id: handoff
+        if: steps.exact.outputs.cache-hit != 'true'
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
-          CACHE_HIT: ${{ steps.guest-cache.outputs.cache-hit }}
-          CACHE_MATCHED_KEY: ${{ steps.guest-cache.outputs.cache-matched-key }}
-          CACHE_REQUESTED_KEY: guest-x86_64-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/linux/**', 'consonance/harmony-linux/nix/**', 'consonance/harmony-linux/libvoidstar/**') }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_KEY: ${{ steps.source.outputs.key }}
         run: |
-          set -euo pipefail
-          if [[ -z "${CACHE_MATCHED_KEY}" ]]; then
-            cat >linux-consistency-report/cache-unavailable.txt <<'EOF'
-          No exact or last-known-good x86 guest cache was available. The scheduled/manual deep builder must populate the durable guest cache before this smoke can execute.
-          EOF
-            echo '::error::Linux consistency PR smoke found no durable guest cache fallback.'
-            exit 1
-          fi
-          cat >linux-consistency-report/cache-provenance.txt <<EOF
-          requested_key=${CACHE_REQUESTED_KEY}
-          matched_key=${CACHE_MATCHED_KEY}
-          cache_hit=${CACHE_HIT}
-          commit=$(git rev-parse HEAD)
-          EOF
-          test -s nix-guest-output/MANIFEST.sha256
-          (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
-          changed=false
-          if [[ "${EVENT_NAME}" == pull_request ]]; then
-            git diff --name-only "${BASE_SHA}"...HEAD >linux-consistency-report/changed-files.txt
-          elif [[ "${EVENT_NAME}" == push && "${BEFORE_SHA}" != 0000000000000000000000000000000000000000 ]]; then
-            git diff --name-only "${BEFORE_SHA}" HEAD >linux-consistency-report/changed-files.txt
-          else
-            : >linux-consistency-report/changed-files.txt
-          fi
-          while IFS= read -r path; do
-            case "${path}" in
-              flake.nix|flake.lock|consonance/harmony-linux/linux/*|consonance/harmony-linux/nix/*|consonance/harmony-linux/libvoidstar/*)
-                changed=true
-                ;;
-            esac
-          done <linux-consistency-report/changed-files.txt
-          provenance=exact-input
-          validation_scope=guest-inputs-validated
-          if [[ "${CACHE_HIT}" != true ]]; then
-            provenance=last-known-good-cache-fallback
-            validation_scope=guest-inputs-validated-from-last-known-good
-            if [[ "${changed}" == true ]]; then
-              validation_scope=guest-inputs-not-validated-for-changed-source
-            fi
-            echo '::warning::Using the last-known-good guest cache; fixture source changes are covered by the scheduled/manual deep builder.'
-          fi
-          cat >linux-consistency-report/cache-provenance.txt <<EOF
-          requested_key=${CACHE_REQUESTED_KEY}
-          matched_key=${CACHE_MATCHED_KEY}
-          cache_hit=${CACHE_HIT}
-          provenance=${provenance}
-          fixture_source_changed=${changed}
-          validation_scope=${validation_scope}
-          commit=$(git rev-parse HEAD)
-          EOF
+          run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
+            -f name="consonance-platform-v1-x86_64-$SOURCE_KEY" -F per_page=100 \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .workflow_run.id // empty')
+          echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        if: steps.handoff.outputs.run_id != ''
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.handoff.outputs.run_id }}
+          name: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
+          path: consonance/harmony-linux/build/x86_64
+      - name: Require source-correct Linux fixtures
+        run: |
+          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
+            --artifacts consonance/harmony-linux/build/x86_64 --output linux-consistency-report/provenance.json
+          python3 -c 'import json; assert json.load(open("linux-consistency-report/provenance.json"))["scope"] == "exact-input", "Run the platform publisher on this source before qualifying Linux snapshots"'
+          test -s consonance/harmony-linux/build/x86_64/initramfs.cpio.gz
       - name: Stage verified Linux fixture
         run: |
-          mkdir -p consonance/harmony-linux/build
-          cp nix-guest-output/x86_64/bzImage consonance/harmony-linux/build/bzImage
-          cp nix-guest-output/x86_64/initramfs.cpio.gz consonance/harmony-linux/build/initramfs.cpio.gz
-          cp nix-guest-output/MANIFEST.sha256 linux-consistency-report/guest-manifest.sha256
+          cp consonance/harmony-linux/build/x86_64/bzImage consonance/harmony-linux/build/bzImage
+          cp consonance/harmony-linux/build/x86_64/initramfs.cpio.gz consonance/harmony-linux/build/initramfs.cpio.gz
+          cp consonance/harmony-linux/build/x86_64/runtime-manifest.json linux-consistency-report/runtime-manifest.json
+          test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
       - name: Build Linux consistency test
         run: cargo test --locked --release -p vmm-core --test x86_kvm_linux_virtual_time --no-run

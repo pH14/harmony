@@ -2,6 +2,17 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -euo pipefail
 
+prebuilt=
+payload_output=
+if [ "$#" -gt 0 ]; then
+    [ "$#" -eq 2 ] || { echo "usage: $0 [--from-nix DIR | --runtime-payloads OUTPUT]" >&2; exit 2; }
+    case "$1" in
+        --from-nix) prebuilt=$(cd "$2" && pwd) ;;
+        --runtime-payloads) payload_output=$(realpath -m "$2") ;;
+        *) echo "usage: $0 [--from-nix DIR | --runtime-payloads OUTPUT]" >&2; exit 2 ;;
+    esac
+fi
+
 cd "$(dirname "$0")/../linux"
 # shellcheck source=../linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
@@ -58,6 +69,42 @@ build_guest() {
         python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" "$target_dir/$runtime_target/release/$binary"
     fi
 }
+if [ -n "$payload_output" ]; then
+    [ ! -e "$payload_output" ] || { echo "FAIL: payload output exists" >&2; exit 1; }
+    payload_source=$(python3 "$GUEST_DIR/scripts/runtime-artifacts.py" source-key --repo "$repo" --architecture "$runtime_arch")
+    if [ "$runtime_arch" = aarch64 ]; then
+        build_arm64_musl
+    fi
+    build_guest supervisor harmony-supervisor
+    [ "$payload_source" = "$(python3 "$GUEST_DIR/scripts/runtime-artifacts.py" source-key --repo "$repo" --architecture "$runtime_arch")" ] || {
+        echo "FAIL: payload source changed during build" >&2; exit 1;
+    }
+    mkdir -p "$payload_output"
+    cp "$GUEST_DIR/runtime/init.sh" "$payload_output/init.sh"
+    cp "$BUILD_ROOT/rust-supervisor/$runtime_target/release/harmony-supervisor" "$payload_output/harmony-supervisor"
+    python3 "$GUEST_DIR/scripts/nix-runtime-artifacts.py" payload-record --repo "$repo" \
+        --input "$payload_output" --architecture "$runtime_arch"
+    exit
+fi
+
+if [ -n "$prebuilt" ]; then
+    python3 "$GUEST_DIR/scripts/nix-runtime-artifacts.py" verify --repo "$repo" \
+        --input "$prebuilt" --architecture "$runtime_arch"
+    if [ "$runtime_arch" = aarch64 ]; then
+        build_arm64_musl
+    fi
+    build_guest runtime-fixture runtime-fixture
+    fixture=$(mktemp -d "$BUILD_ROOT/runtime-fixture-package.XXXXXXXX")
+    trap 'rm -rf "$fixture"' EXIT
+    python3 "$GUEST_DIR/runtime-fixture/package.py" \
+        "$BUILD_ROOT/rust-runtime-fixture/$runtime_target/release/runtime-fixture" \
+        "$fixture/oci" --architecture "$image_arch"
+    python3 "$GUEST_DIR/scripts/nix-runtime-artifacts.py" package --repo "$repo" \
+        --input "$prebuilt" --architecture "$runtime_arch" --fixture "$fixture/oci" \
+        --output "$ART_DIR/$runtime_arch"
+    exit
+fi
+
 "$kernel_builder"
 if [ "$runtime_arch" = aarch64 ]; then
     build_arm64_musl

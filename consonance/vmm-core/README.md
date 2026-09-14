@@ -148,11 +148,12 @@ After a failed smoke gate reports a `StateHash` event index, the ignored
 next replay starts. A no-divergence replay remains diagnostic evidence rather
 than qualification.
 
-Linux smoke fixtures come from main's durable guest cache. Each run verifies
-the manifest and records the exact or last-known-good cache provenance. A
-fallback fixture does not validate changed guest source; the scheduled/manual
-builder supplies that evidence. Execution is bounded independently of builds,
-and failed gates retain diagnostics. Broader repetitions and vendor sampling
+Linux snapshot smoke fixtures come from the shared source-keyed platform
+publisher. The smoke requires exact source provenance, verifies the manifest,
+and uses its direct Linux fixture. The scheduled/manual producer builds the
+Nix kernel once, packages the runtime fixture without another kernel build,
+and publishes only after platform replay passes. Execution stays bounded
+independently of builds, and failed gates retain diagnostics. Broader repetitions and vendor sampling
 remain scheduled/manual. These gates are regression evidence, not a claim that
 the retained XSAVE-presence and AMD NPT PAE counterexamples are resolved.
 
