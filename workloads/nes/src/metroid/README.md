@@ -23,7 +23,12 @@ boundary can expose that intermediate value. Six energy tanks cap normal health
 at 6999, so an underflowed reading is the largest health any endpoint can
 report; because health is the last term of the archive preference, that endpoint
 takes the single slot at its location from every legitimate endpoint beside it.
-Raw health stays unchanged for replay inspection. The historical
+Raw health stays unchanged for replay inspection. Decoding stops at the first
+frame the policy calls terminal while the action itself runs to its end, so a
+terminal endpoint holds an observation and an emulator state from different
+frames. The search neither admits nor snapshots a terminal endpoint, so this
+only reaches replay tools, and only when one is pointed at a policy its tape
+was not recorded under. The historical
 `death_or_ending_v2` predicate is still selectable, through the evaluator's
 `metroid_terminal` request field and `MetroidGame::with_terminal_policy`. Stream
 headers carry the chosen identifier and reject a mismatched replay context.
