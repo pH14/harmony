@@ -224,23 +224,18 @@ if command -v flow-agent >/dev/null 2>&1; then
 fi
 
 # 4. apply the client Pod and let it call the postgres pod over the CNI.
+$BB rm -f /k8s/client-result/client.log /k8s/client-result/client.ip \
+    /k8s/client-result/client.rc
 kc apply -f /k8s/client.yaml >/dev/null 2>&1
-wait_for 600 "pod/client scheduled" \
-    sh -c "k3s kubectl get pod client -o jsonpath='{.status.phase}' | grep -qE 'Running|Succeeded|Failed'" \
+wait_for 600 "client result" test -s /k8s/client-result/client.rc \
     || { tail_k3s; finish 1; }
-
-# 5. wait for the client to terminate (Succeeded/Failed), then stream its log.
-wait_for 600 "pod/client terminated" \
-    sh -c "k3s kubectl get pod client -o jsonpath='{.status.phase}' | grep -qE 'Succeeded|Failed'" \
-    || { tail_k3s; finish 1; }
-
-CLIENT_PHASE=$(kc get pod client -o jsonpath='{.status.phase}' 2>/dev/null)
-log "client pod terminated: phase=$CLIENT_PHASE"
+CLIENT_RC=$($BB cat /k8s/client-result/client.rc)
+log "client pod terminated: rc=$CLIENT_RC"
 
 # --- the deterministic payload: the client pod's workload output to ttyS0 -----
 # (raw stdout, no --timestamps: exactly the K8S49 markers + the row|... lines.)
 $BB echo "----- BEGIN client pod log (the intra-guest workload output) -----"
-kc logs client 2>/dev/null
+$BB cat /k8s/client-result/client.log
 $BB echo "----- END client pod log -----"
 
 # --- intra-guest CNI witnesses (deterministic: pod IPs + the source-IP log) ---
@@ -248,14 +243,10 @@ $BB echo "----- END client pod log -----"
 # (sequential, deterministic). The postgres pod's connection log records the
 # CLIENT's source IP (%h) — a POD IP — proving the path stayed intra-guest over
 # the CNI (no host networking; pv-net unused).
-PG_IP=$(kc get pod postgres -o jsonpath='{.status.podIP}' 2>/dev/null)
-CL_IP=$(kc get pod client   -o jsonpath='{.status.podIP}' 2>/dev/null)
+CL_IP=$($BB cat /k8s/client-result/client.ip)
 log "CNI pod IPs: postgres=$PG_IP client=$CL_IP (pod CIDR 10.42.0.0/16, intra-guest)"
-$BB echo "----- BEGIN postgres connection log (source IP = client pod IP) -----"
-kc logs postgres 2>/dev/null | $BB grep -E 'connection (received|authorized)' | $BB head -8
-$BB echo "----- END postgres connection log -----"
 
-if [ "$CLIENT_PHASE" = "Succeeded" ]; then
+if [ "$CLIENT_RC" = 0 ]; then
     finish 0
 else
     finish 1

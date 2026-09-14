@@ -84,7 +84,8 @@ and runtime exit statuses, and readiness evidence. The Docker recipe launches
 the official PostgreSQL image with Docker's bundled `runc`; the K3s recipe also
 checks direct pod-to-pod PostgreSQL traffic through the guest CNI. The lane
 requires an exact qualified platform artifact and preserves image hashes and
-run records.
+run records. The client reports its log, pod address, and exit status through a
+shared result directory so completion does not depend on control-plane polling.
 Run that lane independently on a proposed branch with:
 
 ```sh

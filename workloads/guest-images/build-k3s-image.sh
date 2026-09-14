@@ -363,21 +363,36 @@ rm -rf "$PGSTAGE" "$IMG"        # only PGDATA is baked; the staging rootfs is th
 cat >"$K3SROOT/k8s/client.sh" <<EOF
 #!/bin/sh
 set -u
+RESULT=/result
+exec >"\$RESULT/client.log" 2>&1
 export PGCONNECT_TIMEOUT=5 LC_ALL=C.UTF-8 PGTZ=UTC
 PGHOST=@POSTGRES_POD_IP@ PGPORT=5432 PGUSER=postgres PGDATABASE=postgres
 export PGHOST PGPORT PGUSER PGDATABASE
+hostname -i | awk '{print \$1}' >"\$RESULT/client.ip"
 echo "K8S49: client pod starting; target postgres pod IP \$PGHOST:\$PGPORT (over the CNI)"
 i=0
+status=0
 until psql -q -c 'SELECT 1' >/dev/null 2>&1; do
-    i=\$((i+1)); [ "\$i" -gt 600 ] && { echo "K8S49: postgres unreachable over the CNI after \$i tries"; exit 1; }
+    i=\$((i+1))
+    if [ "\$i" -gt 60 ]; then
+        echo "K8S49: postgres unreachable over the CNI after \$i tries"
+        status=1
+        break
+    fi
     sleep 1
 done
-echo "K8S49: client connected to the postgres pod over the CNI (pod IP \$PGHOST)"
-echo "K8S49: workload begin"
-psql -q -At -F '|' -P pager=off -v ON_ERROR_STOP=1 -f /workload.sql
-echo "K8S49: workload end"
+if [ "\$status" = 0 ]; then
+    echo "K8S49: client connected to the postgres pod over the CNI (pod IP \$PGHOST)"
+    echo "K8S49: workload begin"
+    psql -q -At -F '|' -P pager=off -v ON_ERROR_STOP=1 -f /workload.sql || status=\$?
+    echo "K8S49: workload end"
+fi
+echo "\$status" >"\$RESULT/client.rc"
+exit "\$status"
 EOF
 chmod 0755 "$K3SROOT/k8s/client.sh"
+mkdir -p "$K3SROOT/k8s/client-result"
+chmod 0777 "$K3SROOT/k8s/client-result"
 
 # --- 6. the k3s config + the Kubernetes manifests -----------------------------
 # Trim everything the gate doesn't need (the spec): no traefik/servicelb/metrics/
@@ -463,11 +478,14 @@ spec:
       volumeMounts:
         - { name: workload, mountPath: /workload.sql }
         - { name: clientsh, mountPath: /client.sh }
+        - { name: result, mountPath: /result }
   volumes:
     - name: workload
       hostPath: { path: /k8s/workload.sql, type: File }
     - name: clientsh
       hostPath: { path: /k8s/client.sh, type: File }
+    - name: result
+      hostPath: { path: /k8s/client-result, type: Directory }
 EOF
 
 # --- 7. install the OCI workload entrypoint ----------------------------------
