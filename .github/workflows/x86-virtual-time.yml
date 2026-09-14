@@ -633,7 +633,7 @@ jobs:
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           printf 'fixed_cpu=%s\ncase=xcr3-seed0-xrstor\nmode=64-bit\nwarmup=disabled\n' "$cpu" > snapshot-report/xsave-d1.txt
-          timeout -k 10 120 bash consonance/vmm-backend/tests/xsave-exit-trace.sh \
+          sudo --preserve-env env HOME="$HOME" PATH="$PATH" timeout -k 10 120 bash consonance/vmm-backend/tests/xsave-exit-trace.sh \
             snapshot-report/xsave-d1-trace taskset -c "$cpu" \
             cargo test --locked --release -p vmm-backend --lib \
               kvm_sys::xsave_diagnostic::snapshot_entry_restores_match_uninterrupted_execution \
