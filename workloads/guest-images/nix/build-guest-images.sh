@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Build Harmony's native guest images from a locked Nix closure. Linux/aarch64
 # produces the minimal and PostgreSQL guests; Linux/x86_64 produces the
-# minimal guest used by the x86 virtual-time reference and the fault-library
+# minimal guest used by the x86 virtual-time reference and the task-park
 # kernel profile that runs stock userspace binaries. Nix supplies every
 # tool and source tarball. The application performs assembly in a fresh
 # external workspace.
@@ -233,7 +233,7 @@ else
         echo "== N5: run /dev/harmony serialization positive and negative control"
         (cd "$linux_dir" && ./test-harmony-serialization.sh)
     fi
-    # The fault-library profile: the same series and pinned source, built
+    # The task-park profile: the same series and pinned source, built
     # with the task park enabled. Both production profiles emulate ring-3
     # counter reads from the same virtual clock. It carries its own reviewed
     # counter-opcode baseline because its call sites sit at different offsets. Built after
@@ -241,10 +241,10 @@ else
     # they were reproduced under, and the serialization test seeds its KUnit
     # kernels from that shared object directory's configuration, which a
     # concurrency test needs left multiprocessor.
-    echo "== N5: build the fault-library x86 kernel profile"
-    (cd "$linux_dir" && FAULTLAB=1 ./build-kernel.sh)
+    echo "== N5: build the task-park x86 kernel profile"
+    (cd "$linux_dir" && TASK_PARK_PROFILE=1 ./build-kernel.sh)
     mkdir -p "$stage/x86_64"
-    for name in bzImage bzImage-faultlab initramfs.cpio.gz initramfs-go-runtime.cpio.gz; do
+    for name in bzImage bzImage-task-park initramfs.cpio.gz initramfs-go-runtime.cpio.gz; do
         [ -f "$artifacts/$name" ] || {
             echo "FAIL: lock build did not produce x86_64/$name" >&2
             exit 1

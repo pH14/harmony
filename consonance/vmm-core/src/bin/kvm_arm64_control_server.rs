@@ -18,7 +18,7 @@ fn main() -> std::process::ExitCode {
         (args.next(), args.next(), args.next())
     else {
         eprintln!(
-            "usage: kvm_arm64_control_server <Image-game> <initramfs-game.cpio.gz> \
+            "usage: kvm_arm64_control_server <Image> <initramfs.cpio.gz> \
              <socket> [max-sessions]"
         );
         return std::process::ExitCode::from(2);
@@ -35,7 +35,7 @@ fn main() -> std::process::ExitCode {
     };
     if args.next().is_some() {
         eprintln!(
-            "usage: kvm_arm64_control_server <Image-game> <initramfs-game.cpio.gz> \
+            "usage: kvm_arm64_control_server <Image> <initramfs.cpio.gz> \
              <socket> [max-sessions]"
         );
         return std::process::ExitCode::from(2);

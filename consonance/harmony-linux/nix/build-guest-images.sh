@@ -226,10 +226,10 @@ else
         (cd "$linux_dir" && ./test-harmony-serialization.sh)
     fi
     echo "== platform: build the park-enabled x86 test profile"
-    (cd "$linux_dir" && FAULTLAB=1 ./build-kernel.sh)
+    (cd "$linux_dir" && TASK_PARK_PROFILE=1 ./build-kernel.sh)
     stage=$work/stage
     mkdir -p "$stage/x86_64"
-    for name in bzImage bzImage-faultlab initramfs.cpio.gz initramfs-go-runtime.cpio.gz; do
+    for name in bzImage bzImage-task-park initramfs.cpio.gz initramfs-go-runtime.cpio.gz; do
         [ -f "$artifacts/x86_64/$name" ] || [ -f "$artifacts/$name" ] || {
             echo "FAIL: lock build did not produce x86_64/$name" >&2
             exit 1

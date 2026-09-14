@@ -100,7 +100,7 @@ fn boot(kernel: &[u8], initramfs: &[u8], label: &str) -> (NormalizedLog, [u8; 32
 #[ignore = "requires stock x86 KVM and Nix-built Go/kernel guest artifacts"]
 fn uninstrumented_go_repeats_on_production_kernels_and_rejects_traps_off() {
     let initramfs = artifact("initramfs-go-runtime.cpio.gz");
-    for profile in ["bzImage", "bzImage-faultlab"] {
+    for profile in ["bzImage", "bzImage-task-park"] {
         let kernel = artifact(profile);
         let (reference, digest) = boot(&kernel, &initramfs, profile);
         for repetition in 1..3 {

@@ -1,5 +1,5 @@
-# Reviewed raw-counter-read sites in the fault-library guest kernel, the
-# task-park build of the same series (FAULTLAB=1 ./build-kernel.sh);
+# Reviewed raw-counter-read sites in the task-park guest kernel
+# (TASK_PARK_PROFILE=1 ./build-kernel.sh);
 # the other kernels' baselines are rdtsc-allowlist.txt and
 # rdtsc-allowlist-gha.txt.
 # (The paravirtual clock interface reachability gate, x86 half — see
@@ -29,8 +29,8 @@
 # the kernel build on any drift, in either direction.
 #
 # BASELINE: captured from the pinned nix toolchain's build of linux-6.18.35
-# under the x86 harmony patch series 0001-0006 as the fault-library kernel
-# (x86-faultlab-config-fragment), reviewed against the extracted source. The
+# under the x86 harmony patch series 0001-0006 as the task-park kernel
+# (x86-task-park-config-fragment), reviewed against the extracted source. The
 # function set is rdtsc-allowlist-gha.txt's; the task park's poll at
 # system-call entry moves do_syscall_64's one reviewed read. The per-function
 # blocks below are the authority on which sites are reviewed.

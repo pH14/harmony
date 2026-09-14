@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Fault-library guest kernel: keep the pvclock and emulate ring-3 timestamp
+# Task-park guest kernel: keep the pvclock and emulate ring-3 timestamp
 # counter reads from its canonical virtual counter. Go's runtime reads RDTSC
 # constantly; the cooperative CR4.TSD/#GP path makes those reads deterministic
 # on stock KVM, where the host cannot surface the instruction as an exit.

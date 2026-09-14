@@ -16,7 +16,7 @@
 # the function-subset property against rdtsc-allowlist.txt before committing.
 # Last re-baseline: canonical HARMONY_PARK enables patch 0006's syscall
 # entry poll, shifting do_syscall_64's reviewed kstack-offset read from
-# +0x1bd to +0x1d1 (also captured in the fault-library baseline).
+# +0x1bd to +0x1d1 (also captured in the task-park baseline).
 # No function or opcode count was added or removed.
 # Selected by build-kernel.sh via HARMONY_RDTSC_ALLOWLIST (the x86-vtime
 # workflow sets it).

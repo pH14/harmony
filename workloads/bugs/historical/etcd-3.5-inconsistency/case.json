@@ -22,7 +22,7 @@
       "source_sha256": "f381557feaa42dfe7f40a5c295f95266b7de341f49e76a3119dfaec3d0a24e5e"
     }
   },
-  "kernel_profile": "faultlab",
+  "kernel_profile": "task-park",
   "oracle": {
     "assertion": 1,
     "evidence": 11,

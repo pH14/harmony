@@ -18,8 +18,8 @@ require_tools cc make flex bison bc xz gzip
 # Each profile variable names one published artifact and one reviewed
 # counter-opcode baseline, so a build that claimed both would publish a kernel
 # under a label that does not describe it.
-if [ -n "${N6_TRAPS_OFF:-}" ] && [ -n "${FAULTLAB:-}" ]; then
-    echo "FAIL: N6_TRAPS_OFF and FAULTLAB select different kernels; set one" >&2
+if [ -n "${N6_TRAPS_OFF:-}" ] && [ -n "${TASK_PARK_PROFILE:-}" ]; then
+    echo "FAIL: N6_TRAPS_OFF and TASK_PARK_PROFILE select different kernels; set one" >&2
     exit 1
 fi
 
@@ -48,7 +48,7 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 allnoconfig
     "$LINUX_DIR"/kata/x86_64/*.conf \
     "$LINUX_DIR/config-fragment" \
     ${N6_TRAPS_OFF:+"$LINUX_DIR/x86-n6-traps-off-config-fragment"} \
-    ${FAULTLAB:+"$LINUX_DIR/x86-faultlab-config-fragment"})
+    ${TASK_PARK_PROFILE:+"$LINUX_DIR/x86-task-park-config-fragment"})
 make -C "$KSRC" O="$KOBJ" ARCH=x86_64 olddefconfig
 
 # merge_config only warns when a fragment symbol cannot take effect; assert the ones
@@ -89,7 +89,7 @@ if [ -n "${N6_TRAPS_OFF:-}" ]; then
 else
     assert_y HARMONY_USER_COUNTER_TRAPS
 fi
-if [ -n "${FAULTLAB:-}" ]; then
+if [ -n "${TASK_PARK_PROFILE:-}" ]; then
     assert_y SMP HARMONY_PARK HAVE_HW_BREAKPOINT
 fi
 # (HPET_TIMER is not in this list: it is def_bool y on x86-64 with no prompt;
@@ -139,15 +139,15 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 echo "== kernel: counter-opcode scan (rdtsc/rdtscp + rdrand/rdseed reachability gate)"
 rdtsc_allowlist=${HARMONY_RDTSC_ALLOWLIST:-$LINUX_DIR/rdtsc-allowlist.txt}
 rdrand_allowlist=${HARMONY_RDRAND_ALLOWLIST:-$LINUX_DIR/rdrand-allowlist.txt}
-# The fault-library kernel carries the task park's system-call poll, so its
+# The task-park profile carries the system-call poll, so its
 # counter-read sites sit at other offsets than the other kernels' and it
 # carries its own reviewed baseline. That baseline belongs to the profile, so it wins over an
 # environment selection, which names a list captured from another
 # configuration and would scan this kernel against the wrong function set.
-if [ -n "${FAULTLAB:-}" ]; then
-    rdtsc_allowlist=$LINUX_DIR/rdtsc-allowlist-faultlab.txt
-    rdrand_allowlist=$LINUX_DIR/rdrand-allowlist-faultlab.txt
-    echo "== kernel: fault-library profile scans against its own baseline"
+if [ -n "${TASK_PARK_PROFILE:-}" ]; then
+    rdtsc_allowlist=$LINUX_DIR/rdtsc-allowlist-task-park.txt
+    rdrand_allowlist=$LINUX_DIR/rdrand-allowlist-task-park.txt
+    echo "== kernel: task-park profile scans against its own baseline"
 fi
 bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" \
     "$rdtsc_allowlist" "$rdrand_allowlist"
@@ -156,8 +156,8 @@ bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" \
 kernel_output=bzImage
 if [ -n "${N6_TRAPS_OFF:-}" ]; then
     kernel_output=bzImage-n6-traps-off
-elif [ -n "${FAULTLAB:-}" ]; then
-    kernel_output=bzImage-faultlab
+elif [ -n "${TASK_PARK_PROFILE:-}" ]; then
+    kernel_output=bzImage-task-park
 fi
 mkdir -p "$ART_DIR/x86_64"
 install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/$kernel_output"

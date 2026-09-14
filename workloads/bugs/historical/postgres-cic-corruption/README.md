@@ -114,11 +114,11 @@ table), `faultlab.churn_slices` (default 2 transactions per cycle) and
 `faultlab.churn_rounds` (default 1200 cycles) shape the churn. The hooks read
 them from `/proc/cmdline`, so `--knobs` varies them without a rebuild.
 
-The guest kernel is the `faultlab` profile of `nix run .#guest-images`, which
-lands beside the default kernel as `x86_64/bzImage-faultlab`. Both production
+The guest kernel is the task-park profile of `nix run .#guest-images`, which
+lands beside the default kernel as `x86_64/bzImage-task-park`. Both production
 profiles serve glibc's and PostgreSQL's userspace `RDTSC`/`RDTSCP` reads from
-Harmony's virtual clock; the fault-library profile additionally carries the
-task-park fault. The same build writes
+Harmony's virtual clock; the task-park profile additionally carries the
+process-control capability used by the fault package. The same build writes
 `x86_64/initramfs.cpio.gz`, the package-neutral base image `--base-initramfs`
 names; canonical OCI preparation supplies the workload rootfs and platform
 supervisor bundle to the guest.
@@ -157,7 +157,7 @@ on a differently built guest kernel under the counter-exiting KVM. A schedule
 found on one build is diagnostic history; the panel requires a fresh finding
 and replay on the current build.
 
-Hosted runners use stock KVM. The `faultlab` kernel emulates userspace counter
+Hosted runners use stock KVM. The task-park kernel emulates userspace counter
 reads from Harmony's virtual clock there, so a host timestamp cannot enter
 guest memory through `RDTSC` or `RDTSCP`. The historical-bug oracle remains the
 criterion for the defect itself: it trips on 14.3, runs and passes on 14.4, and

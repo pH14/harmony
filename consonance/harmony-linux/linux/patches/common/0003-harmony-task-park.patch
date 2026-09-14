@@ -203,7 +203,11 @@ The per-thread instruction breakpoint is architecture-native.
 +	harmony_park_unregister(park);
 +
 +	park->parked_ns = ktime_get_ns();
-+	park->deadline_ns = park->parked_ns + park->hold_ns;
++	if (park->parked_ns >= (u64)KTIME_MAX ||
++	    park->hold_ns > (u64)KTIME_MAX - park->parked_ns)
++		park->deadline_ns = (u64)KTIME_MAX;
++	else
++		park->deadline_ns = park->parked_ns + park->hold_ns;
 +	park->sleeper = current;
 +	deadline = ns_to_ktime(park->deadline_ns);
 +

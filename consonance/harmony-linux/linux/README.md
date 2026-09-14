@@ -72,7 +72,7 @@ make -C consonance/harmony-linux/linux exec-image
 make -C consonance/harmony-linux/linux go-runtime-image
 ```
 
-The x86 kernel's default, traps-off, and faultlab outputs are separate test
+The x86 kernel's default, traps-off, and task-park outputs are separate test
 artifacts with their own instruction audit baselines. The arm64 traps-off
 output is likewise a deliberate negative control. These controls do not alter
 the standard OCI runtime configuration.

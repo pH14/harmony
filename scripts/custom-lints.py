@@ -26,6 +26,7 @@ from typing import Callable, Sequence
 
 # Game titles and ROM identifiers.
 GAME_NAMES = [
+    r"nes",
     r"mario",
     r"super\s+mario\s+bros",
     r"smb",
@@ -52,6 +53,8 @@ SYSTEM_NAMES = [
     r"cockroach(?:db)?",
     r"foundationdb",
     r"k3s",
+    r"faultlab",
+    r"fault[-_ ]library",
 ]
 
 WORKLOAD_NAMES = GAME_NAMES + EMULATOR_NAMES + SYSTEM_NAMES
@@ -423,7 +426,7 @@ def check_numbered_names(repo_root: Path, files: list[str]) -> list[Violation]:
 
 MISPLACED_WORKLOAD_FILE_RE = re.compile(
     r"(?:^|[-_/])"
-    r"(?:game|nes|nova|smb|mario|metroid|tetanes|tetris|postgres|etcd|cockroach|k3s|docker)"
+    r"(?:game|nes|nova|smb|mario|metroid|tetanes|tetris|postgres|etcd|cockroach|k3s|docker|faultlab|fault[-_]library)"
     r"(?:[-_./]|$)",
     re.IGNORECASE,
 )

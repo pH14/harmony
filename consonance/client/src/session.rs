@@ -970,8 +970,8 @@ mod tests {
     #[test]
     fn session_config_identity_tag_changes_domain_without_dropping_image_bytes() {
         let default = SessionConfig::default();
-        let tagged = default.clone().with_identity_tag("nes");
-        assert_eq!(tagged.identity_tag, "nes");
+        let tagged = default.clone().with_identity_tag("subject-a");
+        assert_eq!(tagged.identity_tag, "subject-a");
         assert_ne!(
             identity_with_config(b"kernel", b"initramfs", &default),
             identity_with_config(b"kernel", b"initramfs", &tagged)

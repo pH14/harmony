@@ -238,13 +238,15 @@ fn build_control_segment_validated(
     for input in external_inputs {
         let relative = Path::new(&input.relative);
         let mut prefix = PathBuf::new();
-        for component in relative.components() {
-            let Component::Normal(part) = component else {
-                continue;
-            };
-            prefix.push(part);
-            if directories.insert(prefix.clone()) {
-                writer.dir(&format!("harmony-oci/external/{}", prefix.display()), 0o755);
+        if let Some(parent) = relative.parent() {
+            for component in parent.components() {
+                let Component::Normal(part) = component else {
+                    continue;
+                };
+                prefix.push(part);
+                if directories.insert(prefix.clone()) {
+                    writer.dir(&format!("harmony-oci/external/{}", prefix.display()), 0o755);
+                }
             }
         }
         writer.file(
@@ -635,6 +637,32 @@ mod tests {
         output.stdout
     }
 
+    fn cpio_entries(segment: &[u8]) -> Vec<(String, u32)> {
+        let bytes = unpack(segment);
+        let mut entries = Vec::new();
+        let mut at = 0;
+        loop {
+            let field = |i: usize| {
+                let text =
+                    std::str::from_utf8(&bytes[at + 6 + 8 * i..at + 6 + 8 * (i + 1)]).unwrap();
+                u32::from_str_radix(text, 16).unwrap()
+            };
+            assert_eq!(&bytes[at..at + 6], b"070701");
+            let (mode, filesize, namesize) = (field(1), field(6), field(11));
+            let name_at = at + 110;
+            let name = std::str::from_utf8(&bytes[name_at..name_at + namesize as usize - 1])
+                .unwrap()
+                .to_string();
+            entries.push((name.clone(), mode));
+            if name == "TRAILER!!!" {
+                break;
+            }
+            let data_at = (name_at + namesize as usize).next_multiple_of(4);
+            at = (data_at + filesize as usize).next_multiple_of(4);
+        }
+        entries
+    }
+
     #[test]
     fn launch_resolves_image_argv_environment_cwd_and_credentials() {
         let prepared = prepare(&image(), &LaunchRequest::new(Vec::new())).unwrap();
@@ -708,6 +736,27 @@ mod tests {
         let text = String::from_utf8(unpack(&segment)).unwrap();
         assert!(text.find("external/a/file").unwrap() < text.find("external/z/file").unwrap());
         assert!(text.contains("\"ro\""));
+    }
+
+    #[test]
+    fn root_level_external_input_is_emitted_only_as_a_file() {
+        let spec = execution();
+        let segment =
+            build_control_segment(&spec, &[ExternalInput::new("/program.bin", b"program")])
+                .unwrap();
+        let entries = cpio_entries(&segment);
+        let external_entry = entries
+            .iter()
+            .find(|(name, _)| name == "harmony-oci/external/program.bin")
+            .unwrap();
+        assert_eq!(external_entry.1 & 0o170000, 0o100000);
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|(name, _)| name == "harmony-oci/external/program.bin")
+                .count(),
+            1
+        );
     }
 
     #[test]

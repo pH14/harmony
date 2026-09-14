@@ -43,6 +43,16 @@ class PlatformBoundaryLintTests(unittest.TestCase):
         self.assertFalse(rules["guest-linux-no-workload-names"].applies("workloads/example/init.sh"))
         self.assertFalse(rules["consonance-no-workload-names"].applies("consonance-extra/example.rs"))
 
+    def test_fault_package_names_are_workload_specific(self) -> None:
+        self.assertIsNotNone(LINTS.WORKLOAD_NAME_RE.search("nes"))
+        self.assertIsNotNone(LINTS.WORKLOAD_NAME_RE.search("faultlab"))
+        self.assertIsNotNone(LINTS.WORKLOAD_NAME_RE.search("fault-library"))
+        for path in (
+            "consonance/harmony-linux/faultlab-init.sh",
+            "consonance/harmony-linux/fault-library-config",
+        ):
+            self.assertIsNotNone(LINTS.MISPLACED_WORKLOAD_FILE_RE.search(path))
+
 
 class WorkflowTimeoutLintTests(unittest.TestCase):
     def check(self, content: str) -> list[LINTS.Violation]:
