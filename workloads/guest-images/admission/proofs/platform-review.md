@@ -1,29 +1,35 @@
-# Final standard-platform CPIO candidate review
+# Proposed published-platform refresh, fef80533
 
-Archive SHA256: `44e520bf7db067310d49362a566da2cf36ead6df9867b1ee92cc948ed16849b0`.
-Source archive SHA256: `6ace7267bd480d535d908c06571c5322625b1744ca46072841190dc352d7eee1`,
-retained under the b51ebb8d lab build. See source-manifest.txt and both build
-manifests. Kernel SHA256: `7ce25244cf1d138db1286ce61fb1c880bd224b2866ffaebd1ec19d04b2ad69b6`.
-This is the standard-platform candidate; the full builder/task-park qualification
-was still pending the header-directory fix when reviewed. No approval is inferred
-from the standard kernel/OCI gate.
+Pending primary acceptance. Published run34865561695 artifact archive SHA256
+`733555f781a62f5a2e4d37ae9297efe1c1a347c395586e2cc24b1e38ddf353e3`; rootfs digest `1a757c74f9cf2d930387f928511f1186742febe0639e17414f2b79c52316b532`. Kernel remains
+`7ce25244cf1d138db1286ce61fb1c880bd224b2866ffaebd1ec19d04b2ad69b6`.
+The source-bound runtime manifest verifies exact-input for source key
+`8e6c72124f57bd02490811e18c80f806326de525e1388c2ad25edb7d9f942683`.
+The bridge binds the payload and Nix artifacts to that source, with
+nightly-2026-06-16, target x86_64-unknown-linux-musl.
 
-The exact archive contains60entries, three ELF files and char devices
-/dev/console5:1, /dev/kmsg1:11, /dev/null1:3. Devices were parsed as metadata,
-never created/opened on the host. Kernel gen_init_cpio terminates symlink bodies
-with NUL; the adapter now accepts one optional finalNUL, rejects embeddedNUL,
-and binds raw target bytes. All32 GNU tests pass after this format fix.
+The parsed archive differs from the prior review only in supervisor file
+size/hash:879856→879848 bytes, `f5dd3b5dcf3f3fcf19ae1fa2c92eefe981a32ab65dd2195d210425a7b3fa5458`. All other
+entries, permissions, ownership, devices, scripts and symlinks are unchanged.
+BusyBox and runc retain exact prior hashes and region/selector proofs.
+The3-ELF scan adds no save instruction, dependency, WX segment, executable
+stack, or text relocation. Supervisor's only relevant site remains XGETBV0.
 
-| ELF | SHA256 | Remaining instruction proof |
-|---|---|---|
-| /bin/busybox | `ed276986a91b1c13f6da78900446dfa4311e841d87d8f770ae3ca10b18767b70` | Two exact XSAVE/XSAVEC resolver regions plus ECX0 and final startup-binding scope |
-| /usr/bin/runc | `ce6353a8273004c5f917277846dd521c7185b653ca46cfe538cc16b1be254cc9` | One ECX0 XGETBV control-flow proof; no save-region exception |
-| /usr/lib/harmony/supervisor | `e0ef13ac2e0d37cf0779fc55bb3a6b173e5004d4f27ca6fc5b90b4d9f2488cca` | One ECX0 XGETBV control-flow proof; no save-region exception |
+Supervisor .text address/size and decoded instruction boundaries are unchanged.
+Of128390 decoded instructions,4527 have changed bytes; every change is a
+same-mnemonic RIP-relative memory operand. Direct control-transfer bytes are
+unchanged. Diagnostic dependency paths change /root/.cargo to
+/home/runner/.cargo, .rodata grows64 bytes, and linker symbols/relocations
+change correspondingly. This is not a claim of bit-identical .text.
+No supervisor/runtime/local-dependency source diff exists from b51ebb8d to
+fef80533. Compiler comments match rustc1.98.0-nightly01dfd7924(2026-06-15).
+The exact ECX0 wrapper is separately established by platform-selectors.md.
 
-All three have no PT_INTERP/NEEDED, text relocations, executable stack, or W+X
-PT_LOAD segments. The candidate remains admitted=false. Actual finalarchive
-metadata, source/build identity and per-ELF instruction sequences are retained
-in final-standard-platform.json and adjacent manifests.
+Raw publisher provenance and bounded machine/source evidence are in
+platform-publisher-fef80533/. Their file hashes are retained in SHA256SUMS.
+This refresh remains a proposal until explicit primary acceptance; prior
+approved history should remain in Git. No general runtime immutability or
+arbitrary-code admission is claimed.
 
 ## Fresh BusyBox resolver review
 

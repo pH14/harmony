@@ -1,0 +1,46 @@
+{
+  "/usr/lib/harmony/supervisor": {
+    "old": {
+      "path": "/usr/lib/harmony/supervisor",
+      "kind": "file",
+      "mode": 493,
+      "uid": 0,
+      "gid": 0,
+      "inode": 742,
+      "nlink": 1,
+      "mtime": 0,
+      "archive_device": [
+        3,
+        1
+      ],
+      "rdev": [
+        0,
+        0
+      ],
+      "xattrs": {},
+      "size": 879856,
+      "sha256": "e0ef13ac2e0d37cf0779fc55bb3a6b173e5004d4f27ca6fc5b90b4d9f2488cca"
+    },
+    "new": {
+      "path": "/usr/lib/harmony/supervisor",
+      "kind": "file",
+      "mode": 493,
+      "uid": 0,
+      "gid": 0,
+      "inode": 742,
+      "nlink": 1,
+      "mtime": 0,
+      "archive_device": [
+        3,
+        1
+      ],
+      "rdev": [
+        0,
+        0
+      ],
+      "xattrs": {},
+      "size": 879848,
+      "sha256": "f5dd3b5dcf3f3fcf19ae1fa2c92eefe981a32ab65dd2195d210425a7b3fa5458"
+    }
+  }
+}

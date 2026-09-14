@@ -13,16 +13,16 @@
     {
       "file": "platform.cpio.gz",
       "offset": 0,
-      "size": 7384824
+      "size": 7384254
     },
     {
       "file": "rootfs.cpio.gz",
-      "offset": 7384824,
+      "offset": 7384254,
       "size": 42154759
     },
     {
       "file": "control.cpio.gz",
-      "offset": 49539583,
+      "offset": 49539013,
       "size": 962
     }
   ],
@@ -30,8 +30,8 @@
   "external_inputs": {},
   "files": {
     "composed-initramfs.bin": {
-      "sha256": "fa0a6c5e6de4fa7f6b32deb343c79450eee6027ebb368d3c8fa612dc28c612c1",
-      "size": 49540545
+      "sha256": "bbeaa97f060f443fe40aa128365d4c5d27e17f9218b95b560bba87b6db8b69de",
+      "size": 49539975
     },
     "control.cpio.gz": {
       "sha256": "ceb8c23e9e3d1c93e65be304022f1a5671486c6cb9dc705ad0c422f5c1da393b",
@@ -54,8 +54,8 @@
       "size": 10552320
     },
     "platform.cpio.gz": {
-      "sha256": "44e520bf7db067310d49362a566da2cf36ead6df9867b1ee92cc948ed16849b0",
-      "size": 7384824
+      "sha256": "733555f781a62f5a2e4d37ae9297efe1c1a347c395586e2cc24b1e38ddf353e3",
+      "size": 7384254
     },
     "rootfs.cpio.gz": {
       "sha256": "3e981dd950e1f8c7dd24c445057abf7339d3e4de929f497c96935d3c03ed6715",

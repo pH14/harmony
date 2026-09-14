@@ -1,0 +1,11 @@
+{
+  "architecture": "x86_64",
+  "files": {
+    "harmony-supervisor": "f5dd3b5dcf3f3fcf19ae1fa2c92eefe981a32ab65dd2195d210425a7b3fa5458",
+    "init.sh": "881a872e7c3509804ad229863f244d7cab27758a96da6848e9e5a1162042da7d"
+  },
+  "source_digest": "8e6c72124f57bd02490811e18c80f806326de525e1388c2ad25edb7d9f942683",
+  "target": "x86_64-unknown-linux-musl",
+  "toolchain": "nightly-2026-06-16",
+  "version": 1
+}

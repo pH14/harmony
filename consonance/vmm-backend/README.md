@@ -288,3 +288,11 @@ sets nonzero YMM upper lanes with zero XMM lanes, loads MXCSR=0x3f80, and stops
 at completed port I/O before capture. Both continued and cold-restored STMXCSR
 results must equal 0x3f80. The observed raw presence bitmap is retained rather
 than asserted to exclude SSE on every host.
+
+The imported-case observation is consistent with a compacted host restore:
+[Intel SDM volume 1, sections 13.8.2, 13.11 and 13.12](https://cdrdv2-public.intel.com/868137/325462-089-sdm-vol-1-2abcd-3abcd-4.pdf)
+specifies that compacted restore initializes MXCSR when SSE presence is clear.
+Compacted save includes SSE presence for nondefault MXCSR. On ms02, host boot
+metadata confirms compacted FPU format; the natural test reports presence 6.
+The imported presence-4 case therefore does not establish naturally occurring
+register-value corruption. The precise host restore instruction was not traced.

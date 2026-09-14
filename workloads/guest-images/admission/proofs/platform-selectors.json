@@ -4,11 +4,11 @@
     "sites": [
       {
         "address": 4663138,
+        "adjacent_ecx_zero": false,
         "bytes": "0f01d0",
         "mnemonic": "xgetbv",
         "operands": "",
-        "adjacent_ecx_zero": false,
-        "straightline_ecx_zero": true,
+        "requires_reviewed_control_flow_proof": true,
         "selector_proof_instructions": [
           {
             "address": 4663111,
@@ -47,7 +47,7 @@
             "operands": "%eax,0xe90ee(%rip)        # 0x55b850"
           }
         ],
-        "requires_reviewed_control_flow_proof": true
+        "straightline_ecx_zero": true
       }
     ]
   },
@@ -56,11 +56,11 @@
     "sites": [
       {
         "address": 4217061,
+        "adjacent_ecx_zero": true,
         "bytes": "0f01d0",
         "mnemonic": "xgetbv",
         "operands": "",
-        "adjacent_ecx_zero": true,
-        "straightline_ecx_zero": true,
+        "requires_reviewed_control_flow_proof": true,
         "selector_proof_instructions": [
           {
             "address": 4217056,
@@ -69,20 +69,20 @@
             "operands": "$0x0,%ecx"
           }
         ],
-        "requires_reviewed_control_flow_proof": true
+        "straightline_ecx_zero": true
       }
     ]
   },
   "/usr/lib/harmony/supervisor": {
-    "sha256": "e0ef13ac2e0d37cf0779fc55bb3a6b173e5004d4f27ca6fc5b90b4d9f2488cca",
+    "sha256": "f5dd3b5dcf3f3fcf19ae1fa2c92eefe981a32ab65dd2195d210425a7b3fa5458",
     "sites": [
       {
         "address": 404642,
+        "adjacent_ecx_zero": true,
         "bytes": "0f01d0",
         "mnemonic": "xgetbv",
         "operands": "",
-        "adjacent_ecx_zero": true,
-        "straightline_ecx_zero": true,
+        "requires_reviewed_control_flow_proof": true,
         "selector_proof_instructions": [
           {
             "address": 404640,
@@ -91,7 +91,7 @@
             "operands": "%ecx,%ecx"
           }
         ],
-        "requires_reviewed_control_flow_proof": true
+        "straightline_ecx_zero": true
       }
     ]
   }

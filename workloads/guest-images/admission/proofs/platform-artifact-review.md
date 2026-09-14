@@ -9,3 +9,7 @@ the separate selector review. Artifacts without relevant instructions need no
 instruction exception. Entire file/owner/mode/symlink tree is bound; this is not
 an approval of future hashes. Trusted no-generated-code/no-code-mutation and
 normal ABI loading assumptions remain explicit scope obligations.
+
+Published supervisor refresh is proposed for exact digest `f5dd3b5dcf3f3fcf19ae1fa2c92eefe981a32ab65dd2195d210425a7b3fa5458`.
+See platform-review.md and platform-publisher-fef80533/ for source-bound
+archive and instruction deltas; unchanged BusyBox/runc proofs are retained.
