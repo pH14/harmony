@@ -321,6 +321,7 @@ dependencies = [
  "environment",
  "fault-policy",
  "oci-support",
+ "process-proto",
  "searcher",
  "serde",
  "serde_json",

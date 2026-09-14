@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use control_proto::StopReason;
 use fault_policy::{DecisionClass, Fault, HostFault, Span, StandingWindow, process_target};
+use process_proto::registers as reg;
 use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
 
@@ -11,33 +12,6 @@ pub const DEFAULT_HORIZON_NANOS: u64 = 500_000_000;
 pub const SUPERVISOR_TICK_NANOS: u64 = 10_000_000;
 const RESTART_DOWN_DIVISOR: u64 = 4;
 pub const MAX_FAULT_ACTIONS: usize = 256;
-
-pub mod reg {
-    pub const TICKS: u32 = 1;
-    pub const ALIVE: u32 = 2;
-    pub const HOOKS_STARTED: u32 = 3;
-    pub const HOOKS_FINISHED: u32 = 4;
-    pub const SOMETIMES: u32 = 5;
-    pub const UNEXPECTED_DEATHS: u32 = 6;
-    pub const RESTARTS: u32 = 7;
-    pub const PARKED: u32 = 8;
-    pub const EVENT_KILL_FIRES: u32 = 9;
-    pub const EVENT_KILL_SITE: u32 = 10;
-    pub const EVENT_PARK_FIRES: u32 = 11;
-    pub const WORKLOAD_STARTED: u32 = 12;
-    pub const WORKLOAD_FINISHED: u32 = 13;
-    pub const CHECKS_STARTED: u32 = 14;
-    pub const CHECKS_FINISHED: u32 = 15;
-    pub const INFRASTRUCTURE_ERROR: u32 = 16;
-    pub const EVENT_READY: u32 = 17;
-    pub const DISTURBANCE_GENERATION: u32 = 18;
-    pub const CHECK_ENABLED: u32 = 19;
-    pub const COMPLETED_CHECK_RUN: u32 = 20;
-    pub const COMPLETED_CHECK_START_GENERATION: u32 = 21;
-    pub const COMPLETED_CHECK_END_GENERATION: u32 = 22;
-    pub const COMPLETED_CHECK_POINTS: u32 = 23;
-    pub const PENDING_FAULTS: u32 = 24;
-}
 
 const NS_SHIFT: u32 = 24;
 const NS_ASSERT: u8 = 1;

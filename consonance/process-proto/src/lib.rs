@@ -4,6 +4,34 @@ use core::fmt;
 
 pub mod events;
 
+pub mod registers {
+    pub const SUPERVISOR_REGISTER_BASE: u32 = 0x00ff_f000;
+    pub const TICKS: u32 = SUPERVISOR_REGISTER_BASE;
+    pub const ALIVE: u32 = SUPERVISOR_REGISTER_BASE + 1;
+    pub const HOOKS_STARTED: u32 = SUPERVISOR_REGISTER_BASE + 2;
+    pub const HOOKS_FINISHED: u32 = SUPERVISOR_REGISTER_BASE + 3;
+    pub const SOMETIMES: u32 = SUPERVISOR_REGISTER_BASE + 4;
+    pub const UNEXPECTED_DEATHS: u32 = SUPERVISOR_REGISTER_BASE + 5;
+    pub const RESTARTS: u32 = SUPERVISOR_REGISTER_BASE + 6;
+    pub const PARKED: u32 = SUPERVISOR_REGISTER_BASE + 7;
+    pub const EVENT_KILL_FIRES: u32 = SUPERVISOR_REGISTER_BASE + 8;
+    pub const EVENT_KILL_SITE: u32 = SUPERVISOR_REGISTER_BASE + 9;
+    pub const EVENT_PARK_FIRES: u32 = SUPERVISOR_REGISTER_BASE + 10;
+    pub const WORKLOAD_STARTED: u32 = SUPERVISOR_REGISTER_BASE + 11;
+    pub const WORKLOAD_FINISHED: u32 = SUPERVISOR_REGISTER_BASE + 12;
+    pub const CHECKS_STARTED: u32 = SUPERVISOR_REGISTER_BASE + 13;
+    pub const CHECKS_FINISHED: u32 = SUPERVISOR_REGISTER_BASE + 14;
+    pub const INFRASTRUCTURE_ERROR: u32 = SUPERVISOR_REGISTER_BASE + 15;
+    pub const EVENT_READY: u32 = SUPERVISOR_REGISTER_BASE + 16;
+    pub const DISTURBANCE_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 17;
+    pub const CHECK_ENABLED: u32 = SUPERVISOR_REGISTER_BASE + 18;
+    pub const COMPLETED_CHECK_RUN: u32 = SUPERVISOR_REGISTER_BASE + 19;
+    pub const COMPLETED_CHECK_START_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 20;
+    pub const COMPLETED_CHECK_END_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 21;
+    pub const COMPLETED_CHECK_POINTS: u32 = SUPERVISOR_REGISTER_BASE + 22;
+    pub const PENDING_FAULTS: u32 = SUPERVISOR_REGISTER_BASE + 23;
+}
+
 pub const PROCESS_CLASS: u16 = 6;
 pub const CLASS_PROCESS: u16 = PROCESS_CLASS;
 pub const STANDING_NAMESPACE: u16 = 9;
@@ -365,6 +393,41 @@ mod tests {
                 hold_nanos: 2_000_000,
             },
         ]
+    }
+
+    #[test]
+    fn lifecycle_register_block_is_pinned() {
+        use registers::*;
+
+        assert_eq!(
+            [
+                TICKS,
+                ALIVE,
+                HOOKS_STARTED,
+                HOOKS_FINISHED,
+                SOMETIMES,
+                UNEXPECTED_DEATHS,
+                RESTARTS,
+                PARKED,
+                EVENT_KILL_FIRES,
+                EVENT_KILL_SITE,
+                EVENT_PARK_FIRES,
+                WORKLOAD_STARTED,
+                WORKLOAD_FINISHED,
+                CHECKS_STARTED,
+                CHECKS_FINISHED,
+                INFRASTRUCTURE_ERROR,
+                EVENT_READY,
+                DISTURBANCE_GENERATION,
+                CHECK_ENABLED,
+                COMPLETED_CHECK_RUN,
+                COMPLETED_CHECK_START_GENERATION,
+                COMPLETED_CHECK_END_GENERATION,
+                COMPLETED_CHECK_POINTS,
+                PENDING_FAULTS,
+            ],
+            core::array::from_fn(|offset| SUPERVISOR_REGISTER_BASE + offset as u32)
+        );
     }
 
     #[test]

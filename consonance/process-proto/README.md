@@ -12,6 +12,11 @@ the supervisor and an optional instrumented process runtime. It validates the
 shared 0 through 63 rarity width, exact command acknowledgements, runtime hello,
 kill provenance, and event-park status without naming a workload policy.
 
+The `registers` module owns the reserved lifecycle-register IDs published by
+the platform supervisor and decoded by workload policy. Keeping these IDs with
+the process wire contract prevents platform and workload views of lifecycle
+progress from drifting apart.
+
 Workload policy crates translate their semantic fault enums to
 `ProcessAction`; the platform supervisor consumes the generic action and window
 types. Invalid targets are ignored when filtering a standing response so an
