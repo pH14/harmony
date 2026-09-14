@@ -3,6 +3,8 @@
 """Inventory controlled x86 rootfs inputs; verify only explicitly reviewed baselines."""
 
 import argparse
+import gzip
+import io
 import hashlib
 import json
 import os
@@ -241,7 +243,7 @@ def disassemble(data, segments, objdump):
     return sites
 
 
-def inventory(root, objdump="objdump"):
+def inventory(root, objdump="objdump", archive_manifest=None):
     root = root.resolve(strict=True)
     if not root.is_dir():
         raise Rejected("rootfs must be a directory")
@@ -293,6 +295,8 @@ def inventory(root, objdump="objdump"):
             files.append(item)
 
     walk(root)
+    if archive_manifest is not None:
+        files = archive_manifest
     sonames = {}
     for name, record in artifacts.items():
         soname = record["soname"]
@@ -354,6 +358,111 @@ def inventory(root, objdump="objdump"):
     }, contents
 
 
+def parse_newc(data):
+    """Parse one newc archive; device entries stay inert metadata."""
+    position, entries, names = 0, [], set()
+    while True:
+        header = span(data, position, 110)
+        if header[:6] != b"070701":
+            raise Rejected("require uncompressed newc (070701) records")
+        if not re.fullmatch(b"[0-9a-fA-F]{104}", header[6:]):
+            raise Rejected("invalid newc hexadecimal header")
+        fields = [int(header[6 + i * 8:14 + i * 8], 16) for i in range(13)]
+        ino, mode, uid, gid, nlink, mtime, size, devmajor, devminor, rmajor, rminor, namesize, checksum = fields
+        if checksum or not 1 <= namesize <= 4096 or size > MAX_FILE:
+            raise Rejected("unsupported newc checksum/name/content size")
+        position += 110
+        rawname = span(data, position, namesize)
+        if not rawname.endswith(b"\0") or b"\0" in rawname[:-1]:
+            raise Rejected("invalid newc name")
+        name = rawname[:-1].decode("utf-8")
+        position += namesize
+        padding = (-position) % 4
+        if any(span(data, position, padding)):
+            raise Rejected("nonzero newc name padding")
+        position += padding
+        content = span(data, position, size)
+        position += size
+        padding = (-position) % 4
+        if any(span(data, position, padding)):
+            raise Rejected("nonzero newc content padding")
+        position += padding
+        if name == "TRAILER!!!":
+            if size or any(data[position:]):
+                raise Rejected("newc trailer content or concatenated/trailing archive")
+            return entries
+        if not name or name.startswith("/") or ".." in name.split("/"):
+            raise Rejected("absolute/traversing newc path")
+        normalized = guest_path("/" + name)
+        if normalized in names:
+            raise Rejected(f"duplicate newc path: {normalized}")
+        names.add(normalized)
+        if len(names) > 100000:
+            raise Rejected("newc entry count exceeded")
+        kind = stat.S_IFMT(mode)
+        kinds = {stat.S_IFREG: "file", stat.S_IFDIR: "directory", stat.S_IFLNK: "symlink",
+                 stat.S_IFCHR: "char-device", stat.S_IFBLK: "block-device"}
+        if kind not in kinds or mode & ~0xFFFF or nlink == 0:
+            raise Rejected(f"unsupported newc entry type/mode/link count: {normalized}")
+        if kind != stat.S_IFDIR and nlink != 1:
+            raise Rejected(f"newc hardlinks are unsupported: {normalized}")
+        if kind not in (stat.S_IFREG, stat.S_IFLNK) and size:
+            raise Rejected(f"newc metadata entry has content: {normalized}")
+        if kind not in (stat.S_IFCHR, stat.S_IFBLK) and (rmajor or rminor):
+            raise Rejected(f"newc non-device has device number: {normalized}")
+        if normalized == "/" and kind != stat.S_IFDIR:
+            raise Rejected("newc root must be a directory")
+        item = {"path": normalized, "kind": kinds[kind], "mode": stat.S_IMODE(mode),
+                "uid": uid, "gid": gid, "inode": ino, "nlink": nlink, "mtime": mtime,
+                "archive_device": [devmajor, devminor], "rdev": [rmajor, rminor], "xattrs": {}}
+        if kind == stat.S_IFREG:
+            item.update(size=size, sha256=digest(content))
+        elif kind == stat.S_IFLNK:
+            target = content.decode("utf-8")
+            if not target or "\0" in target:
+                raise Rejected("invalid newc symlink target")
+            item["target"] = target
+        entries.append((item, content))
+
+
+def inventory_initramfs(path, objdump="objdump"):
+    compressed = bounded_read(path)
+    if compressed.startswith(b"\x1f\x8b"):
+        with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream:
+            data = stream.read(MAX_TREE + 1)
+    else:
+        data = compressed
+    if len(data) > MAX_TREE:
+        raise Rejected("uncompressed initramfs byte limit exceeded")
+    entries = parse_newc(data)
+    manifest = sorted([item for item, _ in entries], key=lambda item: item["path"])
+    types = {item["path"]: item["kind"] for item in manifest}
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        for item in manifest:
+            parent = Path(item["path"]).parent
+            while str(parent) != "/":
+                if types.get(str(parent)) != "directory":
+                    raise Rejected(f"newc parent absent or not a directory: {item['path']}")
+                parent = parent.parent
+        for item in manifest:
+            if item["kind"] == "directory":
+                (root / item["path"].lstrip("/")).mkdir(parents=True, exist_ok=True)
+        for item, content in entries:
+            host = root / item["path"].lstrip("/")
+            if item["kind"] == "file":
+                host.write_bytes(content)
+            elif item["kind"] == "symlink":
+                host.symlink_to(item["target"])
+        report, contents = inventory(root, objdump, archive_manifest=manifest)
+    report["files"] = manifest
+    report["rootfs_sha256"] = digest(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode())
+    report["archive_sha256"] = digest(compressed)
+    report["archive_format"] = "gzip-newc" if compressed.startswith(b"\x1f\x8b") else "newc"
+    report["limitations"].append("CPIO device entries are metadata only; no host device nodes are created. Hardlinks, CRC records, concatenated archives and special types other than char/block devices are unsupported.")
+    return report, contents
+
+
 def evidence(reference, baseline_dir):
     if not isinstance(reference, dict) or set(reference) != {"file", "sha256"}:
         raise Rejected("proof requires file and sha256")
@@ -378,6 +487,8 @@ def verify(report, contents, baseline, baseline_dir):
         if baseline.get("scope") != SCOPE:
             raise Rejected("baseline must record all controlled-scope obligations")
         evidence(baseline.get("scope_evidence"), baseline_dir)
+        if baseline.get("archive_sha256") != report.get("archive_sha256"):
+            raise Rejected("initramfs archive digest differs from reviewed baseline")
         if baseline.get("rootfs_sha256") != report["rootfs_sha256"]:
             raise Rejected("rootfs digest differs from reviewed baseline")
         approved = baseline.get("artifacts")
@@ -447,7 +558,7 @@ def verify(report, contents, baseline, baseline_dir):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("inventory", "verify"))
+    parser.add_argument("mode", choices=("inventory", "verify", "inventory-initramfs", "verify-initramfs"))
     parser.add_argument("rootfs", type=Path)
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--output", type=Path, required=True)
@@ -456,14 +567,15 @@ def main():
     try:
         if args.output.resolve().is_relative_to(args.rootfs.resolve()):
             raise Rejected("report must be outside the scanned rootfs")
-        report, contents = inventory(args.rootfs, args.objdump)
+        inspect = inventory_initramfs if args.mode.endswith("-initramfs") else inventory
+        report, contents = inspect(args.rootfs, args.objdump)
         success = True
-        if args.mode == "verify":
+        if args.mode.startswith("verify"):
             if args.baseline is None:
                 raise Rejected("verify requires an explicitly reviewed --baseline")
             baseline = json.loads(bounded_read(args.baseline))
             success = verify(report, contents, baseline, args.baseline.parent)
-    except (Rejected, OSError, ValueError, struct.error, subprocess.SubprocessError) as error:
+    except (Rejected, OSError, ValueError, EOFError, struct.error, subprocess.SubprocessError) as error:
         report = {"version": 1, "mode": args.mode, "admitted": False, "errors": [str(error)]}
         success = False
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

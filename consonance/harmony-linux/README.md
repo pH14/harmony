@@ -231,3 +231,23 @@ and observed direct entries that bypass zeroing stop the proof. Candidate
 exact supporting instruction sequence. Digest-bound human control-flow evidence
 is still required to exclude alternate indirect entry; there is no generic
 manual override for an unproved selector. `adjacent_ecx_zero` remains diagnostic.
+
+For final platform bytes, use `inventory-initramfs INITRAMFS --output report.json`
+or `verify-initramfs INITRAMFS --baseline reviewed.json --output report.json`.
+These explicit modes accept one raw `070701` newc archive or its gzip encoding.
+The baseline additionally requires `archive_sha256`, binding the exact compressed
+or raw bytes. The rootfs digest binds archive entry type, permissions, ownership,
+inode/link count, timestamps, archive device numbers, rdev, file contents and
+symlink targets. It does not substitute staging-directory metadata.
+
+The adapter parses character/block devices as metadata and never creates or
+opens their host device nodes. It uses a private temporary projection containing
+only regular files, directories and symlinks for the shared ELF analysis; guest
+permissions/owners are read from the archive, not applied to the host projection.
+Parent paths must be declared directories, so a symlink cannot redirect file
+creation. Absolute symlink targets retain guest-root semantics. Hardlinks,
+duplicate normalized names, traversal, CRC newc, truncation, nonzero padding,
+concatenated archives, sockets/FIFOs and other unsupported types fail closed.
+Newc carries no extended attributes; this mode records empty xattrs instead of
+claiming metadata from the host staging tree. Existing directory modes retain
+their prior filesystem inventory semantics.

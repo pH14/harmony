@@ -4,7 +4,10 @@ on:
   workflow_dispatch: {}
   push:
     branches: [codex/consolidate-stopped-snapshots]
-    paths: [".github/workflows/xsave-kernel-qualification.yml"]
+    paths:
+      - ".github/workflows/xsave-kernel-qualification.yml"
+      - "consonance/harmony-linux/linux/patches/**"
+      - "consonance/harmony-linux/linux/*allowlist*.txt"
 permissions:
   contents: read
 concurrency:

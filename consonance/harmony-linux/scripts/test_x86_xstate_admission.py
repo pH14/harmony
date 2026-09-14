@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import gzip
+import stat
 import importlib.util
 import os
 from pathlib import Path
@@ -28,6 +30,19 @@ def fixture(code=b"\xc3", flags=5, needed=None, soname=None):
     if needed or soname:
         header += struct.pack("<IIQQQQQQ", 2, 4, 0x1200, 0x400200, 0, 64, 64, 8)
     return header + bytes(0x1000 - len(header)) + payload
+
+
+def newc(entries):
+    output = bytearray()
+    for index, (name, mode, content, rdev) in enumerate(entries + [("TRAILER!!!", 0, b"", (0, 0))]):
+        name = name.encode() + b"\0"
+        fields = [index + 1, mode, 0, 0, 1, 0, len(content), 0, 0, *rdev, len(name), 0]
+        output.extend(b"070701" + b"".join(f"{v:08x}".encode() for v in fields))
+        output.extend(name)
+        output.extend(bytes((-len(output)) % 4))
+        output.extend(content)
+        output.extend(bytes((-len(output)) % 4))
+    return bytes(output)
 
 
 class AdmissionTests(unittest.TestCase):
@@ -289,6 +304,49 @@ class AdmissionTests(unittest.TestCase):
         self.assertTrue(self.admitted(report, data, baseline))
         self.proof.write_text("changed")
         self.assertFalse(self.admitted(report, data, baseline))
+
+    def initramfs(self, device_minor=3):
+        return newc([("bin", stat.S_IFDIR | 0o755, b"", (0, 0)),
+                     ("bin/app", stat.S_IFREG | 0o4755, fixture(), (0, 0)),
+                     ("bin/sh", stat.S_IFLNK | 0o777, b"/bin/app", (0, 0)),
+                     ("dev", stat.S_IFDIR | 0o755, b"", (0, 0)),
+                     ("dev/null", stat.S_IFCHR | 0o666, b"", (1, device_minor))])
+
+    def test_initramfs_devices_metadata_and_archive_binding(self):
+        archive = self.base / "initramfs.gz"
+        archive.write_bytes(gzip.compress(self.initramfs(), mtime=0))
+        report, data = a.inventory_initramfs(archive)
+        files = {f["path"]: f for f in report["files"]}
+        self.assertEqual(files["/dev/null"]["rdev"], [1, 3])
+        self.assertEqual(files["/bin/app"]["mode"], 0o4755)
+        self.assertEqual(files["/bin/sh"]["target"], "/bin/app")
+        baseline = self.baseline(report)
+        self.assertFalse(self.admitted(report, data, baseline))
+        baseline["archive_sha256"] = report["archive_sha256"]
+        self.assertTrue(self.admitted(report, data, baseline))
+        archive.write_bytes(gzip.compress(self.initramfs(5), mtime=0))
+        changed, data = a.inventory_initramfs(archive)
+        self.assertNotEqual(changed["rootfs_sha256"], report["rootfs_sha256"])
+        self.assertFalse(self.admitted(changed, data, baseline))
+
+    def test_newc_duplicates_truncation_and_traversal(self):
+        with self.assertRaisesRegex(a.Rejected, "duplicate"):
+            a.parse_newc(newc([("a", stat.S_IFREG | 0o644, b"", (0, 0)), ("./a", stat.S_IFREG | 0o644, b"", (0, 0))]))
+        for name in ("../escape", "/absolute", "a/../../escape"):
+            with self.assertRaises(a.Rejected):
+                a.parse_newc(newc([(name, stat.S_IFREG | 0o644, b"", (0, 0))]))
+        for truncated in (self.initramfs()[:20], self.initramfs()[:-1]):
+            with self.assertRaises(a.Rejected):
+                a.parse_newc(truncated)
+        with self.assertRaisesRegex(a.Rejected, "concatenated"):
+            a.parse_newc(self.initramfs() + self.initramfs())
+
+    def test_newc_symlink_parent_is_not_extracted(self):
+        archive = self.base / "unsafe.cpio"
+        archive.write_bytes(newc([("outside", stat.S_IFLNK | 0o777, b"/tmp", (0, 0)),
+                                 ("outside/payload", stat.S_IFREG | 0o644, fixture(), (0, 0))]))
+        with self.assertRaisesRegex(a.Rejected, "not a directory"):
+            a.inventory_initramfs(archive)
 
     def test_malformed_baseline(self):
         report, data = self.scan()
