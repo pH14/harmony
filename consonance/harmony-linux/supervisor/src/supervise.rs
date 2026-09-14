@@ -122,13 +122,14 @@ impl ProcessSupervisor {
                 let Some(state) = self.nodes.get_mut(usize::from(node)) else {
                     continue;
                 };
+                let event_kill_death = state.event_kill_death;
+                state.event_kill_death = false;
                 if !state.alive {
                     continue;
                 }
-                let natural = !state.expected_down && !state.event_kill_death;
+                let natural = !state.expected_down && !event_kill_death;
                 state.alive = false;
                 state.paused = false;
-                state.event_kill_death = false;
                 natural
             };
             if natural {
@@ -205,6 +206,7 @@ impl ProcessSupervisor {
                 state.alive = true;
                 state.paused = false;
                 state.expected_down = false;
+                state.event_kill_death = false;
                 self.counters.restarts += 1;
                 if let Some(window) = now_event_kill {
                     actions.push(Action::ArmEventKill(node, window.rarity));
@@ -230,6 +232,7 @@ impl ProcessSupervisor {
             actions.push(Action::Start(node));
             self.nodes[index].alive = true;
             self.nodes[index].paused = false;
+            self.nodes[index].event_kill_death = false;
             self.counters.restarts += 1;
             if let Some(window) = self.event_kill_selected[index] {
                 actions.push(Action::ArmEventKill(node, window.rarity));
@@ -241,9 +244,6 @@ impl ProcessSupervisor {
 
         self.counters.pending_faults = active.pending_process_faults(&self.event_kill_fired);
         self.previous = active.clone();
-        for state in &mut self.nodes {
-            state.event_kill_death = false;
-        }
         actions
     }
 
@@ -354,11 +354,15 @@ impl ProcessSupervisor {
         self.counters.checks_finished = self.counters.checks_finished.saturating_add(1);
     }
 
-    pub fn note_check_completed(&mut self, evidence: CheckEvidence) {
+    pub fn note_check_completed(&mut self, evidence: CheckEvidence) -> bool {
+        if evidence.points == 0 {
+            return false;
+        }
         self.counters.completed_check_run = evidence.run;
         self.counters.completed_check_start_generation = evidence.start_generation;
         self.counters.completed_check_end_generation = evidence.end_generation;
         self.counters.completed_check_points = evidence.points;
+        true
     }
 
     pub fn set_check_enabled(&mut self, enabled: bool) {
@@ -696,6 +700,32 @@ mod tests {
     }
 
     #[test]
+    fn an_event_kill_report_survives_until_the_death_is_observed() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, ProcessAction::EventKill { rarity: 0 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
+        sup.note_event_kill_armed(0, 0, 0);
+        assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
+        assert_eq!(sup.tick(&event, &[]), []);
+        assert_eq!(sup.tick(&event, &[0]), [Action::Start(0)]);
+        assert_eq!(sup.counters().unexpected_deaths, 0);
+    }
+
+    #[test]
+    fn an_event_kill_report_does_not_cross_an_incarnation_replacement() {
+        let mut sup = Supervisor::new(1);
+        let event = active(&[(0, ProcessAction::EventKill { rarity: 0 })]);
+        assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
+        sup.note_event_kill_armed(0, 0, 0);
+        assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
+        let restart = active(&[(0, ProcessAction::Restart)]);
+        assert_eq!(sup.tick(&restart, &[]), [Action::Kill(0)]);
+        assert_eq!(sup.tick(&ActiveWindows::new(), &[]), [Action::Start(0)]);
+        assert_eq!(sup.tick(&ActiveWindows::new(), &[0]), [Action::Start(0)]);
+        assert_eq!(sup.counters().unexpected_deaths, 1);
+    }
+
+    #[test]
     fn a_fired_event_kill_advances_to_the_next_window() {
         let mut sup = Supervisor::new(1);
         let mut events = ActiveWindows::new();
@@ -975,6 +1005,38 @@ mod tests {
         let snap = sup.snapshot();
         assert_eq!(snap.completed_check_start_generation, 2);
         assert_eq!(snap.completed_check_end_generation, 2);
+        assert_eq!(snap.disturbance_generation, 2);
+    }
+
+    #[test]
+    fn an_empty_check_keeps_same_generation_evidence() {
+        let mut sup = Supervisor::new(1);
+        sup.note_process_transition();
+        let mut capture = CheckCapture::new(4, sup.disturbance_generation());
+        capture.note_success(7);
+        assert!(sup.note_check_completed(capture.complete(sup.disturbance_generation())));
+        let empty = CheckCapture::new(5, sup.disturbance_generation());
+        assert!(!sup.note_check_completed(empty.complete(sup.disturbance_generation())));
+        let snap = sup.snapshot();
+        assert_eq!(snap.completed_check_run, 4);
+        assert_eq!(snap.completed_check_start_generation, 1);
+        assert_eq!(snap.completed_check_end_generation, 1);
+        assert_eq!(snap.completed_check_points, 1 << 7);
+    }
+
+    #[test]
+    fn an_empty_post_disturbance_check_keeps_prior_evidence_stale() {
+        let mut sup = Supervisor::new(1);
+        sup.note_process_transition();
+        let mut capture = CheckCapture::new(4, sup.disturbance_generation());
+        capture.note_success(7);
+        assert!(sup.note_check_completed(capture.complete(sup.disturbance_generation())));
+        sup.note_process_transition();
+        let empty = CheckCapture::new(5, sup.disturbance_generation());
+        assert!(!sup.note_check_completed(empty.complete(sup.disturbance_generation())));
+        let snap = sup.snapshot();
+        assert_eq!(snap.completed_check_run, 4);
+        assert_eq!(snap.completed_check_end_generation, 1);
         assert_eq!(snap.disturbance_generation, 2);
     }
 

@@ -51,9 +51,11 @@ accepted instrumentation reports advance that generation, which keeps stale
 pre-fault evidence distinct from a check completed after recovery. Each check
 receives its starting generation in `HARMONY_DISTURBANCE_GENERATION`, allowing a
 stateful checker to invalidate cached results without importing process-fault
-semantics. The supervisor unlinks each check's output file after opening its
-read and write descriptors, so completed checks do not accumulate in the guest
-tmpfs.
+semantics. A successful check replaces the completed evidence only after it
+publishes at least one supported assertion point; an empty check leaves prior
+evidence intact. The supervisor unlinks each check's output file after opening
+its read and write descriptors, so completed checks do not accumulate in the
+guest tmpfs.
 
 Instrumented nodes receive a pair of inherited event descriptors. The generic
 control and report frames live in `process-proto`; the supervisor acknowledges

@@ -111,7 +111,7 @@ mod runtime {
     use harmony_supervisor::directive::{Directive, LineReader, parse_directive};
     use harmony_supervisor::evidence::CheckCapture;
     use harmony_supervisor::process;
-    use harmony_supervisor::reconcile::{ActiveWindows, EventPark};
+    use harmony_supervisor::reconcile::ActiveWindows;
     use harmony_supervisor::recovery::RecoveryGate;
     use harmony_supervisor::regs::{
         REG_ALIVE, REG_CHECK_ENABLED, REG_CHECKS_FINISHED, REG_CHECKS_STARTED,
@@ -1082,17 +1082,17 @@ mod runtime {
                     }
                     supervisor.note_event_ready(node, false);
                 }
-                if signal_node(nodes, node, libc::SIGKILL) {
+                if signal_node(nodes, node, libc::SIGKILL)? {
                     supervisor.note_process_transition();
                 }
             }
             Action::Stop(node) => {
-                if signal_node(nodes, node, libc::SIGSTOP) {
+                if signal_node(nodes, node, libc::SIGSTOP)? {
                     supervisor.note_process_transition();
                 }
             }
             Action::Cont(node) => {
-                if signal_node(nodes, node, libc::SIGCONT) {
+                if signal_node(nodes, node, libc::SIGCONT)? {
                     supervisor.note_process_transition();
                 }
             }
@@ -1231,7 +1231,8 @@ mod runtime {
         while index < retired.len() {
             match retired[index].try_wait() {
                 Ok(Some(_)) => {
-                    retired.remove(index);
+                    let mut child = retired.remove(index);
+                    let _ = child.wait();
                 }
                 Ok(None) => index += 1,
                 Err(error) => return Err(format!("retired ready probe: {error}")),
@@ -1367,6 +1368,55 @@ mod runtime {
             output,
             reader: LineReader::new(),
         })
+    }
+
+    fn watch_parks(
+        nodes: &mut [Node],
+        supervisor: &mut Supervisor,
+        tick: u64,
+    ) -> Result<(), String> {
+        for (id, node) in nodes.iter_mut().enumerate() {
+            let Some(handle) = node.park.as_mut() else {
+                continue;
+            };
+            let status = handle
+                .status()
+                .map_err(|error| format!("park node {id} status: {error}"))?;
+            if status.state >= park::PARKED && !handle.hit_logged {
+                handle.hit_logged = true;
+                supervisor.note_parked();
+                log(
+                    tick,
+                    &format!(
+                        "park node {id} hit {} at pc={:#x} pid={}",
+                        status.hits, status.pc, status.pid
+                    ),
+                );
+            }
+            if status.state == park::RELEASED && !handle.release_logged {
+                handle.release_logged = true;
+                log(
+                    tick,
+                    &format!(
+                        "park node {id} released after {} ns",
+                        status.released_ns.saturating_sub(status.parked_ns)
+                    ),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn signal_node(nodes: &mut [Node], node: u16, signal: libc::c_int) -> Result<bool, String> {
+        let Some(child) = nodes
+            .get(usize::from(node))
+            .and_then(|entry| entry.child.as_ref())
+        else {
+            return Ok(false);
+        };
+        process::signal_group(child.id(), signal)
+            .map(|()| true)
+            .map_err(|error| format!("signal node {node}: {error}"))
     }
 
     fn spawn_check(
@@ -1600,6 +1650,7 @@ mod runtime {
         use process_proto::ProcessAction;
         use std::io::{Read, Write};
         use std::os::fd::AsRawFd;
+        use std::os::unix::fs::MetadataExt;
         use std::os::unix::net::UnixStream;
 
         fn event_faults() -> ActiveWindows {
@@ -1609,17 +1660,14 @@ mod runtime {
         }
 
         fn current_groups() -> Vec<u32> {
-            // SAFETY: a zero-sized getgroups call writes nothing and returns the count.
-            let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
-            assert!(count >= 0);
-            let mut groups = vec![0; usize::try_from(count).expect("group count")];
-            if count == 0 {
-                return groups;
-            }
-            // SAFETY: groups has count writable gid slots for this synchronous call.
-            let actual = unsafe { libc::getgroups(count, groups.as_mut_ptr()) };
-            assert!(actual >= 0);
-            groups.truncate(usize::try_from(actual).expect("actual group count"));
+            let status = std::fs::read_to_string("/proc/self/status").expect("process status");
+            let mut groups = status
+                .lines()
+                .find_map(|line| line.strip_prefix("Groups:"))
+                .expect("process groups")
+                .split_whitespace()
+                .map(|group| group.parse().expect("group id"))
+                .collect::<Vec<_>>();
             groups.sort_unstable();
             groups.dedup();
             groups
@@ -1642,10 +1690,12 @@ mod runtime {
                 argv: argv.to_vec(),
                 env: Vec::new(),
                 cwd: "/".to_owned(),
-                // SAFETY: these calls read scalar credentials and retain no borrowed state.
-                uid: unsafe { libc::geteuid() },
-                // SAFETY: this call reads a scalar credential and retains no borrowed state.
-                gid: unsafe { libc::getegid() },
+                uid: std::fs::metadata("/proc/self")
+                    .expect("process metadata")
+                    .uid(),
+                gid: std::fs::metadata("/proc/self")
+                    .expect("process metadata")
+                    .gid(),
                 additional_gids: current_groups(),
                 bundle: None,
             };
