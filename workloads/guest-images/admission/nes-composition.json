@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "reviewed_by": "Codex primary-agent source, artifact and controlled-scope review, 2026-09-14",
+  "manifest_sha256": "7a4fd4989d542de1673d9d13f6ea7b8177a763e80b85bb950b126aec58beb8c4",
+  "composition_evidence": {
+    "file": "proofs/nes-composition.md",
+    "sha256": "2554bc6c922552f478275732fa9946b9c2108789dcb9fd8ee0a406add29a5c23"
+  },
+  "platform_baseline": {
+    "file": "platform-component.json",
+    "sha256": "9ca0db03c66944be164a3d87478cd5d7300a23f4a956434cec421ce85732f1d8"
+  },
+  "workload_baseline": {
+    "file": "nes-component.json",
+    "sha256": "3feea144d78d69fe4ad94b306c60881d310bd9ee7d3f4197db5906461299107d"
+  }
+}

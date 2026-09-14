@@ -1,0 +1,40 @@
+{
+  "nes-busybox": {
+    "sha256": "dd40538865c749943b671e11ef9f644f86dd6037abe35dcbbf7f7d67853ae3ee",
+    "regions": [
+      {
+        "start": 5040320,
+        "size": 201,
+        "sha256": "45b7b1a9bf8fb6620bd54d8f5c8a4eb3be95b0eed17ad98e815f0741c2737780",
+        "absolute_pointer_file_offsets": []
+      },
+      {
+        "start": 5040528,
+        "size": 185,
+        "sha256": "789293d094771a3f142b27de2bae0b8d6fcacacf8d3e3770bd96272306d17a9d",
+        "absolute_pointer_file_offsets": []
+      }
+    ]
+  },
+  "nes-play-agent": {
+    "sha256": "4cc1dacf6ef2aed5638e5eb6eceb7130eca532ed351e3a5b692da0a903a6349a",
+    "regions": [
+      {
+        "start": 2078352,
+        "size": 201,
+        "sha256": "dc203e81342dc8f71e86648d9ec55caf2a3ffd7120d136b63d72ba58f864f840",
+        "absolute_pointer_file_offsets": [
+          3342296
+        ]
+      },
+      {
+        "start": 2078560,
+        "size": 185,
+        "sha256": "7e56a64f39ac5cf926d5c2eb24bd060ee9a8f52dcf04a2c8df3bd4ba6a69742f",
+        "absolute_pointer_file_offsets": [
+          3342272
+        ]
+      }
+    ]
+  }
+}

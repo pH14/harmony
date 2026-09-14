@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Diagnostic / G1 kernel XSAVE qualification
+name: Checks / G1 kernel XSAVE qualification
 on:
   workflow_dispatch: {}
   push:
@@ -51,12 +51,16 @@ jobs:
           retention-days: 14
   qualify:
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        replica: [1, 2]
+        include:
+          - {replica: 1, runner: ubuntu-24.04}
+          - {replica: 2, runner: ubuntu-24.04}
+          - {replica: 3, runner: ubuntu-22.04}
+          - {replica: 4, runner: ubuntu-22.04}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

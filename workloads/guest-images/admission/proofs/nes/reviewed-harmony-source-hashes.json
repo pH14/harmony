@@ -1,0 +1,9 @@
+{
+  "workloads/nes/src/prepare.rs": "e3776148642a37eff9d9885ff66f70fc9787ac4a816fbea711d5fcd892e88b98",
+  "workloads/nes-guest/src/main.rs": "3eaf677ed9a3c0c6bed1a81ad4d6dcf9c0bea4185a40e7f8cd6c7dfecb072fc3",
+  "workloads/nes-guest/build.sh": "5fc01f440d04c28c9a54485c0434ab30fdd2cb58c97cb880dc0aea4eadda404d",
+  "workloads/nes-guest/build-base-image.sh": "0ce15a884b5b4c383376201bafe53fb3082929f014fc8dcb09d706313e4c9edb",
+  "scripts/build-quicknes-core.sh": "7a19081728b606b0ef1c32563909bdb1601726873d472ad2dad8af03d45061dd",
+  "scripts/quicknes-static-runtime.cpp": "45a4879add12d55b09c895ac67c6162410c3e0b6c0944c2eac91ba59e65892d6",
+  "consonance/oci/src/bundle.rs": "08ecf22ba099b266d4aaed6461699b720e5e3e50388a55f25e7c6ed2c9ff9d57"
+}

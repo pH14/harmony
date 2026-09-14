@@ -1,0 +1,1 @@
+{"entrypoint":["/usr/local/bin/postgres-workload.sh"],"cmd":[],"env":["HARMONY_POSTGRES_VARIANT=postgres"],"working_dir":"/var/lib/postgresql","user":"0:0"}

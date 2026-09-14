@@ -1,0 +1,98 @@
+{
+  "/bin/busybox": {
+    "sha256": "ed276986a91b1c13f6da78900446dfa4311e841d87d8f770ae3ca10b18767b70",
+    "sites": [
+      {
+        "address": 4663138,
+        "bytes": "0f01d0",
+        "mnemonic": "xgetbv",
+        "operands": "",
+        "adjacent_ecx_zero": false,
+        "straightline_ecx_zero": true,
+        "selector_proof_instructions": [
+          {
+            "address": 4663111,
+            "bytes": "31c9",
+            "mnemonic": "xor",
+            "operands": "%ecx,%ecx"
+          },
+          {
+            "address": 4663113,
+            "bytes": "2500000800",
+            "mnemonic": "and",
+            "operands": "$0x80000,%eax"
+          },
+          {
+            "address": 4663118,
+            "bytes": "898520ffffff",
+            "mnemonic": "mov",
+            "operands": "%eax,-0xe0(%rbp)"
+          },
+          {
+            "address": 4663124,
+            "bytes": "09d0",
+            "mnemonic": "or",
+            "operands": "%edx,%eax"
+          },
+          {
+            "address": 4663126,
+            "bytes": "898518ffffff",
+            "mnemonic": "mov",
+            "operands": "%eax,-0xe8(%rbp)"
+          },
+          {
+            "address": 4663132,
+            "bytes": "8905ee900e00",
+            "mnemonic": "mov",
+            "operands": "%eax,0xe90ee(%rip)        # 0x55b850"
+          }
+        ],
+        "requires_reviewed_control_flow_proof": true
+      }
+    ]
+  },
+  "/usr/bin/runc": {
+    "sha256": "ce6353a8273004c5f917277846dd521c7185b653ca46cfe538cc16b1be254cc9",
+    "sites": [
+      {
+        "address": 4217061,
+        "bytes": "0f01d0",
+        "mnemonic": "xgetbv",
+        "operands": "",
+        "adjacent_ecx_zero": true,
+        "straightline_ecx_zero": true,
+        "selector_proof_instructions": [
+          {
+            "address": 4217056,
+            "bytes": "b900000000",
+            "mnemonic": "mov",
+            "operands": "$0x0,%ecx"
+          }
+        ],
+        "requires_reviewed_control_flow_proof": true
+      }
+    ]
+  },
+  "/usr/lib/harmony/supervisor": {
+    "sha256": "e0ef13ac2e0d37cf0779fc55bb3a6b173e5004d4f27ca6fc5b90b4d9f2488cca",
+    "sites": [
+      {
+        "address": 404642,
+        "bytes": "0f01d0",
+        "mnemonic": "xgetbv",
+        "operands": "",
+        "adjacent_ecx_zero": true,
+        "straightline_ecx_zero": true,
+        "selector_proof_instructions": [
+          {
+            "address": 404640,
+            "bytes": "31c9",
+            "mnemonic": "xor",
+            "operands": "%ecx,%ecx"
+          }
+        ],
+        "requires_reviewed_control_flow_proof": true
+      }
+    ]
+  }
+}

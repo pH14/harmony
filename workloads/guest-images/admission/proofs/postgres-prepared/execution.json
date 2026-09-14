@@ -1,0 +1,1 @@
+{"version":1,"argv":["/usr/local/bin/postgres-workload.sh"],"env":["HARMONY_POSTGRES_VARIANT=postgres","LD_BIND_NOW=1","PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],"cwd":"/var/lib/postgresql","uid":0,"gid":0,"additional_gids":[],"bundle":null}

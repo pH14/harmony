@@ -313,6 +313,7 @@ version = "0.1.0"
 name = "nes-workload"
 version = "0.1.0"
 dependencies = [
+ "consonance-client",
  "guest-image",
  "machine",
  "oci-support",

@@ -103,8 +103,10 @@ in `linux/patches/x86/0008-x86-harmony-canonical-xsave.patch`.
 The gated Nix kernel passes the native ms02 functional fixture, independent
 paired boots, and six one-shot debug interventions around the core and signal
 save boundaries. Complete 256 MiB RAM and modeled state match at the
-guest-requested shutdown endpoint without masking. Hosted AMD/Intel Linux
-qualification remains required. These results qualify neither arbitrary images
+guest-requested shutdown endpoint without masking. Hosted run 34857658287
+also passes the original functional/pair/six-intervention fixture on two AMD
+EPYC 7763 hosts under Hyper-V. Hosted Intel and the expanded signal-fault
+fixture's hosted qualification remain required. These results qualify neither arbitrary images
 nor arbitrary imported CPU events.
 
 The exact GCC13 save paths overwrite raw bitmap register aliases and clear the
@@ -115,7 +117,16 @@ pages; one vCPU, disabled local IRQs, fixed mappings, absent PKU and ordinary
 healthy memory exclude a subsequent ordinary access fault. Initial XSAVE faults
 precede the bitmap read. This argument excludes external guest NMI/MCE injection
 and arbitrary imported pending events; the generic backend can represent them.
-Actual save-boundary fault/retry coverage remains a separate obligation.
+The native functional fixture also exercises a fresh writable signal-stack page
+and a protected-page rejection. Its 64-byte-aligned save straddles the page
+boundary at offset 512: header initialization touches only the upper page,
+while the initial save must access the nonresident lower page. The writable
+case preserves x87, SSE, AVX and MXCSR through delivery and return; the
+protected case terminates before its handler runs. A separate one-shot debug
+hit in the exact kernel's save-failure recovery branch confirms that path is
+executed by the standalone writable case. Complete paired and interrupted
+endpoints match on ms02. These initial-save failures do not exercise the
+conditional post-success checked-access residual described above.
 
 The proposed guest contract compares identity at guest-initiated exits; debug
 stops are interventions, not comparison points. Patched save/canonicalize
@@ -145,7 +156,8 @@ does not settle the LBR/NMI path or fault-safe user-memory writes. Final guest
 configuration and executable disassembly must bind the audit to shipped bytes.
 
 Static linking alone does not establish the absence of internal XSAVE or
-IFUNC save paths. The OCI pipeline now forces eager binding for supervisor and workload startup,
+IFUNC save paths. The CLI OCI runner, workload adapters, client default and execution probe include `noxsaveopt noxsaves LD_BIND_NOW=1` in their x86 boot
+arguments. The OCI pipeline forces eager binding for supervisor and workload startup,
 and the patched runc preserves it across internal re-execution. The image
 pipeline does not yet enforce the full dependency instruction admission or
 generated-code policy. Source review
@@ -223,7 +235,7 @@ profiling or alternate loading behavior. Each artifact's reviewed `dependencies`
 and `transitive_dependencies` must exactly match the inventory. No loader digest
 is automatically approved or supplied as a generic default.
 
-This supports candidate inventory of the pruned controlled PostgreSQL image;
+This supports candidate inventory of controlled dynamic images;
 it does not qualify that image. All executable instruction sites, loader
 resolver regions, runtime dlopen paths and controlled no-JIT/startup-binding
 obligations still require the existing digest-bound reviews.

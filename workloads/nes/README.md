@@ -99,3 +99,56 @@ all 40 cleared-level flags, continues execution through intermediate clears, and
 permits an 8,192-action horizon. The default remains the isolated-level workload.
 Whole-game runs must begin at level 1; isolated level setups are never scored as
 whole-game completion.
+
+### Prepared-execution admission evidence
+
+The `prepare-admission` example dumps the actual Rust preparation API outputs
+for the controlled NES and bare-PostgreSQL workloads. It does not launch a VM
+or create an approval baseline:
+
+```sh
+cargo run --locked --manifest-path workloads/nes/Cargo.toml --example prepare-admission -- \
+  nes KERNEL PLATFORM.cpio.gz NES.oci NEW_OUTPUT_DIR ROM.nes
+cargo run --locked --manifest-path workloads/nes/Cargo.toml --example prepare-admission -- \
+  postgres KERNEL PLATFORM.cpio.gz POSTGRES.oci NEW_OUTPUT_DIR
+```
+
+The helper supports only native Linux x86_64 default KVM sessions and rejects
+other hosts. It serializes the real `SessionConfig::default()` as
+`session-config.json`; the checker requires its pre-PID1 eager-binding and xstate
+boot flags. Custom session configurations, including campaign and fault adapters,
+are outside this scope. Inputs must be local OCI layouts. The dump includes exact platform, rootfs and
+control archives, serialized execution and image configuration, input hashes,
+prepared identity, kernel bytes, and ordered concatenated initramfs bytes. NES
+uses `prepare::prepare_oci`; PostgreSQL uses the image's existing command through
+`oci_support::bundle::prepare`. ROM bytes and PostgreSQL's `/workload.sql` and
+entrypoint script receive explicit hashes; all workload files remain bound by
+the rootfs segment. The Nova ROM pin is in `nova-versions.env`.
+
+Run `workloads/guest-images/verify-prepared-admission.py inventory DUMP
+--output NEW_REPORT_DIR` from the repository root for candidate evidence. GNU
+objdump is required (`--objdump` selects it). The checker parses the three
+archives separately and compares their exact concatenation; it does not claim
+the scanner accepts general concatenated archives. It rejects file collisions,
+platform writes into the workload namespace, unexpected control inputs, loader
+overrides and noncanonical writable ROM mounts. A deterministic workload-root
+CPIO view removes only the actual `harmony-oci/rootfs` prefix, preserving entry
+metadata/content so absolute ELF dependency paths resolve in their guest root.
+
+`verify DUMP --baseline REVIEWED.json --output NEW_REPORT_DIR` additionally
+requires `version: 1`, a named `reviewed_by`, the reviewed `manifest_sha256`, `composition_evidence`,
+`platform_baseline`, and `workload_baseline`. Each evidence/baseline reference
+contains a relative `file` and its `sha256`; both component baselines are checked
+by the existing x86 scanner. Candidate generation never produces these reviews.
+The evidence must cover the actual runtime configuration/mounts, loader binding
+before every exec, trusted SQL/ROM/code inputs, no JIT/generated code, and no
+code mutation. The OCI root remains writable: input digest binding is not
+runtime filesystem immutability enforcement. Unsupported overlay or workload
+semantics fail closed rather than broadening this controlled scope.
+
+Run `python3 workloads/guest-images/test_verify_prepared_admission.py
+-v` for composition mutation checks. Build/check the example with the package's
+locked Cargo dependencies before using its dumps for review.
+
+The quality workflow runs the Python composition mutation tests. Candidate
+reports still require explicit reviewer evidence before admission verification.

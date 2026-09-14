@@ -1,0 +1,73 @@
+{
+  "code_inputs": {
+    "/usr/local/bin/postgres-workload.sh": {
+      "sha256": "57de002a3c2aaf4988d1e5f2d412b27a3660cf40d9a59fd36506220122e9070d",
+      "size": 2768
+    },
+    "/workload.sql": {
+      "sha256": "11fcdee04c6865abdb796585152d35c507f277daff0106f08ad46e5fcdbea480",
+      "size": 3332
+    }
+  },
+  "composition": [
+    {
+      "file": "platform.cpio.gz",
+      "offset": 0,
+      "size": 7384824
+    },
+    {
+      "file": "rootfs.cpio.gz",
+      "offset": 7384824,
+      "size": 42154759
+    },
+    {
+      "file": "control.cpio.gz",
+      "offset": 49539583,
+      "size": 962
+    }
+  ],
+  "engine_scope": "default-linux-x86_64-kvm-session",
+  "external_inputs": {},
+  "files": {
+    "composed-initramfs.bin": {
+      "sha256": "fa0a6c5e6de4fa7f6b32deb343c79450eee6027ebb368d3c8fa612dc28c612c1",
+      "size": 49540545
+    },
+    "control.cpio.gz": {
+      "sha256": "ceb8c23e9e3d1c93e65be304022f1a5671486c6cb9dc705ad0c422f5c1da393b",
+      "size": 962
+    },
+    "execution.json": {
+      "sha256": "fc97369bb484311e84537b6775debb5e13f5f3664c0184e02611fa6caada23a6",
+      "size": 267
+    },
+    "image-inputs.json": {
+      "sha256": "7d8932d5c712e73a68d39e04b22317eb0c79cf835e8a611978202fe800a99b64",
+      "size": 717
+    },
+    "image-runtime-config.json": {
+      "sha256": "f24925689bcaa6469c9c7e589bb0cb5b4133f83035e1d57372c75d0ba2009fa6",
+      "size": 156
+    },
+    "kernel.bin": {
+      "sha256": "7ce25244cf1d138db1286ce61fb1c880bd224b2866ffaebd1ec19d04b2ad69b6",
+      "size": 10552320
+    },
+    "platform.cpio.gz": {
+      "sha256": "44e520bf7db067310d49362a566da2cf36ead6df9867b1ee92cc948ed16849b0",
+      "size": 7384824
+    },
+    "rootfs.cpio.gz": {
+      "sha256": "3e981dd950e1f8c7dd24c445057abf7339d3e4de929f497c96935d3c03ed6715",
+      "size": 42154759
+    },
+    "session-config.json": {
+      "sha256": "c32a9f1c1f31b329c957cad769f3542249b2f5d6b75b1a8daaafe01082f3b4af",
+      "size": 351
+    }
+  },
+  "mode": "postgres",
+  "prepared_identity": "28b0d9c068cca80dc64aea44991cdd3740647eade4b2ce3162325910014c8697",
+  "scope": "controlled NES or PostgreSQL; candidate dump, not approval",
+  "version": 1
+}

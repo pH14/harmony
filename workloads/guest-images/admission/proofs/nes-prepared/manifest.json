@@ -1,0 +1,69 @@
+{
+  "code_inputs": {},
+  "composition": [
+    {
+      "file": "platform.cpio.gz",
+      "offset": 0,
+      "size": 7384824
+    },
+    {
+      "file": "rootfs.cpio.gz",
+      "offset": 7384824,
+      "size": 1808709
+    },
+    {
+      "file": "control.cpio.gz",
+      "offset": 9193533,
+      "size": 142582
+    }
+  ],
+  "engine_scope": "default-linux-x86_64-kvm-session",
+  "external_inputs": {
+    "/game.nes": {
+      "sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+      "size": 262160
+    }
+  },
+  "files": {
+    "composed-initramfs.bin": {
+      "sha256": "0dce1847a9fb12069d578f05263d32c84251b2c8e4df869f1400319b45eb4abd",
+      "size": 9336115
+    },
+    "control.cpio.gz": {
+      "sha256": "d4644e5b1814baab51c0fd5929df7359365106a1ac92ad854c4e2acc5722a2ac",
+      "size": 142582
+    },
+    "execution.json": {
+      "sha256": "265c5d8ab9baeaf90b5d96316cae371dacdaa302d36d8f110ea18c2f754007f7",
+      "size": 237
+    },
+    "image-inputs.json": {
+      "sha256": "4309e36c8c8cda7035031a4ab342b4a18ef10bc8d3a151af20078bf0a50a7a93",
+      "size": 715
+    },
+    "image-runtime-config.json": {
+      "sha256": "462e5f79168862f9eeb00cc8a61398a7d33da34492ba0a4412150efd6eca10cf",
+      "size": 133
+    },
+    "kernel.bin": {
+      "sha256": "7ce25244cf1d138db1286ce61fb1c880bd224b2866ffaebd1ec19d04b2ad69b6",
+      "size": 10552320
+    },
+    "platform.cpio.gz": {
+      "sha256": "44e520bf7db067310d49362a566da2cf36ead6df9867b1ee92cc948ed16849b0",
+      "size": 7384824
+    },
+    "rootfs.cpio.gz": {
+      "sha256": "84c2498526f983d455c310e37987df8d149d22d3d1d34b62f9d9ddaa73cfb1b1",
+      "size": 1808709
+    },
+    "session-config.json": {
+      "sha256": "c32a9f1c1f31b329c957cad769f3542249b2f5d6b75b1a8daaafe01082f3b4af",
+      "size": 351
+    }
+  },
+  "mode": "nes",
+  "prepared_identity": "23e316ba5fbc7ca2f55dab7756fd2f82912d27b0b8960bb0cfd559c666f22f6f",
+  "scope": "controlled NES or PostgreSQL; candidate dump, not approval",
+  "version": 1
+}

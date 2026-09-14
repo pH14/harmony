@@ -1,0 +1,111 @@
+  46ca74:	48 8d 04 c6          	lea    (%rsi,%rax,8),%rax
+  46ca78:	eb 0a                	jmp    46ca84 <dl_open_worker_begin+0x184>
+  46ca7a:	66 0f 1f 44 00 00    	nopw   0x0(%rax,%rax,1)
+  46ca80:	48 83 e8 08          	sub    $0x8,%rax
+  46ca84:	48 8b 10             	mov    (%rax),%rdx
+  46ca87:	f6 82 54 03 00 00 10 	testb  $0x10,0x354(%rdx)
+  46ca8e:	75 10                	jne    46caa0 <dl_open_worker_begin+0x1a0>
+  46ca90:	89 f9                	mov    %edi,%ecx
+  46ca92:	f7 d1                	not    %ecx
+  46ca94:	85 8a 60 03 00 00    	test   %ecx,0x360(%rdx)
+  46ca9a:	0f 85 10 04 00 00    	jne    46ceb0 <dl_open_worker_begin+0x5b0>
+  46caa0:	48 39 c6             	cmp    %rax,%rsi
+  46caa3:	75 db                	jne    46ca80 <dl_open_worker_begin+0x180>
+  46caa5:	4c 89 ff             	mov    %r15,%rdi
+  46caa8:	e8 f3 e1 06 00       	call   4daca0 <_dl_cet_open_check>
+  46caad:	f6 05 e9 ee 0e 00 02 	testb  $0x2,0xeeee9(%rip)        # 55b99d <_dl_debug_mask+0x1>
+  46cab4:	0f 85 f7 05 00 00    	jne    46d0b1 <dl_open_worker_begin+0x7b1>
+  46caba:	44 89 e8             	mov    %r13d,%eax
+  46cabd:	8b 3d d5 ee 0e 00    	mov    0xeeed5(%rip),%edi        # 55b998 <_dl_lazy>
+  46cac3:	25 01 00 00 08       	and    $0x8000001,%eax
+  46cac8:	89 45 c8             	mov    %eax,-0x38(%rbp)
+  46cacb:	85 ff                	test   %edi,%edi
+  46cacd:	75 0b                	jne    46cada <dl_open_worker_begin+0x1da>
+  46cacf:	44 89 e8             	mov    %r13d,%eax
+  46cad2:	25 00 00 00 08       	and    $0x8000000,%eax
+  46cad7:	89 45 c8             	mov    %eax,-0x38(%rbp)
+  46cada:	49 8b bf 00 04 00 00 	mov    0x400(%r15),%rdi
+
+  472702:	81 e2 00 40 00 00    	and    $0x4000,%edx
+  472708:	44 0b 1d 35 91 0e 00 	or     0xe9135(%rip),%r11d        # 55b844 <_dl_x86_cpu_features+0xe4>
+  47270f:	0b 15 3b 91 0e 00    	or     0xe913b(%rip),%edx        # 55b850 <_dl_x86_cpu_features+0xf0>
+  472715:	41 f7 c4 00 08 00 00 	test   $0x800,%r12d
+  47271c:	44 89 1d 21 91 0e 00 	mov    %r11d,0xe9121(%rip)        # 55b844 <_dl_x86_cpu_features+0xe4>
+  472723:	0f 45 f0             	cmovne %eax,%esi
+  472726:	89 15 24 91 0e 00    	mov    %edx,0xe9124(%rip)        # 55b850 <_dl_x86_cpu_features+0xf0>
+  47272c:	89 35 76 90 0e 00    	mov    %esi,0xe9076(%rip)        # 55b7a8 <_dl_x86_cpu_features+0x48>
+  472732:	85 c9                	test   %ecx,%ecx
+  472734:	0f 84 05 01 00 00    	je     47283f <update_active.constprop.0+0x25f>
+  47273a:	c7 85 1c ff ff ff 01 00 00 00 	movl   $0x1,-0xe4(%rbp)
+  472744:	44 89 e8             	mov    %r13d,%eax
+  472747:	31 c9                	xor    %ecx,%ecx
+  472749:	25 00 00 08 00       	and    $0x80000,%eax
+  47274e:	89 85 20 ff ff ff    	mov    %eax,-0xe0(%rbp)
+  472754:	09 d0                	or     %edx,%eax
+  472756:	89 85 18 ff ff ff    	mov    %eax,-0xe8(%rbp)
+  47275c:	89 05 ee 90 0e 00    	mov    %eax,0xe90ee(%rip)        # 55b850 <_dl_x86_cpu_features+0xf0>
+  472762:	0f 01 d0             	xgetbv
+  472765:	89 85 2c ff ff ff    	mov    %eax,-0xd4(%rbp)
+  47276b:	f7 d0                	not    %eax
+  47276d:	a8 06                	test   $0x6,%al
+  47276f:	0f 84 d5 02 00 00    	je     472a4a <update_active.constprop.0+0x46a>
+  472775:	83 bd 20 ff ff ff 00 	cmpl   $0x0,-0xe0(%rbp)
+  47277c:	74 65                	je     4727e3 <update_active.constprop.0+0x203>
+  47277e:	83 3d df 8f 0e 00 23 	cmpl   $0x23,0xe8fdf(%rip)        # 55b764 <_dl_x86_cpu_features+0x4>
+  472785:	7e 5c                	jle    4727e3 <update_active.constprop.0+0x203>
+
+  48b071:	e8 2a 9a fe ff       	call   474aa0 <getenv>
+  48b076:	31 d2                	xor    %edx,%edx
+  48b078:	31 c9                	xor    %ecx,%ecx
+  48b07a:	48 8d 35 e5 d6 0a 00 	lea    0xad6e5(%rip),%rsi        # 538766 <__PRETTY_FUNCTION__.0+0x8b2>
+  48b081:	48 89 c7             	mov    %rax,%rdi
+  48b084:	e8 b7 c7 fb ff       	call   447840 <_dl_init_paths>
+  48b089:	48 8b 05 b0 06 0d 00 	mov    0xd06b0(%rip),%rax        # 55b740 <_dl_all_dirs>
+  48b090:	48 8d 3d df d6 0a 00 	lea    0xad6df(%rip),%rdi        # 538776 <__PRETTY_FUNCTION__.0+0x8c2>
+  48b097:	48 89 05 9a 06 0d 00 	mov    %rax,0xd069a(%rip)        # 55b738 <_dl_init_all_dirs>
+  48b09e:	e8 fd 99 fe ff       	call   474aa0 <getenv>
+  48b0a3:	48 89 c2             	mov    %rax,%rdx
+  48b0a6:	b8 01 00 00 00       	mov    $0x1,%eax
+  48b0ab:	48 85 d2             	test   %rdx,%rdx
+  48b0ae:	74 08                	je     48b0b8 <_dl_non_dynamic_init+0x688>
+  48b0b0:	31 c0                	xor    %eax,%eax
+  48b0b2:	80 3a 00             	cmpb   $0x0,(%rdx)
+  48b0b5:	0f 94 c0             	sete   %al
+  48b0b8:	48 8d 3d c3 d6 0a 00 	lea    0xad6c3(%rip),%rdi        # 538782 <__PRETTY_FUNCTION__.0+0x8ce>
+  48b0bf:	89 05 d3 08 0d 00    	mov    %eax,0xd08d3(%rip)        # 55b998 <_dl_lazy>
+  48b0c5:	e8 d6 99 fe ff       	call   474aa0 <getenv>
+  48b0ca:	48 89 c2             	mov    %rax,%rdx
+  48b0cd:	31 c0                	xor    %eax,%eax
+  48b0cf:	48 85 d2             	test   %rdx,%rdx
+  48b0d2:	74 08                	je     48b0dc <_dl_non_dynamic_init+0x6ac>
+  48b0d4:	31 c0                	xor    %eax,%eax
+  48b0d6:	80 3a 00             	cmpb   $0x0,(%rdx)
+  48b0d9:	0f 95 c0             	setne  %al
+
+  49c189:	4d 8b 86 f8 00 00 00 	mov    0xf8(%r14),%r8
+  49c190:	4d 85 c0             	test   %r8,%r8
+  49c193:	74 48                	je     49c1dd <_dl_relocate_object_no_relro+0xbd>
+  49c195:	45 85 e4             	test   %r12d,%r12d
+  49c198:	74 43                	je     49c1dd <_dl_relocate_object_no_relro+0xbd>
+  49c19a:	49 8b 46 58          	mov    0x58(%r14),%rax
+  49c19e:	48 8b 40 08          	mov    0x8(%rax),%rax
+  49c1a2:	41 f6 86 56 03 00 00 20 	testb  $0x20,0x356(%r14)
+  49c1aa:	74 03                	je     49c1af <_dl_relocate_object_no_relro+0x8f>
+  49c1ac:	49 03 06             	add    (%r14),%rax
+  49c1af:	48 8b 50 08          	mov    0x8(%rax),%rdx
+  49c1b3:	48 85 d2             	test   %rdx,%rdx
+  49c1b6:	74 15                	je     49c1cd <_dl_relocate_object_no_relro+0xad>
+  49c1b8:	49 03 16             	add    (%r14),%rdx
+  49c1bb:	49 89 96 28 04 00 00 	mov    %rdx,0x428(%r14)
+  49c1c2:	48 8d 50 18          	lea    0x18(%rax),%rdx
+  49c1c6:	49 89 96 30 04 00 00 	mov    %rdx,0x430(%r14)
+  49c1cd:	66 49 0f 6e c6       	movq   %r14,%xmm0
+  49c1d2:	0f 16 05 7f f5 0b 00 	movhps 0xbf57f(%rip),%xmm0        # 55b758 <_dl_x86_64_runtime_resolve>
+  49c1d9:	0f 11 40 08          	movups %xmm0,0x8(%rax)
+  49c1dd:	41 0f b6 b6 56 03 00 00 	movzbl 0x356(%r14),%esi
+  49c1e5:	49 8b 96 60 01 00 00 	mov    0x160(%r14),%rdx
+  49c1ec:	4d 8b 3e             	mov    (%r14),%r15
+  49c1ef:	41 89 f1             	mov    %esi,%r9d
+  49c1f2:	41 83 e1 20          	and    $0x20,%r9d
+  49c1f6:	48 85 d2             	test   %rdx,%rdx
+  49c1f9:	0f 84 db 00 00 00    	je     49c2da <_dl_relocate_object_no_relro+0x1ba>

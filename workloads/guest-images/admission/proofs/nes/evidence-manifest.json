@@ -1,0 +1,23 @@
+{
+  "controlled-scope.md": "95434ca2112b7adb337aa3abfd29b2d9840d7d250c350dfeb69d3273e9790007",
+  "nes-busybox-binding.md": "b0fd8614ec092bfbae936c835f79aa4ff2e4e279ad163f82dc8304a9342e0748",
+  "nes-busybox-incoming.md": "57786787f588d6a2ed1f7475aa370466a1bdbe0b753b3809079a07b3af9a2b79",
+  "nes-busybox-references.txt": "4ec3913c856691f3446069a9278852b8ddb569f755665e6e9c60bd1300c11012",
+  "nes-busybox-review.md": "a13d4d35a0f41fa94de0138336763df5a979325ea5f6457d925e04e9574abd8a",
+  "nes-busybox-selector.json": "6f7da4aa687f3805f5ccc803191b87702854fdfce9334989595b1b303fd3d6d2",
+  "nes-busybox-selector.md": "8f8561216718d35207776793c4d13b4fe479c99e00e49599928c1805e98e7e4b",
+  "nes-busybox-symbols.txt": "1cf77cb961a061c153f0f4440c9fc818c2f601995bea305a15e57c301bedc799",
+  "nes-play-agent-binding.md": "a3c21a6f9917bd297c93f6c6dc753d31d4ea8fdccfebb907b2a24e1d2757a284",
+  "nes-play-agent-incoming.md": "c4a9691162428ef2cb1f2fec48aaa13aedee018bbf994d181347cf389d2852c7",
+  "nes-play-agent-references.txt": "2ca5ce5f2d5f4cb6869617529b8feab7ad0dd461805884383bb84364cbe3b3c7",
+  "nes-play-agent-review.md": "1359e84c136761cb2bcffc805f67fc761980525d23c6f61957bb9a8f31ff6429",
+  "nes-play-agent-selector.json": "8dc3cb92f248f8fc6274e750b9b8ae8905a914f36cfba0e1a5f65bf4f00b8af4",
+  "nes-play-agent-selector.md": "b532e2b9d50ff3f61962ede19438a5e9fd9f24bcd1deb44adb9005d9c1bbc24c",
+  "nes-play-agent-symbols.txt": "00c4b639dce1327df4df24952cb9862e6267072db520c19a7307af1d5d347bd1",
+  "oci-config-evidence.json": "d924ab53a4a1d3af6dbb71ee457b0d4764e54c8b069e907fcefadadbb95d89b8",
+  "proposed-artifact-entries.json": "07090aba290903f44bf9050a34dd44b8b15fcef4e82dbeab7313e827db795522",
+  "quicknes-execution-api-search.txt": "d13a44614be11231b06f79b91506ca7d166db61aae643fe3516eb6be68e1878d",
+  "quicknes-source-hashes.json": "f2e7fb605425e9af23ccf5127fb6779e41265961bb90d8f811d182612ba4c2b0",
+  "regions.json": "6d217c7691f8d4f5ec137b9b2614cb303a4be4b4a8ed99a5fe3ea1dc32d4c21d",
+  "reviewed-harmony-source-hashes.json": "0e04a806b73dc28cd276d3b30fc8aa8973dd5e54b519983b7bf40d27aa5ee159"
+}
