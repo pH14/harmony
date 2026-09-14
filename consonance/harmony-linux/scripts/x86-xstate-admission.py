@@ -24,7 +24,8 @@ SCOPE = {
     "workloads": "controlled-trusted",
     "loader_overrides": "forbidden",
 }
-LIBRARIES = ("/lib64", "/usr/lib64", "/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu", "/lib", "/usr/lib")
+LIBRARIES = ("/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu", "/lib", "/usr/lib")
+GLIBC_INTERPRETER = "/lib64/ld-linux-x86-64.so.2"
 
 
 class Rejected(ValueError):
@@ -139,7 +140,7 @@ def elf(data):
     if any(tag in tags for tag in (0x7FFFFFFD, 0x7FFFFFFF, 0x6FFFFEFB, 0x6FFFFEFC)):
         raise Rejected("unsupported ELF filter/audit dependency")
     strings = b""
-    if any(tag in tags for tag in (1, 15, 29)):
+    if any(tag in tags for tag in (1, 14, 15, 29)):
         if len(tags.get(5, [])) != 1 or len(tags.get(10, [])) != 1:
             raise Rejected("missing/duplicate ELF dynamic string table")
         address, size = tags[5][0], tags[10][0]
@@ -154,13 +155,15 @@ def elf(data):
             raise Rejected("invalid ELF dynamic string")
         return strings[offset:end].decode("utf-8")
 
-    for tag in (15, 29):
+    for tag in (14, 15, 29):
         if len(tags.get(tag, [])) > 1:
             raise Rejected("duplicate ELF library search path")
     return {
         "segments": segments, "interpreter": interpreter,
         "executable_stack": executable_stack,
+        "dynamic": seen_dynamic,
         "needed": [string(v) for v in tags.get(1, [])],
+        "soname": string(tags[14][0]) if 14 in tags else None,
         "rpath": [string(v) for v in tags.get(15, [])],
         "runpath": [string(v) for v in tags.get(29, [])],
         "bind_now": 24 in tags or any(v & 8 for v in tags.get(30, [])) or any(v & 1 for v in tags.get(0x6FFFFFFB, [])),
@@ -208,12 +211,31 @@ def disassemble(data, segments, objdump):
             continue
         item = dict(item)
         if item["mnemonic"] == "xgetbv":
-            before = instructions[index - 1] if index else None
-            zero = before and before["address"] + len(bytes.fromhex(before["bytes"])) == item["address"] and (
-                before["mnemonic"] in ("xor", "xorl") and re.sub(r"\s", "", before["operands"]) == "%ecx,%ecx"
-                or before["mnemonic"] in ("mov", "movl") and re.sub(r"\s", "", before["operands"]) in ("$0x0,%ecx", "$0,%ecx")
-            )
-            item["adjacent_ecx_zero"] = bool(zero and item["address"] not in targets)
+            cursor = item["address"]
+            zero = False
+            chain = []
+            safe = {"mov", "movb", "movw", "movl", "movq", "lea", "leal", "leaq",
+                    "and", "andl", "andq", "or", "orl", "orq", "add", "addl", "addq",
+                    "sub", "subl", "subq", "cmp", "cmpl", "cmpq", "test", "testl", "testq"}
+            for before in reversed(instructions[max(0, index - 16):index]):
+                if cursor in targets or before["address"] + len(bytes.fromhex(before["bytes"])) != cursor:
+                    break
+                operands = re.sub(r"\s", "", before["operands"])
+                if (before["mnemonic"] in ("xor", "xorl") and operands == "%ecx,%ecx"
+                        or before["mnemonic"] in ("mov", "movl") and operands in ("$0x0,%ecx", "$0,%ecx")):
+                    zero = True
+                    chain.insert(0, before)
+                    break
+                if before["mnemonic"] not in safe:
+                    break
+                destination = operands.rsplit(",", 1)[-1]
+                if not before["mnemonic"].startswith(("cmp", "test")) and re.search(r"%(?:rcx|ecx|cx|cl|ch)\b", destination):
+                    break
+                chain.insert(0, before)
+                cursor = before["address"]
+            item["adjacent_ecx_zero"] = bool(zero and len(chain) == 1)
+            item["straightline_ecx_zero"] = zero
+            item["selector_proof_instructions"] = chain if zero else []
             item["requires_reviewed_control_flow_proof"] = True
         sites.append(item)
     return sites
@@ -271,15 +293,22 @@ def inventory(root, objdump="objdump"):
             files.append(item)
 
     walk(root)
+    sonames = {}
+    for name, record in artifacts.items():
+        soname = record["soname"]
+        if soname:
+            if soname in sonames and sonames[soname] != record["sha256"]:
+                raise Rejected(f"ambiguous differing ELF SONAME: {soname}")
+            sonames[soname] = record["sha256"]
     for name, record in artifacts.items():
         closure = []
-        if record["interpreter"]:
-            raise Rejected(f"dynamic interpreters are not modeled: {name}: {record['interpreter']}")
+        if record["interpreter"] and record["interpreter"] != GLIBC_INTERPRETER:
+            raise Rejected(f"unsupported dynamic interpreter: {name}: {record['interpreter']}")
         if record["needed"] and any(f["path"].startswith("/etc/ld-musl-") for f in files):
             raise Rejected(f"musl loader configuration is not modeled: {name}")
-        if record["needed"] and (record["rpath"] or (root / "etc/ld.so.cache").exists()):
-            raise Rejected(f"unsupported RPATH or loader cache: {name}")
-        if record["needed"] and any(f["path"].endswith("/glibc-hwcaps") for f in files):
+        if record["rpath"] or record["runpath"] or ((record["interpreter"] or record["dynamic"]) and any(f["path"] == "/etc/ld.so.cache" for f in files)):
+            raise Rejected(f"unsupported RPATH/RUNPATH or loader cache: {name}")
+        if (record["interpreter"] or record["dynamic"]) and any(f["path"].endswith("/glibc-hwcaps") for f in files):
             raise Rejected(f"unsupported hardware-capability library search: {name}")
         wanted = [("interpreter", record["interpreter"])] if record["interpreter"] else []
         wanted += [("needed", n) for n in record["needed"]]
@@ -289,15 +318,10 @@ def inventory(root, objdump="objdump"):
             if "/" in dependency:
                 candidates = [guest_path(dependency)]
             else:
-                paths = record["runpath"] or record["rpath"]
-                search = []
-                for paths_value in paths:
-                    for part in paths_value.split(":"):
-                        part = part.replace("${ORIGIN}", str(Path(name).parent)).replace("$ORIGIN", str(Path(name).parent))
-                        if "$" in part or not part.startswith("/"):
-                            raise Rejected(f"unsupported dynamic search path in {name}: {part!r}")
-                        search.append(guest_path(part))
-                candidates = [p + "/" + dependency for p in (*search, *LIBRARIES)]
+                candidates = [p + "/" + dependency for p in LIBRARIES]
+                if dependency == "ld-linux-x86-64.so.2":
+                    candidates.insert(0, GLIBC_INTERPRETER)
+            matches = []
             for candidate in candidates:
                 try:
                     resolved, links = resolve(root, candidate)
@@ -305,17 +329,28 @@ def inventory(root, objdump="objdump"):
                     continue
                 if resolved not in artifacts:
                     raise Rejected(f"dependency is not an inventoried x86 ELF: {name} -> {resolved}")
-                closure.append({"kind": kind, "requested": dependency, "resolved": resolved, "sha256": artifacts[resolved]["sha256"], "symlinks": links})
-                break
-            else:
+                matches.append({"kind": kind, "requested": dependency, "resolved": resolved, "sha256": artifacts[resolved]["sha256"], "symlinks": links})
+            if not matches:
                 raise Rejected(f"missing ELF dependency: {name} -> {dependency}")
+            if len({match["sha256"] for match in matches}) != 1:
+                raise Rejected(f"ambiguous differing ELF dependency: {name} -> {dependency}")
+            closure.append(matches[0])
         record["dependencies"] = closure
+    for name, record in artifacts.items():
+        visited, pending = set(), [edge["resolved"] for edge in record["dependencies"]]
+        while pending:
+            dependency = pending.pop()
+            if dependency in visited:
+                continue
+            visited.add(dependency)
+            pending.extend(edge["resolved"] for edge in artifacts[dependency]["dependencies"])
+        record["transitive_dependencies"] = {path: artifacts[path]["sha256"] for path in sorted(visited)}
     return {
         "version": 1, "mode": "candidate", "admitted": False,
         "rootfs_sha256": digest(json.dumps(sorted(files, key=lambda f: f["path"]), sort_keys=True, separators=(",", ":")).encode()),
         "files": files, "artifacts": artifacts,
         "required_scope": SCOPE,
-        "limitations": ["Static scan does not enforce startup environment, runtime W^X, or generated-code restrictions.", "Requires immutable controlled rootfs and reviewed trusted control flow; no arbitrary-binary admission.", "Dynamic interpreters are unsupported and rejected; musl loader configuration with dependencies is rejected. Loader overrides are forbidden by reviewed scope; DT_RPATH, loader caches and glibc-hwcaps with dynamic dependencies are rejected. Default library search ordering requires deployment review."],
+        "limitations": ["Static scan does not enforce startup environment, runtime W^X, or generated-code restrictions.", "Requires immutable controlled rootfs and reviewed trusted control flow; no arbitrary-binary admission.", "Only digest-reviewed glibc at /lib64/ld-linux-x86-64.so.2 is supported; musl loader configuration with dependencies is rejected. Loader overrides are forbidden by reviewed scope; DT_RPATH/DT_RUNPATH, loader caches and glibc-hwcaps with dynamic dependencies are rejected. Default library search ordering requires deployment review."],
     }, contents
 
 
@@ -348,6 +383,17 @@ def verify(report, contents, baseline, baseline_dir):
         approved = baseline.get("artifacts")
         if not isinstance(approved, dict) or set(approved) != set(report["artifacts"]):
             raise Rejected("missing/unreviewed ELF or stale artifact approval")
+        dynamic = any(a["interpreter"] or a["needed"] for a in report["artifacts"].values())
+        if dynamic:
+            loader = baseline.get("glibc_loader", {})
+            artifact = report["artifacts"].get(GLIBC_INTERPRETER)
+            if not artifact or artifact["soname"] != "ld-linux-x86-64.so.2":
+                raise Rejected("missing canonical glibc loader with reviewed SONAME")
+            if loader.get("path") != GLIBC_INTERPRETER or loader.get("sha256") != artifact["sha256"]:
+                raise Rejected("missing/unreviewed glibc loader digest")
+            if loader.get("default_directories") != list(LIBRARIES):
+                raise Rejected("unreviewed glibc default directories")
+            evidence(loader.get("loader_evidence"), baseline_dir)
         for name, record in report["artifacts"].items():
             item = approved[name]
             if not isinstance(item, dict):
@@ -355,6 +401,9 @@ def verify(report, contents, baseline, baseline_dir):
             if item.get("sha256") != record["sha256"]:
                 raise Rejected(f"ELF digest differs: {name}")
             evidence(item.get("review_evidence"), baseline_dir)
+            if record["needed"] or record["interpreter"]:
+                if item.get("dependencies") != record["dependencies"] or item.get("transitive_dependencies") != record["transitive_dependencies"]:
+                    raise Rejected(f"unreviewed dependency graph: {name}")
             if record["executable_stack"]:
                 raise Rejected(f"executable ELF stack: {name}")
             if record["writable_executable_segments"]:
@@ -366,7 +415,7 @@ def verify(report, contents, baseline, baseline_dir):
             if {s["address"] for s in selectors} != observed:
                 raise Rejected(f"unreviewed/stale XGETBV selector: {name}")
             for site in record["sites"]:
-                if site["mnemonic"] == "xgetbv" and not site["adjacent_ecx_zero"]:
+                if site["mnemonic"] == "xgetbv" and not site["straightline_ecx_zero"]:
                     raise Rejected(f"unproved XGETBV selector: {name}:{site['address']:#x}")
             for selector in selectors:
                 if selector.get("selector") != 0:

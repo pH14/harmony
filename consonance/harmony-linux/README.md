@@ -147,10 +147,9 @@ runtime and workload rootfs trees with GNU `objdump` available (`--objdump`
 selects its executable). Every regular file is read and hashed, including ELF
 files without execute permissions, shared libraries, and possible `dlopen`
 inputs. Symlink paths are interpreted inside the guest root. DT_NEEDED edges record the resolved ELF digest and traversed symlinks.
-Dynamic PT_INTERP executables are unsupported and rejected until their loader
-semantics are modeled; musl loader configuration with dependencies is also rejected. Missing
-or unsupported dependencies fail; DT_RPATH, loader caches, and glibc-hwcaps
-search with dynamic dependencies are currently unsupported and rejected.
+Only the explicitly reviewed glibc interpreter is supported for dynamic
+executables. Missing or ambiguous dependencies fail; RPATH/RUNPATH, loader
+caches, musl loader configuration, and glibc-hwcaps search are rejected.
 
 `scripts/x86-xstate-admission.py verify ROOTFS --baseline reviewed.json --output result.json`
 requires a human-reviewed baseline. There is no baseline generator or bundled
@@ -165,10 +164,9 @@ and non-ELF inputs also invalidate review.
 
 Executable PT_LOAD bytes are disassembled to inventory XSAVE-family saves,
 restores, FXSAVE/FXRSTOR, and XGETBV. Writable executable PT_LOAD segments are
-rejected, as are executable PT_GNU_STACK declarations. Every XGETBV requires an adjacent ECX-zero instruction with no
-observed direct branch to the XGETBV, plus an artifact `xgetbv` entry recording
-`address`, `selector: 0`, and `control_flow_evidence`. More complex valid ECX-zero
-sequences currently fail closed. Review must establish no alternate/indirect
+rejected, as are executable PT_GNU_STACK declarations. Every XGETBV requires a proven ECX-zero instruction sequence, plus an
+artifact `xgetbv` entry recording
+`address`, `selector: 0`, and `control_flow_evidence`. Sequences outside the bounded recognition rules fail closed. Review must establish no alternate/indirect
 entry bypasses that initialization.
 
 Forbidden saves require an explicit artifact `resolver_regions` entry with
@@ -194,3 +192,42 @@ Run `python3 scripts/test_x86_xstate_admission.py -v` on a host with GNU objdump
 instruction decoding, changed ELF hashes, missing dependencies, non-executable
 ELF discovery, symlink resolution, selector failures, W+X segments, read errors,
 changed review evidence, ownership/xattr mutations, unreadable xattrs, and unsupported loader configurations.
+
+The x86 scanner supports the controlled glibc interpreter path
+`/lib64/ld-linux-x86-64.so.2` with the observed default search directories
+`/lib/x86_64-linux-gnu`, `/usr/lib/x86_64-linux-gnu`, `/lib`, and `/usr/lib`.
+It rejects other interpreters, loader caches, RPATH/RUNPATH and glibc-hwcaps
+search. The loader's own SONAME dependency resolves to that canonical
+interpreter. Different file digests matching the same dependency search are
+ambiguous and rejected. Each ELF records direct dependency paths, hashes and
+symlink traversals, plus its complete transitive path/hash graph.
+
+Dynamic verification requires an explicit baseline `glibc_loader` object:
+`path`, `sha256`, `default_directories` (the ordered directories above), and
+`loader_evidence` (the usual relative file/SHA256 proof reference). Review must
+establish that this exact loader implements the modeled search semantics and
+that launch arguments/environment introduce no override, preload, auditing,
+profiling or alternate loading behavior. Each artifact's reviewed `dependencies`
+and `transitive_dependencies` must exactly match the inventory. No loader digest
+is automatically approved or supplied as a generic default.
+
+This supports candidate inventory of the pruned controlled PostgreSQL image;
+it does not qualify that image. All executable instruction sites, loader
+resolver regions, runtime dlopen paths and controlled no-JIT/startup-binding
+obligations still require the existing digest-bound reviews.
+
+Further fail-closed checks reject different ELF digests declaring the same
+SONAME anywhere in the rootfs. RPATH/RUNPATH are rejected even without
+DT_NEEDED; a loader-cache entry (including a dangling symlink) is rejected for
+ELFs with PT_DYNAMIC or an interpreter. Hardware-capability search is likewise
+unsupported for dynamic code.
+
+XGETBV selector recognition accepts a bounded straight-line sequence of at most
+16 preceding instructions: explicit ECX zeroing followed by whitelisted
+MOV/LEA/arithmetic/CMP/TEST instructions that preserve ECX. Calls, branches,
+unknown instructions, ECX or partial-register writes, discontinuous decoding,
+and observed direct entries that bypass zeroing stop the proof. Candidate
+`straightline_ecx_zero` and `selector_proof_instructions` retain the result and
+exact supporting instruction sequence. Digest-bound human control-flow evidence
+is still required to exclude alternate indirect entry; there is no generic
+manual override for an unproved selector. `adjacent_ecx_zero` remains diagnostic.

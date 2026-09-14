@@ -13,19 +13,19 @@ a = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(a)
 
 
-def fixture(code=b"\xc3", flags=5, needed=None):
+def fixture(code=b"\xc3", flags=5, needed=None, soname=None):
     payload = bytearray(code)
     count = 1
-    if needed:
+    if needed or soname:
         count = 2
         payload.extend(bytes(0x100 - len(payload)))
-        strings = b"\0" + needed.encode() + b"\0"
+        strings = b"\0" + (needed or soname).encode() + b"\0"
         payload.extend(strings)
         payload.extend(bytes(0x200 - len(payload)))
-        payload.extend(b"".join(struct.pack("<qQ", *v) for v in [(1, 1), (5, 0x400100), (10, len(strings)), (0, 0)]))
+        payload.extend(b"".join(struct.pack("<qQ", *v) for v in [(1 if needed else 14, 1), (5, 0x400100), (10, len(strings)), (0, 0)]))
     header = struct.pack("<16sHHIQQQIHHHHHH", b"\x7fELF\x02\x01\x01" + bytes(9), 2, 62, 1, 0x400000, 64, 0, 0, 64, 56, count, 0, 0, 0)
     header += struct.pack("<IIQQQQQQ", 1, flags, 0x1000, 0x400000, 0, len(payload), len(payload), 0x1000)
-    if needed:
+    if needed or soname:
         header += struct.pack("<IIQQQQQQ", 2, 4, 0x1200, 0x400200, 0, 64, 64, 8)
     return header + bytes(0x1000 - len(header)) + payload
 
@@ -51,6 +51,7 @@ class AdmissionTests(unittest.TestCase):
         return {"version": 1, "reviewed_by": "unit-test fixture", "scope": a.SCOPE,
                 "scope_evidence": self.ref, "rootfs_sha256": report["rootfs_sha256"],
                 "artifacts": {name: {"sha256": item["sha256"], "review_evidence": self.ref,
+                    "dependencies": item.get("dependencies", []), "transitive_dependencies": item.get("transitive_dependencies", {}),
                     "xgetbv": [{"address": site["address"], "selector": 0, "control_flow_evidence": self.ref}
                                for site in item["sites"] if site["mnemonic"] == "xgetbv"]}
                     for name, item in report["artifacts"].items()}}
@@ -96,14 +97,14 @@ class AdmissionTests(unittest.TestCase):
 
     def test_dependency_symlink_and_full_inventory(self):
         self.binary.write_bytes(fixture(needed="libfixture.so"))
-        (self.root / "lib64").mkdir()
+        (self.root / "lib").mkdir()
         (self.root / "hidden").mkdir()
         (self.root / "hidden/library").write_bytes(fixture())
-        (self.root / "lib64/libfixture.so").symlink_to("/hidden/library")
+        (self.root / "lib/libfixture.so").symlink_to("/hidden/library")
         report, data = self.scan()
         dep = report["artifacts"]["/unexecutable"]["dependencies"][0]
         self.assertEqual(dep["resolved"], "/hidden/library")
-        self.assertEqual(dep["symlinks"], [{"path": "/lib64/libfixture.so", "target": "/hidden/library"}])
+        self.assertEqual(dep["symlinks"], [{"path": "/lib/libfixture.so", "target": "/hidden/library"}])
         baseline = self.baseline(report)
         del baseline["artifacts"]["/hidden/library"]
         self.assertFalse(self.admitted(report, data, baseline))
@@ -167,8 +168,91 @@ class AdmissionTests(unittest.TestCase):
         struct.pack_into("<IIQQQQQQ", data, 120, 3, 4, len(data), 0, 0, len(interpreter), len(interpreter), 1)
         data.extend(interpreter)
         self.binary.write_bytes(data)
-        with self.assertRaisesRegex(a.Rejected, "dynamic interpreters are not modeled"):
+        with self.assertRaisesRegex(a.Rejected, "unsupported dynamic interpreter"):
             self.scan()
+
+    def dynamic_tree(self):
+        data = bytearray(fixture(needed="libfixture.so"))
+        interpreter = a.GLIBC_INTERPRETER.encode() + b"\0"
+        struct.pack_into("<H", data, 56, 3)
+        struct.pack_into("<IIQQQQQQ", data, 176, 3, 4, len(data), 0, 0, len(interpreter), len(interpreter), 1)
+        data.extend(interpreter)
+        self.binary.write_bytes(data)
+        (self.root / "lib64").mkdir()
+        (self.root / "lib64/ld-linux-x86-64.so.2").write_bytes(fixture(soname="ld-linux-x86-64.so.2"))
+        (self.root / "lib").mkdir()
+        (self.root / "lib/libfixture.so").write_bytes(fixture())
+
+    def loader_review(self, report):
+        return {"path": a.GLIBC_INTERPRETER, "sha256": report["artifacts"][a.GLIBC_INTERPRETER]["sha256"],
+                "default_directories": list(a.LIBRARIES), "loader_evidence": self.ref}
+
+    def test_glibc_requires_digest_and_graph_review(self):
+        self.dynamic_tree()
+        report, data = self.scan()
+        baseline = self.baseline(report)
+        self.assertFalse(self.admitted(report, data, baseline))
+        baseline["glibc_loader"] = self.loader_review(report)
+        self.assertTrue(self.admitted(report, data, baseline))
+        baseline["glibc_loader"]["sha256"] = "wrong"
+        self.assertFalse(self.admitted(report, data, baseline))
+        baseline["glibc_loader"] = self.loader_review(report)
+        baseline["artifacts"]["/unexecutable"]["transitive_dependencies"] = {}
+        self.assertFalse(self.admitted(report, data, baseline))
+
+    def test_missing_transitive_dependency(self):
+        self.dynamic_tree()
+        (self.root / "lib/libfixture.so").write_bytes(fixture(needed="libmissing.so"))
+        with self.assertRaisesRegex(a.Rejected, "missing ELF dependency"):
+            self.scan()
+
+    def test_loader_cache_rejected(self):
+        self.dynamic_tree()
+        (self.root / "etc").mkdir()
+        (self.root / "etc/ld.so.cache").write_bytes(b"cache")
+        with self.assertRaisesRegex(a.Rejected, "loader cache"):
+            self.scan()
+
+    def test_ambiguous_library_rejected(self):
+        self.dynamic_tree()
+        (self.root / "usr/lib").mkdir(parents=True)
+        (self.root / "usr/lib/libfixture.so").write_bytes(fixture(b"\x90\xc3"))
+        with self.assertRaisesRegex(a.Rejected, "ambiguous differing"):
+            self.scan()
+
+    def test_differing_duplicate_sonames_rejected(self):
+        self.binary.write_bytes(fixture(soname="libsame.so"))
+        (self.root / "elsewhere").write_bytes(fixture(b"\x90\xc3", soname="libsame.so"))
+        with self.assertRaisesRegex(a.Rejected, "differing ELF SONAME"):
+            self.scan()
+
+    def test_no_needed_dynamic_paths_rejected(self):
+        for tag in (15, 29):
+            data = bytearray(fixture(soname="/lib"))
+            struct.pack_into("<q", data, 0x1200, tag)
+            self.binary.write_bytes(data)
+            with self.assertRaisesRegex(a.Rejected, "RPATH/RUNPATH"):
+                self.scan()
+        self.binary.write_bytes(fixture(soname="libfixture.so"))
+        (self.root / "etc").mkdir()
+        (self.root / "etc/ld.so.cache").symlink_to("/does-not-exist")
+        with self.assertRaisesRegex(a.Rejected, "loader cache"):
+            self.scan()
+
+    def test_straightline_xgetbv_proof(self):
+        cases = [
+            (b"\x31\xc9\xb8\x01\0\0\0\x09\xd0\x0f\x01\xd0\xc3", True),
+            (b"\x31\xc9\xb9\x01\0\0\0\x0f\x01\xd0\xc3", False),
+            (b"\x31\xc9\xb1\x01\x0f\x01\xd0\xc3", False),
+            (b"\x31\xc9\xeb\x00\x0f\x01\xd0\xc3", False),
+            (b"\x31\xc9\xe8\0\0\0\0\x0f\x01\xd0\xc3", False),
+            (b"\xeb\x02\x31\xc9\xb8\x01\0\0\0\x0f\x01\xd0\xc3", False),
+        ]
+        for code, accepted in cases:
+            with self.subTest(code=code.hex()):
+                self.binary.write_bytes(fixture(code))
+                report, data = self.scan()
+                self.assertEqual(self.admitted(report, data, self.baseline(report)), accepted)
 
     def test_musl_configuration_rejected(self):
         self.binary.write_bytes(fixture(needed="libfixture.so"))

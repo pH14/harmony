@@ -46,7 +46,6 @@ create an `ld.so.cache`; its recorded glibc loader resolves libraries through
 its default directories. Adding an extension or provider requires rebuilding
 and reviewing the complete ELF dependency inventory before qualification.
 
-
 The Docker and K3s recipes retain nested container software and their
 application setup. K3s also builds pinned iptables 1.8.11 from source with a
 musl static compiler and packages the `iptables`, `iptables-restore`, and
