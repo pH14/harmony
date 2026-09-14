@@ -37,7 +37,7 @@ The per-thread instruction breakpoint is architecture-native.
  obj-$(CONFIG_MCHP_LAN966X_PCI)	+= lan966x-pci.o
 --- /dev/null
 +++ b/drivers/misc/harmony_park.c
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,412 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * /dev/harmony-park: hold one thread of a workload at an instruction.

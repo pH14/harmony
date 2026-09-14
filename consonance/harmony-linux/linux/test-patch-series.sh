@@ -25,6 +25,29 @@ bash "$apply" "$scratch/tree" "$scratch/common" "$scratch/arch"
 [ "$(cat "$scratch/tree/value")" = three ]
 
 park_patch=$(cd "$(dirname "$0")" && pwd)/patches/common/0003-harmony-task-park.patch
+if ! awk '
+    function verify() {
+        if (in_file && actual != declared)
+            exit 1
+    }
+    $1 == "@@" && $2 == "-0,0" && $3 ~ /^\+1,[0-9]+$/ {
+        verify()
+        split($3, fields, ",")
+        declared = fields[2] + 0
+        actual = 0
+        in_file = 1
+        next
+    }
+    in_file && /^--- \/dev\/null$/ {
+        verify()
+        in_file = 0
+    }
+    in_file && /^\+/ { actual++ }
+    END { verify() }
+' "$park_patch"; then
+    echo 'FAIL: task-park patch hunk length does not match its file body' >&2
+    exit 1
+fi
 grep -qF $'+\tif (park->parked_ns >= (u64)KTIME_MAX ||' "$park_patch"
 grep -qF $'+\t\tpark->deadline_ns = (u64)KTIME_MAX;' "$park_patch"
 if grep -qF $'+\tpark->deadline_ns = park->parked_ns + park->hold_ns;' "$park_patch"; then
