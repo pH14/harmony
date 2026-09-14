@@ -223,6 +223,11 @@ mod tests {
                 armed: true
             })
         );
+        frame[16..24].copy_from_slice(&2_u64.to_le_bytes());
+        assert_eq!(
+            decode_reply(Command::ParkStatus, &frame),
+            Err(ProtocolError::InvalidArmed)
+        );
     }
 
     #[test]
