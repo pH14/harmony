@@ -46,7 +46,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            build-essential curl git unzip python3 python3-pil cc65
+            build-essential curl git make unzip python3 python3-pil cc65
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: workloads/nes -> target
@@ -55,6 +55,7 @@ jobs:
           set -euo pipefail
           workloads/nes/scripts/build-nova-rom.sh "${ASSET_ROOT}/nova"
           workloads/nes/scripts/build-stb-rom.sh "${ASSET_ROOT}/stb"
+          workloads/nes/scripts/build-thwaite-rom.sh "${ASSET_ROOT}/thwaite"
           scripts/build-quicknes-core.sh "${ASSET_ROOT}/quicknes_libretro.so"
           python3 - <<'PY'
           import hashlib
@@ -66,6 +67,7 @@ jobs:
               'core': root / 'quicknes_libretro.so',
               'nova': root / 'nova' / 'nova.nes',
               'stb': root / 'stb' / 'stb.nes',
+              'thwaite': root / 'thwaite' / 'thwaite.nes',
           }
           inventory = {
               name: {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}

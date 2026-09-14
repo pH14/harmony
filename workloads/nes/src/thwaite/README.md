@@ -164,20 +164,27 @@ rejected.
 
 ## Continuous evaluation
 
-[Search evaluation checks](../../../../.github/workflows/search-eval.yml) run
-the [Thwaite evaluation action](../../../../.github/actions/thwaite-evaluation/action.yml):
-a four-execution smoke with a wall limit on relevant PRs and main changes, and a
-20,000-execution seed-1 soak on manual dispatch. The correctness probe checks
-the sealed genesis, neutral input, per-silo fire ownership, aiming directions,
-restored continuations, and the admission probe before search runs. The campaign
-then compares live and replayed reports and checkpoint bytes and verifies the
-headless and rendered endpoints.
+Thwaite is a registered case in the shared roster, not a lane of its own. The
+`thwaite-campaign` case in [`benchmarks/search/nightly.json`](../../../../benchmarks/search/nightly.json)
+runs through the common `nes-eval` runner in the scheduled and manual
+[Benchmarks / NES panel](../../../../.github/workflows/nova-nightly.yml),
+alongside the Nova and Super Tilt Bro cases, and its row appears in the same
+exported roster and HTML report. The panel builds the pinned ROM from source
+and measures its digest into the shared asset inventory.
 
-The registered lanes are fixed-execution soaks. Surviving all 35 hours is the
-declared objective and the action can require a target
-(`THWAITE_REQUIRE_SURVIVAL=true`, which also stops the campaign once the target
-hour is reached), but no repository CI run has demonstrated one, so no lane
-requires it.
+The case takes the panel's shared budget with three overrides, each for a
+reason measured rather than assumed:
+
+| setting | value | why |
+| --- | --- | --- |
+| `executions` | 500,000 | matches `nova-full`; depth keeps climbing well past the shared 100,000 |
+| `actions` | 8,192 | 35 hours is roughly 70,000 frames, far beyond the shared 512-action horizon |
+| `selector` | `..._energy_progress_cheapest_v1:3,6,12,2` | the shared frontier-cheapest selector never consults `progress_cmp`, so it has no hour-to-hour gradient |
+| `suffix` | `one_to_six` | the shared bounded suffix caps a suffix at three action costs, roughly halving the per-execution advance that dominates depth here |
+
+An optional `level` on the case sets the survival target in `1..=35`; omitted,
+the target is the full campaign. `stage`, `ai`, and `whole_game` are rejected,
+because Thwaite has one origin and no level select.
 
 Measured depth on one Linux box, seed 1, three workers, an 8,192-action horizon
 and the policy above:
@@ -192,15 +199,12 @@ The superseded `..._wave_phase_v1` key policy, which keyed the crosshair and
 capped holds at 48 frames, reached two hours at 163,000 executions on the same
 box and seed. These are measured outcomes for one seed, not golden values, and
 the cost of each additional hour grows roughly eightfold, so the full campaign
-is an open problem for this policy rather than a budget away. CI does not retry,
-change seed, or alter search policy.
+is an open problem for this policy rather than a budget away. The case is not
+marked `require_solved`: no run has survived all 35 hours.
 
-Artifacts are retained for 30 days: summary and progress, full champion input
-and observation, campaign/replay reports, control probe, the full champion film
-plus 180 neutral frames, and source/licence notices with checksums. CI compares
-the champion and rendered tapes/observations and counts encoded video frames so
-the film includes the entire input and tail. ROMs, debug symbols, cores,
-snapshots, and raw media are excluded.
+The standalone `thwaite-campaign` binary remains the way to render a film and
+to check replay, checkpoint and rendered-endpoint equality directly; it is not
+wired into CI.
 
 To reproduce one CI campaign locally after the source build, from the repository
 root:

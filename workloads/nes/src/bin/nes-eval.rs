@@ -27,6 +27,10 @@ use nes_workload::{
         campaign::{StbCampaignRun, StbGame},
         target::StbAi,
     },
+    thwaite::{
+        campaign::{ThwaiteCampaignRun, ThwaiteGame},
+        target::CAMPAIGN_HOURS,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -389,6 +393,19 @@ fn main() -> Result<()> {
         "stb" if request.level.is_some() || request.stage.is_some() || request.whole_game => {
             return Err("STB evaluation takes only an ai option".into());
         }
+        "thwaite"
+            if request.stage.is_some()
+                || request.ai.is_some()
+                || request.whole_game
+                || request
+                    .level
+                    .is_some_and(|hours| hours == 0 || u16::from(hours) > CAMPAIGN_HOURS) =>
+        {
+            return Err(
+                "Thwaite evaluation takes an optional level as its survival target in 1..=35; stage, ai and whole_game are unsupported"
+                    .into(),
+            );
+        }
         _ => {}
     }
     let p = &request.core;
@@ -458,6 +475,18 @@ fn main() -> Result<()> {
                 started,
             )
         }
+        "thwaite" => evaluate(
+            ThwaiteGame::with_survival_hours(
+                &rom,
+                p,
+                h,
+                request.level.map_or(CAMPAIGN_HOURS, u16::from),
+            ),
+            ThwaiteCampaignRun,
+            &request,
+            &out,
+            started,
+        ),
         _ => Err("unsupported game".into()),
     }
 }

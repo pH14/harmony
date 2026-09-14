@@ -41,7 +41,7 @@ that experiment does not provide SMB acceptance evidence.
 | Mega Man 2/native | All eight independent stage origins pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
 | Super Tilt Bro/native | `search-eval.yml` (bounded checks) and the scheduled/manual `nova-nightly.yml` capability panel build the pinned ROM and evaluate Easy/Fair/Hard AI through the common `nes-eval` runner. Hard retains its victory requirement in the public panel. | Host QuickNES core and the pinned source-built offline UNROM game. |
-| Thwaite/native | `search-eval.yml` builds the pinned ROM and runs the control probe, search, recorded replay, and film through the dedicated `thwaite-campaign` binary: a bounded PR smoke and a manual-dispatch soak. Its objective is hours survived across the 35-hour campaign; local seed-1 searches reach three hours. It is not in the `nes-eval` roster or the nightly panel. | Host QuickNES core and the pinned source-built NROM game. |
+| Thwaite/native | The `thwaite-campaign` case in the scheduled/manual capability panel builds the pinned ROM and searches it through the common `nes-eval` runner. Its objective is hours survived across the 35-hour campaign; local seed-1 searches reach three hours. | Host QuickNES core and the pinned source-built NROM game. |
 
 On Linux/KVM, the shared oracle is invoked as:
 
@@ -84,7 +84,8 @@ described above, with minimal game guidance.
 ## Local evaluation matrix
 
 [`benchmarks/search`](../../benchmarks/search/README.md) supplies one compact
-native `nes-eval` runner for SMB, Nova, Mega Man 2, Metroid, and Super Tilt Bro.
+native `nes-eval` runner for SMB, Nova, Mega Man 2, Metroid, Super Tilt Bro, and
+Thwaite.
 ROM/core hashes, origin definitions, complete adapter policy identities,
 resource budgets, verification, and immutable export are shared across games.
 Licensed ROMs stay in a private host inventory. Source-built games and generic
@@ -92,10 +93,8 @@ runner/engine tests can run in ordinary CI.
 
 The scheduled/manual public capability panel is registered in
 `benchmarks/search/nightly.json` and reports isolated Nova levels, whole-game
-Nova, and STB in one common roster. It intentionally does not include licensed
-SMB, Mega Man 2, or Metroid. Thwaite is not in that roster either: it runs
-through its own campaign binary and CI action, and joining the common runner
-would need a `nes-eval` case of its own. Run the full private evaluation and the separate
+Nova, STB, and the Thwaite campaign in one common roster. It intentionally does
+not include licensed SMB, Mega Man 2, or Metroid. Run the full private evaluation and the separate
 SMB reference manifest with `benchmarks/search/run-private.sh` on a Linux host
 that already has the caller's asset inventory; those reports remain local.
 

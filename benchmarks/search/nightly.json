@@ -102,6 +102,19 @@
       "search": {
         "executions": 20000
       }
+    },
+    {
+      "id": "thwaite-campaign",
+      "game": "thwaite",
+      "origin": "power-on first hour genesis; all 35 campaign hours required",
+      "rom_sha256": "ee51cd9562f28195ba015d9857c6c4fc9bf67cdfb213e95f655e586b92195173",
+      "search": {
+        "executions": 500000,
+        "actions": 8192,
+        "wall_seconds": 3300,
+        "selector": "hierarchy_uniform_128_energy_progress_cheapest_v1:3,6,12,2",
+        "suffix": "one_to_six"
+      }
     }
   ]
 }
