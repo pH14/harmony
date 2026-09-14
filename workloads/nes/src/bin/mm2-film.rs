@@ -89,7 +89,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut applied = 1_usize;
     for action in &input.actions[1..] {
-        if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+        // The target refuses actions once a boss is down, so counting them
+        // would claim the whole tape was applied.
+        if target.is_dead() || target.defeated_a_boss() || target.exit_kind() != ExitKind::Ok {
             break;
         }
         target.apply(action);

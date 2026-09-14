@@ -621,14 +621,12 @@ fn main() -> Result<()> {
                 let game = MetroidGame::new(&rom, p, h)
                     .with_chord_correlation(chord_correlation)
                     .with_milestone_input_dir(out.join("milestone-inputs"))
-                    .with_terminal_policy(
-                        nes_workload::metroid::target::MetroidTerminalPolicy::parse(
-                            request
-                                .metroid_terminal
-                                .as_deref()
-                                .unwrap_or("death_or_ending_v2"),
-                        )?,
-                    );
+                    .with_terminal_policy(match request.metroid_terminal.as_deref() {
+                        Some(identifier) => {
+                            nes_workload::metroid::target::MetroidTerminalPolicy::parse(identifier)?
+                        }
+                        None => nes_workload::metroid::target::MetroidTerminalPolicy::default(),
+                    });
                 #[cfg(feature = "metroid-boss-context-audit")]
                 let game = game.with_endpoint_encounter_path(out.join(ENDPOINT_ENCOUNTER_ARTIFACT));
                 if request.retention_audit {

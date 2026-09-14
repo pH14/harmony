@@ -4,7 +4,7 @@
 use nes_workload::{
     metroid::{
         progress::{NamedProgress, area_name},
-        target::{MetroidInput, MetroidTarget},
+        target::{MetroidInput, MetroidTarget, MetroidTerminalPolicy},
     },
     mm2::target::{Mm2Stage, Mm2Target},
     target::{ExitKind, Target},
@@ -42,7 +42,10 @@ fn replay(
     if game != "metroid" {
         return Err("game must be metroid or mm2".into());
     }
-    let mut target = MetroidTarget::from_rom_bytes_headless(rom, core, core_hash)?;
+    // The tapes replayed here were recorded before the BCD-borrow predicate
+    // existed, so the historical predicate is the one that reproduces them.
+    let mut target = MetroidTarget::from_rom_bytes_headless(rom, core, core_hash)?
+        .with_terminal_policy(MetroidTerminalPolicy::Legacy);
     let setup_frames = target.frames_clocked();
     let mut progress = NamedProgress::default();
     let mut cells = BTreeSet::new();

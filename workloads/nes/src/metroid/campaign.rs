@@ -152,7 +152,7 @@ impl MetroidGame {
             endpoint_encounter_path: None,
             retention_audit: None,
             retention_capture: None,
-            terminal_policy: MetroidTerminalPolicy::Legacy,
+            terminal_policy: MetroidTerminalPolicy::default(),
         }
     }
 
@@ -777,7 +777,7 @@ impl Reporting for MetroidGame {
                 cell[0] + 1,
                 cell[1].max(u64::from(state.health)),
                 cell[2].max(u64::from(state.missiles)),
-                cell[3].max(u64::from(state.equipment)),
+                cell[3] | u64::from(state.equipment),
                 cell[4].saturating_add(selections),
             ];
             let held = kit
@@ -1489,7 +1489,8 @@ mod tests {
 
     #[test]
     fn terminal_semantics_require_a_matching_replay_context() {
-        let legacy = MetroidGame::new(&[0], Path::new("unused"), "test");
+        let legacy = MetroidGame::new(&[0], Path::new("unused"), "test")
+            .with_terminal_policy(MetroidTerminalPolicy::Legacy);
         let corrected = MetroidGame::new(&[0], Path::new("unused"), "test")
             .with_terminal_policy(MetroidTerminalPolicy::BcdUnderflow);
         let old = legacy.policies(&MetroidCampaignRun);
@@ -1501,6 +1502,12 @@ mod tests {
         assert_eq!(
             old.iter().filter(|(k, v)| new.get(*k) != Some(*v)).count(),
             1
+        );
+        let unset = MetroidGame::new(&[0], Path::new("unused"), "test");
+        assert!(
+            corrected
+                .resolve_recorded(&unset.policies(&MetroidCampaignRun))
+                .is_ok()
         );
     }
 

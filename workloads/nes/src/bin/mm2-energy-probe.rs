@@ -76,6 +76,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("# dead at action {}", index + 1);
             break;
         }
+        // The target refuses actions once a boss is down, so every later row
+        // would repeat this one.
+        if target.defeated_a_boss() {
+            println!("# boss defeated at action {}", index + 1);
+            break;
+        }
     }
     Ok(())
 }

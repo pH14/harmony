@@ -22,7 +22,7 @@ use std::{
 
 use machine::quicknes::VideoFrame;
 use nes_workload::{
-    metroid::target::{MetroidInput, MetroidTarget},
+    metroid::target::{MetroidInput, MetroidTarget, MetroidTerminalPolicy},
     target::{ExitKind, Target},
 };
 use sha2::{Digest, Sha256};
@@ -32,8 +32,8 @@ const OUTPUT_WIDTH: u32 = 768;
 const OUTPUT_HEIGHT: u32 = 720;
 const SPEED_FACTOR: u32 = 4;
 
-const USAGE: &str =
-    "usage: metroid-film <input.json> <output.mp4> [--set-resources HEALTH,MISSILES@ACTIONS]";
+const USAGE: &str = "usage: metroid-film <input.json> <output.mp4> [--set-resources HEALTH,MISSILES@ACTIONS] \
+     [--terminal-policy IDENTIFIER]";
 
 struct Intervention {
     health: u16,
@@ -56,10 +56,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input_path = PathBuf::from(args.next().ok_or(USAGE)?);
     let video = PathBuf::from(args.next().ok_or(USAGE)?);
     let mut intervention = None;
+    // A tape recorded under one terminal predicate replays under that same
+    // predicate; the default stops at the BCD borrow value, which a tape
+    // recorded before that policy existed runs straight through.
+    let mut terminal_policy = MetroidTerminalPolicy::default();
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--set-resources" => {
                 intervention = Some(parse_intervention(&args.next().ok_or(USAGE)?)?);
+            }
+            "--terminal-policy" => {
+                terminal_policy = MetroidTerminalPolicy::parse(&args.next().ok_or(USAGE)?)?;
             }
             _ => return Err(USAGE.into()),
         }
@@ -79,7 +86,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core_path)?));
     let input: MetroidInput = serde_json::from_slice(&fs::read(&input_path)?)?;
 
-    let mut target = MetroidTarget::from_rom_bytes_capturing(&rom, &core_path, &core_sha256)?;
+    let mut target = MetroidTarget::from_rom_bytes_capturing(&rom, &core_path, &core_sha256)?
+        .with_terminal_policy(terminal_policy);
 
     // The boot walk to gameplay genesis has already been emulated, so the film
     // opens on the title screen exactly as the machine saw it.
@@ -102,6 +110,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     film.write(&opening, &target.drain_audio())?;
     drop(opening);
+
+    // An intervention point past the end of the tape would produce an
+    // unmodified film that still looks like the intervened run.
+    if let Some(point) = &intervention
+        && !(1..=input.actions.len()).contains(&point.after)
+    {
+        return Err(format!(
+            "the intervention point {} is outside the tape's {} actions",
+            point.after,
+            input.actions.len()
+        )
+        .into());
+    }
 
     let mut applied = 0_usize;
     for action in &input.actions {
@@ -148,6 +169,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "frames": frame_count,
             "duration_seconds": frame_count as f64 / FPS as f64,
             "audio_sample_frames": sample_frames,
+            "terminal_policy": terminal_policy.identifier(),
             "actions_applied": applied,
             "actions_recorded": input.actions.len(),
             "endpoint": target.mechanical_state(),

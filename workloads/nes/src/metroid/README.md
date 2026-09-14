@@ -339,7 +339,7 @@ without preferring a direction in the retention rule. Group identity, opaque qua
 and emulator snapshots remain unchanged. Both arms of a motion-retention
 comparison use this same metadata and memory accounting.
 
-The feature records key policy v10 with the ordinary 16-pixel geometry, or v11
+The feature records key policy v11 with the ordinary 16-pixel geometry, or v12
 if combined with the separate refined-archive feature, and result-digest
 `metroid-semantic-postcard-1.1.3-sha256-hex-motion-v5`. The combined variant is
 defined for compatibility but is not qualified by the motion experiment.

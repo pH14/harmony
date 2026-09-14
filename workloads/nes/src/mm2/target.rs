@@ -62,6 +62,10 @@ const PLAYER_Y: usize = 0x4a0;
 const PLAYER_HEALTH: usize = 0x6c0;
 const WEAPON_ENERGY: usize = 0x9c;
 const WEAPON_ENERGY_BYTES: usize = 12;
+/// Meters in that block that hold ammunition: the eight special weapons and
+/// the three items. The twelfth byte is the energy-tank count, which is stock
+/// rather than a meter, so filling it hands the player tanks nobody collected.
+const WEAPON_ENERGY_METERS: usize = 11;
 /// Offset of Item 1's meter within the weapon-energy block; Items 2 and 3
 /// follow it.
 const FIRST_ITEM_METER: usize = 8;
@@ -371,7 +375,7 @@ pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
             0 => 0,
             weapon => read_byte(wram, WEAPON_ENERGY + usize::from(weapon) - 1)?,
         },
-        usable_weapons: (WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES)
+        usable_weapons: (WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_METERS)
             .map(|index| Ok(u8::from(read_byte(wram, index)? > 0)))
             .sum::<Result<u8, MachineError>>()?,
         item_charges: (0..ITEM_METERS).try_fold(0_u8, |packed, item| {
@@ -679,7 +683,7 @@ impl Mm2Target {
     /// Refill the named weapon and item meters at a paused live boundary, for
     /// standalone causal diagnostics. An empty list refills all of them.
     /// Refilling one meter asks which ammunition a stalled route needs, which
-    /// refilling all twelve cannot answer. This is never a search action or a
+    /// refilling all eleven cannot answer. This is never a search action or a
     /// generated witness: a replay must record and repeat the operation. All
     /// other machine bytes and the physical clock stay fixed.
     ///
@@ -691,7 +695,7 @@ impl Mm2Target {
         if self.failed || self.is_dead() {
             return Err("weapon refill needs a live target".into());
         }
-        if chosen.iter().any(|index| *index >= WEAPON_ENERGY_BYTES) {
+        if chosen.iter().any(|index| *index >= WEAPON_ENERGY_METERS) {
             return Err("weapon refill names a meter outside the meter block".into());
         }
         let wram = self.machine.read_wram()?;
@@ -699,7 +703,7 @@ impl Mm2Target {
             return Err("weapon refill requires a consistent paused boundary".into());
         }
         let clock = self.frames_clocked();
-        let meters = WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES;
+        let meters = WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_METERS;
         let mut expected = wram;
         for (index, meter) in expected[meters.clone()].iter_mut().enumerate() {
             if !chosen.is_empty() && !chosen.contains(&index) {
@@ -880,9 +884,10 @@ impl Mm2Target {
         self.genesis_weapons
     }
 
-    /// The twelve per-weapon energy meters. The decoded state keeps only their
-    /// sum, which cannot say whether the one weapon a wall needs still has
-    /// ammunition. Reads captured RAM and advances no emulator frames.
+    /// The eleven ammunition meters followed by the energy-tank count. The
+    /// decoded state keeps only their sum, which cannot say whether the one
+    /// weapon a wall needs still has ammunition. Reads captured RAM and
+    /// advances no emulator frames.
     pub fn diagnostic_weapon_energies(&self) -> Result<Vec<u8>, MachineError> {
         let wram = self.machine.read_wram()?;
         (WEAPON_ENERGY..WEAPON_ENERGY + WEAPON_ENERGY_BYTES)
@@ -1359,6 +1364,16 @@ mod tests {
         };
         assert!(!pit.is_dead());
         assert!(pit.is_dying());
+    }
+
+    #[test]
+    fn the_energy_tank_count_is_not_a_usable_weapon() {
+        let mut wram = vec![0_u8; WRAM_SIZE];
+        wram[WEAPON_ENERGY] = 28;
+        wram[WEAPON_ENERGY + WEAPON_ENERGY_METERS - 1] = 28;
+        wram[WEAPON_ENERGY + WEAPON_ENERGY_METERS] = 4;
+        let state = decode_state(&wram).expect("decode");
+        assert_eq!(state.usable_weapons, 2);
     }
 
     #[test]
