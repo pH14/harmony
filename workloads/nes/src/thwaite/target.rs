@@ -19,6 +19,7 @@ pub const BUILDING_SILO0: usize = 2;
 pub const BUILDING_SILO1: usize = 9;
 pub const HOURS_PER_DAY: u8 = 5;
 pub const NUM_MADE_DAYS: u8 = 7;
+pub const CAMPAIGN_HOURS: u16 = 35;
 pub const INITIAL_SILO_MISSILES: u8 = 15;
 
 pub const STATE_INACTIVE: u8 = 0;
@@ -222,6 +223,11 @@ impl<M: Machine> ThwaiteTarget<M> {
     #[must_use]
     pub fn defended_a_perfect_hour(&self) -> bool {
         self.observation.evidence.perfect_levels > 0
+    }
+
+    #[must_use]
+    pub fn hours_survived(&self) -> u16 {
+        self.observation.evidence.levels_cleared
     }
 
     #[must_use]

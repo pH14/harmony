@@ -41,8 +41,12 @@ are not used; no save edit, password, imported input, or scripted firing
 sequence is used.
 
 An hour ends when the wave is exhausted and no enemy missile remains in flight
-(`gameState` moves from `2` to `3`). The declared objective is a **perfect
-hour**: an hour that ends with `buildingsDestroyedThisLevel` still zero. The
+(`gameState` moves from `2` to `3`). The declared objective is **surviving the
+whole 35-hour campaign** — seven days of five hours — and `--survive-hours N`
+lowers that target for a bounded run. A **perfect hour**, one that ends with
+`buildingsDestroyedThisLevel` still zero, stays a reported milestone rather than
+the objective: the interesting question is how far into the week a search can
+keep a town alive, not how immaculately it plays one wave. The
 game itself ends at `gameState = 7` when both silos are destroyed, or when an
 hour ends with no building left; `gameState = 0` after genesis means the game
 returned to the title, which after seven surviving days is the whole-game
@@ -115,33 +119,48 @@ evidence; the input tape remains the reproducible witness for that event.
 
 ## Archive and input policy
 
-The archive key (`thwaite_town_defence_wave_phase_v1`) keeps one representative
-per cell. Identity is the level index, the standing-building count, the wave
-phase (missiles left to launch and missiles in flight), and the crosshair in
-16-pixel cells; wider groups pool the crosshair, then drop it, then keep only
-level and census, then only level. Objective progress is perfect hours, then
-hours cleared, then wave phase, then standing buildings, then score. Wave phase
-precedes the census deliberately: idling also advances the wave, so ranking
-depth first and the census second makes *surviving further with more buildings*
-the gradient, instead of rewarding a short tape that has not yet been shot at.
-Remaining ammunition is a same-cell preference only, never progress. Terminal
-observations have no archive key because their town payload is phase-invalid.
+The archive key (`thwaite_hours_survived_town_wave_bucket_v2`) keeps eight
+elites per cell. Cell identity is the level index, the standing-building count,
+the wave phase (missiles left to launch and missiles in flight), and a coarse
+ammunition bucket; wider groups drop ammunition, then the in-flight count, then
+the fine wave phase, leaving the level index and a coarse wave band at the
+class depth. Objective progress is hours survived, then standing buildings,
+then wave depth, then score.
 
-Like the other NES adapters, `ThwaiteArchiveKey::Ord` compares the objective
-progress prefix first and uses identity fields only as a deterministic
-tie-break, so identity retains a residual tie bias at equal progress.
+The crosshair is deliberately **not** part of cell identity. An earlier revision
+keyed it in 16-pixel cells and the archive grew to 8,228 entries inside the
+first hour alone; removing it collapsed the same search to 17 entries, which
+showed the novelty budget had been spent enumerating reversible cursor
+positions rather than game states. Eight elites per cell restore the population
+that removal costs.
+
+`progress_cmp` orders classes by the hour reached, then by emptier wave and
+flight bands, and treats everything inside a band as mutually maximal. That
+relation is only consulted by the `EnergyProgress*` selectors, so the campaign
+defaults to
+`hierarchy_uniform_128_energy_progress_cheapest_v1:3,6,12,2` and `--selector`
+takes any identifier the searcher recognises. The band has to live at the class
+depth (the coarsest group) or the relation degenerates to the hour alone and
+selection dilutes uniformly across every cell in that hour.
 
 `ButtonChord` uses the QuickNES/NES serial layout: A `0x01`, B `0x02`, Select
 `0x04`, Start `0x08`, Up `0x10`, Down `0x20`, Left `0x40`, Right `0x80`. In one
 player mode the game fires the left silo on B and the right silo on A, both at
 the crosshair, and both edge-triggered. Search chords combine nine
 non-conflicting direction states with the four A/B states. Select is excluded
-because it has no gameplay action; Start is excluded because it pauses. Holds
-are sampled as aiming taps of 1--8 frames (three times in five) or sweeps of
-9--48 frames, because the crosshair accelerates while a direction is held and a
-long hold overshoots. The campaign uses ordinary `Unprobed` admission,
-`OneToSix` suffixes, and the game-neutral `AlphabetOnly` draw mixture;
-`ProbeAtAdmission` is explicitly rejected.
+because it has no gameplay action; Start is excluded because it pauses.
+
+Durations (`stratified_aim_or_watch_v2`) are aiming taps of 1--8 frames (three
+times in five) or watches of 48--120 frames. The long holds matter more than
+they look: the searcher extends a lineage by at most six actions per execution,
+so a policy capped at short holds advances roughly ninety frames per execution
+against an hour that runs two to three thousand frames, and clearing one hour
+then needs about twenty-five consecutive admitted expansions on a single
+lineage. Watching while missiles fall is also what a person does between shots.
+
+The campaign uses ordinary `Unprobed` admission, `OneToSix` suffixes, and the
+game-neutral `AlphabetOnly` draw mixture; `ProbeAtAdmission` is explicitly
+rejected.
 
 ## Continuous evaluation
 
@@ -154,14 +173,27 @@ restored continuations, and the admission probe before search runs. The campaign
 then compares live and replayed reports and checkpoint bytes and verifies the
 headless and rendered endpoints.
 
-The registered lanes are fixed-execution soaks. A perfect hour is the declared
-objective and the action can require one (`THWAITE_REQUIRE_PERFECT_HOUR=true`,
-which also stops the campaign at the first one), but no repository CI run has
-demonstrated a perfect hour, so no lane requires it. A local 40,000-execution
-seed-1 search defended the whole first wave with all twelve buildings standing
-and both silos empty, four missiles still in flight, so the hour had not yet
-ended; that is measured evidence about this search policy, not a golden value.
-CI does not retry, change seed, or alter search policy.
+The registered lanes are fixed-execution soaks. Surviving all 35 hours is the
+declared objective and the action can require a target
+(`THWAITE_REQUIRE_SURVIVAL=true`, which also stops the campaign once the target
+hour is reached), but no repository CI run has demonstrated one, so no lane
+requires it.
+
+Measured depth on one Linux box, seed 1, three workers, an 8,192-action horizon
+and the policy above:
+
+| executions | hours survived |
+| ---: | ---: |
+| 800 | 1 |
+| 4,800 | 2 |
+| 39,500 | 3 |
+
+The superseded `..._wave_phase_v1` key policy, which keyed the crosshair and
+capped holds at 48 frames, reached two hours at 163,000 executions on the same
+box and seed. These are measured outcomes for one seed, not golden values, and
+the cost of each additional hour grows roughly eightfold, so the full campaign
+is an open problem for this policy rather than a budget away. CI does not retry,
+change seed, or alter search policy.
 
 Artifacts are retained for 30 days: summary and progress, full champion input
 and observation, campaign/replay reports, control probe, the full champion film
@@ -183,8 +215,8 @@ workloads/nes/target/release/thwaite-campaign \
   --core workloads/nes/build/thwaite/quicknes_libretro.so \
   --rom workloads/nes/build/thwaite/thwaite.nes \
   --output workloads/nes/build/thwaite-artifact \
-  --seed 1 --executions 20000 --workers 2 --action-limit 512 --fixed-execution-soak
+  --seed 1 --executions 20000 --workers 2 --action-limit 8192 --fixed-execution-soak
 ```
 
-Dropping `--fixed-execution-soak` stops the campaign at the first perfect hour
-and reports it as a qualified campaign.
+Dropping `--fixed-execution-soak` stops the campaign once `--survive-hours`
+(default 35) is reached and reports it as a qualified campaign.

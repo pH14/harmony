@@ -14,7 +14,7 @@ use std::{
 
 use nes_workload::{
     search::{
-        archive::{RetentionPolicy, RetireThresholds, SelectorPolicy},
+        archive::{RetentionPolicy, SelectorPolicy},
         campaign::{Reporting, TargetExecution},
         draw::{DrawMixture, SuffixShape},
     },
@@ -26,7 +26,8 @@ use nes_workload::{
             replay_thwaite_campaign_checkpointed, run_thwaite_campaign_checkpointed,
         },
         target::{
-            ThwaiteDefenceEvidence, ThwaiteInput, ThwaiteMechanicalState, ThwaiteVideoMetadata,
+            CAMPAIGN_HOURS, ThwaiteDefenceEvidence, ThwaiteInput, ThwaiteMechanicalState,
+            ThwaiteVideoMetadata,
         },
     },
 };
@@ -36,6 +37,7 @@ use sha2::{Digest, Sha256};
 const DEFAULT_EXECUTIONS: u64 = 2_000;
 const DEFAULT_WORKERS: u32 = 2;
 const RENDER_TAIL_FRAMES: u32 = 180;
+const DEFAULT_SELECTOR: &str = "hierarchy_uniform_128_energy_progress_cheapest_v1:3,6,12,2";
 
 struct Args {
     core: PathBuf,
@@ -48,6 +50,8 @@ struct Args {
     fixed_execution_soak: bool,
     host: String,
     memory_budget_mib: Option<usize>,
+    survive_hours: u16,
+    selector: SelectorPolicy,
 }
 
 struct RenderedMedia {
@@ -81,6 +85,8 @@ impl Args {
         let mut fixed_execution_soak = false;
         let mut host = "local-thwaite-trial".to_owned();
         let mut memory_budget_mib = None;
+        let mut survive_hours = CAMPAIGN_HOURS;
+        let mut selector = DEFAULT_SELECTOR.to_owned();
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             if flag == "--fixed-execution-soak" {
@@ -102,6 +108,10 @@ impl Args {
                 "--memory-budget-mib" => {
                     memory_budget_mib = Some(parse_number("memory-budget-mib", value)?)
                 }
+                "--survive-hours" => survive_hours = parse_number("survive-hours", value)?,
+                "--selector" => {
+                    selector = value.into_string().map_err(|_| "selector is not UTF-8")?
+                }
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
@@ -113,6 +123,9 @@ impl Args {
         }
         if executions == 0 {
             return Err("executions must be at least 1".into());
+        }
+        if survive_hours == 0 || survive_hours > CAMPAIGN_HOURS {
+            return Err(format!("survive-hours must be between 1 and {CAMPAIGN_HOURS}").into());
         }
         if action_limit == 0 || action_limit > nes_workload::thwaite::archive::MAX_THWAITE_ACTIONS {
             return Err(format!(
@@ -132,6 +145,8 @@ impl Args {
             fixed_execution_soak,
             host,
             memory_budget_mib,
+            survive_hours,
+            selector: nes_workload::thwaite::archive::selector_policy_from_identifier(&selector)?,
         })
     }
 }
@@ -153,7 +168,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&args.output)?;
     let rom = fs::read(&args.rom)?;
     let core_sha256 = sha256(&fs::read(&args.core)?);
-    let game = ThwaiteGame::new(&rom, &args.core, &core_sha256);
+    let game = ThwaiteGame::with_survival_hours(&rom, &args.core, &core_sha256, args.survive_hours);
     run_qualified_campaign(&game, &campaign_config(&args), &args.output)
 }
 
@@ -165,18 +180,15 @@ fn campaign_config(args: &Args) -> ThwaiteCampaignConfig {
         action_limit: args.action_limit,
         host: args.host.clone(),
         wall_budget: None,
-        continue_after_perfect_hour: args.fixed_execution_soak,
+        continue_after_objective: args.fixed_execution_soak,
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
         retention: RetentionPolicy::Unprobed,
-        selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 3,
-            groups: vec![6, 12, 2],
-        }),
+        selector: args.selector.clone(),
         suffix: SuffixShape::OneToSix,
         mixture: DrawMixture::AlphabetOnly,
-        perfect_hour_input_path: Some(args.output.join("perfect-hour-input.json")),
+        objective_input_path: Some(args.output.join("objective-input.json")),
     }
 }
 
@@ -238,7 +250,7 @@ fn run_qualified_campaign(
     }
 
     let summary = json!({
-        "mode": if config.continue_after_perfect_hour {
+        "mode": if config.continue_after_objective {
             "direct_quicknes_fixed_execution_soak"
         } else {
             "qualified_campaign"
@@ -264,7 +276,10 @@ fn run_qualified_campaign(
         "deaths": live.archive.deaths,
         "duplicates_skipped": live.duplicates_skipped,
         "probe_refused": live.probe_refused,
-        "perfect_hours": live.objectives_reached,
+        "survival_hours_target": game.survival_hours(),
+        "objectives_reached": live.objectives_reached,
+        "hours_survived": live.archive.milestones.levels_cleared,
+        "perfect_hours": live.archive.milestones.perfect_levels,
         "progress": live.archive.progress_watermark,
         "milestones": live.archive.milestones,
         "first_reached": live.archive.first_reached,
@@ -460,7 +475,7 @@ fn sha256(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, OsString, campaign_config};
+    use super::{Args, OsString, SelectorPolicy, campaign_config};
 
     fn required_args(extra: &[&str]) -> Vec<OsString> {
         let mut args = ["--core", "core", "--rom", "rom", "--output", "output"]
@@ -478,6 +493,33 @@ mod tests {
         assert_eq!(args.workers, super::DEFAULT_WORKERS);
         assert_eq!(args.action_limit, 512);
         assert!(!args.fixed_execution_soak);
+        assert_eq!(args.survive_hours, super::CAMPAIGN_HOURS);
+        assert!(matches!(
+            args.selector,
+            SelectorPolicy::EnergyProgressCheapest(_)
+        ));
+    }
+
+    #[test]
+    fn the_selector_is_selectable_and_validated() {
+        let args = Args::parse_from(required_args(&[
+            "--selector",
+            "hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2",
+        ]))
+        .expect("frontier selector parses");
+        assert!(matches!(
+            args.selector,
+            SelectorPolicy::EnergyFrontierCheapest(_)
+        ));
+        assert!(Args::parse_from(required_args(&["--selector", "nonsense:1,2"])).is_err());
+    }
+
+    #[test]
+    fn survival_target_is_bounded_to_the_made_campaign() {
+        let args = Args::parse_from(required_args(&["--survive-hours", "5"])).expect("parse");
+        assert_eq!(args.survive_hours, 5);
+        assert!(Args::parse_from(required_args(&["--survive-hours", "0"])).is_err());
+        assert!(Args::parse_from(required_args(&["--survive-hours", "36"])).is_err());
     }
 
     #[test]
@@ -486,7 +528,7 @@ mod tests {
             .expect("soak arguments parse");
         assert!(args.fixed_execution_soak);
         assert_eq!(args.seed, 42);
-        assert!(campaign_config(&args).continue_after_perfect_hour);
+        assert!(campaign_config(&args).continue_after_objective);
         assert!(matches!(
             campaign_config(&args).retention,
             nes_workload::search::archive::RetentionPolicy::Unprobed

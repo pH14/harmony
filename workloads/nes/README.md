@@ -41,7 +41,7 @@ that experiment does not provide SMB acceptance evidence.
 | Mega Man 2/native | All eight independent stage origins pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
 | Super Tilt Bro/native | `search-eval.yml` (bounded checks) and the scheduled/manual `nova-nightly.yml` capability panel build the pinned ROM and evaluate Easy/Fair/Hard AI through the common `nes-eval` runner. Hard retains its victory requirement in the public panel. | Host QuickNES core and the pinned source-built offline UNROM game. |
-| Thwaite/native | `search-eval.yml` builds the pinned ROM and runs the control probe, search, recorded replay, and film through the dedicated `thwaite-campaign` binary: a bounded PR smoke and a manual-dispatch soak. It is not in the `nes-eval` roster or the nightly panel. | Host QuickNES core and the pinned source-built NROM game. |
+| Thwaite/native | `search-eval.yml` builds the pinned ROM and runs the control probe, search, recorded replay, and film through the dedicated `thwaite-campaign` binary: a bounded PR smoke and a manual-dispatch soak. Its objective is hours survived across the 35-hour campaign; local seed-1 searches reach three hours. It is not in the `nes-eval` roster or the nightly panel. | Host QuickNES core and the pinned source-built NROM game. |
 
 On Linux/KVM, the shared oracle is invoked as:
 

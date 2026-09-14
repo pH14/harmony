@@ -20,9 +20,9 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_THWAITE_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "thwaite_town_defence_wave_phase_v1";
+pub const KEY_POLICY_IDENTIFIER: &str = "thwaite_hours_survived_town_wave_bucket_v2";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
-pub const DURATION_IDENTIFIER: &str = "stratified_aim_or_sweep_v1";
+pub const DURATION_IDENTIFIER: &str = "stratified_aim_or_watch_v2";
 
 pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
     crate::search::archive::selector_policy_from_identifier(
@@ -34,14 +34,20 @@ pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolic
 pub type ThwaiteArchive =
     Archive<ButtonChord, ThwaiteArchiveKey, ThwaiteMilestones, ThwaiteSnapshot>;
 
+pub const AMMUNITION_BUCKET: u8 = 8;
+pub const WAVE_BAND_MISSILES: u8 = 4;
+pub const FLIGHT_BAND_MISSILES: u8 = 4;
+pub const SLOTS_PER_CELL: usize = 8;
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct ThwaiteArchiveGroup {
     level_index: u8,
+    wave_band: u8,
+    flight_band: u8,
     buildings_standing: u8,
     enemy_missiles_left: u8,
     enemy_missiles_in_flight: u8,
-    crosshair_x: u8,
-    crosshair_y: u8,
+    ammunition_bucket: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -83,38 +89,49 @@ impl ArchiveKey for ThwaiteArchiveKey {
     fn group(self, depth: usize) -> Self::Group {
         let town = ThwaiteArchiveGroup {
             level_index: self.level_index,
+            wave_band: self.enemy_missiles_left.div_euclid(WAVE_BAND_MISSILES),
+            flight_band: self
+                .enemy_missiles_in_flight
+                .div_euclid(FLIGHT_BAND_MISSILES),
             buildings_standing: self.buildings_standing,
             enemy_missiles_left: self.enemy_missiles_left,
             enemy_missiles_in_flight: self.enemy_missiles_in_flight,
-            crosshair_x: self.crosshair_x,
-            crosshair_y: self.crosshair_y,
+            ammunition_bucket: self.silo_missiles.div_euclid(AMMUNITION_BUCKET),
         };
         match depth {
             0 => town,
             1 => ThwaiteArchiveGroup {
-                crosshair_x: self.crosshair_x.div_euclid(2),
-                crosshair_y: self.crosshair_y.div_euclid(2),
+                ammunition_bucket: 0,
                 ..town
             },
             2 => ThwaiteArchiveGroup {
-                crosshair_x: 0,
-                crosshair_y: 0,
+                enemy_missiles_left: 0,
+                enemy_missiles_in_flight: 0,
+                ammunition_bucket: 0,
                 ..town
             },
             3 => ThwaiteArchiveGroup {
-                level_index: self.level_index,
-                buildings_standing: self.buildings_standing,
+                level_index: town.level_index,
+                wave_band: town.wave_band,
+                flight_band: town.flight_band,
+                buildings_standing: town.buildings_standing,
                 ..ThwaiteArchiveGroup::default()
             },
             _ => ThwaiteArchiveGroup {
-                level_index: self.level_index,
+                level_index: town.level_index,
+                wave_band: town.wave_band,
+                flight_band: town.flight_band,
                 ..ThwaiteArchiveGroup::default()
             },
         }
     }
 
+    fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
+        left.level_index.cmp(&right.level_index)
+    }
+
     fn slot_capacity() -> usize {
-        1
+        SLOTS_PER_CELL
     }
 
     fn preference_cmp(self, other: Self) -> Ordering {
@@ -132,8 +149,8 @@ impl ArchiveKey for ThwaiteArchiveKey {
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct ThwaiteChampionKey {
-    progress: (u16, u16, u8, u8, u16),
-    preference: (u16, u16, u8, u8, u16, u8),
+    progress: (u16, u8, u8, u16),
+    preference: (u16, u8, u8, u16, u8),
 }
 
 impl ThwaiteArchiveKey {
@@ -144,12 +161,11 @@ impl ThwaiteArchiveKey {
         }
     }
 
-    fn progress_key(self) -> (u16, u16, u8, u8, u16) {
+    fn progress_key(self) -> (u16, u8, u8, u16) {
         (
-            self.perfect_levels,
             self.levels_cleared,
-            self.wave_progress,
             self.buildings_standing,
+            self.wave_progress,
             self.score,
         )
     }
@@ -165,9 +181,8 @@ impl ThwaiteArchiveKey {
         )
     }
 
-    fn preference(self) -> (u16, u16, u8, u8, u16, u8) {
+    fn preference(self) -> (u16, u8, u8, u16, u8) {
         (
-            self.perfect_levels,
             self.levels_cleared,
             self.buildings_standing,
             self.wave_progress,
@@ -224,8 +239,8 @@ pub struct ThwaiteMilestoneInputs {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct ThwaiteProgressWatermark {
-    pub perfect_levels: u16,
     pub levels_cleared: u16,
+    pub perfect_levels: u16,
     pub score: u16,
 }
 
@@ -276,8 +291,8 @@ pub fn merge_milestones(into: &mut ThwaiteMilestones, from: ThwaiteMilestones) {
 #[must_use]
 pub fn milestone_key(value: ThwaiteMilestones) -> (u16, u16, u16, bool) {
     (
-        value.perfect_levels,
         value.levels_cleared,
+        value.perfect_levels,
         value.score,
         value.survived_all_days,
     )
@@ -315,7 +330,7 @@ pub fn sample_chord(rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Err
     let hold_frames = if rand.below(NonZeroUsize::new(5).ok_or("invalid duration odds")?) < 3 {
         u8::try_from(1 + rand.below(NonZeroUsize::new(8).ok_or("invalid aim duration")?))?
     } else {
-        u8::try_from(9 + rand.below(NonZeroUsize::new(40).ok_or("invalid sweep duration")?))?
+        u8::try_from(48 + rand.below(NonZeroUsize::new(73).ok_or("invalid watch duration")?))?
     };
     Ok(ButtonChord::new(buttons, hold_frames))
 }
@@ -356,13 +371,48 @@ mod tests {
     }
 
     #[test]
-    fn crosshair_groups_coarsen_with_depth() {
-        let key = archive_key(state(12, 0, 200), evidence(0, 0)).expect("live key");
-        assert_eq!(key.group(0).crosshair_x, 200 / 16);
-        assert_eq!(key.group(1).crosshair_x, 200 / 16 / 2);
-        assert_eq!(key.group(2).crosshair_x, 0);
+    fn the_reversible_crosshair_is_not_part_of_cell_identity() {
+        let left = archive_key(state(12, 0, 16), evidence(0, 0)).expect("live key");
+        let right = archive_key(state(12, 0, 200), evidence(0, 0)).expect("live key");
+        for depth in 0..ThwaiteArchiveKey::groups() {
+            assert_eq!(left.group(depth), right.group(depth));
+        }
+    }
+
+    #[test]
+    fn wave_phase_stays_fine_and_coarsens_with_depth() {
+        let key = archive_key(state(12, 0, 64), evidence(0, 0)).expect("live key");
+        assert_eq!(key.group(0).enemy_missiles_left, 10);
+        assert_eq!(key.group(0).enemy_missiles_in_flight, 2);
+        assert_eq!(key.group(0).ammunition_bucket, 30 / AMMUNITION_BUCKET);
+        assert_eq!(key.group(1).ammunition_bucket, 0);
+        assert_eq!(key.group(2).enemy_missiles_in_flight, 0);
         assert_eq!(key.group(3).enemy_missiles_left, 0);
+        assert_eq!(key.group(3).wave_band, 10 / WAVE_BAND_MISSILES);
         assert_eq!(key.group(4).buildings_standing, 0);
+        assert_eq!(
+            key.group(4).wave_band,
+            10 / WAVE_BAND_MISSILES,
+            "the class depth must carry the wave band or selection has no within-hour frontier"
+        );
+    }
+
+    #[test]
+    fn selection_progress_follows_the_hour_reached() {
+        let early = archive_key(state(12, 900, 64), evidence(0, 0)).expect("live key");
+        let mut later_state = state(3, 0, 64);
+        later_state.game_hour = 2;
+        let later = archive_key(later_state, evidence(0, 2)).expect("live key");
+        assert_eq!(
+            ThwaiteArchiveKey::progress_cmp(later.group(0), early.group(0)),
+            Ordering::Greater
+        );
+        let sibling = archive_key(state(9, 0, 64), evidence(0, 0)).expect("live key");
+        assert_eq!(
+            ThwaiteArchiveKey::progress_cmp(early.group(0), sibling.group(0)),
+            Ordering::Equal,
+            "cells inside one hour must stay mutually maximal"
+        );
     }
 
     #[test]
@@ -371,14 +421,16 @@ mod tests {
         let strong = archive_key(state(12, 400, 64), evidence(0, 0)).expect("live key");
         assert_eq!(weak.group(0), strong.group(0));
         assert_eq!(strong.preference_cmp(weak), Ordering::Greater);
-        assert_eq!(ThwaiteArchiveKey::slot_capacity(), 1);
+        assert_eq!(ThwaiteArchiveKey::slot_capacity(), SLOTS_PER_CELL);
     }
 
     #[test]
-    fn defended_hours_outrank_a_richer_ruined_town() {
-        let ruined = archive_key(state(4, 900, 64), evidence(0, 3)).expect("live key");
-        let defended = archive_key(state(12, 100, 64), evidence(1, 1)).expect("live key");
-        assert!(defended > ruined);
+    fn surviving_more_hours_outranks_a_pristine_shorter_run() {
+        let pristine = archive_key(state(12, 900, 64), evidence(1, 1)).expect("live key");
+        let deeper = archive_key(state(4, 100, 64), evidence(0, 3)).expect("live key");
+        assert!(deeper > pristine);
+        let deeper_intact = archive_key(state(11, 100, 64), evidence(0, 3)).expect("live key");
+        assert!(deeper_intact > deeper, "at equal depth a fuller town wins");
     }
 
     #[test]
@@ -397,7 +449,7 @@ mod tests {
         for _ in 0..1_000 {
             let chord = sample_chord(&mut rand).expect("draw chord");
             assert_eq!(chord.buttons & 0x0c, 0);
-            assert!(chord.hold_frames >= 1 && chord.hold_frames <= 48);
+            assert!(chord.hold_frames >= 1 && chord.hold_frames <= LONGEST_HOLD_FRAMES);
             saw_a |= chord.buttons & 0x01 != 0;
             saw_b |= chord.buttons & 0x02 != 0;
         }

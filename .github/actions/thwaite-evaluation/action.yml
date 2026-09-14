@@ -65,11 +65,11 @@ runs:
         assert "clean_reset_exact true" in lines, "clean reset disagreed with the sealed genesis"
         print("intact genesis, neutral input, aiming and per-silo fire controls verified")
         PY
-    - name: Search the first hour and verify recorded replay
+    - name: Search the campaign and verify recorded replay
       shell: bash
       run: |
         stop_flags=()
-        if [[ "${THWAITE_REQUIRE_PERFECT_HOUR}" != true ]]; then
+        if [[ "${THWAITE_REQUIRE_SURVIVAL}" != true ]]; then
           stop_flags+=(--fixed-execution-soak)
         fi
         search_command=(workloads/nes/target/release/thwaite-campaign \
@@ -77,7 +77,8 @@ runs:
           --rom "${THWAITE_BUILD}/thwaite.nes" \
           --output "${THWAITE_ARTIFACT}" \
           --seed "${THWAITE_SEED}" --executions "${THWAITE_EXECUTIONS}" \
-          --workers "${THWAITE_WORKERS}" --action-limit 512 \
+          --workers "${THWAITE_WORKERS}" --action-limit "${THWAITE_ACTION_LIMIT}" \
+          --survive-hours "${THWAITE_SURVIVE_HOURS}" \
           "${stop_flags[@]}")
         if [[ -n "${THWAITE_WALL_SECONDS:-}" ]]; then
           timeout -k 10 "${THWAITE_WALL_SECONDS}" "${search_command[@]}"
@@ -88,9 +89,10 @@ runs:
       shell: bash
       run: |
         # The binary's exit status gates actual replay/render equality. A
-        # required perfect hour is a defence regression: stop after one, or
-        # fail if the fixed ceiling is exhausted. Soaks retain exact budgets.
-        # Keep seeds and search policy fixed; do not retry a losing campaign.
+        # required survival target is a defence regression: stop once the
+        # target hour is reached, or fail if the fixed ceiling is exhausted.
+        # Soaks retain exact budgets. Keep seeds and search policy fixed; do
+        # not retry a losing campaign.
         jq -e --argjson budget "${THWAITE_EXECUTIONS}" \
           --argjson seed "${THWAITE_SEED}" --argjson workers "${THWAITE_WORKERS}" \
           '.campaign_seed == $seed and .workers == $workers and
@@ -104,7 +106,7 @@ runs:
         cmp "${THWAITE_ARTIFACT}/campaign-report.json" "${THWAITE_ARTIFACT}/replay-report.json"
         cmp "${THWAITE_ARTIFACT}/champion-input.json" "${THWAITE_ARTIFACT}/render-input.json"
         cmp "${THWAITE_ARTIFACT}/champion-observation.json" "${THWAITE_ARTIFACT}/render-observation.json"
-        python3 - "${THWAITE_ARTIFACT}" "${THWAITE_REQUIRE_PERFECT_HOUR}" <<'PY'
+        python3 - "${THWAITE_ARTIFACT}" "${THWAITE_REQUIRE_SURVIVAL}" <<'PY'
         import json
         import sys
         from pathlib import Path
@@ -114,10 +116,11 @@ runs:
         champion = json.loads((artifact / "champion-observation.json").read_text())
         tape = json.loads((artifact / "champion-input.json").read_text())
         if sys.argv[2] == "true":
-            assert summary["perfect_hours"] > 0, "required perfect hour was not found within the execution ceiling"
+            target = summary["survival_hours_target"]
+            assert summary["objectives_reached"] > 0, "required survival target was not reached within the execution ceiling"
+            assert summary["hours_survived"] >= target, "reported survival is short of the declared target"
             assert summary["mode"] == "qualified_campaign"
-            assert 0 < summary["first_reached"]["first_perfect_level"] <= summary["executions"]
-            assert champion["evidence"]["perfect_levels"] > 0
+            assert champion["evidence"]["levels_cleared"] >= target
         else:
             assert summary["mode"] == "direct_quicknes_fixed_execution_soak"
             assert summary["execution_budget_exact"], "fixed-execution soak stopped early"
@@ -130,6 +133,7 @@ runs:
         assert summary["town_lost"] == (champion["decoded"]["game_state"] == 7)
         # Buildings are only ever lost, so the retained tape and its milestones agree.
         assert summary["milestones"]["buildings_lost"] >= champion["evidence"]["buildings_lost"]
+        assert summary["hours_survived"] == summary["milestones"]["levels_cleared"]
         if champion["decoded"]["town"] is not None:
             standing = champion["decoded"]["town"]["buildings_standing"]
             assert standing + champion["evidence"]["buildings_lost"] == 12, "town census and losses disagree"
@@ -151,10 +155,11 @@ runs:
             UPSTREAM-README.md thwaite-versions.env > SHA256SUMS
         )
         {
-          echo "## Thwaite — one player, first hour"
+          echo "## Thwaite — one player, hours survived"
           echo
           echo "Seed ${THWAITE_SEED}; $(jq -r '.executions' "${THWAITE_ARTIFACT}/run-summary.json")/${THWAITE_EXECUTIONS} executions; ${THWAITE_WORKERS} workers."
-          echo "Perfect hour required: ${THWAITE_REQUIRE_PERFECT_HOUR}."
+          echo "Survival target: ${THWAITE_SURVIVE_HOURS} hour(s); required: ${THWAITE_REQUIRE_SURVIVAL}."
+          echo "Hours survived: $(jq -r '.hours_survived' "${THWAITE_ARTIFACT}/run-summary.json"); perfect hours: $(jq -r '.perfect_hours' "${THWAITE_ARTIFACT}/run-summary.json")."
           echo "Campaign report/checkpoint replay and rendered endpoint verified."
           echo "First reached: $(jq -c '.first_reached' "${THWAITE_ARTIFACT}/run-summary.json")."
           echo "Milestones: $(jq -c '.milestones' "${THWAITE_ARTIFACT}/run-summary.json")."

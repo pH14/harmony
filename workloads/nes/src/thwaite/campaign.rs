@@ -34,14 +34,14 @@ use crate::{
             merge_progress_watermark, milestone_key, milestones_from_observation, sample_chord,
         },
         target::{
-            ButtonChord, MAX_HOLD_FRAMES, ThwaiteInput, ThwaiteObservations, ThwaiteSnapshot,
-            ThwaiteTarget,
+            ButtonChord, CAMPAIGN_HOURS, MAX_HOLD_FRAMES, ThwaiteInput, ThwaiteObservations,
+            ThwaiteSnapshot, ThwaiteTarget,
         },
     },
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "thwaite-quicknes-campaign-stream-v1";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "thwaite-quicknes-snapshot-checkpoint-v1";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "thwaite-quicknes-campaign-stream-v2";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "thwaite-quicknes-snapshot-checkpoint-v2";
 pub const THWAITE_COMMIT: &str = "00e36745188bc165990f60eed6b093c3ce6ad0e3";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
@@ -51,7 +51,7 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_no_start_select_v1";
-const TERMINAL_POLICY_IDENTIFIER: &str = "one_player_town_gameover_perfect_hour_v1";
+const TERMINAL_POLICY_IDENTIFIER: &str = "one_player_town_gameover_hours_survived_v2";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ThwaiteNoTableHeader;
@@ -61,13 +61,24 @@ pub struct ThwaiteGame {
     core_path: PathBuf,
     core_sha256: String,
     identity: String,
+    survival_hours: u16,
 }
 
 impl ThwaiteGame {
     #[must_use]
     pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
+        Self::with_survival_hours(rom, core_path, core_sha256, CAMPAIGN_HOURS)
+    }
+
+    #[must_use]
+    pub fn with_survival_hours(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        survival_hours: u16,
+    ) -> Self {
         let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;source=pinobatch/thwaite-nes@{THWAITE_COMMIT};rom=thwaite_nrom256;mode=one_player;genesis=thwaite-first-hour-v1;result_digest=thwaite-semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}",
+            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;source=pinobatch/thwaite-nes@{THWAITE_COMMIT};rom=thwaite_nrom256;mode=one_player;genesis=thwaite-first-hour-v1;hours={survival_hours};result_digest=thwaite-semantic-postcard-1.1.3-sha256-hex-v2;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
@@ -77,7 +88,13 @@ impl ThwaiteGame {
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
             identity,
+            survival_hours,
         }
+    }
+
+    #[must_use]
+    pub const fn survival_hours(&self) -> u16 {
+        self.survival_hours
     }
 
     pub fn from_environment(rom: &[u8]) -> Result<Self, Box<dyn Error>> {
@@ -165,7 +182,7 @@ pub struct ThwaiteCampaignConfig {
     pub action_limit: usize,
     pub host: String,
     pub wall_budget: Option<std::time::Duration>,
-    pub continue_after_perfect_hour: bool,
+    pub continue_after_objective: bool,
     pub archive_entry_limit: usize,
     pub memory_budget_mib: Option<usize>,
     pub materialize_final_artifacts: bool,
@@ -173,7 +190,7 @@ pub struct ThwaiteCampaignConfig {
     pub selector: crate::search::archive::SelectorPolicy,
     pub suffix: SuffixShape,
     pub mixture: DrawMixture,
-    pub perfect_hour_input_path: Option<PathBuf>,
+    pub objective_input_path: Option<PathBuf>,
 }
 
 impl ThwaiteCampaignConfig {
@@ -185,8 +202,8 @@ impl ThwaiteCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
-            stop_rollout_on_objective: !self.continue_after_perfect_hour,
-            stop_campaign_on_objective: !self.continue_after_perfect_hour,
+            stop_rollout_on_objective: !self.continue_after_objective,
+            stop_campaign_on_objective: !self.continue_after_objective,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker:
                 crate::search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
@@ -197,7 +214,7 @@ impl ThwaiteCampaignConfig {
             mixture: self.mixture,
             retention: self.retention,
             selector: self.selector.clone(),
-            objective_witness_path: self.perfect_hour_input_path.clone(),
+            objective_witness_path: self.objective_input_path.clone(),
         }
     }
 }
@@ -222,7 +239,9 @@ fn merge_action_milestones<M: Machine>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_suffix<M: Machine<Portable = machine::SharedState>>(
+    survival_hours: u16,
     target: &mut ThwaiteTarget<M>,
     parent_actions: usize,
     parent_milestones: ThwaiteMilestones,
@@ -235,7 +254,8 @@ pub(super) fn execute_suffix<M: Machine<Portable = machine::SharedState>>(
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = Outcome {
-        objective_reached: target.exit_kind() == ExitKind::Ok && target.defended_a_perfect_hour(),
+        objective_reached: target.exit_kind() == ExitKind::Ok
+            && target.hours_survived() >= survival_hours,
         disposition: if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
         } else if target.is_game_over() {
@@ -261,7 +281,8 @@ pub(super) fn execute_suffix<M: Machine<Portable = machine::SharedState>>(
         } else {
             target.last_action_observations().to_vec()
         };
-        let raw_objective = target.exit_kind() == ExitKind::Ok && target.defended_a_perfect_hour();
+        let raw_objective =
+            target.exit_kind() == ExitKind::Ok && target.hours_survived() >= survival_hours;
         let objective_reached = raw_objective && !objective_seen;
         objective_seen |= raw_objective;
         let disposition = if target.exit_kind() != ExitKind::Ok {
@@ -610,6 +631,7 @@ impl TargetExecution for ThwaiteGame {
             target.apply(action);
         }
         execute_suffix(
+            self.survival_hours,
             target,
             parent_actions,
             parent_milestones,
@@ -637,7 +659,7 @@ impl Evaluation for ThwaiteGame {
         _run: &ThwaiteCampaignRun,
         target: &ThwaiteTarget,
     ) -> Result<bool, Box<dyn Error>> {
-        Ok(target.exit_kind() == ExitKind::Ok && target.defended_a_perfect_hour())
+        Ok(target.exit_kind() == ExitKind::Ok && target.hours_survived() >= self.survival_hours)
     }
 
     fn current_key(&self, target: &ThwaiteTarget) -> Result<ThwaiteArchiveKey, Box<dyn Error>> {
@@ -850,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn champion_ranks_defence_and_ignores_aim_diagnostics() {
+    fn champion_ranks_survival_then_town_and_ignores_aim() {
         let mut intact = result_with_portable(vec![]).actions.remove(0).observations;
         let mut ruined = intact.clone();
         ruined[0].decoded.town.as_mut().unwrap().buildings_standing = 7;
@@ -866,8 +888,15 @@ mod tests {
             .enemy_missiles_in_flight = 3;
         assert_eq!(action_champion_key(&intact), action_champion_key(&aimed));
 
-        intact[0].evidence.perfect_levels = 1;
+        intact[0].evidence.levels_cleared = 1;
         assert!(action_champion_key(&intact) > action_champion_key(&aimed));
+
+        let mut deeper_but_ruined = ruined.clone();
+        deeper_but_ruined[0].evidence.levels_cleared = 2;
+        assert!(
+            action_champion_key(&deeper_but_ruined) > action_champion_key(&intact),
+            "an hour survived outranks a fuller town one hour back"
+        );
     }
 
     #[test]

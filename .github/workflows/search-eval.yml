@@ -170,11 +170,13 @@ jobs:
     env:
       THWAITE_BUILD: workloads/nes/build/thwaite
       THWAITE_ARTIFACT: workloads/nes/build/thwaite-artifact
-      # A defended hour is the declared objective, not a demonstrated CI
-      # result, so the registered lane soaks an exact budget and reports the
-      # defence its champion reached.
+      # Surviving the whole 35-hour campaign is the declared objective, not a
+      # demonstrated CI result, so the registered lane soaks an exact budget
+      # and reports the hours its champion reached.
       THWAITE_EXECUTIONS: "20000"
-      THWAITE_REQUIRE_PERFECT_HOUR: "false"
+      THWAITE_ACTION_LIMIT: "8192"
+      THWAITE_SURVIVE_HOURS: "35"
+      THWAITE_REQUIRE_SURVIVAL: "false"
       THWAITE_SEED: ${{ matrix.seed }}
       THWAITE_WORKERS: "2"
       HARMONY_THWAITE_BUILD_JOBS: "2"
@@ -192,7 +194,9 @@ jobs:
       THWAITE_BUILD: workloads/nes/build/thwaite
       THWAITE_ARTIFACT: workloads/nes/build/thwaite-pr-artifact
       THWAITE_EXECUTIONS: "4"
-      THWAITE_REQUIRE_PERFECT_HOUR: "false"
+      THWAITE_ACTION_LIMIT: "8192"
+      THWAITE_SURVIVE_HOURS: "35"
+      THWAITE_REQUIRE_SURVIVAL: "false"
       THWAITE_SEED: "1"
       THWAITE_WORKERS: "1"
       THWAITE_WALL_SECONDS: "180"
