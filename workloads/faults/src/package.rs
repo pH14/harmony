@@ -694,7 +694,6 @@ mod tests {
         let artifacts = Artifacts {
             kernel: Vec::new(),
             initramfs: Vec::new(),
-            agent: Vec::new(),
         };
         let mut report = Report::new("replay", &artifacts, String::new(), &options());
         report.replays.push(summary);
@@ -723,7 +722,6 @@ mod tests {
         let artifacts = Artifacts {
             kernel: Vec::new(),
             initramfs: Vec::new(),
-            agent: Vec::new(),
         };
         let mut report = Report::new("replay", &artifacts, String::new(), &options());
         report.bugs.push(bug_summary(1, false));

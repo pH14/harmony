@@ -91,8 +91,11 @@ with init/SSE-active/AVX-active states (D3), and an inventory of kernel save
 sites, XGETBV(1), signal-frame handling, and userspace loader behavior (D4).
 The fixed-CPU trace in run 34839425407 confirmed nested-page-fault exits at
 the XSAVE instruction on hosted AMD EPYC 9V74 in reference and cold runs,
-with none in the reused run. Prefaulting must now establish equivalent
-fixtures without guest warmup. No guest canonicalizer is shipped before D3
+with none in the reused run. In run 34840365313, host page materialization,
+disabling fixture dirty logging, and prefaulting removed those exits on AMD
+EPYC 7763, yet all six XRSTOR reuse cohorts still diverged. The traced
+page-fault asymmetry is therefore insufficient to explain the counterexample.
+Attribution of any outer-hypervisor contribution remains open. No guest canonicalizer is shipped before D3
 and D4.
 
 The proposed guest contract compares identity at guest-initiated exits; debug

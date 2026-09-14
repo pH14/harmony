@@ -881,13 +881,70 @@ mod xsave_diagnostic {
         ram: MmapRam,
     }
 
+    fn prefault_entry_memory(backend: &mut KvmBackend, size: usize) {
+        assert!(
+            backend
+                .vm
+                .check_extension_raw(kvm_bindings::KVM_CAP_PRE_FAULT_MEMORY.into())
+                > 0,
+            "XSAVE_PREFAULT_UNSUPPORTED capability=KVM_CAP_PRE_FAULT_MEMORY"
+        );
+        let mut range = kvm_bindings::kvm_pre_fault_memory {
+            gpa: 0,
+            size: size as u64,
+            ..Default::default()
+        };
+        let request = ioc(
+            3,
+            0xae,
+            0xd5,
+            size_of::<kvm_bindings::kvm_pre_fault_memory>() as u64,
+        );
+        while range.size != 0 {
+            let remaining = range.size;
+            // SAFETY: the live vCPU fd receives the matching ioctl's initialized, writable ABI struct, which remains valid for the call.
+            let result = unsafe {
+                libc::ioctl(
+                    backend.vcpu.as_raw_fd(),
+                    request as libc::c_ulong,
+                    &mut range,
+                )
+            };
+            if result < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                if error.raw_os_error() == Some(libc::EOPNOTSUPP) {
+                    panic!("XSAVE_PREFAULT_UNSUPPORTED vcpu_mode error={error}");
+                }
+                panic!(
+                    "XSAVE_PREFAULT_FAILED gpa={} remaining={} error={error}",
+                    range.gpa, range.size
+                );
+            }
+            assert!(range.size < remaining, "XSAVE_PREFAULT_FAILED no progress");
+            assert_eq!(range.gpa + range.size, size as u64);
+        }
+        println!("XSAVE_PREFAULT_COMPLETE bytes={size} guest_instructions=0");
+    }
+
     fn entry_fixture(program: &[u8], seed: u64, xcr0: u64) -> EntryFixture {
         let long_mode = std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some();
         let mut ram = MmapRam::new(RAM_LEN * 2).unwrap();
+        if std::env::var_os("XSAVE_ENTRY_PREFAULT").is_some() {
+            for byte in ram.as_mut_bytes().iter_mut().step_by(4096) {
+                // SAFETY: each byte is a valid exclusive reference into the live RAM mapping; volatile writes materialize host pages before read-prefaulting them.
+                unsafe { std::ptr::write_volatile(byte, 0) };
+            }
+        }
         ram.as_mut_bytes()[CODE_GPA..CODE_GPA + program.len()].copy_from_slice(program);
         ram.as_mut_bytes()[GUEST_XRSTOR_GPA + 24..GUEST_XRSTOR_GPA + 28]
             .copy_from_slice(&0x1f80u32.to_le_bytes());
         let mut backend = KvmBackend::new().unwrap();
+        if std::env::var_os("XSAVE_ENTRY_PREFAULT").is_some() {
+            backend.set_dirty_log_enabled(false);
+        }
         // SAFETY: the owned aligned RAM mapping stays fixed and outlives the backend in EntryFixture.
         unsafe { backend.map_memory(Gpa(0), ram.as_mut_bytes()).unwrap() };
         backend.set_policy(&diagnostic_policy()).unwrap();
@@ -921,6 +978,13 @@ mod xsave_diagnostic {
         state.xcr0 = xcr0;
         state.xsave_restore_bv = Some(seed);
         backend.restore(&state).unwrap();
+        if std::env::var_os("XSAVE_ENTRY_PREFAULT").is_some() {
+            assert!(
+                std::env::var_os("XSAVE_ENTRY_WARMUP").is_none(),
+                "prefault control must not execute guest warmup"
+            );
+            prefault_entry_memory(&mut backend, RAM_LEN * 2);
+        }
         if std::env::var_os("XSAVE_ENTRY_WARMUP").is_some() {
             let initial_ram = ram.as_mut_bytes().to_vec();
             let warmup = entry_program("xrstor", xcr0);
@@ -1188,6 +1252,214 @@ mod xsave_diagnostic {
             failures.is_empty(),
             "debug reentry differences: {failures:?}"
         );
+    }
+
+    #[cfg(not(miri))]
+    mod canonical {
+        use super::*;
+        core::arch::global_asm!(include_str!("xsave_canonical_guest.S"));
+
+        unsafe extern "C" {
+            static harmony_xsave_canonical_start: u8;
+            static harmony_xsave_canonical_standard: u8;
+            static harmony_xsave_canonical_compacted: u8;
+            static harmony_xsave_canonical_saved: u8;
+            static harmony_xsave_canonical_padding: u8;
+            static harmony_xsave_canonical_end: u8;
+        }
+
+        fn canonical_guest() -> (&'static [u8], [usize; 4]) {
+            let start = std::ptr::addr_of!(harmony_xsave_canonical_start) as usize;
+            let end = std::ptr::addr_of!(harmony_xsave_canonical_end) as usize;
+            assert!(end > start && end - start < GUEST_XSAVE_GPA - CODE_GPA);
+            // SAFETY: the assembly labels delimit one immutable linked text blob; no host execution or relocation is required.
+            let program = unsafe { std::slice::from_raw_parts(start as *const u8, end - start) };
+            let stops = [
+                std::ptr::addr_of!(harmony_xsave_canonical_standard) as usize,
+                std::ptr::addr_of!(harmony_xsave_canonical_compacted) as usize,
+                std::ptr::addr_of!(harmony_xsave_canonical_saved) as usize,
+                std::ptr::addr_of!(harmony_xsave_canonical_padding) as usize,
+            ]
+            .map(|address| CODE_GPA + address - start);
+            (program, stops)
+        }
+
+        fn canonical_fixture(mode: u64, compacted: bool, canonical: bool) -> EntryFixture {
+            let (program, _) = canonical_guest();
+            let mut fixture = entry_fixture(program, 0, 7);
+            let mut policy = diagnostic_policy();
+            policy
+                .cpuid
+                .entries
+                .iter_mut()
+                .find(|entry| entry.leaf == 0xd && entry.subleaf == 1)
+                .unwrap()
+                .eax = 2;
+            fixture.backend.install_cpuid(&policy.cpuid).unwrap();
+            fixture.ram.as_mut_bytes()[GUEST_XRSTOR_GPA + 28..GUEST_XRSTOR_GPA + 32]
+                .copy_from_slice(&0x3f80u32.to_le_bytes());
+            let mut state = fixture.backend.save().unwrap();
+            state.regs.r12 = mode;
+            state.regs.r13 = u64::from(canonical);
+            state.regs.r14 = u64::from(compacted);
+            fixture.backend.restore(&state).unwrap();
+            fixture.backend.prepare_snapshot().unwrap();
+            fixture
+        }
+
+        fn canonical_expected(mode: u64, compacted: bool) -> Vec<u8> {
+            let mut image = vec![0; GUEST_XSAVE_LEN];
+            image[0..2].copy_from_slice(&0x37fu16.to_le_bytes());
+            image[SSE_MXCSR]
+                .copy_from_slice(&if mode == 3 { 0x3f80u32 } else { 0x1f80u32 }.to_le_bytes());
+            image[SSE_MXCSR_MASK].copy_from_slice(&0xffffu32.to_le_bytes());
+            let mut bv = 0u64;
+            if matches!(mode, 1 | 2) {
+                image[SSE_XMM0].fill(0xff);
+                bv |= 2;
+            }
+            if mode == 2 {
+                image[576..592].fill(0xff);
+                bv |= 4;
+            }
+            image[XSTATE_BV].copy_from_slice(&bv.to_le_bytes());
+            image[XCOMP_BV]
+                .copy_from_slice(&if compacted { (1u64 << 63) | 7 } else { 0 }.to_le_bytes());
+            image
+        }
+
+        fn canonical_debug_stop(fixture: &mut EntryFixture, rip: usize) {
+            let mut debug = kvm_bindings::kvm_guest_debug {
+                control: kvm_bindings::KVM_GUESTDBG_ENABLE | kvm_bindings::KVM_GUESTDBG_USE_HW_BP,
+                ..Default::default()
+            };
+            debug.arch.debugreg[0] = rip as u64;
+            debug.arch.debugreg[7] = 0x401;
+            fixture.backend.vcpu.set_guest_debug(&debug).unwrap();
+            // SAFETY: the fixture exclusively owns the live vCPU and its run mapping throughout this synchronous ioctl.
+            assert_eq!(unsafe { raw_kvm_run(fixture.backend.vcpu.as_raw_fd()) }, 0);
+            // SAFETY: KVM_RUN initialized the exit reason in the still-live run mapping before returning.
+            assert_eq!(
+                unsafe { (*fixture.backend.run).exit_reason },
+                kvm_bindings::KVM_EXIT_DEBUG
+            );
+            assert_eq!(fixture.backend.vcpu.get_regs().unwrap().rip, rip as u64);
+            fixture
+                .backend
+                .vcpu
+                .set_guest_debug(&Default::default())
+                .unwrap();
+        }
+
+        #[test]
+        #[ignore = "D3 whole-buffer guest canonicalization; fixed-CPU KVM, long mode and XSAVE_CANONICAL_REPORT_DIR required"]
+        fn snapshot_guest_canonicalization_preserves_complete_endpoints() {
+            assert!(std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some());
+            assert!(std::env::var_os("XSAVE_ENTRY_WARMUP").is_none());
+            let root = PathBuf::from(
+                std::env::var_os("XSAVE_CANONICAL_REPORT_DIR").expect("report directory required"),
+            );
+            fs::create_dir(&root).unwrap();
+            let supported = Kvm::new()
+                .unwrap()
+                .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+                .unwrap();
+            assert!(
+                supported
+                    .as_slice()
+                    .iter()
+                    .any(|entry| entry.function == 1 && entry.ecx & (1 << 28) != 0),
+                "D3 unsupported host: AVX required"
+            );
+            assert!(
+                supported
+                    .as_slice()
+                    .iter()
+                    .any(|entry| entry.function == 0xd && entry.index == 1 && entry.eax & 2 != 0),
+                "D3 unsupported host: XSAVEC required"
+            );
+            fs::write(
+                root.join("host-supported-cpuid.txt"),
+                format!("{supported:#?}"),
+            )
+            .unwrap();
+            let (program, stops) = canonical_guest();
+            fs::write(root.join("guest-program.bin"), program).unwrap();
+            fs::write(root.join("guest-stops.txt"), format!("{stops:#x?}\n")).unwrap();
+            let mut failures = Vec::new();
+            let mut raw_divergences = 0;
+            for compacted in [false, true] {
+                for mode in 0..4 {
+                    for canonical in [false, true] {
+                        let label = format!("compacted{compacted}-mode{mode}-canonical{canonical}");
+                        let directory = root.join(&label);
+                        fs::create_dir(&directory).unwrap();
+                        let mut reference = canonical_fixture(mode, compacted, canonical);
+                        let expected = entry_endpoint(&mut reference, &directory, "reference");
+                        let mut source = canonical_fixture(mode, compacted, canonical);
+                        let saved = retain_entry(&mut source, &directory, "capture");
+                        let continued = entry_endpoint(&mut source, &directory, "continued");
+                        let mut cold = canonical_fixture(mode, compacted, canonical);
+                        restore_entry(&mut cold, &saved);
+                        let cold_endpoint = entry_endpoint(&mut cold, &directory, "cold");
+                        let mut poison = saved.state.clone();
+                        poison.regs.r12 = if mode == 2 { 0 } else { 2 };
+                        source.backend.restore(&poison).unwrap();
+                        let poisoned = entry_endpoint(&mut source, &directory, "poisoned");
+                        assert_ne!(expected.ram, poisoned.ram);
+                        restore_entry(&mut source, &saved);
+                        let reused = entry_endpoint(&mut source, &directory, "reused");
+                        let mut report = String::new();
+                        let mut endpoints = vec![
+                            ("continued".to_string(), continued),
+                            ("cold".to_string(), cold_endpoint),
+                            ("reused".to_string(), reused),
+                        ];
+                        for (name, rip) in [
+                            ("before-save", stops[usize::from(compacted)]),
+                            ("after-save", stops[2]),
+                            ("padding", stops[3]),
+                        ] {
+                            if name == "padding" && !canonical {
+                                continue;
+                            }
+                            let mut interrupted = canonical_fixture(mode, compacted, canonical);
+                            canonical_debug_stop(&mut interrupted, rip);
+                            let actual = entry_endpoint(&mut interrupted, &directory, name);
+                            endpoints.push((name.to_string(), actual));
+                        }
+                        for (name, actual) in endpoints {
+                            let equal = expected == actual;
+                            let ram_equal = expected.ram == actual.ram;
+                            let state_equal = expected.state == actual.state;
+                            writeln!(report, "{name}: endpoint_equal={equal} ram_equal={ram_equal} state_equal={state_equal}").unwrap();
+                            if canonical && !equal {
+                                failures.push(format!("{label}/{name}"));
+                            }
+                            if !canonical && !ram_equal {
+                                raw_divergences += 1;
+                            }
+                        }
+                        if canonical {
+                            let actual =
+                                &expected.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN];
+                            let materialized = canonical_expected(mode, compacted);
+                            fs::write(directory.join("expected-image.bin"), &materialized).unwrap();
+                            let correct = actual == materialized;
+                            writeln!(report, "whole_buffer_expected={correct}").unwrap();
+                            if !correct {
+                                failures.push(format!("{label}/whole-buffer-values"));
+                            }
+                        }
+                        fs::write(directory.join("report.txt"), &report).unwrap();
+                        println!("D3 {label}\n{report}");
+                    }
+                }
+            }
+            println!("D3 raw_negative_control_ram_divergences={raw_divergences}");
+            fs::write(root.join("summary.txt"), format!("raw_negative_control_ram_divergences={raw_divergences}\ncanonical_failures={failures:?}\n")).unwrap();
+            assert!(failures.is_empty(), "D3 canonical failures: {failures:?}");
+        }
     }
 
     const RAM_LEN: usize = 0x4000;

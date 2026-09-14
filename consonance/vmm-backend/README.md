@@ -211,3 +211,48 @@ and reused execution. The trace includes the event format, guest RIP and exit
 reason; missing tracing support is an unavailable diagnostic, not confirmation
 of the proposed hidden nested-page fault. The trace instance is removed after
 its contents are retained, including when the raw oracle fails.
+
+## Synthetic guest XSAVE canonicalization
+
+The ignored Linux x86 test
+`kvm_sys::xsave_diagnostic::canonical::snapshot_guest_canonicalization_preserves_complete_endpoints`
+executes `xsave_canonical_guest.S` in long mode with XCR0=7. It requires AVX and
+XSAVEC support and a fresh `XSAVE_CANONICAL_REPORT_DIR`; set
+`XSAVE_ENTRY_LONG_MODE=1`, leave `XSAVE_ENTRY_WARMUP` unset, and run on one fixed
+CPU. This is a test fixture, not a kernel or admission-policy change.
+
+Every execution first fills all 832 owned save bytes with a nonzero pattern,
+then resets registers and selects init, SSE-active, AVX-active, or MXCSR-only
+state. Standard XSAVE64 and compacted XSAVEC64 each have a raw control and a
+guest canonicalizer. The canonicalizer materializes absent component init data,
+clears presence for init payloads, fixes owned reserved/padding bytes, and records
+an explicit format header. MXCSR is saved separately with STMXCSR: SSE presence
+cannot determine its value, and compacted init saves may leave its slot unwritten.
+Only the three enabled components are supported; for this fixed mask the AVX
+payload offset is 576 in both layouts.
+
+Both full-memory cold/reused restores and hardware-breakpoint interventions
+compare complete RAM and modeled state only at the final HLT. Interventions
+before save, after save, and inside canonicalization are not snapshot comparison
+points. A register-value poison must change guest RAM, and every canonical
+reference buffer is checked against an independently constructed expected image.
+Raw controls report their RAM divergence count without requiring Intel hosts to
+reproduce AMD tracking behavior. A zero raw count is not a reproduced negative
+control on that host. Reports retain endpoint RAM, modeled state, raw
+KVM_GET_XSAVE2, expected images, guest bytes, and breakpoint offsets. Broader host
+qualification remains separate from this synthetic test.
+
+The D1 `XSAVE_ENTRY_PREFAULT=1` control populates the entire fixture RAM through
+`KVM_PRE_FAULT_MEMORY` after vCPU configuration and host writes that
+materialize every RAM page (avoiding shared zero-page CoW), without executing guest
+instructions. This full-RAM oracle disables dirty logging before mapping in
+prefault mode, because write-protected dirty-log mappings still fault on the
+first XSAVE write. Production memory policy and the original control remain
+unchanged. It retries partial progress and interruptions. Missing capability
+or unsupported vCPU mode fails explicitly with `XSAVE_PREFAULT_UNSUPPORTED`;
+that result does not qualify the fixture. Leaving the variable unset preserves
+the unfaulted control. Combining it with guest warmup is rejected. The ioctl
+creates stage-2 read mappings and does not break CoW or set accessed bits, so the
+paired exit traces must establish whether the XSAVE write fault disappeared;
+successful prefault completion alone does not establish that result. Bounded CI
+retains the single-cohort trace and all restore/debug-entry prefault cohorts.
