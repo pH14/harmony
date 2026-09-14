@@ -639,6 +639,24 @@ jobs:
               kvm_sys::xsave_diagnostic::snapshot_entry_restores_match_uninterrupted_execution \
               -- --ignored --exact --test-threads=1 --nocapture \
               2>&1 | tee snapshot-report/xsave-d1.log
+      - name: Trace prefaulted KVM exits in one fixed-CPU XRSTOR reuse cohort
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          XSAVE_ENTRY_PREFAULT: "1"
+          XSAVE_ENTRY_CASE: xcr3-seed0-xrstor
+          XSAVE_ENTRY_LONG_MODE: "1"
+          XSAVE_ENTRY_REPORT_DIR: ${{ github.workspace }}/snapshot-report/xsave-d1-prefault-entry
+        run: |
+          set -euo pipefail
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          printf 'fixed_cpu=%s\ncase=xcr3-seed0-xrstor\nmode=64-bit\nwarmup=disabled\nprefault=enabled\ndirty_logging=disabled\n' "$cpu" > snapshot-report/xsave-d1-prefault.txt
+          sudo --preserve-env env HOME="$HOME" PATH="$PATH" timeout -k 10 120 bash consonance/vmm-backend/tests/xsave-exit-trace.sh \
+            snapshot-report/xsave-d1-prefault-trace taskset -c "$cpu" \
+            cargo test --locked --release -p vmm-backend --lib \
+              kvm_sys::xsave_diagnostic::snapshot_entry_restores_match_uninterrupted_execution \
+              -- --ignored --exact --test-threads=1 --nocapture \
+              2>&1 | tee snapshot-report/xsave-d1-prefault.log
       - name: Require snapshot preparation to preserve complete state
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}
         run: |
@@ -716,6 +734,28 @@ jobs:
               kvm_sys::xsave_diagnostic::snapshot_entry_debug_reentry_preserves_guest_observation \
               -- --ignored --exact --test-threads=1 --nocapture \
               2>&1 | tee snapshot-report/xsave-reentry-long-mode.log || failed=1
+          exit "$failed"
+      - name: Compare all prefaulted XSAVE restore and debug-entry cohorts
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          XSAVE_ENTRY_PREFAULT: "1"
+          XSAVE_ENTRY_LONG_MODE: "1"
+        run: |
+          set -euo pipefail
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          printf 'fixed_cpu=%s\nmode=64-bit-long-mode\nprefault=enabled\ndirty_logging=disabled\n' "$cpu" > snapshot-report/xsave-prefault.txt
+          failed=0
+          XSAVE_ENTRY_REPORT_DIR="$PWD/snapshot-report/xsave-entry-prefault" \
+            timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p vmm-backend --lib \
+              kvm_sys::xsave_diagnostic::snapshot_entry_restores_match_uninterrupted_execution \
+              -- --ignored --exact --test-threads=1 --nocapture \
+              2>&1 | tee snapshot-report/xsave-entry-prefault.log || failed=1
+          XSAVE_REENTRY_REPORT_DIR="$PWD/snapshot-report/xsave-reentry-prefault" \
+            timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p vmm-backend --lib \
+              kvm_sys::xsave_diagnostic::snapshot_entry_debug_reentry_preserves_guest_observation \
+              -- --ignored --exact --test-threads=1 --nocapture \
+              2>&1 | tee snapshot-report/xsave-reentry-prefault.log || failed=1
           exit "$failed"
       - name: Measure one-time XRSTOR warmup in 64-bit mode
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}

@@ -881,13 +881,70 @@ mod xsave_diagnostic {
         ram: MmapRam,
     }
 
+    fn prefault_entry_memory(backend: &mut KvmBackend, size: usize) {
+        assert!(
+            backend
+                .vm
+                .check_extension_raw(kvm_bindings::KVM_CAP_PRE_FAULT_MEMORY.into())
+                > 0,
+            "XSAVE_PREFAULT_UNSUPPORTED capability=KVM_CAP_PRE_FAULT_MEMORY"
+        );
+        let mut range = kvm_bindings::kvm_pre_fault_memory {
+            gpa: 0,
+            size: size as u64,
+            ..Default::default()
+        };
+        let request = ioc(
+            3,
+            0xae,
+            0xd5,
+            size_of::<kvm_bindings::kvm_pre_fault_memory>() as u64,
+        );
+        while range.size != 0 {
+            let remaining = range.size;
+            // SAFETY: the live vCPU fd receives the matching ioctl's initialized, writable ABI struct, which remains valid for the call.
+            let result = unsafe {
+                libc::ioctl(
+                    backend.vcpu.as_raw_fd(),
+                    request as libc::c_ulong,
+                    &mut range,
+                )
+            };
+            if result < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                if error.raw_os_error() == Some(libc::EOPNOTSUPP) {
+                    panic!("XSAVE_PREFAULT_UNSUPPORTED vcpu_mode error={error}");
+                }
+                panic!(
+                    "XSAVE_PREFAULT_FAILED gpa={} remaining={} error={error}",
+                    range.gpa, range.size
+                );
+            }
+            assert!(range.size < remaining, "XSAVE_PREFAULT_FAILED no progress");
+            assert_eq!(range.gpa + range.size, size as u64);
+        }
+        println!("XSAVE_PREFAULT_COMPLETE bytes={size} guest_instructions=0");
+    }
+
     fn entry_fixture(program: &[u8], seed: u64, xcr0: u64) -> EntryFixture {
         let long_mode = std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some();
         let mut ram = MmapRam::new(RAM_LEN * 2).unwrap();
+        if std::env::var_os("XSAVE_ENTRY_PREFAULT").is_some() {
+            for byte in ram.as_mut_bytes().iter_mut().step_by(4096) {
+                // SAFETY: each byte is a valid exclusive reference into the live RAM mapping; volatile writes materialize host pages before read-prefaulting them.
+                unsafe { std::ptr::write_volatile(byte, 0) };
+            }
+        }
         ram.as_mut_bytes()[CODE_GPA..CODE_GPA + program.len()].copy_from_slice(program);
         ram.as_mut_bytes()[GUEST_XRSTOR_GPA + 24..GUEST_XRSTOR_GPA + 28]
             .copy_from_slice(&0x1f80u32.to_le_bytes());
         let mut backend = KvmBackend::new().unwrap();
+        if std::env::var_os("XSAVE_ENTRY_PREFAULT").is_some() {
+            backend.set_dirty_log_enabled(false);
+        }
         // SAFETY: the owned aligned RAM mapping stays fixed and outlives the backend in EntryFixture.
         unsafe { backend.map_memory(Gpa(0), ram.as_mut_bytes()).unwrap() };
         backend.set_policy(&diagnostic_policy()).unwrap();
@@ -921,6 +978,13 @@ mod xsave_diagnostic {
         state.xcr0 = xcr0;
         state.xsave_restore_bv = Some(seed);
         backend.restore(&state).unwrap();
+        if std::env::var_os("XSAVE_ENTRY_PREFAULT").is_some() {
+            assert!(
+                std::env::var_os("XSAVE_ENTRY_WARMUP").is_none(),
+                "prefault control must not execute guest warmup"
+            );
+            prefault_entry_memory(&mut backend, RAM_LEN * 2);
+        }
         if std::env::var_os("XSAVE_ENTRY_WARMUP").is_some() {
             let initial_ram = ram.as_mut_bytes().to_vec();
             let warmup = entry_program("xrstor", xcr0);
