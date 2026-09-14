@@ -4,16 +4,16 @@
     {
       "file": "platform.cpio.gz",
       "offset": 0,
-      "size": 7384254
+      "size": 7408030
     },
     {
       "file": "rootfs.cpio.gz",
-      "offset": 7384254,
-      "size": 1808709
+      "offset": 7408030,
+      "size": 1853493
     },
     {
       "file": "control.cpio.gz",
-      "offset": 9192963,
+      "offset": 9261523,
       "size": 142582
     }
   ],
@@ -26,8 +26,8 @@
   },
   "files": {
     "composed-initramfs.bin": {
-      "sha256": "49118b5ab6c1be234dfabc5a844ad7c9d977954003769031769e2b608ea4863e",
-      "size": 9335545
+      "sha256": "075c8f52e17978602c7630fe807d39e643d7d2be590c4acb52093c87c50b2a5c",
+      "size": 9404105
     },
     "control.cpio.gz": {
       "sha256": "d4644e5b1814baab51c0fd5929df7359365106a1ac92ad854c4e2acc5722a2ac",
@@ -38,7 +38,7 @@
       "size": 237
     },
     "image-inputs.json": {
-      "sha256": "4309e36c8c8cda7035031a4ab342b4a18ef10bc8d3a151af20078bf0a50a7a93",
+      "sha256": "652f1828ef3d2c874f404bc6c40cd426429a388fe9d4dff21c501ad5047bfe55",
       "size": 715
     },
     "image-runtime-config.json": {
@@ -50,12 +50,12 @@
       "size": 10552320
     },
     "platform.cpio.gz": {
-      "sha256": "733555f781a62f5a2e4d37ae9297efe1c1a347c395586e2cc24b1e38ddf353e3",
-      "size": 7384254
+      "sha256": "ee6b601b9f3dc04f1547fbe5394df62933dd20e1b57139a1c0fe3d6cd40f3f70",
+      "size": 7408030
     },
     "rootfs.cpio.gz": {
-      "sha256": "84c2498526f983d455c310e37987df8d149d22d3d1d34b62f9d9ddaa73cfb1b1",
-      "size": 1808709
+      "sha256": "b2838b9e3e97a963e413510e1fda7e7fb24d5503f1bb2bae7fafce1e697cc507",
+      "size": 1853493
     },
     "session-config.json": {
       "sha256": "155ad19947af3f0000e6d881d3c96bddf0c1848b4784a2295b0c3d599ed8527f",
@@ -67,7 +67,7 @@
     "backend": "boot_linux_stock_virtual_time",
     "control": "direct-ControlServer-A-E",
     "deadline_kind": "absolute-vtime",
-    "executable_sha256": "a5464888be038c9650a176a807bbc8880c6e20ef56e8a674a95a1c80a9b4359e",
+    "executable_sha256": "170d813c3e99a1c248c7bc8d374d63688f642450b51da40906e81e85a9b4c5c0",
     "restore_mode": "in-place-with-remap-factory",
     "setup_payloads": [
       [
@@ -139,7 +139,7 @@
     "tree_seed": 512023926727777635,
     "version": 1
   },
-  "prepared_identity": "23e316ba5fbc7ca2f55dab7756fd2f82912d27b0b8960bb0cfd559c666f22f6f",
+  "prepared_identity": "5677677b48d2e9c7f26dff4050832b01923b7c53dc273277564f3f5928700804",
   "scope": "controlled NES or PostgreSQL; candidate dump, not approval",
   "version": 1
 }

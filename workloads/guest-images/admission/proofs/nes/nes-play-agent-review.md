@@ -1,9 +1,5 @@
-# nes-play-agent: artifact review
-
-ELF SHA256 4cc1dacf6ef2aed5638e5eb6eceb7130eca532ed351e3a5b692da0a903a6349a.
-Review covers the exact static ELF, complete executable PT_LOAD scan, absence
-of W+X segments/executable GNU_STACK, sole ECX0 XGETBV proof, and the two exact
-resolver regions below. FXSAVE/FXRSTOR/XRSTOR are inventoried but this policy
-forbids XSAVE-family saves. Incoming-reference and eager-binding arguments are
-in the associated named proof files. Conditional controlled-scope obligations
-must be fulfilled in the final composition before using this proposed entry.
+# nes-play-agent exact hosted artifact review proposal
+ELF SHA256 9286525d7b7179d9c7a0b6112616d9a6cdf92d48d50ad83b812482b099f5c477. Complete canonical rootfs scan inventories exactly two ELFs with no dependencies, PT_INTERP, W+X, executable stack or text relocations. Each ELF contains one XGETBV, one FXSAVE/FXRSTOR pair, and XSAVE/XSAVEC resolver saves plus their XRSTOR instructions. The policy forbids XSAVE-family saves; FXSAVE/FXRSTOR/XRSTOR remain inventoried.
+Whole-function proposed exceptions: _dl_runtime_resolve_xsave [0x210e80,0x210f4d), 205bytes, SHA2564ccc14b979f5206a890229d9d35a2284ab7f9248dcbc7a8f00519bb33bfa1c35; _dl_runtime_resolve_xsavec [0x210f50,0x21100d), 189bytes, SHA256cf805e2c5b1a4a799ba1b6b5033d6e3b8869a13ea5a536506c86d89bb46d4c40.
+The shipped static-PIE agent retains the symbols used here; its dynamic section has no NEEDED entries and has NOW flags.
+Incoming and binding proofs below are conditional on the separately reviewed final composition. This is not an approved baseline.

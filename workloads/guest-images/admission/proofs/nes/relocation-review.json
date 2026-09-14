@@ -1,0 +1,12 @@
+{
+  "busybox": {
+    "shipped_companion_relocation_tables_equal": true,
+    "resolver_or_selector_target_relocations": [],
+    "tlsdesc_relocations": []
+  },
+  "play-agent": {
+    "resolver_or_selector_target_relocations": [],
+    "tlsdesc_relocations": []
+  },
+  "method": "Inspect full readelf -rW tables for relocation offsets, symbol values and addends in each resolver/selector interval; retained tables contain no such target. The shipped BusyBox table matches the unstripped companion."
+}

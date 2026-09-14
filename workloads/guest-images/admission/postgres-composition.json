@@ -1,14 +1,14 @@
 {
   "version": 1,
-  "reviewed_by": "Codex primary-agent source, published-artifact and controlled-scope review, 2026-09-14",
-  "manifest_sha256": "769b2cc0573bd9a29f0def74919324dfec555b6969f99d3bb4105053d0c580b3",
+  "reviewed_by": "Codex primary-agent exact source, ELF, loader, selector and controlled-composition review, 2026-09-14",
+  "manifest_sha256": "d2032e87e9cdb25242bad9997824db4af42df7202fa85865310ac8f2ab877827",
   "composition_evidence": {
     "file": "proofs/postgres-composition.md",
-    "sha256": "018a4dfcdfa5243b93d251c0467baad9bada899fad4ebf2f4afff61f5de22c88"
+    "sha256": "62b17fe2ed09b34e30f5f2f4781df87a02c35351cab4a8ce45e9b461e0cf3c1e"
   },
   "platform_baseline": {
     "file": "platform-component.json",
-    "sha256": "76ddca85d4e9d8d1b63349104d23fc114034372be29e930622b6263a250c29df"
+    "sha256": "a293ffba80daf77f4446d30b7d69b2a06e213a0dd4dab30d9acf867744b134c5"
   },
   "workload_baseline": {
     "file": "postgres-component.json",

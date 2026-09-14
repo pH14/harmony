@@ -1,0 +1,444 @@
+{
+  "artifacts": {
+    "e2a9ac58:bin/busybox": {
+      "bytes": 1397360,
+      "file": "ELF 64-bit LSB executable, x86-64, version 1 (GNU/Linux), statically linked, for GNU/Linux 3.10.0, stripped",
+      "program_headers": [
+        "LOAD off    0x0000000000000000 vaddr 0x0000000000400000 paddr 0x0000000000400000 align 2**12",
+        "LOAD off    0x0000000000001000 vaddr 0x0000000000401000 paddr 0x0000000000401000 align 2**12",
+        "LOAD off    0x0000000000118000 vaddr 0x0000000000518000 paddr 0x0000000000518000 align 2**12",
+        "LOAD off    0x000000000014dca0 vaddr 0x000000000054eca0 paddr 0x000000000054eca0 align 2**12",
+        "STACK off    0x0000000000000000 vaddr 0x0000000000000000 paddr 0x0000000000000000 align 2**4",
+        "RELRO off    0x000000000014dca0 vaddr 0x000000000054eca0 paddr 0x000000000054eca0 align 2**0"
+      ],
+      "sha256": "ed276986a91b1c13f6da78900446dfa4311e841d87d8f770ae3ca10b18767b70",
+      "xgetbv_sites": [
+        {
+          "context": [
+            "  47270f: 0b 15 3b 91 0e 00            \torl\t0xe913b(%rip), %edx     # 0x55b850",
+            "  472715: 41 f7 c4 00 08 00 00         \ttestl\t$0x800, %r12d           # imm = 0x800",
+            "  47271c: 44 89 1d 21 91 0e 00         \tmovl\t%r11d, 0xe9121(%rip)    # 0x55b844",
+            "  472723: 0f 45 f0                     \tcmovnel\t%eax, %esi",
+            "  472726: 89 15 24 91 0e 00            \tmovl\t%edx, 0xe9124(%rip)     # 0x55b850",
+            "  47272c: 89 35 76 90 0e 00            \tmovl\t%esi, 0xe9076(%rip)     # 0x55b7a8",
+            "  472732: 85 c9                        \ttestl\t%ecx, %ecx",
+            "  472734: 0f 84 05 01 00 00            \tje\t0x47283f <.text+0x716bf>",
+            "  47273a: c7 85 1c ff ff ff 01 00 00 00\tmovl\t$0x1, -0xe4(%rbp)",
+            "  472744: 44 89 e8                     \tmovl\t%r13d, %eax",
+            "  472747: 31 c9                        \txorl\t%ecx, %ecx",
+            "  472749: 25 00 00 08 00               \tandl\t$0x80000, %eax          # imm = 0x80000",
+            "  47274e: 89 85 20 ff ff ff            \tmovl\t%eax, -0xe0(%rbp)",
+            "  472754: 09 d0                        \torl\t%edx, %eax",
+            "  472756: 89 85 18 ff ff ff            \tmovl\t%eax, -0xe8(%rbp)",
+            "  47275c: 89 05 ee 90 0e 00            \tmovl\t%eax, 0xe90ee(%rip)     # 0x55b850",
+            "  472762: 0f 01 d0                     \txgetbv",
+            "  472765: 89 85 2c ff ff ff            \tmovl\t%eax, -0xd4(%rbp)",
+            "  47276b: f7 d0                        \tnotl\t%eax",
+            "  47276d: a8 06                        \ttestb\t$0x6, %al",
+            "  47276f: 0f 84 d5 02 00 00            \tje\t0x472a4a <.text+0x718ca>",
+            "  472775: 83 bd 20 ff ff ff 00         \tcmpl\t$0x0, -0xe0(%rbp)",
+            "  47277c: 74 65                        \tje\t0x4727e3 <.text+0x71663>",
+            "  47277e: 83 3d df 8f 0e 00 23         \tcmpl\t$0x23, 0xe8fdf(%rip)    # 0x55b764"
+          ],
+          "line": "  472762: 0f 01 d0                     \txgetbv"
+        }
+      ],
+      "xsave_mnemonics": [
+        "fxrstor",
+        "fxsave",
+        "xrstor",
+        "xsave",
+        "xsavec"
+      ]
+    },
+    "e2a9ac58:usr/bin/runc": {
+      "bytes": 12374040,
+      "file": "ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, with debug_info, not stripped",
+      "program_headers": [
+        "LOAD off    0x0000000000000000 vaddr 0x0000000000400000 paddr 0x0000000000400000 align 2**12",
+        "LOAD off    0x0000000000001000 vaddr 0x0000000000401000 paddr 0x0000000000401000 align 2**12",
+        "LOAD off    0x00000000003e7000 vaddr 0x00000000007e7000 paddr 0x00000000007e7000 align 2**12",
+        "LOAD off    0x0000000000824f08 vaddr 0x0000000000c25f08 paddr 0x0000000000c25f08 align 2**12",
+        "STACK off    0x0000000000000000 vaddr 0x0000000000000000 paddr 0x0000000000000000 align 2**4",
+        "RELRO off    0x0000000000824f08 vaddr 0x0000000000c25f08 paddr 0x0000000000c25f08 align 2**0"
+      ],
+      "sha256": "ce6353a8273004c5f917277846dd521c7185b653ca46cfe538cc16b1be254cc9",
+      "xgetbv_sites": [
+        {
+          "context": [
+            "  4056eb: 0f 92 05 bc 42 86 00         \tsetb\t0x8642bc(%rip)          # 0xc699ae <internal/cpu.X86+0x4e>",
+            "  4056f2: 0f ba e0 19                  \tbtl\t$0x19, %eax",
+            "  4056f6: 0f 92 05 a3 42 86 00         \tsetb\t0x8642a3(%rip)          # 0xc699a0 <internal/cpu.X86+0x40>",
+            "  4056fd: 0f ba e0 0c                  \tbtl\t$0xc, %eax",
+            "  405701: 0f 92 c1                     \tsetb\t%cl",
+            "  405704: 0f ba e0 1b                  \tbtl\t$0x1b, %eax",
+            "  405708: 0f 92 c2                     \tsetb\t%dl",
+            "  40570b: 88 15 9b 42 86 00            \tmovb\t%dl, 0x86429b(%rip)     # 0xc699ac <internal/cpu.X86+0x4c>",
+            "  405711: 21 d1                        \tandl\t%edx, %ecx",
+            "  405713: 88 0d 92 42 86 00            \tmovb\t%cl, 0x864292(%rip)     # 0xc699ab <internal/cpu.X86+0x4b>",
+            "  405719: 0f ba e0 1b                  \tbtl\t$0x1b, %eax",
+            "  40571d: 72 06                        \tjb\t0x405725 <internal/cpu.doinit+0x705>",
+            "  40571f: 31 c9                        \txorl\t%ecx, %ecx",
+            "  405721: 31 d2                        \txorl\t%edx, %edx",
+            "  405723: eb 4b                        \tjmp\t0x405770 <internal/cpu.doinit+0x750>",
+            "  405725: 89 44 24 4c                  \tmovl\t%eax, 0x4c(%rsp)",
+            "  405729: e8 b2 01 00 00               \tcallq\t0x4058e0 <internal/cpu.xgetbv.abi0>",
+            "  40572e: 45 0f 57 ff                  \txorps\t%xmm15, %xmm15",
+            "  405732: 64 4c 8b 34 25 f8 ff ff ff   \tmovq\t%fs:-0x8, %r14",
+            "  40573b: 8b 04 24                     \tmovl\t(%rsp), %eax",
+            "  40573e: 0f ba e0 01                  \tbtl\t$0x1, %eax",
+            "  405742: 73 09                        \tjae\t0x40574d <internal/cpu.doinit+0x72d>",
+            "  405744: 0f ba e0 02                  \tbtl\t$0x2, %eax",
+            "  405748: 0f 92 c1                     \tsetb\t%cl"
+          ],
+          "line": "  405729: e8 b2 01 00 00               \tcallq\t0x4058e0 <internal/cpu.xgetbv.abi0>"
+        },
+        {
+          "context": [
+            "",
+            "00000000004058c0 <internal/cpu.cpuid.abi0>:",
+            "  4058c0: 8b 44 24 08                  \tmovl\t0x8(%rsp), %eax",
+            "  4058c4: 8b 4c 24 0c                  \tmovl\t0xc(%rsp), %ecx",
+            "  4058c8: 0f a2                        \tcpuid",
+            "  4058ca: 89 44 24 10                  \tmovl\t%eax, 0x10(%rsp)",
+            "  4058ce: 89 5c 24 14                  \tmovl\t%ebx, 0x14(%rsp)",
+            "  4058d2: 89 4c 24 18                  \tmovl\t%ecx, 0x18(%rsp)",
+            "  4058d6: 89 54 24 1c                  \tmovl\t%edx, 0x1c(%rsp)",
+            "  4058da: c3                           \tretq",
+            "  4058db: cc                           \tint3",
+            "  4058dc: cc                           \tint3",
+            "  4058dd: cc                           \tint3",
+            "  4058de: cc                           \tint3",
+            "  4058df: cc                           \tint3",
+            "",
+            "00000000004058e0 <internal/cpu.xgetbv.abi0>:",
+            "  4058e0: b9 00 00 00 00               \tmovl\t$0x0, %ecx",
+            "  4058e5: 0f 01 d0                     \txgetbv",
+            "  4058e8: 89 44 24 08                  \tmovl\t%eax, 0x8(%rsp)",
+            "  4058ec: 89 54 24 0c                  \tmovl\t%edx, 0xc(%rsp)",
+            "  4058f0: c3                           \tretq",
+            "  4058f1: cc                           \tint3",
+            "  4058f2: cc                           \tint3"
+          ],
+          "line": "00000000004058e0 <internal/cpu.xgetbv.abi0>:"
+        },
+        {
+          "context": [
+            "  4058c0: 8b 44 24 08                  \tmovl\t0x8(%rsp), %eax",
+            "  4058c4: 8b 4c 24 0c                  \tmovl\t0xc(%rsp), %ecx",
+            "  4058c8: 0f a2                        \tcpuid",
+            "  4058ca: 89 44 24 10                  \tmovl\t%eax, 0x10(%rsp)",
+            "  4058ce: 89 5c 24 14                  \tmovl\t%ebx, 0x14(%rsp)",
+            "  4058d2: 89 4c 24 18                  \tmovl\t%ecx, 0x18(%rsp)",
+            "  4058d6: 89 54 24 1c                  \tmovl\t%edx, 0x1c(%rsp)",
+            "  4058da: c3                           \tretq",
+            "  4058db: cc                           \tint3",
+            "  4058dc: cc                           \tint3",
+            "  4058dd: cc                           \tint3",
+            "  4058de: cc                           \tint3",
+            "  4058df: cc                           \tint3",
+            "",
+            "00000000004058e0 <internal/cpu.xgetbv.abi0>:",
+            "  4058e0: b9 00 00 00 00               \tmovl\t$0x0, %ecx",
+            "  4058e5: 0f 01 d0                     \txgetbv",
+            "  4058e8: 89 44 24 08                  \tmovl\t%eax, 0x8(%rsp)",
+            "  4058ec: 89 54 24 0c                  \tmovl\t%edx, 0xc(%rsp)",
+            "  4058f0: c3                           \tretq",
+            "  4058f1: cc                           \tint3",
+            "  4058f2: cc                           \tint3",
+            "  4058f3: cc                           \tint3",
+            "  4058f4: cc                           \tint3"
+          ],
+          "line": "  4058e5: 0f 01 d0                     \txgetbv"
+        }
+      ],
+      "xsave_mnemonics": []
+    },
+    "e2a9ac58:usr/lib/harmony/supervisor": {
+      "bytes": 936568,
+      "file": "ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), static-pie linked, not stripped",
+      "program_headers": [
+        "LOAD off    0x0000000000000000 vaddr 0x0000000000000000 paddr 0x0000000000000000 align 2**12",
+        "LOAD off    0x0000000000007000 vaddr 0x0000000000007000 paddr 0x0000000000007000 align 2**12",
+        "LOAD off    0x0000000000090000 vaddr 0x0000000000090000 paddr 0x0000000000090000 align 2**12",
+        "LOAD off    0x00000000000b2dc0 vaddr 0x00000000000b3dc0 paddr 0x00000000000b3dc0 align 2**12",
+        "DYNAMIC off    0x00000000000b6088 vaddr 0x00000000000b7088 paddr 0x00000000000b7088 align 2**3",
+        "STACK off    0x0000000000000000 vaddr 0x0000000000000000 paddr 0x0000000000000000 align 2**4",
+        "RELRO off    0x00000000000b2dc0 vaddr 0x00000000000b3dc0 paddr 0x00000000000b3dc0 align 2**0"
+      ],
+      "sha256": "6cc0b938db15ccff58e8db84e02ffec09b496d4deb752f2c62dd625c5dc21875",
+      "xgetbv_sites": [
+        {
+          "context": [
+            "   6ce61: 48 8d 75 fc                  \tleaq\t-0x4(%rbp), %rsi",
+            "   6ce65: ff 15 2d a7 04 00            \tcallq\t*0x4a72d(%rip)          # 0xb7598 <_GLOBAL_OFFSET_TABLE_+0x390>",
+            "   6ce6b: 48 83 c4 10                  \taddq\t$0x10, %rsp",
+            "   6ce6f: 5d                           \tpopq\t%rbp",
+            "   6ce70: c3                           \tretq",
+            "",
+            "000000000006ce71 <_RNvYINtCsiQ3f8fg2CjV_14rustc_demangle21SizeLimitedFmtAdapterQNtNtCsap3e9hdarbF_4core3fmt9FormatterENtBZ_5Write9write_fmtB5_>:",
+            "   6ce71: 48 89 d1                     \tmovq\t%rdx, %rcx",
+            "   6ce74: 48 89 f2                     \tmovq\t%rsi, %rdx",
+            "   6ce77: 48 8d 35 fa 95 04 00         \tleaq\t0x495fa(%rip), %rsi     # 0xb6478 <anon.e4ace708238697e0a8b9f69b36f2b7cf.19.llvm.7454628272431984246+0x18d0>",
+            "   6ce7e: ff 25 bc a8 04 00            \tjmpq\t*0x4a8bc(%rip)          # 0xb7740 <_GLOBAL_OFFSET_TABLE_+0x538>",
+            "   6ce84: 66 2e 0f 1f 84 00 00 00 00 00\tnopw\t%cs:(%rax,%rax)",
+            "   6ce8e: 66 90                        \tnop",
+            "",
+            "000000000006ce90 <_RNvNtNtNtCsap3e9hdarbF_4core9core_arch3x865xsave7__xgetbv>:",
+            "   6ce90: 31 c9                        \txorl\t%ecx, %ecx",
+            "   6ce92: 0f 01 d0                     \txgetbv",
+            "   6ce95: 48 c1 e2 20                  \tshlq\t$0x20, %rdx",
+            "   6ce99: 48 09 d0                     \torq\t%rdx, %rax",
+            "   6ce9c: c3                           \tretq",
+            "",
+            "000000000006ce9d <_RINvNtNtCsap3e9hdarbF_4core5slice5index5rangeINtNtNtB6_3ops5range14RangeInclusivejEECs8K8yb9LbGog_11miniz_oxide>:",
+            "   6ce9d: 55                           \tpushq\t%rbp",
+            "   6ce9e: 48 89 e5                     \tmovq\t%rsp, %rbp"
+          ],
+          "line": "   6ce92: 0f 01 d0                     \txgetbv"
+        }
+      ],
+      "xsave_mnemonics": []
+    },
+    "fef80533:bin/busybox": {
+      "bytes": 1397360,
+      "file": "ELF 64-bit LSB executable, x86-64, version 1 (GNU/Linux), statically linked, for GNU/Linux 3.10.0, stripped",
+      "program_headers": [
+        "LOAD off    0x0000000000000000 vaddr 0x0000000000400000 paddr 0x0000000000400000 align 2**12",
+        "LOAD off    0x0000000000001000 vaddr 0x0000000000401000 paddr 0x0000000000401000 align 2**12",
+        "LOAD off    0x0000000000118000 vaddr 0x0000000000518000 paddr 0x0000000000518000 align 2**12",
+        "LOAD off    0x000000000014dca0 vaddr 0x000000000054eca0 paddr 0x000000000054eca0 align 2**12",
+        "STACK off    0x0000000000000000 vaddr 0x0000000000000000 paddr 0x0000000000000000 align 2**4",
+        "RELRO off    0x000000000014dca0 vaddr 0x000000000054eca0 paddr 0x000000000054eca0 align 2**0"
+      ],
+      "sha256": "ed276986a91b1c13f6da78900446dfa4311e841d87d8f770ae3ca10b18767b70",
+      "xgetbv_sites": [
+        {
+          "context": [
+            "  47270f: 0b 15 3b 91 0e 00            \torl\t0xe913b(%rip), %edx     # 0x55b850",
+            "  472715: 41 f7 c4 00 08 00 00         \ttestl\t$0x800, %r12d           # imm = 0x800",
+            "  47271c: 44 89 1d 21 91 0e 00         \tmovl\t%r11d, 0xe9121(%rip)    # 0x55b844",
+            "  472723: 0f 45 f0                     \tcmovnel\t%eax, %esi",
+            "  472726: 89 15 24 91 0e 00            \tmovl\t%edx, 0xe9124(%rip)     # 0x55b850",
+            "  47272c: 89 35 76 90 0e 00            \tmovl\t%esi, 0xe9076(%rip)     # 0x55b7a8",
+            "  472732: 85 c9                        \ttestl\t%ecx, %ecx",
+            "  472734: 0f 84 05 01 00 00            \tje\t0x47283f <.text+0x716bf>",
+            "  47273a: c7 85 1c ff ff ff 01 00 00 00\tmovl\t$0x1, -0xe4(%rbp)",
+            "  472744: 44 89 e8                     \tmovl\t%r13d, %eax",
+            "  472747: 31 c9                        \txorl\t%ecx, %ecx",
+            "  472749: 25 00 00 08 00               \tandl\t$0x80000, %eax          # imm = 0x80000",
+            "  47274e: 89 85 20 ff ff ff            \tmovl\t%eax, -0xe0(%rbp)",
+            "  472754: 09 d0                        \torl\t%edx, %eax",
+            "  472756: 89 85 18 ff ff ff            \tmovl\t%eax, -0xe8(%rbp)",
+            "  47275c: 89 05 ee 90 0e 00            \tmovl\t%eax, 0xe90ee(%rip)     # 0x55b850",
+            "  472762: 0f 01 d0                     \txgetbv",
+            "  472765: 89 85 2c ff ff ff            \tmovl\t%eax, -0xd4(%rbp)",
+            "  47276b: f7 d0                        \tnotl\t%eax",
+            "  47276d: a8 06                        \ttestb\t$0x6, %al",
+            "  47276f: 0f 84 d5 02 00 00            \tje\t0x472a4a <.text+0x718ca>",
+            "  472775: 83 bd 20 ff ff ff 00         \tcmpl\t$0x0, -0xe0(%rbp)",
+            "  47277c: 74 65                        \tje\t0x4727e3 <.text+0x71663>",
+            "  47277e: 83 3d df 8f 0e 00 23         \tcmpl\t$0x23, 0xe8fdf(%rip)    # 0x55b764"
+          ],
+          "line": "  472762: 0f 01 d0                     \txgetbv"
+        }
+      ],
+      "xsave_mnemonics": [
+        "fxrstor",
+        "fxsave",
+        "xrstor",
+        "xsave",
+        "xsavec"
+      ]
+    },
+    "fef80533:usr/bin/runc": {
+      "bytes": 12374040,
+      "file": "ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, with debug_info, not stripped",
+      "program_headers": [
+        "LOAD off    0x0000000000000000 vaddr 0x0000000000400000 paddr 0x0000000000400000 align 2**12",
+        "LOAD off    0x0000000000001000 vaddr 0x0000000000401000 paddr 0x0000000000401000 align 2**12",
+        "LOAD off    0x00000000003e7000 vaddr 0x00000000007e7000 paddr 0x00000000007e7000 align 2**12",
+        "LOAD off    0x0000000000824f08 vaddr 0x0000000000c25f08 paddr 0x0000000000c25f08 align 2**12",
+        "STACK off    0x0000000000000000 vaddr 0x0000000000000000 paddr 0x0000000000000000 align 2**4",
+        "RELRO off    0x0000000000824f08 vaddr 0x0000000000c25f08 paddr 0x0000000000c25f08 align 2**0"
+      ],
+      "sha256": "ce6353a8273004c5f917277846dd521c7185b653ca46cfe538cc16b1be254cc9",
+      "xgetbv_sites": [
+        {
+          "context": [
+            "  4056eb: 0f 92 05 bc 42 86 00         \tsetb\t0x8642bc(%rip)          # 0xc699ae <internal/cpu.X86+0x4e>",
+            "  4056f2: 0f ba e0 19                  \tbtl\t$0x19, %eax",
+            "  4056f6: 0f 92 05 a3 42 86 00         \tsetb\t0x8642a3(%rip)          # 0xc699a0 <internal/cpu.X86+0x40>",
+            "  4056fd: 0f ba e0 0c                  \tbtl\t$0xc, %eax",
+            "  405701: 0f 92 c1                     \tsetb\t%cl",
+            "  405704: 0f ba e0 1b                  \tbtl\t$0x1b, %eax",
+            "  405708: 0f 92 c2                     \tsetb\t%dl",
+            "  40570b: 88 15 9b 42 86 00            \tmovb\t%dl, 0x86429b(%rip)     # 0xc699ac <internal/cpu.X86+0x4c>",
+            "  405711: 21 d1                        \tandl\t%edx, %ecx",
+            "  405713: 88 0d 92 42 86 00            \tmovb\t%cl, 0x864292(%rip)     # 0xc699ab <internal/cpu.X86+0x4b>",
+            "  405719: 0f ba e0 1b                  \tbtl\t$0x1b, %eax",
+            "  40571d: 72 06                        \tjb\t0x405725 <internal/cpu.doinit+0x705>",
+            "  40571f: 31 c9                        \txorl\t%ecx, %ecx",
+            "  405721: 31 d2                        \txorl\t%edx, %edx",
+            "  405723: eb 4b                        \tjmp\t0x405770 <internal/cpu.doinit+0x750>",
+            "  405725: 89 44 24 4c                  \tmovl\t%eax, 0x4c(%rsp)",
+            "  405729: e8 b2 01 00 00               \tcallq\t0x4058e0 <internal/cpu.xgetbv.abi0>",
+            "  40572e: 45 0f 57 ff                  \txorps\t%xmm15, %xmm15",
+            "  405732: 64 4c 8b 34 25 f8 ff ff ff   \tmovq\t%fs:-0x8, %r14",
+            "  40573b: 8b 04 24                     \tmovl\t(%rsp), %eax",
+            "  40573e: 0f ba e0 01                  \tbtl\t$0x1, %eax",
+            "  405742: 73 09                        \tjae\t0x40574d <internal/cpu.doinit+0x72d>",
+            "  405744: 0f ba e0 02                  \tbtl\t$0x2, %eax",
+            "  405748: 0f 92 c1                     \tsetb\t%cl"
+          ],
+          "line": "  405729: e8 b2 01 00 00               \tcallq\t0x4058e0 <internal/cpu.xgetbv.abi0>"
+        },
+        {
+          "context": [
+            "",
+            "00000000004058c0 <internal/cpu.cpuid.abi0>:",
+            "  4058c0: 8b 44 24 08                  \tmovl\t0x8(%rsp), %eax",
+            "  4058c4: 8b 4c 24 0c                  \tmovl\t0xc(%rsp), %ecx",
+            "  4058c8: 0f a2                        \tcpuid",
+            "  4058ca: 89 44 24 10                  \tmovl\t%eax, 0x10(%rsp)",
+            "  4058ce: 89 5c 24 14                  \tmovl\t%ebx, 0x14(%rsp)",
+            "  4058d2: 89 4c 24 18                  \tmovl\t%ecx, 0x18(%rsp)",
+            "  4058d6: 89 54 24 1c                  \tmovl\t%edx, 0x1c(%rsp)",
+            "  4058da: c3                           \tretq",
+            "  4058db: cc                           \tint3",
+            "  4058dc: cc                           \tint3",
+            "  4058dd: cc                           \tint3",
+            "  4058de: cc                           \tint3",
+            "  4058df: cc                           \tint3",
+            "",
+            "00000000004058e0 <internal/cpu.xgetbv.abi0>:",
+            "  4058e0: b9 00 00 00 00               \tmovl\t$0x0, %ecx",
+            "  4058e5: 0f 01 d0                     \txgetbv",
+            "  4058e8: 89 44 24 08                  \tmovl\t%eax, 0x8(%rsp)",
+            "  4058ec: 89 54 24 0c                  \tmovl\t%edx, 0xc(%rsp)",
+            "  4058f0: c3                           \tretq",
+            "  4058f1: cc                           \tint3",
+            "  4058f2: cc                           \tint3"
+          ],
+          "line": "00000000004058e0 <internal/cpu.xgetbv.abi0>:"
+        },
+        {
+          "context": [
+            "  4058c0: 8b 44 24 08                  \tmovl\t0x8(%rsp), %eax",
+            "  4058c4: 8b 4c 24 0c                  \tmovl\t0xc(%rsp), %ecx",
+            "  4058c8: 0f a2                        \tcpuid",
+            "  4058ca: 89 44 24 10                  \tmovl\t%eax, 0x10(%rsp)",
+            "  4058ce: 89 5c 24 14                  \tmovl\t%ebx, 0x14(%rsp)",
+            "  4058d2: 89 4c 24 18                  \tmovl\t%ecx, 0x18(%rsp)",
+            "  4058d6: 89 54 24 1c                  \tmovl\t%edx, 0x1c(%rsp)",
+            "  4058da: c3                           \tretq",
+            "  4058db: cc                           \tint3",
+            "  4058dc: cc                           \tint3",
+            "  4058dd: cc                           \tint3",
+            "  4058de: cc                           \tint3",
+            "  4058df: cc                           \tint3",
+            "",
+            "00000000004058e0 <internal/cpu.xgetbv.abi0>:",
+            "  4058e0: b9 00 00 00 00               \tmovl\t$0x0, %ecx",
+            "  4058e5: 0f 01 d0                     \txgetbv",
+            "  4058e8: 89 44 24 08                  \tmovl\t%eax, 0x8(%rsp)",
+            "  4058ec: 89 54 24 0c                  \tmovl\t%edx, 0xc(%rsp)",
+            "  4058f0: c3                           \tretq",
+            "  4058f1: cc                           \tint3",
+            "  4058f2: cc                           \tint3",
+            "  4058f3: cc                           \tint3",
+            "  4058f4: cc                           \tint3"
+          ],
+          "line": "  4058e5: 0f 01 d0                     \txgetbv"
+        }
+      ],
+      "xsave_mnemonics": []
+    },
+    "fef80533:usr/lib/harmony/supervisor": {
+      "bytes": 879848,
+      "file": "ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), static-pie linked, not stripped",
+      "program_headers": [
+        "LOAD off    0x0000000000000000 vaddr 0x0000000000000000 paddr 0x0000000000000000 align 2**12",
+        "LOAD off    0x0000000000007000 vaddr 0x0000000000007000 paddr 0x0000000000007000 align 2**12",
+        "LOAD off    0x0000000000086000 vaddr 0x0000000000086000 paddr 0x0000000000086000 align 2**12",
+        "LOAD off    0x00000000000a7160 vaddr 0x00000000000a7160 paddr 0x00000000000a7160 align 2**12",
+        "DYNAMIC off    0x00000000000aa128 vaddr 0x00000000000aa128 paddr 0x00000000000aa128 align 2**3",
+        "STACK off    0x0000000000000000 vaddr 0x0000000000000000 paddr 0x0000000000000000 align 2**4",
+        "RELRO off    0x00000000000a7160 vaddr 0x00000000000a7160 paddr 0x00000000000a7160 align 2**0"
+      ],
+      "sha256": "f5dd3b5dcf3f3fcf19ae1fa2c92eefe981a32ab65dd2195d210425a7b3fa5458",
+      "xgetbv_sites": [
+        {
+          "context": [
+            "   62c71: 48 8d 75 fc                  \tleaq\t-0x4(%rbp), %rsi",
+            "   62c75: ff 15 9d 79 04 00            \tcallq\t*0x4799d(%rip)          # 0xaa618 <_GLOBAL_OFFSET_TABLE_+0x370>",
+            "   62c7b: 48 83 c4 10                  \taddq\t$0x10, %rsp",
+            "   62c7f: 5d                           \tpopq\t%rbp",
+            "   62c80: c3                           \tretq",
+            "",
+            "0000000000062c81 <_RNvYINtCsiQ3f8fg2CjV_14rustc_demangle21SizeLimitedFmtAdapterQNtNtCsap3e9hdarbF_4core3fmt9FormatterENtBZ_5Write9write_fmtB5_>:",
+            "   62c81: 48 89 d1                     \tmovq\t%rdx, %rcx",
+            "   62c84: 48 89 f2                     \tmovq\t%rsi, %rdx",
+            "   62c87: 48 8d 35 8a 68 04 00         \tleaq\t0x4688a(%rip), %rsi     # 0xa9518 <anon.e4ace708238697e0a8b9f69b36f2b7cf.19.llvm.7454628272431984246+0x18d0>",
+            "   62c8e: ff 25 0c 7b 04 00            \tjmpq\t*0x47b0c(%rip)          # 0xaa7a0 <_GLOBAL_OFFSET_TABLE_+0x4f8>",
+            "   62c94: 66 2e 0f 1f 84 00 00 00 00 00\tnopw\t%cs:(%rax,%rax)",
+            "   62c9e: 66 90                        \tnop",
+            "",
+            "0000000000062ca0 <_RNvNtNtNtCsap3e9hdarbF_4core9core_arch3x865xsave7__xgetbv>:",
+            "   62ca0: 31 c9                        \txorl\t%ecx, %ecx",
+            "   62ca2: 0f 01 d0                     \txgetbv",
+            "   62ca5: 48 c1 e2 20                  \tshlq\t$0x20, %rdx",
+            "   62ca9: 48 09 d0                     \torq\t%rdx, %rax",
+            "   62cac: c3                           \tretq",
+            "",
+            "0000000000062cad <_RINvNtNtCsap3e9hdarbF_4core5slice5index5rangeINtNtNtB6_3ops5range14RangeInclusivejEECs8K8yb9LbGog_11miniz_oxide>:",
+            "   62cad: 55                           \tpushq\t%rbp",
+            "   62cae: 48 89 e5                     \tmovq\t%rsp, %rbp"
+          ],
+          "line": "   62ca2: 0f 01 d0                     \txgetbv"
+        }
+      ],
+      "xsave_mnemonics": []
+    }
+  },
+  "supervisor": {
+    "revisions": {
+      "e2a9ac58": {
+        "incoming_direct_refs": [
+          [
+            "    e15b: f7 d0                        \tnotl\t%eax",
+            "    e15d: a9 00 00 00 0c               \ttestl\t$0xc000000, %eax        # imm = 0xC000000",
+            "    e162: 0f 85 19 03 00 00            \tjne\t0xe481 <_RNvNtNtCsegQT27cpaCi_10std_detect6detect5cache21detect_and_initialize+0x611>",
+            "    e168: 4c 89 75 c0                  \tmovq\t%r14, -0x40(%rbp)",
+            "    e16c: e8 1f ed 05 00               \tcallq\t0x6ce90 <_RNvNtNtNtCsap3e9hdarbF_4core9core_arch3x865xsave7__xgetbv>",
+            "    e171: 48 89 c6                     \tmovq\t%rax, %rsi",
+            "    e174: 89 f7                        \tmovl\t%esi, %edi",
+            "    e176: 83 e7 06                     \tandl\t$0x6, %edi",
+            "    e179: f7 d0                        \tnotl\t%eax"
+          ]
+        ],
+        "wrapper_bytes": "31c90f01d048c1e2204809d0c3",
+        "wrapper_size": 13,
+        "wrapper_start": 446096
+      },
+      "fef80533": {
+        "incoming_direct_refs": [
+          [
+            "    e00b: f7 d0                        \tnotl\t%eax",
+            "    e00d: a9 00 00 00 0c               \ttestl\t$0xc000000, %eax        # imm = 0xC000000",
+            "    e012: 0f 85 19 03 00 00            \tjne\t0xe331 <_RNvNtNtCsegQT27cpaCi_10std_detect6detect5cache21detect_and_initialize+0x611>",
+            "    e018: 4c 89 75 c0                  \tmovq\t%r14, -0x40(%rbp)",
+            "    e01c: e8 7f 4c 05 00               \tcallq\t0x62ca0 <_RNvNtNtNtCsap3e9hdarbF_4core9core_arch3x865xsave7__xgetbv>",
+            "    e021: 48 89 c6                     \tmovq\t%rax, %rsi",
+            "    e024: 89 f7                        \tmovl\t%esi, %edi",
+            "    e026: 83 e7 06                     \tandl\t$0x6, %edi",
+            "    e029: f7 d0                        \tnotl\t%eax"
+          ]
+        ],
+        "wrapper_bytes": "31c90f01d048c1e2204809d0c3",
+        "wrapper_size": 13,
+        "wrapper_start": 404640
+      }
+    }
+  }
+}

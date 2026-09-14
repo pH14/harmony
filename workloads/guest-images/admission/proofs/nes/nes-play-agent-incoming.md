@@ -1,24 +1,4 @@
-# nes-play-agent: exact resolver incoming-reference review
-
-ELF SHA256 4cc1dacf6ef2aed5638e5eb6eceb7130eca532ed351e3a5b692da0a903a6349a.
-Reviewed symbol ranges and disassembly references are retained in
-nes-play-agent-symbols.txt and nes-play-agent-references.txt. BusyBox symbols come from the
-unstripped build companion whose executable PT_LOAD bytes/addresses were
-matched to the shipped binary in D4; agent symbols are in the shipped ELF.
-
-The observed resolver addresses are taken only by CPU-feature initialization
-at 0x1852a0/0x1852a9/0x1852b9; the selected function pointer is written at
-0x1852c0. Its observed consumer at 0x208ab5 installs the ordinary
-lazy GOT entry under the lazy-relocation branch. No direct call/jump to these
-resolver functions was found in full disassembly. No resolver-target relocation
-was found. Literal 64-bit pointer search found none for BusyBox and only
-nonallocated .symtab entries for the agent. These checks complement the reviewed
-static glibc2.41 source path; they are not exhaustive arbitrary-code reachability
-analysis or protection against corrupted function pointers.
-
-Within the controlled trusted program, these entries are reached through the
-loader's lazy GOT mechanism. Eager binding proof in nes-play-agent-binding.md excludes
-its installation. No arbitrary dlsym/integer-to-function-pointer invocation,
-profile/audit mode, code mutation, or generated-code path is admitted. All
-retained instruction exceptions are exact whole-function byte regions from
-regions.json, never a generic symbol-name exemption.
+# nes-play-agent exact resolver incoming references
+ELF SHA256 9286525d7b7179d9c7a0b6112616d9a6cdf92d48d50ad83b812482b099f5c477. Full disassembly shows no direct call/jump to any byte inside either XSAVE resolver function. Their addresses are materialized only by LEA instructions at 0x20e3a5/0x20e3ac, within _dl_relocate_object's inline elf_machine_runtime_setup. The selected resolver is immediately stored into GOT[2] at 0x20e3b7.
+The setup requires DT_JMPREL and lazy: test/jump 0x20e354/0x20e357 skips the entire installation when lazy=0. Source sysdeps/x86_64/dl-machine.h:81-140 has the same conditional. Unlike the prior glibc2.41 evidence, this is not a global CPU-initialization resolver pointer with a later consumer.
+No resolver-target relocation or TLSDESC relocation occurs in either ELF. Literal entry-address searches find only two nonallocated .symtab values, recorded in review.json. Exact function boundaries and hashes cover every forbidden save site. The source/compiled comparison and the static loader guard support ordinary call flow; no arbitrary dlsym/integer-derived internal entry or control corruption is admitted.

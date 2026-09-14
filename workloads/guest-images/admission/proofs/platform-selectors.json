@@ -74,10 +74,10 @@
     ]
   },
   "/usr/lib/harmony/supervisor": {
-    "sha256": "f5dd3b5dcf3f3fcf19ae1fa2c92eefe981a32ab65dd2195d210425a7b3fa5458",
+    "sha256": "6cc0b938db15ccff58e8db84e02ffec09b496d4deb752f2c62dd625c5dc21875",
     "sites": [
       {
-        "address": 404642,
+        "address": 446098,
         "adjacent_ecx_zero": true,
         "bytes": "0f01d0",
         "mnemonic": "xgetbv",
@@ -85,7 +85,7 @@
         "requires_reviewed_control_flow_proof": true,
         "selector_proof_instructions": [
           {
-            "address": 404640,
+            "address": 446096,
             "bytes": "31c9",
             "mnemonic": "xor",
             "operands": "%ecx,%ecx"

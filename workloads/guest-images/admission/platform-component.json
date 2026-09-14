@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "reviewed_by": "Codex primary-agent source, published-artifact and controlled-scope review, 2026-09-14",
-  "rootfs_sha256": "1a757c74f9cf2d930387f928511f1186742febe0639e17414f2b79c52316b532",
-  "archive_sha256": "733555f781a62f5a2e4d37ae9297efe1c1a347c395586e2cc24b1e38ddf353e3",
+  "reviewed_by": "Codex primary-agent exact source, ELF, loader, selector and controlled-composition review, 2026-09-14",
+  "rootfs_sha256": "54ffb8242d0ddcb2594858b581d5d23c054feb4efeb7965c9eef090b66e90a83",
+  "archive_sha256": "ee6b601b9f3dc04f1547fbe5394df62933dd20e1b57139a1c0fe3d6cd40f3f70",
   "scope": {
     "startup_binding": "LD_BIND_NOW=1-before-every-exec",
     "generated_code": "forbidden",
@@ -12,14 +12,14 @@
   },
   "scope_evidence": {
     "file": "proofs/platform-scope.md",
-    "sha256": "d267f1bd5165745fb528a8c1095a45a8765f51e1244351d5f8744503e1567f80"
+    "sha256": "96bd660b9ac256e094468ce700cb529653e1dffac2437ffda1b9ca1b173875cb"
   },
   "artifacts": {
     "/bin/busybox": {
       "sha256": "ed276986a91b1c13f6da78900446dfa4311e841d87d8f770ae3ca10b18767b70",
       "review_evidence": {
         "file": "proofs/platform-artifact-review.md",
-        "sha256": "4d46c97381b466b8b8090aa7fd6966d1d62757fd23ae0b662ca263a0648a295b"
+        "sha256": "58ca64bf3c097773cf18aaaee5a1695e013ff40e5325d4eeef6128f450bf1d23"
       },
       "dependencies": [],
       "transitive_dependencies": {},
@@ -29,7 +29,7 @@
           "selector": 0,
           "control_flow_evidence": {
             "file": "proofs/platform-selectors.md",
-            "sha256": "b51aeab60b4330ac7d369ccd8ee06378cd565d705c5413b1f5d83c1a2eb4620a"
+            "sha256": "d802019048c439258474020d747a2ee8ec08f222f7b2ebcb4afca9fd4581bad3"
           }
         }
       ],
@@ -41,11 +41,11 @@
           "kind": "reviewed-eager-resolver",
           "incoming_reference_evidence": {
             "file": "proofs/platform-review.md",
-            "sha256": "a82272614554d1d3b0b11513227bf982aab30e949a1be50ec45157d172d85fae"
+            "sha256": "8af6946ca47cdbffc716b49d56084b1ca00e01a4cfc5c178868990b01fd1b786"
           },
           "eager_binding_evidence": {
             "file": "proofs/platform-review.md",
-            "sha256": "a82272614554d1d3b0b11513227bf982aab30e949a1be50ec45157d172d85fae"
+            "sha256": "8af6946ca47cdbffc716b49d56084b1ca00e01a4cfc5c178868990b01fd1b786"
           }
         },
         {
@@ -55,11 +55,11 @@
           "kind": "reviewed-eager-resolver",
           "incoming_reference_evidence": {
             "file": "proofs/platform-review.md",
-            "sha256": "a82272614554d1d3b0b11513227bf982aab30e949a1be50ec45157d172d85fae"
+            "sha256": "8af6946ca47cdbffc716b49d56084b1ca00e01a4cfc5c178868990b01fd1b786"
           },
           "eager_binding_evidence": {
             "file": "proofs/platform-review.md",
-            "sha256": "a82272614554d1d3b0b11513227bf982aab30e949a1be50ec45157d172d85fae"
+            "sha256": "8af6946ca47cdbffc716b49d56084b1ca00e01a4cfc5c178868990b01fd1b786"
           }
         }
       ]
@@ -68,7 +68,7 @@
       "sha256": "ce6353a8273004c5f917277846dd521c7185b653ca46cfe538cc16b1be254cc9",
       "review_evidence": {
         "file": "proofs/platform-artifact-review.md",
-        "sha256": "4d46c97381b466b8b8090aa7fd6966d1d62757fd23ae0b662ca263a0648a295b"
+        "sha256": "58ca64bf3c097773cf18aaaee5a1695e013ff40e5325d4eeef6128f450bf1d23"
       },
       "dependencies": [],
       "transitive_dependencies": {},
@@ -78,26 +78,26 @@
           "selector": 0,
           "control_flow_evidence": {
             "file": "proofs/platform-selectors.md",
-            "sha256": "b51aeab60b4330ac7d369ccd8ee06378cd565d705c5413b1f5d83c1a2eb4620a"
+            "sha256": "d802019048c439258474020d747a2ee8ec08f222f7b2ebcb4afca9fd4581bad3"
           }
         }
       ]
     },
     "/usr/lib/harmony/supervisor": {
-      "sha256": "f5dd3b5dcf3f3fcf19ae1fa2c92eefe981a32ab65dd2195d210425a7b3fa5458",
+      "sha256": "6cc0b938db15ccff58e8db84e02ffec09b496d4deb752f2c62dd625c5dc21875",
       "review_evidence": {
         "file": "proofs/platform-artifact-review.md",
-        "sha256": "4d46c97381b466b8b8090aa7fd6966d1d62757fd23ae0b662ca263a0648a295b"
+        "sha256": "58ca64bf3c097773cf18aaaee5a1695e013ff40e5325d4eeef6128f450bf1d23"
       },
       "dependencies": [],
       "transitive_dependencies": {},
       "xgetbv": [
         {
-          "address": 404642,
+          "address": 446098,
           "selector": 0,
           "control_flow_evidence": {
             "file": "proofs/platform-selectors.md",
-            "sha256": "b51aeab60b4330ac7d369ccd8ee06378cd565d705c5413b1f5d83c1a2eb4620a"
+            "sha256": "d802019048c439258474020d747a2ee8ec08f222f7b2ebcb4afca9fd4581bad3"
           }
         }
       ]

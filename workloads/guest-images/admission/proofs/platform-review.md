@@ -1,35 +1,10 @@
-# Proposed published-platform refresh, fef80533
+# Reviewed OCI platform, e2a9ac58
 
-Pending primary acceptance. Published run34865561695 artifact archive SHA256
-`733555f781a62f5a2e4d37ae9297efe1c1a347c395586e2cc24b1e38ddf353e3`; rootfs digest `1a757c74f9cf2d930387f928511f1186742febe0639e17414f2b79c52316b532`. Kernel remains
-`7ce25244cf1d138db1286ce61fb1c880bd224b2866ffaebd1ec19d04b2ad69b6`.
-The source-bound runtime manifest verifies exact-input for source key
-`8e6c72124f57bd02490811e18c80f806326de525e1388c2ad25edb7d9f942683`.
-The bridge binds the payload and Nix artifacts to that source, with
-nightly-2026-06-16, target x86_64-unknown-linux-musl.
+Accepted by the Codex primary agent after exact source verification, a fresh whole-archive GNU instruction/dependency scan, and the new supervisor selector/incoming-edge review. Source key: 8d0affa9201175cdc8abd1c51594dfa060463edb053b6f6ba43e2a001cae3fdb. Kernel remains 7ce25244cf1d138db1286ce61fb1c880bd224b2866ffaebd1ec19d04b2ad69b6.
 
-The parsed archive differs from the prior review only in supervisor file
-size/hash:879856→879848 bytes, `f5dd3b5dcf3f3fcf19ae1fa2c92eefe981a32ab65dd2195d210425a7b3fa5458`. All other
-entries, permissions, ownership, devices, scripts and symlinks are unchanged.
-BusyBox and runc retain exact prior hashes and region/selector proofs.
-The3-ELF scan adds no save instruction, dependency, WX segment, executable
-stack, or text relocation. Supervisor's only relevant site remains XGETBV0.
+The OCI archive ee6b601b9f3dc04f1547fbe5394df62933dd20e1b57139a1c0fe3d6cd40f3f70 changes only the supervisor entry. Its code changes materially; no whole-binary equivalence is claimed. The fresh scan finds three ELFs, no new dependency, writable/executable segment, executable stack or text relocation. The new supervisor has only the ECX-zero XGETBV wrapper at 0x6ce90, with instruction at 0x6ce92 and direct caller at 0xe16c. Exact selector bytes and incoming-edge evidence are retained in platform-selectors.md and platform-publisher-e2a9ac58/.
 
-Supervisor .text address/size and decoded instruction boundaries are unchanged.
-Of128390 decoded instructions,4527 have changed bytes; every change is a
-same-mnemonic RIP-relative memory operand. Direct control-transfer bytes are
-unchanged. Diagnostic dependency paths change /root/.cargo to
-/home/runner/.cargo, .rodata grows64 bytes, and linker symbols/relocations
-change correspondingly. This is not a claim of bit-identical .text.
-No supervisor/runtime/local-dependency source diff exists from b51ebb8d to
-fef80533. Compiler comments match rustc1.98.0-nightly01dfd7924(2026-06-15).
-The exact ECX0 wrapper is separately established by platform-selectors.md.
-
-Raw publisher provenance and bounded machine/source evidence are in
-platform-publisher-fef80533/. Their file hashes are retained in SHA256SUMS.
-This refresh remains a proposal until explicit primary acceptance; prior
-approved history should remain in Git. No general runtime immutability or
-arbitrary-code admission is claimed.
+BusyBox and runc have unchanged file hashes, so their exact previous resolver/selector evidence remains applicable. Main's structured-bundle launch/recovery paths are outside the admitted bundle:null sessions; their dispatch and ordinary execution environment path were reviewed in source. The changed libvoidstar in the separate direct initramfs is not covered by this OCI component approval. No arbitrary indirect entry, generated code, mutation or runtime filesystem immutability is established.
 
 ## Fresh BusyBox resolver review
 

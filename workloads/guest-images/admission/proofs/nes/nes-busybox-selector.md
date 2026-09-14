@@ -1,11 +1,4 @@
-# nes-busybox: selector review
-
-ELF SHA256 dd40538865c749943b671e11ef9f644f86dd6037abe35dcbbf7f7d67853ae3ee.
-The sole XGETBV at 0x4a5c99 is in update_active.constprop.0.
-nes-busybox-selector.json records the seven-instruction decoded chain: ECX zeroing
-followed by instructions that preserve ECX. The bounded scanner observed no
-direct incoming edge into this chain after zeroing. CPU-feature startup calls
-the containing function normally; the reviewed trusted program does not form
-an indirect interior pointer to these instructions. This is a digest-specific
-control-flow conclusion under controlled-scope.md, not an exemption for an
-unproved selector. No XGETBV1 invocation is admitted.
+# nes-busybox exact ECX0 selector proposal
+ELF SHA256 a01efe4809a7c53dcc69c6360520f4f78eec8ec58166c4f67d9ff30188cfb546. Sole XGETBV at 0x410fb1. Chain [0x410f96,0x410fb4) SHA2562041854c84b1b8b1df44a315fefa1632ae4f0a9e673c1bc435369a2f8066a1f4: XOR ECX,ECX followed by AND EAX, MOV EAX to stack, OR EDX,EAX, MOV EAX to stack, MOV EAX to RIP-relative global, then XGETBV. None modifies ECX after zeroing.
+Full disassembly has no observed direct call/jump entry into the chain after zeroing. No literal64bit pointer to XGETBV occurs. glibc2.39 sysdeps/x86/cpu-features.c:146-152 gates the operation on OSXSAVE and explicitly constrains ECX to0. The containing update_active.constprop.0 bytes match libc-start.o from the exact Ubuntu libc.a modulo enumerated relocation fields.
+This proves the ordinary compiled feature-detection path under trusted control flow, not arbitrary indirect-entry safety. Corrupted/interior pointers and generated/mutated code remain excluded by scope.

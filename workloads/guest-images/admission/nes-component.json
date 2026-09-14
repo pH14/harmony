@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "reviewed_by": "Codex primary-agent source, artifact and controlled-scope review, 2026-09-14",
-  "rootfs_sha256": "8c966242c6ae3b7679159538d0e4bb311ad78a4059cdff423db8ca82c1e334da",
-  "archive_sha256": "d9e9d38da1d1a16be2b16276519432c5b7e2101953e820a62e23f85afb8099c5",
+  "reviewed_by": "Codex primary-agent exact hosted ELF, Ubuntu glibc 2.39 selector/loader and controlled-scope review, 2026-09-14",
+  "rootfs_sha256": "2d6d22f0eea20569caf199feffb36f4b22cfc0fe4894160e0e9a3f09599cc8de",
+  "archive_sha256": "11627e866a4c1c1d36e2f90576af2389f0ee449ed8fe584c44a8830e2c4c2c27",
   "scope": {
     "startup_binding": "LD_BIND_NOW=1-before-every-exec",
     "generated_code": "forbidden",
@@ -12,103 +12,103 @@
   },
   "scope_evidence": {
     "file": "proofs/nes-scope.md",
-    "sha256": "b6abcb6aeb7f2245e68c0122e7ca419770aee50fb276b9fd3f0f5e4fb88dbf95"
+    "sha256": "18217bd79c6fdcb9f2d672b1765b7101e4f41ec749ea67cfa3ef8e7b3d54b164"
   },
   "artifacts": {
     "/bin/busybox": {
-      "sha256": "dd40538865c749943b671e11ef9f644f86dd6037abe35dcbbf7f7d67853ae3ee",
+      "sha256": "a01efe4809a7c53dcc69c6360520f4f78eec8ec58166c4f67d9ff30188cfb546",
       "review_evidence": {
         "file": "proofs/nes/nes-busybox-review.md",
-        "sha256": "a13d4d35a0f41fa94de0138336763df5a979325ea5f6457d925e04e9574abd8a"
+        "sha256": "28dbfbda454b30dd2db869b3872b2fed889d81fd815e73ca15236f424d4c9835"
       },
       "dependencies": [],
       "transitive_dependencies": {},
       "xgetbv": [
         {
-          "address": 4873369,
+          "address": 4263857,
           "selector": 0,
           "control_flow_evidence": {
             "file": "proofs/nes/nes-busybox-selector.md",
-            "sha256": "8f8561216718d35207776793c4d13b4fe479c99e00e49599928c1805e98e7e4b"
+            "sha256": "78670b69be2d5c0d8f617a7c93e4b0f5786678f587a9ab8ce38505f73d743632"
           }
         }
       ],
       "resolver_regions": [
         {
-          "start": 5040320,
-          "size": 201,
-          "sha256": "45b7b1a9bf8fb6620bd54d8f5c8a4eb3be95b0eed17ad98e815f0741c2737780",
+          "start": 5014064,
+          "size": 205,
+          "sha256": "af9cbf0a7c05e5bb9d56e5b4eb96282dc672017f516e9d552fadd7778c27db58",
           "kind": "reviewed-eager-resolver",
           "incoming_reference_evidence": {
             "file": "proofs/nes/nes-busybox-incoming.md",
-            "sha256": "57786787f588d6a2ed1f7475aa370466a1bdbe0b753b3809079a07b3af9a2b79"
+            "sha256": "2173956c3e2fa993b785b9a6445230cfbcdc16cc7e921256bf8c1510dd2643c7"
           },
           "eager_binding_evidence": {
             "file": "proofs/nes/nes-busybox-binding.md",
-            "sha256": "b0fd8614ec092bfbae936c835f79aa4ff2e4e279ad163f82dc8304a9342e0748"
+            "sha256": "e135ed38a5dac59aaec16ed65142d54f958595793cdb7d1eabced2ea458e6f85"
           }
         },
         {
-          "start": 5040528,
-          "size": 185,
-          "sha256": "789293d094771a3f142b27de2bae0b8d6fcacacf8d3e3770bd96272306d17a9d",
+          "start": 5014272,
+          "size": 189,
+          "sha256": "819d71a3112015a038af019815cca12f4db3c003887c932a959205bc4434ac3e",
           "kind": "reviewed-eager-resolver",
           "incoming_reference_evidence": {
             "file": "proofs/nes/nes-busybox-incoming.md",
-            "sha256": "57786787f588d6a2ed1f7475aa370466a1bdbe0b753b3809079a07b3af9a2b79"
+            "sha256": "2173956c3e2fa993b785b9a6445230cfbcdc16cc7e921256bf8c1510dd2643c7"
           },
           "eager_binding_evidence": {
             "file": "proofs/nes/nes-busybox-binding.md",
-            "sha256": "b0fd8614ec092bfbae936c835f79aa4ff2e4e279ad163f82dc8304a9342e0748"
+            "sha256": "e135ed38a5dac59aaec16ed65142d54f958595793cdb7d1eabced2ea458e6f85"
           }
         }
       ]
     },
     "/opt/harmony/play-agent": {
-      "sha256": "4cc1dacf6ef2aed5638e5eb6eceb7130eca532ed351e3a5b692da0a903a6349a",
+      "sha256": "9286525d7b7179d9c7a0b6112616d9a6cdf92d48d50ad83b812482b099f5c477",
       "review_evidence": {
         "file": "proofs/nes/nes-play-agent-review.md",
-        "sha256": "1359e84c136761cb2bcffc805f67fc761980525d23c6f61957bb9a8f31ff6429"
+        "sha256": "22dc8e0fedc75e1a933314d599ddf52a0f546a7a80b8c8b47373f826fdfbe5ff"
       },
       "dependencies": [],
       "transitive_dependencies": {},
       "xgetbv": [
         {
-          "address": 1591225,
+          "address": 1583297,
           "selector": 0,
           "control_flow_evidence": {
             "file": "proofs/nes/nes-play-agent-selector.md",
-            "sha256": "b532e2b9d50ff3f61962ede19438a5e9fd9f24bcd1deb44adb9005d9c1bbc24c"
+            "sha256": "ecb17f05d0213874388e4e2b68c524d56ab91fbe8b09b4d8dd6d11fc60aec3b9"
           }
         }
       ],
       "resolver_regions": [
         {
-          "start": 2078352,
-          "size": 201,
-          "sha256": "dc203e81342dc8f71e86648d9ec55caf2a3ffd7120d136b63d72ba58f864f840",
+          "start": 2166400,
+          "size": 205,
+          "sha256": "4ccc14b979f5206a890229d9d35a2284ab7f9248dcbc7a8f00519bb33bfa1c35",
           "kind": "reviewed-eager-resolver",
           "incoming_reference_evidence": {
             "file": "proofs/nes/nes-play-agent-incoming.md",
-            "sha256": "c4a9691162428ef2cb1f2fec48aaa13aedee018bbf994d181347cf389d2852c7"
+            "sha256": "fb02fd7f2aa9a3ccfd495f001fe2919438d05792ebb4bd17ec5383c2a454e2ed"
           },
           "eager_binding_evidence": {
             "file": "proofs/nes/nes-play-agent-binding.md",
-            "sha256": "a3c21a6f9917bd297c93f6c6dc753d31d4ea8fdccfebb907b2a24e1d2757a284"
+            "sha256": "2f4d3c3d835295d7ee0dca28711156df54b2da316135d864569d8f410e1c9ad4"
           }
         },
         {
-          "start": 2078560,
-          "size": 185,
-          "sha256": "7e56a64f39ac5cf926d5c2eb24bd060ee9a8f52dcf04a2c8df3bd4ba6a69742f",
+          "start": 2166608,
+          "size": 189,
+          "sha256": "cf805e2c5b1a4a799ba1b6b5033d6e3b8869a13ea5a536506c86d89bb46d4c40",
           "kind": "reviewed-eager-resolver",
           "incoming_reference_evidence": {
             "file": "proofs/nes/nes-play-agent-incoming.md",
-            "sha256": "c4a9691162428ef2cb1f2fec48aaa13aedee018bbf994d181347cf389d2852c7"
+            "sha256": "fb02fd7f2aa9a3ccfd495f001fe2919438d05792ebb4bd17ec5383c2a454e2ed"
           },
           "eager_binding_evidence": {
             "file": "proofs/nes/nes-play-agent-binding.md",
-            "sha256": "a3c21a6f9917bd297c93f6c6dc753d31d4ea8fdccfebb907b2a24e1d2757a284"
+            "sha256": "2f4d3c3d835295d7ee0dca28711156df54b2da316135d864569d8f410e1c9ad4"
           }
         }
       ]

@@ -1,0 +1,219 @@
+{
+  "busybox": {
+    "sha256": "a01efe4809a7c53dcc69c6360520f4f78eec8ec58166c4f67d9ff30188cfb546",
+    "regions": [
+      {
+        "start": 5014064,
+        "size": 205,
+        "symbol": "_dl_runtime_resolve_xsave",
+        "sha256": "af9cbf0a7c05e5bb9d56e5b4eb96282dc672017f516e9d552fadd7778c27db58",
+        "bytes": "f30f1efa534889e34883e4c0482b255da508004889042448894c24084889542410488974241848897c24204c894424284c894c2430b8ee00000031d2488994244002000048899424480200004889942450020000488994245802000048899424600200004889942468020000488994247002000048899424780200000fae642440488b7310488b7b08e8427401004989c3b8ee00000031d20fae6c24404c8b4c24304c8b442428488b7c2420488b742418488b542410488b4c2408488b04244889dc488b1c244883c41841ffe3",
+        "direct_control_references": [],
+        "address_references": [
+          {
+            "address": 5002469,
+            "bytes": "488d15442d0000",
+            "mnemonic": "lea",
+            "operands": "0x2d44(%rip),%rdx        # 4c8230 <_dl_runtime_resolve_xsave>"
+          }
+        ],
+        "absolute_pointer_file_offsets": []
+      },
+      {
+        "start": 5014272,
+        "size": 189,
+        "symbol": "_dl_runtime_resolve_xsavec",
+        "sha256": "819d71a3112015a038af019815cca12f4db3c003887c932a959205bc4434ac3e",
+        "bytes": "f30f1efa534889e34883e4c0482b258da408004889042448894c24084889542410488974241848897c24204c894424284c894c2430b8ee00000031d24889942450020000488994245802000048899424600200004889942468020000488994247002000048899424780200000fc7642440488b7310488b7b08e8827301004989c3b8ee00000031d20fae6c24404c8b4c24304c8b442428488b7c2420488b742418488b542410488b4c2408488b04244889dc488b1c244883c41841ffe3",
+        "direct_control_references": [],
+        "address_references": [
+          {
+            "address": 5002476,
+            "bytes": "488d0d0d2e0000",
+            "mnemonic": "lea",
+            "operands": "0x2e0d(%rip),%rcx        # 4c8300 <_dl_runtime_resolve_xsavec>"
+          }
+        ],
+        "absolute_pointer_file_offsets": []
+      }
+    ],
+    "selectors": [
+      {
+        "address": 4263857,
+        "adjacent_ecx_zero": false,
+        "bytes": "0f01d0",
+        "mnemonic": "xgetbv",
+        "operands": "",
+        "requires_reviewed_control_flow_proof": true,
+        "selector_proof_instructions": [
+          {
+            "address": 4263830,
+            "bytes": "31c9",
+            "mnemonic": "xor",
+            "operands": "%ecx,%ecx"
+          },
+          {
+            "address": 4263832,
+            "bytes": "2500000800",
+            "mnemonic": "and",
+            "operands": "$0x80000,%eax"
+          },
+          {
+            "address": 4263837,
+            "bytes": "8985bcfeffff",
+            "mnemonic": "mov",
+            "operands": "%eax,-0x144(%rbp)"
+          },
+          {
+            "address": 4263843,
+            "bytes": "09d0",
+            "mnemonic": "or",
+            "operands": "%edx,%eax"
+          },
+          {
+            "address": 4263845,
+            "bytes": "8985b4feffff",
+            "mnemonic": "mov",
+            "operands": "%eax,-0x14c(%rbp)"
+          },
+          {
+            "address": 4263851,
+            "bytes": "89057f171400",
+            "mnemonic": "mov",
+            "operands": "%eax,0x14177f(%rip)        # 0x552730"
+          }
+        ],
+        "straightline_ecx_zero": true,
+        "start": 4263830,
+        "end": 4263860,
+        "chain_sha256": "2041854c84b1b8b1df44a315fefa1632ae4f0a9e673c1bc435369a2f8066a1f4",
+        "incoming_direct_into_chain": [],
+        "absolute_pointer_file_offsets": []
+      }
+    ],
+    "relocation_text_sha256": "a3a809fbc958d297409cf12c50caf607a113c5d32a2f9f4c6a79a88603f50a49",
+    "companion_sha256": "99feba549a9f957bf769afcaa7102c9680b0d3d5f3a102243c51505064f89325",
+    "executable_companion_match": [
+      {
+        "address": 4198400,
+        "size": 1115433,
+        "sha256": "f29373cbf315dd9faf56eecf45cadac235bcf4b47edda339232eec1f1be7b9f1",
+        "equal": true
+      }
+    ]
+  },
+  "play-agent": {
+    "sha256": "9286525d7b7179d9c7a0b6112616d9a6cdf92d48d50ad83b812482b099f5c477",
+    "regions": [
+      {
+        "start": 2166400,
+        "size": 205,
+        "symbol": "_dl_runtime_resolve_xsave",
+        "sha256": "4ccc14b979f5206a890229d9d35a2284ab7f9248dcbc7a8f00519bb33bfa1c35",
+        "bytes": "f30f1efa534889e34883e4c0482b256d9c16004889042448894c24084889542410488974241848897c24204c894424284c894c2430b8ee00000031d2488994244002000048899424480200004889942450020000488994245802000048899424600200004889942468020000488994247002000048899424780200000fae642440488b7310488b7b08e8020100004989c3b8ee00000031d20fae6c24404c8b4c24304c8b442428488b7c2420488b742418488b542410488b4c2408488b04244889dc488b1c244883c41841ffe3",
+        "direct_control_references": [],
+        "address_references": [
+          {
+            "address": 2155429,
+            "bytes": "488d15d42a0000",
+            "mnemonic": "lea",
+            "operands": "0x2ad4(%rip),%rdx        # 210e80 <_dl_runtime_resolve_xsave>"
+          }
+        ],
+        "absolute_pointer_file_offsets": [
+          {
+            "offset": 3382392,
+            "sections": [
+              {
+                "name": ".symtab",
+                "flags": 0
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "start": 2166608,
+        "size": 189,
+        "symbol": "_dl_runtime_resolve_xsavec",
+        "sha256": "cf805e2c5b1a4a799ba1b6b5033d6e3b8869a13ea5a536506c86d89bb46d4c40",
+        "bytes": "f30f1efa534889e34883e4c0482b259d9b16004889042448894c24084889542410488974241848897c24204c894424284c894c2430b8ee00000031d24889942450020000488994245802000048899424600200004889942468020000488994247002000048899424780200000fc7642440488b7310488b7b08e8420000004989c3b8ee00000031d20fae6c24404c8b4c24304c8b442428488b7c2420488b742418488b542410488b4c2408488b04244889dc488b1c244883c41841ffe3",
+        "direct_control_references": [],
+        "address_references": [
+          {
+            "address": 2155436,
+            "bytes": "488d0d9d2b0000",
+            "mnemonic": "lea",
+            "operands": "0x2b9d(%rip),%rcx        # 210f50 <_dl_runtime_resolve_xsavec>"
+          }
+        ],
+        "absolute_pointer_file_offsets": [
+          {
+            "offset": 3382416,
+            "sections": [
+              {
+                "name": ".symtab",
+                "flags": 0
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "selectors": [
+      {
+        "address": 1583297,
+        "adjacent_ecx_zero": false,
+        "bytes": "0f01d0",
+        "mnemonic": "xgetbv",
+        "operands": "",
+        "requires_reviewed_control_flow_proof": true,
+        "selector_proof_instructions": [
+          {
+            "address": 1583270,
+            "bytes": "31c9",
+            "mnemonic": "xor",
+            "operands": "%ecx,%ecx"
+          },
+          {
+            "address": 1583272,
+            "bytes": "2500000800",
+            "mnemonic": "and",
+            "operands": "$0x80000,%eax"
+          },
+          {
+            "address": 1583277,
+            "bytes": "8985bcfeffff",
+            "mnemonic": "mov",
+            "operands": "%eax,-0x144(%rbp)"
+          },
+          {
+            "address": 1583283,
+            "bytes": "09d0",
+            "mnemonic": "or",
+            "operands": "%edx,%eax"
+          },
+          {
+            "address": 1583285,
+            "bytes": "8985b4feffff",
+            "mnemonic": "mov",
+            "operands": "%eax,-0x14c(%rbp)"
+          },
+          {
+            "address": 1583291,
+            "bytes": "8905cf811f00",
+            "mnemonic": "mov",
+            "operands": "%eax,0x1f81cf(%rip)        # 0x37aa90"
+          }
+        ],
+        "straightline_ecx_zero": true,
+        "start": 1583270,
+        "end": 1583300,
+        "chain_sha256": "ae87b5e2d1eb64b49e4b9898922523a0104ac2e1cb151a8efeec2f36d45e6b91",
+        "incoming_direct_into_chain": [],
+        "absolute_pointer_file_offsets": []
+      }
+    ],
+    "relocation_text_sha256": "449aa9319228266892d24f8b50ad74310dc4b13e95c4848e88f3e40d3b276e55"
+  }
+}

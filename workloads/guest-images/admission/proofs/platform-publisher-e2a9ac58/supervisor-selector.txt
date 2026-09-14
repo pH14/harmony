@@ -1,0 +1,24 @@
+   6ce61: 48 8d 75 fc                  	leaq	-0x4(%rbp), %rsi
+   6ce65: ff 15 2d a7 04 00            	callq	*0x4a72d(%rip)          # 0xb7598 <_GLOBAL_OFFSET_TABLE_+0x390>
+   6ce6b: 48 83 c4 10                  	addq	$0x10, %rsp
+   6ce6f: 5d                           	popq	%rbp
+   6ce70: c3                           	retq
+
+000000000006ce71 <_RNvYINtCsiQ3f8fg2CjV_14rustc_demangle21SizeLimitedFmtAdapterQNtNtCsap3e9hdarbF_4core3fmt9FormatterENtBZ_5Write9write_fmtB5_>:
+   6ce71: 48 89 d1                     	movq	%rdx, %rcx
+   6ce74: 48 89 f2                     	movq	%rsi, %rdx
+   6ce77: 48 8d 35 fa 95 04 00         	leaq	0x495fa(%rip), %rsi     # 0xb6478 <anon.e4ace708238697e0a8b9f69b36f2b7cf.19.llvm.7454628272431984246+0x18d0>
+   6ce7e: ff 25 bc a8 04 00            	jmpq	*0x4a8bc(%rip)          # 0xb7740 <_GLOBAL_OFFSET_TABLE_+0x538>
+   6ce84: 66 2e 0f 1f 84 00 00 00 00 00	nopw	%cs:(%rax,%rax)
+   6ce8e: 66 90                        	nop
+
+000000000006ce90 <_RNvNtNtNtCsap3e9hdarbF_4core9core_arch3x865xsave7__xgetbv>:
+   6ce90: 31 c9                        	xorl	%ecx, %ecx
+   6ce92: 0f 01 d0                     	xgetbv
+   6ce95: 48 c1 e2 20                  	shlq	$0x20, %rdx
+   6ce99: 48 09 d0                     	orq	%rdx, %rax
+   6ce9c: c3                           	retq
+
+000000000006ce9d <_RINvNtNtCsap3e9hdarbF_4core5slice5index5rangeINtNtNtB6_3ops5range14RangeInclusivejEECs8K8yb9LbGog_11miniz_oxide>:
+   6ce9d: 55                           	pushq	%rbp
+   6ce9e: 48 89 e5                     	movq	%rsp, %rbp

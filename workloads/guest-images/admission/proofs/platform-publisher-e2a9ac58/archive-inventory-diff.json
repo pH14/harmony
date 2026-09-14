@@ -1,0 +1,26 @@
+{
+  "initramfs": {
+    "changed": {
+      "usr/lib/libvoidstar.so": {
+        "new": "-rwxr-xr-x   1 root     wheel       16744 Dec 31  1969 usr/lib/libvoidstar.so",
+        "old": "-rwxr-xr-x   1 root     wheel       16688 Dec 31  1969 usr/lib/libvoidstar.so"
+      }
+    },
+    "entry_count_new": 11,
+    "entry_count_old": 11,
+    "new_only": [],
+    "old_only": []
+  },
+  "initramfs-oci": {
+    "changed": {
+      "usr/lib/harmony/supervisor": {
+        "new": "-rwxr-xr-x   1 root     wheel      936568 Dec 31  1969 usr/lib/harmony/supervisor",
+        "old": "-rwxr-xr-x   1 root     wheel      879848 Dec 31  1969 usr/lib/harmony/supervisor"
+      }
+    },
+    "entry_count_new": 60,
+    "entry_count_old": 60,
+    "new_only": [],
+    "old_only": []
+  }
+}

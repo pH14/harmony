@@ -1,117 +1,115 @@
 {
   "/bin/busybox": {
-    "sha256": "dd40538865c749943b671e11ef9f644f86dd6037abe35dcbbf7f7d67853ae3ee",
+    "sha256": "a01efe4809a7c53dcc69c6360520f4f78eec8ec58166c4f67d9ff30188cfb546",
     "sites": [
       {
-        "address": 4873369,
+        "address": 4263857,
+        "adjacent_ecx_zero": false,
         "bytes": "0f01d0",
         "mnemonic": "xgetbv",
         "operands": "",
-        "adjacent_ecx_zero": false,
-        "straightline_ecx_zero": true,
+        "requires_reviewed_control_flow_proof": true,
         "selector_proof_instructions": [
           {
-            "address": 4873338,
+            "address": 4263830,
             "bytes": "31c9",
             "mnemonic": "xor",
             "operands": "%ecx,%ecx"
           },
           {
-            "address": 4873340,
-            "bytes": "c74424a001000000",
-            "mnemonic": "movl",
-            "operands": "$0x1,-0x60(%rsp)"
-          },
-          {
-            "address": 4873348,
+            "address": 4263832,
             "bytes": "2500000800",
             "mnemonic": "and",
             "operands": "$0x80000,%eax"
           },
           {
-            "address": 4873353,
-            "bytes": "8944249c",
+            "address": 4263837,
+            "bytes": "8985bcfeffff",
             "mnemonic": "mov",
-            "operands": "%eax,-0x64(%rsp)"
+            "operands": "%eax,-0x144(%rbp)"
           },
           {
-            "address": 4873357,
+            "address": 4263843,
             "bytes": "09d0",
             "mnemonic": "or",
             "operands": "%edx,%eax"
           },
           {
-            "address": 4873359,
-            "bytes": "894424a4",
+            "address": 4263845,
+            "bytes": "8985b4feffff",
             "mnemonic": "mov",
-            "operands": "%eax,-0x5c(%rsp)"
+            "operands": "%eax,-0x14c(%rbp)"
           },
           {
-            "address": 4873363,
-            "bytes": "8905f7ba0900",
+            "address": 4263851,
+            "bytes": "89057f171400",
             "mnemonic": "mov",
-            "operands": "%eax,0x9baf7(%rip)        # 0x541790"
+            "operands": "%eax,0x14177f(%rip)        # 0x552730"
           }
         ],
-        "requires_reviewed_control_flow_proof": true
+        "straightline_ecx_zero": true,
+        "start": 4263830,
+        "end": 4263860,
+        "chain_sha256": "2041854c84b1b8b1df44a315fefa1632ae4f0a9e673c1bc435369a2f8066a1f4",
+        "incoming_direct_into_chain": [],
+        "absolute_pointer_file_offsets": []
       }
     ]
   },
   "/opt/harmony/play-agent": {
-    "sha256": "4cc1dacf6ef2aed5638e5eb6eceb7130eca532ed351e3a5b692da0a903a6349a",
+    "sha256": "9286525d7b7179d9c7a0b6112616d9a6cdf92d48d50ad83b812482b099f5c477",
     "sites": [
       {
-        "address": 1591225,
+        "address": 1583297,
+        "adjacent_ecx_zero": false,
         "bytes": "0f01d0",
         "mnemonic": "xgetbv",
         "operands": "",
-        "adjacent_ecx_zero": false,
-        "straightline_ecx_zero": true,
+        "requires_reviewed_control_flow_proof": true,
         "selector_proof_instructions": [
           {
-            "address": 1591194,
+            "address": 1583270,
             "bytes": "31c9",
             "mnemonic": "xor",
             "operands": "%ecx,%ecx"
           },
           {
-            "address": 1591196,
-            "bytes": "c74424a001000000",
-            "mnemonic": "movl",
-            "operands": "$0x1,-0x60(%rsp)"
-          },
-          {
-            "address": 1591204,
+            "address": 1583272,
             "bytes": "2500000800",
             "mnemonic": "and",
             "operands": "$0x80000,%eax"
           },
           {
-            "address": 1591209,
-            "bytes": "8944249c",
+            "address": 1583277,
+            "bytes": "8985bcfeffff",
             "mnemonic": "mov",
-            "operands": "%eax,-0x64(%rsp)"
+            "operands": "%eax,-0x144(%rbp)"
           },
           {
-            "address": 1591213,
+            "address": 1583283,
             "bytes": "09d0",
             "mnemonic": "or",
             "operands": "%edx,%eax"
           },
           {
-            "address": 1591215,
-            "bytes": "894424a4",
+            "address": 1583285,
+            "bytes": "8985b4feffff",
             "mnemonic": "mov",
-            "operands": "%eax,-0x5c(%rsp)"
+            "operands": "%eax,-0x14c(%rbp)"
           },
           {
-            "address": 1591219,
-            "bytes": "8905b7fe1e00",
+            "address": 1583291,
+            "bytes": "8905cf811f00",
             "mnemonic": "mov",
-            "operands": "%eax,0x1efeb7(%rip)        # 0x374670"
+            "operands": "%eax,0x1f81cf(%rip)        # 0x37aa90"
           }
         ],
-        "requires_reviewed_control_flow_proof": true
+        "straightline_ecx_zero": true,
+        "start": 1583270,
+        "end": 1583300,
+        "chain_sha256": "ae87b5e2d1eb64b49e4b9898922523a0104ac2e1cb151a8efeec2f36d45e6b91",
+        "incoming_direct_into_chain": [],
+        "absolute_pointer_file_offsets": []
       }
     ]
   }
