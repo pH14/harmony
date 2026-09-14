@@ -69,6 +69,23 @@ logical budget and included in process RSS. The counter never enters archive
 keys, input selection, rewards, or deterministic reports; it remains cumulative
 when the archive's novelty ledger is compacted.
 
+The last progress record of a run carries `retained_diagnostics`, the
+end-of-run census of the live archive.
+`live_entries_by_map_cell` maps `area:map_x:map_y` to
+`[entries, max health, max missiles, equipment union, selections]`. A milestone
+list says the run reached something; this says where the archive still sits,
+what the endpoints in each cell can do, and how often the selector drew there. A
+cell whose equipment union lacks an item the route out of it needs is covered by
+endpoints that can never leave, and the selection count separates a cell the
+selector never drew from one it drew and got nothing from.
+`live_entries_by_map_cell_and_equipment` splits the same census by the equipment
+byte, mapping `area:map_x:map_y:equipment bits` to `[entries, selections]`.
+Endpoints holding different equipment in one cell sit in different archive
+classes and are drawn separately, so a cell's own totals cannot say whether the
+endpoints that can open the next door are the ones the selector goes back to.
+Both read only cached active endpoints, so they are lower bounds where snapshots
+are missing.
+
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md)
 for paired search comparisons and full small-campaign replay. `metroid-campaign`
 also exposes the native experiment command. The source lineage is documented in

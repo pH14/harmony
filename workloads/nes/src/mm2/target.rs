@@ -337,6 +337,22 @@ pub struct Mm2Snapshot {
 }
 
 impl Mm2Snapshot {
+    #[cfg(test)]
+    pub(crate) fn for_census_tests(decoded: Mm2MechanicalState) -> Self {
+        Self {
+            emulator_state: Vec::new(),
+            observation: Mm2Observations {
+                frame_count: 0,
+                decoded,
+                changed_indices: Vec::new(),
+                dead: false,
+                fall_run: 0,
+                log_line: String::new(),
+            },
+            failed: false,
+        }
+    }
+
     #[must_use]
     pub fn state(&self) -> Mm2MechanicalState {
         self.observation.decoded

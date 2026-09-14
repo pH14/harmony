@@ -224,6 +224,24 @@ pub struct MetroidSnapshot {
 }
 
 impl MetroidSnapshot {
+    #[cfg(test)]
+    pub(crate) fn for_census_tests(decoded: MetroidMechanicalState) -> Self {
+        Self {
+            emulator_state: Vec::new(),
+            observation: MetroidObservations {
+                frame_count: 0,
+                decoded,
+                boss_defeats: BossDefeats::default(),
+                mother_brain_status: 0,
+                tourian_events: TourianEvents::default(),
+                changed_indices: Vec::new(),
+                dead: false,
+                log_line: String::new(),
+            },
+            failed: false,
+        }
+    }
+
     #[must_use]
     pub fn state(&self) -> MetroidMechanicalState {
         self.observation.decoded
