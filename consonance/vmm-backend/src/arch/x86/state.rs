@@ -301,6 +301,28 @@ mod tests {
     }
 
     #[test]
+    fn absent_sse_and_avx_materialize_init_mxcsr_but_active_sse_preserves_it() {
+        for bv in [0, 1, 8] {
+            let mut image = init_image(bv);
+            image[SSE_MXCSR].copy_from_slice(&0x3f80u32.to_le_bytes());
+            image[SSE_XMM].fill(0xa5);
+            canonicalize_xsave(&mut image);
+            assert_eq!(image[SSE_MXCSR], SSE_INIT_MXCSR);
+            assert!(image[SSE_XMM].iter().all(|byte| *byte == 0));
+        }
+        for bv in [2, 6] {
+            let mut image = init_image(bv);
+            image[SSE_MXCSR].copy_from_slice(&0x3f80u32.to_le_bytes());
+            canonicalize_xsave(&mut image);
+            assert_eq!(image[SSE_MXCSR], 0x3f80u32.to_le_bytes());
+            assert_eq!(
+                u64::from_le_bytes(image[XSTATE_BV..XSTATE_BV + 8].try_into().unwrap()),
+                bv
+            );
+        }
+    }
+
+    #[test]
     fn ymm_presence_preserves_mxcsr_without_sse_presence() {
         let mut image = init_image(4);
         image[SSE_MXCSR].copy_from_slice(&0x3f80u32.to_le_bytes());

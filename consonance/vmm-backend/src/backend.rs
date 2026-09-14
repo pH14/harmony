@@ -219,6 +219,12 @@ mod tests {
         finish_response: Option<Exit<X86>>,
         finish_error: bool,
         validation_calls: Arc<AtomicUsize>,
+        preparation_calls: usize,
+        preparation_error: bool,
+        #[cfg(feature = "xsave-diagnostics")]
+        breakpoint_requests: Vec<u64>,
+        #[cfg(feature = "xsave-diagnostics")]
+        debug_hits: Vec<u64>,
     }
 
     impl Backend for DefaultRetireBackend {
@@ -282,6 +288,30 @@ mod tests {
             Ok(self.finish_response.take())
         }
 
+        fn prepare_snapshot(&mut self) -> Result<()> {
+            self.preparation_calls += 1;
+            if self.preparation_error {
+                Err(BackendError::PendingCompletion)
+            } else {
+                Ok(())
+            }
+        }
+
+        #[cfg(feature = "xsave-diagnostics")]
+        fn diagnostic_breakpoint(&mut self, rip: u64) -> Result<()> {
+            self.breakpoint_requests.push(rip);
+            if rip == 0 {
+                Err(BackendError::InvalidState)
+            } else {
+                Ok(())
+            }
+        }
+
+        #[cfg(feature = "xsave-diagnostics")]
+        fn diagnostic_debug_hits(&self) -> Vec<u64> {
+            self.debug_hits.clone()
+        }
+
         fn save(&self) -> Result<VcpuState> {
             Ok(VcpuState::default())
         }
@@ -311,6 +341,56 @@ mod tests {
                 arch: X86Caps,
             }
         }
+    }
+
+    #[test]
+    fn boxed_snapshot_preparation_preserves_failure_and_recovery() {
+        let mut backend = Box::new(DefaultRetireBackend {
+            preparation_error: true,
+            ..Default::default()
+        });
+        assert!(matches!(
+            backend.prepare_snapshot(),
+            Err(BackendError::PendingCompletion)
+        ));
+        assert_eq!(backend.preparation_calls, 1);
+        backend.preparation_error = false;
+        backend.prepare_snapshot().expect("completion is now ready");
+        assert_eq!(backend.preparation_calls, 2);
+    }
+
+    #[test]
+    #[cfg(feature = "xsave-diagnostics")]
+    fn boxed_diagnostics_preserve_addresses_errors_and_hit_order() {
+        let mut backend = Box::new(DefaultRetireBackend {
+            debug_hits: vec![0x1234, 0xabcd, 0x1234],
+            ..Default::default()
+        });
+        backend
+            .diagnostic_breakpoint(0x1234)
+            .expect("valid breakpoint");
+        assert!(matches!(
+            backend.diagnostic_breakpoint(0),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.breakpoint_requests, [0x1234, 0]);
+        let mut hits = backend.diagnostic_debug_hits();
+        assert_eq!(hits, [0x1234, 0xabcd, 0x1234]);
+        hits.clear();
+        assert_eq!(backend.diagnostic_debug_hits(), [0x1234, 0xabcd, 0x1234]);
+    }
+
+    #[test]
+    #[cfg(all(feature = "mock", feature = "xsave-diagnostics"))]
+    fn unsupported_diagnostics_fail_without_fabricating_hits() {
+        let mut backend = crate::MockBackend::new();
+        assert!(matches!(
+            backend.diagnostic_breakpoint(0x1234),
+            Err(BackendError::Unsupported {
+                what: "diagnostic_breakpoint"
+            })
+        ));
+        assert!(backend.diagnostic_debug_hits().is_empty());
     }
 
     #[test]

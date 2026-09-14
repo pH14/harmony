@@ -5889,6 +5889,24 @@ mod tests {
         }
     }
 
+    #[test]
+    #[cfg(feature = "xsave-diagnostics")]
+    fn diagnostic_requests_preserve_backend_errors_and_ordered_hits() {
+        let mut backend = ContinuationBackend::new(Vec::new(), Vec::new());
+        backend.debug_hits = vec![0xabc0, 0xdef0, 0xabc0];
+        let mut vmm = Vmm::new(backend, GuestRam::new(0x1000).unwrap());
+        vmm.diagnostic_breakpoint(0xabc0)
+            .expect("accepted breakpoint");
+        assert!(matches!(
+            vmm.diagnostic_breakpoint(0),
+            Err(VmmError::Backend(vmm_backend::BackendError::InvalidState))
+        ));
+        assert_eq!(vmm.backend.breakpoint_requests, [0xabc0, 0]);
+        assert_eq!(vmm.diagnostic_debug_hits(), [0xabc0, 0xdef0, 0xabc0]);
+        assert_eq!(vmm.backend.ordinary_runs, 0);
+        assert_eq!(vmm.backend.preparation_runs, 0);
+    }
+
     struct ContinuationBackend {
         inner: MockBackend,
         ordinary: VecDeque<Exit<X86>>,
@@ -5898,6 +5916,10 @@ mod tests {
         finish_runs: usize,
         preparation_runs: usize,
         mapped: Vec<(Gpa, usize)>,
+        #[cfg(feature = "xsave-diagnostics")]
+        breakpoint_requests: Vec<u64>,
+        #[cfg(feature = "xsave-diagnostics")]
+        debug_hits: Vec<u64>,
     }
 
     impl ContinuationBackend {
@@ -5916,12 +5938,31 @@ mod tests {
                 finish_runs: 0,
                 preparation_runs: 0,
                 mapped: Vec::new(),
+                #[cfg(feature = "xsave-diagnostics")]
+                breakpoint_requests: Vec::new(),
+                #[cfg(feature = "xsave-diagnostics")]
+                debug_hits: Vec::new(),
             }
         }
     }
 
     impl Backend for ContinuationBackend {
         type A = X86;
+
+        #[cfg(feature = "xsave-diagnostics")]
+        fn diagnostic_breakpoint(&mut self, rip: u64) -> vmm_backend::Result<()> {
+            self.breakpoint_requests.push(rip);
+            if rip == 0 {
+                Err(vmm_backend::BackendError::InvalidState)
+            } else {
+                Ok(())
+            }
+        }
+
+        #[cfg(feature = "xsave-diagnostics")]
+        fn diagnostic_debug_hits(&self) -> Vec<u64> {
+            self.debug_hits.clone()
+        }
 
         fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
             self.inner.set_policy(policy)

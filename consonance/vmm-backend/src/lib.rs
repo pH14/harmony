@@ -33,7 +33,7 @@ mod hvf;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
 mod kvm_affinity;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm_sys;
