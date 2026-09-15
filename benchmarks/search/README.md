@@ -123,7 +123,7 @@ as a separate stress condition.
 | `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
 | `alphabet-control.json`, `alphabet-continuation.json` | The same development pilot origins and budgets, comparing alphabet-only mutation with separately accounted quarter-share continuation replay. These exploratory panels do not require every case to solve. |
 | `continuation-accounting-control.json`, `continuation-accounting-isolated.json` | The same development sample comparing original energy-splice continuation accounting with v2, which keeps triggered outcomes separate from ordinary exploration and mutation energy. |
-| `metroid-long-horizon-semantic.json`, `metroid-long-horizon-continuation.json` | Three reused development seeds at 3 million executions, 4 workers and 8 GiB; semantic parent selection with alphabet-only mutation versus the new continuation policy. |
+| `metroid-long-horizon-continuation.json` | Three reused development seeds at 3 million executions, 4 workers and 8 GiB; continuation replay against the alphabet-only arm of `metroid-long-horizon.json`. |
 | `throughput-checkpoint.json` | The 18-cell throughput panel with the adopted two-result-slot profile, for an isolated comparison of unchanged policies before and after implementation changes. |
 | `evaluation-continuation.json` | Frozen candidate for the full panel: learned continuation replay with the original parent selector. Selected from the completed pilots before any full-panel outcome was observed. |
 | `evaluation.json` | Main-mechanism control: five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
@@ -317,14 +317,13 @@ The HTML export includes these fields and links to verified tapes. Older missing
 observations display as unavailable. Resource figures, budgets, stop reasons, and
 failures remain in every row; milestone timings are censored at each run's budget.
 
-`metroid-long-horizon.json` and `metroid-long-horizon-semantic.json` register a
-**development diagnostic** using historical seeds 3, 4, and 5: four workers,
+`metroid-long-horizon.json` and `metroid-long-horizon-continuation.json` register
+a **development diagnostic** using historical seeds 3, 4, and 5: four workers,
 8 GiB logical archive, 3 million executions, 400 million admitted frames, 4096
 actions, `one_to_six`, and alphabet draws. Both arms use the same current adapter
-and executable. Only the parent selector differs. These restore the earlier
-work/memory scale and isolate semantic frontier weighting without count weighting.
-They do not reproduce the historical improvement-replay implementation, exact
-reservation schedule, platform, or action stream. These reused seeds are not
+and executable. Only the mutation mixture differs. These restore the earlier
+work/memory scale. They do not reproduce the historical improvement-replay
+implementation, exact reservation schedule, platform, or action stream. These reused seeds are not
 fresh validation evidence. The earlier 005 Metroid panel used 500,000 executions,
 2 GiB, eight workers, a capped suffix, and energy splice; it cannot establish
 preservation of the earlier 3-million-execution results.

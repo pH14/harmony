@@ -65,7 +65,7 @@ impl ArchiveKey for MetroidArchiveKey {
     }
 
     fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
-        (left.items, left.tanks).cmp(&(right.items, right.tanks))
+        left.items.cmp(&right.items)
     }
 
     fn group(self, depth: usize) -> Self::Group {
@@ -392,5 +392,56 @@ mod tests {
     fn milestones_are_relative_to_genesis_holdings() {
         assert!(!milestones(state(0, 300, 0b1), 1, 0).gained);
         assert!(milestones(state(0, 300, 0b11), 1, 0).gained);
+    }
+
+    #[test]
+    fn the_progress_relation_is_a_total_preorder() {
+        let states = [
+            MetroidMechanicalState::default(),
+            MetroidMechanicalState {
+                area: 0x12,
+                map_x: 3,
+                map_y: 4,
+                ..MetroidMechanicalState::default()
+            },
+            MetroidMechanicalState {
+                equipment: 0b11,
+                energy_tanks: 2,
+                ..MetroidMechanicalState::default()
+            },
+            MetroidMechanicalState {
+                equipment: 0b1,
+                energy_tanks: 5,
+                area: 0x14,
+                ..MetroidMechanicalState::default()
+            },
+        ];
+        let groups = (0..MetroidArchiveKey::groups())
+            .flat_map(|depth| {
+                states
+                    .into_iter()
+                    .map(move |state| archive_key(state).group(depth))
+            })
+            .collect::<Vec<_>>();
+        crate::search::archive::check_total_preorder::<MetroidArchiveKey>(&groups)
+            .expect("Metroid progress relation");
+    }
+
+    #[test]
+    fn tanks_are_capacity_and_do_not_advance_progress() {
+        let one_tank = archive_key(MetroidMechanicalState {
+            equipment: 0b1,
+            energy_tanks: 1,
+            ..MetroidMechanicalState::default()
+        });
+        let five_tanks = archive_key(MetroidMechanicalState {
+            equipment: 0b1,
+            energy_tanks: 5,
+            ..MetroidMechanicalState::default()
+        });
+        assert_eq!(
+            MetroidArchiveKey::progress_cmp(five_tanks.group(1), one_tank.group(1)),
+            Ordering::Equal
+        );
     }
 }

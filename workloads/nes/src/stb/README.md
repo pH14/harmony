@@ -131,16 +131,12 @@ progress. Terminal observations have no archive key because their gameplay
 payload is phase-invalid; terminal knockout counts come from the validated
 observation event instead.
 
-The legacy generic archive selectors use `Ord` for both map identity and
-progress walks. `StbArchiveKey::Ord` therefore compares the
-objective progress prefix first and uses identity fields only as a deterministic
-tie-break. Coordinates consequently retain a residual positional tie bias when
-two endpoints have equal objective progress, even though they are not intended
-as progress measures. The adapter documents this coupling rather than
-pretending that coordinates are progress. The new generic `progress_cmp` hook
-is available, but this imported STB policy retains its default `Ord` relation.
-Adopting an objective-only relation needs a separately versioned fixed-policy
-comparison before it can replace this baseline.
+`StbArchiveKey::Ord` identifies a place and orders the archive's maps. It is not
+a progress measure, and the selector no longer reads it as one. This adapter
+leaves `progress_cmp` at its default, so every STB place is a peer and only
+energy, cell recency and cost decide the draw. Declaring an objective-only
+progress relation needs a separately versioned fixed-policy comparison before it
+can replace this baseline.
 
 `ButtonChord` uses the QuickNES/NES serial layout: A `0x01`, B `0x02`, Select
 `0x04`, Start `0x08`, Up `0x10`, Down `0x20`, Left `0x40`, and Right `0x80`.
