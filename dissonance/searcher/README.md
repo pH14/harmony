@@ -64,6 +64,23 @@ campaign and target contracts:
 | `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
 
+An `ArchiveKey` answers three separate questions, and nothing else reads a
+group as a magnitude:
+
+| Question | Answered by |
+| --- | --- |
+| Is this a new place? | `Eq` on the group. `Ord` only lets maps store it. |
+| Is this band, class or leaf further along? | `ArchiveKey::progress_cmp`, default `Ordering::Equal`. |
+| Which of two states at one slot survives? | `ArchiveKey::preference_cmp`, default `Ordering::Equal`. |
+
+`progress_cmp` must be a total preorder: any two groups compare, comparing them
+in either order gives reversed results, and the relation is transitive over
+every triple. The searcher relies on that to take a maximum in one indexed pass
+instead of a dominance scan. `check_total_preorder` checks those properties over
+a slice of groups; every workload that declares a `progress_cmp` calls it from a
+test. A workload with no progress notion leaves the default, and its places are
+then all peers.
+
 Each contract depends on `CampaignTypes` and can be implemented independently.
 A complete adapter receives the aggregate `Workload` implementation automatically.
 The `tests/interfaces.rs` fixture implements execution alone and exercises it
@@ -174,8 +191,20 @@ work changes that replay rejects. It does not measure a workload speedup.
 
 ## Search evaluation policies
 
-Selector identifiers describe the generic hierarchy and retain their exact
-selection behavior. Search experiments use independent versioned identifiers:
+Five selector policies exist. `hierarchy_uniform_128` draws uniformly over live
+groups. `hierarchy_uniform_128_retire:<thresholds>` drops a group once its
+barren counter passes a threshold. The three `energy_frontier_cheapest`
+identifiers weight the draw by barren energy, by progress rank, and by cost.
+
+The coarsest group is a class. Every class holding a live cell receives draws.
+The walk ranks classes by how many distinct progress levels are ahead of them,
+capped at eight, and weights a class `256 >> rank`, so the leading class takes
+the largest share and no live class takes zero. `SelectorAccounting`'s
+`class_draws_by_rank` reports the share each rank received. Bands inside a class
+are ranked the same way, over the distinct progress levels of their frontier
+groups.
+
+Search experiments use independent versioned identifiers:
 
 - `hierarchy_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
   each within-cell cost weight by one plus that entry's admitted selections.
@@ -265,19 +294,6 @@ Genesis and snapshot-root bootstrap still require a current key and retained
 snapshot; a terminal target without a snapshot is reported as an execution
 error.
 
-`hierarchy_uniform_128_energy_progress_cheapest_count_v1:<thresholds>` is a
-separate experiment that uses `ArchiveKey::progress_cmp` for class preference
-and frontier weighting. Equivalent/incomparable coarsest classes share draws;
-identity still orders maps, never the potentially partial progress relation.
-Each selection draws one maximal eligible class; it does not fall through to
-other classes when that class yields no cell. Semantic frontier rank saturates
-at 16, matching the weighting span, rather than counting the entire tail.
-Within a pooled subtree it chooses a maximal observed descendant as its progress
-representative. Generic tests relabel locations and expose the numeric-label
-bias in the legacy control. This policy changes parent selection; ordinary
-splice donor ranking retains its historical key ordering and remains a separate
-ablation concern for nonlinear workloads.
-
 `run_campaign_checkpointed_with_options` accepts an optional deterministic work
 budget without changing existing `CampaignConfig` callers. The stream and
 report record that budget only when present. Already reserved jobs drain
@@ -285,12 +301,3 @@ normally; evaluators must score first-objective work against the threshold and
 account for any drained overshoot. Omitting the option leaves the campaign
 without a work-budget cutoff.
 
-`hierarchy_uniform_128_energy_progress_cheapest_v1:<thresholds>` isolates semantic
-progress weighting from entry-count weighting. It uses the same progress walk
-and cheapest-cell preference as the count variant, with the original per-entry
-weights. This recovers the location-neutral frontier behavior of the historical
-Pareto experiment: within an inventory class, its declared progress
-relation considers map cells equal, so no map cell can dominate another. It is
-not the full historical cross-location preference/Pareto implementation, and
-it does not restore the prototype's improvement-replay queues. Its separate
-identifier permits an ablation without changing any existing selector's behavior.
