@@ -117,6 +117,7 @@ jobs:
         run: |
           python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
             --artifacts consonance/harmony-linux/build/x86_64 --output pg-pr-smoke/platform-provenance.json
+          python3 -c 'import json; assert json.load(open("pg-pr-smoke/platform-provenance.json"))["scope"] == "exact-input", "Run the platform publisher on this source before qualifying this smoke"'
           test -s oci-images/pgcic-14.3.oci
           test -s oci-images/MANIFEST.sha256
           (cd oci-images && sha256sum -c MANIFEST.sha256)

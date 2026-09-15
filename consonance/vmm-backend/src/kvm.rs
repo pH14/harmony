@@ -125,7 +125,6 @@ impl RunPage {
         unsafe { (*self.run).ready_for_interrupt_injection }
     }
 
-    #[cfg(test)]
     pub(crate) fn immediate_exit(&self) -> u8 {
         // SAFETY: `run` is a valid `kvm_run` (constructor contract); this is a
         // plain, always-initialized top-level field.
@@ -137,6 +136,16 @@ impl RunPage {
         unsafe {
             (*self.run).immediate_exit = u8::from(on);
         }
+    }
+
+    pub(crate) fn set_cr8(&self, cr8: u64) {
+        // SAFETY: the run page is live and exclusively owned while the vCPU is stopped.
+        unsafe { (*self.run).cr8 = cr8 };
+    }
+
+    fn sync_regs_requested(&self) -> bool {
+        // SAFETY: both fields are initialized top-level members of the live run page.
+        unsafe { (*self.run).kvm_valid_regs != 0 || (*self.run).kvm_dirty_regs != 0 }
     }
 
     fn set_request_interrupt_window(&self, on: bool) {
@@ -294,17 +303,37 @@ pub(crate) fn apply_complete_ok(page: RunPage, pending: Pending) -> Result<()> {
     }
 }
 
-pub(crate) fn retire_staged_completion<F>(
+pub(crate) fn prepare_snapshot_run<F>(page: RunPage, cr8: u64, mut enter: F) -> Result<()>
+where
+    F: FnMut() -> std::result::Result<(), std::io::Error>,
+{
+    if page.immediate_exit() != 0 || page.sync_regs_requested() {
+        return Err(BackendError::InvalidState);
+    }
+    page.set_cr8(cr8);
+    page.set_immediate_exit(true);
+    let result = enter();
+    page.set_immediate_exit(false);
+    match result {
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(()),
+        Err(error) => Err(BackendError::Io(error)),
+        Ok(()) => Err(BackendError::Internal(
+            "snapshot preparation did not return without guest entry",
+        )),
+    }
+}
+
+pub(crate) fn finish_staged_completion<F>(
     page: RunPage,
     pending: &mut Pending,
     staged: &mut bool,
     mut enter: F,
-) -> Result<()>
+) -> Result<Option<Exit<X86>>>
 where
     F: FnMut() -> std::result::Result<(), std::io::Error>,
 {
     if !*staged {
-        return Ok(());
+        return Ok(None);
     }
 
     page.set_immediate_exit(true);
@@ -315,12 +344,45 @@ where
         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
             *staged = false;
             *pending = Pending::None;
-            Ok(())
+            Ok(None)
         }
         Err(error) => Err(BackendError::Io(error)),
-        Ok(()) => Err(BackendError::Internal(
-            "completion-only KVM_RUN returned without EINTR",
-        )),
+        Ok(()) => {
+            let Some((exit, next_pending)) = decode_exit(page)? else {
+                return Err(BackendError::Internal(
+                    "completion-only KVM_RUN returned a control exit",
+                ));
+            };
+
+            if !matches!(
+                &exit,
+                Exit::Arch(X86Exit::Io { .. }) | Exit::Common(CommonExit::Mmio { .. })
+            ) {
+                return Err(BackendError::Internal(
+                    "completion-only KVM_RUN returned an unexpected exit",
+                ));
+            }
+
+            *pending = next_pending;
+            *staged = decoded_exit_stages_completion(&exit, next_pending);
+            Ok(Some(exit))
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn retire_staged_completion<F>(
+    page: RunPage,
+    pending: &mut Pending,
+    staged: &mut bool,
+    enter: F,
+) -> Result<()>
+where
+    F: FnMut() -> std::result::Result<(), std::io::Error>,
+{
+    match finish_staged_completion(page, pending, staged, enter)? {
+        None => Ok(()),
+        Some(_) => Err(BackendError::PendingCompletion),
     }
 }
 
@@ -592,6 +654,12 @@ pub(crate) fn from_kvm_events(e: &kvm_vcpu_events) -> VcpuEvents {
         smi_latched_init: e.smi.latched_init,
         triple_fault_pending: e.triple_fault.pending,
     }
+}
+
+pub(crate) fn to_kvm_restore_events(e: &VcpuEvents) -> kvm_vcpu_events {
+    let mut events = to_kvm_events(e);
+    events.flags |= kvm_bindings::KVM_VCPUEVENT_VALID_PAYLOAD;
+    events
 }
 
 pub(crate) fn to_kvm_events(e: &VcpuEvents) -> kvm_vcpu_events {

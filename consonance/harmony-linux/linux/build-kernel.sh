@@ -105,7 +105,8 @@ fi
 # ("default NO_HZ_IDLE if NO_HZ"); Kata sets it =y, but once HZ_PERIODIC wins the
 # choice it is inert (it selects nothing), so it harmlessly stays =y.
 assert_off NUMA CPU_FREQ MODULES TRANSPARENT_HUGEPAGE KSM SUSPEND \
-    HIBERNATION X86_PM_TIMER HIGH_RES_TIMERS RANDOMIZE_BASE \
+    HIBERNATION KEXEC KEXEC_FILE KEXEC_HANDOVER KEXEC_CORE \
+    X86_PM_TIMER HIGH_RES_TIMERS RANDOMIZE_BASE \
     LOCALVERSION_AUTO HW_RANDOM NO_HZ_COMMON NO_HZ_FULL NO_HZ_IDLE TICK_ONESHOT
 assert_off RWSEM_SPIN_ON_OWNER
 # Empty version suffix: git/build state must not leak into the bytes.
@@ -162,4 +163,5 @@ fi
 mkdir -p "$ART_DIR/x86_64"
 install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/$kernel_output"
 install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/x86_64/$kernel_output"
+install -m 0644 "$KOBJ/vmlinux" "$ART_DIR/x86_64/$kernel_output.vmlinux"
 echo "ok: $ART_DIR/$kernel_output"

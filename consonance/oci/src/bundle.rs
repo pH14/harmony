@@ -272,6 +272,8 @@ fn argv(config: &super::image::RuntimeConfig, command: &[String]) -> Vec<String>
 
 fn env(config: &super::image::RuntimeConfig) -> Vec<String> {
     let mut env = config.env.clone();
+    env.retain(|entry| !entry.starts_with("LD_BIND_NOW="));
+    env.push("LD_BIND_NOW=1".into());
     if !env.iter().any(|entry| entry.starts_with("PATH=")) {
         env.push("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
     }
@@ -382,7 +384,8 @@ fn runc_spec(external_inputs: &[ValidatedExternalInput]) -> serde_json::Value {
             "args": [SUPERVISOR_PATH],
             "env": [
                 "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "HARMONY_EXECUTION_SPEC=/run/harmony/execution.json"
+                "HARMONY_EXECUTION_SPEC=/run/harmony/execution.json",
+                "LD_BIND_NOW=1"
             ],
             "cwd": "/"
         },
@@ -679,6 +682,32 @@ mod tests {
         assert_eq!(prepared.execution.uid, 42);
         assert_eq!(prepared.execution.gid, 84);
         assert_eq!(prepared.execution.additional_gids, [99]);
+    }
+
+    #[test]
+    fn eager_binding_is_carried_through_supervisor_and_workload_launch() {
+        for configured in [None, Some("LD_BIND_NOW="), Some("LD_BIND_NOW=0")] {
+            let mut image = image();
+            if let Some(value) = configured {
+                image.config.env.push(value.into());
+            }
+            let prepared = prepare(&image, &LaunchRequest::new(Vec::new())).unwrap();
+            let binding = prepared
+                .execution
+                .env
+                .iter()
+                .filter(|entry| entry.starts_with("LD_BIND_NOW="))
+                .collect::<Vec<_>>();
+            assert_eq!(binding, ["LD_BIND_NOW=1"]);
+            let spec = runc_spec(&[]);
+            assert!(
+                spec["process"]["env"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry == "LD_BIND_NOW=1")
+            );
+        }
     }
 
     #[test]

@@ -75,8 +75,10 @@ pub fn arb_sregs() -> impl Strategy<Value = VcpuSregs> {
             any::<u64>(),
         ),
         any::<u64>(),
+        any::<u64>(),
+        any::<[u64; 4]>(),
     )
-        .prop_map(|(seg, scal, apic_base)| VcpuSregs {
+        .prop_map(|(seg, scal, apic_base, flags, pdptrs)| VcpuSregs {
             cs: seg[0],
             ds: seg[1],
             es: seg[2],
@@ -96,6 +98,8 @@ pub fn arb_sregs() -> impl Strategy<Value = VcpuSregs> {
             cr8: scal.8,
             efer: scal.9,
             apic_base,
+            flags,
+            pdptrs,
         })
 }
 
@@ -108,11 +112,13 @@ pub fn arb_debugregs() -> impl Strategy<Value = DebugRegs> {
         proptest::collection::vec(any::<u64>(), 4..=4),
         any::<u64>(),
         any::<u64>(),
+        any::<u64>(),
     )
-        .prop_map(|(db, dr6, dr7)| DebugRegs {
+        .prop_map(|(db, dr6, dr7, flags)| DebugRegs {
             db: [db[0], db[1], db[2], db[3]],
             dr6,
             dr7,
+            flags,
         })
 }
 
@@ -224,23 +230,40 @@ pub fn arb_vm_state() -> impl Strategy<Value = VmState> {
     )
         .prop_flat_map(
             |(regs, sregs, xcrs, debugregs, events, mp_state, msrs, xsave, vtime, timers)| {
-                (arb_hypercall(), arb_devices(), arb_contract_hash()).prop_map(
-                    move |(hypercall, devices, contract_hash)| VmState {
-                        regs,
-                        sregs,
-                        xcrs,
-                        debugregs,
-                        events,
-                        mp_state,
-                        msrs: msrs.clone(),
-                        xsave: xsave.clone(),
-                        vtime,
-                        timers: timers.clone(),
-                        hypercall,
-                        devices,
-                        contract_hash,
-                    },
+                (
+                    arb_hypercall(),
+                    arb_devices(),
+                    arb_contract_hash(),
+                    proptest::option::of(any::<u64>()),
+                    proptest::collection::vec(any::<u8>(), 0..64),
                 )
+                    .prop_map(
+                        move |(
+                            hypercall,
+                            devices,
+                            contract_hash,
+                            xsave_restore_bv,
+                            engine_state,
+                        )| {
+                            VmState {
+                                regs,
+                                sregs,
+                                xcrs,
+                                debugregs,
+                                events,
+                                mp_state,
+                                msrs: msrs.clone(),
+                                xsave: xsave.clone(),
+                                vtime,
+                                timers: timers.clone(),
+                                hypercall,
+                                devices,
+                                contract_hash,
+                                xsave_restore_bv,
+                                engine_state,
+                            }
+                        },
+                    )
             },
         )
 }
@@ -300,6 +323,8 @@ pub fn fully_populated() -> VmState {
             cr8: 0x0000_0000_0000_0000,
             efer: 0x0000_0000_0000_0d01,
             apic_base: 0x0000_0000_fee0_0900,
+            flags: 0,
+            pdptrs: [0; 4],
         },
         xcrs: Xcrs {
             xcr0: 0x0000_0000_0000_0007,
@@ -308,6 +333,7 @@ pub fn fully_populated() -> VmState {
             db: [0x10, 0x20, 0x30, 0x40],
             dr6: 0x0000_0000_ffff_0ff0,
             dr7: 0x0000_0000_0000_0400,
+            flags: 0,
         },
         events: VcpuEvents {
             exception_pending: true,
@@ -320,6 +346,7 @@ pub fn fully_populated() -> VmState {
         mp_state: MpState::Halted,
         msrs: MsrBlock(msrs),
         xsave: XsaveImage(vec![0x7f, 0x1f, 0x00, 0x00, 0xaa, 0xbb, 0xcc, 0xdd]),
+        xsave_restore_bv: None,
         vtime: VtimeState {
             guest_hz: 2_000_000_000,
             guest_base: 0,
@@ -355,5 +382,6 @@ pub fn fully_populated() -> VmState {
             0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
             0x1c, 0x1d, 0x1e, 0x1f,
         ],
+        engine_state: Vec::new(),
     }
 }

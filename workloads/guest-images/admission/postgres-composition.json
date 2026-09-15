@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "reviewed_by": "Codex primary-agent exact source, ELF, loader, selector and controlled-composition review, 2026-09-14",
+  "manifest_sha256": "d2032e87e9cdb25242bad9997824db4af42df7202fa85865310ac8f2ab877827",
+  "composition_evidence": {
+    "file": "proofs/postgres-composition.md",
+    "sha256": "62b17fe2ed09b34e30f5f2f4781df87a02c35351cab4a8ce45e9b461e0cf3c1e"
+  },
+  "platform_baseline": {
+    "file": "platform-component.json",
+    "sha256": "a293ffba80daf77f4446d30b7d69b2a06e213a0dd4dab30d9acf867744b134c5"
+  },
+  "workload_baseline": {
+    "file": "postgres-component.json",
+    "sha256": "cb4573599797599a5a186e111379bfd1338eacae673ef61ca495e190080af598"
+  }
+}

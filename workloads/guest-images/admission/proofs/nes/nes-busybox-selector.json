@@ -1,0 +1,55 @@
+[
+  {
+    "address": 4873369,
+    "adjacent_ecx_zero": false,
+    "bytes": "0f01d0",
+    "mnemonic": "xgetbv",
+    "operands": "",
+    "requires_reviewed_control_flow_proof": true,
+    "selector_proof_instructions": [
+      {
+        "address": 4873338,
+        "bytes": "31c9",
+        "mnemonic": "xor",
+        "operands": "%ecx,%ecx"
+      },
+      {
+        "address": 4873340,
+        "bytes": "c74424a001000000",
+        "mnemonic": "movl",
+        "operands": "$0x1,-0x60(%rsp)"
+      },
+      {
+        "address": 4873348,
+        "bytes": "2500000800",
+        "mnemonic": "and",
+        "operands": "$0x80000,%eax"
+      },
+      {
+        "address": 4873353,
+        "bytes": "8944249c",
+        "mnemonic": "mov",
+        "operands": "%eax,-0x64(%rsp)"
+      },
+      {
+        "address": 4873357,
+        "bytes": "09d0",
+        "mnemonic": "or",
+        "operands": "%edx,%eax"
+      },
+      {
+        "address": 4873359,
+        "bytes": "894424a4",
+        "mnemonic": "mov",
+        "operands": "%eax,-0x5c(%rsp)"
+      },
+      {
+        "address": 4873363,
+        "bytes": "8905f7ba0900",
+        "mnemonic": "mov",
+        "operands": "%eax,0x9baf7(%rip)        # 0x541790"
+      }
+    ],
+    "straightline_ecx_zero": true
+  }
+]

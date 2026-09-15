@@ -50,7 +50,7 @@ event holds range from 10 ms through 10.24 seconds. Other actions have a built-i
 | `Restart(node)` | the node is killed and comes back inside the horizon |
 | `Hook(id)` | the supervisor runs that hook once |
 | `Park(node, addr, hits, hold)` | guest threads are held at an execution place |
-| `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's seal when settling carried it past that start |
+| `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's snapshot moment when that moment is past the window start |
 
 Each fault action except `Interrupt` becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
@@ -64,15 +64,17 @@ until its hold can finish, allowing another fault to overlap the held thread.
 [`consonance`](src/consonance.rs) drives one `consonance_client::session::Session`
 per evaluator thread. Each portable action prefix maps to a real whole-VM
 snapshot: the session branches its parent under the prefix's window list and
-the host-plane effect its last action stages, runs to the action's deadline,
-and seals the endpoint. The shared session watchdog follows deterministic
-virtual-time progress, so a slowly advancing instrumented guest can finish a
-long action while one stuck at a virtual moment still times out. An endpoint
-the session cannot seal within its settle allowance has no successor and the
-search records it as dead; one
-whose guest stopped for good while settling is recorded with that stop. A
-bounded LRU keeps recent prefixes resident and rebuilds evicted ones from their
-longest cached ancestor.
+the host-plane effect its last action stages, runs to the action's horizon
+deadline, and snapshots the exact stopped endpoint. A terminal stop is recorded
+with its original stop and has no successor. If a continuable endpoint cannot
+be snapshotted, the session is abandoned and the control diagnostic is
+reported. A bounded LRU keeps recent prefixes resident and rebuilds evicted
+ones from their longest cached ancestor.
+The shared session watchdog follows deterministic virtual-time progress, so a
+slowly advancing instrumented guest can finish a long action while one stuck
+at a virtual moment still times out. Replay can apply explicit, bounded Wait
+actions to obtain current quiescent check evidence; these actions and ticks
+are reported separately from the recorded input actions.
 
 A campaign never encodes the virtual-time trace, so the session is configured
 to defer sparse checkpoint hashing. Each due checkpoint would otherwise hash
@@ -113,6 +115,12 @@ harmony search --package faults IMAGE.oci --backend consonance \
 Both modes write `report.json` ([`package`](src/package.rs)) with the pinned
 image and kernel hashes, the execution identity, the run bounds, and
 either the bugs found or the replay outcomes.
+
+New replay outcomes encode the engine's 32-byte state digest directly as
+lowercase hex and mark it with `state_hash_encoding: "engine_digest"`.
+Reports written by earlier versions omit that marker and contain SHA-256 of
+the digest; readers default a missing marker to the legacy interpretation.
+The marker is additive, so older readers continue to parse the report shape.
 
 The search report and `campaign-summary.json` also record
 `watchdog_cutoffs`, the number of guest action runs ended by the session's

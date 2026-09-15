@@ -1,0 +1,10 @@
+{
+  "workloads/nes/examples/prepare-admission.rs": "55a5004ac7e6bf8edc0e2832f347112112a6527433af1cf162c21be05f0d2269",
+  "workloads/guest-images/verify-prepared-admission.py": "df082056c6c131ad028a57451211c3064a38371269b3ca28b0abd2fcaffb48d1",
+  "workloads/guest-images/test_verify_prepared_admission.py": "d69886a6325c30641473030e2de47635fa405376fc926b81afaa1d587c97c730",
+  "workloads/nes/src/prepare.rs": "e3776148642a37eff9d9885ff66f70fc9787ac4a816fbea711d5fcd892e88b98",
+  "workloads/nes/src/admission.rs": "e27c7bac3e52ffb9611fa61540b0f2fd2ed6a37373143d57b2ee3fbdcbaaf0fb",
+  "workloads/tools/src/bin/kvm_x86_nova_probe.rs": "c3b31a87394d5e1333ab8f74b6284846a647667664f6d8eba445c06760bc2636",
+  "consonance/harmony-linux/scripts/x86-xstate-admission.py": "a2754b0c9c8235e46dcae697c8b2693ea9aa0a33af270601d11802cc0730a857",
+  "consonance/harmony-linux/scripts/test_x86_xstate_admission.py": "fa5d0ae51de0975f9834e390579238f2731745ceb724cc43df226d8a9904c1f6"
+}

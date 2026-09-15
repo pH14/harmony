@@ -55,6 +55,8 @@ pub struct VcpuSregs {
     pub cr8: u64,
     pub efer: u64,
     pub apic_base: u64,
+    pub flags: u64,
+    pub pdptrs: [u64; 4],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -67,6 +69,7 @@ pub struct DebugRegs {
     pub db: [u64; 4],
     pub dr6: u64,
     pub dr7: u64,
+    pub flags: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

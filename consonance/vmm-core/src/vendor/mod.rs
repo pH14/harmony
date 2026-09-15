@@ -39,6 +39,12 @@ pub trait Vendor: Arch + Sized {
         write: Option<u64>,
     ) -> Result<Step, VmmError>;
 
+    fn finish_exit<B: Backend<A = Self>>(
+        _vmm: &mut Vmm<B>,
+    ) -> Result<Option<Exit<Self>>, VmmError> {
+        Ok(None)
+    }
+
     fn is_doorbell_exit(exit: &Exit<Self>) -> bool;
 
     fn post_exit<B: Backend<A = Self>>(_vmm: &mut Vmm<B>) -> Result<(), VmmError> {

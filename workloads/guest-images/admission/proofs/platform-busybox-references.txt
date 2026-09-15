@@ -1,0 +1,10 @@
+  46cabd:	8b 3d d5 ee 0e 00    	mov    0xeeed5(%rip),%edi        # 55b998 <_dl_lazy>
+  47321b:	48 8d 05 6e 78 06 00 	lea    0x6786e(%rip),%rax        # 4daa90 <_dl_runtime_resolve_fxsave>
+  473231:	48 8d 05 d8 78 06 00 	lea    0x678d8(%rip),%rax        # 4dab10 <_dl_runtime_resolve_xsave>
+  473238:	48 89 05 19 85 0e 00 	mov    %rax,0xe8519(%rip)        # 55b758 <_dl_x86_64_runtime_resolve>
+  47346a:	48 8d 05 6f 77 06 00 	lea    0x6776f(%rip),%rax        # 4dabe0 <_dl_runtime_resolve_xsavec>
+  48b0bf:	89 05 d3 08 0d 00    	mov    %eax,0xd08d3(%rip)        # 55b998 <_dl_lazy>
+  49c1d2:	0f 16 05 7f f5 0b 00 	movhps 0xbf57f(%rip),%xmm0        # 55b758 <_dl_x86_64_runtime_resolve>
+00000000004daa90 <_dl_runtime_resolve_fxsave>:
+00000000004dab10 <_dl_runtime_resolve_xsave>:
+00000000004dabe0 <_dl_runtime_resolve_xsavec>:

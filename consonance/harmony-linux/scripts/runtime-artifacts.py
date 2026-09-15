@@ -62,6 +62,13 @@ def source_digest(repo):
 def artifacts(root, architecture):
     kernel = "bzImage" if architecture == "x86_64" else "Image"
     paths = [root / kernel, root / "initramfs-oci.cpio.gz"]
+    if (root / "initramfs.cpio.gz").exists():
+        paths.append(root / "initramfs.cpio.gz")
+    if (root / "oci-runtime.manifest").exists():
+        paths.append(root / "oci-runtime.manifest")
+    provenance = root / "build-provenance"
+    if provenance.exists():
+        paths.extend(path for path in provenance.rglob("*") if path.is_file())
     fixture = root / "fixture"
     paths.extend(path for path in fixture.rglob("*") if path.is_file())
     for required in (fixture / "index.json", fixture / "oci-layout"):

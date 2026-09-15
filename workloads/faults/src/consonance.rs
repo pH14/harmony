@@ -30,15 +30,13 @@ const SEED: u64 = 0x4661_756c_744c_6162;
 const SETUP_BUDGET: u64 = 120_000_000_000;
 const WALL_LIMIT: Duration = Duration::from_secs(60);
 const SNAPSHOT_CACHE_LIMIT: usize = 96;
-const SETTLE_STEP_NANOS: u64 = 100_000;
-const SETTLE_ALLOWANCE_NANOS: u64 = 16 * SETTLE_STEP_NANOS;
 const CONSOLE_TAIL: usize = 1_500;
 const WATCHDOG_CUTOFF: &str = "fault-guest-watchdog-cutoff: ";
 
 #[cfg(target_arch = "x86_64")]
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
     no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
-    nox2apic hpet=disable harmony_pvclock rdinit=/init";
+    nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
 #[cfg(target_arch = "aarch64")]
 const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 nohlt rdinit=/init";
 
@@ -666,31 +664,24 @@ impl Live {
                 String::from_utf8_lossy(&tail[start..])
             );
         }
-        let mut stop = FaultStop::from_stop_reason(&stop);
-        let mut snap = None;
-        if stop.is_continuable() {
-            match self.session.seal(SETTLE_STEP_NANOS, SETTLE_ALLOWANCE_NANOS) {
-                Ok((sealed, at, settled)) => {
-                    if let Some(settled) = &settled {
-                        stop = FaultStop::from_stop_reason(settled);
-                    }
-                    if stop.is_continuable() {
-                        snap = Some((sealed, at));
-                    }
-                }
-                Err(error) => match error.downcast_ref::<SessionError>() {
-                    Some(SessionError::Stop(reason)) => stop = FaultStop::from_stop_reason(reason),
-                    Some(SessionError::Settle { allowance }) => {
-                        eprintln!("fault endpoint never sealed within {allowance} ns of settling");
-                    }
-                    _ => return Err(self.abandon("seal", error.as_ref())),
-                },
+        let stop = FaultStop::from_stop_reason(&stop);
+        let snap = if stop.is_continuable() {
+            let (snapshot, at) = self
+                .session
+                .snapshot()
+                .map_err(|error| self.abandon("snapshot", error.as_ref()))?;
+            Some((snapshot, at))
+        } else {
+            None
+        };
+        let observation = match self.observe(stop) {
+            Ok(observation) => observation,
+            Err(error) => {
+                let error: Box<dyn Error> = error.into();
+                return Err(self.abandon("observe", error.as_ref()));
             }
-        }
-        if snap.is_none() && stop.is_continuable() {
-            stop = FaultStop::Unexpected;
-        }
-        Ok((self.observe(stop)?, snap))
+        };
+        Ok((observation, snap))
     }
 
     fn observe(&mut self, stop: FaultStop) -> Result<FaultObservations, String> {
@@ -809,17 +800,18 @@ mod tests {
     }
 
     #[test]
-    fn run_and_seal_watchdogs_share_the_recoverable_classification() {
+    fn run_and_snapshot_watchdogs_share_the_recoverable_classification() {
         let snapshot = FaultSnapshot {
             actions: Vec::new(),
             observation: FaultObservations::default(),
             failed: false,
         };
-        for phase in ["run", "seal"] {
+        for phase in ["run", "snapshot"] {
             for error in [SessionError::Hung(WALL_LIMIT), SessionError::Abandoned] {
+                let error: Box<dyn Error> = Box::new(error);
                 let mut target = unbooted_target();
                 target
-                    .finish_restore(&snapshot, Err(session_failure(phase, &error)))
+                    .finish_restore(&snapshot, Err(session_failure(phase, error.as_ref())))
                     .unwrap();
                 assert!(target.failed());
                 assert_eq!(target.watchdog_cutoffs(), 1);
@@ -829,6 +821,12 @@ mod tests {
                 !session_failure(phase, &SessionError::Unboundable).starts_with(WATCHDOG_CUTOFF)
             );
         }
+    }
+
+    #[test]
+    fn observation_strings_do_not_become_typed_watchdog_errors() {
+        let error: Box<dyn Error> = SessionError::Hung(WALL_LIMIT).to_string().into();
+        assert!(!session_failure("observe", error.as_ref()).starts_with(WATCHDOG_CUTOFF));
     }
 
     #[test]

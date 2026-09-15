@@ -33,6 +33,8 @@ mod hvf;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm;
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
+mod kvm_affinity;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm_sys;
 
@@ -45,6 +47,7 @@ pub use arch::arm64::{
 pub use arch::x86::{
     CpuidEntry, CpuidModel, DebugRegs, DescriptorTable, Injection, MsrFilter, MsrRange, Segment,
     VcpuEvents, VcpuRegs, VcpuSregs, VcpuState, X86, X86Caps, X86Completion, X86Exit, X86Policy,
+    canonicalize_xsave_with_restore_bv, restore_xsave_image,
 };
 pub use arch::{Arch, ArchExit};
 pub use backend::Backend;

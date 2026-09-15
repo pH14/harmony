@@ -1,0 +1,20 @@
+{
+  "architecture": "x86_64",
+  "files": {
+    "build-provenance/MANIFEST.sha256": "c220c810e17d95fc5375f01cacd50eff43809715ce71e2f4f7b1c2c358a93641",
+    "build-provenance/nix-build-provenance.json": "1811d9da5f824e92253375ed8fba6b55c10df730cb307300960cc6c6689e5e14",
+    "build-provenance/oci-runtime.manifest": "bf674cbfa5d3289cac1e4734d9bb3d9ac42aecba5144364f036ede7aec117912",
+    "build-provenance/runtime-payloads.json": "037fdf568aeba2c1bbe3709fb2f835ab7c69b9d6f672ff48aa9addb7a064f082",
+    "bzImage": "7ce25244cf1d138db1286ce61fb1c880bd224b2866ffaebd1ec19d04b2ad69b6",
+    "fixture/blobs/sha256/31d9e7b9b4f91dc2756fcec9927403019468f5f12cfe6b388506b24a43960daa": "31d9e7b9b4f91dc2756fcec9927403019468f5f12cfe6b388506b24a43960daa",
+    "fixture/blobs/sha256/8841a8253204d7bf8cd0ddeb7d762b80f96b7c8e734d16081e43a8dd8c377844": "8841a8253204d7bf8cd0ddeb7d762b80f96b7c8e734d16081e43a8dd8c377844",
+    "fixture/blobs/sha256/a8f8cff274863f9570bee96d688d525ca18122e4148f9765a5a1974622cb0c73": "a8f8cff274863f9570bee96d688d525ca18122e4148f9765a5a1974622cb0c73",
+    "fixture/index.json": "9228d8a8859ef3f767249216ef71ab20aaa59cc9f772fdf880b6cc2d7c59e1fa",
+    "fixture/oci-layout": "18f0797eab35a4597c1e9624aa4f15fd91f6254e5538c1e0d193b2a95dd4acc6",
+    "initramfs-oci.cpio.gz": "733555f781a62f5a2e4d37ae9297efe1c1a347c395586e2cc24b1e38ddf353e3",
+    "initramfs.cpio.gz": "49aa012124f80e8fda3bcd5873ce24470e33ae961ed42fb0ee323f5e6abf2744",
+    "oci-runtime.manifest": "bf674cbfa5d3289cac1e4734d9bb3d9ac42aecba5144364f036ede7aec117912"
+  },
+  "source_digest": "8e6c72124f57bd02490811e18c80f806326de525e1388c2ad25edb7d9f942683",
+  "version": 1
+}

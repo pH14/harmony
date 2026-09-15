@@ -1,0 +1,117 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Checks / G1 kernel XSAVE qualification
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [codex/consolidate-stopped-snapshots]
+    paths:
+      - ".github/workflows/xsave-kernel-qualification.yml"
+      - "consonance/harmony-linux/linux/patches/**"
+      - "consonance/harmony-linux/linux/*allowlist*.txt"
+      - "consonance/harmony-linux/linux/build-xsave-qualification-fixture.sh"
+      - "consonance/harmony-linux/linux/xsave-guest-check.c"
+permissions:
+  contents: read
+concurrency:
+  group: g1-kernel-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Build exact source guest and qualification fixture
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cpio gcc libc6-dev binutils
+          mkdir -p g1-build-report
+          git rev-parse HEAD >g1-build-report/source-commit.txt
+          uname -a >g1-build-report/host.txt
+          lscpu >>g1-build-report/host.txt
+          nix run .#guest-images -- --output "$PWD/g1-source-guest" 2>&1 | tee g1-build-report/kernel-build.log
+          bash consonance/harmony-linux/linux/build-xsave-qualification-fixture.sh \
+            "$PWD/g1-source-guest" "$PWD/g1-fixture" 2>&1 | tee g1-build-report/fixture-build.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: g1-exact-fixture-${{ github.sha }}
+          path: g1-fixture
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g1-build-report-${{ github.sha }}
+          path: g1-build-report
+          retention-days: 14
+  qualify:
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {replica: 1, runner: ubuntu-24.04}
+          - {replica: 2, runner: ubuntu-24.04}
+          - {replica: 3, runner: ubuntu-22.04}
+          - {replica: 4, runner: ubuntu-22.04}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: g1-exact-fixture-${{ github.sha }}
+          path: g1-fixture
+      - name: Verify exact artifact and record actual CPU cohort
+        run: |
+          set -euo pipefail
+          mkdir -p g1-report
+          (cd g1-fixture && sha256sum -c MANIFEST.sha256)
+          grep -Fx "source_commit=$(git rev-parse HEAD)" g1-fixture/provenance.txt
+          cp g1-fixture/{MANIFEST.sha256,provenance.txt} g1-report/
+          uname -a >g1-report/host.txt
+          lscpu >>g1-report/host.txt
+          cat /proc/cpuinfo >g1-report/cpuinfo.txt
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          echo "G1_CPU=$cpu" >>"$GITHUB_ENV"
+          echo "G1_DEBUG_RIPS=$(cat g1-fixture/debug-rips.txt)" >>"$GITHUB_ENV"
+          cp g1-fixture/debug-sites.json g1-report/
+          printf 'fixed_cpu=%s\nreplica=%s\nvendor_selection=observed-not-requested\n' "$cpu" '${{ matrix.replica }}' >g1-report/cohort.txt
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup default 1.97.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build bounded G1 tests
+        run: cargo test --locked --release -p vmm-core --features xsave-diagnostics --test x86_kvm_xsave_kernel --no-run
+      - name: Functional and unmasked paired endpoints
+        env:
+          G1_KERNEL: ${{ github.workspace }}/g1-fixture/bzImage
+          G1_INITRAMFS: ${{ github.workspace }}/g1-fixture/initramfs.cpio.gz
+          G1_REPORT_DIR: ${{ github.workspace }}/g1-report/endpoints
+        run: |
+          set -euo pipefail
+          timeout -k 10 600 taskset -c "$G1_CPU" cargo test --locked --release -p vmm-core \
+            --features xsave-diagnostics --test x86_kvm_xsave_kernel -- \
+            --ignored --test-threads=1 --nocapture 2>&1 | tee g1-report/tests.log
+      - name: Compress complete endpoint evidence
+        if: always()
+        run: |
+          if [[ -d g1-report/endpoints ]]; then
+            tar -C g1-report -czf g1-report/endpoints.tar.gz endpoints
+            rm -rf g1-report/endpoints
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g1-kernel-report-${{ github.sha }}-${{ matrix.replica }}
+          path: g1-report
+          if-no-files-found: error
+          retention-days: 14

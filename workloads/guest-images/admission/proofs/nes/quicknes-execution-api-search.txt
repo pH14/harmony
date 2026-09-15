@@ -1,0 +1,5 @@
+libretro/libretro-common/include/libretro.h:2468: * Asks the frontend whether JIT compilation can be used.
+libretro/libretro-common/include/libretro.h:2471: * Set to \c true if the frontend has verified that JIT compilation is possible.
+libretro/libretro-common/include/libretro.h:2609: * The frontend allocates memory suitable for JIT code generation and returns
+libretro/libretro-common/include/libretro.h:2619: *    protections itself (e.g. mprotect) before writing or executing.
+libretro/libretro-common/include/libretro.h:2633: * whether to take a JIT code path before committing to an allocation.

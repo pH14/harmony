@@ -1,0 +1,38 @@
+--- a/libcontainer/container_linux.go
++++ b/libcontainer/container_linux.go
+@@ -542,7 +542,7 @@
+ 	if cmd.SysProcAttr == nil {
+ 		cmd.SysProcAttr = &unix.SysProcAttr{}
+ 	}
+-	cmd.Env = append(cmd.Env, "GOMAXPROCS="+os.Getenv("GOMAXPROCS"))
++	cmd.Env = append(cmd.Env, "GOMAXPROCS="+os.Getenv("GOMAXPROCS"), "LD_BIND_NOW=1")
+ 	cmd.ExtraFiles = append(cmd.ExtraFiles, p.ExtraFiles...)
+ 	if p.ConsoleSocket != nil {
+ 		cmd.ExtraFiles = append(cmd.ExtraFiles, p.ConsoleSocket)
+--- /dev/null
++++ b/libcontainer/harmony_reexec_test.go
+@@ -0,0 +1,24 @@
++package libcontainer
++
++import (
++ "os/exec"
++ "testing"
++ "github.com/opencontainers/runc/libcontainer/configs"
++)
++
++func TestHarmonyReexecEagerBinding(t *testing.T) {
++ t.Setenv("LD_BIND_NOW", "0")
++ c := &Container{config: &configs.Config{Rootfs: "/"}, stateDir: t.TempDir(), cgroupManager: &mockCgroupManager{}}
++ p := &Process{}
++ defer p.closeClonedExes()
++ parent, err := c.newParentProcess(p)
++ if err != nil { t.Fatal(err) }
++ proc := parent.(*setnsProcess)
++ defer proc.comm.closeChild()
++ defer proc.comm.closeParent()
++ child := exec.Command("/bin/sh", "-c", "printf '%s' \"$LD_BIND_NOW\"")
++ child.Env = proc.cmd.Env
++ got, err := child.Output()
++ if err != nil { t.Fatal(err) }
++ if string(got) != "1" { t.Fatalf("internal reexec environment: got %q, want 1", got) }
++}

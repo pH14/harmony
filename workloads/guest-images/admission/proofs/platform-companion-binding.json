@@ -1,0 +1,10 @@
+{
+  "busybox_sha256": "ed276986a91b1c13f6da78900446dfa4311e841d87d8f770ae3ca10b18767b70",
+  "companion_sha256": "13fe7fda0405dabedded13d1d00cd16ccf45a248ae8db05dbb3c3aebff60ae0c",
+  "executable_segments": [
+    [
+      4198400,
+      "d2ae9d1cb8cae31e045c80939bcf6d35f13bc23f1e6edf1bc1038c1ed1789149"
+    ]
+  ]
+}

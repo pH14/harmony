@@ -13,8 +13,10 @@ use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
 
 use crate::arch::x86::Injection;
 use crate::arch::x86::VcpuState;
-use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Policy};
-use crate::arch::x86::{canonicalize_regs, canonicalize_sregs, canonicalize_xsave};
+use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Exit, X86Policy};
+use crate::arch::x86::{
+    canonicalize_regs, canonicalize_sregs, canonicalize_xsave_with_restore_bv, restore_xsave_image,
+};
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, Exit, ExitCounts};
@@ -54,15 +56,21 @@ pub struct KvmBackend {
     msr_filter_installed: bool,
     pending: Pending,
     completion_staged: bool,
+    completion_exit: Option<Exit<X86>>,
     pending_irq: Option<u8>,
     readiness_current: bool,
     accepted_irq: VecDeque<u8>,
     counts: ExitCounts,
+    #[cfg(feature = "xsave-diagnostics")]
+    diagnostic_rip: Option<u64>,
+    #[cfg(feature = "xsave-diagnostics")]
+    diagnostic_hits: Vec<u64>,
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl KvmBackend {
     pub fn new() -> Result<KvmBackend> {
+        crate::kvm_affinity::check_host_affinity()?;
         let kvm = Kvm::new().map_err(kvm_err)?;
         if !kvm.check_extension(Cap::ImmediateExit) {
             return Err(BackendError::Capability {
@@ -70,6 +78,12 @@ impl KvmBackend {
             });
         }
         let vm = kvm.create_vm().map_err(kvm_err)?;
+        vm.enable_cap(&kvm_enable_cap {
+            cap: kvm_bindings::KVM_CAP_EXCEPTION_PAYLOAD,
+            args: [1, 0, 0, 0],
+            ..Default::default()
+        })
+        .map_err(kvm_err)?;
         let vcpu = vm.create_vcpu(0).map_err(kvm_err)?;
         let mmap_size = kvm.get_vcpu_mmap_size().map_err(kvm_err)?;
         if mmap_size < size_of::<kvm_run>() {
@@ -94,10 +108,15 @@ impl KvmBackend {
             msr_filter_installed: false,
             pending: Pending::None,
             completion_staged: false,
+            completion_exit: None,
             pending_irq: None,
             readiness_current: true,
             accepted_irq: VecDeque::new(),
             counts: ExitCounts::default(),
+            #[cfg(feature = "xsave-diagnostics")]
+            diagnostic_rip: None,
+            #[cfg(feature = "xsave-diagnostics")]
+            diagnostic_hits: Vec::new(),
             cancel_run: std::sync::Arc::default(),
         })
     }
@@ -124,17 +143,43 @@ impl KvmBackend {
         unsafe { RunPage::new(self.run, self.mmap_size) }
     }
 
-    fn retire_pending_completion(&mut self) -> Result<()> {
+    fn finish_staged_exit(&mut self) -> Result<Option<Exit<X86>>> {
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
-        retire_staged_completion(page, &mut self.pending, &mut self.completion_staged, || {
-            let rc = unsafe { raw_kvm_run(fd) };
-            if rc < 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        })
+        let next =
+            finish_staged_completion(page, &mut self.pending, &mut self.completion_staged, || {
+                // SAFETY: the owned vCPU fd references the mapped run page and
+                // this entry is restricted to consuming its staged completion.
+                let rc = unsafe { raw_kvm_run(fd) };
+                if rc < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            })?;
+        if let Some(exit) = &next {
+            self.counts.bump(exit.reason());
+        }
+        Ok(next)
+    }
+
+    fn finish_or_queue_exit(&mut self) -> Result<()> {
+        if self.completion_exit.is_some() {
+            return Err(BackendError::PendingCompletion);
+        }
+        self.completion_exit = self.finish_staged_exit()?;
+        Ok(())
+    }
+
+    fn retire_pending_completion(&mut self) -> Result<()> {
+        if self.completion_exit.is_some() || self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
+        self.finish_or_queue_exit()?;
+        if self.completion_exit.is_some() {
+            return Err(BackendError::PendingCompletion);
+        }
+        Ok(())
     }
 
     fn enter_guest(&mut self) -> Result<Exit<X86>> {
@@ -160,11 +205,33 @@ impl KvmBackend {
             }
             self.completion_staged = false;
             self.readiness_current = true;
+            #[cfg(feature = "xsave-diagnostics")]
+            {
+                let reason = self.run_page().exit_reason();
+                if reason == kvm_bindings::KVM_EXIT_DEBUG {
+                    let expected = self
+                        .diagnostic_rip
+                        .take()
+                        .ok_or(BackendError::Internal("unexpected diagnostic debug exit"))?;
+                    let regs = self.vcpu.get_regs().map_err(kvm_err)?;
+                    if regs.rip != expected {
+                        return Err(BackendError::Internal("diagnostic breakpoint RIP mismatch"));
+                    }
+                    self.vcpu
+                        .set_guest_debug(&Default::default())
+                        .map_err(kvm_err)?;
+                    self.diagnostic_hits.push(regs.rip);
+                    continue;
+                }
+            }
             match decode_exit(self.run_page())? {
                 Some((exit, pending)) => {
                     self.counts.bump(exit.reason());
                     self.pending = pending;
                     self.completion_staged = decoded_exit_stages_completion(&exit, pending);
+                    if matches!(exit, Exit::Arch(X86Exit::Io { write: Some(_), .. })) {
+                        self.finish_or_queue_exit()?;
+                    }
                     return Ok(exit);
                 }
                 None => continue,
@@ -212,15 +279,15 @@ impl KvmBackend {
         ensure_full_msr_count(set, entries.len())
     }
 
-    fn save_xsave(&self) -> Result<Vec<u8>> {
+    fn save_xsave(&self) -> Result<(Vec<u8>, Option<u64>)> {
         let mut bytes = match self.xsave2_size {
             // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_xsave2` allocates and
             // fills exactly `n` bytes (`n >= size_of::<kvm_xsave>()`). Miri-excluded.
             Some(n) => unsafe { raw_get_xsave2(self.vcpu.as_raw_fd(), n)? },
             None => xsave_to_bytes(&self.vcpu.get_xsave().map_err(kvm_err)?),
         };
-        canonicalize_xsave(&mut bytes);
-        Ok(bytes)
+        let restore_bv = canonicalize_xsave_with_restore_bv(&mut bytes);
+        Ok((bytes, restore_bv))
     }
 
     fn restore_xsave(&self, bytes: &[u8]) -> Result<()> {
@@ -556,11 +623,33 @@ impl Backend for KvmBackend {
         Ok(gfns)
     }
 
+    #[cfg(feature = "xsave-diagnostics")]
+    fn diagnostic_breakpoint(&mut self, rip: u64) -> Result<()> {
+        if self.diagnostic_rip.is_some() || !self.diagnostic_hits.is_empty() {
+            return Err(BackendError::Internal("diagnostic breakpoint already used"));
+        }
+        let mut debug = kvm_bindings::kvm_guest_debug {
+            control: kvm_bindings::KVM_GUESTDBG_ENABLE | kvm_bindings::KVM_GUESTDBG_USE_HW_BP,
+            ..Default::default()
+        };
+        debug.arch.debugreg[0] = rip;
+        debug.arch.debugreg[7] = 0x401;
+        self.vcpu.set_guest_debug(&debug).map_err(kvm_err)?;
+        self.diagnostic_rip = Some(rip);
+        Ok(())
+    }
+
+    #[cfg(feature = "xsave-diagnostics")]
+    fn diagnostic_debug_hits(&self) -> Vec<u64> {
+        self.diagnostic_hits.clone()
+    }
+
     fn run(&mut self) -> Result<Exit<X86>> {
         if !self.configured() {
             return Err(BackendError::NotConfigured);
         }
-        if self.pending != Pending::None {
+        if self.pending != Pending::None || self.completion_exit.is_some() || self.completion_staged
+        {
             return Err(BackendError::PendingCompletion);
         }
         self.enter_guest()
@@ -586,24 +675,37 @@ impl Backend for KvmBackend {
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
+        if self.completion_exit.is_some() {
+            return Err(BackendError::PendingCompletion);
+        }
+        let scalar_completion = matches!(self.pending, Pending::IoIn { .. } | Pending::Rdmsr);
         apply_complete_read(self.run_page(), self.pending, value)?;
         self.pending = Pending::None;
         self.completion_staged = true;
+        if scalar_completion {
+            self.finish_or_queue_exit()?;
+        }
         Ok(())
     }
 
     fn complete_fault(&mut self) -> Result<()> {
+        if self.completion_exit.is_some() {
+            return Err(BackendError::PendingCompletion);
+        }
         apply_complete_fault(self.run_page(), self.pending)?;
         self.pending = Pending::None;
         self.completion_staged = true;
-        Ok(())
+        self.finish_or_queue_exit()
     }
 
     fn complete_ok(&mut self) -> Result<()> {
+        if self.completion_exit.is_some() {
+            return Err(BackendError::PendingCompletion);
+        }
         apply_complete_ok(self.run_page(), self.pending)?;
         self.pending = Pending::None;
         self.completion_staged = true;
-        Ok(())
+        self.finish_or_queue_exit()
     }
 
     fn complete_hypercall(&mut self, _ret: u64) -> Result<()> {
@@ -618,6 +720,38 @@ impl Backend for KvmBackend {
         KvmBackend::retire_pending_completion(self)
     }
 
+    fn finish_exit(&mut self) -> Result<Option<Exit<X86>>> {
+        if let Some(exit) = self.completion_exit.take() {
+            return Ok(Some(exit));
+        }
+        if self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
+        self.finish_staged_exit()
+    }
+
+    fn prepare_snapshot(&mut self) -> Result<()> {
+        if !self.configured() {
+            return Err(BackendError::NotConfigured);
+        }
+        if self.pending != Pending::None || self.completion_staged || self.completion_exit.is_some()
+        {
+            return Err(BackendError::PendingCompletion);
+        }
+        // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
+        let sregs = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
+        let fd = self.vcpu.as_raw_fd();
+        prepare_snapshot_run(self.run_page(), sregs.cr8, || {
+            // SAFETY: the owned vCPU has no pending completion; the mapped run page requests immediate exit.
+            let rc = unsafe { raw_kvm_run(fd) };
+            if rc < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        })
+    }
+
     fn save(&self) -> Result<VcpuState> {
         let regs = self.vcpu.get_regs().map_err(kvm_err)?;
         // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_sregs2` writes a full
@@ -627,7 +761,7 @@ impl Backend for KvmBackend {
         let kevents = self.vcpu.get_vcpu_events().map_err(kvm_err)?;
         let mp = self.vcpu.get_mp_state().map_err(kvm_err)?;
         let xcrs = self.vcpu.get_xcrs().map_err(kvm_err)?;
-        let xsave = self.save_xsave()?;
+        let (xsave, xsave_restore_bv) = self.save_xsave()?;
         let msrs = self.save_msrs()?;
 
         let mut sregs = from_kvm_sregs2(&sregs2);
@@ -643,15 +777,23 @@ impl Backend for KvmBackend {
             mp_state: mp_from_kvm(mp.mp_state),
             msrs,
             xsave,
+            xsave_restore_bv,
         })
     }
 
-    fn restore(&mut self, state: &VcpuState) -> Result<()> {
-        if self.pending != Pending::None || self.completion_staged {
-            return Err(BackendError::PendingCompletion);
-        }
+    fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
         validate_restore_shape(state, self.msr_filter.as_ref(), xsave_len)?;
+        restore_xsave_image(&state.xsave, state.xsave_restore_bv).map(|_| ())
+    }
+
+    fn restore(&mut self, state: &VcpuState) -> Result<()> {
+        if self.pending != Pending::None || self.completion_staged || self.completion_exit.is_some()
+        {
+            return Err(BackendError::PendingCompletion);
+        }
+        self.validate_restore_state(state)?;
+        let xsave = restore_xsave_image(&state.xsave, state.xsave_restore_bv)?;
 
         self.vcpu
             .set_regs(&to_kvm_regs(&state.regs))
@@ -667,16 +809,17 @@ impl Backend for KvmBackend {
             .set_debug_regs(&to_kvm_debugregs(&state.debugregs))
             .map_err(kvm_err)?;
         self.vcpu
-            .set_vcpu_events(&to_kvm_events(&state.events))
+            .set_vcpu_events(&to_kvm_restore_events(&state.events))
             .map_err(kvm_err)?;
         let mp = kvm_mp_state {
             mp_state: mp_to_kvm(state.mp_state),
         };
         self.vcpu.set_mp_state(mp).map_err(kvm_err)?;
         self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
-        self.restore_xsave(&state.xsave)?;
+        self.restore_xsave(&xsave)?;
         self.restore_msrs(state)?;
 
+        self.run_page().set_cr8(state.sregs.cr8);
         self.pending_irq = None;
         self.accepted_irq.clear();
         self.readiness_current = false;
@@ -698,5 +841,3042 @@ impl Backend for KvmBackend {
 
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         Some(std::sync::Arc::clone(&self.cancel_run))
+    }
+}
+
+#[cfg(test)]
+mod xsave_diagnostic {
+    use super::*;
+
+    use crate::arch::x86::{CpuidEntry, MsrRange};
+    use crate::exit::CommonExit;
+    use crate::types::MpState;
+    use std::fmt::Write as _;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    #[ignore = "live x86 KVM snapshot preparation; requires /dev/kvm"]
+    fn snapshot_preparation_preserves_state_except_raw_presence() {
+        check_snapshot_preparation(false);
+    }
+
+    #[test]
+    #[ignore = "raw XSAVE presence characterization; requires /dev/kvm"]
+    fn snapshot_preparation_raw_presence_stability() {
+        check_snapshot_preparation(true);
+    }
+
+    fn check_snapshot_preparation(require_raw_stability: bool) {
+        let mut raw_stable = true;
+        for restore_bv in [0, 2, 3] {
+            let mut ram = MmapRam::new(RAM_LEN).unwrap();
+            ram.as_mut_bytes()[CODE_GPA] = 0xf4;
+            let mut backend = KvmBackend::new().unwrap();
+            // SAFETY: the aligned owned RAM mapping outlives the backend and remains fixed during entry.
+            unsafe { backend.map_memory(Gpa(0), ram.as_mut_bytes()).unwrap() };
+            backend.set_policy(&diagnostic_policy()).unwrap();
+            let mut state = backend.save().unwrap();
+            state.regs.rip = CODE_GPA as u64;
+            state.regs.rflags = 2 | (1 << 16);
+            state.sregs.cs.base = 0;
+            state.sregs.cs.selector = 0;
+            state.sregs.cr4 |= (1 << 9) | (1 << 18);
+            state.sregs.cr8 = 7;
+            state.xcr0 = 3;
+            state.xsave_restore_bv = Some(restore_bv);
+            backend.restore(&state).unwrap();
+            backend.pending_irq = Some(0x40);
+            let before = backend.save().unwrap();
+            let memory = ram.as_mut_bytes().to_vec();
+            let counts = backend.exit_counts();
+            let readiness = backend.readiness_current;
+            let mut after = before.clone();
+            for preparation in 1..=2 {
+                backend.prepare_snapshot().unwrap();
+                let observed = backend.save().unwrap();
+                println!(
+                    "SNAPSHOT_PREPARATION seed_bv={restore_bv} preparation={preparation} raw_before={:?} raw_after={:?}",
+                    after.xsave_restore_bv, observed.xsave_restore_bv
+                );
+                if preparation == 2 {
+                    raw_stable &= observed.xsave_restore_bv == after.xsave_restore_bv;
+                }
+                let mut without_presence_change = observed.clone();
+                without_presence_change.xsave_restore_bv = before.xsave_restore_bv;
+                assert_eq!(without_presence_change, before);
+                assert_eq!(ram.as_mut_bytes(), memory);
+                assert_eq!(backend.exit_counts(), counts);
+                assert_eq!(backend.pending_irq, Some(0x40));
+                assert_eq!(backend.readiness_current, readiness);
+                assert_eq!(backend.pending, Pending::None);
+                assert!(!backend.completion_staged);
+                assert!(backend.completion_exit.is_none());
+                assert_eq!(observed.sregs.cr8, 7);
+                println!(
+                    "SNAPSHOT_PREPARATION seed_bv={restore_bv} preparation={preparation} cpu_equal_except_raw_presence=true ram_equal=true counts_equal=true readiness_equal=true pending_equal=true"
+                );
+                after = observed;
+            }
+
+            backend.pending = Pending::IoIn {
+                data_offset: 0,
+                size: 1,
+            };
+            assert!(matches!(
+                backend.prepare_snapshot(),
+                Err(BackendError::PendingCompletion)
+            ));
+            assert_eq!(backend.save().unwrap(), after);
+            backend.pending = Pending::None;
+            backend.completion_staged = true;
+            assert!(matches!(
+                backend.prepare_snapshot(),
+                Err(BackendError::PendingCompletion)
+            ));
+            assert_eq!(backend.save().unwrap(), after);
+            backend.completion_staged = false;
+            backend.pending_irq = None;
+            assert!(matches!(
+                backend.run().unwrap(),
+                Exit::Common(CommonExit::Idle)
+            ));
+            let continued = backend.save().unwrap();
+            println!(
+                "SNAPSHOT_PREPARATION_HLT seed_bv={restore_bv} raw_before={:?} raw_after={:?}",
+                after.xsave_restore_bv, continued.xsave_restore_bv
+            );
+            raw_stable &= continued.xsave_restore_bv == after.xsave_restore_bv;
+            assert_eq!(continued.xsave, after.xsave);
+        }
+        if require_raw_stability {
+            assert!(
+                raw_stable,
+                "raw XSAVE presence changed after repeated preparation or guest HLT; see retained transitions"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "native KVM restore boundary guards; requires /dev/kvm"]
+    fn snapshot_restore_rejects_each_pending_state_without_mutation() {
+        let mut backend = KvmBackend::new().unwrap();
+        backend.set_policy(&diagnostic_policy()).unwrap();
+        let before = backend.save().unwrap();
+        let mut replacement = before.clone();
+        replacement.regs.rip ^= 0x100;
+        let cases = [
+            (
+                Pending::IoIn {
+                    data_offset: 0,
+                    size: 1,
+                },
+                false,
+                false,
+            ),
+            (Pending::MmioLoad { len: 4 }, false, false),
+            (Pending::Rdmsr, false, false),
+            (Pending::Wrmsr, false, false),
+            (Pending::None, true, false),
+            (Pending::None, false, true),
+        ];
+        for (pending, staged, queued) in cases {
+            backend.pending = pending;
+            backend.completion_staged = staged;
+            backend.completion_exit = queued.then_some(Exit::Common(CommonExit::Idle));
+            backend.pending_irq = Some(0x40);
+            let counts = backend.exit_counts();
+            let readiness = backend.readiness_current;
+            let queued_before = format!("{:?}", backend.completion_exit);
+            assert_eq!(backend.save().unwrap(), before);
+            assert!(matches!(
+                backend.restore(&replacement),
+                Err(BackendError::PendingCompletion)
+            ));
+            assert!(matches!(
+                backend.prepare_snapshot(),
+                Err(BackendError::PendingCompletion)
+            ));
+            assert_eq!(backend.pending, pending);
+            assert_eq!(backend.completion_staged, staged);
+            assert_eq!(format!("{:?}", backend.completion_exit), queued_before);
+            assert_eq!(backend.pending_irq, Some(0x40));
+            assert_eq!(backend.exit_counts(), counts);
+            assert_eq!(backend.readiness_current, readiness);
+            backend.pending = Pending::None;
+            backend.completion_staged = false;
+            backend.completion_exit = None;
+            assert_eq!(backend.save().unwrap(), before);
+        }
+        backend.restore(&replacement).unwrap();
+        assert_eq!(backend.save().unwrap(), replacement);
+    }
+
+    struct EntryFixture {
+        backend: KvmBackend,
+        ram: MmapRam,
+    }
+
+    fn prefault_entry_memory(backend: &mut KvmBackend, size: usize) {
+        assert!(
+            backend
+                .vm
+                .check_extension_raw(kvm_bindings::KVM_CAP_PRE_FAULT_MEMORY.into())
+                > 0,
+            "XSAVE_PREFAULT_UNSUPPORTED capability=KVM_CAP_PRE_FAULT_MEMORY"
+        );
+        let mut range = kvm_bindings::kvm_pre_fault_memory {
+            gpa: 0,
+            size: size as u64,
+            ..Default::default()
+        };
+        let request = ioc(
+            3,
+            0xae,
+            0xd5,
+            size_of::<kvm_bindings::kvm_pre_fault_memory>() as u64,
+        );
+        while range.size != 0 {
+            let remaining = range.size;
+            // SAFETY: the live vCPU fd receives the matching ioctl's initialized, writable ABI struct, which remains valid for the call.
+            let result = unsafe {
+                libc::ioctl(
+                    backend.vcpu.as_raw_fd(),
+                    request as libc::c_ulong,
+                    &mut range,
+                )
+            };
+            if result < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                if error.raw_os_error() == Some(libc::EOPNOTSUPP) {
+                    panic!("XSAVE_PREFAULT_UNSUPPORTED vcpu_mode error={error}");
+                }
+                panic!(
+                    "XSAVE_PREFAULT_FAILED gpa={} remaining={} error={error}",
+                    range.gpa, range.size
+                );
+            }
+            assert!(range.size < remaining, "XSAVE_PREFAULT_FAILED no progress");
+            assert_eq!(range.gpa + range.size, size as u64);
+        }
+        println!("XSAVE_PREFAULT_COMPLETE bytes={size} guest_instructions=0");
+    }
+
+    fn entry_fixture(program: &[u8], seed: u64, xcr0: u64) -> EntryFixture {
+        let long_mode = std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some();
+        let mut ram = MmapRam::new(RAM_LEN * 2).unwrap();
+        if std::env::var_os("XSAVE_ENTRY_PREFAULT").is_some() {
+            for byte in ram.as_mut_bytes().iter_mut().step_by(4096) {
+                // SAFETY: each byte is a valid exclusive reference into the live RAM mapping; volatile writes materialize host pages before read-prefaulting them.
+                unsafe { std::ptr::write_volatile(byte, 0) };
+            }
+        }
+        ram.as_mut_bytes()[CODE_GPA..CODE_GPA + program.len()].copy_from_slice(program);
+        ram.as_mut_bytes()[GUEST_XRSTOR_GPA + 24..GUEST_XRSTOR_GPA + 28]
+            .copy_from_slice(&0x1f80u32.to_le_bytes());
+        let mut backend = KvmBackend::new().unwrap();
+        if std::env::var_os("XSAVE_ENTRY_PREFAULT").is_some() {
+            backend.set_dirty_log_enabled(false);
+        }
+        // SAFETY: the owned aligned RAM mapping stays fixed and outlives the backend in EntryFixture.
+        unsafe { backend.map_memory(Gpa(0), ram.as_mut_bytes()).unwrap() };
+        backend.set_policy(&diagnostic_policy()).unwrap();
+        let mut state = backend.save().unwrap();
+        state.regs.rip = CODE_GPA as u64;
+        state.regs.rflags = 2 | (1 << 16);
+        state.sregs.cs.base = 0;
+        state.sregs.cs.selector = 0;
+        state.sregs.ds.base = 0;
+        state.sregs.ds.selector = 0;
+        state.sregs.cr0 &= !((1 << 2) | (1 << 3));
+        state.sregs.cr4 |= (1 << 9) | (1 << 18);
+        state.sregs.cr8 = 7;
+        if long_mode {
+            for (address, entry) in [(0x4000, 0x5003u64), (0x5000, 0x6003), (0x6000, 0x83)] {
+                ram.as_mut_bytes()[address..address + 8].copy_from_slice(&entry.to_le_bytes());
+            }
+            state.sregs.cr0 |= (1 << 31) | 1;
+            state.sregs.cr4 |= 1 << 5;
+            state.sregs.cr3 = 0x4000;
+            state.sregs.efer |= (1 << 8) | (1 << 10);
+            state.sregs.cs.selector = 8;
+            state.sregs.cs.l = 1;
+            state.sregs.cs.db = 0;
+            state.sregs.cs.type_ = 11;
+            state.sregs.cs.s = 1;
+            state.sregs.cs.present = 1;
+            state.sregs.cs.limit = u32::MAX;
+            state.sregs.cs.g = 1;
+        }
+        state.xcr0 = xcr0;
+        state.xsave_restore_bv = Some(seed);
+        backend.restore(&state).unwrap();
+        if std::env::var_os("XSAVE_ENTRY_PREFAULT").is_some() {
+            assert!(
+                std::env::var_os("XSAVE_ENTRY_WARMUP").is_none(),
+                "prefault control must not execute guest warmup"
+            );
+            prefault_entry_memory(&mut backend, RAM_LEN * 2);
+        }
+        if std::env::var_os("XSAVE_ENTRY_WARMUP").is_some() {
+            let initial_ram = ram.as_mut_bytes().to_vec();
+            let warmup = entry_program("xrstor", xcr0);
+            ram.as_mut_bytes()[CODE_GPA..CODE_GPA + warmup.len()].copy_from_slice(&warmup);
+            assert!(matches!(
+                backend.run().unwrap(),
+                Exit::Common(CommonExit::Idle)
+            ));
+            ram.as_mut_bytes().copy_from_slice(&initial_ram);
+            backend.restore(&state).unwrap();
+            backend.reset_exit_counts();
+        }
+        EntryFixture { backend, ram }
+    }
+
+    fn entry_program(mode: &str, xcr0: u64) -> Vec<u8> {
+        if mode == "hlt" {
+            return vec![0xf4];
+        }
+        if std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some() {
+            let mut program = vec![0xb8];
+            program.extend_from_slice(&(xcr0 as u32).to_le_bytes());
+            program.extend_from_slice(&[0x31, 0xd2]);
+            if mode == "xrstor" {
+                program.extend_from_slice(&[0x48, 0x0f, 0xae, 0x2c, 0x25]);
+                program.extend_from_slice(&(GUEST_XRSTOR_GPA as u32).to_le_bytes());
+            }
+            program.extend_from_slice(&[0x48, 0x0f, 0xae, 0x24, 0x25]);
+            program.extend_from_slice(&(GUEST_XSAVE_GPA as u32).to_le_bytes());
+            program.push(0xf4);
+            return program;
+        }
+        let mut program = vec![0x66, 0xb8];
+        program.extend_from_slice(&(xcr0 as u32).to_le_bytes());
+        program.extend_from_slice(&[0x66, 0x31, 0xd2]);
+        if mode == "xrstor" {
+            program.extend_from_slice(&[0x67, 0x0f, 0xae, 0x2d]);
+            program.extend_from_slice(&(GUEST_XRSTOR_GPA as u32).to_le_bytes());
+        }
+        program.extend_from_slice(&[0x67, 0x0f, 0xae, 0x25]);
+        program.extend_from_slice(&(GUEST_XSAVE_GPA as u32).to_le_bytes());
+        program.push(0xf4);
+        program
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct EntryEndpoint {
+        state: VcpuState,
+        ram: Vec<u8>,
+        exits: ExitCounts,
+    }
+
+    fn retain_entry(fixture: &mut EntryFixture, directory: &Path, phase: &str) -> EntryEndpoint {
+        let state = fixture.backend.save().unwrap();
+        let path = directory.join(phase);
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("state.txt"), format!("{state:#?}")).unwrap();
+        let length = fixture.backend.xsave2_size.expect("XSAVE2 required");
+        // SAFETY: the fixture owns a stopped vCPU and the ioctl allocates its capability-sized buffer.
+        let raw = unsafe { raw_get_xsave2(fixture.backend.vcpu.as_raw_fd(), length).unwrap() };
+        write_image(&path, "raw-xsave.bin", &raw);
+        write_image(&path, "ram.bin", fixture.ram.as_mut_bytes());
+        EntryEndpoint {
+            state,
+            ram: fixture.ram.as_mut_bytes().to_vec(),
+            exits: fixture.backend.exit_counts(),
+        }
+    }
+
+    fn entry_endpoint(fixture: &mut EntryFixture, directory: &Path, phase: &str) -> EntryEndpoint {
+        if let Some(path) = std::env::var_os("XSAVE_TRACE_MARKER") {
+            fs::write(path, format!("XSAVE_PHASE_BEGIN {phase}\n")).unwrap();
+        }
+        fixture.backend.reset_exit_counts();
+        assert!(matches!(
+            fixture.backend.run().unwrap(),
+            Exit::Common(CommonExit::Idle)
+        ));
+        if let Some(path) = std::env::var_os("XSAVE_TRACE_MARKER") {
+            fs::write(path, format!("XSAVE_PHASE_END {phase}\n")).unwrap();
+        }
+        retain_entry(fixture, directory, phase)
+    }
+
+    fn restore_entry(fixture: &mut EntryFixture, saved: &EntryEndpoint) {
+        fixture.ram.as_mut_bytes().copy_from_slice(&saved.ram);
+        fixture.backend.restore(&saved.state).unwrap();
+        fixture.backend.prepare_snapshot().unwrap();
+        fixture.backend.reset_exit_counts();
+    }
+
+    #[test]
+    #[ignore = "requires Linux KVM with AVX and a fresh XSAVE_MXCSR_REPORT_DIR"]
+    fn ymm_without_sse_uabi_mxcsr_bytes_survive_capture_and_restore() {
+        assert!(std::env::var_os("XSAVE_ENTRY_WARMUP").is_none());
+        let root =
+            PathBuf::from(std::env::var_os("XSAVE_MXCSR_REPORT_DIR").expect("report directory"));
+        fs::create_dir(&root).unwrap();
+        let program = if std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some() {
+            [0x0f, 0xae, 0x1c, 0x25, 0x00, 0x20, 0x00, 0x00, 0xf4]
+        } else {
+            [0x67, 0x0f, 0xae, 0x1d, 0x00, 0x20, 0x00, 0x00, 0xf4]
+        };
+        let mut original = entry_fixture(&program, 0, 7);
+        let mut state = original.backend.save().unwrap();
+        state.xsave[XSTATE_BV].copy_from_slice(&4u64.to_le_bytes());
+        state.xsave[SSE_MXCSR].copy_from_slice(&0x3f80u32.to_le_bytes());
+        state.xsave[576] = 0x5a;
+        state.xsave_restore_bv = Some(4);
+        original.backend.restore(&state).unwrap();
+        let saved = retain_entry(&mut original, &root, "captured");
+        assert_eq!(saved.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
+        let continued = entry_endpoint(&mut original, &root, "continued");
+        let mut cold = entry_fixture(&program, 0, 7);
+        restore_entry(&mut cold, &saved);
+        let restored = entry_endpoint(&mut cold, &root, "restored");
+        assert_eq!(restored.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
+        assert_eq!(continued.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
+        fs::write(
+            root.join("guest-mxcsr.txt"),
+            format!(
+                "continued={:02x?} restored={:02x?}\n",
+                &continued.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + 4],
+                &restored.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + 4]
+            ),
+        )
+        .unwrap();
+        assert_eq!(continued.ram, restored.ram);
+    }
+
+    #[test]
+    #[ignore = "requires Linux KVM AVX, long mode and a fresh XSAVE_MXCSR_REPORT_DIR"]
+    fn natural_avx_mxcsr_survives_capture_and_restore() {
+        assert!(std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some());
+        assert!(std::env::var_os("XSAVE_ENTRY_WARMUP").is_none());
+        let root =
+            PathBuf::from(std::env::var_os("XSAVE_MXCSR_REPORT_DIR").expect("report directory"));
+        fs::create_dir(&root).unwrap();
+        let program = [
+            0xc5, 0xfd, 0x76, 0xc0, 0xc5, 0xf0, 0x57, 0xc9, 0xc4, 0xe3, 0x7d, 0x18, 0xc1, 0x00,
+            0x0f, 0xae, 0x14, 0x25, 0x1c, 0x30, 0x00, 0x00, 0xe6, 0x80, 0x0f, 0xae, 0x1c, 0x25,
+            0x00, 0x20, 0x00, 0x00, 0xf4,
+        ];
+        let mut original = entry_fixture(&program, 0, 7);
+        original.ram.as_mut_bytes()[0x301c..0x3020].copy_from_slice(&0x3f80u32.to_le_bytes());
+        let exit = original.backend.run().unwrap();
+        assert!(matches!(
+            exit,
+            Exit::Arch(X86Exit::Io {
+                port: 0x80,
+                size: 1,
+                write: Some(0),
+            })
+        ));
+        original.backend.prepare_snapshot().unwrap();
+        let saved = retain_entry(&mut original, &root, "captured");
+        assert_eq!(saved.state.regs.rip, CODE_GPA as u64 + 24);
+        assert_eq!(saved.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
+        let continued = entry_endpoint(&mut original, &root, "continued");
+        let mut cold = entry_fixture(&program, 0, 7);
+        restore_entry(&mut cold, &saved);
+        let restored = entry_endpoint(&mut cold, &root, "restored");
+        for endpoint in [&continued, &restored] {
+            assert_eq!(
+                endpoint.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + 4],
+                0x3f80u32.to_le_bytes()
+            );
+        }
+        assert_eq!(continued.ram, restored.ram);
+    }
+
+    #[test]
+    #[ignore = "bounded raw XSAVE entry differential; KVM and XSAVE_ENTRY_REPORT_DIR required"]
+    fn snapshot_entry_restores_match_uninterrupted_execution() {
+        check_entry_restores(false);
+    }
+
+    #[test]
+    #[ignore = "canonicalized raw-entry witness; KVM, long mode and XSAVE_ENTRY_REPORT_DIR required"]
+    fn snapshot_canonical_entry_restores_match_uninterrupted_execution() {
+        assert!(std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some());
+        assert!(std::env::var_os("XSAVE_ENTRY_WARMUP").is_none());
+        check_entry_restores(true);
+    }
+
+    fn check_entry_restores(canonical: bool) {
+        let root = PathBuf::from(
+            std::env::var_os("XSAVE_ENTRY_REPORT_DIR").expect("report directory required"),
+        );
+        fs::create_dir(&root).unwrap();
+        let mut failures = Vec::new();
+        let selected = std::env::var("XSAVE_ENTRY_CASE").ok();
+        if let Some(selected) = &selected {
+            assert!(
+                [3, 7]
+                    .into_iter()
+                    .any(
+                        |xcr0| [0, 2, 3].into_iter().any(|seed| ["hlt", "xsave", "xrstor"]
+                            .into_iter()
+                            .any(|mode| *selected == format!("xcr{xcr0}-seed{seed}-{mode}")))
+                    )
+            );
+        }
+        for xcr0 in [3, 7] {
+            for seed in [0, 2, 3] {
+                for mode in ["hlt", "xsave", "xrstor"] {
+                    if canonical && mode == "hlt" {
+                        continue;
+                    }
+                    let label = format!("xcr{xcr0}-seed{seed}-{mode}");
+                    if selected.as_ref().is_some_and(|selected| selected != &label) {
+                        continue;
+                    }
+                    let directory = root.join(&label);
+                    fs::create_dir(&directory).unwrap();
+                    let mut program = entry_program(mode, xcr0);
+                    if canonical {
+                        canonical::append_canonicalization(&mut program);
+                    }
+                    fs::write(directory.join("guest-program.bin"), &program).unwrap();
+                    let mut reference = entry_fixture(&program, seed, xcr0);
+                    reference.backend.prepare_snapshot().unwrap();
+                    let initial = retain_entry(&mut reference, &directory, "initial");
+                    let expected = entry_endpoint(&mut reference, &directory, "reference");
+                    let mut source = entry_fixture(&program, seed, xcr0);
+                    source.backend.prepare_snapshot().unwrap();
+                    let saved = retain_entry(&mut source, &directory, "captured");
+                    let repeated = retain_entry(&mut source, &directory, "repeated");
+                    let continued = entry_endpoint(&mut source, &directory, "continued");
+                    let mut cold = entry_fixture(&program, seed, xcr0);
+                    restore_entry(&mut cold, &saved);
+                    let cold_initial = retain_entry(&mut cold, &directory, "cold-initial");
+                    let cold_endpoint = entry_endpoint(&mut cold, &directory, "cold");
+                    let mut poison = saved.state.clone();
+                    poison.regs.rbx ^= 1;
+                    poison.xsave[SSE_XMM0].copy_from_slice(&ACTIVE_XMM0);
+                    let canonical_bv = header(&poison.xsave).0 | 2;
+                    poison.xsave[XSTATE_BV].copy_from_slice(&canonical_bv.to_le_bytes());
+                    poison.xsave_restore_bv = Some(poison.xsave_restore_bv.unwrap() | 2);
+                    source.backend.restore(&poison).unwrap();
+                    if canonical {
+                        source.ram.as_mut_bytes()[0x3f00] ^= 1;
+                    }
+                    let negative = entry_endpoint(&mut source, &directory, "negative");
+                    restore_entry(&mut source, &saved);
+                    let reused_initial = retain_entry(&mut source, &directory, "reused-initial");
+                    let reused = entry_endpoint(&mut source, &directory, "reused");
+                    let checks = [
+                        ("independent-initial", initial == saved),
+                        ("repeated-capture", saved == repeated),
+                        ("captured-continuation", expected == continued),
+                        ("cold-initial", saved == cold_initial),
+                        ("cold-continuation", expected == cold_endpoint),
+                        ("negative-detected", expected != negative),
+                        (
+                            "negative-guest-output-detected",
+                            mode != "xsave"
+                                || expected.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN]
+                                    != negative.ram
+                                        [GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN],
+                        ),
+                        ("reused-initial", saved == reused_initial),
+                        ("reused-continuation", expected == reused),
+                    ];
+                    let mut report = format!(
+                        "label={label}\ncanonical={canonical}\ninitial_bv={:?}\nendpoint_bv={:?}\n",
+                        initial.state.xsave_restore_bv, expected.state.xsave_restore_bv
+                    );
+                    if mode != "hlt" {
+                        writeln!(
+                            report,
+                            "guest_bv={}",
+                            header(
+                                &expected.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN]
+                            )
+                            .0
+                        )
+                        .unwrap();
+                    }
+                    for (check, passed) in checks {
+                        writeln!(report, "{check}={passed}").unwrap();
+                        if !passed {
+                            failures.push(format!("{label}: {check}"));
+                        }
+                    }
+                    fs::write(directory.join("report.txt"), &report).unwrap();
+                    println!("{report}");
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "entry differential failures: {failures:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "hardware debug exit differential; KVM and XSAVE_REENTRY_REPORT_DIR required"]
+    fn snapshot_entry_debug_reentry_preserves_guest_observation() {
+        let root = PathBuf::from(
+            std::env::var_os("XSAVE_REENTRY_REPORT_DIR").expect("report directory required"),
+        );
+        fs::create_dir(&root).unwrap();
+        let mut failures = Vec::new();
+        for xcr0 in [3, 7] {
+            for seed in [0, 2, 3] {
+                let label = format!("xcr{xcr0}-seed{seed}");
+                let directory = root.join(&label);
+                fs::create_dir(&directory).unwrap();
+                let program = entry_program("xrstor", xcr0);
+                let stop_rip = CODE_GPA
+                    + if std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some() {
+                        16
+                    } else {
+                        17
+                    };
+                let mut reference = entry_fixture(&program, seed, xcr0);
+                reference.backend.prepare_snapshot().unwrap();
+                let expected = entry_endpoint(&mut reference, &directory, "reference");
+                let mut interrupted = entry_fixture(&program, seed, xcr0);
+                interrupted.backend.prepare_snapshot().unwrap();
+                let mut debug = kvm_bindings::kvm_guest_debug {
+                    control: kvm_bindings::KVM_GUESTDBG_ENABLE
+                        | kvm_bindings::KVM_GUESTDBG_USE_HW_BP,
+                    ..Default::default()
+                };
+                debug.arch.debugreg[0] = stop_rip as u64;
+                debug.arch.debugreg[7] = 0x401;
+                interrupted.backend.vcpu.set_guest_debug(&debug).unwrap();
+                // SAFETY: the fixture owns the live vCPU and run mapping; the debug exit is read only after ioctl return.
+                assert_eq!(
+                    unsafe { raw_kvm_run(interrupted.backend.vcpu.as_raw_fd()) },
+                    0
+                );
+                // SAFETY: the stopped vCPU's mapped run page is live and the exit reason is initialized by KVM_RUN.
+                let reason = unsafe { (*interrupted.backend.run).exit_reason };
+                assert_eq!(reason, kvm_bindings::KVM_EXIT_DEBUG);
+                let stopped = retain_entry(&mut interrupted, &directory, "debug-stop");
+                assert_eq!(stopped.state.regs.rip, stop_rip as u64);
+                assert!(
+                    stopped.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN]
+                        .iter()
+                        .all(|byte| *byte == 0)
+                );
+                interrupted
+                    .backend
+                    .vcpu
+                    .set_guest_debug(&Default::default())
+                    .unwrap();
+                let actual = entry_endpoint(&mut interrupted, &directory, "resumed");
+                let report = format!(
+                    "label={label}\nreference_guest_bv={}\nresumed_guest_bv={}\ncomplete_endpoint_equal={}\nram_equal={}\nstate_equal={}\n",
+                    header(&expected.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN]).0,
+                    header(&actual.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN]).0,
+                    expected == actual,
+                    expected.ram == actual.ram,
+                    expected.state == actual.state
+                );
+                fs::write(directory.join("report.txt"), &report).unwrap();
+                println!("{report}");
+                if expected != actual {
+                    failures.push(label);
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "debug reentry differences: {failures:?}"
+        );
+    }
+
+    #[cfg(not(miri))]
+    mod canonical {
+        use super::*;
+        core::arch::global_asm!(include_str!("xsave_canonical_guest.S"));
+
+        unsafe extern "C" {
+            static harmony_xsave_canonical_start: u8;
+            static harmony_xsave_canonical_standard: u8;
+            static harmony_xsave_canonical_compacted: u8;
+            static harmony_xsave_canonical_saved: u8;
+            static harmony_xsave_canonical_padding: u8;
+            static harmony_xsave_canonical_end: u8;
+        }
+
+        fn canonical_guest() -> (&'static [u8], [usize; 4]) {
+            let start = std::ptr::addr_of!(harmony_xsave_canonical_start) as usize;
+            let end = std::ptr::addr_of!(harmony_xsave_canonical_end) as usize;
+            assert!(end > start && end - start < GUEST_XSAVE_GPA - CODE_GPA);
+            // SAFETY: the assembly labels delimit one immutable linked text blob; no host execution or relocation is required.
+            let program = unsafe { std::slice::from_raw_parts(start as *const u8, end - start) };
+            let stops = [
+                std::ptr::addr_of!(harmony_xsave_canonical_standard) as usize,
+                std::ptr::addr_of!(harmony_xsave_canonical_compacted) as usize,
+                std::ptr::addr_of!(harmony_xsave_canonical_saved) as usize,
+                std::ptr::addr_of!(harmony_xsave_canonical_padding) as usize,
+            ]
+            .map(|address| CODE_GPA + address - start);
+            (program, stops)
+        }
+
+        pub(super) fn append_canonicalization(program: &mut Vec<u8>) {
+            assert_eq!(program.pop(), Some(0xf4));
+            let (canonical, stops) = canonical_guest();
+            program.extend_from_slice(&[0x41, 0xbd, 1, 0, 0, 0, 0x45, 0x31, 0xf6]);
+            program.extend_from_slice(&canonical[stops[2] - CODE_GPA..]);
+            assert!(program.len() < GUEST_XSAVE_GPA - CODE_GPA);
+        }
+
+        fn canonical_fixture(mode: u64, compacted: bool, canonical: bool) -> EntryFixture {
+            let (program, _) = canonical_guest();
+            let mut fixture = entry_fixture(program, 0, 7);
+            let mut policy = diagnostic_policy();
+            policy
+                .cpuid
+                .entries
+                .iter_mut()
+                .find(|entry| entry.leaf == 0xd && entry.subleaf == 1)
+                .unwrap()
+                .eax = 2;
+            fixture.backend.install_cpuid(&policy.cpuid).unwrap();
+            fixture.ram.as_mut_bytes()[GUEST_XRSTOR_GPA + 28..GUEST_XRSTOR_GPA + 32]
+                .copy_from_slice(&0x3f80u32.to_le_bytes());
+            let mut state = fixture.backend.save().unwrap();
+            state.regs.r12 = mode;
+            state.regs.r13 = u64::from(canonical);
+            state.regs.r14 = u64::from(compacted);
+            fixture.backend.restore(&state).unwrap();
+            fixture.backend.prepare_snapshot().unwrap();
+            fixture
+        }
+
+        fn canonical_expected(mode: u64, compacted: bool) -> Vec<u8> {
+            let mut image = vec![0; GUEST_XSAVE_LEN];
+            image[0..2].copy_from_slice(&0x37fu16.to_le_bytes());
+            image[SSE_MXCSR]
+                .copy_from_slice(&if mode == 3 { 0x3f80u32 } else { 0x1f80u32 }.to_le_bytes());
+            image[SSE_MXCSR_MASK].copy_from_slice(&0xffffu32.to_le_bytes());
+            let mut bv = 0u64;
+            if matches!(mode, 1 | 2) {
+                image[SSE_XMM0].fill(0xff);
+                bv |= 2;
+            }
+            if mode == 2 {
+                image[576..592].fill(0xff);
+                bv |= 4;
+            }
+            image[XSTATE_BV].copy_from_slice(&bv.to_le_bytes());
+            image[XCOMP_BV]
+                .copy_from_slice(&if compacted { (1u64 << 63) | 7 } else { 0 }.to_le_bytes());
+            image
+        }
+
+        fn canonical_debug_stop(fixture: &mut EntryFixture, rip: usize) {
+            let mut debug = kvm_bindings::kvm_guest_debug {
+                control: kvm_bindings::KVM_GUESTDBG_ENABLE | kvm_bindings::KVM_GUESTDBG_USE_HW_BP,
+                ..Default::default()
+            };
+            debug.arch.debugreg[0] = rip as u64;
+            debug.arch.debugreg[7] = 0x401;
+            fixture.backend.vcpu.set_guest_debug(&debug).unwrap();
+            // SAFETY: the fixture exclusively owns the live vCPU and its run mapping throughout this synchronous ioctl.
+            assert_eq!(unsafe { raw_kvm_run(fixture.backend.vcpu.as_raw_fd()) }, 0);
+            // SAFETY: KVM_RUN initialized the exit reason in the still-live run mapping before returning.
+            assert_eq!(
+                unsafe { (*fixture.backend.run).exit_reason },
+                kvm_bindings::KVM_EXIT_DEBUG
+            );
+            assert_eq!(fixture.backend.vcpu.get_regs().unwrap().rip, rip as u64);
+            fixture
+                .backend
+                .vcpu
+                .set_guest_debug(&Default::default())
+                .unwrap();
+        }
+
+        #[test]
+        #[ignore = "D3 whole-buffer guest canonicalization; fixed-CPU KVM, long mode and XSAVE_CANONICAL_REPORT_DIR required"]
+        fn snapshot_guest_canonicalization_preserves_complete_endpoints() {
+            assert!(std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some());
+            assert!(std::env::var_os("XSAVE_ENTRY_WARMUP").is_none());
+            let root = PathBuf::from(
+                std::env::var_os("XSAVE_CANONICAL_REPORT_DIR").expect("report directory required"),
+            );
+            fs::create_dir(&root).unwrap();
+            let supported = Kvm::new()
+                .unwrap()
+                .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+                .unwrap();
+            assert!(
+                supported
+                    .as_slice()
+                    .iter()
+                    .any(|entry| entry.function == 1 && entry.ecx & (1 << 28) != 0),
+                "D3 unsupported host: AVX required"
+            );
+            assert!(
+                supported
+                    .as_slice()
+                    .iter()
+                    .any(|entry| entry.function == 0xd && entry.index == 1 && entry.eax & 2 != 0),
+                "D3 unsupported host: XSAVEC required"
+            );
+            fs::write(
+                root.join("host-supported-cpuid.txt"),
+                format!("{supported:#?}"),
+            )
+            .unwrap();
+            let (program, stops) = canonical_guest();
+            fs::write(root.join("guest-program.bin"), program).unwrap();
+            fs::write(root.join("guest-stops.txt"), format!("{stops:#x?}\n")).unwrap();
+            let mut failures = Vec::new();
+            let mut raw_divergences = 0;
+            for compacted in [false, true] {
+                for mode in 0..4 {
+                    for canonical in [false, true] {
+                        let label = format!("compacted{compacted}-mode{mode}-canonical{canonical}");
+                        let directory = root.join(&label);
+                        fs::create_dir(&directory).unwrap();
+                        let mut reference = canonical_fixture(mode, compacted, canonical);
+                        let expected = entry_endpoint(&mut reference, &directory, "reference");
+                        let mut source = canonical_fixture(mode, compacted, canonical);
+                        let saved = retain_entry(&mut source, &directory, "capture");
+                        let continued = entry_endpoint(&mut source, &directory, "continued");
+                        let mut cold = canonical_fixture(mode, compacted, canonical);
+                        restore_entry(&mut cold, &saved);
+                        let cold_endpoint = entry_endpoint(&mut cold, &directory, "cold");
+                        let mut poison = saved.state.clone();
+                        poison.regs.r12 = if mode == 2 { 0 } else { 2 };
+                        source.backend.restore(&poison).unwrap();
+                        let poisoned = entry_endpoint(&mut source, &directory, "poisoned");
+                        assert_ne!(expected.ram, poisoned.ram);
+                        restore_entry(&mut source, &saved);
+                        let reused = entry_endpoint(&mut source, &directory, "reused");
+                        let mut report = String::new();
+                        let mut endpoints = vec![
+                            ("continued".to_string(), continued),
+                            ("cold".to_string(), cold_endpoint),
+                            ("reused".to_string(), reused),
+                        ];
+                        for (name, rip) in [
+                            ("before-save", stops[usize::from(compacted)]),
+                            ("after-save", stops[2]),
+                            ("padding", stops[3]),
+                        ] {
+                            if name == "padding" && !canonical {
+                                continue;
+                            }
+                            let mut interrupted = canonical_fixture(mode, compacted, canonical);
+                            canonical_debug_stop(&mut interrupted, rip);
+                            let actual = entry_endpoint(&mut interrupted, &directory, name);
+                            endpoints.push((name.to_string(), actual));
+                        }
+                        for (name, actual) in endpoints {
+                            let equal = expected == actual;
+                            let ram_equal = expected.ram == actual.ram;
+                            let state_equal = expected.state == actual.state;
+                            writeln!(report, "{name}: endpoint_equal={equal} ram_equal={ram_equal} state_equal={state_equal}").unwrap();
+                            if canonical && !equal {
+                                failures.push(format!("{label}/{name}"));
+                            }
+                            if !canonical && !ram_equal {
+                                raw_divergences += 1;
+                            }
+                        }
+                        if canonical {
+                            let actual =
+                                &expected.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN];
+                            let materialized = canonical_expected(mode, compacted);
+                            fs::write(directory.join("expected-image.bin"), &materialized).unwrap();
+                            let correct = actual == materialized;
+                            writeln!(report, "whole_buffer_expected={correct}").unwrap();
+                            if !correct {
+                                failures.push(format!("{label}/whole-buffer-values"));
+                            }
+                        }
+                        fs::write(directory.join("report.txt"), &report).unwrap();
+                        println!("D3 {label}\n{report}");
+                    }
+                }
+            }
+            println!("D3 raw_negative_control_ram_divergences={raw_divergences}");
+            fs::write(root.join("summary.txt"), format!("raw_negative_control_ram_divergences={raw_divergences}\ncanonical_failures={failures:?}\n")).unwrap();
+            assert!(failures.is_empty(), "D3 canonical failures: {failures:?}");
+        }
+    }
+
+    const RAM_LEN: usize = 0x4000;
+    const CODE_GPA: usize = 0x1000;
+    const MMIO_GPA: u64 = 0xFEE0_0080;
+    const MMIO_VALUE: u8 = 5;
+    const XSTATE_BV: std::ops::Range<usize> = 512..520;
+    const XCOMP_BV: std::ops::Range<usize> = 520..528;
+    const SSE_MXCSR: std::ops::Range<usize> = 24..28;
+    const SSE_MXCSR_MASK: std::ops::Range<usize> = 28..32;
+    const SSE_XMM0: std::ops::Range<usize> = 160..176;
+    const GUEST_XSAVE_GPA: usize = 0x2000;
+    const GUEST_XRSTOR_GPA: usize = 0x3000;
+    const GUEST_XSAVE_PAGE_LEN: usize = 0x1000;
+    const GUEST_XSAVE_LEN: usize = 0x340;
+    const X87_FCW: std::ops::Range<usize> = 0..2;
+    const X87_FSW: std::ops::Range<usize> = 2..4;
+    const X87_FTW: std::ops::Range<usize> = 4..5;
+    const X87_ST: std::ops::Range<usize> = 32..160;
+    const X87_ST_SEED: [u8; 10] = [0xA7; 10];
+    const X87_ST_ZERO: [u8; 10] = [0; 10];
+    const _: () = assert!(GUEST_XSAVE_GPA + GUEST_XSAVE_PAGE_LEN <= RAM_LEN);
+    const _: () = assert!(GUEST_XSAVE_GPA + GUEST_XSAVE_PAGE_LEN <= GUEST_XRSTOR_GPA);
+    const _: () = assert!(GUEST_XRSTOR_GPA + GUEST_XSAVE_PAGE_LEN <= RAM_LEN);
+    const ACTIVE_XMM0: [u8; 16] = [
+        0xA5, 0x5A, 0x3C, 0xC3, 0x96, 0x69, 0x78, 0x87, 0x12, 0x21, 0x34, 0x43, 0x56, 0x65, 0xAB,
+        0xBA,
+    ];
+    const ZERO_XMM0: [u8; 16] = [0; 16];
+
+    #[derive(Clone, Copy)]
+    enum BoundaryObservation {
+        LegacyGetSetGet,
+        Unobserved,
+        GetOnly,
+        GetSetGet,
+        EarlyBootUnobserved,
+        EarlyBootGetOnly,
+        EarlyBootGetSetGet,
+    }
+
+    impl BoundaryObservation {
+        fn name(self) -> &'static str {
+            match self {
+                Self::LegacyGetSetGet => "get-set-get",
+                Self::Unobserved => "unobserved",
+                Self::GetOnly => "get-only",
+                Self::GetSetGet => "get-set-get",
+                Self::EarlyBootUnobserved => "early-boot-unobserved",
+                Self::EarlyBootGetOnly => "early-boot-get-only",
+                Self::EarlyBootGetSetGet => "early-boot-get-set-get",
+            }
+        }
+
+        fn guest_program(self) -> bool {
+            !matches!(
+                self,
+                Self::LegacyGetSetGet
+                    | Self::EarlyBootUnobserved
+                    | Self::EarlyBootGetOnly
+                    | Self::EarlyBootGetSetGet
+            )
+        }
+
+        fn observes_boundary(self) -> bool {
+            !matches!(self, Self::Unobserved | Self::EarlyBootUnobserved)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum GuestX87Cohort {
+        PayloadPreservation,
+        ZeroState,
+        XrstorInit,
+        EarlyBoot,
+    }
+
+    impl GuestX87Cohort {
+        fn name(self) -> &'static str {
+            match self {
+                Self::PayloadPreservation => "payload-preservation",
+                Self::ZeroState => "zero-state",
+                Self::XrstorInit => "xrstor-init",
+                Self::EarlyBoot => "early-boot",
+            }
+        }
+
+        fn st_seed(self) -> &'static [u8; 10] {
+            match self {
+                Self::PayloadPreservation => &X87_ST_SEED,
+                Self::ZeroState => &X87_ST_ZERO,
+                Self::XrstorInit => &X87_ST_ZERO,
+                Self::EarlyBoot => &X87_ST_ZERO,
+            }
+        }
+
+        fn st_seed_description(self) -> &'static str {
+            match self {
+                Self::PayloadPreservation => "8-slots-of-10-bytes-0xa7-with-6-zero-padding-bytes",
+                Self::ZeroState => "8-slots-of-10-zero-bytes-with-6-zero-padding-bytes",
+                Self::XrstorInit => "initial-vm-8-slots-of-10-zero-bytes-with-6-zero-padding-bytes",
+                Self::EarlyBoot => "canonical-init-xsave-with-no-guest-floating-point-instructions",
+            }
+        }
+
+        fn phase_label(self, observation: BoundaryObservation) -> &'static str {
+            match (self, observation) {
+                (Self::PayloadPreservation, BoundaryObservation::Unobserved) => {
+                    "guest-fninit-unobserved"
+                }
+                (Self::PayloadPreservation, BoundaryObservation::GetOnly) => {
+                    "guest-fninit-get-only"
+                }
+                (Self::PayloadPreservation, BoundaryObservation::GetSetGet) => {
+                    "guest-fninit-get-set-get"
+                }
+                (Self::ZeroState, BoundaryObservation::Unobserved) => {
+                    "guest-fninit-zero-unobserved"
+                }
+                (Self::ZeroState, BoundaryObservation::GetOnly) => "guest-fninit-zero-get-only",
+                (Self::ZeroState, BoundaryObservation::GetSetGet) => {
+                    "guest-fninit-zero-get-set-get"
+                }
+                (Self::XrstorInit, BoundaryObservation::Unobserved) => "guest-xrstor-unobserved",
+                (Self::XrstorInit, BoundaryObservation::GetOnly) => "guest-xrstor-get-only",
+                (Self::XrstorInit, BoundaryObservation::GetSetGet) => "guest-xrstor-get-set-get",
+                (Self::EarlyBoot, BoundaryObservation::EarlyBootUnobserved) => {
+                    "early-boot-unobserved"
+                }
+                (Self::EarlyBoot, BoundaryObservation::EarlyBootGetOnly) => "early-boot-get-only",
+                (Self::EarlyBoot, BoundaryObservation::EarlyBootGetSetGet) => {
+                    "early-boot-get-set-get"
+                }
+                (_, BoundaryObservation::LegacyGetSetGet) => {
+                    panic!("legacy observation has no guest x87 cohort")
+                }
+                _ => panic!("cohort and observation do not match"),
+            }
+        }
+
+        fn comparison_file(self) -> &'static str {
+            match self {
+                Self::PayloadPreservation => "guest-fninit-comparison.txt",
+                Self::ZeroState => "guest-fninit-zero-comparison.txt",
+                Self::XrstorInit => "guest-xrstor-comparison.txt",
+                Self::EarlyBoot => "early-boot-comparison.txt",
+            }
+        }
+
+        fn guest_program(self) -> &'static str {
+            match self {
+                Self::PayloadPreservation | Self::ZeroState => {
+                    "fninit-before-mmio-xsave-after-retirement"
+                }
+                Self::XrstorInit => "xrstor-before-mmio-xsave-after-retirement",
+                Self::EarlyBoot => "integer-mmio-hlt-without-floating-point-instructions",
+            }
+        }
+
+        fn uses_xrstor(self) -> bool {
+            matches!(self, Self::XrstorInit)
+        }
+
+        fn is_early_boot(self) -> bool {
+            matches!(self, Self::EarlyBoot)
+        }
+    }
+
+    struct GuestPhaseResult {
+        raw_endpoint: Vec<u8>,
+        canonical_endpoint: Vec<u8>,
+        endpoint_bv: u64,
+        endpoint_xcomp_bv: u64,
+        endpoint_restore_bv: Option<u64>,
+        guest_xsave: Vec<u8>,
+        canonical_guest_xsave: Vec<u8>,
+        guest_bv: u64,
+        guest_xcomp_bv: u64,
+        guest_restore_bv: Option<u64>,
+    }
+
+    enum PhaseResult {
+        Guest(GuestPhaseResult),
+        EarlyBoot(EarlyBootPhaseResult),
+    }
+
+    struct EarlyBootPhaseResult {
+        raw_endpoint: Vec<u8>,
+        canonical_endpoint: Vec<u8>,
+        endpoint_bv: u64,
+        endpoint_xcomp_bv: u64,
+        endpoint_restore_bv: Option<u64>,
+        endpoint_xcr0: u64,
+        endpoint_cr4: u64,
+    }
+
+    struct MmapRam {
+        ptr: *mut libc::c_void,
+        len: usize,
+    }
+
+    impl MmapRam {
+        fn new(len: usize) -> std::io::Result<Self> {
+            let ptr = unsafe {
+                // SAFETY: `len` is a nonzero page-sized mapping length selected by this test.
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            if ptr == libc::MAP_FAILED {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(Self { ptr, len })
+            }
+        }
+
+        fn as_mut_bytes(&mut self) -> &mut [u8] {
+            unsafe {
+                // SAFETY: `ptr` is a live private mapping owned by this value, and the returned
+                // slice is the only mutable borrow used while the guest is stopped.
+                std::slice::from_raw_parts_mut(self.ptr.cast::<u8>(), self.len)
+            }
+        }
+    }
+
+    impl Drop for MmapRam {
+        fn drop(&mut self) {
+            unsafe {
+                // SAFETY: `ptr` and `len` came from one successful mmap and are unmapped once.
+                libc::munmap(self.ptr, self.len);
+            }
+        }
+    }
+
+    fn diagnostic_policy() -> X86Policy {
+        X86Policy {
+            cpuid: CpuidModel {
+                entries: vec![
+                    CpuidEntry {
+                        leaf: 0,
+                        eax: 0xD,
+                        ebx: 0x756E_6547,
+                        ecx: 0x6C65_746E,
+                        edx: 0x4965_6E69,
+                        ..Default::default()
+                    },
+                    CpuidEntry {
+                        leaf: 1,
+                        eax: 0x0009_06EC,
+                        ebx: 0x0001_0800,
+                        ecx: 0x36DA_3203,
+                        edx: 0x0F8B_BB7F,
+                        ..Default::default()
+                    },
+                    CpuidEntry {
+                        leaf: 0xD,
+                        subleaf_significant: true,
+                        eax: 7,
+                        ebx: 0x340,
+                        ecx: 0x340,
+                        ..Default::default()
+                    },
+                    CpuidEntry {
+                        leaf: 0xD,
+                        subleaf: 1,
+                        subleaf_significant: true,
+                        ..Default::default()
+                    },
+                    CpuidEntry {
+                        leaf: 0xD,
+                        subleaf: 2,
+                        subleaf_significant: true,
+                        eax: 0x100,
+                        ebx: 0x240,
+                        ..Default::default()
+                    },
+                ],
+            },
+            msr_filter: MsrFilter {
+                allow_inkernel: vec![MsrRange {
+                    base: 0x174,
+                    count: 3,
+                }],
+            },
+        }
+    }
+
+    fn mmio_program() -> [u8; 13] {
+        [
+            0x67,
+            0x66,
+            0xC7,
+            0x05,
+            MMIO_GPA as u8,
+            (MMIO_GPA >> 8) as u8,
+            (MMIO_GPA >> 16) as u8,
+            (MMIO_GPA >> 24) as u8,
+            MMIO_VALUE,
+            0,
+            0,
+            0,
+            0xF4,
+        ]
+    }
+
+    fn guest_fninit_xsave_program() -> Vec<u8> {
+        let mmio = mmio_program();
+        let mut program = Vec::with_capacity(33);
+        program.extend_from_slice(&[0xDB, 0xE3]);
+        program.extend_from_slice(&mmio[..mmio.len() - 1]);
+        program.extend_from_slice(&[
+            0x66,
+            0xB8,
+            0x03,
+            0x00,
+            0x00,
+            0x00,
+            0x66,
+            0x31,
+            0xD2,
+            0x67,
+            0x0F,
+            0xAE,
+            0x25,
+            GUEST_XSAVE_GPA as u8,
+            (GUEST_XSAVE_GPA >> 8) as u8,
+            (GUEST_XSAVE_GPA >> 16) as u8,
+            (GUEST_XSAVE_GPA >> 24) as u8,
+            0xF4,
+        ]);
+        program
+    }
+
+    fn xrstor_source_image() -> Vec<u8> {
+        let mut image = vec![0; GUEST_XSAVE_LEN];
+        image[XSTATE_BV].copy_from_slice(&2u64.to_le_bytes());
+        image[XCOMP_BV].copy_from_slice(&0u64.to_le_bytes());
+        image[SSE_MXCSR].copy_from_slice(&0x1f80u32.to_le_bytes());
+        image[SSE_XMM0].copy_from_slice(&ACTIVE_XMM0);
+        image
+    }
+
+    fn guest_xrstor_xsave_program() -> Vec<u8> {
+        let mmio = mmio_program();
+        let mut program = Vec::with_capacity(48);
+        program.extend_from_slice(&[
+            0x66,
+            0xB8,
+            0x03,
+            0x00,
+            0x00,
+            0x00,
+            0x66,
+            0x31,
+            0xD2,
+            0x67,
+            0x0F,
+            0xAE,
+            0x2D,
+            GUEST_XRSTOR_GPA as u8,
+            (GUEST_XRSTOR_GPA >> 8) as u8,
+            (GUEST_XRSTOR_GPA >> 16) as u8,
+            (GUEST_XRSTOR_GPA >> 24) as u8,
+        ]);
+        program.extend_from_slice(&mmio[..mmio.len() - 1]);
+        program.extend_from_slice(&[
+            0x66,
+            0xB8,
+            0x03,
+            0x00,
+            0x00,
+            0x00,
+            0x66,
+            0x31,
+            0xD2,
+            0x67,
+            0x0F,
+            0xAE,
+            0x25,
+            GUEST_XSAVE_GPA as u8,
+            (GUEST_XSAVE_GPA >> 8) as u8,
+            (GUEST_XSAVE_GPA >> 16) as u8,
+            (GUEST_XSAVE_GPA >> 24) as u8,
+            0xF4,
+        ]);
+        program
+    }
+
+    fn header(image: &[u8]) -> (u64, u64) {
+        assert!(
+            image.len() >= XCOMP_BV.end,
+            "XSAVE image is shorter than its header"
+        );
+        let xstate_bv = u64::from_le_bytes(
+            image[XSTATE_BV]
+                .try_into()
+                .expect("XSAVE XSTATE_BV has eight bytes"),
+        );
+        let xcomp_bv = u64::from_le_bytes(
+            image[XCOMP_BV]
+                .try_into()
+                .expect("XSAVE XCOMP_BV has eight bytes"),
+        );
+        (xstate_bv, xcomp_bv)
+    }
+
+    fn cpuid_words(backend: &KvmBackend, leaf: u32, subleaf: u32) -> [u32; 4] {
+        let cpuid = backend
+            .vcpu
+            .get_cpuid2(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+            .unwrap_or_else(|e| panic!("KVM_GET_CPUID2 failed: {e}"));
+        let entry = cpuid
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == leaf && entry.index == subleaf)
+            .unwrap_or_else(|| panic!("guest CPUID leaf {leaf:#x}/{subleaf} missing"));
+        [entry.eax, entry.ebx, entry.ecx, entry.edx]
+    }
+
+    fn backend_xcr0_value(backend: &KvmBackend) -> u64 {
+        let xcrs = backend
+            .vcpu
+            .get_xcrs()
+            .unwrap_or_else(|e| panic!("KVM_GET_XCRS failed: {e}"));
+        xcrs.xcrs
+            .iter()
+            .find(|xcr| xcr.xcr == 0)
+            .map(|xcr| xcr.value)
+            .unwrap_or_else(|| panic!("guest XCR0 missing from KVM_GET_XCRS"))
+    }
+
+    fn write_image(dir: &Path, name: &str, image: &[u8]) {
+        fs::write(dir.join(name), image)
+            .unwrap_or_else(|e| panic!("write {} failed: {e}", dir.join(name).display()));
+    }
+
+    fn fail_with_buffered_error(
+        report_dir: &Path,
+        label: &str,
+        buffered_images: &[(&str, Vec<u8>)],
+        phase: &str,
+        error: impl std::fmt::Display,
+    ) -> ! {
+        for (name, image) in buffered_images {
+            write_image(report_dir, name, image);
+        }
+        let failure = format!("mode={label}\nphase={phase}\nerror={error}\n");
+        fs::write(report_dir.join("failure.txt"), failure).unwrap_or_else(|e| {
+            panic!(
+                "write {} failed while retaining {phase}: {e}",
+                report_dir.join("failure.txt").display()
+            )
+        });
+        panic!("{label} {phase} failed: {error}");
+    }
+
+    fn assert_xmm0_bytes(image: &[u8], expected: &[u8; 16], phase: &str, label: &str) {
+        assert_eq!(
+            &image[SSE_XMM0], expected,
+            "{label} XMM0 changed during {phase}"
+        );
+    }
+
+    fn words_hex(words: [u32; 4]) -> String {
+        format!(
+            "{:08x},{:08x},{:08x},{:08x}",
+            words[0], words[1], words[2], words[3]
+        )
+    }
+
+    fn range_equal(a: &[u8], b: &[u8], range: std::ops::Range<usize>) -> bool {
+        a[range.clone()] == b[range]
+    }
+
+    fn x87_equal(a: &[u8], b: &[u8]) -> bool {
+        range_equal(a, b, 0..24) && range_equal(a, b, 32..160)
+    }
+
+    fn restore_bv_text(value: Option<Option<u64>>) -> String {
+        value.map_or_else(|| "not-observed".to_owned(), |value| format!("{value:?}"))
+    }
+
+    fn append_pairwise<T, F>(
+        output: &mut String,
+        key: &str,
+        unobserved: &T,
+        get_only: &T,
+        get_set_get: &T,
+        equal: F,
+    ) where
+        F: Fn(&T, &T) -> bool,
+    {
+        writeln!(
+            output,
+            "unobserved_vs_get_only_{key}={}",
+            equal(unobserved, get_only)
+        )
+        .expect("comparison write");
+        writeln!(
+            output,
+            "unobserved_vs_get_set_get_{key}={}",
+            equal(unobserved, get_set_get)
+        )
+        .expect("comparison write");
+        writeln!(
+            output,
+            "get_only_vs_get_set_get_{key}={}",
+            equal(get_only, get_set_get)
+        )
+        .expect("comparison write");
+    }
+
+    fn run_variant(report_root: &Path, active_sse: bool) {
+        let label = if active_sse {
+            "active-initialized-sse"
+        } else {
+            "zero-sse-control"
+        };
+        run_variant_with_observation(
+            report_root,
+            active_sse,
+            BoundaryObservation::LegacyGetSetGet,
+            None,
+            label,
+        );
+    }
+
+    fn run_guest_phase(
+        report_root: &Path,
+        cohort: GuestX87Cohort,
+        observation: BoundaryObservation,
+    ) -> GuestPhaseResult {
+        let label = cohort.phase_label(observation);
+        match run_variant_with_observation(report_root, true, observation, Some(cohort), label) {
+            Some(PhaseResult::Guest(result)) => result,
+            Some(PhaseResult::EarlyBoot(_)) => panic!("guest phase returned early-boot result"),
+            None => panic!("guest phase must return a result"),
+        }
+    }
+
+    fn run_earlyboot_phase(
+        report_root: &Path,
+        observation: BoundaryObservation,
+    ) -> EarlyBootPhaseResult {
+        let cohort = GuestX87Cohort::EarlyBoot;
+        let label = cohort.phase_label(observation);
+        match run_variant_with_observation(report_root, false, observation, Some(cohort), label) {
+            Some(PhaseResult::EarlyBoot(result)) => result,
+            Some(PhaseResult::Guest(_)) => panic!("early-boot phase returned guest result"),
+            None => panic!("early-boot phase must return a result"),
+        }
+    }
+
+    fn run_variant_with_observation(
+        report_root: &Path,
+        active_sse: bool,
+        observation: BoundaryObservation,
+        cohort: Option<GuestX87Cohort>,
+        label: &'static str,
+    ) -> Option<PhaseResult> {
+        let early_boot = cohort.is_some_and(GuestX87Cohort::is_early_boot);
+        let report_dir = report_root.join(label);
+        if observation.guest_program() {
+            fs::create_dir(&report_dir)
+                .unwrap_or_else(|e| panic!("create fresh {} failed: {e}", report_dir.display()));
+        } else {
+            fs::create_dir_all(&report_dir)
+                .unwrap_or_else(|e| panic!("create {} failed: {e}", report_dir.display()));
+        }
+
+        let mut ram =
+            MmapRam::new(RAM_LEN).unwrap_or_else(|e| panic!("guest RAM mmap failed: {e}"));
+        let xrstor_source = cohort
+            .filter(|cohort| cohort.uses_xrstor())
+            .map(|_| xrstor_source_image());
+        let program = if observation.guest_program() {
+            if cohort
+                .expect("guest phase cohort checked above")
+                .uses_xrstor()
+            {
+                guest_xrstor_xsave_program()
+            } else {
+                guest_fninit_xsave_program()
+            }
+        } else {
+            mmio_program().to_vec()
+        };
+        ram.as_mut_bytes()[CODE_GPA..CODE_GPA + program.len()].copy_from_slice(&program);
+        if observation.guest_program() {
+            if let Some(image) = xrstor_source.as_ref() {
+                let source_page = &mut ram.as_mut_bytes()
+                    [GUEST_XRSTOR_GPA..GUEST_XRSTOR_GPA + GUEST_XSAVE_PAGE_LEN];
+                source_page.fill(0);
+                source_page[..image.len()].copy_from_slice(image);
+            }
+            ram.as_mut_bytes()[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_PAGE_LEN].fill(0);
+        }
+
+        let mut backend =
+            KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed for {label}: {e}"));
+        let xsave_len = backend
+            .xsave2_size
+            .unwrap_or_else(|| panic!("KVM_CAP_XSAVE2 is unavailable for {label}"));
+        assert!(
+            xsave_len >= size_of::<kvm_xsave>(),
+            "KVM_CAP_XSAVE2 returned a short image"
+        );
+
+        unsafe {
+            // SAFETY: `ram` is page-aligned, pinned for this scope, and outlives `backend`.
+            backend
+                .map_memory(Gpa(0), ram.as_mut_bytes())
+                .unwrap_or_else(|e| panic!("map_memory failed for {label}: {e}"));
+        }
+        backend
+            .set_policy(&diagnostic_policy())
+            .unwrap_or_else(|e| panic!("set_policy failed for {label}: {e}"));
+
+        let mut state = backend
+            .save()
+            .unwrap_or_else(|e| panic!("save entry state failed for {label}: {e}"));
+        state.sregs.cs.base = 0;
+        state.sregs.cs.selector = 0;
+        state.sregs.ds.base = 0;
+        state.sregs.ds.selector = 0;
+        state.sregs.ds.limit = u32::MAX;
+        state.sregs.ds.g = 1;
+        if early_boot {
+            state.sregs.cr4 &= !((1 << 9) | (1 << 18));
+        } else {
+            state.sregs.cr4 |= 1 << 18;
+        }
+        state.sregs.cr0 &= !((1 << 2) | (1 << 3));
+        state.regs.rip = CODE_GPA as u64;
+        state.regs.rflags = 2;
+        state.regs.rbx = 0;
+        state.mp_state = MpState::Runnable;
+        state.xcr0 = if early_boot { 1 } else { 3 };
+        state.xsave_restore_bv = if early_boot {
+            Some(2)
+        } else if observation.guest_program() {
+            Some(3)
+        } else {
+            None
+        };
+        if observation.guest_program() {
+            assert!(cohort.is_some(), "guest phase requires an x87 cohort");
+            assert!(
+                !early_boot,
+                "early-boot phase cannot execute guest FPU setup"
+            );
+        } else if early_boot {
+            assert!(
+                matches!(cohort, Some(GuestX87Cohort::EarlyBoot)),
+                "early-boot phase requires the early-boot cohort"
+            );
+        } else {
+            assert!(
+                cohort.is_none(),
+                "MMIO-only phase cannot have an x87 cohort"
+            );
+        }
+
+        if observation.guest_program() {
+            state.xsave[0..24].fill(0);
+            state.xsave[X87_ST].fill(0);
+            state.xsave[X87_FCW].copy_from_slice(&[0x7f, 0x03]);
+            state.xsave[X87_FSW].fill(0);
+            state.xsave[X87_FTW].copy_from_slice(&[0xff]);
+            let st_seed = cohort.expect("guest phase cohort checked above").st_seed();
+            for slot in state.xsave[X87_ST].chunks_exact_mut(16) {
+                slot[..st_seed.len()].copy_from_slice(st_seed);
+            }
+        } else if early_boot {
+            state.xsave.fill(0);
+            state.xsave[X87_FCW].copy_from_slice(&[0x7f, 0x03]);
+            state.xsave[SSE_MXCSR].copy_from_slice(&[0x80, 0x1f, 0, 0]);
+            state.xsave[SSE_MXCSR_MASK].copy_from_slice(&[0xff, 0xff, 0, 0]);
+        }
+        state.xsave[SSE_XMM0].fill(0);
+        state.xsave[XCOMP_BV].fill(0);
+        state.xsave[XSTATE_BV].copy_from_slice(&if active_sse {
+            if observation.guest_program() {
+                3u64.to_le_bytes()
+            } else {
+                2u64.to_le_bytes()
+            }
+        } else {
+            0u64.to_le_bytes()
+        });
+        if active_sse {
+            state.xsave[SSE_XMM0].copy_from_slice(&ACTIVE_XMM0);
+        }
+        let requested_xcr0 = state.xcr0;
+        let requested_cr4 = state.sregs.cr4;
+        let requested_restore_bv = state.xsave_restore_bv;
+        let (requested_xsave_canonical_bv, requested_xsave_canonical_xcomp_bv) =
+            header(&state.xsave);
+        backend
+            .restore(&state)
+            .unwrap_or_else(|e| panic!("restore entry state failed for {label}: {e}"));
+
+        let cpuid1 = cpuid_words(&backend, 1, 0);
+        let cpuid_d0 = cpuid_words(&backend, 0xD, 0);
+        assert_eq!(
+            cpuid_d0[2] as usize, GUEST_XSAVE_LEN,
+            "diagnostic guest CPUID XSAVE size changed"
+        );
+        let xcr0_before_run = backend_xcr0_value(&backend);
+        assert_eq!(
+            xcr0_before_run, requested_xcr0,
+            "configured guest XCR0 was not retained for {label}"
+        );
+
+        let boundary = backend
+            .run()
+            .unwrap_or_else(|e| panic!("boundary run failed for {label}: {e}"));
+        assert!(
+            matches!(
+                boundary,
+                Exit::Common(CommonExit::Mmio {
+                    gpa: Gpa(MMIO_GPA),
+                    size: 4,
+                    write: Some(_),
+                })
+            ),
+            "{label} did not stop at the expected MMIO boundary: {boundary:?}"
+        );
+        assert!(
+            backend.exit_counts().total() > 0,
+            "{label} reported zero executed exits"
+        );
+
+        let fd = backend.vcpu.as_raw_fd();
+        let mut buffered_images: Vec<(&str, Vec<u8>)> = Vec::new();
+        if let Some(image) = xrstor_source.as_ref() {
+            buffered_images.push(("xrstor-source.bin", image.clone()));
+        }
+        let mut raw_before_1 = None;
+        let mut raw_before_2 = None;
+        let mut canonical_before_1 = None;
+        let mut canonical_before_2 = None;
+        let mut canonical_restore_bv_1 = None;
+        let mut canonical_restore_bv_2 = None;
+        let mut raw_after_set = None;
+        let mut canonical_restore_bv_after_set = None;
+        if observation.observes_boundary() {
+            let raw = unsafe {
+                // SAFETY: the owned vCPU is stopped at the checked MMIO boundary and the capability
+                // sized buffer is retained until KVM finishes the direct ioctl.
+                raw_get_xsave2(fd, xsave_len)
+            };
+            let raw = match raw {
+                Ok(raw) => raw,
+                Err(error) => fail_with_buffered_error(
+                    &report_dir,
+                    label,
+                    &buffered_images,
+                    "first raw KVM_GET_XSAVE2",
+                    error,
+                ),
+            };
+            let mut canonical = raw.clone();
+            let restore_bv = canonicalize_xsave_with_restore_bv(&mut canonical);
+            buffered_images.push(("raw-before-1.bin", raw.clone()));
+            buffered_images.push(("canonical-before-1.bin", canonical.clone()));
+            raw_before_1 = Some(raw);
+            canonical_before_1 = Some(canonical);
+            canonical_restore_bv_1 = Some(restore_bv);
+
+            let raw = unsafe {
+                // SAFETY: the vCPU remains stopped and the second independent buffer has the same
+                // kernel-reported capability size as the first direct read.
+                raw_get_xsave2(fd, xsave_len)
+            };
+            let raw = match raw {
+                Ok(raw) => raw,
+                Err(error) => fail_with_buffered_error(
+                    &report_dir,
+                    label,
+                    &buffered_images,
+                    "second raw KVM_GET_XSAVE2",
+                    error,
+                ),
+            };
+            let mut canonical = raw.clone();
+            let restore_bv = canonicalize_xsave_with_restore_bv(&mut canonical);
+            buffered_images.push(("raw-before-2.bin", raw.clone()));
+            buffered_images.push(("canonical-before-2.bin", canonical.clone()));
+            raw_before_2 = Some(raw);
+            canonical_before_2 = Some(canonical);
+            canonical_restore_bv_2 = Some(restore_bv);
+        }
+
+        if matches!(
+            observation,
+            BoundaryObservation::LegacyGetSetGet
+                | BoundaryObservation::GetSetGet
+                | BoundaryObservation::EarlyBootGetSetGet
+        ) {
+            let before = raw_before_1
+                .as_ref()
+                .expect("SET phase requires a preceding XSAVE GET");
+            unsafe {
+                // SAFETY: the stopped vCPU owns the direct KVM XSAVE target and `before` has the
+                // complete capability-sized image returned by KVM_GET_XSAVE2.
+                raw_set_xsave(fd, before)
+            }
+            .unwrap_or_else(|error| {
+                fail_with_buffered_error(
+                    &report_dir,
+                    label,
+                    &buffered_images,
+                    "raw KVM_SET_XSAVE",
+                    error,
+                )
+            });
+            let raw = unsafe {
+                // SAFETY: the vCPU is still stopped after KVM_SET_XSAVE and the output buffer is
+                // capability-sized and exclusively owned by this test.
+                raw_get_xsave2(fd, xsave_len)
+            };
+            let raw = match raw {
+                Ok(raw) => raw,
+                Err(error) => fail_with_buffered_error(
+                    &report_dir,
+                    label,
+                    &buffered_images,
+                    "raw post-SET KVM_GET_XSAVE2",
+                    error,
+                ),
+            };
+            let mut canonical = raw.clone();
+            let restore_bv = canonicalize_xsave_with_restore_bv(&mut canonical);
+            buffered_images.push(("raw-after-set.bin", raw.clone()));
+            buffered_images.push(("canonical-after-set.bin", canonical.clone()));
+            raw_after_set = Some(raw);
+            canonical_restore_bv_after_set = Some(restore_bv);
+        }
+
+        if let Err(error) = backend.retire_pending_completion() {
+            fail_with_buffered_error(
+                &report_dir,
+                label,
+                &buffered_images,
+                "retire MMIO write completion",
+                error,
+            );
+        }
+
+        let endpoint = match backend.run() {
+            Ok(endpoint) => endpoint,
+            Err(error) => fail_with_buffered_error(
+                &report_dir,
+                label,
+                &buffered_images,
+                "bounded continuation run",
+                error,
+            ),
+        };
+        let endpoint_cr4 = if early_boot {
+            if !matches!(endpoint, Exit::Common(CommonExit::Idle)) {
+                fail_with_buffered_error(
+                    &report_dir,
+                    label,
+                    &buffered_images,
+                    "early-boot continuation HLT endpoint",
+                    format!("unexpected exit: {endpoint:?}"),
+                );
+            }
+            let endpoint_sregs = unsafe {
+                // SAFETY: the vCPU is stopped at the checked HLT endpoint and KVM writes the
+                // complete kernel-sized `kvm_sregs2` into this independent value.
+                raw_get_sregs2(fd)
+            }
+            .unwrap_or_else(|error| {
+                fail_with_buffered_error(
+                    &report_dir,
+                    label,
+                    &buffered_images,
+                    "endpoint KVM_GET_SREGS2",
+                    error,
+                )
+            });
+            Some(endpoint_sregs.cr4)
+        } else {
+            None
+        };
+        let guest_xsave = observation.guest_program().then(|| {
+            ram.as_mut_bytes()[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN].to_vec()
+        });
+        let mut canonical_guest_xsave = None;
+        let guest_restore_bv = if let Some(image) = guest_xsave.as_ref() {
+            let mut canonical = image.clone();
+            let restore_bv = canonicalize_xsave_with_restore_bv(&mut canonical);
+            canonical_guest_xsave = Some(canonical);
+            restore_bv
+        } else {
+            None
+        };
+        if let Some(image) = guest_xsave.as_ref() {
+            buffered_images.push(("guest-xsave.bin", image.clone()));
+        }
+        if let Some(image) = canonical_guest_xsave.as_ref() {
+            buffered_images.push(("canonical-guest-xsave.bin", image.clone()));
+        }
+        let raw_endpoint = unsafe {
+            // SAFETY: the vCPU is stopped after the bounded continuation and the output buffer
+            // is capability-sized.
+            raw_get_xsave2(fd, xsave_len)
+        };
+        let raw_endpoint = match raw_endpoint {
+            Ok(raw_endpoint) => raw_endpoint,
+            Err(error) => fail_with_buffered_error(
+                &report_dir,
+                label,
+                &buffered_images,
+                "endpoint raw KVM_GET_XSAVE2",
+                error,
+            ),
+        };
+        let mut canonical_endpoint = raw_endpoint.clone();
+        let canonical_restore_bv_endpoint =
+            canonicalize_xsave_with_restore_bv(&mut canonical_endpoint);
+        for (name, image) in buffered_images {
+            write_image(&report_dir, name, &image);
+        }
+        write_image(&report_dir, "raw-endpoint.bin", &raw_endpoint);
+        write_image(&report_dir, "canonical-endpoint.bin", &canonical_endpoint);
+
+        let xcr0_endpoint = backend_xcr0_value(&backend);
+        let before_1_header = raw_before_1.as_ref().map(|image| header(image));
+        let before_2_header = raw_before_2.as_ref().map(|image| header(image));
+        let after_set_header = raw_after_set.as_ref().map(|image| header(image));
+        let (endpoint_bv, endpoint_xcomp) = header(&raw_endpoint);
+        let guest_header = guest_xsave.as_ref().map(|image| header(image));
+        let mut metadata = String::new();
+        writeln!(
+            metadata,
+            "phase=stopped-at-mmio-write-exit-before-retirement"
+        )
+        .expect("metadata write");
+        writeln!(metadata, "continuation=retire-mmio-then-one-run-to-hlt").expect("metadata write");
+        writeln!(metadata, "mode={label}").expect("metadata write");
+        writeln!(metadata, "boundary_observation={}", observation.name()).expect("metadata write");
+        writeln!(
+            metadata,
+            "guest_program={}",
+            if observation.guest_program() {
+                cohort
+                    .expect("guest phase cohort checked above")
+                    .guest_program()
+            } else {
+                "mmio-only"
+            }
+        )
+        .expect("metadata write");
+        if observation.guest_program() {
+            let cohort = cohort.expect("guest phase cohort checked above");
+            writeln!(metadata, "pre_guest_xsave_restore_bv=Some(3)").expect("metadata write");
+            writeln!(metadata, "pre_guest_xsave_raw_bv=0x3").expect("metadata write");
+            writeln!(metadata, "pre_guest_xsave_raw_xcomp_bv=0x0").expect("metadata write");
+            writeln!(metadata, "pre_guest_x87_cohort={}", cohort.name()).expect("metadata write");
+            writeln!(metadata, "pre_guest_x87_fcw=[7f, 03]").expect("metadata write");
+            writeln!(metadata, "pre_guest_x87_fsw=[00, 00]").expect("metadata write");
+            writeln!(metadata, "pre_guest_x87_ftw=[ff]").expect("metadata write");
+            writeln!(
+                metadata,
+                "pre_guest_x87_st_seed={}",
+                cohort.st_seed_description()
+            )
+            .expect("metadata write");
+            writeln!(
+                metadata,
+                "pre_guest_x87_st_seed_bytes={:02x?}",
+                cohort.st_seed()
+            )
+            .expect("metadata write");
+            writeln!(
+                metadata,
+                "pre_guest_x87_st_seed_len={}",
+                cohort.st_seed().len()
+            )
+            .expect("metadata write");
+            writeln!(
+                metadata,
+                "guest_instruction={}",
+                if cohort.uses_xrstor() {
+                    "xrstor"
+                } else {
+                    "fninit"
+                }
+            )
+            .expect("metadata write");
+            if cohort.uses_xrstor() {
+                let source = xrstor_source
+                    .as_ref()
+                    .expect("XRSTOR cohort must have a source image");
+                let (source_bv, source_xcomp) = header(source);
+                writeln!(metadata, "xrstor_source_gpa={GUEST_XRSTOR_GPA:#x}")
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_output_gpa={GUEST_XSAVE_GPA:#x}")
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_source_image_len={}", source.len())
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_source_alignment_bytes=64").expect("metadata write");
+                writeln!(metadata, "xrstor_source_output_disjoint=true").expect("metadata write");
+                writeln!(metadata, "xrstor_instruction=67-0f-ae-2d-absolute-disp32")
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_mask_edx_eax=0x0000000000000003")
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_source_format=standard").expect("metadata write");
+                writeln!(metadata, "xrstor_source_xstate_bv={source_bv:#x}")
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_source_xcomp_bv={source_xcomp:#x}")
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_source_mxcsr=0x1f80").expect("metadata write");
+                writeln!(metadata, "xrstor_source_xmm0={:02x?}", &source[SSE_XMM0])
+                    .expect("metadata write");
+                writeln!(metadata, "xrstor_source_reserved_bytes_zero=true")
+                    .expect("metadata write");
+            }
+        }
+        writeln!(
+            metadata,
+            "boundary_io_until_continuation={}",
+            match observation {
+                BoundaryObservation::LegacyGetSetGet => "raw-get-get-set-get",
+                BoundaryObservation::Unobserved => "none",
+                BoundaryObservation::GetOnly => "raw-get-get",
+                BoundaryObservation::GetSetGet => "raw-get-get-set-get",
+                BoundaryObservation::EarlyBootUnobserved => "early-boot-none",
+                BoundaryObservation::EarlyBootGetOnly => "early-boot-raw-get-get",
+                BoundaryObservation::EarlyBootGetSetGet => "early-boot-raw-get-get-set-get",
+            }
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "continuation_guest_sequence={}",
+            if observation.guest_program() {
+                "integer-setup,xsave,halt"
+            } else {
+                "halt"
+            }
+        )
+        .expect("metadata write");
+        writeln!(metadata, "xsave_len={xsave_len}").expect("metadata write");
+        writeln!(metadata, "requested_xcr0={requested_xcr0:#x}").expect("metadata write");
+        writeln!(metadata, "requested_cr4={requested_cr4:#x}").expect("metadata write");
+        writeln!(
+            metadata,
+            "requested_cr4_osxsave={}",
+            requested_cr4 & (1 << 18) != 0
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "requested_cr4_osfxsr={}",
+            requested_cr4 & (1 << 9) != 0
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "requested_xsave_restore_bv={requested_restore_bv:?}"
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "requested_xsave_canonical_bv={requested_xsave_canonical_bv:#x}"
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "requested_xsave_canonical_xcomp_bv={requested_xsave_canonical_xcomp_bv:#x}"
+        )
+        .expect("metadata write");
+        writeln!(metadata, "xcr0_before_run={xcr0_before_run:#x}").expect("metadata write");
+        writeln!(metadata, "xcr0_endpoint={xcr0_endpoint:#x}").expect("metadata write");
+        writeln!(
+            metadata,
+            "cr4_endpoint={}",
+            endpoint_cr4.map_or_else(|| "not-observed".to_owned(), |value| format!("{value:#x}"))
+        )
+        .expect("metadata write");
+        writeln!(metadata, "xcr0_source=KVM_GET_XCRS").expect("metadata write");
+        writeln!(metadata, "cpuid_source=KVM_GET_CPUID2").expect("metadata write");
+        writeln!(metadata, "guest_visible_cpuid1={}", words_hex(cpuid1)).expect("metadata write");
+        writeln!(metadata, "guest_visible_cpuid_d0={}", words_hex(cpuid_d0))
+            .expect("metadata write");
+        writeln!(
+            metadata,
+            "before1_raw_bv={}",
+            before_1_header.map_or_else(
+                || "not-observed".to_owned(),
+                |header| format!("{:#x}", header.0)
+            )
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "before1_raw_xcomp_bv={}",
+            before_1_header.map_or_else(
+                || "not-observed".to_owned(),
+                |header| format!("{:#x}", header.1)
+            )
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "before2_raw_bv={}",
+            before_2_header.map_or_else(
+                || "not-observed".to_owned(),
+                |header| format!("{:#x}", header.0)
+            )
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "before2_raw_xcomp_bv={}",
+            before_2_header.map_or_else(
+                || "not-observed".to_owned(),
+                |header| format!("{:#x}", header.1)
+            )
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "after_set_raw_bv={}",
+            after_set_header.map_or_else(
+                || "not-observed".to_owned(),
+                |header| format!("{:#x}", header.0)
+            )
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "after_set_raw_xcomp_bv={}",
+            after_set_header.map_or_else(
+                || "not-observed".to_owned(),
+                |header| format!("{:#x}", header.1)
+            )
+        )
+        .expect("metadata write");
+        writeln!(metadata, "endpoint_raw_bv={endpoint_bv:#x}").expect("metadata write");
+        writeln!(metadata, "endpoint_raw_xcomp_bv={endpoint_xcomp:#x}").expect("metadata write");
+        writeln!(
+            metadata,
+            "endpoint_tuple=xcr0:{xcr0_endpoint:#x},cr4:{},raw_bv:{endpoint_bv:#x},raw_xcomp_bv:{endpoint_xcomp:#x},restore_bv:{canonical_restore_bv_endpoint:?}",
+            endpoint_cr4.map_or_else(|| "not-observed".to_owned(), |value| format!("{value:#x}"))
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "before_reads_equal={}",
+            raw_before_1
+                .as_ref()
+                .zip(raw_before_2.as_ref())
+                .map(|(first, second)| first == second)
+                .map_or("not-observed", |equal| if equal { "true" } else { "false" })
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_before_reads_equal={}",
+            canonical_before_1
+                .as_ref()
+                .zip(canonical_before_2.as_ref())
+                .map(|(first, second)| first == second)
+                .map_or("not-observed", |equal| if equal { "true" } else { "false" })
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_restore_bv_1={}",
+            restore_bv_text(canonical_restore_bv_1)
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_restore_bv_2={}",
+            restore_bv_text(canonical_restore_bv_2)
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_restore_bv_after_set={}",
+            restore_bv_text(canonical_restore_bv_after_set)
+        )
+        .expect("metadata write");
+        writeln!(
+            metadata,
+            "canonical_restore_bv_endpoint={canonical_restore_bv_endpoint:?}"
+        )
+        .expect("metadata write");
+        if let Some(image) = guest_xsave.as_ref() {
+            let cohort = cohort.expect("guest phase cohort checked above");
+            let (guest_bv, guest_xcomp) = header(image);
+            writeln!(metadata, "guest_xsave_bv={guest_bv:#x}").expect("metadata write");
+            writeln!(metadata, "guest_xsave_xcomp_bv={guest_xcomp:#x}").expect("metadata write");
+            writeln!(metadata, "guest_xsave_restore_bv={guest_restore_bv:?}")
+                .expect("metadata write");
+            writeln!(metadata, "guest_xsave_x87_fcw={:02x?}", &image[X87_FCW])
+                .expect("metadata write");
+            writeln!(metadata, "guest_xsave_x87_fsw={:02x?}", &image[X87_FSW])
+                .expect("metadata write");
+            writeln!(
+                metadata,
+                "guest_xsave_x87_ftw_empty={}",
+                image[X87_FTW].iter().all(|&byte| byte == 0)
+            )
+            .expect("metadata write");
+            writeln!(
+                metadata,
+                "guest_xsave_x87_payload_matches_seed={}",
+                image[X87_ST]
+                    .chunks_exact(16)
+                    .all(|slot| slot[..10] == cohort.st_seed()[..])
+            )
+            .expect("metadata write");
+            writeln!(
+                metadata,
+                "guest_xsave_x87_st_seed_bytes={:02x?}",
+                cohort.st_seed()
+            )
+            .expect("metadata write");
+            writeln!(metadata, "guest_xsave_x87_st_payload_len={}", X87_ST.len())
+                .expect("metadata write");
+            writeln!(metadata, "guest_xsave_mxcsr={:02x?}", &image[SSE_MXCSR])
+                .expect("metadata write");
+            writeln!(metadata, "guest_xsave_xmm0={:02x?}", &image[SSE_XMM0])
+                .expect("metadata write");
+        }
+        writeln!(
+            metadata,
+            "guest_xsave_source={}",
+            if observation.guest_program() {
+                "guest XSAVE immediately after MMIO retirement"
+            } else {
+                "none"
+            }
+        )
+        .expect("metadata write");
+        fs::write(report_dir.join("metadata.txt"), metadata).unwrap_or_else(|e| {
+            panic!(
+                "write {} failed: {e}",
+                report_dir.join("metadata.txt").display()
+            )
+        });
+
+        if early_boot {
+            let endpoint_cr4 = endpoint_cr4.expect("early-boot endpoint CR4 must be observed");
+            assert_eq!(
+                endpoint_cr4 & ((1 << 9) | (1 << 18)),
+                0,
+                "{label} endpoint CR4 re-enabled OSFXSR or OSXSAVE"
+            );
+        }
+        let expected_xmm0 = if active_sse { &ACTIVE_XMM0 } else { &ZERO_XMM0 };
+        if let Some(raw) = raw_before_1.as_ref() {
+            assert_xmm0_bytes(raw, expected_xmm0, "first boundary read", label);
+        }
+        if let Some(raw) = raw_before_2.as_ref() {
+            assert_xmm0_bytes(raw, expected_xmm0, "second boundary read", label);
+        }
+        if let Some(raw) = raw_after_set.as_ref() {
+            assert_xmm0_bytes(raw, expected_xmm0, "raw SET round trip", label);
+        }
+        assert_xmm0_bytes(
+            &raw_endpoint,
+            expected_xmm0,
+            "one guest continuation",
+            label,
+        );
+        assert!(
+            matches!(endpoint, Exit::Common(CommonExit::Idle)),
+            "{label} continuation did not reach HLT: {endpoint:?}"
+        );
+        assert_eq!(
+            backend.exit_counts().total(),
+            2,
+            "{label} executed more than the boundary and one continuation"
+        );
+        if let Some(image) = guest_xsave.as_ref() {
+            assert_eq!(
+                &image[X87_FCW],
+                &[0x7f, 0x03],
+                "{label} guest XSAVE did not retain the expected x87 control word"
+            );
+            assert!(
+                image[X87_FSW].iter().all(|&byte| byte == 0),
+                "{label} guest XSAVE did not retain the expected x87 status word"
+            );
+            assert!(
+                image[X87_FTW].iter().all(|&byte| byte == 0),
+                "{label} guest XSAVE did not retain an empty x87 tag word"
+            );
+            if cohort
+                .expect("guest phase cohort checked above")
+                .uses_xrstor()
+            {
+                assert_eq!(
+                    &image[SSE_MXCSR],
+                    &[0x80, 0x1f, 0, 0],
+                    "{label} guest XSAVE did not retain XRSTOR's MXCSR"
+                );
+            }
+            assert_xmm0_bytes(image, expected_xmm0, "guest XSAVE", label);
+        }
+
+        if observation.guest_program() {
+            Some(PhaseResult::Guest(GuestPhaseResult {
+                raw_endpoint,
+                canonical_endpoint,
+                endpoint_bv,
+                endpoint_xcomp_bv: endpoint_xcomp,
+                endpoint_restore_bv: canonical_restore_bv_endpoint,
+                guest_xsave: guest_xsave.expect("guest program must capture guest XSAVE"),
+                canonical_guest_xsave: canonical_guest_xsave
+                    .expect("guest program must canonicalize guest XSAVE"),
+                guest_bv: guest_header
+                    .expect("guest program must capture guest XSAVE header")
+                    .0,
+                guest_xcomp_bv: guest_header
+                    .expect("guest program must capture guest XSAVE header")
+                    .1,
+                guest_restore_bv,
+            }))
+        } else if early_boot {
+            Some(PhaseResult::EarlyBoot(EarlyBootPhaseResult {
+                raw_endpoint,
+                canonical_endpoint,
+                endpoint_bv,
+                endpoint_xcomp_bv: endpoint_xcomp,
+                endpoint_restore_bv: canonical_restore_bv_endpoint,
+                endpoint_xcr0: xcr0_endpoint,
+                endpoint_cr4: endpoint_cr4.expect("early-boot endpoint CR4 must be observed"),
+            }))
+        } else {
+            None
+        }
+    }
+
+    fn run_guest_cohort(report_root: &Path, cohort: GuestX87Cohort) {
+        let unobserved = run_guest_phase(report_root, cohort, BoundaryObservation::Unobserved);
+        let get_only = run_guest_phase(report_root, cohort, BoundaryObservation::GetOnly);
+        let get_set_get = run_guest_phase(report_root, cohort, BoundaryObservation::GetSetGet);
+        let mut comparison = String::new();
+        writeln!(comparison, "guest_x87_cohort={}", cohort.name()).expect("comparison write");
+        writeln!(comparison, "guest_program={}", cohort.guest_program()).expect("comparison write");
+        writeln!(comparison, "phases=unobserved,get-only,get-set-get").expect("comparison write");
+        append_pairwise(
+            &mut comparison,
+            "guest_xsave_raw_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.guest_xsave == second.guest_xsave,
+        );
+        append_pairwise(
+            &mut comparison,
+            "guest_xsave_canonical_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.canonical_guest_xsave == second.canonical_guest_xsave,
+        );
+        append_pairwise(
+            &mut comparison,
+            "guest_x87_raw_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| x87_equal(&first.guest_xsave, &second.guest_xsave),
+        );
+        append_pairwise(
+            &mut comparison,
+            "guest_x87_canonical_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| x87_equal(&first.canonical_guest_xsave, &second.canonical_guest_xsave),
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_raw_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.raw_endpoint == second.raw_endpoint,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_canonical_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.canonical_endpoint == second.canonical_endpoint,
+        );
+        append_pairwise(
+            &mut comparison,
+            "guest_restore_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.guest_restore_bv == second.guest_restore_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_restore_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_restore_bv == second.endpoint_restore_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "guest_raw_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.guest_bv == second.guest_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "guest_raw_xcomp_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.guest_xcomp_bv == second.guest_xcomp_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_raw_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_bv == second.endpoint_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_raw_xcomp_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_xcomp_bv == second.endpoint_xcomp_bv,
+        );
+        let comparison_path = report_root.join(cohort.comparison_file());
+        fs::write(&comparison_path, comparison)
+            .unwrap_or_else(|e| panic!("write {} failed: {e}", comparison_path.display()));
+    }
+
+    fn run_earlyboot_cohort(report_root: &Path) {
+        let unobserved = run_earlyboot_phase(report_root, BoundaryObservation::EarlyBootUnobserved);
+        let get_only = run_earlyboot_phase(report_root, BoundaryObservation::EarlyBootGetOnly);
+        let get_set_get = run_earlyboot_phase(report_root, BoundaryObservation::EarlyBootGetSetGet);
+        let mut comparison = String::new();
+        writeln!(comparison, "cohort=early-boot").expect("comparison write");
+        writeln!(
+            comparison,
+            "guest_program=integer-mmio-hlt-without-floating-point-instructions"
+        )
+        .expect("comparison write");
+        writeln!(comparison, "phases=unobserved,get-only,get-set-get").expect("comparison write");
+        append_pairwise(
+            &mut comparison,
+            "raw_endpoint_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.raw_endpoint == second.raw_endpoint,
+        );
+        append_pairwise(
+            &mut comparison,
+            "canonical_endpoint_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.canonical_endpoint == second.canonical_endpoint,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_bv == second.endpoint_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_xcomp_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_xcomp_bv == second.endpoint_xcomp_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_restore_bv_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_restore_bv == second.endpoint_restore_bv,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_xcr0_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_xcr0 == second.endpoint_xcr0,
+        );
+        append_pairwise(
+            &mut comparison,
+            "endpoint_cr4_equal",
+            &unobserved,
+            &get_only,
+            &get_set_get,
+            |first, second| first.endpoint_cr4 == second.endpoint_cr4,
+        );
+        let comparison_path = report_root.join(GuestX87Cohort::EarlyBoot.comparison_file());
+        fs::write(&comparison_path, comparison)
+            .unwrap_or_else(|e| panic!("write {} failed: {e}", comparison_path.display()));
+    }
+
+    #[test]
+    #[ignore = "live Linux x86 KVM XSAVE provenance diagnostic; set XSAVE_RAW_REPORT_DIR"]
+    fn raw_xsave_presence_phases() {
+        assert!(
+            Path::new("/dev/kvm").exists(),
+            "/dev/kvm is required for this ignored hardware diagnostic"
+        );
+        let report_root = PathBuf::from(
+            std::env::var_os("XSAVE_RAW_REPORT_DIR")
+                .expect("XSAVE_RAW_REPORT_DIR must capture complete raw evidence"),
+        );
+        fs::create_dir_all(&report_root)
+            .unwrap_or_else(|e| panic!("create {} failed: {e}", report_root.display()));
+        run_variant(&report_root, true);
+        run_variant(&report_root, false);
+        run_guest_cohort(&report_root, GuestX87Cohort::PayloadPreservation);
+        run_guest_cohort(&report_root, GuestX87Cohort::ZeroState);
+        run_guest_cohort(&report_root, GuestX87Cohort::XrstorInit);
+        run_earlyboot_cohort(&report_root);
+    }
+
+    const PAE_RAM_LEN: usize = 4 * 1024 * 1024;
+    const PAE_PAGE_SIZE: usize = 4096;
+    const PAE_CODE_GPA: usize = 0x1000;
+    const PAE_DATA_GPA: usize = 0x8000;
+    const PAE_GDT_GPA: usize = 0x7000;
+    const PAE_PDPT_GPA: usize = 0x4000;
+    const PAE_PD_A_GPA: usize = 0x5000;
+    const PAE_PD_B_GPA: usize = 0x6000;
+    const PAE_REMAPPED_CODE_GPA: usize = 0x201000;
+    const PAE_REMAPPED_DATA_GPA: usize = 0x208000;
+    const PAE_PDPT_A_ENTRY: u64 = 0x5001;
+    const PAE_PDPT_B_ENTRY: u64 = 0x6001;
+    const PAE_SREGS2_FLAGS_PDPTRS_VALID: u64 = 1;
+    const PAE_IA32_EFER: u32 = 0xC000_0080;
+    const PAE_WARMUP_MARKER: u8 = 0xA5;
+    const PAE_GUEST_PDPT_WRITE_LEN: usize = 10;
+    const PAE_BASE_PROGRAM_LEN: usize = 21;
+    const PAE_GUEST_PDPT_WRITE: [u8; PAE_GUEST_PDPT_WRITE_LEN] =
+        [0xC7, 0x05, 0x00, 0x40, 0x00, 0x00, 0x01, 0x60, 0x00, 0x00];
+
+    #[derive(Clone, Copy, Debug)]
+    enum PaePhase {
+        NoReadAtB,
+        OneGetAtB,
+        GetThenSetPrewriteA,
+    }
+
+    impl PaePhase {
+        const fn name(self) -> &'static str {
+            match self {
+                Self::NoReadAtB => "no-read-at-b",
+                Self::OneGetAtB => "one-get-at-b",
+                Self::GetThenSetPrewriteA => "get-then-set-prewrite-a",
+            }
+        }
+
+        const fn reads_at_b(self) -> u64 {
+            match self {
+                Self::NoReadAtB => 0,
+                Self::OneGetAtB | Self::GetThenSetPrewriteA => 1,
+            }
+        }
+
+        const fn sets_at_b(self) -> u64 {
+            match self {
+                Self::GetThenSetPrewriteA => 1,
+                Self::NoReadAtB | Self::OneGetAtB => 0,
+            }
+        }
+    }
+
+    struct PaeObservation {
+        phase: PaePhase,
+        prewrite_a: kvm_sregs2,
+        at_b: Option<kvm_sregs2>,
+        endpoint: kvm_sregs2,
+        pdpt_b: Vec<u8>,
+        endpoint_byte: u8,
+        endpoint_rip: u64,
+        boundary_exit: &'static str,
+        continuation_exit: &'static str,
+        endpoint_exit: &'static str,
+    }
+
+    fn pae_policy() -> X86Policy {
+        let mut policy = diagnostic_policy();
+        policy.msr_filter.allow_inkernel.push(MsrRange {
+            base: PAE_IA32_EFER,
+            count: 1,
+        });
+        policy
+    }
+
+    fn pae_put_u64(bytes: &mut [u8], gpa: usize, value: u64) {
+        bytes[gpa..gpa + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn pae_put_bytes(bytes: &mut [u8], gpa: usize, value: &[u8]) {
+        bytes[gpa..gpa + value.len()].copy_from_slice(value);
+    }
+
+    fn pae_guest_ram() -> MmapRam {
+        let mut ram =
+            MmapRam::new(PAE_RAM_LEN).unwrap_or_else(|e| panic!("PAE RAM mmap failed: {e}"));
+        let bytes = ram.as_mut_bytes();
+        let program = [
+            0xBA,
+            0xF8,
+            0x03,
+            0x00,
+            0x00,
+            0xB0,
+            PAE_WARMUP_MARKER,
+            0xEE,
+            0xA0,
+            0x00,
+            0x80,
+            0x00,
+            0x00,
+            0xBA,
+            0xF8,
+            0x03,
+            0x00,
+            0x00,
+            0xEE,
+            0x43,
+            0xF4,
+        ];
+        pae_put_bytes(bytes, PAE_CODE_GPA, &program);
+        pae_put_bytes(bytes, PAE_REMAPPED_CODE_GPA, &program);
+        bytes.copy_within(
+            PAE_CODE_GPA..PAE_CODE_GPA + PAE_BASE_PROGRAM_LEN,
+            PAE_CODE_GPA + PAE_GUEST_PDPT_WRITE_LEN,
+        );
+        bytes.copy_within(
+            PAE_REMAPPED_CODE_GPA..PAE_REMAPPED_CODE_GPA + PAE_BASE_PROGRAM_LEN,
+            PAE_REMAPPED_CODE_GPA + PAE_GUEST_PDPT_WRITE_LEN,
+        );
+        pae_put_bytes(bytes, PAE_CODE_GPA, &PAE_GUEST_PDPT_WRITE);
+        pae_put_bytes(bytes, PAE_REMAPPED_CODE_GPA, &PAE_GUEST_PDPT_WRITE);
+        bytes[PAE_DATA_GPA] = 0x42;
+        bytes[PAE_REMAPPED_DATA_GPA] = 0x99;
+        pae_put_u64(bytes, PAE_PDPT_GPA, PAE_PDPT_A_ENTRY);
+        pae_put_u64(bytes, PAE_PD_A_GPA, 0x83);
+        pae_put_u64(bytes, PAE_PD_B_GPA, 0x20_00_83);
+        pae_put_u64(bytes, PAE_GDT_GPA, 0);
+        pae_put_u64(bytes, PAE_GDT_GPA + 8, 0x00CF_9B00_0000_FFFF);
+        pae_put_u64(bytes, PAE_GDT_GPA + 16, 0x00CF_9300_0000_FFFF);
+        ram
+    }
+
+    fn pae_code_segment() -> crate::arch::x86::Segment {
+        crate::arch::x86::Segment {
+            base: 0,
+            limit: u32::MAX,
+            selector: 0x8,
+            type_: 0xB,
+            present: 1,
+            dpl: 0,
+            db: 1,
+            s: 1,
+            l: 0,
+            g: 1,
+            avl: 0,
+            unusable: 0,
+        }
+    }
+
+    fn pae_data_segment() -> crate::arch::x86::Segment {
+        crate::arch::x86::Segment {
+            base: 0,
+            limit: u32::MAX,
+            selector: 0x10,
+            type_: 0x3,
+            present: 1,
+            dpl: 0,
+            db: 1,
+            s: 1,
+            l: 0,
+            g: 1,
+            avl: 0,
+            unusable: 0,
+        }
+    }
+
+    fn pae_backend() -> (MmapRam, KvmBackend, kvm_sregs2) {
+        let mut ram = pae_guest_ram();
+        let mut backend = KvmBackend::new().unwrap_or_else(|e| panic!("PAE KVM setup failed: {e}"));
+        unsafe {
+            // SAFETY: `ram` is page-aligned, pinned for this scope, and outlives `backend`.
+            backend
+                .map_memory(Gpa(0), ram.as_mut_bytes())
+                .unwrap_or_else(|e| panic!("PAE map_memory failed: {e}"));
+        }
+        backend
+            .set_policy(&pae_policy())
+            .unwrap_or_else(|e| panic!("PAE set_policy failed: {e}"));
+        let mut state = backend
+            .save()
+            .unwrap_or_else(|e| panic!("PAE entry save failed: {e}"));
+        let data = pae_data_segment();
+        state.regs.rip = PAE_CODE_GPA as u64;
+        state.regs.rsp = (PAE_RAM_LEN - PAE_PAGE_SIZE) as u64;
+        state.regs.rbx = 0;
+        state.regs.rflags = 0x2;
+        state.sregs.cs = pae_code_segment();
+        state.sregs.ds = data;
+        state.sregs.es = data;
+        state.sregs.fs = data;
+        state.sregs.gs = data;
+        state.sregs.ss = data;
+        state.sregs.gdt = crate::arch::x86::DescriptorTable {
+            base: PAE_GDT_GPA as u64,
+            limit: 0x17,
+        };
+        state.sregs.cr0 = 0x8000_0011;
+        state.sregs.cr2 = 0;
+        state.sregs.cr3 = PAE_PDPT_GPA as u64;
+        state.sregs.cr4 = 0x30;
+        state.sregs.efer = 0;
+        state.sregs.flags = PAE_SREGS2_FLAGS_PDPTRS_VALID;
+        state.sregs.pdptrs = [PAE_PDPT_A_ENTRY, 0, 0, 0];
+        state.msrs.insert(PAE_IA32_EFER, 0);
+        state.mp_state = MpState::Runnable;
+        backend
+            .restore(&state)
+            .unwrap_or_else(|e| panic!("PAE entry restore failed: {e}"));
+        let prewrite_a = unsafe {
+            // SAFETY: the vCPU is stopped before the first guest instruction and the ioctl writes
+            // a complete kernel-sized `kvm_sregs2` into the returned value.
+            raw_get_sregs2(backend.vcpu.as_raw_fd())
+        }
+        .unwrap_or_else(|e| panic!("PAE pre-write A KVM_GET_SREGS2 failed: {e}"));
+        (ram, backend, prewrite_a)
+    }
+
+    fn pae_exit_label(exit: &Exit<X86>, phase: &str) -> &'static str {
+        match exit {
+            Exit::Arch(X86Exit::Io {
+                port: 0x3F8,
+                size: 1,
+                write: Some(_),
+            }) => "KVM_EXIT_IO",
+            Exit::Common(CommonExit::Idle) => "KVM_EXIT_HLT",
+            other => panic!("{phase} returned unexpected KVM_RUN exit: {other:?}"),
+        }
+    }
+
+    fn pae_expect_output(exit: &Exit<X86>, expected: u8, phase: &str) {
+        match exit {
+            Exit::Arch(X86Exit::Io {
+                port: 0x3F8,
+                size: 1,
+                write: Some(value),
+            }) => assert_eq!(*value, u32::from(expected), "{phase} UART byte"),
+            other => panic!("{phase} returned unexpected KVM_RUN exit: {other:?}"),
+        }
+    }
+
+    fn pae_sregs2_bytes(value: &kvm_sregs2) -> Vec<u8> {
+        assert_eq!(
+            size_of::<kvm_sregs2>(),
+            320,
+            "kvm_sregs2 ABI size must match the byte evidence contract"
+        );
+        // SAFETY: `kvm_sregs2` is the repr(C) 320-byte kernel ABI value; it has no implicit
+        // padding, and its explicit segment/dtable padding fields are initialized by Default and
+        // retained by raw KVM_GET_SREGS2 before all bytes are copied here.
+        unsafe {
+            std::slice::from_raw_parts(
+                (value as *const kvm_sregs2).cast::<u8>(),
+                size_of::<kvm_sregs2>(),
+            )
+            .to_vec()
+        }
+    }
+
+    #[test]
+    fn pae_sregs2_bytes_preserves_initialized_abi_fields() {
+        let mut value = kvm_sregs2::default();
+        value.cs.base = 0x0123_4567_89AB_CDEF;
+        value.cs.padding = 0xA7;
+        value.gdt.base = 0xFEDC_BA98_7654_3210;
+        value.gdt.limit = 0x1357;
+        value.gdt.padding = [0x2468, 0x369A, 0x48AC];
+        value.flags = PAE_SREGS2_FLAGS_PDPTRS_VALID;
+        value.pdptrs = [PAE_PDPT_A_ENTRY, 0x1111, 0x2222, 0x3333];
+        let bytes = pae_sregs2_bytes(&value);
+        assert_eq!(bytes.len(), 320);
+        assert_eq!(&bytes[0..8], &value.cs.base.to_ne_bytes());
+        assert_eq!(bytes[23], value.cs.padding);
+        assert_eq!(&bytes[192..200], &value.gdt.base.to_ne_bytes());
+        assert_eq!(&bytes[200..202], &value.gdt.limit.to_ne_bytes());
+        assert_eq!(&bytes[202..208], &[0x68, 0x24, 0x9A, 0x36, 0xAC, 0x48]);
+        assert_eq!(&bytes[280..288], &value.flags.to_ne_bytes());
+        assert_eq!(&bytes[288..296], &value.pdptrs[0].to_ne_bytes());
+    }
+
+    fn pae_hash(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x1000_0000_01b3)
+        })
+    }
+
+    fn pae_sregs_summary(label: &str, value: &kvm_sregs2, metadata: &mut String) {
+        writeln!(
+            metadata,
+            "{label}_flags={:#x} {label}_pdptr0={:#x} {label}_pdptr1={:#x} {label}_pdptr2={:#x} {label}_pdptr3={:#x} {label}_cr0={:#x} {label}_cr3={:#x} {label}_cr4={:#x}",
+            value.flags,
+            value.pdptrs[0],
+            value.pdptrs[1],
+            value.pdptrs[2],
+            value.pdptrs[3],
+            value.cr0,
+            value.cr3,
+            value.cr4,
+        )
+        .expect("PAE metadata write");
+    }
+
+    fn run_pae_phase(
+        report_root: &Path,
+        phase: PaePhase,
+        host_vendor: &str,
+        host_paging: &str,
+        host_paging_setting: &str,
+    ) -> PaeObservation {
+        let report_dir = report_root.join(phase.name());
+        assert!(
+            !report_dir.exists(),
+            "{} must be a fresh PAE phase report directory",
+            report_dir.display()
+        );
+        fs::create_dir_all(&report_dir)
+            .unwrap_or_else(|e| panic!("create {} failed: {e}", report_dir.display()));
+        let (mut ram, mut backend, prewrite_a) = pae_backend();
+        assert_eq!(prewrite_a.flags, PAE_SREGS2_FLAGS_PDPTRS_VALID);
+        assert_eq!(prewrite_a.pdptrs[0], PAE_PDPT_A_ENTRY);
+        let pdpt_a = ram.as_mut_bytes()[PAE_PDPT_GPA..PAE_PDPT_GPA + 8].to_vec();
+        assert_eq!(pdpt_a, PAE_PDPT_A_ENTRY.to_le_bytes());
+        write_image(
+            &report_dir,
+            "prewrite-a-sregs2.bin",
+            &pae_sregs2_bytes(&prewrite_a),
+        );
+        write_image(&report_dir, "pdpt-a-prewrite.bin", &pdpt_a);
+
+        let boundary = backend
+            .run()
+            .unwrap_or_else(|e| panic!("{phase:?} boundary KVM_RUN failed: {e}"));
+        pae_expect_output(&boundary, PAE_WARMUP_MARKER, "PAE B boundary");
+        assert_eq!(pae_exit_label(&boundary, "PAE B boundary"), "KVM_EXIT_IO");
+        let boundary_rip = backend
+            .vcpu
+            .get_regs()
+            .unwrap_or_else(|e| panic!("PAE B KVM_GET_REGS failed: {e}"))
+            .rip;
+        assert_eq!(
+            boundary_rip,
+            (PAE_CODE_GPA + PAE_GUEST_PDPT_WRITE_LEN + 8) as u64
+        );
+        let pdpt_b = ram.as_mut_bytes()[PAE_PDPT_GPA..PAE_PDPT_GPA + 8].to_vec();
+        let mut at_b = None;
+        let mut endpoint_for_failure = None;
+        let continuation_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_eq!(pdpt_b, PAE_PDPT_B_ENTRY.to_le_bytes());
+            at_b = match phase {
+                PaePhase::NoReadAtB => None,
+                PaePhase::OneGetAtB | PaePhase::GetThenSetPrewriteA => {
+                    let value = unsafe {
+                        // SAFETY: the vCPU is stopped at the checked PIO boundary and KVM writes
+                        // the complete kernel-sized `kvm_sregs2` into this independent value.
+                        raw_get_sregs2(backend.vcpu.as_raw_fd())
+                    }
+                    .unwrap_or_else(|e| panic!("{} KVM_GET_SREGS2 at B failed: {e}", phase.name()));
+                    at_b = Some(value);
+                    match phase {
+                        PaePhase::GetThenSetPrewriteA => {
+                            unsafe {
+                                // SAFETY: the vCPU is stopped at the checked PIO boundary; the
+                                // source is a complete pre-write KVM SREGS2 record and no guest
+                                // run is interposed before the next continuation.
+                                raw_set_sregs2(backend.vcpu.as_raw_fd(), &prewrite_a)
+                            }
+                            .unwrap_or_else(|e| panic!("PAE raw KVM_SET_SREGS2 at B failed: {e}"));
+                            assert_eq!(
+                                ram.as_mut_bytes()[PAE_PDPT_GPA..PAE_PDPT_GPA + 8],
+                                PAE_PDPT_B_ENTRY.to_le_bytes()
+                            );
+                        }
+                        PaePhase::OneGetAtB | PaePhase::NoReadAtB => {}
+                    }
+                    Some(value)
+                }
+            };
+            backend.retire_pending_completion().unwrap_or_else(|e| {
+                panic!(
+                    "{} boundary completion retirement failed: {e}",
+                    phase.name()
+                )
+            });
+            let continuation = backend
+                .run()
+                .unwrap_or_else(|e| panic!("{} continuation KVM_RUN failed: {e}", phase.name()));
+            let endpoint_byte = match &continuation {
+                Exit::Arch(X86Exit::Io {
+                    port: 0x3F8,
+                    size: 1,
+                    write: Some(value),
+                }) => u8::try_from(*value).expect("PAE UART value fits in a byte"),
+                other => panic!(
+                    "{} returned unexpected continuation KVM_RUN exit: {other:?}",
+                    phase.name()
+                ),
+            };
+            assert!(matches!(endpoint_byte, 0x42 | 0x99));
+            let continuation_exit = pae_exit_label(&continuation, "PAE continuation");
+            backend.retire_pending_completion().unwrap_or_else(|e| {
+                panic!(
+                    "{} continuation completion retirement failed: {e}",
+                    phase.name()
+                )
+            });
+            let endpoint_exit_value = backend
+                .run()
+                .unwrap_or_else(|e| panic!("{} endpoint KVM_RUN failed: {e}", phase.name()));
+            let endpoint_exit = pae_exit_label(&endpoint_exit_value, "PAE endpoint");
+            assert_eq!(endpoint_exit, "KVM_EXIT_HLT");
+            let endpoint = unsafe {
+                // SAFETY: the vCPU is stopped at the checked HLT endpoint and KVM writes a
+                // complete kernel-sized `kvm_sregs2` into this diagnostic value.
+                raw_get_sregs2(backend.vcpu.as_raw_fd())
+            }
+            .unwrap_or_else(|e| panic!("{} endpoint KVM_GET_SREGS2 failed: {e}", phase.name()));
+            endpoint_for_failure = Some(endpoint);
+            let endpoint_rip = backend
+                .vcpu
+                .get_regs()
+                .unwrap_or_else(|e| panic!("{} endpoint KVM_GET_REGS failed: {e}", phase.name()))
+                .rip;
+            assert_eq!(
+                endpoint_rip,
+                (PAE_CODE_GPA + PAE_GUEST_PDPT_WRITE_LEN + PAE_BASE_PROGRAM_LEN) as u64
+            );
+            assert_eq!(backend.exit_counts().total(), 3);
+            assert_eq!(backend.exit_counts().io, 2);
+            assert_eq!(backend.exit_counts().idle, 1);
+            (
+                continuation_exit,
+                endpoint_exit,
+                endpoint,
+                endpoint_rip,
+                endpoint_byte,
+            )
+        }));
+        let (continuation_exit, endpoint_exit, endpoint, endpoint_rip, endpoint_byte) =
+            match continuation_result {
+                Ok(value) => value,
+                Err(payload) => {
+                    write_image(&report_dir, "pdpt-b.bin", &pdpt_b);
+                    if let Some(value) = &at_b {
+                        write_image(&report_dir, "at-b-sregs2.bin", &pae_sregs2_bytes(value));
+                    }
+                    if let Some(value) = &endpoint_for_failure {
+                        write_image(&report_dir, "endpoint-sregs2.bin", &pae_sregs2_bytes(value));
+                    }
+                    fs::write(
+                        report_dir.join("continuation-failed.txt"),
+                        format!("phase={}\ncontinuation=panic\n", phase.name()),
+                    )
+                    .unwrap_or_else(|e| panic!("write continuation failure report failed: {e}"));
+                    std::panic::resume_unwind(payload);
+                }
+            };
+        write_image(&report_dir, "pdpt-b.bin", &pdpt_b);
+        if let Some(value) = &at_b {
+            write_image(&report_dir, "at-b-sregs2.bin", &pae_sregs2_bytes(value));
+        }
+        write_image(
+            &report_dir,
+            "endpoint-sregs2.bin",
+            &pae_sregs2_bytes(&endpoint),
+        );
+        let mut metadata = String::new();
+        writeln!(metadata, "phase={}", phase.name()).expect("PAE metadata write");
+        writeln!(metadata, "host_vendor={host_vendor}").expect("PAE metadata write");
+        writeln!(metadata, "host_paging={host_paging}").expect("PAE metadata write");
+        writeln!(metadata, "host_paging_setting={host_paging_setting}")
+            .expect("PAE metadata write");
+        writeln!(
+            metadata,
+            "phase_arm=after-visible-boundary-after-backend-auto-completion"
+        )
+        .expect("PAE metadata write");
+        writeln!(
+            metadata,
+            "backend_visible_exit_labels=KVM_EXIT_IO,KVM_EXIT_IO,KVM_EXIT_HLT"
+        )
+        .expect("PAE metadata write");
+        writeln!(
+            metadata,
+            "backend_visible_exit_count={}",
+            backend.exit_counts().total()
+        )
+        .expect("PAE metadata write");
+        writeln!(
+            metadata,
+            "completion_retirement_checkpoints=before-continuation,before-endpoint"
+        )
+        .expect("PAE metadata write");
+        writeln!(metadata, "sregs2_gets_at_b={}", phase.reads_at_b()).expect("PAE metadata write");
+        writeln!(metadata, "sregs2_sets_at_b={}", phase.sets_at_b()).expect("PAE metadata write");
+        writeln!(metadata, "boundary_kvm_run_exit=KVM_EXIT_IO").expect("PAE metadata write");
+        writeln!(metadata, "boundary_rip={boundary_rip:#x}").expect("PAE metadata write");
+        writeln!(metadata, "continuation_kvm_run_exit={continuation_exit}")
+            .expect("PAE metadata write");
+        writeln!(metadata, "endpoint_kvm_run_exit={endpoint_exit}").expect("PAE metadata write");
+        writeln!(metadata, "pdpt_a_bytes={pdpt_a:02x?}").expect("PAE metadata write");
+        writeln!(metadata, "pdpt_a_hash={:#018x}", pae_hash(&pdpt_a)).expect("PAE metadata write");
+        writeln!(metadata, "pdpt_b_bytes={pdpt_b:02x?}").expect("PAE metadata write");
+        writeln!(metadata, "pdpt_b_hash={:#018x}", pae_hash(&pdpt_b)).expect("PAE metadata write");
+        writeln!(metadata, "endpoint_uart_byte={endpoint_byte:#04x}").expect("PAE metadata write");
+        writeln!(metadata, "endpoint_rip={endpoint_rip:#x}").expect("PAE metadata write");
+        pae_sregs_summary("prewrite_a", &prewrite_a, &mut metadata);
+        if let Some(value) = &at_b {
+            pae_sregs_summary("at_b", value, &mut metadata);
+        } else {
+            writeln!(metadata, "at_b_sregs2=not-read").expect("PAE metadata write");
+        }
+        pae_sregs_summary("endpoint", &endpoint, &mut metadata);
+        fs::write(report_dir.join("metadata.txt"), metadata).unwrap_or_else(|e| {
+            panic!(
+                "write {} failed: {e}",
+                report_dir.join("metadata.txt").display()
+            )
+        });
+        println!(
+            "PAE_PHASE_OBSERVATION phase={} sregs2_gets_at_b={} sregs2_sets_at_b={} endpoint_uart_byte={endpoint_byte:#04x} endpoint_rip={endpoint_rip:#x} pdpt_b_hash={:#018x}",
+            phase.name(),
+            phase.reads_at_b(),
+            phase.sets_at_b(),
+            pae_hash(&pdpt_b),
+        );
+        PaeObservation {
+            phase,
+            prewrite_a,
+            at_b,
+            endpoint,
+            pdpt_b,
+            endpoint_byte,
+            endpoint_rip,
+            boundary_exit: "KVM_EXIT_IO",
+            continuation_exit,
+            endpoint_exit,
+        }
+    }
+
+    #[test]
+    #[ignore = "live x86 KVM NPT/EPT PAE phase observation; set PAE_PHASE_REPORT_DIR"]
+    fn x86_pae_sregs2_phase_observations() {
+        assert!(
+            Path::new("/dev/kvm").exists(),
+            "/dev/kvm is required for this ignored PAE hardware diagnostic"
+        );
+        let cpuinfo = fs::read_to_string("/proc/cpuinfo").expect("read /proc/cpuinfo");
+        let host_vendor = cpuinfo
+            .lines()
+            .find_map(|line| {
+                line.split_once(':')
+                    .filter(|(key, _)| key.trim() == "vendor_id")
+                    .map(|(_, value)| value.trim())
+            })
+            .expect("/proc/cpuinfo must report a CPU vendor");
+        let (host_paging, host_paging_setting) = match host_vendor {
+            "AuthenticAMD" => {
+                let setting = fs::read_to_string("/sys/module/kvm_amd/parameters/npt")
+                    .expect("read kvm_amd NPT setting");
+                ("NPT", setting)
+            }
+            "GenuineIntel" => {
+                let setting = fs::read_to_string("/sys/module/kvm_intel/parameters/ept")
+                    .expect("read kvm_intel EPT setting");
+                ("EPT", setting)
+            }
+            other => panic!("PAE phase observation does not support CPU vendor {other}"),
+        };
+        let host_paging_setting = host_paging_setting.trim();
+        assert!(
+            matches!(host_paging_setting, "Y" | "1"),
+            "{host_paging} must be enabled"
+        );
+        let report_root = PathBuf::from(
+            std::env::var_os("PAE_PHASE_REPORT_DIR")
+                .expect("PAE_PHASE_REPORT_DIR must capture complete PAE evidence"),
+        );
+        fs::create_dir_all(&report_root)
+            .unwrap_or_else(|e| panic!("create {} failed: {e}", report_root.display()));
+        let observations = [
+            run_pae_phase(
+                &report_root,
+                PaePhase::NoReadAtB,
+                host_vendor,
+                host_paging,
+                host_paging_setting,
+            ),
+            run_pae_phase(
+                &report_root,
+                PaePhase::OneGetAtB,
+                host_vendor,
+                host_paging,
+                host_paging_setting,
+            ),
+            run_pae_phase(
+                &report_root,
+                PaePhase::GetThenSetPrewriteA,
+                host_vendor,
+                host_paging,
+                host_paging_setting,
+            ),
+        ];
+        for observation in observations {
+            assert_eq!(observation.boundary_exit, "KVM_EXIT_IO");
+            assert_eq!(observation.continuation_exit, "KVM_EXIT_IO");
+            assert_eq!(observation.endpoint_exit, "KVM_EXIT_HLT");
+            assert_eq!(observation.pdpt_b, PAE_PDPT_B_ENTRY.to_le_bytes());
+            assert_eq!(observation.prewrite_a.pdptrs[0], PAE_PDPT_A_ENTRY);
+            assert_eq!(
+                observation.endpoint_rip,
+                (PAE_CODE_GPA + PAE_GUEST_PDPT_WRITE_LEN + PAE_BASE_PROGRAM_LEN) as u64
+            );
+            assert_eq!(observation.endpoint.cr0, 0x8000_0011);
+            assert_eq!(observation.endpoint.cr3, PAE_PDPT_GPA as u64);
+            assert_eq!(observation.endpoint.cr4, 0x30);
+            assert!(matches!(observation.endpoint_byte, 0x42 | 0x99));
+            match observation.phase {
+                PaePhase::NoReadAtB => assert!(observation.at_b.is_none()),
+                PaePhase::OneGetAtB | PaePhase::GetThenSetPrewriteA => {
+                    assert!(observation.at_b.is_some())
+                }
+            }
+        }
     }
 }

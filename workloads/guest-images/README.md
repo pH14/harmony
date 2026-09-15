@@ -38,6 +38,14 @@ process, and owns signals and the final VM terminal. PostgreSQL benchmark
 variants share `postgres-workload.sh`; the campaign, ordering, and UUID
 supervisors remain separate payloads so their fault behavior is preserved.
 
+The x86 PostgreSQL ledger fixture uses PostgreSQL's built-in UUID generation
+and disables JIT. It omits the unused uuid-ossp, XML2, SELinux and LLVM JIT
+providers, their extension installation files, and LLVM bitcode. It retains
+PL/pgSQL for the template databases created by `initdb`. The image does not
+create an `ld.so.cache`; its recorded glibc loader resolves libraries through
+its default directories. Adding an extension or provider requires rebuilding
+and reviewing the complete ELF dependency inventory before qualification.
+
 The Docker and K3s recipes retain nested container software and their
 application setup. K3s also builds pinned iptables 1.8.11 from source with a
 musl static compiler and packages the `iptables`, `iptables-restore`, and
@@ -77,3 +85,13 @@ Run that lane independently on a proposed branch with:
 ```sh
 gh workflow run nova-consonance-experiment.yml --ref YOUR_BRANCH -f suite=nested-runtime
 ```
+
+
+The Nova A–E CI gate is `verify-nova-oracle-admission.sh`. It checks the exact
+built oracle executable and downloaded kernel/platform/OCI/ROM immediately
+before execution against `admission/nova-oracle-composition.json`. The baseline
+is a separate review from default-session NES admission; a new publisher output
+must match its reviewed guest composition or fail closed. The gate requires
+restore-oracle mode and no tree-seed override, and retains only JSON/log evidence
+rather than the temporary full composition archives. See `workloads/tools/README.md`
+for candidate generation, review boundaries and executable provenance.

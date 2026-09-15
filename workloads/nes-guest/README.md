@@ -59,3 +59,28 @@ On Linux x86_64 and arm64 the guest SDK uses
 `hypercall_doorbell::observation::Observation`; the guest publishes its opaque
 handle and length through the SDK catalog. No application code maps `/dev/mem`,
 reserves hugepages, reads pagemap entries, or publishes a physical address.
+
+## Native ARM64 snapshot qualification
+
+The restore oracle uses the canonical ARM64 platform kernel and OCI runtime
+from `consonance/harmony-linux/build/aarch64/`, the native `nes.oci` image,
+and the pinned Nova ROM. It consumes these four inputs through the commands
+in `workloads/tools/README.md`. There is no workload-specific kernel profile
+or Nova initramfs; the oracle prepares the workload through the same OCI
+assembly used by the execution package.
+
+The canonical x86 agent uses static GNU libc. Snapshot XSAVE qualification
+must audit its linked executable, including IFUNC and internal save paths;
+static linking alone does not establish the proposed instruction admission
+contract. Exact executable inspection remains outstanding for the current
+OCI build.
+
+The builder also retains `nes-build-provenance` beside the OCI layout, outside
+the guest image. It contains the existing BusyBox unstripped companion and
+configuration/link records when available, source-file hashes, toolchain
+versions, and hashes of the packaged executables and QuickNES archive. The
+host compiler's libc archive is recorded as a candidate; the retained link
+record determines the actual linkage. Nova's two A–E jobs upload this directory
+and the exact ROM-free OCI layout only on failure, for separate admission
+review. These diagnostics neither approve changed bytes nor retain a ROM or
+snapshot RAM.

@@ -90,6 +90,9 @@ exclude_globs = [
 
 # Equivalent mutations in portable logic.
 exclude_re = [
+    # The unsupported diagnostic backend returns Vec::new(); vec![] is identical.
+    # Nonempty defaults and boxed/VMM forwarding mutations remain gated.
+    '^consonance/vmm-backend/src/backend\.rs:[0-9]+:[0-9]+: replace Backend::diagnostic_debug_hits -> Vec<u64> with vec!\[\]$',
     # Linux PROT_READ (1) and PROT_WRITE (2) are disjoint ABI bits, so OR
     # and XOR select the identical protection flags. The AND mutation remains
     # gated by observation mapping tests that assert the syscall arguments.

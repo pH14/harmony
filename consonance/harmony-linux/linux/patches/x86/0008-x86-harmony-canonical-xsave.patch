@@ -1,0 +1,346 @@
+From: Harmony contributors
+Subject: [PATCH] x86/fpu: materialize fixed-contract XSAVE images before publication
+
+For harmony_pvclock only, require the fixed standard FP/SSE/AVX contract.
+Keep the save and whole-buffer canonicalization locally IRQ-disabled and
+use fault-checked accesses for signal destinations. Preserve live MXCSR
+independently of hardware presence, including UABI serialization/import.
+The existing legacy signal epilog still marks materialized FP/SSE present.
+
+This is guest-kernel code, not a host kernel change. Higher components,
+optimized save formats and alternate allocations are rejected explicitly.
+
+--- a/arch/x86/kernel/fpu/harmony_xstate.h
++++ b/arch/x86/kernel/fpu/harmony_xstate.h
+@@ -0,0 +1,142 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __X86_KERNEL_FPU_HARMONY_XSTATE_H
++#define __X86_KERNEL_FPU_HARMONY_XSTATE_H
++
++#define HARMONY_XSTATE_SIZE 832
++#define HARMONY_XSTATE_MASK 7
++
++static __always_inline bool harmony_xstate_layout_valid(u64 mask, unsigned int size,
++						       bool compacted)
++{
++	return mask == HARMONY_XSTATE_MASK && size >= HARMONY_XSTATE_SIZE && !compacted;
++}
++
++static __always_inline int harmony_xstate_get(void *base, bool user, unsigned int off,
++					    u8 *value)
++{
++	if (user)
++		return __get_user(*value, (u8 __user *)base + off);
++	*value = *((u8 *)base + off);
++	return 0;
++}
++
++static __always_inline int harmony_xstate_put(void *base, bool user, unsigned int off,
++					    u8 value)
++{
++	if (user)
++		return __put_user(value, (u8 __user *)base + off);
++	*((u8 *)base + off) = value;
++	return 0;
++}
++
++static __always_inline int harmony_xstate_zero(void *base, bool user,
++					     unsigned int off, unsigned int len)
++{
++	unsigned int i;
++
++	for (i = 0; i < len; i++)
++		if (harmony_xstate_put(base, user, off + i, 0))
++			return -EFAULT;
++	return 0;
++}
++
++static __always_inline int harmony_xstate_is_zero(void *base, bool user,
++						unsigned int off, unsigned int len)
++{
++	unsigned int i;
++	u8 value;
++
++	for (i = 0; i < len; i++) {
++		if (harmony_xstate_get(base, user, off + i, &value))
++			return -EFAULT;
++		if (value)
++			return 0;
++	}
++	return 1;
++}
++
++/*
++ * Only the fixed standard FP/SSE/AVX layout is admitted. The caller owns the
++ * FPU and keeps local IRQs disabled from XSAVE through this operation. The
++ * user variant also requires pagefault_disable(); failure leaves an incomplete
++ * image which the existing signal-frame clear/retry path must discard.
++ * MXCSR is a separately captured live value, never inferred from XSTATE_BV.
++ */
++static __always_inline int harmony_xstate_canonicalize(void *base, bool user,
++						     u32 mxcsr)
++{
++	unsigned int i;
++	volatile u8 bv = 0;
++	u8 value;
++	int zero, ret = 0;
++
++	if (mxcsr & ~0xffffU)
++		return -EINVAL;
++	if (harmony_xstate_get(base, user, 512, &value))
++		goto fault;
++	bv = value & HARMONY_XSTATE_MASK;
++	if (!(bv & 1)) {
++		if (harmony_xstate_zero(base, user, 0, 24) ||
++		    harmony_xstate_zero(base, user, 32, 128) ||
++		    harmony_xstate_put(base, user, 0, 0x7f) ||
++		    harmony_xstate_put(base, user, 1, 3))
++			goto fault;
++	}
++	if (harmony_xstate_put(base, user, 5, 0) ||
++	    harmony_xstate_get(base, user, 7, &value) ||
++	    harmony_xstate_put(base, user, 7, value & 7))
++		goto fault;
++	for (i = 0; i < 8; i++)
++		if (harmony_xstate_zero(base, user, 42 + i * 16, 6))
++			goto fault;
++	if (bv & 1) {
++		if (harmony_xstate_get(base, user, 0, &value))
++			goto fault;
++		if (value == 0x7f) {
++			if (harmony_xstate_get(base, user, 1, &value))
++				goto fault;
++			if (value == 3) {
++				zero = harmony_xstate_is_zero(base, user, 2, 22);
++				if (zero < 0)
++					goto fault;
++				if (zero) {
++					zero = harmony_xstate_is_zero(base, user, 32, 128);
++					if (zero < 0)
++						goto fault;
++					if (zero)
++						bv &= ~1;
++				}
++			}
++		}
++	}
++	if (!(bv & 2) && harmony_xstate_zero(base, user, 160, 256))
++		goto fault;
++	zero = harmony_xstate_is_zero(base, user, 160, 256);
++	if (zero < 0)
++		goto fault;
++	if (zero)
++		bv &= ~2;
++	if (!(bv & 4) && harmony_xstate_zero(base, user, 576, 256))
++		goto fault;
++	zero = harmony_xstate_is_zero(base, user, 576, 256);
++	if (zero < 0)
++		goto fault;
++	if (zero)
++		bv &= ~4;
++	for (i = 0; i < 4; i++)
++		if (harmony_xstate_put(base, user, 24 + i, mxcsr >> (i * 8)) ||
++		    harmony_xstate_put(base, user, 28 + i, 0xffffU >> (i * 8)))
++			goto fault;
++	if (harmony_xstate_zero(base, user, 416, 96) ||
++	    harmony_xstate_zero(base, user, 513, 63) ||
++	    harmony_xstate_put(base, user, 512, bv))
++		goto fault;
++	goto out;
++fault:
++	ret = -EFAULT;
++out:
++	/* A failed checked access must not leave a tracking bitmap on the stack. */
++	bv = 0;
++	return ret;
++}
++#endif
+--- a/arch/x86/kernel/fpu/signal.c
++++ b/arch/x86/kernel/fpu/signal.c
+@@ -225,6 +225,8 @@
+ 	fpregs_unlock();
+ 
+ 	if (ret) {
++		if (ret == -EINVAL)
++			return false;
+ 		if (!__clear_user(buf_fx, fpstate->user_size))
+ 			goto retry;
+ 		return false;
+--- a/arch/x86/kernel/fpu/xstate.c
++++ b/arch/x86/kernel/fpu/xstate.c
+@@ -934,6 +934,19 @@
+ 		goto out_disable;
+ 	}
+ 
++	if (harmony_pvclock_requested() &&
++	    (!IS_ENABLED(CONFIG_X86_64) ||
++	     fpu_kernel_cfg.max_features != HARMONY_XSTATE_MASK ||
++	     fpu_user_cfg.max_features != HARMONY_XSTATE_MASK ||
++	     fpu_kernel_cfg.default_features != HARMONY_XSTATE_MASK ||
++	     fpu_kernel_cfg.max_size != HARMONY_XSTATE_SIZE ||
++	     fpu_user_cfg.max_size != HARMONY_XSTATE_SIZE ||
++	     cpu_feature_enabled(X86_FEATURE_XSAVEOPT) ||
++	     cpu_feature_enabled(X86_FEATURE_XCOMPACTED) ||
++	     cpu_feature_enabled(X86_FEATURE_XGETBV1) ||
++	     cpu_feature_enabled(X86_FEATURE_XFD)))
++		panic("Harmony requires standard FP/SSE/AVX XSAVE without optimized features");
++
+ 	setup_init_fpu_buf();
+ 
+ 	/*
+@@ -1174,8 +1187,10 @@
+ 	copy_feature(header.xfeatures & XFEATURE_MASK_FP, &to, &xsave->i387,
+ 		     &xinit->i387, off_mxcsr);
+ 
+-	/* Copy MXCSR when SSE or YMM are set in the feature mask */
+-	copy_feature(header.xfeatures & (XFEATURE_MASK_SSE | XFEATURE_MASK_YMM),
++	/* Harmony saves materialize MXCSR independently of component presence. */
++	copy_feature((harmony_pvclock_requested() &&
++		      (fpstate->user_xfeatures & XFEATURE_MASK_SSE)) ||
++		     (header.xfeatures & (XFEATURE_MASK_SSE | XFEATURE_MASK_YMM)),
+ 		     &to, &xsave->i387.mxcsr, &xinit->i387.mxcsr,
+ 		     MXCSR_AND_FLAGS_SIZE);
+ 
+@@ -1332,7 +1347,9 @@
+ 
+ 	/* Validate MXCSR when any of the related features is in use */
+ 	mask = XFEATURE_MASK_FP | XFEATURE_MASK_SSE | XFEATURE_MASK_YMM;
+-	if (hdr.xfeatures & mask) {
++	if ((hdr.xfeatures & mask) ||
++	    (harmony_pvclock_requested() &&
++	     (fpstate->user_xfeatures & XFEATURE_MASK_SSE))) {
+ 		u32 mxcsr[2];
+ 
+ 		offset = offsetof(struct fxregs_state, mxcsr);
+@@ -1389,6 +1406,12 @@
+ 	 */
+ 	xsave->header.xfeatures |= hdr.xfeatures;
+ 
++	if (harmony_pvclock_requested()) {
++		if (!harmony_xstate_layout_valid(fpstate->xfeatures, fpstate->size,
++				cpu_feature_enabled(X86_FEATURE_XCOMPACTED)))
++			return -EINVAL;
++		return harmony_xstate_canonicalize(xsave, false, xsave->i387.mxcsr);
++	}
+ 	return 0;
+ }
+ 
+--- a/arch/x86/kernel/fpu/xstate.h
++++ b/arch/x86/kernel/fpu/xstate.h
+@@ -8,6 +8,10 @@
+ #include <asm/msr.h>
+ #include <asm/harmony_pvclock.h>
+ #include <linux/string.h>
++#include <linux/irqflags.h>
++#include <linux/uaccess.h>
++#include <linux/bug.h>
++#include "harmony_xstate.h"
+ 
+ #ifdef CONFIG_X86_64
+ DECLARE_PER_CPU(u64, xfd_state);
+@@ -210,45 +214,6 @@
+ #endif
+ 
+ /*
+- * Keep every save buffer host-neutral (see HARMONY_MXCSR_MASK_PINNED): pin
+- * the hardware-written MXCSR_MASK, and collapse the two encodings of x87/SSE
+- * init state to one. Whether an XSAVE variant records an in-init component as
+- * present-with-init-values or as absent is a microarchitecture choice, so the
+- * same guest state would otherwise leave different bytes in every save buffer
+- * on different hosts. The restore instructions read none of the rewritten
+- * bytes: an absent component's area is ignored, and a cleared bit restores
+- * the same init values the area now holds.
+- */
+-static inline void harmony_canonicalize_xsave(struct xregs_state *xs)
+-{
+-	struct fxregs_state *fx = &xs->i387;
+-
+-	fx->mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
+-
+-	if (!(xs->header.xfeatures & XFEATURE_MASK_FP)) {
+-		fx->cwd = 0x37f;
+-		fx->swd = 0;
+-		fx->twd = 0;
+-		fx->fop = 0;
+-		fx->rip = 0;
+-		fx->rdp = 0;
+-		memset(fx->st_space, 0, sizeof(fx->st_space));
+-	} else if (fx->cwd == 0x37f && !fx->swd && !fx->twd && !fx->fop &&
+-		   !fx->rip && !fx->rdp &&
+-		   !memchr_inv(fx->st_space, 0, sizeof(fx->st_space))) {
+-		xs->header.xfeatures &= ~XFEATURE_MASK_FP;
+-	}
+-
+-	if (!(xs->header.xfeatures & XFEATURE_MASK_SSE)) {
+-		fx->mxcsr = MXCSR_DEFAULT;
+-		memset(fx->xmm_space, 0, sizeof(fx->xmm_space));
+-	} else if (fx->mxcsr == MXCSR_DEFAULT &&
+-		   !memchr_inv(fx->xmm_space, 0, sizeof(fx->xmm_space))) {
+-		xs->header.xfeatures &= ~XFEATURE_MASK_SSE;
+-	}
+-}
+-
+-/*
+  * Save processor xstate to xsave area.
+  *
+  * Uses either XSAVE or XSAVEOPT or XSAVES depending on the CPU features
+@@ -259,18 +224,27 @@
+ 	u64 mask = fpstate->xfeatures;
+ 	u32 lmask = mask;
+ 	u32 hmask = mask >> 32;
++	unsigned long flags = 0;
++	u32 mxcsr;
++	bool harmony = harmony_pvclock_requested();
+ 	int err;
+ 
+ 	WARN_ON_FPU(!alternatives_patched);
+ 	xfd_validate_state(fpstate, mask, false);
+-
++	if (harmony) {
++		BUG_ON(!harmony_xstate_layout_valid(mask, fpstate->size,
++				cpu_feature_enabled(X86_FEATURE_XCOMPACTED)));
++		local_irq_save(flags);
++	}
+ 	XSTATE_XSAVE(&fpstate->regs.xsave, lmask, hmask, err);
+-
+-	/* We should never fault when copying to a kernel buffer: */
++	if (harmony) {
++		asm volatile("stmxcsr %0" : "=m" (mxcsr));
++		if (!err)
++			err = harmony_xstate_canonicalize(&fpstate->regs.xsave, false, mxcsr);
++		local_irq_restore(flags);
++		BUG_ON(err);
++	}
+ 	WARN_ON_FPU(err);
+-
+-	if (harmony_pvclock_requested())
+-		harmony_canonicalize_xsave(&fpstate->regs.xsave);
+ }
+ 
+ /*
+@@ -347,7 +321,24 @@
+ 	u64 mask = fpstate->user_xfeatures;
+ 	u32 lmask;
+ 	u32 hmask;
+-	int err;
++	unsigned long flags;
++	u32 mxcsr;
++	int err;
++
++	if (harmony_pvclock_requested()) {
++		if (!harmony_xstate_layout_valid(mask, fpstate->user_size,
++				cpu_feature_enabled(X86_FEATURE_XCOMPACTED)))
++			return -EINVAL;
++		local_irq_save(flags);
++		stac();
++		XSTATE_OP(XSAVE, buf, (u32)mask, (u32)(mask >> 32), err);
++		clac();
++		asm volatile("stmxcsr %0" : "=m" (mxcsr));
++		if (!err)
++			err = harmony_xstate_canonicalize((void *)buf, true, mxcsr);
++		local_irq_restore(flags);
++		return err;
++	}
+ 
+ 	/* Optimize away writing unnecessary xfeatures: */
+ 	if (fpu_state_size_dynamic())

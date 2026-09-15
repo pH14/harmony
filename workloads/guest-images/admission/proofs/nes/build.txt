@@ -1,0 +1,30 @@
+git_head=94d65df27b1f486b0b419a88ad7d531b8b829f06
+busybox_source_sha256=34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2
+busybox_source_url=https://busybox.net/downloads/busybox-1.38.0.tar.bz2
+architecture=amd64
+agent_path=/home/runner/work/harmony/harmony/workloads/nes-guest/target/x86_64-unknown-linux-gnu/release/play-agent
+rustc 1.97.0 (2d8144b78 2026-07-07)
+binary: rustc
+commit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3
+commit-date: 2026-07-07
+host: x86_64-unknown-linux-gnu
+release: 1.97.0
+LLVM version: 22.1.6
+cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Copyright (C) 2023 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+GNU ld (GNU Binutils for Ubuntu) 2.42
+Copyright (C) 2024 Free Software Foundation, Inc.
+This program is free software; you may redistribute it under the terms of
+the GNU General Public License version 3 or (at your option) a later version.
+This program has absolutely no warranty.
+
+Exact packaged executables and native core:
+a01efe4809a7c53dcc69c6360520f4f78eec8ec58166c4f67d9ff30188cfb546  /tmp/harmony-linux-build/nes-base-root/bin/busybox
+9286525d7b7179d9c7a0b6112616d9a6cdf92d48d50ad83b812482b099f5c477  /tmp/harmony-linux-build/nes-base-root/opt/harmony/play-agent
+7e2c0c9256fd682ff578ce6c62c137d2e17c143dbdf5155e93aa9606275d295d  /home/runner/work/harmony/harmony/workloads/nes/build/nova/libquicknes_libretro.a
+
+Host compiler static libc candidate (actual link recorded separately):
+d2a01bdb5e0443c6213f96f7ed90dd13006cc6913ee1cd306de7456def86ff2f  /usr/lib/gcc/x86_64-linux-gnu/13/../../../x86_64-linux-gnu/libc.a

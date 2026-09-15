@@ -36,11 +36,10 @@ exact-count arrival all fail the branch with the session untouched. One moment
 carries one effect, so a duplicate is reported rather than overwritten.
 
 `Session::run_until` runs to an absolute virtual-time deadline or an earlier
-stop. `Session::seal` snapshots the current stopped state, running the guest a
-further settle step whenever the control server cannot seal that point yet, and
-gives up once the caller's total settle allowance is spent. A guest that has
-crashed or gone quiescent advances no further, so its endpoint is offered one
-last seal and then reported rather than settled again.
+stop. `Session::snapshot` captures that exact stopped state in one control
+exchange and returns the server's synchronized V-time. It never advances the
+guest or retries a refusal, so a capture failure is returned to the caller with
+the control diagnostic.
 
 `SessionConfig::defer_virtual_time_checkpoint_hashes` moves sparse
 virtual-time checkpoint hashing out of the run that reaches a checkpoint. Each
@@ -73,10 +72,12 @@ sharing metadata is host-local and is never written to the wire. An export
 base must have the same setup and identity, and unchanged pages/chunks are
 retained by reference until a snapshot is serialized.
 
-The embedded complete and sparse portable snapshots use format version 3,
-which captures service state through the generic SDK channel. Import rejects
-versions 1 and 2 explicitly. Execution identities record sidecar version 3;
-the outer sparse archive field layout remains version 2.
+The embedded complete and sparse portable snapshots use format version 4,
+which also carries undelivered SDK stops and unanswered service requests.
+Readers still accept version 3 (no pending stop); versions 1 and 2 remain
+explicitly unsupported. The execution identity retains its version-3
+compatibility token so existing artifacts remain importable; the artifact's
+own header selects the codec. The outer sparse archive layout remains version 2.
 
 ```sh
 cargo test -p consonance-client
@@ -90,3 +91,9 @@ lifetime. Unknown, revoked, malformed, and out-of-bounds observations fail befor
 a guest-memory read. Large observations are fetched in chunks within the control
 protocol's read limit while the guest remains stopped. Workload adapters own
 interpretation of the returned bytes.
+
+The default x86 command line preserves AVX while disabling XSAVEOPT and XSAVES
+selection, and passes `LD_BIND_NOW=1` to PID 1 before its libc startup. Custom
+command lines used for XSAVE qualification must retain those settings. The
+kernel, pinned runtime re-execution, and admitted workload environment have
+separate checks; default boot arguments alone do not certify an arbitrary image.

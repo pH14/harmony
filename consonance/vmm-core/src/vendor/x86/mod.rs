@@ -61,6 +61,13 @@ impl Vendor for X86 {
         vmm.dispatch_mmio(gpa, size, write)
     }
 
+    fn finish_exit<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<Option<Exit<Self>>, VmmError> {
+        if !vmm.completion_staged {
+            return Ok(None);
+        }
+        Ok(vmm.backend.finish_exit()?)
+    }
+
     fn is_doorbell_exit(exit: &Exit<Self>) -> bool {
         matches!(
             exit,

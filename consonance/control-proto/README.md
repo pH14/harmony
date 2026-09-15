@@ -39,7 +39,12 @@ allocating an unbounded buffer or panicking.
 The framing version (`PROTO_VERSION`), application vocabulary version
 (`APP_PROTOCOL_VERSION`), and environment blob version are independent. The
 codec validates only framing; application and blob versions are checked by the
-negotiation and backend layers.
+negotiation and backend layers. Application version 12 adds `SnapshotRefused`,
+which retains the state-capture diagnostic instead of reducing it to
+`NotQuiescent`. Earlier error tags still decode with their original bytes;
+version 11 peers are rejected at negotiation. Snapshot artifact formats are
+unchanged. A refusal identifies a representation gap, not permission to advance
+the execution and save a different endpoint.
 
 ## Modules and validation
 

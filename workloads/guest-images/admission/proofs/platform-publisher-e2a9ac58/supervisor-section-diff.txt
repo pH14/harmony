@@ -1,0 +1,54 @@
+--- /private/tmp/harmony-publisher-e2a9ac58-proposal/static/proof/fef80533-usr_lib_harmony_supervisor.sections.txt	2026-09-14 15:36:24
++++ /private/tmp/harmony-publisher-e2a9ac58-proposal/static/proof/e2a9ac58-usr_lib_harmony_supervisor.sections.txt	2026-09-14 15:36:31
+@@ -1,5 +1,5 @@
+ 
+-/private/tmp/harmony-publisher-e2a9ac58-proposal/static/fef80533/usr/lib/harmony/supervisor:	file format elf64-x86-64
++/private/tmp/harmony-publisher-e2a9ac58-proposal/static/e2a9ac58/usr/lib/harmony/supervisor:	file format elf64-x86-64
+ 
+ Sections:
+ Idx Name              Size     VMA              Type
+@@ -7,26 +7,26 @@
+   1 .gnu.hash         0000001c 0000000000000238 DATA
+   2 .dynsym           00000018 0000000000000258 DATA
+   3 .dynstr           00000001 0000000000000270 DATA
+-  4 .rela.dyn         00006240 0000000000000278 DATA
++  4 .rela.dyn         00006768 0000000000000278 DATA
+   5 .init             00000003 0000000000007000 TEXT
+   6 .plt              00000010 0000000000007010 TEXT
+   7 .plt.got          00000018 0000000000007020 TEXT
+-  8 .text             0007e0c3 0000000000007040 TEXT
+-  9 .fini             00000003 0000000000085103 TEXT
+- 10 .rodata           00013540 0000000000086000 DATA
+- 11 .eh_frame_hdr     00001e7c 0000000000099540 DATA
+- 12 .eh_frame         0000a47c 000000000009b3c0 DATA
+- 13 .gcc_except_table 00001584 00000000000a583c DATA
+- 14 .tdata            00000030 00000000000a7160 DATA
+- 15 .tbss             00000020 00000000000a7190 BSS
+- 16 .init_array       00000008 00000000000a7190 DATA
+- 17 .fini_array       00000008 00000000000a7198 DATA
+- 18 .data.rel.ro      00002f88 00000000000a71a0 DATA
+- 19 .dynamic          00000180 00000000000aa128 DATA
+- 20 .got              00000d40 00000000000aa2a8 DATA
+- 21 .data             00000af4 00000000000ab000 DATA
+- 22 .bss              00001900 00000000000abb00 BSS
++  8 .text             00088413 0000000000007040 TEXT
++  9 .fini             00000003 000000000008f453 TEXT
++ 10 .rodata           00013f80 0000000000090000 DATA
++ 11 .eh_frame_hdr     00002014 00000000000a3f80 DATA
++ 12 .eh_frame         0000af14 00000000000a5f98 DATA
++ 13 .gcc_except_table 00001598 00000000000b0eac DATA
++ 14 .tdata            00000030 00000000000b3dc0 DATA
++ 15 .tbss             00000020 00000000000b3df0 BSS
++ 16 .init_array       00000008 00000000000b3df0 DATA
++ 17 .fini_array       00000008 00000000000b3df8 DATA
++ 18 .data.rel.ro      00003288 00000000000b3e00 DATA
++ 19 .dynamic          00000180 00000000000b7088 DATA
++ 20 .got              00000df8 00000000000b7208 DATA
++ 21 .data             00000af4 00000000000b8000 DATA
++ 22 .bss              00001900 00000000000b8b00 BSS
+  23 .comment          00000045 0000000000000000 
+- 24 .symtab           0000af08 0000000000000000 
+- 25 .strtab           0001faf9 0000000000000000 
++ 24 .symtab           0000b580 0000000000000000 
++ 25 .strtab           00021217 0000000000000000 
+  26 .shstrtab         000000e0 0000000000000000 

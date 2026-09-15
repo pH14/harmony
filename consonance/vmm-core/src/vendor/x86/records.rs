@@ -6,6 +6,8 @@ use vm_state::{
     VcpuSregs, VmState, Xcrs, XsaveImage,
 };
 
+use crate::vmm::PvclockSnapshot;
+
 use crate::snapshot::SnapshotError;
 
 pub(crate) fn to_vm_regs(r: &vmm_backend::VcpuRegs) -> VcpuRegs {
@@ -110,6 +112,8 @@ pub(crate) fn to_vm_sregs(s: &vmm_backend::VcpuSregs) -> VcpuSregs {
         cr8: s.cr8,
         efer: s.efer,
         apic_base: s.apic_base,
+        flags: s.flags,
+        pdptrs: s.pdptrs,
     }
 }
 
@@ -138,8 +142,8 @@ pub(crate) fn from_vm_sregs(s: &VcpuSregs) -> vmm_backend::VcpuSregs {
         cr8: s.cr8,
         efer: s.efer,
         apic_base: s.apic_base,
-        flags: 0,
-        pdptrs: [0; 4],
+        flags: s.flags,
+        pdptrs: s.pdptrs,
     }
 }
 
@@ -148,6 +152,7 @@ pub(crate) fn to_vm_debugregs(d: &vmm_backend::DebugRegs) -> DebugRegs {
         db: d.db,
         dr6: d.dr6,
         dr7: d.dr7,
+        flags: d.flags,
     }
 }
 
@@ -156,7 +161,7 @@ pub(crate) fn from_vm_debugregs(d: &DebugRegs) -> vmm_backend::DebugRegs {
         db: d.db,
         dr6: d.dr6,
         dr7: d.dr7,
-        flags: 0,
+        flags: d.flags,
     }
 }
 
@@ -207,6 +212,7 @@ pub(crate) fn vcpu_state_from(s: &VmState) -> vmm_backend::VcpuState {
         mp_state: from_vm_mp_state(s.mp_state),
         msrs: s.msrs.0.clone(),
         xsave: s.xsave.0.clone(),
+        xsave_restore_bv: s.xsave_restore_bv,
     }
 }
 
@@ -219,6 +225,7 @@ pub(crate) fn fill_vcpu_state(out: &mut VmState, s: &vmm_backend::VcpuState) {
     out.mp_state = to_vm_mp_state(s.mp_state);
     out.msrs = MsrBlock(s.msrs.clone());
     out.xsave = XsaveImage(s.xsave.clone());
+    out.xsave_restore_bv = s.xsave_restore_bv;
     out.timers = TimerQueueState::default();
 }
 
@@ -304,42 +311,46 @@ pub(crate) fn events_for_restore(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vc
 }
 
 pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'static str> {
-    let s = &vcpu.sregs;
-    if s.flags != 0 {
+    unrestorable_events(&vcpu.events)
+}
+
+fn exception_shape_error(e: &vmm_backend::VcpuEvents) -> Option<&'static str> {
+    let injected = e.exception_injected != 0;
+    let pending = e.exception_pending != 0;
+    if injected && pending {
         return Some(
-            "kvm_sregs2 flags is set (e.g. PDPTRS_VALID) — the vm_state subset does not carry it; \
-             the determinism guest is 64-bit / paging-off, so a snapshot here is unrepresentable",
+            "kvm_vcpu_events.exception_injected and exception_pending are both set; KVM requires \
+             an exception to be injected or pending, not both",
         );
     }
-    if s.pdptrs.iter().any(|&p| p != 0) {
+    if (injected || pending) && e.exception_nr == 2 {
         return Some(
-            "PAE PDPTRs are non-zero — not carried by the vm_state subset (the determinism guest \
-             is 64-bit / paging-off, where PDPTRs are unused)",
+            "kvm_vcpu_events.exception_nr is vector 2, which is not a valid active exception \
+             vector for KVM",
         );
     }
-    if vcpu.debugregs.flags != 0 {
+    if (injected || pending) && e.exception_nr > 31 {
         return Some(
-            "kvm_debugregs flags is set — the vm_state DebugRegs record carries DR0..3/DR6/DR7 but \
-             not the flags field (KVM defines it as currently always 0)",
+            "kvm_vcpu_events.exception_nr is above 31, which is not a valid active exception \
+             vector for KVM",
         );
     }
-    if let Some(reason) = cap_unrestorable_events(&vcpu.events) {
-        return Some(reason);
+    if injected && e.exception_has_payload != 0 {
+        return Some(
+            "kvm_vcpu_events.exception_has_payload is set for an injected-only exception; KVM \
+             clears payload state for injected exceptions",
+        );
     }
     None
 }
 
-pub(crate) fn cap_unrestorable_events(e: &vmm_backend::VcpuEvents) -> Option<&'static str> {
+pub(crate) fn unrestorable_events(e: &vmm_backend::VcpuEvents) -> Option<&'static str> {
+    if let Some(reason) = exception_shape_error(e) {
+        return Some(reason);
+    }
     if e.triple_fault_pending != 0 {
         return Some(
             "kvm_vcpu_events.triple_fault_pending is set, but KVM_CAP_X86_TRIPLE_FAULT_EVENT is not \
-             enabled on this backend — KVM_SET_VCPU_EVENTS would reject it (-EINVAL); fail closed \
-             rather than seal/restore an unrestorable snapshot",
-        );
-    }
-    if e.exception_has_payload != 0 {
-        return Some(
-            "kvm_vcpu_events.exception_has_payload is set, but KVM_CAP_EXCEPTION_PAYLOAD is not \
              enabled on this backend — KVM_SET_VCPU_EVENTS would reject it (-EINVAL); fail closed \
              rather than seal/restore an unrestorable snapshot",
         );
@@ -381,7 +392,8 @@ pub(crate) fn has_active_event_injection(e: &vmm_backend::VcpuEvents) -> bool {
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4544;
 const DEVICE_BLOB_VERSION_BASE: u16 = 3;
 
-const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 4;
+const DEVICE_BLOB_VERSION_PVCLOCK_LEGACY: u16 = 4;
+const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 5;
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub(crate) struct UartState {
@@ -406,7 +418,7 @@ pub(crate) struct DeviceState {
     pub lapic: Option<LapicState>,
     pub legacy: Option<LegacyState>,
     pub events: vmm_backend::VcpuEvents,
-    pub pvclock: Option<(Option<u64>, bool)>,
+    pub pvclock: Option<PvclockSnapshot>,
 }
 
 fn put_u16(out: &mut Vec<u8>, v: u16) {
@@ -478,10 +490,12 @@ fn put_lapic(out: &mut Vec<u8>, s: &LapicState) {
 pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     let mut out = Vec::new();
     put_u32(&mut out, DEVICE_BLOB_MAGIC);
+    let pending_pvclock = d.pvclock.is_some_and(|pv| pv.gpa.is_some() && !pv.armed);
     put_u16(
         &mut out,
         match d.pvclock {
-            Some(_) => DEVICE_BLOB_VERSION_PVCLOCK,
+            Some(_) if pending_pvclock => DEVICE_BLOB_VERSION_PVCLOCK,
+            Some(_) => DEVICE_BLOB_VERSION_PVCLOCK_LEGACY,
             None => DEVICE_BLOB_VERSION_BASE,
         },
     );
@@ -512,15 +526,18 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
         None => out.push(0),
     }
     put_events(&mut out, &d.events);
-    if let Some((gpa, registrable)) = &d.pvclock {
-        match gpa {
+    if let Some(pv) = &d.pvclock {
+        match pv.gpa {
             Some(g) => {
                 out.push(1);
-                put_u64(&mut out, *g);
+                put_u64(&mut out, g);
             }
             None => out.push(0),
         }
-        out.push(u8::from(*registrable));
+        out.push(u8::from(pv.registrable));
+        if pending_pvclock {
+            out.push(u8::from(pv.armed));
+        }
     }
     DeviceBlob(out)
 }
@@ -636,7 +653,10 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         return Err(bad("bad magic"));
     }
     let version = r.u16().ok_or(bad("truncated version"))?;
-    if version != DEVICE_BLOB_VERSION_BASE && version != DEVICE_BLOB_VERSION_PVCLOCK {
+    if !matches!(
+        version,
+        DEVICE_BLOB_VERSION_BASE | DEVICE_BLOB_VERSION_PVCLOCK_LEGACY | DEVICE_BLOB_VERSION_PVCLOCK
+    ) {
         return Err(bad("unsupported version"));
     }
     let tsc_adjust = r.u64().ok_or(bad("truncated tsc_adjust"))?;
@@ -669,7 +689,10 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         _ => return Err(bad("bad legacy flag")),
     };
     let events = r.events().ok_or(bad("truncated vcpu events"))?;
-    let pvclock = if version == DEVICE_BLOB_VERSION_PVCLOCK {
+    let pvclock = if matches!(
+        version,
+        DEVICE_BLOB_VERSION_PVCLOCK_LEGACY | DEVICE_BLOB_VERSION_PVCLOCK
+    ) {
         let gpa = match r.u8().ok_or(bad("truncated pvclock gpa flag"))? {
             0 => None,
             1 => Some(r.u64().ok_or(bad("truncated pvclock gpa"))?),
@@ -681,7 +704,28 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
                 "pvclock record marks a registered page non-registrable (impossible tuple)",
             ));
         }
-        Some((gpa, registrable))
+        let armed = if version == DEVICE_BLOB_VERSION_PVCLOCK {
+            if gpa.is_none() {
+                return Err(bad("current pvclock record is missing its registered GPA"));
+            }
+            let armed = r.bool().ok_or(bad("bad pvclock armed flag"))?;
+            if armed {
+                return Err(bad(
+                    "current pvclock record must represent a pending registration",
+                ));
+            }
+            armed
+        } else {
+            gpa.is_some()
+        };
+        if armed && gpa.is_none() {
+            return Err(bad("pvclock record is armed without a registered page"));
+        }
+        Some(PvclockSnapshot {
+            gpa,
+            registrable,
+            armed,
+        })
     } else {
         None
     };
@@ -863,6 +907,7 @@ mod tests {
             mp_state: vmm_backend::MpState::Halted,
             msrs,
             xsave: (0u16..600).map(|i| i as u8).collect(),
+            xsave_restore_bv: None,
         }
     }
 
@@ -873,6 +918,16 @@ mod tests {
         fill_vcpu_state(&mut s, &original);
         let back = vcpu_state_from(&s);
         assert_eq!(back, original);
+    }
+
+    #[test]
+    fn xsave_restore_provenance_round_trips_through_vm_state() {
+        let mut original = sample_vcpu();
+        original.xsave_restore_bv = Some(3);
+        let mut s = VmState::default();
+        fill_vcpu_state(&mut s, &original);
+        assert_eq!(s.xsave_restore_bv, Some(3));
+        assert_eq!(vcpu_state_from(&s).xsave_restore_bv, Some(3));
     }
 
     #[test]
@@ -954,7 +1009,11 @@ mod tests {
                 slave_imr: 0xFF,
             }),
             events: full_events(),
-            pvclock: Some((Some(0x4000), true)),
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: true,
+            }),
         };
         let blob = encode_device_blob(&d);
         let decoded = decode_device_blob(&blob.0).unwrap();
@@ -1292,7 +1351,7 @@ mod tests {
         assert_eq!(
             setv.flags & KVM_VCPUEVENT_VALID_PAYLOAD,
             0,
-            "PAYLOAD stays gated on exception_has_payload"
+            "PAYLOAD is active-only for a quiescent snapshot"
         );
 
         let restored_stale = kvm_set(&stale, &setv);
@@ -1342,7 +1401,7 @@ mod tests {
     }
 
     #[test]
-    fn unrepresentable_state_fails_closed_on_cap_gated_event_fields() {
+    fn unrepresentable_state_only_rejects_triple_fault() {
         let representable = |events: vmm_backend::VcpuEvents| vmm_backend::VcpuState {
             events,
             ..Default::default()
@@ -1361,6 +1420,15 @@ mod tests {
                 exception_nr: 13,
                 exception_has_error_code: 1,
                 exception_error_code: 0x18,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                exception_pending: 1,
+                exception_nr: 14,
+                exception_has_error_code: 1,
+                exception_error_code: 0x18,
+                exception_has_payload: 1,
+                exception_payload: 0xCAFE,
                 ..Default::default()
             },
             vmm_backend::VcpuEvents {
@@ -1391,16 +1459,91 @@ mod tests {
             tf.contains("triple_fault_pending"),
             "reject reason names the field: {tf}"
         );
-        let pl = unrepresentable_state(&representable(vmm_backend::VcpuEvents {
-            exception_has_payload: 1,
-            exception_payload: 0xCAFE,
-            ..Default::default()
-        }))
-        .expect("exception_has_payload must fail closed at save");
-        assert!(
-            pl.contains("exception_has_payload"),
-            "reject reason names the field: {pl}"
-        );
+    }
+
+    #[test]
+    fn exception_shape_validation_is_active_only_and_strict() {
+        let invalid = [
+            (
+                vmm_backend::VcpuEvents {
+                    exception_injected: 1,
+                    exception_pending: 1,
+                    exception_nr: 14,
+                    ..Default::default()
+                },
+                "exception_injected",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_pending: 1,
+                    exception_nr: 2,
+                    ..Default::default()
+                },
+                "exception_nr",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_pending: 1,
+                    exception_nr: 32,
+                    ..Default::default()
+                },
+                "exception_nr",
+            ),
+            (
+                vmm_backend::VcpuEvents {
+                    exception_injected: 1,
+                    exception_nr: 13,
+                    exception_has_payload: 1,
+                    exception_payload: 0xCAFE,
+                    ..Default::default()
+                },
+                "exception_has_payload",
+            ),
+        ];
+        for (events, field) in invalid {
+            let reason = exception_shape_error(&events)
+                .unwrap_or_else(|| panic!("invalid active exception must be rejected: {events:?}"));
+            assert!(
+                reason.contains(field),
+                "shape rejection should identify {field:?}, got: {reason}"
+            );
+            assert!(
+                unrestorable_events(&events).is_some(),
+                "the save/restore guard must use the same active-shape validation: {events:?}"
+            );
+        }
+
+        for accepted in [
+            vmm_backend::VcpuEvents {
+                exception_injected: 1,
+                exception_nr: 13,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                exception_pending: 1,
+                exception_nr: 14,
+                exception_has_error_code: 1,
+                exception_error_code: 0x18,
+                exception_has_payload: 1,
+                exception_payload: 0x1234,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                exception_nr: 0xFF,
+                exception_has_payload: 1,
+                exception_payload: 0xCAFE,
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                exception_shape_error(&accepted).is_none(),
+                "valid or inactive exception shape was rejected: {accepted:?}"
+            );
+            assert!(
+                unrestorable_events(&accepted).is_none(),
+                "valid or inactive exception must remain restorable: {accepted:?}"
+            );
+        }
     }
 
     #[test]
@@ -1506,7 +1649,11 @@ mod tests {
             "an unoffered VM must still encode the v3 version word"
         );
         let on = encode_device_blob(&DeviceState {
-            pvclock: Some((Some(0x4000), true)),
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            }),
             ..d.clone()
         })
         .0;
@@ -1517,27 +1664,187 @@ mod tests {
         assert_eq!(
             &on[6..off.len()],
             &off[6..],
-            "the v4 encoding must extend the v3 body, not reshuffle it"
+            "the v5 encoding must extend the v3 body, not reshuffle it"
         );
         assert_eq!(
             on.len(),
-            off.len() + 1 + 8 + 1,
-            "v4 appends exactly the GPA-present flag + the GPA (u64) + the registrable flag"
+            off.len() + 1 + 8 + 1 + 1,
+            "v5 appends the GPA-present flag + GPA + registrable + armed flags"
         );
         assert_eq!(decode_device_blob(&off).unwrap(), d);
         assert_eq!(
             decode_device_blob(&on).unwrap().pvclock,
-            Some((Some(0x4000), true))
+            Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            })
         );
         let unreg = encode_device_blob(&DeviceState {
-            pvclock: Some((None, false)),
+            pvclock: Some(PvclockSnapshot {
+                gpa: None,
+                registrable: false,
+                armed: false,
+            }),
             ..d.clone()
         })
         .0;
         assert_eq!(
             decode_device_blob(&unreg).unwrap().pvclock,
-            Some((None, false))
+            Some(PvclockSnapshot {
+                gpa: None,
+                registrable: false,
+                armed: false,
+            })
         );
+
+        let armed = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: true,
+            }),
+            ..d.clone()
+        })
+        .0;
+        assert_eq!(
+            u16::from_le_bytes([armed[4], armed[5]]),
+            DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
+        );
+        assert_eq!(armed.len(), off.len() + 1 + 8 + 1);
+        let mut expected_legacy = on.clone();
+        expected_legacy.pop();
+        expected_legacy[4..6].copy_from_slice(&DEVICE_BLOB_VERSION_PVCLOCK_LEGACY.to_le_bytes());
+        assert_eq!(armed, expected_legacy);
+        assert_eq!(
+            u16::from_le_bytes([unreg[4], unreg[5]]),
+            DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
+        );
+        assert_eq!(unreg.len(), off.len() + 1 + 1);
+    }
+
+    #[test]
+    fn legacy_pvclock_blob_derives_armed_from_the_gpa() {
+        let current = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            }),
+            ..DeviceState::default()
+        })
+        .0;
+        let mut legacy = current[..current.len() - 1].to_vec();
+        legacy[4..6].copy_from_slice(&DEVICE_BLOB_VERSION_PVCLOCK_LEGACY.to_le_bytes());
+        assert_eq!(
+            decode_device_blob(&legacy).unwrap().pvclock,
+            Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: true,
+            })
+        );
+
+        let legacy_unregistered = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: None,
+                registrable: false,
+                armed: false,
+            }),
+            ..DeviceState::default()
+        })
+        .0;
+        assert_eq!(
+            decode_device_blob(&legacy_unregistered).unwrap().pvclock,
+            Some(PvclockSnapshot {
+                gpa: None,
+                registrable: false,
+                armed: false,
+            })
+        );
+    }
+
+    #[test]
+    fn archived_legacy_pvclock_fixtures_round_trip_byte_exactly() {
+        for (blob, expected) in [
+            (
+                include_bytes!("../../../tests/fixtures/harmony-x86-v4-armed.bin").as_slice(),
+                PvclockSnapshot {
+                    gpa: Some(0x4000),
+                    registrable: true,
+                    armed: true,
+                },
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/harmony-x86-v4-unregistered.bin")
+                    .as_slice(),
+                PvclockSnapshot {
+                    gpa: None,
+                    registrable: true,
+                    armed: false,
+                },
+            ),
+        ] {
+            assert_eq!(
+                u16::from_le_bytes([blob[4], blob[5]]),
+                DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
+            );
+            let decoded = decode_device_blob(blob).unwrap();
+            assert_eq!(decoded.pvclock, Some(expected));
+            assert_eq!(encode_device_blob(&decoded).0, blob);
+        }
+    }
+
+    #[test]
+    fn new_pvclock_blob_rejects_impossible_registration_flags() {
+        let mut bad_armed = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            }),
+            ..DeviceState::default()
+        })
+        .0;
+        *bad_armed.last_mut().unwrap() = 1;
+        assert!(matches!(
+            decode_device_blob(&bad_armed),
+            Err(SnapshotError::DeviceBlob(
+                "current pvclock record must represent a pending registration"
+            ))
+        ));
+
+        let mut missing_gpa = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: true,
+                armed: false,
+            }),
+            ..DeviceState::default()
+        })
+        .0;
+        let gpa_flag = missing_gpa.len() - 11;
+        missing_gpa.drain(gpa_flag + 1..gpa_flag + 9);
+        missing_gpa[gpa_flag] = 0;
+        assert!(matches!(
+            decode_device_blob(&missing_gpa),
+            Err(SnapshotError::DeviceBlob(
+                "current pvclock record is missing its registered GPA"
+            ))
+        ));
+
+        let blob = encode_device_blob(&DeviceState {
+            pvclock: Some(PvclockSnapshot {
+                gpa: Some(0x4000),
+                registrable: false,
+                armed: true,
+            }),
+            ..DeviceState::default()
+        });
+        assert!(matches!(
+            decode_device_blob(&blob.0),
+            Err(SnapshotError::DeviceBlob(_))
+        ));
     }
 
     #[test]
