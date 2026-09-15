@@ -435,16 +435,15 @@ fn isolated_continuation_admission_does_not_tune_the_next_ordinary_splice_draw()
 
 #[test]
 fn continuations_and_count_selection_replay_under_snapshot_pressure() {
-    for (workers, semantic, persistent, mode) in [
-        (1, false, false, 0),
-        (4, false, false, 0),
-        (4, true, false, 0),
-        (4, false, true, 0),
-        (1, false, false, 1),
-        (4, false, false, 1),
-        (4, false, true, 1),
-        (1, false, false, 2),
-        (4, false, false, 2),
+    for (workers, persistent, mode) in [
+        (1, false, 0),
+        (4, false, 0),
+        (4, true, 0),
+        (1, false, 1),
+        (4, false, 1),
+        (4, true, 1),
+        (1, false, 2),
+        (4, false, 2),
     ] {
         let config = CampaignConfig {
             campaign_seed: 947,
@@ -469,11 +468,6 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             retention: RetentionPolicy::Unprobed,
             selector: if persistent {
                 SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
-                    entry: 3,
-                    groups: vec![],
-                })
-            } else if semantic {
-                SelectorPolicy::EnergyProgressCheapestCount(RetireThresholds {
                     entry: 3,
                     groups: vec![],
                 })
@@ -513,7 +507,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         );
         assert_eq!(buffered, (live.clone(), checkpoint.clone()));
         let text = std::str::from_utf8(&bytes).unwrap();
-        if workers == 1 && !semantic && !persistent && mode == 0 {
+        if workers == 1 && !persistent && mode == 0 {
             for field in ["action_cost_unit", "execution_work_unit"] {
                 let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
                 let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();

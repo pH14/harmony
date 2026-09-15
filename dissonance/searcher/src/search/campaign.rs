@@ -2515,6 +2515,7 @@ where
                             classes_skipped: 0,
                             counter_reset: false,
                             concentration: None,
+                            class_rank: None,
                         };
                         let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
                         let splice = Some(CampaignSpliceRecord::Tail {
@@ -2905,7 +2906,6 @@ where
                         core.archive.record_selection_outcome(
                             parent_index,
                             !retained_ids.is_empty(),
-                            new_slot_descendant,
                             new_cell_descendant,
                         );
                     }
@@ -3792,9 +3792,6 @@ where
                     core.archive.record_selection_outcome(
                         parent_index,
                         !retained_ids.is_empty(),
-                        retained_ids
-                            .iter()
-                            .any(|id| core.archive.opened_new_slot(*id)),
                         retained_ids
                             .iter()
                             .any(|id| core.archive.opened_new_cell(*id)),
@@ -5454,6 +5451,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            class_rank: None,
         };
     }
 

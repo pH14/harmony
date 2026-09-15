@@ -2,7 +2,7 @@
 
 use std::{
     cell::Cell,
-    cmp::{Ordering, Reverse},
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt::Debug,
@@ -33,8 +33,8 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn slot_capacity() -> usize {
         MAX_ENTRIES_PER_KEY
     }
-    fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
-        left.cmp(&right)
+    fn progress_cmp(_left: Self::Group, _right: Self::Group) -> Ordering {
+        Ordering::Equal
     }
     fn preference_cmp(self, _other: Self) -> Ordering {
         Ordering::Equal
@@ -42,6 +42,79 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     type Lineage: Clone + Default;
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self;
     fn record(lineage: &mut Self::Lineage, key: Self);
+}
+
+pub(crate) struct ProgressOrdered<K: ArchiveKey>(pub(crate) K::Group);
+
+impl<K: ArchiveKey> Clone for ProgressOrdered<K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<K: ArchiveKey> Copy for ProgressOrdered<K> {}
+
+impl<K: ArchiveKey> PartialEq for ProgressOrdered<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<K: ArchiveKey> Eq for ProgressOrdered<K> {}
+
+impl<K: ArchiveKey> PartialOrd for ProgressOrdered<K> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<K: ArchiveKey> Ord for ProgressOrdered<K> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        K::progress_cmp(self.0, other.0).then_with(|| self.0.cmp(&other.0))
+    }
+}
+
+fn leaf_cell_depth<K: ArchiveKey>() -> usize {
+    1.min(K::groups().saturating_sub(1))
+}
+
+fn leaf_order<K: ArchiveKey>(left: (K, usize), right: (K, usize)) -> Ordering {
+    let depth = leaf_cell_depth::<K>();
+    K::progress_cmp(left.0.group(depth), right.0.group(depth)).then_with(|| left.1.cmp(&right.1))
+}
+
+fn leaf_advances<K: ArchiveKey>(leaf: (K, usize), parent: (K, usize)) -> bool {
+    leaf_order(leaf, parent) == Ordering::Greater
+}
+
+pub fn check_total_preorder<K: ArchiveKey>(groups: &[K::Group]) -> Result<(), String> {
+    for (left, first) in groups.iter().enumerate() {
+        for (right, second) in groups.iter().enumerate() {
+            if K::progress_cmp(*first, *second) != K::progress_cmp(*second, *first).reverse() {
+                return Err(format!(
+                    "progress_cmp on groups {left} and {right} disagrees when the arguments swap"
+                ));
+            }
+        }
+    }
+    for (left, first) in groups.iter().enumerate() {
+        for (middle, second) in groups.iter().enumerate() {
+            if K::progress_cmp(*first, *second) == Ordering::Greater {
+                continue;
+            }
+            for (right, third) in groups.iter().enumerate() {
+                if K::progress_cmp(*second, *third) == Ordering::Greater {
+                    continue;
+                }
+                if K::progress_cmp(*first, *third) == Ordering::Greater {
+                    return Err(format!(
+                        "progress_cmp is not transitive over groups {left}, {middle} and {right}"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub const MAX_ARCHIVE_ENTRIES: usize = 4_194_304;
@@ -106,13 +179,9 @@ pub struct RetireThresholds {
 pub enum SelectorPolicy {
     GroupUniform,
     Retire(RetireThresholds),
-    Energy(RetireThresholds),
-    EnergyFrontier(RetireThresholds),
     EnergyFrontierCheapest(RetireThresholds),
     EnergyFrontierCheapestCount(RetireThresholds),
-    EnergyProgressCheapestCount(RetireThresholds),
     EnergyFrontierCheapestKeyCount(RetireThresholds),
-    EnergyProgressCheapest(RetireThresholds),
 }
 
 #[must_use]
@@ -125,25 +194,8 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
                 threshold_values(thresholds)
             )
         }
-        SelectorPolicy::Energy(scales) => {
-            format!("{SELECTOR_IDENTIFIER}_energy:{}", threshold_values(scales))
-        }
-        SelectorPolicy::EnergyFrontier(scales) => {
-            format!(
-                "{SELECTOR_IDENTIFIER}_energy_frontier:{}",
-                threshold_values(scales)
-            )
-        }
         SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => format!(
             "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:{}",
-            threshold_values(scales)
-        ),
-        SelectorPolicy::EnergyProgressCheapest(scales) => format!(
-            "{SELECTOR_IDENTIFIER}_energy_progress_cheapest_v1:{}",
-            threshold_values(scales)
-        ),
-        SelectorPolicy::EnergyProgressCheapestCount(scales) => format!(
-            "{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:{}",
             threshold_values(scales)
         ),
         SelectorPolicy::EnergyFrontierCheapestCount(scales) => format!(
@@ -175,39 +227,23 @@ pub fn selector_policy_from_identifier(
         return Ok(SelectorPolicy::GroupUniform);
     }
     let retire_prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
-    let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
-    let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
     let key_count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:");
-    let semantic_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_v1:");
-    let progress_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:");
     let count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:");
     let cheapest_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:");
     enum Parsed {
         Retire,
-        Energy,
-        EnergyFrontier,
         EnergyFrontierCheapest,
         EnergyFrontierCheapestCount,
-        EnergyProgressCheapest,
-        EnergyProgressCheapestCount,
         EnergyFrontierCheapestKeyCount,
     }
     let (values, selector) = if let Some(values) = identifier.strip_prefix(&retire_prefix) {
         (values, Parsed::Retire)
     } else if let Some(values) = identifier.strip_prefix(&key_count_prefix) {
         (values, Parsed::EnergyFrontierCheapestKeyCount)
-    } else if let Some(values) = identifier.strip_prefix(&semantic_prefix) {
-        (values, Parsed::EnergyProgressCheapest)
-    } else if let Some(values) = identifier.strip_prefix(&progress_prefix) {
-        (values, Parsed::EnergyProgressCheapestCount)
     } else if let Some(values) = identifier.strip_prefix(&count_prefix) {
         (values, Parsed::EnergyFrontierCheapestCount)
     } else if let Some(values) = identifier.strip_prefix(&cheapest_prefix) {
         (values, Parsed::EnergyFrontierCheapest)
-    } else if let Some(values) = identifier.strip_prefix(&frontier_prefix) {
-        (values, Parsed::EnergyFrontier)
-    } else if let Some(values) = identifier.strip_prefix(&energy_prefix) {
-        (values, Parsed::Energy)
     } else {
         return Err(format!("parent selector {identifier} is not recognized").into());
     };
@@ -233,13 +269,7 @@ pub fn selector_policy_from_identifier(
         Parsed::EnergyFrontierCheapestKeyCount => {
             SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
         }
-        Parsed::EnergyProgressCheapest => SelectorPolicy::EnergyProgressCheapest(thresholds),
-        Parsed::EnergyProgressCheapestCount => {
-            SelectorPolicy::EnergyProgressCheapestCount(thresholds)
-        }
         Parsed::Retire => SelectorPolicy::Retire(thresholds),
-        Parsed::Energy => SelectorPolicy::Energy(thresholds),
-        Parsed::EnergyFrontier => SelectorPolicy::EnergyFrontier(thresholds),
         Parsed::EnergyFrontierCheapestCount => {
             SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
         }
@@ -257,6 +287,8 @@ const CELL_NOVELTY_DRAWS: u64 = 4;
 
 const CELL_NOVELTY_RANK_SCALE: usize = 8;
 
+const CLASS_RANK_CAP: u8 = 8;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectorPath {
@@ -273,6 +305,8 @@ pub struct SelectorDraw {
     pub counter_reset: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concentration: Option<ConcentrationDraw>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class_rank: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -292,6 +326,8 @@ pub struct SelectorAccounting {
     pub productive_selections: u64,
     pub classes_skipped: u64,
     pub counter_resets: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub class_draws_by_rank: Vec<u64>,
     pub concentration: ConcentrationAccounting,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<RetirementAccounting>,
@@ -556,7 +592,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     live_progress: Option<(K, u64)>,
     frontier_cap: Option<usize>,
     active_ids: ActiveIds,
-    classes: BTreeMap<Reverse<K::Group>, ClassCells<K>>,
+    classes: BTreeMap<ProgressOrdered<K>, ClassCells<K>>,
     live_children: LiveChildren<K>,
     live_group_cells: LiveGroupCells<K>,
     active_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
@@ -591,7 +627,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
 
 type ClassCells<K> = BTreeMap<<K as ArchiveKey>::Group, CellMembers<K>>;
 type GroupPair<K> = (<K as ArchiveKey>::Group, <K as ArchiveKey>::Group);
-type LiveChildren<K> = Vec<BTreeMap<GroupPair<K>, BTreeSet<<K as ArchiveKey>::Group>>>;
+type LiveChildren<K> = Vec<BTreeMap<GroupPair<K>, BTreeSet<ProgressOrdered<K>>>>;
 type LiveGroupCells<K> = Vec<BTreeMap<GroupPair<K>, usize>>;
 
 struct CellMembers<K: ArchiveKey> {
@@ -602,7 +638,43 @@ struct CellMembers<K: ArchiveKey> {
     drawn: u64,
 }
 
-type DonorRank<K> = (K, usize, usize);
+struct DonorRank<K: ArchiveKey> {
+    leaf_key: K,
+    leaf_id: usize,
+    donor_id: usize,
+}
+
+impl<K: ArchiveKey> Clone for DonorRank<K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<K: ArchiveKey> Copy for DonorRank<K> {}
+
+impl<K: ArchiveKey> PartialEq for DonorRank<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl<K: ArchiveKey> Eq for DonorRank<K> {}
+
+impl<K: ArchiveKey> PartialOrd for DonorRank<K> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<K: ArchiveKey> Ord for DonorRank<K> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        leaf_order(
+            (self.leaf_key, self.leaf_id),
+            (other.leaf_key, other.leaf_id),
+        )
+        .then_with(|| self.donor_id.cmp(&other.donor_id))
+    }
+}
 
 impl<K: ArchiveKey> Default for CellMembers<K> {
     fn default() -> Self {
@@ -989,11 +1061,11 @@ fn decrement_nested_count<T: Copy + Ord>(
     }
 }
 
-fn update_child<T: Copy + Ord>(
-    children: &mut BTreeMap<(T, T), BTreeSet<T>>,
+fn update_child<T: Copy + Ord, C: Copy + Ord>(
+    children: &mut BTreeMap<(T, T), BTreeSet<C>>,
     class: T,
     parent: T,
-    child: T,
+    child: C,
     add: bool,
 ) {
     let key = (class, parent);
@@ -1874,7 +1946,7 @@ where
         }
         self.active_ids.remove(id);
         let key = self.entries[id].key;
-        let class = Reverse(key.group(Self::class_depth()));
+        let class = ProgressOrdered::<K>(key.group(Self::class_depth()));
         let cell = key.group(Self::cell_depth());
         let was_sampleable = self.entry_unexhausted(id);
         let deepest = self.deepest_leaf[id];
@@ -1885,7 +1957,11 @@ where
             if let Some(members) = cells.get_mut(&cell) {
                 if members.ids.remove(&id) {
                     members.drawn = members.drawn.saturating_sub(self.selected[id]);
-                    members.donors.remove(&(deepest.0, deepest.1, id));
+                    members.donors.remove(&DonorRank {
+                        leaf_key: deepest.0,
+                        leaf_id: deepest.1,
+                        donor_id: id,
+                    });
                     if was_sampleable {
                         members.sampleable.remove(&id);
                     }
@@ -1911,7 +1987,7 @@ where
 
     fn insert_active_cell_member(&mut self, id: usize) {
         let key = self.entries[id].key;
-        let class = Reverse(key.group(Self::class_depth()));
+        let class = ProgressOrdered::<K>(key.group(Self::class_depth()));
         let cell = key.group(Self::cell_depth());
         let sampleable = self.entry_unexhausted(id);
         let deepest = self.deepest_leaf[id];
@@ -1928,7 +2004,11 @@ where
         }
         members.ids.insert(id);
         members.drawn = members.drawn.saturating_add(self.selected[id]);
-        members.donors.insert((deepest.0, deepest.1, id));
+        members.donors.insert(DonorRank {
+            leaf_key: deepest.0,
+            leaf_id: deepest.1,
+            donor_id: id,
+        });
         if sampleable {
             members.sampleable.insert(id);
         }
@@ -1945,7 +2025,7 @@ where
             return;
         }
         let key = self.entries[id].key;
-        let class = Reverse(key.group(Self::class_depth()));
+        let class = ProgressOrdered::<K>(key.group(Self::class_depth()));
         let cell = key.group(Self::cell_depth());
         let Some(members) = self
             .classes
@@ -1957,8 +2037,16 @@ where
         if !members.ids.contains(&id) {
             return;
         }
-        members.donors.remove(&(previous.0, previous.1, id));
-        members.donors.insert((current.0, current.1, id));
+        members.donors.remove(&DonorRank {
+            leaf_key: previous.0,
+            leaf_id: previous.1,
+            donor_id: id,
+        });
+        members.donors.insert(DonorRank {
+            leaf_key: current.0,
+            leaf_id: current.1,
+            donor_id: id,
+        });
     }
 
     fn insert_active_cell(&mut self, key: K) {
@@ -1999,7 +2087,7 @@ where
                 &mut self.live_children[cell_depth],
                 class,
                 key.group(cell_depth + 1),
-                key.group(cell_depth),
+                ProgressOrdered::<K>(key.group(cell_depth)),
                 live,
             );
         }
@@ -2012,7 +2100,7 @@ where
                     &mut self.live_children[depth],
                     class,
                     key.group(depth + 1),
-                    group,
+                    ProgressOrdered::<K>(group),
                     live,
                 );
             }
@@ -2021,7 +2109,7 @@ where
 
     fn set_entry_sampleable(&mut self, id: usize, sampleable: bool) {
         let key = self.entries[id].key;
-        let class = Reverse(key.group(Self::class_depth()));
+        let class = ProgressOrdered::<K>(key.group(Self::class_depth()));
         let cell = key.group(Self::cell_depth());
         let Some(members) = self
             .classes
@@ -2275,15 +2363,20 @@ where
         self.active_count = self.active_count.saturating_add(1);
         self.lineages.push(lineage);
         self.cost_in_group.push(candidate_cost_in_group);
+        let cell_depth = Self::cell_depth();
         match &mut self.live_progress {
-            Some((deepest, cheapest)) if key > *deepest => {
-                *deepest = key;
-                *cheapest = candidate_cost_in_group;
+            Some((deepest, cheapest)) => {
+                match K::progress_cmp(key.group(cell_depth), deepest.group(cell_depth)) {
+                    Ordering::Greater => {
+                        *deepest = key;
+                        *cheapest = candidate_cost_in_group;
+                    }
+                    Ordering::Equal => {
+                        *cheapest = (*cheapest).min(candidate_cost_in_group);
+                    }
+                    Ordering::Less => {}
+                }
             }
-            Some((deepest, cheapest)) if key == *deepest => {
-                *cheapest = (*cheapest).min(candidate_cost_in_group);
-            }
-            Some(_) => {}
             None => self.live_progress = Some((key, candidate_cost_in_group)),
         }
         self.selected.push(0);
@@ -2301,7 +2394,7 @@ where
         let mut ancestor = parent_id;
         while let Some(current) = ancestor {
             let previous = self.deepest_leaf[current];
-            if previous >= (key, id) {
+            if leaf_order(previous, (key, id)) != Ordering::Less {
                 break;
             }
             self.update_index_deepest_leaf(current, previous, (key, id));
@@ -2330,16 +2423,16 @@ where
             self.rebuild_selector_index(max_actions);
         }
         let parent_key = self.entries[parent].key;
-        let class = Reverse(parent_key.group(Self::class_depth()));
+        let class = ProgressOrdered::<K>(parent_key.group(Self::class_depth()));
         let cell = parent_key.group(Self::cell_depth());
         let members = self.classes.get(&class)?.get(&cell)?;
         let donor_id = members
             .donors
             .iter()
             .rev()
-            .find_map(|(_, _, donor)| (*donor != parent).then_some(*donor))?;
+            .find_map(|rank| (rank.donor_id != parent).then_some(rank.donor_id))?;
         let (leaf_key, leaf_id) = self.deepest_leaf[donor_id];
-        if leaf_key <= parent_key {
+        if !leaf_advances((leaf_key, leaf_id), (parent_key, parent)) {
             return None;
         }
         let actions = self
@@ -2392,7 +2485,7 @@ where
         if !leaf_input.starts_with(&donor_input) {
             return Err("splice leaf is not a descendant of its donor");
         }
-        if leaf_entry.key <= parent_key {
+        if !leaf_advances((leaf_entry.key, leaf), (parent_key, parent)) {
             return Err("splice leaf does not advance past the parent");
         }
         let suffix = &leaf_input[donor_input.len()..];
@@ -2438,13 +2531,17 @@ where
                     classes_skipped: 0,
                     counter_reset: false,
                     concentration: None,
+                    class_rank: None,
                 },
             ));
         }
         let mut counter_reset = false;
         let mut classes_skipped = 0_u64;
         loop {
-            if let Some(cell) = self.walk_to_cell(rand, &mut classes_skipped, counter_reset)? {
+            let mut class_rank = None;
+            if let Some(cell) =
+                self.walk_to_cell(rand, &mut classes_skipped, &mut class_rank, counter_reset)?
+            {
                 let (id, concentration) = self.draw_from_cell(rand, cell)?;
                 return Ok((
                     id,
@@ -2453,6 +2550,7 @@ where
                         classes_skipped,
                         counter_reset,
                         concentration: Some(concentration),
+                        class_rank,
                     },
                 ));
             }
@@ -2467,12 +2565,13 @@ where
         &self,
         rand: &mut RomuDuoJrRand,
         classes_skipped: &mut u64,
+        class_rank: &mut Option<u8>,
         ignore_streaks: bool,
     ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
         if !ignore_streaks && !matches!(self.selector_policy, SelectorPolicy::Retire(_)) {
-            return self.walk_live_index(rand, classes_skipped);
+            return self.walk_live_index(rand, classes_skipped, class_rank);
         }
-        self.walk_to_cell_scan(rand, classes_skipped, ignore_streaks)
+        self.walk_to_cell_scan(rand, classes_skipped, class_rank, ignore_streaks)
     }
 
     fn persistent_key_counts(&self) -> bool {
@@ -2482,64 +2581,74 @@ where
         )
     }
 
-    fn semantic_progress(&self) -> bool {
-        matches!(
-            self.selector_policy,
-            SelectorPolicy::EnergyProgressCheapest(_)
-                | SelectorPolicy::EnergyProgressCheapestCount(_)
-        )
+    fn live_class_weights(
+        &self,
+        ignore_streaks: bool,
+    ) -> (Vec<(ProgressOrdered<K>, usize, u8)>, u64) {
+        let skips = if ignore_streaks {
+            &self.active_skip_groups
+        } else {
+            &self.live_skip_groups
+        };
+        let mut weighted = Vec::new();
+        let mut skipped = 0_u64;
+        let mut rank = 0_u8;
+        let mut previous: Option<K::Group> = None;
+        for class in self.classes.keys().rev() {
+            if !ignore_streaks {
+                let active = self
+                    .active_skip_groups
+                    .get(&class.0)
+                    .map_or(0, BTreeMap::len);
+                let live = self.live_skip_groups.get(&class.0).map_or(0, BTreeMap::len);
+                skipped = skipped
+                    .saturating_add(u64::try_from(active.saturating_sub(live)).unwrap_or(u64::MAX));
+            }
+            if !skips.get(&class.0).is_some_and(|groups| !groups.is_empty()) {
+                continue;
+            }
+            if let Some(previous) = previous
+                && K::progress_cmp(previous, class.0) == Ordering::Greater
+            {
+                rank = rank.saturating_add(1).min(CLASS_RANK_CAP);
+            }
+            previous = Some(class.0);
+            weighted.push((*class, 256_usize >> rank, rank));
+        }
+        (weighted, skipped)
     }
 
-    fn class_order(
-        &self,
+    fn draw_class_index(
         rand: &mut RomuDuoJrRand,
-        ignore_streaks: bool,
-    ) -> Result<Vec<Reverse<K::Group>>, Box<dyn Error>> {
-        let mut classes = self.classes.keys().copied().collect::<Vec<_>>();
-        if !self.semantic_progress() {
-            return Ok(classes);
+        weighted: &[(ProgressOrdered<K>, usize, u8)],
+    ) -> Result<Option<usize>, Box<dyn Error>> {
+        let Some(total) = NonZeroUsize::new(weighted.iter().map(|(_, weight, _)| *weight).sum())
+        else {
+            return Ok(None);
+        };
+        let mut draw = rand.below(total);
+        for (index, (_, weight, _)) in weighted.iter().enumerate() {
+            if draw < *weight {
+                return Ok(Some(index));
+            }
+            draw -= weight;
         }
-        classes.retain(|class| {
-            let map = if ignore_streaks {
-                &self.active_skip_groups
-            } else {
-                &self.live_skip_groups
-            };
-            map.get(&class.0).is_some_and(|groups| !groups.is_empty())
-        });
-        let maximal = classes
-            .iter()
-            .copied()
-            .filter(|candidate| {
-                !classes
-                    .iter()
-                    .any(|other| K::progress_cmp(other.0, candidate.0) == Ordering::Greater)
-            })
-            .collect::<Vec<_>>();
-        if classes.is_empty() {
-            return Ok(classes);
-        }
-        let count = NonZeroUsize::new(maximal.len())
-            .ok_or("workload progress relation has a dominance cycle")?;
-        let selected = maximal[if maximal.len() == 1 {
-            0
-        } else {
-            rand.below(count)
-        }];
-        Ok(vec![selected])
+        Err("class draw exceeded its weight total".into())
     }
 
     fn walk_to_cell_scan(
         &self,
         rand: &mut RomuDuoJrRand,
         classes_skipped: &mut u64,
+        class_rank: &mut Option<u8>,
         ignore_streaks: bool,
     ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
-        let skip_depth = 2.min(Self::coarsest_depth());
-        for class in self.class_order(rand, ignore_streaks)? {
+        let (mut weighted, skipped) = self.live_class_weights(ignore_streaks);
+        *classes_skipped = classes_skipped.saturating_add(skipped);
+        while let Some(drawn) = Self::draw_class_index(rand, &weighted)? {
+            let (class, _, rank) = weighted[drawn];
             let cell_map = &self.classes[&class];
             let mut cells = Vec::new();
-            let mut subclass_live = BTreeMap::<K::Group, bool>::new();
             for members in cell_map.values() {
                 let Some(member) = members.ids.iter().next().copied() else {
                     continue;
@@ -2551,19 +2660,15 @@ where
                         self.active.get(*id).copied().unwrap_or(false)
                             && (ignore_streaks || self.entry_unexhausted(*id))
                     });
-                let subclass = subclass_live.entry(key.group(skip_depth)).or_insert(false);
-                *subclass |= live;
                 if live {
                     cells.push((key, members));
                 }
             }
-            *classes_skipped = classes_skipped.saturating_add(
-                u64::try_from(subclass_live.values().filter(|live| !**live).count())
-                    .unwrap_or(u64::MAX),
-            );
             if cells.is_empty() {
+                weighted.swap_remove(drawn);
                 continue;
             }
+            *class_rank = Some(rank);
             for depth in (2..Self::coarsest_depth()).rev() {
                 let mut deepest = BTreeMap::<K::Group, K::Group>::new();
                 for (key, _) in &cells {
@@ -2571,12 +2676,7 @@ where
                     deepest
                         .entry(key.group(depth))
                         .and_modify(|frontier| {
-                            let ahead = if self.semantic_progress() {
-                                K::progress_cmp(band, *frontier) == Ordering::Greater
-                            } else {
-                                band > *frontier
-                            };
-                            if ahead {
+                            if K::progress_cmp(band, *frontier) == Ordering::Greater {
                                 *frontier = band;
                             }
                         })
@@ -2631,89 +2731,86 @@ where
         &self,
         rand: &mut RomuDuoJrRand,
         classes_skipped: &mut u64,
+        class_rank: &mut Option<u8>,
     ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
         let class_depth = Self::class_depth();
         let cell_depth = Self::cell_depth();
-        for reverse_class in self.class_order(rand, false)? {
-            let cells = &self.classes[&reverse_class];
-            let class = reverse_class.0;
-            let active_skip = self.active_skip_groups.get(&class).map_or(0, BTreeMap::len);
-            let live_skip = self.live_skip_groups.get(&class).map_or(0, BTreeMap::len);
-            *classes_skipped = classes_skipped.saturating_add(
-                u64::try_from(active_skip.saturating_sub(live_skip)).unwrap_or(u64::MAX),
-            );
-            if live_skip == 0 {
-                continue;
-            }
+        let (weighted, skipped) = self.live_class_weights(false);
+        *classes_skipped = classes_skipped.saturating_add(skipped);
+        let Some(drawn) = Self::draw_class_index(rand, &weighted)? else {
+            return Ok(None);
+        };
+        let (ordered_class, _, rank) = weighted[drawn];
+        let cells = &self.classes[&ordered_class];
+        let class = ordered_class.0;
+        *class_rank = Some(rank);
 
-            let mut parent = class;
-            for depth in ((cell_depth + 1)..class_depth).rev() {
-                let groups = self
-                    .live_children
-                    .get(depth)
-                    .and_then(|children| children.get(&(class, parent)))
-                    .ok_or("live selector hierarchy is missing a pooled group")?
-                    .iter()
-                    .copied()
-                    .collect::<Vec<_>>();
-                let frontier = groups
-                    .iter()
-                    .map(|group| self.deepest_live_band(class, depth, *group))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let index = self.draw_group_index(rand, depth, &groups, Some(&frontier), None)?;
-                parent = groups[index];
-            }
-
-            let cell = if cell_depth < class_depth {
-                let groups = self
-                    .live_children
-                    .get(cell_depth)
-                    .and_then(|children| children.get(&(class, parent)))
-                    .ok_or("live selector hierarchy is missing a selection cell")?
-                    .iter()
-                    .copied()
-                    .collect::<Vec<_>>();
-                if class_depth >= 1 {
-                    let ranked = groups
-                        .iter()
-                        .map(|cell| {
-                            let members = cells.get(cell);
-                            (
-                                members.and_then(CellMembers::novelty),
-                                members.and_then(|members| {
-                                    self.cheapest_offered(members.sampleable.iter())
-                                }),
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    groups[self.draw_group_index(rand, cell_depth, &groups, None, Some(&ranked))?]
-                } else {
-                    groups[rand
-                        .below(NonZeroUsize::new(groups.len()).ok_or("cell draw over no cells")?)]
-                }
-            } else {
-                let only = [class];
-                if class_depth >= 1 {
-                    let _ = self.draw_group_index(rand, cell_depth, &only, None, None)?;
-                } else {
-                    let _ = rand.below(NonZeroUsize::new(1).ok_or("cell draw over no cells")?);
-                }
-                class
-            };
-            let members = cells
-                .get(&cell)
-                .ok_or("live selector hierarchy chose an absent cell")?;
-            let mut sampleable = members
-                .sampleable
+        let mut parent = class;
+        for depth in ((cell_depth + 1)..class_depth).rev() {
+            let groups = self
+                .live_children
+                .get(depth)
+                .and_then(|children| children.get(&(class, parent)))
+                .ok_or("live selector hierarchy is missing a pooled group")?
                 .iter()
-                .rev()
-                .take(CONCENTRATION_WINDOW)
-                .copied()
+                .map(|group| group.0)
                 .collect::<Vec<_>>();
-            sampleable.reverse();
-            return Ok(Some(sampleable));
+            let frontier = groups
+                .iter()
+                .map(|group| self.deepest_live_band(class, depth, *group))
+                .collect::<Result<Vec<_>, _>>()?;
+            let index = self.draw_group_index(rand, depth, &groups, Some(&frontier), None)?;
+            parent = groups[index];
         }
-        Ok(None)
+
+        let cell = if cell_depth < class_depth {
+            let groups = self
+                .live_children
+                .get(cell_depth)
+                .and_then(|children| children.get(&(class, parent)))
+                .ok_or("live selector hierarchy is missing a selection cell")?
+                .iter()
+                .map(|group| group.0)
+                .collect::<Vec<_>>();
+            if class_depth >= 1 {
+                let ranked = groups
+                    .iter()
+                    .map(|cell| {
+                        let members = cells.get(cell);
+                        (
+                            members.and_then(CellMembers::novelty),
+                            members.and_then(|members| {
+                                self.cheapest_offered(members.sampleable.iter())
+                            }),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                groups[self.draw_group_index(rand, cell_depth, &groups, None, Some(&ranked))?]
+            } else {
+                groups
+                    [rand.below(NonZeroUsize::new(groups.len()).ok_or("cell draw over no cells")?)]
+            }
+        } else {
+            let only = [class];
+            if class_depth >= 1 {
+                let _ = self.draw_group_index(rand, cell_depth, &only, None, None)?;
+            } else {
+                let _ = rand.below(NonZeroUsize::new(1).ok_or("cell draw over no cells")?);
+            }
+            class
+        };
+        let members = cells
+            .get(&cell)
+            .ok_or("live selector hierarchy chose an absent cell")?;
+        let mut sampleable = members
+            .sampleable
+            .iter()
+            .rev()
+            .take(CONCENTRATION_WINDOW)
+            .copied()
+            .collect::<Vec<_>>();
+        sampleable.reverse();
+        Ok(Some(sampleable))
     }
 
     fn frontier_depth() -> usize {
@@ -2728,22 +2825,13 @@ where
     ) -> Result<K::Group, Box<dyn Error>> {
         let mut current = group;
         for level in (Self::frontier_depth()..depth).rev() {
-            current = *self
+            current = self
                 .live_children
                 .get(level)
                 .and_then(|children| children.get(&(class, current)))
-                .and_then(|children| {
-                    if self.semantic_progress() {
-                        children.iter().find(|candidate| {
-                            !children.iter().any(|other| {
-                                K::progress_cmp(*other, **candidate) == Ordering::Greater
-                            })
-                        })
-                    } else {
-                        children.last()
-                    }
-                })
-                .ok_or("live selector hierarchy is missing a pooled group's frontier")?;
+                .and_then(BTreeSet::last)
+                .ok_or("live selector hierarchy is missing a pooled group's frontier")?
+                .0;
         }
         Ok(current)
     }
@@ -2757,41 +2845,43 @@ where
         cells: Option<&[(Option<usize>, Option<u64>)]>,
     ) -> Result<usize, Box<dyn Error>> {
         let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
-        let (scales, ranked_by_frontier) = match &self.selector_policy {
-            SelectorPolicy::Energy(scales) => (scales, false),
-            SelectorPolicy::EnergyFrontier(scales)
-            | SelectorPolicy::EnergyFrontierCheapest(scales)
+        let scales = match &self.selector_policy {
+            SelectorPolicy::EnergyFrontierCheapest(scales)
             | SelectorPolicy::EnergyFrontierCheapestCount(scales)
-            | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales)
-            | SelectorPolicy::EnergyProgressCheapest(scales)
-            | SelectorPolicy::EnergyProgressCheapestCount(scales) => (scales, true),
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => scales,
             _ => return Ok(rand.below(count)),
         };
         let Some(scale) = scales.groups.get(depth - 1).copied() else {
             return Ok(rand.below(count));
         };
         let ranked = match frontier {
-            Some(frontier) if ranked_by_frontier => {
+            Some(frontier) => {
                 let frontier_depth = Self::frontier_depth();
                 let frontier_scale = scales.groups.get(frontier_depth - 1).copied();
-                let mut ranked = frontier.to_vec();
-                ranked.sort_unstable();
+                let mut ranked = frontier
+                    .iter()
+                    .map(|band| ProgressOrdered::<K>(*band))
+                    .collect::<Vec<_>>();
+                if !ranked.is_sorted() {
+                    ranked.sort_unstable();
+                }
                 ranked.dedup();
                 ranked.retain(|band| {
                     let barren = self
                         .group_barren
                         .get(frontier_depth - 1)
-                        .and_then(|map| map.get(band))
+                        .and_then(|map| map.get(&band.0))
                         .copied()
                         .unwrap_or(0);
                     frontier_scale.is_none_or(|scale| barren / scale < 8)
                 });
+                ranked.dedup_by(|left, right| K::progress_cmp(left.0, right.0) == Ordering::Equal);
                 ranked
             }
-            _ => Vec::new(),
+            None => Vec::new(),
         };
         let (newest, cheapest) = match cells {
-            Some(cells) if ranked_by_frontier && frontier.is_none() => {
+            Some(cells) if frontier.is_none() => {
                 let mut newest = cells.iter().filter_map(|cell| cell.0).collect::<Vec<_>>();
                 newest.sort_unstable();
                 let mut cheapest = cells.iter().filter_map(|cell| cell.1).collect::<Vec<_>>();
@@ -2810,25 +2900,13 @@ where
                 .unwrap_or(0);
             let halvings = usize::try_from((barren / scale).min(8)).unwrap_or(8);
             let energy = 256_usize >> halvings;
-            if !ranked_by_frontier {
-                weights.push(energy);
-                continue;
-            }
             let (rank, span) = match (frontier, cells) {
                 (Some(frontier), _) => {
-                    let ahead = if self.semantic_progress() {
-                        ranked
-                            .iter()
-                            .filter(|band| {
-                                K::progress_cmp(**band, frontier[index]) == Ordering::Greater
-                            })
-                            .take(16)
-                            .count()
-                    } else {
-                        let behind = ranked.partition_point(|band| *band <= frontier[index]);
-                        ranked.len().saturating_sub(behind)
-                    };
-                    (ahead, 16)
+                    let level = frontier[index];
+                    let behind = ranked.partition_point(|band| {
+                        K::progress_cmp(band.0, level) != Ordering::Greater
+                    });
+                    (ranked.len().saturating_sub(behind), 16)
                 }
                 (None, Some(cells)) => {
                     let (opened, cost) = cells[index];
@@ -2869,13 +2947,9 @@ where
         match &self.selector_policy {
             SelectorPolicy::GroupUniform => true,
             SelectorPolicy::Retire(thresholds)
-            | SelectorPolicy::Energy(thresholds)
-            | SelectorPolicy::EnergyFrontier(thresholds)
             | SelectorPolicy::EnergyFrontierCheapest(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
-            | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
-            | SelectorPolicy::EnergyProgressCheapest(thresholds)
-            | SelectorPolicy::EnergyProgressCheapestCount(thresholds) => {
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
         }
@@ -2884,13 +2958,9 @@ where
     fn groups_unexhausted(&self, key: K) -> bool {
         match &self.selector_policy {
             SelectorPolicy::GroupUniform
-            | SelectorPolicy::Energy(_)
-            | SelectorPolicy::EnergyFrontier(_)
             | SelectorPolicy::EnergyFrontierCheapest(_)
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
-            | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
-            | SelectorPolicy::EnergyProgressCheapest(_)
-            | SelectorPolicy::EnergyProgressCheapestCount(_) => true,
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(_) => true,
             SelectorPolicy::Retire(thresholds) => {
                 thresholds
                     .groups
@@ -2937,8 +3007,6 @@ where
             SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
-                | SelectorPolicy::EnergyProgressCheapest(_)
-                | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             let mut ranked = window
                 .iter()
@@ -2949,7 +3017,6 @@ where
                 self.selector_policy,
                 SelectorPolicy::EnergyFrontierCheapestCount(_)
                     | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
-                    | SelectorPolicy::EnergyProgressCheapestCount(_)
             );
             let weights = ranked
                 .iter()
@@ -3174,7 +3241,7 @@ where
         }
         if let Some(members) = self
             .classes
-            .get_mut(&Reverse(key.group(Self::class_depth())))
+            .get_mut(&ProgressOrdered::<K>(key.group(Self::class_depth())))
             .and_then(|cells| cells.get_mut(&key.group(Self::cell_depth())))
             && members.ids.contains(&id)
         {
@@ -3186,13 +3253,9 @@ where
         if matches!(
             self.selector_policy,
             SelectorPolicy::Retire(_)
-                | SelectorPolicy::Energy(_)
-                | SelectorPolicy::EnergyFrontier(_)
                 | SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
-                | SelectorPolicy::EnergyProgressCheapest(_)
-                | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
                 let counter = map.entry(key.group(offset + 1)).or_insert(0);
@@ -3222,6 +3285,16 @@ where
             .selector_accounting
             .classes_skipped
             .saturating_add(draw.classes_skipped);
+        if let Some(rank) = draw.class_rank {
+            let rank = usize::from(rank);
+            if self.selector_accounting.class_draws_by_rank.len() <= rank {
+                self.selector_accounting
+                    .class_draws_by_rank
+                    .resize(rank.saturating_add(1), 0);
+            }
+            self.selector_accounting.class_draws_by_rank[rank] =
+                self.selector_accounting.class_draws_by_rank[rank].saturating_add(1);
+        }
         self.selector_accounting.counter_resets = self
             .selector_accounting
             .counter_resets
@@ -3245,7 +3318,6 @@ where
         &mut self,
         id: usize,
         retained_descendant: bool,
-        new_slot_descendant: bool,
         new_cell_descendant: bool,
     ) {
         if !retained_descendant {
@@ -3259,12 +3331,9 @@ where
         }
         let clears_groups = match self.selector_policy {
             SelectorPolicy::Retire(_) => true,
-            SelectorPolicy::Energy(_) | SelectorPolicy::EnergyFrontier(_) => new_slot_descendant,
             SelectorPolicy::EnergyFrontierCheapest(_)
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
-            | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
-            | SelectorPolicy::EnergyProgressCheapest(_)
-            | SelectorPolicy::EnergyProgressCheapestCount(_) => new_cell_descendant,
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(_) => new_cell_descendant,
             SelectorPolicy::GroupUniform => false,
         };
         if clears_groups {
@@ -3292,13 +3361,9 @@ where
             });
         }
         if let SelectorPolicy::Retire(thresholds)
-        | SelectorPolicy::Energy(thresholds)
-        | SelectorPolicy::EnergyFrontier(thresholds)
         | SelectorPolicy::EnergyFrontierCheapest(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
-        | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
-        | SelectorPolicy::EnergyProgressCheapest(thresholds)
-        | SelectorPolicy::EnergyProgressCheapestCount(thresholds) = &self.selector_policy
+        | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds) = &self.selector_policy
         {
             let entries_over_threshold = u64::try_from(
                 self.since_retained
@@ -3376,14 +3441,14 @@ mod tests {
     use std::cmp::Ordering;
 
     use super::{
-        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, HISTORY_COMPACTION_MIN_DROPS, Input,
-        InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, RetireThresholds,
-        SELECTION_EXHAUSTION_THRESHOLD, SelectorAccounting, SelectorDraw, SelectorPath,
-        SelectorPolicy, selector_policy_from_identifier,
+        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, DonorRank, HISTORY_COMPACTION_MIN_DROPS,
+        Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, ProgressOrdered,
+        RetireThresholds, SELECTION_EXHAUSTION_THRESHOLD, SelectorAccounting, SelectorDraw,
+        SelectorPath, SelectorPolicy, selector_policy_from_identifier,
     };
     use crate::search::rand::RomuDuoJrRand;
     use serde::{Deserialize, Serialize};
-    use std::{cmp::Reverse, collections::BTreeMap, sync::Arc};
+    use std::{cell::Cell, collections::BTreeMap, sync::Arc};
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
     struct TestAction {
@@ -3447,6 +3512,10 @@ mod tests {
                 group.room = [0; 3];
             }
             group
+        }
+
+        fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
+            (left.world, left.level, left.progress).cmp(&(right.world, right.level, right.progress))
         }
 
         type Lineage = Vec<[u8; 3]>;
@@ -3944,7 +4013,7 @@ mod tests {
     fn selection_accounting_charge_is_brought_back_under_the_budget() {
         let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
-        archive.selector_policy = SelectorPolicy::Energy(RetireThresholds {
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 1,
             groups: vec![3, 4],
         });
@@ -3972,6 +4041,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            class_rank: None,
         };
         for id in 0..archive.entries.len() {
             archive.record_selection(id, &draw);
@@ -4001,7 +4071,7 @@ mod tests {
         let entries = u8::try_from(HISTORY_COMPACTION_MIN_DROPS / 2).expect("half fits u8");
         let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
-        archive.selector_policy = SelectorPolicy::Energy(RetireThresholds {
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 1,
             groups: vec![3, 4],
         });
@@ -4032,6 +4102,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            class_rank: None,
         };
         for step in 0..256 {
             let parent = archive
@@ -4499,6 +4570,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            class_rank: None,
         };
         for _ in 0..4 {
             archive.record_selection(1, &draw);
@@ -4556,6 +4628,7 @@ mod tests {
                 classes_skipped: 0,
                 counter_reset: false,
                 concentration: None,
+                class_rank: None,
             },
         );
         assert!(!archive.entry_unexhausted(id));
@@ -4576,6 +4649,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            class_rank: None,
         };
         for _ in 0..19 {
             archive.record_selection(0, &draw);
@@ -4801,14 +4875,17 @@ mod tests {
                 )
                 .expect("insert progress entry")
                 .expect("retain progress entry");
-            let expected = match index {
-                0 | 1 => Some((FlatKey([1, 0, 0, 0]), 5, u64::try_from(index + 1).unwrap())),
-                2 | 3 => Some((FlatKey([2, 0, 0, 0]), 7, u64::try_from(index + 1).unwrap())),
-                _ => unreachable!(),
-            };
-            assert_eq!(archive.live_progress(), expected);
+            let cheapest = if index == 0 { 5 } else { 2 };
+            assert_eq!(
+                archive.live_progress(),
+                Some((
+                    FlatKey([1, 0, 0, 0]),
+                    cheapest,
+                    u64::try_from(index + 1).unwrap()
+                ))
+            );
         }
-        assert_eq!(archive.live_progress(), Some((FlatKey([2, 0, 0, 0]), 7, 4)));
+        assert_eq!(archive.live_progress(), Some((FlatKey([1, 0, 0, 0]), 2, 4)));
         assert!(archive.active_ids(1).is_empty());
         archive.active[1] = false;
         archive.snapshot_selectable[2] = false;
@@ -4850,15 +4927,27 @@ mod tests {
 
         let members = archive
             .classes
-            .get(&Reverse(
-                root_key.group(Archive::<u8, FlatKey<3>, (), ()>::class_depth()),
-            ))
+            .get(&ProgressOrdered::<FlatKey<3>>(root_key.group(Archive::<
+                u8,
+                FlatKey<3>,
+                (),
+                (),
+            >::class_depth(
+            ))))
             .and_then(|cells| {
                 cells.get(&root_key.group(Archive::<u8, FlatKey<3>, (), ()>::cell_depth()))
             })
             .expect("root selection cell");
-        assert!(members.donors.contains(&(child_key, child, root)));
-        assert!(!members.donors.contains(&(root_key, root, root)));
+        assert!(members.donors.contains(&DonorRank {
+            leaf_key: child_key,
+            leaf_id: child,
+            donor_id: root,
+        }));
+        assert!(!members.donors.contains(&DonorRank {
+            leaf_key: root_key,
+            leaf_id: root,
+            donor_id: root,
+        }));
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -5079,10 +5168,10 @@ mod tests {
             let mut cached_skipped = 0;
             let mut scanned_skipped = 0;
             let cached = archive
-                .walk_live_index(&mut cached_rand, &mut cached_skipped)
+                .walk_live_index(&mut cached_rand, &mut cached_skipped, &mut None)
                 .expect("cached walk");
             let scanned = archive
-                .walk_to_cell_scan(&mut scanned_rand, &mut scanned_skipped, false)
+                .walk_to_cell_scan(&mut scanned_rand, &mut scanned_skipped, &mut None, false)
                 .expect("scanned walk");
             assert_eq!(cached, scanned);
             assert_eq!(cached_skipped, scanned_skipped);
@@ -5095,6 +5184,7 @@ mod tests {
                     classes_skipped: cached_skipped,
                     counter_reset: true,
                     concentration: None,
+                    class_rank: None,
                 };
                 archive.record_selection(0, &draw);
                 continue;
@@ -5105,9 +5195,10 @@ mod tests {
                 classes_skipped: cached_skipped,
                 counter_reset: false,
                 concentration: None,
+                class_rank: None,
             };
             archive.record_selection(id, &draw);
-            archive.record_selection_outcome(id, step % 3 == 0, false, false);
+            archive.record_selection_outcome(id, step % 3 == 0, false);
         }
     }
 
@@ -5127,6 +5218,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            class_rank: None,
         };
         archive.record_selection(0, &draw);
 
@@ -5136,26 +5228,26 @@ mod tests {
         let mut scanned_skipped = 0;
         assert_eq!(
             archive
-                .walk_live_index(&mut cached_rand, &mut cached_skipped)
+                .walk_live_index(&mut cached_rand, &mut cached_skipped, &mut None)
                 .expect("cached walk"),
             archive
-                .walk_to_cell_scan(&mut scanned_rand, &mut scanned_skipped, false)
+                .walk_to_cell_scan(&mut scanned_rand, &mut scanned_skipped, &mut None, false)
                 .expect("scanned walk")
         );
         assert_eq!(cached_skipped, scanned_skipped);
         assert_eq!(cached_rand.next_u64(), scanned_rand.next_u64());
 
-        archive.record_selection_outcome(0, true, true, true);
+        archive.record_selection_outcome(0, true, true);
         let mut cached_rand = RomuDuoJrRand::with_seed(0x0af7_c0de);
         let mut scanned_rand = cached_rand;
         let mut cached_skipped = 0;
         let mut scanned_skipped = 0;
         assert_eq!(
             archive
-                .walk_live_index(&mut cached_rand, &mut cached_skipped)
+                .walk_live_index(&mut cached_rand, &mut cached_skipped, &mut None)
                 .expect("cached walk after stale outcome"),
             archive
-                .walk_to_cell_scan(&mut scanned_rand, &mut scanned_skipped, false)
+                .walk_to_cell_scan(&mut scanned_rand, &mut scanned_skipped, &mut None, false)
                 .expect("scanned walk after stale outcome")
         );
         assert_eq!(cached_skipped, scanned_skipped);
@@ -5185,9 +5277,9 @@ mod tests {
                 .expect("retain entry")
         };
         let root = insert(&mut archive, None, [1, 2, 3, 4], vec![0]);
+        let arrival = insert(&mut archive, None, [0, 2, 3, 4], vec![9]);
         let middle = insert(&mut archive, Some(root), [1, 2, 3, 6], vec![0, 1]);
         let leaf = insert(&mut archive, Some(middle), [1, 2, 3, 7], vec![0, 1, 2]);
-        let arrival = insert(&mut archive, None, [0, 2, 3, 4], vec![9]);
         let dispatched = archive
             .splice_tail_for_campaign(arrival, MAX_COMPLETION_ACTIONS, 8)
             .expect("dispatch-time splice");
@@ -5333,7 +5425,7 @@ mod tests {
                 .entry((key.progress, key.player_y_bucket))
                 .or_default() += 1;
             archive.record_selection(id, &draw);
-            archive.record_selection_outcome(id, true, true, true);
+            archive.record_selection_outcome(id, true, true);
         }
         assert!(cell_draws > 600);
         assert_eq!(per_cell.len(), 3, "cells drawn: {per_cell:?}");
@@ -5364,6 +5456,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            class_rank: None,
         };
         archive.record_selection(0, &barren_draw);
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e30);
@@ -5374,14 +5467,14 @@ mod tests {
                 .expect("selection");
             if draw.path == SelectorPath::HierarchyWalk {
                 assert_eq!(id, 2, "cell draws must fall through to the 124 band");
-                assert_eq!(draw.classes_skipped, 1);
+                assert_eq!(draw.classes_skipped, 0);
                 assert!(!draw.counter_reset);
                 fell_through += 1;
             }
         }
         assert!(fell_through > 0);
         archive.record_selection(1, &barren_draw);
-        archive.record_selection_outcome(1, true, true, true);
+        archive.record_selection_outcome(1, true, true);
         let mut upper_band_seen = false;
         for _ in 0..64 {
             let (id, draw) = archive
@@ -5404,7 +5497,7 @@ mod tests {
     fn an_energy_barren_band_fades_but_keeps_receiving_draws() {
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 145), (1, 0, 124)];
         let mut archive = selector_archive(&keys);
-        archive.selector_policy = SelectorPolicy::Energy(RetireThresholds {
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 1_024,
             groups: vec![1_024, 1, 1_024],
         });
@@ -5413,6 +5506,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            class_rank: None,
         };
         for _ in 0..9 {
             archive.record_selection(0, &barren_draw);
@@ -5537,7 +5631,7 @@ mod tests {
     fn the_frontier_selector_weights_the_deepest_band_over_a_fresh_shallow_one() {
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 145), (1, 0, 124)];
         let mut archive = selector_archive(&keys);
-        archive.selector_policy = SelectorPolicy::EnergyFrontier(RetireThresholds {
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 1_024,
             groups: vec![1_024, 1_024, 1_024],
         });
@@ -5582,6 +5676,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            class_rank: None,
         };
         archive.record_selection(0, &barren_draw);
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e31);
@@ -5610,6 +5705,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            class_rank: None,
         };
         for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
             archive.record_selection(0, &exhausting_draw);
@@ -5621,16 +5717,15 @@ mod tests {
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection");
             if draw.path == SelectorPath::HierarchyWalk {
-                fell_through += 1;
-                assert!(
-                    id == 1 || id == 2,
-                    "cell draws must fall through to the 124 band"
-                );
+                assert_ne!(id, 0, "an exhausted parent must not be drawn");
                 assert_eq!(draw.classes_skipped, 1);
                 assert!(!draw.counter_reset);
+                if id == 1 || id == 2 {
+                    fell_through += 1;
+                }
             }
         }
-        assert!(fell_through > 0);
+        assert!(fell_through > 0, "the 124 band must keep receiving draws");
         assert_eq!(
             archive.selector_report().cell_selections,
             SELECTION_EXHAUSTION_THRESHOLD
@@ -5646,6 +5741,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            class_rank: None,
         };
         for id in 0..keys.len() {
             for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
@@ -5664,7 +5760,7 @@ mod tests {
                     "the first cell draw after full exhaustion must reset"
                 );
                 assert_eq!(draw.classes_skipped, 2);
-                assert_eq!(id, 0);
+                assert_eq!(id, 1);
                 archive.record_selection(id, &draw);
                 reset_seen = true;
                 break;
@@ -5718,6 +5814,7 @@ mod tests {
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
+            class_rank: None,
         };
         for id in 1..=128 {
             for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
@@ -5889,124 +5986,404 @@ mod tests {
         );
         assert_eq!(archive.active_count(), 4);
     }
-    #[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-    struct LabelledKey<const CLASSES: bool> {
-        label: u16,
-        progress: u16,
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct OrderingKey<const PROGRESS: bool> {
+        class_label: u16,
+        class_progress: u16,
+        band_label: u16,
+        band_progress: u16,
+        cell: u16,
     }
 
-    impl<const CLASSES: bool> ArchiveKey for LabelledKey<CLASSES> {
-        type Group = [u16; 2];
+    impl<const PROGRESS: bool> ArchiveKey for OrderingKey<PROGRESS> {
+        type Group = [u16; 5];
         type Lineage = ();
+
         fn groups() -> usize {
-            5
+            4
         }
+
         fn group(self, depth: usize) -> Self::Group {
-            if depth == 4 && !CLASSES {
-                [0, 0]
-            } else {
-                [self.label, self.progress]
+            match depth {
+                0 | 1 => [
+                    self.class_label,
+                    self.class_progress,
+                    self.band_label,
+                    self.band_progress,
+                    self.cell,
+                ],
+                2 => [
+                    self.class_label,
+                    self.class_progress,
+                    self.band_label,
+                    self.band_progress,
+                    0,
+                ],
+                _ => [self.class_label, self.class_progress, 0, 0, 0],
             }
         }
-        fn progress_cmp(left: Self::Group, right: Self::Group) -> std::cmp::Ordering {
-            left[1].cmp(&right[1])
+
+        fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
+            if PROGRESS {
+                (left[1], left[3]).cmp(&(right[1], right[3]))
+            } else {
+                Ordering::Equal
+            }
         }
-        fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
             self
         }
-        fn record(_: &mut Self::Lineage, _: Self) {}
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    fn ordering_key<const PROGRESS: bool>(
+        class_label: u16,
+        class_progress: u16,
+        band_label: u16,
+        band_progress: u16,
+        cell: u16,
+    ) -> OrderingKey<PROGRESS> {
+        OrderingKey {
+            class_label,
+            class_progress,
+            band_label,
+            band_progress,
+            cell,
+        }
+    }
+
+    const ORDERING_DRAWS: usize = 12_000;
+    const ORDERING_TOLERANCE: usize = 400;
+
+    fn ordering_walk_counts<const PROGRESS: bool>(keys: &[OrderingKey<PROGRESS>]) -> Vec<usize> {
+        let mut archive = Archive::<u8, OrderingKey<PROGRESS>, (), ()>::new(|_| 1);
+        let mut ids = Vec::new();
+        for (index, key) in keys.iter().enumerate() {
+            let id = archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![u8::try_from(index).expect("ordering fixture is small")],
+                        key: *key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("ordering insert")
+                .expect("ordering retention");
+            ids.push(id);
+        }
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
+            entry: 1_000_000,
+            groups: vec![1_000_000; 3],
+        });
+        let mut rand = RomuDuoJrRand::with_seed(802);
+        let mut counts = vec![0; keys.len()];
+        for _ in 0..ORDERING_DRAWS {
+            let (id, draw) = archive.select_parent(&mut rand, 64).expect("walk draw");
+            if draw.path == SelectorPath::HierarchyWalk {
+                let index = ids
+                    .iter()
+                    .position(|candidate| *candidate == id)
+                    .expect("draw outside the fixture");
+                counts[index] += 1;
+            }
+        }
+        counts
     }
 
     #[test]
-    fn semantic_selection_does_not_reward_arbitrary_location_labels() {
-        fn sample<const CLASSES: bool>(
-            labels: [u16; 3],
-            semantic: bool,
-            counts: bool,
-        ) -> [usize; 3] {
-            let mut archive = Archive::<u8, LabelledKey<CLASSES>, (), ()>::new(|_| 1);
-            for (id, label) in labels.into_iter().enumerate() {
-                archive
-                    .insert(
-                        None,
-                        0,
-                        ArchiveCandidate {
-                            suffix: vec![id as u8],
-                            key: LabelledKey {
-                                label,
-                                progress: if id == 2 { 1 } else { 2 },
-                            },
-                            milestones: (),
-                        },
-                        (),
-                    )
-                    .unwrap();
-            }
-            let thresholds = RetireThresholds {
-                entry: 1000,
-                groups: vec![1000; 3],
-            };
-            archive.selector_policy = if semantic && !counts {
-                SelectorPolicy::EnergyProgressCheapest(thresholds)
-            } else if semantic {
-                SelectorPolicy::EnergyProgressCheapestCount(thresholds)
-            } else {
-                SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
-            };
-            let mut rand = RomuDuoJrRand::with_seed(802);
-            let mut counts = [0; 3];
-            for _ in 0..12_000 {
-                let (id, draw) = archive.select_parent(&mut rand, 64).unwrap();
-                if draw.path == SelectorPath::HierarchyWalk {
-                    counts[id] += 1;
-                }
-            }
-            counts
-        }
-        for labels in [[1, 900, 2000], [2000, 1, 900]] {
-            let classes = sample::<true>(labels, true, true);
+    fn group_labels_do_not_change_walk_draws() {
+        let class_forward = [
+            ordering_key::<true>(1, 2, 0, 0, 0),
+            ordering_key::<true>(2, 2, 0, 0, 1),
+            ordering_key::<true>(3, 1, 0, 0, 2),
+        ];
+        let class_reversed = [
+            ordering_key::<true>(300, 2, 0, 0, 0),
+            ordering_key::<true>(200, 2, 0, 0, 1),
+            ordering_key::<true>(100, 1, 0, 0, 2),
+        ];
+        let forward = ordering_walk_counts(&class_forward);
+        let reversed = ordering_walk_counts(&class_reversed);
+        for index in 0..forward.len() {
             assert!(
-                classes[0] > 4000 && classes[1] > 4000,
-                "equivalent progress must share classes: {classes:?}"
-            );
-            assert_eq!(
-                classes[2], 0,
-                "a larger label must not displace actual progress"
-            );
-            let bands = sample::<false>(labels, true, true);
-            assert!(
-                bands[0].abs_diff(bands[1]) < 400,
-                "location labels changed frontier weighting: {bands:?}"
-            );
-            assert!(
-                bands[0] > bands[2] * 2,
-                "declared progress must still influence selection: {bands:?}"
+                forward[index].abs_diff(reversed[index]) < ORDERING_TOLERANCE,
+                "class labels changed the draw at {index}: {forward:?} against {reversed:?}"
             );
         }
-        let legacy = sample::<true>([1, 900, 2000], false, true);
+
+        let band_forward = [
+            ordering_key::<true>(0, 0, 1, 2, 0),
+            ordering_key::<true>(0, 0, 2, 2, 1),
+            ordering_key::<true>(0, 0, 3, 1, 2),
+        ];
+        let band_reversed = [
+            ordering_key::<true>(0, 0, 300, 2, 0),
+            ordering_key::<true>(0, 0, 200, 2, 1),
+            ordering_key::<true>(0, 0, 100, 1, 2),
+        ];
+        let forward = ordering_walk_counts(&band_forward);
+        let reversed = ordering_walk_counts(&band_reversed);
+        for index in 0..forward.len() {
+            assert!(
+                forward[index].abs_diff(reversed[index]) < ORDERING_TOLERANCE,
+                "band labels changed the draw at {index}: {forward:?} against {reversed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_leading_class_does_not_take_every_walk_draw() {
+        let mut keys = vec![ordering_key::<true>(1, 2, 0, 0, 0)];
+        for cell in 0..10 {
+            keys.push(ordering_key::<true>(9, 1, 0, 0, cell));
+        }
+        let counts = ordering_walk_counts(&keys);
+        let leading = counts[0];
+        let trailing = counts[1..].iter().sum::<usize>();
         assert!(
-            legacy[2] > 8000,
-            "the control must reproduce the old label bias"
+            leading > 0 && trailing > 0,
+            "every live class takes a share: {counts:?}"
         );
-        for labels in [[10, 90, 200], [200, 10, 90]] {
-            let draws = sample::<false>(labels, true, false);
+        assert!(
+            leading > trailing,
+            "the leading class takes the largest share: {counts:?}"
+        );
+    }
+
+    #[test]
+    fn a_key_without_a_progress_notion_has_only_peers() {
+        for bands in [[1_u16, 2], [200, 100]] {
+            let counts = ordering_walk_counts(&[
+                ordering_key::<false>(0, 0, bands[0], 0, 0),
+                ordering_key::<false>(0, 0, bands[1], 0, 1),
+            ]);
             assert!(
-                draws[0] > draws[2] && draws[1] > draws[2],
-                "semantic-only {draws:?}"
-            );
-            assert!(
-                draws[0].abs_diff(draws[1]) < 400,
-                "equal progress {draws:?}"
+                counts[0].abs_diff(counts[1]) < ORDERING_TOLERANCE,
+                "bands without a progress notion are peers: {counts:?} under {bands:?}"
             );
         }
-        let policy = SelectorPolicy::EnergyProgressCheapest(RetireThresholds {
-            entry: 3,
-            groups: vec![6, 12, 2],
+    }
+
+    thread_local! {
+        static PROGRESS_CMP_CALLS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct CountedKey {
+        class: u16,
+        band: u16,
+        cell: u16,
+    }
+
+    impl ArchiveKey for CountedKey {
+        type Group = [u16; 3];
+        type Lineage = ();
+
+        fn groups() -> usize {
+            4
+        }
+
+        fn group(self, depth: usize) -> Self::Group {
+            match depth {
+                0 | 1 => [self.class, self.band, self.cell],
+                2 => [self.class, self.band, 0],
+                _ => [self.class, 0, 0],
+            }
+        }
+
+        fn progress_cmp(_left: Self::Group, _right: Self::Group) -> Ordering {
+            PROGRESS_CMP_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
+            Ordering::Equal
+        }
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    fn counted_calls_per_draw(keys: &[CountedKey]) -> u64 {
+        const DRAWS: u64 = 256;
+        let mut archive = Archive::<u8, CountedKey, (), ()>::new(|_| 1);
+        for (index, key) in keys.iter().enumerate() {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![u8::try_from(index % 251).expect("byte suffix")],
+                        key: *key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("counted insert")
+                .expect("counted retention");
+        }
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
+            entry: 1_000_000,
+            groups: vec![1_000_000; 3],
         });
-        assert_eq!(
-            selector_policy_from_identifier(&super::selector_policy_identifier(&policy), 3)
-                .unwrap(),
-            policy
+        let mut rand = RomuDuoJrRand::with_seed(451);
+        archive.select_parent(&mut rand, 64).expect("index warmup");
+        PROGRESS_CMP_CALLS.with(|calls| calls.set(0));
+        for _ in 0..DRAWS {
+            archive.select_parent(&mut rand, 64).expect("counted draw");
+        }
+        PROGRESS_CMP_CALLS.with(Cell::get) / DRAWS
+    }
+
+    #[test]
+    fn the_class_draw_costs_one_pass_over_the_live_classes() {
+        let classes = |count: u16| {
+            (0..count)
+                .map(|class| CountedKey {
+                    class,
+                    band: 0,
+                    cell: 0,
+                })
+                .collect::<Vec<_>>()
+        };
+        let small = counted_calls_per_draw(&classes(64));
+        let large = counted_calls_per_draw(&classes(128));
+        assert!(
+            large <= small * 2 + 64,
+            "the class draw is not a pairwise scan: {small} calls at 64 classes, {large} at 128"
         );
+    }
+
+    #[test]
+    fn the_band_draw_costs_one_pass_over_the_live_bands() {
+        let bands = |count: u16| {
+            (0..count)
+                .map(|band| CountedKey {
+                    class: 0,
+                    band,
+                    cell: 0,
+                })
+                .collect::<Vec<_>>()
+        };
+        let small = counted_calls_per_draw(&bands(64));
+        let large = counted_calls_per_draw(&bands(128));
+        assert!(
+            large <= small * 2 + 64,
+            "the band draw is not a pairwise scan: {small} calls at 64 bands, {large} at 128"
+        );
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct SpliceKey {
+        class_label: u16,
+        class_progress: u16,
+        cell_progress: u16,
+        slot: u16,
+    }
+
+    impl ArchiveKey for SpliceKey {
+        type Group = [u16; 4];
+        type Lineage = ();
+
+        fn groups() -> usize {
+            3
+        }
+
+        fn group(self, depth: usize) -> Self::Group {
+            match depth {
+                0 => [
+                    self.class_label,
+                    self.class_progress,
+                    self.cell_progress,
+                    self.slot,
+                ],
+                1 => [self.class_label, self.class_progress, self.cell_progress, 0],
+                _ => [self.class_label, self.class_progress, 0, 0],
+            }
+        }
+
+        fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
+            (left[1], left[2]).cmp(&(right[1], right[2]))
+        }
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn a_splice_leaf_advances_by_progress_not_by_label() {
+        let mut archive = Archive::<u8, SpliceKey, (), ()>::new(|_| 1);
+        let insert = |archive: &mut Archive<u8, SpliceKey, (), ()>,
+                      parent: Option<usize>,
+                      action: u8,
+                      key: SpliceKey| {
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![action],
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("splice insert")
+                .expect("splice retention")
+        };
+        let parent = insert(
+            &mut archive,
+            None,
+            1,
+            SpliceKey {
+                class_label: 9,
+                class_progress: 0,
+                cell_progress: 0,
+                slot: 0,
+            },
+        );
+        let donor = insert(
+            &mut archive,
+            None,
+            2,
+            SpliceKey {
+                class_label: 9,
+                class_progress: 0,
+                cell_progress: 0,
+                slot: 1,
+            },
+        );
+        let leaf = insert(
+            &mut archive,
+            Some(donor),
+            3,
+            SpliceKey {
+                class_label: 1,
+                class_progress: 0,
+                cell_progress: 5,
+                slot: 0,
+            },
+        );
+        assert!(
+            archive.entries[leaf].key < archive.entries[parent].key,
+            "the fixture needs a leaf that sorts below its parent"
+        );
+        let tail = archive
+            .recorded_splice_tail(parent, donor, leaf, 8)
+            .expect("a leaf ahead by progress splices past its parent");
+        assert_eq!(tail, vec![3]);
+        let campaign = archive
+            .splice_tail_for_campaign(parent, 64, 8)
+            .expect("the campaign splice finds the same leaf");
+        assert_eq!(campaign.donor_id, donor);
+        assert_eq!(campaign.leaf_id, leaf);
+        assert_eq!(campaign.actions, vec![3]);
     }
 }
