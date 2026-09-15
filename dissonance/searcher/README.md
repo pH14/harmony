@@ -229,6 +229,15 @@ and dispatched replay/suffix action costs. Those costs are declared path cost,
 not measured execution work. Profiling values and clocks never enter
 search decisions or the deterministic campaign stream.
 
+The last sidecar record of a run also carries `retained_diagnostics`, an
+optional workload census over the archive's cached active endpoints. Each
+endpoint is offered with the number of times the selector drew it, so a census
+can separate a place the selector never went from one it went to and got nothing
+from. The census reads only cached endpoints; a missing snapshot payload is
+counted and never reconstructed, which makes every total a lower bound. It is
+reporting only: it runs after the search is over and feeds nothing back into
+selection, keys, rewards or the recorded stream.
+
 Each recorded action carries an objective event and an execution disposition.
 `Runnable` states can produce retained candidates even when the rollout stops
 after observing an objective; `Terminal` and `Failed` states cannot. The rollout

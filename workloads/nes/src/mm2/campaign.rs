@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     io::Write,
     path::{Path, PathBuf},
@@ -428,6 +428,66 @@ impl CampaignTypes for Mm2Game {
 }
 
 impl Reporting for Mm2Game {
+    fn retained_diagnostics<'a>(
+        snapshots: impl Iterator<Item = (Option<&'a Mm2Snapshot>, u64)>,
+    ) -> Option<serde_json::Value> {
+        let (mut active, mut missing) = (0_u64, 0_u64);
+        let (mut weapons, mut stage, mut screen) = (0, 0, 0);
+        let mut health = vec![0_u8; 256];
+        let mut energy = vec![0_u16; 256];
+        let mut entries = vec![0_u64; 256];
+        let mut selected = vec![0_u64; 256];
+        let mut rows = BTreeMap::<(u8, u8), [u64; 2]>::new();
+        for (snapshot, selections) in snapshots {
+            active += 1;
+            let Some(snapshot) = snapshot else {
+                missing += 1;
+                continue;
+            };
+            let state = snapshot.state();
+            weapons |= state.weapons_obtained;
+            stage = stage.max(state.stage);
+            screen = screen.max(state.screen);
+            let here = usize::from(state.screen);
+            health[here] = health[here].max(state.health);
+            energy[here] = energy[here].max(state.weapon_energy);
+            entries[here] += 1;
+            selected[here] = selected[here].saturating_add(selections);
+            let row = rows.entry((state.screen, state.y / 16)).or_default();
+            *row = [row[0] + 1, row[1].saturating_add(selections)];
+        }
+        let deepest = usize::from(screen);
+        Some(serde_json::json!({
+            "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
+            "active_entries": active, "missing_snapshots": missing,
+            "weapons_union": weapons, "max_stage": stage, "max_screen": screen,
+            "deepest_screen_max_health": health[deepest],
+            "deepest_screen_max_weapon_energy": energy[deepest],
+            "live_entries_by_screen": entries
+                .iter()
+                .enumerate()
+                .filter(|(_, count)| **count > 0)
+                .map(|(here, count)| {
+                    (
+                        here.to_string(),
+                        [
+                            *count,
+                            u64::from(health[here]),
+                            u64::from(energy[here]),
+                            selected[here],
+                        ],
+                    )
+                })
+                .collect::<BTreeMap<_, _>>(),
+            "live_entries_by_screen_format": "screen -> [entries, max health, max summed energy, selections]",
+            "live_entries_by_screen_row": rows
+                .iter()
+                .map(|((here, row), best)| (format!("{here}:{row}"), *best))
+                .collect::<BTreeMap<_, _>>(),
+            "live_entries_by_screen_row_format": "screen:16-pixel row from the top -> [entries, selections]",
+            "temporary_screen_table_bytes": 256 * 4
+        }))
+    }
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -852,6 +912,39 @@ pub fn replay_mm2_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_census_reports_where_the_live_archive_sits_and_what_the_selector_drew() {
+        use crate::mm2::target::Mm2MechanicalState;
+
+        let at = |screen, y, health| Mm2MechanicalState {
+            stage: 8,
+            screen,
+            y,
+            health,
+            ..Mm2MechanicalState::default()
+        };
+        let cached = [(at(4, 10, 28), 3), (at(4, 200, 8), 0), (at(2, 10, 20), 11)]
+            .map(|(state, selections)| (Mm2Snapshot::for_census_tests(state), selections));
+        let census = Mm2Game::retained_diagnostics(
+            cached
+                .iter()
+                .map(|(snapshot, selections)| (Some(snapshot), *selections))
+                .chain(std::iter::once((None, 9))),
+        )
+        .expect("census");
+
+        assert_eq!(census["active_entries"], 4);
+        assert_eq!(census["missing_snapshots"], 1);
+        assert_eq!(census["max_screen"], 4);
+        assert_eq!(census["deepest_screen_max_health"], 28);
+        let screens = &census["live_entries_by_screen"];
+        assert_eq!(screens["4"], serde_json::json!([2, 28, 0, 3]));
+        assert_eq!(screens["2"], serde_json::json!([1, 20, 0, 11]));
+        let rows = &census["live_entries_by_screen_row"];
+        assert_eq!(rows["4:0"], serde_json::json!([1, 3]));
+        assert_eq!(rows["4:12"], serde_json::json!([1, 0]));
+    }
 
     #[test]
     fn recorded_policy_set_is_exact_and_game_owned() {

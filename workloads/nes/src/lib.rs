@@ -2,6 +2,7 @@
 
 pub use searcher::{search, target};
 pub mod admission;
+pub mod film;
 pub mod nes_backend;
 pub mod nova;
 pub mod prepare;
