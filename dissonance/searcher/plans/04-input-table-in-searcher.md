@@ -9,76 +9,90 @@ step 3.
 The searcher's input draw mixes an alphabet sampler with a table of steps
 folded from retained inputs. The table type, `EmpiricalStepTables` in
 `src/search/empirical_steps.rs`, and the mixture in `src/search/draw.rs` are
-generic. Everything that feeds, scopes, checkpoints and replays the table
-lives in `workloads/nes/src/smb/campaign.rs`, about 600 lines plus tests, so
-only Super Mario Bros has it. Metroid, Mega Man 2, Nova, Super Tilt Bro and
-the fault workloads pass a sampler that always returns `None` and draw from
-the alphabet alone.
+generic. Everything that feeds, checkpoints and replays the table lives in
+`workloads/nes/src/smb/campaign.rs`, about 600 lines plus tests, so only
+Super Mario Bros has it. Metroid, Mega Man 2, Nova, Super Tilt Bro and the
+fault workloads pass a sampler that always returns `None` and draw from the
+alphabet alone.
 
 The game interface is meant to be the key, the preference, the progress
 relation and the action alphabet. The SMB driver carries searcher logic.
 
 ## What it becomes
 
-The searcher owns the table end to end. A workload declares its alphabet
-sampler and, optionally, the archive depth that scopes the table. Every
-other input-policy method keeps a default.
+The searcher owns one table per run for every workload, which is what
+SMB's default policy does today. A workload declares its alphabet sampler.
+Every other input-policy method keeps a default.
 
 | Today in `smb/campaign.rs` | After, in `dissonance/searcher/src/search/` |
 |---|---|
 | `SmbDrawState { tables, versions }` (284) | `DrawTables<A>`, one concrete type for every workload |
-| `SmbCampaignChordPolicy`, `SmbChordTableDerivation`, `chord_policy_identifier` (562), `chord_policy_from_identifier` (588) | one searcher policy identifier for the table parameters, recorded per run in `WorkloadPolicies` beside the selector and mixture identifiers |
-| `SmbChordSource::{All, Level}` (519) and the source filter (511) | scope by archive group: `None` for one table per run, `Some(depth)` for one table per `group(depth)`; a draw uses the parent's group |
-| `initial_chord_tables` (648) and `SmbChordTableHeader` | fold an origin archive's retained inputs into the initial tables by scope; the header carries source hash, parameters and initial checkpoint |
-| `recorded_chord_tables` (723), `remember_chord_version` (746), `SmbChordTableVersion` | same logic, generic over the action type |
-| the `InputPolicy` impl (848): `initial_draw_state`, `draw_checkpoint`, `expand_suffix`, `expand_suffix_recorded`, `finish_stream_record`, `remember_draw_version`, memory accounting | default methods on `InputPolicy` (`campaign.rs` 186-300) written once against `DrawTables` |
-| `ChordFoldSource::{SuffixOnly, FullInput}` and `retained_inputs_need_full` | keep the one the SMB default uses today; delete the other |
+| `SmbCampaignChordPolicy`, `SmbChordTableDerivation`, `chord_policy_identifier` (562), `chord_policy_from_identifier` (588) | one searcher identifier for the table parameters, recorded per run in `WorkloadPolicies` beside the selector and mixture identifiers |
+| `SmbChordSource::{All, Level}` and the source filter (511, 519) | deleted; every retained input folds into the one table |
+| `initial_chord_tables` (648) and `SmbChordTableHeader` | the campaign folds an origin archive's retained inputs into the initial table where `Evaluation::source_entries` (`campaign.rs` 418) is available; the header carries source hash, parameters and initial checkpoint |
+| `recorded_chord_tables` (723), `remember_chord_version` (746), `SmbChordTableVersion` | same logic, generic over the action type, with versions dropped after their last recorded use |
+| the `InputPolicy` impl (848): `initial_draw_state`, `draw_checkpoint`, `draw_checkpoint_version` (936, returns `checkpoint.records`), `expand_suffix`, `expand_suffix_recorded`, `finish_stream_record`, `remember_draw_version`, memory accounting | default methods on `InputPolicy` (`campaign.rs` 186-300) written once against `DrawTables` |
+| `retained_inputs_need_full` (995, returns false) and the full-input branch in the searcher (`campaign.rs` 3156-3190) | deleted; the fold is suffix-only |
 | the tests in `smb/campaign.rs` that exercise fold, versions and replay | searcher unit tests over a test action type |
 
 `CampaignTypes::{DrawState, DrawCheckpoint, DrawHeader}` (`campaign.rs`
 150-152) become the searcher's concrete types and leave the trait.
 
-Default scope is `None`, one table per run, which is what SMB's default
-policy `SmbChordSource::All` does today. Default parameters are SMB's
-current defaults: `prefix_steps 0, recent_successes 128, recent_weight 3,
-all_history_weight 1, update_every_records 64, hash_every_records 1024`.
+Default parameters are SMB's current defaults: `prefix_steps 0,
+recent_successes 128, recent_weight 3, all_history_weight 1,
+update_every_records 64, hash_every_records 1024`.
+
+Whether a draw consults the table is decided by the mixture identifier, as
+today: `alphabet_only` never does, `energy_splice` does through its
+strategy weights (`draw.rs` 302). So a run with the table and a run
+without one are two mixtures, and no new identifier value is needed.
 
 ## Steps
 
 ### 1. Move the generic parts into the searcher
 
-Create `src/search/draw_tables.rs` holding `DrawTables<A>`: the tables, the
-version map, fold on `finish_stream_record`, checkpoint, recorded lookup,
-version reuse, and memory accounting. Move the SMB test cases for these
-across, generic over a small test action.
+Create `src/search/draw_tables.rs` holding `DrawTables<A>`: the table, the
+version map, fold on `finish_stream_record`, checkpoint, checkpoint
+version, recorded lookup, version reuse, and memory accounting. Move the
+SMB test cases for these across, generic over a small test action.
+
+Before deleting the SMB code, add a test in `workloads/nes/src/smb/` that
+folds one recorded set of retained inputs through both `DrawTables` and the
+SMB code and asserts the `table_sha256` of every checkpoint is identical.
+Keep it until step 6 deletes the SMB code, then delete the test with it and
+say in the pull request that it passed.
 
 ### 2. Defaults on `InputPolicy`
 
-Give `initial_draw_state`, `draw_checkpoint`, `expand_suffix`,
-`expand_suffix_recorded`, `finish_stream_record`, `remember_draw_version`,
-`draw_state_memory_bytes` and `draw_state_memory_reserve_bytes` default
-bodies written against `DrawTables`. Add two methods a workload may
-override: `sample_alphabet(&self, run, rand) -> Action`, required, and
-`table_scope_depth(&self) -> Option<usize>`, default `None`.
+Give `initial_draw_state`, `draw_checkpoint`, `draw_checkpoint_version`,
+`expand_suffix`, `expand_suffix_recorded`, `finish_stream_record`,
+`remember_draw_version`, `draw_state_memory_bytes` and
+`draw_state_memory_reserve_bytes` default bodies written against
+`DrawTables`. Add one required method, `sample_alphabet(&self, run, rand)
+-> Action`, which `expand_suffix` passes to `draw_suffix` as the alphabet
+sampler; the biased sampler is the table.
 
 ### 3. Policy identifier
 
-Add the table identifier to `WorkloadPolicies` in the searcher, recorded on
-every run, with an `off` value for paired measurement only. It is on by
-default for every workload.
+Add the table parameter identifier to `WorkloadPolicies`, recorded on every
+run.
 
-### 4. Origin seeding
+### 4. Versions
+
+Versions exist for replay only: `remember_draw_version` is called at
+`campaign.rs` 3354, 3564 and 3784, all in replay. Replay collects every
+required version up front (3247-3261). Turn that set into a map from
+version to the index of the last record needing it, and drop a version
+after that record replays. Versions are not charged to the memory budget,
+since replay memory must equal live memory (3778); the last-use rule is
+what bounds them.
+
+### 5. Origin seeding
 
 When a campaign starts from an archive origin, fold that archive's retained
-inputs into the initial tables by scope, as `initial_chord_tables` does for
-SMB today, and record the header.
-
-### 5. Bounds
-
-One table per group can grow without limit at a fine scope depth. Cap the
-number of tables, evict the least recently folded, and charge them through
-the memory accounting. Fine scope depths are for measurement, never the
-default, until the cost is known.
+inputs into the initial table, as `initial_chord_tables` does for SMB
+today, in the campaign code that already holds the origin report, and
+record the header.
 
 ### 6. Strip the drivers
 
@@ -86,20 +100,19 @@ default, until the cost is known.
   vocabulary as the alphabet sampler.
 - Metroid (`campaign.rs` 678-683), Mega Man 2 (613-618), Nova (535-540),
   Super Tilt Bro (506-511), faults (`workloads/faults/src/campaign.rs`
-  460-465): delete the draw-state and suffix boilerplate; supply the alphabet
-  sampler only.
-- Each recorded stream now carries a draw checkpoint. Bump the stream format
-  identifier where a workload declares one.
+  460-465): delete the draw-state and suffix boilerplate; supply the
+  alphabet sampler only.
+- Every recorded stream now carries a draw checkpoint. Set
+  `CAMPAIGN_SCHEMA_VERSION` to 5.
 
 ### 7. Tests
 
 - The moved unit tests pass against the test action.
-- Contract: a recorded stream from every workload replays bit-identically
-  with the table on.
-- Contract: with scope `Some(depth)`, a draw from a parent in one group never
-  reads steps folded from another group.
-- Contract: a workload with the table `off` draws from the alphabet only and
-  replays.
+- Contract: a recorded stream from every workload replays exactly.
+- Contract: replay of a long stream with many checkpoint versions holds at
+  most the versions still needed; assert the version map shrinks as the
+  replay advances.
+- The SMB equivalence test from step 1 passed before its deletion.
 
 ### 8. Docs
 
@@ -112,13 +125,20 @@ else about drawing.
 
 From `README.md`: local checks, SMB regression, quick panel, long panel.
 
-The SMB regression is the exact check for this step. With the default scope
-and parameters the searcher reproduces SMB's current table, so the per-seed
-victory execution counts and the recorded stream hashes must match the step
-3 run of the same manifest on the same build settings. If they differ, the
-draw sequence changed; find why before the quick panel.
+The SMB regression is the exact check for this step. SMB's draws are the
+same code and the same parameters as before, so for every seed and memory
+budget the `executions_to_first_victory` and `frames_to_first_victory`
+values in the run results must equal the step 3 run of the same manifest
+on the same build settings. The raw stream hash is not the comparison; the
+header and record format changed. If a value differs, find why before the
+quick panel.
 
-On the quick panel the other games now draw from a table for the first
-time. Watch the film for Metroid and Mega Man 2 before reading numbers. A
-paired run with the table `off` on the same seeds is the comparison, and it
-is the one place the `off` value is used.
+On the quick panel the other games draw from a table for the first time,
+and the step 3 quick panel is the comparison. Watch the film for Metroid
+and Mega Man 2 before reading numbers.
+
+Long panel: run `benchmarks/search/metroid-long-horizon.json` unchanged,
+whose `alphabet_only` mixture never consults the table, and a copy
+committed as `benchmarks/search/metroid-long-horizon-table.json` with the
+mixture set to the quick panel's `energy_splice:6`. Both on the step 4
+build. Compare the two arms by film, map images, then numbers.

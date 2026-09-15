@@ -1,7 +1,8 @@
 # Step 2: reset energy only at the depths where a descendant is new
 
 Base: the step 1 merge commit. Line numbers from `58d07433`; refresh before
-editing, and expect `record_selection_outcome` to have changed in step 1.
+editing, and expect `record_selection_outcome` and the selector policy list
+to have changed in step 1.
 
 ## What is wrong
 
@@ -12,12 +13,10 @@ today means the child landed in a depth-1 group (a 32-pixel cell in the NES
 workloads) the archive had never seen.
 
 So a new 32-pixel cell inside a room the search already covers counts as
-full credit for the room and its region. A room has a few hundred possible
-cells once posture and door state are multiplied in, and every tank pickup
-creates a fresh copy of all of them. Covered rooms keep producing this fine
-novelty and never fade. In the Metroid controls, selection cells grew from
-22,000 to 89,000 while map cells froze at 262; in Mega Man 2 the first stage
-screen held 13 percent of the archive.
+full credit for the room and its region. Covered rooms keep producing this
+fine novelty and never fade. In the Metroid controls, selection cells grew
+from 22,000 to 89,000 while map cells froze at 262; in Mega Man 2 the first
+stage screen held 13 percent of the archive.
 
 ## What it becomes
 
@@ -32,10 +31,13 @@ been seen before.
 | 1, 32-pixel cell | new 32-pixel cell | new 32-pixel cell |
 | 2, 128-pixel region | new 32-pixel cell | new region |
 | 3, map cell | new 32-pixel cell | new map cell |
-| 4, class (added in step 1) | new 32-pixel cell | new class |
 
-This removes the advantage covered places hold. It gives the frontier no
-bonus of its own; that comes from cell recency and from step 3.
+The selector identifier `hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2`
+reads as entry threshold 3, then one halving scale per pooled depth: 6 at
+depth 1, 12 at depth 2, 2 at depth 3 (`archive.rs` 218-232).
+
+`Retire` clears every depth on any productive selection today and keeps
+doing so. `GroupUniform` never clears.
 
 ## Where it lives
 
@@ -47,8 +49,11 @@ All in `dissonance/searcher/src/search/archive.rs` unless stated.
 | compaction of both | 1444, 1456 | rebuilt with the retained entries |
 | the new-cell computation in `insert_after` | 2286-2291 | `cells_seen.insert(key.group(1))` |
 | `opened_new_cell(id)` | 2995 | returns the bool |
+| `novelty_memory_bytes` | 3106 | charges `cells_seen.len()`; feeds `history_memory_bytes` (1732) and so compaction (1375) |
+| `historical_cell_count` | 3133 | `cells_seen.len()` for reports |
 | `record_selection_outcome` | 3236, clear loop at 3262 | clears every `group_barren` map for the parent's groups |
 | callers in `campaign.rs` | 2902, 3801 | `any(opened_new_cell)` over the retained children |
+| `CAMPAIGN_SCHEMA_VERSION` | `campaign.rs` 46 | 2; replay refuses any other value (3214) |
 | `counter_resets` | 294 | the walk's own counter; unrelated, leave it |
 
 ## Steps
@@ -56,11 +61,11 @@ All in `dissonance/searcher/src/search/archive.rs` unless stated.
 ### 1. Record which depths a new entry opened
 
 In `insert_after`, replace the single seen-set and bool with one seen-set
-per pooled depth and one `u8` mask per entry, bit `d` set when `group(d)`
-was new:
+per depth from 1 to `groups() - 1` and one `u32` mask per entry, bit `d`
+set when `group(d)` was new:
 
 ```rust
-let mut opened = 0u8;
+let mut opened = 0u32;
 for depth in 1..K::groups() {
     if self.groups_seen[depth - 1].insert(key.group(depth)) {
         opened |= 1 << depth;
@@ -69,14 +74,12 @@ for depth in 1..K::groups() {
 self.opened_depths.push(opened);
 ```
 
-Keep `cells_seen.len()` available as the depth-1 entry of the new vector; it
-feeds the cell count in reports (3107, 3134). Compaction rebuilds every
-seen-set the way it rebuilds `cells_seen` today. `opened_new_cell(id)`
-becomes `opened_depths(id) -> u8`.
-
-If `opened_cell` is written into the archive checkpoint, the checkpoint
-format changes. Older checkpoints then fail to load with a clear error;
-that is acceptable.
+`insert_after` returns an error if `K::groups() > 32`; the trait sets no
+bound of its own. `historical_cell_count` returns the length of the depth-1
+set. `novelty_memory_bytes` charges every set, each length times
+`historical_group_memory_charge(0)`. Compaction rebuilds every set the way
+it rebuilds `cells_seen` today. `opened_new_cell(id)` becomes
+`opened_depths(id) -> u32`.
 
 ### 2. Combine over the children
 
@@ -96,39 +99,57 @@ for (offset, map) in self.group_barren.iter_mut().enumerate() {
 }
 ```
 
-If step 1 kept the `Energy` or `EnergyFrontier` policies, which clear on a
-new slot rather than a new cell, treat a new slot as all bits set for them.
+For `Retire`, pass a mask with every bit set.
 
-### 4. Count resets per depth
+### 4. Bump the schema version
 
-Add `energy_resets: [u64; N]` (one per barren map) to the selector
-accounting and report it. It tells a reader of a run what share of
-map-cell resets came from a child that was new only at depth 1, which is
-the number that says whether this change mattered on that run.
+The memory charge changed, so compaction can fire at a different moment
+than a stream recorded before this step expects. Set
+`CAMPAIGN_SCHEMA_VERSION` to 3. Older streams then fail with the existing
+schema error; the test at `campaign.rs` 5378 covers that path.
 
-### 5. Tests
+### 5. Count resets and what caused them
+
+Add to `SelectorAccounting`:
+
+- `energy_resets: Vec<u64>`, one per barren map, the counters actually
+  cleared at each depth.
+- `productive_by_opened: Vec<u64>`, indexed by the deepest depth the mask
+  has set (0 for a productive selection that opened nothing new). The
+  entry at index 1 counts productive selections that were new only at
+  depth 1. Those are the selections that cleared every depth before this
+  step and clear one depth after it, so the share
+  `productive_by_opened[1] / productive_selections` says how much this
+  change did on that run.
+
+### 6. Tests
 
 - Update the existing calls that pass three bools to
   `record_selection_outcome` (5097, 5135, 5323, 5371) to pass a mask.
 - New: a child new at depth 1 only zeroes the parent's depth-1 counter and
   leaves depths 2 and 3 as they were.
 - New: a child new at depth 3 zeroes depths 1, 2 and 3.
-- New: the accounting reports one reset per cleared counter per depth.
-- Replay identity: an existing recorded stream still replays exactly, since
-  the mask is derived from the same admissions in the same order.
+- New: the accounting reports one reset per cleared counter per depth, and
+  `productive_by_opened` counts the depth-1-only case.
+- New: `novelty_memory_bytes` grows when a group is new at depth 2 only.
+- Replay: the generic resource fixture in
+  `campaign_continuation_tests.rs` runs a live campaign under a memory
+  budget tight enough to compact, replays its stream, and asserts the
+  replayed archive matches the live one entry for entry. Extend it with a
+  key of three depths so the extra seen-sets are charged and compacted.
 
-### 6. Docs
+### 7. Docs
 
 One paragraph in `dissonance/searcher/README.md` under the energy policy
 description saying that a counter clears only when the child is new at that
-counter's depth.
+counter's depth, and naming the two new accounting fields.
 
 ## Checks after merge
 
 From `README.md`: local checks, SMB regression, quick panel. Expect most
 map-cell counters to sit at the floor most of the time now, since the
-halving thresholds `3,6,12` were tuned when resets were frequent. That is
-expected. If the quick panel shows Metroid or Mega Man 2 reaching less far
-on every seed, the first thing to try is a larger depth-3 threshold in the
-selector identifier, and the reset rule stays. Read `energy_resets` per
-depth in the reports and put the numbers in the pull request.
+depth-3 scale of 2 was set when resets were frequent. That is expected. If
+the quick panel shows Metroid or Mega Man 2 reaching less far on every
+seed, the first thing to try is a larger depth-3 scale in the selector
+identifier, recorded as its own manifest change; the reset rule stays. Put
+`energy_resets` and `productive_by_opened` per seed in the pull request.
