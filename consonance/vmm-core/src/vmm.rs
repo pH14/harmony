@@ -5636,6 +5636,18 @@ mod tests {
             Err(VmmError::Backend(vmm_backend::BackendError::Internal(message)))
                 if message.contains("during an active event")
         ));
+        assert!(matches!(
+            target.save_vm_state(),
+            Err(VmmError::Backend(
+                vmm_backend::BackendError::PendingCompletion
+            ))
+        ));
+        assert!(matches!(
+            target.state_hash(),
+            Err(VmmError::Backend(
+                vmm_backend::BackendError::PendingCompletion
+            ))
+        ));
     }
 
     #[test]
