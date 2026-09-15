@@ -15,8 +15,8 @@ step's actual base before editing.
 |---|---|---|---|---|
 | 1 | `01-archive-ordering-split.md` | main | the searcher stops reading key field order as progress; the class draw becomes a weight | local checks, SMB regression, quick panel |
 | 2 | `02-energy-reset-depth.md` | step 1 merge | a productive draw resets energy only at the depths where the child is new | local checks, SMB regression, quick panel |
-| 3 | `03-continuation-graph.md` | step 2 merge | continuation replay sized to the archive, breadth-first, on by default | local checks, SMB regression, quick panel, long panel, throughput |
-| 4 | `04-input-table-in-searcher.md` | step 3 merge | the retained-input table leaves the SMB driver and every workload gets it | local checks, SMB regression with exact comparison, quick panel, long panel both arms |
+| 3 | `03-continuation-graph.md` | step 2 merge | continuation replay sized to the archive, breadth-first, on by default | local checks, SMB regression, quick panel, long panel with both manifests, throughput |
+| 4 | `04-input-table-in-searcher.md` | step 3 merge | the retained-input table leaves the SMB driver and every workload gets it | local checks, SMB regression with exact comparison, quick panel, long panel with the energy-splice manifest |
 
 The order matters. Step 1 removes selector policy variants that step 2 would
 otherwise have to handle. Steps 1 and 2 together flatten the draw over
@@ -118,8 +118,10 @@ step with `eval.py build` and keep the build directory named for the step.
   check.
 - **Long panel**: `benchmarks/search/metroid-long-horizon.json`. Seeds 3, 4
   and 5, four workers, 8192 MiB, up to 3,000,000 executions or 400 million
-  frames or two hours each, mixture `alphabet_only`. Run only where the
-  table above says so.
+  frames or two hours each, mixture `alphabet_only`. Step 3 adds
+  `metroid-long-horizon-energy-splice.json`, the same with the quick
+  panel's `energy_splice:6` mixture. Run only where the table above says
+  so.
 - **Throughput**: executions per second and frames per second from the
   quick panel's run reports, compared with the previous step's quick panel
   on the same box. If it fell, profile one case with `perf record` on the

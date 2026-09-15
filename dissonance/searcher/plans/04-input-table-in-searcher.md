@@ -127,18 +127,23 @@ From `README.md`: local checks, SMB regression, quick panel, long panel.
 
 The SMB regression is the exact check for this step. SMB's draws are the
 same code and the same parameters as before, so for every seed and memory
-budget the `executions_to_first_victory` and `frames_to_first_victory`
-values in the run results must equal the step 3 run of the same manifest
-on the same build settings. The raw stream hash is not the comparison; the
-header and record format changed. If a value differs, find why before the
-quick panel.
+budget the step 4 run must match the step 3 run of the same manifest on
+the same build settings in two places: `executions_to_first_victory` and
+`frames_to_first_victory` in the run results, and every record of
+`campaign/progress.jsonl` in the run directory, field by field, apart from
+wall-clock fields. Identical draws give identical admissions, and the
+progress records carry the admission, entry and cell counts at every
+progress point. The raw stream hash is not the comparison; the header and
+record format changed. If anything differs, find why before the quick
+panel.
 
 On the quick panel the other games draw from a table for the first time,
 and the step 3 quick panel is the comparison. Watch the film for Metroid
 and Mega Man 2 before reading numbers.
 
-Long panel: run `benchmarks/search/metroid-long-horizon.json` unchanged,
-whose `alphabet_only` mixture never consults the table, and a copy
-committed as `benchmarks/search/metroid-long-horizon-table.json` with the
-mixture set to the quick panel's `energy_splice:6`. Both on the step 4
-build. Compare the two arms by film, map images, then numbers.
+Long panel: run `benchmarks/search/metroid-long-horizon-energy-splice.json`,
+committed in step 3, and compare with step 3's run of the same manifest.
+Both runs use `energy_splice:6`, so splicing and continuation are the same
+in both and the table is the only difference. Compare by film, map images,
+then numbers. The `alphabet_only` manifest never consults the table and is
+not run in this step.

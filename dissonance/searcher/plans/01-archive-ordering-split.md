@@ -44,21 +44,29 @@ All in `dissonance/searcher/src/search/archive.rs` unless stated.
 | `class_order` | 2485 | sorts classes by `Ord`, or a dominance scan under the semantic policies | replaced by the weighted class draw |
 | `walk_to_cell_scan` | 2524, compare at 2569 | `band > *frontier` | `progress_cmp == Greater` |
 | `walk_live_index` | 2622 | first class in `class_order` with a live cell | the weighted class draw |
-| `deepest_live_band` | 2715, at 2729-2735 | `children.last()`, or a nested dominance scan | one pass taking the maximum by `progress_cmp`; ties keep the first in map order |
-| `draw_group_index` | 2743, at 2812-2824 | `partition_point` by `Ord`, or a filtered scan | sort `ranked` by `progress_cmp` once, then `partition_point` with `progress_cmp`; span 16 unchanged |
+| `classes` map, `live_children` sets | 592, 594 | keyed by `Reverse<Group>` and `Group`, so `Ord` order | keyed by `ProgressOrdered<Group>` (below), so progress order with the same indexed cost |
+| `deepest_live_band` | 2715, at 2729-2735 | `children.last()`, or a nested dominance scan | `children.last()` on the `ProgressOrdered` set; the last peer is the representative, and peers compare `Equal` so the choice changes no result |
+| `draw_group_index` | 2743, at 2812-2824 | `partition_point` by `Ord`, or a filtered scan | `ranked` sorted as `ProgressOrdered`, `partition_point` with `progress_cmp`; span 16 unchanged |
 | `deepest_leaf` update | 2296 | `previous >= (key, id)` on the full key | `leaf_order` (below) |
 | `donors` set | 600, type at 606 | `BTreeSet<(K, usize, usize)>` ordered by the full key | a newtype whose `Ord` is `leaf_order` on the leaf, then leaf id, then donor id |
 | `splice_tail_for_campaign` | 2334 | `leaf_key <= parent_key` | `!leaf_advances(leaf, parent)` |
 | `recorded_splice_tail` | 2387 | `leaf_entry.key <= parent_key` | the same `leaf_advances` helper |
-| `live_progress` update | 2270-2279 | `key > *deepest` and `key == *deepest` | `progress_cmp` on the cell group: `Greater` replaces, `Equal` keeps the lower cost |
+| `live_progress` update | 2270-2279 | `key > *deepest` and `key == *deepest` | `progress_cmp` on the cell group and nothing else: `Greater` replaces, `Equal` keeps the held key and the lower cost |
 | `semantic_progress` | 2477 | the switch between the two paths | deleted |
 | `SelectorPolicy` | 106, identifiers 119-248 | nine variants | five: the three `EnergyFrontierCheapest*`, `Retire`, `GroupUniform` |
+
+`ProgressOrdered<G>` is a newtype over a group whose `Ord` is
+`progress_cmp` first and the group's own `Ord` second. It is a total order
+because the second comparison is one. Maps and sets keyed by it iterate in
+progress order, so a maximum is `.last()` and a rank is a `partition_point`,
+as today.
 
 `leaf_order(a: (K, usize), b: (K, usize))` is `progress_cmp` on
 `group(cell_depth())` of the two keys, then the entry id. It is a total
 order because ids are unique. `leaf_advances(leaf, parent)` is
 `leaf_order(leaf, parent) == Greater`, where `parent` is the parent entry's
-key and id. `cell_depth()` is at 1764.
+key and id. `cell_depth()` is at 1764. `live_progress` holds no id and uses
+`progress_cmp` alone.
 
 `deepest_key` in the campaign report (`campaign.rs` 2097, 2154) reads
 `live_progress` and needs no change of its own.
@@ -88,24 +96,37 @@ before changing searcher code and note the failure in the pull request.
 3. **No progress notion means peers.** A key that leaves `progress_cmp` at
    its default: two bands that differ only in label receive walk counts
    within the tolerance above, under both labellings.
-4. **Operation count.** A key with 64 live peer classes, then 128. Count
-   `progress_cmp` calls per draw through a test-only counter on the key.
-   Assert the count with 128 classes is at most twice the count with 64
-   plus a constant, so the class draw is one pass and not a pairwise scan.
+4. **Operation count, classes.** A key with 64 live peer classes, then
+   128. Count `progress_cmp` calls per draw through a test-only counter on
+   the key. Assert the count with 128 classes is at most twice the count
+   with 64 plus a constant, so the class draw is one pass and not a
+   pairwise scan.
+5. **Operation count, bands.** One region holding 64 live peer bands, then
+   128. Assert the `progress_cmp` calls per draw grow by at most a constant,
+   since band lookups are indexed.
+6. **Splice past the old ordering.** A leaf that is ahead of the parent by
+   `progress_cmp` and sorts lower than the parent by the derived `Ord` is
+   accepted by both `splice_tail_for_campaign` and `recorded_splice_tail`.
+   On the base commit both reject it.
 
 ### 2. Change the trait
 
 - `progress_cmp` default becomes `Ordering::Equal`.
-- Add a test helper in `archive.rs` tests, `assert_total_preorder<K>(groups:
-  &[K::Group])`, that checks transitivity over every triple. Every workload
-  with a `progress_cmp` calls it from its own tests on a handful of groups.
+- Add `pub fn check_total_preorder<K: ArchiveKey>(groups: &[K::Group]) ->
+  Result<(), String>` in `archive.rs` proper, exported from the crate, since
+  the `archive.rs` test module is private and the NES crate depends on the
+  searcher as a library. It checks that comparing two groups in either
+  order gives reversed results, that `Equal` is transitive, and that the
+  ordering is transitive over every triple. Every workload with a
+  `progress_cmp` calls it from its own tests on a handful of groups.
 - Nothing else on the trait changes.
 
 ### 3. Route every read through `progress_cmp`
 
-Work down the table above. Where one representative is needed, take the
-first maximal element in map order. Every scan that compared each element
-against every other becomes a single pass or a sort; none remains.
+Work down the table above. Re-keying `classes` and `live_children` by
+`ProgressOrdered` is what keeps `.last()` and `partition_point` correct;
+do that before touching the walk. No scan that compares each element
+against every other remains.
 
 ### 4. Delete the switch and the duplicate policies
 
@@ -132,11 +153,12 @@ In `walk_live_index` and `walk_to_cell_scan`, replace "loop over
 weighted draw. It applies under every selector policy and needs no
 threshold.
 
-1. Collect the classes with at least one live cell, as `class_order` does
-   at 2494-2501. This is one pass over `classes`, the same work
-   `class_order` does today.
-2. Sort them by `progress_cmp` descending. `rank` of a class is the number
-   of distinct progress levels ahead of it, capped at 8. Peers share a rank.
+1. Walk `classes` from the last key down, keeping those with at least one
+   live cell, as `class_order` does at 2494-2501. This is one pass over
+   `classes`, the same work `class_order` does today, and the keys already
+   arrive in progress order.
+2. `rank` of a class is the number of distinct progress levels ahead of it
+   in that walk, capped at 8. Peers share a rank.
 3. `weight = 256 >> rank`.
 4. Draw one class in proportion to weight with the archive's `rand`, so the
    draw is recorded and replays exactly.

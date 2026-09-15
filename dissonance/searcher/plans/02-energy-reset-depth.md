@@ -75,7 +75,10 @@ self.opened_depths.push(opened);
 ```
 
 `insert_after` returns an error if `K::groups() > 32`; the trait sets no
-bound of its own. `historical_cell_count` returns the length of the depth-1
+bound of its own. With `groups() == 1` there is no seen-set, bit 0 of the
+mask is set when the slot is new, and `historical_cell_count` returns the
+slot count, which is what the `new_slot` fallback at 2287-2290 reports
+today. `historical_cell_count` otherwise returns the length of the depth-1
 set. `novelty_memory_bytes` charges every set, each length times
 `historical_group_memory_charge(0)`. Compaction rebuilds every set the way
 it rebuilds `cells_seen` today. `opened_new_cell(id)` becomes
@@ -114,13 +117,12 @@ Add to `SelectorAccounting`:
 
 - `energy_resets: Vec<u64>`, one per barren map, the counters actually
   cleared at each depth.
-- `productive_by_opened: Vec<u64>`, indexed by the deepest depth the mask
-  has set (0 for a productive selection that opened nothing new). The
-  entry at index 1 counts productive selections that were new only at
-  depth 1. Those are the selections that cleared every depth before this
-  step and clear one depth after it, so the share
-  `productive_by_opened[1] / productive_selections` says how much this
-  change did on that run.
+- `productive_by_mask: BTreeMap<u32, u64>`, a histogram of the mask over
+  productive selections. Few distinct masks occur. Before this step every
+  mask with bit 1 set cleared every depth; after it only the depths in the
+  mask clear. So the share of old-style full resets this change removed on
+  a run is the count at mask `2` (bit 1 alone) divided by the sum over
+  masks with bit 1 set.
 
 ### 6. Tests
 
@@ -130,7 +132,8 @@ Add to `SelectorAccounting`:
   leaves depths 2 and 3 as they were.
 - New: a child new at depth 3 zeroes depths 1, 2 and 3.
 - New: the accounting reports one reset per cleared counter per depth, and
-  `productive_by_opened` counts the depth-1-only case.
+  `productive_by_mask` counts the depth-1-only mask separately from a mask
+  with bits 1 and 3.
 - New: `novelty_memory_bytes` grows when a group is new at depth 2 only.
 - Replay: the generic resource fixture in
   `campaign_continuation_tests.rs` runs a live campaign under a memory
@@ -152,4 +155,4 @@ depth-3 scale of 2 was set when resets were frequent. That is expected. If
 the quick panel shows Metroid or Mega Man 2 reaching less far on every
 seed, the first thing to try is a larger depth-3 scale in the selector
 identifier, recorded as its own manifest change; the reset rule stays. Put
-`energy_resets` and `productive_by_opened` per seed in the pull request.
+`energy_resets` and `productive_by_mask` per seed in the pull request.

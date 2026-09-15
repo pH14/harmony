@@ -36,7 +36,7 @@ wave dies within a few hops.
 | share | one reservation in four (`campaign.rs` 2487; replay check at 3569) | one in two while anything is pending |
 | enablement | `enable_continuations(config.mixture.uses_continuations())` (`campaign.rs` 2367, 3366) | always on |
 | identifiers | `energy_splice_continuation_v1`, `_v2`, `alphabet_continuation_v1` in `draw.rs` 121-165 | removed; recorded runs naming them fail to load with an error naming them; `ci.json` names `energy_splice_continuation_v1:6` and must change |
-| replay | reconstructs a continuation job from its record (`campaign.rs` 3598) | runs the same dispatch loop against the bank it rebuilt, and checks the record matches |
+| replay | reconstructs a continuation job from its record (`campaign.rs` 3598) | runs the same dispatch loop against the bank it rebuilt at each reconstructed reservation, and checks the record matches |
 | record | donor, leaf, tail | plus destination slot and wave length |
 | accounting | dispatch totals | plus edges held, pending entries, continuation jobs run and their execution work, replays landing in their destination slot, replays that replaced the holder there, and the longest wave, per progress record |
 
@@ -81,11 +81,13 @@ Replace `ContinuationBank` with:
 `record(from, to, ...)` inserts, or replaces only when the new tail is
 cheaper. `improved(place, parent, wave)` sets `pending_parent` for each
 out-edge of `place` and pushes the pair onto `pending` only if it was not
-already present. `pop()` takes from the front and skips a pair absent from
-`pending_parent`. `remove_slot(slot)` deletes the slot's out-edges and
-in-edges through both index sets and their `pending_parent` entries. When
-`pending.len()` exceeds twice `pending_parent.len()`, rebuild `pending`
-from the map in map order.
+already present. `pop()` takes from the front; a pair absent from
+`pending_parent` is a tombstone, and `pop()` returns it as such so the
+caller counts it against the reservation's limit of 8. `remove_slot(slot)`
+deletes the slot's out-edges and in-edges through both index sets and
+their `pending_parent` entries. When `pending.len()` exceeds twice
+`pending_parent.len()`, retain in `pending`, in its existing order, only
+the pairs still in the map; oldest-first order survives.
 
 ### 2. Memory
 
@@ -97,19 +99,23 @@ Charge each recorded edge's bytes at record time and release them in
 In `insert_after`, call `improved` on any replacement, with wave length 0
 for an ordinary admission and the arriving job's wave plus one for a
 continuation result. In the dispatch loop, change one in four to one in
-two, examine at most 8 pending entries, and fall back to ordinary selection
-when none is usable.
+two, take at most 8 entries from the queue, tombstones included, and fall
+back to ordinary selection when none of them is usable.
 
 ### 4. Replay
 
-In the replay loop at `campaign.rs` 3567-3579, when the record's sequence
-falls on a continuation reservation, run the same pop loop against the
-replayed bank. If the loop yields a job, the record must be a continuation
-job with the same parent, donor, leaf, tail, destination and wave;
-otherwise the record must be an ordinary job. Either mismatch is an error
-naming the sequence. The bank is rebuilt by replayed admissions and
-replacements, so live and replay pop the same entries, discard the same
-stale ones, and charge the same bytes.
+Live pops the bank when a reservation is made: in the prefill before any
+admission (`campaign.rs` 2743) and after each admission (3054). Replay
+already reconstructs those reservations where it pins each job's origin
+snapshot: the prefill at 3424-3436 and the replenish at 3816-3823. Run the
+pop loop at those two places, for the job slot being pinned, and not in
+the record loop at 3567. If the loop yields a job, the record in that slot
+must be a continuation job with the same parent, donor, leaf, tail,
+destination and wave; otherwise the record must be an ordinary job. Either
+mismatch is an error naming the sequence. Delete the consistency check at
+3567-3579. The bank is rebuilt by replayed admissions and replacements in
+the same order as live, so live and replay pop the same entries, discard
+the same stale ones, and charge the same bytes.
 
 ### 5. Always on, identifiers removed, schema version
 
@@ -118,7 +124,10 @@ continuation mixture identifiers, their `DrawMixture` variants,
 `isolates_continuations` and `uses_continuations`. Update
 `benchmarks/search/ci.json` and any other manifest naming a removed
 identifier. Set `CAMPAIGN_SCHEMA_VERSION` to 4, since the job record and
-the reservation share changed.
+the reservation share changed. Add
+`benchmarks/search/metroid-long-horizon-energy-splice.json`, a copy of
+`metroid-long-horizon.json` with the mixture set to the quick panel's
+`energy_splice:6`; step 4 compares against this step's run of it.
 
 ### 6. Tail length
 
@@ -134,9 +143,12 @@ Tie the tail cap to the suffix shape's maximum and delete `ACTION_CAP`.
 - Removing a slot drops its out-edges, its in-edges, their pending
   entries, and their memory charge; recording an edge into a recreated
   slot works afterwards.
-- A reservation with 20 stale pending entries examines 8, runs an
-  ordinary job, and the next continuation reservation continues from the
-  ninth.
+- A reservation with 20 stale pending entries takes 8, runs an ordinary
+  job, and the next continuation reservation continues from the ninth.
+- After a rebuild the surviving pairs keep their relative order.
+- A stream recorded with several reservations in flight, where a
+  replacement lands between a reservation and its record, replays; this
+  is the case a pop in the record loop would reject.
 - Live and replay agree on edge count, pending count, memory charge and
   every admission, on a run with several outstanding reservations, stale
   attempts, and a memory budget tight enough to compact. The generic
@@ -152,8 +164,10 @@ on, the bounds, and the accounting fields.
 
 ## Checks after merge
 
-From `README.md`: local checks, SMB regression, quick panel, long panel,
-throughput.
+From `README.md`: local checks, SMB regression, quick panel, long panel
+with both manifests, throughput. The `alphabet_only` manifest compares
+with the runs on main; the `energy_splice:6` manifest is the comparison
+step 4 will use.
 
 Before the milestone numbers, read the accounting: how many edges, how many
 replays landed in their recorded destination, how many replaced the holder
