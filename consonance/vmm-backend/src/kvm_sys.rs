@@ -1295,6 +1295,18 @@ mod xsave_diagnostic {
     #[test]
     #[ignore = "bounded raw XSAVE entry differential; KVM and XSAVE_ENTRY_REPORT_DIR required"]
     fn snapshot_entry_restores_match_uninterrupted_execution() {
+        check_entry_restores(false);
+    }
+
+    #[test]
+    #[ignore = "canonicalized raw-entry witness; KVM, long mode and XSAVE_ENTRY_REPORT_DIR required"]
+    fn snapshot_canonical_entry_restores_match_uninterrupted_execution() {
+        assert!(std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some());
+        assert!(std::env::var_os("XSAVE_ENTRY_WARMUP").is_none());
+        check_entry_restores(true);
+    }
+
+    fn check_entry_restores(canonical: bool) {
         let root = PathBuf::from(
             std::env::var_os("XSAVE_ENTRY_REPORT_DIR").expect("report directory required"),
         );
@@ -1315,13 +1327,20 @@ mod xsave_diagnostic {
         for xcr0 in [3, 7] {
             for seed in [0, 2, 3] {
                 for mode in ["hlt", "xsave", "xrstor"] {
+                    if canonical && mode == "hlt" {
+                        continue;
+                    }
                     let label = format!("xcr{xcr0}-seed{seed}-{mode}");
                     if selected.as_ref().is_some_and(|selected| selected != &label) {
                         continue;
                     }
                     let directory = root.join(&label);
                     fs::create_dir(&directory).unwrap();
-                    let program = entry_program(mode, xcr0);
+                    let mut program = entry_program(mode, xcr0);
+                    if canonical {
+                        canonical::append_canonicalization(&mut program);
+                    }
+                    fs::write(directory.join("guest-program.bin"), &program).unwrap();
                     let mut reference = entry_fixture(&program, seed, xcr0);
                     reference.backend.prepare_snapshot().unwrap();
                     let initial = retain_entry(&mut reference, &directory, "initial");
@@ -1342,6 +1361,9 @@ mod xsave_diagnostic {
                     poison.xsave[XSTATE_BV].copy_from_slice(&canonical_bv.to_le_bytes());
                     poison.xsave_restore_bv = Some(poison.xsave_restore_bv.unwrap() | 2);
                     source.backend.restore(&poison).unwrap();
+                    if canonical {
+                        source.ram.as_mut_bytes()[0x3f00] ^= 1;
+                    }
                     let negative = entry_endpoint(&mut source, &directory, "negative");
                     restore_entry(&mut source, &saved);
                     let reused_initial = retain_entry(&mut source, &directory, "reused-initial");
@@ -1364,7 +1386,7 @@ mod xsave_diagnostic {
                         ("reused-continuation", expected == reused),
                     ];
                     let mut report = format!(
-                        "label={label}\ninitial_bv={:?}\nendpoint_bv={:?}\n",
+                        "label={label}\ncanonical={canonical}\ninitial_bv={:?}\nendpoint_bv={:?}\n",
                         initial.state.xsave_restore_bv, expected.state.xsave_restore_bv
                     );
                     if mode != "hlt" {
@@ -1498,6 +1520,14 @@ mod xsave_diagnostic {
             ]
             .map(|address| CODE_GPA + address - start);
             (program, stops)
+        }
+
+        pub(super) fn append_canonicalization(program: &mut Vec<u8>) {
+            assert_eq!(program.pop(), Some(0xf4));
+            let (canonical, stops) = canonical_guest();
+            program.extend_from_slice(&[0x41, 0xbd, 1, 0, 0, 0, 0x45, 0x31, 0xf6]);
+            program.extend_from_slice(&canonical[stops[2] - CODE_GPA..]);
+            assert!(program.len() < GUEST_XSAVE_GPA - CODE_GPA);
         }
 
         fn canonical_fixture(mode: u64, compacted: bool, canonical: bool) -> EntryFixture {

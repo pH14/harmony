@@ -227,6 +227,15 @@ XSAVEC support and a fresh `XSAVE_CANONICAL_REPORT_DIR`; set
 `XSAVE_ENTRY_LONG_MODE=1`, leave `XSAVE_ENTRY_WARMUP` unset, and run on one fixed
 CPU. This is a test fixture, not a kernel or admission-policy change.
 
+`snapshot_canonical_entry_restores_match_uninterrupted_execution` also applies
+the same canonicalizer after the raw entry fixture's XSAVE, preserving its
+capture, poison, cold restore and reused restore sequence. It covers XCR0=3/7,
+each raw seed and both XSAVE-only and XRSTOR-then-XSAVE programs, with and without
+prefaulting in required CI. It uses `XSAVE_ENTRY_REPORT_DIR` and long mode. Full
+RAM, CPU state and exit counts remain byte-exact; a separate RAM poison keeps
+the negative control observable after the canonicalizer clears scratch GPRs.
+The original unmodified raw-entry diagnostic remains a distinct control.
+
 Every execution first fills all 832 owned save bytes with a nonzero pattern,
 then resets registers and selects init, SSE-active, AVX-active, or MXCSR-only
 state. Standard XSAVE64 and compacted XSAVEC64 each have a raw control and a
