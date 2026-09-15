@@ -141,7 +141,12 @@ removed from snapshot identity; the raw-bitmap identity problem remains open. `s
 and hashing remain reads; callers prepare a boundary explicitly after restoring
 RAM and CPU state or servicing an exit. Pending CPU events remain present;
 unretired userspace instruction completion is a different condition and must
-not be consumed by preparation. KVM may refresh shared run-page output metadata.
+not be consumed by preparation. KVM restore also rejects pending read/MSR responses, staged completions and
+queued completion exits before any CPU ioctl or state mutation. A rejected
+restore leaves completion and interrupt state intact. Raw backend save remains
+available during exit servicing for CPUID resolution and tracing; it is not
+itself a sealable snapshot boundary. Snapshot publication must enforce the
+completion boundary at the VMM layer. KVM may refresh shared run-page output metadata.
 The tentative supported execution requirement is a single host core type for all
 related boots, forks, and restores. On hybrid Intel Linux hosts, launch the worker
 under `taskset -c <pool>` or a cpuset containing only P-cores or only E-cores.

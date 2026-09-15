@@ -3589,6 +3589,14 @@ mod tests {
             (hypercall_proto::Status::Ok as u16, chord_b.clone())
         );
         assert_eq!(s.handle(&Request::Replay(mid)).unwrap(), Ok(Reply::Unit));
+        let replay_remaining = match s.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(reproducer)) => EnvSpec::decode(&reproducer.bytes).unwrap(),
+            other => panic!("recorded environment after replay: {other:?}"),
+        };
+        assert_eq!(
+            replay_remaining.payloads(),
+            Some([chord_b.clone()].as_slice())
+        );
         assert_eq!(
             ring_payload(&mut s, 2),
             (hypercall_proto::Status::Ok as u16, chord_b)

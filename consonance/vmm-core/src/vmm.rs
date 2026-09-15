@@ -325,6 +325,7 @@ where
     pub(crate) deferred_virtual_time_checkpoints: bool,
     virtual_time_checkpoint_events: BTreeSet<u64>,
     pub(crate) completion_staged: bool,
+    snapshot_ready: bool,
     pub(crate) sdk_snapshot_reentry_required: bool,
     pub(crate) snapshot_hashing: bool,
     checkpoint_hash_preimage_armed: bool,
@@ -385,6 +386,7 @@ where
             deferred_virtual_time_checkpoints: false,
             virtual_time_checkpoint_events: BTreeSet::new(),
             completion_staged: false,
+            snapshot_ready: true,
             sdk_snapshot_reentry_required: false,
             snapshot_hashing: false,
             checkpoint_hash_preimage_armed: false,
@@ -794,12 +796,24 @@ where
     }
 
     pub fn prepare_snapshot(&mut self) -> Result<(), VmmError> {
+        self.snapshot_ready = false;
         self.backend.prepare_snapshot()?;
         self.saved_state = None;
+        self.snapshot_ready = true;
+        Ok(())
+    }
+
+    fn check_snapshot_ready(&self) -> Result<(), VmmError> {
+        if !self.snapshot_ready {
+            return Err(VmmError::Backend(
+                vmm_backend::BackendError::PendingCompletion,
+            ));
+        }
         Ok(())
     }
 
     pub fn save_vm_state(&self) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
+        self.check_snapshot_ready()?;
         let vcpu = match &self.saved_state {
             Some(s) => s.clone(),
             None => self.backend.save()?,
@@ -914,6 +928,7 @@ where
             vendor,
             vtime,
         } = self.prepare_restore_vm_state(s)?;
+        self.snapshot_ready = false;
         self.backend.restore(&vcpu)?;
         if let Some((cfg, clock, entropy)) = vtime {
             let vt = self.vtime.as_mut().expect("vtime_commit implies wired");
@@ -935,6 +950,7 @@ where
         self.saved_state = None;
         self.completion_staged = false;
         self.sdk_snapshot_reentry_required = engine_state.sdk_snapshot_reentry_required;
+        self.snapshot_ready = true;
         Ok(())
     }
 
@@ -976,6 +992,7 @@ where
             return Ok(Step::Terminal(reason));
         }
         <B::A as Vendor>::service_pending_irqs(self)?;
+        self.snapshot_ready = false;
         let mut exit = self.backend.run()?;
         self.sdk_snapshot_reentry_required = false;
         let mut stop = Step::Continued;
@@ -1125,6 +1142,7 @@ where
     }
 
     pub(crate) fn state_blob_suffix(&self) -> Result<Vec<u8>, VmmError> {
+        self.check_snapshot_ready()?;
         let mut out = Vec::new();
         let vcpu = match &self.saved_state {
             Some(state) => state.clone(),
@@ -6216,6 +6234,48 @@ mod tests {
     }
 
     #[test]
+    fn failed_exit_service_blocks_snapshot_and_hash_publication() {
+        let mut vmm = full_vmm(
+            VcpuState::default(),
+            vec![Exit::Common(CommonExit::Hypercall(
+                vmm_backend::HypercallFrame::default(),
+            ))],
+            10,
+            1,
+        );
+        let before = vmm.save_vm_state().unwrap();
+        vmm.saved_state = Some(vmm.backend.save().unwrap());
+        assert!(matches!(vmm.step(), Err(VmmError::ContractViolation(_))));
+        assert!(vmm.backend.save().is_ok());
+        assert!(matches!(
+            vmm.save_vm_state(),
+            Err(VmmError::Backend(
+                vmm_backend::BackendError::PendingCompletion
+            ))
+        ));
+        assert!(matches!(
+            vmm.state_blob(),
+            Err(VmmError::Backend(
+                vmm_backend::BackendError::PendingCompletion
+            ))
+        ));
+        assert!(matches!(
+            vmm.state_hash(),
+            Err(VmmError::Backend(
+                vmm_backend::BackendError::PendingCompletion
+            ))
+        ));
+        vmm.backend.complete_hypercall(0).unwrap();
+        vmm.backend.retire_pending_completion().unwrap();
+        assert!(vmm.restore_vm_state(&before).is_err());
+        assert!(vmm.save_vm_state().is_err());
+        assert!(vmm.state_hash().is_err());
+        vmm.virtual_time_trace = None;
+        vmm.restore_vm_state(&before).unwrap();
+        assert_eq!(vmm.save_vm_state().unwrap(), before);
+    }
+
+    #[test]
     fn snapshot_fails_while_a_continuation_remains_queued() {
         let mut vmm = continuation_vmm(
             vec![apic_read(lapic::APIC_VERSION)],
@@ -6235,6 +6295,16 @@ mod tests {
                 vmm_backend::BackendError::PendingCompletion
             ))
         ));
+        assert!(vmm.prepare_snapshot().is_err());
+        vmm.backend.current_continuations.clear();
+        vmm.backend.complete_read(0).unwrap();
+        vmm.backend.retire_pending_completion().unwrap();
+        assert!(vmm.backend.save().is_ok());
+        assert!(vmm.save_vm_state().is_err());
+        assert!(vmm.state_hash().is_err());
+        vmm.prepare_snapshot().unwrap();
+        assert!(vmm.save_vm_state().is_ok());
+        assert!(vmm.state_hash().is_ok());
     }
 
     fn fragmented_checkpoint_script() -> (Vec<Exit<X86>>, Vec<Vec<Exit<X86>>>) {

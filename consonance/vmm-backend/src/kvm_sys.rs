@@ -788,7 +788,8 @@ impl Backend for KvmBackend {
     }
 
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
-        if self.pending != Pending::None || self.completion_staged {
+        if self.pending != Pending::None || self.completion_staged || self.completion_exit.is_some()
+        {
             return Err(BackendError::PendingCompletion);
         }
         self.validate_restore_state(state)?;
@@ -954,6 +955,61 @@ mod xsave_diagnostic {
                 "raw XSAVE presence changed after repeated preparation or guest HLT; see retained transitions"
             );
         }
+    }
+
+    #[test]
+    #[ignore = "native KVM restore boundary guards; requires /dev/kvm"]
+    fn snapshot_restore_rejects_each_pending_state_without_mutation() {
+        let mut backend = KvmBackend::new().unwrap();
+        backend.set_policy(&diagnostic_policy()).unwrap();
+        let before = backend.save().unwrap();
+        let mut replacement = before.clone();
+        replacement.regs.rip ^= 0x100;
+        let cases = [
+            (
+                Pending::IoIn {
+                    data_offset: 0,
+                    size: 1,
+                },
+                false,
+                false,
+            ),
+            (Pending::MmioLoad { len: 4 }, false, false),
+            (Pending::Rdmsr, false, false),
+            (Pending::Wrmsr, false, false),
+            (Pending::None, true, false),
+            (Pending::None, false, true),
+        ];
+        for (pending, staged, queued) in cases {
+            backend.pending = pending;
+            backend.completion_staged = staged;
+            backend.completion_exit = queued.then_some(Exit::Common(CommonExit::Idle));
+            backend.pending_irq = Some(0x40);
+            let counts = backend.exit_counts();
+            let readiness = backend.readiness_current;
+            let queued_before = format!("{:?}", backend.completion_exit);
+            assert_eq!(backend.save().unwrap(), before);
+            assert!(matches!(
+                backend.restore(&replacement),
+                Err(BackendError::PendingCompletion)
+            ));
+            assert!(matches!(
+                backend.prepare_snapshot(),
+                Err(BackendError::PendingCompletion)
+            ));
+            assert_eq!(backend.pending, pending);
+            assert_eq!(backend.completion_staged, staged);
+            assert_eq!(format!("{:?}", backend.completion_exit), queued_before);
+            assert_eq!(backend.pending_irq, Some(0x40));
+            assert_eq!(backend.exit_counts(), counts);
+            assert_eq!(backend.readiness_current, readiness);
+            backend.pending = Pending::None;
+            backend.completion_staged = false;
+            backend.completion_exit = None;
+            assert_eq!(backend.save().unwrap(), before);
+        }
+        backend.restore(&replacement).unwrap();
+        assert_eq!(backend.save().unwrap(), replacement);
     }
 
     struct EntryFixture {

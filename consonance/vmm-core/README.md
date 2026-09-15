@@ -174,6 +174,11 @@ full-memory and control-server restores prepare after installing RAM and CPU
 state. `Vmm::prepare_snapshot` is explicit for low-level callers that construct
 or restore CPU state separately from memory; call it only once the complete
 boundary is installed. Snapshot reads and hash reads do not enter KVM.
+Entering the backend invalidates snapshot publication until exit servicing and
+preparation succeed. A failed entry, completion chain, preparation, or live
+restore cannot publish a cached CPU image as a new snapshot or hash. Raw backend
+register reads remain available to service an exit; they are not snapshot
+admission checks.
 
 KVM preparation round-trips FPU state without executing a guest instruction,
 while preserving modeled RAM, CPU fields other than hardware XSAVE presence,
