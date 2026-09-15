@@ -176,6 +176,10 @@ Search also writes
 ([`report`](src/report.rs)); each of those carries the action list and the
 encoded window list that reproduces it.
 
+`FaultArchiveKey` identifies a place and nothing more. The adapter leaves
+`progress_cmp` at its default, so every place is a peer and the selector ranks
+places only by energy, cell recency and cost.
+
 The Consonance backend needs Linux and KVM. The action model, the bundle
 parser, the archive key, the image preparation and the report shapes are
 portable and tested everywhere.

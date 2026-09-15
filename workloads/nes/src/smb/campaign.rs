@@ -2345,7 +2345,7 @@ mod tests {
     #[test]
     fn budgeted_64_entry_campaign_reactivates_at_action_limit_and_replays_exactly() {
         let rom = synthetic_nrom();
-        let mut config = genesis_config(0x5eed_ca31, 4, 8_192);
+        let mut config = genesis_config(0x5eed_ca34, 4, 8_192);
         config.retention = crate::search::archive::RetentionPolicy::Unprobed;
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 64;
@@ -2518,7 +2518,7 @@ mod tests {
     fn energy_selector_records_counters_and_replays_byte_identically() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca22, 4, 48);
-        config.selector = crate::search::archive::SelectorPolicy::Energy(
+        config.selector = crate::search::archive::SelectorPolicy::EnergyFrontierCheapest(
             crate::search::archive::RetireThresholds {
                 entry: 2,
                 groups: vec![4, 8, 16],
@@ -2529,7 +2529,7 @@ mod tests {
             .expect("energy campaign");
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
-        assert!(header.contains("hierarchy_uniform_128_energy:2,4,8,16"));
+        assert!(header.contains("hierarchy_uniform_128_energy_frontier_cheapest:2,4,8,16"));
         assert!(live.archive.selector.retirement.is_some());
         let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay energy");
         assert_eq!(
@@ -2578,11 +2578,11 @@ mod tests {
                 entry: 3,
                 groups: vec![6, 12, 2],
             }),
-            SelectorPolicy::Energy(RetireThresholds {
+            SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
                 entry: 3,
                 groups: vec![6, 12, 2],
             }),
-            SelectorPolicy::EnergyFrontier(RetireThresholds {
+            SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
                 entry: 3,
                 groups: vec![6, 12, 2],
             }),
