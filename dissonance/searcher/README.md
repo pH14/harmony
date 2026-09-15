@@ -46,6 +46,15 @@ memory is outside the archive's logical budget and must be measured in host RSS.
 Benchmark callers record this physical execution choice in their run identity.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
+`memory_budget_mib` is split before bootstrap: the workload's draw-state reserve
+and the adaptive duration reserve are subtracted, and the archive gets the rest
+as its own limit. The draw state and the duration histories are checked against
+their reserves on every admission and fail the campaign when either exceeds one.
+The archive's limit is enforced incrementally, a bounded number of eviction
+visits per admission, so resident bytes may sit above the limit while
+maintenance catches up. That lag is why the archive's resident bytes are not
+checked against the whole budget.
+
 ## Workload boundary
 
 `searcher` is independently buildable. Workload packages implement its typed

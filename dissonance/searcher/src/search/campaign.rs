@@ -2937,7 +2937,7 @@ where
                     }
                     if !memory_is_within_reserve(
                         duration_policies.memory_bytes(),
-                        DurationPolicies::<G::Key>::memory_reserve_bytes(),
+                        duration_memory_reserve,
                     ) {
                         return Err(
                             "live adaptive duration state exceeds its memory reserve".into()
@@ -3776,7 +3776,7 @@ where
                 }
                 if !memory_is_within_reserve(
                     duration_policies.memory_bytes(),
-                    DurationPolicies::<G::Key>::memory_reserve_bytes(),
+                    duration_memory_reserve,
                 ) {
                     return Err("replay adaptive duration state exceeds its memory reserve".into());
                 }
@@ -4625,6 +4625,46 @@ mod tests {
             .expect("bootstrap root");
         assert_eq!(core.objectives_reached, 1);
         assert_eq!(core.objective_witness, Some(Input::default()));
+    }
+
+    #[test]
+    fn a_campaign_whose_archive_reaches_its_memory_limit_keeps_running() {
+        let config = CampaignConfig {
+            campaign_seed: 11,
+            workers: 2,
+            execution_budget: 2_048,
+            action_limit: 64,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: false,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 4_096,
+            reservations_per_worker: 1,
+            memory_budget_mib: Some(1),
+            materialize_final_artifacts: true,
+            run: (),
+            suffix: SuffixShape::OneOrTwo,
+            mixture: DrawMixture::AlphabetOnly,
+            retention: RetentionPolicy::Unprobed,
+            selector: SelectorPolicy::GroupUniform,
+            objective_witness_path: None,
+        };
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+        };
+        let mut stream = Vec::new();
+        let live = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("memory limited campaign");
+        assert_eq!(live.0.executions_completed, 2_048);
+        let replayed = replay_campaign_checkpointed(&workload, &stream, None, None)
+            .expect("memory limited replay");
+        assert_eq!(replayed, live);
     }
 
     #[test]

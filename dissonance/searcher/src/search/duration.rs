@@ -565,4 +565,21 @@ mod tests {
             assert_eq!(policy.draw(&mut rand, positive(1)), 1);
         }
     }
+
+    #[test]
+    fn a_saturated_context_history_stays_within_its_memory_reserve() {
+        let mut policies = DurationPolicies::<u32>::new();
+        for context in 0..u32::try_from(MAX_DURATION_CONTEXTS * 2).expect("context count") {
+            for _ in 0..(RECENT_OBSERVATIONS * 2) {
+                policies
+                    .observe(context, positive(1), true, positive(1))
+                    .expect("observe");
+                policies
+                    .observe(context, positive(2), false, positive(1))
+                    .expect("observe");
+            }
+        }
+        assert_eq!(policies.policies.len(), MAX_DURATION_CONTEXTS);
+        assert!(policies.memory_bytes() <= DurationPolicies::<u32>::memory_reserve_bytes());
+    }
 }
