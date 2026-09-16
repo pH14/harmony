@@ -1156,6 +1156,103 @@ mod xsave_diagnostic {
         exits: ExitCounts,
     }
 
+    fn canonical_entry_setup_matches(
+        left: &EntryEndpoint,
+        right: &EntryEndpoint,
+        left_raw: &[u8],
+        right_raw: &[u8],
+    ) -> bool {
+        let (Some(left_bv), Some(right_bv)) =
+            (left.state.xsave_restore_bv, right.state.xsave_restore_bv)
+        else {
+            return false;
+        };
+        if left.state.xsave.len() < 520 || left_raw.len() < 520 || right_raw.len() != left_raw.len()
+        {
+            return false;
+        }
+        let canonical_bv = u64::from_le_bytes(left.state.xsave[512..520].try_into().unwrap());
+        let allowed = 3 & !canonical_bv;
+        if (left_bv ^ right_bv) & !allowed != 0
+            || u64::from_le_bytes(left_raw[512..520].try_into().unwrap()) != left_bv
+            || u64::from_le_bytes(right_raw[512..520].try_into().unwrap()) != right_bv
+            || left_raw[..512] != right_raw[..512]
+            || left_raw[520..] != right_raw[520..]
+        {
+            return false;
+        }
+        let mut right_state = right.state.clone();
+        right_state.xsave_restore_bv = Some(left_bv);
+        left.state == right_state && left.ram == right.ram && left.exits == right.exits
+    }
+
+    #[test]
+    fn canonical_entry_setup_allows_only_init_x87_sse_presence() {
+        let endpoint = |presence: u64| EntryEndpoint {
+            state: VcpuState {
+                xsave: vec![0; 576],
+                xsave_restore_bv: Some(presence),
+                ..Default::default()
+            },
+            ram: vec![0; 16],
+            exits: ExitCounts::default(),
+        };
+        let raw = |presence: u64| {
+            let mut bytes = vec![0; 576];
+            bytes[512..520].copy_from_slice(&presence.to_le_bytes());
+            bytes
+        };
+        let left = endpoint(0);
+        for presence in [0, 1, 2, 3] {
+            let right = endpoint(presence);
+            assert!(canonical_entry_setup_matches(
+                &left,
+                &right,
+                &raw(0),
+                &raw(presence)
+            ));
+            assert_eq!(left == right, presence == 0);
+        }
+        assert!(!canonical_entry_setup_matches(
+            &left,
+            &endpoint(4),
+            &raw(0),
+            &raw(4)
+        ));
+        for mutation in 0..6 {
+            let mut right = endpoint(2);
+            let mut right_raw = raw(2);
+            match mutation {
+                0 => right.state.xsave[160] = 1,
+                1 => right.state.regs.rbx = 1,
+                2 => right.ram[0] = 1,
+                3 => right.exits.idle = 1,
+                4 => right_raw[160] = 1,
+                _ => right_raw[520] = 1,
+            }
+            assert!(!canonical_entry_setup_matches(
+                &left,
+                &right,
+                &raw(0),
+                &right_raw
+            ));
+        }
+        for active in [1, 2] {
+            let mut active_left = endpoint(0);
+            let mut active_right = endpoint(active);
+            active_left.state.xsave[512] = active as u8;
+            active_right.state.xsave[512] = active as u8;
+            active_left.state.xsave[160] = 1;
+            active_right.state.xsave[160] = 1;
+            assert!(!canonical_entry_setup_matches(
+                &active_left,
+                &active_right,
+                &raw(0),
+                &raw(active)
+            ));
+        }
+    }
+
     fn retain_entry(fixture: &mut EntryFixture, directory: &Path, phase: &str) -> EntryEndpoint {
         let state = fixture.backend.save().unwrap();
         let path = directory.join(phase);
@@ -1275,17 +1372,20 @@ mod xsave_diagnostic {
 
     #[test]
     #[ignore = "bounded raw XSAVE entry differential; KVM and XSAVE_ENTRY_REPORT_DIR required"]
+    #[cfg(not(miri))]
     fn snapshot_entry_restores_match_uninterrupted_execution() {
         check_entry_restores(false);
     }
 
     #[test]
     #[ignore = "canonicalized raw-entry witness; KVM, long mode and XSAVE_ENTRY_REPORT_DIR required"]
+    #[cfg(not(miri))]
     fn snapshot_canonical_entry_restores_match_uninterrupted_execution() {
         assert!(std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some());
         check_entry_restores(true);
     }
 
+    #[cfg(not(miri))]
     fn check_entry_restores(canonical: bool) {
         let root = PathBuf::from(
             std::env::var_os("XSAVE_ENTRY_REPORT_DIR").expect("report directory required"),
@@ -1341,8 +1441,9 @@ mod xsave_diagnostic {
                     poison.xsave[XSTATE_BV].copy_from_slice(&canonical_bv.to_le_bytes());
                     poison.xsave_restore_bv = Some(poison.xsave_restore_bv.unwrap() | 2);
                     source.backend.restore(&poison).unwrap();
-                    if canonical {
-                        source.ram.as_mut_bytes()[0x3f00] ^= 1;
+                    if canonical && mode == "xrstor" {
+                        source.ram.as_mut_bytes()[GUEST_XRSTOR_GPA + 24..GUEST_XRSTOR_GPA + 28]
+                            .copy_from_slice(&0x3f80u32.to_le_bytes());
                     }
                     let negative = entry_endpoint(&mut source, &directory, "negative");
                     restore_entry(&mut source, &saved);
@@ -1380,9 +1481,60 @@ mod xsave_diagnostic {
                         )
                         .unwrap();
                     }
+                    if canonical {
+                        for (name, left, right, left_phase, right_phase) in [
+                            ("independent-setup", &initial, &saved, "initial", "captured"),
+                            (
+                                "cold-setup",
+                                &saved,
+                                &cold_initial,
+                                "captured",
+                                "cold-initial",
+                            ),
+                            (
+                                "reused-setup",
+                                &saved,
+                                &reused_initial,
+                                "captured",
+                                "reused-initial",
+                            ),
+                        ] {
+                            let left_raw =
+                                fs::read(directory.join(left_phase).join("raw-xsave.bin")).unwrap();
+                            let right_raw =
+                                fs::read(directory.join(right_phase).join("raw-xsave.bin"))
+                                    .unwrap();
+                            let passed =
+                                canonical_entry_setup_matches(left, right, &left_raw, &right_raw);
+                            writeln!(report, "required:{name}={passed}").unwrap();
+                            if !passed {
+                                failures.push(format!("{label}: {name}"));
+                            }
+                        }
+                        if mode == "xrstor" {
+                            let output = GUEST_XSAVE_GPA + 24..GUEST_XSAVE_GPA + 28;
+                            let passed = negative.ram[output.clone()] == 0x3f80u32.to_le_bytes()
+                                && expected.ram[output] == 0x1f80u32.to_le_bytes();
+                            writeln!(report, "required:negative-xrstor-mxcsr-output={passed}")
+                                .unwrap();
+                            if !passed {
+                                failures.push(format!("{label}: negative-xrstor-mxcsr-output"));
+                            }
+                        }
+                    }
                     for (check, passed) in checks {
-                        writeln!(report, "{check}={passed}").unwrap();
-                        if !passed {
+                        let diagnostic = canonical
+                            && matches!(
+                                check,
+                                "independent-initial" | "cold-initial" | "reused-initial"
+                            );
+                        let scope = if diagnostic {
+                            "diagnostic-pre-entry-identity"
+                        } else {
+                            "required"
+                        };
+                        writeln!(report, "{scope}:{check}={passed}").unwrap();
+                        if !passed && !diagnostic {
                             failures.push(format!("{label}: {check}"));
                         }
                     }

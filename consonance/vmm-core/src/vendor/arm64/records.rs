@@ -733,8 +733,13 @@ mod tests {
         let gpa_flag = armed_flag - 10;
         missing_gpa.drain(gpa_flag + 1..gpa_flag + 9);
         missing_gpa[gpa_flag] = 0;
-        *missing_gpa.last_mut().unwrap() = 1;
-        assert!(decode_device_blob(&missing_gpa).is_err());
+        missing_gpa[armed_flag - 8] = 1;
+        assert!(matches!(
+            decode_device_blob(&missing_gpa),
+            Err(SnapshotError::DeviceBlob(
+                "pvclock record is armed without a registered page"
+            ))
+        ));
 
         let mut nonregistrable = sample_with_pvclock();
         nonregistrable.pvclock.as_mut().unwrap().armed = false;

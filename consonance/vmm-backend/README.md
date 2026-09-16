@@ -245,3 +245,13 @@ Snapshot preparation coverage compares CPU state excluding only raw presence,
 RAM, exit counts, readiness, pending events, and CR8 after each preparation.
 Raw transitions are printed explicitly, and the preparation and restore guard
 regressions retain their failure evidence. Production preparation is unchanged.
+
+The canonical entry fixture requires exact equality at completed guest HLT
+endpoints. Before the first instruction, exact identity comparisons are recorded
+as diagnostics; setup still requires identical RAM, canonical CPU data, exit
+counts and raw XSAVE bytes except x87/SSE presence bits whose canonical component
+is init-valued. Active-component differences remain failures. Repeated capture
+purity remains required. The XSAVE negative checks changed XMM output; the
+XRSTOR negative supplies non-init MXCSR and checks the guest's saved MXCSR value,
+without relying on an unrelated RAM mutation. This fixture distinction does not
+change production snapshot identity or restore semantics.
