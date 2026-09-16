@@ -81,9 +81,10 @@ restore also synchronizes that field, preventing a stale run page from replacing
 restored CR8. This path does not inject queued interrupts or count a guest exit.
 
 The immediate-exit operation does not guarantee stable XSAVE presence bits,
-either across repeated preparation or subsequent guest entry. No bits are
-removed from snapshot identity. The required public-API regression reproduces
-identity drift on AMD; the exact contract decision is documented under
+either across repeated preparation or subsequent guest entry. Backend snapshots
+retain the complete raw bitmap. The core layer projects only validated init
+x87/SSE restoration metadata for verified controlled guests; generic identity
+remains strict. The reproduced AMD failure and scoped contract are documented under
 [Published XSAVE identity gate](../vmm-core/README.md#published-xsave-identity-gate). `save()`
 and hashing remain reads; callers prepare a boundary explicitly after restoring
 RAM and CPU state or servicing an exit. Pending CPU events remain present;

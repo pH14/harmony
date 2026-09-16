@@ -3,10 +3,10 @@ name: Acceptance / Linux snapshot consistency smoke
 
 on:
   pull_request:
-    paths: ["consonance/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "flake.nix", "flake.lock", ".github/workflows/snapshot-linux-smoke.yml"]
+    paths: ["consonance/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "flake.nix", "flake.lock", ".github/workflows/snapshot-linux-smoke.yml", "workloads/guest-images/admission/minimal-component.json"]
   push:
     branches: [main]
-    paths: ["consonance/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "flake.nix", "flake.lock", ".github/workflows/snapshot-linux-smoke.yml"]
+    paths: ["consonance/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "flake.nix", "flake.lock", ".github/workflows/snapshot-linux-smoke.yml", "workloads/guest-images/admission/minimal-component.json"]
   workflow_dispatch: {}
 
 permissions:
@@ -73,6 +73,12 @@ jobs:
             --artifacts consonance/harmony-linux/build/x86_64 --output linux-consistency-report/provenance.json
           python3 -c 'import json; assert json.load(open("linux-consistency-report/provenance.json"))["scope"] == "exact-input", "Run the platform publisher on this source before qualifying Linux snapshots"'
           test -s consonance/harmony-linux/build/x86_64/initramfs.cpio.gz
+      - name: Verify controlled minimal guest admission
+        run: |
+          python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify-initramfs \
+            consonance/harmony-linux/build/x86_64/initramfs.cpio.gz \
+            --baseline workloads/guest-images/admission/minimal-component.json \
+            --output linux-consistency-report/admission.json
       - name: Stage verified Linux fixture
         run: |
           cp consonance/harmony-linux/build/x86_64/bzImage consonance/harmony-linux/build/bzImage

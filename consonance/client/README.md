@@ -72,12 +72,19 @@ sharing metadata is host-local and is never written to the wire. An export
 base must have the same setup and identity, and unchanged pages/chunks are
 retained by reference until a snapshot is serialized.
 
-The embedded complete and sparse portable snapshots use format version 4,
-which also carries undelivered SDK stops and unanswered service requests.
-Readers still accept version 3 (no pending stop); versions 1 and 2 remain
-explicitly unsupported. The execution identity retains its version-3
-compatibility token so existing artifacts remain importable; the artifact's
-own header selects the codec. The outer sparse archive layout remains version 2.
+The embedded complete and sparse portable snapshots use format version 6.
+Older embedded versions are rejected. The outer sparse archive layout remains
+version 2.
+
+On x86, `Session::new_controlled_with_config_and_payloads` requires exact reviewed
+kernel, initramfs, RAM and command-line inputs before boot. It binds the session
+image identity to the profile, launch configuration and ordered setup payloads,
+and rejects an identity-tag override. Ordinary constructors
+still accept other inputs, retaining strict raw identity for unknown profiles.
+For matched profiles, logical identity excludes only validated init x87/SSE raw
+presence metadata; exported artifacts retain those bytes and checksum them.
+The guest execution restrictions and import boundary are documented in the
+[core identity contract](../vmm-core/README.md#published-xsave-identity-gate).
 
 ```sh
 cargo test -p consonance-client

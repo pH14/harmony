@@ -225,6 +225,10 @@ fn boot_once(
 ) -> BootRun {
     let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
         .expect("boot_linux_stock_virtual_time");
+    assert!(
+        vmm.controlled_guest_identity().is_some(),
+        "Linux identity consistency requires the exact reviewed controlled fixture"
+    );
     vmm.arm_checkpoint_hash_preimage();
     run_boot_observed(
         &mut vmm,
@@ -611,6 +615,7 @@ fn x2_same_seed_boots_one_normalized_log() {
     report_run("boot 0", &reference);
     assert!(
         reference.clean()
+            && reference.guest_ready
             && reference.reached_userspace
             && reference.pvclock_registered
             && reference.placement_error.is_none(),
@@ -628,6 +633,7 @@ fn x2_same_seed_boots_one_normalized_log() {
         report_run(&format!("boot {i}"), &run);
         assert!(
             run.clean()
+                && run.guest_ready
                 && run.reached_userspace
                 && run.pvclock_registered
                 && run.placement_error.is_none(),

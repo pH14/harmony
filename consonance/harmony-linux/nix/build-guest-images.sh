@@ -216,13 +216,16 @@ if [ "$host_arch" = aarch64 ]; then
     fi
 else
     echo "== platform: build standard x86 kernel and fixture images"
-    (cd "$linux_dir" && ./build-kernel.sh && ./build-initramfs.sh && ./build-go-runtime-image.sh)
+    (cd "$linux_dir" && ./build-kernel.sh && ./build-go-runtime-image.sh)
     if [ "$oci_runtime" -eq 1 ]; then
         : "${HARMONY_NIX_RUNTIME_INIT:?--oci-runtime requires HARMONY_NIX_RUNTIME_INIT}"
         : "${HARMONY_NIX_RUNTIME_SUPERVISOR:?--oci-runtime requires HARMONY_NIX_RUNTIME_SUPERVISOR}"
         (cd "$linux_dir" && HARMONY_RUNTIME_INIT="$HARMONY_NIX_RUNTIME_INIT" \
             HARMONY_RUNTIME_SUPERVISOR="$HARMONY_NIX_RUNTIME_SUPERVISOR" \
             ./build-oci-runtime-initramfs.sh x86_64)
+        (cd "$linux_dir" && ./build-initramfs.sh --busybox "$build_root/oci-runtime-root-x86_64/bin/busybox")
+    else
+        (cd "$linux_dir" && ./build-initramfs.sh)
     fi
     if [ "$n6" -eq 1 ]; then
         echo "== platform: build generated sweep and traps-off x86 kernel"

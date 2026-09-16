@@ -228,6 +228,17 @@ pub fn restore_xsave_image(image: &[u8], restore_bv: Option<u64>) -> Result<Vec<
     Ok(restored)
 }
 
+pub fn logical_xsave_restore_bv(image: &[u8], restore_bv: Option<u64>) -> Result<Option<u64>> {
+    if image.len() < 576 {
+        return Err(BackendError::InvalidState);
+    }
+    let Some((canonical_bv, 0)) = standard_xsave_header(image) else {
+        return Err(BackendError::InvalidState);
+    };
+    restore_xsave_image(image, Some(restore_bv.unwrap_or(canonical_bv)))?;
+    Ok(restore_bv.map(|raw| raw & !(3 & !canonical_bv)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +250,91 @@ mod tests {
         image[28..32].copy_from_slice(&0xFFFFu32.to_le_bytes());
         image[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&xstate_bv.to_le_bytes());
         image
+    }
+
+    #[test]
+    fn logical_presence_collapses_only_init_x87_and_sse() {
+        let canonical = init_image(0);
+        let before = canonical.clone();
+        for raw in [0, 1, 2, 3] {
+            assert_eq!(
+                logical_xsave_restore_bv(&canonical, Some(raw)).unwrap(),
+                Some(0)
+            );
+        }
+        assert_eq!(logical_xsave_restore_bv(&canonical, None).unwrap(), None);
+        assert_eq!(canonical, before);
+        for bit in [1, 2, 4, 8, 1 << 63] {
+            let mut active = init_image(bit);
+            if bit == 1 {
+                active[X87_ST.start] = 0x55;
+            }
+            if bit == 2 {
+                active[SSE_XMM.start] = 0x55;
+            }
+            if bit == 4 {
+                active[576] = 0x55;
+            }
+            let before = active.clone();
+            for raw in [bit, bit | 3] {
+                assert_eq!(
+                    logical_xsave_restore_bv(&active, Some(raw)).unwrap(),
+                    Some(bit)
+                );
+            }
+            assert_eq!(active, before);
+            assert_ne!(
+                logical_xsave_restore_bv(&active, Some(bit)).unwrap(),
+                Some(0)
+            );
+        }
+    }
+
+    #[test]
+    fn logical_presence_preserves_mxcsr_with_sse_or_avx() {
+        for bit in [2, 4, 6] {
+            let mut active = init_image(bit);
+            active[SSE_MXCSR].copy_from_slice(&0x3f80_u32.to_le_bytes());
+            let before = active.clone();
+            assert_eq!(
+                logical_xsave_restore_bv(&active, Some(bit)).unwrap(),
+                Some(bit)
+            );
+            assert_eq!(active, before);
+            assert_eq!(&active[SSE_MXCSR], &0x3f80_u32.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn logical_presence_rejects_invalid_provenance() {
+        let canonical = init_image(0);
+        for length in [0, 512, 527, 528, 575] {
+            for raw in [None, Some(0)] {
+                assert!(logical_xsave_restore_bv(&canonical[..length], raw).is_err());
+            }
+        }
+        let mut compacted = canonical.clone();
+        compacted[XCOMP_BV..XSAVE_HEADER_END].copy_from_slice(&(1_u64 << 63).to_le_bytes());
+        for raw in [None, Some(0)] {
+            assert!(logical_xsave_restore_bv(&compacted, raw).is_err());
+        }
+        for bit in [1, 2, 4] {
+            let mut active = init_image(bit);
+            if bit == 1 {
+                active[X87_ST.start] = 1;
+            }
+            if bit == 2 {
+                active[SSE_XMM.start] = 1;
+            }
+            if bit == 4 {
+                active[576] = 1;
+            }
+            assert!(logical_xsave_restore_bv(&active, Some(0)).is_err());
+        }
+        let mut noncanonical = canonical;
+        noncanonical[SSE_XMM.start] = 1;
+        assert!(logical_xsave_restore_bv(&noncanonical, None).is_err());
+        assert!(logical_xsave_restore_bv(&noncanonical, Some(0)).is_err());
     }
 
     #[test]

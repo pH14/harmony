@@ -79,6 +79,13 @@ Cold Nix guest builds fetch the pinned BusyBox archive from the Buildroot mirror
 with the upstream URL as fallback. Both locations use the same locked SHA-256;
 the mirror choice leaves the guest source version and bytes unchanged.
 
+The x86 Nix OCI producer packs the minimal Linux fixture with the same reviewed
+BusyBox binary as the OCI platform. Its fixed init only mounts proc/sysfs,
+prints readiness and powers off; the archive contains no libvoidstar or dynamic
+dependencies. `build-initramfs.sh --busybox FILE` selects that binary explicitly;
+the standalone builder still builds its own BusyBox. Only the reviewed archive
+qualifies for controlled identity.
+
 ## Controlled x86 XSAVE behavior
 
 The guest kernel canonicalizes complete XSAVE buffers while keeping AVX. The
@@ -109,7 +116,10 @@ configuration. Generated code, JITs, code mutation and writable executable memor
 are excluded by policy. These restrictions do not qualify arbitrary images,
 SQL, ROMs or imported machine states.
 
-Raw XSAVE presence remains in restore data and strict snapshot identity.
+Raw XSAVE presence remains in restore data. Generic snapshot identity stays
+strict; exact verified guest compositions can use the core layer's
+[controlled logical identity](../vmm-core/README.md#published-xsave-identity-gate),
+which excludes only validated init x87/SSE presence metadata.
 Matching finite executions does not establish general continuation equivalence.
 Outstanding XSAVE and PAE behavior is tracked in
 [#307](https://github.com/pH14/harmony/issues/307) and

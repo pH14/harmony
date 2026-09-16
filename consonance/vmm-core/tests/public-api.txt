@@ -50,6 +50,8 @@ pub fn vmm_core::control::host_minor_faults() -> core::option::Option<u64>
 pub fn vmm_core::control::server_caps() -> control_proto::types::Caps
 pub type vmm_core::control::RemapVmmFactory<B> = alloc::boxed::Box<dyn core::ops::function::FnMut(snapshot_store::mapping::Mapping) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>>
 pub type vmm_core::control::VmmFactory<B> = alloc::boxed::Box<dyn core::ops::function::FnMut() -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>>
+pub mod vmm_core::controlled_guest
+pub fn vmm_core::controlled_guest::linux_identity(&[u8], &[u8], usize, &str) -> core::option::Option<[u8; 32]>
 pub mod vmm_core::exec
 pub struct vmm_core::exec::ExecOutcome
 pub vmm_core::exec::ExecOutcome::ok: bool
@@ -488,6 +490,7 @@ pub fn vmm_core::vendor::Vendor::check_wire_interrupt<B: vmm_backend::backend::B
 pub fn vmm_core::vendor::Vendor::clockevent_trace_schedule<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<(u64, u32)>
 pub fn vmm_core::vendor::Vendor::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_core::vendor::Vendor::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
+pub fn vmm_core::vendor::Vendor::controlled_identity_vcpu(&Self::VcpuState) -> core::result::Result<Self::VcpuState, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::Vendor::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
 pub fn vmm_core::vendor::Vendor::device_components(&Self::VcpuState, &Self::Devices, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
 pub fn vmm_core::vendor::Vendor::dispatch_arch<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::Exit) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
@@ -524,6 +527,7 @@ pub fn vmm_backend::arch::arm64::Arm64::check_wire_interrupt<B: vmm_backend::bac
 pub fn vmm_backend::arch::arm64::Arm64::clockevent_trace_schedule<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<(u64, u32)>
 pub fn vmm_backend::arch::arm64::Arm64::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_backend::arch::arm64::Arm64::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
+pub fn vmm_backend::arch::arm64::Arm64::controlled_identity_vcpu(&Self::VcpuState) -> core::result::Result<Self::VcpuState, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::arm64::Arm64::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
 pub fn vmm_backend::arch::arm64::Arm64::device_components(&vmm_backend::arch::arm64::state::Arm64VcpuState, &Self::Devices, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
 pub fn vmm_backend::arch::arm64::Arm64::dispatch_arch<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::arch::arm64::Arm64Exit) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
@@ -560,6 +564,7 @@ pub fn vmm_backend::arch::x86::X86::check_wire_interrupt<B: vmm_backend::backend
 pub fn vmm_backend::arch::x86::X86::clockevent_trace_schedule<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<(u64, u32)>
 pub fn vmm_backend::arch::x86::X86::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_backend::arch::x86::X86::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
+pub fn vmm_backend::arch::x86::X86::controlled_identity_vcpu(&vmm_backend::arch::x86::state::VcpuState) -> core::result::Result<vmm_backend::arch::x86::state::VcpuState, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::x86::X86::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
 pub fn vmm_backend::arch::x86::X86::device_components(&Self::VcpuState, &Self::Devices, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
 pub fn vmm_backend::arch::x86::X86::dispatch_arch<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::arch::x86::X86Exit) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
@@ -782,6 +787,7 @@ pub fn vmm_core::vmm::Vmm<B>::arm_checkpoint_hash_preimage(&mut self) -> &mut Se
 pub fn vmm_core::vmm::Vmm<B>::cancellation_flag(&self) -> core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>
 pub fn vmm_core::vmm::Vmm<B>::checkpoint_virtual_time_trace(&mut self) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::checkpoint_virtual_time_trace_at(&mut self, u64, [u8; 32]) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::controlled_guest_identity(&self) -> core::option::Option<[u8; 32]>
 pub fn vmm_core::vmm::Vmm<B>::defer_virtual_time_checkpoint_hashes(&mut self) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::diagnostic_breakpoint(&mut self, u64) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::diagnostic_debug_hits(&self) -> alloc::vec::Vec<u64>

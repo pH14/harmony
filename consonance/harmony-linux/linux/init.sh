@@ -7,5 +7,5 @@
 set -e
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sysfs /sys
-echo GUEST_READY
+/bin/busybox echo GUEST_READY
 exec /bin/busybox poweroff -f

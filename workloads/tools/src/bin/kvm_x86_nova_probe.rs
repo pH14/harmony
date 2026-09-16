@@ -204,6 +204,12 @@ fn boot_probe(kernel: &[u8], initramfs: &[u8]) -> Result<ProbeVmm, vmm_core::vmm
         PROBE_CMDLINE,
         PROBE_RAM,
     )?;
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if vmm.controlled_guest_identity().is_none() {
+        return Err(vmm_core::vmm::VmmError::ContractViolation(
+            "Nova x86 boot did not select a reviewed controlled guest profile".to_owned(),
+        ));
+    }
     vmm.wire_snapshot_hashing();
     vmm.defer_virtual_time_checkpoint_hashes()?;
     Ok(vmm)
@@ -2703,10 +2709,23 @@ fn run_session() -> Result<(), String> {
     )
     .map_err(|error| format!("prepare NES OCI execution: {error}"))?;
     let initramfs = prepared.initramfs(&platform_initramfs);
+    #[cfg(target_arch = "x86_64")]
+    let config = SessionConfig::new(RAM, SEED, RUN_BUDGET, CMDLINE)
+        .with_deferred_virtual_time_checkpoint_hashes();
+    #[cfg(target_arch = "aarch64")]
     let config = SessionConfig::new(RAM, SEED, RUN_BUDGET, CMDLINE)
         .with_identity_tag(prepared.identity_hex())
         .with_deferred_virtual_time_checkpoint_hashes();
     let setup_payloads = vec![vec![0, 1]; 16];
+    #[cfg(target_arch = "x86_64")]
+    let mut session = Session::new_controlled_with_config_and_payloads(
+        &kernel,
+        &initramfs,
+        config,
+        setup_payloads,
+    )
+    .map_err(|error| format!("Consonance controlled session: {error}"))?;
+    #[cfg(target_arch = "aarch64")]
     let mut session =
         Session::new_with_config_and_payloads(&kernel, &initramfs, config, setup_payloads)
             .map_err(|error| format!("Consonance session: {error}"))?;

@@ -328,6 +328,7 @@ where
     snapshot_ready: bool,
     pub(crate) sdk_snapshot_reentry_required: bool,
     pub(crate) snapshot_hashing: bool,
+    pub(crate) controlled_guest_identity: Option<[u8; 32]>,
     checkpoint_hash_preimage_armed: bool,
     checkpoint_hash_preimage: Option<CheckpointHashPreimage>,
     pub(crate) idle_wake_vns: Option<u64>,
@@ -389,6 +390,7 @@ where
             snapshot_ready: true,
             sdk_snapshot_reentry_required: false,
             snapshot_hashing: false,
+            controlled_guest_identity: None,
             checkpoint_hash_preimage_armed: false,
             checkpoint_hash_preimage: None,
             idle_wake_vns: None,
@@ -592,6 +594,10 @@ where
     pub fn wire_snapshot_hashing(&mut self) -> &mut Self {
         self.snapshot_hashing = true;
         self
+    }
+
+    pub fn controlled_guest_identity(&self) -> Option<[u8; 32]> {
+        self.controlled_guest_identity
     }
 
     pub fn snapshot_hashing_wired(&self) -> bool {
@@ -1147,6 +1153,12 @@ where
         let vcpu = match &self.saved_state {
             Some(state) => state.clone(),
             None => self.backend.save()?,
+        };
+        let vcpu = if let Some(profile) = self.controlled_guest_identity {
+            put_chunk(&mut out, b"IDPF", &profile);
+            <B::A as Vendor>::controlled_identity_vcpu(&vcpu)?
+        } else {
+            vcpu
         };
         if let Some(db) = &self.doorbell_pages {
             put_chunk(&mut out, b"DOOR", db.as_bytes());
@@ -2782,6 +2794,114 @@ mod tests {
         expected.update(vmm.state_blob().unwrap());
         let expected: [u8; 32] = expected.finalize().into();
         assert_eq!(vmm.state_hash().unwrap(), expected);
+    }
+
+    fn identity_profile_vmm(
+        state: VcpuState,
+        profile: Option<[u8; 32]>,
+        hashing: bool,
+    ) -> Vmm<MockBackend> {
+        let mut backend = configured_mock(Vec::new());
+        backend.set_state(state);
+        let mut vmm = Vmm::new(backend, GuestRam::new(0x1000).unwrap());
+        vmm.controlled_guest_identity = profile;
+        if hashing {
+            vmm.wire_snapshot_hashing();
+        }
+        vmm
+    }
+
+    fn identity_profile_state(raw: u64) -> VcpuState {
+        let mut xsave = canonical_xsave_image();
+        xsave.resize(832, 0);
+        VcpuState {
+            xsave,
+            xsave_restore_bv: Some(raw),
+            xcr0: 7,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn controlled_identity_projects_both_hash_chunks_without_changing_snapshots() {
+        for hashing in [false, true] {
+            let mut hashes = Vec::new();
+            let mut persisted = Vec::new();
+            for raw in [0, 2, 3] {
+                let vmm = identity_profile_vmm(identity_profile_state(raw), Some([1; 32]), hashing);
+                let before = vmm.save_vm_state().unwrap();
+                assert_eq!(before.xsave_restore_bv, Some(raw));
+                hashes.push(vmm.state_hash().unwrap());
+                persisted.push(before.encode().unwrap());
+                assert!(has_tag(&vmm.state_blob().unwrap(), b"IDPF"));
+                assert_eq!(vmm.save_vm_state().unwrap(), before);
+                assert_eq!(vmm.backend.save().unwrap().xsave_restore_bv, Some(raw));
+            }
+            assert!(hashes.windows(2).all(|pair| pair[0] == pair[1]));
+            assert!(persisted.windows(2).all(|pair| pair[0] != pair[1]));
+            for profile in [None, Some([2; 32])] {
+                let other = identity_profile_vmm(identity_profile_state(0), profile, hashing);
+                assert_ne!(other.state_hash().unwrap(), hashes[0]);
+            }
+            let generic0 = identity_profile_vmm(identity_profile_state(0), None, hashing);
+            let generic2 = identity_profile_vmm(identity_profile_state(2), None, hashing);
+            assert_ne!(
+                generic0.state_hash().unwrap(),
+                generic2.state_hash().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn controlled_identity_preserves_active_fp_vector_and_mxcsr_distinctions() {
+        for hashing in [false, true] {
+            let baseline = identity_profile_vmm(identity_profile_state(0), Some([1; 32]), hashing)
+                .state_hash()
+                .unwrap();
+            for (bit, offset, byte) in [(1_u64, 32, 1), (2, 160, 1), (2, 25, 0x3f), (4, 576, 1)] {
+                let mut state = identity_profile_state(bit);
+                state.xsave[512..520].copy_from_slice(&bit.to_le_bytes());
+                state.xsave[offset] = byte;
+                let vmm = identity_profile_vmm(state.clone(), Some([1; 32]), hashing);
+                assert_ne!(vmm.state_hash().unwrap(), baseline);
+                assert_eq!(vmm.save_vm_state().unwrap().xsave.0, state.xsave);
+            }
+            let mut invalid = identity_profile_state(0);
+            invalid.xsave[160] = 1;
+            assert!(
+                identity_profile_vmm(invalid, Some([1; 32]), hashing)
+                    .state_hash()
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn controlled_identity_restore_rejects_other_profiles_before_mutation() {
+        for source_profile in [None, Some([1; 32]), Some([2; 32])] {
+            let source = identity_profile_vmm(identity_profile_state(3), source_profile, true);
+            let snapshot = source.save_vm_state().unwrap();
+            for target_profile in [None, Some([1; 32]), Some([2; 32])] {
+                let mut target =
+                    identity_profile_vmm(identity_profile_state(0), target_profile, true);
+                target.ram.as_mut_bytes().fill(0xa5);
+                let before = target.save_vm_state().unwrap();
+                let memory = target.guest_memory().to_vec();
+                let result = target.restore_snapshot(source.guest_memory(), &snapshot);
+                if source_profile == target_profile {
+                    result.unwrap();
+                    assert_eq!(target.save_vm_state().unwrap(), snapshot);
+                    assert_eq!(target.guest_memory(), source.guest_memory());
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(VmmError::Snapshot(SnapshotError::ContractMismatch))
+                    ));
+                    assert_eq!(target.save_vm_state().unwrap(), before);
+                    assert_eq!(target.guest_memory(), memory);
+                }
+            }
+        }
     }
 
     #[test]

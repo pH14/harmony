@@ -57,9 +57,9 @@ flags, in the current VM-state v6 records. Cached PDPTRs are distinct from the
 current PDPT contents in guest RAM and must survive restore without reloading
 them from that memory. Every standard-format XSAVE capture retains the original
 `XSTATE_BV` in the v6 tag-15 record, whether or not canonicalization changes the
-x87/SSE init-state bits. The value is validated before restore and included in
-both the vCPU identity and the complete VMST identity when snapshot hashing is
-wired. Short or compacted images may omit that optional provenance field. A
+x87/SSE init-state bits. The value is validated before restore. Generic guests
+include it in both the vCPU identity and the complete VMST identity; verified
+controlled guests use the scoped logical identity described below. Short or compacted images may omit that optional provenance field. A
 matching fingerprint is not a proof of whole-guest future equivalence; focused
 guest-byte coverage remains required.
 
@@ -171,8 +171,9 @@ admission checks.
 
 KVM preparation round-trips FPU state without executing a guest instruction,
 while preserving modeled RAM, CPU fields other than hardware XSAVE presence,
-and execution accounting. The complete raw XSAVE presence value remains part
-of identity. The tentative execution requirement is one qualified host core type
+and execution accounting. Raw XSAVE presence remains restoration metadata; its
+identity treatment depends on the verified guest profile below. The execution
+requirement is one qualified host core type
 for related boots and restores; see the backend README for affinity admission and
 its limits. Cross-type migration is not supported. Cross-host and broader XSAVE
 state qualification remain follow-up work.
@@ -195,7 +196,7 @@ program remains an informational characterization using the same exercise.
 
 ### Published XSAVE identity gate
 
-`live_kvm::public_snapshot_replay_recapture_preserves_xsave_identity` exercises
+`controlled_guest::live_tests::public_snapshot_replay_recapture_preserves_xsave_identity` exercises
 `ControlServer`'s published Snapshot, Replay and portable export APIs. It mints a
 new snapshot after restore, rather than re-exporting the original handle. The
 required fixed-core CI gate covers raw init seeds 0/2/3, XCR0 3/7, initial and
@@ -205,11 +206,12 @@ entries. The guest dirties FP/vector/MXCSR state before replay. Independent
 single-component changes to x87, XMM, YMM and MXCSR must change published identity
 with identical guest RAM and program bytes.
 
-The gate compares hashes and complete persisted execution state, including raw
-restore metadata, and resumes both paths to the same guest endpoint. Only the
-existing portable comparison's diagnostic trace counters and independently
-validated envelope checksums are excluded across replay. Repeated captures and
-host-only preparation comparisons remain byte-exact. No XSAVE bit is masked.
+The gate compares logical hashes and complete persisted execution state, then
+resumes both paths to the same guest endpoint. Comparisons validate each artifact
+before projecting only the permitted raw restoration metadata. RAM, canonical
+CPU state, MXCSR, devices and control state remain part of the comparison. The
+existing diagnostic trace counters remain excluded across replay. Artifact
+checksums still cover every original byte, including raw restoration metadata.
 
 The seeded gate reproduced a published hash change on fixed-core AMD after a
 third host-only preparation entry, with no guest instruction executed
@@ -232,14 +234,40 @@ RAM digest. Original RAM bytes were not retained, so this is digest-strength RAM
 attribution, not a bytewise RAM comparison. Avoiding duplicate preparation calls
 would not close this ordinary execution witness.
 
-The remaining contract decision is explicit: may the public snapshot API require
-a verified controlled guest image/profile and define logical identity separately
-from raw restoration metadata? Today Session accepts caller-supplied kernels and
-initramfs bytes, ControlServer accepts a VMM/factory, and the general x86 policy
-admits native XSAVE. Those entry points do not enforce the external workload
-admission audit. Excluding presence metadata globally would therefore merge
-states a permitted guest can inspect. Until a narrower contract is enforced and
-its equivalence demonstrated, exact raw identity across additional host entries
-is unsupported on the failing AMD case; the bitmap stays in restore data and
-identity, and this regression stays required. The PR must remain draft while
-that required gate fails.
+Controlled guest identity separates logical state from raw restoration metadata.
+`controlled_guest::linux_identity` matches the exact reviewed kernel and composed
+initramfs digests, RAM size and command line before enabling the profile. The
+NES and PostgreSQL digests come from the approved composition manifests pinned
+by `workloads/guest-images/admission`. The minimal Linux smoke image is bound to
+its `minimal-component.json` baseline and fixed init script. Unknown or changed
+inputs retain generic
+strict identity. The workload-free platform archive is not itself an approved
+workload composition. Updating an input requires renewed admission review and
+an explicit profile update; a caller cannot enable this mode with a boolean.
+
+For a verified profile, `logical_xsave_restore_bv` validates the standard XSAVE
+image and its raw provenance, then removes only raw x87/SSE presence bits for
+components already absent from the canonical image. Every other presence bit,
+canonical component byte, MXCSR and all non-CPU state remain significant. Both
+VCPU and VMST hashing use the same projection. `save_vm_state` and portable
+exports retain the complete original metadata for restoration: equal logical
+identities can therefore have different artifact bytes and artifact checksums.
+
+The profile digest is part of logical identity and the snapshot contract hash.
+Restore rejects a different profile or a generic/controlled mismatch before
+mutating RAM or CPU state. A fresh or remapped restore target inherits only the
+control server's trusted original profile, never one selected by an imported
+snapshot. `Vmm::controlled_guest_identity` exposes the selected profile read-only.
+
+This guarantee assumes the admitted kernel and userspace execution contract:
+no unreviewed executable code, code mutation, raw userspace XSAVE-family saves,
+or XGETBV with ECX=1. It does not qualify arbitrary ROMs, SQL, injected machine
+state or external events merely because the initial image matches. Snapshot
+contract hashes prevent accidental profile mixing; they are not signatures or
+an admission proof for adversarially modified snapshot contents. Generic APIs
+continue to represent those broader states with strict raw identity.
+
+The published API regression remains required on AMD and Intel under supported
+core placement. A successful scoped regression does not establish raw bitmap
+stability or support for arbitrary guest code. The PR remains draft until the
+required current-head checks, including the qualified Linux smoke, pass.

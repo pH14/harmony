@@ -75,6 +75,45 @@ impl Session {
         Self::new_with_config_and_payloads(kernel, initramfs, config, Vec::new())
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub fn new_controlled_with_config_and_payloads(
+        kernel: &[u8],
+        initramfs: &[u8],
+        config: SessionConfig,
+        setup_payloads: Vec<Vec<u8>>,
+    ) -> Result<Self, Box<dyn Error>> {
+        config.validate()?;
+        if !config.identity_tag.is_empty() {
+            return Err(SessionError::Control(
+                "controlled sessions cannot use an identity tag".into(),
+            )
+            .into());
+        }
+        let profile = vmm_core::controlled_guest::linux_identity(
+            kernel,
+            initramfs,
+            config.ram_bytes,
+            &config.cmdline,
+        )
+        .ok_or_else(|| {
+            SessionError::Control("guest inputs do not match a reviewed controlled profile".into())
+        })?;
+        let image_identity = super::controlled_image_identity_with_config_and_payloads(
+            kernel,
+            initramfs,
+            &config,
+            &setup_payloads,
+            profile,
+        );
+        Self::new_with_config_and_payloads_inner(
+            kernel,
+            initramfs,
+            config,
+            setup_payloads,
+            image_identity,
+        )
+    }
+
     pub fn new_with_config_and_payloads(
         kernel: &[u8],
         initramfs: &[u8],
@@ -82,7 +121,23 @@ impl Session {
         setup_payloads: Vec<Vec<u8>>,
     ) -> Result<Self, Box<dyn Error>> {
         config.validate()?;
-        let image_identity = image_identity_with_config(kernel, initramfs, &config);
+        let image_identity = super::image_identity_with_config(kernel, initramfs, &config);
+        Self::new_with_config_and_payloads_inner(
+            kernel,
+            initramfs,
+            config,
+            setup_payloads,
+            image_identity,
+        )
+    }
+
+    fn new_with_config_and_payloads_inner(
+        kernel: &[u8],
+        initramfs: &[u8],
+        config: SessionConfig,
+        setup_payloads: Vec<Vec<u8>>,
+        image_identity: [u8; 32],
+    ) -> Result<Self, Box<dyn Error>> {
         let ram = config.ram_bytes;
         let seed = config.seed;
         let cmdline = config.cmdline.clone();
@@ -725,5 +780,56 @@ mod tests {
         });
 
         assert_eq!(result.unwrap_err().to_string(), "cleanup failed");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn controlled_constructor_rejects_unreviewed_inputs_before_boot() {
+        let config = SessionConfig::new(128 * 1024 * 1024, 7, 11, "cmdline");
+        let error = Session::new_controlled_with_config_and_payloads(
+            b"unreviewed-kernel",
+            b"unreviewed-initramfs",
+            config,
+            Vec::new(),
+        )
+        .expect_err("unreviewed inputs must be rejected before attempting a boot");
+        assert!(
+            error
+                .to_string()
+                .contains("guest inputs do not match a reviewed controlled profile")
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn controlled_constructor_rejects_invalid_config_and_identity_override_before_boot() {
+        let invalid = SessionConfig::new(0, 7, 11, "cmdline");
+        let error = Session::new_controlled_with_config_and_payloads(
+            b"unreviewed-kernel",
+            b"unreviewed-initramfs",
+            invalid,
+            Vec::new(),
+        )
+        .expect_err("invalid config must be rejected before attempting a boot");
+        assert!(
+            error
+                .to_string()
+                .contains("session RAM must be a non-zero page multiple")
+        );
+
+        let tagged = SessionConfig::new(128 * 1024 * 1024, 7, 11, "cmdline")
+            .with_identity_tag("caller-selected");
+        let error = Session::new_controlled_with_config_and_payloads(
+            b"unreviewed-kernel",
+            b"unreviewed-initramfs",
+            tagged,
+            Vec::new(),
+        )
+        .expect_err("controlled identity tags must be rejected before attempting a boot");
+        assert!(
+            error
+                .to_string()
+                .contains("controlled sessions cannot use an identity tag")
+        );
     }
 }

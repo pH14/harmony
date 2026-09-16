@@ -89,6 +89,10 @@ pub trait Vendor: Arch + Sized {
 
     fn inject_serial_input(devices: &mut Self::Devices, bytes: &[u8]);
 
+    fn controlled_identity_vcpu(vcpu: &Self::VcpuState) -> Result<Self::VcpuState, VmmError> {
+        Ok(vcpu.clone())
+    }
+
     fn encode_vcpu_chunk(vcpu: &Self::VcpuState) -> Vec<u8>;
 
     fn encode_device_state(devices: &Self::Devices) -> Vec<u8>;

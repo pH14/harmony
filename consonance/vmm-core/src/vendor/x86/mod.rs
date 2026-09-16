@@ -167,6 +167,15 @@ impl Vendor for X86 {
         devices.uart.inject_input(bytes);
     }
 
+    fn controlled_identity_vcpu(
+        vcpu: &vmm_backend::VcpuState,
+    ) -> Result<vmm_backend::VcpuState, VmmError> {
+        let mut projected = vcpu.clone();
+        projected.xsave_restore_bv =
+            vmm_backend::logical_xsave_restore_bv(&vcpu.xsave, vcpu.xsave_restore_bv)?;
+        Ok(projected)
+    }
+
     fn encode_vcpu_chunk(vcpu: &vmm_backend::VcpuState) -> Vec<u8> {
         dispatch::encode_vcpu_state(vcpu)
     }
