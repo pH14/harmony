@@ -25,11 +25,12 @@ SPEC.loader.exec_module(LINTS)
 
 
 def workflow(job: str, body: str) -> str:
-    return f"""name: Checks / timeout test
+    return f"""name: Checks
 on:
   pull_request:
 jobs:
   {job}:
+    name: Bounded validation
     runs-on: ubuntu-latest
 {body}
 """
@@ -147,16 +148,18 @@ class WorkflowTimeoutLintTests(unittest.TestCase):
         self.assertEqual([v.rule for v in violations], ["ci-pr-job-timeout"])
 
     def test_exception_for_another_job_does_not_apply(self) -> None:
-        content = f"""name: Checks / timeout test
+        content = f"""name: Checks
 on:
   pull_request:
 jobs:
   other:
+    name: Other validation
     runs-on: ubuntu-latest
     # ci-pr-job-timeout-exception: mutants -- wrong job name
     timeout-minutes: 90
     steps: []
   mutants:
+    name: Mutation testing
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps: []
@@ -181,7 +184,7 @@ jobs:
 
     def test_category_controls_triggers_even_with_short_jobs(self):
         for category in ("Benchmarks", "Acceptance", "Nightly"):
-            content = workflow("short", "    timeout-minutes: 1").replace("Checks /", category + " /")
+            content = workflow("short", "    timeout-minutes: 1").replace("name: Checks", "name: " + category + " / Search campaign")
             self.assertIn("ci-workflow-triggers", [v.rule for v in self.check(content)])
 
     def test_checks_cannot_mix_schedule_and_pr(self):
@@ -215,6 +218,43 @@ jobs:
                 save.assert_not_called()
 
 
+class DisplayNameTests(unittest.TestCase):
+    def test_sentence_case_preserves_proper_names_and_acronyms(self):
+        for name in ("Native NES search", "STB search and replay", "PostgreSQL fault search",
+                     "VM execution and restore", "KVM deterministic replay", "Kani proofs",
+                     "Public API compatibility", "Memory safety — ${{ matrix.name }}",
+                     "Lint, build, and unit tests"):
+            with self.subTest(name=name):
+                self.assertTrue(LINTS._sentence_case_name(name))
+
+    def test_generic_title_case_and_misspelled_acronyms_fail(self):
+        for name in ("Gates", "Products", "Quality", "Report", "native NES search",
+                     "Native NES Search", "Public Api Compatibility", "Public api compatibility",
+                     "STB Search And Replay", "KANI proofs", "Checks / Memory safety", "${{ matrix.name }}"):
+            with self.subTest(name=name):
+                self.assertFalse(LINTS._sentence_case_name(name))
+
+    def test_real_workflows_use_flat_names_and_reject_bad_job_names(self):
+        root = SCRIPT.parent.parent
+        for path, category in LINTS.PR_WORKFLOWS.items():
+            with self.subTest(path=path):
+                content = (root / path).read_text()
+                parsed = LINTS._parse_workflow(root / path)
+                self.assertEqual(parsed["name"], category)
+                with tempfile.TemporaryDirectory() as directory:
+                    copy_root = Path(directory)
+                    target = copy_root / path
+                    target.parent.mkdir(parents=True)
+                    target.write_text(content)
+                    self.assertFalse(LINTS.check_workflow_rules(copy_root, [path]))
+                    first_name = next(iter(parsed["jobs"].values()))["name"]
+                    for bad_name in ("Gates", "Choose Tests From Changed Files", "public api checks"):
+                        target.write_text(content.replace("name: " + first_name, "name: " + bad_name, 1))
+                        self.assertIn("ci-display-name", {v.rule for v in LINTS.check_workflow_rules(copy_root, [path])})
+                    target.write_text(content.replace("name: " + category + "\n", "name: " + category + " / Products\n", 1))
+                    self.assertIn("ci-display-name", {v.rule for v in LINTS.check_workflow_rules(copy_root, [path])})
+
+
 class SmokeRoutingTests(unittest.TestCase):
     def setUp(self):
         self.path = ".github/workflows/product-smoke.yml"
@@ -231,7 +271,7 @@ class SmokeRoutingTests(unittest.TestCase):
             path.parent.mkdir(parents=True)
             path.write_text(original)
             self.assertFalse(LINTS.check_workflow_rules(root, [self.path]))
-            path.write_text(original.replace("name: Smoke / Products", "name: Checks / Products"))
+            path.write_text(original.replace("name: Smoke\n", "name: Checks\n"))
             rules = {v.rule for v in LINTS.check_workflow_rules(root, [self.path])}
             self.assertIn("ci-pr-smoke-routing", rules)
             self.assertIn("ci-pr-workflow-registration", rules)

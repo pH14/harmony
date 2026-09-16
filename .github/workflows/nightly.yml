@@ -1,4 +1,4 @@
-name: Checks / Memory safety
+name: Checks
 
 on:
   pull_request:
@@ -24,7 +24,7 @@ on:
       - .github/workflows/nightly.yml
 jobs:
   miri-scope:
-    name: select affected Miri targets
+    name: Choose memory-safety checks from changed files
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -52,7 +52,7 @@ jobs:
           echo "Miri matrix: ${matrix}"
 
   miri-pr:
-    name: miri PR — ${{ matrix.name }}
+    name: Memory safety — ${{ matrix.name }}
     needs: miri-scope
     if: needs.miri-scope.outputs.has-targets == 'true'
     runs-on: ubuntu-latest

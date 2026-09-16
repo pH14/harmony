@@ -1,4 +1,4 @@
-name: Checks / Quality
+name: Checks
 
 on:
   push:
@@ -16,7 +16,7 @@ env:
 
 jobs:
   safety-scope:
-    name: select formal safety checks
+    name: Choose Kani and public API checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -51,7 +51,7 @@ jobs:
           fi
 
   gates:
-    name: gates
+    name: Lint, build, and unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -190,7 +190,7 @@ jobs:
           cargo deny --manifest-path workloads/nes/Cargo.toml check --config deny.toml
 
   kani:
-    name: kani
+    name: Kani proofs
     needs: safety-scope
     if: needs.safety-scope.outputs.kani == 'true'
     runs-on: ubuntu-latest
@@ -224,7 +224,7 @@ jobs:
           cargo kani --manifest-path workloads/fault-policy/Cargo.toml
 
   public-api:
-    name: public-api
+    name: Public API compatibility
     needs: safety-scope
     if: needs.safety-scope.outputs.public_api == 'true'
     runs-on: ubuntu-latest

@@ -8,6 +8,7 @@ defaults:
     shell: bash
 jobs:
   source-built:
+    name: Source-built NES evaluation
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30

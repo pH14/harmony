@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Smoke / Products
+name: Smoke
 on:
   pull_request:
   push:
@@ -21,7 +21,7 @@ env:
   CASE_DIR: workloads/bugs/historical/postgres-cic-corruption
 jobs:
   scope:
-    name: Select affected product smokes
+    name: Choose smoke tests from changed files
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -48,7 +48,7 @@ jobs:
           python3 scripts/ci_scope.py < changed-files.txt >> "$GITHUB_OUTPUT"
 
   native:
-    name: Native Dissonance search smoke
+    name: Native NES search
     needs: scope
     if: needs.scope.outputs.native == 'true'
     runs-on: ubuntu-24.04
@@ -103,7 +103,7 @@ jobs:
           retention-days: 14
 
   stb:
-    name: STB source build, search and replay smoke
+    name: STB search and replay
     needs: scope
     if: needs.scope.outputs.stb == 'true'
     runs-on: ubuntu-24.04
@@ -127,7 +127,7 @@ jobs:
       - uses: ./.github/actions/stb-evaluation
 
   faults:
-    name: PostgreSQL faults search inside Consonance smoke
+    name: PostgreSQL fault search
     needs: scope
     if: needs.scope.outputs.faults == 'true'
     runs-on: ubuntu-24.04
@@ -256,7 +256,7 @@ jobs:
           retention-days: 14
 
   platform:
-    name: Platform execution and restore
+    name: VM execution and restore
     needs: scope
     if: needs.scope.outputs.platform == 'true'
     runs-on: ubuntu-24.04
@@ -328,7 +328,7 @@ jobs:
           retention-days: 14
 
   kvm:
-    name: Consonance real KVM execution, restore, and replay smoke
+    name: KVM deterministic replay
     needs: scope
     if: needs.scope.outputs.kvm == 'true'
     runs-on: ubuntu-24.04

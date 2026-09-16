@@ -5,7 +5,7 @@ const report = require('./benchmark-report.cjs');
 test('reports failed matrix cases and links evidence without trusting names as HTML', async () => {
   const calls = [];
   const summary = new Proxy({}, {get: (_, method) => method === 'then' ? undefined : (...args) => {calls.push([method,...args]); return summary;}});
-  const jobs = [{name:'Nova <failed>',html_url:'https://example.test/job',conclusion:'failure',started_at:'2026-01-01T00:00:00Z',completed_at:'2026-01-01T00:00:12Z'}, {name:'report'}];
+  const jobs = [{name:'Nova <failed>',html_url:'https://example.test/job',conclusion:'failure',started_at:'2026-01-01T00:00:00Z',completed_at:'2026-01-01T00:00:12Z'}, {name:'NES campaign report'}];
   const github = {rest:{actions:{listJobsForWorkflowRun:'jobs',listWorkflowRunArtifacts:'artifacts'}},paginate:async method => method==='jobs' ? jobs : [{id:7,name:'evidence',expired:false}]};
   await report({github,context:{repo:{owner:'owner',repo:'repo'},runId:1,serverUrl:'https://github.com'},core:{summary}});
   const table=calls.find(c=>c[0]==='addTable')[1];

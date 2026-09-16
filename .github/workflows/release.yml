@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   cli:
+    name: CLI builds
     strategy:
       matrix:
         include:
@@ -31,6 +32,7 @@ jobs:
           path: harmony-*.tar.gz
 
   guest:
+    name: Guest builds
     strategy:
       matrix:
         include:
@@ -85,6 +87,7 @@ jobs:
           path: harmony-guest-*.tar.gz
 
   publish:
+    name: Publish release artifacts
     needs: [cli, guest]
     runs-on: ubuntu-24.04
     steps:

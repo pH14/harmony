@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   miri-vmm-core:
-    name: miri — vmm-core (UB safety net, own job)
+    name: Memory safety — vmm-core
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 240
@@ -24,7 +24,7 @@ jobs:
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-core
 
   miri:
-    name: miri (unsafe crates, UB safety net)
+    name: Memory safety — unsafe crates
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 320

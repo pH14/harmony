@@ -1,7 +1,18 @@
 # GitHub Actions conventions
 
-Use `Category / Subject` display names. The allowed categories are enforced
-by the `ci-workflow-prefix` lint in `scripts/custom-lints.py`.
+Use flat `Category / Subject` check display names. PR workflow names are just
+`Checks` or `Smoke`; their jobs supply the descriptive subject, so GitHub shows
+`Smoke / Native NES search`, not `Smoke / Products / Native NES search`.
+The separate PR workflow files retain their existing triggers and routing.
+Other workflow names use `Category / Subject` directly.
+
+Subjects use sentence case: capitalize the first word, proper names, and
+acronyms only. Use `Public API compatibility`, not `Public Api Compatibility`.
+Every job needs an explicit descriptive name; generic names such as `Gates`,
+`Products`, `Quality`, and `Report` are rejected. Matrix expressions remain
+unchanged, preserving crate and case identifiers. `ci-workflow-prefix` and
+`ci-display-name` in `scripts/custom-lints.py` enforce this contract; register
+new proper names/acronyms in `CI_NAME_TERMS` rather than weakening casing rules.
 
 | Category | Purpose | Trigger |
 | --- | --- | --- |
@@ -41,9 +52,9 @@ PostgreSQL uses the same runtime while retaining its application assertions.
 
 | Workflow | Automatic triggers |
 | --- | --- |
-| Checks / Quality | PRs and pushes to main |
-| Checks / Memory safety | Relevant PRs; bounded affected-crate Miri |
-| Smoke / Products | PRs and main; selected native NES, STB, faults, platform, and KVM smokes |
+| Checks (`quality.yml`) | PRs and main; lint/build/unit tests, Kani proofs, and public API compatibility |
+| Checks (`nightly.yml`) | Relevant PRs; bounded memory-safety checks |
+| Smoke (`product-smoke.yml`) | PRs and main; selected native NES, STB, PostgreSQL, VM, and KVM checks |
 | Nightly / Memory safety | Nightly/manual full Miri suites |
 | Nightly / Extended quality | Nightly/manual coverage and full-tree mutation |
 | Acceptance / Search evaluation | Manual common-runner and STB qualification |
@@ -60,7 +71,7 @@ STB. Fault changes select PostgreSQL. Platform changes select the OCI smoke;
 VMM/backend changes also select the hardware execution/restore/replay smoke.
 Shared process interfaces and CLI changes select the relevant consumers.
 Dependency, toolchain, and selector changes conservatively select all consumers.
-Documentation changes do not select product smokes. Quality retains portable
+Documentation changes do not select product smokes. The lint/build/unit-test job retains portable
 unit tests, runner/report tests and contract checks. Public-API checks run for
 platform/dependency changes; proof and Miri selection retain their own narrow
 rules and tests.
@@ -97,12 +108,12 @@ prerequisite lands, keep its two CI purposes separate:
 
 | Workflow | Automatic triggers | Owns |
 | --- | --- | --- |
-| Checks / Skill evaluator | Relevant PRs | Bounded sandbox, build, guest-delivery, and grading checks without model calls; each job stays within 15 minutes. |
+| Checks (Skill evaluator job) | Relevant PRs | Bounded sandbox, build, guest-delivery, and grading checks without model calls; each job stays within 15 minutes. |
 | Acceptance / Skill guest qualification | Manual dispatch | Guest qualification with a trusted `guest_artifact_run_id`, in a separate workflow with a 45-minute ceiling. |
 | Benchmarks / Developer skills | Nightly schedule; manual dispatch | Real-model investigation, integration, and end-to-end panels under their declared budgets. The job must fail before starting a paid attempt when provider credentials are missing. |
 
-The no-model runner and fixture qualification belong in `Checks / Skill
-evaluator`, alongside the other qualification harness checks. The benchmark
+The no-model runner and fixture qualification belong in a `Skill evaluator`
+job under `Checks`, alongside the other qualification harness checks. The benchmark
 workflow should invoke the shared runner for its panels without copying those
 checks or adding a real-model pull-request job. Do not add these workflows
 until the evaluator sources are present on the base branch; branch-only
@@ -140,7 +151,8 @@ Run the regression tests with `python3 -m unittest discover -s scripts -p 'test_
 and `python3 -m unittest discover -s scripts -p 'test_ci_*.py'`.
 They include the old monolithic panel, omitted and
 duplicated cases, mixed triggers, short-timeout expensive commands, YAML parse
-failures, and the removed timeout exemption. The Quality workflow runs them
+failures, the removed timeout exemption, and sentence-case display names.
+The lint/build/unit-test job runs them
 before invoking the linter.
 
 These checks validate declared workflow structure. They do not determine the

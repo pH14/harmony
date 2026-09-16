@@ -134,7 +134,7 @@ jobs:
           retention-days: 30
 
   report:
-    name: report
+    name: NES campaign report
     needs: [public]
     if: always()
     runs-on: ubuntu-latest

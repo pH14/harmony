@@ -14,7 +14,7 @@ env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
 jobs:
   coverage:
-    name: coverage
+    name: Test coverage
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -40,7 +40,7 @@ jobs:
           path: lcov.info
 
   mutants:
-    name: mutants (${{ matrix.shard }}/16)
+    name: Mutation testing (${{ matrix.shard }}/16)
     runs-on: ubuntu-latest
     timeout-minutes: 320
     strategy:
