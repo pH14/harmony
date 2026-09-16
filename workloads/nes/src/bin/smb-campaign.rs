@@ -85,7 +85,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut retention = RetentionPolicy::Unprobed;
     let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
         entry: 3,
-        groups: vec![6, 12, 2],
+        groups: vec![6, 12, 2, 16],
     });
     let mut vocabulary = SmbButtonVocabulary::default();
     let mut terminal = SmbTerminalPredicate::GameVictory;

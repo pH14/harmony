@@ -57,7 +57,7 @@ impl Args {
         let mut verify_replay = false;
         let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 3,
-            groups: vec![6, 12, 2],
+            groups: vec![6, 12, 2, 16],
         });
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
@@ -83,7 +83,7 @@ impl Args {
                 "--selector" => {
                     let thresholds = RetireThresholds {
                         entry: 3,
-                        groups: vec![6, 12, 2],
+                        groups: vec![6, 12, 2, 16],
                     };
                     selector = match value.to_string_lossy().as_ref() {
                         "frontier-cheapest" => SelectorPolicy::EnergyFrontierCheapest(thresholds),

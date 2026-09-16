@@ -160,7 +160,7 @@ fn campaign_config(args: &Args) -> NovaCampaignConfig {
         retention: RetentionPolicy::Unprobed,
         selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 3,
-            groups: vec![6, 12, 2],
+            groups: vec![6, 12, 2, 16],
         }),
         suffix: SuffixShape::OneToSix,
         mixture: DrawMixture::AlphabetOnly,
