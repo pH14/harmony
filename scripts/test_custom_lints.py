@@ -41,6 +41,7 @@ class RepositoryVocabularyTests(unittest.TestCase):
         word = LINTS.PROHIBITED_WORD
         for text in (word, word.upper(), word.title(), word[0].upper() + word[1:3] + word[3].upper(),
                      word + "s", "a_" + word, word + "_status",
+                     word + "Ready", word + "sReady",
                      "Recovery" + word.title(), "Snapshot" + word.title() + "Status"):
             with self.subTest(text=text), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)

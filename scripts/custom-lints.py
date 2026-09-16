@@ -1053,6 +1053,7 @@ def save_baseline(repo_root: Path, baseline: dict[str, list[str]]) -> None:
 PROHIBITED_WORD = "ga" + "te"
 PROHIBITED_WORD_RE = re.compile(
     rf"(?<![A-Za-z0-9])(?i:{PROHIBITED_WORD}s?)(?![A-Za-z0-9])"
+    rf"|(?<![A-Za-z0-9]){PROHIBITED_WORD}s?(?=[A-Z])"
     rf"|{PROHIBITED_WORD.capitalize()}s?(?=[A-Z]|[^A-Za-z0-9]|$)"
 )
 VOCABULARY_RULE = "no-prohibited-word"
