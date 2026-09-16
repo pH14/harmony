@@ -35,12 +35,18 @@ class InlineSelectionTests(unittest.TestCase):
             git("init", "-q")
             git("config", "uploadpack.allowFilter", "true")
             (root / "README.md").write_text("baseline\n")
+            source = root / "consonance/vmm-backend/src/kvm.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text("moved implementation\n")
             (root / "legacy.bin").write_bytes(b"historical content\0" * 8192)
             git("add", ".")
             git("commit", "-qm", "baseline")
             base = git("rev-parse", "HEAD").strip()
             legacy_blob = git("rev-parse", "HEAD:legacy.bin").strip()
             (root / "legacy.bin").unlink()
+            destination = root / "dissonance/searcher/src/kvm.rs"
+            destination.parent.mkdir(parents=True)
+            source.rename(destination)
             target = root / "workloads/nes/src/stb/target.rs"
             target.parent.mkdir(parents=True)
             target.write_text("changed\n")
@@ -54,9 +60,14 @@ class InlineSelectionTests(unittest.TestCase):
             self.assertIn("?" + legacy_blob, missing.splitlines())
             with mock.patch.object(SCOPE.subprocess, "check_output", side_effect=lambda args, **kwargs: run(args, cwd=clone, **kwargs)):
                 paths = SCOPE.changed_paths("smoke", "pull_request", base, "")
-            self.assertEqual(paths, ["legacy.bin", "workloads/nes/src/stb/target.rs"])
+            self.assertEqual(paths, ["consonance/vmm-backend/src/kvm.rs", "dissonance/searcher/src/kvm.rs",
+                                     "legacy.bin", "workloads/nes/src/stb/target.rs"])
             self.assertTrue(SCOPE.selection("smoke", "stb", paths)["enabled"])
-            self.assertFalse(SCOPE.selection("smoke", "native", paths)["enabled"])
+            for target_name in ("native", "platform", "kvm"):
+                self.assertTrue(SCOPE.selection("smoke", target_name, paths)["enabled"])
+            self.assertTrue(SCOPE.selection("public_api", "", paths)["enabled"])
+            missing = run(["git", "rev-list", "--objects", "--all", "--missing=print"], cwd=clone, text=True)
+            self.assertIn("?" + legacy_blob, missing.splitlines())
 
     def test_matches_existing_selectors(self):
         samples = [[], ["docs/WORKFLOWS.md"], ["Cargo.lock"],
@@ -90,12 +101,12 @@ class InlineSelectionTests(unittest.TestCase):
         for kind in ("smoke", "kani", "public_api", "miri"):
             with mock.patch.object(SCOPE.subprocess, "check_output", return_value="file\0") as run:
                 self.assertEqual(SCOPE.changed_paths(kind, "pull_request", "base", ""), ["file"])
-                run.assert_called_once_with(["git", "diff", "--name-only", "-z", "base...HEAD"], text=True)
+                run.assert_called_once_with(["git", "diff", "--no-renames", "--name-only", "-z", "base...HEAD"], text=True)
         for kind in ("smoke", "kani", "public_api"):
             with mock.patch.object(SCOPE.subprocess, "check_output", return_value="") as run:
                 SCOPE.changed_paths(kind, "push", "", "before")
                 suffix = ["before...HEAD"] if kind == "smoke" else ["before", "HEAD"]
-                run.assert_called_once_with(["git", "diff", "--name-only", "-z", *suffix], text=True)
+                run.assert_called_once_with(["git", "diff", "--no-renames", "--name-only", "-z", *suffix], text=True)
             for before in ("", "0" * 40):
                 with mock.patch.object(SCOPE.subprocess, "check_output", return_value="") as run:
                     SCOPE.changed_paths(kind, "push", "", before)

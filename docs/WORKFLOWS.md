@@ -83,6 +83,8 @@ Miri job checks out full commit history with `filter: blob:none` and invokes `.g
 first local step. `scripts/ci-job-scope.py` computes the same complete Git diff
 as the previous routing jobs and delegates to the existing selectors. It does
 not use GitHub's changed-file API or introduce new native path-filter limits.
+Rename detection is disabled so moves select checks for both source and
+destination paths without fetching historical blobs for rename scoring.
 The blob filter avoids downloading every historical file revision into every
 runner; the current working tree is materialized, and Git can fetch old blobs
 on demand if a diff needs them. Changes to the shared routing implementation

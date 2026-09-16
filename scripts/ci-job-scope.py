@@ -18,13 +18,13 @@ def changed_paths(kind, event, base, before):
     if event == "pull_request":
         if not base:
             raise ValueError("pull requests require a base SHA")
-        command = ["git", "diff", "--name-only", "-z", f"{base}...HEAD"]
+        command = ["git", "diff", "--no-renames", "--name-only", "-z", f"{base}...HEAD"]
     elif not before or before == "0" * 40:
         command = ["git", "ls-files", "-z"]
     elif kind == "smoke":
-        command = ["git", "diff", "--name-only", "-z", f"{before}...HEAD"]
+        command = ["git", "diff", "--no-renames", "--name-only", "-z", f"{before}...HEAD"]
     else:
-        command = ["git", "diff", "--name-only", "-z", before, "HEAD"]
+        command = ["git", "diff", "--no-renames", "--name-only", "-z", before, "HEAD"]
     return [path for path in subprocess.check_output(command, text=True).split("\0") if path]
 
 
