@@ -2,7 +2,7 @@
 use super::*;
 use crate::search::archive::{RetireThresholds, SelectorAccounting, entries_by_suffix};
 use crate::search::rollout::ExecutionDisposition;
-use std::collections::{BTreeSet, VecDeque};
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 struct TestAction {
     input: u8,
@@ -20,25 +20,6 @@ impl TestAction {
 
 fn test_action_cost(action: &TestAction) -> u64 {
     u64::from(action.work_units).saturating_mul(2)
-}
-
-fn test_draw_action(fingerprint: u32, mutation_seed: u64) -> TestAction {
-    TestAction::new((mutation_seed as u8).wrapping_add(fingerprint as u8), 1)
-}
-
-const TEST_DRAW_VERSION_CAP: usize = 16;
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct TestDrawCheckpoint {
-    generation: u64,
-    fingerprint: u32,
-}
-
-#[derive(Default)]
-struct TestDrawState {
-    generation: u64,
-    fingerprint: u32,
-    versions: VecDeque<TestDrawCheckpoint>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -109,9 +90,6 @@ impl CampaignTypes for TestWorkload {
     type Evidence = ();
     type ArchiveReport = TestArchiveReport;
     type Run = ();
-    type DrawState = TestDrawState;
-    type DrawCheckpoint = TestDrawCheckpoint;
-    type DrawHeader = ();
 }
 
 impl Reporting for TestWorkload {
@@ -150,109 +128,25 @@ impl Reporting for TestWorkload {
 }
 
 impl InputPolicy for TestWorkload {
-    fn draw_state_memory_reserve_bytes(&self, _run: &Self::Run, _max_actions: usize) -> usize {
-        std::mem::size_of::<TestDrawState>()
-            + TEST_DRAW_VERSION_CAP * std::mem::size_of::<TestDrawCheckpoint>()
-    }
-    fn draw_state_memory_bytes(&self, _state: &Self::DrawState) -> usize {
-        std::mem::size_of::<TestDrawState>()
-            + TEST_DRAW_VERSION_CAP * std::mem::size_of::<TestDrawCheckpoint>()
-    }
     fn policies(&self, _run: &Self::Run) -> WorkloadPolicies {
         WorkloadPolicies::new()
     }
     fn resolve_recorded(&self, _policies: &WorkloadPolicies) -> Result<Self::Run, Box<dyn Error>> {
         Ok(())
     }
-    fn initial_draw_state(
+    fn sample_alphabet(
         &self,
         _run: &Self::Run,
-        _origin: Option<(&str, &Self::ArchiveReport)>,
-    ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
-        let mut state = TestDrawState::default();
-        state.versions.push_back(TestDrawCheckpoint {
-            generation: 0,
-            fingerprint: 0,
-        });
-        Ok((state, None))
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<Self::Action, Box<dyn Error>> {
+        Ok(TestAction::new(rand.next_u64() as u8, 1))
     }
-    fn expand_suffix(
-        &self,
-        _run: &Self::Run,
-        state: &Self::DrawState,
-        _shape: SuffixShape,
-        _mixture: MixtureDraw,
-        mutation_seed: u64,
-    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        Ok(vec![test_draw_action(state.fingerprint, mutation_seed)])
-    }
-
-    fn draw_checkpoint(
-        &self,
-        state: &Self::DrawState,
-    ) -> Result<Option<Self::DrawCheckpoint>, Box<dyn Error>> {
-        Ok(Some(TestDrawCheckpoint {
-            generation: state.generation,
-            fingerprint: state.fingerprint,
-        }))
-    }
-
-    fn draw_checkpoint_version(&self, checkpoint: &Self::DrawCheckpoint) -> u64 {
-        checkpoint.generation
-    }
-
-    fn expand_suffix_recorded(
-        &self,
-        run: &Self::Run,
-        state: &Self::DrawState,
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        before: Option<&Self::DrawCheckpoint>,
-        mutation_seed: u64,
-    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        let Some(before) = before else {
-            return Err("stateful fixture omitted its draw checkpoint".into());
-        };
-        if !state.versions.iter().any(|checkpoint| checkpoint == before) {
-            return Err("recorded draw checkpoint does not match live state".into());
+    fn draw_table_parameters(&self, _run: &Self::Run) -> EmpiricalStepParameters {
+        EmpiricalStepParameters {
+            update_every_records: 1,
+            hash_every_records: 1,
+            ..DEFAULT_DRAW_TABLE_PARAMETERS
         }
-        let _ = (run, shape, mixture);
-        Ok(vec![test_draw_action(before.fingerprint, mutation_seed)])
-    }
-
-    fn finish_stream_record(
-        &self,
-        _run: &Self::Run,
-        state: &mut Self::DrawState,
-        retained: &[(usize, &[Self::Action])],
-    ) -> Result<Option<Self::DrawCheckpoint>, Box<dyn Error>> {
-        let contribution = retained
-            .iter()
-            .flat_map(|(_, actions)| actions.iter())
-            .fold(0_u32, |fingerprint, action| {
-                fingerprint.wrapping_add(u32::from(action.input))
-            });
-        state.generation = state.generation.saturating_add(1);
-        state.fingerprint = state.fingerprint.wrapping_add(contribution);
-        let checkpoint = self
-            .draw_checkpoint(state)?
-            .ok_or("stateful fixture omitted its draw checkpoint")?;
-        if state.versions.len() == TEST_DRAW_VERSION_CAP {
-            state.versions.pop_front();
-        }
-        state.versions.push_back(checkpoint.clone());
-        Ok(Some(checkpoint))
-    }
-
-    fn remember_draw_version(
-        &self,
-        state: &mut Self::DrawState,
-        required: &BTreeSet<u64>,
-    ) -> Result<(), Box<dyn Error>> {
-        state
-            .versions
-            .retain(|checkpoint| required.contains(&checkpoint.generation));
-        Ok(())
     }
 
     fn max_action_limit(&self) -> usize {
@@ -262,6 +156,21 @@ impl InputPolicy for TestWorkload {
     fn max_action_cost(&self) -> u64 {
         2
     }
+
+    fn remember_draw_version(
+        &self,
+        state: &mut DrawTables<Self::Action>,
+        schedule: &DrawVersionSchedule,
+    ) -> Result<(), Box<dyn Error>> {
+        state.remember_version(schedule)?;
+        REPLAY_DRAW_VERSIONS.with_borrow_mut(|counts| counts.push(state.version_count()));
+        Ok(())
+    }
+}
+
+thread_local! {
+    static REPLAY_DRAW_VERSIONS: std::cell::RefCell<Vec<usize>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 impl TargetExecution for TestWorkload {
@@ -556,9 +465,13 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             continuation_count > 0,
             "fixture must actually exercise continuation dispatch"
         );
+        let dispatch_count = text
+            .lines()
+            .filter(|line| line.contains("\"path\":"))
+            .count();
         assert!(
-            continuation_count <= 200,
-            "continuations exceeded their quarter share"
+            continuation_count * 2 <= dispatch_count,
+            "continuations exceeded their reservation share: {continuation_count} of {dispatch_count}"
         );
         assert!(
             live.snapshot_evictions > 0,
@@ -575,11 +488,12 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             .expect("stateful fixture records a draw checkpoint");
         let mut checkpoint_value: serde_json::Value =
             serde_json::from_str(checkpoint_line).expect("checkpoint record parses");
-        let fingerprint = checkpoint_value["draw_checkpoint_after"]["fingerprint"]
-            .as_u64()
-            .expect("checkpoint fingerprint is numeric");
-        checkpoint_value["draw_checkpoint_after"]["fingerprint"] =
-            serde_json::json!(fingerprint.saturating_add(1));
+        assert!(
+            checkpoint_value["draw_checkpoint_after"]["table_sha256"].is_string(),
+            "checkpoint carries its table hash"
+        );
+        checkpoint_value["draw_checkpoint_after"]["table_sha256"] =
+            serde_json::json!("0".repeat(64));
         *checkpoint_line = serde_json::to_string(&checkpoint_value).expect("checkpoint re-encodes");
         assert!(
             replay_campaign_checkpointed(
@@ -749,4 +663,52 @@ fn a_live_progress_line_reports_the_selector_accounting() {
     assert_eq!(record.selector, outcome.archive.selector);
     assert!(record.selector.cell_selections > 0);
     assert!(!record.selector.class_draws_by_rank.is_empty());
+}
+
+#[test]
+fn a_replay_holds_only_the_draw_table_versions_its_remaining_records_name() {
+    let config = CampaignConfig {
+        campaign_seed: 0x5eed_0f01,
+        workers: 4,
+        execution_budget: 600,
+        action_limit: 64,
+        host: "test".into(),
+        wall_budget: None,
+        stop_rollout_on_objective: false,
+        stop_campaign_on_objective: false,
+        archive_entry_limit: 128,
+        reservations_per_worker: 2,
+        memory_budget_mib: Some(12),
+        materialize_final_artifacts: true,
+        run: (),
+        suffix: SuffixShape::OneOrTwo,
+        mixture: DrawMixture::BiasedHalf,
+        retention: RetentionPolicy::Unprobed,
+        selector: SelectorPolicy::GroupUniform,
+        objective_witness_path: None,
+    };
+    let mut bytes = Vec::new();
+    let (live, checkpoint) = run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        None,
+    )
+    .unwrap();
+    let records = std::str::from_utf8(&bytes).unwrap().lines().count() - 1;
+    REPLAY_DRAW_VERSIONS.with_borrow_mut(Vec::clear);
+    let replayed = replay_campaign_checkpointed(&TestWorkload, &bytes, None, None).unwrap();
+    assert_eq!(replayed, (live, checkpoint));
+    let counts = REPLAY_DRAW_VERSIONS.with_borrow(Clone::clone);
+    assert!(counts.len() > 1, "replay remembered no table version");
+    let held = counts.iter().copied().max().unwrap_or(0);
+    assert!(
+        held * 4 < records,
+        "replay held {held} table versions across {records} records"
+    );
+    assert!(
+        counts.last().copied().unwrap_or(0) < held,
+        "the version map never shrank: {counts:?}"
+    );
 }

@@ -60,9 +60,6 @@ impl CampaignTypes for TinyExecution {
     type Evidence = ();
     type ArchiveReport = ();
     type Run = ();
-    type DrawState = ();
-    type DrawCheckpoint = ();
-    type DrawHeader = ();
 }
 
 fn action_cost(action: &TinyAction) -> u64 {

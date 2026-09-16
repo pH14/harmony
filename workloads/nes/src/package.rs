@@ -194,7 +194,6 @@ where
 }
 fn smb_run() -> SmbCampaignRun {
     SmbCampaignRun {
-        chord: Default::default(),
         vocabulary: Default::default(),
         terminal: None,
     }
