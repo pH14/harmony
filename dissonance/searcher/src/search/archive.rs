@@ -328,6 +328,10 @@ pub struct SelectorAccounting {
     pub counter_resets: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub class_draws_by_rank: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub energy_resets: Vec<u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub productive_by_mask: BTreeMap<u32, u64>,
     pub concentration: ConcentrationAccounting,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<RetirementAccounting>,
@@ -579,8 +583,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     since_retained: Vec<u64>,
     in_window_ever: Vec<bool>,
     opened_slot: Vec<bool>,
-    opened_cell: Vec<bool>,
-    cells_seen: BTreeSet<K::Group>,
+    opened_depths: Vec<u32>,
+    groups_seen: Vec<BTreeSet<K::Group>>,
     selector_accounting: SelectorAccounting,
     cost_in_group: Vec<u64>,
     replacement_cost_displaced: u64,
@@ -1107,8 +1111,8 @@ where
             since_retained: Vec::new(),
             in_window_ever: Vec::new(),
             opened_slot: Vec::new(),
-            opened_cell: Vec::new(),
-            cells_seen: BTreeSet::new(),
+            opened_depths: Vec::new(),
+            groups_seen: vec![BTreeSet::new(); K::groups().saturating_sub(1)],
             selector_accounting: SelectorAccounting {
                 concentration: ConcentrationAccounting {
                     window_cap: u64::try_from(CONCENTRATION_WINDOW).unwrap_or(u64::MAX),
@@ -1513,7 +1517,7 @@ where
         self.since_retained = retain_marked(std::mem::take(&mut self.since_retained), &keep);
         self.in_window_ever = retain_marked(std::mem::take(&mut self.in_window_ever), &keep);
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
-        self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
+        self.opened_depths = retain_marked(std::mem::take(&mut self.opened_depths), &keep);
         self.cost_in_group = retain_marked(std::mem::take(&mut self.cost_in_group), &keep);
         self.lineages = retain_marked(std::mem::take(&mut self.lineages), &keep);
         self.snapshot_selectable =
@@ -1525,12 +1529,14 @@ where
         self.referenced = retain_marked(std::mem::take(&mut self.referenced), &keep);
         self.drop_hand = 0;
 
-        self.cells_seen = self
-            .entries
-            .iter()
-            .zip(&self.active)
-            .filter_map(|(entry, active)| active.then_some(entry.key.group(Self::cell_depth())))
-            .collect();
+        for (offset, seen) in self.groups_seen.iter_mut().enumerate() {
+            *seen = self
+                .entries
+                .iter()
+                .zip(&self.active)
+                .filter_map(|(entry, active)| active.then_some(entry.key.group(offset + 1)))
+                .collect();
+        }
         for (offset, barren) in self.group_barren.iter_mut().enumerate() {
             let live_groups = self
                 .entries
@@ -2376,12 +2382,13 @@ where
         self.since_retained.push(0);
         self.in_window_ever.push(false);
         self.opened_slot.push(new_slot);
-        let new_cell = if K::groups() > 1 {
-            self.cells_seen.insert(key.group(1))
-        } else {
-            new_slot
-        };
-        self.opened_cell.push(new_cell);
+        let mut opened = u32::from(new_slot);
+        for (offset, seen) in self.groups_seen.iter_mut().enumerate() {
+            if seen.insert(key.group(offset + 1)) {
+                opened |= 1 << (offset + 1);
+            }
+        }
+        self.opened_depths.push(opened);
         self.deepest_leaf.push((key, id));
         let mut ancestor = parent_id;
         while let Some(current) = ancestor {
@@ -3059,8 +3066,8 @@ where
     }
 
     #[must_use]
-    pub fn opened_new_cell(&self, id: usize) -> bool {
-        self.opened_cell.get(id).copied().unwrap_or(false)
+    pub fn opened_depths(&self, id: usize) -> u32 {
+        self.opened_depths.get(id).copied().unwrap_or(0)
     }
 
     #[must_use]
@@ -3171,8 +3178,10 @@ where
 
     #[must_use]
     pub(crate) fn novelty_memory_bytes(&self) -> usize {
-        self.cells_seen
-            .len()
+        self.groups_seen
+            .iter()
+            .map(BTreeSet::len)
+            .sum::<usize>()
             .saturating_mul(Self::historical_group_memory_charge(0))
     }
 
@@ -3198,7 +3207,9 @@ where
 
     #[must_use]
     pub(crate) fn historical_cell_count(&self) -> usize {
-        self.cells_seen.len()
+        self.groups_seen
+            .first()
+            .map_or_else(|| self.slots.len(), BTreeSet::len)
     }
 
     #[must_use]
@@ -3306,12 +3317,7 @@ where
         }
     }
 
-    pub fn record_selection_outcome(
-        &mut self,
-        id: usize,
-        retained_descendant: bool,
-        new_cell_descendant: bool,
-    ) {
+    pub fn record_selection_outcome(&mut self, id: usize, retained_descendant: bool, opened: u32) {
         if !retained_descendant {
             return;
         }
@@ -3321,19 +3327,31 @@ where
         if !was_sampleable && self.entry_unexhausted(id) {
             self.set_entry_sampleable(id, true);
         }
-        let clears_groups = match self.selector_policy {
-            SelectorPolicy::Retire(_) => true,
+        let cleared = match self.selector_policy {
+            SelectorPolicy::Retire(_) => u32::MAX,
             SelectorPolicy::EnergyFrontierCheapest(_)
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
-            | SelectorPolicy::EnergyFrontierCheapestKeyCount(_) => new_cell_descendant,
-            SelectorPolicy::GroupUniform => false,
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(_) => opened,
+            SelectorPolicy::GroupUniform => 0,
         };
-        if clears_groups {
+        if cleared != 0 {
             let key = self.entries[id].key;
+            let resets = &mut self.selector_accounting.energy_resets;
+            resets.resize(self.group_barren.len(), 0);
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
+                if cleared & (1 << (offset + 1)) == 0 {
+                    continue;
+                }
                 map.insert(key.group(offset + 1), 0);
+                resets[offset] = resets[offset].saturating_add(1);
             }
         }
+        let count = self
+            .selector_accounting
+            .productive_by_mask
+            .entry(opened)
+            .or_insert(0);
+        *count = count.saturating_add(1);
         self.selector_accounting.productive_selections = self
             .selector_accounting
             .productive_selections
@@ -3907,7 +3925,7 @@ mod tests {
         let history_charge =
             3 * Archive::<u8, FlatKey<3>, (), ()>::history_entry_memory_charge(1, 1);
         let novelty_charge =
-            3 * Archive::<u8, FlatKey<3>, (), ()>::historical_group_memory_charge(0);
+            4 * Archive::<u8, FlatKey<3>, (), ()>::historical_group_memory_charge(0);
         archive.set_memory_budget(root_charge + history_charge + novelty_charge + 2, |_| 1);
         for index in 0_u8..3 {
             archive
@@ -5185,7 +5203,7 @@ mod tests {
                 class_rank: None,
             };
             archive.record_selection(id, &draw);
-            archive.record_selection_outcome(id, step % 3 == 0, false);
+            archive.record_selection_outcome(id, step % 3 == 0, 0);
         }
     }
 
@@ -5224,7 +5242,7 @@ mod tests {
         assert_eq!(cached_skipped, scanned_skipped);
         assert_eq!(cached_rand.next_u64(), scanned_rand.next_u64());
 
-        archive.record_selection_outcome(0, true, true);
+        archive.record_selection_outcome(0, true, u32::MAX);
         let mut cached_rand = RomuDuoJrRand::with_seed(0x0af7_c0de);
         let mut scanned_rand = cached_rand;
         let mut cached_skipped = 0;
@@ -5412,7 +5430,7 @@ mod tests {
                 .entry((key.progress, key.player_y_bucket))
                 .or_default() += 1;
             archive.record_selection(id, &draw);
-            archive.record_selection_outcome(id, true, true);
+            archive.record_selection_outcome(id, true, u32::MAX);
         }
         assert!(cell_draws > 600);
         assert_eq!(per_cell.len(), 3, "cells drawn: {per_cell:?}");
@@ -5461,7 +5479,7 @@ mod tests {
         }
         assert!(fell_through > 0);
         archive.record_selection(1, &barren_draw);
-        archive.record_selection_outcome(1, true, true);
+        archive.record_selection_outcome(1, true, u32::MAX);
         let mut upper_band_seen = false;
         for _ in 0..64 {
             let (id, draw) = archive
@@ -5478,6 +5496,95 @@ mod tests {
         let accounting = archive.selector_report();
         let retirement = accounting.retirement.expect("retirement accounting");
         assert_eq!(retirement.groups_over_threshold[1], 0);
+    }
+
+    fn depth_archive() -> Archive<u8, FlatKey<4>, (), ()> {
+        let mut archive = Archive::<u8, FlatKey<4>, (), ()>::new(|_| 1);
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
+            entry: 1_024,
+            groups: vec![1_024; 3],
+        });
+        archive
+    }
+
+    fn insert_depth_child(
+        archive: &mut Archive<u8, FlatKey<4>, (), ()>,
+        parent: Option<usize>,
+        suffix: u8,
+        key: [u16; 4],
+    ) -> usize {
+        archive
+            .insert(
+                parent,
+                u64::from(suffix),
+                ArchiveCandidate {
+                    suffix: vec![suffix],
+                    key: FlatKey(key),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert depth entry")
+            .expect("retain depth entry")
+    }
+
+    #[test]
+    fn a_child_new_at_one_depth_clears_only_that_depth() {
+        let mut archive = depth_archive();
+        let parent = insert_depth_child(&mut archive, None, 0, [0, 0, 0, 0]);
+        let child = insert_depth_child(&mut archive, Some(parent), 1, [0, 1, 0, 0]);
+        let opened = archive.opened_depths(child);
+        assert_eq!(opened, 0b11);
+        archive.record_selection_outcome(parent, true, opened);
+        let accounting = archive.selector_report();
+        assert_eq!(accounting.energy_resets, vec![1, 0]);
+        assert_eq!(accounting.productive_by_mask, BTreeMap::from([(0b11, 1)]));
+    }
+
+    #[test]
+    fn a_child_new_at_the_coarsest_pooled_depth_clears_every_depth_below_it() {
+        let mut archive = depth_archive();
+        let parent = insert_depth_child(&mut archive, None, 0, [0, 0, 0, 0]);
+        let child = insert_depth_child(&mut archive, Some(parent), 1, [0, 0, 1, 0]);
+        let opened = archive.opened_depths(child);
+        assert_eq!(opened, 0b111);
+        archive.record_selection_outcome(parent, true, opened);
+        let accounting = archive.selector_report();
+        assert_eq!(accounting.energy_resets, vec![1, 1]);
+    }
+
+    #[test]
+    fn the_productive_mask_histogram_separates_the_depths_a_selection_opened() {
+        let mut archive = depth_archive();
+        let parent = insert_depth_child(&mut archive, None, 0, [0, 0, 0, 0]);
+        let shallow = insert_depth_child(&mut archive, Some(parent), 1, [0, 1, 0, 0]);
+        let deep = insert_depth_child(&mut archive, Some(parent), 2, [0, 0, 1, 0]);
+        let repeat = insert_depth_child(&mut archive, Some(parent), 3, [0, 2, 0, 0]);
+        for child in [shallow, deep, repeat] {
+            let opened = archive.opened_depths(child);
+            archive.record_selection_outcome(parent, true, opened);
+        }
+        let accounting = archive.selector_report();
+        assert_eq!(
+            accounting.productive_by_mask,
+            BTreeMap::from([(0b11, 2), (0b111, 1)])
+        );
+        assert_eq!(accounting.productive_selections, 3);
+        assert_eq!(accounting.energy_resets, vec![3, 1]);
+    }
+
+    #[test]
+    fn a_group_new_at_a_second_depth_charges_novelty_for_both() {
+        let mut archive = depth_archive();
+        let parent = insert_depth_child(&mut archive, None, 0, [0, 0, 0, 0]);
+        let charge = Archive::<u8, FlatKey<4>, (), ()>::historical_group_memory_charge(0);
+        let after_root = archive.novelty_memory_bytes();
+        insert_depth_child(&mut archive, Some(parent), 1, [0, 1, 0, 0]);
+        let after_shallow = archive.novelty_memory_bytes();
+        insert_depth_child(&mut archive, Some(parent), 2, [0, 0, 1, 0]);
+        let after_deep = archive.novelty_memory_bytes();
+        assert_eq!(after_shallow - after_root, charge);
+        assert_eq!(after_deep - after_shallow, 2 * charge);
     }
 
     #[test]

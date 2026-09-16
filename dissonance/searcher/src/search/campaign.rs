@@ -43,7 +43,7 @@ pub type InitialDrawState<G> = (
     Option<<G as CampaignTypes>::DrawHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 2;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 3;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
@@ -2898,14 +2898,14 @@ where
                     let new_slot_descendant = retained_ids
                         .iter()
                         .any(|id| core.archive.opened_new_slot(*id));
-                    let new_cell_descendant = retained_ids
+                    let opened_depths = retained_ids
                         .iter()
-                        .any(|id| core.archive.opened_new_cell(*id));
+                        .fold(0, |mask, id| mask | core.archive.opened_depths(*id));
                     if !isolated_continuation {
                         core.archive.record_selection_outcome(
                             parent_index,
                             !retained_ids.is_empty(),
-                            new_cell_descendant,
+                            opened_depths,
                         );
                     }
                     record_mixture_outcome(
@@ -3791,7 +3791,7 @@ where
                         !retained_ids.is_empty(),
                         retained_ids
                             .iter()
-                            .any(|id| core.archive.opened_new_cell(*id)),
+                            .fold(0, |mask, id| mask | core.archive.opened_depths(*id)),
                     );
                 }
                 core.archive.unpin_job_origin(snapshot_id);
@@ -4685,7 +4685,7 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":2,"format":"campaign-v1","campaign_seed":7,"workers":2,
+    const RECORDED_HEADER: &str = r#"{"schema_version":3,"format":"campaign-v1","campaign_seed":7,"workers":2,
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
