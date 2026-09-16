@@ -223,6 +223,15 @@ earlier run also failed an extra preparation after reused restore
 Intel's fixed-P-core matrix passes. A passing retry does not remove these
 failures or establish raw identity stability across extra entries.
 
+The ordinary two-boot Linux smoke also reproduced the same field difference
+([run 35048054460](https://github.com/pH14/harmony/actions/runs/35048054460)). At
+checkpoint 14847, the event context and RAM digest match, and the retained suffix
+has exactly one changed byte: raw restore presence 2 versus 0 in VCPU's XSRB
+field. Both reported hashes reconstruct from the retained suffixes and matching
+RAM digest. Original RAM bytes were not retained, so this is digest-strength RAM
+attribution, not a bytewise RAM comparison. Avoiding duplicate preparation calls
+would not close this ordinary execution witness.
+
 The remaining contract decision is explicit: may the public snapshot API require
 a verified controlled guest image/profile and define logical identity separately
 from raw restoration metadata? Today Session accepts caller-supplied kernels and
