@@ -133,9 +133,10 @@ where that behavior matters, and includes a representative failing case.
 names outside `workloads/`, personal references, misplaced files. It cannot
 judge what a file actually says. `scripts/semantic-lints.py` covers that gap
 by asking TypeSafe's Jev model whether a changed file reads as a run record
-or status report, names a person or a role standing in for one, carries
-decision residue (a rejected alternative, an old name, a reviewer-driven
-change), or names a workload in workload-agnostic code. It needs
+or status report, carries decision residue (a rejected alternative, an old
+name, a reviewer-driven change), or names one of the project's own workloads
+(a specific game, database, or distributed system) in workload-agnostic
+code. It needs
 `TYPESAFE_API_KEY`; without it, it prints a skip message and passes. Known
 violations that predate a check are recorded in `docs/custom-lints-baseline.json`
 and `docs/semantic-lints-baseline.json`; regenerate either with

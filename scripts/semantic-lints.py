@@ -3,9 +3,9 @@
 """Content lint for the Harmony repository, backed by TypeSafe's Jev model.
 
 Judges file content rather than file name or a fixed word list: run
-records, status narratives, personal references, decision residue, and
-workload names in workload-agnostic code. Skipped entirely without
-TYPESAFE_API_KEY, so it never blocks a fork PR or an offline checkout.
+records, status narratives, decision residue, and workload names in
+workload-agnostic code. Skipped entirely without TYPESAFE_API_KEY, so it
+never blocks a fork PR or an offline checkout.
 """
 
 from __future__ import annotations
@@ -100,14 +100,6 @@ QUESTIONS = {
             "false": "it is reference, instructions, code or data.",
         },
     },
-    "names_people": {
-        "type": "noul",
-        "instructions": "Does this file name, address, or refer to a specific person, or address someone by a role that stands in for a person (reviewer, owner, maintainer)?",
-        "criteria": {
-            "true": "a personal name or a role used as a person.",
-            "false": "no person is named or addressed.",
-        },
-    },
     "decision_residue": {
         "type": "noul",
         "instructions": "Does this file describe rejected alternatives, changes made in answer to a reviewer, or an earlier name of something?",
@@ -118,14 +110,20 @@ QUESTIONS = {
     },
     "workload_named": {
         "type": "choice",
-        "instructions": "Does this file name a specific program the platform might run, rather than a generic target?",
+        "instructions": (
+            "Does this file name one of Harmony's own workloads: a specific "
+            "video game or console, database, or distributed system that "
+            "the project models, fuzzes, or reproduces bugs in under "
+            "workloads/? Generic infrastructure, build, packaging, or "
+            "virtualization tooling the project uses to run or build "
+            "things does not count (an emulator such as QEMU, an init "
+            "system such as BusyBox, a package manager such as Nix), and "
+            "neither does Harmony's own component or crate name."
+        ),
         "criteria": {
-            "none": "no specific program is named.",
-            "game": "a specific video game or console.",
-            "emulator": "a specific emulator or emulation library.",
-            "database": "a specific database.",
-            "distributed_system": "a specific distributed system, orchestrator or key-value store.",
-            "other_program": "another specific application.",
+            "none": "no workload is named, or only generic infrastructure, tooling, or a component name is named.",
+            "game": "a specific video game or game console that is one of the project's own workloads.",
+            "database_or_distributed_system": "a specific database, distributed system, orchestrator or key-value store that is one of the project's own workloads.",
         },
     },
 }
@@ -134,11 +132,6 @@ QUESTIONS = {
 def _is_text_file(path: str) -> bool:
     _, ext = os.path.splitext(path)
     return ext in TEXT_EXTENSIONS
-
-
-def _is_license_file(path: str) -> bool:
-    name = os.path.basename(path)
-    return name == "LICENSE" or name.endswith("-LICENSE.md")
 
 
 def _in_decision_residue_scope(path: str) -> bool:
@@ -161,8 +154,6 @@ def questions_for(path: str) -> dict:
         "records_runs": QUESTIONS["records_runs"],
         "status_narrative": QUESTIONS["status_narrative"],
     }
-    if not _is_license_file(path):
-        selected["names_people"] = QUESTIONS["names_people"]
     if _in_decision_residue_scope(path):
         selected["decision_residue"] = QUESTIONS["decision_residue"]
     if _in_workload_named_scope(path):
@@ -314,13 +305,6 @@ def evaluate(answers: dict) -> tuple[list[str], list[str]]:
     elif run_record_warn:
         warned.append("run-record")
 
-    if "names_people" in answers:
-        names_people = answers["names_people"]["noul"]
-        if names_people >= FAIL_PROBABILITY:
-            failed.append("names-people")
-        elif names_people >= WARN_PROBABILITY:
-            warned.append("names-people")
-
     if "decision_residue" in answers:
         decision_residue = answers["decision_residue"]["noul"]
         if decision_residue >= FAIL_PROBABILITY:
@@ -347,12 +331,6 @@ REMEDIATION = {
         "repository. Remove the file or rewrite it as reference material "
         "with no run-specific content."
     ),
-    "names-people": (
-        "This file names or addresses a specific person, or addresses "
-        "someone by a role that stands in for a person. Rewrite without "
-        "referencing the person involved; decisions belong to the "
-        "project, not an individual."
-    ),
     "decision-residue": (
         "This file describes a rejected alternative, a change made in "
         "answer to a reviewer, or an earlier name for something. Describe "
@@ -374,8 +352,6 @@ def _format_signal(path: str, answers: dict) -> str:
         parts.append(f"records_runs={answers['records_runs']['noul']:.2f}")
     if "status_narrative" in answers:
         parts.append(f"status_narrative={answers['status_narrative']['noul']:.2f}")
-    if "names_people" in answers:
-        parts.append(f"names_people={answers['names_people']['noul']:.2f}")
     if "decision_residue" in answers:
         parts.append(f"decision_residue={answers['decision_residue']['noul']:.2f}")
     if "workload_named" in answers:

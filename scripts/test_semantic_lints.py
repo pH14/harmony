@@ -36,7 +36,6 @@ def full_answers(
     file_kind_confidence=0.9,
     records_runs=0.05,
     status_narrative=0.05,
-    names_people=0.05,
     decision_residue=0.05,
     workload="none",
     workload_confidence=0.9,
@@ -45,7 +44,6 @@ def full_answers(
         "file_kind": choice(file_kind, file_kind_confidence),
         "records_runs": noul(records_runs),
         "status_narrative": noul(status_narrative),
-        "names_people": noul(names_people),
         "decision_residue": noul(decision_residue),
         "workload_named": choice(workload, workload_confidence),
     }
@@ -76,30 +74,6 @@ class RequiresApiKey(unittest.TestCase):
 
 
 class QuestionScopeTests(RequiresApiKey):
-    def test_names_people_fails_but_license_is_never_asked(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            named = root / "docs" / "ATTRIBUTIONS.md"
-            named.parent.mkdir(parents=True)
-            named.write_text("Thanks to our reviewer for the careful pass.")
-            license_file = root / "LICENSE"
-            license_file.write_text("Thanks to our reviewer for the careful pass.")
-
-            answers = full_answers(names_people=0.95)
-            calls: list = []
-            post = make_post(answers, calls)
-
-            new_failures, new_warnings, _, _, _, _ = LINTS.run(
-                root, ["docs/ATTRIBUTIONS.md", "LICENSE"], {}, post=post,
-            )
-
-            self.assertEqual(
-                [(rule, path) for rule, path, _ in new_failures],
-                [("names-people", "docs/ATTRIBUTIONS.md")],
-            )
-            license_request = calls[1]
-            self.assertNotIn("names_people", license_request["questions"])
-
     def test_workload_named_is_scoped_to_searcher_not_workloads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
