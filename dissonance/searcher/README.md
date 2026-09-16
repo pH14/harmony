@@ -51,9 +51,14 @@ and the adaptive duration reserve are subtracted, and the archive gets the rest
 as its own limit. The draw state and the duration histories are checked against
 their reserves on every admission and fail the campaign when either exceeds one.
 The archive's limit is enforced incrementally, a bounded number of eviction
-visits per admission, so resident bytes may sit above the limit while
-maintenance catches up. That lag is why the archive's resident bytes are not
-checked against the whole budget.
+visits per admission, so resident bytes sit above the limit while maintenance
+catches up. Maintenance does not always converge below the limit: history
+compaction batches and declines to run below `HISTORY_COMPACTION_MIN_DROPS`,
+and entry dropping stops at one surviving active entry, so a campaign can
+carry an over-budget tail of retained history to its end. Final compaction
+bypasses the batching threshold and rejects an archive that is still over its
+limit. Because of that lag, the archive's resident bytes are not checked
+against the whole budget during the campaign.
 
 ## Workload boundary
 

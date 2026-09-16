@@ -567,6 +567,36 @@ mod tests {
     }
 
     #[test]
+    fn a_partially_filled_checkpoint_stays_within_its_memory_reserve_once_refilled() {
+        let mut source = DurationPolicy::new();
+        for _ in 0..(RECENT_OBSERVATIONS - 1) {
+            source
+                .observe(positive(1), true, positive(1))
+                .expect("observe");
+        }
+        let contexts = (0..u32::try_from(MAX_DURATION_CONTEXTS).expect("context count"))
+            .map(|context| DurationContextCheckpoint {
+                context,
+                history: source.checkpoint(),
+            })
+            .collect();
+        let mut policies = DurationPolicies::from_checkpoint(DurationPoliciesCheckpoint {
+            policy: DURATION_POLICIES_IDENTIFIER.to_owned(),
+            contexts,
+        })
+        .expect("restore");
+        for context in 0..u32::try_from(MAX_DURATION_CONTEXTS).expect("context count") {
+            for _ in 0..RECENT_OBSERVATIONS {
+                policies
+                    .observe(context, positive(2), true, positive(1))
+                    .expect("observe");
+            }
+        }
+        assert_eq!(policies.policies.len(), MAX_DURATION_CONTEXTS);
+        assert!(policies.memory_bytes() <= DurationPolicies::<u32>::memory_reserve_bytes());
+    }
+
+    #[test]
     fn a_saturated_context_history_stays_within_its_memory_reserve() {
         let mut policies = DurationPolicies::<u32>::new();
         for context in 0..u32::try_from(MAX_DURATION_CONTEXTS * 2).expect("context count") {
