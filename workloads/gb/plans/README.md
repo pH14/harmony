@@ -121,6 +121,39 @@ tape proves the macros and the RAM map before any search runs.
 
 **Film.** `blue-film` renders a tape to MP4 the way `metroid-film` does.
 
+Added while building step 2:
+
+- A fifth module, `map.rs`, holds the overworld collision model and the
+  routing over it. Walking is breadth-first over that model rather than A*,
+  since a map is small enough that the two cost the same.
+- Collision reads the lower-left tile of the 2×2 tile square a step covers,
+  not the upper-left one. Reading the upper-left tile walks through ledges and
+  walls.
+- The three tiles in `wTilesetTalkingOverTiles` extend talking range to two
+  steps. Without them the Poké Mart cashier and the Pokémon Center nurse are
+  unreachable behind their counters. The alphabet generates both approach
+  distances.
+- The alphabet also holds one exit per map edge, and marks tiles under
+  standing sprites unwalkable.
+- `action_cost_fn` is a pure function of the action, so a macro cannot report
+  the frames it spent as its cost. Each macro declares a frame ceiling as its
+  cost and stops there; the frames actually spent are execution work.
+- The observation summarises the 320-byte event block as a set-bit count, a
+  digest, and the seven tracked flags. The warp table is read live from RAM
+  rather than stored.
+- The route flags latch once set, and the three "entered" milestones come from
+  map ids rather than event flags.
+- The key's preference is party HP then party levels. The archive already
+  breaks a preference tie by lower accumulated cost and the key cannot see how
+  many actions reached it, so fewest actions stays the archive's rule.
+- A drawn macro that the live state cannot run is mapped onto one it can by
+  `ActionKind::in_context`, so every draw is usable.
+- `interact` stops at a yes/no box (`wTextBoxID` `0x14`) and leaves the answer
+  to the next action: interact means yes, advance means no.
+- The driver gained `begin_action` and `hold_frame` so a macro runs frame by
+  frame inside one action, and `set_wram_capture` so it does not copy work RAM
+  on every frame.
+
 ### Step 3: plain campaign
 
 Add a `blue` case to `benchmarks/search/pilot.json` with a new-game origin,
