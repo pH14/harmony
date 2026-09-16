@@ -429,18 +429,7 @@ impl InputPolicy for FaultWorkload {
         })
     }
 
-    fn expand_suffix_duration(
-        &self,
-        run: &FaultCampaignRun,
-        state: &DrawTables<FaultAction>,
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        mutation_seed: u64,
-        draw: DurationDraw<FaultArchiveKey>,
-    ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-        held_suffix(run, state, shape, mixture, None, mutation_seed, false, draw)
-    }
-
+    #[allow(clippy::too_many_arguments)]
     fn expand_suffix_recorded_duration(
         &self,
         run: &FaultCampaignRun,
@@ -451,6 +440,30 @@ impl InputPolicy for FaultWorkload {
         mutation_seed: u64,
         draw: Option<DurationDraw<FaultArchiveKey>>,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
+        self.expand_duration_recorded_or_live(
+            run,
+            state,
+            shape,
+            mixture,
+            before,
+            mutation_seed,
+            draw.ok_or("fault campaign is missing its duration choice")?,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn expand_duration_recorded_or_live(
+        &self,
+        run: &FaultCampaignRun,
+        state: &DrawTables<FaultAction>,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        before: Option<&EmpiricalStepCheckpoint>,
+        mutation_seed: u64,
+        draw: DurationDraw<FaultArchiveKey>,
+        replay: bool,
+    ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
         held_suffix(
             run,
             state,
@@ -458,8 +471,8 @@ impl InputPolicy for FaultWorkload {
             mixture,
             before,
             mutation_seed,
-            true,
-            draw.ok_or("fault campaign is missing its duration choice")?,
+            replay,
+            draw,
         )
     }
 

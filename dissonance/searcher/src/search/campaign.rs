@@ -225,8 +225,16 @@ pub trait InputPolicy: CampaignTypes {
         mutation_seed: u64,
         draw: DurationDraw<Self::Key>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        let _ = draw;
-        self.expand_suffix(run, state, shape, mixture, mutation_seed)
+        self.expand_duration_recorded_or_live(
+            run,
+            state,
+            shape,
+            mixture,
+            None,
+            mutation_seed,
+            draw,
+            false,
+        )
     }
     #[allow(clippy::too_many_arguments)]
     fn expand_suffix_recorded_duration(
@@ -240,11 +248,33 @@ pub trait InputPolicy: CampaignTypes {
         draw: Option<DurationDraw<Self::Key>>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         match draw {
-            Some(draw) => {
-                self.expand_suffix_duration(run, state, shape, mixture, mutation_seed, draw)
-            }
+            Some(draw) => self.expand_duration_recorded_or_live(
+                run,
+                state,
+                shape,
+                mixture,
+                before,
+                mutation_seed,
+                draw,
+                true,
+            ),
             None => self.expand_suffix_recorded(run, state, shape, mixture, before, mutation_seed),
         }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn expand_duration_recorded_or_live(
+        &self,
+        run: &Self::Run,
+        state: &DrawTables<Self::Action>,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        before: Option<&EmpiricalStepCheckpoint>,
+        mutation_seed: u64,
+        draw: DurationDraw<Self::Key>,
+        replay: bool,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        let _ = draw;
+        self.expand_recorded_or_live(run, state, shape, mixture, before, mutation_seed, replay)
     }
     fn duration_of_action(&self, run: &Self::Run, action: &Self::Action) -> Option<NonZeroU64> {
         let _ = (run, action);
