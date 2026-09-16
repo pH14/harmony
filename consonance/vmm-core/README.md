@@ -193,7 +193,44 @@ and hash comparisons and the MMIO completion/timing assertions. There is no
 extra guest exit, warmup or host restore-bitmap forcing. The original init-only
 program remains an informational characterization using the same exercise.
 
-Init-valued SSE data can retain identical RAM and CPU values while KVM changes
-raw presence across restoration. The informational init-only fixture preserves
-that counterexample; the active-data fixture does not resolve general raw
-identity. Informational failures remain failures.
+### Published XSAVE identity gate
+
+`live_kvm::public_snapshot_replay_recapture_preserves_xsave_identity` exercises
+`ControlServer`'s published Snapshot, Replay and portable export APIs. It mints a
+new snapshot after restore, rather than re-exporting the original handle. The
+required fixed-core CI gate covers raw init seeds 0/2/3, XCR0 3/7, initial and
+serviced UART boundaries, init and active register values, fresh and verified
+in-place restores, repeated captures, and three additional host-only preparation
+entries. The guest dirties FP/vector/MXCSR state before replay. Independent
+single-component changes to x87, XMM, YMM and MXCSR must change published identity
+with identical guest RAM and program bytes.
+
+The gate compares hashes and complete persisted execution state, including raw
+restore metadata, and resumes both paths to the same guest endpoint. Only the
+existing portable comparison's diagnostic trace counters and independently
+validated envelope checksums are excluded across replay. Repeated captures and
+host-only preparation comparisons remain byte-exact. No XSAVE bit is masked.
+
+The seeded gate reproduced a published hash change on fixed-core AMD after a
+third host-only preparation entry, with no guest instruction executed
+([run 35047743001, replica 2](https://github.com/pH14/harmony/actions/runs/35047743001/job/104641200322)).
+The raw restore bitmap changed from 0 to 2; RAM and every other serialized CPU
+field were identical. This occurred after fresh restore of a guest-initiated
+UART stop with init-valued SSE state, seed 3 and XCR0 3. All 48 immediate A-to-B
+comparisons and all 48 continuation comparisons passed in the same run. An
+earlier run also failed an extra preparation after reused restore
+([run 35047329499, replica 2](https://github.com/pH14/harmony/actions/runs/35047329499/job/104639902214)).
+Intel's fixed-P-core matrix passes. A passing retry does not remove these
+failures or establish raw identity stability across extra entries.
+
+The remaining contract decision is explicit: may the public snapshot API require
+a verified controlled guest image/profile and define logical identity separately
+from raw restoration metadata? Today Session accepts caller-supplied kernels and
+initramfs bytes, ControlServer accepts a VMM/factory, and the general x86 policy
+admits native XSAVE. Those entry points do not enforce the external workload
+admission audit. Excluding presence metadata globally would therefore merge
+states a permitted guest can inspect. Until a narrower contract is enforced and
+its equivalence demonstrated, exact raw identity across additional host entries
+is unsupported on the failing AMD case; the bitmap stays in restore data and
+identity, and this regression stays required. The PR must remain draft while
+that required gate fails.

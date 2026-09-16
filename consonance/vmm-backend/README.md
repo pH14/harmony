@@ -82,7 +82,9 @@ restored CR8. This path does not inject queued interrupts or count a guest exit.
 
 The immediate-exit operation does not guarantee stable XSAVE presence bits,
 either across repeated preparation or subsequent guest entry. No bits are
-removed from snapshot identity; the raw-bitmap identity problem remains open. `save()`
+removed from snapshot identity. The required public-API regression reproduces
+identity drift on AMD; the exact contract decision is documented under
+[Published XSAVE identity gate](../vmm-core/README.md#published-xsave-identity-gate). `save()`
 and hashing remain reads; callers prepare a boundary explicitly after restoring
 RAM and CPU state or servicing an exit. Pending CPU events remain present;
 unretired userspace instruction completion is a different condition and must
