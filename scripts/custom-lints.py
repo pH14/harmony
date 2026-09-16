@@ -462,6 +462,11 @@ def check_misplaced_workload_files(files: list[str]) -> list[Violation]:
 CI_WORKFLOW_PREFIXES = ["Acceptance", "Benchmarks", "Checks", "Nightly", "Release", "Smoke"]
 
 PR_JOB_MAX_TIMEOUT_MINUTES = 15
+PR_WORKFLOWS = {
+    ".github/workflows/quality.yml": "Checks",
+    ".github/workflows/nightly.yml": "Checks",
+    ".github/workflows/product-smoke.yml": "Smoke",
+}
 
 # Event names that cannot be a pull-request run.
 NON_PR_EVENTS = {"push", "schedule", "workflow_dispatch"}
@@ -594,6 +599,7 @@ def _parse_workflow(abs_path: Path) -> dict:
 
 
 def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
+    """Validate the complete tracked-file inventory, not a changed-file subset."""
     violations = []
     nes_manifest = "benchmarks/search/nightly.json"
     nes_workflow = ".github/workflows/nova-nightly.yml"
@@ -653,7 +659,10 @@ def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
             violations.extend(check_nes_job_coverage(repo_root, rel_path, data))
         if not set(triggers) & {"pull_request", "pull_request_target", "merge_group"}:
             continue
-        if category == "Smoke":
+        if PR_WORKFLOWS.get(rel_path) != category:
+            violations.append(Violation("ci-pr-workflow-registration", rel_path, 0,
+                "PR workflows must use a registered path and category; register new checks explicitly"))
+        if category == "Smoke" or rel_path == ".github/workflows/product-smoke.yml":
             violations.extend(check_pr_smoke_routing(rel_path, data))
         for job_name, job in (data.get("jobs") or {}).items():
             if not isinstance(job, dict):
@@ -665,7 +674,7 @@ def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
                     f"job '{job_name}' belongs in a separate schedule/manual workflow"))
                 continue
             commands = "\n".join(str(step.get("run", "")) for step in job.get("steps", []) if isinstance(step, dict))
-            if re.search(r"\bcargo(?:\s+\+\S+)?\s+(?:mutants|llvm-cov)\b", commands):
+            if re.search(r"\bcargo(?:\s+\+\S+)?\s+(?:mutants|llvm-cov)\b|\bscripts/coverage\.sh\b", commands):
                 violations.append(Violation("ci-pr-extended-validation", rel_path, 0,
                     f"job '{job_name}' runs mutation or coverage; move it to Nightly"))
             # Every automatic PR job must declare its bound. Treat a missing
@@ -700,6 +709,8 @@ def check_pr_smoke_routing(path: str, workflow: dict) -> list[Violation]:
 
     if path != ".github/workflows/product-smoke.yml":
         return problem("PR smokes must be registered in product-smoke.yml and scripts/ci_scope.py")
+    if not str(workflow.get("name", "")).startswith("Smoke / "):
+        return problem("the registered product workflow must retain its Smoke category")
     jobs = workflow["jobs"]
     expected = set(SMOKES) | {"scope", "guest-qualification"}
     if set(jobs) != expected:
@@ -1147,6 +1158,7 @@ def main(argv: list[str] | None = None) -> int:
         "ci-workflow-triggers": "Acceptance, Benchmarks and Nightly allow only schedule/manual/reusable triggers. Checks and Smoke cannot be scheduled.",
         "ci-pr-only-jobs": "Keep nightly/manual jobs out of PR workflows, including jobs hidden behind event guards.",
         "ci-pr-extended-validation": "Run coverage and mutation in Nightly workflows; a short timeout does not make them PR checks.",
+        "ci-pr-workflow-registration": "Register new PR workflows and their category in PR_WORKFLOWS; route product smokes through the existing selector.",
         "ci-pr-smoke-routing": "Register PR product smokes through the tested consumer selector; do not add independent broad triggers or unbounded matrices.",
         "ci-nes-case-jobs": "Map every public NES manifest case exactly once to the case matrix, select it with --case, disable fail-fast, and retain an always-running report.",
         "ci-workflow-prefix": (

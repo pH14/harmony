@@ -36,6 +36,8 @@ def selected(paths):
             result["stb"] = True
         if path.startswith(("workloads/fault-policy/", "workloads/faults/", "workloads/bugs/historical/postgres-cic-corruption/", "scripts/historical-")):
             result["faults"] = True
+        if path in (".github/workflows/historical-bugs.yml", "scripts/render-historical-bugs.py"):
+            result["faults"] = True
         if path.startswith("cli/"):
             result["faults"] = result["platform"] = True
         if path == ".github/workflows/quality.yml":

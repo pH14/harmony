@@ -65,6 +65,10 @@ unit tests, runner/report tests and contract checks. Public-API checks run for
 platform/dependency changes; proof and Miri selection retain their own narrow
 rules and tests.
 
+Nova-through-Consonance search is intentionally a nightly/manual acceptance
+campaign, not a separate PR smoke. Native NES exercises the shared search loop;
+the faults and platform smokes cover the Consonance execution path on PRs.
+
 Full-tree mutation runs in sixteen nightly shards with a 320-minute ceiling;
 the coverage floor remains 90%. It no longer depends on a PR diff. These jobs
 can be dispatched before merge when deeper evidence is needed. They are not
@@ -76,6 +80,9 @@ uploads its own compact export; `scripts/nes-nightly-report.py` combines the
 rosters and links the complete case reports. Missing, duplicate, or mismatched
 evidence fails the report while retaining a visible row for every expected
 cell. Search errors retain their original status and fail the owning job.
+The case-job ceiling is 210 minutes: the three whole-game seeds need two
+CPU-admission waves (up to 114 minutes including finish budgets), plus cold
+builds and evidence export. The ceiling does not increase any search budget.
 
 The historical panel remains the single owner of PostgreSQL and etcd searches.
 Do not introduce a second case-specific workflow. GitHub retains workflow
@@ -113,7 +120,10 @@ manual, or reusable invocation. Checks and Smoke cannot use schedules.
 an event guard skips them. The timeout rule includes pull_request_target and
 merge_group; bounds must be positive and at most 15 minutes.
 `ci-pr-extended-validation` rejects direct cargo-mutants and cargo-llvm-cov
-commands in PR jobs, including jobs with short timeouts.
+commands and the known `scripts/coverage.sh` wrapper in PR jobs, including jobs
+with short timeouts. `ci-pr-workflow-registration` requires PR workflows to use
+registered file paths and categories; adding a new PR workflow is an explicit
+contract change, not a way to bypass smoke routing under a Checks name.
 `ci-pr-smoke-routing` requires all automatic Smoke workflows to use the registered
 product selector, matching job names and output guards. Each consumer is one
 bounded job; independent broad triggers and added matrices fail validation.

@@ -20,6 +20,10 @@ class ScopeTests(unittest.TestCase):
     def test_fault_changes_select_database(self):
         self.assertEqual(self.active("workloads/faults/src/target.rs"), {"faults"})
 
+    def test_historical_publisher_and_report_select_database_consumer(self):
+        for path in (".github/workflows/historical-bugs.yml", "scripts/render-historical-bugs.py"):
+            self.assertEqual(self.active(path), {"faults"})
+
     def test_backend_changes_select_both_platform_seams(self):
         self.assertEqual(self.active("consonance/vmm-backend/src/kvm.rs"), {"platform", "kvm", "public_api"})
 

@@ -63,10 +63,10 @@ class WorkflowTimeoutLintTests(unittest.TestCase):
     def check(self, content: str) -> list[LINTS.Violation]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            workflow_path = root / ".github/workflows/test.yml"
+            workflow_path = root / ".github/workflows/quality.yml"
             workflow_path.parent.mkdir(parents=True)
             workflow_path.write_text(content)
-            return LINTS.check_workflow_rules(root, [".github/workflows/test.yml"])
+            return LINTS.check_workflow_rules(root, [".github/workflows/quality.yml"])
 
     def test_missing_timeout_is_a_violation(self) -> None:
         violations = self.check(workflow("missing", "    steps: []"))
@@ -189,7 +189,8 @@ jobs:
         self.assertIn("ci-workflow-triggers", [v.rule for v in self.check(content)])
 
     def test_deep_tools_cannot_hide_behind_short_timeout(self):
-        for command in ("cargo mutants --in-diff pr.diff", "cargo llvm-cov nextest", "cargo +nightly mutants"):
+        for command in ("cargo mutants --in-diff pr.diff", "cargo llvm-cov nextest", "cargo +nightly mutants",
+                        "bash scripts/coverage.sh", "./scripts/coverage.sh"):
             content = workflow("short", f"    timeout-minutes: 1\n    steps:\n      - run: {command}")
             self.assertIn("ci-pr-extended-validation", [v.rule for v in self.check(content)])
 
@@ -221,6 +222,27 @@ class SmokeRoutingTests(unittest.TestCase):
 
     def test_registered_smokes_pass(self):
         self.assertFalse(LINTS.check_pr_smoke_routing(self.path, self.workflow))
+
+    def test_workflow_dispatcher_cannot_bypass_routing_by_renaming(self):
+        original = (SCRIPT.parent.parent / self.path).read_text()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / self.path
+            path.parent.mkdir(parents=True)
+            path.write_text(original)
+            self.assertFalse(LINTS.check_workflow_rules(root, [self.path]))
+            path.write_text(original.replace("name: Smoke / Products", "name: Checks / Products"))
+            rules = {v.rule for v in LINTS.check_workflow_rules(root, [self.path])}
+            self.assertIn("ci-pr-smoke-routing", rules)
+            self.assertIn("ci-pr-workflow-registration", rules)
+
+    def test_new_checks_workflow_requires_registration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = ".github/workflows/extra-checks.yml"
+            (root / path).parent.mkdir(parents=True)
+            (root / path).write_text(workflow("bounded", "    timeout-minutes: 15\n    steps: []"))
+            self.assertIn("ci-pr-workflow-registration", {v.rule for v in LINTS.check_workflow_rules(root, [path])})
 
     def test_separate_broad_trigger_is_rejected(self):
         self.assertTrue(LINTS.check_pr_smoke_routing(".github/workflows/another-smoke.yml", self.workflow))
