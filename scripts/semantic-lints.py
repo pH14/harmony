@@ -213,12 +213,18 @@ def ask(
             attempt += 1
             continue
         break
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise JevHTTPError(0, raw) from error
+    answers = data.get("answers")
+    if not isinstance(answers, dict) or set(answers) != set(questions):
+        raise JevHTTPError(0, raw)
     if usage_totals is not None:
         usage = data.get("usage", {})
         usage_totals["input_tokens"] = usage_totals.get("input_tokens", 0) + usage.get("input_tokens", 0)
         usage_totals["output_tokens"] = usage_totals.get("output_tokens", 0) + usage.get("output_tokens", 0)
-    return data["answers"]
+    return answers
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +244,7 @@ def _state_for(path: str, content: str) -> dict:
 def _cache_key(path: str, content: str, questions: dict) -> str:
     question_text = json.dumps(questions, sort_keys=True)
     digest = hashlib.sha256()
-    digest.update(f"{path}\0{content}\0{MODEL}\0{question_text}".encode())
+    digest.update(f"{path}\0{content}\0{MODEL}\0{STATE_CONTENT_LIMIT}\0{question_text}".encode())
     return digest.hexdigest()
 
 
@@ -404,11 +410,20 @@ def save_baseline(repo_root: Path, baseline: dict[str, list[str]]) -> None:
 
 
 def stale_baseline_entries(
-    baseline: dict[str, list[str]], still_baselined: set[tuple[str, str]]
+    baseline: dict[str, list[str]],
+    still_baselined: set[tuple[str, str]],
+    judged: set[str],
 ) -> list[tuple[str, str]]:
+    """A baseline entry is stale only if this run actually judged its file and
+    the violation didn't reappear. `--changed-from` judges a subset of files,
+    so a baseline entry for a file outside that subset is neither confirmed
+    nor cleared and must not be reported as fixed.
+    """
     stale = []
     for rule_name, paths in baseline.items():
         for path in paths:
+            if path not in judged:
+                continue
             if (rule_name, path) not in still_baselined:
                 stale.append((rule_name, path))
     return stale
@@ -431,7 +446,7 @@ def all_tracked_files(repo_root: Path) -> list[str]:
 
 def changed_files(repo_root: Path, rev: str) -> list[str]:
     result = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=AM", rev, "HEAD"],
+        ["git", "diff", "--name-only", "--find-renames", "--diff-filter=AMR", rev, "HEAD"],
         cwd=repo_root,
         capture_output=True,
         text=True,
@@ -478,16 +493,19 @@ def run(
     set[tuple[str, str]],
     dict,
     list[tuple[str, str]],
+    set[str],
 ]:
     """Judge every file. Returns (new_failures, new_warnings, still_baselined,
-    usage_totals, errors).
+    usage_totals, errors, judged).
 
-    `new_failures`/`new_warnings` are (rule, path, answers) triples.
+    `new_failures`/`new_warnings` are (rule, path, answers) triples. `judged`
+    holds every path this call got an answer for; callers use it to scope
+    baseline comparisons to files that were actually checked this run.
     `cache`, when given, is mutated in place, so a second call over the
     same files with the same cache makes no new network calls. A file whose
-    call raises (a state too large for the model's budget, a network fault)
-    is recorded in `errors` as (path, message) instead of aborting the rest
-    of the sweep.
+    call raises (a state too large for the model's budget, a network fault,
+    or a response that doesn't match the documented shape) is recorded in
+    `errors` as (path, message) instead of aborting the rest of the sweep.
     """
     if cache is None:
         cache = {}
@@ -496,6 +514,7 @@ def run(
     new_warnings: list[tuple[str, str, dict]] = []
     still_baselined: set[tuple[str, str]] = set()
     errors: list[tuple[str, str]] = []
+    judged: set[str] = set()
 
     for path in files:
         try:
@@ -503,6 +522,7 @@ def run(
         except (JevHTTPError, OSError) as error:
             errors.append((path, str(error)))
             continue
+        judged.add(path)
         if dump_rows is not None:
             for question_id, answer in answers.items():
                 dump_rows.append(_dump_row(path, question_id, answer))
@@ -515,7 +535,7 @@ def run(
         for rule_name in warned_rules:
             new_warnings.append((rule_name, path, answers))
 
-    return new_failures, new_warnings, still_baselined, usage_totals, errors
+    return new_failures, new_warnings, still_baselined, usage_totals, errors, judged
 
 
 # ---------------------------------------------------------------------------
@@ -557,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
     cache = load_cache(root)
     dump_rows: list | None = [] if args.dump else None
 
-    new_failures, new_warnings, still_baselined, usage_totals, errors = run(
+    new_failures, new_warnings, still_baselined, usage_totals, errors, judged = run(
         root, files, baseline, post=_http_post, cache=cache, dump_rows=dump_rows,
     )
     save_cache(root, cache)
@@ -569,10 +589,13 @@ def main(argv: list[str] | None = None) -> int:
                 f.write("\t".join(row) + "\n")
 
     if args.update_baseline:
+        # A baseline entry for a file this run didn't judge (--changed-from
+        # skips most of the tree) carries forward unchanged; only a judged
+        # file's entries are confirmed, dropped, or newly added.
         full: dict[str, list[str]] = {}
+        for rule_name, paths in baseline.items():
+            full[rule_name] = [p for p in paths if p not in judged or (rule_name, p) in still_baselined]
         for rule_name, path, _ in new_failures:
-            full.setdefault(rule_name, []).append(path)
-        for rule_name, path in still_baselined:
             full.setdefault(rule_name, []).append(path)
         save_baseline(root, full)
         count = sum(len(v) for v in full.values())
@@ -584,7 +607,7 @@ def main(argv: list[str] | None = None) -> int:
         _print_usage(usage_totals)
         return 0
 
-    stale = stale_baseline_entries(baseline, still_baselined)
+    stale = stale_baseline_entries(baseline, still_baselined, judged)
 
     if new_failures or stale or errors:
         print(
@@ -610,8 +633,9 @@ def main(argv: list[str] | None = None) -> int:
         if errors:
             print(
                 f"\n  [judge-error] Jev could not judge this file (state too large "
-                f"for its budget, or a network fault). Investigate and rerun; a "
-                f"file that never gets judged is a silent gap in this check.",
+                f"for its budget, a network fault, or a response that didn't match "
+                f"the documented shape). Investigate and rerun; a file that never "
+                f"gets judged is a silent gap in this check.",
                 file=sys.stderr,
             )
             for path, message in errors:

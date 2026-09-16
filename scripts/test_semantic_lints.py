@@ -89,7 +89,7 @@ class QuestionScopeTests(RequiresApiKey):
             calls: list = []
             post = make_post(answers, calls)
 
-            new_failures, new_warnings, _, _, _ = LINTS.run(
+            new_failures, new_warnings, _, _, _, _ = LINTS.run(
                 root, ["docs/ATTRIBUTIONS.md", "LICENSE"], {}, post=post,
             )
 
@@ -114,7 +114,7 @@ class QuestionScopeTests(RequiresApiKey):
             calls: list = []
             post = make_post(answers, calls)
 
-            new_failures, _, _, _, _ = LINTS.run(
+            new_failures, _, _, _, _, _ = LINTS.run(
                 root,
                 ["dissonance/searcher/src/lib.rs", "workloads/lib.rs"],
                 {},
@@ -140,7 +140,7 @@ class VerdictTests(RequiresApiKey):
 
     def test_high_confidence_run_record_fails(self) -> None:
         answers = full_answers(file_kind="run_record", file_kind_confidence=0.95)
-        new_failures, new_warnings, _, _, _ = self._run_one(
+        new_failures, new_warnings, _, _, _, _ = self._run_one(
             "dissonance/PLANTED-RUN.toml", "seed = 42\nhost = \"box1\"\n", answers,
         )
         self.assertEqual([r for r, _, _ in new_failures], ["run-record"])
@@ -148,7 +148,7 @@ class VerdictTests(RequiresApiKey):
 
     def test_medium_probability_run_record_warns_not_fails(self) -> None:
         answers = full_answers(records_runs=0.90)
-        new_failures, new_warnings, _, _, _ = self._run_one(
+        new_failures, new_warnings, _, _, _, _ = self._run_one(
             "dissonance/PLANTED-RUN.toml", "seed = 42\nhost = \"box1\"\n", answers,
         )
         self.assertEqual(new_failures, [])
@@ -156,7 +156,7 @@ class VerdictTests(RequiresApiKey):
 
     def test_component_reference_passes_clean(self) -> None:
         answers = full_answers(file_kind="component_reference", file_kind_confidence=0.97)
-        new_failures, new_warnings, _, _, _ = self._run_one(
+        new_failures, new_warnings, _, _, _, _ = self._run_one(
             "consonance/vmm-core/README.md",
             "This component owns snapshot restore boundaries.",
             answers,
@@ -165,18 +165,57 @@ class VerdictTests(RequiresApiKey):
         self.assertEqual(new_warnings, [])
 
     def test_baseline_reports_baselined_and_stale_entry_fails(self) -> None:
+        # GONE.toml is judged in this run (unlike an untouched file in a
+        # --changed-from sweep) and comes back clean, so it's a genuine fix:
+        # stale, not "not checked".
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "dissonance").mkdir()
+            (root / "dissonance" / "PLANTED-RUN.toml").write_text("seed = 42\n")
+            (root / "dissonance" / "GONE.toml").write_text("this file is clean now\n")
+
+            run_record_answers = full_answers(file_kind="run_record", file_kind_confidence=0.95)
+            clean_answers = full_answers(file_kind="component_reference")
+
+            def post(url: str, headers: dict, body: bytes) -> bytes:
+                payload = json.loads(body)
+                path = payload["state"]["path"]
+                answers = run_record_answers if path == "dissonance/PLANTED-RUN.toml" else clean_answers
+                return json.dumps(
+                    {
+                        "model": LINTS.MODEL,
+                        "answers": {k: v for k, v in answers.items() if k in payload["questions"]},
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                    }
+                ).encode()
+
+            baseline = {
+                "run-record": ["dissonance/PLANTED-RUN.toml", "dissonance/GONE.toml"],
+            }
+            new_failures, _, still_baselined, _, _, judged = LINTS.run(
+                root, ["dissonance/PLANTED-RUN.toml", "dissonance/GONE.toml"], baseline, post=post,
+            )
+            self.assertEqual(new_failures, [])
+            self.assertIn(("run-record", "dissonance/PLANTED-RUN.toml"), still_baselined)
+
+            stale = LINTS.stale_baseline_entries(baseline, still_baselined, judged)
+            self.assertEqual(stale, [("run-record", "dissonance/GONE.toml")])
+
+    def test_baseline_entry_outside_changed_set_is_not_reported_stale(self) -> None:
+        # dissonance/GONE.toml is a known violation but wasn't judged this run
+        # (a --changed-from sweep only judges the files that actually changed);
+        # only a file this run actually checked can confirm a fix.
         answers = full_answers(file_kind="run_record", file_kind_confidence=0.95)
         baseline = {
             "run-record": ["dissonance/PLANTED-RUN.toml", "dissonance/GONE.toml"],
         }
-        new_failures, _, still_baselined, _, _ = self._run_one(
+        _, _, still_baselined, _, _, judged = self._run_one(
             "dissonance/PLANTED-RUN.toml", "seed = 42\n", answers, baseline=baseline,
         )
-        self.assertEqual(new_failures, [])
-        self.assertIn(("run-record", "dissonance/PLANTED-RUN.toml"), still_baselined)
+        self.assertNotIn("dissonance/GONE.toml", judged)
 
-        stale = LINTS.stale_baseline_entries(baseline, still_baselined)
-        self.assertEqual(stale, [("run-record", "dissonance/GONE.toml")])
+        stale = LINTS.stale_baseline_entries(baseline, still_baselined, judged)
+        self.assertEqual(stale, [])
 
 
 class TruncationTests(unittest.TestCase):
@@ -223,6 +262,22 @@ class RetryTests(unittest.TestCase):
             with self.assertRaises(LINTS.JevHTTPError):
                 LINTS.ask({"path": "x", "content": "y"}, LINTS.QUESTIONS, post=bad_post)
 
+    def test_non_json_body_raises_instead_of_crashing(self) -> None:
+        def garbled_post(url: str, headers: dict, body: bytes) -> bytes:
+            return b"not json"
+
+        with mock.patch.dict(os.environ, {"TYPESAFE_API_KEY": "test-key"}):  # pragma: allowlist secret
+            with self.assertRaises(LINTS.JevHTTPError):
+                LINTS.ask({"path": "x", "content": "y"}, {"records_runs": LINTS.QUESTIONS["records_runs"]}, post=garbled_post)
+
+    def test_answers_missing_a_requested_question_raises(self) -> None:
+        def incomplete_post(url: str, headers: dict, body: bytes) -> bytes:
+            return json.dumps({"model": LINTS.MODEL, "answers": {}, "usage": {}}).encode()
+
+        with mock.patch.dict(os.environ, {"TYPESAFE_API_KEY": "test-key"}):  # pragma: allowlist secret
+            with self.assertRaises(LINTS.JevHTTPError):
+                LINTS.ask({"path": "x", "content": "y"}, {"records_runs": LINTS.QUESTIONS["records_runs"]}, post=incomplete_post)
+
 
 class CacheTests(RequiresApiKey):
     def test_second_run_over_same_file_does_not_call_network_again(self) -> None:
@@ -260,13 +315,14 @@ class PerFileErrorTests(RequiresApiKey):
                     }
                 ).encode()
 
-            new_failures, new_warnings, _, _, errors = LINTS.run(
+            new_failures, new_warnings, _, _, errors, judged = LINTS.run(
                 root, ["huge.md", "ok.md"], {}, post=post,
             )
 
             self.assertEqual(new_failures, [])
             self.assertEqual(new_warnings, [])
             self.assertEqual([path for path, _ in errors], ["huge.md"])
+            self.assertEqual(judged, {"ok.md"})
 
 
 class ChangedFilesTests(unittest.TestCase):
@@ -295,6 +351,77 @@ class ChangedFilesTests(unittest.TestCase):
             selected = LINTS.select_files(root, candidates)
 
             self.assertEqual(sorted(selected), ["added.md", "keep.md"])
+
+    def test_changed_from_selects_renamed_files_by_new_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._git(root, "init", "-q")
+            self._git(root, "config", "user.email", "test@example.com")
+            self._git(root, "config", "user.name", "Test")
+
+            (root / "old-name.md").write_text("a" * 200 + "\noriginal content\n")
+            self._git(root, "add", "old-name.md")
+            self._git(root, "commit", "-q", "-m", "base")
+
+            (root / "old-name.md").rename(root / "new-name.md")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "rename")
+
+            candidates = LINTS.changed_files(root, "HEAD~1")
+
+            self.assertEqual(candidates, ["new-name.md"])
+
+
+class MainChangedFromBaselineTests(RequiresApiKey):
+    """A --changed-from run only judges the files that changed. A baseline
+    entry for a file outside that set must not be reported as fixed, and
+    --update-baseline must not drop it either."""
+
+    def _git(self, root: Path, *args: str) -> None:
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True)
+
+    def _make_repo(self, root: Path) -> None:
+        self._git(root, "init", "-q")
+        self._git(root, "config", "user.email", "test@example.com")
+        self._git(root, "config", "user.name", "Test")
+
+        (root / "docs").mkdir()
+        baseline = {"run-record": ["untouched.md"]}
+        (root / "docs" / "semantic-lints-baseline.json").write_text(json.dumps(baseline))
+        (root / "untouched.md").write_text("a known violation nobody fixed yet")
+        (root / "changed.md").write_text("original")
+        self._git(root, "add", "-A")
+        self._git(root, "commit", "-q", "-m", "base")
+
+        (root / "changed.md").write_text("modified, still clean content")
+        self._git(root, "add", "-A")
+        self._git(root, "commit", "-q", "-m", "change")
+
+    def test_unjudged_baseline_entry_does_not_fail_the_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._make_repo(root)
+            post = make_post(full_answers(file_kind="component_reference"))
+
+            with mock.patch.object(LINTS, "_http_post", post):
+                code = LINTS.main(["--repo-root", str(root), "--changed-from", "HEAD^1"])
+
+            self.assertEqual(code, 0)
+
+    def test_update_baseline_preserves_an_unjudged_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._make_repo(root)
+            post = make_post(full_answers(file_kind="component_reference"))
+
+            with mock.patch.object(LINTS, "_http_post", post):
+                code = LINTS.main([
+                    "--repo-root", str(root), "--changed-from", "HEAD^1", "--update-baseline",
+                ])
+
+            self.assertEqual(code, 0)
+            baseline = json.loads((root / "docs" / "semantic-lints-baseline.json").read_text())
+            self.assertEqual(baseline, {"run-record": ["untouched.md"]})
 
 
 class SkipWithoutKeyTests(unittest.TestCase):
