@@ -408,6 +408,7 @@ mod live_kvm {
         put_u64(bytes, 0x4000, 0x5003);
         put_u64(bytes, 0x5000, 0x83);
         bytes[0x2000..0x2004].copy_from_slice(&0x3f80_u32.to_le_bytes());
+        bytes[0x2004..0x2008].copy_from_slice(&0x5f80_u32.to_le_bytes());
         let mut code = Vec::new();
         if active {
             code.extend_from_slice(&[0xd9, 0xe8, 0x66, 0x0f, 0x76, 0xc0]);
@@ -418,6 +419,13 @@ mod live_kvm {
         code.extend_from_slice(&[0xf3, 0x0f, 0x7f, 0x04, 0x25, 0x20, 0x20, 0, 0]);
         if active {
             code.extend_from_slice(&[0xdd, 0x1c, 0x25, 0x30, 0x20, 0, 0]);
+        }
+        code.extend_from_slice(&[0xd9, 0xeb]);
+        code.extend_from_slice(&[0xb8, 0x55, 0x55, 0x55, 0x55]);
+        code.extend_from_slice(&[0x66, 0x0f, 0x6e, 0xc0, 0x66, 0x0f, 0x70, 0xc0, 0]);
+        code.extend_from_slice(&[0x0f, 0xae, 0x14, 0x25, 0x04, 0x20, 0, 0]);
+        if xcr0 == 7 {
+            code.extend_from_slice(&[0xc5, 0xf5, 0x76, 0xc9]);
         }
         code.extend_from_slice(&[0xb0, 0x42, 0xee, 0xf4]);
         put_bytes(bytes, 0x1000, &code);
@@ -564,6 +572,7 @@ mod live_kvm {
         use vmm_core::control::{ControlServer, RestoreMode};
         require_kvm();
         assert_public_identity_negative_controls();
+        let mut failures = Vec::new();
         for seed in [0, 2, 3] {
             for xcr0 in [3, 7] {
                 for active in [false, true] {
@@ -607,7 +616,18 @@ mod live_kvm {
                             assert_ne!(a, a_again);
                             assert_eq!(a_hash, a_again_hash, "repeated A capture hash");
                             assert!(a_bytes == a_again_bytes, "repeated A capture bytes");
+                            let source_xsave = server.vmm().unwrap().save_vm_state().unwrap().xsave;
                             let expected = public_continue(&mut server, active);
+                            let dirty_xsave = server.vmm().unwrap().save_vm_state().unwrap().xsave;
+                            assert_ne!(
+                                source_xsave, dirty_xsave,
+                                "guest continuation must dirty FP state before replay"
+                            );
+                            assert_eq!(&dirty_xsave.0[160..176], &[0x55; 16]);
+                            assert_eq!(&dirty_xsave.0[24..28], &0x5f80_u32.to_le_bytes());
+                            if xcr0 == 7 {
+                                assert_eq!(&dirty_xsave.0[592..608], &[0xff; 16]);
+                            }
                             let restores_before = creations.load(Ordering::SeqCst);
                             assert_eq!(
                                 server
@@ -626,12 +646,12 @@ mod live_kvm {
                                 usize::from(mode == RestoreMode::Memcpy)
                             );
                             let (b, b_bytes, b_hash) = public_capture(&mut server);
-                            let b_raw = server
-                                .vmm()
-                                .unwrap()
-                                .save_vm_state()
-                                .unwrap()
-                                .xsave_restore_bv;
+                            let b_state = server.vmm().unwrap().save_vm_state().unwrap();
+                            let b_memory = server.vmm().unwrap().guest_memory().to_vec();
+                            let b_raw = b_state.xsave_restore_bv;
+                            let case = format!(
+                                "seed={seed}, xcr0={xcr0}, active={active}, after_out={after_out}, mode={mode:?}"
+                            );
                             eprintln!("post-capture raw metadata: A={a_raw:?}, B={b_raw:?}");
                             let (b_again, b_again_bytes, b_again_hash) =
                                 public_capture(&mut server);
@@ -653,20 +673,31 @@ mod live_kvm {
                                 server.vmm_mut().unwrap().prepare_snapshot().unwrap();
                                 let (_, prepared_bytes, prepared_hash) =
                                     public_capture(&mut server);
-                                assert_eq!(
-                                    b_hash, prepared_hash,
-                                    "host-only preparation {cycle} identity"
+                                let prepared_state = server.vmm().unwrap().save_vm_state().unwrap();
+                                let mut without_presence_change = prepared_state.clone();
+                                without_presence_change.xsave_restore_bv = b_state.xsave_restore_bv;
+                                let ram_equal = server.vmm().unwrap().guest_memory() == b_memory;
+                                eprintln!(
+                                    "host-only preparation {cycle}: {case}, raw_before={:?}, raw_after={:?}, full_state_equal={}, state_equal_except_raw_bitmap={}, ram_equal={ram_equal}, hash_equal={}, portable_bytes_equal={}",
+                                    b_state.xsave_restore_bv,
+                                    prepared_state.xsave_restore_bv,
+                                    b_state == prepared_state,
+                                    b_state == without_presence_change,
+                                    b_hash == prepared_hash,
+                                    b_bytes == prepared_bytes
                                 );
-                                assert!(
-                                    b_bytes == prepared_bytes,
-                                    "host-only preparation {cycle} bytes"
-                                );
+                                if b_hash != prepared_hash
+                                    || b_bytes != prepared_bytes
+                                    || b_state != prepared_state
+                                    || !ram_equal
+                                {
+                                    failures.push(format!("host-only preparation {cycle}: {case}"));
+                                }
                             }
                             assert_ne!(a, b);
-                            assert_eq!(
-                                a_hash, b_hash,
-                                "immediate recapture identity: active={active}, after_out={after_out}, mode={mode:?}"
-                            );
+                            if a_hash != b_hash {
+                                failures.push(format!("immediate recapture hash: {case}"));
+                            }
                             for (label, left, right) in [
                                 ("immediate A/B", a_bytes, b_bytes),
                                 (
@@ -684,16 +715,22 @@ mod live_kvm {
                                     "{label}: active={active}, after_out={after_out}, mode={mode:?}, comparison={comparison:?}, first_envelope_difference={:?}",
                                     left.iter().zip(&right).position(|(a, b)| a != b)
                                 );
-                                assert!(
-                                    comparison.equal,
-                                    "complete execution state differs at {label}"
-                                );
+                                if !comparison.equal {
+                                    failures.push(format!(
+                                        "complete execution state at {label}: {case}"
+                                    ));
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        assert!(
+            failures.is_empty(),
+            "strict public snapshot failures:\n{}",
+            failures.join("\n")
+        );
     }
 
     const MMIO_RAM_LEN: usize = 64 * 1024;
