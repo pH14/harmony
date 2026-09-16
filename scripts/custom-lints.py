@@ -700,6 +700,8 @@ def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
                 "PR workflows must use a registered path and category; register new checks explicitly"))
         if category == "Smoke" or rel_path == ".github/workflows/product-smoke.yml":
             violations.extend(check_pr_smoke_routing(rel_path, data))
+        if rel_path in {".github/workflows/quality.yml", ".github/workflows/nightly.yml"}:
+            violations.extend(check_pr_check_routing(rel_path, data))
         for job_name, job in (data.get("jobs") or {}).items():
             if not isinstance(job, dict):
                 continue
@@ -748,19 +750,65 @@ def check_pr_smoke_routing(path: str, workflow: dict) -> list[Violation]:
     if workflow.get("name") != "Smoke":
         return problem("the registered product workflow must retain its Smoke category")
     jobs = workflow["jobs"]
-    expected = set(SMOKES) | {"scope", "guest-qualification"}
+    expected = set(SMOKES) | {"guest-qualification"}
     if set(jobs) != expected:
         return problem("product smoke jobs must match the selector's registered consumers and qualification check")
-    scope = jobs["scope"]
-    commands = "\n".join(str(step.get("run", "")) for step in scope.get("steps", []))
-    if "python3 scripts/ci_scope.py" not in commands or not set(SMOKES).issubset(scope.get("outputs", {})):
-        return problem("scope must execute ci_scope.py and publish every consumer selection")
     for name in SMOKES:
         job = jobs[name]
-        guard = str(job.get("if", "")).replace("${{", "").replace("}}", "").strip()
-        if job.get("needs") not in ("scope", ["scope"]) or guard != f"needs.scope.outputs.{name} == 'true'" or "strategy" in job:
-            return problem(f"smoke '{name}' must be one job gated by its scope output")
+        if "strategy" in job or not _inline_scope_valid(job, "smoke", name):
+            return problem(f"smoke '{name}' must select work inside its own bounded job and guard every test step")
+    qualification = jobs["guest-qualification"]
+    if (qualification.get("needs") != ["platform"]
+            or qualification.get("if") != "always() && needs.platform.outputs.enabled == 'true'"
+            or jobs["platform"].get("outputs", {}).get("enabled") != "${{ steps.scope.outputs.enabled }}"
+            or jobs["platform"].get("outputs", {}).get("scope") != "${{ steps.provenance.outputs.scope }}"):
+        return problem("guest qualification must retain exact-input evidence for selected platform tests")
     return []
+
+
+def _inline_scope_valid(job: dict, kind: str, target: str | None = None) -> bool:
+    if "needs" in job or "if" in job:
+        return False
+    steps = job.get("steps", [])
+    if len(steps) < 3:
+        return False
+    checkout, scope = steps[:2]
+    expected = {"kind": kind, **({"target": target} if target is not None else {})}
+    if (checkout.get("uses") != "actions/checkout@v4" or checkout.get("with", {}).get("fetch-depth") != 0
+            or "if" in checkout or scope.get("uses") != "./.github/actions/ci-scope"
+            or scope.get("id") != "scope" or scope.get("with") != expected or "if" in scope
+            or scope.get("continue-on-error", False)):
+        return False
+    gate = "steps.scope.outputs.enabled == 'true'"
+    for step in steps[2:]:
+        guard = str(step.get("if", "")).replace("${{", "").replace("}}", "").strip()
+        guard = _strip_outer_parentheses(guard)
+        if len(_split_condition(guard, "||")) > 1:
+            return False
+        if gate not in [_strip_outer_parentheses(part) for part in _split_condition(guard, "&&")]:
+            return False
+    return True
+
+
+def check_pr_check_routing(path: str, workflow: dict) -> list[Violation]:
+    from miri_scope import TARGETS
+
+    jobs = workflow["jobs"]
+    if path == ".github/workflows/quality.yml":
+        valid = (set(jobs) == {"gates", "kani", "public-api"}
+                 and _inline_scope_valid(jobs["kani"], "kani")
+                 and _inline_scope_valid(jobs["public-api"], "public_api"))
+    else:
+        job = jobs.get("miri-pr", {})
+        strategy = job.get("strategy", {})
+        matrix = strategy.get("matrix", {})
+        valid = (set(jobs) == {"miri-pr"} and _inline_scope_valid(job, "miri", "${{ matrix.name }}")
+                 and strategy.get("fail-fast") is False
+                 and matrix == {"name": [target["name"] for target in TARGETS]})
+    if valid:
+        return []
+    return [Violation("ci-pr-check-routing", path, 0,
+        "checks must select work inside their real jobs; keep full diff checkout, per-step guards, and complete Miri target coverage")]
 
 
 def check_nes_job_coverage(repo_root: Path, path: str, workflow: dict) -> list[Violation]:
@@ -1197,6 +1245,7 @@ def main(argv: list[str] | None = None) -> int:
         "ci-pr-workflow-registration": "Register new PR workflows and their category in PR_WORKFLOWS; route product smokes through the existing selector.",
         "ci-display-name": "Use descriptive sentence-case subjects, preserving registered proper names/acronyms. Checks and Smoke are category-only workflow names; job names supply the flat display subject. Do not use generic names such as Gates, Products or Quality.",
         "ci-pr-smoke-routing": "Register PR product smokes through the tested consumer selector; do not add independent broad triggers or unbounded matrices.",
+        "ci-pr-check-routing": "Keep selection inside real checks, not separate routing jobs. Every expensive or artifact step must require its selection output; the Miri matrix must match registered targets.",
         "ci-nes-case-jobs": "Map every public NES manifest case exactly once to the case matrix, select it with --case, disable fail-fast, and retain an always-running report.",
         "ci-workflow-prefix": (
             "Every GitHub Actions workflow name must start with one of the "

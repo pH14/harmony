@@ -12,6 +12,7 @@ GLOBAL = (
     "rust-toolchain*", "flake.nix", "flake.lock", ".cargo/**",
     ".github/workflows/product-smoke.yml", "scripts/ci_scope.py",
     "scripts/test_ci_scope.py",
+    ".github/actions/ci-scope/**", "scripts/ci-job-scope.py", "scripts/test_ci_job_scope.py",
 )
 
 

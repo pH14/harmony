@@ -68,6 +68,7 @@ GLOBAL_PATH_PATTERNS = (
     "clippy.toml",
     "deny.toml",
     ".github/workflows/nightly.yml",
+    ".github/actions/ci-scope/**", "scripts/ci-job-scope.py", "scripts/test_ci_job_scope.py",
 )
 
 

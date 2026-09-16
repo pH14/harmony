@@ -30,8 +30,10 @@ exceptions in comments are not accepted. Coverage and mutation belong in Nightly
 Miri's full crate suites remain schedule/manual only (their existing 240- and
 320-minute ceilings are intentionally retained). Relevant PR changes select a
 per-crate Miri matrix with a 15-minute ceiling; dependency and toolchain
-changes select every target. The bounded matrix reports the affected unsafe
-crate directly while the scheduled suite remains the broad safety net.
+changes select every target. The static bounded matrix lists every registered
+crate, but only affected crates install or run Miri. Unselected entries finish
+as explicitly reported not-applicable jobs. The scheduled suite remains the
+broad safety net.
 Guest-backed PR smokes consume verified cached artifacts or an exact artifact
 handoff from the scheduled/manual builder. Changed guest inputs require an
 exact build and qualification before the platform smoke can qualify the PR.
@@ -75,6 +77,23 @@ Documentation changes do not select product smokes. The lint/build/unit-test job
 unit tests, runner/report tests and contract checks. Public-API checks run for
 platform/dependency changes; proof and Miri selection retain their own narrow
 rules and tests.
+
+There are no standalone selection checks. Each smoke, Kani, public API, and
+Miri job checks out full history and invokes `.github/actions/ci-scope` as its
+first local step. `scripts/ci-job-scope.py` computes the same complete Git diff
+as the previous routing jobs and delegates to the existing selectors. It does
+not use GitHub's changed-file API or introduce new native path-filter limits.
+Changes to this shared routing implementation conservatively select all tests.
+
+Every subsequent setup, test, cache, and artifact step is gated by that job's
+selection output. A selected test failure still fails its job and still uploads
+available failure evidence. A diff/selection error fails closed. Unselected
+jobs briefly allocate a runner and finish successfully with a summary saying
+`Not applicable` and `Test steps were not run`; they do not install tools,
+restore caches, run tests, or upload empty artifacts. This preserves test
+selection, not the old skipped-job status or runner allocation behavior.
+Exact guest qualification remains a real evidence check after selected
+platform execution; a successful host-only smoke cannot qualify guest inputs.
 
 Nova-through-Consonance search is intentionally a nightly/manual acceptance
 campaign, not a separate PR smoke. Native NES exercises the shared search loop;
@@ -135,9 +154,13 @@ commands and the known `scripts/coverage.sh` wrapper in PR jobs, including jobs
 with short timeouts. `ci-pr-workflow-registration` requires PR workflows to use
 registered file paths and categories; adding a new PR workflow is an explicit
 contract change, not a way to bypass smoke routing under a Checks name.
-`ci-pr-smoke-routing` requires all automatic Smoke workflows to use the registered
-product selector, matching job names and output guards. Each consumer is one
-bounded job; independent broad triggers and added matrices fail validation.
+`ci-pr-smoke-routing` requires every smoke to use the shared inline selector
+with its registered consumer identity. `ci-pr-check-routing` does the same for
+Kani, public API, and Miri checks, and compares the static Miri matrix against
+the registered targets. Both enforce full-history checkout and selection
+guards on every setup/test/artifact step. Separate routing jobs, unguarded
+steps (including `always()` uploads), and missing Miri targets fail validation.
+Each smoke consumer is one bounded job; added smoke matrices fail validation.
 
 `ci-nes-case-jobs` compares the Benchmarks / NES case matrices to
 `benchmarks/search/nightly.json` and requires its owning `nova-nightly.yml`
@@ -151,7 +174,9 @@ Run the regression tests with `python3 -m unittest discover -s scripts -p 'test_
 and `python3 -m unittest discover -s scripts -p 'test_ci_*.py'`.
 They include the old monolithic panel, omitted and
 duplicated cases, mixed triggers, short-timeout expensive commands, YAML parse
-failures, the removed timeout exemption, and sentence-case display names.
+failures, the removed timeout exemption, sentence-case display names, and
+inline-selection bypasses. Selector parity tests cover docs-only and mixed
+changes, large diffs, Miri arguments/flags, and diff failures.
 The lint/build/unit-test job runs them
 before invoking the linter.
 

@@ -22,57 +22,42 @@ on:
       - clippy.toml
       - deny.toml
       - .github/workflows/nightly.yml
+      - .github/actions/ci-scope/**
+      - scripts/ci-job-scope.py
+      - scripts/test_ci_job_scope.py
 jobs:
-  miri-scope:
-    name: Choose memory-safety checks from changed files
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      matrix: ${{ steps.select.outputs.matrix }}
-      has-targets: ${{ steps.select.outputs.has-targets }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Select Miri targets from changed inputs
-        id: select
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          git diff --name-only "${BASE_SHA}"...HEAD >changed-files.txt
-          matrix=$(python3 scripts/miri_scope.py <changed-files.txt)
-          echo "matrix=${matrix}" >>"${GITHUB_OUTPUT}"
-          if [[ "${matrix}" == '{"include":[]}' ]]; then
-            echo 'has-targets=false' >>"${GITHUB_OUTPUT}"
-          else
-            echo 'has-targets=true' >>"${GITHUB_OUTPUT}"
-          fi
-          echo "Miri matrix: ${matrix}"
-
   miri-pr:
     name: Memory safety — ${{ matrix.name }}
-    needs: miri-scope
-    if: needs.miri-scope.outputs.has-targets == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.miri-scope.outputs.matrix) }}
+      matrix:
+        name: [vmm-core, hypercall-doorbell, consonance-client, vm-state, vmm-backend, snapshot-store, machine, nes-guest, harmony-supervisor]
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
       HARMONY_MIRI_PR_SMOKE: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine whether this test is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: miri
+          target: ${{ matrix.name }}
       - name: Install pinned nightly + Miri
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
       - name: Run the affected crate's Miri tests
+        if: steps.scope.outputs.enabled == 'true'
         env:
-          MIRIFLAGS: ${{ matrix.miriflags }}
-          MIRI_COMMAND: ${{ matrix.command }}
+          MIRIFLAGS: ${{ steps.scope.outputs.miriflags }}
+          MIRI_COMMAND: ${{ steps.scope.outputs.command }}
         run: |
           set -euo pipefail
           read -r -a command <<<"${MIRI_COMMAND}"

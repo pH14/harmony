@@ -15,41 +15,6 @@ env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
-  safety-scope:
-    name: Choose Kani and public API checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      kani: ${{ steps.select.outputs.kani }}
-      public_api: ${{ steps.select.outputs.public_api }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Select checks from changed inputs
-        id: select
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          if [[ "${EVENT_NAME}" == pull_request ]]; then
-            git diff --name-only "${BASE_SHA}"...HEAD >changed-files.txt
-          elif [[ "${EVENT_NAME}" == push && "${BEFORE_SHA}" != 0000000000000000000000000000000000000000 ]]; then
-            git diff --name-only "${BEFORE_SHA}" HEAD >changed-files.txt
-          else
-            git ls-files >changed-files.txt
-          fi
-
-          kani=$(python3 scripts/quality_scope.py <changed-files.txt)
-          echo "kani=${kani}" >>"${GITHUB_OUTPUT}"
-          python3 scripts/ci_scope.py < changed-files.txt >> "${GITHUB_OUTPUT}"
-          echo "Kani selected: ${kani}"
-          if [[ "${kani}" == true ]]; then
-            sed 's/^/  /' changed-files.txt
-          fi
-
   gates:
     name: Lint, build, and unit tests
     runs-on: ubuntu-latest
@@ -191,18 +156,26 @@ jobs:
 
   kani:
     name: Kani proofs
-    needs: safety-scope
-    if: needs.safety-scope.outputs.kani == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine whether this test is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: kani
       - name: Install stable toolchain
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
       - name: Cache Kani toolchain
+        if: steps.scope.outputs.enabled == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -211,12 +184,14 @@ jobs:
             ~/.kani
           key: kani-${{ runner.os }}-${{ env.HARMONY_KANI_VERSION }}
       - name: Install Kani
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           if ! cargo kani --version 2>/dev/null | grep -Fq "${HARMONY_KANI_VERSION}"; then
             cargo install --locked --force --version "${HARMONY_KANI_VERSION}" kani-verifier
           fi
           cargo kani setup
       - name: cargo kani (vtime + lapic + vmm-backend + fault-policy)
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           cargo kani -p vtime
           cargo kani -p lapic
@@ -225,25 +200,34 @@ jobs:
 
   public-api:
     name: Public API compatibility
-    needs: safety-scope
-    if: needs.safety-scope.outputs.public_api == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine whether this test is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: public_api
       - name: Install toolchains (stable default + pinned nightly)
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
           rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
       - name: Install CI cargo tools
+        if: steps.scope.outputs.enabled == 'true'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-public-api@0.52.0
       - name: public-api snapshot tests
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           cargo test \
             -p hypercall-proto -p hypercall-doorbell -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p telemetry -p environment -p control-proto \

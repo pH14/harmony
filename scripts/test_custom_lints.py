@@ -67,7 +67,8 @@ class WorkflowTimeoutLintTests(unittest.TestCase):
             workflow_path = root / ".github/workflows/quality.yml"
             workflow_path.parent.mkdir(parents=True)
             workflow_path.write_text(content)
-            return LINTS.check_workflow_rules(root, [".github/workflows/quality.yml"])
+            with mock.patch.object(LINTS, "check_pr_check_routing", return_value=[]):
+                return LINTS.check_workflow_rules(root, [".github/workflows/quality.yml"])
 
     def test_missing_timeout_is_a_violation(self) -> None:
         violations = self.check(workflow("missing", "    steps: []"))
@@ -296,6 +297,50 @@ class SmokeRoutingTests(unittest.TestCase):
     def test_unregistered_consumer_is_rejected(self):
         self.workflow["jobs"]["extra"] = self.workflow["jobs"]["native"]
         self.assertTrue(LINTS.check_pr_smoke_routing(self.path, self.workflow))
+
+    def test_unselected_smokes_cannot_run_setup_or_uploads(self):
+        for index in range(2, len(self.workflow["jobs"]["native"]["steps"])):
+            workflow = copy.deepcopy(self.workflow)
+            del workflow["jobs"]["native"]["steps"][index]["if"]
+            self.assertTrue(LINTS.check_pr_smoke_routing(self.path, workflow))
+        for guard in ("always()", "steps.scope.outputs.enabled == 'true' || always()"):
+            workflow = copy.deepcopy(self.workflow)
+            workflow["jobs"]["native"]["steps"][-1]["if"] = guard
+            self.assertTrue(LINTS.check_pr_smoke_routing(self.path, workflow))
+
+    def test_scope_failures_and_shallow_diffs_cannot_be_ignored(self):
+        for index, update in ((0, {"with": {"fetch-depth": 1}}), (1, {"continue-on-error": True}),
+                              (1, {"if": "false"}), (1, {"with": {"kind": "smoke", "target": "stb"}})):
+            workflow = copy.deepcopy(self.workflow)
+            workflow["jobs"]["native"]["steps"][index].update(update)
+            self.assertTrue(LINTS.check_pr_smoke_routing(self.path, workflow))
+
+    def test_qualification_still_depends_on_selected_platform_evidence(self):
+        self.workflow["jobs"]["guest-qualification"]["if"] = "false"
+        self.assertTrue(LINTS.check_pr_smoke_routing(self.path, self.workflow))
+
+
+class CheckRoutingTests(unittest.TestCase):
+    def test_routing_is_inline_and_every_miri_target_is_present(self):
+        for path in (".github/workflows/quality.yml", ".github/workflows/nightly.yml"):
+            workflow = LINTS._parse_workflow(SCRIPT.parent.parent / path)
+            self.assertFalse(LINTS.check_pr_check_routing(path, workflow))
+            workflow["jobs"]["selection"] = {"steps": []}
+            self.assertTrue(LINTS.check_pr_check_routing(path, workflow))
+        path = ".github/workflows/nightly.yml"
+        workflow = LINTS._parse_workflow(SCRIPT.parent.parent / path)
+        workflow["jobs"]["miri-pr"]["strategy"]["matrix"]["name"].pop()
+        self.assertTrue(LINTS.check_pr_check_routing(path, workflow))
+
+    def test_check_steps_cannot_bypass_inline_selection(self):
+        for path, job in ((".github/workflows/quality.yml", "kani"),
+                          (".github/workflows/quality.yml", "public-api"),
+                          (".github/workflows/nightly.yml", "miri-pr")):
+            workflow = LINTS._parse_workflow(SCRIPT.parent.parent / path)
+            for index in range(2, len(workflow["jobs"][job]["steps"])):
+                modified = copy.deepcopy(workflow)
+                del modified["jobs"][job]["steps"][index]["if"]
+                self.assertTrue(LINTS.check_pr_check_routing(path, modified))
 
 
 class NesWorkflowCoverageTests(unittest.TestCase):

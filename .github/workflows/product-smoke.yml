@@ -20,49 +20,32 @@ env:
   HARMONY_PLATFORM_FIXTURE: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/fixture
   CASE_DIR: workloads/bugs/historical/postgres-cic-corruption
 jobs:
-  scope:
-    name: Choose smoke tests from changed files
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      native: ${{ steps.select.outputs.native }}
-      stb: ${{ steps.select.outputs.stb }}
-      faults: ${{ steps.select.outputs.faults }}
-      platform: ${{ steps.select.outputs.platform }}
-      kvm: ${{ steps.select.outputs.kvm }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Select consumers from changed inputs
-        id: select
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$BASE_SHA" || "$BASE_SHA" == 0000000000000000000000000000000000000000 ]]; then
-            git ls-files > changed-files.txt
-          else
-            git diff --name-only "$BASE_SHA"...HEAD > changed-files.txt
-          fi
-          python3 scripts/ci_scope.py < changed-files.txt >> "$GITHUB_OUTPUT"
-
   native:
     name: Native NES search
-    needs: scope
-    if: needs.scope.outputs.native == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine whether this test is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: smoke
+          target: native
       - name: Initialize smoke artifact directory
+        if: steps.scope.outputs.enabled == 'true'
         run: mkdir -p nova-native-pr-smoke && touch nova-native-pr-smoke.console.txt
       - name: Install Nova build tools
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends binutils cc65 curl g++ git
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
       - name: Reproduce the pinned Nova ROM and QuickNES core
+        if: steps.scope.outputs.enabled == 'true'
         env:
           NOVA_BUILD: workloads/nes/build/nova
           HARMONY_QUICKNES_BUILD_JOBS: "2"
@@ -70,6 +53,7 @@ jobs:
           workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
           scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
       - name: Run a bounded native Nova search
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           mkdir -p nova-native-pr-smoke
@@ -93,7 +77,7 @@ jobs:
               raise SystemExit("native Nova smoke recorded no job event")
           PY
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: steps.scope.outputs.enabled == 'true' && (always())
         with:
           name: nova-native-pr-smoke-${{ github.run_id }}
           path: |
@@ -104,8 +88,6 @@ jobs:
 
   stb:
     name: STB search and replay
-    needs: scope
-    if: needs.scope.outputs.stb == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -122,27 +104,45 @@ jobs:
       HARMONY_QUICKNES_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine whether this test is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: smoke
+          target: stb
       - name: Initialize smoke artifact directory
+        if: steps.scope.outputs.enabled == 'true'
         run: mkdir -p "${STB_ARTIFACT}"
       - uses: ./.github/actions/stb-evaluation
+        if: steps.scope.outputs.enabled == 'true'
 
   faults:
     name: PostgreSQL fault search
-    needs: scope
-    if: needs.scope.outputs.faults == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Determine whether this test is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: smoke
+          target: faults
       - name: Initialize smoke artifact directory
+        if: steps.scope.outputs.enabled == 'true'
         run: mkdir -p pg-pr-smoke
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
       - name: Compute platform source key
+        if: steps.scope.outputs.enabled == 'true'
         id: platform-source
         run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
       - name: Restore the qualified platform runtime
+        if: steps.scope.outputs.enabled == 'true'
         id: platform-cache
         uses: actions/cache/restore@v4
         with:
@@ -151,7 +151,7 @@ jobs:
           restore-keys: consonance-platform-v1-x86_64-
       - name: Locate exact platform handoff
         id: handoff
-        if: steps.platform-cache.outputs.cache-hit != 'true'
+        if: steps.scope.outputs.enabled == 'true' && (steps.platform-cache.outputs.cache-hit != 'true')
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_KEY: ${{ steps.platform-source.outputs.key }}
@@ -161,16 +161,17 @@ jobs:
             --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .workflow_run.id // empty')
           echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
       - name: Clear superseded cached runtime
-        if: steps.handoff.outputs.run_id != ''
+        if: steps.scope.outputs.enabled == 'true' && (steps.handoff.outputs.run_id != '')
         run: rm -rf consonance/harmony-linux/build/x86_64
       - uses: actions/download-artifact@v4
-        if: steps.handoff.outputs.run_id != ''
+        if: steps.scope.outputs.enabled == 'true' && (steps.handoff.outputs.run_id != '')
         with:
           github-token: ${{ github.token }}
           run-id: ${{ steps.handoff.outputs.run_id }}
           name: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
           path: consonance/harmony-linux/build/x86_64
       - name: Restore the locked PostgreSQL workload image
+        if: steps.scope.outputs.enabled == 'true'
         id: image-cache
         uses: actions/cache/restore@v4
         with:
@@ -180,7 +181,7 @@ jobs:
           key: pgcic-oci-v1-${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**', 'workloads/bugs/historical/postgres-cic-corruption/case.json') }}
       - name: Locate exact workload image handoff
         id: image-handoff
-        if: steps.image-cache.outputs.cache-hit != 'true'
+        if: steps.scope.outputs.enabled == 'true' && (steps.image-cache.outputs.cache-hit != 'true')
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE_KEY: ${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**', 'workloads/bugs/historical/postgres-cic-corruption/case.json') }}
@@ -190,21 +191,22 @@ jobs:
             --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .workflow_run.id // empty')
           echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
       - name: Require exact workload image inputs
-        if: steps.image-cache.outputs.cache-hit != 'true' && steps.image-handoff.outputs.run_id == ''
+        if: steps.scope.outputs.enabled == 'true' && (steps.image-cache.outputs.cache-hit != 'true' && steps.image-handoff.outputs.run_id == '')
         run: |
           echo '::error::Exact PostgreSQL workload images are missing. Run the historical workflow on this branch, then rerun this smoke after image publication.'
           exit 1
       - name: Clear superseded cached workload images
-        if: steps.image-handoff.outputs.run_id != ''
+        if: steps.scope.outputs.enabled == 'true' && (steps.image-handoff.outputs.run_id != '')
         run: rm -rf oci-images
       - uses: actions/download-artifact@v4
-        if: steps.image-handoff.outputs.run_id != ''
+        if: steps.scope.outputs.enabled == 'true' && (steps.image-handoff.outputs.run_id != '')
         with:
           github-token: ${{ github.token }}
           run-id: ${{ steps.image-handoff.outputs.run_id }}
           name: pgcic-oci-v1-${{ hashFiles('workloads/bugs/historical/postgres-cic-corruption/image/**', 'workloads/bugs/historical/postgres-cic-corruption/case.json') }}
           path: oci-images
       - name: Verify platform and application artifacts
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
             --artifacts consonance/harmony-linux/build/x86_64 --output pg-pr-smoke/platform-provenance.json
@@ -212,8 +214,10 @@ jobs:
           test -s oci-images/MANIFEST.sha256
           (cd oci-images && sha256sum -c MANIFEST.sha256)
       - name: Build the CLI
+        if: steps.scope.outputs.enabled == 'true'
         run: cargo build --locked --release -p harmony-cli
       - name: Run a bounded PostgreSQL faults search through Consonance
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
@@ -246,7 +250,7 @@ jobs:
               raise SystemExit("PostgreSQL smoke recorded no admitted job")
           PY
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: steps.scope.outputs.enabled == 'true' && (always())
         with:
           name: postgres-faults-pr-smoke-${{ github.run_id }}
           path: |
@@ -257,30 +261,41 @@ jobs:
 
   platform:
     name: VM execution and restore
-    needs: scope
-    if: needs.scope.outputs.platform == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
+      enabled: ${{ steps.scope.outputs.enabled }}
       scope: ${{ steps.provenance.outputs.scope }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine whether this test is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: smoke
+          target: platform
       - name: Install pinned host toolchain
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
           rustup default "$HARMONY_RUST_TOOLCHAIN"
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
       - name: Compute platform source key
+        if: steps.scope.outputs.enabled == 'true'
         id: source
         run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v4
+        if: steps.scope.outputs.enabled == 'true'
         id: exact
         with:
           path: consonance/harmony-linux/build/x86_64
           key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
       - name: Locate exact qualification handoff
         id: handoff
-        if: steps.exact.outputs.cache-hit != 'true'
+        if: steps.scope.outputs.enabled == 'true' && (steps.exact.outputs.cache-hit != 'true')
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_KEY: ${{ steps.source.outputs.key }}
@@ -290,19 +305,20 @@ jobs:
             --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .workflow_run.id // empty')
           echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
-        if: steps.handoff.outputs.run_id != ''
+        if: steps.scope.outputs.enabled == 'true' && (steps.handoff.outputs.run_id != '')
         with:
           github-token: ${{ github.token }}
           run-id: ${{ steps.handoff.outputs.run_id }}
           name: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
           path: consonance/harmony-linux/build/x86_64
       - uses: actions/cache/restore@v4
-        if: steps.exact.outputs.cache-hit != 'true' && steps.handoff.outputs.run_id == ''
+        if: steps.scope.outputs.enabled == 'true' && (steps.exact.outputs.cache-hit != 'true' && steps.handoff.outputs.run_id == '')
         with:
           path: consonance/harmony-linux/build/x86_64
           key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
           restore-keys: consonance-platform-v1-x86_64-
       - name: Verify and record qualification scope
+        if: steps.scope.outputs.enabled == 'true'
         id: provenance
         run: |
           python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
@@ -311,16 +327,18 @@ jobs:
           echo "scope=$scope" >>"$GITHUB_OUTPUT"
           echo "Platform artifact scope: $scope" >>"$GITHUB_STEP_SUMMARY"
       - name: Enable hardware backend
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
       - name: Platform execution and restore smoke
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           set -o pipefail
           timeout -k 10 720 cargo test --locked --release -p oci-support --test platform --test process_platform -- --ignored --nocapture \
             2>&1 | tee platform-smoke/replay.log
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: steps.scope.outputs.enabled == 'true' && (always())
         with:
           name: platform-pr-smoke-${{ github.run_id }}
           path: platform-smoke
@@ -329,25 +347,36 @@ jobs:
 
   kvm:
     name: KVM deterministic replay
-    needs: scope
-    if: needs.scope.outputs.kvm == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine whether this test is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: smoke
+          target: kvm
       - name: Initialize smoke artifact directory
+        if: steps.scope.outputs.enabled == 'true'
         run: mkdir -p pr-kvm-smoke
       - name: Install stable toolchain
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
       - name: Grant /dev/kvm access
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: Exercise real hardware, snapshot/restore, and deterministic replay
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           mkdir -p pr-kvm-smoke
@@ -362,7 +391,7 @@ jobs:
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee pr-kvm-smoke/replay.txt
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: steps.scope.outputs.enabled == 'true' && (always())
         with:
           name: consonance-x86-pr-smoke-${{ github.run_id }}
           path: pr-kvm-smoke
@@ -371,8 +400,8 @@ jobs:
 
   guest-qualification:
     name: Exact guest platform qualification
-    needs: [scope, platform]
-    if: always() && needs.scope.outputs.platform == 'true'
+    needs: [platform]
+    if: always() && needs.platform.outputs.enabled == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     steps:
