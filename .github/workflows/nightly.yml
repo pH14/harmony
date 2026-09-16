@@ -25,6 +25,8 @@ on:
       - .github/actions/ci-scope/**
       - scripts/ci-job-scope.py
       - scripts/test_ci_job_scope.py
+      - scripts/miri_scope.py
+      - scripts/test_miri_scope.py
 jobs:
   miri-pr:
     name: Memory safety — ${{ matrix.name }}
@@ -41,6 +43,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          filter: blob:none
       - name: Determine whether this test is applicable
         id: scope
         uses: ./.github/actions/ci-scope

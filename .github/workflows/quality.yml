@@ -162,6 +162,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          filter: blob:none
       - name: Determine whether this test is applicable
         id: scope
         uses: ./.github/actions/ci-scope
@@ -208,6 +209,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          filter: blob:none
       - name: Determine whether this test is applicable
         id: scope
         uses: ./.github/actions/ci-scope

@@ -69,6 +69,7 @@ GLOBAL_PATH_PATTERNS = (
     "deny.toml",
     ".github/workflows/nightly.yml",
     ".github/actions/ci-scope/**", "scripts/ci-job-scope.py", "scripts/test_ci_job_scope.py",
+    "scripts/miri_scope.py", "scripts/test_miri_scope.py",
 )
 
 

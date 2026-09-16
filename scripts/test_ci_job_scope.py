@@ -25,26 +25,36 @@ SPEC.loader.exec_module(SCOPE)
 class InlineSelectionTests(unittest.TestCase):
     def test_reads_a_real_git_diff(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory) / "origin"
+            root.mkdir()
             def git(*args):
                 return subprocess.check_output(["git", "-c", "core.hooksPath=/dev/null",
                                                 "-c", "commit.gpgsign=false",
                                                 "-c", "user.name=CI test", "-c", "user.email=ci@example.invalid",
                                                 *args], cwd=root, text=True)
             git("init", "-q")
+            git("config", "uploadpack.allowFilter", "true")
             (root / "README.md").write_text("baseline\n")
+            (root / "legacy.bin").write_bytes(b"historical content\0" * 8192)
             git("add", ".")
             git("commit", "-qm", "baseline")
             base = git("rev-parse", "HEAD").strip()
+            legacy_blob = git("rev-parse", "HEAD:legacy.bin").strip()
+            (root / "legacy.bin").unlink()
             target = root / "workloads/nes/src/stb/target.rs"
             target.parent.mkdir(parents=True)
             target.write_text("changed\n")
             git("add", ".")
             git("commit", "-qm", "workload change")
+            clone = Path(directory) / "partial"
+            subprocess.check_call(["git", "clone", "-q", "--filter=blob:none", root.as_uri(), str(clone)])
             run = subprocess.check_output
-            with mock.patch.object(SCOPE.subprocess, "check_output", side_effect=lambda args, **kwargs: run(args, cwd=root, **kwargs)):
+            self.assertEqual(run(["git", "rev-parse", "--is-shallow-repository"], cwd=clone, text=True).strip(), "false")
+            missing = run(["git", "rev-list", "--objects", "--all", "--missing=print"], cwd=clone, text=True)
+            self.assertIn("?" + legacy_blob, missing.splitlines())
+            with mock.patch.object(SCOPE.subprocess, "check_output", side_effect=lambda args, **kwargs: run(args, cwd=clone, **kwargs)):
                 paths = SCOPE.changed_paths("smoke", "pull_request", base, "")
-            self.assertEqual(paths, ["workloads/nes/src/stb/target.rs"])
+            self.assertEqual(paths, ["legacy.bin", "workloads/nes/src/stb/target.rs"])
             self.assertTrue(SCOPE.selection("smoke", "stb", paths)["enabled"])
             self.assertFalse(SCOPE.selection("smoke", "native", paths)["enabled"])
 

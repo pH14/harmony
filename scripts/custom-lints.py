@@ -775,6 +775,7 @@ def _inline_scope_valid(job: dict, kind: str, target: str | None = None) -> bool
     checkout, scope = steps[:2]
     expected = {"kind": kind, **({"target": target} if target is not None else {})}
     if (checkout.get("uses") != "actions/checkout@v4" or checkout.get("with", {}).get("fetch-depth") != 0
+            or checkout.get("with", {}).get("filter") != "blob:none"
             or "if" in checkout or scope.get("uses") != "./.github/actions/ci-scope"
             or scope.get("id") != "scope" or scope.get("with") != expected or "if" in scope
             or scope.get("continue-on-error", False)):

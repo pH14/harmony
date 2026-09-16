@@ -309,7 +309,7 @@ class SmokeRoutingTests(unittest.TestCase):
             self.assertTrue(LINTS.check_pr_smoke_routing(self.path, workflow))
 
     def test_scope_failures_and_shallow_diffs_cannot_be_ignored(self):
-        for index, update in ((0, {"with": {"fetch-depth": 1}}), (1, {"continue-on-error": True}),
+        for index, update in ((0, {"with": {"fetch-depth": 1}}), (0, {"with": {"fetch-depth": 0}}), (1, {"continue-on-error": True}),
                               (1, {"if": "false"}), (1, {"with": {"kind": "smoke", "target": "stb"}})):
             workflow = copy.deepcopy(self.workflow)
             workflow["jobs"]["native"]["steps"][index].update(update)

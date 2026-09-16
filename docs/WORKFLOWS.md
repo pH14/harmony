@@ -79,11 +79,15 @@ platform/dependency changes; proof and Miri selection retain their own narrow
 rules and tests.
 
 There are no standalone selection checks. Each smoke, Kani, public API, and
-Miri job checks out full history and invokes `.github/actions/ci-scope` as its
+Miri job checks out full commit history with `filter: blob:none` and invokes `.github/actions/ci-scope` as its
 first local step. `scripts/ci-job-scope.py` computes the same complete Git diff
 as the previous routing jobs and delegates to the existing selectors. It does
 not use GitHub's changed-file API or introduce new native path-filter limits.
-Changes to this shared routing implementation conservatively select all tests.
+The blob filter avoids downloading every historical file revision into every
+runner; the current working tree is materialized, and Git can fetch old blobs
+on demand if a diff needs them. Changes to the shared routing implementation
+conservatively select all tests. Miri and Kani selector changes also select
+their own checks; the Miri workflow trigger includes its selector and tests.
 
 Every subsequent setup, test, cache, and artifact step is gated by that job's
 selection output. A selected test failure still fails its job and still uploads
@@ -157,7 +161,7 @@ contract change, not a way to bypass smoke routing under a Checks name.
 `ci-pr-smoke-routing` requires every smoke to use the shared inline selector
 with its registered consumer identity. `ci-pr-check-routing` does the same for
 Kani, public API, and Miri checks, and compares the static Miri matrix against
-the registered targets. Both enforce full-history checkout and selection
+the registered targets. Both enforce blob-filtered full-history checkout and selection
 guards on every setup/test/artifact step. Separate routing jobs, unguarded
 steps (including `always()` uploads), and missing Miri targets fail validation.
 Each smoke consumer is one bounded job; added smoke matrices fail validation.

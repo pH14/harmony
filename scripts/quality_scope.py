@@ -27,6 +27,7 @@ KANI_PATH_PATTERNS = (
     ".github/workflows/quality.yml",
     ".github/workflows/nightly.yml",
     ".github/actions/ci-scope/**", "scripts/ci-job-scope.py", "scripts/test_ci_job_scope.py",
+    "scripts/quality_scope.py", "scripts/test_quality_scope.py",
 )
 
 
