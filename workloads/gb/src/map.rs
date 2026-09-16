@@ -64,7 +64,8 @@ impl Overworld {
                 let block = wram.get(block_index).copied()?;
                 let tile_row = (y % STEPS_PER_BLOCK) * STEPS_PER_BLOCK + STEP_FOOT_ROW;
                 let tile_column = (x % STEPS_PER_BLOCK) * STEPS_PER_BLOCK;
-                let offset = usize::from(block) * BLOCK_BYTES + tile_row * BLOCK_TILES + tile_column;
+                let offset =
+                    usize::from(block) * BLOCK_BYTES + tile_row * BLOCK_TILES + tile_column;
                 let tile = blocks.get(offset).copied()?;
                 tiles[y * width + x] = tile;
                 walkable[y * width + x] = collision.contains(&tile);
@@ -344,7 +345,10 @@ mod tests {
         }
         let overworld = Overworld::decode(&wram_with(&map, 3, 3), &rom_with_two_blocks())
             .expect("decode a fully walled map");
-        assert_eq!(overworld.route((0, 0), (2, 0)), Some(vec![STEP_RIGHT, STEP_RIGHT]));
+        assert_eq!(
+            overworld.route((0, 0), (2, 0)),
+            Some(vec![STEP_RIGHT, STEP_RIGHT])
+        );
         assert!(overworld.route((0, 0), (4, 0)).is_none());
     }
 }

@@ -5,9 +5,11 @@ use std::{error::Error, path::Path};
 use machine::{
     MachineError,
     gambatte::{GambatteMachine, VideoFrame},
-    gb::{A, B, ButtonChord, DOWN, LEFT, RIGHT, UP, WRAM_SIZE},
+    gb::{A, B, ButtonChord, DOWN, LEFT, RIGHT, UP},
 };
 use searcher::target::{ExitKind, Target};
+
+pub use machine::gb::WRAM_SIZE;
 use serde::{Deserialize, Serialize};
 
 use crate::map::{Overworld, STEP_LEFT, STEP_RIGHT, STEP_UP, step_delta, step_towards};
@@ -97,6 +99,7 @@ pub const FLAG_ENTERED_FOREST: u8 = 1 << 4;
 pub const FLAG_ENTERED_PEWTER: u8 = 1 << 5;
 pub const FLAG_ENTERED_GYM: u8 = 1 << 6;
 pub const ROUTE_FLAGS: u8 = 7;
+pub const MILESTONE_BITS: usize = ROUTE_FLAGS as usize + 1;
 
 pub const BATTLE_MENU_CURSOR_ROW: u8 = 0x0e;
 pub const BATTLE_MENU_LEFT_COLUMN: u8 = 0x09;
@@ -239,7 +242,12 @@ impl BlueState {
 
     #[must_use]
     pub fn milestone_flags(self) -> u8 {
-        self.route_flags | if self.has_badge() { 1 << ROUTE_FLAGS } else { 0 }
+        self.route_flags
+            | if self.has_badge() {
+                1 << ROUTE_FLAGS
+            } else {
+                0
+            }
     }
 }
 
@@ -359,6 +367,17 @@ impl ActionKind {
             Self::UseItem => USE_ITEM_FRAME_BUDGET,
             Self::Switch => SWITCH_FRAME_BUDGET,
             Self::Advance => ADVANCE_FRAME_BUDGET,
+        }
+    }
+
+    #[must_use]
+    pub fn in_context(self, in_battle: bool) -> Self {
+        match (self, in_battle) {
+            (Self::WalkTo, true) => Self::BattleMove,
+            (Self::Interact, true) => Self::Advance,
+            (Self::BattleMove, false) => Self::WalkTo,
+            (Self::UseItem | Self::Switch, false) => Self::Interact,
+            _ => self,
         }
     }
 
@@ -1074,7 +1093,7 @@ impl BlueTarget {
         self.budget = action.kind.frame_budget();
         let alphabet = self.alphabet();
         let map = self.peek(CUR_MAP);
-        match action.kind {
+        match action.kind.in_context(alphabet.in_battle) {
             ActionKind::WalkTo => self.walk_to(action.index, &alphabet),
             ActionKind::Interact => self.interact(),
             ActionKind::BattleMove => self.battle_move(action.index, &alphabet),
@@ -1096,7 +1115,10 @@ impl BlueTarget {
         let state = decode_state(&self.wram, self.latched_flags);
         self.latched_flags = state.route_flags;
         Ok(BlueObservation {
-            frame_count: self.observation.frame_count.saturating_add(self.action_frames),
+            frame_count: self
+                .observation
+                .frame_count
+                .saturating_add(self.action_frames),
             state,
             alphabet_size: u16::try_from(alphabet(&self.wram, &self.rom, state).size())
                 .unwrap_or(u16::MAX),
@@ -1230,7 +1252,10 @@ mod tests {
 
     #[test]
     fn an_event_flag_is_read_from_its_own_bit() {
-        let wram = wram_with(&[(EVENT_FLAGS + EVENT_GOT_STARTER / 8, 1 << (EVENT_GOT_STARTER % 8))]);
+        let wram = wram_with(&[(
+            EVENT_FLAGS + EVENT_GOT_STARTER / 8,
+            1 << (EVENT_GOT_STARTER % 8),
+        )]);
         assert!(event_flag(&wram, EVENT_GOT_STARTER));
         assert!(!event_flag(&wram, EVENT_GOT_POKEDEX));
         assert_eq!(decode_state(&wram, 0).route_flags, FLAG_GOT_STARTER);
@@ -1243,7 +1268,11 @@ mod tests {
         let fainted = decode_state(&wram_with(&[(PARTY_COUNT, 1), (PARTY_MONS, 7)]), 0);
         assert!(fainted.whited_out());
         let alive = decode_state(
-            &wram_with(&[(PARTY_COUNT, 1), (PARTY_MONS, 7), (PARTY_MONS + PARTY_MON_HP + 1, 9)]),
+            &wram_with(&[
+                (PARTY_COUNT, 1),
+                (PARTY_MONS, 7),
+                (PARTY_MONS + PARTY_MON_HP + 1, 9),
+            ]),
             0,
         );
         assert!(!alive.whited_out());
@@ -1284,6 +1313,9 @@ mod tests {
         assert_eq!(alphabet.size(), 4 + 3 + 2 + 1);
         let actions = alphabet.actions();
         assert_eq!(actions.len(), alphabet.size());
-        assert_eq!(actions.last().map(|action| action.kind), Some(ActionKind::Advance));
+        assert_eq!(
+            actions.last().map(|action| action.kind),
+            Some(ActionKind::Advance)
+        );
     }
 }

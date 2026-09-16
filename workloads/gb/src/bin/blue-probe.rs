@@ -5,7 +5,7 @@ use std::{error::Error, fs, path::PathBuf};
 use blue_workload::{
     map::Overworld,
     target::{
-        BlueAction, BlueTarget, CURRENT_MENU_ITEM, CUR_MAP, CUR_MAP_WIDTH, MAX_MENU_ITEM,
+        BlueAction, BlueTarget, CUR_MAP, CUR_MAP_WIDTH, CURRENT_MENU_ITEM, MAX_MENU_ITEM,
         NUMBER_OF_WARPS, X_COORD, Y_COORD, byte,
     },
 };
@@ -82,13 +82,19 @@ fn describe(target: &BlueTarget) -> String {
         alphabet.size(),
         byte(target.work_ram(), blue_workload::target::JOY_IGNORE),
         byte(target.work_ram(), blue_workload::target::STATUS_FLAGS_5),
-        byte(target.work_ram(), blue_workload::target::WALK_BIKE_SURF_STATE),
+        byte(
+            target.work_ram(),
+            blue_workload::target::WALK_BIKE_SURF_STATE
+        ),
         state.text_box,
         state.party[0].species,
         state.party[0].level,
         state.party[0].hp,
         (0..4)
-            .map(|slot| byte(target.work_ram(), blue_workload::target::PARTY_MONS + 8 + slot))
+            .map(|slot| byte(
+                target.work_ram(),
+                blue_workload::target::PARTY_MONS + 8 + slot
+            ))
             .collect::<Vec<_>>(),
     )
 }
@@ -113,7 +119,7 @@ fn setup(output: &str) -> Result<(), Box<dyn Error>> {
         if in_the_bedroom(&wram) {
             break;
         }
-        if tape.len() % 40 == 0 {
+        if tape.len().is_multiple_of(40) {
             println!(
                 "chords={} map={} width={} warps={} menu={}/{}",
                 tape.len(),
@@ -268,7 +274,8 @@ fn dump_after(prefix: &str, actions: Option<&str>) -> Result<(), Box<dyn Error>>
         println!("screen {row:2} {line}");
     }
     for index in 0..u16::from(byte(wram, NUMBER_OF_WARPS)) {
-        let base = blue_workload::target::WARP_ENTRIES + blue_workload::target::WARP_ENTRY_BYTES * index;
+        let base =
+            blue_workload::target::WARP_ENTRIES + blue_workload::target::WARP_ENTRY_BYTES * index;
         println!(
             "warp {index}: x={} y={} to map {} entry {}",
             byte(wram, base + 1),
@@ -311,10 +318,7 @@ fn dump_after(prefix: &str, actions: Option<&str>) -> Result<(), Box<dyn Error>>
                 .map(|x| {
                     format!(
                         "{:02x} ",
-                        overworld.tile(
-                            u8::try_from(x).unwrap_or(0),
-                            u8::try_from(y).unwrap_or(0)
-                        )
+                        overworld.tile(u8::try_from(x).unwrap_or(0), u8::try_from(y).unwrap_or(0))
                     )
                 })
                 .collect::<String>();
@@ -324,11 +328,13 @@ fn dump_after(prefix: &str, actions: Option<&str>) -> Result<(), Box<dyn Error>>
     let base = usize::from(OVERWORLD_MAP - blue_workload::target::WRAM_BASE);
     let stride = usize::from(byte(wram, CUR_MAP_WIDTH)) + 6;
     for row in 0..usize::from(byte(wram, CUR_MAP_HEIGHT)) + 6 {
-        println!("{:?}", &wram[base + row * stride..base + (row + 1) * stride]);
+        println!(
+            "{:?}",
+            &wram[base + row * stride..base + (row + 1) * stride]
+        );
     }
     Ok(())
 }
-
 
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(tag = "goal", rename_all = "snake_case")]
@@ -475,7 +481,7 @@ impl Planner {
                 stalls += 1;
                 if stalls > WALK_STALL_LIMIT {
                     return Err(
-                        format!("the walk from {here:?} to {goal:?} made no progress").into()
+                        format!("the walk from {here:?} to {goal:?} made no progress").into(),
                     );
                 }
                 self.apply(BlueAction::new(
@@ -614,7 +620,8 @@ impl Planner {
             if state.party[0].level >= level {
                 return Ok(());
             }
-            if !state.in_battle() && state.party_hp() * GRIND_HEALTH_DIVISOR <= self.party_max_hp() {
+            if !state.in_battle() && state.party_hp() * GRIND_HEALTH_DIVISOR <= self.party_max_hp()
+            {
                 return Ok(());
             }
             if state.in_battle() {
