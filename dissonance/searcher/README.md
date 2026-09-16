@@ -215,6 +215,17 @@ the largest share and no live class takes zero. `SelectorAccounting`'s
 are ranked the same way, over the distinct progress levels of their frontier
 groups.
 
+A productive selection clears the parent's barren counter at a pooled depth
+only when a retained child's group at that depth had not been seen before. A
+child that opens a new coarse group necessarily opens the finer groups
+containing it, so it still clears every depth below. A child that is new only
+at the finest pooled depth clears that depth alone, so a place that keeps
+producing fine novelty inside ground the search already covers no longer holds
+its coarser counters at zero. `Retire` clears every depth on any productive
+selection; `hierarchy_uniform_128` clears none. `SelectorAccounting` reports
+`energy_resets`, the counters cleared at each depth, and `productive_by_mask`, a
+histogram over productive selections of which depths the selection opened.
+
 Search experiments use independent versioned identifiers:
 
 - `hierarchy_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
