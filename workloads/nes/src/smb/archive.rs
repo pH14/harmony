@@ -12,7 +12,7 @@ pub use crate::smb::target::ROOM_IDENTITY_BYTES;
 pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
     crate::search::archive::selector_policy_from_identifier(
         identifier,
-        SmbArchiveKey::groups().saturating_sub(2),
+        SmbArchiveKey::groups().saturating_sub(1),
     )
 }
 use crate::search::rand::RomuDuoJrRand;

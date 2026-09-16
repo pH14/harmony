@@ -1125,7 +1125,7 @@ where
             lineages: Vec::new(),
             deepest_leaf: Vec::new(),
             selector_policy: SelectorPolicy::GroupUniform,
-            group_barren: vec![BTreeMap::new(); K::groups().saturating_sub(2)],
+            group_barren: vec![BTreeMap::new(); K::groups().saturating_sub(1)],
             action_cost,
             live_progress: None,
             frontier_cap: None,
@@ -2597,6 +2597,16 @@ where
         } else {
             &self.live_skip_groups
         };
+        let class_scale = match &self.selector_policy {
+            SelectorPolicy::EnergyFrontierCheapest(scales)
+            | SelectorPolicy::EnergyFrontierCheapestCount(scales)
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => scales
+                .groups
+                .get(Self::class_depth().saturating_sub(1))
+                .copied()
+                .filter(|scale| *scale > 0),
+            SelectorPolicy::Retire(_) | SelectorPolicy::GroupUniform => None,
+        };
         let mut weighted = Vec::new();
         let mut skipped = 0_u64;
         let mut rank = 0_u8;
@@ -2620,7 +2630,19 @@ where
                 rank = rank.saturating_add(1).min(CLASS_RANK_CAP);
             }
             previous = Some(class.0);
-            weighted.push((*class, 256_usize >> rank, rank));
+            let energy = match class_scale {
+                Some(scale) => {
+                    let barren = self
+                        .group_barren
+                        .get(Self::class_depth().saturating_sub(1))
+                        .and_then(|map| map.get(&class.0))
+                        .copied()
+                        .unwrap_or(0);
+                    256_usize >> usize::try_from((barren / scale).min(8)).unwrap_or(8)
+                }
+                None => 256,
+            };
+            weighted.push((*class, (256_usize >> rank).saturating_mul(energy), rank));
         }
         (weighted, skipped)
     }
@@ -5550,20 +5572,20 @@ mod tests {
         assert_eq!(opened, 0b11);
         archive.record_selection_outcome(parent, true, opened);
         let accounting = archive.selector_report();
-        assert_eq!(accounting.energy_resets, vec![1, 0]);
+        assert_eq!(accounting.energy_resets, vec![1, 0, 0]);
         assert_eq!(accounting.productive_by_mask, BTreeMap::from([(0b11, 1)]));
     }
 
     #[test]
-    fn a_child_new_at_the_coarsest_pooled_depth_clears_every_depth_below_it() {
+    fn a_child_new_at_the_class_depth_clears_every_depth_below_it() {
         let mut archive = depth_archive();
         let parent = insert_depth_child(&mut archive, None, 0, [0, 0, 0, 0]);
-        let child = insert_depth_child(&mut archive, Some(parent), 1, [0, 0, 1, 0]);
+        let child = insert_depth_child(&mut archive, Some(parent), 1, [0, 0, 0, 1]);
         let opened = archive.opened_depths(child);
-        assert_eq!(opened, 0b111);
+        assert_eq!(opened, 0b1111);
         archive.record_selection_outcome(parent, true, opened);
         let accounting = archive.selector_report();
-        assert_eq!(accounting.energy_resets, vec![1, 1]);
+        assert_eq!(accounting.energy_resets, vec![1, 1, 1]);
     }
 
     #[test]
@@ -5583,7 +5605,7 @@ mod tests {
             BTreeMap::from([(0b11, 2), (0b111, 1)])
         );
         assert_eq!(accounting.productive_selections, 3);
-        assert_eq!(accounting.energy_resets, vec![3, 1]);
+        assert_eq!(accounting.energy_resets, vec![3, 1, 0]);
     }
 
     #[test]
@@ -6259,6 +6281,57 @@ mod tests {
         assert!(
             leading > trailing,
             "the leading class takes the largest share: {counts:?}"
+        );
+    }
+
+    #[test]
+    fn a_barren_class_loses_its_share_to_a_peer_that_still_produces() {
+        let keys = [
+            ordering_key::<true>(1, 1, 0, 0, 0),
+            ordering_key::<true>(2, 1, 0, 0, 1),
+        ];
+        let mut archive = Archive::<u8, OrderingKey<true>, (), ()>::new(|_| 1);
+        let mut ids = Vec::new();
+        for (index, key) in keys.iter().enumerate() {
+            ids.push(
+                archive
+                    .insert(
+                        None,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![u8::try_from(index).expect("fixture is small")],
+                            key: *key,
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .expect("barren class insert")
+                    .expect("barren class retention"),
+            );
+        }
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
+            entry: 1_000_000,
+            groups: vec![1_000_000, 1_000_000, 1],
+        });
+        let class_depth = Archive::<u8, OrderingKey<true>, (), ()>::class_depth();
+        archive.group_barren[class_depth - 1].insert(keys[0].group(class_depth), 8);
+        let mut rand = RomuDuoJrRand::with_seed(802);
+        let mut counts = vec![0_usize; keys.len()];
+        for _ in 0..ORDERING_DRAWS {
+            let (id, draw) = archive.select_parent(&mut rand, 64).expect("walk draw");
+            if draw.path == SelectorPath::HierarchyWalk
+                && let Some(index) = ids.iter().position(|candidate| *candidate == id)
+            {
+                counts[index] += 1;
+            }
+        }
+        assert!(
+            counts[0] > 0 && counts[1] > 0,
+            "a barren class keeps a share: {counts:?}"
+        );
+        assert!(
+            counts[1] > counts[0].saturating_mul(4),
+            "the class that still produces takes the larger share: {counts:?}"
         );
     }
 

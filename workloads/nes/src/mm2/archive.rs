@@ -28,7 +28,7 @@ pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
     crate::search::archive::selector_policy_from_identifier(
         identifier,
-        Mm2ArchiveKey::groups().saturating_sub(2),
+        Mm2ArchiveKey::groups().saturating_sub(1),
     )
 }
 

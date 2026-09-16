@@ -26,7 +26,7 @@ pub use crate::stb::target::INITIAL_STOCKS;
 pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
     crate::search::archive::selector_policy_from_identifier(
         identifier,
-        StbArchiveKey::groups().saturating_sub(2),
+        StbArchiveKey::groups().saturating_sub(1),
     )
 }
 
