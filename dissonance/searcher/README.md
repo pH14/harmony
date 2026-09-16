@@ -209,9 +209,12 @@ identifiers weight the draw by barren energy, by progress rank, and by cost.
 
 The coarsest group is a class. Every class holding a live cell receives draws.
 The walk ranks classes by how many distinct progress levels are ahead of them,
-capped at eight, and weights a class `256 >> rank` times its barren energy, so
-the leading class takes the largest share, a class that stops producing falls
-away, and no live class takes zero. Without the energy term a workload whose
+capped at eight, and weights a class `1 << ((8 - rank) * 3)` times its barren
+energy, so the leading class takes most of the draws, a class that stops
+producing falls away, and no live class takes zero. The factor of eight per
+rank is what keeps a deep run moving; a factor of two spreads the draws far
+enough behind the frontier that a workload with many finished classes stops
+finishing. Without the energy term a workload whose
 classes form a chain of finished and unfinished stages spends half its draws
 behind the frontier forever. The class depth is an ordinary pooled depth: the
 `energy_frontier_cheapest` identifiers carry one scale per depth from the
