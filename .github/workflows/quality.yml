@@ -61,6 +61,7 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_ci_*.py'
           python3 -m unittest discover -s scripts -p 'test_*scope.py'
           python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
+          python3 -m unittest discover -s scripts -p test_semantic_lints.py
           python3 scripts/custom-lints.py
           python3 scripts/strip-comments.py --check
       - name: N6 instruction sweep generators and negative controls
@@ -258,6 +259,23 @@ jobs:
           cargo test --locked --manifest-path workloads/nes/Cargo.toml --release --all-features
           cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml --all-features
           cargo deny --manifest-path workloads/nes/Cargo.toml check --config deny.toml
+
+  semantic:
+    name: Semantic content lints
+    runs-on: ubuntu-latest
+    environment: Checks
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Judge changed file content
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: python3 scripts/semantic-lints.py --changed-from HEAD^1
 
   kani:
     name: Kani proofs

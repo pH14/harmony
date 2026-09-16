@@ -80,8 +80,11 @@ Dependency, toolchain, and selector changes conservatively select all consumers.
 Documentation changes do not select product smokes. Portable quality checks run
 in six independent jobs: repository scripts and custom lints, workspace lint
 and unit tests, guest crates, Dissonance search, workload support, and NES
-packages. Each job retains the 15-minute bound and runs on every PR and main
-push. Rust jobs cache their own manifest directories under separate keys;
+packages. A seventh independent job judges changed file content with the
+Jev-backed semantic lint. It uses the `Checks` environment, limits secret access
+to the judge step, and checks out two commits for the first-parent diff.
+Semantic lint unit tests remain in the portable repository checks. Each
+quality job retains the 15-minute bound and runs on every PR and main push. Rust jobs cache their own manifest directories under separate keys;
 there is no dependency chain or shared build-artifact handoff. Keeping lint,
 build, and tests for each manifest together reuses compilation within a job.
 All six jobs are required quality evidence alongside applicable proofs and API

@@ -799,7 +799,7 @@ def check_pr_check_routing(path: str, workflow: dict) -> list[Violation]:
 
     jobs = workflow["jobs"]
     if path == ".github/workflows/quality.yml":
-        valid = (set(jobs) == {"repository", "workspace", "guests", "search", "support", "nes", "kani", "public-api"}
+        valid = (set(jobs) == {"repository", "workspace", "guests", "search", "support", "nes", "semantic", "kani", "public-api"}
                  and _inline_scope_valid(jobs["kani"], "kani")
                  and _inline_scope_valid(jobs["public-api"], "public_api"))
     else:
@@ -938,7 +938,7 @@ def check_docs_allowlist(files: list[str]) -> list[Violation]:
     for rel_path in files:
         if not rel_path.startswith("docs/"):
             continue
-        if rel_path == str(BASELINE_PATH):
+        if rel_path in (str(BASELINE_PATH), "docs/semantic-lints-baseline.json"):
             continue
         if not rel_path.endswith(".md"):
             violations.append(Violation(

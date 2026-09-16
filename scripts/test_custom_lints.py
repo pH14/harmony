@@ -376,6 +376,17 @@ class CheckRoutingTests(unittest.TestCase):
         self.assertEqual(len(keys), 5)
         self.assertEqual(len(set(keys)), 5)
 
+    def test_semantic_lint_retains_diff_history_and_environment_secret(self):
+        workflow = LINTS._parse_workflow(SCRIPT.parent.parent / ".github/workflows/quality.yml")
+        job = workflow["jobs"]["semantic"]
+        self.assertEqual(job["environment"], "Checks")
+        self.assertNotIn("needs", job)
+        self.assertEqual(job["timeout-minutes"], 15)
+        self.assertEqual(job["steps"][0]["with"]["fetch-depth"], 2)
+        command = job["steps"][-1]
+        self.assertEqual(command["run"], "python3 scripts/semantic-lints.py --changed-from HEAD^1")
+        self.assertEqual(command["env"]["TYPESAFE_API_KEY"], "${{ secrets.TYPESAFE_API_KEY }}")
+
     def test_routing_is_inline_and_every_miri_target_is_present(self):
         for path in (".github/workflows/quality.yml", ".github/workflows/nightly.yml"):
             workflow = LINTS._parse_workflow(SCRIPT.parent.parent / path)
