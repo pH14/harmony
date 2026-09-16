@@ -1,5 +1,0 @@
-# nes-busybox exact hosted artifact review proposal
-ELF SHA256 a01efe4809a7c53dcc69c6360520f4f78eec8ec58166c4f67d9ff30188cfb546. Complete canonical rootfs scan inventories exactly two ELFs with no dependencies, PT_INTERP, W+X, executable stack or text relocations. Each ELF contains one XGETBV, one FXSAVE/FXRSTOR pair, and XSAVE/XSAVEC resolver saves plus their XRSTOR instructions. The policy forbids XSAVE-family saves; FXSAVE/FXRSTOR/XRSTOR remain inventoried.
-Whole-function proposed exceptions: _dl_runtime_resolve_xsave [0x4c8230,0x4c82fd), 205bytes, SHA256af9cbf0a7c05e5bb9d56e5b4eb96282dc672017f516e9d552fadd7778c27db58; _dl_runtime_resolve_xsavec [0x4c8300,0x4c83bd), 189bytes, SHA256819d71a3112015a038af019815cca12f4db3c003887c932a959205bc4434ac3e.
-BusyBox shipped executable PT_LOAD bytes/addresses exactly match its retained unstripped companion; review.json records the comparison. All symbols used here come from that companion.
-Incoming and binding proofs below are conditional on the separately reviewed final composition. This is not an approved baseline.

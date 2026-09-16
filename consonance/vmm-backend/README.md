@@ -69,61 +69,6 @@ vCPU. ARM KVM and HVF expose pure restore-shape checks through the `Backend`
 trait, so portable snapshot import rejects their known invalid vCPU records
 before guest RAM or backend state is changed.
 
-The ignored Linux x86 test `kvm_sys::xsave_diagnostic::raw_xsave_presence_phases`
-is a bounded XSAVE provenance diagnostic. Set `XSAVE_RAW_REPORT_DIR` and run
-`cargo test --locked --release -p vmm-backend --lib kvm_sys::xsave_diagnostic::raw_xsave_presence_phases -- --ignored --exact --nocapture`
-on a KVM host, using a fresh report directory for each run. It records complete raw `KVM_GET_XSAVE2` images at a stopped
-MMIO boundary, canonicalized copies, a raw SET/GET round trip, and one HLT
-continuation for an initialized SSE case and an otherwise identical zero-SSE
-control. It then runs two sets of three fresh VMs with guest `FNINIT` before the same
-MMIO boundary and integer setup followed by guest `XSAVE` before any further
-x87 operation: unobserved, two repeated boundary GETs, and GET/SET/GET. These phases retain
-raw and canonical guest and vCPU images, including restore-BV values, so raw
-presence differences remain visible. The FNINIT observation sets use two
-separate fresh-VM x87 cohorts with the same `XSTATE_BV=3`, restore presence,
-`FCW=0x037f`, zero status, and nonempty tags before `FNINIT`: a
-payload-preservation cohort seeds ten `0xa7` bytes in each ST slot with zero
-padding, while a zero-state cohort seeds ten zero bytes with zero padding. The
-first cohort records whether an owned payload survives the guest's `FNINIT`;
-the second supplies an init-valued x87 witness. A third fresh-VM cohort uses a
-standard-format guest `XRSTOR` source image with mask `0x3`, `XSTATE_BV=2`,
-`XCOMP_BV=0`, `MXCSR=0x1f80`, and the active XMM0 payload. Its 64-byte-aligned
-source and guest `XSAVE` output buffers are disjoint, and it establishes x87
-initialization through the absent x87 presence bit without executing `FNINIT`.
-All cohorts have separate phase directories and comparison files, and each
-report records its actual source image and seed. The report is evidence about
-the host/KVM path and does not change snapshot semantics.
-The fourteen-phase diagnostic also runs an early-boot integer cohort in three
-independent fresh VMs: no boundary observation, repeated GET-only observation,
-and GET/SET/GET observation. These VMs start with requested `XCR0=1`, clear
-`CR4.OSXSAVE` and `CR4.OSFXSR`, and restore a canonical architectural-init
-XSAVE image with requested restore presence `Some(2)`. Their guest executes
-only the existing integer MMIO write and HLT sequence, with no guest FPU,
-XSAVE, or XRSTOR instruction. Each phase records the requested XCR0/CR4 and
-XSAVE presence, every observed raw/canonical image, the actual endpoint tuple,
-and pairwise comparison metadata without requiring hardware presence to remain
-`2`.
-
-The ignored Linux x86 test
-`kvm_sys::xsave_diagnostic::x86_pae_sregs2_phase_observations` is a bounded
-PAE cache diagnostic for issue [#314](https://github.com/pH14/harmony/issues/314).
-Set `PAE_PHASE_REPORT_DIR` and run
-`cargo test --locked --release -p vmm-backend --lib kvm_sys::xsave_diagnostic::x86_pae_sregs2_phase_observations -- --ignored --exact --nocapture`
-on a KVM host, using a fresh report directory for each run. It starts the existing guest witness three times and arms each
-phase after a common pre-write `KVM_GET_SREGS2` and the common `KVM_GET_REGS`
-RIP check at the guest-written PDPT B boundary: no SREGS2 read at B, one raw
-GET at B, or one raw GET followed by raw SET of the pre-write-A record. The
-x86 backend auto-completes the visible PIO boundary before the phase arm; the
-report labels backend-visible exits separately from completion checkpoints.
-AMD NPT is the target observation path and Intel EPT is a control path. Raw
-SREGS2 bytes, flags, cached PDPTRs, CR0/CR3/CR4, PDPT RAM, UART, and RIP are
-retained. The result is host/KVM observation evidence and is not a consistency
-proof or a change to restore semantics.
-The x86 workflow runs this as a continue-on-error informational step on every
-supported NPT/EPT host, including when the required snapshot gate fails, and
-keeps its report with the existing snapshot artifacts.
-
-
 ## Preparing x86 KVM snapshot boundaries
 
 `Backend::prepare_snapshot` reconciles backend execution state before a logical
@@ -197,26 +142,11 @@ AMD reuse can change that header despite equal final modeled CPU state. Snapshot
 consistency remains under investigation; preparation is not a proven universal
 fixed point.
 
-A separate test-only `XSAVE_ENTRY_WARMUP` arm executes guest XRSTOR-to-init,
-XSAVE, and HLT once in each fresh fixture, then restores the intended initial
-CPU state and all RAM before any reference execution. It tests whether a first
-guest FPU transition explains the AMD fresh/reused difference. Production
-construction does not execute this warmup; the original differential remains
-unchanged when the variable is absent.
-
 `XSAVE_ENTRY_LONG_MODE` selects a separate fixed-CPU control with identity-mapped
 64-bit code and XSAVE64/XRSTOR64, matching the shipped Linux execution mode.
 The original entry fixtures use real mode, so their failures alone do not
 establish that the same instruction sequence diverges in 64-bit mode. Both
 sets retain full CPU and RAM comparisons; the mode is recorded in CI evidence.
-
-D1 selects one exact cohort with `XSAVE_ENTRY_CASE` and records a scoped tracefs
-instance using `tests/xsave-exit-trace.sh`. Phase markers bracket each actual
-guest run so in-kernel `kvm:kvm_exit` events can be assigned to reference, cold,
-and reused execution. The trace includes the event format, guest RIP and exit
-reason; missing tracing support is an unavailable diagnostic, not confirmation
-of the proposed hidden nested-page fault. The trace instance is removed after
-its contents are retained, including when the raw oracle fails.
 
 ## Synthetic guest XSAVE canonicalization
 
@@ -224,7 +154,7 @@ The ignored Linux x86 test
 `kvm_sys::xsave_diagnostic::canonical::snapshot_guest_canonicalization_preserves_complete_endpoints`
 executes `xsave_canonical_guest.S` in long mode with XCR0=7. It requires AVX and
 XSAVEC support and a fresh `XSAVE_CANONICAL_REPORT_DIR`; set
-`XSAVE_ENTRY_LONG_MODE=1`, leave `XSAVE_ENTRY_WARMUP` unset, and run on one fixed
+`XSAVE_ENTRY_LONG_MODE=1`, and run on one fixed
 CPU. This is a test fixture, not a kernel or admission-policy change.
 
 `snapshot_canonical_entry_restores_match_uninterrupted_execution` also applies
@@ -257,7 +187,7 @@ control on that host. Reports retain endpoint RAM, modeled state, raw
 KVM_GET_XSAVE2, expected images, guest bytes, and breakpoint offsets. Broader host
 qualification remains separate from this synthetic test.
 
-The D1 `XSAVE_ENTRY_PREFAULT=1` control populates the entire fixture RAM through
+The `XSAVE_ENTRY_PREFAULT=1` control populates the entire fixture RAM through
 `KVM_PRE_FAULT_MEMORY` after vCPU configuration and host writes that
 materialize every RAM page (avoiding shared zero-page CoW), without executing guest
 instructions. This full-RAM oracle disables dirty logging before mapping in
@@ -266,11 +196,10 @@ first XSAVE write. Production memory policy and the original control remain
 unchanged. It retries partial progress and interruptions. Missing capability
 or unsupported vCPU mode fails explicitly with `XSAVE_PREFAULT_UNSUPPORTED`;
 that result does not qualify the fixture. Leaving the variable unset preserves
-the unfaulted control. Combining it with guest warmup is rejected. The ioctl
-creates stage-2 read mappings and does not break CoW or set accessed bits, so the
-paired exit traces must establish whether the XSAVE write fault disappeared;
+the unfaulted control. The ioctl creates stage-2 read mappings and does not break CoW or set accessed bits, so the
+paired endpoint results must establish whether the XSAVE write fault disappeared;
 successful prefault completion alone does not establish that result. Bounded CI
-retains the single-cohort trace and all restore/debug-entry prefault cohorts.
+retains the single-cohort result and all restore/debug-entry prefault cohorts.
 
 The non-default `xsave-diagnostics` feature exposes a one-shot hardware
 execution breakpoint for native guest-kernel tests. KVM verifies the debug
@@ -293,9 +222,9 @@ KVM images, checks capture/restore byte preservation, and compares guest STMXCSR
 after continued and cold-restored runs. The guest value is reported, not assumed
 to match the imported MXCSR: a host may retain nondefault bytes in its KVM UABI
 yet initialize live MXCSR on guest entry when SSE presence is absent.
-It requires AVX, a fresh `XSAVE_MXCSR_REPORT_DIR`, and no XSAVE_ENTRY_WARMUP
-setting. `XSAVE_ENTRY_LONG_MODE=1` selects the production-mode SIB-addressed
-STMXCSR instruction; otherwise it uses the fixture's 16-bit real mode. This is a valid-state KVM round trip,
+It requires AVX and a fresh `XSAVE_MXCSR_REPORT_DIR`. `XSAVE_ENTRY_LONG_MODE=1`
+selects the production-mode SIB-addressed STMXCSR instruction; otherwise it uses
+the fixture's 16-bit real mode. This is a valid-state KVM round trip,
 not a claim that every host naturally emits that presence bitmap.
 
 `natural_avx_mxcsr_survives_capture_and_restore` requires long mode. The guest
@@ -312,11 +241,7 @@ metadata confirms compacted FPU format; the natural test reports presence 6.
 The imported presence-4 case therefore does not establish naturally occurring
 register-value corruption. The precise host restore instruction was not traced.
 
-Snapshot preparation hardware coverage separates required state preservation
-preservation from raw presence characterization. The required test compares CPU
-state excluding only raw presence, RAM, exit counts, readiness, pending events
-and CR8 after each preparation. Raw transitions are printed explicitly. A
-separate informational diagnostic retains repeated-preparation and post-HLT
-raw-bitmap stability failures; these failures are not passes. Raw entry and
-reentry characterization remains recorded on every CI host, while obsolete
-XRSTOR warmup CI cohorts are retired. Production preparation is unchanged.
+Snapshot preparation coverage compares CPU state excluding only raw presence,
+RAM, exit counts, readiness, pending events, and CR8 after each preparation.
+Raw transitions are printed explicitly, and the preparation and restore guard
+regressions retain their failure evidence. Production preparation is unchanged.

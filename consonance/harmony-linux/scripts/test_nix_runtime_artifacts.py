@@ -67,6 +67,10 @@ class BridgeTests(unittest.TestCase):
         self.package()
         for name in ["bzImage", "initramfs-oci.cpio.gz", "initramfs.cpio.gz"]:
             self.assertEqual((self.output / name).read_bytes(), (self.root / "x86_64" / name).read_bytes())
+        self.assertEqual((self.output / "oci-runtime.manifest").read_bytes(),
+                         (self.root / "x86_64/oci-runtime.manifest").read_bytes())
+        self.assertEqual({p.name for p in (self.output / "build-provenance").iterdir()},
+                         {BRIDGE.PAYLOAD_MANIFEST, BRIDGE.PROVENANCE, "MANIFEST.sha256"})
         self.assertEqual(BRIDGE.runtime.verify(self.repo, self.output, "x86_64")["scope"], "exact-input")
         (self.output / "build-provenance/MANIFEST.sha256").write_text("mutated")
         with self.assertRaises(ValueError):

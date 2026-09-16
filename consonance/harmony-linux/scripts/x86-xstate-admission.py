@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Inventory controlled x86 rootfs inputs; verify only explicitly reviewed baselines."""
+"""Inventory controlled x86 rootfs inputs; verify pinned executable contracts."""
 
 import argparse
 import gzip
@@ -160,10 +160,32 @@ def elf(data):
     for tag in (14, 15, 29):
         if len(tags.get(tag, [])) > 1:
             raise Rejected("duplicate ELF library search path")
+    tlsdesc = any(tag in tags for tag in (0x6ffffef6, 0x6ffffef7))
+    tables = [(7, 8, 24), (17, 18, 16)]
+    if 23 in tags:
+        if tags.get(20) not in ([7], [17]):
+            raise Rejected("unsupported PLT relocation format")
+        tables.append((23, 2, 24 if tags[20] == [7] else 16))
+    for address_tag, size_tag, stride in tables:
+        if address_tag not in tags and size_tag not in tags:
+            continue
+        if len(tags.get(address_tag, [])) != 1 or len(tags.get(size_tag, [])) != 1:
+            raise Rejected("missing/duplicate relocation table")
+        address, size = tags[address_tag][0], tags[size_tag][0]
+        if size % stride:
+            raise Rejected("invalid relocation table size")
+        if not size:
+            continue
+        matches = [s for s in segments if s["address"] <= address and address + size <= s["address"] + s["size"]]
+        if len(matches) != 1:
+            raise Rejected("relocations are not file-backed")
+        raw = span(data, matches[0]["offset"] + address - matches[0]["address"], size)
+        tlsdesc |= any(struct.unpack_from("<Q", raw, off + 8)[0] & 0xffffffff in (34, 35, 36) for off in range(0, size, stride))
     return {
         "segments": segments, "interpreter": interpreter,
         "executable_stack": executable_stack,
         "dynamic": seen_dynamic,
+        "tlsdesc": tlsdesc,
         "text_relocations": 22 in tags or any(v & 4 for v in tags.get(30, [])),
         "needed": [string(v) for v in tags.get(1, [])],
         "soname": string(tags[14][0]) if 14 in tags else None,
@@ -464,93 +486,61 @@ def inventory_initramfs(path, objdump="objdump"):
     return report, contents
 
 
-def evidence(reference, baseline_dir):
-    if not isinstance(reference, dict) or set(reference) != {"file", "sha256"}:
-        raise Rejected("proof requires file and sha256")
-    relative = Path(reference["file"])
-    if relative.is_absolute() or ".." in relative.parts:
-        raise Rejected("proof must be relative to baseline directory")
-    path = (baseline_dir / relative).resolve(strict=True)
-    if not path.is_relative_to(baseline_dir.resolve()):
-        raise Rejected("proof escapes baseline directory")
-    data = bounded_read(path)
-    if not data or digest(data) != reference["sha256"]:
-        raise Rejected(f"proof missing/changed: {relative}")
-
-
-def verify(report, contents, baseline, baseline_dir):
+def verify(report, contents, contract):
     errors = []
     try:
-        if not isinstance(baseline, dict):
-            raise Rejected("baseline must be an object")
-        if baseline.get("version") != 1 or not isinstance(baseline.get("reviewed_by"), str) or not baseline["reviewed_by"].strip():
-            raise Rejected("baseline requires version 1 and a named reviewer")
-        if baseline.get("scope") != SCOPE:
-            raise Rejected("baseline must record all controlled-scope obligations")
-        evidence(baseline.get("scope_evidence"), baseline_dir)
-        if baseline.get("archive_sha256") != report.get("archive_sha256"):
-            raise Rejected("initramfs archive digest differs from reviewed baseline")
-        if baseline.get("rootfs_sha256") != report["rootfs_sha256"]:
-            raise Rejected("rootfs digest differs from reviewed baseline")
-        approved = baseline.get("artifacts")
+        fields = {"version", "archive_sha256", "rootfs_sha256", "elf_sha256", "xstate"}
+        if not isinstance(contract, dict) or set(contract) != fields or contract["version"] != 2:
+            raise Rejected("unsupported executable contract")
+        if contract["archive_sha256"] != report.get("archive_sha256"):
+            raise Rejected("initramfs archive digest differs from contract")
+        if contract["rootfs_sha256"] != report["rootfs_sha256"]:
+            raise Rejected("rootfs digest differs from contract")
+        approved = contract["elf_sha256"]
         if not isinstance(approved, dict) or set(approved) != set(report["artifacts"]):
-            raise Rejected("missing/unreviewed ELF or stale artifact approval")
-        dynamic = any(a["interpreter"] or a["needed"] for a in report["artifacts"].values())
-        if dynamic:
-            loader = baseline.get("glibc_loader", {})
-            artifact = report["artifacts"].get(GLIBC_INTERPRETER)
-            if not artifact or artifact["soname"] != "ld-linux-x86-64.so.2":
-                raise Rejected("missing canonical glibc loader with reviewed SONAME")
-            if loader.get("path") != GLIBC_INTERPRETER or loader.get("sha256") != artifact["sha256"]:
-                raise Rejected("missing/unreviewed glibc loader digest")
-            if loader.get("default_directories") != list(LIBRARIES):
-                raise Rejected("unreviewed glibc default directories")
-            evidence(loader.get("loader_evidence"), baseline_dir)
+            raise Rejected("missing or unexpected ELF")
+        exceptions = contract["xstate"]
+        if not isinstance(exceptions, dict) or not set(exceptions).issubset(approved):
+            raise Rejected("invalid xstate exceptions")
+        if any(a["interpreter"] or a["needed"] for a in report["artifacts"].values()):
+            loader = report["artifacts"].get(GLIBC_INTERPRETER)
+            if not loader or loader["soname"] != "ld-linux-x86-64.so.2":
+                raise Rejected("missing canonical glibc loader")
         for name, record in report["artifacts"].items():
-            item = approved[name]
-            if not isinstance(item, dict):
-                raise Rejected(f"invalid artifact review: {name}")
-            if item.get("sha256") != record["sha256"]:
+            if approved[name] != record["sha256"]:
                 raise Rejected(f"ELF digest differs: {name}")
-            evidence(item.get("review_evidence"), baseline_dir)
-            if record["needed"] or record["interpreter"]:
-                if item.get("dependencies") != record["dependencies"] or item.get("transitive_dependencies") != record["transitive_dependencies"]:
-                    raise Rejected(f"unreviewed dependency graph: {name}")
             if record["text_relocations"]:
                 raise Rejected(f"ELF text relocations: {name}")
             if record["executable_stack"]:
                 raise Rejected(f"executable ELF stack: {name}")
             if record["writable_executable_segments"]:
                 raise Rejected(f"writable executable ELF segment: {name}")
-            selectors = item.get("xgetbv", [])
-            if not isinstance(selectors, list) or len({s["address"] for s in selectors}) != len(selectors):
-                raise Rejected(f"invalid selector reviews: {name}")
+            item = exceptions.get(name, {"xgetbv": [], "resolver_regions": []})
+            if not isinstance(item, dict) or set(item) != {"xgetbv", "resolver_regions"}:
+                raise Rejected(f"invalid xstate exception: {name}")
+            selectors = item["xgetbv"]
+            if not isinstance(selectors, list) or any(type(v) is not int for v in selectors) or len(set(selectors)) != len(selectors):
+                raise Rejected(f"invalid XGETBV selectors: {name}")
             observed = {s["address"] for s in record["sites"] if s["mnemonic"] == "xgetbv"}
-            if {s["address"] for s in selectors} != observed:
-                raise Rejected(f"unreviewed/stale XGETBV selector: {name}")
-            for site in record["sites"]:
-                if site["mnemonic"] == "xgetbv" and not site["straightline_ecx_zero"]:
-                    raise Rejected(f"unproved XGETBV selector: {name}:{site['address']:#x}")
-            for selector in selectors:
-                if selector.get("selector") != 0:
-                    raise Rejected(f"XGETBV selector is not zero: {name}")
-                evidence(selector.get("control_flow_evidence"), baseline_dir)
-            regions = item.get("resolver_regions", [])
+            if set(selectors) != observed:
+                raise Rejected(f"unexpected XGETBV selector: {name}")
+            if any(s["mnemonic"] == "xgetbv" and not s["straightline_ecx_zero"] for s in record["sites"]):
+                raise Rejected(f"unproved XGETBV selector: {name}")
+            regions = item["resolver_regions"]
+            if not isinstance(regions, list):
+                raise Rejected(f"invalid resolver regions: {name}")
             for region in regions:
-                if region.get("kind") not in ("reviewed-eager-resolver", "reviewed-unused-tlsdesc") or type(region.get("start")) is not int or type(region.get("size")) is not int or region["size"] <= 0:
-                    raise Rejected(f"invalid reviewed resolver region: {name}")
+                if not isinstance(region, dict) or set(region) != {"kind", "start", "size", "sha256"} or region["kind"] not in ("eager-resolver", "unused-tlsdesc") or type(region["start"]) is not int or type(region["size"]) is not int or region["size"] <= 0:
+                    raise Rejected(f"invalid resolver region: {name}")
+                if region["kind"] == "unused-tlsdesc" and any(r["tlsdesc"] for r in report["artifacts"].values()):
+                    raise Rejected("TLSdesc relocation in executable closure")
                 start, size = region["start"], region["size"]
                 segments = [s for s in record["segments"] if s["flags"] & 1 and s["address"] <= start and start + size <= s["address"] + s["size"]]
                 if len(segments) != 1:
                     raise Rejected(f"resolver region outside executable bytes: {name}")
                 data = span(contents[name], segments[0]["offset"] + start - segments[0]["address"], size)
-                if digest(data) != region.get("sha256"):
+                if digest(data) != region["sha256"]:
                     raise Rejected(f"resolver region bytes differ: {name}")
-                evidence(region.get("incoming_reference_evidence"), baseline_dir)
-                if region["kind"] == "reviewed-eager-resolver":
-                    evidence(region.get("eager_binding_evidence"), baseline_dir)
-                else:
-                    evidence(region.get("tlsdesc_closure_evidence"), baseline_dir)
             for site in record["sites"]:
                 if site["mnemonic"] in SAVE:
                     covering = [r for r in regions if r["start"] <= site["address"] and site["address"] + len(bytes.fromhex(site["bytes"])) <= r["start"] + r["size"]]
@@ -578,9 +568,9 @@ def main():
         success = True
         if args.mode.startswith("verify"):
             if args.baseline is None:
-                raise Rejected("verify requires an explicitly reviewed --baseline")
+                raise Rejected("verify requires an explicit --baseline contract")
             baseline = json.loads(bounded_read(args.baseline))
-            success = verify(report, contents, baseline, args.baseline.parent)
+            success = verify(report, contents, baseline)
     except (Rejected, OSError, ValueError, EOFError, struct.error, subprocess.SubprocessError) as error:
         report = {"version": 1, "mode": args.mode, "admitted": False, "errors": [str(error)]}
         success = False

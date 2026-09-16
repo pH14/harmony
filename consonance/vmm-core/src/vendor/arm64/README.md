@@ -26,8 +26,6 @@ backend boundary.
 architectural comparator in the parent module compares vCPU and canonical GIC
 fields independently of snapshot hashes.
 
-Pvclock-bearing device blobs use versions 9–12 for pending registrations so
-the page GPA, registration capability, and pending-versus-armed handshake state
-survive capture and restore. Already-representable states retain legacy
-versions 5–8 bytes, which remain readable; a legacy GPA implies an armed
-registration because those writers refused to seal pending registrations.
+Device blobs use the current version 13 format. Presence fields describe the
+optional GIC, doorbell, and pvclock records; pvclock records preserve the page
+GPA, registration capability, and pending-versus-armed handshake state.

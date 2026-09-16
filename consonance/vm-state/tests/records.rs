@@ -3,8 +3,8 @@
 use vm_state::{Arm64VmState, SnapshotRecords, VmState};
 
 fn engine_state_lifecycle<S: SnapshotRecords>(mut state: S) {
-    let legacy = <S as SnapshotRecords>::encode(&state).unwrap();
-    let restored = <S as SnapshotRecords>::decode(&legacy).unwrap();
+    let initial_blob = <S as SnapshotRecords>::encode(&state).unwrap();
+    let restored = <S as SnapshotRecords>::decode(&initial_blob).unwrap();
     assert!(restored.engine_state().is_empty());
 
     let first = vec![0xA5, 0x00, 0xFE, 0x11];
@@ -27,7 +27,7 @@ fn engine_state_lifecycle<S: SnapshotRecords>(mut state: S) {
     let reset_blob = <S as SnapshotRecords>::encode(&reset).unwrap();
     let reset_restored = <S as SnapshotRecords>::decode(&reset_blob).unwrap();
     assert!(reset_restored.engine_state().is_empty());
-    assert_eq!(reset_blob, legacy);
+    assert_eq!(reset_blob, initial_blob);
 }
 
 #[test]

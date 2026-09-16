@@ -622,7 +622,7 @@ jobs:
             exit 1
           fi
           printf '%s\n' 'SNAPSHOT_GATE_STATUS=passed' | tee snapshot-report/required-tests.status
-      - name: Trace hidden KVM exits in one fixed-CPU XRSTOR reuse cohort
+      - name: Record the fixed-CPU raw XRSTOR reuse counterexample
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}
         continue-on-error: true
         env:
@@ -633,13 +633,12 @@ jobs:
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           printf 'fixed_cpu=%s\ncase=xcr3-seed0-xrstor\nmode=64-bit\nwarmup=disabled\n' "$cpu" > snapshot-report/xsave-d1.txt
-          sudo --preserve-env env HOME="$HOME" PATH="$PATH" timeout -k 10 120 bash consonance/vmm-backend/tests/xsave-exit-trace.sh \
-            snapshot-report/xsave-d1-trace taskset -c "$cpu" \
+          timeout -k 10 120 taskset -c "$cpu" \
             cargo test --locked --release -p vmm-backend --lib \
               kvm_sys::xsave_diagnostic::snapshot_entry_restores_match_uninterrupted_execution \
               -- --ignored --exact --test-threads=1 --nocapture \
               2>&1 | tee snapshot-report/xsave-d1.log
-      - name: Trace prefaulted KVM exits in one fixed-CPU XRSTOR reuse cohort
+      - name: Record the prefaulted raw XRSTOR reuse counterexample
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}
         continue-on-error: true
         env:
@@ -651,8 +650,7 @@ jobs:
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           printf 'fixed_cpu=%s\ncase=xcr3-seed0-xrstor\nmode=64-bit\nwarmup=disabled\nprefault=enabled\ndirty_logging=disabled\n' "$cpu" > snapshot-report/xsave-d1-prefault.txt
-          sudo --preserve-env env HOME="$HOME" PATH="$PATH" timeout -k 10 120 bash consonance/vmm-backend/tests/xsave-exit-trace.sh \
-            snapshot-report/xsave-d1-prefault-trace taskset -c "$cpu" \
+          timeout -k 10 120 taskset -c "$cpu" \
             cargo test --locked --release -p vmm-backend --lib \
               kvm_sys::xsave_diagnostic::snapshot_entry_restores_match_uninterrupted_execution \
               -- --ignored --exact --test-threads=1 --nocapture \
@@ -838,57 +836,13 @@ jobs:
             grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "snapshot-report/$name.log" || failed=1
           done
           exit "$failed"
-      - name: Record PAE SREGS2 phase diagnostic (informational)
-        if: ${{ !cancelled() && steps.host.outcome == 'success' && (steps.host.outputs.amd_npt == 'true' || steps.host.outputs.intel_ept == 'true') }}
-        continue-on-error: true
-        env:
-          CARGO_TERM_COLOR: never
-          PAE_PHASE_REPORT_DIR: ${{ github.workspace }}/snapshot-report/pae-phase
-        run: |
-          set -euo pipefail
-          mkdir -p "$PAE_PHASE_REPORT_DIR"
-          set +e
-          timeout -k 10 120 cargo test --locked --release -p vmm-backend --lib \
-            kvm_sys::xsave_diagnostic::x86_pae_sregs2_phase_observations \
-            -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee snapshot-report/pae-phase.log
-          pipeline_status=("${PIPESTATUS[@]}")
-          set -e
-          printf 'CARGO_EXIT=%s\nTEE_EXIT=%s\n' "${pipeline_status[0]}" "${pipeline_status[1]}" \
-            > snapshot-report/pae-phase.status
-          test "${pipeline_status[0]}" -eq 0
-          test "${pipeline_status[1]}" -eq 0
-          grep -Fq 'running 1 test' snapshot-report/pae-phase.log
-          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/pae-phase.log
-      - name: Record raw XSAVE acquisition and restore phases
-        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
-        continue-on-error: true
-        env:
-          CARGO_TERM_COLOR: never
-          XSAVE_RAW_REPORT_DIR: ${{ github.workspace }}/snapshot-report/xsave-raw
-        run: |
-          set -euo pipefail
-          mkdir -p "$XSAVE_RAW_REPORT_DIR"
-          set +e
-          timeout -k 10 120 cargo test --locked --release -p vmm-backend --lib \
-            kvm_sys::xsave_diagnostic::raw_xsave_presence_phases \
-            -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee snapshot-report/xsave-raw.log
-          pipeline_status=("${PIPESTATUS[@]}")
-          set -e
-          printf 'CARGO_EXIT=%s\nTEE_EXIT=%s\n' "${pipeline_status[0]}" "${pipeline_status[1]}" \
-            > snapshot-report/xsave-raw.status
-          test "${pipeline_status[0]}" -eq 0
-          test "${pipeline_status[1]}" -eq 0
-          grep -Fq 'running 1 test' snapshot-report/xsave-raw.log
-          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/xsave-raw.log
       - name: Explain informational XSAVE results
         if: always()
         run: |
           printf '%s\n' \
-            'Raw XSAVE entry, reentry, acquisition and preparation-presence checks are informational hardware diagnostics on every host.' \
+            'Raw XSAVE entry, reentry and preparation-presence checks are informational hardware diagnostics on every host.' \
             'Informational failures are retained failures, not passes. Raw bitmap identity remains unresolved; production snapshot serialization is unchanged.' \
-            'Preparation invariants excluding raw presence, D3 canonical endpoints and full-VMM snapshot checks remain required. The obsolete XRSTOR warmup cohorts are retired.' \
+            'Preparation invariants excluding raw presence, D3 canonical endpoints and full-VMM snapshot checks remain required.' \
             >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()

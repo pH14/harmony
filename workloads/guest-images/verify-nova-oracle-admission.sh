@@ -30,7 +30,7 @@ if ! "$oracle" --prepare-admission "$kernel" "$platform" "$oci" "$rom" "$work/du
     >"$report/dump.log" 2>&1; then
     status=1
 elif ! python3 "$here/verify-prepared-admission.py" verify "$work/dump" \
-    --output "$work/verification" --oracle-executable "$oracle" \
+    --output "$work/verification" \
     --baseline "$here/admission/nova-oracle-composition.json" \
     >"$report/verification.log" 2>&1; then
     status=1

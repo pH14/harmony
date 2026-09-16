@@ -21,12 +21,6 @@ pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 
 pub const VM_STATE_VERSION: u16 = 6;
 
-pub(crate) const VM_STATE_CPU_VERSION: u16 = 5;
-
-pub(crate) const VM_STATE_ENGINE_VERSION: u16 = 4;
-
-pub const VM_STATE_LEGACY_VERSION: u16 = 3;
-
 pub const ARCH_X86_64: u16 = 1;
 
 pub const ARCH_AARCH64: u16 = 2;

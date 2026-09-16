@@ -10,13 +10,10 @@ use crate::types::{
     VtimeState, Xcrs, XsaveImage,
 };
 use crate::wire::{
-    DebugRegsWire, DebugRegsWireV5, EventsWire, HeaderWire, MsrPairWire, RegsWire, SregsWire,
-    SregsWireV5, TimerEntryWire, VtimeWire, XcrsWire, XsaveRestoreBvWire,
+    DebugRegsWire, EventsWire, HeaderWire, MsrPairWire, RegsWire, SregsWire, TimerEntryWire,
+    VtimeWire, XcrsWire, XsaveRestoreBvWire,
 };
-use crate::{
-    ARCH_X86_64, VM_STATE_CPU_VERSION, VM_STATE_ENGINE_VERSION, VM_STATE_LEGACY_VERSION,
-    VM_STATE_MAGIC, VM_STATE_VERSION, VmState,
-};
+use crate::{ARCH_X86_64, VM_STATE_MAGIC, VM_STATE_VERSION, VmState};
 
 const TAG_REGS: u16 = 1;
 const TAG_SREGS: u16 = 2;
@@ -32,7 +29,7 @@ const TAG_HYPERCALL: u16 = 11;
 const TAG_DEVICES: u16 = 12;
 const TAG_CONTRACT_HASH: u16 = 13;
 
-const LEGACY_SECTION_COUNT: u16 = 13;
+const SECTION_COUNT: u16 = 13;
 
 const TAG_ENGINE_STATE: u16 = 14;
 
@@ -47,24 +44,14 @@ const CONTRACT_HASH_LEN: usize = 32;
 
 impl VmState {
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
-        let extended_cpu = has_extended_cpu_fields(self);
-        let version = if self.xsave_restore_bv.is_some() {
-            VM_STATE_VERSION
-        } else if extended_cpu {
-            VM_STATE_CPU_VERSION
-        } else if self.engine_state.is_empty() {
-            VM_STATE_LEGACY_VERSION
-        } else {
-            VM_STATE_ENGINE_VERSION
-        };
-        let section_count = LEGACY_SECTION_COUNT
+        let section_count = SECTION_COUNT
             + u16::from(!self.engine_state.is_empty())
             + u16::from(self.xsave_restore_bv.is_some());
         let mut out = Vec::new();
         out.extend_from_slice(
             HeaderWire {
                 magic: VM_STATE_MAGIC.into(),
-                version: version.into(),
+                version: VM_STATE_VERSION.into(),
                 arch: ARCH_X86_64.into(),
                 section_count: section_count.into(),
             }
@@ -72,29 +59,13 @@ impl VmState {
         );
 
         put_section(&mut out, TAG_REGS, RegsWire::from(&self.regs).as_bytes())?;
-        if version == VM_STATE_CPU_VERSION || version == VM_STATE_VERSION {
-            put_section(
-                &mut out,
-                TAG_SREGS,
-                SregsWireV5::from(&self.sregs).as_bytes(),
-            )?;
-        } else {
-            put_section(&mut out, TAG_SREGS, SregsWire::from(&self.sregs).as_bytes())?;
-        }
+        put_section(&mut out, TAG_SREGS, SregsWire::from(&self.sregs).as_bytes())?;
         put_section(&mut out, TAG_XCRS, XcrsWire::from(&self.xcrs).as_bytes())?;
-        if version == VM_STATE_CPU_VERSION || version == VM_STATE_VERSION {
-            put_section(
-                &mut out,
-                TAG_DEBUGREGS,
-                DebugRegsWireV5::from(&self.debugregs).as_bytes(),
-            )?;
-        } else {
-            put_section(
-                &mut out,
-                TAG_DEBUGREGS,
-                DebugRegsWire::from(&self.debugregs).as_bytes(),
-            )?;
-        }
+        put_section(
+            &mut out,
+            TAG_DEBUGREGS,
+            DebugRegsWire::from(&self.debugregs).as_bytes(),
+        )?;
         put_section(
             &mut out,
             TAG_EVENTS,
@@ -131,11 +102,7 @@ impl VmState {
             return Err(VmStateError::BadMagic(magic));
         }
         let version = header.version.get();
-        if version != VM_STATE_LEGACY_VERSION
-            && version != VM_STATE_ENGINE_VERSION
-            && version != VM_STATE_CPU_VERSION
-            && version != VM_STATE_VERSION
-        {
+        if version != VM_STATE_VERSION {
             return Err(VmStateError::UnsupportedVersion(version));
         }
         let arch = header.arch.get();
@@ -181,14 +148,8 @@ impl VmState {
 
             match tag {
                 TAG_REGS => regs = Some(VcpuRegs::from(&read_fixed::<RegsWire>(payload)?)),
-                TAG_SREGS if version == VM_STATE_CPU_VERSION || version == VM_STATE_VERSION => {
-                    sregs = Some(VcpuSregs::from(&read_fixed::<SregsWireV5>(payload)?));
-                }
                 TAG_SREGS => sregs = Some(VcpuSregs::from(&read_fixed::<SregsWire>(payload)?)),
                 TAG_XCRS => xcrs = Some(Xcrs::from(&read_fixed::<XcrsWire>(payload)?)),
-                TAG_DEBUGREGS if version == VM_STATE_CPU_VERSION || version == VM_STATE_VERSION => {
-                    debugregs = Some(DebugRegs::from(&read_fixed::<DebugRegsWireV5>(payload)?));
-                }
                 TAG_DEBUGREGS => {
                     debugregs = Some(DebugRegs::from(&read_fixed::<DebugRegsWire>(payload)?));
                 }
@@ -207,20 +168,15 @@ impl VmState {
                 TAG_HYPERCALL => hypercall = Some(payload.to_vec()),
                 TAG_DEVICES => devices = Some(DeviceBlob(payload.to_vec())),
                 TAG_CONTRACT_HASH => contract_hash = Some(decode_contract_hash(payload)?),
-                TAG_ENGINE_STATE
-                    if version == VM_STATE_ENGINE_VERSION
-                        || version == VM_STATE_CPU_VERSION
-                        || version == VM_STATE_VERSION =>
-                {
+                TAG_ENGINE_STATE => {
+                    if payload.is_empty() {
+                        return Err(VmStateError::InvalidField);
+                    }
                     engine_state = Some(payload.to_vec());
                 }
-                TAG_ENGINE_STATE => return Err(VmStateError::UnknownTag(TAG_ENGINE_STATE)),
-                TAG_XSAVE_RESTORE_BV if version == VM_STATE_VERSION => {
+                TAG_XSAVE_RESTORE_BV => {
                     let value = read_fixed::<XsaveRestoreBvWire>(payload)?;
                     xsave_restore_bv = Some((&value).into());
-                }
-                TAG_XSAVE_RESTORE_BV => {
-                    return Err(VmStateError::UnknownTag(TAG_XSAVE_RESTORE_BV));
                 }
                 other => return Err(VmStateError::UnknownTag(other)),
             }
@@ -229,45 +185,6 @@ impl VmState {
         if !r.at_end() {
             return Err(VmStateError::TrailingBytes);
         }
-
-        let engine_state = match version {
-            VM_STATE_LEGACY_VERSION => Vec::new(),
-            VM_STATE_ENGINE_VERSION => {
-                let state = engine_state.ok_or(VmStateError::MissingSection(TAG_ENGINE_STATE))?;
-                if state.is_empty() {
-                    return Err(VmStateError::InvalidField);
-                }
-                state
-            }
-            VM_STATE_CPU_VERSION => {
-                let sregs = sregs
-                    .as_ref()
-                    .ok_or(VmStateError::MissingSection(TAG_SREGS))?;
-                let debugregs = debugregs
-                    .as_ref()
-                    .ok_or(VmStateError::MissingSection(TAG_DEBUGREGS))?;
-                if !has_extended_cpu_values(sregs, debugregs) {
-                    return Err(VmStateError::InvalidField);
-                }
-                match engine_state {
-                    Some(state) if state.is_empty() => return Err(VmStateError::InvalidField),
-                    Some(state) => state,
-                    None => Vec::new(),
-                }
-            }
-            VM_STATE_VERSION => {
-                let restore_bv =
-                    xsave_restore_bv.ok_or(VmStateError::MissingSection(TAG_XSAVE_RESTORE_BV))?;
-                let engine_state = match engine_state {
-                    Some(state) if state.is_empty() => return Err(VmStateError::InvalidField),
-                    Some(state) => state,
-                    None => Vec::new(),
-                };
-                xsave_restore_bv = Some(restore_bv);
-                engine_state
-            }
-            _ => unreachable!("version was checked above"),
-        };
 
         Ok(VmState {
             regs: regs.ok_or(VmStateError::MissingSection(TAG_REGS))?,
@@ -284,7 +201,7 @@ impl VmState {
             hypercall: hypercall.ok_or(VmStateError::MissingSection(TAG_HYPERCALL))?,
             devices: devices.ok_or(VmStateError::MissingSection(TAG_DEVICES))?,
             contract_hash: contract_hash.ok_or(VmStateError::MissingSection(TAG_CONTRACT_HASH))?,
-            engine_state,
+            engine_state: engine_state.unwrap_or_default(),
         })
     }
 
@@ -298,14 +215,6 @@ impl VmState {
         }
         Ok(header.version.get())
     }
-}
-
-fn has_extended_cpu_fields(state: &VmState) -> bool {
-    has_extended_cpu_values(&state.sregs, &state.debugregs)
-}
-
-fn has_extended_cpu_values(sregs: &VcpuSregs, debugregs: &DebugRegs) -> bool {
-    sregs.flags != 0 || sregs.pdptrs != [0; 4] || debugregs.flags != 0
 }
 
 pub(crate) fn put_section(out: &mut Vec<u8>, tag: u16, payload: &[u8]) -> Result<(), VmStateError> {

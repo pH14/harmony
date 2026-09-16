@@ -1,44 +1,35 @@
 # Controlled x86 execution admission
 
-These reviewed baselines bind the exact platform, NES/Nova and bare-PostgreSQL
-artifacts retained in `proofs/`. They support the serialized default Linux
-x86_64 KVM sessions and the separately reviewed Nova A–E oracle composition.
-They do not qualify other campaign/fault configurations, arbitrary OCI images,
-SQL, ROMs, or guest code changes.
+The schema-2 component contracts pin the platform, NES/Nova and PostgreSQL
+archives, filesystem metadata and every ELF digest. The `xstate` entries bind
+XGETBV selector addresses and the bytes of permitted loader resolver regions.
+The scanner checks the actual dependency closure, ECX-zero selector sequences,
+segment permissions and absence of TLSdesc relocations before allowing an
+`unused-tlsdesc` region. Startup eager binding is required for resolver exclusions.
 
-The primary-agent review accepts the exact ECX-zero instruction chains under
-normal trusted program control flow; it does not infer arbitrary indirect-entry
-safety from linear disassembly. The reviewed glibc resolver exclusions depend
-on startup eager binding and the fixed loading closure. PostgreSQL TLSdesc
-exclusion separately relies on zero TLSdesc relocations across all 152 ELFs;
-eager binding alone is insufficient. The checked composition binds pre-PID1
-boot arguments, process arguments/environment, mounts and code inputs.
+Composition contracts bind the prepared kernel, boot arguments, process
+arguments/environment, mounts and code inputs. NES and PostgreSQL use exact
+manifest hashes; the Nova A–E oracle binds its guest inputs and execution
+controls. Changed guest inputs fail admission until the contract is updated.
 
-No generated code, JIT, code mutation, additional modules, loader overrides or
-arbitrary interior function pointers are admitted. These are trusted workload
-conditions, not a runtime security boundary. The OCI root is writable; the
-scanner does not claim to enforce runtime filesystem immutability or W^X.
-The retained proposal-stage reports explain the evidence and its limitations;
-review acceptance is recorded in the top-level baseline reviewer fields.
+These contracts cover fixed trusted workloads. They exclude generated code,
+JITs, code mutation, additional modules, loader overrides and arbitrary interior
+function pointers. They are not a runtime security boundary: a writable OCI
+root is not made immutable by scanning it. Kernel XSAVE canonicalization and
+snapshot continuation tests are required in addition to static admission.
+See the harmony-linux README for the kernel and signal-handling restrictions.
 
-Use the real `prepare-admission` example described in the NES README, then run:
+Prepare the actual execution using the workload's `prepare-admission` command,
+then verify it:
 
 ```sh
 python3 workloads/guest-images/verify-prepared-admission.py verify DUMP \
   --baseline workloads/guest-images/admission/nes-composition.json \
-  --output NEW_REPORT_DIR
+  --output REPORT_DIR
 ```
 
-Use `postgres-composition.json` for the exact PostgreSQL dump. A changed input
-or proof must fail verification until reviewed. A successful static admission
-result is distinct from kernel/endpoint qualification and does not settle raw
-restore-bitmap membership in snapshot identity. Runtime host qualification and
-remaining bare-metal AMD attribution are recorded in the component README/PR.
-
-`nova-oracle-composition.json` reviews the fixed A–E guest inputs and controls.
-Its guest composition digest excludes only host executable/source provenance;
-each actual candidate still binds those hashes and verification requires the
-actual executable. Both Nova CI A–E paths run `verify-nova-oracle-admission.sh`
-immediately before execution using the same executable and input paths. The
-gate requires oracle mode and forbids a tree-seed override. A host-only rebuild
-can reuse this guest review; changed guest bytes/configuration cannot.
+Use `postgres-composition.json` for PostgreSQL. Nova's A–E commands invoke
+`verify-nova-oracle-admission.sh` with their actual executable and guest input
+paths immediately before execution. The oracle contract requires oracle mode
+and forbids a tree-seed override. No retained evidence archive or host executable
+hash is part of the guest contract.

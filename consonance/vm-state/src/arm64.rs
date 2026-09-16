@@ -11,7 +11,7 @@ use crate::error::VmStateError;
 use crate::records::SnapshotRecords;
 use crate::types::{DeviceBlob, MpState, TimerQueueState, VtimeState};
 use crate::wire::{HeaderWire, VtimeWire};
-use crate::{ARCH_AARCH64, VM_STATE_ENGINE_VERSION, VM_STATE_LEGACY_VERSION, VM_STATE_MAGIC};
+use crate::{ARCH_AARCH64, VM_STATE_MAGIC, VM_STATE_VERSION};
 
 const TAG_REGS: u16 = 1;
 const TAG_SYSREGS: u16 = 2;
@@ -26,9 +26,7 @@ const TAG_DEBUG: u16 = 10;
 const TAG_VTIMER: u16 = 11;
 const TAG_INTERRUPTS: u16 = 12;
 
-const LEGACY_SECTION_COUNT: u16 = 12;
-
-const ENGINE_SECTION_COUNT: u16 = LEGACY_SECTION_COUNT + 1;
+const SECTION_COUNT: u16 = 12;
 
 const TAG_ENGINE_STATE: u16 = 13;
 
@@ -348,16 +346,12 @@ fn decode_interrupts(w: &Arm64InterruptsWire) -> Result<Arm64Interrupts, VmState
 
 impl Arm64VmState {
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
-        let (version, section_count) = if self.engine_state.is_empty() {
-            (VM_STATE_LEGACY_VERSION, LEGACY_SECTION_COUNT)
-        } else {
-            (VM_STATE_ENGINE_VERSION, ENGINE_SECTION_COUNT)
-        };
+        let section_count = SECTION_COUNT + u16::from(!self.engine_state.is_empty());
         let mut out = Vec::new();
         out.extend_from_slice(
             HeaderWire {
                 magic: VM_STATE_MAGIC.into(),
-                version: version.into(),
+                version: VM_STATE_VERSION.into(),
                 arch: ARCH_AARCH64.into(),
                 section_count: section_count.into(),
             }
@@ -416,7 +410,7 @@ impl Arm64VmState {
             return Err(VmStateError::BadMagic(magic));
         }
         let version = header.version.get();
-        if version != VM_STATE_LEGACY_VERSION && version != VM_STATE_ENGINE_VERSION {
+        if version != VM_STATE_VERSION {
             return Err(VmStateError::UnsupportedVersion(version));
         }
         let arch = header.arch.get();
@@ -485,10 +479,12 @@ impl Arm64VmState {
                         payload,
                     )?)?);
                 }
-                TAG_ENGINE_STATE if version == VM_STATE_ENGINE_VERSION => {
+                TAG_ENGINE_STATE => {
+                    if payload.is_empty() {
+                        return Err(VmStateError::InvalidField);
+                    }
                     engine_state = Some(payload.to_vec());
                 }
-                TAG_ENGINE_STATE => return Err(VmStateError::UnknownTag(TAG_ENGINE_STATE)),
                 other => return Err(VmStateError::UnknownTag(other)),
             }
         }
@@ -498,17 +494,6 @@ impl Arm64VmState {
         }
 
         let vtime = vtime.ok_or(VmStateError::MissingSection(TAG_VTIME))?;
-        let engine_state = match version {
-            VM_STATE_LEGACY_VERSION => Vec::new(),
-            VM_STATE_ENGINE_VERSION => {
-                let state = engine_state.ok_or(VmStateError::MissingSection(TAG_ENGINE_STATE))?;
-                if state.is_empty() {
-                    return Err(VmStateError::InvalidField);
-                }
-                state
-            }
-            _ => unreachable!("version was checked above"),
-        };
         Ok(Arm64VmState {
             regs: regs.ok_or(VmStateError::MissingSection(TAG_REGS))?,
             sysregs: sysregs.ok_or(VmStateError::MissingSection(TAG_SYSREGS))?,
@@ -522,7 +507,7 @@ impl Arm64VmState {
             hypercall: hypercall.ok_or(VmStateError::MissingSection(TAG_HYPERCALL))?,
             devices: devices.ok_or(VmStateError::MissingSection(TAG_DEVICES))?,
             contract_hash: contract_hash.ok_or(VmStateError::MissingSection(TAG_CONTRACT_HASH))?,
-            engine_state,
+            engine_state: engine_state.unwrap_or_default(),
         })
     }
 }
@@ -646,19 +631,19 @@ mod tests {
     }
 
     #[test]
-    fn v4_engine_state_round_trips_multiple_payloads() {
+    fn current_engine_state_round_trips_multiple_payloads() {
         for payload in [vec![0x01], vec![0x00, 0xFE, 0xA5], (0u8..=255).collect()] {
             let mut state = sample();
             state.engine_state = payload.clone();
             let blob = state.encode().unwrap();
             assert_eq!(
                 u16::from_le_bytes(blob[4..6].try_into().unwrap()),
-                VM_STATE_ENGINE_VERSION
+                VM_STATE_VERSION
             );
             assert_eq!(
                 u16::from_le_bytes(blob[8..10].try_into().unwrap()),
                 13,
-                "v4 adds exactly one trailing section"
+                "current format adds exactly one trailing section"
             );
             let decoded = Arm64VmState::decode(&blob).unwrap();
             assert_eq!(decoded.engine_state, payload);
@@ -667,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn v4_engine_state_section_is_required_nonempty_and_last() {
+    fn current_engine_state_section_is_optional_nonempty_and_last() {
         let good_state = {
             let mut state = sample();
             state.engine_state = vec![1, 2, 3];
@@ -681,21 +666,19 @@ mod tests {
         let mut empty = sections.clone();
         empty.last_mut().unwrap().1.clear();
         assert_eq!(
-            Arm64VmState::decode(&pack(VM_STATE_ENGINE_VERSION, count, &empty)),
+            Arm64VmState::decode(&pack(VM_STATE_VERSION, count, &empty)),
             Err(VmStateError::InvalidField)
         );
 
         let mut missing = sections.clone();
         missing.pop();
-        assert_eq!(
-            Arm64VmState::decode(&pack(VM_STATE_ENGINE_VERSION, count - 1, &missing)),
-            Err(VmStateError::MissingSection(TAG_ENGINE_STATE))
-        );
+        let decoded = Arm64VmState::decode(&pack(VM_STATE_VERSION, count - 1, &missing)).unwrap();
+        assert!(decoded.engine_state.is_empty());
 
         let mut duplicate = sections.clone();
         duplicate.push(sections.last().unwrap().clone());
         assert_eq!(
-            Arm64VmState::decode(&pack(VM_STATE_ENGINE_VERSION, count + 1, &duplicate)),
+            Arm64VmState::decode(&pack(VM_STATE_VERSION, count + 1, &duplicate)),
             Err(VmStateError::DuplicateTag(TAG_ENGINE_STATE))
         );
 
@@ -703,7 +686,7 @@ mod tests {
         let last = out_of_order.len() - 1;
         out_of_order.swap(last - 1, last);
         assert_eq!(
-            Arm64VmState::decode(&pack(VM_STATE_ENGINE_VERSION, count, &out_of_order)),
+            Arm64VmState::decode(&pack(VM_STATE_VERSION, count, &out_of_order)),
             Err(VmStateError::SectionOrder(TAG_ENGINE_STATE - 1))
         );
 
@@ -712,11 +695,6 @@ mod tests {
         assert_eq!(
             Arm64VmState::decode(&trailing),
             Err(VmStateError::TrailingBytes)
-        );
-
-        assert_eq!(
-            Arm64VmState::decode(&pack(VM_STATE_LEGACY_VERSION, count, &duplicate)),
-            Err(VmStateError::UnknownTag(TAG_ENGINE_STATE))
         );
     }
 
@@ -732,35 +710,6 @@ mod tests {
         assert_eq!(
             VmState::decode(&arm),
             Err(VmStateError::UnsupportedArch(ARCH_AARCH64))
-        );
-    }
-
-    #[test]
-    fn x86_v5_and_v6_are_not_arm64_record_versions() {
-        let mut x86_v5 = VmState::default();
-        x86_v5.sregs.flags = 1;
-        let x86_v5_bytes = x86_v5.encode().unwrap();
-        assert_eq!(
-            u16::from_le_bytes(x86_v5_bytes[4..6].try_into().unwrap()),
-            5
-        );
-        assert_eq!(
-            Arm64VmState::decode(&x86_v5_bytes),
-            Err(VmStateError::UnsupportedVersion(5))
-        );
-
-        let x86_v6 = VmState {
-            xsave_restore_bv: Some(0x0102_0304_0506_0708),
-            ..Default::default()
-        };
-        let x86_v6_bytes = x86_v6.encode().unwrap();
-        assert_eq!(
-            u16::from_le_bytes(x86_v6_bytes[4..6].try_into().unwrap()),
-            crate::VM_STATE_VERSION
-        );
-        assert_eq!(
-            Arm64VmState::decode(&x86_v6_bytes),
-            Err(VmStateError::UnsupportedVersion(crate::VM_STATE_VERSION))
         );
     }
 

@@ -1,1 +1,0 @@
-{"ram_bytes":134217728,"seed":5642823696889628977,"run_budget":2000000000,"cmdline":"console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init","identity_tag":"","wall_limit":null,"defer_virtual_time_checkpoint_hashes":true}

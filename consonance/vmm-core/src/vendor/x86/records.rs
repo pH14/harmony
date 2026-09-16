@@ -390,10 +390,7 @@ pub(crate) fn has_active_event_injection(e: &vmm_backend::VcpuEvents) -> bool {
 }
 
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4544;
-const DEVICE_BLOB_VERSION_BASE: u16 = 3;
-
-const DEVICE_BLOB_VERSION_PVCLOCK_LEGACY: u16 = 4;
-const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 5;
+const DEVICE_BLOB_VERSION: u16 = 6;
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub(crate) struct UartState {
@@ -490,15 +487,7 @@ fn put_lapic(out: &mut Vec<u8>, s: &LapicState) {
 pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     let mut out = Vec::new();
     put_u32(&mut out, DEVICE_BLOB_MAGIC);
-    let pending_pvclock = d.pvclock.is_some_and(|pv| pv.gpa.is_some() && !pv.armed);
-    put_u16(
-        &mut out,
-        match d.pvclock {
-            Some(_) if pending_pvclock => DEVICE_BLOB_VERSION_PVCLOCK,
-            Some(_) => DEVICE_BLOB_VERSION_PVCLOCK_LEGACY,
-            None => DEVICE_BLOB_VERSION_BASE,
-        },
-    );
+    put_u16(&mut out, DEVICE_BLOB_VERSION);
     put_u64(&mut out, d.tsc_adjust);
     put_u32(&mut out, d.report_stream.len() as u32);
     for &word in &d.report_stream {
@@ -527,6 +516,7 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     }
     put_events(&mut out, &d.events);
     if let Some(pv) = &d.pvclock {
+        out.push(1);
         match pv.gpa {
             Some(g) => {
                 out.push(1);
@@ -535,9 +525,9 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
             None => out.push(0),
         }
         out.push(u8::from(pv.registrable));
-        if pending_pvclock {
-            out.push(u8::from(pv.armed));
-        }
+        out.push(u8::from(pv.armed));
+    } else {
+        out.push(0);
     }
     DeviceBlob(out)
 }
@@ -653,10 +643,7 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         return Err(bad("bad magic"));
     }
     let version = r.u16().ok_or(bad("truncated version"))?;
-    if !matches!(
-        version,
-        DEVICE_BLOB_VERSION_BASE | DEVICE_BLOB_VERSION_PVCLOCK_LEGACY | DEVICE_BLOB_VERSION_PVCLOCK
-    ) {
+    if version != DEVICE_BLOB_VERSION {
         return Err(bad("unsupported version"));
     }
     let tsc_adjust = r.u64().ok_or(bad("truncated tsc_adjust"))?;
@@ -689,10 +676,7 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         _ => return Err(bad("bad legacy flag")),
     };
     let events = r.events().ok_or(bad("truncated vcpu events"))?;
-    let pvclock = if matches!(
-        version,
-        DEVICE_BLOB_VERSION_PVCLOCK_LEGACY | DEVICE_BLOB_VERSION_PVCLOCK
-    ) {
+    let pvclock = if r.bool().ok_or(bad("bad pvclock presence flag"))? {
         let gpa = match r.u8().ok_or(bad("truncated pvclock gpa flag"))? {
             0 => None,
             1 => Some(r.u64().ok_or(bad("truncated pvclock gpa"))?),
@@ -704,20 +688,7 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
                 "pvclock record marks a registered page non-registrable (impossible tuple)",
             ));
         }
-        let armed = if version == DEVICE_BLOB_VERSION_PVCLOCK {
-            if gpa.is_none() {
-                return Err(bad("current pvclock record is missing its registered GPA"));
-            }
-            let armed = r.bool().ok_or(bad("bad pvclock armed flag"))?;
-            if armed {
-                return Err(bad(
-                    "current pvclock record must represent a pending registration",
-                ));
-            }
-            armed
-        } else {
-            gpa.is_some()
-        };
+        let armed = r.bool().ok_or(bad("bad pvclock armed flag"))?;
         if armed && gpa.is_none() {
             return Err(bad("pvclock record is armed without a registered page"));
         }
@@ -1632,7 +1603,7 @@ mod tests {
     }
 
     #[test]
-    fn unoffered_pvclock_encodes_the_v3_shape_byte_for_byte() {
+    fn device_blob_encodes_optional_pvclock_in_the_current_shape() {
         let d = DeviceState {
             tsc_adjust: 0x1234,
             report_stream: vec![7],
@@ -1643,11 +1614,7 @@ mod tests {
             pvclock: None,
         };
         let off = encode_device_blob(&d).0;
-        assert_eq!(
-            u16::from_le_bytes([off[4], off[5]]),
-            DEVICE_BLOB_VERSION_BASE,
-            "an unoffered VM must still encode the v3 version word"
-        );
+        assert_eq!(u16::from_le_bytes([off[4], off[5]]), DEVICE_BLOB_VERSION);
         let on = encode_device_blob(&DeviceState {
             pvclock: Some(PvclockSnapshot {
                 gpa: Some(0x4000),
@@ -1657,20 +1624,8 @@ mod tests {
             ..d.clone()
         })
         .0;
-        assert_eq!(
-            u16::from_le_bytes([on[4], on[5]]),
-            DEVICE_BLOB_VERSION_PVCLOCK
-        );
-        assert_eq!(
-            &on[6..off.len()],
-            &off[6..],
-            "the v5 encoding must extend the v3 body, not reshuffle it"
-        );
-        assert_eq!(
-            on.len(),
-            off.len() + 1 + 8 + 1 + 1,
-            "v5 appends the GPA-present flag + GPA + registrable + armed flags"
-        );
+        assert_eq!(u16::from_le_bytes([on[4], on[5]]), DEVICE_BLOB_VERSION);
+        assert_eq!(on.len(), off.len() + 1 + 8 + 1 + 1);
         assert_eq!(decode_device_blob(&off).unwrap(), d);
         assert_eq!(
             decode_device_blob(&on).unwrap().pvclock,
@@ -1709,111 +1664,19 @@ mod tests {
         .0;
         assert_eq!(
             u16::from_le_bytes([armed[4], armed[5]]),
-            DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
+            DEVICE_BLOB_VERSION
         );
-        assert_eq!(armed.len(), off.len() + 1 + 8 + 1);
-        let mut expected_legacy = on.clone();
-        expected_legacy.pop();
-        expected_legacy[4..6].copy_from_slice(&DEVICE_BLOB_VERSION_PVCLOCK_LEGACY.to_le_bytes());
-        assert_eq!(armed, expected_legacy);
+        assert_eq!(armed.len(), on.len());
+        assert!(decode_device_blob(&armed).unwrap().pvclock.unwrap().armed);
         assert_eq!(
             u16::from_le_bytes([unreg[4], unreg[5]]),
-            DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
+            DEVICE_BLOB_VERSION
         );
-        assert_eq!(unreg.len(), off.len() + 1 + 1);
+        assert_eq!(unreg.len(), off.len() + 1 + 1 + 1);
     }
 
     #[test]
-    fn legacy_pvclock_blob_derives_armed_from_the_gpa() {
-        let current = encode_device_blob(&DeviceState {
-            pvclock: Some(PvclockSnapshot {
-                gpa: Some(0x4000),
-                registrable: true,
-                armed: false,
-            }),
-            ..DeviceState::default()
-        })
-        .0;
-        let mut legacy = current[..current.len() - 1].to_vec();
-        legacy[4..6].copy_from_slice(&DEVICE_BLOB_VERSION_PVCLOCK_LEGACY.to_le_bytes());
-        assert_eq!(
-            decode_device_blob(&legacy).unwrap().pvclock,
-            Some(PvclockSnapshot {
-                gpa: Some(0x4000),
-                registrable: true,
-                armed: true,
-            })
-        );
-
-        let legacy_unregistered = encode_device_blob(&DeviceState {
-            pvclock: Some(PvclockSnapshot {
-                gpa: None,
-                registrable: false,
-                armed: false,
-            }),
-            ..DeviceState::default()
-        })
-        .0;
-        assert_eq!(
-            decode_device_blob(&legacy_unregistered).unwrap().pvclock,
-            Some(PvclockSnapshot {
-                gpa: None,
-                registrable: false,
-                armed: false,
-            })
-        );
-    }
-
-    #[test]
-    fn archived_legacy_pvclock_fixtures_round_trip_byte_exactly() {
-        for (blob, expected) in [
-            (
-                include_bytes!("../../../tests/fixtures/harmony-x86-v4-armed.bin").as_slice(),
-                PvclockSnapshot {
-                    gpa: Some(0x4000),
-                    registrable: true,
-                    armed: true,
-                },
-            ),
-            (
-                include_bytes!("../../../tests/fixtures/harmony-x86-v4-unregistered.bin")
-                    .as_slice(),
-                PvclockSnapshot {
-                    gpa: None,
-                    registrable: true,
-                    armed: false,
-                },
-            ),
-        ] {
-            assert_eq!(
-                u16::from_le_bytes([blob[4], blob[5]]),
-                DEVICE_BLOB_VERSION_PVCLOCK_LEGACY
-            );
-            let decoded = decode_device_blob(blob).unwrap();
-            assert_eq!(decoded.pvclock, Some(expected));
-            assert_eq!(encode_device_blob(&decoded).0, blob);
-        }
-    }
-
-    #[test]
-    fn new_pvclock_blob_rejects_impossible_registration_flags() {
-        let mut bad_armed = encode_device_blob(&DeviceState {
-            pvclock: Some(PvclockSnapshot {
-                gpa: Some(0x4000),
-                registrable: true,
-                armed: false,
-            }),
-            ..DeviceState::default()
-        })
-        .0;
-        *bad_armed.last_mut().unwrap() = 1;
-        assert!(matches!(
-            decode_device_blob(&bad_armed),
-            Err(SnapshotError::DeviceBlob(
-                "current pvclock record must represent a pending registration"
-            ))
-        ));
-
+    fn current_pvclock_blob_rejects_impossible_registration_flags() {
         let mut missing_gpa = encode_device_blob(&DeviceState {
             pvclock: Some(PvclockSnapshot {
                 gpa: Some(0x4000),
@@ -1826,10 +1689,11 @@ mod tests {
         let gpa_flag = missing_gpa.len() - 11;
         missing_gpa.drain(gpa_flag + 1..gpa_flag + 9);
         missing_gpa[gpa_flag] = 0;
+        *missing_gpa.last_mut().unwrap() = 1;
         assert!(matches!(
             decode_device_blob(&missing_gpa),
             Err(SnapshotError::DeviceBlob(
-                "current pvclock record is missing its registered GPA"
+                "pvclock record is armed without a registered page"
             ))
         ));
 
@@ -1858,6 +1722,14 @@ mod tests {
             Err(SnapshotError::DeviceBlob("bad magic"))
         ));
         let good = encode_device_blob(&DeviceState::default()).0;
+        for version in 1..DEVICE_BLOB_VERSION {
+            let mut unsupported = good.clone();
+            unsupported[4..6].copy_from_slice(&version.to_le_bytes());
+            assert!(matches!(
+                decode_device_blob(&unsupported),
+                Err(SnapshotError::DeviceBlob("unsupported version"))
+            ));
+        }
         for cut in 0..good.len() {
             assert!(
                 matches!(

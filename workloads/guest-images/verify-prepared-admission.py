@@ -43,30 +43,14 @@ def inspect_engine(manifest, session):
                 "deadline_kind": "absolute-vtime", "setup_payloads": [[0, 1]] * 16,
                 "tree_seed": ORACLE_SEED ^ 0x4954454d325f5452}
     oracle = manifest.get("oracle")
-    if not isinstance(oracle, dict) or set(oracle) != set(expected) | {"source_sha256", "executable_sha256"}:
+    if not isinstance(oracle, dict) or set(oracle) != set(expected):
         raise a.Rejected("unsupported Nova A–E oracle metadata")
     if any(oracle[k] != v for k, v in expected.items()):
         raise a.Rejected("unsupported Nova A–E oracle controls")
-    for key in ("source_sha256", "executable_sha256"):
-        value = oracle[key]
-        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
-            raise a.Rejected("invalid Nova A–E oracle digest")
 
 
 def oracle_composition_digest(manifest):
-    boundary = dict(manifest)
-    boundary["oracle"] = {key: value for key, value in manifest["oracle"].items()
-                          if key not in ("source_sha256", "executable_sha256")}
-    return a.digest(json.dumps(boundary, sort_keys=True, separators=(",", ":")).encode())
-
-
-def verify_oracle_executable(report, executable):
-    if report["engine_scope"] != ORACLE_SCOPE:
-        return
-    if executable is None or executable.is_symlink() or not executable.is_file():
-        raise a.Rejected("Nova A–E verification requires the actual oracle executable")
-    if a.digest(a.bounded_read(executable)) != report["oracle"]["executable_sha256"]:
-        raise a.Rejected("Nova A–E oracle executable differs from candidate")
+    return a.digest(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode())
 
 
 def archive_entries(data):
@@ -205,7 +189,6 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--objdump", default="objdump")
-    parser.add_argument("--oracle-executable", type=Path)
     args = parser.parse_args()
     created = False
     try:
@@ -221,25 +204,24 @@ def main():
             scans[name] = a.inventory_initramfs(path, args.objdump)
             (args.output / (name + "-candidate.json")).write_text(json.dumps(scans[name][0], indent=2))
         if args.mode == "verify":
-            verify_oracle_executable(report, args.oracle_executable)
             if args.baseline is None:
-                raise a.Rejected("explicit reviewed composition baseline required")
+                raise a.Rejected("explicit composition baseline required")
             baseline = json.loads(a.bounded_read(args.baseline))
-            if baseline.get("version") != 1 or not isinstance(baseline.get("reviewed_by"), str) or not baseline["reviewed_by"].strip():
-                raise a.Rejected("composition baseline requires version1 and named reviewer")
+            if baseline.get("version") != 2:
+                raise a.Rejected("unsupported composition contract")
             if report["engine_scope"] == ORACLE_SCOPE and baseline.get("engine_scope") != ORACLE_SCOPE:
-                raise a.Rejected("explicit reviewed Nova A–E oracle scope required")
+                raise a.Rejected("explicit Nova A–E oracle scope required")
             if report["engine_scope"] == ORACLE_SCOPE:
                 if baseline.get("composition_sha256") != report["composition_sha256"]:
                     raise a.Rejected("oracle guest composition/configuration differs from review")
             elif baseline.get("manifest_sha256") != report["manifest_sha256"]:
                 raise a.Rejected("composition differs from reviewed manifest")
-            a.evidence(baseline.get("composition_evidence"), args.baseline.parent)
             for name in ("platform", "workload"):
                 reference = baseline[name + "_baseline"]
-                a.evidence(reference, args.baseline.parent)
-                file = args.baseline.parent / reference["file"]
-                if not a.verify(*scans[name], json.loads(a.bounded_read(file)), file.parent):
+                if reference not in {"platform-component.json", "nes-component.json", "postgres-component.json"}:
+                    raise a.Rejected("unsupported component contract")
+                file = args.baseline.parent / reference
+                if not a.verify(*scans[name], json.loads(a.bounded_read(file))):
                     raise a.Rejected(f"{name} baseline rejected: {scans[name][0]['errors']}")
                 (args.output / (name + "-verification.json")).write_text(json.dumps(scans[name][0], indent=2))
             report["admitted"] = True

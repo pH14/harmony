@@ -1,17 +1,6 @@
 {
-  "version": 1,
-  "reviewed_by": "Codex primary-agent exact source, ELF, loader, selector and controlled-composition review, 2026-09-14",
+  "version": 2,
   "manifest_sha256": "1badf764ae2c833f164bbc1677d6194476658bd3b253567ea222dc762d953dc5",
-  "composition_evidence": {
-    "file": "proofs/nes-composition.md",
-    "sha256": "09957d74c804484bf229174f6ef21a3be615e1ecdec178a79b3dc352c939f789"
-  },
-  "platform_baseline": {
-    "file": "platform-component.json",
-    "sha256": "a293ffba80daf77f4446d30b7d69b2a06e213a0dd4dab30d9acf867744b134c5"
-  },
-  "workload_baseline": {
-    "file": "nes-component.json",
-    "sha256": "b4456b2a0dbec18742e5a0feee8a0cb19ac8ad778e60a2f9f84f8bbbb99405f8"
-  }
+  "platform_baseline": "platform-component.json",
+  "workload_baseline": "nes-component.json"
 }

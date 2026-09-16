@@ -1,1 +1,0 @@
-{"version":1,"argv":["/opt/harmony/play-agent","--nes-payload","--rom","/game.nes"],"env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","LD_BIND_NOW=1"],"cwd":"/","uid":0,"gid":0,"additional_gids":[],"bundle":null}

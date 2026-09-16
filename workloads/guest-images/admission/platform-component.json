@@ -1,106 +1,43 @@
 {
-  "version": 1,
-  "reviewed_by": "Codex primary-agent exact source, ELF, loader, selector and controlled-composition review, 2026-09-14",
   "rootfs_sha256": "54ffb8242d0ddcb2594858b581d5d23c054feb4efeb7965c9eef090b66e90a83",
   "archive_sha256": "ee6b601b9f3dc04f1547fbe5394df62933dd20e1b57139a1c0fe3d6cd40f3f70",
-  "scope": {
-    "startup_binding": "LD_BIND_NOW=1-before-every-exec",
-    "generated_code": "forbidden",
-    "writable_executable_memory": "forbidden",
-    "workloads": "controlled-trusted",
-    "loader_overrides": "forbidden"
+  "version": 2,
+  "elf_sha256": {
+    "/bin/busybox": "ed276986a91b1c13f6da78900446dfa4311e841d87d8f770ae3ca10b18767b70",
+    "/usr/bin/runc": "ce6353a8273004c5f917277846dd521c7185b653ca46cfe538cc16b1be254cc9",
+    "/usr/lib/harmony/supervisor": "6cc0b938db15ccff58e8db84e02ffec09b496d4deb752f2c62dd625c5dc21875"
   },
-  "scope_evidence": {
-    "file": "proofs/platform-scope.md",
-    "sha256": "96bd660b9ac256e094468ce700cb529653e1dffac2437ffda1b9ca1b173875cb"
-  },
-  "artifacts": {
+  "xstate": {
     "/bin/busybox": {
-      "sha256": "ed276986a91b1c13f6da78900446dfa4311e841d87d8f770ae3ca10b18767b70",
-      "review_evidence": {
-        "file": "proofs/platform-artifact-review.md",
-        "sha256": "58ca64bf3c097773cf18aaaee5a1695e013ff40e5325d4eeef6128f450bf1d23"
-      },
-      "dependencies": [],
-      "transitive_dependencies": {},
       "xgetbv": [
-        {
-          "address": 4663138,
-          "selector": 0,
-          "control_flow_evidence": {
-            "file": "proofs/platform-selectors.md",
-            "sha256": "d802019048c439258474020d747a2ee8ec08f222f7b2ebcb4afca9fd4581bad3"
-          }
-        }
+        4663138
       ],
       "resolver_regions": [
         {
+          "kind": "eager-resolver",
           "start": 5090064,
           "size": 205,
-          "sha256": "735459c051cb69af8a1cb6ed7d6675dd0ab1cef4f5ea5b07b5a1dfbc0fd68ef6",
-          "kind": "reviewed-eager-resolver",
-          "incoming_reference_evidence": {
-            "file": "proofs/platform-review.md",
-            "sha256": "8af6946ca47cdbffc716b49d56084b1ca00e01a4cfc5c178868990b01fd1b786"
-          },
-          "eager_binding_evidence": {
-            "file": "proofs/platform-review.md",
-            "sha256": "8af6946ca47cdbffc716b49d56084b1ca00e01a4cfc5c178868990b01fd1b786"
-          }
+          "sha256": "735459c051cb69af8a1cb6ed7d6675dd0ab1cef4f5ea5b07b5a1dfbc0fd68ef6"
         },
         {
+          "kind": "eager-resolver",
           "start": 5090272,
           "size": 189,
-          "sha256": "219a7e5e3e2cc5b936dd699bf5da9d9ed67a6bdb355d03723e3346eb1fa35b0a",
-          "kind": "reviewed-eager-resolver",
-          "incoming_reference_evidence": {
-            "file": "proofs/platform-review.md",
-            "sha256": "8af6946ca47cdbffc716b49d56084b1ca00e01a4cfc5c178868990b01fd1b786"
-          },
-          "eager_binding_evidence": {
-            "file": "proofs/platform-review.md",
-            "sha256": "8af6946ca47cdbffc716b49d56084b1ca00e01a4cfc5c178868990b01fd1b786"
-          }
+          "sha256": "219a7e5e3e2cc5b936dd699bf5da9d9ed67a6bdb355d03723e3346eb1fa35b0a"
         }
       ]
     },
     "/usr/bin/runc": {
-      "sha256": "ce6353a8273004c5f917277846dd521c7185b653ca46cfe538cc16b1be254cc9",
-      "review_evidence": {
-        "file": "proofs/platform-artifact-review.md",
-        "sha256": "58ca64bf3c097773cf18aaaee5a1695e013ff40e5325d4eeef6128f450bf1d23"
-      },
-      "dependencies": [],
-      "transitive_dependencies": {},
       "xgetbv": [
-        {
-          "address": 4217061,
-          "selector": 0,
-          "control_flow_evidence": {
-            "file": "proofs/platform-selectors.md",
-            "sha256": "d802019048c439258474020d747a2ee8ec08f222f7b2ebcb4afca9fd4581bad3"
-          }
-        }
-      ]
+        4217061
+      ],
+      "resolver_regions": []
     },
     "/usr/lib/harmony/supervisor": {
-      "sha256": "6cc0b938db15ccff58e8db84e02ffec09b496d4deb752f2c62dd625c5dc21875",
-      "review_evidence": {
-        "file": "proofs/platform-artifact-review.md",
-        "sha256": "58ca64bf3c097773cf18aaaee5a1695e013ff40e5325d4eeef6128f450bf1d23"
-      },
-      "dependencies": [],
-      "transitive_dependencies": {},
       "xgetbv": [
-        {
-          "address": 446098,
-          "selector": 0,
-          "control_flow_evidence": {
-            "file": "proofs/platform-selectors.md",
-            "sha256": "d802019048c439258474020d747a2ee8ec08f222f7b2ebcb4afca9fd4581bad3"
-          }
-        }
-      ]
+        446098
+      ],
+      "resolver_regions": []
     }
   }
 }

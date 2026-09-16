@@ -188,7 +188,6 @@ pub vm_state::Xcrs::xcr0: u64
 pub struct vm_state::XsaveImage(pub alloc::vec::Vec<u8>)
 pub const vm_state::ARCH_AARCH64: u16
 pub const vm_state::ARCH_X86_64: u16
-pub const vm_state::VM_STATE_LEGACY_VERSION: u16
 pub const vm_state::VM_STATE_MAGIC: u32
 pub const vm_state::VM_STATE_VERSION: u16
 pub trait vm_state::SnapshotRecords: core::marker::Sized

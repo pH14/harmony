@@ -22,23 +22,17 @@ fingerprint and snapshot machinery cover guest memory, vCPU state, device state,
 timer state, virtual time, entropy, control state, and protocol state. Vendor
 fingerprint encodings cover the complete state records used for restore, while
 the complete portable artifact digest covers the same persisted bytes. The
-VMST switch is still default-off for legacy paths; a present v6
-`xsave_restore_bv` intentionally changes the VCPU identity in either mode.
-Snapshots can be restored into a copy-on-write memory mapping. SDK state
-capture retains pending stops and unanswered service requests without consuming
-them, including the response sequence and request identity. Portable format 4
-carries this state; version 3 remains readable without pending stops. Portable
-format 5 adds pending host effects and reseeds, the recorded input prefix,
-schedule failure, and command nonce. Replay restores these without reseeding or
-reapplying consumed inputs; an explicit branch selects a new plan and retains
-the command nonce. Whole-state hashes include this control state, including the
-recorded prefix used for duplicate-input rejection. Legacy v3/v4 artifacts remain
-readable with their historical empty control-state default; their recorded hash
-uses the old coverage. The codec retains v4 bytes when control state is absent.
-Portable format 6 carries sections that exceed the legacy envelope limits,
-including long SDK event histories; smaller records retain their v4/v5 bytes.
-Complete reads allocate incrementally from received bytes, and sparse section
-lengths are bounded by the supplied input. Readers retain v3–v5 compatibility.
+VMST uses the current version 6 wire format; a present `xsave_restore_bv`
+intentionally changes the VCPU identity.
+Snapshots can be restored into a copy-on-write memory mapping. Portable format
+6 preserves pending SDK stops, unanswered service requests, response sequences,
+pending host effects and reseeds, the recorded input prefix, schedule failure,
+and command nonce. Replay restores these without reseeding or reapplying consumed
+inputs; an explicit branch selects a new plan and retains the command nonce.
+Whole-state hashes include this control state and the recorded prefix used for
+duplicate-input rejection. Writers always emit the current format, and readers
+reject older envelopes. Complete reads allocate incrementally from received
+bytes, and sparse section lengths are bounded by the supplied input.
 Whole-VM capture preserves pending SDK stops and is side-effect-free for a
 pending pvclock registration, carrying its GPA, `armed = false` state, and page
 bytes so the next handshake resumes from the same state.
@@ -49,29 +43,25 @@ digests. It reports those counters for diagnostics; they are not restore inputs,
 and the helper does not change live trace scheduling or establish backend
 admissibility or future execution equivalence.
 Pvclock-bearing device records explicitly preserve the registered page GPA,
-registration capability, and pending-versus-armed handshake state. Pending
-registrations use x86 v5 and arm64 v9–12; already-representable states retain
-legacy x86 v4 and arm64 v5–8 bytes, where a GPA implies an armed registration.
+registration capability, and pending-versus-armed handshake state. The current
+x86 device format is version 6 and the current arm64 device format is version
+13; each uses presence fields so optional devices retain their state without
+selecting historical layouts.
 
 The architecture-neutral engine record preserves terminal reasons and deferred
-SDK reentry state. Nonempty records use VM-state container v4; ordinary runnable
-states retain v3 bytes. Legacy v3 records remain readable with the historical
-runnable lifecycle default. A terminal restore does not enter the guest again.
+SDK reentry state in the current VM-state container. A terminal restore does not
+enter the guest again.
 
 X86 CPU capture retains SREGS2 flags and cached PAE PDPTRs, plus debug-register
-flags. Nonzero extended fields select VM-state v5; zero values retain v3/v4
-bytes. Cached PDPTRs are distinct from the current PDPT contents in guest RAM
-and must survive restore without reloading them from that memory. Every
-standard-format XSAVE capture retains the original `XSTATE_BV` in the v6
-tag-15 record, whether or not canonicalization changes the x87/SSE init-state
-bits. The value is validated before restore and included in both the vCPU
-identity and the complete VMST identity when snapshot hashing is wired. Short
-or compacted images retain the legacy no-provenance behavior. Always retaining
-the field for standard captures also avoids a 14-byte record-length variation
-crossing a sparse sidecar charge boundary. A matching fingerprint is not a proof
-of whole-guest future equivalence; focused guest-byte coverage remains required.
-Legacy records without that field keep their historical normalized restore
-behavior and cannot recover discarded header provenance.
+flags, in the current VM-state v6 records. Cached PDPTRs are distinct from the
+current PDPT contents in guest RAM and must survive restore without reloading
+them from that memory. Every standard-format XSAVE capture retains the original
+`XSTATE_BV` in the v6 tag-15 record, whether or not canonicalization changes the
+x87/SSE init-state bits. The value is validated before restore and included in
+both the vCPU identity and the complete VMST identity when snapshot hashing is
+wired. Short or compacted images may omit that optional provenance field. A
+matching fingerprint is not a proof of whole-guest future equivalence; focused
+guest-byte coverage remains required.
 
 Hardware continuation coverage depends on the backend and paging mode. AMD
 default NPT has an unresolved PAE capture divergence
@@ -157,14 +147,13 @@ Nix kernel once, packages the runtime fixture without another kernel build,
 and publishes only after platform replay passes. Execution stays bounded
 independently of builds, and failed gates retain diagnostics. Broader repetitions and vendor sampling
 remain scheduled/manual. These gates are regression evidence, not a claim that
-the retained XSAVE-presence and AMD NPT PAE counterexamples are resolved.
+all XSAVE-presence and AMD NPT PAE behavior is resolved.
 
 Full and sparse portable imports share the VMM's read-only restore preparation
 before entering the snapshot store. Invalid engine state, XSAVE provenance,
 device records, and clock wiring are rejected before changing the destination
 execution. Import requires a live validation target. This preflight does not
 replace backend validation or make host ioctl failures transactional.
-
 
 ## Publishing prepared snapshot boundaries
 
@@ -197,28 +186,6 @@ PDPTR persistence without invalidation remain recorded informational diagnostics
 they do not define the supported Linux guest contract. Arbitrary supplied kernels
 are not confined to that contract by their initial long-mode entry.
 
-The non-default `xsave-diagnostics` feature forwards the backend's one-shot
-execution-breakpoint diagnostic. The ignored `x86_kvm_xsave_kernel` paired
-endpoint test accepts comma-separated hexadecimal `G1_DEBUG_RIPS`, requires
-one hit for each variant, and retains complete unmasked shutdown RAM and
-modeled-state artifacts under `G1_REPORT_DIR`. Addresses must be verified
-against the exact tested vmlinux and bzImage hashes. This seam is for native
-qualification and is absent from the default interface.
-
-The ordinary sequential `x2_same_seed_boots_one_normalized_log` test caches boot0
-checkpoint suffixes and memory-prefix digests (at most32MiB/8192 records). With
-`X2_ORIGINAL_WITNESS_REPORT` naming a fresh directory, its first later checkpoint
-mismatch retains actual RAM once plus both exact suffixes and event/hash metadata.
-The observer drains completed checkpoints before handling terminal returns and
-does not recapture CPU state or advance the guest for evidence. The original
-RAM is unavailable; equal memory digests establish equivalence only at digest
-strength. With matching digests, the retained actual RAM must reconstruct both
-the actual hash and the original hash using their respective suffixes. Event
-misalignment or differing memory prevents suffix-only attribution. Full suffix
-bytes remain available for independent field-level inspection; suffix-only does
-not itself mean restore-bitmap-only. The workflow retains this original witness
-separately from any fresh paired reproduction. No retry changes acceptance.
-
 The required MMIO full-snapshot fixture creates active XMM0 data with a guest
 PCMPEQD before the LAPIC read/modify/write. It checks the captured value and a
 subsequent guest MOVDQU store, while retaining exact RAM, CPU, serialized state
@@ -229,4 +196,4 @@ program remains an informational characterization using the same exercise.
 Init-valued SSE data can retain identical RAM and CPU values while KVM changes
 raw presence across restoration. The informational init-only fixture preserves
 that counterexample; the active-data fixture does not resolve general raw
-identity or the earlier Linux witness. Informational failures remain failures.
+identity. Informational failures remain failures.

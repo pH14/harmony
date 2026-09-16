@@ -110,11 +110,11 @@ permits an 8,192-action horizon. The default remains the isolated-level workload
 Whole-game runs must begin at level 1; isolated level setups are never scored as
 whole-game completion.
 
-### Prepared-execution admission evidence
+### Prepared-execution admission
 
 The `prepare-admission` example dumps the actual Rust preparation API outputs
 for the controlled NES and bare-PostgreSQL workloads. It does not launch a VM
-or create an approval baseline:
+or generate an accepting contract:
 
 ```sh
 cargo run --locked --manifest-path workloads/nes/Cargo.toml --example prepare-admission -- \
@@ -136,7 +136,7 @@ entrypoint script receive explicit hashes; all workload files remain bound by
 the rootfs segment. The Nova ROM pin is in `nova-versions.env`.
 
 Run `workloads/guest-images/verify-prepared-admission.py inventory DUMP
---output NEW_REPORT_DIR` from the repository root for candidate evidence. GNU
+--output NEW_REPORT_DIR` from the repository root for a candidate inventory. GNU
 objdump is required (`--objdump` selects it). The checker parses the three
 archives separately and compares their exact concatenation; it does not claim
 the scanner accepts general concatenated archives. It rejects file collisions,
@@ -145,26 +145,24 @@ overrides and noncanonical writable ROM mounts. A deterministic workload-root
 CPIO view removes only the actual `harmony-oci/rootfs` prefix, preserving entry
 metadata/content so absolute ELF dependency paths resolve in their guest root.
 
-`verify DUMP --baseline REVIEWED.json --output NEW_REPORT_DIR` additionally
-requires `version: 1`, a named `reviewed_by`, the reviewed `manifest_sha256`, `composition_evidence`,
-`platform_baseline`, and `workload_baseline`. Each evidence/baseline reference
-contains a relative `file` and its `sha256`; both component baselines are checked
-by the existing x86 scanner. Candidate generation never produces these reviews.
-The evidence must cover the actual runtime configuration/mounts, loader binding
-before every exec, trusted SQL/ROM/code inputs, no JIT/generated code, and no
-code mutation. The OCI root remains writable: input digest binding is not
-runtime filesystem immutability enforcement. Unsupported overlay or workload
-semantics fail closed rather than broadening this controlled scope.
+`verify DUMP --baseline CONTRACT.json --output NEW_REPORT_DIR` additionally
+checks the schema-2 composition contract and its platform/workload component
+contracts. Components pin the exact archive/rootfs and every ELF SHA-256, with
+small address/region exceptions for the instruction scanner. The composition
+binds actual kernel, launch configuration, ordered archives and ROM/SQL inputs.
+Candidate generation does not create an accepting contract.
 
-Run `python3 workloads/guest-images/test_verify_prepared_admission.py
--v` for composition mutation checks. Build/check the example with the package's
-locked Cargo dependencies before using its dumps for review.
+The execution scope requires eager binding before every exec, fixed trusted
+SQL/ROM/code inputs, no JIT/generated code and no code mutation. The OCI root
+remains writable: input digests do not enforce runtime filesystem immutability.
+Unsupported overlay or workload semantics fail closed.
 
-The quality workflow runs the Python composition mutation tests. Candidate
-reports still require explicit reviewer evidence before admission verification.
+```sh
+python3 workloads/guest-images/test_verify_prepared_admission.py -v
+```
 
-The `admission` module writes candidate manifests from the same OCI preparation
-API used for execution. The `prepare-admission` example retains its exact default
-Linux x86 session format. The tools probe reuses the writer for a separately
-named Nova A–E scope; see `workloads/tools/README.md`. Neither writer approves
-its output or substitutes for component and composition review.
+The quality workflow runs these composition mutation checks. The `admission`
+module writes candidate manifests from the actual OCI preparation API. The
+example describes default Linux x86 sessions; the tools probe uses the same
+writer for its separately named Nova A–E scope, described in
+`workloads/tools/README.md`. Neither mode broadens the controlled workload scope.

@@ -79,219 +79,104 @@ Cold Nix guest builds fetch the pinned BusyBox archive from the Buildroot mirror
 with the upstream URL as fallback. Both locations use the same locked SHA-256;
 the mirror choice leaves the guest source version and bytes unchanged.
 
-## XSAVE consistency qualification in progress
+## Controlled x86 XSAVE behavior
 
-The September 14 workstream keeps AVX and targets deterministic guest-owned
-XSAVE buffers on hosted AMD as well as Intel. The broad snapshot integration
-goal remains open; this work does not qualify arbitrary supplied workloads.
+The guest kernel canonicalizes complete XSAVE buffers while keeping AVX. The
+x86 configuration uses `noxsaveopt noxsaves`; save/canonicalize sequences exclude
+local interrupt handlers. Identity comparisons belong at completed
+guest-initiated exits, not at diagnostic breakpoint stops inside those sequences.
+The kernel configuration excludes unsupported LBR/AMX save paths and kexec.
+The CLI, client defaults and workload adapters supply
+`noxsaveopt noxsaves LD_BIND_NOW=1`; the OCI runtime also preserves eager binding
+through supervisor startup, workload startup and runc re-execution.
 
-Qualification proceeds through a traced fixed-CPU reuse cohort (D1), a
-bare-metal AMD attribution run (D2), synthetic whole-buffer canonicalization
-with init/SSE-active/AVX-active states (D3), and an inventory of kernel save
-sites, XGETBV(1), signal-frame handling, and userspace loader behavior (D4).
-The fixed-CPU trace in run 34839425407 confirmed nested-page-fault exits at
-the XSAVE instruction on hosted AMD EPYC 9V74 in reference and cold runs,
-with none in the reused run. In run 34840365313, host page materialization,
-disabling fixture dirty logging, and prefaulting removed those exits on AMD
-EPYC 7763, yet all six XRSTOR reuse cohorts still diverged. The traced
-page-fault asymmetry is therefore insufficient to explain the counterexample.
-Attribution of any outer-hypervisor contribution remains open. D3 now passes
-on hosted AMD, hosted Intel, and ms02, including independently checked
-MXCSR-only data. The D4 site inventory supports the fixed-layout kernel patch
-in `linux/patches/x86/0008-x86-harmony-canonical-xsave.patch`.
+The general fpstate and user signal-frame paths have distinct layouts and fault
+handling. Successful paths overwrite raw bitmap register aliases and owned
+stack storage before restoring interrupts. A conditional signal checked-access
+failure can retain the raw bitmap in EDX. The controlled execution contract
+excludes that post-success failure: successful mask-7 plain XSAVE has already
+written both possible buffer pages, with one vCPU, disabled local IRQs, fixed
+mappings, no PKU and healthy memory. Initial XSAVE faults precede the bitmap
+read and do not establish coverage of this later conditional failure. External
+NMI/MCE injection and arbitrary imported pending events are outside this
+contract; the generic backend can represent them.
 
-The gated Nix kernel passes the native ms02 functional fixture, independent
-paired boots, and six one-shot debug interventions around the core and signal
-save boundaries. Complete 256 MiB RAM and modeled state match at the
-guest-requested shutdown endpoint without masking. Hosted run 34857658287
-also passes the original fixture on AMD EPYC 7763 under Hyper-V. Expanded run
-34861414443 passes the functional, real signal-fault, paired and six-intervention
-checks on hosted Intel Xeon 8370C and AMD EPYC 9V74. Bare-metal AMD attribution
-and qualification remain pending. These results qualify neither arbitrary images
-nor arbitrary imported CPU events.
+Outside the patched kernel, controlled workloads must not execute XSAVE-family
+saves or XGETBV with ECX=1. XGETBV with a proven zero selector remains allowed.
+Static linking alone does not exclude libc save routines. Loader exceptions
+apply only to pinned code regions whose paths are excluded by the fixed loading
+configuration. Generated code, JITs, code mutation and writable executable memory
+are excluded by policy. These restrictions do not qualify arbitrary images,
+SQL, ROMs or imported machine states.
 
-The exact GCC13 save paths overwrite raw bitmap register aliases and clear the
-owned stack byte before restoring interrupts on success. A conditional signal
-checked-access failure can retain the raw bitmap in EDX. Within the controlled
-boot, successful mask-7 plain XSAVE has already written both possible buffer
-pages; one vCPU, disabled local IRQs, fixed mappings, absent PKU and ordinary
-healthy memory exclude a subsequent ordinary access fault. Initial XSAVE faults
-precede the bitmap read. This argument excludes external guest NMI/MCE injection
-and arbitrary imported pending events; the generic backend can represent them.
-The native functional fixture also exercises a fresh writable signal-stack page
-and a protected-page rejection. Its 64-byte-aligned save straddles the page
-boundary at offset 512: header initialization touches only the upper page,
-while the initial save must access the nonresident lower page. The writable
-case preserves x87, SSE, AVX and MXCSR through delivery and return; the
-protected case terminates before its handler runs. A separate one-shot debug
-hit in the exact kernel's save-failure recovery branch confirms that path is
-executed by the standalone writable case. Complete paired and interrupted
-endpoints match on ms02. These initial-save failures do not exercise the
-conditional post-success checked-access residual described above.
+Raw XSAVE presence remains in restore data and strict snapshot identity.
+Matching finite executions does not establish general continuation equivalence.
+Outstanding XSAVE and PAE behavior is tracked in
+[#307](https://github.com/pH14/harmony/issues/307) and
+[#314](https://github.com/pH14/harmony/issues/314).
 
-The proposed guest contract compares identity at guest-initiated exits; debug
-stops are interventions, not comparison points. Patched save/canonicalize
-sequences must exclude guest interrupt handlers. Admitted executable code,
-including shared libraries and dlopen dependencies, must exclude XSAVE-family
-instructions and XGETBV(1) outside the patched kernel. XGETBV(0) needs a proven
-zero selector. JITs, generated code, and writable executable mappings are
-outside that controlled admission scope. These are requirements to implement
-and verify, not claims about the current image or scan.
+## Controlled x86 userspace admission
 
-The primary path adapts whole-buffer canonicalization to each audited save
-layout and fault path, disables modified-save optimizations, and uses eager
-dynamic binding in admitted workloads. Disabling XSAVE/AVX is a fallback only
-if a correct synthetic canonicalizer exposes actual register-value corruption.
-Raw restore presence stays in the restore path and diagnostics. Removing it
-from logical identity requires the kernel audit and admission argument, not
-merely matching boot tests. Real-Linux paired boots and interrupted runs must
-then agree in complete RAM and modeled state on every qualification host.
+Run the scanner on complete rootfs trees, including shared libraries and possible
+`dlopen` inputs, with GNU objdump available:
 
-The pinned Linux 6.18.35 source audit identifies the general kernel fpstate
-save, direct user signal-frame save, and independent XSAVES for Intel LBR.
-The XGETBV(1) consumers are dynamic signal-mask pruning and AMX idle release.
-Plain XSAVE writes every requested component; optimized forms have different
-write rules. Signal save already uses plain XSAVE, but its mask and subsequent
-ABI header rewriting need separate treatment. Disabling local interrupts alone
-does not settle the LBR/NMI path or fault-safe user-memory writes. Final guest
-configuration and executable disassembly must bind the audit to shipped bytes.
+```sh
+python3 consonance/harmony-linux/scripts/x86-xstate-admission.py inventory ROOTFS --output candidate.json
+python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify ROOTFS --baseline contract.json --output result.json
+python3 consonance/harmony-linux/scripts/x86-xstate-admission.py inventory-initramfs INITRAMFS --output candidate.json
+python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify-initramfs INITRAMFS --baseline contract.json --output result.json
+```
 
-Static linking alone does not establish the absence of internal XSAVE or
-IFUNC save paths. The CLI OCI runner, workload adapters, client default and execution probe include `noxsaveopt noxsaves LD_BIND_NOW=1` in their x86 boot
-arguments. The OCI pipeline forces eager binding for supervisor and workload startup,
-and the patched runc preserves it across internal re-execution. The image
-pipeline does not yet enforce the full dependency instruction admission or
-generated-code policy. Source review
-and synthetic success cannot substitute for those artifact-level checks.
+`--objdump` selects the disassembler. Inventory discovers every ELF by file
+contents regardless of executable permissions. Schema-2 contracts bind the exact
+archive, rootfs and complete ELF path-to-SHA256 map, plus small `xstate` exception
+records. Candidate inventory does not generate an accepting contract. File
+contents, metadata and symlink changes invalidate their corresponding digest.
+Actual launch configuration, kernel, ordered archive composition, ROM and SQL
+inputs are additionally bound by the workload composition checker under
+`workloads/guest-images/`.
 
-### Controlled x86 userspace admission
+Dependency analysis resolves symlinks inside the guest root and checks the
+complete transitive ELF closure. The supported dynamic interpreter is
+`/lib64/ld-linux-x86-64.so.2`, with default directories
+`/lib/x86_64-linux-gnu`, `/usr/lib/x86_64-linux-gnu`, `/lib` and `/usr/lib`.
+Missing dependencies, differing duplicate SONAMEs and ambiguous resolutions
+fail closed. Other interpreters, loader caches, RPATH/RUNPATH and glibc-hwcaps
+search are unsupported. Launch environment overrides are outside the contract.
 
-`scripts/x86-xstate-admission.py inventory ROOTFS --output candidate.json`
-produces an inventory, never an approval. Run it on the complete unpacked
-runtime and workload rootfs trees with GNU `objdump` available (`--objdump`
-selects its executable). Every regular file is read and hashed, including ELF
-files without execute permissions, shared libraries, and possible `dlopen`
-inputs. Symlink paths are interpreted inside the guest root. DT_NEEDED edges record the resolved ELF digest and traversed symlinks.
-Only the explicitly reviewed glibc interpreter is supported for dynamic
-executables. Missing or ambiguous dependencies fail; RPATH/RUNPATH, loader
-caches, musl loader configuration, and glibc-hwcaps search are rejected.
+Executable segments are scanned for XSAVE-family instructions and XGETBV;
+restore instructions are inventoried separately. Verification rejects W+X
+PT_LOAD segments, executable PT_GNU_STACK and DT_TEXTREL/DF_TEXTREL images.
+Every XGETBV address must be listed in the contract and have a recognized
+straight-line ECX-zero sequence. The bounded recognizer rejects intervening
+ECX writes, branches, calls, unknown instructions and observed alternate direct
+entries. Trusted control flow must also exclude indirect entry that bypasses
+initialization; linear disassembly cannot enforce that condition for arbitrary
+code.
 
-`scripts/x86-xstate-admission.py verify ROOTFS --baseline reviewed.json --output result.json`
-requires a human-reviewed baseline. There is no baseline generator or bundled
-approval of the current glibc artifacts. A baseline has `version: 1`, a named
-`reviewed_by`, the inventory's `rootfs_sha256`, an exact copy of its
-`required_scope` as `scope`, `scope_evidence`, and an `artifacts` object keyed
-by every inventory ELF path. Each artifact records `sha256` and
-`review_evidence`. Evidence references are objects with a relative `file` and
-its `sha256`; referenced nonempty files must stay inside the baseline directory.
-The complete file/mode/uid/gid/xattr/symlink manifest, including root-directory metadata, is digest-bound, so changes to scripts
-and non-ELF inputs also invalidate review.
+Save instructions may occur only inside exact digest-bound resolver regions,
+with `kind`, `start`, `size` and `sha256`. `eager-resolver` requires startup eager
+binding and the fixed loading paths to keep the region unreachable.
+`unused-tlsdesc` requires no TLSdesc relocations anywhere in the complete ELF
+closure; the scanner rejects that exception if such relocations are present.
+Eager binding alone does not establish TLS descriptor unreachability. Neither
+exception is a symbol-name allowlist or runtime instruction interception.
 
-Executable PT_LOAD bytes are disassembled to inventory XSAVE-family saves,
-restores, FXSAVE/FXRSTOR, and XGETBV. Writable executable PT_LOAD segments are
-rejected, as are executable PT_GNU_STACK declarations. Every XGETBV requires a proven ECX-zero instruction sequence, plus an
-artifact `xgetbv` entry recording
-`address`, `selector: 0`, and `control_flow_evidence`. Sequences outside the bounded recognition rules fail closed. Review must establish no alternate/indirect
-entry bypasses that initialization.
+The initramfs adapter accepts one raw newc `070701` archive or its gzip encoding
+and binds the exact input bytes. It inventories device nodes as metadata without
+creating or opening host devices. ELF analysis uses a temporary projection of
+regular files, directories and symlinks; guest metadata comes from the archive.
+Traversal, duplicate entries, hardlinks, truncation, nonzero padding,
+concatenated archives and unsupported types fail closed. Absolute symlinks retain
+guest-root semantics; one terminal NUL in a kernel-generated symlink body is
+accepted, while embedded NULs are rejected. Newc has no extended attributes.
 
-Forbidden saves require an explicit artifact `resolver_regions` entry with
-`kind: reviewed-eager-resolver`, virtual `start`, byte `size`, region `sha256`,
-`incoming_reference_evidence`, and `eager_binding_evidence`. Every instruction
-must fit entirely inside exactly one such reviewed region. Evidence must prove
-all incoming references and why startup eager binding makes those paths
-unreachable for that exact ELF and controlled execution. Symbol names alone
-provide no exception. This infrastructure validates the evidence bindings; it
-does not automatically prove the assertions in human-written evidence.
+These static checks do not enforce runtime filesystem immutability, W^X,
+startup binding or the no-generated-code policy. The OCI root is writable;
+execution remains limited to trusted, fixed workloads and loading behavior.
 
-Static admission is conditional on immutable reviewed inputs, trusted controlled
-workloads, LD_BIND_NOW=1 before every process startup, no loader environment
-overrides, no generated/JIT code, and no writable executable memory. These are
-reviewed deployment obligations, not runtime enforcement supplied by the
-scanner. Dynamic default search paths and indirect entry points require review.
-Linear disassembly is not a proof against intentionally overlapping instruction
-streams or arbitrary binaries. Scan every ELF in each complete controlled tree;
-review any explicit loading and execution paths and their environment separately.
+```sh
+python3 consonance/harmony-linux/scripts/test_x86_xstate_admission.py -v
+```
 
-Run `python3 scripts/test_x86_xstate_admission.py -v` on a host with GNU objdump;
-`OBJDUMP` selects a non-default executable. The fixtures exercise actual x86
-instruction decoding, changed ELF hashes, missing dependencies, non-executable
-ELF discovery, symlink resolution, selector failures, W+X segments, read errors,
-changed review evidence, ownership/xattr mutations, unreadable xattrs, and unsupported loader configurations.
-
-The x86 scanner supports the controlled glibc interpreter path
-`/lib64/ld-linux-x86-64.so.2` with the observed default search directories
-`/lib/x86_64-linux-gnu`, `/usr/lib/x86_64-linux-gnu`, `/lib`, and `/usr/lib`.
-It rejects other interpreters, loader caches, RPATH/RUNPATH and glibc-hwcaps
-search. The loader's own SONAME dependency resolves to that canonical
-interpreter. Different file digests matching the same dependency search are
-ambiguous and rejected. Each ELF records direct dependency paths, hashes and
-symlink traversals, plus its complete transitive path/hash graph.
-
-Dynamic verification requires an explicit baseline `glibc_loader` object:
-`path`, `sha256`, `default_directories` (the ordered directories above), and
-`loader_evidence` (the usual relative file/SHA256 proof reference). Review must
-establish that this exact loader implements the modeled search semantics and
-that launch arguments/environment introduce no override, preload, auditing,
-profiling or alternate loading behavior. Each artifact's reviewed `dependencies`
-and `transitive_dependencies` must exactly match the inventory. No loader digest
-is automatically approved or supplied as a generic default.
-
-This supports candidate inventory of controlled dynamic images;
-it does not qualify that image. All executable instruction sites, loader
-resolver regions, runtime dlopen paths and controlled no-JIT/startup-binding
-obligations still require the existing digest-bound reviews.
-
-Further fail-closed checks reject different ELF digests declaring the same
-SONAME anywhere in the rootfs. RPATH/RUNPATH are rejected even without
-DT_NEEDED; a loader-cache entry (including a dangling symlink) is rejected for
-ELFs with PT_DYNAMIC or an interpreter. Hardware-capability search is likewise
-unsupported for dynamic code.
-
-XGETBV selector recognition accepts a bounded straight-line sequence of at most
-16 preceding instructions: explicit ECX zeroing followed by whitelisted
-MOV/LEA/arithmetic/CMP/TEST instructions that preserve ECX. Calls, branches,
-unknown instructions, ECX or partial-register writes, discontinuous decoding,
-and observed direct entries that bypass zeroing stop the proof. Candidate
-`straightline_ecx_zero` and `selector_proof_instructions` retain the result and
-exact supporting instruction sequence. Digest-bound human control-flow evidence
-is still required to exclude alternate indirect entry; there is no generic
-manual override for an unproved selector. `adjacent_ecx_zero` remains diagnostic.
-
-For final platform bytes, use `inventory-initramfs INITRAMFS --output report.json`
-or `verify-initramfs INITRAMFS --baseline reviewed.json --output report.json`.
-These explicit modes accept one raw `070701` newc archive or its gzip encoding.
-The baseline additionally requires `archive_sha256`, binding the exact compressed
-or raw bytes. The rootfs digest binds archive entry type, permissions, ownership,
-inode/link count, timestamps, archive device numbers, rdev, file contents and
-symlink targets. It does not substitute staging-directory metadata.
-
-The adapter parses character/block devices as metadata and never creates or
-opens their host device nodes. It uses a private temporary projection containing
-only regular files, directories and symlinks for the shared ELF analysis; guest
-permissions/owners are read from the archive, not applied to the host projection.
-Parent paths must be declared directories, so a symlink cannot redirect file
-creation. Absolute symlink targets retain guest-root semantics. Hardlinks,
-duplicate normalized names, traversal, CRC newc, truncation, nonzero padding,
-concatenated archives, sockets/FIFOs and other unsupported types fail closed.
-Newc carries no extended attributes; this mode records empty xattrs instead of
-claiming metadata from the host staging tree. Existing directory modes retain
-their prior filesystem inventory semantics.
-
-ELF inventory records `text_relocations` when DT_TEXTREL or DF_TEXTREL is set.
-Verification rejects those images: the controlled policy does not admit loader
-relocations that require modifying executable/text pages. This complements,
-and does not replace, runtime no-code-mutation and no-W+X obligations.
-
-A separate `reviewed-unused-tlsdesc` region kind requires exact `start`, `size`,
-region `sha256`, `incoming_reference_evidence`, and `tlsdesc_closure_evidence`.
-This exception is specifically for TLS descriptor save wrappers proven unused
-by the entire digest-bound closed ELF tree and its controlled loading paths.
-It cannot borrow an eager-binding proof: eager binding does not establish that
-TLS descriptor wrappers are unreachable. `reviewed-eager-resolver` retains its
-separate mandatory `eager_binding_evidence` for ordinary PLT resolver exclusion.
-Neither kind is an unrestricted manual exemption or an automatically generated
-approval; changes to the closed tree require fresh closure review.
-
-Kernel gen_init_cpio symlink bodies may contain one terminal NUL. The archive
-adapter accepts that encoding as well as nonterminated bodies, rejects embedded
-NULs, and records raw content size/SHA256 alongside the guest symlink target.
+The scanner tests require GNU objdump; `OBJDUMP` selects a non-default executable.

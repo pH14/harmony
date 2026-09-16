@@ -1,4 +1,0 @@
-# nes-play-agent exact ECX0 selector proposal
-ELF SHA256 9286525d7b7179d9c7a0b6112616d9a6cdf92d48d50ad83b812482b099f5c477. Sole XGETBV at 0x1828c1. Chain [0x1828a6,0x1828c4) SHA256ae87b5e2d1eb64b49e4b9898922523a0104ac2e1cb151a8efeec2f36d45e6b91: XOR ECX,ECX followed by AND EAX, MOV EAX to stack, OR EDX,EAX, MOV EAX to stack, MOV EAX to RIP-relative global, then XGETBV. None modifies ECX after zeroing.
-Full disassembly has no observed direct call/jump entry into the chain after zeroing. No literal64bit pointer to XGETBV occurs. glibc2.39 sysdeps/x86/cpu-features.c:146-152 gates the operation on OSXSAVE and explicitly constrains ECX to0. The containing update_active.constprop.0 bytes match libc-start.o from the exact Ubuntu libc.a modulo enumerated relocation fields.
-This proves the ordinary compiled feature-detection path under trusted control flow, not arbitrary indirect-entry safety. Corrupted/interior pointers and generated/mutated code remain excluded by scope.

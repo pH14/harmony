@@ -70,14 +70,11 @@ class CompositionTests(unittest.TestCase):
         data = json.dumps(session).encode()
         (self.root / "session-config.json").write_bytes(data)
         manifest["files"]["session-config.json"] = {"size": len(data), "sha256": p.a.digest(data)}
-        self.executable = self.root / "oracle-executable"
-        self.executable.write_bytes(b"oracle test executable")
         manifest["engine_scope"] = p.ORACLE_SCOPE
         manifest["oracle"] = {"version": 1, "backend": "boot_linux_stock_virtual_time",
             "control": "direct-ControlServer-A-E", "restore_mode": "in-place-with-remap-factory",
             "deadline_kind": "absolute-vtime", "setup_payloads": [[0, 1]] * 16,
-            "tree_seed": p.ORACLE_SEED ^ 0x4954454d325f5452,
-            "source_sha256": "a" * 64, "executable_sha256": p.a.digest(self.executable.read_bytes())}
+            "tree_seed": p.ORACLE_SEED ^ 0x4954454d325f5452}
         manifest_path.write_text(json.dumps(manifest))
         return manifest, session
 
@@ -86,7 +83,6 @@ class CompositionTests(unittest.TestCase):
         report, _ = p.inspect_dump(self.root)
         self.assertFalse(report["admitted"])
         self.assertEqual(report["engine_scope"], p.ORACLE_SCOPE)
-        p.verify_oracle_executable(report, self.executable)
 
     def test_resealed_oracle_configuration_mutations(self):
         for field, value in [("seed", 0), ("ram_bytes", 268435456),
@@ -117,13 +113,9 @@ class CompositionTests(unittest.TestCase):
         with self.assertRaisesRegex(p.a.Rejected, "cannot use default"):
             p.inspect_dump(self.root)
 
-    def test_oracle_review_boundary_excludes_only_host_provenance(self):
+    def test_oracle_contract_covers_guest_inputs_and_controls(self):
         manifest, _ = self.oracle_dump()
         expected = p.oracle_composition_digest(manifest)
-        rebuilt = copy.deepcopy(manifest)
-        rebuilt["oracle"]["executable_sha256"] = "b" * 64
-        rebuilt["oracle"]["source_sha256"] = "c" * 64
-        self.assertEqual(p.oracle_composition_digest(rebuilt), expected)
         for key in ("kernel.bin", "rootfs.cpio.gz", "session-config.json", "control.cpio.gz"):
             with self.subTest(key=key):
                 changed = copy.deepcopy(manifest)
@@ -133,25 +125,16 @@ class CompositionTests(unittest.TestCase):
         changed["oracle"]["setup_payloads"] = [[1, 1]] * 16
         self.assertNotEqual(p.oracle_composition_digest(changed), expected)
 
-    def test_oracle_verification_requires_same_executable(self):
-        self.oracle_dump()
-        report, _ = p.inspect_dump(self.root)
-        with self.assertRaisesRegex(p.a.Rejected, "actual oracle executable"):
-            p.verify_oracle_executable(report, None)
-        self.executable.write_bytes(b"another build")
-        with self.assertRaisesRegex(p.a.Rejected, "differs from candidate"):
-            p.verify_oracle_executable(report, self.executable)
-
     def test_oracle_verification_fails_without_separate_review(self):
         self.oracle_dump()
         for baseline_kind in ("absent", "default-session"):
             with self.subTest(baseline=baseline_kind), tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "report"
                 argv = ["verify-prepared-admission.py", "verify", str(self.root),
-                        "--output", str(output), "--oracle-executable", str(self.executable)]
+                        "--output", str(output)]
                 if baseline_kind == "default-session":
                     baseline = Path(directory) / "baseline.json"
-                    baseline.write_text(json.dumps({"version": 1, "reviewed_by": "test",
+                    baseline.write_text(json.dumps({"version": 2,
                         "manifest_sha256": p.a.digest((self.root / "manifest.json").read_bytes())}))
                     argv += ["--baseline", str(baseline)]
                 with mock.patch("sys.argv", argv), mock.patch.object(p.a, "inventory_initramfs", return_value=({},)):

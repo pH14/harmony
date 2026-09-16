@@ -97,9 +97,8 @@ def package(repo, root, output, fixture, architecture):
     shutil.copytree(fixture, output / "fixture")
     provenance = output / "build-provenance"
     provenance.mkdir()
-    for source, name in [(root / PAYLOAD_MANIFEST, PAYLOAD_MANIFEST), (root / PROVENANCE, PROVENANCE), (root / "MANIFEST.sha256", "MANIFEST.sha256"),
-                         (root / architecture / "oci-runtime.manifest", "oci-runtime.manifest")]:
-        shutil.copyfile(source, provenance / name)
+    for name in (PAYLOAD_MANIFEST, PROVENANCE, "MANIFEST.sha256"):
+        shutil.copyfile(root / name, provenance / name)
     # Check again before sealing so changed inputs cannot receive the current key.
     verify(repo, root, architecture)
     for name in [kernel, "initramfs-oci.cpio.gz", "initramfs.cpio.gz"]:

@@ -14,24 +14,27 @@ use crate::vmm::{SdkSnapshot, SdkStop};
 use snapshot_store::PAGE_SIZE;
 
 const MAGIC: [u8; 8] = *b"HMSNAP01";
-const V3_VERSION: u16 = 3;
-const LEGACY_VERSION: u16 = 4;
-const V5_VERSION: u16 = 5;
 const VERSION: u16 = 6;
 const FLAG_SDK: u16 = 1;
 const FLAG_TAINTED: u16 = 1 << 1;
 const KNOWN_FLAGS: u16 = FLAG_SDK | FLAG_TAINTED;
 
+#[cfg(test)]
 const MAX_VM_STATE_LEN: usize = 16 * 1024 * 1024;
+#[cfg(test)]
 const MAX_SDK_LEN: usize = 64 * 1024 * 1024;
+#[cfg(test)]
 const MAX_CONTROL_LEN: usize = MAX_SDK_LEN;
+#[cfg(test)]
 const MAX_POLICY_LEN: usize = 1024 * 1024;
 const SPARSE_MAGIC: [u8; 8] = *b"HMSSNAP1";
 const SPARSE_VERSION: u16 = VERSION;
 const SPARSE_FLAG_SDK: u16 = 1;
 const SPARSE_FLAG_TAINTED: u16 = 1 << 1;
 const SPARSE_KNOWN_FLAGS: u16 = SPARSE_FLAG_SDK | SPARSE_FLAG_TAINTED;
+#[cfg(test)]
 const MAX_SUFFIX_LEN: usize = 16 * 1024 * 1024;
+#[cfg(test)]
 const MAX_SPARSE_SIDECAR_LEN: usize = MAX_VM_STATE_LEN
     .saturating_add(MAX_SDK_LEN)
     .saturating_add(MAX_CONTROL_LEN)
@@ -150,21 +153,8 @@ impl PortableSnapshotRef<'_> {
     pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<(), PortableSnapshotError> {
         let sdk = self.sdk.map(encode_sdk).transpose()?;
         let policy = self.policy.encode();
-        let version = complete_version(
-            self.vm_state.len(),
-            sdk.as_ref().map_or(0, Vec::len),
-            policy.len(),
-            self.control_state.len(),
-        );
         if self.vm_state.is_empty() {
             return Err(PortableSnapshotError::BadFlags);
-        }
-        if version != VERSION {
-            check_len("memory", self.memory.len(), self.memory.len())?;
-            check_len("vm_state", self.vm_state.len(), MAX_VM_STATE_LEN)?;
-            check_len("sdk", sdk.as_ref().map_or(0, Vec::len), MAX_SDK_LEN)?;
-            check_len("policy", policy.len(), MAX_POLICY_LEN)?;
-            check_len("control_state", self.control_state.len(), MAX_CONTROL_LEN)?;
         }
 
         let mut flags = 0;
@@ -177,15 +167,13 @@ impl PortableSnapshotRef<'_> {
 
         let mut out = HashWriter::new(&mut writer);
         out.write_all(&MAGIC)?;
-        put_u16(&mut out, version)?;
+        put_u16(&mut out, VERSION)?;
         put_u16(&mut out, flags)?;
         put_len(&mut out, self.memory.len())?;
         put_len(&mut out, self.vm_state.len())?;
         put_len(&mut out, sdk.as_ref().map_or(0, Vec::len))?;
         put_len(&mut out, policy.len())?;
-        if version >= V5_VERSION {
-            put_len(&mut out, self.control_state.len())?;
-        }
+        put_len(&mut out, self.control_state.len())?;
         put_u64(&mut out, self.at)?;
         put_u64(&mut out, self.sdk_events)?;
         put_u64(&mut out, self.trace_events)?;
@@ -197,9 +185,7 @@ impl PortableSnapshotRef<'_> {
             out.write_all(bytes)?;
         }
         out.write_all(&policy)?;
-        if version >= V5_VERSION {
-            out.write_all(self.control_state)?;
-        }
+        out.write_all(self.control_state)?;
         out.flush()?;
         let digest = out.finish();
         writer.write_all(&digest)?;
@@ -220,11 +206,7 @@ impl PortableSnapshot {
             return Err(PortableSnapshotError::BadMagic);
         }
         let version = get_u16(&mut input)?;
-        if version != V3_VERSION
-            && version != LEGACY_VERSION
-            && version != V5_VERSION
-            && version != VERSION
-        {
+        if version != VERSION {
             return Err(PortableSnapshotError::BadVersion(version));
         }
         let flags = get_u16(&mut input)?;
@@ -239,20 +221,12 @@ impl PortableSnapshot {
                 max: expected_memory_len as u64,
             });
         }
-        let vm_state_len = section_len(&mut input, "vm_state", version, MAX_VM_STATE_LEN)?;
-        let sdk_len = section_len(&mut input, "sdk", version, MAX_SDK_LEN)?;
-        let policy_len = section_len(&mut input, "policy", version, MAX_POLICY_LEN)?;
-        let control_len = if version >= V5_VERSION {
-            section_len(&mut input, "control_state", version, MAX_CONTROL_LEN)?
-        } else {
-            0
-        };
+        let vm_state_len = section_len(&mut input, "vm_state")?;
+        let sdk_len = section_len(&mut input, "sdk")?;
+        let policy_len = section_len(&mut input, "policy")?;
+        let control_len = section_len(&mut input, "control_state")?;
         let has_sdk = flags & FLAG_SDK != 0;
-        if vm_state_len == 0
-            || has_sdk != (sdk_len != 0)
-            || policy_len == 0
-            || (version == V5_VERSION && control_len == 0)
-        {
+        if vm_state_len == 0 || has_sdk != (sdk_len != 0) || policy_len == 0 {
             return Err(PortableSnapshotError::BadFlags);
         }
         let at = get_u64(&mut input)?;
@@ -276,9 +250,7 @@ impl PortableSnapshot {
         if reader.read(&mut trailing)? != 0 {
             return Err(PortableSnapshotError::Malformed("trailing bytes"));
         }
-        let sdk = has_sdk
-            .then(|| decode_sdk(&sdk_bytes, version))
-            .transpose()?;
+        let sdk = has_sdk.then(|| decode_sdk(&sdk_bytes)).transpose()?;
         let policy = ServiceConfig::decode(&policy_bytes)?;
         Ok(Self {
             memory,
@@ -301,33 +273,20 @@ pub fn compare_portable_execution_state(
     right: &[u8],
     expected_memory_len: usize,
 ) -> Result<PortableExecutionComparison, PortableSnapshotError> {
-    let (left_version, left_trace_events, left_trace_schedules) = {
+    let (left_trace_events, left_trace_schedules) = {
         let decoded = PortableSnapshot::read_from(left, expected_memory_len)?;
-        let values = (
-            u16::from_le_bytes([left[8], left[9]]),
-            decoded.trace_events,
-            decoded.trace_schedules,
-        );
+        let values = (decoded.trace_events, decoded.trace_schedules);
         drop(decoded);
         values
     };
-    let (right_version, right_trace_events, right_trace_schedules) = {
+    let (right_trace_events, right_trace_schedules) = {
         let decoded = PortableSnapshot::read_from(right, expected_memory_len)?;
-        let values = (
-            u16::from_le_bytes([right[8], right[9]]),
-            decoded.trace_events,
-            decoded.trace_schedules,
-        );
+        let values = (decoded.trace_events, decoded.trace_schedules);
         drop(decoded);
         values
     };
-    let trace_start = |version| match version {
-        V3_VERSION | LEGACY_VERSION => 60,
-        V5_VERSION | VERSION => 68,
-        _ => unreachable!(),
-    };
-    let left_trace_start = trace_start(left_version);
-    let right_trace_start = trace_start(right_version);
+    let left_trace_start = 68;
+    let right_trace_start = 68;
     let equal = left[..left_trace_start] == right[..right_trace_start]
         && left[left_trace_start + 16..left.len() - 32]
             == right[right_trace_start + 16..right.len() - 32];
@@ -345,30 +304,8 @@ pub(crate) fn encode_sparse_sidecar(
 ) -> Result<Vec<u8>, PortableSnapshotError> {
     let sdk = sidecar.sdk.map(encode_sdk).transpose()?;
     let policy = sidecar.policy.encode();
-    let version = sparse_version(
-        sidecar.vm_state.len(),
-        sdk.as_ref().map_or(0, Vec::len),
-        policy.len(),
-        sidecar.state_blob_suffix.len(),
-        sidecar.control_state.len(),
-    );
     if sidecar.vm_state.is_empty() {
         return Err(PortableSnapshotError::BadFlags);
-    }
-    if version != SPARSE_VERSION {
-        check_len("vm_state", sidecar.vm_state.len(), MAX_VM_STATE_LEN)?;
-        check_len("sdk", sdk.as_ref().map_or(0, Vec::len), MAX_SDK_LEN)?;
-        check_len("policy", policy.len(), MAX_POLICY_LEN)?;
-        check_len(
-            "state_blob_suffix",
-            sidecar.state_blob_suffix.len(),
-            MAX_SUFFIX_LEN,
-        )?;
-        check_len(
-            "control_state",
-            sidecar.control_state.len(),
-            MAX_CONTROL_LEN,
-        )?;
     }
 
     let mut flags = 0;
@@ -381,15 +318,13 @@ pub(crate) fn encode_sparse_sidecar(
 
     let mut out = Vec::new();
     out.extend_from_slice(&SPARSE_MAGIC);
-    put_u16(&mut out, version)?;
+    put_u16(&mut out, VERSION)?;
     put_u16(&mut out, flags)?;
     put_len(&mut out, sidecar.vm_state.len())?;
     put_len(&mut out, sdk.as_ref().map_or(0, Vec::len))?;
     put_len(&mut out, policy.len())?;
     put_len(&mut out, sidecar.state_blob_suffix.len())?;
-    if version >= V5_VERSION {
-        put_len(&mut out, sidecar.control_state.len())?;
-    }
+    put_len(&mut out, sidecar.control_state.len())?;
     put_u64(&mut out, sidecar.at)?;
     put_u64(&mut out, sidecar.sdk_events)?;
     put_u64(&mut out, sidecar.trace_events)?;
@@ -400,12 +335,7 @@ pub(crate) fn encode_sparse_sidecar(
     }
     out.extend_from_slice(&policy);
     out.extend_from_slice(sidecar.state_blob_suffix);
-    if version >= V5_VERSION {
-        out.extend_from_slice(sidecar.control_state);
-    }
-    if version != SPARSE_VERSION {
-        check_len("sidecar", out.len(), MAX_SPARSE_SIDECAR_LEN)?;
-    }
+    out.extend_from_slice(sidecar.control_state);
     Ok(out)
 }
 
@@ -417,35 +347,20 @@ pub(crate) fn decode_sparse_sidecar(
         return Err(PortableSnapshotError::BadMagic);
     }
     let version = input.u16()?;
-    if version != V3_VERSION
-        && version != LEGACY_VERSION
-        && version != V5_VERSION
-        && version != SPARSE_VERSION
-    {
-        return Err(PortableSnapshotError::BadVersion(version));
-    }
     if version != SPARSE_VERSION {
-        check_len("sidecar", bytes.len(), MAX_SPARSE_SIDECAR_LEN)?;
+        return Err(PortableSnapshotError::BadVersion(version));
     }
     let flags = input.u16()?;
     if flags & !SPARSE_KNOWN_FLAGS != 0 {
         return Err(PortableSnapshotError::BadFlags);
     }
-    let vm_state_len = input.section_len("vm_state", version, MAX_VM_STATE_LEN)?;
-    let sdk_len = input.section_len("sdk", version, MAX_SDK_LEN)?;
-    let policy_len = input.section_len("policy", version, MAX_POLICY_LEN)?;
-    let suffix_len = input.section_len("state_blob_suffix", version, MAX_SUFFIX_LEN)?;
-    let control_len = if version >= V5_VERSION {
-        input.section_len("control_state", version, MAX_CONTROL_LEN)?
-    } else {
-        0
-    };
+    let vm_state_len = input.section_len("vm_state")?;
+    let sdk_len = input.section_len("sdk")?;
+    let policy_len = input.section_len("policy")?;
+    let suffix_len = input.section_len("state_blob_suffix")?;
+    let control_len = input.section_len("control_state")?;
     let has_sdk = flags & SPARSE_FLAG_SDK != 0;
-    if vm_state_len == 0
-        || policy_len == 0
-        || has_sdk != (sdk_len != 0)
-        || (version == V5_VERSION && control_len == 0)
-    {
+    if vm_state_len == 0 || policy_len == 0 || has_sdk != (sdk_len != 0) {
         return Err(PortableSnapshotError::BadFlags);
     }
     let at = input.u64()?;
@@ -458,9 +373,7 @@ pub(crate) fn decode_sparse_sidecar(
     let state_blob_suffix = input.section(suffix_len)?;
     let control_state = input.section(control_len)?;
     input.finish("sparse sidecar")?;
-    let sdk = has_sdk
-        .then(|| decode_sdk(&sdk_bytes, version))
-        .transpose()?;
+    let sdk = has_sdk.then(|| decode_sdk(&sdk_bytes)).transpose()?;
     let policy = ServiceConfig::decode(&policy_bytes)?;
     Ok(SparsePortableSidecar {
         vm_state,
@@ -501,16 +414,12 @@ fn encode_sdk(sdk: &SdkSnapshot) -> Result<Vec<u8>, PortableSnapshotError> {
     Ok(out)
 }
 
-fn decode_sdk(bytes: &[u8], version: u16) -> Result<SdkSnapshot, PortableSnapshotError> {
+fn decode_sdk(bytes: &[u8]) -> Result<SdkSnapshot, PortableSnapshotError> {
     let mut input = SliceReader::new(bytes);
     let recorded = channel::RecordedState::decode(&input.bytes()?)
         .map_err(|_| PortableSnapshotError::Malformed("SDK recorded state"))?;
     let pending_snapshot = input.boolean()?;
-    let pending_stop = if version >= 4 {
-        decode_pending_stop(&mut input)?
-    } else {
-        None
-    };
+    let pending_stop = decode_pending_stop(&mut input)?;
     let event_count = input.count("SDK event count", 20)?;
     let mut events = Vec::new();
     events
@@ -608,43 +517,11 @@ fn decode_pending_stop(
     })
 }
 
-fn complete_version(vm: usize, sdk: usize, policy: usize, control: usize) -> u16 {
-    if vm > MAX_VM_STATE_LEN
-        || sdk > MAX_SDK_LEN
-        || policy > MAX_POLICY_LEN
-        || control > MAX_CONTROL_LEN
-    {
-        VERSION
-    } else if control == 0 {
-        LEGACY_VERSION
-    } else {
-        V5_VERSION
-    }
-}
-
-fn sparse_version(vm: usize, sdk: usize, policy: usize, suffix: usize, control: usize) -> u16 {
-    if suffix > MAX_SUFFIX_LEN {
-        VERSION
-    } else {
-        complete_version(vm, sdk, policy, control)
-    }
-}
-
 fn section_len<R: Read>(
     input: &mut R,
     section: &'static str,
-    version: u16,
-    legacy_max: usize,
 ) -> Result<usize, PortableSnapshotError> {
-    bounded_len(
-        input,
-        section,
-        if version == VERSION {
-            isize::MAX as usize
-        } else {
-            legacy_max
-        },
-    )
+    bounded_len(input, section, isize::MAX as usize)
 }
 
 fn check_len(section: &'static str, got: usize, max: usize) -> Result<(), PortableSnapshotError> {
@@ -862,18 +739,8 @@ impl<'a> SliceReader<'a> {
         Ok(copy)
     }
 
-    fn section_len(
-        &mut self,
-        section: &'static str,
-        version: u16,
-        legacy_max: usize,
-    ) -> Result<usize, PortableSnapshotError> {
-        let max = if version == VERSION {
-            self.bytes.len()
-        } else {
-            legacy_max
-        };
-        self.bounded_len(section, max)
+    fn section_len(&mut self, section: &'static str) -> Result<usize, PortableSnapshotError> {
+        self.bounded_len(section, self.bytes.len())
     }
 
     fn bounded_len(
@@ -988,7 +855,7 @@ mod tests {
         miri,
         ignore = "161 MiB sparse-sidecar boundary regression; native-only allocation is intentional"
     )]
-    fn sparse_v6_preserves_a_sidecar_larger_than_the_legacy_total_bound() {
+    fn large_sparse_sidecar_preserves_all_sections() {
         let suffix = vec![0xA7; MAX_SPARSE_SIDECAR_LEN + 1];
         let policy = ServiceConfig::default();
         let mut encoded = encode_sparse_sidecar(&SparsePortableSidecarRef {
@@ -1016,13 +883,10 @@ mod tests {
         drop(decoded);
         drop(suffix);
 
-        encoded[8..10].copy_from_slice(&V5_VERSION.to_le_bytes());
+        encoded[8..10].copy_from_slice(&5_u16.to_le_bytes());
         assert!(matches!(
             decode_sparse_sidecar(&encoded),
-            Err(PortableSnapshotError::Length {
-                section: "sidecar",
-                ..
-            })
+            Err(PortableSnapshotError::BadVersion(5))
         ));
     }
 
@@ -1031,7 +895,7 @@ mod tests {
         miri,
         ignore = "large stream size regression; small SDK codecs run under Miri"
     )]
-    fn sdk_stream_beyond_legacy_limit_selects_version_six_without_dropping_events() {
+    fn large_sdk_stream_preserves_every_event() {
         let (memory, vm, mut sdk, policy) = fixture();
         sdk.events = (0..65)
             .map(|at| (at, 9, vec![at as u8; 1024 * 1024]))
@@ -1077,40 +941,6 @@ mod tests {
             decode_sparse_sidecar(&sparse).unwrap().sdk.unwrap().events,
             sdk.events
         );
-    }
-
-    #[test]
-    fn version_selection_preserves_old_layouts_and_admits_each_large_section() {
-        assert_eq!(
-            complete_version(MAX_VM_STATE_LEN, MAX_SDK_LEN, MAX_POLICY_LEN, 0),
-            LEGACY_VERSION
-        );
-        assert_eq!(
-            complete_version(
-                MAX_VM_STATE_LEN,
-                MAX_SDK_LEN,
-                MAX_POLICY_LEN,
-                MAX_CONTROL_LEN
-            ),
-            V5_VERSION
-        );
-        for lengths in [
-            (MAX_VM_STATE_LEN + 1, 0, 0, 0),
-            (1, MAX_SDK_LEN + 1, 0, 0),
-            (1, 0, MAX_POLICY_LEN + 1, 0),
-            (1, 0, 0, MAX_CONTROL_LEN + 1),
-        ] {
-            assert_eq!(
-                complete_version(lengths.0, lengths.1, lengths.2, lengths.3),
-                VERSION
-            );
-            assert_eq!(
-                sparse_version(lengths.0, lengths.1, lengths.2, 0, lengths.3),
-                VERSION
-            );
-        }
-        assert_eq!(sparse_version(1, 0, 0, MAX_SUFFIX_LEN, 0), LEGACY_VERSION);
-        assert_eq!(sparse_version(1, 0, 0, MAX_SUFFIX_LEN + 1, 0), VERSION);
     }
 
     #[test]
@@ -1185,9 +1015,6 @@ mod tests {
     #[test]
     fn wire_constants_are_exact_contract_values() {
         assert_eq!(MAGIC, *b"HMSNAP01");
-        assert_eq!(V3_VERSION, 3);
-        assert_eq!(LEGACY_VERSION, 4);
-        assert_eq!(V5_VERSION, 5);
         assert_eq!(VERSION, 6);
         assert_eq!((FLAG_SDK, FLAG_TAINTED, KNOWN_FLAGS), (1, 2, 3));
         assert_eq!(MAX_VM_STATE_LEN, 16 * 1024 * 1024);
@@ -1211,7 +1038,7 @@ mod tests {
                 + 128
         );
 
-        for old_version in [1_u16, 2, VERSION + 1] {
+        for old_version in [1_u16, 2, 3, 4, 5, VERSION + 1] {
             let mut old = encoded();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             refresh_digest(&mut old);
@@ -1269,23 +1096,9 @@ mod tests {
     }
 
     #[test]
-    fn compare_portable_execution_ignores_trace_metadata_for_each_version() {
-        let mut version_six = encoded_with_control_state(b"control");
-        version_six[8..10].copy_from_slice(&VERSION.to_le_bytes());
-        refresh_digest(&mut version_six);
-        let artifacts = [
-            include_bytes!("../tests/fixtures/sdk-v3-full.bin").to_vec(),
-            include_bytes!("../tests/fixtures/sdk-v4-full-pending.bin").to_vec(),
-            encoded_with_control_state(b"control"),
-            version_six,
-        ];
-        for original in artifacts {
-            let version = u16::from_le_bytes(original[8..10].try_into().unwrap());
-            let trace_start = match version {
-                V3_VERSION | LEGACY_VERSION => 60,
-                V5_VERSION | VERSION => 68,
-                _ => unreachable!(),
-            };
+    fn compare_portable_execution_ignores_trace_metadata() {
+        for original in [encoded_with_control_state(b"control"), encoded()] {
+            let trace_start = 68;
             let mut changed = original.clone();
             changed[trace_start..trace_start + 8].copy_from_slice(&u64::MAX.to_le_bytes());
             changed[trace_start + 8..trace_start + 16]
@@ -1323,9 +1136,12 @@ mod tests {
             assert!(!comparison.equal, "byte index {index}");
         }
 
-        let version_four = include_bytes!("../tests/fixtures/sdk-v4-full-pending.bin");
-        let comparison = compare_portable_execution_state(&version_four[..], &left, 8192).unwrap();
-        assert!(!comparison.equal);
+        let mut old = left.clone();
+        old[8..10].copy_from_slice(&4_u16.to_le_bytes());
+        assert!(matches!(
+            compare_portable_execution_state(&old, &left, 8192),
+            Err(PortableSnapshotError::BadVersion(4))
+        ));
     }
 
     #[test]
@@ -1392,7 +1208,7 @@ mod tests {
         assert_eq!(&bytes[..8], b"HMSSNAP1");
         assert_eq!(
             u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
-            LEGACY_VERSION
+            VERSION
         );
         let decoded = decode_sparse_sidecar(&bytes).unwrap();
         assert_eq!(decoded.vm_state, b"strict-vm-state");
@@ -1409,7 +1225,7 @@ mod tests {
     }
 
     #[test]
-    fn v5_complete_snapshot_round_trips_multiple_control_states() {
+    fn complete_snapshot_round_trips_multiple_control_states() {
         for control_state in [
             vec![0x01],
             vec![0x00, 0xfe, 0xa5],
@@ -1418,7 +1234,7 @@ mod tests {
             let bytes = encoded_with_control_state(&control_state);
             assert_eq!(
                 u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
-                V5_VERSION
+                VERSION
             );
             assert_eq!(
                 u64::from_le_bytes(bytes[44..52].try_into().unwrap()),
@@ -1448,7 +1264,7 @@ mod tests {
     }
 
     #[test]
-    fn v5_sparse_sidecar_round_trips_multiple_control_states() {
+    fn sparse_sidecar_round_trips_multiple_control_states() {
         for control_state in [
             vec![0x01],
             vec![0x00, 0xfe, 0xa5],
@@ -1457,7 +1273,7 @@ mod tests {
             let bytes = sparse_sidecar_fixture_with_control_state(&control_state);
             assert_eq!(
                 u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
-                V5_VERSION
+                VERSION
             );
             assert_eq!(
                 u64::from_le_bytes(bytes[44..52].try_into().unwrap()),
@@ -1484,16 +1300,13 @@ mod tests {
     }
 
     #[test]
-    fn v5_complete_snapshot_control_state_is_nonempty_bounded_trailing_and_authenticated() {
+    fn complete_snapshot_control_state_is_bounded_trailing_and_authenticated() {
         let good = encoded_with_control_state(&[1, 2, 3]);
 
         let mut missing = good.clone();
         missing[44..52].copy_from_slice(&0_u64.to_le_bytes());
         refresh_digest(&mut missing);
-        assert!(matches!(
-            PortableSnapshot::read_from(missing.as_slice(), 8192),
-            Err(PortableSnapshotError::BadFlags)
-        ));
+        assert!(PortableSnapshot::read_from(missing.as_slice(), 8192).is_err());
 
         let mut oversized = good.clone();
         oversized[44..52].copy_from_slice(&u64::MAX.to_le_bytes());
@@ -1526,15 +1339,12 @@ mod tests {
     }
 
     #[test]
-    fn v5_sparse_sidecar_control_state_is_nonempty_bounded_trailing_and_total() {
+    fn sparse_sidecar_control_state_is_bounded_trailing_and_total() {
         let good = sparse_sidecar_fixture_with_control_state(&[1, 2, 3]);
 
         let mut missing = good.clone();
         missing[44..52].copy_from_slice(&0_u64.to_le_bytes());
-        assert!(matches!(
-            decode_sparse_sidecar(&missing),
-            Err(PortableSnapshotError::BadFlags)
-        ));
+        assert!(decode_sparse_sidecar(&missing).is_err());
 
         let mut oversized = good.clone();
         oversized[44..52].copy_from_slice(&u64::MAX.to_le_bytes());
@@ -1556,7 +1366,7 @@ mod tests {
         for end in 0..good.len() {
             assert!(
                 decode_sparse_sidecar(&good[..end]).is_err(),
-                "truncated v5 sidecar prefix {end} was accepted"
+                "truncated sidecar prefix {end} was accepted"
             );
         }
     }
@@ -1576,7 +1386,7 @@ mod tests {
             decode_sparse_sidecar(&bad_version),
             Err(PortableSnapshotError::BadVersion(u16::MAX))
         ));
-        for old_version in [1_u16, 2, VERSION + 1] {
+        for old_version in [1_u16, 2, 3, 4, 5, VERSION + 1] {
             let mut old = original.clone();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             assert!(matches!(
@@ -1785,10 +1595,7 @@ mod tests {
         recorded_env.set_payloads(None).unwrap();
         sdk.recorded = recorded_env.snapshot_state().unwrap();
         let bytes = encode_sdk(&sdk).unwrap();
-        assert_eq!(
-            decode_sdk(&bytes, VERSION).unwrap().remaining_payloads(),
-            None
-        );
+        assert_eq!(decode_sdk(&bytes).unwrap().remaining_payloads(), None);
     }
 
     #[test]
@@ -1799,14 +1606,14 @@ mod tests {
         let event_count = 8 + recorded_len + 2;
         impossible[event_count..event_count + 8].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(matches!(
-            decode_sdk(&impossible, VERSION),
+            decode_sdk(&impossible),
             Err(PortableSnapshotError::Malformed("SDK event count"))
         ));
 
         let mut trailing = encode_sdk(&sdk).unwrap();
         trailing.push(0);
         assert!(matches!(
-            decode_sdk(&trailing, VERSION),
+            decode_sdk(&trailing),
             Err(PortableSnapshotError::Malformed("SDK"))
         ));
     }
@@ -1819,7 +1626,7 @@ mod tests {
         empty.extend_from_slice(b"COVR");
         empty.extend_from_slice(&0_u64.to_le_bytes());
         assert!(matches!(
-            decode_sdk(&empty, VERSION),
+            decode_sdk(&empty),
             Err(PortableSnapshotError::Malformed(
                 "SDK coverage threshold count"
             ))
@@ -1836,7 +1643,7 @@ mod tests {
         descending[first_thread..first_thread + 4].copy_from_slice(&7_u32.to_le_bytes());
         descending[second_thread..second_thread + 4].copy_from_slice(&2_u32.to_le_bytes());
         assert!(matches!(
-            decode_sdk(&descending, VERSION),
+            decode_sdk(&descending),
             Err(PortableSnapshotError::Malformed("SDK coverage threshold"))
         ));
     }
@@ -1997,7 +1804,7 @@ mod tests {
         let bytes = encoded();
         assert_eq!(
             u16::from_le_bytes(bytes[8..10].try_into().unwrap()),
-            LEGACY_VERSION
+            VERSION
         );
         let decoded = PortableSnapshot::read_from(bytes.as_slice(), 8192).unwrap();
         assert_eq!(decoded.memory, fixture().0);
@@ -2074,8 +1881,7 @@ mod tests {
             Some(3)
         );
 
-        let version = u16::from_le_bytes(artifact[8..10].try_into().unwrap());
-        let header_len = if version >= V5_VERSION { 116 } else { 108 };
+        let header_len = 116;
         let memory_len =
             usize::try_from(u64::from_le_bytes(artifact[12..20].try_into().unwrap())).unwrap();
         let vm_start = header_len + memory_len;
@@ -2112,7 +1918,7 @@ mod tests {
 
         let (canonical, restore_zero) = captured_xsave(0);
         assert_eq!(restore_zero, Some(0));
-        let legacy_vm = vm_state(canonical.clone(), None).encode().unwrap();
+        let initial_vm = vm_state(canonical.clone(), Some(0)).encode().unwrap();
 
         let policy = ServiceConfig::default();
         let control_state = b"control";
@@ -2133,22 +1939,21 @@ mod tests {
         };
 
         const SHARED_STATE_CHUNK_SIZE: usize = 512;
-        const XSAVE_RESTORE_BV_TLV_LEN: usize = 2 + 4 + 8;
-        let without_suffix = encode(&legacy_vm, &[]);
+        let without_suffix = encode(&initial_vm, &[]);
         let suffix_len = (SHARED_STATE_CHUNK_SIZE - without_suffix.len() % SHARED_STATE_CHUNK_SIZE)
             % SHARED_STATE_CHUNK_SIZE;
         let suffix = vec![0xa7; suffix_len];
-        let legacy_sidecar = encode(&legacy_vm, &suffix);
-        assert_eq!(legacy_sidecar.len() % SHARED_STATE_CHUNK_SIZE, 0);
+        let initial_sidecar = encode(&initial_vm, &suffix);
+        assert_eq!(initial_sidecar.len() % SHARED_STATE_CHUNK_SIZE, 0);
         assert_eq!(
-            decode_sparse_sidecar(&legacy_sidecar).unwrap().vm_state,
-            legacy_vm
+            decode_sparse_sidecar(&initial_sidecar).unwrap().vm_state,
+            initial_vm
         );
         assert_eq!(
-            vm_state::VmState::decode(&legacy_vm)
+            vm_state::VmState::decode(&initial_vm)
                 .unwrap()
                 .xsave_restore_bv,
-            None
+            Some(0)
         );
 
         let mut v6_len = None;
@@ -2159,7 +1964,7 @@ mod tests {
 
             let vm = vm_state(image, restore_bv);
             let vm_bytes = vm.encode().unwrap();
-            assert_eq!(vm_bytes.len(), legacy_vm.len() + XSAVE_RESTORE_BV_TLV_LEN);
+            assert_eq!(vm_bytes.len(), initial_vm.len());
             assert_eq!(
                 vm_state::VmState::decode(&vm_bytes)
                     .unwrap()
@@ -2170,16 +1975,10 @@ mod tests {
             let sidecar = encode(&vm_bytes, &suffix);
             assert_eq!(
                 u16::from_le_bytes(sidecar[8..10].try_into().unwrap()),
-                V5_VERSION
+                VERSION
             );
-            assert_eq!(
-                sidecar.len(),
-                legacy_sidecar.len() + XSAVE_RESTORE_BV_TLV_LEN
-            );
-            assert_eq!(
-                sidecar.len() % SHARED_STATE_CHUNK_SIZE,
-                XSAVE_RESTORE_BV_TLV_LEN
-            );
+            assert_eq!(sidecar.len(), initial_sidecar.len());
+            assert_eq!(sidecar.len() % SHARED_STATE_CHUNK_SIZE, 0);
             let decoded = decode_sparse_sidecar(&sidecar).unwrap();
             assert_eq!(
                 vm_state::VmState::decode(&decoded.vm_state)
@@ -2198,7 +1997,7 @@ mod tests {
     #[test]
     fn planted_corruption_in_each_load_bearing_section_is_rejected() {
         let original = encoded();
-        const HEADER_LEN: usize = 108;
+        const HEADER_LEN: usize = 116;
         let section_len = |offset: usize| {
             let mut bytes = [0; 8];
             bytes.copy_from_slice(&original[offset..offset + 8]);
@@ -2253,7 +2052,7 @@ mod tests {
         let mut zero = bytes.clone();
         zero[covr + 16..covr + 24].copy_from_slice(&0_u64.to_le_bytes());
         assert!(matches!(
-            decode_sdk(&zero, VERSION),
+            decode_sdk(&zero),
             Err(PortableSnapshotError::Malformed("SDK coverage threshold"))
         ));
 
@@ -2261,7 +2060,7 @@ mod tests {
         let first_thread = duplicate[covr + 12..covr + 16].to_vec();
         duplicate[covr + 24..covr + 28].copy_from_slice(&first_thread);
         assert!(matches!(
-            decode_sdk(&duplicate, VERSION),
+            decode_sdk(&duplicate),
             Err(PortableSnapshotError::Malformed("SDK coverage threshold"))
         ));
     }
@@ -2284,7 +2083,7 @@ mod tests {
             let (memory, vm_state, mut sdk, policy) = fixture();
             sdk.pending_stop = stop.clone();
             let encoded = encode_sdk(&sdk).unwrap();
-            let restored = decode_sdk(&encoded, VERSION).unwrap();
+            let restored = decode_sdk(&encoded).unwrap();
             assert_eq!(restored.pending_stop, stop);
             assert_eq!(restored.recorded.encode(), sdk.recorded.encode());
             assert_eq!(restored.events, sdk.events);
@@ -2339,97 +2138,5 @@ mod tests {
         bytes.extend_from_slice(&[0; 22]);
         bytes.extend_from_slice(&u64::MAX.to_le_bytes());
         assert!(decode_pending_stop(&mut SliceReader::new(&bytes)).is_err());
-    }
-
-    #[test]
-    fn version_three_complete_and_sparse_artifacts_remain_readable() {
-        let (memory, _, sdk, _) = fixture();
-        let full = include_bytes!("../tests/fixtures/sdk-v3-full.bin");
-        let decoded = PortableSnapshot::read_from(full.as_slice(), memory.len()).unwrap();
-        let decoded_sdk = decoded.sdk.unwrap();
-        assert_eq!(decoded.memory, memory);
-        assert_eq!(decoded_sdk.pending_stop, None);
-        assert_eq!(decoded_sdk.recorded.encode(), sdk.recorded.encode());
-        assert_eq!(decoded_sdk.events, sdk.events);
-        let sparse = include_bytes!("../tests/fixtures/sdk-v3-sparse.bin");
-        let decoded = decode_sparse_sidecar(sparse).unwrap();
-        assert_eq!(decoded.sdk.unwrap().pending_stop, None);
-        assert_eq!(decoded.state_blob_suffix, b"canonical-suffix");
-    }
-
-    #[test]
-    fn version_four_complete_and_sparse_artifacts_remain_byte_stable() {
-        let full = include_bytes!("../tests/fixtures/sdk-v4-full-pending.bin");
-        assert_eq!(
-            u16::from_le_bytes(full[8..10].try_into().unwrap()),
-            LEGACY_VERSION
-        );
-        let decoded = PortableSnapshot::read_from(full.as_slice(), 8192).unwrap();
-        assert!(decoded.control_state.is_empty());
-        assert_eq!(
-            decoded.sdk.as_ref().unwrap().pending_stop,
-            Some(SdkStop::Decision {
-                moment: 47,
-                seq: 3,
-                question: channel::Question::with_request_id(
-                    0x1234,
-                    7,
-                    b"portable-v4-decision".to_vec(),
-                )
-                .unwrap(),
-            })
-        );
-        let mut reencoded = Vec::new();
-        PortableSnapshotRef {
-            memory: &decoded.memory,
-            vm_state: &decoded.vm_state,
-            sdk: decoded.sdk.as_ref(),
-            policy: &decoded.policy,
-            at: decoded.at,
-            sdk_events: decoded.sdk_events,
-            trace_events: decoded.trace_events,
-            trace_schedules: decoded.trace_schedules,
-            tainted: decoded.tainted,
-            state_hash: decoded.state_hash,
-            control_state: &decoded.control_state,
-        }
-        .write_to(&mut reencoded)
-        .unwrap();
-        assert_eq!(reencoded.as_slice(), full);
-
-        let sparse = include_bytes!("../tests/fixtures/sdk-v4-sparse-pending.bin");
-        assert_eq!(
-            u16::from_le_bytes(sparse[8..10].try_into().unwrap()),
-            LEGACY_VERSION
-        );
-        let decoded = decode_sparse_sidecar(sparse).unwrap();
-        assert!(decoded.control_state.is_empty());
-        assert_eq!(
-            decoded.sdk.as_ref().unwrap().pending_stop,
-            Some(SdkStop::Decision {
-                moment: 47,
-                seq: 3,
-                question: channel::Question::with_request_id(
-                    0x1234,
-                    7,
-                    b"portable-v4-decision".to_vec(),
-                )
-                .unwrap(),
-            })
-        );
-        let reencoded = encode_sparse_sidecar(&SparsePortableSidecarRef {
-            vm_state: &decoded.vm_state,
-            sdk: decoded.sdk.as_ref(),
-            policy: &decoded.policy,
-            at: decoded.at,
-            sdk_events: decoded.sdk_events,
-            trace_events: decoded.trace_events,
-            trace_schedules: decoded.trace_schedules,
-            tainted: decoded.tainted,
-            state_blob_suffix: &decoded.state_blob_suffix,
-            control_state: &decoded.control_state,
-        })
-        .unwrap();
-        assert_eq!(reencoded.as_slice(), sparse);
     }
 }
