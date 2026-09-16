@@ -1,0 +1,236 @@
+{
+  "rootfs_sha256": "35082b0b7f874961adde1c6db70522c2b48cd6f05e1a4f3a02a4675271c0e7f6",
+  "archive_sha256": "a47c03046ff1f7a3f1d0fb0f7ed5fdc361fa00df51a834b2e4688ce476083513",
+  "version": 2,
+  "elf_sha256": {
+    "/bin/busybox": "dfcabe58212e7b2d8cabeac17a779f8572a4f97836bbcc35c3c45a98d28f1de0",
+    "/lib/x86_64-linux-gnu/libaudit.so.1": "8632b443369cb51570b78e0bf5b0fa5b1a7b343439b65c21200a27e015aed507",
+    "/lib/x86_64-linux-gnu/libc.so.6": "9792e3cbb541c8f44c7acf5f14f4022ea62998ecc787d326bed4d8b6547dfd92",
+    "/lib/x86_64-linux-gnu/libcap-ng.so.0": "6b5be42df1bed00b8ea1f52e9412dce5ed500c29a6dd22b31e72f5dab5a3a575",
+    "/lib/x86_64-linux-gnu/libcap.so.2": "41217b0af128444f66dee8adda52b2ceaf19da00e5b0b155e2b87b857671286b",
+    "/lib/x86_64-linux-gnu/libcom_err.so.2": "dc4828400674492839b630c001db424cd38e5cecfcf46dbf705a637647e04bea",
+    "/lib/x86_64-linux-gnu/libcrypto.so.3": "8bb5f3fdffe280d4453eb79a4663c2c47af70b7c247fe2e94e2da703cee1fd3d",
+    "/lib/x86_64-linux-gnu/libgcc_s.so.1": "30c61ab012a4241bed033725a09b61f5fdd3bb7df95ee852d0b096520524c7af",
+    "/lib/x86_64-linux-gnu/libgssapi_krb5.so.2": "c290f761873ebeac539911010526e1c5db86218bfcb29672760da46841741de0",
+    "/lib/x86_64-linux-gnu/libicudata.so.76": "a04b2b906193fa1e40f968a3d16d7d6c844a1fafbdd5bce6e9f67b01c124ff24",
+    "/lib/x86_64-linux-gnu/libicui18n.so.76": "596132c352dc25d1e8a1f91e2c5790262ed02376d27afc14b545a1952341b3fc",
+    "/lib/x86_64-linux-gnu/libicuuc.so.76": "a8e433e81075732faf255b17d4a25ce28632e41fef1a75e727ee7f4ed73ab151",
+    "/lib/x86_64-linux-gnu/libk5crypto.so.3": "c4c3221d0350f882cee0430b58d5fb289a5776c684d3156964864c8a9719dff1",
+    "/lib/x86_64-linux-gnu/libkeyutils.so.1": "e5d5a7450d08eff7d4bbcaac75ef2b94d3447c81a1b2ddf3ab85d2de4709a9a8",
+    "/lib/x86_64-linux-gnu/libkrb5.so.3": "c4ab64e6bc2874a83e649e4439be752465da027a0041e2bb5343f81c80f0882d",
+    "/lib/x86_64-linux-gnu/libkrb5support.so.0": "f559f051ee5d39f151a57d79f2cde475c484030098b0c73f9f7035b421b187c4",
+    "/lib/x86_64-linux-gnu/liblber.so.2": "ca319704dd4f58b5b3fc8510738850f03f18940544ba04bebf2fa8a23a798346",
+    "/lib/x86_64-linux-gnu/libldap.so.2": "e8f34e65087f24f296fa7a65a8c65383f4a7e2b532c46e40463d4e59a206c20a",
+    "/lib/x86_64-linux-gnu/liblz4.so.1": "67bf8b84af77e962e09be661944f7c61393c4806746734e36db9fbdaebc1de36",
+    "/lib/x86_64-linux-gnu/liblzma.so.5": "01e05a4b5268805a10a2414a8904fb1fb45c60626dce53b5ea19c1d491049b99",
+    "/lib/x86_64-linux-gnu/libm.so.6": "6d567d53e895273ca14a1f9dc164fc6c8d39aed2f60aa46a733c2784228915f3",
+    "/lib/x86_64-linux-gnu/libnss_files.so.2": "8c93b2ae43dac3c2d688d227609d713f71620d3f0980ebf6bbb371c6eb542108",
+    "/lib/x86_64-linux-gnu/libpam.so.0": "7e61037c89b06382c9d22518174914fef77b9e473962f49ab1c90c55c9b5bca2",
+    "/lib/x86_64-linux-gnu/libpq.so.5": "f64dcec14657e4123621448442cd3d0795744d238e588774f5c864f592f4860d",
+    "/lib/x86_64-linux-gnu/libreadline.so.8": "a3334d88f3f6c6a25736667e0b39db0f68b4e7e6bf758a475aff681ddb33ad8b",
+    "/lib/x86_64-linux-gnu/libresolv.so.2": "d41dd4adacf5a35df426461dd8a92d7bdd5ba29bb61a1c3531bec0ada386f8dd",
+    "/lib/x86_64-linux-gnu/libsasl2.so.2": "3f93968591811eb3972c3467c69c2968dd9cb2b51f7b7bb48de22ba8e17d13fd",
+    "/lib/x86_64-linux-gnu/libssl.so.3": "4b34859318555bf96d518131bed5fc4d5e35fefa4e1729f49eaa26bd05263850",
+    "/lib/x86_64-linux-gnu/libstdc++.so.6": "972bb2a18b71140dab0240f8a1f68ab3fb1d56bcd4c4f824a91b70888faf5a00",
+    "/lib/x86_64-linux-gnu/libsystemd.so.0": "c59f9015342de9c2dcb2decccb3d83218849fe3e4388c723a6528254fd7606f0",
+    "/lib/x86_64-linux-gnu/libtinfo.so.6": "4013e7651ac68f547d8333517def25b2366c97eec7de7f06e105dbf3444ffebf",
+    "/lib/x86_64-linux-gnu/libxml2.so.2": "8f2643af68a9eba917929046806dabd1848867068d0eee0f6799288a8e886963",
+    "/lib/x86_64-linux-gnu/libxxhash.so.0": "7dd49b353facbee50c371d0559ce29db5afee5ac33249ca5c7068420fb642762",
+    "/lib/x86_64-linux-gnu/libz.so.1": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e",
+    "/lib/x86_64-linux-gnu/libzstd.so.1": "27f07c9a49c2c956bcfb64cd4712976586a66facbf15fc7f09bc37413b5f2b21",
+    "/lib64/ld-linux-x86-64.so.2": "c8438e4fde1934e61c88311633f00949ff645d5c04cdb8671fa3d78164d2f307",
+    "/usr/lib/libvoidstar.so": "510fd856907664db540c910db597e7905f1625b9f582bb6f2f4ac94869efb696",
+    "/usr/lib/postgresql/17/bin/clusterdb": "8bfd5c54a7d7e9fd55685b8d240d77e8db99977091730f35ce6b8cea12d4687e",
+    "/usr/lib/postgresql/17/bin/createdb": "6fff0a0a8c0209c51c098a872fc24d7876aeefa88d76d2c2e83e74743308d5b8",
+    "/usr/lib/postgresql/17/bin/createuser": "0880b159eae6d493a1d2839b8bdddb2fe62a6178e23cf389cac60a2a170b0e3b",
+    "/usr/lib/postgresql/17/bin/dropdb": "d21292317269c5b35a771deaec8901ce7d40e3f51a0caf20a760c454d03e23ed",
+    "/usr/lib/postgresql/17/bin/dropuser": "5f929865b402a1d6522e8896e7f2fac58afdee154725756af2984caad6353fd6",
+    "/usr/lib/postgresql/17/bin/initdb": "a0363354125bc00f25075bb47fc32a2838fa7668c008326227f5bc04d628ca1d",
+    "/usr/lib/postgresql/17/bin/oid2name": "745f03392587e1a9275c1c77c1ed4290bf1976f88e63d5880e1772382b81a917",
+    "/usr/lib/postgresql/17/bin/pg_amcheck": "7720c4a9b95b9d8dc7692b300507549335e2c7c23e329e6ab8dac9042c9de37c",
+    "/usr/lib/postgresql/17/bin/pg_archivecleanup": "d46b033c2d56a3962820552b05dca9a63f51e1a2a4bff434d2cbb11fd72ed651",
+    "/usr/lib/postgresql/17/bin/pg_basebackup": "0ed568ab0e88d79555722de07f31e3b81fef961984e97dcbedc6f6006700ae91",
+    "/usr/lib/postgresql/17/bin/pg_checksums": "fdf1df6fbcc22b89ed57fc79f5f573605d15c2d4774784cf9e9aa99a66f1add6",
+    "/usr/lib/postgresql/17/bin/pg_combinebackup": "898b83b86fdff12a05ab8095aa307f6f034037b43355089587ca982a0e1aa84c",
+    "/usr/lib/postgresql/17/bin/pg_config": "8fc0425c51a3d1772ea60aa5d88c26e5903f46e5ee37b0652cefe9ffea377427",
+    "/usr/lib/postgresql/17/bin/pg_controldata": "b54c1bdeeab0953598b8447127b2230b1748ea1989dd972e6ee02455f256f180",
+    "/usr/lib/postgresql/17/bin/pg_createsubscriber": "9af9b328e4159a63977bdf7bfac4e17e3b32ad50f782d98e3affb09598e80c95",
+    "/usr/lib/postgresql/17/bin/pg_ctl": "c8a0fa6df90600186575e3f3c47a352bafac73547416cf67675b41991b5b5d74",
+    "/usr/lib/postgresql/17/bin/pg_dump": "b5f14f509728e44d97ff876b570c85c9d641fc22898b394ec0f5a923ec6ef793",
+    "/usr/lib/postgresql/17/bin/pg_dumpall": "1e56a3748a11401ee4a45266af67273cfabb58181a27d8830f2acf2d7dbe45c5",
+    "/usr/lib/postgresql/17/bin/pg_isready": "f02ea2f9ee0119ac00427e700ffe56368d655016c1807e689265afc6138cbf63",
+    "/usr/lib/postgresql/17/bin/pg_receivewal": "f4efad69d566ecd4bc189305149efce2a0c18dca483ece1d9e11578b783cae36",
+    "/usr/lib/postgresql/17/bin/pg_recvlogical": "48f4dd4a51ae37592347e883d53306cb310411116e0e92dd4719c716e7170ee6",
+    "/usr/lib/postgresql/17/bin/pg_resetwal": "8ee18a2001e6428229ccf04a34934af06fee5e606458b9b9660b478e10dee8f4",
+    "/usr/lib/postgresql/17/bin/pg_restore": "6a5c329542ccbb58957edbc8c0aa08e103cb32f8257c1f2d3b8dad19ce947692",
+    "/usr/lib/postgresql/17/bin/pg_rewind": "4d3167e2f274e3ed0fc595c6b45d239f4550e03f8d6915884414bb4bc3e1f008",
+    "/usr/lib/postgresql/17/bin/pg_test_fsync": "a0f5307bf273f8426047b25ba14ab8dde617f0f24bfbac5eec47f80052fdda6d",
+    "/usr/lib/postgresql/17/bin/pg_test_timing": "b06efef90b394aaac20082f12647a51bc15ae64dd1d50213ad574733499d5a8b",
+    "/usr/lib/postgresql/17/bin/pg_upgrade": "fc55bba86c3f03f592a31291b3130b61fd7d35ba68ca83c46a7038305c063c62",
+    "/usr/lib/postgresql/17/bin/pg_verifybackup": "b9db52c3f58887c6b97c6c42fcb469193b275a357d07d71187964e83b242e5a3",
+    "/usr/lib/postgresql/17/bin/pg_waldump": "dc2aab22c84fea0d7d5ea2e4bb3cf1f98560d4639d72b12aa82731418abb94f8",
+    "/usr/lib/postgresql/17/bin/pg_walsummary": "09e8749679b9b50f82f25186f31c0533d42a6d4cd9173a824623efa0bf2cd3b6",
+    "/usr/lib/postgresql/17/bin/pgbench": "a506e0a934c77c91c76a3d8d888e895d01ae42bd018e8f0da08015c33b605fcc",
+    "/usr/lib/postgresql/17/bin/postgres": "6468a969338215cb3912cf9c0b894bdbbd37b9a709926db078e9a5bf8bdc3e16",
+    "/usr/lib/postgresql/17/bin/psql": "3c94c29652ea7ff8803ab1ca35e48c38a39c8a94a8c8eeadbb1d87c68494506c",
+    "/usr/lib/postgresql/17/bin/reindexdb": "aaf26fb0d165e75611cbe630f1dba9615056f73b0c72e375c368a757f9528933",
+    "/usr/lib/postgresql/17/bin/vacuumdb": "43246af964a7e3f10c18154e5775cbf06e592287e891b2c3f46563b359e4da85",
+    "/usr/lib/postgresql/17/bin/vacuumlo": "e1346ed1baf718b6aee854aee2ea77f6312186ec9f886e163e42bf1bfe22c122",
+    "/usr/lib/postgresql/17/lib/_int.so": "2bf9e9945590ef5334c776b3ba9c601bd9cc73f0c0cf691769d7d8b1d83857c2",
+    "/usr/lib/postgresql/17/lib/amcheck.so": "7549c0129a28a40ed6f96f5708b565335309bdf851bc06becbca15e963beaf9a",
+    "/usr/lib/postgresql/17/lib/auth_delay.so": "b6609b0dea4826b0788463a435c2dc51b1f485d5459c814ac5a4c9a1d7e66d09",
+    "/usr/lib/postgresql/17/lib/auto_explain.so": "6d3ce79d80862f8c87c36353b2fd80ea3961ae28db4ee4764695f1d06eedf3a3",
+    "/usr/lib/postgresql/17/lib/autoinc.so": "00c8d2f91857a5cb13fe690bc86b59fa6b03406c436758b459cf21499dfafadc",
+    "/usr/lib/postgresql/17/lib/basebackup_to_shell.so": "a249bc0bbe508b3b6a6a4e183b8378128fcc94023393b8622277d46210e9be93",
+    "/usr/lib/postgresql/17/lib/basic_archive.so": "49649fb6a51bc90635e40682eb0b921e4836cf5b30a06fa94e1898ce013dc82a",
+    "/usr/lib/postgresql/17/lib/bloom.so": "061949b0279d3f626949bc1605ccaf1e630806b023f7aadf22a7f22dca7f8824",
+    "/usr/lib/postgresql/17/lib/btree_gin.so": "8ce38b44e6d4d70fd6fc9f1e40cd4c4bd1e4eb0924cc8583ed9b6b881115099b",
+    "/usr/lib/postgresql/17/lib/btree_gist.so": "bcaeb0b4709fd40481cc78b9c778a1063b520c798e042a06e29dc00fe7d10edc",
+    "/usr/lib/postgresql/17/lib/citext.so": "7f73baecc8b7c3f0f44970d82d274ff897b44e54269eeb109038d927bbb37e8a",
+    "/usr/lib/postgresql/17/lib/cube.so": "0a339595e82ccf8043662b965126b8d9f4723b1b9b3fc9e50edb8222a2507c7e",
+    "/usr/lib/postgresql/17/lib/cyrillic_and_mic.so": "1427cf992ed9253a1534ba748143cad6b9b6c719f02ef42ce06ad9681d62f7bd",
+    "/usr/lib/postgresql/17/lib/dblink.so": "b26eda30b1045fe081bdee68dd4e46b92d37421d8ab9140a5f501e6a36ddd7a0",
+    "/usr/lib/postgresql/17/lib/dict_int.so": "732ae1c8c268c679a154b2dfd864cc6a4afd61f9cdb308d36fbaceaaabdca435",
+    "/usr/lib/postgresql/17/lib/dict_snowball.so": "ca8503880d161135d94ee32225b1221322ff7764c0281b78be5057b34a496ac4",
+    "/usr/lib/postgresql/17/lib/dict_xsyn.so": "0b4ef5857979e20052d7faf1c50a628dba8a435253639fe5a9ccfe3dd91eb433",
+    "/usr/lib/postgresql/17/lib/earthdistance.so": "6658db8af266c064367afac7de81f5df9a08f534bdee69c2debf089ab2199189",
+    "/usr/lib/postgresql/17/lib/euc2004_sjis2004.so": "e99563c55f3643a0c95b2196839cbc9c13f46bc5938543c058fb4a8cd269a594",
+    "/usr/lib/postgresql/17/lib/euc_cn_and_mic.so": "db14b79c5cb3364f646ad9f48f175d43abf4e3787e39f94b6afe761a4e606d31",
+    "/usr/lib/postgresql/17/lib/euc_jp_and_sjis.so": "ef76ac1c40801c3dc44252bb7add0acc30613d0ad6da14c1a47796790019fa54",
+    "/usr/lib/postgresql/17/lib/euc_kr_and_mic.so": "b2733daad188195a9721bc49730d7ef9ef7ec920820591e1cfc698a5c5562cde",
+    "/usr/lib/postgresql/17/lib/euc_tw_and_big5.so": "cc36c1470f013273904bd79aa62cfcb47be1c5b15ac0a571370fdb3e26158770",
+    "/usr/lib/postgresql/17/lib/file_fdw.so": "8309eebe97a65a7746596d0e010666cfdc3cc10a886ec9cf8a1b6bb8d87ea42a",
+    "/usr/lib/postgresql/17/lib/fuzzystrmatch.so": "366ddb05f05f49c7c5b896a7ec98782d5862c4ce5a91260bc49801e83ca18a55",
+    "/usr/lib/postgresql/17/lib/hstore.so": "fcf5b9ebe8023caa53014f082cc1bb345eef200418c75b2f3384e0a308911da1",
+    "/usr/lib/postgresql/17/lib/insert_username.so": "246c68c817dc3f0b3dfc05e4230094e81844f02c3b8d043fa5afdb4bffd491bb",
+    "/usr/lib/postgresql/17/lib/isn.so": "931ea954a27a5e98a39df891e82b6428307afbfb905610b9cd174308d3c64700",
+    "/usr/lib/postgresql/17/lib/latin2_and_win1250.so": "89e1cb3b20512c8b9ead34c837204876a9630d681dfe2b30bc96ed7d6953002b",
+    "/usr/lib/postgresql/17/lib/latin_and_mic.so": "5a553549cf361b71729829988b9ae614c0077fe409cc922489a84c8287ea12ee",
+    "/usr/lib/postgresql/17/lib/libpqwalreceiver.so": "75f8600a03a1e498eb06fb46b05e00033a38e0c3e4278a1bb6a9221524a4e5ce",
+    "/usr/lib/postgresql/17/lib/lo.so": "3b29e16894b406a3aa46f3ca4351a10ef632b02cf7ff8595f666ac0c408e8df1",
+    "/usr/lib/postgresql/17/lib/ltree.so": "7994379cead8299be64a125f099fdb4bf478c5abe011c0cf0e46e5fcdab44629",
+    "/usr/lib/postgresql/17/lib/moddatetime.so": "be88ee126fbd3bf22f86bed5b32a9916166b0695c2b5f1b3d91c1e8a3874abec",
+    "/usr/lib/postgresql/17/lib/pageinspect.so": "dd9efad71d829e65807a194db6b5462a945481cbb5113a84dde9d6137c4b974f",
+    "/usr/lib/postgresql/17/lib/passwordcheck.so": "747ec53ab9403dc31d9ce019229c7ba180e3bad2e2e53a6d380fa0ace6dce7fc",
+    "/usr/lib/postgresql/17/lib/pg_buffercache.so": "f58292afdad200dfe098fc17478359d93111a3947b608250532bd4ba6d6ba1cc",
+    "/usr/lib/postgresql/17/lib/pg_freespacemap.so": "26d2db3fedbd3e0ec1becf661666ac1a057964e3b594917e3d2f34a7f9f46578",
+    "/usr/lib/postgresql/17/lib/pg_prewarm.so": "b17a3b6d8679edc1076fb968a0900be2959e782a357589132310243777d781a8",
+    "/usr/lib/postgresql/17/lib/pg_stat_statements.so": "d312f84eb42f20c46022c94f69842615b974ac6ac88d4bf5b43ac6d125473258",
+    "/usr/lib/postgresql/17/lib/pg_surgery.so": "8d72c8a7fa2c2302d6897d59a8240bdbec85403a9f1ac34357fc6fb39d7f3130",
+    "/usr/lib/postgresql/17/lib/pg_trgm.so": "a6872e0b28e57317ebe579a130e1f1de6eb87acc7bfbf0b4b8370bbe78e936ab",
+    "/usr/lib/postgresql/17/lib/pg_visibility.so": "887e4d5418235939da595fcc806d22b6978974509b809e00101f10ecb3cf6e76",
+    "/usr/lib/postgresql/17/lib/pg_walinspect.so": "549cbe6c3b5eadd7fc82cf538cc1ca3644e107a42e5bc024efa104e26c9efbff",
+    "/usr/lib/postgresql/17/lib/pgcrypto.so": "791e8e93de8de2a004346386b8b7acf353a60ebe7342e00724c17f765e609910",
+    "/usr/lib/postgresql/17/lib/pgoutput.so": "6277146c0a06eeb13cb4b4606a755f8ecef53e47103a2604e48e5d4af4cf4521",
+    "/usr/lib/postgresql/17/lib/pgrowlocks.so": "4eb4c916df8ea804e50c8ccccbcf8b9d1c8c6d24aa58d5073a4d8845b7f1cb14",
+    "/usr/lib/postgresql/17/lib/pgstattuple.so": "c70bffc2aaaaf1dc8c41f3036804afecaba8f1bd8e5e1ad706c92e40fe8d5f11",
+    "/usr/lib/postgresql/17/lib/pgxs/src/test/isolation/isolationtester": "ad0dc945d16b583aa3d1a2b68ddad47311f72f83d9ba047499e517d6c7c8d772",
+    "/usr/lib/postgresql/17/lib/pgxs/src/test/isolation/pg_isolation_regress": "2af8dc1bc8139f69741a2d3a245a2cb00fc531ad071f17b78246edb57bd0df35",
+    "/usr/lib/postgresql/17/lib/pgxs/src/test/regress/pg_regress": "35d0479f5f0964f718ee36273908c6d7398ef0fa88f7cab3467073a4176fe33e",
+    "/usr/lib/postgresql/17/lib/plpgsql.so": "65bc747abc06a53551f8e22fd7ca89add329c54c30a9047d18c7418ce621f5f4",
+    "/usr/lib/postgresql/17/lib/postgres_fdw.so": "748d0d33e12febb420eef78e7206eb364cc48b9c4db3120f9d1d13d66aac0c8f",
+    "/usr/lib/postgresql/17/lib/refint.so": "276a265f4aa253b015af7a5352c6972e7a85a39b2a2593ee4f430a90f368336e",
+    "/usr/lib/postgresql/17/lib/seg.so": "c68050e5c684ba3b4f3a2f4e57f8a971fec806e35e4f535a4c0a854a3bfe5074",
+    "/usr/lib/postgresql/17/lib/sslinfo.so": "983e66cf4d50ff2be74c373fa58da97654fa00a426d306281f3d3b9fd0f08743",
+    "/usr/lib/postgresql/17/lib/tablefunc.so": "b5254d6cb089663586ae24a059c74d0da9f3e78f37aa30f395d04b0ac6384e4f",
+    "/usr/lib/postgresql/17/lib/tcn.so": "3ff65a0893f1b4d1ea6645a117a8cd159bab34770ffa141128c35e79cf3540ac",
+    "/usr/lib/postgresql/17/lib/test_decoding.so": "4e5c668b9aa65a90205ac168c9f845072cae62d40fe5afcb3473e84ab5971973",
+    "/usr/lib/postgresql/17/lib/tsm_system_rows.so": "a9611d4b3c30a5e1509acb6a4d81e9570694297f36f44fac27b4ef629f595752",
+    "/usr/lib/postgresql/17/lib/tsm_system_time.so": "204750bfd0465e223d9d604d858c11fd51d2d79070dfd2857115d9998d049dbd",
+    "/usr/lib/postgresql/17/lib/unaccent.so": "dd720accb35fa3fdb15c4a201be1ec68d995c1cf5839b04fbc5bb003e7299fb1",
+    "/usr/lib/postgresql/17/lib/utf8_and_big5.so": "0531db5c255dc5237b63601ed382a7b0e673623795e344c4947d9be1a64b9266",
+    "/usr/lib/postgresql/17/lib/utf8_and_cyrillic.so": "88a3bfa1f2bdc994cb558227b2d9f4d3dd5b1d020f77595f71c1f9b4b3227ba8",
+    "/usr/lib/postgresql/17/lib/utf8_and_euc2004.so": "a3f42cf58833570a828d6d3c71ab9126984d16065456b587a268149222e1cdc6",
+    "/usr/lib/postgresql/17/lib/utf8_and_euc_cn.so": "63a565a0e58037e3dba968c936609c5831d9ac3eac86369924947d8e64af3c7b",
+    "/usr/lib/postgresql/17/lib/utf8_and_euc_jp.so": "791e399657df2610d1221c71bfbfcbf3b8ba5282175cb5c724716a79b6af4576",
+    "/usr/lib/postgresql/17/lib/utf8_and_euc_kr.so": "c3a2385777f77deb057f26334f27b8b33e8139d4aff657b409f564730cc7aa60",
+    "/usr/lib/postgresql/17/lib/utf8_and_euc_tw.so": "a160754c054d32b58ae56b74381b214941e0cb0796a9d27930b6d1716a72fccf",
+    "/usr/lib/postgresql/17/lib/utf8_and_gb18030.so": "ed577f3f5c032251404220c6601aeb254ff5ed8c954934f3ee2bc68e37e3cd5f",
+    "/usr/lib/postgresql/17/lib/utf8_and_gbk.so": "e5ac46ffd0f40ffd3cc358b6d8e4092fe6c5c8e91b486b36cd3e2f2000c934af",
+    "/usr/lib/postgresql/17/lib/utf8_and_iso8859.so": "cdc1c86c5b0c9bbf42624fb6d4e70a0d412f5a1dd5846263664f964cd8f00c3d",
+    "/usr/lib/postgresql/17/lib/utf8_and_iso8859_1.so": "a9929e56fee6b5d45cccfae8c3604e184a9d49743a721c5ed36078f33dfbba34",
+    "/usr/lib/postgresql/17/lib/utf8_and_johab.so": "e7ee5d89ff843ccdb36a36692350d110a1078ebe7961f48b8a770331c02c8cbe",
+    "/usr/lib/postgresql/17/lib/utf8_and_sjis.so": "cb99705398a443beb08c2df02500aefa28a00eaa5ec147ff162cdb589334ecbe",
+    "/usr/lib/postgresql/17/lib/utf8_and_sjis2004.so": "6aeaeba37f1b97916ea5c3880e1db86b3b5f6267bd2df2afca2873bf8d55878d",
+    "/usr/lib/postgresql/17/lib/utf8_and_uhc.so": "30d378496e99cfa26a5ee093735705c9c3c711c2b31a59cdad80673e700cf6ca",
+    "/usr/lib/postgresql/17/lib/utf8_and_win.so": "89e2a364ab61a25b4a58ab881a862e341dc2d4dabb8d4d6e593e51b119c2ee56",
+    "/usr/lib/x86_64-linux-gnu/libpq.so.5.17": "f64dcec14657e4123621448442cd3d0795744d238e588774f5c864f592f4860d"
+  },
+  "xstate": {
+    "/bin/busybox": {
+      "xgetbv": [
+        4937817
+      ],
+      "resolver_regions": [
+        {
+          "kind": "eager-resolver",
+          "start": 5152944,
+          "size": 201,
+          "sha256": "e2f9cd7005b3c6d33eb21cf448775a12b8de290c74f4d783f128c3fedf62b1c5"
+        },
+        {
+          "kind": "eager-resolver",
+          "start": 5153152,
+          "size": 185,
+          "sha256": "63fab5ae79d76e9537187d37877c341ad89b3d6feff06495f6103bd37b96e938"
+        }
+      ]
+    },
+    "/lib/x86_64-linux-gnu/libcrypto.so.3": {
+      "xgetbv": [
+        2663648
+      ],
+      "resolver_regions": []
+    },
+    "/lib/x86_64-linux-gnu/libgcc_s.so.1": {
+      "xgetbv": [
+        19581
+      ],
+      "resolver_regions": []
+    },
+    "/lib/x86_64-linux-gnu/libxxhash.so.0": {
+      "xgetbv": [
+        53955
+      ],
+      "resolver_regions": []
+    },
+    "/lib64/ld-linux-x86-64.so.2": {
+      "xgetbv": [
+        91105,
+        105487
+      ],
+      "resolver_regions": [
+        {
+          "kind": "eager-resolver",
+          "start": 78784,
+          "size": 201,
+          "sha256": "1729a188b522faeb2c1f9f5f0cd7b89b832214d179897c8cda3d2afbeb4e4e2a"
+        },
+        {
+          "kind": "eager-resolver",
+          "start": 78992,
+          "size": 185,
+          "sha256": "8c30ae40b76cfcbca10f1d8ae877c28ea7dbd0dadc4d8a96281471b4fe708731"
+        },
+        {
+          "kind": "unused-tlsdesc",
+          "start": 98160,
+          "size": 262,
+          "sha256": "cdf6367cfa1aa71d1d639fde3cce5b625b9ac4a66b307b2f48413fe0ff5c42ee"
+        },
+        {
+          "kind": "unused-tlsdesc",
+          "start": 98432,
+          "size": 246,
+          "sha256": "481c7bcfd3eeb4fac8a013d0afe5781b495a6a396d53dd662fa554e68fef09e8"
+        }
+      ]
+    },
+    "/usr/lib/postgresql/17/bin/postgres": {
+      "xgetbv": [
+        6927810
+      ],
+      "resolver_regions": []
+    }
+  }
+}

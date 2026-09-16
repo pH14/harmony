@@ -61,6 +61,13 @@ impl Vendor for X86 {
         vmm.dispatch_mmio(gpa, size, write)
     }
 
+    fn finish_exit<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<Option<Exit<Self>>, VmmError> {
+        if !vmm.completion_staged {
+            return Ok(None);
+        }
+        Ok(vmm.backend.finish_exit()?)
+    }
+
     fn is_doorbell_exit(exit: &Exit<Self>) -> bool {
         matches!(
             exit,
@@ -158,6 +165,15 @@ impl Vendor for X86 {
 
     fn inject_serial_input(devices: &mut Self::Devices, bytes: &[u8]) {
         devices.uart.inject_input(bytes);
+    }
+
+    fn controlled_identity_vcpu(
+        vcpu: &vmm_backend::VcpuState,
+    ) -> Result<vmm_backend::VcpuState, VmmError> {
+        let mut projected = vcpu.clone();
+        projected.xsave_restore_bv =
+            vmm_backend::logical_xsave_restore_bv(&vcpu.xsave, vcpu.xsave_restore_bv)?;
+        Ok(projected)
     }
 
     fn encode_vcpu_chunk(vcpu: &vmm_backend::VcpuState) -> Vec<u8> {

@@ -19,7 +19,8 @@ fn future_version_is_rejected_but_peekable() {
 
 #[test]
 fn current_version_round_trips_and_peeks() {
-    let blob = fully_populated().encode().unwrap();
+    let state = fully_populated();
+    let blob = state.encode().unwrap();
     assert_eq!(VmState::peek_version(&blob), Ok(VM_STATE_VERSION));
-    assert!(VmState::decode(&blob).is_ok());
+    assert_eq!(VmState::decode(&blob), Ok(state));
 }

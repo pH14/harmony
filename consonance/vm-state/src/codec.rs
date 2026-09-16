@@ -11,7 +11,7 @@ use crate::types::{
 };
 use crate::wire::{
     DebugRegsWire, EventsWire, HeaderWire, MsrPairWire, RegsWire, SregsWire, TimerEntryWire,
-    VtimeWire, XcrsWire,
+    VtimeWire, XcrsWire, XsaveRestoreBvWire,
 };
 use crate::{ARCH_X86_64, VM_STATE_MAGIC, VM_STATE_VERSION, VmState};
 
@@ -31,6 +31,10 @@ const TAG_CONTRACT_HASH: u16 = 13;
 
 const SECTION_COUNT: u16 = 13;
 
+const TAG_ENGINE_STATE: u16 = 14;
+
+const TAG_XSAVE_RESTORE_BV: u16 = 15;
+
 const HEADER_LEN: usize = 10;
 
 const MP_STATE_RUNNABLE: u8 = 0;
@@ -40,13 +44,16 @@ const CONTRACT_HASH_LEN: usize = 32;
 
 impl VmState {
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
+        let section_count = SECTION_COUNT
+            + u16::from(!self.engine_state.is_empty())
+            + u16::from(self.xsave_restore_bv.is_some());
         let mut out = Vec::new();
         out.extend_from_slice(
             HeaderWire {
                 magic: VM_STATE_MAGIC.into(),
                 version: VM_STATE_VERSION.into(),
                 arch: ARCH_X86_64.into(),
-                section_count: SECTION_COUNT.into(),
+                section_count: section_count.into(),
             }
             .as_bytes(),
         );
@@ -72,6 +79,16 @@ impl VmState {
         put_section(&mut out, TAG_HYPERCALL, &self.hypercall)?;
         put_section(&mut out, TAG_DEVICES, &self.devices.0)?;
         put_section(&mut out, TAG_CONTRACT_HASH, &self.contract_hash)?;
+        if !self.engine_state.is_empty() {
+            put_section(&mut out, TAG_ENGINE_STATE, &self.engine_state)?;
+        }
+        if let Some(value) = self.xsave_restore_bv {
+            put_section(
+                &mut out,
+                TAG_XSAVE_RESTORE_BV,
+                XsaveRestoreBvWire::from(value).as_bytes(),
+            )?;
+        }
 
         Ok(out)
     }
@@ -110,6 +127,8 @@ impl VmState {
         let mut hypercall = None;
         let mut devices = None;
         let mut contract_hash = None;
+        let mut engine_state = None;
+        let mut xsave_restore_bv = None;
 
         for _ in 0..section_count {
             let tag = r.u16()?;
@@ -149,6 +168,16 @@ impl VmState {
                 TAG_HYPERCALL => hypercall = Some(payload.to_vec()),
                 TAG_DEVICES => devices = Some(DeviceBlob(payload.to_vec())),
                 TAG_CONTRACT_HASH => contract_hash = Some(decode_contract_hash(payload)?),
+                TAG_ENGINE_STATE => {
+                    if payload.is_empty() {
+                        return Err(VmStateError::InvalidField);
+                    }
+                    engine_state = Some(payload.to_vec());
+                }
+                TAG_XSAVE_RESTORE_BV => {
+                    let value = read_fixed::<XsaveRestoreBvWire>(payload)?;
+                    xsave_restore_bv = Some((&value).into());
+                }
                 other => return Err(VmStateError::UnknownTag(other)),
             }
         }
@@ -166,11 +195,13 @@ impl VmState {
             mp_state: mp_state.ok_or(VmStateError::MissingSection(TAG_MP_STATE))?,
             msrs: msrs.ok_or(VmStateError::MissingSection(TAG_MSRS))?,
             xsave: xsave.ok_or(VmStateError::MissingSection(TAG_XSAVE))?,
+            xsave_restore_bv,
             vtime: vtime.ok_or(VmStateError::MissingSection(TAG_VTIME))?,
             timers: timers.ok_or(VmStateError::MissingSection(TAG_TIMERS))?,
             hypercall: hypercall.ok_or(VmStateError::MissingSection(TAG_HYPERCALL))?,
             devices: devices.ok_or(VmStateError::MissingSection(TAG_DEVICES))?,
             contract_hash: contract_hash.ok_or(VmStateError::MissingSection(TAG_CONTRACT_HASH))?,
+            engine_state: engine_state.unwrap_or_default(),
         })
     }
 

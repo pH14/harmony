@@ -9,11 +9,16 @@ hypervisor dependencies.
 
 ## Format
 
-Version 3 is a little-endian TLV container: an 8-byte header followed by the
-required sections in ascending tag order. Fixed-layout records use zerocopy
-wire types; variable sections are length-delimited. MSRs use `BTreeMap` order,
-and timer entries retain their firing order, so encoding is independent of
-insertion order.
+Version 6 is a little-endian TLV container: a 10-byte header (magic, version,
+architecture tag, and section count) followed by sections in ascending tag
+order. X86 records always use the current SREGS and DEBUGREGS layouts with the
+captured CPU fields (`flags` and `pdptrs`). The engine-state and
+`xsave_restore_bv` sections are optional within this current format. ARM uses
+the same current version and retains its complete architecture-specific record
+set. Older output versions are rejected rather than decoded or re-emitted.
+Fixed-layout records use zerocopy wire types; variable sections are
+length-delimited. MSRs use `BTreeMap` order, and timer entries retain their
+firing order, so encoding is independent of insertion order.
 
 `VmState::encode` validates the state before writing. Timer entries must be
 strictly ordered by `(deadline, sequence)`, tokens must be unique, and each
@@ -22,8 +27,10 @@ malformed headers, section order, lengths, fields, missing sections,
 duplicates, and trailing bytes return typed errors.
 
 `peek_version` validates the magic and reads the version without decoding the
-rest of the blob. `VM_STATE_VERSION` must be bumped for incompatible layout
-changes. The golden test pins the bytes of a fully populated state.
+rest of the blob. `VM_STATE_VERSION` identifies the only writer and reader
+format. The golden test pins the bytes of a fully populated current state. The
+restore-bits section is validated for wire shape here; vmm-core owns any
+backend-specific validation of the captured XSAVE image.
 
 ## Ownership boundaries
 

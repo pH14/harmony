@@ -24,6 +24,12 @@ class ScopeTests(unittest.TestCase):
         for path in (".github/workflows/historical-bugs.yml", "scripts/render-historical-bugs.py"):
             self.assertEqual(self.active(path), {"faults"})
 
+    def test_minimal_guest_admission_selects_platform_consumer(self):
+        self.assertEqual(self.active("workloads/guest-images/admission/minimal-component.json"), {"platform"})
+
+    def test_controlled_profile_catalog_selects_runtime_consumers(self):
+        self.assertEqual(self.active("workloads/guest-images/admission/controlled-profiles.rs"), {"platform", "kvm", "faults", "public_api"})
+
     def test_backend_changes_select_both_platform_seams(self):
         self.assertEqual(self.active("consonance/vmm-backend/src/kvm.rs"), {"platform", "kvm", "public_api"})
 

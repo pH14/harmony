@@ -36,11 +36,10 @@ exact-count arrival all fail the branch with the session untouched. One moment
 carries one effect, so a duplicate is reported rather than overwritten.
 
 `Session::run_until` runs to an absolute virtual-time deadline or an earlier
-stop. `Session::seal` snapshots the current stopped state, running the guest a
-further settle step whenever the control server cannot seal that point yet, and
-gives up once the caller's total settle allowance is spent. A guest that has
-crashed or gone quiescent advances no further, so its endpoint is offered one
-last seal and then reported rather than settled again.
+stop. `Session::snapshot` captures that exact stopped state in one control
+exchange and returns the server's synchronized V-time. It never advances the
+guest or retries a refusal, so a capture failure is returned to the caller with
+the control diagnostic.
 
 `SessionConfig::defer_virtual_time_checkpoint_hashes` moves sparse
 virtual-time checkpoint hashing out of the run that reaches a checkpoint. Each
@@ -73,10 +72,19 @@ sharing metadata is host-local and is never written to the wire. An export
 base must have the same setup and identity, and unchanged pages/chunks are
 retained by reference until a snapshot is serialized.
 
-The embedded complete and sparse portable snapshots use format version 3,
-which captures service state through the generic SDK channel. Import rejects
-versions 1 and 2 explicitly. Execution identities record sidecar version 3;
-the outer sparse archive field layout remains version 2.
+The embedded complete and sparse portable snapshots use format version 6.
+Older embedded versions are rejected. The outer sparse archive layout remains
+version 2.
+
+On x86, `Session::new_controlled_with_config_and_payloads` requires exact reviewed
+kernel, initramfs, RAM and command-line inputs before boot. It binds the session
+image identity to the profile, launch configuration and ordered setup payloads,
+and rejects an identity-tag override. Ordinary constructors
+still accept other inputs, retaining strict raw identity for unknown profiles.
+For matched profiles, logical identity excludes only validated init x87/SSE raw
+presence metadata; exported artifacts retain those bytes and checksum them.
+The guest execution restrictions and import boundary are documented in the
+[core identity contract](../vmm-core/README.md#published-xsave-identity-gate).
 
 ```sh
 cargo test -p consonance-client
@@ -90,3 +98,9 @@ lifetime. Unknown, revoked, malformed, and out-of-bounds observations fail befor
 a guest-memory read. Large observations are fetched in chunks within the control
 protocol's read limit while the guest remains stopped. Workload adapters own
 interpretation of the returned bytes.
+
+The default x86 command line preserves AVX while disabling XSAVEOPT and XSAVES
+selection, and passes `LD_BIND_NOW=1` to PID 1 before its libc startup. Custom
+command lines used for XSAVE qualification must retain those settings. The
+kernel, pinned runtime re-execution, and admitted workload environment have
+separate checks; default boot arguments alone do not certify an arbitrary image.

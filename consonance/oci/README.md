@@ -85,7 +85,11 @@ never fall back to root.
 
 Runtime environment entries must use `VARNAME=VARVALUE` with a shell-safe
 variable name. Invalid entries fail image parsing instead of being silently
-discarded by the guest launcher.
+discarded by the guest launcher. Preparation forces `LD_BIND_NOW=1` in both
+supervisor and workload environments, replacing image-supplied values, so
+admitted dynamic binding resolves symbols eagerly. This does not replace
+executable/dependency admission or certify child programs that construct a new
+environment; those remain part of the controlled-image qualification.
 
 ```sh
 cargo test --manifest-path consonance/oci/Cargo.toml

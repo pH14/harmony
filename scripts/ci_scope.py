@@ -43,6 +43,10 @@ def selected(paths):
             result["faults"] = result["platform"] = True
         if path == ".github/workflows/quality.yml":
             result["public_api"] = True
+        if path == "workloads/guest-images/admission/minimal-component.json":
+            result["platform"] = True
+        if path == "workloads/guest-images/admission/controlled-profiles.rs":
+            result["platform"] = result["kvm"] = result["faults"] = result["public_api"] = True
         if path.startswith("consonance/"):
             result["platform"] = result["public_api"] = True
         if path.startswith(("consonance/vmm-backend/", "consonance/vmm-core/", "consonance/vm-state/", "consonance/vtime/")):

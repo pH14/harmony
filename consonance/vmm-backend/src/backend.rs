@@ -34,6 +34,18 @@ pub trait Backend {
         })
     }
 
+    #[cfg(feature = "xsave-diagnostics")]
+    fn diagnostic_breakpoint(&mut self, _rip: u64) -> Result<()> {
+        Err(crate::error::BackendError::Unsupported {
+            what: "diagnostic_breakpoint",
+        })
+    }
+
+    #[cfg(feature = "xsave-diagnostics")]
+    fn diagnostic_debug_hits(&self) -> Vec<u64> {
+        Vec::new()
+    }
+
     fn run(&mut self) -> Result<Exit<Self::A>>;
 
     fn inject(&mut self, event: <Self::A as Arch>::Injection) -> Result<()>;
@@ -58,7 +70,19 @@ pub trait Backend {
         })
     }
 
+    fn finish_exit(&mut self) -> Result<Option<Exit<Self::A>>> {
+        Ok(None)
+    }
+
+    fn prepare_snapshot(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     fn save(&self) -> Result<<Self::A as Arch>::VcpuState>;
+
+    fn validate_restore_state(&self, _state: &<Self::A as Arch>::VcpuState) -> Result<()> {
+        Ok(())
+    }
 
     fn restore(&mut self, state: &<Self::A as Arch>::VcpuState) -> Result<()>;
 
@@ -88,6 +112,16 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
         (**self).drain_dirty_pages()
+    }
+
+    #[cfg(feature = "xsave-diagnostics")]
+    fn diagnostic_breakpoint(&mut self, rip: u64) -> Result<()> {
+        (**self).diagnostic_breakpoint(rip)
+    }
+
+    #[cfg(feature = "xsave-diagnostics")]
+    fn diagnostic_debug_hits(&self) -> Vec<u64> {
+        (**self).diagnostic_debug_hits()
     }
 
     fn run(&mut self) -> Result<Exit<Self::A>> {
@@ -130,8 +164,20 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         (**self).retire_pending_completion()
     }
 
+    fn finish_exit(&mut self) -> Result<Option<Exit<Self::A>>> {
+        (**self).finish_exit()
+    }
+
+    fn prepare_snapshot(&mut self) -> Result<()> {
+        (**self).prepare_snapshot()
+    }
+
     fn save(&self) -> Result<<Self::A as Arch>::VcpuState> {
         (**self).save()
+    }
+
+    fn validate_restore_state(&self, state: &<Self::A as Arch>::VcpuState) -> Result<()> {
+        (**self).validate_restore_state(state)
     }
 
     fn restore(&mut self, state: &<Self::A as Arch>::VcpuState) -> Result<()> {
@@ -160,13 +206,26 @@ mod tests {
     use super::Backend;
     use crate::arch::x86::{Injection, VcpuState, X86, X86Caps, X86Completion, X86Policy};
     use crate::error::{BackendError, Result};
-    use crate::exit::{Capabilities, Exit, ExitCounts};
+    use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
     use crate::types::Gpa;
     use std::sync::Arc;
+    #[cfg(feature = "mock")]
     use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
-    struct DefaultRetireBackend;
+    struct DefaultRetireBackend {
+        finish_calls: Arc<AtomicUsize>,
+        finish_response: Option<Exit<X86>>,
+        finish_error: bool,
+        validation_calls: Arc<AtomicUsize>,
+        preparation_calls: usize,
+        preparation_error: bool,
+        #[cfg(feature = "xsave-diagnostics")]
+        breakpoint_requests: Vec<u64>,
+        #[cfg(feature = "xsave-diagnostics")]
+        debug_hits: Vec<u64>,
+    }
 
     impl Backend for DefaultRetireBackend {
         type A = X86;
@@ -219,8 +278,51 @@ mod tests {
             Err(BackendError::BadCompletion)
         }
 
+        fn finish_exit(&mut self) -> Result<Option<Exit<X86>>> {
+            self.finish_calls.fetch_add(1, Ordering::SeqCst);
+            if self.finish_error {
+                return Err(BackendError::Unsupported {
+                    what: "finish_exit-test",
+                });
+            }
+            Ok(self.finish_response.take())
+        }
+
+        fn prepare_snapshot(&mut self) -> Result<()> {
+            self.preparation_calls += 1;
+            if self.preparation_error {
+                Err(BackendError::PendingCompletion)
+            } else {
+                Ok(())
+            }
+        }
+
+        #[cfg(feature = "xsave-diagnostics")]
+        fn diagnostic_breakpoint(&mut self, rip: u64) -> Result<()> {
+            self.breakpoint_requests.push(rip);
+            if rip == 0 {
+                Err(BackendError::InvalidState)
+            } else {
+                Ok(())
+            }
+        }
+
+        #[cfg(feature = "xsave-diagnostics")]
+        fn diagnostic_debug_hits(&self) -> Vec<u64> {
+            self.debug_hits.clone()
+        }
+
         fn save(&self) -> Result<VcpuState> {
             Ok(VcpuState::default())
+        }
+
+        fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
+            self.validation_calls.fetch_add(1, Ordering::SeqCst);
+            if state.xsave.len() == 1 {
+                Err(BackendError::InvalidState)
+            } else {
+                Ok(())
+            }
         }
 
         fn restore(&mut self, _state: &VcpuState) -> Result<()> {
@@ -242,8 +344,58 @@ mod tests {
     }
 
     #[test]
+    fn boxed_snapshot_preparation_preserves_failure_and_recovery() {
+        let mut backend = Box::new(DefaultRetireBackend {
+            preparation_error: true,
+            ..Default::default()
+        });
+        assert!(matches!(
+            backend.prepare_snapshot(),
+            Err(BackendError::PendingCompletion)
+        ));
+        assert_eq!(backend.preparation_calls, 1);
+        backend.preparation_error = false;
+        backend.prepare_snapshot().expect("completion is now ready");
+        assert_eq!(backend.preparation_calls, 2);
+    }
+
+    #[test]
+    #[cfg(feature = "xsave-diagnostics")]
+    fn boxed_diagnostics_preserve_addresses_errors_and_hit_order() {
+        let mut backend = Box::new(DefaultRetireBackend {
+            debug_hits: vec![0x1234, 0xabcd, 0x1234],
+            ..Default::default()
+        });
+        backend
+            .diagnostic_breakpoint(0x1234)
+            .expect("valid breakpoint");
+        assert!(matches!(
+            backend.diagnostic_breakpoint(0),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.breakpoint_requests, [0x1234, 0]);
+        let mut hits = backend.diagnostic_debug_hits();
+        assert_eq!(hits, [0x1234, 0xabcd, 0x1234]);
+        hits.clear();
+        assert_eq!(backend.diagnostic_debug_hits(), [0x1234, 0xabcd, 0x1234]);
+    }
+
+    #[test]
+    #[cfg(all(feature = "mock", feature = "xsave-diagnostics"))]
+    fn unsupported_diagnostics_fail_without_fabricating_hits() {
+        let mut backend = crate::MockBackend::new();
+        assert!(matches!(
+            backend.diagnostic_breakpoint(0x1234),
+            Err(BackendError::Unsupported {
+                what: "diagnostic_breakpoint"
+            })
+        ));
+        assert!(backend.diagnostic_debug_hits().is_empty());
+    }
+
+    #[test]
     fn default_retirement_is_fail_closed_and_box_forwards_it() {
-        let mut plain = DefaultRetireBackend;
+        let mut plain = DefaultRetireBackend::default();
         assert!(matches!(
             plain.retire_pending_completion(),
             Err(BackendError::Unsupported {
@@ -251,7 +403,7 @@ mod tests {
             })
         ));
 
-        let mut boxed: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend);
+        let mut boxed: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend::default());
         assert!(matches!(
             boxed.retire_pending_completion(),
             Err(BackendError::Unsupported {
@@ -261,9 +413,82 @@ mod tests {
     }
 
     #[test]
+    fn box_forwards_finish_exit_response_calls_and_errors() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let continuation = Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(0xfee0_0000),
+            size: 4,
+            write: None,
+        });
+        let mut boxed: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend {
+            finish_calls: Arc::clone(&calls),
+            finish_response: Some(continuation.clone()),
+            finish_error: false,
+            ..Default::default()
+        });
+        assert_eq!(
+            boxed.finish_exit().expect("forwarded continuation"),
+            Some(continuation)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(boxed.finish_exit().expect("forwarded empty response"), None);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let error_calls = Arc::new(AtomicUsize::new(0));
+        let mut failing: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend {
+            finish_calls: Arc::clone(&error_calls),
+            finish_response: None,
+            finish_error: true,
+            ..Default::default()
+        });
+        assert!(matches!(
+            failing.finish_exit(),
+            Err(BackendError::Unsupported {
+                what: "finish_exit-test"
+            })
+        ));
+        assert_eq!(error_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn box_forwards_restore_shape_validation_without_changing_the_state() {
+        let invalid = VcpuState {
+            xsave: vec![0],
+            ..Default::default()
+        };
+        let before = invalid.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let plain = DefaultRetireBackend {
+            validation_calls: Arc::clone(&calls),
+            ..Default::default()
+        };
+        assert!(matches!(
+            plain.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(invalid, before);
+
+        let boxed: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend {
+            validation_calls: Arc::clone(&calls),
+            ..Default::default()
+        });
+        assert!(matches!(
+            boxed.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(invalid, before);
+    }
+
+    #[test]
     fn a_backend_without_a_latch_reports_none_through_a_box_too() {
-        assert!(DefaultRetireBackend.cancellation_flag().is_none());
-        let without: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend);
+        assert!(
+            DefaultRetireBackend::default()
+                .cancellation_flag()
+                .is_none()
+        );
+        let without: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend::default());
         assert!(without.cancellation_flag().is_none());
     }
 

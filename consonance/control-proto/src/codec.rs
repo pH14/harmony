@@ -74,6 +74,7 @@ const CE_PERTURB_RESERVED_VECTOR: u8 = 16;
 const CE_READ_OUT_OF_RANGE: u8 = 17;
 const CE_READ_TOO_LARGE: u8 = 18;
 const CE_TAINTED: u8 = 19;
+const CE_SNAPSHOT_REFUSED: u8 = 20;
 
 const PE_SHORT_FRAME: u8 = 0;
 const PE_BAD_MAGIC: u8 = 1;
@@ -595,6 +596,10 @@ fn write_control_error(w: &mut Vec<u8>, err: &crate::error::ControlError) {
         Ce::RestoreFailed => w.push(CE_RESTORE_FAILED),
         Ce::SnapshotWhileArmed => w.push(CE_SNAPSHOT_WHILE_ARMED),
         Ce::NotQuiescent => w.push(CE_NOT_QUIESCENT),
+        Ce::SnapshotRefused { reason } => {
+            w.push(CE_SNAPSHOT_REFUSED);
+            put_bytes(w, reason.as_bytes());
+        }
         Ce::BadEnvVersion(v) => {
             w.push(CE_BAD_ENV_VERSION);
             put_u16(w, *v);
@@ -657,6 +662,11 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
         CE_RESTORE_FAILED => Ce::RestoreFailed,
         CE_SNAPSHOT_WHILE_ARMED => Ce::SnapshotWhileArmed,
         CE_NOT_QUIESCENT => Ce::NotQuiescent,
+        CE_SNAPSHOT_REFUSED => Ce::SnapshotRefused {
+            reason: std::str::from_utf8(r.bytes()?)
+                .map_err(|_| ProtocolError::ShortFrame)?
+                .to_owned(),
+        },
         CE_BAD_ENV_VERSION => Ce::BadEnvVersion(r.u16()?),
         CE_MALFORMED_ENVIRONMENT => Ce::MalformedEnvironment,
         CE_RESOLVE_WITHOUT_DECISION => Ce::ResolveWithoutDecision,

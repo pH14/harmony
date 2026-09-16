@@ -213,6 +213,7 @@ jobs:
         run: |
           python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
             --artifacts consonance/harmony-linux/build/x86_64 --output pg-pr-smoke/platform-provenance.json
+          python3 -c 'import json; assert json.load(open("pg-pr-smoke/platform-provenance.json"))["scope"] == "exact-input", "Publish this source before qualifying PostgreSQL"'
           test -s oci-images/pgcic-14.3.oci
           test -s oci-images/MANIFEST.sha256
           (cd oci-images && sha256sum -c MANIFEST.sha256)
@@ -341,6 +342,37 @@ jobs:
           set -o pipefail
           timeout -k 10 720 cargo test --locked --release -p oci-support --test platform --test process_platform -- --ignored --nocapture \
             2>&1 | tee platform-smoke/replay.log
+      - name: Require and admit source-correct minimal Linux fixture
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          python3 -c 'import json; assert json.load(open("platform-smoke/provenance.json"))["scope"] == "exact-input", "Publish this source before qualifying Linux snapshots"'
+          mkdir -p platform-smoke/linux-consistency
+          python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify-initramfs \
+            consonance/harmony-linux/build/x86_64/initramfs.cpio.gz \
+            --baseline workloads/guest-images/admission/minimal-component.json \
+            --output platform-smoke/linux-consistency/admission.json
+          cp consonance/harmony-linux/build/x86_64/bzImage consonance/harmony-linux/build/bzImage
+          cp consonance/harmony-linux/build/x86_64/initramfs.cpio.gz consonance/harmony-linux/build/initramfs.cpio.gz
+          cp consonance/harmony-linux/build/x86_64/runtime-manifest.json platform-smoke/linux-consistency/runtime-manifest.json
+      - name: Build Linux consistency test
+        if: steps.scope.outputs.enabled == 'true'
+        run: cargo test --locked --release -p vmm-core --test x86_kvm_linux_virtual_time --no-run
+      - name: Compare two complete same-seed Linux execution logs
+        if: steps.scope.outputs.enabled == 'true'
+        env:
+          X2_ORIGINAL_WITNESS_REPORT: ${{ github.workspace }}/platform-smoke/linux-consistency/original-sequential-witness
+          X2_BOOTS: "2"
+          X2_WALL_SECS: "55"
+        run: |
+          set -euo pipefail
+          timeout -k 10 240 cargo test --locked --release -p vmm-core \
+            --test x86_kvm_linux_virtual_time x2_same_seed_boots_one_normalized_log \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee platform-smoke/linux-consistency/test.txt
+          grep -Fqx 'X2_BOOTS=2' platform-smoke/linux-consistency/test.txt
+          grep -Eq '^X2_EVENTS=[1-9][0-9]*$' platform-smoke/linux-consistency/test.txt
+          grep -Fqx 'X2_DIVERGENCES=0' platform-smoke/linux-consistency/test.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' platform-smoke/linux-consistency/test.txt
       - uses: actions/upload-artifact@v4
         if: steps.scope.outputs.enabled == 'true' && (always())
         with:
@@ -380,21 +412,36 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Exercise real hardware, snapshot/restore, and deterministic replay
+      - name: Build bounded KVM test binaries once
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          cargo test --locked --release -p vmm-backend --test kvm_smoke --no-run
+          cargo test --locked --release -p vmm-core --lib --test x86_kvm_virtual_time --no-run
+      - name: Exercise execution, completion, public snapshot identity, and replay
         if: steps.scope.outputs.enabled == 'true'
         run: |
           set -euo pipefail
-          mkdir -p pr-kvm-smoke
-          cargo test -p vmm-backend --test kvm_smoke \
-            bringup_smoke_out_then_hlt -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee pr-kvm-smoke/execution.txt
-          cargo test -p vmm-backend --test kvm_smoke \
-            save_restore_round_trips_on_real_kvm -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee pr-kvm-smoke/restore.txt
-          cargo test -p vmm-core --test x86_kvm_virtual_time \
-            x1_ten_same_seed_runs_produce_one_normalized_log \
-            -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee pr-kvm-smoke/replay.txt
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          {
+            printf 'PINNED_CPU=%s\n' "$cpu"
+            lscpu
+            uname -a
+          } | tee pr-kvm-smoke/host.txt
+          run_exact() {
+            local label="$1"
+            shift
+            timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release "$@" \
+              -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee "pr-kvm-smoke/$label.txt"
+            grep -Fq 'running 1 test' "pr-kvm-smoke/$label.txt"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "pr-kvm-smoke/$label.txt"
+          }
+          run_exact restore -p vmm-backend --test kvm_smoke save_restore_round_trips_on_real_kvm
+          run_exact pio -p vmm-backend --test kvm_smoke serviced_pio_is_exactly_snapshottable_without_guest_execution
+          run_exact msr -p vmm-backend --test kvm_smoke serviced_msr_is_exactly_snapshottable_without_guest_execution
+          run_exact exception -p vmm-backend --test kvm_smoke serviced_exception_payload_round_trips_and_empty_restore_clears_it
+          run_exact mmio -p vmm-backend --test kvm_smoke serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu
+          run_exact identity -p vmm-core --lib controlled_guest::live_tests::public_snapshot_replay_recapture_preserves_xsave_identity
+          run_exact replay -p vmm-core --test x86_kvm_virtual_time x1_ten_same_seed_runs_produce_one_normalized_log
       - uses: actions/upload-artifact@v4
         if: steps.scope.outputs.enabled == 'true' && (always())
         with:

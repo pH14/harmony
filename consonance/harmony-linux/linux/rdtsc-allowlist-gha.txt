@@ -1,4 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+# G1: twenty ordered-TSC replacement sites move by 0x29 after the FPU
+# alternatives grow. ELF records retain the same ten reviewed owners and
+# LFENCE_RDTSC/RDTSCP feature pairs; no site or function is added or removed.
 # Counter-read (rdtsc/rdtscp) per-site allowlist for the guest kernel as built
 # by the GitHub-hosted ubuntu-24.04 runner toolchain (default gcc 13).
 #
@@ -20,16 +23,16 @@
 # No function or opcode count was added or removed.
 # Selected by build-kernel.sh via HARMONY_RDTSC_ALLOWLIST (the x86-vtime
 # workflow sets it).
-vmlinux:.altinstr_replacement+0x1d20
-vmlinux:.altinstr_replacement+0x1d22
-vmlinux:.altinstr_replacement+0x1d28
-vmlinux:.altinstr_replacement+0x1d2a
-vmlinux:.altinstr_replacement+0x1d30
-vmlinux:.altinstr_replacement+0x1d32
-vmlinux:.altinstr_replacement+0x1d38
-vmlinux:.altinstr_replacement+0x1d3a
-vmlinux:.altinstr_replacement+0x1d40
-vmlinux:.altinstr_replacement+0x1d42
+vmlinux:.altinstr_replacement+0x1d49
+vmlinux:.altinstr_replacement+0x1d4b
+vmlinux:.altinstr_replacement+0x1d51
+vmlinux:.altinstr_replacement+0x1d53
+vmlinux:.altinstr_replacement+0x1d59
+vmlinux:.altinstr_replacement+0x1d5b
+vmlinux:.altinstr_replacement+0x1d61
+vmlinux:.altinstr_replacement+0x1d63
+vmlinux:.altinstr_replacement+0x1d69
+vmlinux:.altinstr_replacement+0x1d6b
 vmlinux:.altinstr_replacement+0x322
 vmlinux:.altinstr_replacement+0x324
 vmlinux:.altinstr_replacement+0x32a
@@ -38,16 +41,16 @@ vmlinux:.altinstr_replacement+0x332
 vmlinux:.altinstr_replacement+0x334
 vmlinux:.altinstr_replacement+0x59f
 vmlinux:.altinstr_replacement+0x5a1
-vmlinux:.altinstr_replacement+0x88c
-vmlinux:.altinstr_replacement+0x88e
-vmlinux:.altinstr_replacement+0x894
-vmlinux:.altinstr_replacement+0x896
-vmlinux:.altinstr_replacement+0x92e
-vmlinux:.altinstr_replacement+0x930
-vmlinux:.altinstr_replacement+0x94b
-vmlinux:.altinstr_replacement+0x94d
-vmlinux:.altinstr_replacement+0x953
-vmlinux:.altinstr_replacement+0x955
+vmlinux:.altinstr_replacement+0x8b5
+vmlinux:.altinstr_replacement+0x8b7
+vmlinux:.altinstr_replacement+0x8bd
+vmlinux:.altinstr_replacement+0x8bf
+vmlinux:.altinstr_replacement+0x957
+vmlinux:.altinstr_replacement+0x959
+vmlinux:.altinstr_replacement+0x974
+vmlinux:.altinstr_replacement+0x976
+vmlinux:.altinstr_replacement+0x97c
+vmlinux:.altinstr_replacement+0x97e
 vmlinux:__dmar_enable_qi+0x84
 vmlinux:__dmar_enable_qi+0xa0
 vmlinux:__iommu_flush_context+0x5e

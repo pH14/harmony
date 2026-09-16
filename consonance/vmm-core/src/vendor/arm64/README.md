@@ -25,3 +25,7 @@ backend boundary.
 `records` converts live arm64 vCPU and GIC state to the `vm-state` records. The
 architectural comparator in the parent module compares vCPU and canonical GIC
 fields independently of snapshot hashes.
+
+Device blobs use the current version 13 format. Presence fields describe the
+optional GIC, doorbell, and pvclock records; pvclock records preserve the page
+GPA, registration capability, and pending-versus-armed handshake state.

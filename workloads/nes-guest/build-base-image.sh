@@ -17,7 +17,7 @@ cd "$LINUX_DIR"
 # shellcheck source=../../consonance/harmony-linux/linux/lib-build.sh disable=SC1091
 . ./lib-build.sh
 
-require_tools cargo cut make nproc patch readelf rustc sha256sum tail tar wc
+require_tools cargo cc cut git ld make nproc patch readelf rustc sha256sum sort tail tar wc xargs
 
 quicknes_archive=${HARMONY_QUICKNES_STATIC_LIB:-}
 agent_override=${PLAY_AGENT_BIN:-}
@@ -232,4 +232,43 @@ mv "$staging" "$image"
 
 printf '%s  nes.oci/blobs/sha256/%s\n' "$manifest_digest" "$manifest_digest" \
     >"$ART_DIR/nes.oci.sha256"
+# Retain companions from this build outside the image for exact-byte review.
+provenance="$ART_DIR/nes-build-provenance"
+rm -rf "$provenance"
+mkdir -p "$provenance/busybox"
+for companion in busybox_unstripped busybox_unstripped.map busybox_unstripped.out \
+    .config .busybox_unstripped.cmd include/autoconf.h include/bbconfigopts.h; do
+    if [ -f "$NES_BUSYBOX_OBJ/$companion" ]; then
+        install -m 0644 "$NES_BUSYBOX_OBJ/$companion" \
+            "$provenance/busybox/$(basename "$companion")"
+    fi
+done
+install -m 0644 "$BBSRC/Makefile" "$provenance/busybox/source-Makefile"
+{
+    printf 'git_head=%s\n' "$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    printf 'busybox_source_sha256=%s\n' "$BUSYBOX_SHA256"
+    printf 'busybox_source_url=%s\n' "$BUSYBOX_URL"
+    printf 'architecture=%s\n' "$OCI_ARCH"
+    printf 'agent_path=%s\n' "$agent"
+    rustc -vV
+    cc --version
+    ld --version
+    printf '\nExact packaged executables and native core:\n'
+    sha256sum "$NES_ROOT/bin/busybox" "$NES_ROOT/opt/harmony/play-agent"
+    if [ -n "$quicknes_archive" ]; then sha256sum "$quicknes_archive"; fi
+    printf '\nHost compiler static libc candidate (actual link recorded separately):\n'
+    libc_archive=$(cc -print-file-name=libc.a)
+    if [ -f "$libc_archive" ]; then sha256sum "$libc_archive"; fi
+} >"$provenance/build.txt"
+(
+    cd "$REPO_ROOT"
+    git ls-files -z -- workloads/nes-guest workloads/nes-protocol \
+        consonance/harmony-linux/sdk consonance/hypercall-proto \
+        consonance/hypercall-doorbell scripts/build-quicknes-core.sh \
+        consonance/harmony-linux/linux/lib-build.sh | xargs -0 sha256sum
+) >"$provenance/source-files.sha256"
+(
+    cd "$provenance"
+    find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum
+) >"$provenance/SHA256SUMS"
 echo "ok: $image (OCI layout; architecture=$OCI_ARCH)"

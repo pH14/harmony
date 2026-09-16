@@ -1,12 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 fn main() -> std::process::ExitCode {
-    match run() {
+    let result = match std::env::args_os().nth(1).as_deref() {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        Some(value) if value == std::ffi::OsStr::new("--prepare-admission") => {
+            prepare_oracle_admission()
+        }
+        Some(value) if value == std::ffi::OsStr::new("--control-child") => run_control_child(),
+        _ => {
+            #[cfg(target_os = "linux")]
+            if std::env::var_os("HARMONY_CONSONANCE_RESTORE_ORACLE").is_none() {
+                return match run_session() {
+                    Ok(()) => std::process::ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("NOVA_CONSONANCE_PROBE_FAIL: {error}");
+                        std::process::ExitCode::FAILURE
+                    }
+                };
+            }
+            run()
+        }
+    };
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("NOVA_CONSONANCE_PROBE_FAIL: {error}");
@@ -15,10 +38,644 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+const PROBE_RAM: usize = 128 * 1024 * 1024;
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+const PROBE_SEED: u64 = 0x4e4f_5641_5f43_4931;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const PROBE_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
+    no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
+    nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn oracle_setup_payloads() -> Vec<Vec<u8>> {
+    vec![vec![0, 1]; 16]
+}
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn oracle_default_tree_seed() -> u64 {
+    PROBE_SEED ^ 0x4954_454d_325f_5452
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const ORACLE_RUN_BUDGET: u64 = 2_000_000_000;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn oracle_admission_session() -> consonance_client::session::SessionConfig {
+    consonance_client::session::SessionConfig::new(
+        PROBE_RAM,
+        PROBE_SEED,
+        ORACLE_RUN_BUDGET,
+        PROBE_CMDLINE,
+    )
+    .with_deferred_virtual_time_checkpoint_hashes()
+}
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn prepare_oracle_admission() -> Result<(), String> {
+    if std::env::var_os("HARMONY_CONSONANCE_ORACLE_TREE_SEED").is_some() {
+        return Err("admission candidate requires the default A–E tree seed".into());
+    }
+    let supplied: Vec<String> = std::env::args().skip(2).collect();
+    if supplied.len() != 5 {
+        return Err(
+            "usage: kvm_x86_nova_probe --prepare-admission KERNEL PLATFORM OCI ROM OUTPUT".into(),
+        );
+    }
+    let args = vec![
+        "nes".into(),
+        supplied[0].clone(),
+        supplied[1].clone(),
+        supplied[2].clone(),
+        supplied[4].clone(),
+        supplied[3].clone(),
+    ];
+    let oracle = serde_json::json!({
+        "version": 1,
+        "backend": "boot_linux_stock_virtual_time",
+        "control": "direct-ControlServer-A-E",
+        "restore_mode": "in-place-with-remap-factory",
+        "deadline_kind": "absolute-vtime",
+        "setup_payloads": oracle_setup_payloads(),
+        "tree_seed": oracle_default_tree_seed(),
+    });
+    let session_json =
+        serde_json::to_vec(&oracle_admission_session()).map_err(|e| e.to_string())?;
+    nes_workload::admission::dump(&args, &session_json, Some(oracle))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_arch = "aarch64")]
+const PROBE_CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
+type ProbeBackend = Box<dyn vmm_backend::Backend<A = vmm_backend::X86>>;
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+type ProbeBackend = Box<dyn vmm_backend::Backend<A = vmm_backend::Arm64>>;
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+type ProbeBackend = vmm_backend::HvfBackend;
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+type ProbeVmm = vmm_core::vmm::Vmm<ProbeBackend>;
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn prepare_probe_initramfs(
+    platform_path: &std::ffi::OsStr,
+    image_path: &std::ffi::OsStr,
+    rom_path: &std::ffi::OsStr,
+) -> Result<Vec<u8>, String> {
+    let platform = std::fs::read(platform_path)
+        .map_err(|error| format!("cannot read platform initramfs {platform_path:?}: {error}"))?;
+    let rom = std::fs::read(rom_path)
+        .map_err(|error| format!("cannot read Nova ROM {rom_path:?}: {error}"))?;
+    let image = image_path
+        .to_str()
+        .ok_or("NES OCI image path must be UTF-8")?;
+    let prepared = nes_workload::prepare::stage_and_prepare(image, &rom)
+        .map_err(|error| format!("prepare NES OCI execution: {error}"))?;
+    Ok(prepared.initramfs(&platform))
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn boot_probe(kernel: &[u8], initramfs: &[u8]) -> Result<ProbeVmm, vmm_core::vmm::VmmError> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let mut vmm = {
+        let config = oracle_admission_session();
+        vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time(
+            kernel,
+            initramfs,
+            config.ram_bytes,
+            &config.cmdline,
+            config.seed,
+        )?
+    };
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    let mut vmm = vmm_core::vendor::arm64::bringup::boot_selected_control(
+        kernel,
+        initramfs,
+        PROBE_CMDLINE,
+        PROBE_RAM,
+        PROBE_SEED,
+    )?;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let mut vmm = vmm_core::vendor::arm64::bringup::boot_hvf_control(
+        kernel,
+        initramfs,
+        PROBE_CMDLINE,
+        PROBE_RAM,
+    )?;
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if vmm.controlled_guest_identity().is_none() {
+        return Err(vmm_core::vmm::VmmError::ContractViolation(
+            "Nova x86 boot did not select a reviewed controlled guest profile".to_owned(),
+        ));
+    }
+    vmm.wire_snapshot_hashing();
+    vmm.defer_virtual_time_checkpoint_hashes()?;
+    Ok(vmm)
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn latest_frame(events: &[(u64, u32, Vec<u8>)]) -> Option<u64> {
+    const FRAME_COMPLETE_EVENT_ID: u32 = (4 << 24) | 1;
+    events.iter().rev().find_map(|(_, id, bytes)| {
+        (*id == FRAME_COMPLETE_EVENT_ID && bytes.len() == 8)
+            .then(|| u64::from_le_bytes(bytes.as_slice().try_into().expect("checked frame length")))
+    })
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+struct StdioDuplex {
+    input: std::io::Stdin,
+    output: std::io::Stdout,
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+impl std::io::Read for StdioDuplex {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(&mut self.input, buffer)
+    }
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+impl std::io::Write for StdioDuplex {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        std::io::Write::write(&mut self.output, buffer)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(&mut self.output)
+    }
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn run_control_child() -> Result<(), String> {
+    use control_proto::SnapId;
+    use std::io::BufReader;
+    use vmm_core::control::{ControlServer, RestoreMode, VmmFactory};
+
+    let mut args = std::env::args_os().skip(2);
+    let (Some(kernel_path), Some(initramfs_path), Some(image_path), Some(rom_path), None) = (
+        args.next(),
+        args.next(),
+        args.next(),
+        args.next(),
+        args.next(),
+    ) else {
+        return Err(
+            "control child requires <bzImage> <platform-initramfs> <nes.oci> <nova.nes>".to_owned(),
+        );
+    };
+    let kernel = std::fs::read(&kernel_path)
+        .map_err(|error| format!("control child cannot read {kernel_path:?}: {error}"))?;
+    let initramfs = prepare_probe_initramfs(&initramfs_path, &image_path, &rom_path)?;
+
+    let live = boot_probe(&kernel, &initramfs)
+        .map_err(|error| format!("control child boot: {error:?}"))?;
+    let factory_kernel = kernel;
+    let factory_initramfs = initramfs;
+    let factory: VmmFactory<ProbeBackend> =
+        Box::new(move || boot_probe(&factory_kernel, &factory_initramfs));
+    let mut server = ControlServer::new(live, factory);
+    server.set_restore_mode(RestoreMode::Memcpy);
+
+    let import = std::env::var_os("HARMONY_PORTABLE_IMPORT")
+        .ok_or("control child requires HARMONY_PORTABLE_IMPORT")?;
+    let import_file = std::fs::File::open(&import)
+        .map_err(|error| format!("control child cannot open import {import:?}: {error}"))?;
+    server
+        .import_portable_snapshot(BufReader::new(import_file))
+        .map_err(|error| format!("control child portable import failed: {error}"))?;
+
+    server
+        .serve(StdioDuplex {
+            input: std::io::stdin(),
+            output: std::io::stdout(),
+        })
+        .map_err(|error| format!("control child serve failed: {error}"))?;
+    if server.in_place_fallbacks() != 0 {
+        return Err(format!(
+            "control child used {} in-place fallbacks",
+            server.in_place_fallbacks()
+        ));
+    }
+
+    let export = std::env::var_os("HARMONY_PORTABLE_EXPORT")
+        .ok_or("control child requires HARMONY_PORTABLE_EXPORT")?;
+    let handle = std::env::var_os("HARMONY_PORTABLE_EXPORT_HANDLE")
+        .ok_or("control child requires HARMONY_PORTABLE_EXPORT_HANDLE")?;
+    let handle = if handle == "last" {
+        server
+            .latest_snapshot()
+            .ok_or("control child has no snapshot to export")?
+    } else {
+        SnapId(
+            handle
+                .to_string_lossy()
+                .parse::<u64>()
+                .map_err(|error| format!("control child export handle is malformed: {error}"))?,
+        )
+    };
+    let export_file = std::fs::File::create(&export)
+        .map_err(|error| format!("control child cannot create export {export:?}: {error}"))?;
+    server
+        .export_portable_snapshot(handle, export_file)
+        .map_err(|error| format!("control child portable export failed: {error}"))?;
+    if let Some(state_path) = std::env::var_os("HARMONY_CONSONANCE_ORACLE_STATE_BLOB") {
+        let state = server
+            .vmm()
+            .ok_or("control child VM unavailable for state export")?
+            .state_blob()
+            .map_err(|error| format!("control child raw state export failed: {error}"))?;
+        std::fs::write(&state_path, state)
+            .map_err(|error| format!("control child cannot write state {state_path:?}: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+type ChildReply = Result<(u32, Result<control_proto::Reply, String>), String>;
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+struct ChildSession {
+    child: std::process::Child,
+    input: Option<std::process::ChildStdin>,
+    replies: std::sync::mpsc::Receiver<ChildReply>,
+    reader: Option<std::thread::JoinHandle<()>>,
+    next_seq: u32,
+    finished: bool,
+    pid: u32,
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+impl ChildSession {
+    fn spawn(
+        kernel: &std::path::Path,
+        initramfs: &std::path::Path,
+        image: &std::path::Path,
+        rom: &std::path::Path,
+        import: &std::path::Path,
+        export: &std::path::Path,
+        state: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
+        use std::process::Stdio;
+
+        let mut command = std::process::Command::new(
+            std::env::current_exe()
+                .map_err(|error| format!("cannot locate probe executable: {error}"))?,
+        );
+        command
+            .arg("--control-child")
+            .arg(kernel)
+            .arg(initramfs)
+            .arg(image)
+            .arg(rom)
+            .env("HARMONY_PORTABLE_IMPORT", import)
+            .env("HARMONY_PORTABLE_EXPORT", export)
+            .env("HARMONY_PORTABLE_EXPORT_HANDLE", "last")
+            .env_remove("HARMONY_CONSONANCE_ORACLE_STATE_BLOB")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        if let Some(state) = state {
+            command.env("HARMONY_CONSONANCE_ORACLE_STATE_BLOB", state);
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("cannot spawn probe control child: {error}"))?;
+        let pid = child.id();
+        let input = match child.stdin.take() {
+            Some(input) => input,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("probe control child stdin was not piped".to_owned());
+            }
+        };
+        let output = match child.stdout.take() {
+            Some(output) => output,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("probe control child stdout was not piped".to_owned());
+            }
+        };
+        let (sender, replies) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut output = output;
+            let mut buffer = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                loop {
+                    match control_proto::decode_reply(&buffer) {
+                        Ok(Some((seq, reply, consumed))) => {
+                            buffer.drain(..consumed);
+                            let reply = reply.map_err(|error| format!("{error:?}"));
+                            if sender.send(Ok((seq, reply))).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(error) => {
+                            let _ = sender
+                                .send(Err(format!("control child reply decode failed: {error:?}")));
+                            return;
+                        }
+                    }
+                }
+                match std::io::Read::read(&mut output, &mut chunk) {
+                    Ok(0) => {
+                        let message = if buffer.is_empty() {
+                            "control child closed stdout".to_owned()
+                        } else {
+                            "control child closed stdout with a partial reply".to_owned()
+                        };
+                        let _ = sender.send(Err(message));
+                        return;
+                    }
+                    Ok(count) => buffer.extend_from_slice(&chunk[..count]),
+                    Err(error) => {
+                        let _ =
+                            sender.send(Err(format!("control child stdout read failed: {error}")));
+                        return;
+                    }
+                }
+            }
+        });
+        Ok(Self {
+            child,
+            input: Some(input),
+            replies,
+            reader: Some(reader),
+            next_seq: 1,
+            finished: false,
+            pid,
+        })
+    }
+
+    fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    fn request(
+        &mut self,
+        request: &control_proto::Request,
+    ) -> Result<control_proto::Reply, String> {
+        let seq = self.next_seq;
+        self.next_seq = self
+            .next_seq
+            .checked_add(1)
+            .ok_or("control child request sequence exhausted")?;
+        let mut frame = Vec::new();
+        control_proto::encode_request(seq, request, &mut frame)
+            .map_err(|error| format!("control child request encode failed: {error:?}"))?;
+        if frame.len() > 4096 {
+            return Err(format!(
+                "control child request frame is unexpectedly large: {} bytes",
+                frame.len()
+            ));
+        }
+        let input = self.input.as_mut().ok_or("control child stdin is closed")?;
+        std::io::Write::write_all(input, &frame)
+            .map_err(|error| format!("control child request write failed: {error}"))?;
+        std::io::Write::flush(input)
+            .map_err(|error| format!("control child request flush failed: {error}"))?;
+        let (reply_seq, reply) = self
+            .replies
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(|error| format!("control child reply timed out or closed: {error}"))??;
+        if reply_seq != seq {
+            return Err(format!(
+                "control child reply sequence mismatch: expected {seq}, got {reply_seq}"
+            ));
+        }
+        reply
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    fn finish(mut self) -> Result<u32, String> {
+        self.input.take();
+        let pid = self.pid;
+        let start = std::time::Instant::now();
+        let status = loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if start.elapsed() < std::time::Duration::from_secs(30) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Ok(None) => {
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    return Err(format!(
+                        "control child {pid} did not exit within 30 seconds"
+                    ));
+                }
+                Err(error) => {
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    return Err(format!("control child {pid} wait failed: {error}"));
+                }
+            }
+        };
+        self.finished = true;
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+        if !status.success() {
+            return Err(format!("control child {pid} exited with {status}"));
+        }
+        Ok(pid)
+    }
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+impl Drop for ChildSession {
+    fn drop(&mut self) {
+        if !self.finished {
+            if self.child.try_wait().ok().flatten().is_none() {
+                let _ = self.child.kill();
+            }
+            let _ = self.child.wait();
+        }
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+struct OracleArtifacts {
+    directory: std::path::PathBuf,
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+impl OracleArtifacts {
+    #[allow(clippy::disallowed_methods)]
+    fn new() -> Result<Self, String> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| format!("oracle artifact clock failed: {error}"))?
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "harmony-nova-oracle-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory)
+            .map_err(|error| format!("cannot create private oracle artifact directory: {error}"))?;
+        #[cfg(unix)]
+        if let Err(error) = std::fs::set_permissions(
+            &directory,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        ) {
+            let _ = std::fs::remove_dir_all(&directory);
+            return Err(format!("cannot protect oracle artifact directory: {error}"));
+        }
+        Ok(Self { directory })
+    }
+
+    fn file(&self, name: &str) -> std::path::PathBuf {
+        self.directory.join(name)
+    }
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+impl Drop for OracleArtifacts {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
 ))]
 fn boot_memory_kib(console: &str) -> Result<(u64, u64), String> {
     let normalized = console.replace('\r', "");
@@ -48,12 +705,39 @@ fn boot_memory_kib(console: &str) -> Result<(u64, u64), String> {
 
 #[cfg(all(
     test,
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
+    any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            not(miri)
+        ),
+        all(target_os = "macos", target_arch = "aarch64", not(miri))
+    )
 ))]
 mod tests {
     use super::boot_memory_kib;
+
+    #[test]
+    fn frame_evidence_uses_canonical_lifecycle_events() {
+        let events = vec![
+            (0, (2 << 24) | 10, vec![0; 9]),
+            (1, (4 << 24) | 1, 17u64.to_le_bytes().to_vec()),
+            (2, (4 << 24) | 1, 29u64.to_le_bytes().to_vec()),
+        ];
+        assert_eq!(super::latest_frame(&events), Some(29));
+        assert_eq!(super::latest_frame(&events[..1]), None);
+    }
+
+    #[test]
+    fn frame_evidence_ignores_neighbor_and_malformed_events() {
+        let events = vec![
+            (0, (4 << 24) | 1, 17u64.to_le_bytes().to_vec()),
+            (1, 4 << 24, 29u64.to_le_bytes().to_vec()),
+            (2, (4 << 24) | 1, vec![0; 7]),
+            (3, (4 << 24) | 1, vec![0; 9]),
+        ];
+        assert_eq!(super::latest_frame(&events), Some(17));
+    }
 
     #[test]
     fn boot_memory_accepts_plain_and_kernel_timestamped_reports() {
@@ -75,18 +759,1651 @@ mod tests {
     }
 }
 
+#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+))]
+fn run() -> Result<(), String> {
+    use control_proto::{
+        HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
+    };
+    use environment::input_spec::InputSpec as EnvSpec;
+    use std::{fmt::Write as _, time::Instant};
+    #[cfg(target_arch = "aarch64")]
+    use vmm_core::vendor::arm64::board;
+    #[cfg(target_arch = "x86_64")]
+    use vmm_core::vendor::x86::bringup::compose_stock_virtual_time_restore_target;
+    use vmm_core::{
+        control::{ControlServer, RestoreMode, VmmFactory, host_minor_faults, server_caps},
+        portable_snapshot::compare_portable_execution_state,
+        snapshot::DEFAULT_MAX_CHAIN_LEN,
+    };
+
+    type Server = ControlServer<ProbeBackend>;
+    #[cfg(target_arch = "x86_64")]
+    const RAM: usize = 128 * 1024 * 1024;
+    #[cfg(target_arch = "aarch64")]
+    const RAM: usize = 128 * 1024 * 1024;
+    #[cfg(target_arch = "x86_64")]
+    const RAM_GPA_BASE: u64 = 0;
+    #[cfg(target_arch = "aarch64")]
+    const RAM_GPA_BASE: u64 = board::RAM_BASE;
+    const SEED: u64 = PROBE_SEED;
+    #[cfg(target_arch = "x86_64")]
+    const DEADLINE: u64 = ORACLE_RUN_BUDGET;
+    #[cfg(target_arch = "aarch64")]
+    const DEADLINE: u64 = 20_000_000_000;
+    #[derive(Clone, Copy)]
+    enum ProfileVerb {
+        Branch,
+        Run,
+        Snapshot,
+        Read,
+        SdkEvents,
+    }
+
+    impl ProfileVerb {
+        const fn index(self) -> usize {
+            match self {
+                Self::Branch => 0,
+                Self::Run => 1,
+                Self::Snapshot => 2,
+                Self::Read => 3,
+                Self::SdkEvents => 4,
+            }
+        }
+
+        const fn name(self) -> &'static str {
+            match self {
+                Self::Branch => "Branch",
+                Self::Run => "Run",
+                Self::Snapshot => "Snapshot",
+                Self::Read => "Read",
+                Self::SdkEvents => "SdkEvents",
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct ProbeProfile {
+        enabled: bool,
+        ram_gpa_base: u64,
+        wall_ns: [u128; 5],
+        calls: [u64; 5],
+        branch_wall_samples_ns: Vec<u128>,
+        snapshot_wall_samples_ns: Vec<u128>,
+        last_snapshot_wall_ns: u128,
+        flatten_wall_samples_ns: Vec<u128>,
+        restore_calls: u64,
+        restore_bytes: u64,
+        in_place_fallbacks: u64,
+        setup_nonzero_pages: Option<u64>,
+        billboard: Option<(u64, u64)>,
+        agent_ranges: Vec<(u64, u64)>,
+        seals: u64,
+        dirty_available_seals: u64,
+        dirty_pages: u64,
+        dirty_billboard_pages: u64,
+        dirty_agent_pages: u64,
+        dirty_other_pages: u64,
+        action_dirty_pages: u64,
+        action_dirty_billboard_pages: u64,
+        action_dirty_agent_pages: u64,
+        action_dirty_other_pages: u64,
+        actions: u64,
+        frames: u64,
+        doorbell_exits: u64,
+        touched_pages: u64,
+        last_frame: Option<u64>,
+    }
+
+    impl ProbeProfile {
+        fn new(enabled: bool) -> Self {
+            Self {
+                enabled,
+                ram_gpa_base: RAM_GPA_BASE,
+                agent_ranges: Vec::new(),
+                ..Self::default()
+            }
+        }
+
+        fn record_verb(&mut self, request: &Request, wall_ns: u128) {
+            if !self.enabled {
+                return;
+            }
+            let Some(verb) = profile_verb(request) else {
+                return;
+            };
+            let index = verb.index();
+            self.wall_ns[index] = self.wall_ns[index].saturating_add(wall_ns);
+            self.calls[index] = self.calls[index].saturating_add(1);
+            if matches!(verb, ProfileVerb::Branch) {
+                self.branch_wall_samples_ns.push(wall_ns);
+            } else if matches!(verb, ProfileVerb::Snapshot) {
+                self.snapshot_wall_samples_ns.push(wall_ns);
+                self.last_snapshot_wall_ns = wall_ns;
+            }
+        }
+
+        fn record_restore(&mut self, bytes: u64, fallbacks: u64) {
+            if !self.enabled {
+                return;
+            }
+            self.restore_calls = self.restore_calls.saturating_add(1);
+            self.restore_bytes = self.restore_bytes.saturating_add(bytes);
+            self.in_place_fallbacks = fallbacks;
+        }
+
+        fn record_seal(&mut self, dirty_gfns: Option<&[u64]>, chain_len: Option<u32>) {
+            if !self.enabled {
+                return;
+            }
+            self.seals = self.seals.saturating_add(1);
+            let Some(dirty_gfns) = dirty_gfns else {
+                return;
+            };
+            self.dirty_available_seals = self.dirty_available_seals.saturating_add(1);
+            if chain_len == Some(1) {
+                self.flatten_wall_samples_ns
+                    .push(self.last_snapshot_wall_ns);
+            }
+            for &gfn in dirty_gfns {
+                let gpa = self.ram_gpa_base.saturating_add(gfn.saturating_mul(4096));
+                self.dirty_pages = self.dirty_pages.saturating_add(1);
+                if self.overlaps_billboard(gpa) {
+                    self.dirty_billboard_pages = self.dirty_billboard_pages.saturating_add(1);
+                } else if self
+                    .agent_ranges
+                    .iter()
+                    .any(|&(start, end)| gpa < end && start < gpa.saturating_add(4096))
+                {
+                    self.dirty_agent_pages = self.dirty_agent_pages.saturating_add(1);
+                } else {
+                    self.dirty_other_pages = self.dirty_other_pages.saturating_add(1);
+                }
+            }
+        }
+
+        fn set_setup(&mut self, nonzero_pages: u64, billboard_gpa: u64, billboard_len: u64) {
+            if !self.enabled {
+                return;
+            }
+            self.setup_nonzero_pages = Some(nonzero_pages);
+            self.billboard = Some((billboard_gpa, billboard_len));
+        }
+
+        fn overlaps_billboard(&self, gpa: u64) -> bool {
+            self.billboard.is_some_and(|(start, len)| {
+                let end = start.saturating_add(len);
+                gpa < end && start < gpa.saturating_add(4096)
+            })
+        }
+
+        fn record_action(
+            &mut self,
+            frames: u64,
+            doorbell_exits: u64,
+            touched_pages: Option<u64>,
+            frame: Option<u64>,
+            dirty_before: [u64; 4],
+        ) {
+            if !self.enabled {
+                return;
+            }
+            let dirty_after = self.dirty_totals();
+            self.action_dirty_pages = self
+                .action_dirty_pages
+                .saturating_add(dirty_after[0].saturating_sub(dirty_before[0]));
+            self.action_dirty_billboard_pages = self
+                .action_dirty_billboard_pages
+                .saturating_add(dirty_after[1].saturating_sub(dirty_before[1]));
+            self.action_dirty_agent_pages = self
+                .action_dirty_agent_pages
+                .saturating_add(dirty_after[2].saturating_sub(dirty_before[2]));
+            self.action_dirty_other_pages = self
+                .action_dirty_other_pages
+                .saturating_add(dirty_after[3].saturating_sub(dirty_before[3]));
+            self.actions = self.actions.saturating_add(1);
+            self.frames = self.frames.saturating_add(frames);
+            self.doorbell_exits = self.doorbell_exits.saturating_add(doorbell_exits);
+            self.touched_pages = self
+                .touched_pages
+                .saturating_add(touched_pages.unwrap_or(0));
+            if frame.is_some() {
+                self.last_frame = frame;
+            }
+        }
+
+        fn dirty_totals(&self) -> [u64; 4] {
+            [
+                self.dirty_pages,
+                self.dirty_billboard_pages,
+                self.dirty_agent_pages,
+                self.dirty_other_pages,
+            ]
+        }
+
+        fn render(&self) -> Option<String> {
+            if !self.enabled {
+                return None;
+            }
+            let mut line = String::from("consonance-probe-profile");
+            for verb in [
+                ProfileVerb::Branch,
+                ProfileVerb::Run,
+                ProfileVerb::Snapshot,
+                ProfileVerb::Read,
+                ProfileVerb::SdkEvents,
+            ] {
+                let index = verb.index();
+                let _ = write!(
+                    line,
+                    " {}_calls={} {}_wall_ns={}",
+                    verb.name().to_ascii_lowercase(),
+                    self.calls[index],
+                    verb.name().to_ascii_lowercase(),
+                    self.wall_ns[index]
+                );
+            }
+            let ranges = self
+                .agent_ranges
+                .iter()
+                .map(|&(start, end)| format!("{start:#x}-{end:#x}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut branch_samples = self.branch_wall_samples_ns.clone();
+            branch_samples.sort_unstable();
+            let branch_median_ns = percentile(&branch_samples, 50);
+            let branch_p99_ns = percentile(&branch_samples, 99);
+            let mut snapshot_samples = self.snapshot_wall_samples_ns.clone();
+            snapshot_samples.sort_unstable();
+            let snapshot_median_ns = percentile(&snapshot_samples, 50);
+            let snapshot_p99_ns = percentile(&snapshot_samples, 99);
+            let mut flatten_samples = self.flatten_wall_samples_ns.clone();
+            flatten_samples.sort_unstable();
+            let flatten_wall_ns = flatten_samples.iter().copied().sum::<u128>();
+            let flatten_median_ns = percentile(&flatten_samples, 50);
+            let flatten_p99_ns = percentile(&flatten_samples, 99);
+            let _ = write!(
+                line,
+                " branch_median_ns={} branch_p99_ns={} snapshot_median_ns={} snapshot_p99_ns={} restore_calls={} restore_bytes={} in_place_fallbacks={} seals={} dirty_available_seals={} flatten_calls={} flatten_wall_ns={} flatten_median_ns={} flatten_p99_ns={} dirty_pages={} dirty_billboard_pages={} dirty_agent_pages={} dirty_other_pages={} action_dirty_pages={} action_dirty_billboard_pages={} action_dirty_agent_pages={} action_dirty_other_pages={} setup_nonzero_pages={} billboard={} agent_ranges={} actions={} frames={} doorbell_exits={} touched_pages={}",
+                branch_median_ns,
+                branch_p99_ns,
+                snapshot_median_ns,
+                snapshot_p99_ns,
+                self.restore_calls,
+                self.restore_bytes,
+                self.in_place_fallbacks,
+                self.seals,
+                self.dirty_available_seals,
+                flatten_samples.len(),
+                flatten_wall_ns,
+                flatten_median_ns,
+                flatten_p99_ns,
+                self.dirty_pages,
+                self.dirty_billboard_pages,
+                self.dirty_agent_pages,
+                self.dirty_other_pages,
+                self.action_dirty_pages,
+                self.action_dirty_billboard_pages,
+                self.action_dirty_agent_pages,
+                self.action_dirty_other_pages,
+                self.setup_nonzero_pages.unwrap_or(0),
+                self.billboard.map_or_else(
+                    || "none".to_owned(),
+                    |(gpa, len)| { format!("{gpa:#x}+{len:#x}") }
+                ),
+                ranges,
+                self.actions,
+                self.frames,
+                self.doorbell_exits,
+                self.touched_pages,
+            );
+            Some(line)
+        }
+    }
+
+    fn profile_verb(request: &Request) -> Option<ProfileVerb> {
+        match request {
+            Request::Branch { .. } | Request::Replay(_) => Some(ProfileVerb::Branch),
+            Request::Run { .. } => Some(ProfileVerb::Run),
+            Request::Snapshot => Some(ProfileVerb::Snapshot),
+            Request::Read { .. } => Some(ProfileVerb::Read),
+            Request::SdkEvents { .. } => Some(ProfileVerb::SdkEvents),
+            _ => None,
+        }
+    }
+
+    fn percentile(sorted: &[u128], percentile: usize) -> u128 {
+        if sorted.is_empty() {
+            return 0;
+        }
+        let index = (sorted.len() - 1).saturating_mul(percentile) / 100;
+        sorted[index]
+    }
+
+    fn latest_register(events: &[(u64, u32, Vec<u8>)], register: u32) -> Result<u64, String> {
+        const SDK_NS_SHIFT: u32 = 24;
+        const SDK_NS_STATE: u8 = 2;
+        const SDK_STATE_SET: u8 = 0;
+        const SDK_STATE_MAX: u8 = 1;
+        let event_id = (u32::from(SDK_NS_STATE) << SDK_NS_SHIFT) | register;
+        let mut value = None;
+        for &(_, id, ref bytes) in events {
+            if id != event_id || bytes.len() != 9 {
+                continue;
+            }
+            let next = u64::from_le_bytes(
+                bytes[1..9]
+                    .try_into()
+                    .map_err(|_| "SDK state payload is malformed".to_owned())?,
+            );
+            match bytes[0] {
+                SDK_STATE_SET => value = Some(next),
+                SDK_STATE_MAX => value = Some(value.unwrap_or(0).max(next)),
+                _ => {}
+            }
+        }
+        value.ok_or_else(|| format!("SDK register {register} is absent"))
+    }
+
+    fn drive(
+        server: &mut Server,
+        request: &Request,
+        profile: &mut ProbeProfile,
+    ) -> Result<Reply, String> {
+        #[allow(clippy::disallowed_methods)]
+        let started = profile.enabled.then(Instant::now);
+        let result = server.handle(request);
+        #[allow(clippy::disallowed_methods)]
+        if let Some(started) = started {
+            profile.record_verb(request, started.elapsed().as_nanos());
+        }
+        if matches!(request, Request::Snapshot)
+            && let Ok(Ok(Reply::Snapshot { id, .. })) = &result
+        {
+            profile.record_seal(
+                server.last_seal_dirty_gfns(),
+                server.snapshot_chain_len(*id),
+            );
+        }
+        if matches!(request, Request::Branch { .. } | Request::Replay(_))
+            && matches!(result, Ok(Ok(Reply::Unit)))
+        {
+            profile.record_restore(
+                server.last_restore_bytes_written(),
+                server.in_place_fallbacks(),
+            );
+        }
+        match result {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(error)) => Err(format!("{request:?} returned {error:?}")),
+            Err(error) => Err(format!("{request:?} ended the session: {error:?}")),
+        }
+    }
+
+    fn console(server: &mut Server, profile: &mut ProbeProfile) -> String {
+        match drive(server, &Request::Console { offset: 0 }, profile) {
+            Ok(Reply::Console { chunk, .. }) => String::from_utf8_lossy(&chunk).into_owned(),
+            Ok(other) => format!("<unexpected console reply {other:?}>"),
+            Err(error) => format!("<console unavailable: {error}>"),
+        }
+    }
+
+    fn run_to_snapshot(server: &mut Server, profile: &mut ProbeProfile) -> Result<Moment, String> {
+        let request = Request::Run {
+            until: StopConditions {
+                deadline: Some(Moment(DEADLINE)),
+                on: StopMask::NONE.arm(control_proto::class_bit::SNAPSHOT_POINT),
+            },
+            resolve: None,
+        };
+        let reply = drive(server, &request, profile).map_err(|error| {
+            format!(
+                "{error}\n--- guest console ---\n{}",
+                console(server, profile)
+            )
+        })?;
+        match reply {
+            Reply::Stop(StopReason::SnapshotPoint { vtime }) => Ok(vtime),
+            other => Err(format!(
+                "expected Nova snapshot point, received {other:?}\n--- guest console ---\n{}",
+                console(server, profile)
+            )),
+        }
+    }
+
+    fn payload_env(payloads: Vec<Vec<u8>>) -> Reproducer {
+        let mut spec = EnvSpec::seeded(SEED);
+        spec.set_payloads(Some(payloads));
+        Reproducer {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: spec.encode(),
+        }
+    }
+
+    fn endpoint(
+        server: &mut Server,
+        base: SnapId,
+        profile: &mut ProbeProfile,
+    ) -> Result<([u8; 32], Vec<u8>), String> {
+        let env = payload_env(vec![vec![0x81, 12], vec![0, 1]]);
+        let before_faults = profile.enabled.then(host_minor_faults).flatten();
+        let before_frame = profile.last_frame;
+        let dirty_before = profile.dirty_totals();
+        match drive(server, &Request::Branch { snap: base, env }, profile)? {
+            Reply::Unit => {}
+            other => return Err(format!("branch returned {other:?}")),
+        }
+        let before_exits = server.vmm().map(|vmm| vmm.doorbell_exits()).unwrap_or(0);
+        let at = run_to_snapshot(server, profile)?;
+        match drive(server, &Request::Snapshot, profile)? {
+            Reply::Snapshot { .. } => {}
+            other => return Err(format!("endpoint snapshot returned {other:?}")),
+        }
+        let hash = match drive(
+            server,
+            &Request::Hash {
+                scope: HashScope::Whole,
+            },
+            profile,
+        )? {
+            Reply::Hash(hash) => hash,
+            other => return Err(format!("hash returned {other:?}")),
+        };
+        let events = match drive(server, &Request::SdkEvents { offset: 0 }, profile)? {
+            Reply::SdkEvents(events) => {
+                let frame = latest_frame(&events);
+                let frames = frame.zip(before_frame).map_or_else(
+                    || frame.unwrap_or(0),
+                    |(after, before)| after.saturating_sub(before),
+                );
+                let after_exits = server.vmm().map(|vmm| vmm.doorbell_exits()).unwrap_or(0);
+                profile.record_action(
+                    frames,
+                    after_exits.saturating_sub(before_exits),
+                    before_faults.and_then(|before| {
+                        host_minor_faults().map(|after| after.saturating_sub(before))
+                    }),
+                    frame,
+                    dirty_before,
+                );
+                format!("{at:?}:{events:?}").into_bytes()
+            }
+            other => return Err(format!("SDK event fetch returned {other:?}")),
+        };
+        Ok((hash, events))
+    }
+
+    fn hash_whole(server: &mut Server, profile: &mut ProbeProfile) -> Result<[u8; 32], String> {
+        match drive(
+            server,
+            &Request::Hash {
+                scope: HashScope::Whole,
+            },
+            profile,
+        )? {
+            Reply::Hash(hash) => Ok(hash),
+            other => Err(format!("hash returned {other:?}")),
+        }
+    }
+
+    fn export_snapshot(server: &Server, snap: SnapId) -> Result<Vec<u8>, String> {
+        let mut artifact = Vec::new();
+        server
+            .export_portable_snapshot(snap, &mut artifact)
+            .map_err(|error| format!("portable snapshot export failed: {error}"))?;
+        Ok(artifact)
+    }
+
+    fn retain_oracle_mismatch(label: &str, expected: &[u8], actual: &[u8]) -> Result<(), String> {
+        let Some(directory) = std::env::var_os("HARMONY_CONSONANCE_ORACLE_REPORT_DIR") else {
+            return Ok(());
+        };
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        std::fs::write(directory.join(format!("{label}-expected.bin")), expected)
+            .map_err(|error| error.to_string())?;
+        std::fs::write(directory.join(format!("{label}-actual.bin")), actual)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    fn snapshot_current(
+        server: &mut Server,
+        profile: &mut ProbeProfile,
+    ) -> Result<(SnapId, Vec<u8>), String> {
+        let snap = match drive(server, &Request::Snapshot, profile)? {
+            Reply::Snapshot { id, .. } => id,
+            other => return Err(format!("portable comparison snapshot returned {other:?}")),
+        };
+        Ok((snap, export_snapshot(server, snap)?))
+    }
+
+    fn oracle_action(
+        server: &mut Server,
+        parent: SnapId,
+        payload: Vec<u8>,
+        seal: bool,
+        profile: &mut ProbeProfile,
+    ) -> Result<(Option<SnapId>, [u8; 32]), String> {
+        match drive(
+            server,
+            &Request::Branch {
+                snap: parent,
+                env: payload_env(vec![payload, vec![0, 1]]),
+            },
+            profile,
+        )? {
+            Reply::Unit => {}
+            other => return Err(format!("restore-oracle branch returned {other:?}")),
+        }
+        run_to_snapshot(server, profile)?;
+        let child = if seal {
+            match drive(server, &Request::Snapshot, profile)? {
+                Reply::Snapshot { id, .. } => Some(id),
+                other => return Err(format!("restore-oracle snapshot returned {other:?}")),
+            }
+        } else {
+            None
+        };
+        Ok((child, hash_whole(server, profile)?))
+    }
+
+    fn oracle_word(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        *state
+    }
+
+    fn oracle_payload(word: u64) -> Vec<u8> {
+        vec![word as u8, ((word >> 8) % 12 + 1) as u8]
+    }
+
+    struct DRunImages<'a> {
+        kernel_path: &'a std::path::Path,
+        initramfs_path: &'a std::path::Path,
+        image_path: &'a std::path::Path,
+        rom_path: &'a std::path::Path,
+    }
+
+    fn run_restore_oracle(
+        server: &mut Server,
+        base: SnapId,
+        profile: &mut ProbeProfile,
+        _cold_factory: &dyn Fn() -> Result<Server, String>,
+        images: &DRunImages<'_>,
+    ) -> Result<(), String> {
+        const CONTROL_AT: [u64; 8] = [1, 2, 4, 8, 16, 32, 64, 199];
+
+        #[derive(Clone)]
+        struct Edge {
+            parent: SnapId,
+            payload: Vec<u8>,
+            child: SnapId,
+            hash: [u8; 32],
+            sdk_capture: String,
+        }
+
+        struct EndpointEvidence {
+            at: Moment,
+            frame: Option<u64>,
+            events_len: usize,
+            events: Vec<u8>,
+            state: Vec<u8>,
+            hash: [u8; 32],
+            artifact: Vec<u8>,
+            snapshot: SnapId,
+        }
+
+        fn branch_to_boundary(
+            server: &mut Server,
+            parent: SnapId,
+            payload: Vec<u8>,
+            profile: &mut ProbeProfile,
+        ) -> Result<Moment, String> {
+            match drive(
+                server,
+                &Request::Branch {
+                    snap: parent,
+                    env: payload_env(vec![payload, vec![0, 1]]),
+                },
+                profile,
+            )? {
+                Reply::Unit => {}
+                other => return Err(format!("A/B restore branch returned {other:?}")),
+            }
+            run_to_snapshot(server, profile)
+        }
+
+        fn sdk_events_evidence(
+            server: &mut Server,
+            profile: &mut ProbeProfile,
+        ) -> Result<(Vec<u8>, Option<u64>, usize), String> {
+            let mut events = Vec::new();
+            let mut offset = 0u32;
+            loop {
+                let page = match drive(server, &Request::SdkEvents { offset }, profile)? {
+                    Reply::SdkEvents(page) => page,
+                    other => return Err(format!("SDK event fetch returned {other:?}")),
+                };
+                if page.is_empty() {
+                    break;
+                }
+                let page_len = u32::try_from(page.len())
+                    .map_err(|_| "SDK event page is too large".to_owned())?;
+                offset = offset
+                    .checked_add(page_len)
+                    .ok_or("SDK event stream exceeds its offset range")?;
+                events.extend(page);
+            }
+            let frame = latest_frame(&events);
+            Ok((format!("{events:?}").into_bytes(), frame, events.len()))
+        }
+
+        fn child_sdk_events(
+            child: &mut ChildSession,
+        ) -> Result<(Vec<u8>, Option<u64>, usize), String> {
+            let mut events = Vec::new();
+            let mut offset = 0u32;
+            loop {
+                let page = match child.request(&Request::SdkEvents { offset })? {
+                    Reply::SdkEvents(page) => page,
+                    other => return Err(format!("child SDK event fetch returned {other:?}")),
+                };
+                if page.is_empty() {
+                    break;
+                }
+                let page_len = u32::try_from(page.len())
+                    .map_err(|_| "child SDK event page is too large".to_owned())?;
+                offset = offset
+                    .checked_add(page_len)
+                    .ok_or("child SDK event stream exceeds its offset range")?;
+                events.extend(page);
+            }
+            let frame = latest_frame(&events);
+            Ok((format!("{events:?}").into_bytes(), frame, events.len()))
+        }
+
+        fn endpoint_after_continuation(
+            server: &mut Server,
+            profile: &mut ProbeProfile,
+        ) -> Result<EndpointEvidence, String> {
+            let at = run_to_snapshot(server, profile)?;
+            let (events, frame, events_len) = sdk_events_evidence(server, profile)?;
+            let state = server
+                .vmm()
+                .ok_or("oracle VM unavailable")?
+                .state_blob()
+                .map_err(|error| format!("endpoint state export failed: {error}"))?;
+            let hash = hash_whole(server, profile)?;
+            let (snapshot, artifact) = snapshot_current(server, profile)?;
+            Ok(EndpointEvidence {
+                at,
+                frame,
+                events_len,
+                events,
+                state,
+                hash,
+                artifact,
+                snapshot,
+            })
+        }
+
+        fn compare_endpoint(
+            label: &str,
+            expected: &EndpointEvidence,
+            actual: &EndpointEvidence,
+        ) -> Result<(), String> {
+            if expected.at == actual.at
+                && expected.frame == actual.frame
+                && expected.events_len == actual.events_len
+                && expected.events == actual.events
+                && expected.state == actual.state
+                && expected.hash == actual.hash
+                && expected.artifact == actual.artifact
+            {
+                return Ok(());
+            }
+            retain_oracle_mismatch(
+                &format!("{label}-portable"),
+                &expected.artifact,
+                &actual.artifact,
+            )?;
+            if expected.state != actual.state {
+                retain_oracle_mismatch(&format!("{label}-state"), &expected.state, &actual.state)?;
+            }
+            if expected.events != actual.events {
+                retain_oracle_mismatch(
+                    &format!("{label}-events"),
+                    &expected.events,
+                    &actual.events,
+                )?;
+            }
+            Err(format!("restore-oracle {label} endpoint differed"))
+        }
+
+        fn compare_different_history_endpoint(
+            label: &str,
+            expected: &EndpointEvidence,
+            actual: &EndpointEvidence,
+            expected_memory_len: usize,
+        ) -> Result<(u64, u64, u64, u64), String> {
+            let comparison = match compare_portable_execution_state(
+                expected.artifact.as_slice(),
+                actual.artifact.as_slice(),
+                expected_memory_len,
+            ) {
+                Ok(comparison) => comparison,
+                Err(error) => {
+                    retain_oracle_mismatch(
+                        &format!("{label}-portable"),
+                        &expected.artifact,
+                        &actual.artifact,
+                    )?;
+                    return Err(format!(
+                        "restore-oracle {label} portable comparison failed: {error}"
+                    ));
+                }
+            };
+            let observations_equal = expected.at == actual.at
+                && expected.frame == actual.frame
+                && expected.events_len == actual.events_len
+                && expected.events == actual.events
+                && expected.state == actual.state
+                && expected.hash == actual.hash;
+            if observations_equal && comparison.equal {
+                return Ok((
+                    comparison.left_trace_events,
+                    comparison.right_trace_events,
+                    comparison.left_trace_schedules,
+                    comparison.right_trace_schedules,
+                ));
+            }
+            retain_oracle_mismatch(
+                &format!("{label}-portable"),
+                &expected.artifact,
+                &actual.artifact,
+            )?;
+            if expected.state != actual.state {
+                retain_oracle_mismatch(&format!("{label}-state"), &expected.state, &actual.state)?;
+            }
+            if expected.events != actual.events {
+                retain_oracle_mismatch(
+                    &format!("{label}-events"),
+                    &expected.events,
+                    &actual.events,
+                )?;
+            }
+            Err(format!("restore-oracle {label} endpoint differed"))
+        }
+
+        fn assert_endpoint_progress(
+            label: &str,
+            boundary: Moment,
+            boundary_events_len: usize,
+            endpoint: &EndpointEvidence,
+        ) -> Result<(), String> {
+            if endpoint.at <= boundary {
+                return Err(format!(
+                    "restore-oracle {label} continuation did not advance: boundary={boundary:?} endpoint={:?}",
+                    endpoint.at
+                ));
+            }
+            if endpoint.events_len <= boundary_events_len {
+                return Err(format!(
+                    "restore-oracle {label} continuation did not consume SDK suffix: boundary_events={boundary_events_len} endpoint_events={}",
+                    endpoint.events_len
+                ));
+            }
+            Ok(())
+        }
+
+        let sample_start = profile.branch_wall_samples_ns.len();
+        let bytes_start = profile.restore_bytes;
+        let fallbacks_start = server.in_place_fallbacks();
+        let mut nodes = vec![base];
+        let mut edges = Vec::with_capacity(50);
+
+        let action_a = vec![0x81, 12];
+        let (s1, _) = oracle_action(server, base, action_a.clone(), true, profile)?;
+        let s1 = s1.ok_or("restore-oracle action A did not seal S1")?;
+        nodes.push(s1);
+        edges.push(Edge {
+            parent: base,
+            payload: action_a,
+            child: s1,
+
+            hash: hash_whole(server, profile)?,
+            sdk_capture: format!(
+                "{:?}",
+                server.vmm().ok_or("oracle VM unavailable")?.sdk_snapshot()
+            ),
+        });
+        let action_b = vec![0x42, 7];
+        let (s2, s2_hash) = oracle_action(server, s1, action_b.clone(), true, profile)?;
+        let s2 = s2.ok_or("restore-oracle action B did not seal S2")?;
+        nodes.push(s2);
+        edges.push(Edge {
+            parent: s1,
+            payload: action_b.clone(),
+            child: s2,
+
+            hash: s2_hash,
+            sdk_capture: format!(
+                "{:?}",
+                server.vmm().ok_or("oracle VM unavailable")?.sdk_snapshot()
+            ),
+        });
+        let (_, replay_b_hash) = oracle_action(server, s1, action_b, false, profile)?;
+        if replay_b_hash != s2_hash {
+            return Err("restore-oracle S1 + B did not reproduce S2".to_string());
+        }
+        let mut equal = 1u64;
+        let mut fresh_equal = 0usize;
+        let mut full_state_equal = 0usize;
+        let mut temporary_snapshots = Vec::new();
+        let mut control_edges = Vec::new();
+
+        let tree_seed = match std::env::var("HARMONY_CONSONANCE_ORACLE_TREE_SEED") {
+            Ok(value) => value
+                .parse::<u64>()
+                .map_err(|error| format!("invalid oracle tree seed: {error}"))?,
+            Err(std::env::VarError::NotPresent) => oracle_default_tree_seed(),
+            Err(error) => return Err(format!("invalid oracle tree seed: {error}")),
+        };
+        let mut rng = tree_seed;
+        while edges.len() < 50 {
+            let word = oracle_word(&mut rng);
+            let parent = nodes[(word as usize) % nodes.len()];
+            let payload = oracle_payload(word.rotate_left(17));
+            let (child, hash) = oracle_action(server, parent, payload.clone(), true, profile)?;
+            let child = child.ok_or("restore-oracle tree action did not seal")?;
+            nodes.push(child);
+            edges.push(Edge {
+                parent,
+                payload,
+                child,
+                hash,
+                sdk_capture: format!(
+                    "{:?}",
+                    server.vmm().ok_or("oracle VM unavailable")?.sdk_snapshot()
+                ),
+            });
+        }
+
+        while equal < 200 {
+            let word = oracle_word(&mut rng);
+            let edge_index = (word as usize) % edges.len();
+            let edge = &edges[edge_index];
+            let (_, replay_hash) =
+                oracle_action(server, edge.parent, edge.payload.clone(), false, profile)?;
+            if replay_hash != edge.hash {
+                return Err(format!(
+                    "restore-oracle hash mismatch at comparison {equal} edge {edge_index}: parent={:?} payload={:?} expected={:02x?} actual={replay_hash:02x?}",
+                    edge.parent, edge.payload, edge.hash
+                ));
+            }
+            if CONTROL_AT.contains(&equal) {
+                control_edges.push(edge.clone());
+            }
+            equal = equal.saturating_add(1);
+        }
+
+        let ab_edge = control_edges
+            .get(4)
+            .cloned()
+            .ok_or("restore-oracle A/B control edge 16 is absent")?;
+
+        for edge in control_edges {
+            let (_, replay_hash) =
+                oracle_action(server, edge.parent, edge.payload.clone(), false, profile)?;
+            if replay_hash != edge.hash {
+                let expected = export_snapshot(server, edge.child)?;
+                let (_, actual) = snapshot_current(server, profile)?;
+                retain_oracle_mismatch("post-pass-history", &expected, &actual)?;
+                return Err("restore-oracle post-pass in-place control differed".to_owned());
+            }
+            let expected_artifact = export_snapshot(server, edge.child)?;
+            let in_place_state = server
+                .vmm()
+                .ok_or("oracle VM unavailable")?
+                .state_blob()
+                .map_err(|error| format!("in-place state export failed: {error}"))?;
+            let (in_place_snap, in_place_artifact) = snapshot_current(server, profile)?;
+            if in_place_artifact != expected_artifact {
+                retain_oracle_mismatch(
+                    "in-place-portable",
+                    &expected_artifact,
+                    &in_place_artifact,
+                )?;
+                return Err(format!(
+                    "restore-oracle portable state differed for in-place comparison {}",
+                    fresh_equal + 1
+                ));
+            }
+            drop(expected_artifact);
+            let parent_artifact = export_snapshot(server, edge.parent)?;
+            #[cfg(target_os = "linux")]
+            let (fresh_hash, fresh_state, fresh_artifact, fresh_fallbacks) = {
+                let mut cold = _cold_factory()?;
+                let mut cold_profile = ProbeProfile::new(true);
+                match drive(&mut cold, &Request::Hello(server_caps()), &mut cold_profile)? {
+                    Reply::Hello(caps) if caps == server_caps() => {}
+                    other => return Err(format!("cold hello returned {other:?}")),
+                }
+                let imported = cold
+                    .import_portable_snapshot(parent_artifact.as_slice())
+                    .map_err(|error| format!("cold portable import failed: {error}"))?;
+                let (_, fresh_hash) = oracle_action(
+                    &mut cold,
+                    imported.id,
+                    edge.payload.clone(),
+                    false,
+                    &mut cold_profile,
+                )?;
+                let fresh_state = cold
+                    .vmm()
+                    .ok_or("cold oracle VM unavailable")?
+                    .state_blob()
+                    .map_err(|error| format!("fresh state export failed: {error}"))?;
+                let (_, fresh_artifact) = snapshot_current(&mut cold, &mut cold_profile)?;
+                (
+                    fresh_hash,
+                    fresh_state,
+                    fresh_artifact,
+                    cold.in_place_fallbacks(),
+                )
+            };
+            #[cfg(target_os = "macos")]
+            let (fresh_hash, fresh_state, fresh_artifact, fresh_fallbacks) = {
+                let cold_artifacts = OracleArtifacts::new()?;
+                let parent_path = cold_artifacts.file("parent.bin");
+                let fresh_path = cold_artifacts.file("fresh.bin");
+                let fresh_state_path = cold_artifacts.file("fresh-state.bin");
+                std::fs::write(&parent_path, &parent_artifact)
+                    .map_err(|error| format!("cold parent export failed: {error}"))?;
+                let mut cold = ChildSession::spawn(
+                    images.kernel_path,
+                    images.initramfs_path,
+                    images.image_path,
+                    images.rom_path,
+                    &parent_path,
+                    &fresh_path,
+                    Some(&fresh_state_path),
+                )?;
+                match cold.request(&Request::Hello(server_caps()))? {
+                    Reply::Hello(caps) if caps == server_caps() => {}
+                    other => return Err(format!("cold child hello returned {other:?}")),
+                }
+                match cold.request(&Request::Branch {
+                    snap: SnapId(1),
+                    env: payload_env(vec![edge.payload.clone(), vec![0, 1]]),
+                })? {
+                    Reply::Unit => {}
+                    other => return Err(format!("cold child branch returned {other:?}")),
+                }
+                child_run_to_boundary(&mut cold)?;
+                let fresh_hash = match cold.request(&Request::Hash {
+                    scope: HashScope::Whole,
+                })? {
+                    Reply::Hash(hash) => hash,
+                    other => return Err(format!("cold child hash returned {other:?}")),
+                };
+                match cold.request(&Request::Snapshot)? {
+                    Reply::Snapshot { id, .. } if id.0 > 1 => {}
+                    Reply::Snapshot { id, .. } => {
+                        return Err(format!("cold child snapshot reused imported id {}", id.0));
+                    }
+                    other => return Err(format!("cold child snapshot returned {other:?}")),
+                }
+                cold.finish()?;
+                let fresh_state = std::fs::read(&fresh_state_path)
+                    .map_err(|error| format!("cold child state was not readable: {error}"))?;
+                let fresh_artifact = std::fs::read(&fresh_path)
+                    .map_err(|error| format!("cold child export was not readable: {error}"))?;
+                (fresh_hash, fresh_state, fresh_artifact, 0)
+            };
+            drop(parent_artifact);
+            if fresh_state != in_place_state {
+                retain_oracle_mismatch("cold-state", &in_place_state, &fresh_state)?;
+                return Err(format!(
+                    "restore-oracle raw VM state differed for cold comparison {}",
+                    fresh_equal + 1
+                ));
+            }
+            drop(in_place_state);
+            if fresh_artifact != in_place_artifact {
+                retain_oracle_mismatch("cold-portable", &in_place_artifact, &fresh_artifact)?;
+                return Err(format!(
+                    "restore-oracle portable state differed for cold comparison {}",
+                    fresh_equal + 1
+                ));
+            }
+            temporary_snapshots.push(in_place_snap);
+            if fresh_hash != replay_hash || fresh_fallbacks != 0 {
+                return Err(format!(
+                    "restore-oracle in-place/cold mismatch at comparison {}",
+                    fresh_equal + 1
+                ));
+            }
+            fresh_equal += 1;
+            full_state_equal += 1;
+        }
+
+        if fresh_equal != CONTROL_AT.len() {
+            return Err("restore-oracle performed no fresh-VM controls".to_owned());
+        }
+        if full_state_equal != CONTROL_AT.len() {
+            return Err("restore-oracle performed no raw full-state comparisons".to_owned());
+        }
+
+        let a_s_at = branch_to_boundary(server, ab_edge.parent, ab_edge.payload.clone(), profile)?;
+        let (a_s_events, _a_s_frame, a_s_events_len) = sdk_events_evidence(server, profile)?;
+        let a_endpoint = endpoint_after_continuation(server, profile)?;
+        temporary_snapshots.push(a_endpoint.snapshot);
+        assert_endpoint_progress("a", a_s_at, a_s_events_len, &a_endpoint)?;
+
+        let b1_s_at = branch_to_boundary(server, ab_edge.parent, ab_edge.payload.clone(), profile)?;
+        let (b1_s_events, _b1_s_frame, b1_s_events_len) = sdk_events_evidence(server, profile)?;
+        if a_s_at != b1_s_at || a_s_events != b1_s_events {
+            retain_oracle_mismatch("ab1-boundary-events", &a_s_events, &b1_s_events)?;
+            return Err("restore-oracle A/B1 boundary evidence differed".to_owned());
+        }
+        let (b1_s_snapshot, b1_s_artifact) = snapshot_current(server, profile)?;
+        temporary_snapshots.push(b1_s_snapshot);
+        let b1_endpoint = endpoint_after_continuation(server, profile)?;
+        temporary_snapshots.push(b1_endpoint.snapshot);
+        assert_endpoint_progress("b1", b1_s_at, b1_s_events_len, &b1_endpoint)?;
+        compare_endpoint("b1", &a_endpoint, &b1_endpoint)?;
+        drop(b1_endpoint);
+
+        let b3_s_at = branch_to_boundary(server, ab_edge.parent, ab_edge.payload.clone(), profile)?;
+        let (b3_s_events, _b3_s_frame, b3_s_events_len) = sdk_events_evidence(server, profile)?;
+        if a_s_at != b3_s_at || a_s_events != b3_s_events {
+            retain_oracle_mismatch("ab3-boundary-events", &a_s_events, &b3_s_events)?;
+            return Err("restore-oracle A/B3 boundary evidence differed".to_owned());
+        }
+        let (b3_s_snapshot, b3_s_artifact) = snapshot_current(server, profile)?;
+        temporary_snapshots.push(b3_s_snapshot);
+        if b3_s_artifact != b1_s_artifact {
+            retain_oracle_mismatch("ab1-ab3-capture", &b1_s_artifact, &b3_s_artifact)?;
+            return Err("restore-oracle B1/B3 first capture differed".to_owned());
+        }
+        let (b3_s_repeat, b3_s_repeat_artifact) = snapshot_current(server, profile)?;
+        temporary_snapshots.push(b3_s_repeat);
+        if b3_s_repeat_artifact != b3_s_artifact {
+            retain_oracle_mismatch(
+                "ab3-repeated-capture-1",
+                &b3_s_artifact,
+                &b3_s_repeat_artifact,
+            )?;
+            return Err("restore-oracle repeated B3 capture differed".to_owned());
+        }
+        drop(b3_s_repeat_artifact);
+        let (b3_s_repeat, b3_s_repeat_artifact) = snapshot_current(server, profile)?;
+        temporary_snapshots.push(b3_s_repeat);
+        if b3_s_repeat_artifact != b3_s_artifact {
+            retain_oracle_mismatch(
+                "ab3-repeated-capture-2",
+                &b3_s_artifact,
+                &b3_s_repeat_artifact,
+            )?;
+            return Err("restore-oracle repeated B3 capture differed".to_owned());
+        }
+        drop(b3_s_repeat_artifact);
+        drop(b3_s_artifact);
+        let b3_endpoint = endpoint_after_continuation(server, profile)?;
+        temporary_snapshots.push(b3_endpoint.snapshot);
+        assert_endpoint_progress("b3", b3_s_at, b3_s_events_len, &b3_endpoint)?;
+        compare_endpoint("b3", &a_endpoint, &b3_endpoint)?;
+        drop(b3_endpoint);
+
+        let alternate_payload = if ab_edge.payload == vec![0x42, 7] {
+            vec![0x81, 12]
+        } else {
+            vec![0x42, 7]
+        };
+        branch_to_boundary(server, ab_edge.parent, alternate_payload, profile)?;
+        match drive(server, &Request::Replay(b1_s_snapshot), profile)? {
+            Reply::Unit => {}
+            other => return Err(format!("restore-oracle C replay returned {other:?}")),
+        }
+        let c_endpoint = endpoint_after_continuation(server, profile)?;
+        temporary_snapshots.push(c_endpoint.snapshot);
+        assert_endpoint_progress("c", b1_s_at, b1_s_events_len, &c_endpoint)?;
+        let c_trace = compare_different_history_endpoint("c", &a_endpoint, &c_endpoint, RAM)?;
+        drop(c_endpoint);
+
+        let artifacts = OracleArtifacts::new()?;
+        let parent_path = artifacts.file("parent.bin");
+        let source_path = artifacts.file("source-s.bin");
+        let destination_path = artifacts.file("destination.bin");
+        let destination_state_path = artifacts.file("destination-state.bin");
+        let parent_artifact = export_snapshot(server, ab_edge.parent)?;
+        std::fs::write(&parent_path, &parent_artifact)
+            .map_err(|error| format!("destroyed-source parent export failed: {error}"))?;
+        drop(parent_artifact);
+
+        fn child_run_to_boundary(child: &mut ChildSession) -> Result<Moment, String> {
+            let request = Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(DEADLINE)),
+                    on: StopMask::NONE.arm(control_proto::class_bit::SNAPSHOT_POINT),
+                },
+                resolve: None,
+            };
+            match child.request(&request)? {
+                Reply::Stop(StopReason::SnapshotPoint { vtime }) => Ok(vtime),
+                other => Err(format!(
+                    "child expected Nova snapshot point, received {other:?}"
+                )),
+            }
+        }
+
+        let mut source = ChildSession::spawn(
+            images.kernel_path,
+            images.initramfs_path,
+            images.image_path,
+            images.rom_path,
+            &parent_path,
+            &source_path,
+            None,
+        )?;
+        match source.request(&Request::Hello(server_caps()))? {
+            Reply::Hello(caps) if caps == server_caps() => {}
+            other => return Err(format!("destroyed-source hello returned {other:?}")),
+        }
+        match source.request(&Request::Branch {
+            snap: SnapId(1),
+            env: payload_env(vec![ab_edge.payload.clone(), vec![0, 1]]),
+        })? {
+            Reply::Unit => {}
+            other => return Err(format!("destroyed-source branch returned {other:?}")),
+        }
+        let source_s_at = child_run_to_boundary(&mut source)?;
+        if source_s_at != b1_s_at {
+            return Err(format!(
+                "destroyed-source boundary differed: source={source_s_at:?} B1={b1_s_at:?}"
+            ));
+        }
+        let source_s_snapshot = match source.request(&Request::Snapshot)? {
+            Reply::Snapshot { id, at, .. } if at == source_s_at => id,
+            Reply::Snapshot { at, .. } => {
+                return Err(format!(
+                    "destroyed-source snapshot boundary differed: run={source_s_at:?} capture={at:?}"
+                ));
+            }
+            other => return Err(format!("destroyed-source snapshot returned {other:?}")),
+        };
+        if source_s_snapshot.0 <= 1 {
+            return Err(format!(
+                "destroyed-source snapshot reused imported id {}",
+                source_s_snapshot.0
+            ));
+        }
+        let (source_s_events, source_s_frame, source_s_events_len) = child_sdk_events(&mut source)?;
+        if source_s_at != b1_s_at
+            || source_s_frame != _b1_s_frame
+            || source_s_events_len != b1_s_events_len
+            || source_s_events != b1_s_events
+        {
+            retain_oracle_mismatch(
+                "destroyed-source-boundary-events",
+                &b1_s_events,
+                &source_s_events,
+            )?;
+            return Err("restore-oracle destroyed-source boundary evidence differed".to_owned());
+        }
+        let source_process = source.finish()?;
+        let source_s_artifact = std::fs::read(&source_path)
+            .map_err(|error| format!("destroyed-source export was not readable: {error}"))?;
+        if source_s_artifact != b1_s_artifact {
+            retain_oracle_mismatch("destroyed-source-s", &b1_s_artifact, &source_s_artifact)?;
+            return Err("restore-oracle destroyed-source S differed".to_owned());
+        }
+        drop(b1_s_artifact);
+
+        let mut destination = ChildSession::spawn(
+            images.kernel_path,
+            images.initramfs_path,
+            images.image_path,
+            images.rom_path,
+            &source_path,
+            &destination_path,
+            Some(&destination_state_path),
+        )?;
+        let destination_process = destination.pid();
+        if destination_process == source_process || destination_process == std::process::id() {
+            return Err(format!(
+                "restore-oracle child process identity was not distinct: source={source_process} destination={destination_process} parent={}",
+                std::process::id()
+            ));
+        }
+        match destination.request(&Request::Hello(server_caps()))? {
+            Reply::Hello(caps) if caps == server_caps() => {}
+            other => return Err(format!("destroyed-destination hello returned {other:?}")),
+        }
+        match destination.request(&Request::Replay(SnapId(1)))? {
+            Reply::Unit => {}
+            other => return Err(format!("destroyed-destination replay returned {other:?}")),
+        }
+        let d_at = child_run_to_boundary(&mut destination)?;
+        let (d_events, d_frame, d_events_len) = child_sdk_events(&mut destination)?;
+        let d_hash = match destination.request(&Request::Hash {
+            scope: HashScope::Whole,
+        })? {
+            Reply::Hash(hash) => hash,
+            other => return Err(format!("destroyed-destination hash returned {other:?}")),
+        };
+        let d_snapshot = match destination.request(&Request::Snapshot)? {
+            Reply::Snapshot { id, .. } if id.0 > 1 => id,
+            Reply::Snapshot { id, .. } => {
+                return Err(format!(
+                    "destroyed-destination snapshot reused imported id {}",
+                    id.0
+                ));
+            }
+            other => return Err(format!("destroyed-destination snapshot returned {other:?}")),
+        };
+        let destination_process = destination.finish()?;
+        let d_state = std::fs::read(&destination_state_path)
+            .map_err(|error| format!("destroyed-destination state was not readable: {error}"))?;
+        let d_artifact = std::fs::read(&destination_path)
+            .map_err(|error| format!("destroyed-destination export was not readable: {error}"))?;
+        let d_endpoint = EndpointEvidence {
+            at: d_at,
+            frame: d_frame,
+            events_len: d_events_len,
+            events: d_events,
+            state: d_state,
+            hash: d_hash,
+            artifact: d_artifact,
+            snapshot: d_snapshot,
+        };
+        if source_process == destination_process || source_process == std::process::id() {
+            return Err(format!(
+                "restore-oracle child process identity was not distinct: source={source_process} destination={destination_process} parent={}",
+                std::process::id()
+            ));
+        }
+        assert_endpoint_progress("d-destroyed-source", b1_s_at, b1_s_events_len, &d_endpoint)?;
+        let d_trace = compare_different_history_endpoint(
+            "d-destroyed-source",
+            &a_endpoint,
+            &d_endpoint,
+            RAM,
+        )?;
+
+        enum EWork {
+            Visit(usize),
+            Cleanup(SnapId),
+        }
+
+        let mut children_by_parent = std::collections::BTreeMap::<SnapId, Vec<usize>>::new();
+        for (index, edge) in edges.iter().enumerate() {
+            children_by_parent
+                .entry(edge.parent)
+                .or_default()
+                .push(index);
+        }
+        let mut e_work = Vec::new();
+        if let Some(root_children) = children_by_parent.get(&base) {
+            for &index in root_children {
+                e_work.push(EWork::Visit(index));
+            }
+        }
+        let mut e_seen = vec![false; edges.len()];
+        let mut e_remapped = std::collections::BTreeMap::from([(base, base)]);
+        let mut e_controls = 0u64;
+        let mut e_reordered_positions = 0u64;
+        let mut e_cleanup = 0u64;
+        while let Some(work) = e_work.pop() {
+            match work {
+                EWork::Cleanup(snap) => {
+                    temporary_snapshots.push(snap);
+                    e_cleanup = e_cleanup.saturating_add(1);
+                }
+                EWork::Visit(index) => {
+                    if e_seen.get(index).copied() != Some(false) {
+                        return Err(format!(
+                            "restore-oracle reordered tree visited edge {index} more than once"
+                        ));
+                    }
+                    e_seen[index] = true;
+                    let edge = edges
+                        .get(index)
+                        .ok_or("restore-oracle reordered tree edge disappeared")?;
+                    let parent = e_remapped
+                        .get(&edge.parent)
+                        .copied()
+                        .ok_or("restore-oracle reordered tree parent was not mapped")?;
+                    let (new_child, new_hash) =
+                        oracle_action(server, parent, edge.payload.clone(), true, profile)?;
+                    let new_child =
+                        new_child.ok_or("restore-oracle reordered tree action did not seal")?;
+                    let expected_artifact = export_snapshot(server, edge.child)?;
+                    let actual_artifact = export_snapshot(server, new_child)?;
+                    let hash_equal = new_hash == edge.hash;
+                    let artifact_equal = actual_artifact == expected_artifact;
+                    let sdk_equal = edge.sdk_capture
+                        == format!(
+                            "{:?}",
+                            server.vmm().ok_or("oracle VM unavailable")?.sdk_snapshot()
+                        );
+                    if !hash_equal || !artifact_equal || !sdk_equal {
+                        retain_oracle_mismatch(
+                            "reordered-tree",
+                            &expected_artifact,
+                            &actual_artifact,
+                        )?;
+                        return Err(format!(
+                            "restore-oracle reordered tree differed at edge {index}: hash_equal={hash_equal} artifact_equal={artifact_equal} sdk_equal={sdk_equal}"
+                        ));
+                    }
+                    drop(actual_artifact);
+                    drop(expected_artifact);
+                    if e_remapped.insert(edge.child, new_child).is_some() {
+                        return Err(format!(
+                            "restore-oracle reordered tree remapped edge {index} twice"
+                        ));
+                    }
+                    if index != e_controls as usize {
+                        e_reordered_positions = e_reordered_positions.saturating_add(1);
+                    }
+                    e_controls = e_controls.saturating_add(1);
+                    e_work.push(EWork::Cleanup(new_child));
+                    if let Some(child_indices) = children_by_parent.get(&edge.child) {
+                        for &child_index in child_indices {
+                            e_work.push(EWork::Visit(child_index));
+                        }
+                    }
+                }
+            }
+        }
+        if e_controls != edges.len() as u64 || e_seen.iter().any(|seen| !seen) {
+            return Err(format!(
+                "restore-oracle reordered tree covered {e_controls}/{} edges",
+                edges.len()
+            ));
+        }
+        if e_cleanup != e_controls || e_remapped.len() != e_controls as usize + 1 {
+            return Err(
+                "restore-oracle reordered tree cleanup or mapping was incomplete".to_owned(),
+            );
+        }
+        if e_reordered_positions == 0 {
+            return Err("restore-oracle reordered tree did not change traversal order".to_owned());
+        }
+
+        let a_controls = 1u64;
+        let b1_controls = 1u64;
+        let b3_controls = 1u64;
+        let b3_captures = 3u64;
+        let c_controls = 1u64;
+        let d_controls = 1u64;
+        let d_processes = std::collections::BTreeSet::from([source_process, destination_process]);
+        if d_processes.len() != 2 {
+            return Err("restore-oracle D did not use two child processes".to_owned());
+        }
+
+        for snap in temporary_snapshots {
+            match drive(server, &Request::Drop(snap), profile)? {
+                Reply::Unit => {}
+                other => return Err(format!("temporary snapshot drop returned {other:?}")),
+            }
+        }
+
+        let fallbacks = server.in_place_fallbacks().saturating_sub(fallbacks_start);
+        if fallbacks != 0 {
+            return Err(format!(
+                "restore-oracle used {fallbacks} fresh-VM fallbacks"
+            ));
+        }
+        let mut samples = profile.branch_wall_samples_ns[sample_start..].to_vec();
+        samples.sort_unstable();
+        println!(
+            "NOVA_CONSONANCE_RESTORE_ORACLE_OK equal={} tree_actions={} fresh_equal={} full_state_equal={} a_controls={} b1_controls={} b3_controls={} b3_captures={} c_controls={} d_controls={} d_processes={} d_source_pid={} d_destination_pid={} e_controls={} e_reordered_positions={} c_trace_events_left={} c_trace_events_right={} c_trace_schedules_left={} c_trace_schedules_right={} d_trace_events_left={} d_trace_events_right={} d_trace_schedules_left={} d_trace_schedules_right={} tree_seed={} branch_median_ns={} branch_p99_ns={} restore_bytes={} fallbacks={}",
+            equal,
+            edges.len(),
+            fresh_equal,
+            full_state_equal,
+            a_controls,
+            b1_controls,
+            b3_controls,
+            b3_captures,
+            c_controls,
+            d_controls,
+            d_processes.len(),
+            source_process,
+            destination_process,
+            e_controls,
+            e_reordered_positions,
+            c_trace.0,
+            c_trace.1,
+            c_trace.2,
+            c_trace.3,
+            d_trace.0,
+            d_trace.1,
+            d_trace.2,
+            d_trace.3,
+            tree_seed,
+            percentile(&samples, 50),
+            percentile(&samples, 99),
+            profile.restore_bytes.saturating_sub(bytes_start),
+            fallbacks,
+        );
+        Ok(())
+    }
+
+    let mut args = std::env::args_os().skip(1);
+    let first = args.next();
+    let (Some(kernel_path), Some(initramfs_path), Some(image_path), Some(rom_path), None) =
+        (first, args.next(), args.next(), args.next(), args.next())
+    else {
+        return Err(
+            "usage: kvm_x86_nova_probe <bzImage> <platform-initramfs> <nes.oci> <nova.nes>"
+                .to_string(),
+        );
+    };
+    let restore_oracle = std::env::var_os("HARMONY_CONSONANCE_RESTORE_ORACLE").is_some();
+    let mut profile = ProbeProfile::new(
+        restore_oracle || std::env::var_os("HARMONY_CONSONANCE_PROFILE").is_some(),
+    );
+    #[cfg(target_os = "linux")]
+    if !std::path::Path::new("/dev/kvm").exists() {
+        return Err("/dev/kvm is unavailable on this runner".to_string());
+    }
+    let kernel = std::fs::read(&kernel_path)
+        .map_err(|error| format!("cannot read {kernel_path:?}: {error}"))?;
+    let initramfs = prepare_probe_initramfs(&initramfs_path, &image_path, &rom_path)?;
+
+    let boot = |kernel: &[u8], initramfs: &[u8]| boot_probe(kernel, initramfs);
+    let live = boot(&kernel, &initramfs).map_err(|error| format!("boot compose: {error:?}"))?;
+    let factory_kernel = kernel.clone();
+    let factory_initramfs = initramfs.clone();
+    let factory: VmmFactory<ProbeBackend> =
+        Box::new(move || boot(&factory_kernel, &factory_initramfs));
+    let mut server = ControlServer::new(live, factory);
+    let fresh_components = server
+        .vmm()
+        .ok_or("fresh composed VM is unavailable")?
+        .state_components();
+    #[cfg(target_arch = "x86_64")]
+    if profile.enabled {
+        server.set_remap_factory(Box::new(move |mapping| {
+            let mut vmm = compose_stock_virtual_time_restore_target(mapping, SEED)?;
+            vmm.wire_snapshot_hashing();
+            vmm.defer_virtual_time_checkpoint_hashes()?;
+            Ok(vmm)
+        }));
+    }
+    server.set_restore_mode(RestoreMode::InPlace);
+    match drive(&mut server, &Request::Hello(server_caps()), &mut profile)? {
+        Reply::Hello(caps) if caps == server_caps() => {}
+        other => return Err(format!("hello returned {other:?}")),
+    }
+
+    let genesis = match drive(&mut server, &Request::Snapshot, &mut profile)? {
+        Reply::Snapshot { id, .. } => id,
+        other => return Err(format!("genesis snapshot returned {other:?}")),
+    };
+    let bootstrap = payload_env(oracle_setup_payloads());
+    match drive(
+        &mut server,
+        &Request::Branch {
+            snap: genesis,
+            env: bootstrap,
+        },
+        &mut profile,
+    )? {
+        Reply::Unit => {}
+        other => return Err(format!("bootstrap branch returned {other:?}")),
+    }
+    let setup_at = run_to_snapshot(&mut server, &mut profile)?;
+    if profile.enabled {
+        server.set_max_chain_len(0);
+    }
+    let base = match drive(&mut server, &Request::Snapshot, &mut profile)? {
+        Reply::Snapshot { id, .. } => id,
+        other => return Err(format!("setup snapshot returned {other:?}")),
+    };
+    if profile.enabled {
+        server.set_max_chain_len(DEFAULT_MAX_CHAIN_LEN);
+    }
+    let setup_events = match drive(&mut server, &Request::SdkEvents { offset: 0 }, &mut profile)? {
+        Reply::SdkEvents(events) => events,
+        other => return Err(format!("setup SDK event fetch returned {other:?}")),
+    };
+    let setup_console = console(&mut server, &mut profile);
+    let (mem_total_kib, boot_available_kib) = boot_memory_kib(&setup_console)
+        .map_err(|error| format!("{error}\n--- guest console ---\n{setup_console}"))?;
+    const BILLBOARD_RESERVE_KIB: u64 = 2 * 2 * 1024;
+    let setup_available_floor_kib = boot_available_kib.saturating_sub(BILLBOARD_RESERVE_KIB);
+    println!(
+        "NOVA_CONSONANCE_SETUP_MEMORY_OK mem_total_kib={mem_total_kib} boot_available_kib={boot_available_kib} billboard_reserve_kib={BILLBOARD_RESERVE_KIB} setup_available_floor_kib={setup_available_floor_kib}"
+    );
+    profile.last_frame = latest_frame(&setup_events);
+    let setup_stats = server
+        .snapshot_stats(base)
+        .ok_or("setup snapshot statistics are unavailable")?;
+    let observation_handle = u32::try_from(latest_register(&setup_events, 1)?)
+        .map_err(|_| "observation handle exceeds u32".to_owned())?;
+    let observation_length = u32::try_from(latest_register(&setup_events, 2)?)
+        .map_err(|_| "observation length exceeds u32".to_owned())?;
+    if observation_handle == 0 || observation_length == 0 {
+        return Err("setup observation is empty".to_owned());
+    }
+    let observation =
+        consonance_client::session::observation_descriptor(&setup_events, observation_handle)
+            .map_err(|error| format!("setup observation: {error}"))?;
+    let observation_gpa = observation
+        .range(0, observation_length)
+        .map_err(|error| format!("setup observation range: {error}"))?;
+    profile.set_setup(
+        setup_stats.owned_pages,
+        observation_gpa,
+        u64::from(observation_length),
+    );
+    let fresh_by_label: std::collections::BTreeMap<_, _> =
+        fresh_components.iter().copied().collect();
+    let used_components = server
+        .vmm()
+        .ok_or("used setup VM is unavailable")?
+        .state_components();
+    let changed_components = used_components
+        .iter()
+        .filter_map(|(label, digest)| (fresh_by_label.get(label) != Some(digest)).then_some(*label))
+        .collect::<Vec<_>>()
+        .join(",");
+    #[cfg(target_arch = "x86_64")]
+    let inventory_arch = "x86_64";
+    #[cfg(target_arch = "aarch64")]
+    let inventory_arch = "aarch64";
+    println!(
+        "NOVA_CONSONANCE_STATE_INVENTORY arch={inventory_arch} fresh_used_changed={changed_components}"
+    );
+    if restore_oracle {
+        let cold_factory = || {
+            let live = boot(&kernel, &initramfs)
+                .map_err(|error| format!("cold boot compose: {error:?}"))?;
+            let cold_kernel = kernel.clone();
+            let cold_initramfs = initramfs.clone();
+            let factory: VmmFactory<ProbeBackend> =
+                Box::new(move || boot(&cold_kernel, &cold_initramfs));
+            let mut cold = ControlServer::new(live, factory);
+            cold.set_restore_mode(RestoreMode::Memcpy);
+            Ok(cold)
+        };
+        run_restore_oracle(
+            &mut server,
+            base,
+            &mut profile,
+            &cold_factory,
+            &DRunImages {
+                kernel_path: std::path::Path::new(&kernel_path),
+                initramfs_path: std::path::Path::new(&initramfs_path),
+                image_path: std::path::Path::new(&image_path),
+                rom_path: std::path::Path::new(&rom_path),
+            },
+        )?;
+    }
+    let first = endpoint(&mut server, base, &mut profile)?;
+    let second = endpoint(&mut server, base, &mut profile)?;
+    if first != second {
+        return Err("same-seed Nova branches produced different endpoint evidence".to_string());
+    }
+
+    let hash = first
+        .0
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    println!(
+        "NOVA_CONSONANCE_PROBE_OK setup_vtime={} base_snapshot={} endpoint_hash={} sdk_evidence_bytes={}",
+        setup_at.0,
+        base.0,
+        hash,
+        first.1.len()
+    );
+    if let Some(line) = profile.render() {
+        eprintln!("{line}");
+    }
+    Ok(())
+}
+
+#[cfg(not(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ),
+    all(target_os = "macos", target_arch = "aarch64", not(miri))
+)))]
+fn main() -> std::process::ExitCode {
+    eprintln!(
+        "kvm_x86_nova_probe requires Linux KVM on x86-64 or arm64, or macOS HVF on Apple Silicon, outside Miri"
+    );
+    std::process::ExitCode::from(2)
+}
+
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
 ))]
-fn run() -> Result<(), String> {
+fn run_session() -> Result<(), String> {
     use consonance_client::session::{SdkEvent, Session, SessionConfig};
     use nes_workload::prepare::stage_and_prepare;
     use std::{fs, path::PathBuf};
 
     const RAM: usize = 128 * 1024 * 1024;
-    const SEED: u64 = 0x4e4f_5641_5f43_4931;
+    const SEED: u64 = PROBE_SEED;
     #[cfg(target_arch = "x86_64")]
     const RUN_BUDGET: u64 = 2_000_000_000;
     #[cfg(target_arch = "aarch64")]
@@ -94,7 +2411,7 @@ fn run() -> Result<(), String> {
     #[cfg(target_arch = "x86_64")]
     const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
         no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
-        nox2apic hpet=disable harmony_pvclock rdinit=/init";
+        nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
     #[cfg(target_arch = "aarch64")]
     const CMDLINE: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
     const HANDLE_REGISTER: u32 = 1;
@@ -153,21 +2470,6 @@ fn run() -> Result<(), String> {
             if self.enabled {
                 self.runs = self.runs.saturating_add(1);
             }
-        }
-
-        fn snapshot(&mut self, session: &Session, snapshot: control_proto::SnapId) {
-            if !self.enabled {
-                return;
-            }
-            self.snapshots = self.snapshots.saturating_add(1);
-            if let Some(pages) = session.last_seal_dirty_gfns() {
-                self.dirty_pages = self
-                    .dirty_pages
-                    .saturating_add(u64::try_from(pages.len()).unwrap_or(u64::MAX));
-            }
-            self.setup_owned_pages = self
-                .setup_owned_pages
-                .or_else(|| session.snapshot_owned_pages(snapshot));
         }
 
         fn sdk_events(&mut self) {
@@ -320,17 +2622,6 @@ fn run() -> Result<(), String> {
             .map_err(|error| with_console(session, format!("run: {error}")))
     }
 
-    fn take_snapshot(
-        session: &mut Session,
-        profile: &mut ProbeProfile,
-    ) -> Result<(control_proto::SnapId, u64), String> {
-        let receipt = session
-            .snapshot()
-            .map_err(|error| format!("snapshot: {error}"))?;
-        profile.snapshot(session, receipt.0);
-        Ok(receipt)
-    }
-
     fn with_console(session: &mut Session, error: String) -> String {
         let Ok(console) = session.console_tail() else {
             return error;
@@ -383,205 +2674,6 @@ fn run() -> Result<(), String> {
         ))
     }
 
-    struct Edge {
-        parent: control_proto::SnapId,
-        payload: Vec<u8>,
-        hash: [u8; 32],
-        evidence: Vec<u8>,
-    }
-
-    type OracleOutcome = (Option<control_proto::SnapId>, [u8; 32], Vec<u8>);
-
-    fn oracle_action(
-        session: &mut Session,
-        profile: &mut ProbeProfile,
-        parent: control_proto::SnapId,
-        payload: Vec<u8>,
-        seal: bool,
-        observation_handle: u32,
-        observation_length: u32,
-    ) -> Result<OracleOutcome, String> {
-        let before_faults = profile
-            .enabled
-            .then(consonance_client::session::host_minor_faults)
-            .flatten();
-        let before_frame = profile.last_frame;
-        let before_exits = session.doorbell_exits();
-        branch(session, profile, parent, payload)?;
-        let at = run_to_snapshot(session, profile, parent)?;
-        let child = if seal {
-            Some(take_snapshot(session, profile)?.0)
-        } else {
-            None
-        };
-        let events = sdk_events(session, profile)?;
-        let observation =
-            read_observation(session, profile, observation_handle, observation_length)?;
-        let frame = observation_frame(&observation)?;
-        let hash = session
-            .state_hash()
-            .map_err(|error| format!("whole-state hash: {error}"))?;
-        let after_faults =
-            before_faults.and_then(|_| consonance_client::session::host_minor_faults());
-        let touched_pages =
-            before_faults.and_then(|before| after_faults.map(|after| after.saturating_sub(before)));
-        let frames = before_frame.map_or(frame, |before| frame.saturating_sub(before));
-        profile.action(
-            frames,
-            session.doorbell_exits().saturating_sub(before_exits),
-            touched_pages,
-            Some(frame),
-        );
-        Ok((
-            child,
-            hash,
-            format!("{at}:{events:?}:{observation:?}").into_bytes(),
-        ))
-    }
-
-    fn oracle_word(state: &mut u64) -> u64 {
-        *state = state
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        *state
-    }
-
-    fn oracle_payload(word: u64) -> Vec<u8> {
-        vec![word as u8, ((word >> 8) % 12 + 1) as u8]
-    }
-
-    fn run_restore_oracle(
-        session: &mut Session,
-        base: control_proto::SnapId,
-        observation_handle: u32,
-        observation_length: u32,
-        profile: &mut ProbeProfile,
-    ) -> Result<(), String> {
-        let fallbacks_start = session.last_restore_stats().1;
-        let mut nodes = vec![base];
-        let mut edges = Vec::with_capacity(50);
-
-        let action_a = vec![0x81, 12];
-        let (s1, s1_hash, s1_evidence) = oracle_action(
-            session,
-            profile,
-            base,
-            action_a.clone(),
-            true,
-            observation_handle,
-            observation_length,
-        )?;
-        let s1 = s1.ok_or("restore-oracle action A did not seal S1")?;
-        nodes.push(s1);
-        edges.push(Edge {
-            parent: base,
-            payload: action_a,
-            hash: s1_hash,
-            evidence: s1_evidence,
-        });
-
-        let action_b = vec![0x42, 7];
-        let (s2, s2_hash, s2_evidence) = oracle_action(
-            session,
-            profile,
-            s1,
-            action_b.clone(),
-            true,
-            observation_handle,
-            observation_length,
-        )?;
-        let s2 = s2.ok_or("restore-oracle action B did not seal S2")?;
-        nodes.push(s2);
-        edges.push(Edge {
-            parent: s1,
-            payload: action_b.clone(),
-            hash: s2_hash,
-            evidence: s2_evidence,
-        });
-        let (_, replay_b_hash, replay_b_evidence) = oracle_action(
-            session,
-            profile,
-            s1,
-            action_b,
-            false,
-            observation_handle,
-            observation_length,
-        )?;
-        if replay_b_hash != s2_hash || replay_b_evidence != edges[1].evidence {
-            return Err("restore-oracle S1 + B did not reproduce S2".to_owned());
-        }
-        let mut equal = 1_u64;
-        let mut rng = SEED ^ 0x4954_454d_325f_5452;
-        while edges.len() < 50 {
-            let word = oracle_word(&mut rng);
-            let parent = nodes[(word as usize) % nodes.len()];
-            let payload = oracle_payload(word.rotate_left(17));
-            let (child, hash, evidence) = oracle_action(
-                session,
-                profile,
-                parent,
-                payload.clone(),
-                true,
-                observation_handle,
-                observation_length,
-            )?;
-            let child = child.ok_or("restore-oracle tree action did not seal")?;
-            nodes.push(child);
-            edges.push(Edge {
-                parent,
-                payload,
-                hash,
-                evidence,
-            });
-        }
-
-        while equal < 200 {
-            let word = oracle_word(&mut rng);
-            let edge = &edges[(word as usize) % edges.len()];
-            let (_, replay_hash, replay_evidence) = oracle_action(
-                session,
-                profile,
-                edge.parent,
-                edge.payload.clone(),
-                false,
-                observation_handle,
-                observation_length,
-            )?;
-            if replay_hash != edge.hash || replay_evidence != edge.evidence {
-                return Err(format!(
-                    "restore-oracle hash or observation mismatch at comparison {equal}: expected_hash={:02x?} actual_hash={:02x?} expected_evidence_bytes={} actual_evidence_bytes={}",
-                    edge.hash,
-                    replay_hash,
-                    edge.evidence.len(),
-                    replay_evidence.len(),
-                ));
-            }
-            equal = equal.saturating_add(1);
-        }
-
-        let fallbacks = session
-            .last_restore_stats()
-            .1
-            .saturating_sub(fallbacks_start);
-        if fallbacks != 0 {
-            return Err(format!(
-                "restore-oracle used {fallbacks} fresh-VM fallbacks"
-            ));
-        }
-        println!(
-            "NOVA_CONSONANCE_RESTORE_ORACLE_OK equal={equal} tree_actions={} restore_bytes={} fallbacks={fallbacks}",
-            edges.len(),
-            session.last_restore_stats().0,
-        );
-
-        for snapshot in nodes.into_iter().skip(1).rev() {
-            session
-                .drop_snapshot(snapshot)
-                .map_err(|error| format!("drop restore-oracle snapshot: {error}"))?;
-        }
-        Ok(())
-    }
-
     fn bytes_hex(bytes: &[u8; 32]) -> String {
         bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
@@ -617,10 +2709,23 @@ fn run() -> Result<(), String> {
     )
     .map_err(|error| format!("prepare NES OCI execution: {error}"))?;
     let initramfs = prepared.initramfs(&platform_initramfs);
+    #[cfg(target_arch = "x86_64")]
+    let config = SessionConfig::new(RAM, SEED, RUN_BUDGET, CMDLINE)
+        .with_deferred_virtual_time_checkpoint_hashes();
+    #[cfg(target_arch = "aarch64")]
     let config = SessionConfig::new(RAM, SEED, RUN_BUDGET, CMDLINE)
         .with_identity_tag(prepared.identity_hex())
         .with_deferred_virtual_time_checkpoint_hashes();
     let setup_payloads = vec![vec![0, 1]; 16];
+    #[cfg(target_arch = "x86_64")]
+    let mut session = Session::new_controlled_with_config_and_payloads(
+        &kernel,
+        &initramfs,
+        config,
+        setup_payloads,
+    )
+    .map_err(|error| format!("Consonance controlled session: {error}"))?;
+    #[cfg(target_arch = "aarch64")]
     let mut session =
         Session::new_with_config_and_payloads(&kernel, &initramfs, config, setup_payloads)
             .map_err(|error| format!("Consonance session: {error}"))?;
@@ -669,15 +2774,7 @@ fn run() -> Result<(), String> {
         std::env::consts::ARCH,
         bytes_hex(&session.image_identity()),
     );
-    if std::env::var_os("HARMONY_CONSONANCE_RESTORE_ORACLE").is_some() {
-        run_restore_oracle(
-            &mut session,
-            base,
-            observation_handle,
-            observation_length,
-            &mut profile,
-        )?;
-    }
+
     let first = endpoint(
         &mut session,
         &mut profile,
@@ -706,14 +2803,4 @@ fn run() -> Result<(), String> {
         eprintln!("{line}");
     }
     Ok(())
-}
-
-#[cfg(not(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
-)))]
-fn main() -> std::process::ExitCode {
-    eprintln!("kvm_x86_nova_probe requires Linux KVM on x86-64 or arm64 outside Miri");
-    std::process::ExitCode::from(2)
 }

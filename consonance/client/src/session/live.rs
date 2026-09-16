@@ -3,8 +3,7 @@
 use std::{collections::BTreeMap, error::Error, fmt, path::Path, time::Duration};
 
 use control_proto::{
-    ControlError, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
-    class_bit,
+    Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason, class_bit,
 };
 use environment::{
     channel::Effect,
@@ -12,7 +11,6 @@ use environment::{
 };
 use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, RestoreMode, VmmFactory, server_caps};
-use vmm_core::vmm::Vmm;
 
 use crate::watchdog::Watchdog;
 
@@ -77,6 +75,45 @@ impl Session {
         Self::new_with_config_and_payloads(kernel, initramfs, config, Vec::new())
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub fn new_controlled_with_config_and_payloads(
+        kernel: &[u8],
+        initramfs: &[u8],
+        config: SessionConfig,
+        setup_payloads: Vec<Vec<u8>>,
+    ) -> Result<Self, Box<dyn Error>> {
+        config.validate()?;
+        if !config.identity_tag.is_empty() {
+            return Err(SessionError::Control(
+                "controlled sessions cannot use an identity tag".into(),
+            )
+            .into());
+        }
+        let profile = vmm_core::controlled_guest::linux_identity(
+            kernel,
+            initramfs,
+            config.ram_bytes,
+            &config.cmdline,
+        )
+        .ok_or_else(|| {
+            SessionError::Control("guest inputs do not match a reviewed controlled profile".into())
+        })?;
+        let image_identity = super::controlled_image_identity_with_config_and_payloads(
+            kernel,
+            initramfs,
+            &config,
+            &setup_payloads,
+            profile,
+        );
+        Self::new_with_config_and_payloads_inner(
+            kernel,
+            initramfs,
+            config,
+            setup_payloads,
+            image_identity,
+        )
+    }
+
     pub fn new_with_config_and_payloads(
         kernel: &[u8],
         initramfs: &[u8],
@@ -84,7 +121,23 @@ impl Session {
         setup_payloads: Vec<Vec<u8>>,
     ) -> Result<Self, Box<dyn Error>> {
         config.validate()?;
-        let image_identity = image_identity_with_config(kernel, initramfs, &config);
+        let image_identity = super::image_identity_with_config(kernel, initramfs, &config);
+        Self::new_with_config_and_payloads_inner(
+            kernel,
+            initramfs,
+            config,
+            setup_payloads,
+            image_identity,
+        )
+    }
+
+    fn new_with_config_and_payloads_inner(
+        kernel: &[u8],
+        initramfs: &[u8],
+        config: SessionConfig,
+        setup_payloads: Vec<Vec<u8>>,
+        image_identity: [u8; 32],
+    ) -> Result<Self, Box<dyn Error>> {
         let ram = config.ram_bytes;
         let seed = config.seed;
         let cmdline = config.cmdline.clone();
@@ -267,62 +320,6 @@ impl Session {
             }
             .into()),
         }
-    }
-
-    pub fn seal(
-        &mut self,
-        settle_step: u64,
-        max_settle: u64,
-    ) -> Result<(SnapId, u64, Option<StopReason>), Box<dyn Error>> {
-        seal_after_settling(
-            self,
-            settle_step,
-            max_settle,
-            Self::try_seal,
-            Self::settle_step,
-        )
-    }
-
-    fn try_seal(&mut self) -> Result<Option<(SnapId, u64)>, Box<dyn Error>> {
-        let outcome = self.client.transport_mut().handle(&Request::Snapshot);
-        match outcome {
-            Ok(Ok(Reply::Snapshot {
-                id,
-                at,
-                tainted: false,
-                ..
-            })) => {
-                self.snapshot_times.insert(id, at.0);
-                Ok(Some((id, at.0)))
-            }
-            Ok(Ok(Reply::Snapshot {
-                id, tainted: true, ..
-            })) => {
-                let _ = drop_control_handle(&mut self.client, id);
-                Err(SessionError::Control("seal was tainted".into()).into())
-            }
-            Ok(Ok(reply)) => Err(SessionError::Reply {
-                operation: "seal",
-                reply,
-            }
-            .into()),
-            Ok(Err(ControlError::NotQuiescent)) => Ok(None),
-            Ok(Err(error)) => Err(SessionError::Control(error.to_string()).into()),
-            Err(error) => Err(SessionError::Control(error.to_string()).into()),
-        }
-    }
-
-    fn settle_step(&mut self, step: u64) -> Result<StopReason, Box<dyn Error>> {
-        let now = self
-            .client
-            .transport()
-            .vmm()
-            .and_then(Vmm::effective_vns)
-            .ok_or_else(|| SessionError::Control("live VM has no virtual time".to_owned()))?;
-        let deadline = now
-            .checked_add(step)
-            .ok_or("Consonance settle deadline overflow")?;
-        self.run_until(deadline)
     }
 
     fn drive(&mut self, request: &Request) -> Result<Reply, Box<dyn Error>> {
@@ -617,37 +614,6 @@ where
     }
 }
 
-struct SnapshotReceipt {
-    id: SnapId,
-    at: u64,
-}
-
-fn snapshot_handle(
-    client: &mut Server,
-    operation: &'static str,
-) -> Result<SnapshotReceipt, Box<dyn Error>> {
-    let reply = client
-        .request(&Request::Snapshot)
-        .map_err(|error| SessionError::Control(error.to_string()))?;
-    match reply {
-        Reply::Snapshot {
-            id,
-            at,
-            tainted: false,
-            ..
-        } => Ok(SnapshotReceipt { id, at: at.0 }),
-        Reply::Snapshot {
-            id, tainted: true, ..
-        } => {
-            let error: Box<dyn Error> =
-                SessionError::Control(format!("{operation} was tainted")).into();
-            let _ = drop_control_handle(client, id);
-            Err(error)
-        }
-        reply => Err(SessionError::Reply { operation, reply }.into()),
-    }
-}
-
 fn branch_payload(
     client: &mut Server,
     snap: SnapId,
@@ -784,20 +750,6 @@ impl Error for ConsoleDiagnostic {
     }
 }
 
-fn expect_unit(reply: Reply, operation: &'static str) -> Result<(), Box<dyn Error>> {
-    match reply {
-        Reply::Unit => Ok(()),
-        reply => Err(SessionError::Reply { operation, reply }.into()),
-    }
-}
-
-fn drop_control_handle(client: &mut Server, handle: SnapId) -> Result<(), Box<dyn Error>> {
-    let reply = client
-        .request(&Request::Drop(handle))
-        .map_err(|error| SessionError::Control(error.to_string()))?;
-    expect_unit(reply, "drop snapshot")
-}
-
 #[must_use]
 pub fn host_minor_faults() -> Option<u64> {
     vmm_core::control::host_minor_faults()
@@ -828,5 +780,56 @@ mod tests {
         });
 
         assert_eq!(result.unwrap_err().to_string(), "cleanup failed");
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn controlled_constructor_rejects_unreviewed_inputs_before_boot() {
+        let config = SessionConfig::new(128 * 1024 * 1024, 7, 11, "cmdline");
+        let error = Session::new_controlled_with_config_and_payloads(
+            b"unreviewed-kernel",
+            b"unreviewed-initramfs",
+            config,
+            Vec::new(),
+        )
+        .expect_err("unreviewed inputs must be rejected before attempting a boot");
+        assert!(
+            error
+                .to_string()
+                .contains("guest inputs do not match a reviewed controlled profile")
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn controlled_constructor_rejects_invalid_config_and_identity_override_before_boot() {
+        let invalid = SessionConfig::new(0, 7, 11, "cmdline");
+        let error = Session::new_controlled_with_config_and_payloads(
+            b"unreviewed-kernel",
+            b"unreviewed-initramfs",
+            invalid,
+            Vec::new(),
+        )
+        .expect_err("invalid config must be rejected before attempting a boot");
+        assert!(
+            error
+                .to_string()
+                .contains("session RAM must be a non-zero page multiple")
+        );
+
+        let tagged = SessionConfig::new(128 * 1024 * 1024, 7, 11, "cmdline")
+            .with_identity_tag("caller-selected");
+        let error = Session::new_controlled_with_config_and_payloads(
+            b"unreviewed-kernel",
+            b"unreviewed-initramfs",
+            tagged,
+            Vec::new(),
+        )
+        .expect_err("controlled identity tags must be rejected before attempting a boot");
+        assert!(
+            error
+                .to_string()
+                .contains("controlled sessions cannot use an identity tag")
+        );
     }
 }

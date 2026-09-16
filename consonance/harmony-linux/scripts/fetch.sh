@@ -69,7 +69,7 @@ fetch_one "$KERNEL_URL" "$KERNEL_SHA256"
 fetch_one "$BUSYBOX_URL" "$BUSYBOX_SHA256" \
     "https://ftp.gwdg.de/pub/linux/gentoo/distfiles/e3/busybox-1.38.0.tar.bz2"
 fetch_one "$MUSL_URL" "$MUSL_SHA256"
-fetch_one "$RUNC_X86_64_URL" "$RUNC_X86_64_SHA256"
+fetch_one "$GO_X86_BOOTSTRAP_URL" "$GO_X86_BOOTSTRAP_SHA256"
 fetch_one "$RUNC_SOURCE_URL" "$RUNC_SOURCE_SHA256"
 fetch_one "$GO_BOOTSTRAP_URL" "$GO_BOOTSTRAP_SHA256"
 

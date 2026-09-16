@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
+xsave-diagnostics = []
 # Non-default. Gates the in-process `MockBackend` (the deterministic `Backend`
 # substrate vmm-core's unit tests run against). NOT `#[cfg(test)]`: a
 # `#[cfg(test)]` item is invisible to downstream crates, so it could not be the

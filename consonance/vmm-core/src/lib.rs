@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod control;
+mod control_state;
+pub mod controlled_guest;
+mod engine_state;
 pub mod exec;
 pub mod portable_snapshot;
 pub mod session_trace;

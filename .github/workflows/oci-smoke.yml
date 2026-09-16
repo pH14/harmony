@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
       - name: Install pinned Rust toolchains
         run: |
           rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
@@ -44,14 +45,15 @@ jobs:
           key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
       - name: Build exact platform artifacts
         if: steps.runtime.outputs.cache-hit != 'true'
-        env:
-          HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
-          HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential flex bison libelf-dev libssl-dev bc cpio kmod bzip2 wget python3
-          make -C consonance/harmony-linux fetch
-          consonance/harmony-linux/scripts/build-platform-runtime.sh
+          sudo apt-get install -y --no-install-recommends build-essential cpio python3
+          consonance/harmony-linux/scripts/build-platform-runtime.sh --runtime-payloads "$PWD/runtime-payloads"
+          export HARMONY_NIX_RUNTIME_INIT="$PWD/runtime-payloads/init.sh"
+          export HARMONY_NIX_RUNTIME_SUPERVISOR="$PWD/runtime-payloads/harmony-supervisor"
+          export HARMONY_NIX_RUNTIME_MANIFEST="$PWD/runtime-payloads/runtime-payloads.json"
+          nix run .#guest-images -- --oci-runtime --output "$PWD/nix-guest-output"
+          consonance/harmony-linux/scripts/build-platform-runtime.sh --from-nix "$PWD/nix-guest-output"
       - name: Verify exact source and artifact manifest
         run: |
           python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \

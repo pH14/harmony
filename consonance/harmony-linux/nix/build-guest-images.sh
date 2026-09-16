@@ -108,18 +108,16 @@ chmod -R u+w "$repo"
 
 install -m 0644 "$HARMONY_NIX_LINUX_SOURCE" "$downloads/linux-6.18.35.tar.xz"
 install -m 0644 "$HARMONY_NIX_BUSYBOX_SOURCE" "$downloads/busybox-1.38.0.tar.bz2"
-if [ "$host_arch" = aarch64 ]; then
-    install -m 0644 "$HARMONY_NIX_MUSL_SOURCE" "$downloads/musl-1.2.6.tar.gz"
-fi
+install -m 0644 "$HARMONY_NIX_MUSL_SOURCE" "$downloads/musl-1.2.6.tar.gz"
 if [ "$oci_runtime" -eq 1 ]; then
+    : "${HARMONY_NIX_RUNC_SOURCE:?--oci-runtime requires HARMONY_NIX_RUNC_SOURCE}"
+    install -m 0644 "$HARMONY_NIX_RUNC_SOURCE" "$downloads/v1.5.0.tar.gz"
     if [ "$host_arch" = aarch64 ]; then
-        : "${HARMONY_NIX_RUNC_SOURCE:?--oci-runtime requires HARMONY_NIX_RUNC_SOURCE}"
         : "${HARMONY_NIX_GO_ARM_BOOTSTRAP:?--oci-runtime requires HARMONY_NIX_GO_ARM_BOOTSTRAP}"
-        install -m 0644 "$HARMONY_NIX_RUNC_SOURCE" "$downloads/v1.5.0.tar.gz"
         install -m 0644 "$HARMONY_NIX_GO_ARM_BOOTSTRAP" "$downloads/go1.25.0.linux-arm64.tar.gz"
     else
-        : "${HARMONY_NIX_RUNC_X86_SOURCE:?--oci-runtime requires HARMONY_NIX_RUNC_X86_SOURCE}"
-        install -m 0755 "$HARMONY_NIX_RUNC_X86_SOURCE" "$downloads/runc.amd64"
+        : "${HARMONY_NIX_GO_X86_BOOTSTRAP:?--oci-runtime requires HARMONY_NIX_GO_X86_BOOTSTRAP}"
+        install -m 0644 "$HARMONY_NIX_GO_X86_BOOTSTRAP" "$downloads/go1.25.0.linux-amd64.tar.gz"
     fi
 fi
 
@@ -158,6 +156,15 @@ path.write_bytes(data.replace(before, after))
 PY
     echo "== platform negative control: changed one patch byte"
 fi
+
+if [ "$oci_runtime" -eq 1 ]; then
+    : "${HARMONY_NIX_RUNTIME_MANIFEST:?--oci-runtime requires HARMONY_NIX_RUNTIME_MANIFEST}"
+    python3 "$guest/scripts/nix-runtime-artifacts.py" payload-verify --repo "$repo" \
+        --input "$HARMONY_NIX_RUNTIME_MANIFEST" --architecture "$host_arch" \
+        --init "$HARMONY_NIX_RUNTIME_INIT" --supervisor "$HARMONY_NIX_RUNTIME_SUPERVISOR"
+fi
+
+build_source_digest=$(python3 "$guest/scripts/runtime-artifacts.py" source-key --repo "$repo" --architecture "$host_arch")
 
 if [ "$host_arch" = aarch64 ]; then
     echo "== platform: build standard ARM kernel and fixture initramfs"
@@ -209,13 +216,16 @@ if [ "$host_arch" = aarch64 ]; then
     fi
 else
     echo "== platform: build standard x86 kernel and fixture images"
-    (cd "$linux_dir" && ./build-kernel.sh && ./build-initramfs.sh && ./build-go-runtime-image.sh)
+    (cd "$linux_dir" && ./build-kernel.sh && ./build-go-runtime-image.sh)
     if [ "$oci_runtime" -eq 1 ]; then
         : "${HARMONY_NIX_RUNTIME_INIT:?--oci-runtime requires HARMONY_NIX_RUNTIME_INIT}"
         : "${HARMONY_NIX_RUNTIME_SUPERVISOR:?--oci-runtime requires HARMONY_NIX_RUNTIME_SUPERVISOR}"
         (cd "$linux_dir" && HARMONY_RUNTIME_INIT="$HARMONY_NIX_RUNTIME_INIT" \
             HARMONY_RUNTIME_SUPERVISOR="$HARMONY_NIX_RUNTIME_SUPERVISOR" \
             ./build-oci-runtime-initramfs.sh x86_64)
+        (cd "$linux_dir" && ./build-initramfs.sh --busybox "$build_root/oci-runtime-root-x86_64/bin/busybox")
+    else
+        (cd "$linux_dir" && ./build-initramfs.sh)
     fi
     if [ "$n6" -eq 1 ]; then
         echo "== platform: build generated sweep and traps-off x86 kernel"
@@ -229,7 +239,7 @@ else
     (cd "$linux_dir" && TASK_PARK_PROFILE=1 ./build-kernel.sh)
     stage=$work/stage
     mkdir -p "$stage/x86_64"
-    for name in bzImage bzImage-task-park initramfs.cpio.gz initramfs-go-runtime.cpio.gz; do
+    for name in bzImage bzImage.vmlinux bzImage-task-park initramfs.cpio.gz initramfs-go-runtime.cpio.gz; do
         [ -f "$artifacts/x86_64/$name" ] || [ -f "$artifacts/$name" ] || {
             echo "FAIL: lock build did not produce x86_64/$name" >&2
             exit 1
@@ -276,6 +286,18 @@ done < <(find "$stage" -mindepth 2 -type f -print0)
     find . -mindepth 2 -type f -print0 | LC_ALL=C sort -z \
         | sed -z 's#^\./##' | xargs -0 sha256sum >MANIFEST.sha256
 )
+if [ "$oci_runtime" -eq 1 ]; then
+    [ "$build_source_digest" = "$(python3 "$guest/scripts/runtime-artifacts.py" source-key --repo "$repo" --architecture "$host_arch")" ] || {
+        echo "FAIL: copied platform source changed during build" >&2
+        exit 1
+    }
+    python3 "$guest/scripts/nix-runtime-artifacts.py" payload-verify --repo "$repo" \
+        --input "$HARMONY_NIX_RUNTIME_MANIFEST" --architecture "$host_arch" \
+        --init "$HARMONY_NIX_RUNTIME_INIT" --supervisor "$HARMONY_NIX_RUNTIME_SUPERVISOR"
+    cp "$HARMONY_NIX_RUNTIME_MANIFEST" "$stage/runtime-payloads.json"
+    python3 "$guest/scripts/nix-runtime-artifacts.py" record --repo "$repo" \
+        --input "$stage" --architecture "$host_arch"
+fi
 cp -a "$stage/." "$output/"
 echo "PASS: Nix-locked platform artifacts built offline"
 cat "$output/MANIFEST.sha256"

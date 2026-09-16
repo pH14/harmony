@@ -126,30 +126,14 @@ extract_busybox() {
     verify_and_extract "$DL_DIR/$(basename "$BUSYBOX_URL")" "$BUSYBOX_SHA256" "$BBSRC"
 }
 
-extract_runc() {
-    local arch=$1
-    local url sha path got
-    case "$arch" in
-        x86_64)
-            url=$RUNC_X86_64_URL
-            sha=$RUNC_X86_64_SHA256
-            ;;
-        *)
-            echo "FAIL: unsupported runc architecture: $arch" >&2
-            exit 1
-            ;;
-    esac
-    path=$DL_DIR/$(basename "$url")
-    if [ ! -f "$path" ]; then
-        echo "FAIL: $path missing — run 'make -C consonance/harmony-linux fetch' first" >&2
-        exit 1
-    fi
-    got=$(sha256_of "$path")
-    if [ "$got" != "$sha" ]; then
-        echo "FAIL: $path sha256 mismatch (want $sha, got $got)" >&2
-        exit 1
-    fi
-    printf '%s\n' "$path"
+extract_runc_source() {
+    local destination=$BUILD_ROOT/runc-$RUNC_VERSION
+    rm -rf "$destination"
+    verify_and_extract "$DL_DIR/$(basename "$RUNC_SOURCE_URL")" "$RUNC_SOURCE_SHA256" "$destination"
+    local runc_patch
+    for runc_patch in "$LINUX_DIR"/patches/runc/*.patch; do
+        patch -d "$destination" --batch --forward -p1 <"$runc_patch" >/dev/null
+    done
 }
 
 verify_static_runc() {

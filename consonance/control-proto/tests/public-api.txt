@@ -37,6 +37,8 @@ pub control_proto::ControlError::RestoreFailed
 pub control_proto::ControlError::ScheduleUnsatisfiable
 pub control_proto::ControlError::ScheduleUnsatisfiable::moment: u64
 pub control_proto::ControlError::ScheduleUnsatisfiable::vtime: u64
+pub control_proto::ControlError::SnapshotRefused
+pub control_proto::ControlError::SnapshotRefused::reason: alloc::string::String
 pub control_proto::ControlError::SnapshotWhileArmed
 pub control_proto::ControlError::Tainted
 pub control_proto::ControlError::UnknownSnapshot(control_proto::SnapId)

@@ -304,6 +304,9 @@ impl Backend for MockArm64Backend {
     }
 
     fn save(&self) -> Result<Arm64VcpuState> {
+        if self.pending != Pending::None || self.completion_staged {
+            return Err(BackendError::PendingCompletion);
+        }
         Ok(self.state)
     }
 
@@ -335,7 +338,7 @@ mod tests {
     use super::{Arm64MockCompletion, MockArm64Backend, Pending};
     use crate::arch::arm64::{Arm64Policy, Arm64VcpuState, GicIntId};
     use crate::backend::Backend;
-    use crate::exit::Capabilities;
+    use crate::exit::{Capabilities, CommonExit, Exit};
 
     fn configured() -> MockArm64Backend {
         let mut mock = MockArm64Backend::new();
@@ -401,6 +404,53 @@ mod tests {
         assert!(!mock.completion_staged);
         assert_eq!(mock.pending_irq, None);
         assert!(mock.accepted_irq.is_empty());
+    }
+
+    #[test]
+    fn save_rejects_pending_or_staged_completion_without_mutating_state() {
+        let mut mock = configured();
+        let mut state = Arm64VcpuState::default();
+        state.core.x[0] = 0x1234;
+        state.core.pc = 0x4000;
+        mock.set_state(state);
+
+        for (pending, complete) in [
+            (Pending::Read, Arm64MockCompletion::Read(0x90)),
+            (Pending::SysregRead, Arm64MockCompletion::Fault),
+            (Pending::SysregWrite, Arm64MockCompletion::Ok),
+        ] {
+            mock.pending = pending;
+            mock.completion_staged = false;
+            let completions = mock.completions.clone();
+            assert!(matches!(
+                mock.save(),
+                Err(crate::BackendError::PendingCompletion)
+            ));
+            assert_eq!(mock.pending, pending);
+            assert!(!mock.completion_staged);
+            assert_eq!(mock.completions, completions);
+            assert_eq!(mock.state, state);
+
+            match complete {
+                Arm64MockCompletion::Read(value) => mock.complete_read(value).unwrap(),
+                Arm64MockCompletion::Fault => mock.complete_fault().unwrap(),
+                Arm64MockCompletion::Ok => mock.complete_ok().unwrap(),
+                Arm64MockCompletion::Hypercall(_) => unreachable!(),
+            }
+            assert_eq!(mock.pending, Pending::None);
+            assert!(mock.completion_staged);
+            assert!(matches!(
+                mock.save(),
+                Err(crate::BackendError::PendingCompletion)
+            ));
+            assert_eq!(mock.pending, Pending::None);
+            assert!(mock.completion_staged);
+
+            mock.push_exit(Exit::Common(CommonExit::Idle));
+            assert_eq!(mock.run().unwrap(), Exit::Common(CommonExit::Idle));
+            assert!(!mock.completion_staged);
+            assert_eq!(mock.save().unwrap(), state);
+        }
     }
 
     #[test]

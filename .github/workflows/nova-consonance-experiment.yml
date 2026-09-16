@@ -120,15 +120,21 @@ jobs:
       - name: Verify x86 in-place restore oracle
         env:
           HARMONY_CONSONANCE_RESTORE_ORACLE: "1"
+          HARMONY_CONSONANCE_ORACLE_REPORT_DIR: ${{ github.workspace }}/nova-consonance-report/restore-artifacts
         run: |
-          timeout -k 10 600 \
-            workloads/tools/target/release/kvm_x86_nova_probe \
-              consonance/harmony-linux/build/x86_64/bzImage \
-              consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
-              consonance/harmony-linux/build/nes.oci \
-              "${NOVA_BUILD}/nova.nes" \
+          set -euo pipefail
+          oracle=workloads/tools/target/release/kvm_x86_nova_probe
+          oracle_inputs=(
+            consonance/harmony-linux/build/x86_64/bzImage
+            consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
+            consonance/harmony-linux/build/nes.oci
+            "${NOVA_BUILD}/nova.nes"
+          )
+          workloads/guest-images/verify-nova-oracle-admission.sh \
+            "$oracle" "${oracle_inputs[@]}" nova-consonance-report/oracle-admission
+          timeout -k 10 600 "$oracle" "${oracle_inputs[@]}" \
             2>&1 | tee nova-consonance-report/restore-oracle.txt
-          grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 .* fallbacks=0$' \
+          grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 fresh_equal=8 full_state_equal=8 a_controls=1 b1_controls=1 b3_controls=1 b3_captures=3 c_controls=1 d_controls=1 d_processes=2 d_source_pid=[0-9]+ d_destination_pid=[0-9]+ e_controls=50 e_reordered_positions=[1-9][0-9]* .* fallbacks=0$' \
             nova-consonance-report/restore-oracle.txt
       - name: Compare direct and whole-VM Nova observations
         run: |
@@ -217,6 +223,18 @@ jobs:
             cat nova-consonance-report/campaign-summary.json
             printf '\140\140\140\n'
           } >>"${GITHUB_STEP_SUMMARY}"
+      - name: Retain exact NES image for failed admission or execution review
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: nova-consonance-campaign-${{ github.run_id }}-${{ matrix.replica }}-nes-review
+          path: |
+            consonance/harmony-linux/build/nes.oci
+            consonance/harmony-linux/build/nes.oci.sha256
+            consonance/harmony-linux/build/nes-build-provenance
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         if: always()
         with:

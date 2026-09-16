@@ -39,6 +39,12 @@ pub trait Vendor: Arch + Sized {
         write: Option<u64>,
     ) -> Result<Step, VmmError>;
 
+    fn finish_exit<B: Backend<A = Self>>(
+        _vmm: &mut Vmm<B>,
+    ) -> Result<Option<Exit<Self>>, VmmError> {
+        Ok(None)
+    }
+
     fn is_doorbell_exit(exit: &Exit<Self>) -> bool;
 
     fn post_exit<B: Backend<A = Self>>(_vmm: &mut Vmm<B>) -> Result<(), VmmError> {
@@ -82,6 +88,10 @@ pub trait Vendor: Arch + Sized {
     fn serial_capture(devices: &Self::Devices) -> &[u8];
 
     fn inject_serial_input(devices: &mut Self::Devices, bytes: &[u8]);
+
+    fn controlled_identity_vcpu(vcpu: &Self::VcpuState) -> Result<Self::VcpuState, VmmError> {
+        Ok(vcpu.clone())
+    }
 
     fn encode_vcpu_chunk(vcpu: &Self::VcpuState) -> Vec<u8>;
 

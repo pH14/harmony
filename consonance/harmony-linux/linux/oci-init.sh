@@ -3,5 +3,6 @@
 # The kernel always enters through this stable PID 1 path. The platform init
 # owns guest setup and invokes the platform supervisor and pinned OCI runtime.
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
-export PATH
+LD_BIND_NOW=1
+export PATH LD_BIND_NOW
 exec /usr/lib/harmony/init "$@"

@@ -23,6 +23,11 @@ codec bounds lengths and validates ordering. Mechanical effects describe memory
 writes, memory XOR, and interrupt delivery; packages choose when and why to use
 them. The VMM validates their machine addresses before applying them.
 
+`InputSpec::decode` accepts one transport message and caps the complete blob at
+`MAX_CHANNEL_BYTES`. `InputSpec::decode_snapshot` runs the same strict parser
+for a caller-bounded captured section, so a long input history may contain more
+than one transport message while every nested value remains bounded and ordered.
+
 The fault catalog and fault-selection policies live in
 [`workloads/fault-policy`](../../workloads/fault-policy/README.md). An ordinary
 Consonance execution uses the nominal handler and builds independently of that

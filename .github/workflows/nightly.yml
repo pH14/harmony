@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [vmm-core, hypercall-doorbell, consonance-client, vm-state, vmm-backend, snapshot-store, machine, nes-guest, harmony-supervisor]
+        name: [vmm-core, hypercall-doorbell, hypercall-doorbell-round-trip, consonance-client, vm-state, vmm-backend, snapshot-store, machine, nes-guest, harmony-supervisor]
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
       HARMONY_MIRI_PR_SMOKE: "1"

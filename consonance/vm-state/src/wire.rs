@@ -146,6 +146,8 @@ pub(crate) struct SregsWire {
     cr8: U64,
     efer: U64,
     apic_base: U64,
+    flags: U64,
+    pdptrs: [U64; 4],
 }
 
 impl From<&VcpuSregs> for SregsWire {
@@ -170,6 +172,8 @@ impl From<&VcpuSregs> for SregsWire {
             cr8: s.cr8.into(),
             efer: s.efer.into(),
             apic_base: s.apic_base.into(),
+            flags: s.flags.into(),
+            pdptrs: s.pdptrs.map(U64::from),
         }
     }
 }
@@ -196,6 +200,8 @@ impl From<&SregsWire> for VcpuSregs {
             cr8: w.cr8.get(),
             efer: w.efer.get(),
             apic_base: w.apic_base.get(),
+            flags: w.flags.get(),
+            pdptrs: w.pdptrs.map(|value| value.get()),
         }
     }
 }
@@ -222,6 +228,26 @@ impl From<&XcrsWire> for Xcrs {
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
+pub(crate) struct XsaveRestoreBvWire {
+    value: U64,
+}
+
+impl From<u64> for XsaveRestoreBvWire {
+    fn from(value: u64) -> Self {
+        Self {
+            value: value.into(),
+        }
+    }
+}
+
+impl From<&XsaveRestoreBvWire> for u64 {
+    fn from(w: &XsaveRestoreBvWire) -> Self {
+        w.value.get()
+    }
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
 pub(crate) struct DebugRegsWire {
     db0: U64,
     db1: U64,
@@ -229,6 +255,7 @@ pub(crate) struct DebugRegsWire {
     db3: U64,
     dr6: U64,
     dr7: U64,
+    flags: U64,
 }
 
 impl From<&DebugRegs> for DebugRegsWire {
@@ -240,6 +267,7 @@ impl From<&DebugRegs> for DebugRegsWire {
             db3: d.db[3].into(),
             dr6: d.dr6.into(),
             dr7: d.dr7.into(),
+            flags: d.flags.into(),
         }
     }
 }
@@ -250,6 +278,7 @@ impl From<&DebugRegsWire> for DebugRegs {
             db: [w.db0.get(), w.db1.get(), w.db2.get(), w.db3.get()],
             dr6: w.dr6.get(),
             dr7: w.dr7.get(),
+            flags: w.flags.get(),
         }
     }
 }

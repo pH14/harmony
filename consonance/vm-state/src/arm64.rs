@@ -28,6 +28,8 @@ const TAG_INTERRUPTS: u16 = 12;
 
 const SECTION_COUNT: u16 = 12;
 
+const TAG_ENGINE_STATE: u16 = 13;
+
 const HEADER_LEN: usize = 10;
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -44,6 +46,7 @@ pub struct Arm64VmState {
     pub hypercall: Vec<u8>,
     pub devices: DeviceBlob,
     pub contract_hash: [u8; 32],
+    pub engine_state: Vec<u8>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -343,13 +346,14 @@ fn decode_interrupts(w: &Arm64InterruptsWire) -> Result<Arm64Interrupts, VmState
 
 impl Arm64VmState {
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
+        let section_count = SECTION_COUNT + u16::from(!self.engine_state.is_empty());
         let mut out = Vec::new();
         out.extend_from_slice(
             HeaderWire {
                 magic: VM_STATE_MAGIC.into(),
                 version: VM_STATE_VERSION.into(),
                 arch: ARCH_AARCH64.into(),
-                section_count: SECTION_COUNT.into(),
+                section_count: section_count.into(),
             }
             .as_bytes(),
         );
@@ -390,6 +394,9 @@ impl Arm64VmState {
             TAG_INTERRUPTS,
             Arm64InterruptsWire::from(&self.interrupts).as_bytes(),
         )?;
+        if !self.engine_state.is_empty() {
+            put_section(&mut out, TAG_ENGINE_STATE, &self.engine_state)?;
+        }
 
         Ok(out)
     }
@@ -427,6 +434,7 @@ impl Arm64VmState {
         let mut debug = None;
         let mut vtimer = None;
         let mut interrupts = None;
+        let mut engine_state = None;
 
         for _ in 0..section_count {
             let tag = r.u16()?;
@@ -471,6 +479,12 @@ impl Arm64VmState {
                         payload,
                     )?)?);
                 }
+                TAG_ENGINE_STATE => {
+                    if payload.is_empty() {
+                        return Err(VmStateError::InvalidField);
+                    }
+                    engine_state = Some(payload.to_vec());
+                }
                 other => return Err(VmStateError::UnknownTag(other)),
             }
         }
@@ -493,6 +507,7 @@ impl Arm64VmState {
             hypercall: hypercall.ok_or(VmStateError::MissingSection(TAG_HYPERCALL))?,
             devices: devices.ok_or(VmStateError::MissingSection(TAG_DEVICES))?,
             contract_hash: contract_hash.ok_or(VmStateError::MissingSection(TAG_CONTRACT_HASH))?,
+            engine_state: engine_state.unwrap_or_default(),
         })
     }
 }
@@ -514,6 +529,14 @@ impl SnapshotRecords for Arm64VmState {
 
     fn timers(&self) -> &TimerQueueState {
         &self.timers
+    }
+
+    fn engine_state(&self) -> &[u8] {
+        &self.engine_state
+    }
+
+    fn set_engine_state(&mut self, state: Vec<u8>) {
+        self.engine_state = state;
     }
 
     fn entropy_bytes(&self) -> &[u8] {
@@ -570,6 +593,34 @@ mod tests {
         panic!("section {wanted} not present in valid arm64 blob");
     }
 
+    fn split(blob: &[u8]) -> (u16, Vec<(u16, Vec<u8>)>) {
+        let count = u16::from_le_bytes(blob[8..10].try_into().unwrap());
+        let mut sections = Vec::new();
+        let mut pos = HEADER_LEN;
+        while pos < blob.len() {
+            let tag = u16::from_le_bytes(blob[pos..pos + 2].try_into().unwrap());
+            let len = u32::from_le_bytes(blob[pos + 2..pos + 6].try_into().unwrap()) as usize;
+            let payload = pos + 6;
+            sections.push((tag, blob[payload..payload + len].to_vec()));
+            pos = payload + len;
+        }
+        (count, sections)
+    }
+
+    fn pack(version: u16, count: u16, sections: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&crate::VM_STATE_MAGIC.to_le_bytes());
+        out.extend_from_slice(&version.to_le_bytes());
+        out.extend_from_slice(&crate::ARCH_AARCH64.to_le_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+        for (tag, payload) in sections {
+            out.extend_from_slice(&tag.to_le_bytes());
+            out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            out.extend_from_slice(payload);
+        }
+        out
+    }
+
     #[test]
     fn round_trips_byte_deterministically() {
         let s = sample();
@@ -577,6 +628,74 @@ mod tests {
         let b = s.encode().unwrap();
         assert_eq!(a, b, "equal values must encode to identical bytes");
         assert_eq!(Arm64VmState::decode(&a).unwrap(), s);
+    }
+
+    #[test]
+    fn current_engine_state_round_trips_multiple_payloads() {
+        for payload in [vec![0x01], vec![0x00, 0xFE, 0xA5], (0u8..=255).collect()] {
+            let mut state = sample();
+            state.engine_state = payload.clone();
+            let blob = state.encode().unwrap();
+            assert_eq!(
+                u16::from_le_bytes(blob[4..6].try_into().unwrap()),
+                VM_STATE_VERSION
+            );
+            assert_eq!(
+                u16::from_le_bytes(blob[8..10].try_into().unwrap()),
+                13,
+                "current format adds exactly one trailing section"
+            );
+            let decoded = Arm64VmState::decode(&blob).unwrap();
+            assert_eq!(decoded.engine_state, payload);
+            assert_eq!(decoded.encode().unwrap(), blob);
+        }
+    }
+
+    #[test]
+    fn current_engine_state_section_is_optional_nonempty_and_last() {
+        let good_state = {
+            let mut state = sample();
+            state.engine_state = vec![1, 2, 3];
+            state
+        };
+        let good = good_state.encode().unwrap();
+        let (count, sections) = split(&good);
+        assert_eq!(count, 13);
+        assert_eq!(sections.last().map(|(tag, _)| *tag), Some(TAG_ENGINE_STATE));
+
+        let mut empty = sections.clone();
+        empty.last_mut().unwrap().1.clear();
+        assert_eq!(
+            Arm64VmState::decode(&pack(VM_STATE_VERSION, count, &empty)),
+            Err(VmStateError::InvalidField)
+        );
+
+        let mut missing = sections.clone();
+        missing.pop();
+        let decoded = Arm64VmState::decode(&pack(VM_STATE_VERSION, count - 1, &missing)).unwrap();
+        assert!(decoded.engine_state.is_empty());
+
+        let mut duplicate = sections.clone();
+        duplicate.push(sections.last().unwrap().clone());
+        assert_eq!(
+            Arm64VmState::decode(&pack(VM_STATE_VERSION, count + 1, &duplicate)),
+            Err(VmStateError::DuplicateTag(TAG_ENGINE_STATE))
+        );
+
+        let mut out_of_order = sections;
+        let last = out_of_order.len() - 1;
+        out_of_order.swap(last - 1, last);
+        assert_eq!(
+            Arm64VmState::decode(&pack(VM_STATE_VERSION, count, &out_of_order)),
+            Err(VmStateError::SectionOrder(TAG_ENGINE_STATE - 1))
+        );
+
+        let mut trailing = good;
+        trailing.push(0);
+        assert_eq!(
+            Arm64VmState::decode(&trailing),
+            Err(VmStateError::TrailingBytes)
+        );
     }
 
     #[test]

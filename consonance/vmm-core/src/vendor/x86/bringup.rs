@@ -61,6 +61,7 @@ fn compose_linux_seeded<B: Backend<A = X86>>(
     let mut state = backend.save()?;
     apply_linux_entry(&mut state, &entry_state);
     backend.restore(&state)?;
+    backend.prepare_snapshot()?;
 
     let lapic = lapic::Lapic::new(lapic::LapicConfig {
         apic_id: BSP_APIC_ID,
@@ -214,6 +215,8 @@ fn compose_linux_virtual_time<B: Backend<A = X86>>(
         contract::cpuid_model(),
         Some(&boot_seed),
     )?;
+    vmm.controlled_guest_identity =
+        crate::controlled_guest::linux_identity(kernel, initramfs, guest_ram_len, cmdline);
     vmm.wire_vtime(wiring);
     vmm.enable_pvclock();
     Ok(vmm)

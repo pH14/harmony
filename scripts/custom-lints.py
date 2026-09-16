@@ -106,6 +106,8 @@ NUMBERED_NAME_ALLOWLIST = re.compile(
     r"(?:u|i|f)(?:8|16|32|64|128)$"
     # Architecture and hardware names.
     r"|(?:x86|arm64|Arm64|X86|Gicv3|gicv3)$"
+    # Architectural x86 control register names.
+    r"|(?:cr[02348])$"
     # Hardware device names (Pl011, Uart8250, ...).
     r"|(?:Pl011|Uart8250|8250)$"
     # KVM ABI types (sregs2, cpuid_entry2, xsave2, ...).
@@ -471,6 +473,7 @@ CI_NAME_TERMS = {
     "API", "CLI", "CPU", "KVM", "NES", "STB", "VM",
     "Consonance", "Dissonance", "Docker", "Go", "Harmony", "Intel",
     "K3s", "Kani", "Linux", "Miri", "Nova", "PostgreSQL", "QuickNES",
+    "XSAVE",
 }
 CI_GENERIC_NAMES = {"gates", "products", "quality", "checks", "smoke", "test", "tests", "job", "report"}
 

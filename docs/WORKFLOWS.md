@@ -49,6 +49,11 @@ verified artifacts is recorded as `host-only`. The separate guest qualification
 check requires successful hardware execution with `exact-input` artifacts.
 Neither missing manifests nor file presence alone qualifies this platform.
 PostgreSQL uses the same runtime while retaining its application assertions.
+The platform smoke also verifies the controlled minimal fixture and requires two
+clean same-seed Linux boots with identical execution logs. The KVM smoke runs
+the fixed-core published snapshot/replay identity matrix, including fresh and
+reused vCPUs, extra host entries and floating-point/vector negative controls.
+Broader snapshot hardware cohorts remain in scheduled/manual x86 acceptance.
 
 ## Current workflows
 
