@@ -260,6 +260,37 @@ jobs:
           cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml --all-features
           cargo deny --manifest-path workloads/nes/Cargo.toml check --config deny.toml
 
+  gameboy:
+    name: Game Boy package checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-gameboy
+          workspaces: |
+            workloads/gb -> target
+            workloads/gb-machine -> target
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.9
+      - name: Game Boy workload package checks
+        run: |
+          cargo fmt --manifest-path workloads/gb-machine/Cargo.toml --all -- --check
+          cargo fmt --manifest-path workloads/gb/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path workloads/gb-machine/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path workloads/gb-machine/Cargo.toml --all-features
+          cargo build --locked --manifest-path workloads/gb/Cargo.toml --release
+          cargo clippy --locked --manifest-path workloads/gb/Cargo.toml --release --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path workloads/gb/Cargo.toml --release --all-features
+          cargo deny --manifest-path workloads/gb/Cargo.toml check --config deny.toml
+
   semantic:
     name: Semantic content lints
     runs-on: ubuntu-latest

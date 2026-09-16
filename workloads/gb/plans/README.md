@@ -13,9 +13,9 @@ address. Read state from RAM only. Never decode the screen.
 
 | Input | Where | Notes |
 |---|---|---|
-| ROM | `~/Downloads/pokemon-blue.gb` on Paul's Mac, copy to any lab box | SHA-256 `2a951313c2640e8c2cb21f25d1db019ae6245d9c7121f754fa61afd7bee6452d`; 1 MiB; add under key `blue` in the private assets inventory the way `benchmarks/search/README.md` describes |
+| ROM | `~/Downloads/pokemon-blue.gb` on the workstation, copy to any lab box | SHA-256 `2a951313c2640e8c2cb21f25d1db019ae6245d9c7121f754fa61afd7bee6452d`; 1 MiB; add under key `blue` in the private assets inventory the way `benchmarks/search/README.md` describes |
 | Emulator core | Gambatte libretro, https://github.com/libretro/gambatte-libretro | pin one revision in `scripts/build-gambatte-core.sh`, copied from `scripts/build-quicknes-core.sh` |
-| TypeSafe key | `TYPESAFE_API_KEY` in `~/.zshrc` on Paul's Mac | copy to msr1 and ms02 freely; only step 4 and 5 read it |
+| TypeSafe key | `TYPESAFE_API_KEY` in `~/.zshrc` on the workstation | copy to msr1 and ms02 freely; only step 4 and 5 read it |
 | Jev API | the `typesafe-jev-model` memory note, then https://docs.typesafe.ai/llms.txt | one endpoint, three question types, no generation, no images |
 
 ## Order
@@ -51,6 +51,20 @@ Measure frames per second headless on msr1 and put it in the crate README.
 msr1 is arm64, so the core build script must handle `aarch64` the way
 `scripts/build-quicknes-core.sh` handles its two hosts, and the pinned core
 hash is per architecture.
+
+Added while building step 1:
+
+- Serialize and restore are not byte-exact as written above. Two things break
+  it and the driver closes both; `workloads/gb-machine/README.md` records what
+  they are. Every action must begin from a restored state, and the snapshot
+  must clear the clock, HuC3 and DMG palette records.
+- Build the core with `HAVE_NETWORK=0`; the serial-link listener would
+  otherwise open a socket into the emulated machine.
+- The driver refuses a cartridge type that declares a clock.
+- `HARMONY_GAMBATTE_CORE` names the core and `HARMONY_BLUE_ROM` the ROM.
+- `gb-machine` defines its own machine vocabulary rather than importing
+  `nes-machine`, whose generic half is entangled with the NES Consonance
+  backend.
 
 ### Step 2: Pokémon Blue workload
 

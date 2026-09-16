@@ -13,6 +13,8 @@ members = ["cli", "consonance/*"]
 exclude = [
   "consonance/harmony-linux",
   "dissonance",
+  "workloads/gb",
+  "workloads/gb-machine",
   "workloads/nes",
   "workloads/tools",
   "workloads/nes-machine",

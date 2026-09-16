@@ -471,8 +471,8 @@ PR_WORKFLOWS = {
 }
 CI_NAME_TERMS = {
     "API", "CLI", "CPU", "KVM", "NES", "STB", "VM",
-    "Consonance", "Dissonance", "Docker", "Go", "Harmony", "Intel",
-    "K3s", "Kani", "Linux", "Miri", "Nova", "PostgreSQL", "QuickNES",
+    "Boy", "Consonance", "Dissonance", "Docker", "Gambatte", "Go", "Harmony",
+    "Intel", "K3s", "Kani", "Linux", "Miri", "Nova", "PostgreSQL", "QuickNES",
     "XSAVE",
 }
 CI_GENERIC_NAMES = {"products", "quality", "checks", "smoke", "test", "tests", "job", "report"}
@@ -799,7 +799,7 @@ def check_pr_check_routing(path: str, workflow: dict) -> list[Violation]:
 
     jobs = workflow["jobs"]
     if path == ".github/workflows/quality.yml":
-        valid = (set(jobs) == {"repository", "workspace", "guests", "search", "support", "nes", "semantic", "kani", "public-api"}
+        valid = (set(jobs) == {"repository", "workspace", "guests", "search", "support", "nes", "gameboy", "semantic", "kani", "public-api"}
                  and _inline_scope_valid(jobs["kani"], "kani")
                  and _inline_scope_valid(jobs["public-api"], "public_api"))
     else:
