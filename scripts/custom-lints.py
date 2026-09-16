@@ -935,7 +935,7 @@ def check_docs_allowlist(files: list[str]) -> list[Violation]:
     for rel_path in files:
         if not rel_path.startswith("docs/"):
             continue
-        if rel_path == str(BASELINE_PATH):
+        if rel_path in (str(BASELINE_PATH), "docs/semantic-lints-baseline.json"):
             continue
         if not rel_path.endswith(".md"):
             violations.append(Violation(

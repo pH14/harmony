@@ -28,3 +28,7 @@ flake.nix
 /workloads/**/target/
 /workloads/**/build/
 __pycache__/
+
+# Local semantic-lints cache and calibration dump; both are per-machine scratch.
+/.semantic-lints-cache.json
+/semantic-lints-calibration.tsv

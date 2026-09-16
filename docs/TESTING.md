@@ -127,6 +127,20 @@ suite uses these checks:
 Each gate identifies the behavior it establishes, covers the production path
 where that behavior matters, and includes a representative failing case.
 
+## Content lints
+
+`scripts/custom-lints.py` checks file name and fixed text patterns: workload
+names outside `workloads/`, personal references, misplaced files. It cannot
+judge what a file actually says. `scripts/semantic-lints.py` covers that gap
+by asking TypeSafe's Jev model whether a changed file reads as a run record
+or status report, names a person or a role standing in for one, carries
+decision residue (a rejected alternative, an old name, a reviewer-driven
+change), or names a workload in workload-agnostic code. It needs
+`TYPESAFE_API_KEY`; without it, it prints a skip message and passes. Known
+violations that predate a check are recorded in `docs/custom-lints-baseline.json`
+and `docs/semantic-lints-baseline.json`; regenerate either with
+`--update-baseline` after fixing or accepting what it reports.
+
 Development commands and CI configuration live in contributor guidance and
 automation. Component-specific fixtures and format details live beside their
 owning code.
