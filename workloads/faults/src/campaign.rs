@@ -494,6 +494,15 @@ impl InputPolicy for FaultWorkload {
     }
 }
 
+fn event_is_ready(action: &FaultAction, event_ready: u64) -> bool {
+    match action {
+        FaultAction::EventKill { node, .. } | FaultAction::EventPark { node, .. } => 1_u64
+            .checked_shl(u32::from(*node))
+            .is_some_and(|bit| event_ready & bit != 0),
+        _ => true,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn held_suffix(
     run: &FaultCampaignRun,
@@ -508,16 +517,21 @@ fn held_suffix(
     let ticks = std::num::NonZeroU16::new(u16::try_from(draw.duration.get())?)
         .ok_or("wait duration must be positive")?;
     let hold_us = u32::try_from(draw.duration.get().saturating_mul(SUPERVISOR_TICK_MICROS))?;
-    let mut suffix = state.draw(before, replay, |view| {
-        draw_suffix(
-            shape,
-            mixture.mixture,
-            mixture.weight,
-            mutation_seed,
-            |rand| biased_step(view, rand),
-            |rand| sample_action(rand, &run.vocabulary, draw.context.event_ready),
-        )
-    })?;
+    let event_ready = draw.context.event_ready;
+    let mut suffix =
+        state.draw(before, replay, |view| {
+            draw_suffix(
+                shape,
+                mixture.mixture,
+                mixture.weight,
+                mutation_seed,
+                |rand| {
+                    Ok(biased_step(view, rand)?
+                        .filter(|action| event_is_ready(action, event_ready)))
+                },
+                |rand| sample_action(rand, &run.vocabulary, event_ready),
+            )
+        })?;
     for action in &mut suffix {
         match action {
             FaultAction::Wait(_) => *action = FaultAction::Wait(ticks),
