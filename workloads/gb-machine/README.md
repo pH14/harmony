@@ -41,6 +41,7 @@ Headless throughput, one machine, video and audio off, measured by the
 | Host | Frames per second | 30-frame actions per second |
 | --- | --- | --- |
 | Apple M-series, macOS | 9,800 | 330 |
+| CIX CP8180 aarch64, Debian 13 | 8,560 | 285 |
 
 `run_chord` runs one chord and appends each frame's work RAM to `frames`;
 `step_frame` runs a single frame, so a caller expanding a macro can read RAM
