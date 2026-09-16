@@ -102,8 +102,11 @@ before changing searcher code and note the failure in the pull request.
    with 64 plus a constant, so the class draw is one pass and not a
    pairwise scan.
 5. **Operation count, bands.** One region holding 64 live peer bands, then
-   128. Assert the `progress_cmp` calls per draw grow by at most a constant,
-   since band lookups are indexed.
+   128. Assert the count with 128 bands is at most twice the count with 64
+   plus a constant, the same shape as the class assertion. `draw_group_index`
+   ranks every band in the frontier on each draw, so the per-draw count is
+   linear in the band count and cannot be constant. The assertion still
+   separates one indexed pass from the pairwise scan, which is quadratic.
 6. **Splice past the old ordering.** A leaf that is ahead of the parent by
    `progress_cmp` and sorts lower than the parent by the derived `Ord` is
    accepted by both `splice_tail_for_campaign` and `recorded_splice_tail`.
