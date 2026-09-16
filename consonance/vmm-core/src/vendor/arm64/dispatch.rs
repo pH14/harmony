@@ -470,7 +470,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             if self.devices.gic.is_none() {
                 return Err(VmmError::ContractViolation(format!(
                     "GICv3 MMIO at {addr:#x} but the userspace GICv3 is unwired — guest \
-                     delivery is AA-6-gated (the in-kernel vGICv3 round-trip verdict); a \
+                     delivery is AA-6-guarded (the in-kernel vGICv3 round-trip verdict); a \
                      stock-backend boot never wires it"
                 )));
             }
@@ -771,7 +771,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             return Err(VmmError::ContractViolation(format!(
                 "InjectInterrupt INTID {vector:#x} but no arm64 delivery fabric is wired — the \
                  GICv3 arbitration model is unwired in this composition and guest delivery is \
-                 AA-6-gated (the in-kernel vGICv3 round-trip verdict)"
+                 AA-6-guarded (the in-kernel vGICv3 round-trip verdict)"
             )));
         };
         gic.pulse(vector).map_err(|e| {

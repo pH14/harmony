@@ -72,7 +72,7 @@ an interpreter-reachable path.
 
 ## Test strength
 
-Use this lens when a change adds or alters a regression gate. Demonstrate that
+Use this lens when a change adds or alters a regression check. Demonstrate that
 the test observes the behavior it names, including a planted failure when a
 green result could otherwise be vacuous. Treat coverage as reachability
 evidence rather than proof of assertion strength.

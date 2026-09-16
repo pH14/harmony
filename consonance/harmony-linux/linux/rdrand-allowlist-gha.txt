@@ -11,7 +11,7 @@
 # Selected by the x86-vtime workflow via HARMONY_RDRAND_ALLOWLIST.
 
 # extract_entropy's block loop tries arch_get_random_seed_longs (rdseed) then
-# arch_get_random_longs (rdrand); both inlines gate the instruction on
+# arch_get_random_longs (rdrand); both inlines check the instruction on
 # static_cpu_has(X86_FEATURE_RDSEED / X86_FEATURE_RDRAND).
 vmlinux:extract_entropy.constprop.0+0xa2
 vmlinux:extract_entropy.constprop.0+0xb5

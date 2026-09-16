@@ -118,12 +118,12 @@ fi
 echo "== kernel: building bzImage"
 make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 
-# The counter-opcode reachability gate (paravirtual clock interface, x86
+# The counter-opcode reachability check (paravirtual clock interface, x86
 # half) — every rdtsc/rdtscp left in the image must match a reviewed,
 # trap-backstopped allowlist entry (function + exact instruction count). Scans
 # the uncompressed vmlinux (symbols); self-tests its own ability to fail
-# before scanning. The gate ships ARMED (baseline reviewed + committed); a
-# GATE-UNARMED marker in the allowlist (re-baselining only, e.g. a kernel
+# before scanning. The check ships ARMED (baseline reviewed + committed); a
+# CHECK-UNARMED marker in the allowlist (re-baselining only, e.g. a kernel
 # version bump) makes the scan print the new capture and FAIL the build until
 # the reviewed baseline lands. See scan-counter-opcodes.sh for the workflow.
 #
@@ -132,12 +132,12 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 # `set -e`, a failed scan aborts here, so a REJECTED kernel never reaches the
 # path used by the guest runner. (Publishing first, then scanning, would leave
 # the rejected artifact at the canonical path on failure.) Proven locally by
-# `test-publish-gate.sh` with a planted rejection.
+# `test-publish-check.sh` with a planted rejection.
 # Site offsets are toolchain-dependent, so each build toolchain carries its
 # own committed baseline over the same reviewed function set;
 # HARMONY_RDTSC_ALLOWLIST / HARMONY_RDRAND_ALLOWLIST select them for the
 # default kernel (default: the box toolchain's lists).
-echo "== kernel: counter-opcode scan (rdtsc/rdtscp + rdrand/rdseed reachability gate)"
+echo "== kernel: counter-opcode scan (rdtsc/rdtscp + rdrand/rdseed reachability check)"
 rdtsc_allowlist=${HARMONY_RDTSC_ALLOWLIST:-$LINUX_DIR/rdtsc-allowlist.txt}
 rdrand_allowlist=${HARMONY_RDRAND_ALLOWLIST:-$LINUX_DIR/rdrand-allowlist.txt}
 # The task-park profile carries the system-call poll, so its

@@ -35,7 +35,7 @@ arm64-oci-image: arm64-kernel
 	./build-oci-runtime-initramfs.sh aarch64
 
 # Depends on `kernel` so the documented single-command build works from a clean
-# checkout: the box gate needs both bzImage and this initramfs.
+# checkout: the box check needs both bzImage and this initramfs.
 exec-image: kernel
 	./build-exec-image.sh
 

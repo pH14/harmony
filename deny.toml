@@ -26,7 +26,7 @@ wildcards = "deny"
 # versions by proptest vs tempfile), unfixable without forking upstream, and the
 # exact set shifts with platform/feature resolution. Warning keeps them visible
 # without failing CI on churn we don't control. "deny multiple-versions where
-# reasonable" (the spec) — here it is not reasonable to gate.
+# reasonable" (the spec) — here it is not reasonable to check.
 multiple-versions = "warn"
 
 [licenses]

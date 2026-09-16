@@ -78,7 +78,7 @@ runs:
     - name: Check and describe compact evidence
       shell: bash
       run: |
-        # The binary's exit status gates actual replay/render equality.
+        # The binary's exit status checks actual replay/render equality.
         # Hard is a completion regression: stop after a win, or fail if the
         # fixed ceiling is exhausted. Easy/Fair retain exact-budget soaks.
         # Keep seeds and search policy fixed; do not retry a losing campaign.

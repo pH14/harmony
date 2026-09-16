@@ -81,7 +81,7 @@ static int prefix_matches(uint64_t draw)
 // Announce the planted bug: print the distinctive `UUID_BUG:` serial marker
 // (fingerprint attribution) and write the terminal FAIL code to isa-debug-exit.
 // **Does not return via `_exit`** — the caller emits the marker BEFORE the
-// faulting dereference (the crash-attribution gate must see the marker for the
+// faulting dereference (the crash-attribution check must see the marker for the
 // bug it identifies, and on this container kernel isa-debug-exit is unreachable
 // so the deref is the actual crash mechanism /init reports). On a kernel that
 // grants port access, the `outb` terminates the guest here (Crash{Panic}).

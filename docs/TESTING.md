@@ -124,9 +124,16 @@ suite uses these checks:
 - mutation, property, fuzz, and proof checks exercise invariants beyond example
   tests.
 
-Each gate identifies the behavior it establishes, covers the production path
+Each check identifies the behavior it establishes, covers the production path
 where that behavior matters, and includes a representative failing case.
 
 Development commands and CI configuration live in contributor guidance and
 automation. Component-specific fixtures and format details live beside their
 owning code.
+
+Repository vocabulary is checked by `scripts/custom-lints.py` in every tracked
+UTF-8 text file and filename, including extensionless files and the checker
+itself. The prohibited term encoded by `PROHIBITED_WORD` is rejected as a word,
+plural, or snake/camel-case identifier component. Larger words such as
+`aggregate` and `propagate` remain valid. Vocabulary violations cannot be
+suppressed through the custom-lint baseline.

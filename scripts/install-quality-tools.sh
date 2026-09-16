@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Install the external code-quality binaries used by the quality gates
+# Install the external code-quality binaries used by the quality checks
 # (.github/workflows/quality.yml, .pre-commit-config.yaml, and
 # CONTRIBUTING.md).
 #
@@ -17,10 +17,10 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 # crate            provides
-#   cargo-nextest    fast, process-isolated test runner (gates)
+#   cargo-nextest    fast, process-isolated test runner (checks)
 #   cargo-llvm-cov   source-based coverage          (quality-b)
 #   cargo-mutants@27.1.0 mutation testing          (quality-c; pinned for CI parity)
-#   cargo-deny       advisories/licenses/bans/sources (gates)
+#   cargo-deny       advisories/licenses/bans/sources (checks)
 #   cargo-public-api public-API snapshots           (quality-d)
 tools=(
     cargo-nextest
@@ -44,7 +44,7 @@ cargo public-api --version
 
 # Wire up the local fast-feedback git hooks (.githooks/pre-push: fmt, clippy,
 # nextest) via core.hooksPath. Convenience only —
-# the gate of record is the self-hosted runner (.github/workflows/quality.yml).
+# the check of record is the self-hosted runner (.github/workflows/quality.yml).
 # Skip with `git push --no-verify`. Run from inside the repo.
 if git rev-parse --git-dir >/dev/null 2>&1; then
     echo "== configuring git hooks (core.hooksPath = .githooks)"

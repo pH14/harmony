@@ -566,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn armed_timer_deliverable_gates_on_active_vector_and_priority() {
+    fn armed_timer_delivery_requires_active_vector_and_priority() {
         let mut l = enabled(24_000_000);
         assert!(!l.armed_timer_deliverable(), "no timer armed");
 

@@ -162,7 +162,7 @@ Harmony repository's designated guest-kernel patch exception.
 +
 +/*
 + * Return the virtual generic-counter value. Zero is the fail-closed value:
-+ * this dedicated kernel has no raw-counter fallback, and the build gate
++ * this dedicated kernel has no raw-counter fallback, and the build check
 + * rejects one if a future edit adds it.
 + */
 +noinstr u64 harmony_arm_pvclock_read(void)

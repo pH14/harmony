@@ -11,4 +11,4 @@
 #
 # No box capture exists yet (the marker below keeps box builds fail-closed);
 # capturing and reviewing it is part of the box re-baseline issue.
-# GATE-UNARMED
+# CHECK-UNARMED

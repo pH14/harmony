@@ -13,7 +13,7 @@
 # computation has no general preemption guarantee. The qualification must
 # establish actual cluster completion and same-seed output equality.
 #
-# **Serial discipline (determinism gate).** k3s' own verbose log is kept in
+# **Serial discipline (determinism check).** k3s' own verbose log is kept in
 # /run/k3s.log (NOT streamed to ttyS0): k8s logs are full of durations/goroutine
 # ordering that need not be bit-identical. ttyS0 carries only curated, deterministic
 # markers (K8S49: ...) + the client pod's workload output (the row|... lines, the
@@ -197,8 +197,8 @@ log "POSTGRES_READY the postgres pod is Running and accepting connections"
 # BEFORE the client pod exists, while the CNI is up. The agent asks the host
 # `net_decide` once for this flow and enforces the answer on the intra-guest CNI
 # (cni0), targeting the postgres pod IP:5432. The nominal path installs nothing
-# (agent presence stays deterministic — box gate A); a NetLatency/full-drop policy
-# installs a `tc netem`/`nft drop` rule the client then observes (gate B). Guarded:
+# (agent presence stays deterministic — box check A); a NetLatency/full-drop policy
+# installs a `tc netem`/`nft drop` rule the client then observes (check B). Guarded:
 # a missing binary (agent-absent image) or a fail-closed-to-nominal decision (no
 # Net channel wired) never aborts the workload — the agent is additive. `PG_IP` is
 # the deterministic sequential-IPAM pod IP resolved above (the workload's server).

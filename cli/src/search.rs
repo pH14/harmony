@@ -304,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn linux_gate_accepts_and_rejects_explicit_platform_values() {
+    fn linux_check_accepts_and_rejects_explicit_platform_values() {
         assert!(require_supported_linux(true).is_ok());
         assert!(require_supported_linux(false).is_err());
     }

@@ -392,7 +392,7 @@ The five validation seeds all passed in 89–251 seconds including verification
 (median 143 seconds), with first-victory frame costs of 28.2–107.6 million.
 OS peak process RSS ranged from 2,530 to 2,889 MiB despite the 2,048 MiB logical
 archive budget; final per-cell disk footprints were 6.1–14.5 MiB.
-Seed 20260911 needed 598,013 executions, leaving little headroom under the gate.
+Seed 20260911 needed 598,013 executions, leaving little headroom under the check.
 The four development seeds took 122–167 seconds. These small fixed panels do
 not establish that arbitrary seeds always succeed. Run the checked
 [`smb-reference.json`](../smb-reference.json) to repeat this recipe; retain the

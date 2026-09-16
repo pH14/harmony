@@ -1317,7 +1317,7 @@ mod tests {
         assert_eq!(
             setv.flags & KVM_VCPUEVENT_VALID_SIPI_VECTOR,
             0,
-            "SIPI stays gated on restore"
+            "SIPI stays guarded on restore"
         );
         assert_eq!(
             setv.flags & KVM_VCPUEVENT_VALID_PAYLOAD,
@@ -1342,7 +1342,7 @@ mod tests {
         let leaked = kvm_set(&stale, &canonical_events(&clean));
         assert_ne!(
             leaked, restored_fresh,
-            "canonical_events (gated bits) leaks the prior occupant's NMI/SMM/shadow"
+            "canonical_events (guarded bits) leaks the prior occupant's NMI/SMM/shadow"
         );
         assert_eq!(
             leaked.nmi_pending, 1,

@@ -70,7 +70,7 @@ those manifests, and leaves the HTML/JSON report in a sibling `-public`
 directory. The report is local evidence; the script does not fetch, upload, or
 publish licensed assets or their private requests.
 
-Repeat the qualified whole-game SMB gate with the same identified build:
+Repeat the qualified whole-game SMB check with the same identified build:
 
 ```sh
 python3 benchmarks/search/eval.py run benchmarks/search/smb-reference.json \
@@ -135,14 +135,14 @@ as a separate stress condition.
 | `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, five seeds. Every cell must solve within its declared budget. |
 | `throughput.json` | Short isolated 24-worker runs across all five games, three seeds, a two-reservation window and 512 MiB. Copy it and change only `result_slots` from 1 to 2 to measure physical overlap. Whole-game completion is not required in this work-limited panel. |
 
-Seeds 20260905–20260907 form the development pilot. The dedicated SMB gate adds
+Seeds 20260905–20260907 form the development pilot. The dedicated SMB check adds
 20260908–20260909; those seeds have now been observed in count-policy validation.
 The practical SMB reference validates on 20260910–20260914. Before any broad
 evaluation cell ran, its seeds were moved to the separate, preregistered panel
 20260920–20260924, preserving unobserved trials for
 validating a mechanism selected from the development runs. Performance panels have explicit
 frame, execution and wall ceilings. SMB's dedicated regression panel keeps the
-400,000-execution gate; the broad eight-worker panel allows 600,000 executions
+400,000-execution check; the broad eight-worker panel allows 600,000 executions
 under an 80-million-frame cap. The practical SMB reference allows 600,000
 executions and 120 million frames at 24 workers. It solved all four development
 seeds (including seed 1) in 122–167 seconds and all five fresh validation seeds
@@ -303,7 +303,7 @@ Selection stops when measured work reaches the threshold and drains the
 existing reservation window. Total work can therefore exceed the threshold;
 the overshoot is logged. A victory first observed beyond the frame budget is
 preserved and verified as evidence but does **not** pass the suite's success
-gate. The optional work budget is recorded in the deterministic header/report.
+check. The optional work budget is recorded in the deterministic header/report.
 Omitting it leaves the campaign without a work-budget cutoff.
 
 ## Deep progress and historical comparisons

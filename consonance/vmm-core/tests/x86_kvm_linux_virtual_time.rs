@@ -53,7 +53,7 @@ fn require_artifact(name: &str) -> Vec<u8> {
 fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm absent — run this `#[ignore]`d live gate on a KVM-capable Linux host."
+        "/dev/kvm absent — run this `#[ignore]`d live check on a KVM-capable Linux host."
     );
 }
 
@@ -536,7 +536,7 @@ fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
 }
 
 #[test]
-#[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
+#[ignore = "live check (real KVM + built guest image); run with -- --ignored --nocapture"]
 fn x2_virtual_time_stock_boot_smoke() {
     require_kvm();
     let kernel = require_artifact("bzImage");
@@ -601,7 +601,7 @@ fn x2_virtual_time_stock_boot_smoke() {
 }
 
 #[test]
-#[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
+#[ignore = "live check (real KVM + built guest image); run with -- --ignored --nocapture"]
 fn x2_same_seed_boots_one_normalized_log() {
     require_kvm();
     let kernel = require_artifact("bzImage");
@@ -672,7 +672,7 @@ fn x2_same_seed_boots_one_normalized_log() {
 }
 
 #[test]
-#[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
+#[ignore = "live check (real KVM + built guest image); run with -- --ignored --nocapture"]
 fn x2_component_diff_two_boots() {
     require_kvm();
     let kernel = require_artifact("bzImage");
@@ -1070,7 +1070,7 @@ fn report_selected_checkpoint(label: &str, capture: &SelectedCheckpoint) {
 }
 
 #[test]
-#[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
+#[ignore = "live check (real KVM + built guest image); run with -- --ignored --nocapture"]
 fn x2_component_diff_first_checkpoint() {
     require_kvm();
     let kernel = require_artifact("bzImage");

@@ -112,7 +112,7 @@ mod runtime {
     use harmony_supervisor::evidence::CheckCapture;
     use harmony_supervisor::process;
     use harmony_supervisor::reconcile::ActiveWindows;
-    use harmony_supervisor::recovery::RecoveryGate;
+    use harmony_supervisor::recovery::RecoveryReadiness;
     use harmony_supervisor::regs::{
         REG_ALIVE, REG_CHECK_ENABLED, REG_CHECKS_FINISHED, REG_CHECKS_STARTED,
         REG_COMPLETED_CHECK_END_GENERATION, REG_COMPLETED_CHECK_POINTS, REG_COMPLETED_CHECK_RUN,
@@ -619,7 +619,7 @@ mod runtime {
     struct HookRuntime {
         hooks: Vec<Hook>,
         launches: u64,
-        recovery: RecoveryGate,
+        recovery: RecoveryReadiness,
         recovery_probe: Option<RecoveryProbe>,
         retired_probes: Vec<Child>,
         workload: Option<Child>,
@@ -633,7 +633,7 @@ mod runtime {
             Self {
                 hooks: Vec::new(),
                 launches: 0,
-                recovery: RecoveryGate::initially_ready(),
+                recovery: RecoveryReadiness::initially_ready(),
                 recovery_probe: None,
                 retired_probes: Vec::new(),
                 workload: None,
@@ -1223,7 +1223,7 @@ mod runtime {
     fn poll_recovery(
         spec: &execution_proto::ExecutionSpec,
         ready: Option<&[String]>,
-        recovery: &mut RecoveryGate,
+        recovery: &mut RecoveryReadiness,
         current: &mut Option<RecoveryProbe>,
         retired: &mut Vec<Child>,
     ) -> Result<Vec<u32>, String> {

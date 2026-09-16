@@ -19,7 +19,7 @@ workspace = true
 # `kvm-ioctls`/`kvm-bindings`/`vm-memory` here — those live below the trait.
 # `version` is pinned alongside `path` so `cargo deny`'s `wildcards = "deny"`
 # (deny.toml [bans]) accepts the rule-2 sibling dependency — a bare `{ path }` is a
-# `*` requirement and would fail that gate. The path always wins for resolution.
+# `*` requirement and would fail that check. The path always wins for resolution.
 vmm-backend = { path = "../vmm-backend", version = "0.1.0" }
 # Rule-2 sibling exception: the V-time clock arithmetic and the seeded
 # entropy stream both live *above* the `Backend` trait — vmm-core computes the
@@ -87,9 +87,9 @@ libc = "0.2"
 [dev-dependencies]
 snapshot-store = { path = "../snapshot-store", version = "0.1.0", features = ["test-utils"] }
 # `mock` turns on `vmm_backend::MockBackend` — the scripted, no-`/dev/kvm`
-# substrate the pure-logic gates drive the event loop against (Mac + Linux).
+# substrate the pure-logic checks drive the event loop against (Mac + Linux).
 vmm-backend = { path = "../vmm-backend", version = "0.1.0", features = ["mock"] }
-# Wire the userspace xAPIC in the box-only `live_preemption` gate: that
+# Wire the userspace xAPIC in the box-only `live_preemption` check: that
 # test boots the bare `irq-landing` payload on the patched backend, `wire_lapic`s a
 # timer, and proves preemption lands the LAPIC-timer interrupt mid-busy-spin. `lapic`
 # is already a (non-dev) sibling dependency; declared here so the integration test

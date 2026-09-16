@@ -220,7 +220,7 @@ for t in kubectl crictl ctr; do ln -sf k3s "$K3SROOT/usr/local/bin/$t"; done
 # a caller-supplied static musl `flow-agent` binary; bake it in when its path is
 # passed via FLOW_AGENT_BIN. The workload entrypoint starts it before the client
 # pod. The
-# nominal path installs no rules; the FAULT path (gate B) additionally needs `nft`
+# nominal path installs no rules; the FAULT path (check B) additionally needs `nft`
 # + `tc` in the image — bake those alongside when driving a NetLatency/drop policy.
 if [ -n "${FLOW_AGENT_BIN:-}" ]; then
     install -m 0755 "$FLOW_AGENT_BIN" "$K3SROOT/usr/local/bin/flow-agent"
@@ -315,7 +315,7 @@ autovacuum = off
 max_wal_size = 64MB
 EOF
 # Trust the cluster CIDRs (pod 10.42.0.0/16, service 10.43.0.0/16) over TCP. A
-# trusted single-purpose determinism gate with no external network — `host all
+# trusted single-purpose determinism check with no external network — `host all
 # all all trust` is the simplest correct rule (initdb only trusts loopback).
 printf 'host all all all trust\n' >>"$PGSTAGE$PGDATA_REL/pg_hba.conf"
 
@@ -366,7 +366,7 @@ EOF
 chmod 0755 "$K3SROOT/k8s/client.sh"
 
 # --- 6. the k3s config + the Kubernetes manifests -----------------------------
-# Trim everything the gate doesn't need (the spec): no traefik/servicelb/metrics/
+# Trim everything the check doesn't need (the spec): no traefik/servicelb/metrics/
 # local-storage; CoreDNS off (we target the Service ClusterIP directly, no DNS);
 # no network-policy/helm controllers. flannel host-gw: single-node, so all pod
 # traffic is same-subnet on the cni0 bridge — host-gw avoids the vxlan device
@@ -388,7 +388,7 @@ EOF
 
 # The postgres Pod + Service are baked into the server manifests dir, which k3s
 # auto-applies once the apiserver is up. The client Pod is applied separately by
-# workload entrypoint AFTER the postgres pod is Ready (clean sequencing for the gate
+# workload entrypoint AFTER the postgres pod is Ready (clean sequencing for the check
 # narrative; the client's retry loop makes it robust regardless).
 cat >"$K3SROOT/var/lib/rancher/k3s/server/manifests/postgres.yaml" <<EOF
 apiVersion: v1

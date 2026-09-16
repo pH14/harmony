@@ -40,7 +40,7 @@ without that seed source.
 This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
 consonance/harmony-linux/linux/patches/ per the repo's kernel-patch licensing exception
 (patches/README.md); it is not first-party harmony source. Applied by
-consonance/harmony-linux/linux/build-kernel.sh; the counter-opcode reachability gate
+consonance/harmony-linux/linux/build-kernel.sh; the counter-opcode reachability check
 (scan-counter-opcodes.sh) accounts for this file's two deliberate rdtsc
 reads in its reviewed allowlist.
 
@@ -155,7 +155,7 @@ the flag, so pinned images restore without observable effect.
 + * -- exception and interrupt frames (pt_regs), the syscall R11 image,
 + * local_irq_save() -- would otherwise carry that vendor-specific bit into
 + * guest memory. No 64-bit-mode instruction reads AF, so the deterministic
-+ * guest clears it wherever flags become data. The gate is a plain
++ * guest clears it wherever flags become data. The check is a plain
 + * __ro_after_init bool (no call) so noinstr entry paths can use it.
 + */
 +#ifdef CONFIG_HARMONY_PVCLOCK
@@ -180,7 +180,7 @@ the flag, so pinned images restore without observable effect.
 + * an exit-free execution stretch still reaches an armed clockevent
 + * deadline. The exact port, width, and value are default-denied by the
 + * userspace device model. Same noinstr rules as harmony_pin_flags: the
-+ * gate is the plain __ro_after_init bool and outl is inline asm.
++ * check is the plain __ro_after_init bool and outl is inline asm.
 + */
 +#define HARMONY_VIRTUAL_TIME_TICK_PORT 0x0CA3
 +
@@ -434,7 +434,7 @@ the flag, so pinned images restore without observable effect.
 + * anywhere else in the system still traps to the hypervisor and returns the
 + * same exit-count-derived value (the enforcement backstop).
 + *
-+ * Everything is gated on the `harmony_pvclock` kernel parameter, which only
++ * Everything is guarded on the `harmony_pvclock` kernel parameter, which only
 + * the harmony vmm appends to the command line when it offers the page — this
 + * file is dead weight (and this kernel behaves exactly as before) on any
 + * other host, which is what lets one kernel image serve as both the page-on

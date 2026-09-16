@@ -1504,7 +1504,7 @@ where
         };
         let vt = self.vtime.as_ref().ok_or_else(|| {
             VmmError::ContractViolation(
-                "pvclock page registered but V-time is not wired — registration is gated on the \
+                "pvclock page registered but V-time is not wired — registration requires the \
                  determinism path, so this is unreachable state"
                     .to_string(),
             )
@@ -7471,7 +7471,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_hashing_is_gated_off_by_default() {
+    fn snapshot_hashing_is_disabled_by_default() {
         let v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         assert!(!v.snapshot_hashing_wired());
         assert!(!has_tag(&v.state_blob().unwrap(), b"VMST"));

@@ -6,7 +6,7 @@ graduate the finder from "catches what we planted" to "catches what actually hap
 
 **FOSS only.** Every entry must be fully reproducible from public source at a pinned version.
 
-## Provenance is the gate
+## Provenance is the check
 
 An entry is not accepted on folklore. Its README must cite primary sources — the upstream
 issue/thread, the fixing commit, the release notes or postmortem — and state exactly:
@@ -60,7 +60,7 @@ manifest-declared clean trajectories exercises fresh starts, including no-find
 paths, with two fresh repeats on one arm so their state digests can be compared,
 under the case's aggregate replay-session cap. The committed probe file remains
 a historical reference; the current build's discovered input is the replay
-source and the probe is not a CI gate.
+source and the probe is not a CI check.
 
 The PostgreSQL image builder publishes a checksum-verified artifact keyed by
 the image sources and case manifest. PR smoke checks require that exact cache

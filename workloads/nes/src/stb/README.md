@@ -190,7 +190,7 @@ seed-1 Easy smoke on affected PRs and main changes.
 [Search evaluation acceptance](../../../../.github/workflows/search-eval.yml)
 qualifies all three AI levels through manual dispatch.
 [The NES benchmark](../../../../.github/workflows/nova-nightly.yml) follows
-Nova's source-build/search/film pattern and gates full recorded campaign replay;
+Nova's source-build/search/film pattern and checks full recorded campaign replay;
 scheduled and manually selected STB runs cross all three levels with registered seeds 1, 2,
 and 3. Easy and Fair run exact 2,000-execution soaks. Hard searches up to
 20,000 executions and stops after finding a victory (then drains outstanding
@@ -200,7 +200,7 @@ job timeout. The correctness probe checks controls, autonomous opposition,
 and restored continuations before search. The campaign compares live/replayed
 reports and checkpoint bytes and verifies the headless/rendered endpoint.
 
-CI gates execution limits, replay consistency, and usable evidence. Every Hard
+CI checks execution limits, replay consistency, and usable evidence. Every Hard
 cell must also produce a verified Player-A victory with all five opponent
 stock losses; exhausting its ceiling without a win fails CI. Easy/Fair retain
 progress-only qualification. First-win executions remain measured outcomes,

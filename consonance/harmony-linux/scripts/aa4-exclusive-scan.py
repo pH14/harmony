@@ -152,7 +152,7 @@ def executable_words(path: str):
     # defined non-exec DATA section already describes: those are data, mapped non-executable at
     # runtime under STRICT_KERNEL_RWX (they only share the executable init PT_LOAD in the vmlinux
     # ELF), so scanning them as instructions is a false reject. This makes the STATIC scanner a
-    # section-aware PRE-FLIGHT; the AUTHORITATIVE W^X gate is the runtime page-granular
+    # section-aware PRE-FLIGHT; the AUTHORITATIVE W^X check is the runtime page-granular
     # execute-guard (hm-rfz), which rescans the ACTUAL bytes of any page the guest makes
     # executable. A forged ELF that mislabels executable hazard-bearing code as a data section
     # therefore passes HERE but is rejected THERE — proven by a forged-ELF fixture.

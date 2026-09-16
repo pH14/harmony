@@ -6,14 +6,14 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: harmony-build-guest-images --output DIR [--minimal-only] [--mutate-cache-line] [--serialization-gate] [--n6] [--oci-runtime]" >&2
+    echo "usage: harmony-build-guest-images --output DIR [--minimal-only] [--mutate-cache-line] [--serialization-check] [--n6] [--oci-runtime]" >&2
     exit 2
 }
 
 output=
 minimal_only=0
 mutate_cache_line=0
-serialization_gate=0
+serialization_check=0
 n6=0
 oci_runtime=0
 while [ "$#" -gt 0 ]; do
@@ -31,8 +31,8 @@ while [ "$#" -gt 0 ]; do
             mutate_cache_line=1
             shift
             ;;
-        --serialization-gate)
-            serialization_gate=1
+        --serialization-check)
+            serialization_check=1
             shift
             ;;
         --n6)
@@ -55,8 +55,8 @@ done
 host_arch=$(uname -m)
 case "$host_arch" in
     aarch64)
-        [ "$serialization_gate" -eq 0 ] || {
-            echo "FAIL: --serialization-gate is x86_64-only" >&2
+        [ "$serialization_check" -eq 0 ] || {
+            echo "FAIL: --serialization-check is x86_64-only" >&2
             exit 1
         }
         ;;
@@ -231,7 +231,7 @@ else
         echo "== platform: build generated sweep and traps-off x86 kernel"
         (cd "$linux_dir" && ./build-n6-instruction-images.sh && N6_TRAPS_OFF=1 ./build-kernel.sh)
     fi
-    if [ "$serialization_gate" -eq 1 ]; then
+    if [ "$serialization_check" -eq 1 ]; then
         echo "== platform: run /dev/harmony serialization checks"
         (cd "$linux_dir" && ./test-harmony-serialization.sh)
     fi

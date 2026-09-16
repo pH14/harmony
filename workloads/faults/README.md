@@ -31,7 +31,7 @@ setup point, then owns the node process groups and hook launches.
 After setup, readiness probes run asynchronously while standing-fault polling
 continues. The configured command decides readiness, including whether it can
 operate with some nodes down. Already-running hooks continue reporting their
-assertions across restarts; readiness only gates new launches. Bundles without
+assertions across restarts; readiness only checks new launches. Bundles without
 a readiness command keep immediate hook launches.
 
 ## Actions
@@ -131,7 +131,7 @@ produces no suffix action, retained candidate, oracle evidence, or duration
 feedback. Other reconstruction errors still fail the campaign. A completed CLI
 with such cutoffs remains a measured campaign;
 an outer CLI timeout is an infrastructure failure. The reports also expose
-`execution_failures`; the nightly gate rejects non-watchdog failures. A supervisor
+`execution_failures`; the nightly check rejects non-watchdog failures. A supervisor
 runtime error has a separate SDK status and cannot turn a PID 1 exit into bug
 evidence.
 

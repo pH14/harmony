@@ -104,4 +104,4 @@ workloads/tools/target/release/kvm_x86_nova_probe --prepare-admission \
 
 The candidate binds the kernel, prepared runtime/workload, ROM, serialized boot
 configuration and fixed oracle controls. It does not approve its inputs; the
-controlled-workload admission gate remains separate from the A–E comparisons.
+controlled-workload admission check remains separate from the A–E comparisons.

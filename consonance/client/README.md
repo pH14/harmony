@@ -84,7 +84,7 @@ still accept other inputs, retaining strict raw identity for unknown profiles.
 For matched profiles, logical identity excludes only validated init x87/SSE raw
 presence metadata; exported artifacts retain those bytes and checksum them.
 The guest execution restrictions and import boundary are documented in the
-[core identity contract](../vmm-core/README.md#published-xsave-identity-gate).
+[core identity contract](../vmm-core/README.md#published-xsave-identity-check).
 
 ```sh
 cargo test -p consonance-client

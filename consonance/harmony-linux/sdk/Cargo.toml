@@ -31,11 +31,11 @@ debug = 0
 hypercall-proto = { path = "../../hypercall-proto", version = "0.1.0", default-features = false, features = ["guest"] }
 
 # The host `Dispatcher` + reference services (`EventSink`, `CoverageService`) drive the
-# loopback gate. Their `host` feature implies `std`; under the v2 resolver it
+# loopback check. Their `host` feature implies `std`; under the v2 resolver it
 # unifies only into the `cargo test` graph, never into
 # `cargo build --target x86_64-unknown-none`, so the library stays no_std. The
 # real guest doorbell transport (`hypercall-doorbell`) is exercised only in the
-# box gate, so it is a dev-dependency here (the SDK is generic over `Transport`).
+# box check, so it is a dev-dependency here (the SDK is generic over `Transport`).
 [dev-dependencies]
 hypercall-proto = { path = "../../hypercall-proto", version = "0.1.0", features = ["host"] }
 hypercall-doorbell = { path = "../../hypercall-doorbell", version = "0.1.0" }

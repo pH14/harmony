@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Fast local feedback before GitHub-hosted CI does the full pass.
 # Installed by scripts/install-quality-tools.sh via `git config core.hooksPath
-# .githooks`. This is a convenience, NOT the gate of record (that is the
+# .githooks`. This is a convenience, NOT the check of record (that is the
 # GitHub-hosted runner / .github/workflows/quality.yml) — it runs the *fast*
-# cross-platform gates so a developer gets early signal:
+# cross-platform checks so a developer gets early signal:
 #
 #   fmt -> clippy (-D warnings) -> nextest
 #
@@ -37,4 +37,4 @@ else
     cargo test --all-features
 fi
 
-echo "== pre-push: all fast gates passed"
+echo "== pre-push: all fast checks passed"
