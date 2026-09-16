@@ -2381,6 +2381,10 @@ where
         return Err("initial draw state exceeds its deterministic memory reserve".into());
     }
     let mut header = stream_header(workload, config, &origin_record, draw_header);
+    crate::search::archive::selector_policy_from_identifier(
+        &header.parent_scheduler,
+        G::Key::groups().saturating_sub(1),
+    )?;
     header.work_budget = work_budget;
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
