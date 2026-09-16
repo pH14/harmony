@@ -203,14 +203,17 @@ impl InputPolicy for TimingWorkload {
         self.expand_suffix(run, state, shape, mixture, mutation_seed)
     }
 
-    fn expand_suffix_duration(
+    #[allow(clippy::too_many_arguments)]
+    fn expand_duration_recorded_or_live(
         &self,
         _run: &Self::Run,
         _state: &DrawTables<Self::Action>,
         _shape: SuffixShape,
         _mixture: MixtureDraw,
+        _before: Option<&EmpiricalStepCheckpoint>,
         draw_seed: u64,
         draw: DurationDraw<Self::Key>,
+        _replay: bool,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         let _ = draw_seed;
         if self.fail_timed_action {
