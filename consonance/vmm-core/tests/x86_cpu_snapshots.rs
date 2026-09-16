@@ -401,7 +401,7 @@ mod live_kvm {
     use vmm_backend::KvmBackend;
     use vmm_core::virtual_time::{DeviceClass, NormalizedEventClass};
 
-    fn public_identity_vmm(active: bool) -> Vmm<KvmBackend> {
+    fn public_identity_vmm(active: bool, seed: u64, xcr0: u64) -> Vmm<KvmBackend> {
         let mut ram = GuestRam::new(0x10000).unwrap();
         let bytes = ram.as_mut_bytes();
         put_u64(bytes, 0x3000, 0x4003);
@@ -427,7 +427,15 @@ mod live_kvm {
             state.regs = entry.regs;
             state.sregs = entry.sregs;
             state.sregs.cr4 |= (1 << 9) | (1 << 18);
-            state.xcr0 = 3;
+            state.xcr0 = xcr0;
+            assert_eq!(
+                &state.xsave[512..520],
+                &0_u64.to_le_bytes(),
+                "entry template must be canonical init"
+            );
+            state.xsave_restore_bv = Some(seed);
+            vmm_backend::restore_xsave_image(&state.xsave, state.xsave_restore_bv)
+                .expect("seed must represent the same canonical init state");
             state.msrs.insert(IA32_EFER, state.sregs.efer);
             backend.restore(&state).unwrap();
         });
@@ -482,8 +490,8 @@ mod live_kvm {
     fn assert_public_identity_negative_controls() {
         use vmm_core::control::{ControlServer, server_caps};
         let mut server = ControlServer::new(
-            public_identity_vmm(true),
-            Box::new(|| Ok(public_identity_vmm(true))),
+            public_identity_vmm(true, 3, 7),
+            Box::new(|| Ok(public_identity_vmm(true, 3, 7))),
         );
         server
             .handle(&control_proto::Request::Hello(server_caps()))
@@ -498,8 +506,8 @@ mod live_kvm {
         baseline.xsave_restore_bv = Some(7);
         let restore_target = |state: &vm_state::VmState| {
             let mut target = ControlServer::new(
-                public_identity_vmm(true),
-                Box::new(|| Ok(public_identity_vmm(true))),
+                public_identity_vmm(true, 3, 7),
+                Box::new(|| Ok(public_identity_vmm(true, 3, 7))),
             );
             target
                 .handle(&control_proto::Request::Hello(server_caps()))
@@ -556,106 +564,132 @@ mod live_kvm {
         use vmm_core::control::{ControlServer, RestoreMode};
         require_kvm();
         assert_public_identity_negative_controls();
-        for active in [false, true] {
-            for after_out in [false, true] {
-                for mode in [RestoreMode::Memcpy, RestoreMode::InPlace] {
-                    let creations = Arc::new(AtomicUsize::new(0));
-                    let factory_count = creations.clone();
-                    let mut server = ControlServer::new(
-                        public_identity_vmm(active),
-                        Box::new(move || {
-                            factory_count.fetch_add(1, Ordering::SeqCst);
-                            Ok(public_identity_vmm(active))
-                        }),
-                    );
-                    server
-                        .handle(&control_proto::Request::Hello(
-                            vmm_core::control::server_caps(),
-                        ))
-                        .unwrap()
-                        .unwrap();
-                    server.set_restore_mode(mode);
-                    if after_out {
-                        assert_eq!(server.vmm_mut().unwrap().step().unwrap(), Step::Continued);
-                        assert_eq!(server.vmm().unwrap().serial_output(), b"A");
-                    }
-                    let (a, a_bytes, a_hash) = public_capture(&mut server);
-                    let (a_again, a_again_bytes, a_again_hash) = public_capture(&mut server);
-                    assert_ne!(a, a_again);
-                    assert_eq!(a_hash, a_again_hash, "repeated A capture hash");
-                    assert!(a_bytes == a_again_bytes, "repeated A capture bytes");
-                    let expected = public_continue(&mut server, active);
-                    let restores_before = creations.load(Ordering::SeqCst);
-                    assert_eq!(
-                        server
-                            .handle(&control_proto::Request::Replay(a))
-                            .unwrap()
-                            .unwrap(),
-                        control_proto::Reply::Unit
-                    );
-                    assert_eq!(
-                        server.in_place_fallbacks(),
-                        0,
-                        "reuse must not silently fall back"
-                    );
-                    assert_eq!(
-                        creations.load(Ordering::SeqCst) - restores_before,
-                        usize::from(mode == RestoreMode::Memcpy)
-                    );
-                    let (b, b_bytes, b_hash) = public_capture(&mut server);
-                    let (b_again, b_again_bytes, b_again_hash) = public_capture(&mut server);
-                    assert_ne!(b, b_again);
-                    assert_eq!(b_hash, b_again_hash, "repeated B capture hash");
-                    assert!(b_bytes == b_again_bytes, "repeated B capture bytes");
-                    eprintln!(
-                        "A/B envelope differences: active={active}, after_out={after_out}, mode={mode:?}: {:?}",
-                        a_bytes
-                            .iter()
-                            .zip(&b_bytes)
-                            .enumerate()
-                            .filter(|(_, (a, b))| a != b)
-                            .take(16)
-                            .map(|(offset, (a, b))| (offset, *a, *b))
-                            .collect::<Vec<_>>()
-                    );
-                    for cycle in 0..3 {
-                        server.vmm_mut().unwrap().prepare_snapshot().unwrap();
-                        let (_, prepared_bytes, prepared_hash) = public_capture(&mut server);
-                        assert_eq!(
-                            b_hash, prepared_hash,
-                            "host-only preparation {cycle} identity"
-                        );
-                        assert!(
-                            b_bytes == prepared_bytes,
-                            "host-only preparation {cycle} bytes"
-                        );
-                    }
-                    assert_ne!(a, b);
-                    assert_eq!(
-                        a_hash, b_hash,
-                        "immediate recapture identity: active={active}, after_out={after_out}, mode={mode:?}"
-                    );
-                    for (label, left, right) in [
-                        ("immediate A/B", a_bytes, b_bytes),
-                        (
-                            "continuation",
-                            expected,
-                            public_continue(&mut server, active),
-                        ),
-                    ] {
-                        let comparison =
-                            vmm_core::portable_snapshot::compare_portable_execution_state(
-                                &left, &right, 0x10000,
-                            )
-                            .unwrap();
-                        eprintln!(
-                            "{label}: active={active}, after_out={after_out}, mode={mode:?}, comparison={comparison:?}, first_envelope_difference={:?}",
-                            left.iter().zip(&right).position(|(a, b)| a != b)
-                        );
-                        assert!(
-                            comparison.equal,
-                            "complete execution state differs at {label}"
-                        );
+        for seed in [0, 2, 3] {
+            for xcr0 in [3, 7] {
+                for active in [false, true] {
+                    for after_out in [false, true] {
+                        for mode in [RestoreMode::Memcpy, RestoreMode::InPlace] {
+                            eprintln!(
+                                "public identity case: seed={seed}, xcr0={xcr0}, active={active}, after_out={after_out}, mode={mode:?}"
+                            );
+                            let creations = Arc::new(AtomicUsize::new(0));
+                            let factory_count = creations.clone();
+                            let mut server = ControlServer::new(
+                                public_identity_vmm(active, seed, xcr0),
+                                Box::new(move || {
+                                    factory_count.fetch_add(1, Ordering::SeqCst);
+                                    Ok(public_identity_vmm(active, seed, xcr0))
+                                }),
+                            );
+                            server
+                                .handle(&control_proto::Request::Hello(
+                                    vmm_core::control::server_caps(),
+                                ))
+                                .unwrap()
+                                .unwrap();
+                            server.set_restore_mode(mode);
+                            if after_out {
+                                assert_eq!(
+                                    server.vmm_mut().unwrap().step().unwrap(),
+                                    Step::Continued
+                                );
+                                assert_eq!(server.vmm().unwrap().serial_output(), b"A");
+                            }
+                            let (a, a_bytes, a_hash) = public_capture(&mut server);
+                            let a_raw = server
+                                .vmm()
+                                .unwrap()
+                                .save_vm_state()
+                                .unwrap()
+                                .xsave_restore_bv;
+                            let (a_again, a_again_bytes, a_again_hash) =
+                                public_capture(&mut server);
+                            assert_ne!(a, a_again);
+                            assert_eq!(a_hash, a_again_hash, "repeated A capture hash");
+                            assert!(a_bytes == a_again_bytes, "repeated A capture bytes");
+                            let expected = public_continue(&mut server, active);
+                            let restores_before = creations.load(Ordering::SeqCst);
+                            assert_eq!(
+                                server
+                                    .handle(&control_proto::Request::Replay(a))
+                                    .unwrap()
+                                    .unwrap(),
+                                control_proto::Reply::Unit
+                            );
+                            assert_eq!(
+                                server.in_place_fallbacks(),
+                                0,
+                                "reuse must not silently fall back"
+                            );
+                            assert_eq!(
+                                creations.load(Ordering::SeqCst) - restores_before,
+                                usize::from(mode == RestoreMode::Memcpy)
+                            );
+                            let (b, b_bytes, b_hash) = public_capture(&mut server);
+                            let b_raw = server
+                                .vmm()
+                                .unwrap()
+                                .save_vm_state()
+                                .unwrap()
+                                .xsave_restore_bv;
+                            eprintln!("post-capture raw metadata: A={a_raw:?}, B={b_raw:?}");
+                            let (b_again, b_again_bytes, b_again_hash) =
+                                public_capture(&mut server);
+                            assert_ne!(b, b_again);
+                            assert_eq!(b_hash, b_again_hash, "repeated B capture hash");
+                            assert!(b_bytes == b_again_bytes, "repeated B capture bytes");
+                            eprintln!(
+                                "A/B envelope differences: active={active}, after_out={after_out}, mode={mode:?}: {:?}",
+                                a_bytes
+                                    .iter()
+                                    .zip(&b_bytes)
+                                    .enumerate()
+                                    .filter(|(_, (a, b))| a != b)
+                                    .take(16)
+                                    .map(|(offset, (a, b))| (offset, *a, *b))
+                                    .collect::<Vec<_>>()
+                            );
+                            for cycle in 0..3 {
+                                server.vmm_mut().unwrap().prepare_snapshot().unwrap();
+                                let (_, prepared_bytes, prepared_hash) =
+                                    public_capture(&mut server);
+                                assert_eq!(
+                                    b_hash, prepared_hash,
+                                    "host-only preparation {cycle} identity"
+                                );
+                                assert!(
+                                    b_bytes == prepared_bytes,
+                                    "host-only preparation {cycle} bytes"
+                                );
+                            }
+                            assert_ne!(a, b);
+                            assert_eq!(
+                                a_hash, b_hash,
+                                "immediate recapture identity: active={active}, after_out={after_out}, mode={mode:?}"
+                            );
+                            for (label, left, right) in [
+                                ("immediate A/B", a_bytes, b_bytes),
+                                (
+                                    "continuation",
+                                    expected,
+                                    public_continue(&mut server, active),
+                                ),
+                            ] {
+                                let comparison =
+                                    vmm_core::portable_snapshot::compare_portable_execution_state(
+                                        &left, &right, 0x10000,
+                                    )
+                                    .unwrap();
+                                eprintln!(
+                                    "{label}: active={active}, after_out={after_out}, mode={mode:?}, comparison={comparison:?}, first_envelope_difference={:?}",
+                                    left.iter().zip(&right).position(|(a, b)| a != b)
+                                );
+                                assert!(
+                                    comparison.equal,
+                                    "complete execution state differs at {label}"
+                                );
+                            }
+                        }
                     }
                 }
             }
