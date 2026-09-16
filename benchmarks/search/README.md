@@ -142,9 +142,14 @@ The practical SMB reference validates on 20260910–20260914. Before any broad
 evaluation cell ran, its seeds were moved to the separate, preregistered panel
 20260920–20260924, preserving unobserved trials for
 validating a mechanism selected from the development runs. Performance panels have explicit
-frame, execution and wall ceilings. SMB's dedicated regression panel keeps the
-400,000-execution check; the broad eight-worker panel allows 600,000 executions
-under an 80-million-frame cap. The practical SMB reference allows 600,000
+frame, execution and wall ceilings. SMB's dedicated regression panel allows
+2,000,000 executions under a 400-million-frame cap and a 1,800-second wall; the
+broad eight-worker panel allows 600,000 executions under an 80-million-frame
+cap. The regression panel's earlier 400,000-execution ceiling sat inside the
+spread of its own solve points, measured from 267,067 to 685,954 executions
+across its ten cells, so which cells solved varied run to run. Its ceiling is a
+floor for whether a run completes at all; compare runs by the recorded
+`executions_to_first_victory`, not by whether a cell cleared the ceiling. The practical SMB reference allows 600,000
 executions and 120 million frames at 24 workers. It solved all four development
 seeds (including seed 1) in 122–167 seconds and all five fresh validation seeds
 in 89–251 seconds, including witness verification. One validation seed needed
