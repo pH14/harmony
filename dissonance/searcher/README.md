@@ -198,11 +198,16 @@ identifiers weight the draw by barren energy, by progress rank, and by cost.
 
 The coarsest group is a class. Every class holding a live cell receives draws.
 The walk ranks classes by how many distinct progress levels are ahead of them,
-capped at eight, and weights a class `256 >> rank`, so the leading class takes
-the largest share and no live class takes zero. `SelectorAccounting`'s
-`class_draws_by_rank` reports the share each rank received. Bands inside a class
-are ranked the same way, over the distinct progress levels of their frontier
-groups.
+capped at eight, and weights a class `256 >> rank` times its barren energy, so
+the leading class takes the largest share, a class that stops producing falls
+away, and no live class takes zero. Without the energy term a workload whose
+classes form a chain of finished and unfinished stages spends half its draws
+behind the frontier forever. The class depth is an ordinary pooled depth: the
+`energy_frontier_cheapest` identifiers carry one scale per depth from the
+finest pooled depth up to the class, and `group_barren` holds a counter at each
+of them. `SelectorAccounting`'s `class_draws_by_rank` reports the share each
+rank received. Bands inside a class are ranked the same way, over the distinct
+progress levels of their frontier groups.
 
 A productive selection clears the parent's barren counter at a pooled depth
 only when a retained child's group at that depth had not been seen before. A

@@ -210,7 +210,7 @@ where
         retention: RetentionPolicy::Unprobed,
         selector: selector_policy_from_identifier(
             &request.selector,
-            G::Key::groups().saturating_sub(2),
+            G::Key::groups().saturating_sub(1),
         )?,
         objective_witness_path: Some(out.join("victory-input.json")),
     };

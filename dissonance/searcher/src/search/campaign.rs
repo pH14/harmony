@@ -3299,7 +3299,7 @@ where
     let replay_retention = retention_policy_from_identifier(&header.retention_policy)?;
     let replay_selector = crate::search::archive::selector_policy_from_identifier(
         &header.parent_scheduler,
-        G::Key::groups().saturating_sub(2),
+        G::Key::groups().saturating_sub(1),
     )?;
     let expected_resume = if header.origin_kind == ORIGIN_SNAPSHOT_ROOT {
         SNAPSHOT_ROOT_RESUME_IDENTIFIER
