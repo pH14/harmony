@@ -461,13 +461,14 @@ def check_misplaced_workload_files(files: list[str]) -> list[Violation]:
 # CI workflow name prefix check
 # ---------------------------------------------------------------------------
 
-CI_WORKFLOW_PREFIXES = ["Acceptance", "Benchmarks", "Checks", "Nightly", "Release", "Smoke"]
+CI_WORKFLOW_PREFIXES = ["Checks", "Validation", "Benchmarks", "Release"]
+CI_JOB_PREFIXES = ["Check", "Test", "Build", "Search", "Replay", "Report", "Publish"]
 
 PR_JOB_MAX_TIMEOUT_MINUTES = 15
 PR_WORKFLOWS = {
-    ".github/workflows/quality.yml": "Checks",
-    ".github/workflows/nightly.yml": "Checks",
-    ".github/workflows/product-smoke.yml": "Smoke",
+    ".github/workflows/quality.yml": "Checks / Repository",
+    ".github/workflows/nightly.yml": "Checks / Memory safety",
+    ".github/workflows/product-smoke.yml": "Checks / Product smokes",
 }
 CI_NAME_TERMS = {
     "API", "CLI", "CPU", "KVM", "NES", "STB", "VM",
@@ -494,6 +495,14 @@ def _sentence_case_name(name: str) -> bool:
         if word != expected:
             return False
     return True
+
+
+def _qualified_display_name(name: str, prefixes: list[str], *, matrix: bool = False) -> bool:
+    if name != name.strip() or (not matrix and "${{" in name):
+        return False
+    prefix, separator, subject = name.partition(" / ")
+    return (prefix in prefixes and bool(separator) and subject == subject.strip()
+            and _sentence_case_name(subject))
 
 # Event names that cannot be a pull-request run.
 NON_PR_EVENTS = {"push", "schedule", "workflow_dispatch"}
@@ -628,6 +637,7 @@ def _parse_workflow(abs_path: Path) -> dict:
 def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
     """Validate the complete tracked-file inventory, not a changed-file subset."""
     violations = []
+    workflow_names = {}
     nes_manifest = "benchmarks/search/nightly.json"
     nes_workflow = ".github/workflows/nova-nightly.yml"
     if nes_manifest in files or (repo_root / nes_manifest).is_file():
@@ -646,7 +656,7 @@ def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
         except (OSError, ValueError) as error:
             violations.append(Violation("ci-workflow-parse", rel_path, 0, str(error)))
             continue
-        name = str(data.get("name", "")).strip()
+        name = str(data.get("name", ""))
         if not name:
             violations.append(Violation(
                 rule="ci-workflow-prefix",
@@ -656,25 +666,31 @@ def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
             ))
         else:
             prefix = name.split("/")[0].strip() if "/" in name else name
-            flat = name in {"Checks", "Smoke"}
-            if prefix not in CI_WORKFLOW_PREFIXES or (not flat and not re.fullmatch(r"\S+ / \S.*", name)):
+            if prefix not in CI_WORKFLOW_PREFIXES or " / " not in name:
                 violations.append(Violation(
                     rule="ci-workflow-prefix",
                     path=rel_path,
                     line=0,
                     text=f"workflow name '{name}' does not start with an allowed prefix",
                 ))
-            elif prefix in {"Checks", "Smoke"} and not flat:
-                violations.append(Violation("ci-display-name", rel_path, 0,
-                    "Checks and Smoke workflow names must be the category alone; descriptive subjects belong on jobs"))
-            elif not flat and not _sentence_case_name(name.split(" / ", 1)[1]):
+            elif not _qualified_display_name(name, CI_WORKFLOW_PREFIXES):
                 violations.append(Violation("ci-display-name", rel_path, 0,
                     f"workflow subject must be descriptive sentence case: {name}"))
+        if name in workflow_names:
+            violations.append(Violation("ci-display-name", rel_path, 0,
+                f"workflow name '{name}' is already used by {workflow_names[name]}"))
+        workflow_names[name] = rel_path
+        job_names = set()
         for job_id, job in data["jobs"].items():
             job_name = job.get("name")
-            if not isinstance(job_name, str) or not _sentence_case_name(job_name):
+            if not isinstance(job_name, str) or not _qualified_display_name(job_name, CI_JOB_PREFIXES, matrix=True):
                 violations.append(Violation("ci-display-name", rel_path, 0,
-                    f"job '{job_id}' needs a descriptive sentence-case display name (capitalize proper names and registered acronyms only)"))
+                    f"job '{job_id}' needs Role / Subject with a descriptive sentence-case subject; roles: {', '.join(CI_JOB_PREFIXES)}"))
+            elif job_name in job_names:
+                violations.append(Violation("ci-display-name", rel_path, 0,
+                    f"job '{job_id}' repeats display name '{job_name}'"))
+            if isinstance(job_name, str):
+                job_names.add(job_name)
 
         triggers = data.get("on", data.get(True, {}))
         if isinstance(triggers, str):
@@ -685,9 +701,9 @@ def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
             violations.append(Violation("ci-workflow-parse", rel_path, 0, "workflow has no valid triggers"))
             continue
         category = str(data.get("name", "")).split(" / ")[0]
-        if category in {"Acceptance", "Benchmarks", "Nightly"}:
+        if category in {"Validation", "Benchmarks"}:
             forbidden = set(triggers) - {"schedule", "workflow_dispatch", "workflow_call"}
-        elif category in {"Checks", "Smoke"}:
+        elif category == "Checks":
             forbidden = set(triggers) & {"schedule"}
         else:
             forbidden = set()
@@ -698,10 +714,10 @@ def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
             violations.extend(check_nes_job_coverage(repo_root, rel_path, data))
         if not set(triggers) & {"pull_request", "pull_request_target", "merge_group"}:
             continue
-        if PR_WORKFLOWS.get(rel_path) != category:
+        if PR_WORKFLOWS.get(rel_path) != name:
             violations.append(Violation("ci-pr-workflow-registration", rel_path, 0,
                 "PR workflows must use a registered path and category; register new checks explicitly"))
-        if category == "Smoke" or rel_path == ".github/workflows/product-smoke.yml":
+        if rel_path == ".github/workflows/product-smoke.yml":
             violations.extend(check_pr_smoke_routing(rel_path, data))
         if rel_path in {".github/workflows/quality.yml", ".github/workflows/nightly.yml"}:
             violations.extend(check_pr_check_routing(rel_path, data))
@@ -717,7 +733,7 @@ def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
             commands = "\n".join(str(step.get("run", "")) for step in job.get("steps", []) if isinstance(step, dict))
             if re.search(r"\bcargo(?:\s+\+\S+)?\s+(?:mutants|llvm-cov)\b|\bscripts/coverage\.sh\b", commands):
                 violations.append(Violation("ci-pr-extended-validation", rel_path, 0,
-                    f"job '{job_name}' runs mutation or coverage; move it to Nightly"))
+                    f"job '{job_name}' runs mutation or coverage; move it to Validation"))
             # Every automatic PR job must declare its bound. Treat a missing
             # or malformed value as a violation instead of silently allowing
             # an unbounded runner.
@@ -750,8 +766,8 @@ def check_pr_smoke_routing(path: str, workflow: dict) -> list[Violation]:
 
     if path != ".github/workflows/product-smoke.yml":
         return problem("PR smokes must be registered in product-smoke.yml and scripts/ci_scope.py")
-    if workflow.get("name") != "Smoke":
-        return problem("the registered product workflow must retain its Smoke category")
+    if workflow.get("name") != PR_WORKFLOWS[path]:
+        return problem("the registered product workflow must retain its Checks / Product smokes name")
     jobs = workflow["jobs"]
     expected = set(SMOKES) | {"guest-qualification"}
     if set(jobs) != expected:
@@ -1272,25 +1288,25 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "ci-pr-job-timeout": (
             f"Automatic per-PR jobs must not exceed {PR_JOB_MAX_TIMEOUT_MINUTES} minutes. "
-            "Very short workloads are smoke tests (Smoke category). Long-running "
-            "workloads are acceptance tests that run on an off-hours schedule "
-            "(Acceptance category). If the job must run on every PR, split it into "
+            "Short workloads belong in Checks / Product smokes. Long-running "
+            "correctness tests belong in Validation on a schedule or manual dispatch. "
+            "If the job must run on every PR, split it into "
             "smaller pieces or move the expensive part behind a schedule or "
             "workflow_dispatch trigger. Comment-based timeout exceptions are not allowed."
         ),
         "ci-workflow-parse": "Install PyYAML==6.0.3 and fix malformed or duplicate YAML fields; workflow checks never silently skip parsing.",
-        "ci-workflow-triggers": "Acceptance, Benchmarks and Nightly allow only schedule/manual/reusable triggers. Checks and Smoke cannot be scheduled.",
+        "ci-workflow-triggers": "Validation and Benchmarks allow only schedule/manual/reusable triggers. Checks cannot be scheduled.",
         "ci-pr-only-jobs": "Keep nightly/manual jobs out of PR workflows, including jobs hidden behind event guards.",
-        "ci-pr-extended-validation": "Run coverage and mutation in Nightly workflows; a short timeout does not make them PR checks.",
+        "ci-pr-extended-validation": "Run coverage and mutation in Validation workflows; a short timeout does not make them PR checks.",
         "ci-pr-workflow-registration": "Register new PR workflows and their category in PR_WORKFLOWS; route product smokes through the existing selector.",
-        "ci-display-name": "Use descriptive sentence-case subjects, preserving registered proper names/acronyms. Checks and Smoke are category-only workflow names; job names supply the flat display subject. Do not use generic names such as Checks, Products or Quality.",
+        "ci-display-name": "Require unique Category / Subject workflow names and unique Role / Subject job names within each workflow. Subjects use descriptive sentence case and registered proper names/acronyms; matrix expressions belong only in job subjects.",
         "ci-pr-smoke-routing": "Register PR product smokes through the tested consumer selector; do not add independent broad triggers or unbounded matrices.",
         "ci-pr-check-routing": "Keep selection inside real checks, not separate routing jobs. Every expensive or artifact step must require its selection output; the Miri matrix must match registered targets.",
         "ci-nes-case-jobs": "Map every public NES manifest case exactly once to the case matrix, select it with --case, disable fail-fast, and retain an always-running report.",
         "ci-workflow-prefix": (
             "Every GitHub Actions workflow name must start with one of the "
-            "defined categories: Acceptance, Benchmarks, Checks, Nightly, Release, Smoke. "
-            "Use 'Checks' or 'Smoke' with descriptive job names, or 'Category / Description' for other workflows. If none of these "
+            "defined categories: Checks, Validation, Benchmarks, Release. "
+            "Use 'Category / Subject' for every workflow; bare category names are forbidden. If none of these "
             "categories fit, ask the project owner whether to create a new one."
         ),
         "lab-notes-not-tracked": (

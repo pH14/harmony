@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Smoke
+name: Checks / Product smokes
 on:
   pull_request:
   push:
@@ -21,7 +21,7 @@ env:
   CASE_DIR: workloads/bugs/historical/postgres-cic-corruption
 jobs:
   native:
-    name: Native NES search
+    name: Test / Native NES search
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -88,7 +88,7 @@ jobs:
           retention-days: 14
 
   stb:
-    name: STB search and replay
+    name: Test / STB search and replay
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -121,7 +121,7 @@ jobs:
         if: steps.scope.outputs.enabled == 'true'
 
   faults:
-    name: PostgreSQL fault search
+    name: Test / PostgreSQL fault search
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -264,7 +264,7 @@ jobs:
           retention-days: 14
 
   platform:
-    name: VM execution and restore
+    name: Test / VM execution and restore
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -382,7 +382,7 @@ jobs:
           retention-days: 14
 
   kvm:
-    name: KVM deterministic replay
+    name: Test / KVM deterministic replay
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -451,7 +451,7 @@ jobs:
           retention-days: 14
 
   guest-qualification:
-    name: Exact guest platform qualification
+    name: Test / Exact guest platform qualification
     needs: [platform]
     if: always() && needs.platform.outputs.enabled == 'true'
     runs-on: ubuntu-24.04
@@ -463,6 +463,6 @@ jobs:
           QUALIFICATION_SCOPE: ${{ needs.platform.outputs.scope }}
         run: |
           if [[ "$SMOKE_RESULT" != success || "$QUALIFICATION_SCOPE" != exact-input ]]; then
-            echo '::error::Exact guest qualification is missing. Manually run Acceptance / Consonance platform (oci-smoke.yml) on the proposed branch, then rerun the PR smoke to consume its qualified artifact handoff. Host-only smoke does not qualify changed guest sources.'
+            echo '::error::Exact guest qualification is missing. Manually run Validation / Consonance platform (oci-smoke.yml) on the proposed branch, then rerun the PR smoke to consume its qualified artifact handoff. Host-only smoke does not qualify changed guest sources.'
             exit 1
           fi

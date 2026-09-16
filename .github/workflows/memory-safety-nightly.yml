@@ -1,4 +1,4 @@
-name: Nightly / Memory safety
+name: Validation / Memory safety
 on:
   schedule:
     - cron: "0 8 * * *"
@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   miri-vmm-core:
-    name: Memory safety — vmm-core
+    name: Test / Memory safety — vmm-core
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 240
@@ -24,7 +24,7 @@ jobs:
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-core
 
   miri:
-    name: Memory safety — unsafe crates
+    name: Test / Memory safety — unsafe crates
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 320

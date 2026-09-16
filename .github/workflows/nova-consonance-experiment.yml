@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Acceptance / Workload backends
+name: Validation / Workload backends
 
 on:
   workflow_dispatch:
@@ -35,7 +35,7 @@ env:
 
 jobs:
   whole-vm-search-campaign:
-    name: Dissonance search · QuickNES guest · Consonance snapshots
+    name: Test / Dissonance search · QuickNES guest · Consonance snapshots
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'nested-runtime')
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -244,7 +244,7 @@ jobs:
           retention-days: 30
 
   compare-replicas:
-    name: Compare deterministic campaign hashes across replicas
+    name: Check / Compare deterministic campaign hashes across replicas
     needs: whole-vm-search-campaign
     if: ${{ always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'nested-runtime')) && needs.whole-vm-search-campaign.result == 'success' }}
     runs-on: ubuntu-24.04
@@ -294,7 +294,7 @@ jobs:
           PY
 
   package-backend-acceptance:
-    name: NES package native/Consonance backend acceptance
+    name: Test / NES package native/Consonance backend acceptance
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'nested-runtime')
     runs-on: ubuntu-24.04
     timeout-minutes: 75
@@ -444,7 +444,7 @@ jobs:
           retention-days: 30
 
   nested-runtime-qualification:
-    name: Docker/K3s nested runtime qualification
+    name: Test / Docker/K3s nested runtime qualification
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 120

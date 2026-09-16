@@ -1,4 +1,4 @@
-name: Checks
+name: Checks / Memory safety
 
 on:
   pull_request:
@@ -30,7 +30,7 @@ on:
       - scripts/test_miri_scope.py
 jobs:
   miri-pr:
-    name: Memory safety — ${{ matrix.name }}
+    name: Test / Memory safety — ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:

@@ -1,4 +1,4 @@
-name: Acceptance / Search evaluation
+name: Validation / Search evaluation
 on:
   workflow_dispatch:
 permissions:
@@ -8,7 +8,7 @@ defaults:
     shell: bash
 jobs:
   source-built:
-    name: Source-built NES evaluation
+    name: Test / Source-built NES evaluation
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -64,7 +64,7 @@ jobs:
           retention-days: 30
 
   stb-contract:
-    name: Source build, probe, search and replay (${{ matrix.ai.name }}, seed ${{ matrix.seed }})
+    name: Test / STB contract — ${{ matrix.ai.name }}, seed ${{ matrix.seed }}
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Acceptance / Kernel XSAVE qualification
+name: Validation / Kernel XSAVE qualification
 on:
   workflow_dispatch: {}
 permissions:
@@ -12,7 +12,7 @@ defaults:
     shell: bash
 jobs:
   build:
-    name: Build kernel XSAVE fixture
+    name: Build / Kernel XSAVE fixture
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -43,7 +43,7 @@ jobs:
           path: g1-build-report
           retention-days: 14
   qualify:
-    name: Qualify kernel XSAVE — replica ${{ matrix.replica }}
+    name: Test / Qualify kernel XSAVE — replica ${{ matrix.replica }}
     needs: build
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
