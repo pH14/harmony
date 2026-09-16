@@ -1,6 +1,6 @@
 # Searcher groundwork: order of work and how to check it
 
-Four changes to the generic searcher, then one experiment, built one after
+Three changes to the generic searcher, then two experiments, built one after
 another. Every step starts from the merge commit of the step before it. The
 step plans in this directory carry the file paths, line numbers and tests.
 This file says what order to work in, what to check after each step, and how
@@ -15,27 +15,25 @@ step's actual base before editing.
 |---|---|---|---|---|
 | 1 | `01-archive-ordering-split.md` | main | the searcher stops reading key field order as progress; the class draw becomes a weight | local checks, SMB regression, quick panel |
 | 2 | `02-energy-reset-depth.md` | step 1 merge | a productive draw resets energy only at the depths where the child is new | local checks, SMB regression, quick panel |
-| 3 | `03-continuation-graph.md` | step 2 merge | continuation replay sized to the archive, breadth-first, on by default | local checks, SMB regression, quick panel, long panel with both manifests, throughput |
-| 4 | `04-input-table-in-searcher.md` | step 3 merge | the retained-input table leaves the SMB driver and every workload gets it | local checks, SMB regression with exact comparison, quick panel, long panel with the energy-splice manifest |
-| 5 | `05-strategy-portfolio.md` | step 4 merge | a workload declares an ordered list of preferences and a slot retains the union of their champions | local checks, SMB regression, quick panel, long panel with both manifests, throughput, memory |
+| 3 | `04-input-table-in-searcher.md` | step 2 merge | the retained-input table leaves the SMB driver and every workload gets it | local checks, SMB regression with exact comparison, quick panel, long panel with the energy-splice manifest |
+| 4 | `05-strategy-portfolio.md` | step 3 merge | a workload declares an ordered list of preferences and a slot retains the union of their champions | local checks, SMB regression, quick panel, long panel with both manifests, throughput, memory |
+| 5 | `03-continuation-graph.md` | step 4 merge | replay of a recorded continuation, redesigned in the plan before any code | local checks, SMB regression, quick panel, long panel with both manifests, throughput |
 
 The order matters. Step 1 removes selector policy variants that step 2 would
-otherwise have to handle. Steps 1 and 2 together flatten the draw over
-covered places, and step 3 is what then pushes toward the frontier, so the
-long panel is not run until step 3 is in. Step 4 rewrites the input policy
-surface and is independent of the archive internals, so it goes last of the
-four.
+otherwise have to handle. Step 3 rewrites the input policy surface and is
+independent of the archive internals.
 
-Steps 1 to 4 are groundwork and go in whatever the panels show. Step 5 is an
-experiment and can be rejected on its results. It runs last because it changes
-what a slot retains, and each earlier step changes how slots are drawn from,
-scored or filled; measuring it against a moving baseline would not answer
-anything. Do not start it until steps 1 to 4 are merged and their checks have
-been read.
+Steps 1 to 3 are groundwork and go in whatever the panels show. Steps 4 and 5
+are experiments and can be rejected on their results. Step 4 runs after the
+groundwork because it changes what a slot retains, and each earlier step
+changes how slots are drawn from, scored or filled; measuring it against a
+moving baseline would not answer anything. Step 5 was built once and measured
+worse on both workloads at every reservation rate tried, so it is redesigned
+from its plan rather than rebuilt from that branch.
 
-Steps 1 to 4 are semantic commits in one pull request. Push each step when its
-tests pass and run the review described in the shipping-code skill. Step 5 gets
-its own pull request, opened after that one merges.
+Steps 1 to 3 are semantic commits in one pull request. Push each step when its
+tests pass and run the review described in the shipping-code skill. Steps 4
+and 5 get their own pull requests, opened after that one merges.
 
 ## What we expect
 
@@ -46,12 +44,12 @@ judgements to make, never numbers to compare against.
   manifest solves.
 - Metroid, Mega Man 2, Nova and Super Tilt Bro get at least as far as they do
   today on the quick panel, seed noise allowed for.
-- The step 1 to 4 changes stay in even when a panel shows no gain. They are
+- The step 1 to 3 changes stay in even when a panel shows no gain. They are
   the right structure for the searcher, and a later step may be what makes an
-  earlier one visible. Step 5 is judged on its arms instead; a mixed or
-  negative result is an answer.
+  earlier one visible. Steps 4 and 5 are judged on their arms instead; a mixed
+  or negative result is an answer.
 - Peak resident set size and the searcher's own memory accounting stay where
-  they are. Step 5 is the one step that retains more states per place, and it
+  they are. Step 4 is the one step that retains more states per place, and it
   gets no extra budget for them.
 - Throughput does not get worse in a hot path. Extra bookkeeping per
   admission is expected. New work that grows with the archive on a
@@ -112,7 +110,7 @@ python3 scripts/check-dependency-boundaries.py
 python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
 ```
 
-Step 4 also touches `workloads/faults`; add the same fmt, clippy and test
+Step 3 also touches `workloads/faults`; add the same fmt, clippy and test
 commands with `--manifest-path workloads/faults/Cargo.toml`.
 
 Box runs, on ms02, following `benchmarks/search/README.md`. Build once per
@@ -131,10 +129,10 @@ step with `eval.py build` and keep the build directory named for the step.
   check.
 - **Long panel**: `benchmarks/search/metroid-long-horizon.json`. Seeds 3, 4
   and 5, four workers, 8192 MiB, up to 3,000,000 executions or 400 million
-  frames or two hours each, mixture `alphabet_only`. Step 3 adds
+  frames or two hours each, mixture `alphabet_only`. Step 5 adds
   `metroid-long-horizon-energy-splice.json`, the same with the quick
   panel's `energy_splice:6` mixture. Run only where the table above says
-  so. Step 5 runs it fresh-start on every arm; a snapshot start may explain a
+  so. Step 4 runs it fresh-start on every arm; a snapshot start may explain a
   bottleneck and is not capability evidence.
 - **Throughput**: executions per second and frames per second from the
   quick panel's run reports, compared with the previous step's quick panel
