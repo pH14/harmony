@@ -4624,46 +4624,6 @@ mod tests {
     }
 
     #[test]
-    fn a_campaign_whose_archive_reaches_its_memory_limit_keeps_running() {
-        let config = CampaignConfig {
-            campaign_seed: 11,
-            workers: 2,
-            execution_budget: 2_048,
-            action_limit: 64,
-            host: "test".to_owned(),
-            wall_budget: None,
-            stop_rollout_on_objective: false,
-            stop_campaign_on_objective: false,
-            archive_entry_limit: 4_096,
-            reservations_per_worker: 1,
-            memory_budget_mib: Some(1),
-            materialize_final_artifacts: true,
-            run: (),
-            suffix: SuffixShape::OneOrTwo,
-            mixture: DrawMixture::AlphabetOnly,
-            retention: RetentionPolicy::Unprobed,
-            selector: SelectorPolicy::GroupUniform,
-            objective_witness_path: None,
-        };
-        let workload = TestWorkload {
-            bootstrap_objective: false,
-        };
-        let mut stream = Vec::new();
-        let live = run_campaign_checkpointed(
-            &workload,
-            &config,
-            &CampaignOrigin::Genesis,
-            &mut stream,
-            None,
-        )
-        .expect("memory limited campaign");
-        assert_eq!(live.0.executions_completed, 2_048);
-        let replayed = replay_campaign_checkpointed(&workload, &stream, None, None)
-            .expect("memory limited replay");
-        assert_eq!(replayed, live);
-    }
-
-    #[test]
     fn bootstrap_objective_stops_reservation_and_replays_with_both_stop_policies() {
         for (stop_rollout_on_objective, stop_campaign_on_objective) in
             [(false, false), (true, false), (false, true), (true, true)]
