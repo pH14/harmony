@@ -2135,6 +2135,8 @@ pub struct CampaignProgressRecord<K> {
     pub historical_cells: usize,
     #[serde(default)]
     pub barren_groups: usize,
+    #[serde(default)]
+    pub selector: SelectorAccounting,
 }
 
 fn write_live_progress<G: Workload>(
@@ -2203,6 +2205,7 @@ fn write_live_progress<G: Workload>(
         input_index_nodes: core.archive.input_index_nodes(),
         historical_cells: core.archive.historical_cell_count(),
         barren_groups: core.archive.barren_group_count(),
+        selector: core.archive.selector_report(),
     })?;
     sink.write_all(line.as_bytes())?;
     sink.write_all(b"\n")?;

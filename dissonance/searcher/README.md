@@ -215,6 +215,10 @@ selection; `hierarchy_uniform_128` clears none. `SelectorAccounting` reports
 `energy_resets`, the counters cleared at each depth, and `productive_by_mask`, a
 histogram over productive selections of which depths the selection opened.
 
+Every live progress line carries the whole of `SelectorAccounting` under
+`selector`, so a run's class draw shares and energy resets can be read over
+time rather than only from the final census.
+
 Search experiments use independent versioned identifiers:
 
 - `hierarchy_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides

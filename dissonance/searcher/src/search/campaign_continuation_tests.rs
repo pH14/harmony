@@ -661,3 +661,46 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         );
     }
 }
+
+#[test]
+fn a_live_progress_line_reports_the_selector_accounting() {
+    let config = CampaignConfig {
+        campaign_seed: 947,
+        workers: 4,
+        execution_budget: 800,
+        action_limit: 64,
+        host: "test".into(),
+        wall_budget: None,
+        stop_rollout_on_objective: false,
+        stop_campaign_on_objective: false,
+        archive_entry_limit: 128,
+        reservations_per_worker: 2,
+        memory_budget_mib: Some(18),
+        materialize_final_artifacts: true,
+        run: (),
+        suffix: SuffixShape::OneOrTwo,
+        mixture: DrawMixture::EnergySpliceContinuation { scale: 6 },
+        retention: RetentionPolicy::Unprobed,
+        selector: SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
+            entry: 3,
+            groups: vec![],
+        }),
+        objective_witness_path: None,
+    };
+    let mut bytes = Vec::new();
+    let mut progress = Vec::new();
+    let (outcome, _) = run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        Some(&mut progress),
+    )
+    .unwrap();
+    let text = String::from_utf8(progress).unwrap();
+    let last = text.lines().last().expect("a progress line was written");
+    let record: CampaignProgressRecord<serde_json::Value> = serde_json::from_str(last).unwrap();
+    assert_eq!(record.selector, outcome.archive.selector);
+    assert!(record.selector.cell_selections > 0);
+    assert!(!record.selector.class_draws_by_rank.is_empty());
+}
