@@ -595,6 +595,12 @@ def _parse_workflow(abs_path: Path) -> dict:
 
 def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
     violations = []
+    nes_manifest = "benchmarks/search/nightly.json"
+    nes_workflow = ".github/workflows/nova-nightly.yml"
+    if nes_manifest in files or (repo_root / nes_manifest).is_file():
+        if nes_workflow not in files or not (repo_root / nes_workflow).is_file():
+            violations.append(Violation("ci-nes-case-jobs", nes_workflow, 0,
+                "the registered public NES manifest requires its tracked owning workflow"))
     for rel_path in files:
         if not rel_path.startswith(".github/workflows/") or not rel_path.endswith((".yml", ".yaml")):
             continue

@@ -237,6 +237,21 @@ class SmokeRoutingTests(unittest.TestCase):
 
 
 class NesWorkflowCoverageTests(unittest.TestCase):
+    def test_registered_manifest_requires_tracked_owning_workflow(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "benchmarks/search/nightly.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({"cases": [{"id": "nova-full"}]}))
+            owner = ".github/workflows/nova-nightly.yml"
+            for files in ([], [owner]):
+                with self.subTest(files=files):
+                    violations = LINTS.check_workflow_rules(root, files)
+                    self.assertIn("ci-nes-case-jobs", [v.rule for v in violations])
+            (root / owner).parent.mkdir(parents=True)
+            (root / owner).write_text("name: Benchmarks / NES\n")
+            self.assertIn("ci-nes-case-jobs", [v.rule for v in LINTS.check_workflow_rules(root, [])])
+
     def check(self, cases, matrix, command="python3 benchmarks/search/eval.py run benchmarks/search/nightly.json --case '${{ matrix.case }}'", fail_fast=False, report_if="always()", needs="campaign"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

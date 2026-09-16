@@ -90,13 +90,14 @@ prerequisite lands, keep its two CI purposes separate:
 
 | Workflow | Automatic triggers | Owns |
 | --- | --- | --- |
-| Checks / Skill evaluator | Relevant PRs; manual guest qualification | Sandbox, build, guest-delivery, and grading qualification without model calls. Automatic jobs stay within 15 minutes; the guest job is manual-only and may use the 45-minute ceiling when given a trusted `guest_artifact_run_id`. |
+| Checks / Skill evaluator | Relevant PRs | Bounded sandbox, build, guest-delivery, and grading checks without model calls; each job stays within 15 minutes. |
+| Acceptance / Skill guest qualification | Manual dispatch | Guest qualification with a trusted `guest_artifact_run_id`, in a separate workflow with a 45-minute ceiling. |
 | Benchmarks / Developer skills | Nightly schedule; manual dispatch | Real-model investigation, integration, and end-to-end panels under their declared budgets. The job must fail before starting a paid attempt when provider credentials are missing. |
 
 The no-model runner and fixture qualification belong in `Checks / Skill
 evaluator`, alongside the other qualification harness checks. The benchmark
 workflow should invoke the shared runner for its panels without copying those
-checks or adding a real-model pull-request job. Do not add either workflow
+checks or adding a real-model pull-request job. Do not add these workflows
 until the evaluator sources are present on the base branch; branch-only
 workflow definitions must not point at an absent `benchmarks/skills/` tree.
 
@@ -118,7 +119,8 @@ product selector, matching job names and output guards. Each consumer is one
 bounded job; independent broad triggers and added matrices fail validation.
 
 `ci-nes-case-jobs` compares the Benchmarks / NES case matrices to
-`benchmarks/search/nightly.json`. Each case must occur exactly once in a static
+`benchmarks/search/nightly.json` and requires its owning `nova-nightly.yml`
+workflow to remain tracked while the manifest exists. Each case must occur exactly once in a static
 `matrix.case` list, run through `eval.py run` with `--case ${{ matrix.case }}`,
 and use `fail-fast: false`. Adding a game to the public roster therefore requires
 adding its cases to the workflow. The report must run with `always()` and depend

@@ -382,6 +382,6 @@ jobs:
           QUALIFICATION_SCOPE: ${{ needs.platform.outputs.scope }}
         run: |
           if [[ "$SMOKE_RESULT" != success || "$QUALIFICATION_SCOPE" != exact-input ]]; then
-            echo '::error::Exact guest qualification is missing. Run this workflow manually on the proposed branch, then rerun the PR smoke to consume its qualified artifact handoff. Host-only smoke does not qualify changed guest sources.'
+            echo '::error::Exact guest qualification is missing. Manually run Acceptance / Consonance platform (oci-smoke.yml) on the proposed branch, then rerun the PR smoke to consume its qualified artifact handoff. Host-only smoke does not qualify changed guest sources.'
             exit 1
           fi
