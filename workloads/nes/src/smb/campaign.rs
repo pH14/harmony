@@ -2331,7 +2331,10 @@ mod tests {
         assert_eq!(
             accounting
                 .uniform_selections
-                .checked_add(accounting.cell_selections),
+                .checked_add(accounting.cell_selections)
+                .and_then(|drawn| {
+                    drawn.checked_add(accounting.continuation_selections.unwrap_or(0))
+                }),
             live.executions_completed
                 .checked_add(live.duplicates_skipped)
         );
@@ -2347,6 +2350,7 @@ mod tests {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca34, 4, 8_192);
         config.retention = crate::search::archive::RetentionPolicy::Unprobed;
+        config.action_limit = 16;
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 64;
         let mut stream = Vec::new();
@@ -2497,7 +2501,7 @@ mod tests {
         config.selector = crate::search::archive::SelectorPolicy::Retire(
             crate::search::archive::RetireThresholds {
                 entry: 2,
-                groups: vec![4, 8, 16],
+                groups: vec![4, 8, 16, 32],
             },
         );
         let mut stream = Vec::new();
@@ -2505,7 +2509,7 @@ mod tests {
             .expect("retiring campaign");
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
-        assert!(header.contains("hierarchy_uniform_128_retire:2,4,8,16"));
+        assert!(header.contains("hierarchy_uniform_128_retire:2,4,8,16,32"));
         assert!(live.archive.selector.retirement.is_some());
         let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay retiring");
         assert_eq!(
@@ -2521,7 +2525,7 @@ mod tests {
         config.selector = crate::search::archive::SelectorPolicy::EnergyFrontierCheapest(
             crate::search::archive::RetireThresholds {
                 entry: 2,
-                groups: vec![4, 8, 16],
+                groups: vec![4, 8, 16, 32],
             },
         );
         let mut stream = Vec::new();
@@ -2529,7 +2533,7 @@ mod tests {
             .expect("energy campaign");
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
-        assert!(header.contains("hierarchy_uniform_128_energy_frontier_cheapest:2,4,8,16"));
+        assert!(header.contains("hierarchy_uniform_128_energy_frontier_cheapest:2,4,8,16,32"));
         assert!(live.archive.selector.retirement.is_some());
         let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay energy");
         assert_eq!(
@@ -2547,7 +2551,7 @@ mod tests {
             config.selector = crate::search::archive::SelectorPolicy::Retire(
                 crate::search::archive::RetireThresholds {
                     entry: 1,
-                    groups: vec![2, 2, 3],
+                    groups: vec![2, 2, 3, 3],
                 },
             );
             let mut stream = Vec::new();
@@ -2576,19 +2580,19 @@ mod tests {
             SelectorPolicy::GroupUniform,
             SelectorPolicy::Retire(RetireThresholds {
                 entry: 3,
-                groups: vec![6, 12, 2],
+                groups: vec![6, 12, 2, 4],
             }),
             SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
                 entry: 3,
-                groups: vec![6, 12, 2],
+                groups: vec![6, 12, 2, 4],
             }),
             SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
                 entry: 3,
-                groups: vec![6, 12, 2],
+                groups: vec![6, 12, 2, 4],
             }),
             SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
                 entry: 3,
-                groups: vec![6, 12, 2],
+                groups: vec![6, 12, 2, 4],
             }),
         ] {
             assert_eq!(
@@ -2599,7 +2603,7 @@ mod tests {
         }
         assert!(retention_policy_from_identifier("no_probe").is_err());
         assert!(selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6,12").is_err());
-        assert!(selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6,12,0").is_err());
+        assert!(selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6,12,4,0").is_err());
     }
 
     #[test]
