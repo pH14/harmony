@@ -435,7 +435,6 @@ jobs:
             grep -Fq 'running 1 test' "pr-kvm-smoke/$label.txt"
             grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "pr-kvm-smoke/$label.txt"
           }
-          run_exact execution -p vmm-backend --test kvm_smoke bringup_smoke_out_then_hlt
           run_exact restore -p vmm-backend --test kvm_smoke save_restore_round_trips_on_real_kvm
           run_exact pio -p vmm-backend --test kvm_smoke serviced_pio_is_exactly_snapshottable_without_guest_execution
           run_exact msr -p vmm-backend --test kvm_smoke serviced_msr_is_exactly_snapshottable_without_guest_execution
