@@ -15,7 +15,7 @@ address. Read state from RAM only. Never decode the screen.
 |---|---|---|
 | ROM | `~/Downloads/pokemon-blue.gb` on Paul's Mac, copy to any lab box | SHA-256 `2a951313c2640e8c2cb21f25d1db019ae6245d9c7121f754fa61afd7bee6452d`; 1 MiB; add under key `blue` in the private assets inventory the way `benchmarks/search/README.md` describes |
 | Emulator core | Gambatte libretro, https://github.com/libretro/gambatte-libretro | pin one revision in `scripts/build-gambatte-core.sh`, copied from `scripts/build-quicknes-core.sh` |
-| TypeSafe key | `TYPESAFE_API_KEY` in `~/.zshrc` on Paul's Mac | copy to ms02 and msr1 freely; only step 4 and 5 read it |
+| TypeSafe key | `TYPESAFE_API_KEY` in `~/.zshrc` on Paul's Mac | copy to msr1 and ms02 freely; only step 4 and 5 read it |
 | Jev API | the `typesafe-jev-model` memory note, then https://docs.typesafe.ai/llms.txt | one endpoint, three question types, no generation, no images |
 
 ## Order
@@ -24,7 +24,7 @@ address. Read state from RAM only. Never decode the screen.
 |---|---|---|
 | 1 | `workloads/gb-machine`: Gambatte libretro driver | loopback and real-core tests, determinism check |
 | 2 | `workloads/gb`: Pokémon Blue workload with macro actions | new-game to Brock reachable by a scripted tape, replay exact |
-| 3 | plain campaign, three seeds on ms02 | film, milestone table, stalled archives saved |
+| 3 | plain campaign, three seeds on msr1 | film, milestone table, stalled archives saved |
 | 4 | Jev offline test on the step 3 archives | picks compared against the known route; stop if no better than the searcher's own ranking |
 | 5 | Jev weighting the alphabet draw, recorded in the stream | paired three-seed run against step 3 at matched executions |
 
@@ -47,7 +47,10 @@ the same. Differences:
   driver does, and reject a different core.
 
 Audio and video off during search. Keep the frame capture path for film.
-Measure frames per second headless on ms02 and put it in the crate README.
+Measure frames per second headless on msr1 and put it in the crate README.
+msr1 is arm64, so the core build script must handle `aarch64` the way
+`scripts/build-quicknes-core.sh` handles its two hosts, and the pinned core
+hash is per architecture.
 
 ### Step 2: Pokémon Blue workload
 
@@ -108,7 +111,7 @@ tape proves the macros and the RAM map before any search runs.
 
 Add a `blue` case to `benchmarks/search/pilot.json` with a new-game origin,
 and run three seeds, eight workers, 2048 MiB, a 30-minute wall limit each, on
-ms02. Judge by the README rules for the searcher plans: film the deepest
+msr1 (see the `msr1` skill for access; ms02 is the fallback). Judge by the README rules for the searcher plans: film the deepest
 witness per seed and write one sentence each, then read the milestone table.
 Save each run's end-of-run report and the live archive entries; step 4 reads
 them. If no seed reaches Brock, diagnose from the film before step 4, since
