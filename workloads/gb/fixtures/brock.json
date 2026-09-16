@@ -1,0 +1,1874 @@
+[
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 5
+  },
+  {
+    "kind": "WalkTo",
+    "index": 21
+  },
+  {
+    "kind": "WalkTo",
+    "index": 18
+  },
+  {
+    "kind": "WalkTo",
+    "index": 16
+  },
+  {
+    "kind": "WalkTo",
+    "index": 12
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 20
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 12
+  },
+  {
+    "kind": "WalkTo",
+    "index": 1
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 5
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 2
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 1
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 13
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 2
+  },
+  {
+    "kind": "WalkTo",
+    "index": 4
+  },
+  {
+    "kind": "WalkTo",
+    "index": 26
+  },
+  {
+    "kind": "WalkTo",
+    "index": 44
+  },
+  {
+    "kind": "WalkTo",
+    "index": 14
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 12
+  },
+  {
+    "kind": "WalkTo",
+    "index": 1
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 4
+  },
+  {
+    "kind": "WalkTo",
+    "index": 4
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 4
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 2
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 12
+  },
+  {
+    "kind": "WalkTo",
+    "index": 5
+  },
+  {
+    "kind": "WalkTo",
+    "index": 1
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 1
+  },
+  {
+    "kind": "WalkTo",
+    "index": 6
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 6
+  },
+  {
+    "kind": "WalkTo",
+    "index": 6
+  },
+  {
+    "kind": "WalkTo",
+    "index": 2
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 13
+  },
+  {
+    "kind": "WalkTo",
+    "index": 12
+  },
+  {
+    "kind": "WalkTo",
+    "index": 8
+  },
+  {
+    "kind": "WalkTo",
+    "index": 10
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "WalkTo",
+    "index": 14
+  },
+  {
+    "kind": "WalkTo",
+    "index": 8
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 18
+  },
+  {
+    "kind": "WalkTo",
+    "index": 11
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "WalkTo",
+    "index": 14
+  },
+  {
+    "kind": "WalkTo",
+    "index": 8
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "WalkTo",
+    "index": 15
+  },
+  {
+    "kind": "WalkTo",
+    "index": 11
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "WalkTo",
+    "index": 14
+  },
+  {
+    "kind": "WalkTo",
+    "index": 8
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 15
+  },
+  {
+    "kind": "WalkTo",
+    "index": 11
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "WalkTo",
+    "index": 6
+  },
+  {
+    "kind": "WalkTo",
+    "index": 6
+  },
+  {
+    "kind": "WalkTo",
+    "index": 2
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 13
+  },
+  {
+    "kind": "WalkTo",
+    "index": 12
+  },
+  {
+    "kind": "WalkTo",
+    "index": 8
+  },
+  {
+    "kind": "WalkTo",
+    "index": 10
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "WalkTo",
+    "index": 14
+  },
+  {
+    "kind": "WalkTo",
+    "index": 8
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "WalkTo",
+    "index": 15
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 11
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "WalkTo",
+    "index": 14
+  },
+  {
+    "kind": "WalkTo",
+    "index": 8
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "WalkTo",
+    "index": 15
+  },
+  {
+    "kind": "WalkTo",
+    "index": 11
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "WalkTo",
+    "index": 14
+  },
+  {
+    "kind": "WalkTo",
+    "index": 8
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "WalkTo",
+    "index": 15
+  },
+  {
+    "kind": "WalkTo",
+    "index": 11
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "WalkTo",
+    "index": 14
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 15
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "WalkTo",
+    "index": 15
+  },
+  {
+    "kind": "WalkTo",
+    "index": 11
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "WalkTo",
+    "index": 6
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 6
+  },
+  {
+    "kind": "WalkTo",
+    "index": 6
+  },
+  {
+    "kind": "WalkTo",
+    "index": 2
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 13
+  },
+  {
+    "kind": "WalkTo",
+    "index": 12
+  },
+  {
+    "kind": "WalkTo",
+    "index": 8
+  },
+  {
+    "kind": "WalkTo",
+    "index": 10
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "WalkTo",
+    "index": 14
+  },
+  {
+    "kind": "WalkTo",
+    "index": 8
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "WalkTo",
+    "index": 15
+  },
+  {
+    "kind": "WalkTo",
+    "index": 11
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "WalkTo",
+    "index": 14
+  },
+  {
+    "kind": "WalkTo",
+    "index": 8
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 15
+  },
+  {
+    "kind": "WalkTo",
+    "index": 11
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "WalkTo",
+    "index": 14
+  },
+  {
+    "kind": "WalkTo",
+    "index": 8
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "WalkTo",
+    "index": 15
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 15
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 9
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 7
+  },
+  {
+    "kind": "WalkTo",
+    "index": 14
+  },
+  {
+    "kind": "WalkTo",
+    "index": 8
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 19
+  },
+  {
+    "kind": "WalkTo",
+    "index": 15
+  },
+  {
+    "kind": "WalkTo",
+    "index": 11
+  },
+  {
+    "kind": "WalkTo",
+    "index": 6
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 6
+  },
+  {
+    "kind": "WalkTo",
+    "index": 6
+  },
+  {
+    "kind": "WalkTo",
+    "index": 2
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 2
+  },
+  {
+    "kind": "WalkTo",
+    "index": 13
+  },
+  {
+    "kind": "WalkTo",
+    "index": 17
+  },
+  {
+    "kind": "WalkTo",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "WalkTo",
+    "index": 2
+  },
+  {
+    "kind": "WalkTo",
+    "index": 2
+  },
+  {
+    "kind": "Interact",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "BattleMove",
+    "index": 2
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  },
+  {
+    "kind": "Advance",
+    "index": 0
+  }
+]
