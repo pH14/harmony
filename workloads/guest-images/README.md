@@ -95,3 +95,14 @@ must match its reviewed guest composition or fail closed. The gate requires
 restore-oracle mode and no tree-seed override, and retains only JSON/log evidence
 rather than the temporary full composition archives. See `workloads/tools/README.md`
 for candidate generation, review boundaries and executable provenance.
+
+The immutable `admission/controlled-profiles.rs` catalog owns the approved input
+policy for logical snapshot identity. Consonance compiles these opaque tuples
+and matches exact kernel/initramfs SHA-256, RAM and command-line inputs; it has
+no application-specific matching branches. The catalog records the reviewed
+minimal Linux fixture and the NES/PostgreSQL composed images. Its application
+entries derive from the composition manifests pinned by `nes-composition.json`
+and `postgres-composition.json`; the minimal entry derives from
+`minimal-component.json`. Changing any tuple requires renewed admission review.
+The catalog is compiled into the host binary, not accepted from runtime callers
+or imported snapshots. Unknown inputs keep generic strict raw identity.

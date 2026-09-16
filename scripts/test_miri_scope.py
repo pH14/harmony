@@ -68,6 +68,10 @@ class MiriScopeTests(unittest.TestCase):
         )
         self.assertEqual(self.names([]), set())
 
+    def test_selector_changes_select_every_target(self) -> None:
+        for path in ("scripts/miri_scope.py", "scripts/test_miri_scope.py"):
+            self.assertEqual(self.names([path]), self.names(["Cargo.lock"]))
+
 
 if __name__ == "__main__":
     unittest.main()

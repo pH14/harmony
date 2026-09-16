@@ -1,19 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Smoke / Consonance platform
+name: Acceptance / Consonance platform
 
 on:
-  pull_request:
-    paths: ["cli/**", "consonance/**", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock", ".github/workflows/oci-smoke.yml"]
-  push:
-    branches: [main]
-    paths: ["cli/**", "consonance/**", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock", ".github/workflows/oci-smoke.yml"]
   schedule:
     - cron: "11 5 * * *"
   workflow_dispatch:
 
-concurrency:
-  group: platform-smoke-${{ github.ref }}
-  cancel-in-progress: true
 permissions:
   contents: read
   actions: read
@@ -97,91 +89,3 @@ jobs:
           path: platform-smoke
           if-no-files-found: warn
           retention-days: 14
-
-  pr-smoke:
-    name: Platform execution and restore
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    outputs:
-      scope: ${{ steps.provenance.outputs.scope }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install pinned host toolchain
-        run: |
-          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
-          rustup default "$HARMONY_RUST_TOOLCHAIN"
-      - uses: Swatinem/rust-cache@v2
-      - name: Compute platform source key
-        id: source
-        run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v4
-        id: exact
-        with:
-          path: consonance/harmony-linux/build/x86_64
-          key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
-      - name: Locate exact qualification handoff
-        id: handoff
-        if: steps.exact.outputs.cache-hit != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_KEY: ${{ steps.source.outputs.key }}
-        run: |
-          run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
-            -f name="consonance-platform-v1-x86_64-$SOURCE_KEY" -F per_page=100 \
-            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .workflow_run.id // empty')
-          echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
-      - uses: actions/download-artifact@v4
-        if: steps.handoff.outputs.run_id != ''
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ steps.handoff.outputs.run_id }}
-          name: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
-          path: consonance/harmony-linux/build/x86_64
-      - uses: actions/cache/restore@v4
-        if: steps.exact.outputs.cache-hit != 'true' && steps.handoff.outputs.run_id == ''
-        with:
-          path: consonance/harmony-linux/build/x86_64
-          key: consonance-platform-v1-x86_64-${{ steps.source.outputs.key }}
-          restore-keys: consonance-platform-v1-x86_64-
-      - name: Verify and record qualification scope
-        id: provenance
-        run: |
-          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
-            --artifacts consonance/harmony-linux/build/x86_64 --output platform-smoke/provenance.json
-          scope=$(python3 -c 'import json; print(json.load(open("platform-smoke/provenance.json"))["scope"])')
-          echo "scope=$scope" >>"$GITHUB_OUTPUT"
-          echo "Platform artifact scope: $scope" >>"$GITHUB_STEP_SUMMARY"
-      - name: Enable hardware backend
-        run: |
-          test -c /dev/kvm
-          sudo chmod a+rw /dev/kvm
-      - name: Platform execution and restore smoke
-        run: |
-          set -o pipefail
-          timeout -k 10 720 cargo test --locked --release -p oci-support --test platform --test process_platform -- --ignored --nocapture \
-            2>&1 | tee platform-smoke/replay.log
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: platform-pr-smoke-${{ github.run_id }}
-          path: platform-smoke
-          if-no-files-found: error
-          retention-days: 14
-
-  guest-qualification:
-    name: Exact guest platform qualification
-    needs: pr-smoke
-    if: always() && (github.event_name == 'pull_request' || github.event_name == 'push')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 1
-    steps:
-      - name: Require successful exact-input hardware evidence
-        env:
-          SMOKE_RESULT: ${{ needs.pr-smoke.result }}
-          QUALIFICATION_SCOPE: ${{ needs.pr-smoke.outputs.scope }}
-        run: |
-          if [[ "$SMOKE_RESULT" != success || "$QUALIFICATION_SCOPE" != exact-input ]]; then
-            echo '::error::Exact guest qualification is missing. Run this workflow manually on the proposed branch, then rerun the PR smoke to consume its qualified artifact handoff. Host-only smoke does not qualify changed guest sources.'
-            exit 1
-          fi

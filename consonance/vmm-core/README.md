@@ -127,12 +127,13 @@ exact pair. This is a fresh paired reproduction, not recovery of an earlier
 sequential run. The ordinary same-input boot gate remains the acceptance check.
 
 PR acceptance combines the portable contract suite and selected Miri checks
-with bounded hardware gates. `x86-virtual-time.yml` checks serviced exits, RF,
-PAE translations, and guest-written XSAVE output, including a reused VM whose
-FPU state was changed by another continuation. `snapshot-linux-smoke.yml`
-compares two complete same-seed Linux execution logs; its success requires
-nonzero events and zero differences. Workload acceptance smokes exercise
-continuations through their restore oracles.
+with bounded hardware gates in `product-smoke.yml`. The KVM job requires the
+published snapshot identity/replay matrix and serviced-exit checks. The platform
+job compares two complete same-seed Linux execution logs, requiring guest
+readiness, nonzero events and zero differences. The scheduled/manual
+`x86-virtual-time.yml` retains broader serviced-exit, RF, PAE translation and
+guest-written XSAVE coverage, including dirty reused vCPUs. Scheduled/manual
+workload acceptance retains the full-state workload restore oracle.
 After a failed smoke gate reports a `StateHash` event index, the ignored
 `x2_component_diff_selected_checkpoint` diagnostic replays that boundary with
 `X2_CKPT_EVENT` and retains its reference or first-divergent raw captures under
@@ -236,9 +237,9 @@ would not close this ordinary execution witness.
 
 Controlled guest identity separates logical state from raw restoration metadata.
 `controlled_guest::linux_identity` matches the exact reviewed kernel and composed
-initramfs digests, RAM size and command line before enabling the profile. The
-NES and PostgreSQL digests come from the approved composition manifests pinned
-by `workloads/guest-images/admission`. The minimal Linux smoke image is bound to
+initramfs digests, RAM size and command line before enabling the profile. The compiled
+input catalog lives in `workloads/guest-images/admission/controlled-profiles.rs`;
+its entries come from that directory's approved composition manifests. The minimal Linux smoke image is bound to
 its `minimal-component.json` baseline and fixed init script. Unknown or changed
 inputs retain generic
 strict identity. The workload-free platform archive is not itself an approved

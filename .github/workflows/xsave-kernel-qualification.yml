@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Checks / G1 kernel XSAVE qualification
+name: Acceptance / Kernel XSAVE qualification
 on:
   workflow_dispatch: {}
-  push:
-    branches: [codex/consolidate-stopped-snapshots]
-    paths:
-      - ".github/workflows/xsave-kernel-qualification.yml"
-      - "consonance/harmony-linux/linux/patches/**"
-      - "consonance/harmony-linux/linux/*allowlist*.txt"
-      - "consonance/harmony-linux/linux/build-xsave-qualification-fixture.sh"
-      - "consonance/harmony-linux/linux/xsave-guest-check.c"
 permissions:
   contents: read
 concurrency:
@@ -20,6 +12,7 @@ defaults:
     shell: bash
 jobs:
   build:
+    name: Build kernel XSAVE fixture
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -50,6 +43,7 @@ jobs:
           path: g1-build-report
           retention-days: 14
   qualify:
+    name: Qualify kernel XSAVE — replica ${{ matrix.replica }}
     needs: build
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20

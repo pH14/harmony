@@ -75,6 +75,8 @@ GLOBAL_PATH_PATTERNS = (
     "scripts/miri_scope.py",
     "scripts/test_miri_scope.py",
     ".github/workflows/nightly.yml",
+    ".github/actions/ci-scope/**", "scripts/ci-job-scope.py", "scripts/test_ci_job_scope.py",
+    "scripts/miri_scope.py", "scripts/test_miri_scope.py",
 )
 
 

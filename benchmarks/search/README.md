@@ -43,12 +43,16 @@ python3 benchmarks/search/eval.py run benchmarks/search/evaluation.json \
 ```
 
 The scheduled/manual [Benchmarks / NES workflow](../../.github/workflows/nova-nightly.yml)
-runs the source-built public capability panel from `nightly.json`. It builds
-Nova, Super Tilt Bro, and the pinned QuickNES core, then sends all cases through
-the same `nes-eval` runner used by the private panels. Its artifact is the
-allowlisted HTML report plus `roster.json`; it contains no ROM or core. The
-workflow is intentionally schedule/manual only, so pull requests use the
-bounded smoke checks in `search-eval.yml`.
+runs the source-built public capability panel from `nightly.json`. Each case has
+an independent matrix job that builds its game and the pinned QuickNES core,
+then uses the same `nes-eval` runner as the private panels with `--case`.
+Each job retains the three registered seeds and exports its own HTML report and
+`roster.json`; exports contain no ROM or core. An always-running report combines
+these rosters, links case reports, and fails on missing or conflicting evidence.
+The custom lint requires the case matrix to match this manifest exactly.
+The workflow is schedule/manual only. PRs use the selected bounded product
+smokes in `product-smoke.yml`; extended common-runner qualification remains
+manual in `search-eval.yml`.
 
 Run the licensed panels on the private Linux host with the caller-supplied
 inventory and keep both the matrix and export directories on that host:

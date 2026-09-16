@@ -2,11 +2,16 @@
 
 use sha2::{Digest, Sha256};
 
-const KERNEL: &str = "7ce25244cf1d138db1286ce61fb1c880bd224b2866ffaebd1ec19d04b2ad69b6";
-const MINIMAL: &str = "3609719da1de4f95944bfa2e9e79960698ed3b6784e594777440251bcfb1aa21";
-const NES: &str = "075c8f52e17978602c7630fe807d39e643d7d2be590c4acb52093c87c50b2a5c";
-const POSTGRES: &str = "9ab0487109626b62c9d8588d62b831302d1a73cbe7c6858c7044404272e74d44";
-const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1";
+#[derive(Clone, Copy)]
+struct ReviewedInputs {
+    kernel: &'static str,
+    initramfs: &'static str,
+    ram_bytes: usize,
+    cmdline: &'static str,
+}
+
+const REVIEWED: &[ReviewedInputs] =
+    include!("../../../workloads/guest-images/admission/controlled-profiles.rs");
 
 pub fn linux_identity(
     kernel: &[u8],
@@ -23,14 +28,12 @@ pub fn linux_identity(
 }
 
 fn match_hashes(kernel: &str, initramfs: &str, ram: usize, cmdline: &str) -> Option<[u8; 32]> {
-    if kernel != KERNEL {
-        return None;
-    }
-    let minimal = initramfs == MINIMAL && ram == 256 << 20 && cmdline == CMDLINE;
-    let workload = matches!(initramfs, NES | POSTGRES)
-        && ram == 128 << 20
-        && cmdline == format!("{CMDLINE} rdinit=/init");
-    if !minimal && !workload {
+    if !REVIEWED.iter().any(|entry| {
+        kernel == entry.kernel
+            && initramfs == entry.initramfs
+            && ram == entry.ram_bytes
+            && cmdline == entry.cmdline
+    }) {
         return None;
     }
     let mut hash = Sha256::new();
@@ -51,29 +54,41 @@ mod tests {
 
     #[test]
     fn only_exact_reviewed_linux_inputs_select_logical_identity() {
-        let cmdline = format!("{CMDLINE} rdinit=/init");
-        let nes = match_hashes(KERNEL, NES, 128 << 20, &cmdline).unwrap();
-        let postgres = match_hashes(KERNEL, POSTGRES, 128 << 20, &cmdline).unwrap();
-        let minimal = match_hashes(KERNEL, MINIMAL, 256 << 20, CMDLINE).unwrap();
-        assert_ne!(nes, postgres);
-        assert_ne!(nes, minimal);
-        for (kernel, initramfs, ram, args) in [
-            ("changed", NES, 128 << 20, cmdline.as_str()),
-            (KERNEL, "changed", 128 << 20, cmdline.as_str()),
-            (KERNEL, NES, 256 << 20, cmdline.as_str()),
-            (KERNEL, NES, 128 << 20, CMDLINE),
-            (KERNEL, MINIMAL, 128 << 20, CMDLINE),
-            (KERNEL, MINIMAL, 256 << 20, cmdline.as_str()),
-        ] {
-            assert_eq!(match_hashes(kernel, initramfs, ram, args), None);
+        let mut identities = std::collections::BTreeSet::new();
+        for entry in REVIEWED {
+            let ReviewedInputs {
+                kernel,
+                initramfs,
+                ram_bytes,
+                cmdline,
+            } = *entry;
+            let identity = match_hashes(kernel, initramfs, ram_bytes, cmdline).unwrap();
+            assert!(
+                identities.insert(identity),
+                "reviewed profiles must be distinct"
+            );
+            for (kernel, initramfs, ram, args) in [
+                ("changed", initramfs, ram_bytes, cmdline),
+                (kernel, "changed", ram_bytes, cmdline),
+                (kernel, initramfs, ram_bytes + 4096, cmdline),
+                (kernel, initramfs, ram_bytes, "changed"),
+            ] {
+                assert_eq!(match_hashes(kernel, initramfs, ram, args), None);
+            }
+            assert_eq!(
+                linux_identity(b"kernel", b"initramfs", ram_bytes, cmdline),
+                None
+            );
+            assert_eq!(
+                match_hashes(
+                    kernel,
+                    initramfs,
+                    ram_bytes,
+                    &format!("{cmdline} init=/bin/sh")
+                ),
+                None
+            );
         }
-        assert_eq!(
-            linux_identity(b"kernel", b"initramfs", 128 << 20, &cmdline),
-            None
-        );
-        assert_eq!(
-            match_hashes(KERNEL, NES, 128 << 20, &format!("{cmdline} init=/bin/sh")),
-            None
-        );
+        assert!(!identities.is_empty());
     }
 }

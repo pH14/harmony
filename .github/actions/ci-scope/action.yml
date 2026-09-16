@@ -1,0 +1,31 @@
+name: Select work inside a CI job
+description: Use the complete local diff and report unselected checks as not applicable.
+inputs:
+  kind:
+    description: smoke, kani, public_api, or miri
+    required: true
+  target:
+    description: Registered smoke or Miri target
+    default: ''
+outputs:
+  enabled:
+    description: Whether this job should execute its test steps
+    value: ${{ steps.select.outputs.enabled }}
+  command:
+    description: Selected Miri test arguments
+    value: ${{ steps.select.outputs.command }}
+  miriflags:
+    description: Selected Miri interpreter flags
+    value: ${{ steps.select.outputs.miriflags }}
+runs:
+  using: composite
+  steps:
+    - id: select
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        BEFORE_SHA: ${{ github.event.before }}
+        CHECK_KIND: ${{ inputs.kind }}
+        CHECK_TARGET: ${{ inputs.target }}
+      run: python3 scripts/ci-job-scope.py --kind "$CHECK_KIND" --target "$CHECK_TARGET" >> "$GITHUB_OUTPUT"
