@@ -7,7 +7,7 @@ use std::{
 };
 
 use machine::{Machine, quicknes::QuickNesMachine};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -32,7 +32,9 @@ use crate::{
             SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_value_sha256,
             replay_campaign_checkpointed, run_campaign_checkpointed,
         },
-        draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        draw::{DrawMixture, SuffixShape},
+        draw_tables::DrawTableHeader,
+        rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
@@ -63,9 +65,6 @@ const VIABILITY_PROBE_FRAMES: u16 = 60;
 
 type NovaPreference = (u8, u8, u8, bool, u8, u8);
 type NovaChampionKey = (NovaProgressWatermark, NovaPreference);
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct NovaNoTableHeader;
 
 pub struct NovaGame<M: NovaMachineKind = QuickNesMachine> {
     rom: Vec<u8>,
@@ -237,7 +236,7 @@ pub type NovaCampaignCheckpoint<M = QuickNesMachine> =
     CampaignCheckpoint<NovaSnapshot<<M as Machine>::Portable>>;
 pub type NovaSnapshotCheckpoint<M = QuickNesMachine> =
     SnapshotCheckpoint<NovaSnapshot<<M as Machine>::Portable>>;
-pub type NovaCampaignStreamHeader = CampaignStreamHeader<NovaNoTableHeader>;
+pub type NovaCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
 pub type NovaCampaignModeReport = CampaignModeReport<ButtonChord, NovaArchiveReport>;
 pub type NovaCampaignProgressRecord = CampaignProgressRecord<NovaArchiveKey>;
 type NovaCampaignActionResult<M> = CampaignActionResult<NovaGame<M>>;
@@ -415,9 +414,6 @@ impl<M: NovaMachineKind> CampaignTypes for NovaGame<M> {
     type Evidence = NovaCampaignEvidence;
     type ArchiveReport = NovaArchiveReport;
     type Run = NovaCampaignRun;
-    type DrawState = ();
-    type DrawCheckpoint = ();
-    type DrawHeader = NovaNoTableHeader;
 }
 
 impl<M: NovaMachineKind> Reporting for NovaGame<M> {
@@ -466,16 +462,6 @@ impl<M: NovaMachineKind> Reporting for NovaGame<M> {
 }
 
 impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
-    fn draw_state_memory_reserve_bytes(
-        &self,
-        _run: &NovaCampaignRun,
-        _max_actions: usize,
-    ) -> usize {
-        0
-    }
-    fn draw_state_memory_bytes(&self, _state: &()) -> usize {
-        0
-    }
     fn policies(&self, _run: &NovaCampaignRun) -> WorkloadPolicies {
         [
             (
@@ -502,6 +488,7 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
         )))
         .collect()
     }
+
     fn resolve_recorded(
         &self,
         policies: &WorkloadPolicies,
@@ -517,30 +504,6 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
         }
         Ok(NovaCampaignRun)
     }
-    fn initial_draw_state(
-        &self,
-        _run: &NovaCampaignRun,
-        _origin: Option<(&str, &NovaArchiveReport)>,
-    ) -> Result<((), Option<NovaNoTableHeader>), Box<dyn Error>> {
-        Ok(((), None))
-    }
-    fn expand_suffix(
-        &self,
-        _run: &NovaCampaignRun,
-        _state: &(),
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        mutation_seed: u64,
-    ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        draw_suffix(
-            shape,
-            mixture.mixture,
-            mixture.weight,
-            mutation_seed,
-            |_| Ok(None),
-            sample_chord,
-        )
-    }
 
     fn max_action_limit(&self) -> usize {
         if self.whole_game {
@@ -552,6 +515,14 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
 
     fn max_action_cost(&self) -> u64 {
         u64::from(crate::nova::archive::LONGEST_HOLD_FRAMES)
+    }
+
+    fn sample_alphabet(
+        &self,
+        _run: &NovaCampaignRun,
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<ButtonChord, Box<dyn Error>> {
+        sample_chord(rand)
     }
 }
 

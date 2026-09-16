@@ -49,6 +49,10 @@ trajectory achieved their union. The inherited count representation and
 lexicographic resource preference are policy tradeoffs, not true capability
 or resource dominance.
 
+The adapter supplies its controller vocabulary as the alphabet sampler and
+nothing else about drawing; the searcher owns the suffix draw and the
+retained-input table.
+
 `progress_cmp` compares the item count and nothing else, so that is the whole
 progress relation the selector reads. Tanks are capacity, so they live in the
 preference, which decides which of two states keeps one slot. Field declaration

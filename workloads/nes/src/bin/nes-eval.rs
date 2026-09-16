@@ -402,7 +402,6 @@ fn main() -> Result<()> {
         "smb" => evaluate(
             SmbGame::new(&rom, p, h),
             SmbCampaignRun {
-                chord: Default::default(),
                 vocabulary: Default::default(),
                 terminal: Some(SmbTerminalPredicate::GameVictory),
             },

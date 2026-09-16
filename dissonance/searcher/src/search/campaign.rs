@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     error::Error,
     fmt::Debug,
     io::Write,
@@ -21,13 +21,18 @@ use crate::search::archive::{
 };
 use crate::search::draw::{
     DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
-    draw_mixture_from_identifier, draw_mixture_identifier, energy_strategy,
+    draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
     suffix_shape_from_identifier, suffix_shape_identifier,
+};
+use crate::search::draw_tables::{
+    DEFAULT_DRAW_TABLE_PARAMETERS, DRAW_TABLE_POLICY_FIELD, DrawTableHeader, DrawTables,
+    DrawVersionSchedule, biased_step, draw_table_from_identifier, draw_table_identifier,
 };
 use crate::search::duration::{
     DurationCheckpoint, DurationContextCheckpoint, DurationDraw, DurationPolicies, DurationPolicy,
     DurationRequest,
 };
+use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParameters};
 
 pub const SPLICE_ACTION_CAP: usize = 128;
 use crate::search::parallel::{ResultSlots, with_worker_pool};
@@ -39,11 +44,11 @@ pub type CampaignOutcome<G> = (
 );
 
 pub type InitialDrawState<G> = (
-    <G as CampaignTypes>::DrawState,
-    Option<<G as CampaignTypes>::DrawHeader>,
+    DrawTables<<G as CampaignTypes>::Action>,
+    Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 3;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 4;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
@@ -147,9 +152,6 @@ pub trait CampaignTypes: Sync {
     type Evidence: Clone + Default;
     type ArchiveReport: Clone;
     type Run: Clone + Sync;
-    type DrawState;
-    type DrawCheckpoint: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
-    type DrawHeader: Clone + Debug + Eq + Serialize + DeserializeOwned;
 }
 
 pub trait Reporting: CampaignTypes {
@@ -188,14 +190,23 @@ pub trait InputPolicy: CampaignTypes {
     fn max_action_cost(&self) -> u64;
     fn policies(&self, run: &Self::Run) -> WorkloadPolicies;
     fn resolve_recorded(&self, policies: &WorkloadPolicies) -> Result<Self::Run, Box<dyn Error>>;
-    fn draw_state_memory_reserve_bytes(&self, run: &Self::Run, max_actions: usize) -> usize;
-    fn draw_state_memory_bytes(&self, state: &Self::DrawState) -> usize;
-
-    fn initial_draw_state(
+    fn sample_alphabet(
         &self,
         run: &Self::Run,
-        origin: Option<(&str, &Self::ArchiveReport)>,
-    ) -> Result<InitialDrawState<Self>, Box<dyn Error>>;
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<Self::Action, Box<dyn Error>>;
+
+    fn draw_table_parameters(&self, run: &Self::Run) -> EmpiricalStepParameters {
+        let _ = run;
+        DEFAULT_DRAW_TABLE_PARAMETERS
+    }
+    fn draw_state_memory_reserve_bytes(&self, run: &Self::Run, max_actions: usize) -> usize {
+        let _ = (run, max_actions);
+        DrawTables::<Self::Action>::memory_reserve_bytes()
+    }
+    fn draw_state_memory_bytes(&self, state: &DrawTables<Self::Action>) -> usize {
+        state.memory_bytes()
+    }
     fn duration_request(
         &self,
         run: &Self::Run,
@@ -208,7 +219,7 @@ pub trait InputPolicy: CampaignTypes {
     fn expand_suffix_duration(
         &self,
         run: &Self::Run,
-        state: &Self::DrawState,
+        state: &DrawTables<Self::Action>,
         shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
@@ -221,10 +232,10 @@ pub trait InputPolicy: CampaignTypes {
     fn expand_suffix_recorded_duration(
         &self,
         run: &Self::Run,
-        state: &Self::DrawState,
+        state: &DrawTables<Self::Action>,
         shape: SuffixShape,
         mixture: MixtureDraw,
-        before: Option<&Self::DrawCheckpoint>,
+        before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
         draw: Option<DurationDraw<Self::Key>>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
@@ -241,55 +252,71 @@ pub trait InputPolicy: CampaignTypes {
     }
     fn draw_checkpoint(
         &self,
-        state: &Self::DrawState,
-    ) -> Result<Option<Self::DrawCheckpoint>, Box<dyn Error>> {
-        let _ = state;
-        Ok(None)
+        state: &DrawTables<Self::Action>,
+    ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
+        state.checkpoint().map(Some)
     }
-    fn draw_checkpoint_version(&self, _checkpoint: &Self::DrawCheckpoint) -> u64 {
-        0
+    fn draw_checkpoint_version(&self, checkpoint: &EmpiricalStepCheckpoint) -> u64 {
+        checkpoint.records
     }
     fn expand_suffix(
         &self,
         run: &Self::Run,
-        state: &Self::DrawState,
+        state: &DrawTables<Self::Action>,
         shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
-    ) -> Result<Vec<Self::Action>, Box<dyn Error>>;
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        self.expand_recorded_or_live(run, state, shape, mixture, None, mutation_seed, false)
+    }
     fn expand_suffix_recorded(
         &self,
         run: &Self::Run,
-        state: &Self::DrawState,
+        state: &DrawTables<Self::Action>,
         shape: SuffixShape,
         mixture: MixtureDraw,
-        before: Option<&Self::DrawCheckpoint>,
+        before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        if before.is_some() {
-            return Err("recorded stream carries an unsupported draw checkpoint".into());
-        }
-        self.expand_suffix(run, state, shape, mixture, mutation_seed)
+        self.expand_recorded_or_live(run, state, shape, mixture, before, mutation_seed, true)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn expand_recorded_or_live(
+        &self,
+        run: &Self::Run,
+        state: &DrawTables<Self::Action>,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        before: Option<&EmpiricalStepCheckpoint>,
+        mutation_seed: u64,
+        replay: bool,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        state.draw(before, replay, |view| {
+            draw_suffix(
+                shape,
+                mixture.mixture,
+                mixture.weight,
+                mutation_seed,
+                |rand| biased_step(view, rand),
+                |rand| self.sample_alphabet(run, rand),
+            )
+        })
     }
     fn finish_stream_record(
         &self,
         run: &Self::Run,
-        state: &mut Self::DrawState,
+        state: &mut DrawTables<Self::Action>,
         retained: &[(usize, &[Self::Action])],
-    ) -> Result<Option<Self::DrawCheckpoint>, Box<dyn Error>> {
-        let _ = (run, state, retained);
-        Ok(None)
-    }
-    fn retained_inputs_need_full(&self, _run: &Self::Run) -> bool {
-        false
+    ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
+        let _ = run;
+        state.finish_record(retained)
     }
     fn remember_draw_version(
         &self,
-        state: &mut Self::DrawState,
-        required: &BTreeSet<u64>,
+        state: &mut DrawTables<Self::Action>,
+        schedule: &DrawVersionSchedule,
     ) -> Result<(), Box<dyn Error>> {
-        let _ = (state, required);
-        Ok(())
+        state.remember_version(schedule)
     }
 }
 
@@ -1534,8 +1561,8 @@ fn stream_header<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
     origin: &CampaignOriginRecord,
-    draw_header: Option<G::DrawHeader>,
-) -> CampaignStreamHeader<G::DrawHeader> {
+    draw_header: Option<DrawTableHeader>,
+) -> CampaignStreamHeader<DrawTableHeader> {
     CampaignStreamHeader {
         schema_version: CAMPAIGN_SCHEMA_VERSION,
         format: workload.stream_format().to_owned(),
@@ -1566,7 +1593,7 @@ fn stream_header<G: Workload>(
         },
         suffix_policy: suffix_shape_identifier(config.suffix).to_owned(),
         mixture_policy: draw_mixture_identifier(config.mixture),
-        workload_policies: workload.policies(&config.run),
+        workload_policies: recorded_policies(workload, &config.run),
         draw_header,
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
         parent_scheduler: selector_policy_identifier(&config.selector),
@@ -1862,7 +1889,7 @@ impl CampaignCounters {
 
 fn build_report<G: Workload>(
     workload: &G,
-    header: &CampaignStreamHeader<G::DrawHeader>,
+    header: &CampaignStreamHeader<DrawTableHeader>,
     origin: CampaignOriginRecord,
     core: CoordinatorCore<G>,
     counters: &CampaignCounters,
@@ -2024,7 +2051,7 @@ struct PendingJob<G: Workload + ?Sized> {
     splice_weight: u8,
     splice: Option<CampaignSpliceRecord>,
     selector: SelectorDraw,
-    draw_checkpoint_before: Option<G::DrawCheckpoint>,
+    draw_checkpoint_before: Option<EmpiricalStepCheckpoint>,
     duration_draw: Option<DurationDraw<G::Key>>,
     duration_admission_sequence_at_draw: Option<u64>,
     duration_remaining_work: Option<NonZeroU64>,
@@ -2345,7 +2372,7 @@ where
             ..
         } => Some((file_sha256.as_str(), report.as_ref())),
     };
-    let (mut draw_state, draw_header) = workload.initial_draw_state(&config.run, draw_origin)?;
+    let (mut draw_state, draw_header) = initial_draw_state(workload, &config.run, draw_origin)?;
     let mut duration_policies = DurationPolicies::<G::Key>::new();
     if !memory_is_within_reserve(
         workload.draw_state_memory_bytes(&draw_state),
@@ -2457,7 +2484,7 @@ where
         |pool| -> Result<(), Box<dyn Error>> {
             let select = |core: &mut CoordinatorCore<G>,
                           rands: &mut [RomuDuoJrRand],
-                          draw_state: &mut G::DrawState,
+                          draw_state: &mut DrawTables<G::Action>,
                           duration_policies: &DurationPolicies<G::Key>,
                           writer: &mut StreamWriter<'_>,
                           counters: &mut CampaignCounters,
@@ -3151,11 +3178,10 @@ where
 fn finish_record<G: Workload>(
     workload: &G,
     run: &G::Run,
-    draw_state: &mut G::DrawState,
+    draw_state: &mut DrawTables<G::Action>,
     core: &CoordinatorCore<G>,
     decisions: &[CampaignAdmissionDecision],
-) -> Result<Option<G::DrawCheckpoint>, Box<dyn Error>> {
-    let needs_full = workload.retained_inputs_need_full(run);
+) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
     let mut retained_inputs = Vec::new();
     for decision in decisions {
         let CampaignAdmissionDecision::Retained { id } = decision else {
@@ -3170,31 +3196,79 @@ fn finish_record<G: Workload>(
             .entries
             .get(index)
             .ok_or("retained draw-table entry is missing from the run archive")?;
-        let input = if needs_full {
-            core.archive
-                .materialize_input(index)
-                .map_err(|error| -> Box<dyn Error> { error.into() })?
-        } else {
-            Input {
-                actions: entry.input_suffix.clone(),
-            }
-        };
-        let parent_actions = if needs_full {
-            entry
-                .parent_id
-                .and_then(|parent| core.archive.index_of_id(parent))
-                .and_then(|parent| core.archive.entries.get(parent))
-                .map_or(0, |parent| parent.input_len)
-        } else {
-            0
-        };
-        retained_inputs.push((parent_actions, input));
+        retained_inputs.push(entry.input_suffix.clone());
     }
     let retained = retained_inputs
         .iter()
-        .map(|(parent_actions, input)| (*parent_actions, input.actions.as_slice()))
+        .map(|suffix| (0, suffix.as_slice()))
         .collect::<Vec<_>>();
     workload.finish_stream_record(run, draw_state, &retained)
+}
+
+fn recorded_policies<G: Workload>(workload: &G, run: &G::Run) -> WorkloadPolicies {
+    let mut policies = workload.policies(run);
+    policies.insert(
+        DRAW_TABLE_POLICY_FIELD.to_owned(),
+        draw_table_identifier(workload.draw_table_parameters(run)),
+    );
+    policies
+}
+
+fn resolve_recorded_policies<G: Workload>(
+    workload: &G,
+    policies: &WorkloadPolicies,
+) -> Result<G::Run, Box<dyn Error>> {
+    let mut workload_policies = policies.clone();
+    let recorded = workload_policies
+        .remove(DRAW_TABLE_POLICY_FIELD)
+        .ok_or("campaign stream is missing its draw table policy")?;
+    let parameters = draw_table_from_identifier(&recorded)?;
+    let run = workload.resolve_recorded(&workload_policies)?;
+    if workload.draw_table_parameters(&run) != parameters {
+        return Err("campaign stream draw table policy does not match this build".into());
+    }
+    Ok(run)
+}
+
+fn initial_draw_state<G: Workload>(
+    workload: &G,
+    run: &G::Run,
+    origin: Option<(&str, &G::ArchiveReport)>,
+) -> Result<InitialDrawState<G>, Box<dyn Error>> {
+    let parameters = workload.draw_table_parameters(run);
+    let mut tables = DrawTables::new(parameters)?;
+    let source_sha256 = match origin {
+        None => format!("{:x}", Sha256::digest([])),
+        Some((file_sha256, report)) => {
+            let entries = workload.source_entries(report);
+            let parent_len: BTreeMap<u64, usize> = entries
+                .iter()
+                .map(|entry| (entry.id, entry.input.actions.len()))
+                .collect();
+            let mut pending = 0_u64;
+            for entry in entries {
+                let prefix = entry
+                    .parent_id
+                    .and_then(|parent| parent_len.get(&parent).copied())
+                    .unwrap_or(0);
+                tables.fold_source(entry.input.actions.get(prefix..).unwrap_or(&[]))?;
+                pending = pending.saturating_add(1);
+                if pending >= parameters.update_every_records {
+                    tables.flush()?;
+                    pending = 0;
+                }
+            }
+            file_sha256.to_owned()
+        }
+    };
+    tables.flush()?;
+    let initial = tables.checkpoint()?;
+    let header = DrawTableHeader {
+        source_sha256,
+        parameters,
+        initial,
+    };
+    Ok((tables, Some(header)))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3211,7 +3285,7 @@ where
     let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
     let text = std::str::from_utf8(stream_bytes)?;
     let mut lines = text.lines();
-    let header: CampaignStreamHeader<G::DrawHeader> =
+    let header: CampaignStreamHeader<DrawTableHeader> =
         serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
     if header.schema_version != CAMPAIGN_SCHEMA_VERSION {
         return Err("campaign stream schema version is not recognized".into());
@@ -3246,11 +3320,12 @@ where
         );
     }
     let record_lines = lines.collect::<Vec<_>>();
-    let mut required_draw_versions = BTreeSet::new();
+    let mut required_draw_versions = DrawVersionSchedule::default();
     let mut replay_job_parents = Vec::<u64>::new();
     let mut replay_job_metadata = Vec::<Vec<u64>>::new();
-    for line in &record_lines {
-        let record: CampaignStreamRecord<G::DrawCheckpoint, G::Key> = serde_json::from_str(line)?;
+    for (index, line) in record_lines.iter().enumerate() {
+        let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
+            serde_json::from_str(line)?;
         let before = match record {
             CampaignStreamRecord::Job(job) => {
                 replay_job_parents.push(job.parent_id);
@@ -3260,7 +3335,7 @@ where
             CampaignStreamRecord::Skip(skip) => skip.draw_checkpoint_before,
         };
         if let Some(before) = before {
-            required_draw_versions.insert(workload.draw_checkpoint_version(&before));
+            required_draw_versions.require(workload.draw_checkpoint_version(&before), index);
         }
     }
     let resume_input = match header.origin_kind.as_str() {
@@ -3311,7 +3386,7 @@ where
     }
     let replay_suffix = suffix_shape_from_identifier(&header.suffix_policy)?;
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
-    let replay_run = workload.resolve_recorded(&header.workload_policies)?;
+    let replay_run = resolve_recorded_policies(workload, &header.workload_policies)?;
     let action_cost = workload.action_cost_fn();
     let max_action_cost = workload.max_action_cost();
     if let Some(checkpoint) = origin_checkpoint {
@@ -3332,7 +3407,7 @@ where
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     let (mut draw_state, replay_draw_header) =
-        workload.initial_draw_state(&replay_run, draw_origin)?;
+        initial_draw_state(workload, &replay_run, draw_origin)?;
     let mut duration_policies = DurationPolicies::<G::Key>::new();
     if let Some(memory_budget_mib) = header.memory_budget_mib {
         let budget = memory_budget_mib.saturating_mul(1024 * 1024);
@@ -3447,8 +3522,10 @@ where
         .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
 
     let mut replay_job_index = 0_usize;
-    for line in record_lines {
-        let record: CampaignStreamRecord<G::DrawCheckpoint, G::Key> = serde_json::from_str(line)?;
+    for (replay_record_index, line) in record_lines.into_iter().enumerate() {
+        draw_state.release_versions(&required_draw_versions, replay_record_index);
+        let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
+            serde_json::from_str(line)?;
         match record {
             CampaignStreamRecord::Skip(skip) => {
                 let parent_index = core
@@ -3883,24 +3960,23 @@ mod tests {
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
         CampaignConfig, CampaignCounters, CampaignJobRecord, CampaignJobResult, CampaignOrigin,
         CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes,
-        CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, DurationAdmission,
-        EnergyStrategy, Evaluation, InitialDrawState, InputPolicy, LiveCoordinatorProfile,
-        MAX_PROGRESS_CURVE_POINTS, Reporting, SPLICE_ACTION_CAP, TargetExecution, WorkloadPolicies,
-        admission_window_depth, archive_entry_limit_is_valid, compact_progress_curve,
-        completed_results_within_bound, execution_work_delta, finish_record, is_zero_usize,
-        live_coordinator_profile, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
-        profile_now, progress_checkpoint_due, progress_policy_is_supported,
-        record_compaction_elapsed, replay_campaign_checkpointed, replay_splice,
-        resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
-        schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
-        stop_reservations_after_objective,
+        CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, DrawTables, DurationAdmission,
+        EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LiveCoordinatorProfile,
+        MAX_PROGRESS_CURVE_POINTS, Reporting, RomuDuoJrRand, SPLICE_ACTION_CAP, TargetExecution,
+        WorkloadPolicies, admission_window_depth, archive_entry_limit_is_valid,
+        compact_progress_curve, completed_results_within_bound, execution_work_delta,
+        finish_record, is_zero_usize, live_coordinator_profile, memory_is_within_reserve,
+        postcard_value_sha256, profile_elapsed, profile_now, progress_checkpoint_due,
+        progress_policy_is_supported, record_compaction_elapsed, replay_campaign_checkpointed,
+        replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
+        run_campaign_checkpointed, schedule_policy_identifier, schedule_policy_is_supported,
+        schedule_policy_window, stop_reservations_after_objective,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
         SelectorPath, SelectorPolicy, entries_by_suffix,
     };
     use crate::search::draw::{DrawMixture, MixtureDraw, SuffixShape};
-    use crate::search::empirical_steps::EmpiricalStepCheckpoint;
     use crate::search::rollout::{ExecutionDisposition, Outcome, Rollout, execute_suffix};
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
@@ -3991,9 +4067,6 @@ mod tests {
         type Evidence = ();
         type ArchiveReport = TestArchiveReport;
         type Run = ();
-        type DrawState = ();
-        type DrawCheckpoint = ();
-        type DrawHeader = ();
     }
 
     impl Reporting for TestWorkload {
@@ -4031,12 +4104,6 @@ mod tests {
     }
 
     impl InputPolicy for TestWorkload {
-        fn draw_state_memory_reserve_bytes(&self, _run: &Self::Run, _max_actions: usize) -> usize {
-            0
-        }
-        fn draw_state_memory_bytes(&self, _state: &Self::DrawState) -> usize {
-            0
-        }
         fn policies(&self, _run: &Self::Run) -> WorkloadPolicies {
             WorkloadPolicies::new()
         }
@@ -4046,22 +4113,33 @@ mod tests {
         ) -> Result<Self::Run, Box<dyn Error>> {
             Ok(())
         }
-        fn initial_draw_state(
+        fn sample_alphabet(
             &self,
             _run: &Self::Run,
-            _origin: Option<(&str, &Self::ArchiveReport)>,
-        ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
-            Ok(((), None))
+            rand: &mut RomuDuoJrRand,
+        ) -> Result<Self::Action, Box<dyn Error>> {
+            Ok(TestAction::new(rand.next_u64() as u8, 1))
         }
         fn expand_suffix(
             &self,
             _run: &Self::Run,
-            _state: &Self::DrawState,
+            _state: &DrawTables<Self::Action>,
             _shape: SuffixShape,
             _mixture: MixtureDraw,
             mutation_seed: u64,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
             Ok(vec![TestAction::new(mutation_seed as u8, 1)])
+        }
+        fn expand_suffix_recorded(
+            &self,
+            run: &Self::Run,
+            state: &DrawTables<Self::Action>,
+            shape: SuffixShape,
+            mixture: MixtureDraw,
+            _before: Option<&EmpiricalStepCheckpoint>,
+            mutation_seed: u64,
+        ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+            self.expand_suffix(run, state, shape, mixture, mutation_seed)
         }
 
         fn max_action_limit(&self) -> usize {
@@ -4688,7 +4766,7 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":3,"format":"campaign-v1","campaign_seed":7,"workers":2,
+    const RECORDED_HEADER: &str = r#"{"schema_version":4,"format":"campaign-v1","campaign_seed":7,"workers":2,
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
@@ -5164,9 +5242,8 @@ mod tests {
         ];
         assert_eq!(retained_archive_indexes(&core, &decisions), vec![0, 1]);
 
-        let (mut draw_state, _header) = workload
-            .initial_draw_state(&run, None)
-            .expect("initialize draw state");
+        let (mut draw_state, _header) =
+            super::initial_draw_state(&workload, &run, None).expect("initialize draw state");
         assert!(
             finish_record(
                 &workload,

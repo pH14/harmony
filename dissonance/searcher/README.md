@@ -24,8 +24,12 @@ namespaces are rejected before replay because their snapshot accounting differs.
 
 Empirical step tables fold retained suffixes into an incremental hash and a
 deterministic frequency map capped at 4,096 distinct steps. The compact table
-is the only supported representation. Workloads identify their input policies
-and reject unknown or retired identifiers during replay.
+is the only supported representation. Every campaign keeps one, in
+`search::draw_tables`, so a workload gets the biased draw without owning any of
+the bookkeeping. `DrawTables` folds each retained suffix as its record closes,
+publishes an `EmpiricalStepCheckpoint` the stream records beside every draw,
+and keeps the table versions a serial replay still needs. Workloads identify
+their input policies and reject unknown or retired identifiers during replay.
 
 Physical executors default to at most one running or completed-but-unadmitted
 job each. `run_campaign_checkpointed_with_options` can explicitly allow two
@@ -60,7 +64,7 @@ campaign and target contracts:
 | Contract | Workload responsibility |
 | --- | --- |
 | `TargetExecution` | Construct, drive, restore, and snapshot targets; capture observations and account for deterministic execution work. |
-| `InputPolicy` | Define the action vocabulary, draw suffixes, retain policy history, and checkpoint draw state. |
+| `InputPolicy` | Define the action vocabulary and the policy identifiers a recording must match. |
 | `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
 
@@ -86,12 +90,16 @@ A complete adapter receives the aggregate `Workload` implementation automaticall
 The `tests/interfaces.rs` fixture implements execution alone and exercises it
 through a function bounded only by `TargetExecution`.
 
-Stateful input policies provide a serializable `DrawCheckpoint` and optional
-`DrawHeader`. Campaign records carry those types directly; the coordinator
-only asks the policy for a checkpoint's history version when retaining replay
-state. It does not interpret the checkpoint payload. Stateless policies use
-`()`. Policy state and retained checkpoint history must fit the declared memory
-reserve.
+`InputPolicy` requires four things of a workload: the action limit, the action
+cost ceiling, the policy identifiers a recording must match, and
+`sample_alphabet`, which draws one action from the workload's vocabulary. The
+searcher supplies the rest. `expand_suffix` mixes `sample_alphabet` with a step
+drawn from the retained-input table, `finish_stream_record` folds the record's
+retained suffixes back into it, and `remember_draw_version` keeps the versions
+a replay still names. A workload that embeds a duration choice in its actions
+overrides `expand_suffix_duration` and draws through `DrawTables::draw` itself.
+`draw_table_parameters` sizes the table; its default reserve is 2 MiB and must
+fit the campaign's memory budget.
 
 Streams require the current engine `schema_version` in addition to the
 workload's format identifier. Missing or unsupported engine versions are

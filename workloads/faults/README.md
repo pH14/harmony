@@ -150,7 +150,9 @@ hash matches its instrumentation attestation. A runtime hello identifies the
 ready nodes in each incarnation; event faults select only those nodes, so mixed
 instrumented and uninstrumented bundles share the same search policy. Backend capabilities determine
 whether host interrupt actions are available. Unsupported alternatives are
-excluded from the alphabet. The continuous client and oracle remain image-owned
+excluded from the alphabet. The adapter supplies that alphabet and the duration
+each drawn action carries; the searcher owns the suffix draw and the
+retained-input table. The continuous client and oracle remain image-owned
 commands; the oracle decides when its observations are conclusive, including
 when some nodes are down.
 

@@ -53,7 +53,9 @@ The adapter performs a bounded title, main-menu, level-select, pre-level, and
 gameplay sequence with release frames between edge-triggered presses. Genesis
 is sealed after health and coordinates confirm gameplay. Search actions exclude
 Start and Select. They combine nine non-conflicting directional states with the
-four A/B button states.
+four A/B button states. The adapter supplies that vocabulary as its alphabet
+sampler and nothing else about drawing; the searcher owns the suffix draw and
+the retained-input table.
 
 ## Level and whole-game evaluation
 
