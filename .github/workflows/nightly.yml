@@ -1,7 +1,5 @@
-name: Checks / Memory safety
+name: Checks
 
-# Nightly Miri validation for crates containing `unsafe`. The jobs are also
-# manually dispatchable. Timeouts include headroom for hosted-runner variance.
 on:
   pull_request:
     paths:
@@ -24,157 +22,46 @@ on:
       - clippy.toml
       - deny.toml
       - .github/workflows/nightly.yml
-  schedule:
-    # 08:00 UTC daily.
-    - cron: "0 8 * * *"
-  workflow_dispatch: {}
-
+      - .github/actions/ci-scope/**
+      - scripts/ci-job-scope.py
+      - scripts/test_ci_job_scope.py
+      - scripts/miri_scope.py
+      - scripts/test_miri_scope.py
 jobs:
-  # The per-PR matrix keeps each affected unsafe crate's Miri run within the
-  # common 15-minute CI bound. vmm-core selects its focused pointer-lifetime
-  # seam test instead of the 240-minute full crate suite. Dependency and
-  # toolchain changes select all targets because they can alter every build.
-  miri-scope:
-    name: select affected Miri targets
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      matrix: ${{ steps.select.outputs.matrix }}
-      has-targets: ${{ steps.select.outputs.has-targets }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Select Miri targets from changed inputs
-        id: select
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          git diff --name-only "${BASE_SHA}"...HEAD >changed-files.txt
-          matrix=$(python3 scripts/miri_scope.py <changed-files.txt)
-          echo "matrix=${matrix}" >>"${GITHUB_OUTPUT}"
-          if [[ "${matrix}" == '{"include":[]}' ]]; then
-            echo 'has-targets=false' >>"${GITHUB_OUTPUT}"
-          else
-            echo 'has-targets=true' >>"${GITHUB_OUTPUT}"
-          fi
-          echo "Miri matrix: ${matrix}"
-
   miri-pr:
-    name: miri PR — ${{ matrix.name }}
-    needs: miri-scope
-    if: needs.miri-scope.outputs.has-targets == 'true'
+    name: Memory safety — ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.miri-scope.outputs.matrix) }}
+      matrix:
+        name: [vmm-core, hypercall-doorbell, consonance-client, vm-state, vmm-backend, snapshot-store, machine, nes-guest, harmony-supervisor]
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
       HARMONY_MIRI_PR_SMOKE: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Determine whether this test is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: miri
+          target: ${{ matrix.name }}
       - name: Install pinned nightly + Miri
+        if: steps.scope.outputs.enabled == 'true'
         run: |
           rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
       - name: Run the affected crate's Miri tests
+        if: steps.scope.outputs.enabled == 'true'
         env:
-          MIRIFLAGS: ${{ matrix.miriflags }}
-          MIRI_COMMAND: ${{ matrix.command }}
+          MIRIFLAGS: ${{ steps.scope.outputs.miriflags }}
+          MIRI_COMMAND: ${{ steps.scope.outputs.command }}
         run: |
           set -euo pipefail
           read -r -a command <<<"${MIRI_COMMAND}"
           cargo "+${PINNED_NIGHTLY}" miri test "${command[@]}"
-
-  # vmm-core runs separately because its interpreted suite is substantially
-  # longer than the other crate suites.
-  #
-  # vmm-core's UB surface is the two `Backend::map_memory` pointer seams in
-  # `bringup`, and BOTH are exercised by a running Miri test:
-  #   - boot path: `compose`/`compose_linux` over owned `GuestRam` —
-  #     `bringup::tests::compose_drives_guestram_and_unsafe_map_memory` (and every
-  #     mock boot).
-  #   - restore path: `compose_restore_target` maps a
-  #     `snapshot_store::Mapping` moved into the returned `Vmm` — a different
-  #     ownership/lifetime obligation, covered by
-  #     `bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping`,
-  #     which drives the same seam over the 4-KiB-aligned `Mapping::anonymous`
-  #     buffer through a pointer-retaining backend double (the retained raw
-  #     pointer is read AFTER the move, so Miri checks the liveness obligation).
-  # The `ControlServer` restore-driving tests (`Branch`/`Replay`/
-  # `engine.materialize()`) are `#[cfg_attr(miri, ignore)]`d — they hit
-  # `snapshot-store`'s tempfile+mmap, which Miri can't execute; their rationale
-  # strings cite the dedicated restore-target test above. Job-level
-  # `-Zmiri-permissive-provenance` only — no disable-isolation.
-  miri-vmm-core:
-    name: miri — vmm-core (UB safety net, own job)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
-    env:
-      PINNED_NIGHTLY: nightly-2026-06-16
-      MIRIFLAGS: -Zmiri-permissive-provenance
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install pinned nightly + miri
-        run: |
-          rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
-      - uses: Swatinem/rust-cache@v2
-      - name: miri — vmm-core
-        run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-core
-
-  miri:
-    name: miri (unsafe crates, UB safety net)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 320
-    env:
-      PINNED_NIGHTLY: nightly-2026-06-16
-      MIRIFLAGS: -Zmiri-permissive-provenance
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install pinned nightly + miri
-        run: |
-          rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
-      - uses: Swatinem/rust-cache@v2
-      # Run each unsafe crate as its own step so a single crate's failure is legible
-      # and one crate's Miri memory footprint is reclaimed before the next.
-      - name: miri — hypercall-doorbell
-        run: cargo "+${PINNED_NIGHTLY}" miri test -p hypercall-doorbell --features linux-device
-      - name: miri — vm-state
-        run: cargo "+${PINNED_NIGHTLY}" miri test -p vm-state
-      - name: miri — vmm-backend
-        run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-backend --all-features
-      # snapshot-store uses --lib because the
-      # mapping/materialize tests need real file-backed mmap, which Miri cannot
-      # execute (they are cfg(not(miri))). The lib tests need disable-isolation
-      # for tempfile creation on top of the job-level permissive-provenance.
-      - name: miri — snapshot-store (lib)
-        run: cargo "+${PINNED_NIGHTLY}" miri test -p snapshot-store --lib
-        env:
-          MIRIFLAGS: -Zmiri-permissive-provenance -Zmiri-disable-isolation
-      # machine's native QuickNES loader is cfg(not(miri)); the loopback table
-      # drives the same function-pointer, fixed-buffer, and direct-RAM logic.
-      - name: miri — machine
-        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path workloads/nes-machine/Cargo.toml
-      # workloads/nes-guest is out-of-workspace (its own manifest): its
-      # ONLY unsafe is the binary's cfg(linux) libretro dlopen FFI + the hugetlb/
-      # pagemap/mlock billboard pinning + the /dev/mem doorbell — real syscalls
-      # Miri cannot execute, cfg-gated off non-Linux hosts. This run is the UB
-      # safety net over the unsafe-free brain (lib.rs: chord decode, RAM map,
-      # billboard writer, the mock-core agent loop) PLUS the hoisted FFI-edge
-      # logic (lib.rs glue: callback responses, joypad-bit mapping, work-RAM
-      # copy bounds, hugetlb length bound, pagemap decode) + the agent
-      # integration suite. `--bins` additionally builds the binary
-      # itself on this job's Linux host — where the cfg(linux) modules COMPILE
-      # under Miri — and executes the bin's own unit tests, which drive the one
-      # residual value-carrying unsafe (env_cb's bool store) through a real
-      # pointer with no FFI. Proptest cases are cut under cfg(miri).
-      - name: miri — workloads/nes-guest (lib + agent + bin unit tests, out-of-workspace manifest)
-        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path workloads/nes-guest/Cargo.toml --lib --test agent --bins
-
-      - name: miri — platform supervisor portable logic
-        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path consonance/harmony-linux/supervisor/Cargo.toml --lib --bins

@@ -185,8 +185,10 @@ carry the separate logical frame count.
 
 ## Continuous evaluation
 
-[Search evaluation checks](../../../../.github/workflows/search-eval.yml) run
-seed 1 against all three AI levels on relevant PRs and main changes.
+[Product smokes](../../../../.github/workflows/product-smoke.yml) run a bounded
+seed-1 Easy smoke on affected PRs and main changes.
+[Search evaluation acceptance](../../../../.github/workflows/search-eval.yml)
+qualifies all three AI levels through manual dispatch.
 [The NES benchmark](../../../../.github/workflows/nova-nightly.yml) follows
 Nova's source-build/search/film pattern and gates full recorded campaign replay;
 scheduled and manually selected STB runs cross all three levels with registered seeds 1, 2,

@@ -35,6 +35,10 @@ class KaniScopeTests(unittest.TestCase):
     def test_an_empty_change_set_does_not_select_kani(self) -> None:
         self.assertFalse(kani_required([]))
 
+    def test_selector_changes_select_kani(self) -> None:
+        for path in ("scripts/quality_scope.py", "scripts/test_quality_scope.py"):
+            self.assertTrue(kani_required([path]))
+
 
 if __name__ == "__main__":
     unittest.main()
