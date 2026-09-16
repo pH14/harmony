@@ -105,7 +105,10 @@ searcher supplies the rest. `expand_suffix` mixes `sample_alphabet` with a step
 drawn from the retained-input table, `finish_stream_record` folds the record's
 retained suffixes back into it, and `remember_draw_version` keeps the versions
 a replay still names. A workload that embeds a duration choice in its actions
-overrides `expand_suffix_duration` and draws through `DrawTables::draw` itself.
+overrides `expand_duration_recorded_or_live` and draws through
+`DrawTables::draw` itself. That one method serves the live and replay paths,
+so a recorded run reaches the workload with the table version the stream
+named.
 `draw_table_parameters` sizes the table; its default reserve is 2 MiB and must
 fit the campaign's memory budget.
 

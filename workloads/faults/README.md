@@ -153,7 +153,10 @@ Instrumentation actions become available automatically when the staged image
 contains the runtime bridge, nonempty event symbols, and an executable whose
 hash matches its instrumentation attestation. A runtime hello identifies the
 ready nodes in each incarnation; event faults select only those nodes, so mixed
-instrumented and uninstrumented bundles share the same search policy. Backend capabilities determine
+instrumented and uninstrumented bundles share the same search policy. A step
+drawn from the retained-input table is held to the same rule and falls through
+to the alphabet when its node is not ready, so the readiness a run recorded
+bounds every draw rather than the alphabet alone. Backend capabilities determine
 whether host interrupt actions are available. Unsupported alternatives are
 excluded from the alphabet. The adapter supplies that alphabet and the duration
 each drawn action carries; the searcher owns the suffix draw and the
