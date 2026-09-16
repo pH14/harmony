@@ -622,6 +622,17 @@ jobs:
             exit 1
           fi
           printf '%s\n' 'SNAPSHOT_GATE_STATUS=passed' | tee snapshot-report/required-tests.status
+      - name: Require published snapshot replay and recapture identity
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          printf 'fixed_cpu=%s\n' "$cpu"
+          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p vmm-core \
+            --test x86_cpu_snapshots live_kvm::public_snapshot_replay_recapture_preserves_xsave_identity \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee snapshot-report/public-snapshot-identity.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/public-snapshot-identity.log
       - name: Record the fixed-CPU raw XRSTOR reuse counterexample
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}
         continue-on-error: true
