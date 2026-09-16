@@ -288,6 +288,7 @@ const CELL_NOVELTY_DRAWS: u64 = 4;
 const CELL_NOVELTY_RANK_SCALE: usize = 8;
 
 const CLASS_RANK_CAP: u8 = 8;
+const CLASS_RANK_SHIFT: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -2634,7 +2635,8 @@ where
                 }
                 None => 256,
             };
-            weighted.push((*class, (256_usize >> rank).saturating_mul(energy), rank));
+            let falloff = u32::from(CLASS_RANK_CAP.saturating_sub(rank)) * CLASS_RANK_SHIFT;
+            weighted.push((*class, (1_usize << falloff).saturating_mul(energy), rank));
         }
         (weighted, skipped)
     }
