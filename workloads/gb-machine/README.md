@@ -43,10 +43,12 @@ Headless throughput, one machine, video and audio off, measured by the
 | Apple M-series, macOS | 9,800 | 330 |
 | CIX CP8180 aarch64, Debian 13 | 8,560 | 285 |
 
-`run_chord` runs one chord and appends each frame's work RAM to `frames`;
-`step_frame` runs a single frame, so a caller expanding a macro can read RAM
-between frames. Both are action boundaries, which matters for the first hazard
-below.
+`run_chord` runs one chord and appends each frame's work RAM to `frames`, and
+is an action boundary, which matters for the first hazard below. A caller that
+expands a macro into single frames calls `begin_action` once at the boundary
+and then `hold_frame` per frame, reading RAM between frames. Such a caller
+turns `set_wram_capture` off, since appending 8 KiB per frame costs more than
+the frames themselves; `read` then serves the few bytes a macro polls.
 
 ## Determinism
 

@@ -485,6 +485,7 @@ pub struct GambatteMachine {
     input: u8,
     vtime: u64,
     frames: Vec<[u8; WRAM_SIZE]>,
+    capture_wram: bool,
     capture_video: bool,
     capture_audio: bool,
     _not_sync: PhantomData<Cell<()>>,
@@ -594,6 +595,7 @@ impl GambatteMachine {
             input: 0,
             vtime: 0,
             frames: Vec::new(),
+            capture_wram: true,
             capture_video: false,
             capture_audio: false,
             _not_sync: PhantomData,
@@ -616,6 +618,13 @@ impl GambatteMachine {
 
     pub fn clear_frames(&mut self) {
         self.frames.clear();
+    }
+
+    pub fn set_wram_capture(&mut self, enabled: bool) {
+        self.capture_wram = enabled;
+        if !enabled {
+            self.frames.clear();
+        }
     }
 
     pub fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError> {
@@ -770,8 +779,15 @@ impl GambatteMachine {
         Ok(())
     }
 
-    pub fn step_frame(&mut self, buttons: u8) -> Result<(), MachineError> {
-        self.run_chord(ButtonChord::new(buttons, 1))
+    pub fn begin_action(&mut self) -> Result<(), MachineError> {
+        self.reset_host_counters()
+    }
+
+    pub fn hold_frame(&mut self, buttons: u8) -> Result<(), MachineError> {
+        self.input = buttons;
+        let result = self.run_frame();
+        self.input = 0;
+        result
     }
 
     pub fn run_chords(&mut self, chords: &[ButtonChord]) -> Result<(), MachineError> {
@@ -877,7 +893,9 @@ impl GambatteMachine {
         if let Some(detail) = CALLBACK_ERROR.with(|error| error.borrow_mut().take()) {
             return Err(MachineError::Backend(detail));
         }
-        self.frames.push(self.read_wram()?);
+        if self.capture_wram {
+            self.frames.push(self.read_wram()?);
+        }
         Ok(())
     }
 
