@@ -184,8 +184,8 @@ chmod 0700 "$PGROOT/var/lib/postgresql/data"
 # V-time-driven. Each iteration INSERTs (i, clock_timestamp()) and SELECTs the row
 # back with the running count(*)/sum(i) aggregate plus its id + t, streamed as
 # `row|i|count|sum|uuid|t`. The count/sum prefix stays a pure function of the loop
-# index — the deterministic anchor the gate matches (`row|20|20|210|…`) — while the
-# uuid + t are seed-derived (deterministic but not predictable, so the gate checks
+# index — the deterministic anchor the check matches (`row|20|20|210|…`) — while the
+# uuid + t are seed-derived (deterministic but not predictable, so the check checks
 # them by *shape* and proves seed-sensitivity at a different seed). gen_random_uuid()
 # is built into PostgreSQL core since v13 (PG17 here), so no CREATE EXTENSION pgcrypto
 # is needed — confirmed by the workload running clean under ON_ERROR_STOP=1.

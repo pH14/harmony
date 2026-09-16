@@ -36,6 +36,44 @@ jobs:
 """
 
 
+class RepositoryVocabularyTests(unittest.TestCase):
+    def test_words_and_identifier_components_are_rejected(self):
+        word = LINTS.PROHIBITED_WORD
+        for text in (word, word.upper(), word.title(), word[0].upper() + word[1:3] + word[3].upper(),
+                     word + "s", "a_" + word, word + "_status",
+                     word + "Ready", word + "sReady",
+                     "Recovery" + word.title(), "Snapshot" + word.title() + "Status"):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "Makefile").write_text(text)
+                violations = LINTS.check_repository_vocabulary(root, ["Makefile"])
+                self.assertEqual([(v.rule, v.line) for v in violations], [(LINTS.VOCABULARY_RULE, 1)])
+
+    def test_paths_are_checked_and_larger_words_and_binary_files_are_allowed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            name = "test-" + LINTS.PROHIBITED_WORD + ".sh"
+            (root / name).write_text("aggregate propagate delegate negate gateway")
+            (root / "asset.bin").write_bytes(b"\0" + LINTS.PROHIBITED_WORD.encode())
+            violations = LINTS.check_repository_vocabulary(root, [name, "asset.bin"])
+            self.assertEqual([(v.path, v.line) for v in violations], [(name, 0)])
+
+    def test_checker_is_in_scope_and_vocabulary_cannot_be_baselined(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = "scripts/custom-lints.py"
+            (root / path).parent.mkdir()
+            (root / path).write_text(LINTS.PROHIBITED_WORD)
+            with mock.patch.object(LINTS, "tracked_files", return_value=[]), \
+                 mock.patch.object(LINTS, "check_workflow_rules", return_value=[]), \
+                 mock.patch.object(LINTS, "load_baseline", return_value={LINTS.VOCABULARY_RULE: [path + ":1"]}), \
+                 mock.patch.object(LINTS, "save_baseline") as save, \
+                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(LINTS.main(["--repo-root", directory]), 1)
+                self.assertEqual(LINTS.main(["--repo-root", directory, "--update-baseline"]), 1)
+                save.assert_not_called()
+
+
 class PlatformBoundaryLintTests(unittest.TestCase):
     def test_new_platform_components_are_in_scope(self) -> None:
         rules = {rule.name: rule for rule in LINTS.RULES}
@@ -229,7 +267,7 @@ class DisplayNameTests(unittest.TestCase):
                 self.assertTrue(LINTS._sentence_case_name(name))
 
     def test_generic_title_case_and_misspelled_acronyms_fail(self):
-        for name in ("Gates", "Products", "Quality", "Report", "native NES search",
+        for name in ("Checks", "Products", "Quality", "Report", "native NES search",
                      "Native NES Search", "Public Api Compatibility", "Public api compatibility",
                      "STB Search And Replay", "KANI proofs", "Checks / Memory safety", "${{ matrix.name }}"):
             with self.subTest(name=name):
@@ -249,7 +287,7 @@ class DisplayNameTests(unittest.TestCase):
                     target.write_text(content)
                     self.assertFalse(LINTS.check_workflow_rules(copy_root, [path]))
                     first_name = next(iter(parsed["jobs"].values()))["name"]
-                    for bad_name in ("Gates", "Choose Tests From Changed Files", "public api checks"):
+                    for bad_name in ("Checks", "Choose Tests From Changed Files", "public api checks"):
                         target.write_text(content.replace("name: " + first_name, "name: " + bad_name, 1))
                         self.assertIn("ci-display-name", {v.rule for v in LINTS.check_workflow_rules(copy_root, [path])})
                     target.write_text(content.replace("name: " + category + "\n", "name: " + category + " / Products\n", 1))
@@ -321,6 +359,34 @@ class SmokeRoutingTests(unittest.TestCase):
 
 
 class CheckRoutingTests(unittest.TestCase):
+    def test_portable_jobs_run_independently_with_separate_manifest_caches(self):
+        workflow = LINTS._parse_workflow(SCRIPT.parent.parent / ".github/workflows/quality.yml")
+        keys = []
+        for name in ("repository", "workspace", "guests", "search", "support", "nes"):
+            job = workflow["jobs"][name]
+            self.assertNotIn("needs", job)
+            self.assertNotIn("if", job)
+            self.assertEqual(job["timeout-minutes"], 15)
+            for step in job["steps"]:
+                self.assertNotIn("if", step)
+                self.assertFalse(step.get("continue-on-error", False))
+                if step.get("uses") == "Swatinem/rust-cache@v2":
+                    keys.append(step["with"]["shared-key"])
+                    self.assertTrue(step["with"]["workspaces"])
+        self.assertEqual(len(keys), 5)
+        self.assertEqual(len(set(keys)), 5)
+
+    def test_semantic_lint_retains_diff_history_and_environment_secret(self):
+        workflow = LINTS._parse_workflow(SCRIPT.parent.parent / ".github/workflows/quality.yml")
+        job = workflow["jobs"]["semantic"]
+        self.assertEqual(job["environment"], "Checks")
+        self.assertNotIn("needs", job)
+        self.assertEqual(job["timeout-minutes"], 15)
+        self.assertEqual(job["steps"][0]["with"]["fetch-depth"], 2)
+        command = job["steps"][-1]
+        self.assertEqual(command["run"], "python3 scripts/semantic-lints.py --changed-from HEAD^1")
+        self.assertEqual(command["env"]["TYPESAFE_API_KEY"], "${{ secrets.TYPESAFE_API_KEY }}")
+
     def test_routing_is_inline_and_every_miri_target_is_present(self):
         for path in (".github/workflows/quality.yml", ".github/workflows/nightly.yml"):
             workflow = LINTS._parse_workflow(SCRIPT.parent.parent / path)

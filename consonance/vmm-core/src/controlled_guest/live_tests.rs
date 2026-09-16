@@ -72,7 +72,7 @@ fn wire_snapshot_path(vmm: &mut Vmm<KvmBackend>) {
 fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm missing — run this ignored live gate on a Linux x86-64 KVM host"
+        "/dev/kvm missing — run this ignored live check on a Linux x86-64 KVM host"
     );
 }
 

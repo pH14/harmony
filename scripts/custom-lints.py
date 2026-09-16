@@ -475,7 +475,7 @@ CI_NAME_TERMS = {
     "K3s", "Kani", "Linux", "Miri", "Nova", "PostgreSQL", "QuickNES",
     "XSAVE",
 }
-CI_GENERIC_NAMES = {"gates", "products", "quality", "checks", "smoke", "test", "tests", "job", "report"}
+CI_GENERIC_NAMES = {"products", "quality", "checks", "smoke", "test", "tests", "job", "report"}
 
 
 def _sentence_case_name(name: str) -> bool:
@@ -783,13 +783,13 @@ def _inline_scope_valid(job: dict, kind: str, target: str | None = None) -> bool
             or scope.get("id") != "scope" or scope.get("with") != expected or "if" in scope
             or scope.get("continue-on-error", False)):
         return False
-    gate = "steps.scope.outputs.enabled == 'true'"
+    selection_guard = "steps.scope.outputs.enabled == 'true'"
     for step in steps[2:]:
         guard = str(step.get("if", "")).replace("${{", "").replace("}}", "").strip()
         guard = _strip_outer_parentheses(guard)
         if len(_split_condition(guard, "||")) > 1:
             return False
-        if gate not in [_strip_outer_parentheses(part) for part in _split_condition(guard, "&&")]:
+        if selection_guard not in [_strip_outer_parentheses(part) for part in _split_condition(guard, "&&")]:
             return False
     return True
 
@@ -799,7 +799,7 @@ def check_pr_check_routing(path: str, workflow: dict) -> list[Violation]:
 
     jobs = workflow["jobs"]
     if path == ".github/workflows/quality.yml":
-        valid = (set(jobs) == {"gates", "kani", "public-api"}
+        valid = (set(jobs) == {"repository", "workspace", "guests", "search", "support", "nes", "semantic", "kani", "public-api"}
                  and _inline_scope_valid(jobs["kani"], "kani")
                  and _inline_scope_valid(jobs["public-api"], "public_api"))
     else:
@@ -938,7 +938,7 @@ def check_docs_allowlist(files: list[str]) -> list[Violation]:
     for rel_path in files:
         if not rel_path.startswith("docs/"):
             continue
-        if rel_path == str(BASELINE_PATH):
+        if rel_path in (str(BASELINE_PATH), "docs/semantic-lints-baseline.json"):
             continue
         if not rel_path.endswith(".md"):
             violations.append(Violation(
@@ -1049,6 +1049,36 @@ def save_baseline(repo_root: Path, baseline: dict[str, list[str]]) -> None:
         f.write("\n")
 
 
+# The prohibited term is assembled so this checker follows its own rule.
+PROHIBITED_WORD = "ga" + "te"
+PROHIBITED_WORD_RE = re.compile(
+    rf"(?<![A-Za-z0-9])(?i:{PROHIBITED_WORD}s?)(?![A-Za-z0-9])"
+    rf"|(?<![A-Za-z0-9]){PROHIBITED_WORD}s?(?=[A-Z])"
+    rf"|{PROHIBITED_WORD.capitalize()}s?(?=[A-Z]|[^A-Za-z0-9]|$)"
+)
+VOCABULARY_RULE = "no-prohibited-word"
+
+
+def check_repository_vocabulary(repo_root: Path, files: list[str]) -> list[Violation]:
+    """Check every tracked text file and path, including this checker."""
+    violations = []
+    for rel_path in files:
+        if PROHIBITED_WORD_RE.search(rel_path):
+            violations.append(Violation(VOCABULARY_RULE, rel_path, 0,
+                                        "prohibited word in file path"))
+        try:
+            data = (repo_root / rel_path).read_bytes()
+            if b"\0" in data:
+                continue
+            text = data.decode("utf-8")
+        except (OSError, UnicodeError):
+            continue
+        for line, content in enumerate(text.splitlines(), 1):
+            if PROHIBITED_WORD_RE.search(content):
+                violations.append(Violation(VOCABULARY_RULE, rel_path, line, content.strip()))
+    return violations
+
+
 # ---------------------------------------------------------------------------
 # Checker
 # ---------------------------------------------------------------------------
@@ -1140,6 +1170,8 @@ def main(argv: list[str] | None = None) -> int:
     # Content rules (line-level pattern matches).
     new_violations, still_baselined = check_content_rules(root, files, baseline)
 
+    vocabulary_violations = check_repository_vocabulary(root, files + ["scripts/custom-lints.py"])
+
     # File-level checks.
     comment_violations = check_comment_density(root, files)
     misplaced_violations = check_misplaced_workload_files(files)
@@ -1152,12 +1184,12 @@ def main(argv: list[str] | None = None) -> int:
     lab_violations = check_lab_notes(files)
 
     # Merge file-level violations into the baseline system.
-    all_file_violations = comment_violations + misplaced_violations + numbered_violations + workflow_violations + github_dir_violations + golden_violations + docs_violations + toplevel_violations
+    all_file_violations = vocabulary_violations + comment_violations + misplaced_violations + numbered_violations + workflow_violations + github_dir_violations + golden_violations + docs_violations + toplevel_violations
     new_file_violations: list[Violation] = []
     for v in all_file_violations:
         key = _violation_key(v)
         rule_baseline = set(baseline.get(v.rule, []))
-        if key in rule_baseline and not v.rule.startswith("ci-"):
+        if key in rule_baseline and not v.rule.startswith("ci-") and v.rule != VOCABULARY_RULE:
             still_baselined.add((v.rule, key))
         else:
             new_file_violations.append(v)
@@ -1166,6 +1198,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.update_baseline:
         ci_errors = [v for v in workflow_violations if v.rule.startswith("ci-")]
+        if vocabulary_violations:
+            print("cannot baseline prohibited vocabulary; rename every occurrence first", file=sys.stderr)
+            return 1
         if ci_errors:
             print("cannot baseline CI contract violations; fix the workflows first", file=sys.stderr)
             return 1
@@ -1181,6 +1216,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Remediation text for non-Rule checks.
     REMEDIATION = {
+        VOCABULARY_RULE: "Use a precise term such as check, guard, requirement, or readiness instead.",
         "comment-density": (
             "This file has too many plain // comments relative to its code. "
             "Comments should explain why, never what. Delete comments that "
@@ -1247,7 +1283,7 @@ def main(argv: list[str] | None = None) -> int:
         "ci-pr-only-jobs": "Keep nightly/manual jobs out of PR workflows, including jobs hidden behind event guards.",
         "ci-pr-extended-validation": "Run coverage and mutation in Nightly workflows; a short timeout does not make them PR checks.",
         "ci-pr-workflow-registration": "Register new PR workflows and their category in PR_WORKFLOWS; route product smokes through the existing selector.",
-        "ci-display-name": "Use descriptive sentence-case subjects, preserving registered proper names/acronyms. Checks and Smoke are category-only workflow names; job names supply the flat display subject. Do not use generic names such as Gates, Products or Quality.",
+        "ci-display-name": "Use descriptive sentence-case subjects, preserving registered proper names/acronyms. Checks and Smoke are category-only workflow names; job names supply the flat display subject. Do not use generic names such as Checks, Products or Quality.",
         "ci-pr-smoke-routing": "Register PR product smokes through the tested consumer selector; do not add independent broad triggers or unbounded matrices.",
         "ci-pr-check-routing": "Keep selection inside real checks, not separate routing jobs. Every expensive or artifact step must require its selection output; the Miri matrix must match registered targets.",
         "ci-nes-case-jobs": "Map every public NES manifest case exactly once to the case matrix, select it with --case, disable fail-fast, and retain an always-running report.",

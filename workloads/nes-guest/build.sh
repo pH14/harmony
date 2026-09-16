@@ -9,7 +9,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 if [ "$(uname -sm)" != "Linux x86_64" ]; then
-    echo "play-agent: guest build needs x86-64 Linux (the box); use 'cargo test' for the portable gates" >&2
+    echo "play-agent: guest build needs x86-64 Linux (the box); use 'cargo test' for the portable checks" >&2
     exit 1
 fi
 

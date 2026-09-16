@@ -20,7 +20,7 @@ make -C consonance/harmony-linux test
 and static OCI runtime sources. Workload packages own their separate fetch
 entrypoints.
 `test-libvoidstar` runs the portable ABI and device-transaction checks.
-`test-linux` builds the Linux artifacts twice and runs the image gate; it
+`test-linux` builds the Linux artifacts twice and runs the image check; it
 requires Linux, or a Linux/amd64 build container on macOS. Build output lives
 in `consonance/harmony-linux/build/`; `GUEST_BUILD_ROOT` can select another
 build root.
@@ -118,7 +118,7 @@ SQL, ROMs or imported machine states.
 
 Raw XSAVE presence remains in restore data. Generic snapshot identity stays
 strict; exact verified guest compositions can use the core layer's
-[controlled logical identity](../vmm-core/README.md#published-xsave-identity-gate),
+[controlled logical identity](../vmm-core/README.md#published-xsave-identity-check),
 which excludes only validated init x87/SSE presence metadata.
 Matching finite executions does not establish general continuation equivalence.
 Outstanding XSAVE and PAE behavior is tracked in

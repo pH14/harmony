@@ -80,6 +80,6 @@ bytes from that same stream before guest execution. Hardware RNG instructions st
 hidden. The pinned Linux kernel must trust bootloader randomness (its default);
 `random.trust_bootloader=off` disables this readiness mechanism.
 
-The OCI CI gate reads `/dev/urandom` and checks byte-identical serial logs and
+The OCI CI check reads `/dev/urandom` and checks byte-identical serial logs and
 digests for repeated seeds, distinct output for different seeds, and cancellation
 of a guest loop that performs no I/O.

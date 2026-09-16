@@ -124,9 +124,32 @@ suite uses these checks:
 - mutation, property, fuzz, and proof checks exercise invariants beyond example
   tests.
 
-Each gate identifies the behavior it establishes, covers the production path
+Each check identifies the behavior it establishes, covers the production path
 where that behavior matters, and includes a representative failing case.
+
+## Content lints
+
+`scripts/custom-lints.py` checks file name and fixed text patterns: workload
+names outside `workloads/`, personal references, misplaced files. It cannot
+judge what a file actually says. `scripts/semantic-lints.py` covers that gap
+by asking TypeSafe's Jev model whether a changed file reads as a run record
+or status report, carries decision residue (a rejected alternative, an old
+name, a reviewer-driven change), or names one of the project's own workloads
+(a specific game, database, or distributed system) in workload-agnostic
+code. It needs
+`TYPESAFE_API_KEY`; without it, it prints a skip message and passes. Known
+semantic violations that predate the check are recorded in
+`docs/semantic-lints-baseline.json`; use `--update-baseline` to refresh reviewed
+entries. Static checks use `docs/custom-lints-baseline.json` where permitted;
+repository vocabulary and CI contract violations cannot be baselined.
 
 Development commands and CI configuration live in contributor guidance and
 automation. Component-specific fixtures and format details live beside their
 owning code.
+
+Repository vocabulary is checked by `scripts/custom-lints.py` in every tracked
+UTF-8 text file and filename, including extensionless files and the checker
+itself. The prohibited term encoded by `PROHIBITED_WORD` is rejected as a word,
+plural, or snake/camel-case identifier component. Larger words such as
+`aggregate` and `propagate` remain valid. Vocabulary violations cannot be
+suppressed through the custom-lint baseline.

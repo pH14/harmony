@@ -3,7 +3,7 @@
 # Build the **exec-capable** initramfs: static busybox + `exec-init.sh`
 # as /init (an interactive root shell on ttyS0), packed reproducibly with the
 # kernel's own gen_init_cpio exactly like `build-initramfs.sh`. Produces
-# consonance/harmony-linux/build/initramfs-exec.cpio.gz — the image the `exec` improvisation box gate
+# consonance/harmony-linux/build/initramfs-exec.cpio.gz — the image the `exec` improvisation box check
 # (`consonance/vmm-core/tests/live_exec_improvisation.rs`, with EXEC_EXPECT_OUTPUT=1)
 # talks a real command to. Reuses the kernel built by `make kernel`.
 #
@@ -62,4 +62,4 @@ EOF
 "$BUILD_ROOT/gen_init_cpio" -t 0 "$spec" | gzip -n -9 >"$ART_DIR/initramfs-exec.cpio.gz"
 echo "ok: $ART_DIR/initramfs-exec.cpio.gz"
 echo "note: record its sha256 in MANIFEST.sha256 under the hashed-input ruling if this"
-echo "      image becomes a gated artifact (it is off-record test scaffolding for now)."
+echo "      image becomes a guarded artifact (it is off-record test scaffolding for now)."

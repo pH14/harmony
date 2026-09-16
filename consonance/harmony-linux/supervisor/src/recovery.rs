@@ -7,13 +7,13 @@ pub enum RecoveryError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RecoveryGate {
+pub struct RecoveryReadiness {
     generation: u64,
     ready: bool,
     queued: Vec<u32>,
 }
 
-impl RecoveryGate {
+impl RecoveryReadiness {
     #[must_use]
     pub fn initially_ready() -> Self {
         Self {
@@ -62,69 +62,72 @@ impl RecoveryGate {
 
 #[cfg(test)]
 mod tests {
-    use super::{RecoveryError, RecoveryGate};
+    use super::{RecoveryError, RecoveryReadiness};
 
     #[test]
     fn a_slow_probe_keeps_hooks_queued_until_the_current_generation_is_ready() {
-        let mut gate = RecoveryGate::initially_ready();
-        gate.restarted().unwrap();
-        let generation = gate.generation();
+        let mut readiness = RecoveryReadiness::initially_ready();
+        readiness.restarted().unwrap();
+        let generation = readiness.generation();
 
-        assert!(gate.is_pending());
-        assert!(gate.request_hook(7).is_empty());
-        assert!(gate.request_hook(7).is_empty());
-        assert!(gate.mark_ready(generation - 1).is_empty());
-        assert!(gate.is_pending());
+        assert!(readiness.is_pending());
+        assert!(readiness.request_hook(7).is_empty());
+        assert!(readiness.request_hook(7).is_empty());
+        assert!(readiness.mark_ready(generation - 1).is_empty());
+        assert!(readiness.is_pending());
 
-        assert_eq!(gate.mark_ready(generation), [7, 7]);
-        assert!(!gate.is_pending());
+        assert_eq!(readiness.mark_ready(generation), [7, 7]);
+        assert!(!readiness.is_pending());
     }
 
     #[test]
     fn a_stale_probe_cannot_release_hooks_after_a_new_restart() {
-        let mut gate = RecoveryGate::initially_ready();
-        gate.restarted().unwrap();
-        let stale = gate.generation();
-        assert!(gate.request_hook(3).is_empty());
+        let mut readiness = RecoveryReadiness::initially_ready();
+        readiness.restarted().unwrap();
+        let stale = readiness.generation();
+        assert!(readiness.request_hook(3).is_empty());
 
-        gate.restarted().unwrap();
-        let current = gate.generation();
+        readiness.restarted().unwrap();
+        let current = readiness.generation();
         assert_ne!(current, stale);
-        assert!(gate.mark_ready(stale).is_empty());
-        assert!(gate.is_pending());
-        assert_eq!(gate.mark_ready(current), [3]);
+        assert!(readiness.mark_ready(stale).is_empty());
+        assert!(readiness.is_pending());
+        assert_eq!(readiness.mark_ready(current), [3]);
     }
 
     #[test]
     fn ready_hooks_preserve_request_order_and_duplicates() {
-        let mut gate = RecoveryGate::initially_ready();
-        gate.restarted().unwrap();
-        assert!(gate.request_hook(2).is_empty());
-        assert!(gate.request_hook(1).is_empty());
-        assert!(gate.request_hook(2).is_empty());
-        let generation = gate.generation();
+        let mut readiness = RecoveryReadiness::initially_ready();
+        readiness.restarted().unwrap();
+        assert!(readiness.request_hook(2).is_empty());
+        assert!(readiness.request_hook(1).is_empty());
+        assert!(readiness.request_hook(2).is_empty());
+        let generation = readiness.generation();
 
-        assert_eq!(gate.mark_ready(generation), [2, 1, 2]);
+        assert_eq!(readiness.mark_ready(generation), [2, 1, 2]);
     }
 
     #[test]
     fn a_bundle_without_a_ready_probe_stays_immediately_ready() {
-        let mut gate = RecoveryGate::initially_ready();
+        let mut readiness = RecoveryReadiness::initially_ready();
 
-        assert_eq!(gate.request_hook(3), [3]);
-        assert_eq!(gate.request_hook(4), [4]);
+        assert_eq!(readiness.request_hook(3), [3]);
+        assert_eq!(readiness.request_hook(4), [4]);
     }
 
     #[test]
     fn generation_exhaustion_does_not_reuse_a_stale_generation() {
-        let mut gate = RecoveryGate {
+        let mut readiness = RecoveryReadiness {
             generation: u64::MAX,
             ready: true,
             queued: Vec::new(),
         };
 
-        assert_eq!(gate.restarted(), Err(RecoveryError::GenerationExhausted));
-        assert_eq!(gate.generation(), u64::MAX);
-        assert!(!gate.is_pending());
+        assert_eq!(
+            readiness.restarted(),
+            Err(RecoveryError::GenerationExhausted)
+        );
+        assert_eq!(readiness.generation(), u64::MAX);
+        assert!(!readiness.is_pending());
     }
 }

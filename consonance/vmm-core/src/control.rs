@@ -5537,7 +5537,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_mask_gates_the_sdk_snapshot_point_and_assertion() {
+    fn stop_mask_checks_the_sdk_snapshot_point_and_assertion() {
         const REQ_GPA: usize = 0xE000;
 
         let frame_for = |payload: &[u8]| -> Vec<u8> {

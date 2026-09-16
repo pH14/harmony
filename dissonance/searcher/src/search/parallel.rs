@@ -192,9 +192,9 @@ mod tests {
         with_worker_pool(
             2,
             |_| Ok::<_, String>(()),
-            |_, (gate, value): (Option<mpsc::Receiver<()>>, u8)| {
-                if let Some(gate) = gate {
-                    gate.recv().map_err(|e| e.to_string())?;
+            |_, (release, value): (Option<mpsc::Receiver<()>>, u8)| {
+                if let Some(release) = release {
+                    release.recv().map_err(|e| e.to_string())?;
                 }
                 Ok::<_, String>(value)
             },

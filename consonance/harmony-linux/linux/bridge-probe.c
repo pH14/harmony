@@ -2,7 +2,7 @@
 // **The first real `/dev/harmony` transaction** (bead hm-i8kc, PR #133 finding
 // F2). Until this probe existed, nothing anywhere executed the guest bridge:
 // `libvoidstar/tests/abi_test.c` macro-mocks `open`/`read`/`write` and compiles
-// the library against the mocks, and the Linux box gate only greps the serial
+// the library against the mocks, and the Linux box check only greps the serial
 // for `GUEST_READY`. So the driver's ioctl-free read/write ABI, the host's
 // Entropy/Event doorbell services, and `libvoidstar.so` had never met.
 //
@@ -13,7 +13,7 @@
 //      (`fuzz_json_data` returns `void`, `fuzz_get_random` returns 0 both for
 //      "the host said 0" and for "the transaction failed"), so a probe built
 //      *only* on the library cannot tell a live bridge from a dead one — it
-//      would be a green-on-fail gate of exactly the shape the tasks/157 lane
+//      would be a green-on-fail check of exactly the shape the tasks/157 lane
 //      already had to fix once (PR161-F1). The raw leg is what makes failure
 //      loud: it prints the errno.
 //   2. **libvoidstar leg** — `dlopen`s `/usr/lib/libvoidstar.so` (the path and
@@ -22,9 +22,9 @@
 //      through the shipped library, proving the artifact guests actually link
 //      is live, not just the ABI underneath it.
 //
-// Every line it prints is a gate assertion made by the host side; the exit code
+// Every line it prints is a check assertion made by the host side; the exit code
 // is the summary. Determinism note: the entropy words come from the host's
-// seeded stream, so at a fixed boot seed they are fixed values — the box gate
+// seeded stream, so at a fixed boot seed they are fixed values — the box check
 // compares two same-seed runs for equality and two different-seed runs for
 // inequality rather than hard-coding a constant here.
 

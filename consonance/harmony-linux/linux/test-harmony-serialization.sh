@@ -13,7 +13,7 @@ require_linux_amd64
 require_tools make perl qemu-system-x86_64
 
 if [ ! -f "$KOBJ/.config" ] || [ ! -f "$ART_DIR/initramfs.cpio.gz" ]; then
-    echo "FAIL: build the x86 kernel and initramfs before the serialization gate" >&2
+    echo "FAIL: build the x86 kernel and initramfs before the serialization check" >&2
     exit 1
 fi
 

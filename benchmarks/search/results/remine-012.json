@@ -5822,7 +5822,7 @@
   "format": "harmony-search-remine-012-v1",
   "limits": [
     "All policy comparison seeds were reused development seeds; no universal policy promotion.",
-    "Fresh SMB reference is a separate required gate. Short qualification runs do not establish solves.",
+    "Fresh SMB reference is a separate required check. Short qualification runs do not establish solves.",
     "Throughput arms ran one cell at a time on the otherwise idle host with the same final runner and profiling enabled.",
     "Other panels ran concurrent jobs. Long Metroid arms use disjoint heterogeneous CPU sets; timing is descriptive.",
     "Disk measures cell output directories, excluding shared assets, builds, and runtime files outside them.",

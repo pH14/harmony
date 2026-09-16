@@ -276,7 +276,7 @@ IMG_ENV=$(jq -c '.config.Env // []' "$CFG")     # the image's PATH/PG_* etc.
 # namespace = `--network none` (loopback only); the workload reaches postgres over
 # the local unix socket. Allow all devices (the bare `runc spec` default-deny
 # device cgroup is an eBPF filter that kills PID 1 at exec on the guest kernel) —
-# fine for a trusted single-purpose determinism gate.
+# fine for a trusted single-purpose determinism check.
 jq --argjson env "$IMG_ENV" '
     .process.terminal = false
   | .process.args = ["/bin/sh", "/run-workload.sh"]

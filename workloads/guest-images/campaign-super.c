@@ -53,7 +53,7 @@
 // at/after CAMPAIGN_READY, which the retry search overshoots by up to
 // `snapshot_retry_step` ns — lands *inside* the loop, not past it in the halt
 // tail. A short loop (the original 2·10⁶) finished before the base sealed, so no
-// injected fault could ever reach the fault-sensitive guard (the box gate proved
+// injected fault could ever reach the fault-sensitive guard (the box check proved
 // this: a fault at base+0 did not trigger). 2·10⁸ spans tens of ms of V-time —
 // the base seals deep inside it, leaving a wide fault window for `--window-*`.
 #define ITERS 200000000L
@@ -112,7 +112,7 @@ static void report_bug_and_die(const char *which)
     _exit(FAIL_CODE);
 }
 
-// Bring-up aid (gated on CAMPAIGN_DEBUG so it never perturbs the golden): print
+// Bring-up aid (guarded on CAMPAIGN_DEBUG so it never perturbs the golden): print
 // the ledger's guest-physical address, read via /proc/self/pagemap, so the
 // operator can scope the campaign's --gpa-* search tightly. Reading the PFN
 // needs CAP_SYS_ADMIN (run as root) on a modern kernel; a zero PFN means the
@@ -179,7 +179,7 @@ int main(void)
     }
 
     // The base snapshot is sealed at this marker — mid-workload, post-readiness,
-    // right before the fault-sensitive loop (the gate's snapshot point).
+    // right before the fault-sensitive loop (the check's snapshot point).
     printf("CAMPAIGN_READY\n");
     fflush(stdout);
 

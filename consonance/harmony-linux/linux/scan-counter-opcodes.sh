@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Static counter-opcode scan of the built guest kernel — the x86 half of the
-# paravirtual clock interface reachability gate (the LL/SC-scan discipline
+# paravirtual clock interface reachability check (the LL/SC-scan discipline
 # transposed to counter reads: rdtsc `0F 31`, rdtscp `0F 01 F9`).
 #
 # WHAT IT PROVES on x86: every raw counter read left in the image is a KNOWN,
@@ -14,18 +14,18 @@
 # with the same exit-count-derived value the pvclock page carries (§4.1 — on x86 a raw
 # read is survivable-by-trap, never a determinism hole). Exact accounting in both
 # directions: an unlisted (or moved) site fails the build; a stale entry fails
-# too. (On ARM, where no trap exists, the transposed gate has an EMPTY allowlist
+# too. (On ARM, where no trap exists, the transposed check has an EMPTY allowlist
 # by necessity; that discipline is validated at spike stage AA-5, not here.)
 #
-# ARMING: while the allowlist carries a `# GATE-UNARMED` marker line, the
+# ARMING: while the allowlist carries a `# CHECK-UNARMED` marker line, the
 # scan runs in CAPTURE mode — it prints every found site in paste-ready
 # `symbol+0xOFFSET` form (one line per site) under a loud banner and then **FAILS the build**
-# (fail-closed, the PR #110 r2 disposition: a disarmed reachability gate must
+# (fail-closed, the PR #110 r2 disposition: a disarmed reachability check must
 # never let a kernel build pass). The marker exists only for re-baselining
 # (e.g. a kernel version bump): capture the printed baseline in a linux/amd64
 # container or on the box, review it entry-by-entry, commit it, remove the
 # marker. The committed tree ships with the marker REMOVED and the reviewed
-# baseline present — the gate armed. The self-test proves the armed mode can
+# baseline present — the check armed. The self-test proves the armed mode can
 # fail on every invocation regardless of the marker.
 #
 # RUNTIME HALF — SPECCED AND STUBBED (stated per the evidence bar,
@@ -42,7 +42,7 @@
 # together, and all three run: the real-mode `setup` code, the `compressed`
 # decompressor that unpacks the kernel, and the kernel proper. Scanning only
 # `vmlinux` left the first two unscanned — an rdtsc added to the decompressor
-# would have sailed through a gate that calls itself a final-image reachability
+# would have sailed through a check that calls itself a final-image reachability
 # scan.
 #
 # TWO SCAN MODES, by artifact (cross-model r7 P2). The kernel proper (`vmlinux`)
@@ -94,7 +94,7 @@ RAW_ARTIFACTS=(
 # rdtscp instruction — one line PER SITE, identified by the instruction's byte
 # offset within its containing function (cross-model r10 P1). A per-function
 # COUNT can miss a removed+added pair inside one function (the count is
-# unchanged), so the gate would pass a moved/replaced counter read; a per-site
+# unchanged), so the check would pass a moved/replaced counter read; a per-site
 # offset changes, so the removed site goes stale and the added site is unlisted —
 # both caught. The mnemonic match is prefix-aware (a legal `66 0f 31` renders
 # `data16 rdtsc`, so the first token would misread `data16`): walk the mnemonic
@@ -132,7 +132,7 @@ sites() {
 
 # all_sites [mnemonic-regex]: disassemble the kernel proper and emit its
 # artifact-qualified site list for that mnemonic class (boot artifacts use the
-# section-aware scan below). FAILS if vmlinux is missing — a gate that silently
+# section-aware scan below). FAILS if vmlinux is missing — a check that silently
 # skips its target passes vacuously.
 all_sites() {
     if [ ! -f "$VMLINUX" ]; then
@@ -152,7 +152,7 @@ all_sites() {
 # anywhere in an executable section fails. The decompressor's ordinary `.text`
 # is compiler-generated 64-bit code, however, and is disassembled in that
 # architectural mode. Treating a `0f31` pair inside a 64-bit instruction's
-# displacement as RDTSC makes the gate depend on unrelated link layout while
+# displacement as RDTSC makes the check depend on unrelated link layout while
 # proving nothing about an executable instruction. Both paths still require
 # ZERO counter and hardware-RNG instructions. Runs on every build (r7 P2), not
 # once. Returns 1 on any hit, decode failure, or missing artifact.
@@ -183,7 +183,7 @@ raw_byte_scan_one() {
         # failure (objcopy / od / tr) — `pipefail` is set, so the pipeline's exit
         # status is checked explicitly here; otherwise a swallowed failure (this
         # runs under `if ! raw_byte_scan`, where errexit is off) would leave an
-        # empty `hex`, match nothing, and silently green the gate (cross-model
+        # empty `hex`, match nothing, and silently green the check (cross-model
         # r9 P1).
         # objcopy must write to a regular file: with `/dev/stdout` it emits zero
         # bytes on binutils 2.44, which would read no section at all.
@@ -276,7 +276,7 @@ raw_byte_scan() {
 
 # allowed <allowlist-file>: emit the reviewed per-site entries (comments/blank
 # lines stripped), sorted; FAIL on a malformed entry. Every entry is a single
-# token `[tag:]symbol+0xOFFSET` — the per-SITE identity is the gate (cross-model
+# token `[tag:]symbol+0xOFFSET` — the per-SITE identity is the check (cross-model
 # r10 P1); a bare function name (or the old `function count` form) would silently
 # weaken it back to function granularity and miss a removed+added pair.
 allowed() {
@@ -340,12 +340,12 @@ scan_sites() {
     return $bad
 }
 
-# unarmed <allowlist-file>: 0 iff the GATE-UNARMED marker is present.
+# unarmed <allowlist-file>: 0 iff the CHECK-UNARMED marker is present.
 unarmed() {
-    grep -q '^# GATE-UNARMED' "$1"
+    grep -q '^# CHECK-UNARMED' "$1"
 }
 
-# ---- self-test (every invocation): the ARMED gate must be able to FAIL -----
+# ---- self-test (every invocation): the ARMED check must be able to FAIL -----
 self_test() {
     local d
     d=$(mktemp -d)
@@ -439,7 +439,7 @@ EOF
     fi
 
     # A bare, offset-less (function-granularity) entry: MUST be rejected as
-    # malformed — it would weaken the gate back to per-function.
+    # malformed — it would weaken the check back to per-function.
     printf 'native_sched_clock\n' > "$d/bare.txt"
     if scan "$d/clean.dis" "$d/bare.txt" >/dev/null 2>&1; then
         echo "FAIL: self-test — a bare (offset-less) allowlist entry was NOT rejected" >&2
@@ -601,21 +601,21 @@ RNG_FOUND=$(all_sites '^(rdrand|rdseed)$')
 
 if unarmed "$ALLOWLIST"; then
     echo "###############################################################################" >&2
-    echo "# FAIL: counter-opcode gate UNARMED ('# GATE-UNARMED' marker present in" >&2
-    echo "# $ALLOWLIST) — a disarmed reachability gate never passes a build" >&2
+    echo "# FAIL: counter-opcode check UNARMED ('# CHECK-UNARMED' marker present in" >&2
+    echo "# $ALLOWLIST) — a disarmed reachability check never passes a build" >&2
     echo "# (fail-closed). Captured baseline, paste-ready after entry-by-entry review" >&2
-    echo "# (commit it + REMOVE the marker to arm the gate):" >&2
+    echo "# (commit it + REMOVE the marker to arm the check):" >&2
     echo "###############################################################################" >&2
     printf '%s\n' "$FOUND" | sed 's/^/  /' >&2
     exit 1
 fi
 if unarmed "$RNG_ALLOWLIST"; then
     echo "###############################################################################" >&2
-    echo "# FAIL: hardware-RNG gate UNARMED ('# GATE-UNARMED' marker present in" >&2
-    echo "# $RNG_ALLOWLIST) — a disarmed reachability gate never passes a build" >&2
+    echo "# FAIL: hardware-RNG check UNARMED ('# CHECK-UNARMED' marker present in" >&2
+    echo "# $RNG_ALLOWLIST) — a disarmed reachability check never passes a build" >&2
     echo "# (fail-closed). Captured baseline, paste-ready after entry-by-entry review" >&2
     echo "# (each site must sit behind X86_FEATURE_RDRAND/RDSEED; commit it + REMOVE" >&2
-    echo "# the marker to arm the gate):" >&2
+    echo "# the marker to arm the check):" >&2
     echo "###############################################################################" >&2
     printf '%s\n' "$RNG_FOUND" | sed 's/^/  /' >&2
     exit 1

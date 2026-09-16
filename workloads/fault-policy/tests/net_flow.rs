@@ -135,7 +135,7 @@ fn stale_v2_blob_is_rejected_not_reinterpreted() {
 }
 
 #[test]
-fn a_v4_blob_is_rejected_at_the_version_gate() {
+fn a_v4_blob_is_rejected_at_the_version_check() {
     let spec = EnvSpec::Recorded {
         seed: 0,
         policy: FaultPolicy::none(),
@@ -150,12 +150,12 @@ fn a_v4_blob_is_rejected_at_the_version_gate() {
     assert_eq!(
         EnvSpec::decode(&bytes),
         Err(fault_policy::EnvError::BadVersion(4)),
-        "a v4 blob rejects at the version gate, not mid-parse"
+        "a v4 blob rejects at the version check, not mid-parse"
     );
 }
 
 #[test]
-fn retired_net_tags_reject_on_every_ungated_decode_path() {
+fn retired_net_tags_reject_on_every_unguarded_decode_path() {
     for old_tag in 0u8..=4 {
         assert_eq!(
             Answer::decode(&[2, old_tag]),

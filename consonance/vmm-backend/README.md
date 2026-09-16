@@ -85,7 +85,7 @@ either across repeated preparation or subsequent guest entry. Backend snapshots
 retain the complete raw bitmap. The core layer projects only validated init
 x87/SSE restoration metadata for verified controlled guests; generic identity
 remains strict. The reproduced AMD failure and scoped contract are documented under
-[Published XSAVE identity gate](../vmm-core/README.md#published-xsave-identity-gate). `save()`
+[Published XSAVE identity check](../vmm-core/README.md#published-xsave-identity-check). `save()`
 and hashing remain reads; callers prepare a boundary explicitly after restoring
 RAM and CPU state or servicing an exit. Pending CPU events remain present;
 unretired userspace instruction completion is a different condition and must
@@ -135,7 +135,7 @@ diagnostic inserts a hardware execution breakpoint between guest XRSTOR-to-init
 and XSAVE. It retains the stopped and resumed state and compares the complete
 endpoint, including guest RAM, with uninterrupted execution. This intervention
 is not yet qualified as equivalent to arbitrary host interruption. The hardware
-gate runs both this diagnostic and the entry/restore differential on one fixed
+check runs both this diagnostic and the entry/restore differential on one fixed
 allowed CPU, alongside the original unrestricted differential, to distinguish
 placement effects without replacing first-failure evidence.
 

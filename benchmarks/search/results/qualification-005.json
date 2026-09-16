@@ -1,6 +1,6 @@
 {
   "format": "harmony-search-qualification-evidence-v1",
-  "scope": "All 19 registered native origins, 500 executions / 50,000 admitted frames, two-reservation/two-result profile. Each successful binary exit gates full campaign/report/checkpoint replay plus two fresh witness replays. Qualification is not a completion requirement.",
+  "scope": "All 19 registered native origins, 500 executions / 50,000 admitted frames, two-reservation/two-result profile. Each successful binary exit checks full campaign/report/checkpoint replay plus two fresh witness replays. Qualification is not a completion requirement.",
   "run": "qualification-prefetch-005",
   "raw_export_location": "ms02:/root/harmony-search-eval/public/",
   "results_sha256": "c3005bf74522cc400dec135eb0165a3257ee3cf1902c11924118ea2cff746aea",

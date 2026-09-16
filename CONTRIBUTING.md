@@ -9,7 +9,7 @@ the authorities for supported versions and validation commands.
 Install Rust with [rustup](https://rustup.rs/). The repository's
 `rust-toolchain.toml` selects the project toolchain automatically.
 
-Install the external Cargo tools used by the quality gates:
+Install the external Cargo tools used by the quality checks:
 
 ```sh
 scripts/install-quality-tools.sh
@@ -37,7 +37,7 @@ cargo deny check
 ```
 
 The pre-push hook runs the fast subset. `.github/workflows/quality.yml` defines
-the portable PR gate, including formal checks,
+the portable PR check, including formal checks,
 public-API snapshots, cross-architecture checks, and standalone guest crates.
 Coverage and full-tree mutation run nightly or manually through
 `.github/workflows/extended-quality.yml`.

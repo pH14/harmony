@@ -7,14 +7,14 @@ toolchain:   gcc (Debian 14.2.0-19) 14.2.0
 qemu:        QEMU emulator version 10.0.11 (Debian 1:10.0.11+ds-0+deb13u1)
 anchor:      Mac-emulated bzImage baseline = 91b092c56b18df883d3289bafa536e12ab5227dc94235500f6f634c9e2d89c7b
 
-===== gate structural narrative (run-tests.sh milestones; CC/LD spew omitted) =====
+===== check structural narrative (run-tests.sh milestones; CC/LD spew omitted) =====
 == repro test: build #1
 ok: build trees and artifacts removed (downloads and sources kept)
 == kernel: applying 0001-x86-harmony-pvclock-work-derived-clocksource.patch
 == kernel: applying 0002-x86-harmony-character-device.patch
 == kernel: Kata guest-kernel config (kata/, pinned 3.32.0  (published 2026-06-22)) + determinism overlay (linux-6.18.35)
 == kernel: building bzImage
-== kernel: counter-opcode scan (rdtsc/rdtscp reachability gate)
+== kernel: counter-opcode scan (rdtsc/rdtscp reachability check)
 ok: scan self-test (planted-new, planted-prefixed, planted-inside-allowlisted, removed+added-pair, stale-entry, bare-entry, artifact-qualification, raw-byte-scan, fixtures all caught)
 ok: counter-opcode scan — kernel proper: every rdtsc/rdtscp site matches one of the 112 reviewed per-site allowlist entries (symbol+offset); setup + decompressor: raw executable-byte scan clean (2 artifacts, decode-independent)
 ok: /work/consonance/harmony-linux/build/bzImage
@@ -27,7 +27,7 @@ ok: build trees and artifacts removed (downloads and sources kept)
 == kernel: 0002-x86-harmony-character-device.patch already applied
 == kernel: Kata guest-kernel config (kata/, pinned 3.32.0  (published 2026-06-22)) + determinism overlay (linux-6.18.35)
 == kernel: building bzImage
-== kernel: counter-opcode scan (rdtsc/rdtscp reachability gate)
+== kernel: counter-opcode scan (rdtsc/rdtscp reachability check)
 ok: scan self-test (planted-new, planted-prefixed, planted-inside-allowlisted, removed+added-pair, stale-entry, bare-entry, artifact-qualification, raw-byte-scan, fixtures all caught)
 ok: counter-opcode scan — kernel proper: every rdtsc/rdtscp site matches one of the 112 reviewed per-site allowlist entries (symbol+offset); setup + decompressor: raw executable-byte scan clean (2 artifacts, decode-independent)
 ok: /work/consonance/harmony-linux/build/bzImage
@@ -37,7 +37,7 @@ ok: /work/consonance/harmony-linux/build/initramfs.cpio.gz
 ok: two builds bit-identical; MANIFEST.sha256 written
 == boot test
 ok: GUEST_READY seen and QEMU exited (status 0)
-PASS: guest Linux image gates
+PASS: guest Linux image checks
 
 === F1 verification — genuine clean libvoidstar.so rebuild in BOTH legs ===
 libvoidstar.so source compiles: 2   (expect 2 — one per reproducibility leg)
@@ -49,7 +49,7 @@ reproducibility verdict:
     10493:ok: two builds bit-identical; MANIFEST.sha256 written
 boot verdict:
     10495:ok: GUEST_READY seen and QEMU exited (status 0)
-    10496:PASS: guest Linux image gates
+    10496:PASS: guest Linux image checks
 
 === resulting MANIFEST.sha256 ===
 91b092c56b18df883d3289bafa536e12ab5227dc94235500f6f634c9e2d89c7b  bzImage

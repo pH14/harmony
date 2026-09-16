@@ -124,17 +124,17 @@ including RAM and the exact hash suffix. It adds no CPU capture beyond each
 checkpoint's existing read. Reports distinguish the first log difference from
 the retained checkpoint indices and identify terminal cases with no available
 exact pair. This is a fresh paired reproduction, not recovery of an earlier
-sequential run. The ordinary same-input boot gate remains the acceptance check.
+sequential run. The ordinary same-input boot check remains the acceptance check.
 
 PR acceptance combines the portable contract suite and selected Miri checks
-with bounded hardware gates in `product-smoke.yml`. The KVM job requires the
+with bounded hardware checks in `product-smoke.yml`. The KVM job requires the
 published snapshot identity/replay matrix and serviced-exit checks. The platform
 job compares two complete same-seed Linux execution logs, requiring guest
 readiness, nonzero events and zero differences. The scheduled/manual
 `x86-virtual-time.yml` retains broader serviced-exit, RF, PAE translation and
 guest-written XSAVE coverage, including dirty reused vCPUs. Scheduled/manual
 workload acceptance retains the full-state workload restore oracle.
-After a failed smoke gate reports a `StateHash` event index, the ignored
+After a failed smoke check reports a `StateHash` event index, the ignored
 `x2_component_diff_selected_checkpoint` diagnostic replays that boundary with
 `X2_CKPT_EVENT` and retains its reference or first-divergent raw captures under
 `X2_REPORT_DIR`. Each replay finishes its boot and destroys the VM before the
@@ -146,8 +146,8 @@ publisher. The smoke requires exact source provenance, verifies the manifest,
 and uses its direct Linux fixture. The scheduled/manual producer builds the
 Nix kernel once, packages the runtime fixture without another kernel build,
 and publishes only after platform replay passes. Execution stays bounded
-independently of builds, and failed gates retain diagnostics. Broader repetitions and vendor sampling
-remain scheduled/manual. These gates are regression evidence, not a claim that
+independently of builds, and failed checks retain diagnostics. Broader repetitions and vendor sampling
+remain scheduled/manual. These checks are regression evidence, not a claim that
 all XSAVE-presence and AMD NPT PAE behavior is resolved.
 
 Full and sparse portable imports share the VMM's read-only restore preparation
@@ -195,26 +195,26 @@ and hash comparisons and the MMIO completion/timing assertions. There is no
 extra guest exit, warmup or host restore-bitmap forcing. The original init-only
 program remains an informational characterization using the same exercise.
 
-### Published XSAVE identity gate
+### Published XSAVE identity check
 
 `controlled_guest::live_tests::public_snapshot_replay_recapture_preserves_xsave_identity` exercises
 `ControlServer`'s published Snapshot, Replay and portable export APIs. It mints a
 new snapshot after restore, rather than re-exporting the original handle. The
-required fixed-core CI gate covers raw init seeds 0/2/3, XCR0 3/7, initial and
+required fixed-core CI check covers raw init seeds 0/2/3, XCR0 3/7, initial and
 serviced UART boundaries, init and active register values, fresh and verified
 in-place restores, repeated captures, and three additional host-only preparation
 entries. The guest dirties FP/vector/MXCSR state before replay. Independent
 single-component changes to x87, XMM, YMM and MXCSR must change published identity
 with identical guest RAM and program bytes.
 
-The gate compares logical hashes and complete persisted execution state, then
+The check compares logical hashes and complete persisted execution state, then
 resumes both paths to the same guest endpoint. Comparisons validate each artifact
 before projecting only the permitted raw restoration metadata. RAM, canonical
 CPU state, MXCSR, devices and control state remain part of the comparison. The
 existing diagnostic trace counters remain excluded across replay. Artifact
 checksums still cover every original byte, including raw restoration metadata.
 
-The seeded gate reproduced a published hash change on fixed-core AMD after a
+The seeded check reproduced a published hash change on fixed-core AMD after a
 third host-only preparation entry, with no guest instruction executed
 ([run 35047743001, replica 2](https://github.com/pH14/harmony/actions/runs/35047743001/job/104641200322)).
 The raw restore bitmap changed from 0 to 2; RAM and every other serialized CPU

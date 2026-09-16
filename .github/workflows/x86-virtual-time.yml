@@ -120,7 +120,7 @@ jobs:
           mkdir -p nix-guest-output consonance/harmony-linux/build
           nix run .#guest-images -- \
             --output "$PWD/nix-guest-output" \
-            --serialization-gate \
+            --serialization-check \
             --n6
           cp nix-guest-output/x86_64/bzImage consonance/harmony-linux/build/bzImage
           cp nix-guest-output/x86_64/initramfs.cpio.gz consonance/harmony-linux/build/initramfs.cpio.gz
@@ -388,7 +388,7 @@ jobs:
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
-      - name: Build snapshot gate test binaries once
+      - name: Build snapshot check test binaries once
         env:
           CARGO_TERM_COLOR: never
         run: |
@@ -522,10 +522,10 @@ jobs:
           run_exact vmm-core x86_cpu_snapshots live_kvm::xsave_live_registers_survive_cold_continuation xsave-live \
             "XSAVE_LIVE_REGISTERS_REPORT_DIR=$PWD/snapshot-report/xsave-live" || failed=1
           if [[ "$failed" -ne 0 ]]; then
-            printf '%s\n' 'SNAPSHOT_GATE_STATUS=failed' | tee snapshot-report/required-tests.status
+            printf '%s\n' 'SNAPSHOT_CHECK_STATUS=failed' | tee snapshot-report/required-tests.status
             exit 1
           fi
-          printf '%s\n' 'SNAPSHOT_GATE_STATUS=passed' | tee snapshot-report/required-tests.status
+          printf '%s\n' 'SNAPSHOT_CHECK_STATUS=passed' | tee snapshot-report/required-tests.status
       - name: Require published snapshot replay and recapture identity
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}
         run: |

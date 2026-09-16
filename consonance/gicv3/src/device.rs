@@ -790,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn every_input_delivery_gate_is_independently_observable() {
+    fn every_input_delivery_check_is_independently_observable() {
         let mut g = gic();
         assert!(!g.group1_enabled());
         arm(&mut g, 40, 0x40);

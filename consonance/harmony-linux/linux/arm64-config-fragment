@@ -26,7 +26,7 @@ CONFIG_NR_CPUS=2
 
 ## LSE-only atomic contract
 # The N1 exposes FEAT_LSE. The owned patch removes the runtime LL/SC atomic
-# alternative and reservation-monitor wait hints; the publication gate scans
+# alternative and reservation-monitor wait hints; the publication check scans
 # every executable word in vmlinux and the vDSO for any surviving exclusive.
 CONFIG_ARM64_USE_LSE_ATOMICS=y
 CONFIG_HARMONY_ARM_LSE_ONLY=y

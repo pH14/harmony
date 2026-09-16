@@ -3,7 +3,7 @@
 &[
     ReviewedInputs {
         kernel: "7ce25244cf1d138db1286ce61fb1c880bd224b2866ffaebd1ec19d04b2ad69b6",
-        initramfs: "3609719da1de4f95944bfa2e9e79960698ed3b6784e594777440251bcfb1aa21",
+        initramfs: "b48c9f8eac32fc90f4681d997dbfe5217ca50a823db7627974518ecd3efc8fe8",
         ram_bytes: 256 << 20,
         cmdline: "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1",
     },

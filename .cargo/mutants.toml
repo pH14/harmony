@@ -1,7 +1,7 @@
 # cargo-mutants configuration (quality-c).
 #
 # Lives at `.cargo/mutants.toml` because that is the path cargo-mutants
-# auto-discovers; a bare `cargo mutants -p unison` (the acceptance-gate
+# auto-discovers; a bare `cargo mutants -p unison` (the acceptance-check
 # command) and the CI `--in-diff` run both pick it up with no extra flag.
 #
 # Mutation testing mutates the source (flip `<` to `<=`, replace a return value
@@ -10,7 +10,7 @@
 # strategy is summarized in `docs/TESTING.md`.
 
 # Run the nextest suite (process-isolated, faster) as the mutation oracle and
-# build/test with all features so the `cli`-gated code is included.
+# build/test with all features so the `cli`-guarded code is included.
 test_tool = "nextest"
 all_features = true
 
@@ -32,20 +32,20 @@ timeout_multiplier = 3.0
 # (non-kani) test suite cargo-mutants uses as its oracle, so every mutant in them
 # — functions *and* module-level bound consts — is structurally unkillable here
 # ("missed"). They are verified by the dedicated `kani` CI job (bounded model
-# checking), a stronger gate than mutation. Excluding the whole file (not a name
+# checking), a stronger check than mutation. Excluding the whole file (not a name
 # regex) catches the const mutants too, while the real arithmetic in `clock.rs` /
-# `device.rs` stays in the mutation gate.
+# `device.rs` stays in the mutation check.
 #
 # The entire `cfg(linux)` KVM path in `consonance/vmm-backend` — `kvm_sys.rs` (the
 # `KvmBackend` syscall orchestration: `Backend` impl + raw `mmap`/`ioctl`
 # wrappers), `kvm.rs` (the `kvm_run`⇄`Exit` / state-conversion logic), and the
-# `kvm/` dir (its unit tests) — is excluded from the mutation gate. The `mutants`
+# `kvm/` dir (its unit tests) — is excluded from the mutation check. The `mutants`
 # job runs the `nextest` oracle **without `--ignored`**, so the box-only KVM
 # integration tests that verify the FFI end-to-end never run; counting that path
 # would surface unkillable "missed" mutants. The KVM path is verified instead by
 # those `#[ignore]` box tests + Miri (which still *runs* `kvm.rs`'s synthetic-
 # `kvm_run` unit tests, so logic regressions fail the suite — just not mutation-
-# *counted*). The mutation-gated set is the portable factored logic
+# *counted*). The mutation-guarded set is the portable factored logic
 # (`region`/`run_buf`, the value types, the `MockBackend` run-loop contract).
 exclude_globs = [
     "**/main.rs",
@@ -53,7 +53,7 @@ exclude_globs = [
     # most of this repository's hardware probes use descriptive filenames
     # rather than `main.rs`. They are the same demo/debug/box-only composition
     # glue described above, and the hosted mutation oracle cannot execute their
-    # HVF or `/dev/kvm` paths. Keep their portable library seams mutation-gated,
+    # HVF or `/dev/kvm` paths. Keep their portable library seams mutation-guarded,
     # but do not count unentered probe mains as surviving library mutants.
     "**/src/bin/*.rs",
     # The live Session is the Linux/KVM composition root. Portable session
@@ -67,7 +67,7 @@ exclude_globs = [
     # forbids. Mutating an exam's assertions is structurally unkillable — there
     # is no oracle for the oracle — so excluding it restores the default
     # treatment of test code rather than lowering a floor. The exam's own
-    # non-vacuity is gated by `tests/contract_mock.rs`, which asserts that a
+    # non-vacuity is guarded by `tests/contract_mock.rs`, which asserts that a
     # contract-breaking backend fails it and that a limited backend's declines
     # are recorded exactly.
     "consonance/vmm-backend/src/contract.rs",
@@ -91,11 +91,11 @@ exclude_globs = [
 # Equivalent mutations in portable logic.
 exclude_re = [
     # The unsupported diagnostic backend returns Vec::new(); vec![] is identical.
-    # Nonempty defaults and boxed/VMM forwarding mutations remain gated.
+    # Nonempty defaults and boxed/VMM forwarding mutations remain guarded.
     '^consonance/vmm-backend/src/backend\.rs:[0-9]+:[0-9]+: replace Backend::diagnostic_debug_hits -> Vec<u64> with vec!\[\]$',
     # Linux PROT_READ (1) and PROT_WRITE (2) are disjoint ABI bits, so OR
     # and XOR select the identical protection flags. The AND mutation remains
-    # gated by observation mapping tests that assert the syscall arguments.
+    # guarded by observation mapping tests that assert the syscall arguments.
     "consonance/hypercall-doorbell/src/observation\\.rs:[0-9]+:[0-9]+: replace \\| with \\^ in Observation::create_with$",
     "consonance/vmm-backend/src/arch/x86/mod\\.rs:.*replace <impl ArchExit for X86Exit>::stages_completion -> bool with true",
     # The nominal handler has empty configuration and no dynamic state.
@@ -107,34 +107,34 @@ exclude_re = [
     # cfg-excluded from the Linux mutation oracle, so replacing its `None` with
     # a sentinel `Some` cannot affect that build. Linux exercises the real
     # getrusage path and its testable seam; macOS exercises this fallback in the
-    # ordinary all-features gates. Pin the exact fallback line so the live Linux
-    # accessor remains mutation-gated.
+    # ordinary all-features checks. Pin the exact fallback line so the live Linux
+    # accessor remains mutation-guarded.
     "consonance/vmm-core/src/control\\.rs:57:5: replace host_minor_faults -> Option<u64> with Some\\([01]\\)",
     # (b) Provably-equivalent disjoint-bit OR mutants in vmm-core: `a | b` ≡ `a ^ b`
     #     whenever a,b share no set bits — true of every bitwise-flag combine here
     #     (USER_SPACE_MSR_MASK = FILTER|UNKNOWN|INVAL; resolve_cpuid's clear-then-set
     #     and byte-merge; CR0 = PE|NE). No test distinguishes OR from XOR for
-    #     disjoint operands. Scoped to vmm-core so sibling crates' `|` stays gated.
+    #     disjoint operands. Scoped to vmm-core so sibling crates' `|` stays guarded.
     "consonance/vmm-core/src/.*replace \\| with \\^",
     # KVM's ARM64 one-register IDs and vGIC sysreg IDs are concatenations of
     # non-overlapping ABI bitfields, so `|` and `^` are mathematically
     # identical there. The first entry covers the module-level ID constants
     # (matched by the absence of an `in <fn>` suffix), the second the four
     # compose helpers. `restore_vgic` and `set_irq_line` set a bit into a value
-    # that may already hold it, so their `|` stays gated, as do the
+    # that may already hold it, so their `|` stays guarded, as do the
     # neighboring `|`→`&`, shift, index, and return-value mutants.
     "consonance/vmm-backend/src/arm64_kvm\\.rs:[0-9]+:[0-9]+: replace \\| with \\^$",
     "consonance/vmm-backend/src/arm64_kvm\\.rs:.*replace \\| with \\^ in (vgic_sysreg|core_reg|core_reg_sized|sysreg_id|<impl Backend for Arm64KvmBackend<K>>::set_policy)$",
     # GICD_CTLR's retained Group-1 bit and the fixed ARE/DS bits occupy
     # disjoint positions, so OR and XOR return the same register value for all
-    # reachable states. The writable-bit and exact-value mutants stay gated.
+    # reachable states. The writable-bit and exact-value mutants stay guarded.
     "replace \\| with \\^ in Gicv3::dist_read",
     # GICR_IIDR is architecturally zero, and the RD-frame fallback is also
     # RES0. Removing this explicit documentary arm cannot change any result.
     "delete match arm GICR_IIDR in Gicv3::redist_read",
     # TCO and BTYPE occupy disjoint PSTATE bit positions, so OR and XOR are
     # identical for this constant mask. The clearing and detection operations
-    # that consume the mask remain mutation-gated.
+    # that consume the mask remain mutation-guarded.
     "consonance/vmm-backend/src/arch/arm64/state\\.rs.*replace \\| with \\^",
     # (c) Observability-/structurally-unkillable helpers in vmm-core/vmm.rs: the §1
     #     MSR loud-log (`loud_msr`) and the best-effort guest RIP it logs
@@ -161,7 +161,7 @@ exclude_re = [
     # The Apple-Silicon HVF boot roots are the arm64 counterparts of the
     # Linux/KVM composition roots above. They open Hypervisor.framework and
     # cannot be entered by the Ubuntu mutation oracle; portable `compose*`
-    # image/DTB policy remains mutation-gated and mock-tested.
+    # image/DTB policy remains mutation-guarded and mock-tested.
     "boot_hvf(_control)?",
     # Host-only HVF liveness handle forwarding is compiled only on Apple
     # Silicon and cannot be entered by the Ubuntu mutation oracle. The handle
@@ -170,7 +170,7 @@ exclude_re = [
     # The two frozen pvclock ABI flags are distinct single bits (1 and 2), so
     # OR and XOR are identical for this compile-time constant expression. The
     # `|` inside `stamp` sets a sequence bit that may already be set and stays
-    # gated, which the absence of an `in <fn>` suffix distinguishes.
+    # guarded, which the absence of an `in <fn>` suffix distinguishes.
     "consonance/vtime/src/pvclock\\.rs:[0-9]+:[0-9]+: replace \\| with \\^$",
     # (g) `impl Backend for Box<B>`'s `inject` forward: `inject` returns
     #     `Result<()>` with no trait-observable effect (no getter on the trait) and
@@ -191,7 +191,7 @@ exclude_re = [
     #     So emptying `shutdown`'s body to `()` leaves the observable post-condition
     #     identical (threads joined, listener closed) — `shutdown` is by design just
     #     an explicit, eager `drop`. The `stop`/`drop` bodies themselves stay
-    #     mutation-gated (killed by `dropping_the_server_stops_the_listener`, which
+    #     mutation-guarded (killed by `dropping_the_server_stops_the_listener`, which
     #     asserts a dropped server stops accepting); only this one Drop-shadowed
     #     mutant is excluded.
     "consonance/telemetry/src/server\\.rs.*replace RunningServer::shutdown with \\(\\)",
@@ -215,26 +215,26 @@ exclude_re = [
     #     mutation runner's host fixes to one value, and `Isa::current` reads
     #     the compile-target arch, so the other arm can never be entered. The
     #     pure classification they feed (`classify`, `guest_dir_name`,
-    #     `Hypervisor::available`, Display) is unit-tested and stays gated.
+    #     `Hypervisor::available`, Display) is unit-tested and stays guarded.
     "cli/src/host\\.rs.*(detect_kvm|detect_hvf|detect_nested|Isa::current)",
     # `oci::runner`'s `execute` variants are the per-cell hypervisor
     # composition roots (same category as `boot_hvf`/`boot_linux_selected`
     # above) and `drive` is their step loop over a live vCPU: neither can run
     # without HVF or /dev/kvm plus built guest artifacts. Verified end-to-end
     # by the `oci-smoke` CI lane's real seed-0/seed-0/seed-7 runs. The stream
-    # filtering and cmdline policy they use are unit-tested and stay gated.
+    # filtering and cmdline policy they use are unit-tested and stay guarded.
     "cli/src/oci/runner\\.rs.*(execute|drive)",
     # `oci::run` is the verb's end-to-end pipeline (host check → docker stage
     # → boot → artifact write) and `rootfs_segment_for` its docker-backed
     # cache orchestration; both need a container tool and a hypervisor the
     # oracle host does not guarantee. Covered by the `oci-smoke` lane; the
-    # pure pieces (`hex`, `parse_container_rc`, bundle/cache/cpio) stay gated.
+    # pure pieces (`hex`, `parse_container_rc`, bundle/cache/cpio) stay guarded.
     "cli/src/oci/mod\\.rs.*(in run|rootfs_segment_for)",
     # docker/podman subprocess glue: probe for an installed tool, inspect the
     # local image store, pull, save. The oracle host's container-tool state is
     # not controllable from a unit test. The parsing these feed
     # (`parse_runtime_config`, manifest/layout resolution, layer whiteouts)
-    # is unit-tested and stays gated.
+    # is unit-tested and stays guarded.
     "consonance/oci/src/image\\.rs.*(replace tool|local_image_id|export_from_tool)",
     # `cache::key` is the image-ID lookup through docker/podman — same
     # category; the store/load/atomic-write logic it keys is unit-tested.

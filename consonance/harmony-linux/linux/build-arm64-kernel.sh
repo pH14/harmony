@@ -138,7 +138,7 @@ make -C "$KSRC" O="$arm64_object_root" ARCH=arm64 LOCALVERSION= -j"$(nproc)" Ima
 # count registers also vary with host execution.
 # The canonical Image is therefore published only after the empty-allowlist
 # scanner accepts the symbolized vmlinux.
-echo "== arm64 kernel: zero-live-counter reachability gate"
+echo "== arm64 kernel: zero-live-counter reachability check"
 scan=$GUEST_DIR/scripts/aa5-counter-scan.py
 scan_probe=$BUILD_ROOT/aa5-counter-scan-probe.S
 scan_probe_elf=$BUILD_ROOT/aa5-counter-scan-probe
@@ -176,8 +176,8 @@ python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" \
 # LL/SC permits implementation-dependent spurious STXR failures that can change
 # guest-visible control flow across hosts. The config removes the known fallback
 # bodies; this raw executable-word scan is the fail-closed
-# artifact proof. Its negative control prevents a vacuous green gate.
-echo "== arm64 kernel: zero-LL/SC executable-image gate"
+# artifact proof. Its negative control prevents a vacuous green check.
+echo "== arm64 kernel: zero-LL/SC executable-image check"
 exclusive_scan=$GUEST_DIR/scripts/aa4-exclusive-scan.py
 exclusive_probe=$BUILD_ROOT/aa4-exclusive-scan-probe.S
 exclusive_probe_elf=$BUILD_ROOT/aa4-exclusive-scan-probe

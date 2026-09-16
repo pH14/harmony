@@ -15,16 +15,16 @@ env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
-  gates:
-    name: Lint, build, and unit tests
+  repository:
+    name: Repository checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          # The out-of-workspace Dissonance gate below scopes itself to the
-          # first-parent diff (base -> PR merge, or previous -> pushed commit).
-          fetch-depth: 2
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - name: Benchmark report checks
         run: node --test scripts/benchmark-report.test.cjs
       - name: Historical-bug oracle checks
@@ -36,7 +36,9 @@ jobs:
       - name: Historical-bug manifest checks
         run: scripts/historical-manifest.test.sh
       - name: Kernel patch-series checks
-        run: bash consonance/harmony-linux/linux/test-patch-series.sh
+        run: |
+          bash consonance/harmony-linux/linux/test-patch-series.sh
+          bash consonance/harmony-linux/linux/test-publish-check.sh
       - name: XSAVE canonicalization model
         run: bash consonance/harmony-linux/linux/test-xsave-canonical.sh
       - name: Controlled x86 admission checks
@@ -45,15 +47,6 @@ jobs:
         run: python3 consonance/harmony-linux/scripts/test_nix_runtime_artifacts.py -v
       - name: Prepared execution admission checks
         run: python3 workloads/guest-images/test_verify_prepared_admission.py -v
-      - name: Install stable toolchain
-        run: |
-          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
-          rustup default "${HARMONY_RUST_TOOLCHAIN}"
-      - uses: Swatinem/rust-cache@v2
-      - name: Install CI cargo tools
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest,cargo-deny@0.19.9
       - name: Cargo dependency boundaries
         run: |
           python3 -m unittest discover -s scripts -p test_check_dependency_boundaries.py
@@ -68,8 +61,39 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_ci_*.py'
           python3 -m unittest discover -s scripts -p 'test_*scope.py'
           python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
+          python3 -m unittest discover -s scripts -p test_semantic_lints.py
           python3 scripts/custom-lints.py
           python3 scripts/strip-comments.py --check
+      - name: N6 instruction sweep generators and negative controls
+        run: |
+          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
+          python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
+      - name: V-time cost fitter self-test
+        run: python3 scripts/fit-vtime-costs.py --self-test
+      - name: consonance/harmony-linux/libvoidstar ABI (C subtree, out-of-workspace)
+        run: make -C consonance/harmony-linux test-libvoidstar
+      - name: Fault workload instrumentation runtime
+        run: make -C workloads/faults/runtime check
+
+  workspace:
+    name: Workspace lint and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-workspace
+          workspaces: |
+            . -> target
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-deny@0.19.9
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
@@ -81,18 +105,35 @@ jobs:
           cargo deny --manifest-path consonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
       - name: cargo nextest
         run: cargo nextest run --all-features
-      - name: N6 instruction sweep generators and negative controls
-        run: |
-          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
-          python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
-      - name: V-time cost fitter self-test
-        run: python3 scripts/fit-vtime-costs.py --self-test
       - name: cross-check aarch64 (the arch seam must stay additive)
         run: |
           rustup target add aarch64-unknown-linux-gnu
           CARGO_FEATURE_NO_NEON=1 cargo clippy --target aarch64-unknown-linux-gnu \
             --all-features --all-targets -- -D warnings
-      - name: consonance/harmony-linux/sdk gates (out-of-workspace manifest)
+
+  guests:
+    name: Guest crate checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-guests
+          workspaces: |
+            consonance/harmony-linux/sdk -> target
+            workloads/nes-guest -> target
+            consonance/harmony-linux/supervisor -> target
+            consonance/harmony-linux/runtime-fixture -> target
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.9
+      - name: consonance/harmony-linux/sdk checks (out-of-workspace manifest)
         run: |
           cargo fmt --manifest-path consonance/harmony-linux/sdk/Cargo.toml --all -- --check
           cargo clippy --manifest-path consonance/harmony-linux/sdk/Cargo.toml --all-features --all-targets -- -D warnings
@@ -102,10 +143,10 @@ jobs:
           cargo deny --manifest-path consonance/harmony-linux/sdk/Cargo.toml check --config deny.toml licenses
           # no_std build proof: the crate and its deps must compile for the bare
           # metal target the guest actually runs in (host-only tests can't catch a
-          # std leak). Fails the gate if anything pulls in std.
+          # std leak). Fails the check if anything pulls in std.
           rustup target add x86_64-unknown-none
           cargo build --manifest-path consonance/harmony-linux/sdk/Cargo.toml --lib --target x86_64-unknown-none
-      - name: workloads/nes-guest gates (out-of-workspace manifest)
+      - name: workloads/nes-guest checks (out-of-workspace manifest)
         run: |
           cargo fmt --manifest-path workloads/nes-guest/Cargo.toml --all -- --check
           cargo clippy --manifest-path workloads/nes-guest/Cargo.toml --all-features --all-targets -- -D warnings
@@ -118,28 +159,6 @@ jobs:
           cargo test --manifest-path workloads/nes-guest/Cargo.toml --no-default-features --test agent --bin play-agent
           cargo deny --manifest-path workloads/nes-guest/Cargo.toml check --config deny.toml licenses
           cargo build --manifest-path workloads/nes-guest/Cargo.toml --bin play-agent
-      - name: consonance/harmony-linux/libvoidstar ABI (C subtree, out-of-workspace)
-        run: make -C consonance/harmony-linux test-libvoidstar
-      - name: Fault workload instrumentation runtime
-        run: make -C workloads/faults/runtime check
-      - name: Dissonance search core gates
-        run: |
-          cargo fmt --manifest-path dissonance/Cargo.toml --all -- --check
-          cargo build --locked --manifest-path dissonance/Cargo.toml --release
-          cargo clippy --locked --manifest-path dissonance/Cargo.toml --release --all-features --all-targets -- -D warnings
-          cargo test --locked --release --manifest-path dissonance/Cargo.toml --all-features
-          cargo deny --manifest-path dissonance/Cargo.toml check
-
-      - name: Workload support and fault toolkit gates
-        run: |
-          for package in nes-protocol fault-policy faults tools; do
-            manifest="workloads/$package/Cargo.toml"
-            cargo fmt --manifest-path "$manifest" --all -- --check
-            cargo clippy --locked --manifest-path "$manifest" --all-features --all-targets -- -D warnings
-            cargo test --locked --manifest-path "$manifest" --all-features
-            cargo deny --manifest-path "$manifest" check --config deny.toml
-          done
-
       - name: Platform guest crates
         run: |
           rustup target add x86_64-unknown-linux-musl
@@ -152,7 +171,86 @@ jobs:
             cargo clippy --locked --manifest-path "$manifest" --target x86_64-unknown-linux-musl --all-targets -- -D warnings
           done
 
-      - name: NES workload package gates
+  search:
+    name: Dissonance search checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-search
+          workspaces: |
+            dissonance -> target
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.9
+      - name: Dissonance search core checks
+        run: |
+          cargo fmt --manifest-path dissonance/Cargo.toml --all -- --check
+          cargo build --locked --manifest-path dissonance/Cargo.toml --release
+          cargo clippy --locked --manifest-path dissonance/Cargo.toml --release --all-features --all-targets -- -D warnings
+          cargo test --locked --release --manifest-path dissonance/Cargo.toml --all-features
+          cargo deny --manifest-path dissonance/Cargo.toml check
+
+  support:
+    name: Workload support checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-support
+          workspaces: |
+            workloads/nes-protocol -> target
+            workloads/fault-policy -> target
+            workloads/faults -> target
+            workloads/tools -> target
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.9
+      - name: Workload support and fault toolkit checks
+        run: |
+          for package in nes-protocol fault-policy faults tools; do
+            manifest="workloads/$package/Cargo.toml"
+            cargo fmt --manifest-path "$manifest" --all -- --check
+            cargo clippy --locked --manifest-path "$manifest" --all-features --all-targets -- -D warnings
+            cargo test --locked --manifest-path "$manifest" --all-features
+            cargo deny --manifest-path "$manifest" check --config deny.toml
+          done
+
+  nes:
+    name: NES package checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-nes
+          workspaces: |
+            workloads/nes -> target
+            workloads/nes-machine -> target
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.9
+      - name: NES workload package checks
         run: |
           cargo fmt --manifest-path workloads/nes/Cargo.toml --all -- --check
           cargo fmt --manifest-path workloads/nes-machine/Cargo.toml --all -- --check
@@ -161,6 +259,23 @@ jobs:
           cargo test --locked --manifest-path workloads/nes/Cargo.toml --release --all-features
           cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml --all-features
           cargo deny --manifest-path workloads/nes/Cargo.toml check --config deny.toml
+
+  semantic:
+    name: Semantic content lints
+    runs-on: ubuntu-latest
+    environment: Checks
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Judge changed file content
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: python3 scripts/semantic-lints.py --changed-from HEAD^1
 
   kani:
     name: Kani proofs

@@ -17,10 +17,10 @@
 # therefore meets an unwired doorbell and gets `UnknownService` back, which the
 # driver turns into a write(2) error and this script reports loudly.
 #
-# SUCCESS-GATED marker (PR161-F1, the lane's own W1 lesson): BRIDGE_DONE is
+# SUCCESS-GUARDED marker (PR161-F1, the lane's own W1 lesson): BRIDGE_DONE is
 # emitted ONLY on a clean probe. A failed probe reboots FIRST, so the marker
 # never appears, `drive_to_marker` reaches the triple-fault as a terminal, and
-# the gate fails loudly instead of sealing past the failure — the sweep's
+# the check fails loudly instead of sealing past the failure — the sweep's
 # >= 2-distinct-futures check is satisfied by the V-time reseed fold alone, with
 # zero guest entropy, so an unconditional marker would print a vacuous PASS.
 BB=/bin/busybox

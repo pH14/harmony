@@ -70,7 +70,7 @@ CONFIG_HZ_100=y
 # TSC is the only fine-grained clocksource "where possible": the ACPI PM
 # timer is configured out here; HPET support cannot be (CONFIG_HPET_TIMER is
 # def_bool y on x86-64, no prompt), so the HPET is kept out at runtime
-# instead — the hypervisor will simply not expose one, and the boot gate
+# instead — the hypervisor will simply not expose one, and the boot check
 # passes -machine hpet=off (alternative: the hpet=disable boot parameter).
 # CONFIG_X86_PM_TIMER is not set
 # The harmony paravirt exit-count-derived clock (task 110, consonance/vtime/README.md
@@ -101,7 +101,7 @@ CONFIG_HARMONY_PARK=y
 # random.trust_cpu=off so RDRAND entropy is never credited at boot.
 # CONFIG_HW_RANDOM is not set
 # (CONFIG_RANDOM_TRUST_CPU was removed in kernel 6.2: RDRAND crediting is the
-# random.trust_cpu= boot parameter now — default on, so the boot gate passes
+# random.trust_cpu= boot parameter now — default on, so the boot check passes
 # random.trust_cpu=off — and RDRAND is hidden by the guest CPUID policy.
 # Nothing to set at build time in 6.18.)
 
@@ -119,7 +119,7 @@ CONFIG_HARMONY_PARK=y
 # CONFIG_KEXEC_FILE is not set
 # CONFIG_KEXEC_HANDOVER is not set
 # ACPI so `poweroff -f` actually powers the (QEMU) machine off and the boot
-# gate can observe QEMU exiting. PCI is required with it: QEMU's DSDT
+# check can observe QEMU exiting. PCI is required with it: QEMU's DSDT
 # declares PCI config-space operation regions, and without the PCI region
 # handler ACPICA fails table load (AE_BAD_PARAMETER) and never registers
 # pm_power_off.
@@ -188,7 +188,7 @@ CONFIG_POSIX_TIMERS=y
 # userspace port I/O for applications (docs/ARCHITECTURE.md). Determinism-neutral:
 # syscall availability changes nothing unless called, and the doorbell OUT is
 # the same deterministic port exit the VMM already services; the task-86
-# replay gate re-validates the rebuilt kernel. Asserted in
+# replay check re-validates the rebuilt kernel. Asserted in
 # build-kernel.sh so a Kata-side regression cannot silently drop it.
 CONFIG_X86_IOPL_IOPERM=y
 # /dev/mem itself (same smoke, next layer down): the doorbell transport maps

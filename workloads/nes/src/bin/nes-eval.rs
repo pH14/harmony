@@ -477,7 +477,7 @@ mod tests {
     use super::objective_within_budget;
 
     #[test]
-    fn a_victory_in_the_drained_window_does_not_pass_the_frame_gate() {
+    fn a_victory_in_the_drained_window_does_not_pass_the_frame_check() {
         assert!(objective_within_budget(Some(128), Some(128)));
         assert!(!objective_within_budget(Some(129), Some(128)));
         assert!(objective_within_budget(Some(129), None));

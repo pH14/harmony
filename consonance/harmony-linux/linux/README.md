@@ -48,7 +48,7 @@ the platform OCI fixture, and records a source and artifact manifest. The
 lower-level `build-oci-runtime-initramfs.sh` accepts the built platform init and
 supervisor through `HARMONY_RUNTIME_INIT` and `HARMONY_RUNTIME_SUPERVISOR`.
 It fails when a required input is missing. Every ARM executable must satisfy
-the existing LSE and counter reachability gates.
+the existing LSE and counter reachability checks.
 
 Both architectures build runc 1.5.0 from the verified source and Go 1.25.0
 pins in `versions.lock`. Internal re-execution preserves `LD_BIND_NOW=1`

@@ -39,7 +39,7 @@ Each entry is a directory containing:
 - A **nominal control**: every entry must define a no-fault configuration under which the bug
   never fires. False-positive rate is measured, not assumed.
 
-Harnesses use portable gates where their logic is portable and hardware gates
+Harnesses use portable checks where their logic is portable and hardware checks
 for checks that require `/dev/kvm`.
 
 Ground truth is sacred: for `historical/` entries, affected versions, trigger, and fix commit

@@ -87,11 +87,11 @@ gh workflow run nova-consonance-experiment.yml --ref YOUR_BRANCH -f suite=nested
 ```
 
 
-The Nova A–E CI gate is `verify-nova-oracle-admission.sh`. It checks the exact
+The Nova A–E CI check is `verify-nova-oracle-admission.sh`. It checks the exact
 built oracle executable and downloaded kernel/platform/OCI/ROM immediately
 before execution against `admission/nova-oracle-composition.json`. The baseline
 is a separate review from default-session NES admission; a new publisher output
-must match its reviewed guest composition or fail closed. The gate requires
+must match its reviewed guest composition or fail closed. The check requires
 restore-oracle mode and no tree-seed override, and retains only JSON/log evidence
 rather than the temporary full composition archives. See `workloads/tools/README.md`
 for candidate generation, review boundaries and executable provenance.

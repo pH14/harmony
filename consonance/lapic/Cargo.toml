@@ -6,7 +6,7 @@ license.workspace = true
 description = "Deterministic userspace xAPIC register file + V-time timer (pure logic, no_std)"
 
 [features]
-# Off by default: the core state machine compiles and passes every gate with no
+# Off by default: the core state machine compiles and passes every check with no
 # features. `serde` derives Serialize/Deserialize on `LapicState` only for use
 # by `vm-state`.
 default = []

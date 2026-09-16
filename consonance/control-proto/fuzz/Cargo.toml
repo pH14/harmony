@@ -1,9 +1,9 @@
-# cargo-fuzz harness for control-proto (acceptance gate 3 — the decoder
+# cargo-fuzz harness for control-proto (acceptance check 3 — the decoder
 # has a dedicated fuzz target). Kept inside the crate directory
 # (conventions rule 1 — touch only `dissonance/control-proto/`) rather than the
 # repo-root `fuzz/`. The empty `[workspace]` table makes this
 # its own workspace root, so the parent workspace's `dissonance/*` glob never
-# pulls it in and the standard `-p control-proto` gates ignore it.
+# pulls it in and the standard `-p control-proto` checks ignore it.
 #
 # Dependency note (ask-by-comment, per conventions rule 5): `libfuzzer-sys` is the
 # standard cargo-fuzz harness crate and is outside the dependency whitelist; it is

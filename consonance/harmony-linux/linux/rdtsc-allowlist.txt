@@ -1,5 +1,5 @@
 # Reviewed raw-counter-read sites in the built guest kernel (the
-# paravirtual clock interface reachability gate, x86 half — see
+# paravirtual clock interface reachability check, x86 half — see
 # scan-counter-opcodes.sh). One `artifact:symbol+0xOFFSET` entry per line — the
 # artifact, containing function, and the rdtsc/rdtscp instruction's byte OFFSET
 # within it (cross-model r10 P1). Per-SITE, not per-function-count: a NEW read is
@@ -31,7 +31,7 @@
 # different compiler version (or a change to a function's earlier code) shifts
 # them — such a drift fails the armed scan loudly; re-review the drifted sites
 # against that build's capture and commit the delta. For a FULL re-baseline
-# (a kernel version bump), add a line starting with `# GATE-UNARMED` — the
+# (a kernel version bump), add a line starting with `# CHECK-UNARMED` — the
 # scan then prints the new capture and FAILS the build until the reviewed
 # baseline is committed and the marker removed (fail-closed; it can never
 # ship a silently-green scan).

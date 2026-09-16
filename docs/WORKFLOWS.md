@@ -8,8 +8,7 @@ Other workflow names use `Category / Subject` directly.
 
 Subjects use sentence case: capitalize the first word, proper names, and
 acronyms only. Use `Public API compatibility`, not `Public Api Compatibility`.
-Every job needs an explicit descriptive name; generic names such as `Gates`,
-`Products`, `Quality`, and `Report` are rejected. Matrix expressions remain
+Every job needs an explicit descriptive name; generic names such as `Products`, `Quality`, and `Report` are rejected. Matrix expressions remain
 unchanged, preserving crate and case identifiers. `ci-workflow-prefix` and
 `ci-display-name` in `scripts/custom-lints.py` enforce this contract; register
 new proper names/acronyms in `CI_NAME_TERMS` rather than weakening casing rules.
@@ -78,8 +77,18 @@ STB. Fault changes select PostgreSQL. Platform changes select the OCI smoke;
 VMM/backend changes also select the hardware execution/restore/replay smoke.
 Shared process interfaces and CLI changes select the relevant consumers.
 Dependency, toolchain, and selector changes conservatively select all consumers.
-Documentation changes do not select product smokes. The lint/build/unit-test job retains portable
-unit tests, runner/report tests and contract checks. Public-API checks run for
+Documentation changes do not select product smokes. Portable quality checks run
+in six independent jobs: repository scripts and custom lints, workspace lint
+and unit tests, guest crates, Dissonance search, workload support, and NES
+packages. A seventh independent job judges changed file content with the
+Jev-backed semantic lint. It uses the `Checks` environment, limits secret access
+to the judge step, and checks out two commits for the first-parent diff.
+Semantic lint unit tests remain in the portable repository checks. Each
+quality job retains the 15-minute bound and runs on every PR and main push. Rust jobs cache their own manifest directories under separate keys;
+there is no dependency chain or shared build-artifact handoff. Keeping lint,
+build, and tests for each manifest together reuses compilation within a job.
+All six jobs are required quality evidence alongside applicable proofs and API
+checks. Public-API checks run for
 platform/dependency changes; proof and Miri selection retain their own narrow
 rules and tests.
 
@@ -96,7 +105,7 @@ on demand if a diff needs them. Changes to the shared routing implementation
 conservatively select all tests. Miri and Kani selector changes also select
 their own checks; the Miri workflow trigger includes its selector and tests.
 
-Every subsequent setup, test, cache, and artifact step is gated by that job's
+Every subsequent setup, test, cache, and artifact step is guarded by that job's
 selection output. A selected test failure still fails its job and still uploads
 available failure evidence. A diff/selection error fails closed. Unselected
 jobs briefly allocate a runner and finish successfully with a summary saying

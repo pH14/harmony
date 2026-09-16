@@ -1,7 +1,7 @@
 {
   "version": 2,
-  "archive_sha256": "3609719da1de4f95944bfa2e9e79960698ed3b6784e594777440251bcfb1aa21",
-  "rootfs_sha256": "f63a6623bd1572d43c3253841dadcc08cabb669722fbe174b8eb0551e8d757ac",
+  "archive_sha256": "b48c9f8eac32fc90f4681d997dbfe5217ca50a823db7627974518ecd3efc8fe8",
+  "rootfs_sha256": "ac09392c748cf3ae31bf4e2ea8a8211a0081be5b1d29084a015e663fffdbcbcd",
   "elf_sha256": {
     "/bin/busybox": "ed276986a91b1c13f6da78900446dfa4311e841d87d8f770ae3ca10b18767b70"
   },

@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Proof that build-kernel.sh must run the counter-opcode SCAN and
 # pass it BEFORE it publishes the bzImage to the canonical
-# `consonance/harmony-linux/build/bzImage` that the guest runner consumes. Otherwise a kernel the gate REJECTS is left at
+# `consonance/harmony-linux/build/bzImage` that the guest runner consumes. Otherwise a kernel the check REJECTS is left at
 # that path (the scan used to run after the install).
 #
 # This plants a REAL rejection — a `vmlinux` with an un-allowlisted `rdtsc` — and
-# drives the REAL scan (`scan-counter-opcodes.sh`), then asserts the publish-gate
+# drives the REAL scan (`scan-counter-opcodes.sh`), then asserts the publish-check
 # with the SAME `scan && install` control flow build-kernel.sh uses under
 # `set -e`: on a scan FAILURE nothing is published; on a scan PASS the image is.
 #
 # Linux + binutils only (needs ELF `as`/`objdump`, like run-tests.sh's QEMU
-# gate); it plants and scans a tiny object file, so it needs NO kernel build and
+# check); it plants and scans a tiny object file, so it needs NO kernel build and
 # NO box KVM window.
 set -euo pipefail
 
@@ -34,14 +34,14 @@ art="$work/bzImage"
 # process (like build-kernel.sh itself — so errexit is never disabled by an `if`
 # condition around it): scan THEN install, so a non-zero scan aborts before the
 # publish. Returns the process exit status; sets nothing.
-GATE_TAIL="$work/gate-tail.sh"
-cat >"$GATE_TAIL" <<'EOF'
+CHECK_TAIL="$work/check-tail.sh"
+cat >"$CHECK_TAIL" <<'EOF'
 set -euo pipefail
 bash "$1" "$2" "$3" >/dev/null 2>&1   # the counter-opcode scan
 install -m 0644 "$4" "$5"             # publish ONLY if the scan passed
 EOF
-publish_gate() { # <vmlinux> <allowlist>
-    bash "$GATE_TAIL" "$SCAN" "$1" "$2" "$work/bzImage.built" "$art"
+publish_check() { # <vmlinux> <allowlist>
+    bash "$CHECK_TAIL" "$SCAN" "$1" "$2" "$work/bzImage.built" "$art"
 }
 
 # --- NEGATIVE: a PLANTED rejection must NOT be published ----------------------
@@ -57,7 +57,7 @@ EOF
 as -o "$work/planted.o" "$work/planted.s"
 : >"$work/empty-allow.txt"
 
-# Sanity: the real scan actually rejects the planted object (else the gate proof
+# Sanity: the real scan actually rejects the planted object (else the check proof
 # below would be vacuous).
 if bash "$SCAN" "$work/planted.o" "$work/empty-allow.txt" >/dev/null 2>&1; then
     echo "FAIL: the counter-opcode scan did NOT reject a planted un-allowlisted rdtsc" >&2
@@ -65,15 +65,15 @@ if bash "$SCAN" "$work/planted.o" "$work/empty-allow.txt" >/dev/null 2>&1; then
 fi
 
 rm -f "$art"
-# Capture the gate's exit WITHOUT an `if`/`&&` context, so the separate process's
+# Capture the check's exit WITHOUT an `if`/`&&` context, so the separate process's
 # own `set -e` governs it (errexit is disabled inside functions/subshells tested
 # by a condition — the very pitfall this harness must not fall into).
 set +e
-publish_gate "$work/planted.o" "$work/empty-allow.txt"
-gate_rc=$?
+publish_check "$work/planted.o" "$work/empty-allow.txt"
+check_rc=$?
 set -e
-if [ "$gate_rc" -eq 0 ]; then
-    echo "FAIL: the publish-gate returned success on a planted rejection" >&2
+if [ "$check_rc" -eq 0 ]; then
+    echo "FAIL: the publish-check returned success on a planted rejection" >&2
     exit 1
 fi
 if [ -e "$art" ]; then
@@ -84,7 +84,7 @@ echo "ok: a planted rejection is rejected by the scan AND never published"
 
 # --- POSITIVE: when the scan passes, the image IS published -------------------
 # The full scan needs the boot artifacts (setup/decompressor) to complete, which
-# a minimal object lacks; so the positive leg proves the gate's OTHER branch —
+# a minimal object lacks; so the positive leg proves the check's OTHER branch —
 # a passing scan reaches and runs `install` — with a trivially-passing scan.
 rm -f "$art"
 (
@@ -98,4 +98,4 @@ if [ ! -e "$art" ]; then
 fi
 echo "ok: a passing scan publishes the image"
 
-echo "PASS: build-kernel.sh publish-gate — a scan-rejected kernel is never published"
+echo "PASS: build-kernel.sh publish-check — a scan-rejected kernel is never published"

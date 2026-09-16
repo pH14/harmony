@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Part B gates.
+# Part B checks.
 #   1. Reproducibility: clean-artifacts + image, twice; bzImage and
 #      initramfs.cpio.gz sha256s must be identical across the two builds;
 #      emits consonance/harmony-linux/linux/MANIFEST.sha256.
@@ -50,7 +50,7 @@ status=0
 # -machine hpet=off and random.trust_cpu=off apply the runtime mitigations
 # the config-fragment documents (HPET_TIMER cannot be configured out on
 # x86-64; RDRAND crediting is a boot parameter since kernel 6.2), so the
-# gate boots the time/entropy surface the fragment claims. Expected with no
+# check boots the time/entropy surface the fragment claims. Expected with no
 # HPET and no PM timer: under (nested) TCG the kernel may fail PIT-based TSC
 # calibration and boot on jiffies — proof that no other hardware clocksource
 # is reachable; the hypervisor will hand the guest its TSC frequency via
@@ -82,4 +82,4 @@ if ! grep -q 'GUEST_READY' "$out"; then
 fi
 rm -f "$out"
 echo "ok: GUEST_READY seen and QEMU exited (status $status)"
-echo "PASS: guest Linux image gates"
+echo "PASS: guest Linux image checks"

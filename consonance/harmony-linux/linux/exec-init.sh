@@ -16,8 +16,8 @@
 #
 # This is a **deliberately crude, off-record** transport — `exec` taints its
 # timeline by ruling (docs/PROTOCOL.md), so nothing here needs to
-# be deterministic. The image exists purely to give gate 2 a shell to talk to; the
-# taint guard (gate 3) and gate 2's determinism half hold against ANY image.
+# be deterministic. The image exists purely to give check 2 a shell to talk to; the
+# taint guard (check 3) and check 2's determinism half hold against ANY image.
 set -e
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sysfs /sys
