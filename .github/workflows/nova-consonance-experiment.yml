@@ -12,34 +12,7 @@ on:
         options:
           - all
           - nested-runtime
-  pull_request:
-    paths:
-      - .github/workflows/nova-consonance-experiment.yml
-      - flake.nix
-      - flake.lock
-      - consonance/**
-      - workloads/**
-      - '!workloads/bugs/**'
-      - dissonance/**
-      - cli/**
-      - scripts/build-quicknes-core.sh
-      - Cargo.toml
-      - Cargo.lock
 
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/nova-consonance-experiment.yml
-      - flake.nix
-      - flake.lock
-      - consonance/**
-      - workloads/**
-      - '!workloads/bugs/**'
-      - dissonance/**
-      - cli/**
-      - scripts/build-quicknes-core.sh
-      - Cargo.toml
-      - Cargo.lock
   schedule:
     - cron: "17 4 * * *"
 
@@ -65,15 +38,9 @@ jobs:
     name: Dissonance search · QuickNES guest · Consonance snapshots
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'nested-runtime')
     runs-on: ubuntu-24.04
-    # A cold guest build precedes the 10,000-execution campaign. Slow hosted
-    # replicas need more than 50 minutes for the fixed work; the assertions
-    # below still require all 10,000 executions and matching replica hashes.
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      # GitHub-hosted x86 runners draw from both Intel and AMD pools. Keep
-      # every draw's oracle and campaign evidence separate so either vendor's
-      # result remains inspectable after the runner disappears.
       matrix:
         replica: [1, 2, 3, 4]
     env:
@@ -312,7 +279,6 @@ jobs:
     name: NES package native/Consonance backend acceptance
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite != 'nested-runtime')
     runs-on: ubuntu-24.04
-    # Leave room for a cold guest build before the two backend checks.
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
@@ -458,207 +424,6 @@ jobs:
             package-consonance/stream.jsonl
           if-no-files-found: warn
           retention-days: 30
-
-  pr-native-smoke:
-    name: Native Dissonance search smoke
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Initialize smoke artifact directory
-        run: mkdir -p nova-native-pr-smoke && touch nova-native-pr-smoke.console.txt
-      - name: Install Nova build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends binutils cc65 curl g++ git
-      - uses: Swatinem/rust-cache@v2
-      - name: Reproduce the pinned Nova ROM and QuickNES core
-        env:
-          NOVA_BUILD: workloads/nes/build/nova
-          HARMONY_QUICKNES_BUILD_JOBS: "2"
-        run: |
-          workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
-          scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
-      - name: Run a bounded native Nova search
-        run: |
-          set -euo pipefail
-          mkdir -p nova-native-pr-smoke
-          cargo build --locked --release -p harmony-cli
-          timeout -k 10 120 target/release/harmony search --package nes --backend native \
-            --core workloads/nes/build/nova/quicknes_libretro.so \
-            --seed 20260901 --workers 1 --executions 4 --actions 8 \
-            --out nova-native-pr-smoke workloads/nes/build/nova/nova.nes \
-            2>&1 | tee nova-native-pr-smoke.console.txt
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          report = json.loads(Path("nova-native-pr-smoke/report.json").read_text())
-          if report.get("executions_completed", 0) <= 0:
-              raise SystemExit("native Nova smoke admitted no executions")
-          if len(report.get("archive", {}).get("entries", [])) <= 0:
-              raise SystemExit("native Nova smoke retained no archive work")
-          stream = Path("nova-native-pr-smoke/stream.jsonl").read_text().splitlines()
-          if not any(json.loads(line).get("event") == "job" for line in stream[1:]):
-              raise SystemExit("native Nova smoke recorded no job event")
-          PY
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: nova-native-pr-smoke-${{ github.run_id }}
-          path: |
-            nova-native-pr-smoke
-            nova-native-pr-smoke.console.txt
-          if-no-files-found: error
-          retention-days: 14
-
-  pr-consonance-smoke:
-    name: Nova search inside Consonance smoke
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Initialize smoke artifact directory
-        run: mkdir -p nova-consonance-pr-smoke
-      - name: Install Nova and image build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            binutils build-essential cc65 curl ffmpeg g++ git jq python3 shellcheck wget
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-            workloads/nes -> target
-            workloads/nes-guest -> target
-      - name: Compute platform source key
-        id: platform-source
-        run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
-      - name: Restore the exact platform runtime
-        id: platform-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: consonance/harmony-linux/build/x86_64
-          key: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
-      - name: Locate the exact cross-branch platform handoff
-        id: handoff
-        if: steps.platform-cache.outputs.cache-hit != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_KEY: ${{ steps.platform-source.outputs.key }}
-        run: |
-          set -euo pipefail
-          run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
-            -f name="consonance-platform-v1-x86_64-$SOURCE_KEY" -F per_page=100 \
-            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .workflow_run.id // empty')
-          echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
-      - name: Clear the runtime directory before handoff
-        if: steps.handoff.outputs.run_id != ''
-        run: rm -rf consonance/harmony-linux/build/x86_64
-      - uses: actions/download-artifact@v4
-        if: steps.handoff.outputs.run_id != ''
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ steps.handoff.outputs.run_id }}
-          name: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
-          path: consonance/harmony-linux/build/x86_64
-      - name: Verify exact platform provenance
-        env:
-          CACHE_HIT: ${{ steps.platform-cache.outputs.cache-hit }}
-          CACHE_MATCHED_KEY: ${{ steps.platform-cache.outputs.cache-matched-key }}
-          CACHE_REQUESTED_KEY: consonance-platform-v1-x86_64-${{ steps.platform-source.outputs.key }}
-          HANDOFF_RUN_ID: ${{ steps.handoff.outputs.run_id }}
-          SOURCE_KEY: ${{ steps.platform-source.outputs.key }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${CACHE_MATCHED_KEY}" && -z "${HANDOFF_RUN_ID}" ]]; then
-            cat >nova-consonance-pr-smoke/cache-unavailable.txt <<'EOF'
-          No exact platform runtime cache or exact cross-branch handoff was available. Run the scheduled/manual platform qualification before this smoke.
-          EOF
-            echo '::error::Nova Consonance PR smoke found no exact platform runtime.'
-            exit 1
-          fi
-          python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
-            --artifacts consonance/harmony-linux/build/x86_64 \
-            --output nova-consonance-pr-smoke/platform-provenance.json
-          scope=$(python3 -c 'import json; print(json.load(open("nova-consonance-pr-smoke/platform-provenance.json"))["scope"])')
-          [[ "${scope}" == exact-input ]] || {
-            echo "::error::Nova Consonance PR smoke requires exact-input platform artifacts (got ${scope})."
-            exit 1
-          }
-          if [[ -n "${HANDOFF_RUN_ID}" ]]; then
-            provenance=exact-cross-branch-handoff
-          else
-            provenance=exact-cache
-          fi
-          cat >nova-consonance-pr-smoke/cache-provenance.txt <<EOF
-          requested_key=${CACHE_REQUESTED_KEY}
-          source_key=${SOURCE_KEY}
-          matched_key=${CACHE_MATCHED_KEY}
-          cache_hit=${CACHE_HIT}
-          handoff_run_id=${HANDOFF_RUN_ID}
-          provenance=${provenance}
-          scope=${scope}
-          commit=$(git rev-parse HEAD)
-          EOF
-      - name: Reproduce Nova and its static QuickNES archive
-        env:
-          NOVA_BUILD: workloads/nes/build/nova
-          HARMONY_QUICKNES_BUILD_JOBS: "2"
-        run: |
-          workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
-          HARMONY_QUICKNES_STATIC_OUTPUT="${NOVA_BUILD}/libquicknes_libretro.a" \
-            scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
-      - name: Build the ROM-free generic NES OCI image
-        env:
-          HARMONY_QUICKNES_STATIC_LIB: ${{ github.workspace }}/workloads/nes/build/nova/libquicknes_libretro.a
-        run: |
-          make -C consonance/harmony-linux fetch
-          workloads/nes-guest/build-base-image.sh
-          test -s consonance/harmony-linux/build/nes.oci.sha256
-          test -s consonance/harmony-linux/build/nes.oci/index.json
-      - name: Run Nova search through Consonance
-        run: |
-          set -euo pipefail
-          mkdir -p nova-consonance-pr-smoke
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          cargo build --locked --release --manifest-path workloads/nes/Cargo.toml \
-            -p nes-workload --features consonance --bin nova-consonance-campaign
-          timeout -k 10 240 \
-            workloads/nes/target/release/nova-consonance-campaign \
-              --kernel consonance/harmony-linux/build/x86_64/bzImage \
-              --platform-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
-              --image consonance/harmony-linux/build/nes.oci \
-              --rom workloads/nes/build/nova/nova.nes \
-              --core workloads/nes/build/nova/quicknes_libretro.so \
-              --output nova-consonance-pr-smoke --seed 20260901 --executions 2 \
-              --workers 1 --action-limit 4 --wall-seconds 120 --memory-budget-mib 1024 \
-            2>&1 | tee nova-consonance-pr-smoke/console.txt
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          summary = json.loads(Path("nova-consonance-pr-smoke/campaign-summary.json").read_text())
-          if summary.get("executions", 0) <= 0:
-              raise SystemExit("Consonance Nova smoke admitted no executions")
-          if summary.get("archive_entries", 0) <= 0:
-              raise SystemExit("Consonance Nova smoke retained no archive work")
-          if summary.get("best_input_actions", 0) <= 0:
-              raise SystemExit("Consonance Nova smoke produced no action input")
-          PY
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: nova-consonance-pr-smoke-${{ github.run_id }}
-          path: nova-consonance-pr-smoke
-          if-no-files-found: error
-          retention-days: 14
 
   nested-runtime-qualification:
     name: Docker/K3s nested runtime qualification

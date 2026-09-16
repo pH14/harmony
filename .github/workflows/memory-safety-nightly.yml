@@ -1,0 +1,56 @@
+name: Nightly / Memory safety
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  miri-vmm-core:
+    name: miri — vmm-core (UB safety net, own job)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      PINNED_NIGHTLY: nightly-2026-06-16
+      MIRIFLAGS: -Zmiri-permissive-provenance
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned nightly + miri
+        run: |
+          rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      - uses: Swatinem/rust-cache@v2
+      - name: miri — vmm-core
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-core
+
+  miri:
+    name: miri (unsafe crates, UB safety net)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    env:
+      PINNED_NIGHTLY: nightly-2026-06-16
+      MIRIFLAGS: -Zmiri-permissive-provenance
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned nightly + miri
+        run: |
+          rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      - uses: Swatinem/rust-cache@v2
+      - name: miri — hypercall-doorbell
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p hypercall-doorbell --features linux-device
+      - name: miri — vm-state
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p vm-state
+      - name: miri — vmm-backend
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-backend --all-features
+      - name: miri — snapshot-store (lib)
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p snapshot-store --lib
+        env:
+          MIRIFLAGS: -Zmiri-permissive-provenance -Zmiri-disable-isolation
+      - name: miri — machine
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path workloads/nes-machine/Cargo.toml
+      - name: miri — workloads/nes-guest (lib + agent + bin unit tests, out-of-workspace manifest)
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path workloads/nes-guest/Cargo.toml --lib --test agent --bins
+
+      - name: miri — platform supervisor portable logic
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path consonance/harmony-linux/supervisor/Cargo.toml --lib --bins

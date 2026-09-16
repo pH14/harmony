@@ -1,27 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: Acceptance / Consonance x86
 
-# Hosted-runner x86 acceptance; each replica preserves its own evidence.
 on:
-  pull_request:
-    paths:
-      - consonance/**
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - flake.nix
-      - flake.lock
-      - .github/workflows/x86-virtual-time.yml
-  push:
-    branches: [main]
-    paths:
-      - consonance/**
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - flake.nix
-      - flake.lock
-      - .github/workflows/x86-virtual-time.yml
+
   schedule:
     - cron: "13 3 * * *"
   workflow_dispatch: {}
@@ -33,8 +14,6 @@ concurrency:
 permissions:
   contents: read
 
-# The explicit `bash` shell runs with pipefail, so `cmd | tee` steps fail when
-# the command fails; the implicit default shell would report tee's exit status.
 defaults:
   run:
     shell: bash
@@ -44,8 +23,6 @@ env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
-  # X0: CPU identity, /dev/kvm, the KVM capability table, and one minimal
-  # real-mode guest through the public KvmBackend.
   probe:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
@@ -63,8 +40,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build probe
         run: cargo build -p vmm-backend --bin x86_kvm_probe
-      # Negative control: with /dev/kvm unreadable the probe must fail closed
-      # with the kvm_open reason, never report PASS.
       - name: Probe fails closed without /dev/kvm access
         run: |
           sudo chmod 600 /dev/kvm
@@ -95,10 +70,6 @@ jobs:
             kvm-smoke.txt
           if-no-files-found: error
 
-  # X1: ten same-seed runs of the virtual_time run loop over the stock
-  # KvmBackend and a real-mode guest must produce one normalized log, with the
-  # comparator and placement-checker negatives standing against the same
-  # workload's log. Two replicas so most pushes also sample two hardware draws.
   x1-minimal-guest:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
@@ -130,10 +101,6 @@ jobs:
           path: x1-report.txt
           if-no-files-found: error
 
-  # X2 input: build the committed guest image from the locked Nix graph in a
-  # clean runner store. The output is passed only through this workflow's
-  # immutable artifact, never a cross-run cache, so N5 can distinguish an
-  # actual rebuild from a restored image.
   guest-image:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
@@ -166,9 +133,6 @@ jobs:
           path: nix-guest-output
           if-no-files-found: error
 
-  # N6: the table-generated instruction sweep. The traps-off kernel must be
-  # rejected first; only then may both production profiles' two same-seed
-  # traps-on boots receive credit.
   n6-instruction-sweep:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: guest-image
@@ -215,9 +179,6 @@ jobs:
           path: n6-report
           if-no-files-found: error
 
-  # #276: ordinary Go must run with no runtime tuning, and its complete
-  # execution trace must repeat on both production kernel profiles while the
-  # corresponding traps-off boot demonstrably diverges.
   go-runtime:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: guest-image
@@ -262,13 +223,6 @@ jobs:
           path: go-runtime-report.txt
           if-no-files-found: error
 
-  # X2: Linux boots to /init under assigned-at-exit V-time on the stock
-  # backend. Both tiers gate: the smoke tier (one boot) and the determinism
-  # tier (10 same-seed boots, one normalized log). The localizer stays
-  # informational — it is a diagnostic for when the determinism tier fails.
-  # Release build: the trace checkpoints hash the full 256 MiB guest RAM, which
-  # an unoptimized sha2 makes wall-clock-prohibitive. Two replicas so most
-  # pushes sample two hardware draws.
   x2-linux-virtual_time:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: guest-image
@@ -304,10 +258,6 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      # Each tier runs under coreutils `timeout`: the test's own wall watchdog
-      # cannot fire while a guest spins exit-free inside a blocking KVM_RUN
-      # ioctl, so an external bound keeps a hung boot from consuming the whole
-      # job budget — and the tee'd serial up to the hang still uploads.
       - name: X2 smoke (one virtual_time stock boot)
         run: |
           grep -m1 "model name" /proc/cpuinfo | tee x2-report.txt
@@ -320,8 +270,6 @@ jobs:
           X2_BOOTS=10 timeout -k 10 1500 cargo test --release -p vmm-core --test x86_kvm_linux_virtual_time \
             x2_same_seed_boots_one_normalized_log -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee -a x2-report.txt
-      # The localizers are diagnostics: they must run when the determinism
-      # tier fails, which is exactly when their output matters.
       - name: X2 first-checkpoint localizer (bounded boots until a divergent pair; informational)
         if: always()
         continue-on-error: true
@@ -346,11 +294,6 @@ jobs:
             x2-boot.calib
           if-no-files-found: error
 
-  # Widen the vendor sample: the pool serves Intel rarely, and every closed
-  # cross-vendor divergence needed an Intel draw to observe. Each replica
-  # prints its CPU model and runs only the bounded first-checkpoint localizer
-  # (sub-second boots), so a wide matrix is cheap. Report-only: an AMD draw
-  # finding no divergent pair is the expected common case.
   x2-intel-hunt:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: guest-image
@@ -396,8 +339,6 @@ jobs:
           path: x2-hunt-report.txt
           if-no-files-found: error
 
-  # Linux compile/lint/test truth for the crates the x86 work touches; the
-  # macOS development host cannot check cfg(linux) code.
   check:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
@@ -415,44 +356,3 @@ jobs:
         run: cargo clippy -p vmm-backend -p vmm-core --all-features --all-targets -- -D warnings
       - name: tests (portable)
         run: cargo test -p vmm-backend --all-features
-
-  pr-smoke:
-    name: Consonance real KVM execution, restore, and replay smoke
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Initialize smoke artifact directory
-        run: mkdir -p pr-kvm-smoke
-      - name: Install stable toolchain
-        run: |
-          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
-          rustup default "${HARMONY_RUST_TOOLCHAIN}"
-      - uses: Swatinem/rust-cache@v2
-      - name: Grant /dev/kvm access
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - name: Exercise real hardware, snapshot/restore, and deterministic replay
-        run: |
-          set -euo pipefail
-          mkdir -p pr-kvm-smoke
-          cargo test -p vmm-backend --test kvm_smoke \
-            bringup_smoke_out_then_hlt -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee pr-kvm-smoke/execution.txt
-          cargo test -p vmm-backend --test kvm_smoke \
-            save_restore_round_trips_on_real_kvm -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee pr-kvm-smoke/restore.txt
-          cargo test -p vmm-core --test x86_kvm_virtual_time \
-            x1_ten_same_seed_runs_produce_one_normalized_log \
-            -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee pr-kvm-smoke/replay.txt
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: consonance-x86-pr-smoke-${{ github.run_id }}
-          path: pr-kvm-smoke
-          if-no-files-found: error
-          retention-days: 14

@@ -8,6 +8,11 @@ import importlib.util
 import sys
 import tempfile
 import unittest
+from unittest import mock
+import json
+import copy
+import contextlib
+import io
 from pathlib import Path
 
 
@@ -80,15 +85,12 @@ class WorkflowTimeoutLintTests(unittest.TestCase):
         self.assertEqual([v.rule for v in violations], ["ci-pr-job-timeout"])
         self.assertIn("timeout-minutes=16", violations[0].text)
 
-    def test_non_pr_guard_may_have_a_long_timeout(self) -> None:
+    def test_non_pr_guard_requires_a_separate_workflow(self) -> None:
         content = workflow(
             "deep",
             "    if: github.event_name == 'schedule'\n    timeout-minutes: 90\n    steps: []",
         )
-        self.assertFalse(self.check(content))
-        self.assertFalse(
-            self.check(workflow("manual_only", "    if: github.event_name == 'workflow_dispatch'\n    steps: []"))
-        )
+        self.assertEqual([v.rule for v in self.check(content)], ["ci-pr-only-jobs"])
 
     def test_negative_event_comparison_does_not_prove_non_pr(self) -> None:
         content = workflow(
@@ -122,9 +124,9 @@ class WorkflowTimeoutLintTests(unittest.TestCase):
             "    timeout-minutes: 90\n"
             "    steps: []",
         )
-        self.assertFalse(self.check(content))
+        self.assertEqual([v.rule for v in self.check(content)], ["ci-pr-only-jobs"])
 
-    def test_adjacent_named_exception_passes(self) -> None:
+    def test_adjacent_named_exception_cannot_bypass_timeout(self) -> None:
         content = workflow(
             "mutants",
             """    # ci-pr-job-timeout-exception: mutants -- sharded mutation coverage is required
@@ -132,7 +134,7 @@ class WorkflowTimeoutLintTests(unittest.TestCase):
     if: github.event_name == 'pull_request'
     steps: []""",
         )
-        self.assertFalse(self.check(content))
+        self.assertEqual([v.rule for v in self.check(content)], ["ci-pr-job-timeout"])
 
     def test_exception_elsewhere_in_job_does_not_apply(self) -> None:
         content = workflow(
@@ -161,6 +163,111 @@ jobs:
 """
         violations = self.check(content)
         self.assertEqual([v.rule for v in violations], ["ci-pr-job-timeout", "ci-pr-job-timeout"])
+
+    def test_parse_errors_fail_closed(self):
+        for content in ("name: Checks / broken\njobs: [", "[]", "name: Checks / absent\non: pull_request",
+                        "name: Checks / bad\non: pull_request\njobs: {broken: null}",
+                        "name: Checks / bad\non: pull_request\njobs: {broken: {steps: null}}"):
+            with self.subTest(content=content):
+                self.assertIn("ci-workflow-parse", [v.rule for v in self.check(content)])
+
+    def test_duplicate_keys_are_rejected(self):
+        content = workflow("test", "    timeout-minutes: 90\n    timeout-minutes: 15")
+        self.assertIn("ci-workflow-parse", [v.rule for v in self.check(content)])
+
+    def test_missing_parser_is_an_error(self):
+        with mock.patch.dict(sys.modules, {"yaml": None}):
+            self.assertIn("ci-workflow-parse", [v.rule for v in self.check(workflow("job", "    timeout-minutes: 15"))])
+
+    def test_category_controls_triggers_even_with_short_jobs(self):
+        for category in ("Benchmarks", "Acceptance", "Nightly"):
+            content = workflow("short", "    timeout-minutes: 1").replace("Checks /", category + " /")
+            self.assertIn("ci-workflow-triggers", [v.rule for v in self.check(content)])
+
+    def test_checks_cannot_mix_schedule_and_pr(self):
+        content = workflow("short", "    timeout-minutes: 1").replace("  pull_request:", "  pull_request:\n  schedule: [{cron: '0 6 * * *'}]")
+        self.assertIn("ci-workflow-triggers", [v.rule for v in self.check(content)])
+
+    def test_deep_tools_cannot_hide_behind_short_timeout(self):
+        for command in ("cargo mutants --in-diff pr.diff", "cargo llvm-cov nextest", "cargo +nightly mutants"):
+            content = workflow("short", f"    timeout-minutes: 1\n    steps:\n      - run: {command}")
+            self.assertIn("ci-pr-extended-validation", [v.rule for v in self.check(content)])
+
+    def test_pr_event_forms_and_nonpositive_timeouts(self):
+        for event in ("pull_request", "pull_request_target", "merge_group"):
+            for minutes in (0, -1, 16):
+                content = workflow("bad", f"    timeout-minutes: {minutes}").replace("  pull_request:", f"  {event}:")
+                self.assertIn("ci-pr-job-timeout", [v.rule for v in self.check(content)])
+
+    def test_ci_errors_cannot_be_hidden_in_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = ".github/workflows/test.yml"
+            (root / path).parent.mkdir(parents=True)
+            (root / path).write_text(workflow("long", "    timeout-minutes: 90"))
+            with mock.patch.object(LINTS, "tracked_files", return_value=[path]), \
+                 mock.patch.object(LINTS, "load_baseline", return_value={"ci-pr-job-timeout": [path + ":0"]}), \
+                 mock.patch.object(LINTS, "save_baseline") as save, \
+                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(LINTS.main(["--repo-root", directory]), 1)
+                self.assertEqual(LINTS.main(["--repo-root", directory, "--update-baseline"]), 1)
+                save.assert_not_called()
+
+
+class SmokeRoutingTests(unittest.TestCase):
+    def setUp(self):
+        self.path = ".github/workflows/product-smoke.yml"
+        self.workflow = LINTS._parse_workflow(SCRIPT.parent.parent / self.path)
+
+    def test_registered_smokes_pass(self):
+        self.assertFalse(LINTS.check_pr_smoke_routing(self.path, self.workflow))
+
+    def test_separate_broad_trigger_is_rejected(self):
+        self.assertTrue(LINTS.check_pr_smoke_routing(".github/workflows/another-smoke.yml", self.workflow))
+
+    def test_bypassing_selector_or_adding_matrix_is_rejected(self):
+        for mutation in ({"if": "always()"}, {"needs": []}, {"strategy": {"matrix": {"seed": [1, 2, 3]}}}):
+            workflow = copy.deepcopy(self.workflow)
+            workflow["jobs"]["native"].update(mutation)
+            self.assertTrue(LINTS.check_pr_smoke_routing(self.path, workflow))
+
+    def test_unregistered_consumer_is_rejected(self):
+        self.workflow["jobs"]["extra"] = self.workflow["jobs"]["native"]
+        self.assertTrue(LINTS.check_pr_smoke_routing(self.path, self.workflow))
+
+
+class NesWorkflowCoverageTests(unittest.TestCase):
+    def check(self, cases, matrix, command="python3 benchmarks/search/eval.py run benchmarks/search/nightly.json --case '${{ matrix.case }}'", fail_fast=False, report_if="always()", needs="campaign"):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "benchmarks/search/nightly.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({"cases": [{"id": case} for case in cases]}))
+            data = {"jobs": {
+                "campaign": {"strategy": {"fail-fast": fail_fast, "matrix": matrix}, "steps": [{"run": command}]},
+                "report": {"if": report_if, "needs": needs},
+            }}
+            return LINTS.check_nes_job_coverage(root, ".github/workflows/nes.yml", data)
+
+    def test_each_case_has_an_independent_job(self):
+        self.assertFalse(self.check(["nova-full", "stb-hard"], {"case": ["nova-full", "stb-hard"]}))
+
+    def test_monolithic_panel_is_rejected(self):
+        self.assertTrue(self.check(["nova-full", "stb-hard"], {}, "python3 benchmarks/search/eval.py run benchmarks/search/nightly.json"))
+
+    def test_new_game_requires_a_job(self):
+        self.assertTrue(self.check(["nova-full", "stb-hard", "new-game"], {"case": ["nova-full", "stb-hard"]}))
+
+    def test_duplicate_and_unknown_cases_are_rejected(self):
+        for cases in (["nova", "nova"], ["nova", "unknown"]):
+            self.assertTrue(self.check(["nova", "stb"], {"case": cases}))
+
+    def test_extra_axis_cannot_multiply_case_jobs(self):
+        self.assertTrue(self.check(["nova"], {"case": ["nova"], "repeat": [1, 2]}))
+
+    def test_sibling_failures_do_not_cancel_cases_or_hide_report(self):
+        for options in ({"fail_fast": True}, {"report_if": "success()"}, {"needs": []}):
+            self.assertTrue(self.check(["nova"], {"case": ["nova"]}, **options))
 
 
 if __name__ == "__main__":

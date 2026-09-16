@@ -14,25 +14,18 @@ by the `ci-workflow-prefix` lint in `scripts/custom-lints.py`.
 
 Automatic per-PR jobs must finish within 15 minutes (`ci-pr-job-timeout`
 lint). Short workloads that verify basic function are smoke tests. Long-running
-workloads are acceptance tests that run on an off-hours schedule. The sharded
-in-diff mutation gate is the one explicit per-PR timeout exception; its named
-rationale is adjacent to the 90-minute timeout in `quality.yml`.
+workloads are acceptance tests that run on an off-hours schedule. Timeout
+exceptions in comments are not accepted. Coverage and mutation belong in Nightly.
 Miri's full crate suites remain schedule/manual only (their existing 240- and
 320-minute ceilings are intentionally retained). Relevant PR changes select a
 per-crate Miri matrix with a 15-minute ceiling; dependency and toolchain
 changes select every target. The bounded matrix reports the affected unsafe
 crate directly while the scheduled suite remains the broad safety net.
-Guest-backed PR smokes restore an exact cache when available and otherwise use
-the most recent matching main-branch cache. Each smoke records the requested
-and resolved cache keys, hit mode, fixture-source changes, and validation
-scope. Prefix fallbacks verify the cached artifact manifest when one exists;
-older manifestless caches require every expected artifact to be nonempty and
-are reported as legacy file-presence validation. Scheduled/manual builders
-publish manifest-bearing replacements. A PR that changes a guest or image
-builder can therefore prove the host orchestration while the deep builder
-validates the changed fixture. If no durable cache exists, the smoke preserves
-a `cache-unavailable.txt` artifact and fails with the builder handoff required
-to make it runnable.
+Guest-backed PR smokes consume verified cached artifacts or an exact artifact
+handoff from the scheduled/manual builder. Changed guest inputs require an
+exact build and qualification before the platform smoke can qualify the PR.
+The expensive builder runs through manual dispatch on the proposed branch.
+Missing artifacts fail the smoke; they are never treated as passing evidence.
 
 Consonance's OCI platform smoke requires a verified runtime manifest. Its
 scheduled/manual job builds the kernel, runtime, and tiny OCI fixture and runs
@@ -49,15 +42,46 @@ PostgreSQL uses the same runtime while retaining its application assertions.
 | Workflow | Automatic triggers |
 | --- | --- |
 | Checks / Quality | PRs and pushes to main |
-| Checks / Memory safety | Relevant PRs and nightly/manual full suites |
-| Checks / Search evaluation | Relevant PRs and changes on main |
-| Smoke / Consonance platform | Bounded smoke on relevant PRs and main; build and extended replay nightly/manual |
-| Acceptance / Consonance x86 | Bounded smoke on relevant PRs and main; deep nightly/manual |
-| Acceptance / Workload backends | Bounded smoke on relevant PRs and main; deep nightly/manual |
-| Benchmarks / NES | Nightly, with parallel game/case jobs |
-| Smoke / PostgreSQL | Relevant PRs |
+| Checks / Memory safety | Relevant PRs; bounded affected-crate Miri |
+| Smoke / Products | PRs and main; selected native NES, STB, faults, platform, and KVM smokes |
+| Nightly / Memory safety | Nightly/manual full Miri suites |
+| Nightly / Extended quality | Nightly/manual coverage and full-tree mutation |
+| Acceptance / Search evaluation | Manual common-runner and STB qualification |
+| Acceptance / Consonance platform | Nightly/manual exact build and extended replay |
+| Acceptance / Consonance x86 | Nightly/manual hardware and determinism suites |
+| Acceptance / Workload backends | Nightly/manual backend and nested-runtime suites |
+| Benchmarks / NES | Nightly/manual independent public case jobs and aggregate roster |
 | Benchmarks / Historical bugs | Nightly/manual search and replay panel |
 | Release / Harmony | Version tags |
+
+`scripts/ci_scope.py` is the single selector for product smokes. Search-core and
+ordinary NES changes select the native NES smoke; STB-specific changes select
+STB. Fault changes select PostgreSQL. Platform changes select the OCI smoke;
+VMM/backend changes also select the hardware execution/restore/replay smoke.
+Shared process interfaces and CLI changes select the relevant consumers.
+Dependency, toolchain, and selector changes conservatively select all consumers.
+Documentation changes do not select product smokes. Quality retains portable
+unit tests, runner/report tests and contract checks. Public-API checks run for
+platform/dependency changes; proof and Miri selection retain their own narrow
+rules and tests.
+
+Full-tree mutation runs in sixteen nightly shards with a 320-minute ceiling;
+the coverage floor remains 90%. It no longer depends on a PR diff. These jobs
+can be dispatched before merge when deeper evidence is needed. They are not
+automatic PR requirements.
+
+NES uses one independent job per registered case, retaining all three seeds in
+each job. Nova whole-game work cannot delay or fail the STB jobs. Each case
+uploads its own compact export; `scripts/nes-nightly-report.py` combines the
+rosters and links the complete case reports. Missing, duplicate, or mismatched
+evidence fails the report while retaining a visible row for every expected
+cell. Search errors retain their original status and fail the owning job.
+
+The historical panel remains the single owner of PostgreSQL and etcd searches.
+Do not introduce a second case-specific workflow. GitHub retains workflow
+registry entries from branch-only runs even when their file is absent on main;
+inspect `gh workflow list --all` and run history before disabling an obsolete
+entry. Disabling preserves its old runs and is separate from repository lint.
 
 ## Skill evaluation boundary
 
@@ -77,6 +101,40 @@ until the evaluator sources are present on the base branch; branch-only
 workflow definitions must not point at an absent `benchmarks/skills/` tree.
 
 ## Job conventions
+
+`scripts/custom-lints.py` parses every workflow using PyYAML 6.0.3. Missing parser
+dependencies, invalid YAML, duplicate mapping keys, and invalid trigger shapes
+fail validation. CI rules cannot be waived through the lint baseline.
+
+`ci-workflow-triggers` confines Acceptance, Benchmarks, and Nightly to schedule,
+manual, or reusable invocation. Checks and Smoke cannot use schedules.
+`ci-pr-only-jobs` rejects nightly/manual jobs embedded in PR workflows even when
+an event guard skips them. The timeout rule includes pull_request_target and
+merge_group; bounds must be positive and at most 15 minutes.
+`ci-pr-extended-validation` rejects direct cargo-mutants and cargo-llvm-cov
+commands in PR jobs, including jobs with short timeouts.
+`ci-pr-smoke-routing` requires all automatic Smoke workflows to use the registered
+product selector, matching job names and output guards. Each consumer is one
+bounded job; independent broad triggers and added matrices fail validation.
+
+`ci-nes-case-jobs` compares the Benchmarks / NES case matrices to
+`benchmarks/search/nightly.json`. Each case must occur exactly once in a static
+`matrix.case` list, run through `eval.py run` with `--case ${{ matrix.case }}`,
+and use `fail-fast: false`. Adding a game to the public roster therefore requires
+adding its cases to the workflow. The report must run with `always()` and depend
+on every campaign matrix.
+
+Run the regression tests with `python3 -m unittest discover -s scripts -p 'test_custom_lints.py'`
+and `python3 -m unittest discover -s scripts -p 'test_ci_*.py'`.
+They include the old monolithic panel, omitted and
+duplicated cases, mixed triggers, short-timeout expensive commands, YAML parse
+failures, and the removed timeout exemption. The Quality workflow runs them
+before invoking the linter.
+
+These checks validate declared workflow structure. They do not determine the
+cost of arbitrary scripts, prove the correctness of change selectors, or inspect
+GitHub's retained registry of branch-only workflows. Selector tests and a
+separate registry audit remain necessary for those boundaries.
 
 Use `fail-fast: false` on case matrices so one failure does not cancel other
 cases. Benchmark workflows end with an always-running `report` job that links

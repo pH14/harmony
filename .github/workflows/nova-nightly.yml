@@ -29,15 +29,21 @@ defaults:
 
 jobs:
   public:
-    name: Source-built NES capability panel
+    name: NES · ${{ matrix.case }}
     if: github.event_name == 'schedule' || inputs.panel == 'public'
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        case: [nova-level-1, nova-level-9, nova-level-17, nova-level-25, nova-level-33, nova-full, stb-easy, stb-fair, stb-hard]
     env:
       ASSET_ROOT: /tmp/nes-search-assets
       BUILD_ROOT: /tmp/nes-search-build
       RUN_ROOT: /tmp/nes-search-runs
       PUBLIC_ROOT: /tmp/nes-search-public
+      NES_CASE: ${{ matrix.case }}
       HARMONY_STB_BUILD_JOBS: "2"
       HARMONY_QUICKNES_BUILD_JOBS: "2"
     steps:
@@ -53,8 +59,11 @@ jobs:
       - name: Reproduce source-built games and pinned core
         run: |
           set -euo pipefail
-          workloads/nes/scripts/build-nova-rom.sh "${ASSET_ROOT}/nova"
-          workloads/nes/scripts/build-stb-rom.sh "${ASSET_ROOT}/stb"
+          case "$NES_CASE" in
+            nova-*) workloads/nes/scripts/build-nova-rom.sh "${ASSET_ROOT}/nova" ;;
+            stb-*) workloads/nes/scripts/build-stb-rom.sh "${ASSET_ROOT}/stb" ;;
+            *) echo "Unregistered public NES case: $NES_CASE" >&2; exit 1 ;;
+          esac
           scripts/build-quicknes-core.sh "${ASSET_ROOT}/quicknes_libretro.so"
           python3 - <<'PY'
           import hashlib
@@ -64,9 +73,11 @@ jobs:
           root = Path('/tmp/nes-search-assets')
           files = {
               'core': root / 'quicknes_libretro.so',
-              'nova': root / 'nova' / 'nova.nes',
-              'stb': root / 'stb' / 'stb.nes',
           }
+          for game in ('nova', 'stb'):
+              rom = root / game / (game + '.nes')
+              if rom.is_file():
+                  files[game] = rom
           inventory = {
               name: {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
               for name, path in files.items()
@@ -78,7 +89,7 @@ jobs:
       - name: Run the registered source-built panel
         run: |
           set +e
-          python3 benchmarks/search/eval.py run benchmarks/search/nightly.json \
+          python3 benchmarks/search/eval.py run benchmarks/search/nightly.json --case '${{ matrix.case }}' \
             --assets "${ASSET_ROOT}/inventory.json" \
             --binary "${BUILD_ROOT}/nes-eval" \
             --build-info "${BUILD_ROOT}/build-info.json" \
@@ -117,7 +128,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: nes-public-search-${{ github.run_id }}
+          name: nes-public-search-${{ matrix.case }}-${{ github.run_id }}
           path: /tmp/nes-search-public
           if-no-files-found: warn
           retention-days: 30
@@ -133,7 +144,22 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: nes-public-search-*-${{ github.run_id }}
+          path: nes-nightly-report/cases
+      - name: Merge case rosters and account for missing evidence
+        run: python3 scripts/nes-nightly-report.py --cases nes-nightly-report/cases --out nes-nightly-report
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nes-public-roster-${{ github.run_id }}
+          path: nes-nightly-report
+          if-no-files-found: error
+          retention-days: 30
       - uses: actions/github-script@v7
+        if: always()
         with:
           script: |
             await require(`${process.env.GITHUB_WORKSPACE}/scripts/benchmark-report.cjs`)({github, context, core});
