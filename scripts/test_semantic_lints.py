@@ -253,6 +253,42 @@ class RetryTests(unittest.TestCase):
                 LINTS.ask({"path": "x", "content": "y"}, {"records_runs": LINTS.QUESTIONS["records_runs"]}, post=incomplete_post)
 
 
+class AnswerValidationTests(RequiresApiKey):
+    def test_invalid_answers_are_errors_and_never_cached_or_judged(self):
+        invalid = []
+        for question in ("file_kind", "records_runs", "status_narrative"):
+            for value in ({}, None, [], "clean"):
+                invalid.append((question, value))
+        for value in (-0.1, 1.1, float("nan"), float("inf"), False, "0.1"):
+            invalid.append(("records_runs", {"noul": value}))
+            invalid.append(("file_kind", {"choice": "code", "confidence": value}))
+        for value in ("unknown", None, []):
+            invalid.append(("file_kind", {"choice": value, "confidence": 0.9}))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "notes.txt").write_text("Reference material.")
+            for question, value in invalid:
+                with self.subTest(question=question, value=value):
+                    answers = full_answers()
+                    answers[question] = value
+                    cache = {}
+                    failures, warnings, baselined, _, errors, judged = LINTS.run(
+                        root, ["notes.txt"], {}, post=make_post(answers), cache=cache,
+                    )
+                    self.assertEqual((failures, warnings, baselined, judged), ([], [], set(), set()))
+                    self.assertEqual([path for path, _ in errors], ["notes.txt"])
+                    self.assertEqual(cache, {})
+
+    def test_normalized_score_boundaries_are_valid(self):
+        for value in (0, 1, 0.0, 1.0):
+            answers = full_answers(records_runs=value, file_kind_confidence=value)
+            self.assertTrue(LINTS._valid_answers(answers, LINTS.QUESTIONS))
+
+    def test_nonobject_response_is_reported_as_judge_error(self):
+        with self.assertRaises(LINTS.JevHTTPError):
+            LINTS.ask({}, LINTS.QUESTIONS, post=lambda *_: b"[]")
+
+
 class CacheTests(RequiresApiKey):
     def test_second_run_over_same_file_does_not_call_network_again(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -267,6 +303,21 @@ class CacheTests(RequiresApiKey):
             LINTS.run(root, ["README.md"], {}, post=post, cache=cache)
 
             self.assertEqual(len(calls), 1)
+
+    def test_invalid_cached_verdict_is_rejudged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = "Reference material."
+            (root / "notes.txt").write_text(content)
+            questions = LINTS.questions_for("notes.txt")
+            key = LINTS._cache_key("notes.txt", content, questions)
+            cache = {key: {name: {} for name in questions}}
+            calls = []
+            result = LINTS.run(root, ["notes.txt"], {}, post=make_post(full_answers(), calls), cache=cache)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(result[4], [])
+            self.assertTrue(LINTS._valid_answers(cache[key], questions))
+
 
 
 class PerFileErrorTests(RequiresApiKey):
@@ -344,6 +395,22 @@ class ChangedFilesTests(unittest.TestCase):
             candidates = LINTS.changed_files(root, "HEAD~1")
 
             self.assertEqual(candidates, ["new-name.md"])
+
+    def test_changed_paths_preserve_unicode_and_control_characters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._git(root, "init", "-q")
+            self._git(root, "config", "user.email", "test@example.com")
+            self._git(root, "config", "user.name", "Test")
+            self._git(root, "commit", "--allow-empty", "-q", "-m", "base")
+            names = ["résumé.md", "tab\tname.md", "line\nname.md"]
+            for name in names:
+                (root / name).write_text("Reference material.")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "files")
+            selected = LINTS.select_files(root, LINTS.changed_files(root, "HEAD~1"))
+            self.assertEqual(sorted(selected), sorted(names))
+
 
 
 class MainChangedFromBaselineTests(RequiresApiKey):

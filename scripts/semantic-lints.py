@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import subprocess
 import sys
@@ -181,6 +182,30 @@ def _http_post(url: str, headers: dict, body: bytes) -> bytes:
         raise JevHTTPError(error.code, error.read()) from error
 
 
+def _valid_score(value) -> bool:
+    return type(value) in (int, float) and 0 <= value <= 1 and math.isfinite(value)
+
+
+def _valid_answers(answers, questions: dict) -> bool:
+    if not isinstance(answers, dict) or set(answers) != set(questions):
+        return False
+    for name, question in questions.items():
+        answer = answers[name]
+        if not isinstance(answer, dict):
+            return False
+        if question["type"] == "noul":
+            if not _valid_score(answer.get("noul")):
+                return False
+        elif question["type"] == "choice":
+            if (not isinstance(answer.get("choice"), str)
+                    or answer["choice"] not in question["criteria"]
+                    or not _valid_score(answer.get("confidence"))):
+                return False
+        else:
+            return False
+    return True
+
+
 def ask(
     state,
     questions: dict,
@@ -208,8 +233,8 @@ def ask(
         data = json.loads(raw)
     except json.JSONDecodeError as error:
         raise JevHTTPError(0, raw) from error
-    answers = data.get("answers")
-    if not isinstance(answers, dict) or set(answers) != set(questions):
+    answers = data.get("answers") if isinstance(data, dict) else None
+    if not _valid_answers(answers, questions):
         raise JevHTTPError(0, raw)
     if usage_totals is not None:
         usage = data.get("usage", {})
@@ -249,8 +274,9 @@ def judge_file(
     content = (repo_root / path).read_text(errors="replace")
     questions = questions_for(path)
     key = _cache_key(path, content, questions)
-    if key in cache:
+    if key in cache and _valid_answers(cache[key], questions):
         return cache[key]
+    cache.pop(key, None)
     answers = ask(_state_for(path, content), questions, post=post, usage_totals=usage_totals)
     cache[key] = answers
     return answers
@@ -262,7 +288,8 @@ def load_cache(repo_root: Path) -> dict:
         return {}
     try:
         with path.open() as f:
-            return json.load(f)
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -422,13 +449,13 @@ def all_tracked_files(repo_root: Path) -> list[str]:
 
 def changed_files(repo_root: Path, rev: str) -> list[str]:
     result = subprocess.run(
-        ["git", "diff", "--name-only", "--find-renames", "--diff-filter=AMR", rev, "HEAD"],
+        ["git", "diff", "--name-only", "-z", "--find-renames", "--diff-filter=AMR", rev, "HEAD"],
         cwd=repo_root,
         capture_output=True,
         text=True,
         check=True,
     )
-    return [p for p in result.stdout.splitlines() if p]
+    return [p for p in result.stdout.split("\0") if p]
 
 
 def select_files(repo_root: Path, candidates: list[str]) -> list[str]:
