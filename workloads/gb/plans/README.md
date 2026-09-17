@@ -225,6 +225,24 @@ and an identity that says so.
 Run the paired three-seed comparison against step 3 at matched executions and
 judge by film first, then the milestone table.
 
+Added while building step 5:
+
+- The draw weights the macro kind, not the slot inside it. A slot index only
+  means something against the live alphabet and `expand_suffix` never sees the
+  live state, so a weight on a slot would be a weight on nothing.
+- A place is the badges byte, the route flags and the map id, taken from the
+  parent key through `duration_request`, which is the only hook that carries any
+  part of the parent's position into the draw. Cells are left out: a per-cell
+  table would ask thousands of questions for one map.
+- The answer arrives one stream record late. `duration_request` cannot call out
+  and `finish_stream_record` is the hook that can change the table, so the first
+  draws at a new place use even weights.
+- The adviser posts through `curl` rather than a Rust HTTP client. No crate in
+  the repository speaks HTTP, and `blue-film` already shells out to `ffmpeg`.
+  The key goes in on standard input so it never reaches a command line.
+- Map names come from pokered's `constants/map_constants.asm`, so the model can
+  tell a house from a route.
+
 ## Working rules
 
 - Read `CLAUDE.md`, `REVIEWING.md`, `dissonance/searcher/README.md`,

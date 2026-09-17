@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, fs, path::PathBuf};
+use std::{collections::BTreeSet, error::Error, fs, path::PathBuf};
 
 use blue_workload::{
+    advice::{AdviceContext, AdviceTable, BlueAdviser, map_name},
     map::Overworld,
     target::{
-        BlueAction, BlueTarget, CUR_MAP, CUR_MAP_WIDTH, CURRENT_MENU_ITEM, MAX_MENU_ITEM,
-        NUMBER_OF_WARPS, X_COORD, Y_COORD, byte,
+        ACTION_KINDS, BlueAction, BlueTarget, CUR_MAP, CUR_MAP_WIDTH, CURRENT_MENU_ITEM,
+        MAX_MENU_ITEM, NUMBER_OF_WARPS, X_COORD, Y_COORD, byte,
     },
 };
 use machine::{
@@ -775,6 +776,35 @@ fn shot(prefix: &str, actions: &str, output: &str) -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
+fn advise(map: &str, route: &str) -> Result<(), Box<dyn Error>> {
+    let adviser = BlueAdviser::from_environment()
+        .ok_or("blue-probe advise needs TYPESAFE_API_KEY in the environment")?;
+    let context = AdviceContext {
+        badges: 0,
+        route: route.parse()?,
+        map: map.parse()?,
+    };
+    let mut table = AdviceTable::default();
+    table.fill(&adviser, &BTreeSet::from([context]));
+    let weights = table.weights_for(context);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "map": map_name(context.map),
+            "next_milestone_after": context.route,
+            "calls": table.calls(),
+            "failures": table.failures(),
+            "input_tokens": table.input_tokens(),
+            "weights": ACTION_KINDS
+                .iter()
+                .enumerate()
+                .map(|(index, kind)| ((*kind).name(), weights[index]))
+                .collect::<Vec<_>>(),
+        }))?
+    );
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     match arguments.iter().map(String::as_str).collect::<Vec<_>>()[..] {
@@ -786,8 +816,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         ["route", prefix, actions] => route(prefix, actions),
         ["shot", prefix, actions, output] => shot(prefix, actions, output),
         ["trace", prefix, actions, output] => trace(prefix, actions, output),
+        ["advise", map, route] => advise(map, route),
         ["alphabet", prefix] => alphabet(prefix, None),
         ["alphabet", prefix, actions] => alphabet(prefix, Some(actions)),
-        _ => Err("usage: blue-probe setup|state|dump|plan|route|trace|alphabet|shot ...".into()),
+        _ => Err(
+            "usage: blue-probe setup|state|dump|plan|route|trace|advise|alphabet|shot ...".into(),
+        ),
     }
 }

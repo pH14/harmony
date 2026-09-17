@@ -11,6 +11,7 @@ use std::{
 };
 
 use blue_workload::{
+    advice::BlueAdviser,
     archive::MAX_ARCHIVE_ENTRIES,
     campaign::{
         BlueCampaignConfig, BlueCampaignOrigin, BlueGame, replay_blue_campaign_checkpointed,
@@ -37,6 +38,7 @@ struct Args {
     wall_seconds: Option<u64>,
     mixture: DrawMixture,
     verify_replay: bool,
+    advise: bool,
     selector: SelectorPolicy,
 }
 
@@ -64,11 +66,16 @@ impl Args {
         let mut wall_seconds = None;
         let mut mixture = DrawMixture::AlphabetOnly;
         let mut verify_replay = false;
+        let mut advise = false;
         let mut selector = SelectorPolicy::EnergyFrontierCheapest(thresholds());
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             if flag == "--verify-replay" {
                 verify_replay = true;
+                continue;
+            }
+            if flag == "--advise" {
+                advise = true;
                 continue;
             }
             let value = args
@@ -116,6 +123,7 @@ impl Args {
             wall_seconds,
             mixture,
             verify_replay,
+            advise,
             selector,
         })
     }
@@ -138,9 +146,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&args.output)?;
     let rom = fs::read(&args.rom)?;
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&args.core)?));
-    let game = BlueGame::new(&rom, &args.core, &core_sha256, setup_prefix()?)
+    let mut game = BlueGame::new(&rom, &args.core, &core_sha256, setup_prefix()?)
         .with_champion_input_path(args.output.join("champion-input.json"))
         .with_milestone_input_dir(args.output.join("milestones"));
+    if args.advise {
+        let adviser = BlueAdviser::from_environment()
+            .ok_or("--advise needs TYPESAFE_API_KEY in the environment")?;
+        game = game.with_adviser(adviser);
+    }
     let config = BlueCampaignConfig {
         campaign_seed: args.seed,
         workers: args.workers,
@@ -183,9 +196,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let archive = &report.archive;
     let maps: BTreeSet<u8> = archive.entries.iter().map(|entry| entry.key.map).collect();
+    let advice = game.advice_usage();
     println!(
         "executions={} retained={} rejected={} whiteouts={} milestones={:08b} levels={} \
-         maps={} entries={}",
+         maps={} entries={} advised_places={} advice_calls={} advice_failures={} \
+         advice_input_tokens={}",
         archive.executions,
         archive.retained,
         archive.rejected,
@@ -194,6 +209,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         archive.progress_watermark.party_levels,
         maps.len(),
         archive.entries.len(),
+        advice.places_advised,
+        advice.calls,
+        advice.failures,
+        advice.input_tokens,
     );
     Ok(())
 }

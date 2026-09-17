@@ -4,7 +4,12 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     io::Write,
+    num::NonZeroU64,
     path::{Path, PathBuf},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use searcher::{
@@ -18,6 +23,7 @@ use searcher::{
             postcard_value_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        duration::{DurationDraw, DurationRequest},
         rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
@@ -26,6 +32,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    advice::{
+        ADVICE_POLICY_IDENTIFIER, AdviceCheckpoint, AdviceContext, AdviceTable, BlueAdviser,
+        reserve_bytes, sample_advised_action,
+    },
     archive::{
         BlueArchiveEntryReport, BlueArchiveKey, BlueArchiveReport, BlueInput, BlueMilestoneInputs,
         BlueMilestoneTimes, BlueMilestones, BlueProgressWatermark, DURATION_IDENTIFIER,
@@ -49,6 +59,7 @@ const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const MACRO_VOCABULARY_IDENTIFIER: &str =
     "walk_interact_battle_move_item_switch_advance_slot256_v1";
 const ADVISER_NONE: &str = "none";
+const ADVISED_DRAW_IDENTIFIER: &str = "jev_weighted_macro_kind_and_uniform_slot_v1";
 
 type BluePreference = (u32, u32);
 type BlueChampionKey = (BlueProgressWatermark, BluePreference);
@@ -64,6 +75,24 @@ pub struct BlueGame {
     identity: String,
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
+    adviser: Option<BlueAdviser>,
+    pending: Mutex<BTreeSet<AdviceContext>>,
+    advice_calls: AtomicU64,
+    advice_failures: AtomicU64,
+    advice_input_tokens: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct AdviceUsage {
+    pub places_advised: u64,
+    pub calls: u64,
+    pub failures: u64,
+    pub input_tokens: u64,
+}
+
+#[derive(Default)]
+pub struct BlueDrawState {
+    table: AdviceTable,
 }
 
 impl BlueGame {
@@ -94,6 +123,35 @@ impl BlueGame {
             identity,
             champion_input_path: None,
             milestone_input_dir: None,
+            adviser: None,
+            pending: Mutex::new(BTreeSet::new()),
+            advice_calls: AtomicU64::new(0),
+            advice_failures: AtomicU64::new(0),
+            advice_input_tokens: AtomicU64::new(0),
+        }
+    }
+
+    #[must_use]
+    pub fn with_adviser(mut self, adviser: BlueAdviser) -> Self {
+        self.adviser = Some(adviser);
+        self
+    }
+
+    #[must_use]
+    pub fn advises(&self) -> bool {
+        self.adviser.is_some()
+    }
+
+    #[must_use]
+    pub fn advice_usage(&self) -> AdviceUsage {
+        AdviceUsage {
+            places_advised: self
+                .pending
+                .lock()
+                .map_or(0, |pending| pending.len() as u64),
+            calls: self.advice_calls.load(Ordering::Relaxed),
+            failures: self.advice_failures.load(Ordering::Relaxed),
+            input_tokens: self.advice_input_tokens.load(Ordering::Relaxed),
         }
     }
 
@@ -144,7 +202,9 @@ impl BlueGame {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct BlueCampaignRun;
+pub struct BlueCampaignRun {
+    pub advise: bool,
+}
 
 #[derive(Clone, Default)]
 pub struct MapCoverage {
@@ -246,7 +306,7 @@ pub struct BlueCampaignConfig {
 }
 
 impl BlueCampaignConfig {
-    fn generic(&self) -> CampaignConfig<BlueGame> {
+    fn generic(&self, advise: bool) -> CampaignConfig<BlueGame> {
         CampaignConfig {
             campaign_seed: self.campaign_seed,
             workers: self.workers,
@@ -261,7 +321,7 @@ impl BlueCampaignConfig {
                 searcher::search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
-            run: BlueCampaignRun,
+            run: BlueCampaignRun { advise },
             suffix: self.suffix,
             mixture: self.mixture,
             retention: self.retention,
@@ -412,9 +472,9 @@ impl CampaignTypes for BlueGame {
     type Evidence = BlueCampaignEvidence;
     type ArchiveReport = BlueArchiveReport;
     type Run = BlueCampaignRun;
-    type DrawState = ();
+    type DrawState = BlueDrawState;
     type DrawHeader = BlueNoTableHeader;
-    type DrawCheckpoint = ();
+    type DrawCheckpoint = AdviceCheckpoint;
 }
 
 impl Reporting for BlueGame {
@@ -542,21 +602,26 @@ impl InputPolicy for BlueGame {
         longest_action_frames()
     }
 
-    fn draw_state_memory_reserve_bytes(&self, _run: &BlueCampaignRun, _actions: usize) -> usize {
-        0
+    fn draw_state_memory_reserve_bytes(&self, run: &BlueCampaignRun, _actions: usize) -> usize {
+        if run.advise { reserve_bytes() } else { 0 }
     }
 
-    fn draw_state_memory_bytes(&self, _state: &()) -> usize {
-        0
+    fn draw_state_memory_bytes(&self, state: &BlueDrawState) -> usize {
+        state.table.memory_bytes()
     }
 
-    fn policies(&self, _run: &BlueCampaignRun) -> WorkloadPolicies {
+    fn policies(&self, run: &BlueCampaignRun) -> WorkloadPolicies {
+        let (draw, adviser) = if run.advise {
+            (ADVISED_DRAW_IDENTIFIER, ADVICE_POLICY_IDENTIFIER)
+        } else {
+            (DURATION_IDENTIFIER, ADVISER_NONE)
+        };
         [
             (MACRO_VOCABULARY_FIELD, MACRO_VOCABULARY_IDENTIFIER),
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
-            (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
+            (DURATION_POLICY_FIELD, draw),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
-            (ADVISER_FIELD, ADVISER_NONE),
+            (ADVISER_FIELD, adviser),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -571,34 +636,69 @@ impl InputPolicy for BlueGame {
         &self,
         policies: &WorkloadPolicies,
     ) -> Result<BlueCampaignRun, Box<dyn Error>> {
-        let expected = self.policies(&BlueCampaignRun);
-        if policies != &expected {
-            for (field, value) in &expected {
-                if recorded(policies, field)? != value {
-                    return Err(format!("Blue stream {field} policy is not recognized").into());
-                }
+        for advise in [false, true] {
+            let run = BlueCampaignRun { advise };
+            if policies == &self.policies(&run) {
+                return Ok(run);
             }
-            return Err("Blue stream carries an unknown game policy".into());
         }
-        Ok(BlueCampaignRun)
+        let expected = self.policies(&BlueCampaignRun {
+            advise: self.advises(),
+        });
+        for (field, value) in &expected {
+            if recorded(policies, field)? != value {
+                return Err(format!("Blue stream {field} policy is not recognized").into());
+            }
+        }
+        Err("Blue stream carries an unknown game policy".into())
     }
 
     fn initial_draw_state(
         &self,
         _run: &BlueCampaignRun,
         _origin: Option<(&str, &BlueArchiveReport)>,
-    ) -> Result<((), Option<BlueNoTableHeader>), Box<dyn Error>> {
-        Ok(((), None))
+    ) -> Result<(BlueDrawState, Option<BlueNoTableHeader>), Box<dyn Error>> {
+        Ok((BlueDrawState::default(), None))
     }
 
-    fn draw_checkpoint(&self, _state: &()) -> Result<Option<()>, Box<dyn Error>> {
-        Ok(None)
+    fn duration_request(
+        &self,
+        run: &BlueCampaignRun,
+        parent: BlueArchiveKey,
+        _remaining_work: Option<NonZeroU64>,
+    ) -> Option<DurationRequest<BlueArchiveKey>> {
+        if !run.advise {
+            return None;
+        }
+        let context = AdviceContext::of(parent);
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.insert(context);
+        }
+        Some(DurationRequest {
+            context: context.key(),
+            max_duration: NonZeroU64::new(1)?,
+        })
+    }
+
+    fn draw_checkpoint(
+        &self,
+        state: &BlueDrawState,
+    ) -> Result<Option<AdviceCheckpoint>, Box<dyn Error>> {
+        if self.advises() {
+            Ok(Some(state.table.checkpoint()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn draw_checkpoint_version(&self, checkpoint: &AdviceCheckpoint) -> u64 {
+        checkpoint.records
     }
 
     fn expand_suffix(
         &self,
         _run: &BlueCampaignRun,
-        _state: &(),
+        _state: &BlueDrawState,
         shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
@@ -613,28 +713,93 @@ impl InputPolicy for BlueGame {
         )
     }
 
+    fn expand_suffix_duration(
+        &self,
+        _run: &BlueCampaignRun,
+        state: &BlueDrawState,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        mutation_seed: u64,
+        draw: DurationDraw<BlueArchiveKey>,
+    ) -> Result<Vec<BlueAction>, Box<dyn Error>> {
+        let weights = state.table.weights_for(AdviceContext::of(draw.context));
+        draw_suffix(
+            shape,
+            mixture.mixture,
+            mixture.weight,
+            mutation_seed,
+            |_| Ok(None),
+            |rand| sample_advised_action(rand, weights),
+        )
+    }
+
     fn expand_suffix_recorded(
         &self,
         run: &BlueCampaignRun,
-        state: &(),
+        state: &BlueDrawState,
         shape: SuffixShape,
         mixture: MixtureDraw,
-        before: Option<&()>,
+        before: Option<&AdviceCheckpoint>,
         mutation_seed: u64,
     ) -> Result<Vec<BlueAction>, Box<dyn Error>> {
-        if before.is_some() {
+        if before.is_some() && !run.advise {
             return Err("Blue stream unexpectedly records a draw table".into());
         }
         self.expand_suffix(run, state, shape, mixture, mutation_seed)
     }
 
+    fn expand_suffix_recorded_duration(
+        &self,
+        run: &BlueCampaignRun,
+        state: &BlueDrawState,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        before: Option<&AdviceCheckpoint>,
+        mutation_seed: u64,
+        draw: Option<DurationDraw<BlueArchiveKey>>,
+    ) -> Result<Vec<BlueAction>, Box<dyn Error>> {
+        let Some(draw) = draw else {
+            return self.expand_suffix_recorded(run, state, shape, mixture, before, mutation_seed);
+        };
+        let context = AdviceContext::of(draw.context);
+        let weights = before.map_or_else(
+            || state.table.weights_for(context),
+            |checkpoint| checkpoint.weights_for(context),
+        );
+        draw_suffix(
+            shape,
+            mixture.mixture,
+            mixture.weight,
+            mutation_seed,
+            |_| Ok(None),
+            |rand| sample_advised_action(rand, weights),
+        )
+    }
+
     fn finish_stream_record(
         &self,
-        _run: &BlueCampaignRun,
-        _state: &mut (),
+        run: &BlueCampaignRun,
+        state: &mut BlueDrawState,
         _retained: &[(usize, &[BlueAction])],
-    ) -> Result<Option<()>, Box<dyn Error>> {
-        Ok(None)
+    ) -> Result<Option<AdviceCheckpoint>, Box<dyn Error>> {
+        if !run.advise {
+            return Ok(None);
+        }
+        if let Some(adviser) = &self.adviser {
+            let pending = self
+                .pending
+                .lock()
+                .map(|pending| pending.clone())
+                .unwrap_or_default();
+            state.table.fill(adviser, &pending);
+            self.advice_calls
+                .store(state.table.calls(), Ordering::Relaxed);
+            self.advice_failures
+                .store(state.table.failures(), Ordering::Relaxed);
+            self.advice_input_tokens
+                .store(state.table.input_tokens(), Ordering::Relaxed);
+        }
+        Ok(Some(state.table.finish_record()))
     }
 
     fn retained_inputs_need_full(&self, _run: &BlueCampaignRun) -> bool {
@@ -643,14 +808,10 @@ impl InputPolicy for BlueGame {
 
     fn remember_draw_version(
         &self,
-        _state: &mut (),
-        required: &BTreeSet<u64>,
+        _state: &mut BlueDrawState,
+        _required: &BTreeSet<u64>,
     ) -> Result<(), Box<dyn Error>> {
-        if required.is_empty() {
-            Ok(())
-        } else {
-            Err("Blue stream requires an unsupported draw-table version".into())
-        }
+        Ok(())
     }
 }
 
@@ -899,7 +1060,13 @@ pub fn run_blue_campaign_checkpointed(
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
 ) -> Result<(BlueCampaignModeReport, BlueSnapshotCheckpoint), Box<dyn Error>> {
-    run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
+    run_campaign_checkpointed(
+        game,
+        &config.generic(game.advises()),
+        origin,
+        stream,
+        progress,
+    )
 }
 
 pub fn replay_blue_campaign_checkpointed(
@@ -923,7 +1090,7 @@ mod tests {
     #[test]
     fn a_stream_from_another_policy_is_refused() {
         let game = game();
-        let good = game.policies(&BlueCampaignRun);
+        let good = game.policies(&BlueCampaignRun { advise: false });
         assert!(game.resolve_recorded(&good).is_ok());
         let mut altered = good.clone();
         altered.insert(KEY_POLICY_FIELD.to_owned(), "something_else".to_owned());
@@ -931,6 +1098,16 @@ mod tests {
         let mut missing = good;
         missing.remove(ADVISER_FIELD);
         assert!(game.resolve_recorded(&missing).is_err());
+    }
+
+    #[test]
+    fn an_advised_stream_resolves_to_an_advised_run() {
+        let game = game();
+        let advised = game.policies(&BlueCampaignRun { advise: true });
+        let plain = game.policies(&BlueCampaignRun { advise: false });
+        assert_ne!(advised, plain);
+        assert!(game.resolve_recorded(&advised).unwrap().advise);
+        assert!(!game.resolve_recorded(&plain).unwrap().advise);
     }
 
     #[test]

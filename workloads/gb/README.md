@@ -158,6 +158,37 @@ Out of battle: every warp tile on the map, every approach tile for each sprite
 and sign within six steps, one exit per map edge, and a straight-line walk of
 one, two, or four steps in each direction.
 
+## Adviser
+
+`--advise` on `blue-campaign` puts the TypeSafe Jev decision model in the draw.
+It needs `TYPESAFE_API_KEY`; without the flag nothing calls the network and the
+run identity says `alphabet_adviser=none`.
+
+The unit the draw weights is the macro kind. The kind is what a place decides:
+in Oak's lab the route is walking and talking, on Route 1 it is walking and
+leaving wild battles. The slot inside a kind stays uniform because a slot only
+means something against the live alphabet, which the draw cannot see.
+
+A place is the badges byte, the route flags, and the map id. The searcher hands
+the draw a coarsened parent key through `duration_request`, so those three
+fields are what the draw knows about where the lineage stands. Cells are left
+out: a per-cell table would ask the model thousands of questions for one map.
+
+The first draw at a new place uses even weights. `duration_request` records the
+place, and at the next stream record `finish_stream_record` asks Jev one `score`
+question per macro kind against a four-rung scale, all six in one request. A
+score becomes a weight between a floor of 16 and a ceiling of 256, so the most
+useful kind takes about three quarters of the draws and every other kind keeps
+at least a twentieth. A refused or malformed answer stores even weights and
+counts a failure. At most eight places are asked per record and the table holds
+512 places.
+
+The table goes into the campaign stream as a draw checkpoint at each record, and
+a replayed advised run reads the weights out of the record.
+
+Map names come from `constants/map_constants.asm` in pokered. They are what lets
+the model tell a house from a route.
+
 ## Archive key
 
 Groups run coarse to fine: badges, then the seven route flags, then the number of
@@ -209,7 +240,8 @@ is the archive key and milestone flags after each of its actions, written by
 
 `blue-campaign` runs a campaign. `blue-film` renders a recorded tape to MP4 and
 needs `ffmpeg`. `blue-probe` is the authoring and debugging tool: `setup`,
-`state`, `dump`, `plan`, `route`, `trace`, `alphabet`, and `shot`. `dump` prints the
+`state`, `dump`, `plan`, `route`, `trace`, `advise`, `alphabet`, and `shot`.
+`advise <map> <route>` prints the weights Jev gives one place. `dump` prints the
 walkability grid, the tile ids, the screen tile map, the warp table and the
 sprite table; `shot` writes one frame as a PPM. `BLUE_TRACE=1` prints the decoded
 state after every applied action.
