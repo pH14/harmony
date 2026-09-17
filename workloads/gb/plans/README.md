@@ -273,16 +273,6 @@ Added while building step 5:
   are the game's own record of where each map's script stands, but they move 22
   times over the 463 actions: adding their sum to the key takes it from 135
   distinct keys to 144 and leaves the longest same-key run at six.
-- Conversation text is what the key cannot see, and `advance` is what crosses
-  it. Of the scripted route's 463 actions, 191 sit in runs of three or more that
-  share one archive key, the longest run is six, and 119 of those 191 actions are
-  `advance`. The five longest runs are all the same shape: walk up to someone,
-  press A, then push the text through. Described only as a way to run from a wild
-  battle, `advance` drew 5% of the weight in Oak's lab against a uniform 17%.
-- The per-map script bytes at `wGameProgressFlags` do not close that gap. They
-  are the game's own record of where each map's script stands, but they move 22
-  times over the 463 actions: adding their sum to the key takes it from 135
-  distinct keys to 144 and leaves the longest same-key run at six.
 - An advised run is not replay-checked. The recorded table is what a replayed
   draw reads, and rebuilding the counters would mean reaching the API again, so
   `--verify-replay` refuses `--advise`.
@@ -298,6 +288,23 @@ Added while building step 5:
   The key goes in on standard input so it never reaches a command line.
 - Map names come from pokered's `constants/map_constants.asm`, so the model can
   tell a house from a route.
+
+Added while running step 5:
+
+- The plain searcher reaches the Boulder Badge. Seed 20260907 took all eight
+  milestones and won at execution 37,249, over 25 maps and a level 13 party. The
+  other two plain seeds stop at Oak's parcel with 12 maps, so the badge crosses
+  on one seed of three.
+- The adviser reaches the second milestone sooner on every seed and no further on
+  any: Oak's parcel at 994 against 1,407, 743 against 2,064, and 1,987 against
+  4,021. Neither advised seed past that point delivered the parcel.
+- The advised arm whites out far more: 250, 124 and 522 against 9, 8 and 114.
+  The weight it puts on the fighting kinds is spent on wild battles it loses. The
+  seed that won is the plain seed with the most whiteouts, so fighting is what
+  the route needs and losing the fights is what the adviser buys.
+- The panel is paired on one box, both arms at six workers, and compared at
+  matched executions rather than matched wall time. The advised arm runs about
+  15% more executions per second, since a weighted draw picks cheaper macros.
 
 ## Working rules
 

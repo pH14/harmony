@@ -175,13 +175,15 @@ fields are what the draw knows about where the lineage stands. Cells are left
 out: a per-cell table would ask the model thousands of questions for one map.
 
 The first draw at a new place uses even weights. `duration_request` records the
-place, and at the next stream record `finish_stream_record` asks Jev one `score`
-question per macro kind against a four-rung scale, all six in one request. A
-score becomes a weight between a floor of 16 and a ceiling of 256, so the most
-useful kind takes about three quarters of the draws and every other kind keeps
-at least a twentieth. A refused or malformed answer stores even weights and
-counts a failure. At most eight places are asked per record and the table holds
-512 places.
+place, and at the next stream record `finish_stream_record` asks Jev one `choice`
+question over the six macro kinds, each described by what it does in context. The
+answer is a probability per kind, and each probability becomes a weight between a
+floor of 16 and a ceiling of 256. A kind the model puts 0.9 on takes about three
+quarters of the draws and every other kind keeps at least a twentieth. A `choice`
+answer has to sum to one, which is why it is the question type here: the same six
+kinds scored one at a time come back too close together to separate. A refused or
+malformed answer stores even weights and counts a failure. At most eight places
+are asked per record and the table holds 512 places.
 
 The table goes into the campaign stream as a draw checkpoint at each record, and
 a replayed advised run draws from the weights in that record. The campaign result
@@ -192,6 +194,29 @@ cannot match.
 
 Map names come from `constants/map_constants.asm` in pokered. They are what lets
 the model tell a house from a route.
+
+## Campaign results
+
+Three seeds, both arms side by side on one arm64 box at six workers each,
+compared at matched executions.
+
+| Arm | Seed | Executions | Maps | Milestones | Whiteouts |
+| --- | --- | --- | --- | --- | --- |
+| plain | 20260905 | 41,425 | 12 | 2 | 9 |
+| plain | 20260906 | 40,276 | 12 | 2 | 8 |
+| plain | 20260907 | 41,141 | 25 | 8 | 114 |
+| advised | 20260905 | 47,609 | 12 | 2 | 250 |
+| advised | 20260906 | 42,716 | 12 | 2 | 124 |
+| advised | 20260907 | 45,981 | 12 | 2 | 522 |
+
+The plain searcher wins the game on seed 20260907, taking the Boulder Badge at
+execution 37,249 with a level 13 party. The badge crosses on one seed of three.
+
+The adviser reaches Oak's parcel sooner on every seed and no further on any:
+execution 994 against 1,407, 743 against 2,064, and 1,987 against 4,021. It also
+whites out four to twenty times as often. The weight it puts on the fighting
+kinds is spent losing wild battles rather than winning the trainer battles the
+route needs, and the seed that won is the plain seed that fought the most.
 
 ## Archive key
 
