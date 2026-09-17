@@ -205,6 +205,35 @@ fn route(prefix: &str, actions: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn trace(prefix: &str, actions: &str, output: &str) -> Result<(), Box<dyn Error>> {
+    let mut target = new_target(&read_chords(prefix)?)?;
+    let mut points = Vec::new();
+    for (index, action) in read_actions(actions)?.iter().enumerate() {
+        target.apply(action);
+        if target.exit_kind() != searcher::target::ExitKind::Ok {
+            return Err("the target failed".into());
+        }
+        let state = target.state();
+        points.push(serde_json::json!({
+            "action": index,
+            "key": blue_workload::archive::archive_key(state),
+            "milestones": state.milestone_flags(),
+        }));
+        if target.is_victory() {
+            break;
+        }
+    }
+    std::fs::write(
+        output,
+        serde_json::to_vec(&serde_json::json!({
+            "format": "blue-route-trace-v1",
+            "points": points,
+        }))?,
+    )?;
+    println!("{} points", points.len());
+    Ok(())
+}
+
 fn alphabet(prefix: &str, actions: Option<&str>) -> Result<(), Box<dyn Error>> {
     let mut target = new_target(&read_chords(prefix)?)?;
     if let Some(actions) = actions {
@@ -756,8 +785,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         ["plan", prefix, itinerary, output] => plan(prefix, itinerary, output),
         ["route", prefix, actions] => route(prefix, actions),
         ["shot", prefix, actions, output] => shot(prefix, actions, output),
+        ["trace", prefix, actions, output] => trace(prefix, actions, output),
         ["alphabet", prefix] => alphabet(prefix, None),
         ["alphabet", prefix, actions] => alphabet(prefix, Some(actions)),
-        _ => Err("usage: blue-probe setup|state|dump|plan|route|alphabet|shot ...".into()),
+        _ => Err("usage: blue-probe setup|state|dump|plan|route|trace|alphabet|shot ...".into()),
     }
 }

@@ -160,10 +160,18 @@ one, two, or four steps in each direction.
 
 ## Archive key
 
-Groups run coarse to fine: badges, then the seven route flags, then the map id,
-then the 4-tile cell of the player. `progress_cmp` ranks a group by how many
-badge bits it holds and then by how many route flags it holds, so a badge
-outranks every route flag and position never ranks at all.
+Groups run coarse to fine: badges, then the seven route flags, then the number of
+set event bits, then the map id, then the 4-tile cell of the player.
+`progress_cmp` ranks a group by how many badge bits it holds, then by how many
+route flags, then by that event count, so a named milestone outranks any amount of
+script progress and position never ranks at all.
+
+The event count is the game's own progress record and it is what makes a scripted
+sequence visible. Oak's speech in the lab takes ten actions and sets three event
+bits along the way. Without the count in the key those ten actions occupy two
+slots, and the lineage that walks to the Poke Ball without hearing the speech holds
+the slot that the lineage which heard it needs, so the starter is unreachable from
+the slot that owns the tile.
 
 The preference inside a slot is party HP and then party levels. The plan asked
 for fewest actions first; the archive already breaks a preference tie by lower

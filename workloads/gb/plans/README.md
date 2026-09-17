@@ -143,6 +143,11 @@ Added while building step 2:
   rather than stored.
 - The route flags latch once set, and the three "entered" milestones come from
   map ids rather than event flags.
+- The archive key carries the number of set event bits, between the route flags
+  and the map. The plan's key has no gradient through a scripted sequence: Oak's
+  speech is ten actions in two cells, and the lineage holding the Poke Ball tile
+  without having heard the speech cannot take the starter and is never displaced.
+  The count is the game's own progress record, so it works for every script.
 - The key's preference is party HP then party levels. The archive already
   breaks a preference tie by lower accumulated cost and the key cannot see how
   many actions reached it, so fewest actions stays the archive's rule.

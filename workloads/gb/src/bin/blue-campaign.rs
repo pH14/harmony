@@ -43,7 +43,7 @@ struct Args {
 fn thresholds() -> RetireThresholds {
     RetireThresholds {
         entry: 3,
-        groups: vec![6, 12],
+        groups: vec![6, 12, 24],
     }
 }
 

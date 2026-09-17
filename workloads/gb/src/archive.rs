@@ -20,7 +20,7 @@ pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_BLUE_ACTIONS: usize = 4_096;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "blue_badges_route_map_cell4_preference_party_hp_then_levels_v1";
+    "blue_badges_route_events_map_cell4_preference_party_hp_then_levels_v2";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "uniform_macro_kind_and_slot_v1";
 
@@ -34,6 +34,7 @@ pub type BlueArchive = Archive<BlueAction, BlueArchiveKey, BlueMilestones, BlueS
 pub struct BlueArchiveGroup {
     badges: u8,
     route: u8,
+    events: u16,
     map: u8,
     cell_x: u8,
     cell_y: u8,
@@ -43,6 +44,7 @@ pub struct BlueArchiveGroup {
 pub struct BlueArchiveKey {
     pub badges: u8,
     pub route: u8,
+    pub events: u16,
     pub map: u8,
     pub cell_x: u8,
     pub cell_y: u8,
@@ -54,18 +56,27 @@ impl ArchiveKey for BlueArchiveKey {
     type Group = BlueArchiveGroup;
 
     fn groups() -> usize {
-        4
+        5
     }
 
     fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
-        (left.badges.count_ones(), left.route.count_ones())
-            .cmp(&(right.badges.count_ones(), right.route.count_ones()))
+        (
+            left.badges.count_ones(),
+            left.route.count_ones(),
+            left.events,
+        )
+            .cmp(&(
+                right.badges.count_ones(),
+                right.route.count_ones(),
+                right.events,
+            ))
     }
 
     fn group(self, depth: usize) -> Self::Group {
         let place = BlueArchiveGroup {
             badges: self.badges,
             route: self.route,
+            events: self.events,
             map: self.map,
             cell_x: self.cell_x,
             cell_y: self.cell_y,
@@ -82,6 +93,11 @@ impl ArchiveKey for BlueArchiveKey {
                 cell_x: 0,
                 cell_y: 0,
                 ..place
+            },
+            3 => BlueArchiveGroup {
+                badges: self.badges,
+                route: self.route,
+                ..BlueArchiveGroup::default()
             },
             _ => BlueArchiveGroup {
                 badges: self.badges,
@@ -112,6 +128,7 @@ pub fn archive_key(state: BlueState) -> BlueArchiveKey {
     BlueArchiveKey {
         badges: state.badges,
         route: state.route_flags,
+        events: state.events_set,
         map: state.map,
         cell_x: state.x / CELL_STEPS,
         cell_y: state.y / CELL_STEPS,
@@ -222,9 +239,24 @@ mod tests {
     use super::*;
 
     fn key(badges: u8, route: u8, map: u8, x: u8, y: u8, hp: u32, levels: u32) -> BlueArchiveKey {
+        keyed(badges, route, 0, map, x, y, hp, levels)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn keyed(
+        badges: u8,
+        route: u8,
+        events: u16,
+        map: u8,
+        x: u8,
+        y: u8,
+        hp: u32,
+        levels: u32,
+    ) -> BlueArchiveKey {
         BlueArchiveKey {
             badges,
             route,
+            events,
             map,
             cell_x: x / CELL_STEPS,
             cell_y: y / CELL_STEPS,
@@ -256,7 +288,23 @@ mod tests {
         assert_ne!(left.group(0), key(0, 1, 12, 12, 28, 20, 6).group(0));
         assert_eq!(left.group(1), key(0, 1, 12, 30, 2, 20, 6).group(1));
         assert_eq!(left.group(2), key(0, 1, 40, 30, 2, 20, 6).group(2));
-        assert_eq!(left.group(3), key(0, 0x40, 40, 30, 2, 20, 6).group(3));
+        assert_eq!(left.group(3), keyed(0, 1, 9, 40, 30, 2, 20, 6).group(3));
+        assert_eq!(left.group(4), key(0, 0x40, 40, 30, 2, 20, 6).group(4));
+    }
+
+    #[test]
+    fn a_set_event_flag_is_a_new_place_and_outranks_the_same_place_without_it() {
+        let before = keyed(0, 0, 1, 40, 7, 4, 0, 0);
+        let after = keyed(0, 0, 4, 40, 7, 4, 0, 0);
+        assert_ne!(before.group(0), after.group(0));
+        assert_eq!(
+            BlueArchiveKey::progress_cmp(after.group(0), before.group(0)),
+            Ordering::Greater
+        );
+        assert_eq!(
+            BlueArchiveKey::progress_cmp(keyed(0, 1, 0, 40, 7, 4, 0, 0).group(0), after.group(0)),
+            Ordering::Greater
+        );
     }
 
     #[test]
