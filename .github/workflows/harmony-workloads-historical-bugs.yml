@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Benchmarks / Historical bugs
+# Fresh searches for known historical defects on their pinned affected
+# versions, executed through Consonance. Each scenario job is named after the
+# bug it looks for; there is no execution-arm dimension and no fixed-version
+# comparison. Pull requests exercise the shared infrastructure through
+# Checks / Harmony Workloads / OCI instead of rediscovering these bugs.
+name: Benchmarks / Harmony Workloads / Historical Bugs
 
 # Historical searches are deliberately off the pull-request path. Pull
 # requests have their own short smoke checks; these campaigns run on the
@@ -22,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: historical-bugs-${{ github.ref }}
+  group: harmony-historical-bugs-${{ github.ref }}
   cancel-in-progress: false
 
 defaults:
@@ -31,14 +36,12 @@ defaults:
 
 jobs:
   manifest:
-    name: Read historical case manifests
+    name: Case Manifests
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.read.outputs.matrix }}
       runnable_matrix: ${{ steps.read.outputs.runnable_matrix }}
-      search_matrix: ${{ steps.read.outputs.search_matrix }}
-      replay_matrix: ${{ steps.read.outputs.replay_matrix }}
     steps:
       - uses: actions/checkout@v4
       - name: Validate and expand case manifests
@@ -48,13 +51,9 @@ jobs:
           python3 scripts/historical-manifest.py --check
           matrix=$(python3 scripts/historical-manifest.py --matrix)
           runnable_matrix=$(python3 scripts/historical-manifest.py --runnable-matrix)
-          search_matrix=$(python3 scripts/historical-manifest.py --search-matrix)
-          replay_matrix=$(python3 scripts/historical-manifest.py --replay-matrix)
           {
             printf 'matrix=%s\n' "${matrix}"
             printf 'runnable_matrix=%s\n' "${runnable_matrix}"
-            printf 'search_matrix=%s\n' "${search_matrix}"
-            printf 'replay_matrix=%s\n' "${replay_matrix}"
           } >>"${GITHUB_OUTPUT}"
       - name: Summarize runnable and deferred cases
         run: |
@@ -70,7 +69,7 @@ jobs:
           } >>"${GITHUB_STEP_SUMMARY}"
 
   guest:
-    name: Build the canonical platform runtime
+    name: Guest Runtime
     needs: manifest
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -111,7 +110,7 @@ jobs:
           retention-days: 1
 
   tools:
-    name: Build Harmony
+    name: Harmony
     needs: manifest
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -131,7 +130,7 @@ jobs:
           retention-days: 1
 
   images:
-    name: Build ${{ matrix.id }} workload images
+    name: Workload Images — ${{ matrix.id }}
     needs: manifest
     strategy:
       fail-fast: false
@@ -150,20 +149,17 @@ jobs:
           context=$(jq -er .image.context "${case_json}")
           dockerfile=$(jq -er .image.dockerfile "${case_json}")
           mkdir -p oci-images
-          mapfile -t arms < <(jq -r '.arms | keys[]' "${case_json}")
-          for arm in "${arms[@]}"; do
-            version=$(jq -er --arg arm "${arm}" '.arms[$arm].version' "${case_json}")
-            mapfile -t build_args < <(jq -r --arg arm "${arm}" \
-              '.image.build_args[$arm] // {} | to_entries[] | "\(.key)=\(.value)"' "${case_json}")
-            args=()
-            for build_arg in "${build_args[@]}"; do
-              args+=(--build-arg "${build_arg}")
-            done
-            tag="harmony-${IMAGE_PREFIX}:${version}"
-            docker build --pull "${args[@]}" --tag "${tag}" --file "${dockerfile}" "${context}"
-            docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "${tag}"
-            test -s "oci-images/${IMAGE_PREFIX}-${version}.oci"
+          version=$(jq -er '.workload.version' "${case_json}")
+          mapfile -t build_args < <(jq -r \
+            '.image.build_args // {} | to_entries[] | "\(.key)=\(.value)"' "${case_json}")
+          args=()
+          for build_arg in "${build_args[@]}"; do
+            args+=(--build-arg "${build_arg}")
           done
+          tag="harmony-${IMAGE_PREFIX}:${version}"
+          docker build --pull "${args[@]}" --tag "${tag}" --file "${dockerfile}" "${context}"
+          docker save --output "oci-images/${IMAGE_PREFIX}-${version}.oci" "${tag}"
+          test -s "oci-images/${IMAGE_PREFIX}-${version}.oci"
       - name: Record workload image checksums
         run: |
           set -euo pipefail
@@ -191,13 +187,13 @@ jobs:
           retention-days: 1
 
   search:
-    name: Search ${{ matrix.id }} · ${{ matrix.arm }} arm
+    name: ${{ matrix.display_name }}
     needs: [manifest, guest, images, tools]
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.manifest.outputs.search_matrix) }}
+      matrix: ${{ fromJSON(needs.manifest.outputs.runnable_matrix) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ matrix.search_timeout_minutes }}
+    timeout-minutes: ${{ matrix.job_timeout_minutes }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -223,7 +219,6 @@ jobs:
         env:
           CASE_DIR: ${{ matrix.dir }}
           CASE_ID: ${{ matrix.id }}
-          ARM: ${{ matrix.arm }}
           SOFTWARE_NAME: ${{ matrix.software }}
           WORKLOAD_VERSION: ${{ matrix.workload_version }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
@@ -237,99 +232,20 @@ jobs:
           ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}
           ORACLE_EVIDENCE: ${{ matrix.oracle_evidence }}
         run: scripts/historical-search.sh
-      - uses: actions/upload-artifact@v4
+      - name: Replay the declared clean samples on the searched version
         if: always()
-        with:
-          name: historical-search-${{ matrix.id }}-${{ matrix.arm }}-${{ github.run_id }}
-          path: reports
-          if-no-files-found: warn
-          retention-days: 30
-
-  differential:
-    name: Differential replay ${{ matrix.id }}
-    needs: [manifest, guest, images, tools, search]
-    if: always()
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.manifest.outputs.replay_matrix) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: historical-guest-${{ github.run_id }}
-          path: guest
-      - uses: actions/download-artifact@v4
-        with:
-          name: historical-tools-${{ github.run_id }}
-          path: tools
-      - uses: actions/download-artifact@v4
-        with:
-          name: historical-images-${{ matrix.id }}-${{ github.run_id }}
-          path: oci-images
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: historical-search-${{ matrix.id }}-vulnerable-${{ github.run_id }}
-          path: reports
-      - name: Grant nested KVM access
-        run: |
-          set -euo pipefail
-          test -c /dev/kvm
-          sudo chmod a+rw /dev/kvm
-          test -r /dev/kvm
-          test -w /dev/kvm
-      - name: Replay the first current-build finding on the fixed arm
-        if: matrix.control_version != ''
-        env:
-          CASE_DIR: ${{ matrix.dir }}
-          CASE_ID: ${{ matrix.id }}
-          SOFTWARE_NAME: ${{ matrix.software }}
-          VULNERABLE_VERSION: ${{ matrix.vulnerable_version }}
-          CONTROL_VERSION: ${{ matrix.control_version }}
-          IMAGE_PREFIX: ${{ matrix.image_prefix }}
-          RAM_MIB: ${{ matrix.ram_mib }}
-          KNOBS: ${{ matrix.knobs }}
-          ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}
-          ORACLE_EVIDENCE: ${{ matrix.oracle_evidence }}
-          REPLAY_ARMS: control
-          REPLAY_REPEATS: 1
-          REPLAY_TIMEOUT_SECONDS: ${{ matrix.replay_timeout_seconds }}
-          MAX_REPLAY_SESSIONS: ${{ inputs.replay_sessions || matrix.replay_max_sessions }}
-          PLANNED_REPLAY_SESSIONS: ${{ matrix.planned_replay_sessions }}
-        run: |
-          set -euo pipefail
-          if [[ ! "${MAX_REPLAY_SESSIONS}" =~ ^[1-9][0-9]*$ ]] ||
-             (( MAX_REPLAY_SESSIONS < PLANNED_REPLAY_SESSIONS )); then
-            echo "${CASE_ID}: replay cap ${MAX_REPLAY_SESSIONS} is below the aggregate plan of ${PLANNED_REPLAY_SESSIONS} sessions" >&2
-            exit 1
-          fi
-          input="reports/${CASE_ID}.vulnerable.search/first-bug-input.json"
-          if [[ -n "${CONTROL_VERSION}" && -s "${input}" ]]; then
-            scripts/historical-replay.sh discovery "${input}"
-          else
-            mkdir -p "reports/${CASE_ID}.control.discovery"
-            jq -n --arg status search-miss --arg case_id "${CASE_ID}" \
-              '{case_id:$case_id, mode:"discovery", status:$status}' \
-              >"reports/${CASE_ID}.control.discovery/panel-status.json"
-            echo "${CASE_ID}: no current-build finding was available for differential replay" >&2
-          fi
-      - name: Replay manifest-declared clean samples within the cap
         env:
           SAMPLE_PATHS_JSON: ${{ toJSON(matrix.sample_paths) }}
           MAX_REPLAY_SESSIONS: ${{ inputs.replay_sessions || matrix.replay_max_sessions }}
           CASE_DIR: ${{ matrix.dir }}
           CASE_ID: ${{ matrix.id }}
           SOFTWARE_NAME: ${{ matrix.software }}
-          VULNERABLE_VERSION: ${{ matrix.vulnerable_version }}
-          CONTROL_VERSION: ${{ matrix.control_version }}
+          WORKLOAD_VERSION: ${{ matrix.workload_version }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
           RAM_MIB: ${{ matrix.ram_mib }}
           KNOBS: ${{ matrix.knobs }}
           ORACLE_ASSERTION: ${{ matrix.oracle_assertion }}
           ORACLE_EVIDENCE: ${{ matrix.oracle_evidence }}
-          REPLAY_ARMS: vulnerable
           REPLAY_REPEATS: 2
           REPLAY_TIMEOUT_SECONDS: ${{ matrix.replay_timeout_seconds }}
           PLANNED_REPLAY_SESSIONS: ${{ matrix.planned_replay_sessions }}
@@ -341,10 +257,6 @@ jobs:
             exit 1
           fi
           remaining=${MAX_REPLAY_SESSIONS}
-          input="reports/${CASE_ID}.vulnerable.search/first-bug-input.json"
-          if [[ -s "${input}" ]]; then
-            remaining=$((remaining - 1))
-          fi
           mapfile -t samples < <(jq -r '.[]' <<<"${SAMPLE_PATHS_JSON}")
           for sample in "${samples[@]}"; do
             [[ -n "${sample}" ]] || continue
@@ -358,14 +270,14 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: historical-differential-${{ matrix.id }}-${{ github.run_id }}
+          name: historical-search-${{ matrix.id }}-${{ github.run_id }}
           path: reports
           if-no-files-found: warn
           retention-days: 30
 
   report:
-    name: Render historical panel
-    needs: [manifest, guest, tools, images, search, differential]
+    name: Results
+    needs: [manifest, guest, tools, images, search]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -378,12 +290,6 @@ jobs:
         continue-on-error: true
         with:
           pattern: historical-search-*-${{ github.run_id }}
-          path: reports
-          merge-multiple: true
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          pattern: historical-differential-*-${{ github.run_id }}
           path: reports
           merge-multiple: true
       - name: Render the roster from this run's reports

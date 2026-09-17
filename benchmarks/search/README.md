@@ -42,17 +42,18 @@ python3 benchmarks/search/eval.py run benchmarks/search/evaluation.json \
   --memory-capacity-mib 40000
 ```
 
-The scheduled/manual [Benchmarks / NES workflow](../../.github/workflows/nova-nightly.yml)
+The scheduled and dispatched
+[Benchmarks / Dissonance Workloads / NES](../../.github/workflows/dissonance-workloads-nes-benchmarks.yml)
 runs the source-built public capability panel from `nightly.json`. Each case has
 an independent matrix job that builds its game and the pinned QuickNES core,
 then uses the same `nes-eval` runner as the private panels with `--case`.
-Each job retains the three registered seeds and exports its own HTML report and
-`roster.json`; exports contain no ROM or core. An always-running report combines
-these rosters, links case reports, and fails on missing or conflicting evidence.
-The custom lint requires the case matrix to match this manifest exactly.
-The workflow is schedule/manual only. PRs use the selected bounded product
-smokes in `product-smoke.yml`; extended common-runner qualification remains
-manual in `search-eval.yml`.
+Each job retains the three registered seeds, films every scenario, and exports
+its own HTML report and `roster.json`; exports contain no ROM or core. An
+always-running Results job combines these rosters, links case reports, and fails
+on missing or conflicting evidence. The custom lint requires the case matrix to
+match this manifest exactly. Pull requests run the bounded jobs in
+[Checks / Dissonance Workloads / NES](../../.github/workflows/dissonance-workloads-nes-checks.yml)
+instead; [docs/WORKFLOWS.md](../../docs/WORKFLOWS.md) is the contract.
 
 Run the licensed panels on the private Linux host with the caller-supplied
 inventory and keep both the matrix and export directories on that host:
@@ -235,6 +236,34 @@ re-executes the complete stream and compares the report and portable checkpoint.
 These modes and verification time are explicit in the matrix. No large-run
 full-campaign verification is implied by a witness-only result.
 
+## Films
+
+```sh
+python3 benchmarks/search/eval.py film /private/runs/evaluation-001 \
+  --binary /private/builds/search-001/nes-film --max-frames 72000
+```
+
+`film` renders each completed cell's own recorded input to an MP4 with game
+audio through the `nes-film` renderer described in the
+[NES package README](../../workloads/nes/README.md). It reads the cell's
+`witness-input.json` and `result.json`, so it never starts a second search. A
+cell that produced no renderable input is recorded as unavailable with a reason;
+a render that fails is recorded as failed and fails the command. `films.json`
+indexes all three states beside each cell's `film/render.log`.
+`scripts/verify-nes-films.py` then rechecks every film's digest, frame count,
+audio stream, mean volume, audio coverage and duration, and checks each film
+against the digest, input and identity `films.json` recorded for its cell. It
+writes its verdict per cell to `film-verification.json`, and the roster and HTML
+report count a film as media only when that record accepts it.
+
+`eval.py build` builds `nes-film` alongside `nes-eval` and records its hash.
+`--max-frames` bounds each render. A long input is still emulated in full and
+rendered as a trailing window ending at the recorded endpoint; the ceiling, the
+clip policy and the dropped frame count are in each `film.json`. The HTML report
+carries a Media column linking the film with its duration and clip policy, and a
+cell with no media stays in the roster as unavailable instead of disappearing
+from it.
+
 ## Compare and publish
 
 ```sh
@@ -245,7 +274,8 @@ python3 benchmarks/search/eval.py export /private/runs/candidate \
 ```
 
 The export is a standalone HTML report plus allowlisted JSON/JSONL, discovered
-controller inputs and SHA-256 checksums. It excludes ROMs, cores, snapshots,
+controller inputs, rendered films with their `film.json` and render log, and
+SHA-256 checksums. It excludes ROMs, cores, snapshots,
 full streams, private requests, arbitrary files and logs. Symlinks are rejected.
 Copy the export directory to your static publication location; publishing is a
 separate operator action. Source-built STB artifacts also carry the license

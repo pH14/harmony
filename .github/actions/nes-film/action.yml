@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: NES scenario films
+description: >-
+  Render every recorded run in an evaluation matrix into video with game audio,
+  then check that each film is playable, carries a real audio stream and matches
+  the endpoint its run recorded. Runs that produced no renderable input are
+  reported as media unavailable; a failed render fails the job.
+inputs:
+  matrix:
+    description: The evaluation run directory to render
+    required: true
+  binary:
+    description: The nes-film executable from the attested build
+    required: true
+  max-frames:
+    description: Frame ceiling per film; a longer witness keeps its trailing window and endpoint
+    default: "72000"
+  min-seconds:
+    description: Shortest film that counts as playable media
+    default: "1"
+  require:
+    description: Minimum number of films this matrix must produce
+    default: "1"
+runs:
+  using: composite
+  steps:
+    - name: Render every recorded scenario input with game audio
+      shell: bash
+      run: |
+        python3 benchmarks/search/eval.py film "${{ inputs.matrix }}" \
+          --binary "${{ inputs.binary }}" --max-frames "${{ inputs.max-frames }}"
+    - name: Verify playable media with a real audio stream
+      shell: bash
+      run: |
+        python3 scripts/verify-nes-films.py \
+          --index "${{ inputs.matrix }}/films.json" --matrix "${{ inputs.matrix }}" \
+          --min-seconds "${{ inputs.min-seconds }}" --require "${{ inputs.require }}"
+    - name: Describe the rendered scenarios
+      shell: bash
+      run: |
+        python3 - "${{ inputs.matrix }}/films.json" <<'PY' >>"$GITHUB_STEP_SUMMARY"
+        import json
+        import sys
+
+        index = json.load(open(sys.argv[1]))
+        print('## Scenario films')
+        print()
+        print('| Scenario | Seconds | Frames | Clip | Endpoint |')
+        print('| --- | --- | --- | --- | --- |')
+        for row in index['films']:
+            clip = row['clip']
+            print(f"| {row['cell']} | {row['capture']['duration_seconds']:.1f} | "
+                  f"{row['video']['frames']:,} | {clip['policy']} | "
+                  f"{'verified' if row['endpoint_verified'] else 'unverified'} |")
+        for row in index['unavailable']:
+            print(f"| {row['cell']} | media unavailable | {row['reason']} | | |")
+        print()
+        print('Each film replays the input its own run recorded through native QuickNES and '
+              'ends at the endpoint that run verified.')
+        PY

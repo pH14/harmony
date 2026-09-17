@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::{
+    film::Endpointed,
     nova::campaign::{NovaCampaignRun, NovaGame},
     smb::campaign::{SmbCampaignRun, SmbGame},
+    witness::replay_witness,
 };
 use searcher::search::{
     archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy, SelectorPolicy},
     campaign::{
-        CampaignConfig, CampaignOrigin, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Workload,
+        CampaignConfig, CampaignOrigin, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
         run_campaign_checkpointed,
     },
     draw::{DrawMixture, SuffixShape},
@@ -122,7 +124,12 @@ fn record_identity(
     )?;
     Ok(())
 }
-fn search<G: Workload>(game: G, run: G::Run, options: &SearchOptions) -> Result<(), Box<dyn Error>>
+fn search<G: Endpointed>(
+    game: G,
+    run: G::Run,
+    backend: &str,
+    options: &SearchOptions,
+) -> Result<(), Box<dyn Error>>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
 {
@@ -158,6 +165,31 @@ where
         fs::File::create(options.output.join("checkpoint.json"))?,
         &checkpoint,
     )?;
+    let best = match report.objective_witness.clone() {
+        Some(input) => input,
+        None => serde_json::from_value(
+            serde_json::to_value(&report.archive)?
+                .get("champion_input")
+                .cloned()
+                .ok_or("the campaign retained no champion input to replay")?,
+        )?,
+    };
+    serde_json::to_writer_pretty(
+        fs::File::create(options.output.join("witness-input.json"))?,
+        &best,
+    )?;
+    let witness = replay_witness(&game, &config.run, &best)?;
+    let endpoint = game.headless_endpoint(&best)?;
+    serde_json::to_writer_pretty(
+        fs::File::create(options.output.join("result.json"))?,
+        &serde_json::json!({
+            "format": "harmony-search-result-v1",
+            "backend": backend,
+            "solved": report.objectives_reached > 0,
+            "witness": witness,
+            "endpoint": endpoint,
+        }),
+    )?;
     Ok(())
 }
 fn smb_run() -> SmbCampaignRun {
@@ -191,10 +223,16 @@ pub fn search_native(
         options,
     )?;
     match kind {
-        RomKind::Smb => search(SmbGame::new(rom, core, &core_hash), smb_run(), options),
+        RomKind::Smb => search(
+            SmbGame::new(rom, core, &core_hash),
+            smb_run(),
+            "native",
+            options,
+        ),
         RomKind::Nova => search(
             NovaGame::new(rom, core, &core_hash),
             NovaCampaignRun,
+            "native",
             options,
         ),
     }
@@ -247,11 +285,13 @@ pub fn search_consonance(
         RomKind::Smb => search(
             SmbGame::new_consonance(rom, kernel, &initramfs),
             smb_run(),
+            "consonance",
             options,
         ),
         RomKind::Nova => search(
             NovaGame::new_consonance(rom, kernel, &initramfs),
             NovaCampaignRun,
+            "consonance",
             options,
         ),
     }

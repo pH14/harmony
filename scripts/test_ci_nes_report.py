@@ -26,8 +26,10 @@ class ReportTests(unittest.TestCase):
         (directory / "suite.json").write_text(json.dumps(self.suite if suite is None else suite))
         (directory / "roster.json").write_text(json.dumps(rows))
 
-    def complete_rows(self):
-        return [{"cell": job["id"], "case": job["case"]["id"], "status": "complete"}
+    def complete_rows(self, media=None):
+        if media is None:
+            media = {"available": True, "mp4": "film/witness.mp4"}
+        return [{"cell": job["id"], "case": job["case"]["id"], "status": "complete", "media": media}
                 for job in REPORT.EVAL.expand_suite(self.suite)]
 
     def test_missing_jobs_remain_in_roster(self):
@@ -45,6 +47,26 @@ class ReportTests(unittest.TestCase):
         self.assertFalse(issues)
         self.assertEqual(merged[0]["status"], "error")
         self.assertIn("cases/0/index.html", REPORT.render(merged, issues))
+
+    def test_media_a_case_never_rendered_is_an_issue_and_stays_visible(self):
+        rows = self.complete_rows()
+        rows[0]["media"] = {"available": False, "reason": "the search produced no renderable input"}
+        for index, row in enumerate(rows):
+            self.write_roster(str(index), [row])
+        merged, issues = REPORT.collect(self.suite, self.root)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("media unavailable: the search produced no renderable input", issues[0])
+        page = REPORT.render(merged, issues)
+        self.assertIn("no renderable input", page)
+        self.assertIn("film with game audio", page)
+
+    def test_a_roster_without_media_is_reported_rather_than_assumed(self):
+        for index, row in enumerate(self.complete_rows(media=None)):
+            del row["media"]
+            self.write_roster(str(index), [row])
+        _, issues = REPORT.collect(self.suite, self.root)
+        self.assertEqual(len(issues), 27)
+        self.assertTrue(all("predates media" in issue for issue in issues))
 
     def test_duplicate_cells_cannot_count_twice(self):
         rows = self.complete_rows()

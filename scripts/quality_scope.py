@@ -24,8 +24,7 @@ KANI_PATH_PATTERNS = (
     "clippy.toml",
     "deny.toml",
     ".cargo/**",
-    ".github/workflows/quality.yml",
-    ".github/workflows/nightly.yml",
+    ".github/workflows/consonance-analysis.yml",
     ".github/actions/ci-scope/**", "scripts/ci-job-scope.py", "scripts/test_ci_job_scope.py",
     "scripts/quality_scope.py", "scripts/test_quality_scope.py",
 )

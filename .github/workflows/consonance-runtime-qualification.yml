@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Acceptance / Consonance platform
+name: Checks / Consonance / Guest Runtime Qualification
 
 on:
   schedule:
@@ -21,8 +21,8 @@ env:
   HARMONY_PLATFORM_FIXTURE: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/fixture
 
 jobs:
-  build-and-qualify:
-    name: Exact runtime build and extended replay
+  runtime-artifacts:
+    name: Exact Runtime Artifacts
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 120

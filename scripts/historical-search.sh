@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Run one fresh, bounded historical search campaign for one manifest arm.
+# Run one fresh, bounded historical search campaign for one manifest case.
 #
 # The input image and tools are built by the current checkout. The campaign is
 # bounded by both its deterministic execution budget and its wall budget. Its
@@ -8,7 +8,7 @@
 # replay a committed input or make a prior run a check.
 set -euo pipefail
 
-: "${CASE_ID:?}" "${ARM:?}" "${WORKLOAD_VERSION:?}" "${IMAGE_PREFIX:?}"
+: "${CASE_ID:?}" "${WORKLOAD_VERSION:?}" "${IMAGE_PREFIX:?}"
 : "${SOFTWARE_NAME:?}" "${RAM_MIB:?}"
 : "${SEED:?}" "${WORKERS:?}" "${ACTIONS:?}" "${EXECUTIONS:?}" "${WALL_MINUTES:?}"
 : "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
@@ -22,11 +22,6 @@ for name in RAM_MIB SEED WORKERS ACTIONS EXECUTIONS WALL_MINUTES; do
     }
 done
 
-case "${ARM}" in
-    vulnerable|control) ;;
-    *) echo "historical-search: infra-failure (unknown arm ${ARM})" >&2; exit 2 ;;
-esac
-
 oracle=$(dirname "$0")/historical-oracle.sh
 harmony=${PWD}/tools/harmony
 kernel=${PWD}/guest/bzImage
@@ -35,8 +30,8 @@ chmod +x "${harmony}"
 test -x "${harmony}" && test -s "${kernel}" && test -s "${base_initramfs}"
 
 mkdir -p reports
-out="reports/${CASE_ID}.${ARM}.search"
-console="reports/${CASE_ID}.${ARM}.search.console.txt"
+out="reports/${CASE_ID}.search"
+console="reports/${CASE_ID}.search.console.txt"
 rm -rf "${out}"
 
 # The outer bound covers a process that stops answering after the campaign's
@@ -64,7 +59,7 @@ summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 report="${out}/report.json"
 if [[ ! -s "${report}" ]]; then
     {
-        echo "## Search campaign — ${ARM} (${SOFTWARE_NAME} ${WORKLOAD_VERSION})"
+        echo "## Search campaign — ${SOFTWARE_NAME} ${WORKLOAD_VERSION}"
         echo
         echo "| field | value |"
         echo "|---|---|"
@@ -130,7 +125,7 @@ if (( status != 0 )); then
 elif (( execution_failures > watchdog_cutoffs )); then
     outcome="fail: infra-failure (execution failures ${execution_failures} exceed watchdog cutoffs ${watchdog_cutoffs})"
     verdict=1
-elif ! outcome=$("${oracle}" search "${report}" "${ARM}"); then
+elif ! outcome=$("${oracle}" search "${report}"); then
     verdict=1
 else
     verdict=0
@@ -154,7 +149,7 @@ if [[ -s "${out}/first-bug-input.json" ]]; then
     reproducer="${out}/first-bug-input.json"
 fi
 jq -n \
-    --arg case_id "${CASE_ID}" --arg arm "${ARM}" --arg software "${SOFTWARE_NAME}" \
+    --arg case_id "${CASE_ID}" --arg software "${SOFTWARE_NAME}" \
     --arg version "${WORKLOAD_VERSION}" --arg image_prefix "${IMAGE_PREFIX}" \
     --arg oracle "${outcome}" --arg execution_status "${execution_status}" \
     --argjson cli_exit_status "${status}" --argjson watchdog_cutoffs "${watchdog_cutoffs}" \
@@ -164,7 +159,7 @@ jq -n \
     --argjson ram_mib "${RAM_MIB}" \
     --argjson wall_minutes "${WALL_MINUTES}" --arg knobs "${knobs}" \
     --arg reproducer "${reproducer}" \
-    '{case_id:$case_id, arm:$arm, software:$software, version:$version,
+    '{case_id:$case_id, software:$software, version:$version,
       image_prefix:$image_prefix, seed:$seed, workers:$workers,
       executions_budget:$executions_budget, actions:$actions,
       ram_mib:$ram_mib, wall_minutes:$wall_minutes,
@@ -176,7 +171,7 @@ jq -n \
     /dev/null >"${out}/panel-status.json"
 
 {
-    echo "## Search campaign — ${ARM} (${SOFTWARE_NAME} ${WORKLOAD_VERSION})"
+    echo "## Search campaign — ${SOFTWARE_NAME} ${WORKLOAD_VERSION}"
     echo
     echo "| field | value |"
     echo "|---|---|"

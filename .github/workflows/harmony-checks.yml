@@ -1,0 +1,112 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Checks / Harmony
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harmony-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+
+jobs:
+  cli:
+    name: CLI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-cli
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Lint the assembled CLI
+        run: cargo clippy -p harmony-cli --all-features --all-targets -- -D warnings
+      - name: Argument admission, preflight and staging
+        run: cargo nextest run --all-features -p harmony-cli
+
+  nes-adapter:
+    name: NES Adapter
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-nes-adapter
+          workspaces: |
+            workloads/nes -> target
+            workloads/nes-machine -> target
+            workloads/nes-protocol -> target
+            workloads/nes-guest -> target
+      - name: Host-side NES adapter and machine
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --manifest-path workloads/nes/Cargo.toml --release \
+            --all-features --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path workloads/nes-protocol/Cargo.toml \
+            --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path workloads/nes/Cargo.toml --release --all-features
+          cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml --all-features
+          cargo test --locked --manifest-path workloads/nes-protocol/Cargo.toml --all-features
+      - name: Guest-side NES agent on its own manifest
+        run: |
+          set -euo pipefail
+          manifest=workloads/nes-guest/Cargo.toml
+          cargo clippy --manifest-path "$manifest" --all-features --all-targets -- -D warnings
+          # The static QuickNES feature needs the pinned external archive the
+          # Nova guest image build supplies, so the integration and binary tests
+          # run through the archive-free dynamic-core profile instead.
+          cargo test --manifest-path "$manifest" --all-features --lib
+          cargo test --manifest-path "$manifest" --no-default-features --test agent --bin play-agent
+          cargo build --manifest-path "$manifest" --bin play-agent
+
+  fault-injection:
+    name: Fault Injection
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-fault-injection
+          workspaces: |
+            workloads/fault-policy -> target
+            workloads/faults -> target
+            workloads/tools -> target
+      - name: Fault policy, package and tooling
+        run: |
+          set -euo pipefail
+          for package in fault-policy faults tools; do
+            manifest="workloads/$package/Cargo.toml"
+            cargo clippy --locked --manifest-path "$manifest" --all-features --all-targets -- -D warnings
+            cargo test --locked --manifest-path "$manifest" --all-features
+          done
+      - name: Guest-side instrumentation runtime
+        run: make -C workloads/faults/runtime check

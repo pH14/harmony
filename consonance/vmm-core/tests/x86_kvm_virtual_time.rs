@@ -88,7 +88,7 @@ fn new_backend_or_explain() -> KvmBackend {
     if !std::path::Path::new("/dev/kvm").exists() {
         panic!(
             "/dev/kvm missing — run on a Linux x86-64 KVM host \
-             (the x86-virtual-time workflow runner grants access first)"
+             (the hardware qualification workflow runner grants access first)"
         );
     }
     KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed ({e})"))

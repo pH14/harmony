@@ -28,31 +28,57 @@ line per action endpoint, for state the campaign report sums away: the map cell
 a Metroid route crossed, and the per-weapon Mega Man 2 meters behind the decoded
 sum.
 
+`src/film.rs` also holds the benchmark capture contract. `Endpointed` returns a
+game's decoded endpoint and frame count for a recorded input, `Filmable` adds
+rendering that input to raw video and audio, and `Reel` owns the FFmpeg
+pipeline: it rejects an empty or wrong-geometry render and a PCM track too short
+to cover the video, muxes the track back in, and hashes both the track and the
+MP4. `nes-film` renders the evaluation matrices of both compositions. It reads the input and `result.json` a campaign already
+recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
+own input rather than a second search.
+
+`nes-film --recorded-backend native` requires the replayed witness to equal the
+one the run recorded. `--recorded-backend consonance` compares the recorded
+semantic endpoint instead, because a whole-VM run's snapshot digest differs from
+a native one by construction. Such a film is a native QuickNES replay of a tape
+the VM search recorded: `film.json` sets `endpoint_bridged` and leaves
+`evidence_verified` false, and nothing is captured inside the guest.
+
+`--max-frames` bounds the render. A `nova-full` input can hold 8192 actions of
+up to 120 frames each, so an unbounded film would run for hours. Frames past the
+ceiling are still emulated and are left out of the video, making the film a
+trailing window ending at the recorded endpoint plus `--tail-frames`. The
+ceiling, the clip policy and the dropped frame count are recorded in `film.json`
+under `clip`. `scripts/verify-nes-films.py` checks the MP4 against those
+numbers: digest, frame count, a real audio stream, audible volume, audio that
+covers the video, and a duration floor. Its `--media` mode applies the same
+checks to an MP4 a workload wrote without a `film.json`, which is how the Super
+Tilt Bro campaign's own witness is checked.
+
 Campaign recordings use the current Dissonance schedule policy version 3 and
 bounded progress policy. Replay rejects recordings from superseded policy
 namespaces before constructing a replay target.
 
-## Backend acceptance matrix
+## Backend evidence matrix
 
 The native/Consonance backend oracle covers SMB and Nova, but the available
 artifact and platform evidence is not uniform:
 
-Nova has two separate Consonance evidence paths. The package acceptance lane
-below builds the generic NES OCI image and runs the shared backend oracle and
-CLI entry point. The larger Nova experiment in
-`.github/workflows/nova-consonance-experiment.yml` uses the same platform
-runtime and NES OCI image through its specialized campaign/oracle binaries; it
-does not provide SMB acceptance evidence.
+Nova has two separate Consonance evidence paths. The `Backend Equivalence` job
+in `Checks / Harmony Workloads / NES` builds the generic NES OCI image and runs
+the shared backend oracle and CLI entry point. `Benchmarks / Harmony Workloads /
+NES` uses the same platform runtime and NES OCI image through the whole-VM
+campaign binary; it produces no SMB evidence.
 
 | Workload/backend | Current evidence | Required artifacts and platform |
 | --- | --- | --- |
-| Nova/native | CI package acceptance and the Nova Consonance experiment exercise the pinned ROM and QuickNES core. | Host QuickNES core; the CI ROM is built from the pinned source recipe. |
-| Nova/Consonance | Real VM campaign and backend checks run in `.github/workflows/nova-consonance-experiment.yml`. | Linux/KVM, pinned kernel/runtime, NES OCI image, and the pinned Nova ROM/core. |
+| Nova/native | `Checks / Dissonance Workloads / NES` and `Benchmarks / Dissonance Workloads / NES` exercise the pinned ROM and QuickNES core. | Host QuickNES core; the CI ROM is built from the pinned source recipe. |
+| Nova/Consonance | The whole-VM campaign runs in `Benchmarks / Harmony Workloads / NES` and the backend oracle in `Checks / Harmony Workloads / NES`. | Linux/KVM, pinned kernel/runtime, NES OCI image, and the pinned Nova ROM/core. |
 | SMB/native | Adapter and loopback tests are checked in; no current real-ROM CI lane is claimed here. | Pinned QuickNES core and a licensed SMB ROM supplied by the caller. |
 | SMB/Consonance | `nes-backend-oracle` supports the path; no repository CI VM result is claimed here. | Linux/KVM, the platform runtime, NES OCI image, and a caller-supplied licensed SMB ROM. |
 | Mega Man 2/native | All eight independent stage origins pass local full-campaign replay qualification through `nes-eval`; commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed MM2 ROM. |
 | Metroid/native | New-game origin passes local full-campaign replay qualification through `nes-eval`; this is not an ending claim. Commercial ROMs are excluded from CI. | Pinned QuickNES core and a caller-supplied licensed Metroid ROM. |
-| Super Tilt Bro/native | `product-smoke.yml` selects a bounded PR smoke; `search-eval.yml` provides manual qualification. The scheduled/manual `nova-nightly.yml` capability panel evaluates Easy/Fair/Hard AI in independent case jobs through `nes-eval`. Hard retains its victory requirement in the public panel. | Host QuickNES core and the pinned source-built offline UNROM game. |
+| Super Tilt Bro/native | The `STB` job in `Checks / Dissonance Workloads / NES` runs a bounded search on affected pull requests. The `Benchmarks / Dissonance Workloads / NES` capability panel evaluates Easy/Fair/Hard AI in independent case jobs through `nes-eval`. Hard retains its victory requirement in the public panel. | Host QuickNES core and the pinned source-built offline UNROM game. |
 
 On Linux/KVM, the shared oracle is invoked as:
 
@@ -66,7 +92,7 @@ The oracle identifies SMB and Nova from the ROM and compares native and
 whole-VM observations, restored continuations, terminal outcomes, and probes.
 ROMs are not redistributed by this package. On aarch64, the caller must supply
 a kernel, platform runtime, and NES OCI image built for that architecture; no
-current ARM package acceptance result is claimed by this matrix.
+current ARM result is claimed by this matrix.
 
 ```sh
 cargo test --manifest-path workloads/nes/Cargo.toml

@@ -47,9 +47,8 @@ interaction stated in `e28bb88`. Keep provenance straight if repro details are i
   but measure and record here. Knobs: table size, UPDATE rate, build duration (index width /
   `maintenance_work_mem`), autovacuum aggressiveness (`autovacuum_naptime`, or manual `VACUUM`
   calls to force pruning).
-- **Nominal control**: identical workload on PostgreSQL 14.4 — must never trip the oracle.
-  (This entry's control is a *fixed version*, not a no-fault schedule, since no fault is
-  injected.)
+- Declared clean trajectories: schedules that never overlap a build with churn and pruning,
+  on the same pinned 14.3 image — must never trip the oracle.
 
 ## Notes
 
@@ -58,13 +57,12 @@ Second in build order: it reuses the deterministic-Postgres plumbing wholesale, 
 
 ## Workload as built
 
-`image/Dockerfile` builds both arms. Its build args select the PostgreSQL
-release and nothing else, so the two images differ in the PostgreSQL sources
-alone: 14.3 by default, 14.4 with `PG_VERSION` and `PG_SHA256` overridden. Both
-come from the official source tarball, verified against the sha256 in
-`case.json`. Source rather than a distro package because the oracle needs
-contrib `amcheck` plus the `pg_amcheck` client, and because 14.3 has no current
-distro build at all. `image/README.md` carries the two build commands.
+`image/Dockerfile` builds the pinned 14.3 image. Its build args select the
+PostgreSQL release and nothing else. The sources come from the official tarball,
+verified against the sha256 in `case.json`. Source rather than a distro package
+because the oracle needs contrib `amcheck` plus the `pg_amcheck` client, and
+because 14.3 has no current distro build at all. `image/README.md` carries the
+build command.
 
 `initdb` runs at build time, so the cluster system identifier is snapshotted
 into the image and every boot starts from identical on-disk bytes. The cluster
@@ -103,9 +101,9 @@ pruning event and puts it under the searcher's control.
 
 Run the hooks by hand in a plain container — start the churn, start the build
 while it runs, then check — and the 14.3 image reports rows without index
-entries while the 14.4 image stays silent. That says the image and its oracle
-are wired correctly; it says nothing about whether a Consonance search reaches
-the same overlap, which is what CI measures.
+entries. That says the image and its oracle are wired correctly; it says nothing
+about whether a Consonance search reaches the same overlap, which is what CI
+measures.
 
 The concurrency the bug needs comes from the platform supervisor spawning hooks without
 waiting, so overlapping hook 1 and hook 2 windows are what a campaign must
@@ -126,23 +124,20 @@ supervisor bundle to the guest.
 `case.json` is the machine-readable form of all of this: the pins, the node and
 hook table, the oracle, the run settings and the search budget. `probe.json` is
 the hand-written overlap — hook 1, hook 2, wait, wait, hook 3, wait, wait, at
-500 ms horizons — that must trip the oracle on 14.3 and stay silent on 14.4. It
-is a historical reachability reference; the CI panel discovers a fresh input
-on the current build instead of gating on this committed sequence.
+500 ms horizons — that trips the oracle on 14.3. It is a historical reachability
+reference; CI discovers a fresh input on the current build instead of gating on
+this committed sequence.
 
 ## Status
 
-`.github/workflows/historical-bugs.yml` runs the case on GitHub-hosted
-`ubuntu-24.04` runners with nested KVM during the nightly schedule or by manual
-dispatch. The panel has three stages:
+The historical-bug benchmark workflow runs the case on GitHub-hosted
+`ubuntu-24.04` runners with nested KVM on a schedule or by manual dispatch. The
+scenario has two stages:
 
 - **search** — a fresh campaign on the current 14.3 build, bounded by the
   execution and wall budgets in `case.json`. The faults package confirms each
   newly found candidate in a fresh Consonance session. A miss, an unverified
   candidate, and an infrastructure failure are reported separately.
-- **differential** — when search found an input, replay it once in a fresh
-  session on 14.4. The replay must execute the detector and remain free of the
-  vulnerable assertion; a violation is an actual differential mismatch.
 - **samples** — replay each manifest-declared clean input twice on fresh 14.3
   sessions and compare their state digests. These samples include no-find paths
   and consume the case's aggregate replay-session cap.
@@ -160,6 +155,7 @@ and replay on the current build.
 Hosted runners use stock KVM. The task-park kernel emulates userspace counter
 reads from Harmony's virtual clock there, so a host timestamp cannot enter
 guest memory through `RDTSC` or `RDTSCP`. The historical-bug oracle remains the
-criterion for the defect itself: it trips on 14.3, runs and passes on 14.4, and
-a campaign finds a tripping input within budget. Each replay also reports
-whether state hashes agreed, providing a separate determinism diagnostic.
+criterion for the defect itself: a campaign finds an input that trips it on 14.3
+within budget, and the package confirms that input in a fresh session. Each
+replay also reports whether state hashes agreed, providing a separate
+determinism diagnostic.

@@ -1,18 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Acceptance / Kernel XSAVE qualification
+name: Checks / Consonance / Kernel XSAVE Qualification
 on:
   workflow_dispatch: {}
 permissions:
   contents: read
 concurrency:
-  group: g1-kernel-${{ github.ref }}
+  group: consonance-kernel-xsave-qualification-${{ github.ref }}
   cancel-in-progress: true
 defaults:
   run:
     shell: bash
 jobs:
   build:
-    name: Build kernel XSAVE fixture
+    name: Kernel Fixture
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -43,7 +43,7 @@ jobs:
           path: g1-build-report
           retention-days: 14
   qualify:
-    name: Qualify kernel XSAVE — replica ${{ matrix.replica }}
+    name: Kernel XSAVE — Replica ${{ matrix.replica }}
     needs: build
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20

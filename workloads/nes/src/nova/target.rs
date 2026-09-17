@@ -137,6 +137,7 @@ pub struct NovaVideoMetadata {
     pub audio_sample_rate: u32,
     pub audio_channels: u8,
     pub audio_frames: u64,
+    pub skipped_frames: u64,
     pub input_endpoint: NovaMechanicalState,
 }
 
@@ -489,6 +490,7 @@ impl NovaTarget<QuickNesMachine> {
         &mut self,
         input: &NovaInput,
         tail_frames: u32,
+        skip_frames: u64,
         video_output: &mut dyn Write,
         audio_output: &mut dyn Write,
     ) -> Result<NovaVideoMetadata, Box<dyn Error>> {
@@ -500,8 +502,15 @@ impl NovaTarget<QuickNesMachine> {
         self.machine.set_audio_capture(true);
         let result = (|| {
             let mut metadata = None;
+            let mut skip = skip_frames;
             for action in &input.actions {
-                self.render_action(*action, video_output, audio_output, &mut metadata)?;
+                self.render_action(
+                    *action,
+                    video_output,
+                    audio_output,
+                    &mut metadata,
+                    &mut skip,
+                )?;
             }
             let (endpoint_wram, endpoint_save_ram) = read_memory(&self.machine)?;
             let input_endpoint = decode_state(&endpoint_wram, &endpoint_save_ram)?;
@@ -514,6 +523,7 @@ impl NovaTarget<QuickNesMachine> {
                     video_output,
                     audio_output,
                     &mut metadata,
+                    &mut skip,
                 )?;
                 remaining -= u32::from(hold);
             }
@@ -522,6 +532,7 @@ impl NovaTarget<QuickNesMachine> {
                 return Err("QuickNES produced no audio samples".into());
             }
             metadata.input_endpoint = input_endpoint;
+            metadata.skipped_frames = skip_frames - skip;
             Ok(metadata)
         })();
         self.machine.set_audio_capture(false);
@@ -535,6 +546,7 @@ impl NovaTarget<QuickNesMachine> {
         video_output: &mut dyn Write,
         audio_output: &mut dyn Write,
         metadata: &mut Option<NovaVideoMetadata>,
+        skip: &mut u64,
     ) -> Result<(), Box<dyn Error>> {
         let start = self.machine.snapshot()?;
         self.machine
@@ -551,6 +563,11 @@ impl NovaTarget<QuickNesMachine> {
                 .machine
                 .take_video_frame()
                 .ok_or("QuickNES omitted a requested video frame")?;
+            if *skip > 0 {
+                *skip -= 1;
+                self.machine.take_audio_samples();
+                continue;
+            }
             match metadata {
                 Some(existing)
                     if (existing.width, existing.height) != (frame.width, frame.height) =>
@@ -566,6 +583,7 @@ impl NovaTarget<QuickNesMachine> {
                         audio_sample_rate: QUICKNES_AUDIO_SAMPLE_RATE,
                         audio_channels: QUICKNES_AUDIO_CHANNELS,
                         audio_frames: 0,
+                        skipped_frames: 0,
                         input_endpoint: NovaMechanicalState::default(),
                     });
                 }

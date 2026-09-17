@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# NES games searched through the Dissonance adapter against native QuickNES.
+# The same games run through Consonance guest execution in
+# Checks / Harmony Workloads / NES; neither composition substitutes for the
+# other. Full capability searches live in the matching Benchmarks workflow.
+name: Checks / Dissonance Workloads / NES
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: dissonance-nes-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+
+jobs:
+  nova:
+    name: Nova
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      NOVA_BUILD: workloads/nes/build/nova
+      HARMONY_QUICKNES_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Determine whether this check is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: dissonance_nes
+      - name: Initialize the evidence directory
+        if: steps.scope.outputs.enabled == 'true'
+        run: mkdir -p nova-native-check && touch nova-native-check/console.txt
+      - name: Install Nova build tools
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends binutils cc65 curl ffmpeg g++ git
+      - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
+        with:
+          shared-key: dissonance-nes-nova
+          workspaces: |
+            . -> target
+            workloads/nes -> target
+      - name: Reproduce the pinned Nova ROM and QuickNES core
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
+          scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
+      - name: Cartridge RAM survives a real-core snapshot
+        if: steps.scope.outputs.enabled == 'true'
+        env:
+          HARMONY_QUICKNES_CORE: ${{ github.workspace }}/workloads/nes/build/nova/quicknes_libretro.so
+          HARMONY_NOVA_ROM: ${{ github.workspace }}/workloads/nes/build/nova/nova.nes
+        run: |
+          cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml \
+            --test cartridge_ram -- --ignored --exact \
+            declared_cartridge_ram_survives_real_core_restore
+      - name: Search Nova on the native backend
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p harmony-cli
+          timeout -k 10 120 target/release/harmony search --package nes --backend native \
+            --core "${NOVA_BUILD}/quicknes_libretro.so" \
+            --seed 20260901 --workers 1 --executions 4 --actions 8 \
+            --out nova-native-check/search "${NOVA_BUILD}/nova.nes" \
+            2>&1 | tee nova-native-check/console.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          run = Path("nova-native-check/search")
+          report = json.loads((run / "report.json").read_text())
+          if report.get("executions_completed", 0) <= 0:
+              raise SystemExit("the native Nova check admitted no executions")
+          if len(report.get("archive", {}).get("entries", [])) <= 0:
+              raise SystemExit("the native Nova check retained no archive work")
+          stream = (run / "stream.jsonl").read_text().splitlines()
+          if not any(json.loads(line).get("event") == "job" for line in stream[1:]):
+              raise SystemExit("the native Nova check recorded no job event")
+          prepared = json.loads((run / "prepared.json").read_text())
+          if prepared["execution"]["backend"] != "native":
+              raise SystemExit("the native Nova check did not run on the native backend")
+          PY
+      - name: Capture a short replay with game audio
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --manifest-path workloads/nes/Cargo.toml --bin nes-film
+          cp workloads/nes/NOVA-ARTIFACT-LICENSE.md nova-native-check/ARTIFACT-LICENSE.md
+          cp workloads/nes/nova-versions.env nova-native-check/
+          workloads/nes/target/release/nes-film --game nova \
+            --rom "${NOVA_BUILD}/nova.nes" \
+            --core "${NOVA_BUILD}/quicknes_libretro.so" \
+            --rom-sha256 "$(sha256sum "${NOVA_BUILD}/nova.nes" | cut -d' ' -f1)" \
+            --core-sha256 "$(sha256sum "${NOVA_BUILD}/quicknes_libretro.so" | cut -d' ' -f1)" \
+            --input nova-native-check/search/witness-input.json \
+            --evidence nova-native-check/search/result.json \
+            --out nova-native-check/film --max-frames 4096
+          python3 scripts/verify-nes-films.py nova-native-check/film/film.json --min-seconds 2
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scope.outputs.enabled == 'true'
+        with:
+          name: dissonance-nes-nova-${{ github.run_id }}
+          path: nova-native-check
+          if-no-files-found: error
+          retention-days: 14
+
+  stb:
+    name: STB
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      STB_BUILD: workloads/nes/build/stb
+      STB_ARTIFACT: workloads/nes/build/stb-check-artifact
+      STB_EXECUTIONS: "4"
+      STB_REQUIRE_VICTORY: "false"
+      STB_SEED: "1"
+      STB_AI: easy
+      STB_AI_LEVEL: "1"
+      STB_WORKERS: "1"
+      STB_WALL_SECONDS: "180"
+      HARMONY_STB_BUILD_JOBS: "2"
+      HARMONY_QUICKNES_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Determine whether this check is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: dissonance_stb
+      - name: Initialize the evidence directory
+        if: steps.scope.outputs.enabled == 'true'
+        run: mkdir -p "${STB_ARTIFACT}"
+      - uses: ./.github/actions/stb-evaluation
+        if: steps.scope.outputs.enabled == 'true'

@@ -10,6 +10,8 @@ import json
 import os
 import subprocess
 import sys
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +23,10 @@ assert SPEC is not None and SPEC.loader is not None
 LINTS = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = LINTS
 SPEC.loader.exec_module(LINTS)
+
+ROOT = SCRIPT.parent.parent
+sys.path.insert(0, str(SCRIPT.parent))
+import ci_contract
 
 
 def noul(value: float) -> dict:
@@ -39,14 +45,19 @@ def full_answers(
     decision_residue=0.05,
     workload="none",
     workload_confidence=0.9,
+    **architecture: float,
 ) -> dict:
-    return {
+    answers = {
         "file_kind": choice(file_kind, file_kind_confidence),
         "records_runs": noul(records_runs),
         "status_narrative": noul(status_narrative),
         "decision_residue": noul(decision_residue),
         "workload_named": choice(workload, workload_confidence),
     }
+    for question_id in LINTS.CI_ARCHITECTURE_RULES:
+        answers[question_id] = noul(architecture.pop(question_id, 0.05))
+    assert not architecture, sorted(architecture)
+    return answers
 
 
 def make_post(canned_answers: dict, calls: list | None = None):
@@ -463,6 +474,198 @@ class MainChangedFromBaselineTests(RequiresApiKey):
             self.assertEqual(code, 0)
             baseline = json.loads((root / "docs" / "semantic-lints-baseline.json").read_text())
             self.assertEqual(baseline, {"run-record": ["untouched.md"]})
+
+
+class CiArchitectureTests(RequiresApiKey):
+    """The CI architecture questions: scope, context, invalidation and verdicts."""
+
+    def plant(self, root: Path, path: str, content: str) -> None:
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(content)
+
+    def workflow_path(self) -> str:
+        return ci_contract.WORKFLOWS[0].path
+
+    def test_workflow_questions_are_asked_only_of_workflows(self):
+        asked = set(LINTS.questions_for(self.workflow_path()))
+        self.assertTrue(set(LINTS.WORKFLOW_QUESTION_IDS) <= asked)
+        self.assertFalse(set(LINTS.CI_DOCUMENTATION_QUESTION_IDS) <= asked)
+        for path in (".github/actions/nes-film/action.yml", "workloads/nes/src/film.rs",
+                     "benchmarks/search/eval.py"):
+            with self.subTest(path=path):
+                self.assertFalse(set(LINTS.WORKFLOW_QUESTION_IDS) <= set(LINTS.questions_for(path)))
+
+    def test_documentation_questions_follow_the_documentation_scope(self):
+        for path in ("docs/WORKFLOWS.md", "workloads/bugs/historical/README.md",
+                     "consonance/vmm-core/README.md", "CONTRIBUTING.md"):
+            with self.subTest(path=path):
+                self.assertTrue(set(LINTS.CI_DOCUMENTATION_QUESTION_IDS)
+                                <= set(LINTS.questions_for(path)))
+        for path in ("dissonance/searcher/src/lib.rs", "benchmarks/search/nightly.json"):
+            with self.subTest(path=path):
+                self.assertFalse(set(LINTS.CI_DOCUMENTATION_QUESTION_IDS)
+                                 & set(LINTS.questions_for(path)))
+
+    def test_a_workflow_is_judged_with_its_actions_scripts_and_contract(self):
+        path = ci_contract.by_name("Checks / Dissonance Workloads / NES").path
+        content = (ROOT / path).read_text()
+        context = LINTS.context_for(ROOT, path, content)
+        self.assertEqual(context["registered"]["name"], "Checks / Dissonance Workloads / NES")
+        self.assertIn(".github/actions/ci-scope/action.yml", context["referenced"])
+        self.assertIn("scripts/verify-nes-films.py", context["referenced"])
+        self.assertIn("docs/WORKFLOWS.md", context["documentation"])
+        self.assertIn("Harmony Workloads", context["policy"]["compositions"])
+        self.assertTrue(any(entry["name"] == "Checks / Harmony Workloads / NES"
+                            for entry in context["other_workflows"]))
+
+    def test_the_composed_context_stays_bounded(self):
+        for workflow in ci_contract.WORKFLOWS:
+            content = (ROOT / workflow.path).read_text()
+            context = LINTS.context_for(ROOT, workflow.path, content)
+            excerpts = [entry["text"] for entry in context["referenced"].values()
+                        if "text" in entry]
+            with self.subTest(workflow=workflow.name):
+                self.assertLessEqual(len(excerpts), LINTS.CONTEXT_FILE_COUNT)
+                self.assertLessEqual(sum(len(body) for body in excerpts),
+                                     LINTS.CONTEXT_TOTAL_LIMIT + LINTS.CONTEXT_FILE_LIMIT)
+                self.assertTrue(all(len(entry["sha256"]) == 64
+                                    for entry in context["referenced"].values()))
+
+    def test_a_script_reached_through_an_action_is_a_dependency(self):
+        path = ci_contract.by_name("Benchmarks / Dissonance Workloads / NES").path
+        content = (ROOT / path).read_text()
+        self.assertNotIn("scripts/verify-nes-films.py", content)
+        self.assertIn("scripts/verify-nes-films.py", LINTS.referenced_paths(ROOT, content))
+        self.assertIn(path, LINTS.select_files(ROOT, ["scripts/verify-nes-films.py"]))
+
+    def test_a_registered_media_renderer_is_a_dependency(self):
+        path = ci_contract.by_name("Benchmarks / Harmony Workloads / NES").path
+        content = (ROOT / path).read_text()
+        self.assertIn("workloads/nes/src/bin/nes-film.rs",
+                      LINTS._dependencies(ROOT, path, content))
+        self.assertIn(path, LINTS.select_files(ROOT, ["workloads/nes/src/bin/nes-film.rs"]))
+
+    def test_a_change_past_the_context_excerpt_invalidates_the_judgment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = self.workflow_path()
+            content = ("name: Checks / Repository\non:\n  pull_request:\n"
+                       "jobs:\n  one:\n    steps:\n"
+                       "      - run: python3 scripts/verify-nes-films.py\n")
+            self.plant(root, path, content)
+            self.plant(root, "docs/WORKFLOWS.md", "The registry owns every workflow.\n")
+            padding = "# " + "x" * (LINTS.CONTEXT_FILE_LIMIT + 32) + "\n"
+            self.plant(root, "scripts/verify-nes-films.py", padding + "MARKER = 1\n")
+            first = LINTS._cache_key(path, content, LINTS.questions_for(path),
+                                     LINTS.context_for(root, path, content))
+            self.plant(root, "scripts/verify-nes-films.py", padding + "MARKER = 2\n")
+            second = LINTS._cache_key(path, content, LINTS.questions_for(path),
+                                      LINTS.context_for(root, path, content))
+            self.assertNotEqual(first, second)
+
+    def test_a_changed_dependency_reselects_and_rejudges_the_workflow(self):
+        path = ci_contract.by_name("Checks / Dissonance Workloads / NES").path
+        selected = LINTS.select_files(ROOT, ["scripts/verify-nes-films.py"])
+        self.assertIn(path, selected)
+        self.assertIn(path, LINTS.select_files(ROOT, ["scripts/ci_contract.py"]))
+        self.assertIn(path, LINTS.select_files(ROOT, ["docs/WORKFLOWS.md"]))
+        self.assertNotIn(path, LINTS.select_files(ROOT, ["README.md"]))
+
+    def test_a_dependency_change_invalidates_the_cached_judgment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = self.workflow_path()
+            self.plant(root, path, "name: Checks / Repository\non:\n  pull_request:\n")
+            self.plant(root, "docs/WORKFLOWS.md", "The registry owns every workflow.\n")
+            calls: list = []
+            post = make_post(full_answers(file_kind="config"), calls)
+            cache: dict = {}
+            LINTS.run(root, [path], {}, post=post, cache=cache)
+            LINTS.run(root, [path], {}, post=post, cache=cache)
+            self.assertEqual(len(calls), 1)
+            self.plant(root, "docs/WORKFLOWS.md", "The registry owns every workflow and job.\n")
+            LINTS.run(root, [path], {}, post=post, cache=cache)
+            self.assertEqual(len(calls), 2)
+
+    def test_the_policy_version_is_part_of_the_cache_key(self):
+        questions = LINTS.questions_for("docs/WORKFLOWS.md")
+        context = LINTS.context_for(ROOT, "docs/WORKFLOWS.md", "text")
+        first = LINTS._cache_key("docs/WORKFLOWS.md", "text", questions, context)
+        bumped = json.loads(json.dumps(context))
+        bumped["policy"]["version"] += 1
+        self.assertNotEqual(first, LINTS._cache_key("docs/WORKFLOWS.md", "text", questions, bumped))
+
+    def test_each_architecture_question_fails_warns_and_passes_by_threshold(self):
+        for question_id, rule in LINTS.CI_ARCHITECTURE_RULES.items():
+            with self.subTest(question=question_id):
+                failed, warned = LINTS.evaluate(full_answers(**{question_id: 0.97}))
+                self.assertEqual(failed, [rule])
+                failed, warned = LINTS.evaluate(full_answers(**{question_id: 0.90}))
+                self.assertEqual((failed, warned), ([], [rule]))
+                self.assertEqual(LINTS.evaluate(full_answers(**{question_id: 0.10})), ([], []))
+
+    def test_a_clean_workflow_and_a_clean_document_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = self.workflow_path()
+            self.plant(root, path, "name: Checks / Repository\non:\n  pull_request:\n")
+            self.plant(root, "workloads/bugs/historical/README.md",
+                       "Each case records the upstream versions the bug affects.\n")
+            failures, warnings, _, _, errors, _ = LINTS.run(
+                root, [path, "workloads/bugs/historical/README.md"], {},
+                post=make_post(full_answers(file_kind="config")))
+            self.assertEqual((failures, warnings, errors), ([], [], []))
+
+    def test_documentation_directing_a_fixed_version_campaign_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plant(root, "workloads/bugs/historical/README.md",
+                       "Run the search against the fixed version as a control arm.\n")
+            failures, _, _, _, _, _ = LINTS.run(
+                root, ["workloads/bugs/historical/README.md"], {},
+                post=make_post(full_answers(file_kind="instructions",
+                                            fixed_version_direction=0.96)))
+            self.assertEqual([rule for rule, _, _ in failures], ["ci-fixed-version-direction"])
+
+    def test_an_architecture_finding_cannot_be_baselined(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = self.workflow_path()
+            self.plant(root, path, "name: Checks / Repository\non:\n  pull_request:\n")
+            answers = full_answers(file_kind="config", disguised_search=0.99)
+            baseline = {"ci-disguised-search": [path]}
+            failures, _, baselined, _, _, _ = LINTS.run(
+                root, [path], baseline, post=make_post(answers))
+            self.assertEqual([rule for rule, _, _ in failures], ["ci-disguised-search"])
+            self.assertEqual(baselined, set())
+
+    def test_update_baseline_refuses_an_architecture_finding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = self.workflow_path()
+            self.plant(root, path, "name: Checks / Repository\non:\n  pull_request:\n")
+            answers = full_answers(file_kind="config", owner_match=0.99)
+            with mock.patch.object(LINTS, "_http_post", make_post(answers)), \
+                 mock.patch.object(LINTS, "all_tracked_files", return_value=[path]), \
+                 mock.patch.object(LINTS, "save_baseline") as save, \
+                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(LINTS.main(["--repo-root", directory, "--all", "--update-baseline"]), 1)
+            save.assert_not_called()
+
+    def test_text_addressed_to_the_judge_is_material_not_instruction(self):
+        for question_id in LINTS.CI_ARCHITECTURE_RULES:
+            with self.subTest(question=question_id):
+                self.assertTrue(
+                    LINTS.QUESTIONS[question_id]["instructions"].startswith(LINTS.CONTENT_IS_DATA))
+
+    def test_no_credentials_still_skips_with_the_new_questions(self):
+        calls: list = []
+        with mock.patch.object(LINTS, "_http_post", make_post(full_answers(), calls)), \
+             mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TYPESAFE_API_KEY", None)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(LINTS.main(["--all"]), 0)
+        self.assertEqual(calls, [])
 
 
 class SkipWithoutKeyTests(unittest.TestCase):

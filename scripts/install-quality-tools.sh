@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Install the external code-quality binaries used by the quality checks
-# (.github/workflows/quality.yml, .pre-commit-config.yaml, and
+# (.github/workflows/repository-checks.yml, .pre-commit-config.yaml, and
 # CONTRIBUTING.md).
 #
 # These are *tools*, not crate dependencies — they are exempt from the
@@ -44,7 +44,7 @@ cargo public-api --version
 
 # Wire up the local fast-feedback git hooks (.githooks/pre-push: fmt, clippy,
 # nextest) via core.hooksPath. Convenience only —
-# the check of record is the self-hosted runner (.github/workflows/quality.yml).
+# the check of record is the self-hosted runner (.github/workflows/).
 # Skip with `git push --no-verify`. Run from inside the repo.
 if git rev-parse --git-dir >/dev/null 2>&1; then
     echo "== configuring git hooks (core.hooksPath = .githooks)"
@@ -61,7 +61,8 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
     fi
 fi
 
-# Miri runs only in CI (nightly.yml), but the unsafe⇒Miri review rule (AGENTS.md)
+# Miri runs only in CI (the components' Analysis workflows), but the unsafe⇒Miri
+# review rule (AGENTS.md)
 # means reviewers run it locally on crates whose diff touches `unsafe`.
 # Suggest the toolchain (don't force a multi-hundred-MB download on every tool install).
 if ! cargo +nightly-2026-06-16 miri --version >/dev/null 2>&1; then

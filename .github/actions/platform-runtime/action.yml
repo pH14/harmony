@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Restore the qualified Consonance guest runtime
+description: >-
+  Recover the kernel, initramfs and runtime manifest whose source key matches
+  this commit, from this branch's cache or from the publishing run's artifact,
+  and report the provenance scope it actually reached.
+inputs:
+  architecture:
+    description: Guest architecture whose runtime to restore
+    default: x86_64
+  require-exact:
+    description: Fail when the restored artifacts are not built from this source
+    default: 'true'
+  report:
+    description: Directory that receives provenance.json
+    default: platform-runtime
+outputs:
+  scope:
+    description: exact-input when the artifacts were built from this source
+    value: ${{ steps.verify.outputs.scope }}
+  source-key:
+    description: The source key the restore asked for
+    value: ${{ steps.source.outputs.key }}
+runs:
+  using: composite
+  steps:
+    - id: source
+      shell: bash
+      env:
+        ARCHITECTURE: ${{ inputs.architecture }}
+      run: |
+        key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key \
+          --architecture "$ARCHITECTURE")
+        echo "key=$key" >>"$GITHUB_OUTPUT"
+    - id: exact
+      uses: actions/cache/restore@v4
+      with:
+        path: consonance/harmony-linux/build/${{ inputs.architecture }}
+        key: consonance-platform-v1-${{ inputs.architecture }}-${{ steps.source.outputs.key }}
+    - id: handoff
+      if: steps.exact.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        ARTIFACT: consonance-platform-v1-${{ inputs.architecture }}-${{ steps.source.outputs.key }}
+      run: |
+        run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
+          -f name="$ARTIFACT" -F per_page=100 \
+          --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .workflow_run.id // empty')
+        echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
+    - if: steps.handoff.outputs.run_id != ''
+      shell: bash
+      run: rm -rf consonance/harmony-linux/build/${{ inputs.architecture }}
+    - if: steps.handoff.outputs.run_id != ''
+      uses: actions/download-artifact@v4
+      with:
+        github-token: ${{ github.token }}
+        run-id: ${{ steps.handoff.outputs.run_id }}
+        name: consonance-platform-v1-${{ inputs.architecture }}-${{ steps.source.outputs.key }}
+        path: consonance/harmony-linux/build/${{ inputs.architecture }}
+    - if: >-
+        inputs.require-exact != 'true' && steps.exact.outputs.cache-hit != 'true'
+        && steps.handoff.outputs.run_id == ''
+      uses: actions/cache/restore@v4
+      with:
+        path: consonance/harmony-linux/build/${{ inputs.architecture }}
+        key: consonance-platform-v1-${{ inputs.architecture }}-${{ steps.source.outputs.key }}
+        restore-keys: consonance-platform-v1-${{ inputs.architecture }}-
+    - id: verify
+      shell: bash
+      env:
+        ARCHITECTURE: ${{ inputs.architecture }}
+        REPORT: ${{ inputs.report }}
+        REQUIRE_EXACT: ${{ inputs.require-exact }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$REPORT"
+        python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify \
+          --architecture "$ARCHITECTURE" \
+          --artifacts "consonance/harmony-linux/build/$ARCHITECTURE" \
+          --output "$REPORT/provenance.json" || true
+        scope=$(python3 -c 'import json,os,sys; print(json.load(open(sys.argv[1]))["scope"])' \
+          "$REPORT/provenance.json")
+        echo "scope=$scope" >>"$GITHUB_OUTPUT"
+        echo "Guest runtime provenance: $scope" >>"$GITHUB_STEP_SUMMARY"
+        if [[ "$REQUIRE_EXACT" == true && "$scope" != exact-input ]]; then
+          echo "::error::This job needs guest runtime artifacts built from the proposed source (got $scope). Run Checks / Consonance / Guest Runtime Qualification on this branch, then rerun."
+          exit 1
+        fi

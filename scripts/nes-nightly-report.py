@@ -32,6 +32,9 @@ def collect(suite, cases):
                     raise ValueError(f"unknown or duplicate cell: {cell}")
                 if row.get("case") != expected[cell]["case"]["id"]:
                     raise ValueError(f"case identity differs for {cell}")
+                media = row.get("media") or {"available": False, "reason": "the roster predates media"}
+                if not media.get("available"):
+                    issues.append(f"{cell}: media unavailable: {media.get('reason', 'unrecorded')}")
                 found[cell] = {**row, "report": f"cases/{roster.parent.name}/index.html"}
         except (OSError, ValueError, KeyError, TypeError) as error:
             issues.append(f"{roster.parent.name}: {error}")
@@ -52,14 +55,22 @@ def render(rows, issues):
         cell = html.escape(row["cell"])
         if row.get("report"):
             cell = f'<a href="{html.escape(row["report"], quote=True)}">{cell}</a>'
+        media = row.get("media") or {}
+        if media.get("available"):
+            link = f'cases/{row["report"].split("/")[1]}/{media["mp4"]}' if row.get("report") else media["mp4"]
+            film = f'<a href="{html.escape(link, quote=True)}">film with game audio</a>'
+        else:
+            film = html.escape(str(media.get("reason", "unavailable")))
         table.append(f'<tr><td>{cell}</td><td>{html.escape(str(row.get("status", "unavailable")))}</td>'
-                     f'<td>{html.escape(str(row.get("outcome", "unavailable")))}</td></tr>')
+                     f'<td>{html.escape(str(row.get("outcome", "unavailable")))}</td>'
+                     f'<td>{film}</td></tr>')
     return ('<!doctype html><meta charset="utf-8"><title>NES nightly roster</title>'
             '<h1>NES nightly roster</h1><p>Independent case jobs; missing evidence remains visible. '
-            'Each case report retains budgets, progress, replay confirmation and resource costs.</p>'
+            'Each case report retains budgets, progress, replay confirmation, media and resource costs. '
+            'Every film replays the input its own run recorded and carries game audio.</p>'
             '<p><a href="roster.json">Combined roster JSON</a></p><ul>'
             + ''.join(f'<li>{html.escape(issue)}</li>' for issue in issues)
-            + '</ul><table><tr><th>Cell / report</th><th>Status</th><th>Outcome</th></tr>'
+            + '</ul><table><tr><th>Cell / report</th><th>Status</th><th>Outcome</th><th>Media</th></tr>'
             + ''.join(table) + '</table>')
 
 

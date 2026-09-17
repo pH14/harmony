@@ -9,6 +9,11 @@ use std::{
 };
 
 use machine::quicknes::VideoFrame;
+use serde::Serialize;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+use crate::search::{archive::Input, campaign::Workload};
 
 pub const FPS: u64 = 60;
 const OUTPUT_WIDTH: u32 = 768;
@@ -264,4 +269,208 @@ fn speed_up(video: &Path, factor: u32) -> Result<PathBuf, Box<dyn Error>> {
         return Err(format!("FFmpeg speed pass failed with {status}").into());
     }
     Ok(fast)
+}
+
+pub const NES_WIDTH: u32 = 256;
+pub const NES_HEIGHT: u32 = 224;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FilmMetadata {
+    pub width: u32,
+    pub height: u32,
+    pub frames: u64,
+    pub skipped_frames: u64,
+    pub audio_sample_rate: u32,
+    pub audio_channels: u8,
+    pub audio_frames: u64,
+    pub input_endpoint: Value,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Capture {
+    pub mp4: PathBuf,
+    pub frames: u64,
+    pub audio_frames: u64,
+    pub duration_seconds: f64,
+    pub audio_pcm_sha256: String,
+    pub mp4_sha256: String,
+}
+
+pub trait Endpointed: Workload {
+    fn headless_endpoint(&self, input: &Input<Self::Action>) -> Result<Value, Box<dyn Error>>;
+
+    fn input_frames(&self, input: &Input<Self::Action>) -> u64;
+}
+
+pub trait Filmable: Endpointed {
+    fn film(
+        &self,
+        input: &Input<Self::Action>,
+        tail_frames: u32,
+        skip_frames: u64,
+        video_output: &mut dyn Write,
+        audio_output: &mut dyn Write,
+    ) -> Result<FilmMetadata, Box<dyn Error>>;
+}
+
+pub struct Reel {
+    encoder: Child,
+    video: Option<BufWriter<ChildStdin>>,
+    audio: BufWriter<File>,
+    silent: PathBuf,
+    pcm: PathBuf,
+    mp4: PathBuf,
+}
+
+impl Reel {
+    pub fn start(mp4: &Path, width: u32, height: u32) -> Result<Self, Box<dyn Error>> {
+        let silent = mp4.with_extension("silent.mp4");
+        let pcm = mp4.with_extension("s16le");
+        let mut encoder = spawn_witness_encoder(width, height, &silent)?;
+        let video = BufWriter::new(encoder.stdin.take().ok_or("FFmpeg has no input pipe")?);
+        Ok(Self {
+            encoder,
+            video: Some(video),
+            audio: BufWriter::new(File::create(&pcm)?),
+            silent,
+            pcm,
+            mp4: mp4.to_path_buf(),
+        })
+    }
+
+    pub fn sinks(&mut self) -> Result<(&mut dyn Write, &mut dyn Write), Box<dyn Error>> {
+        let video = self.video.as_mut().ok_or("this reel is already closed")?;
+        Ok((video, &mut self.audio))
+    }
+
+    pub fn finish(mut self, metadata: &FilmMetadata) -> Result<Capture, Box<dyn Error>> {
+        if let Some(mut video) = self.video.take() {
+            video.flush()?;
+        }
+        self.audio.flush()?;
+        let status = self.encoder.wait()?;
+        if !status.success() {
+            return Err(format!("FFmpeg video pass failed with {status}").into());
+        }
+        if metadata.frames == 0 {
+            return Err("this replay produced no video frames".into());
+        }
+        if metadata.audio_frames == 0 {
+            return Err("this replay produced no audio samples".into());
+        }
+        let covering = metadata.frames * u64::from(metadata.audio_sample_rate) / FPS;
+        if metadata.audio_frames * 100 < covering * 99 {
+            return Err(format!(
+                "this replay produced {} audio samples, too few to cover {} video frames",
+                metadata.audio_frames, metadata.frames
+            )
+            .into());
+        }
+        if (metadata.width, metadata.height) != (NES_WIDTH, NES_HEIGHT) {
+            return Err("unexpected pinned QuickNES video geometry".into());
+        }
+        mux_witness_audio(
+            &self.silent,
+            &self.pcm,
+            &self.mp4,
+            metadata.audio_sample_rate,
+            metadata.audio_channels,
+        )?;
+        let capture = Capture {
+            mp4: self.mp4.clone(),
+            frames: metadata.frames,
+            audio_frames: metadata.audio_frames,
+            duration_seconds: metadata.frames as f64 / FPS as f64,
+            audio_pcm_sha256: sha256_file(&self.pcm)?,
+            mp4_sha256: sha256_file(&self.mp4)?,
+        };
+        fs::remove_file(&self.silent)?;
+        fs::remove_file(&self.pcm)?;
+        Ok(capture)
+    }
+}
+
+fn spawn_witness_encoder(width: u32, height: u32, output: &Path) -> Result<Child, Box<dyn Error>> {
+    Ok(Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "rgb24",
+            "-video_size",
+            &format!("{width}x{height}"),
+            "-framerate",
+            "60",
+            "-i",
+            "pipe:0",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .arg(output)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()?)
+}
+
+fn mux_witness_audio(
+    silent: &Path,
+    pcm: &Path,
+    mp4: &Path,
+    sample_rate: u32,
+    channels: u8,
+) -> Result<(), Box<dyn Error>> {
+    let status = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(silent)
+        .args([
+            "-f",
+            "s16le",
+            "-ar",
+            &sample_rate.to_string(),
+            "-ac",
+            &channels.to_string(),
+            "-i",
+        ])
+        .arg(pcm)
+        .args([
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-af",
+            "apad",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+        ])
+        .arg(mp4)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()?;
+    if !status.success() {
+        return Err(format!("FFmpeg audio mux failed with {status}").into());
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
+    Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
 }

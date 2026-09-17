@@ -126,23 +126,25 @@ the retained checkpoint indices and identify terminal cases with no available
 exact pair. This is a fresh paired reproduction, not recovery of an earlier
 sequential run. The ordinary same-input boot check remains the acceptance check.
 
-PR acceptance combines the portable contract suite and selected Miri checks
-with bounded hardware checks in `product-smoke.yml`. The KVM job requires the
+`Checks / Consonance` combines the portable contract suite with bounded
+hardware checks on every pull request, and `Checks / Consonance / Analysis`
+carries the Miri, coverage, mutation and proof work. The KVM job requires the
 published snapshot identity/replay matrix and serviced-exit checks. The platform
 job compares two complete same-seed Linux execution logs, requiring guest
-readiness, nonzero events and zero differences. The scheduled/manual
-`x86-virtual-time.yml` retains broader serviced-exit, RF, PAE translation and
-guest-written XSAVE coverage, including dirty reused vCPUs. Scheduled/manual
-workload acceptance retains the full-state workload restore oracle.
-After a failed smoke check reports a `StateHash` event index, the ignored
+readiness, nonzero events and zero differences. The scheduled and dispatched
+`Checks / Consonance / Hardware Qualification` retains broader serviced-exit,
+RF, PAE translation and guest-written XSAVE coverage, including dirty reused
+vCPUs, and `Checks / Harmony Workloads / OCI` retains the full-state workload
+restore oracle.
+After a failed bounded check reports a `StateHash` event index, the ignored
 `x2_component_diff_selected_checkpoint` diagnostic replays that boundary with
 `X2_CKPT_EVENT` and retains its reference or first-divergent raw captures under
 `X2_REPORT_DIR`. Each replay finishes its boot and destroys the VM before the
 next replay starts. A no-divergence replay remains diagnostic evidence rather
 than qualification.
 
-Linux snapshot smoke fixtures come from the shared source-keyed platform
-publisher. The smoke requires exact source provenance, verifies the manifest,
+Linux snapshot fixtures come from the shared source-keyed platform
+publisher. The bounded check requires exact source provenance, verifies the manifest,
 and uses its direct Linux fixture. The scheduled/manual producer builds the
 Nix kernel once, packages the runtime fixture without another kernel build,
 and publishes only after platform replay passes. Execution stays bounded
@@ -176,8 +178,8 @@ and execution accounting. Raw XSAVE presence remains restoration metadata; its
 identity treatment depends on the verified guest profile below. The execution
 requirement is one qualified host core type
 for related boots and restores; see the backend README for affinity admission and
-its limits. Cross-type migration is not supported. Cross-host and broader XSAVE
-state qualification remain follow-up work.
+its limits. Cross-type migration is not supported. Cross-host placement and broader
+XSAVE state lie outside the qualified set.
 
 The shipped Linux guest follows architectural page-table update and invalidation
 rules and cannot replace its kernel through kexec. Required PAE continuation
@@ -214,32 +216,20 @@ CPU state, MXCSR, devices and control state remain part of the comparison. The
 existing diagnostic trace counters remain excluded across replay. Artifact
 checksums still cover every original byte, including raw restoration metadata.
 
-The seeded check reproduced a published hash change on fixed-core AMD after a
-third host-only preparation entry, with no guest instruction executed
-([run 35047743001, replica 2](https://github.com/pH14/harmony/actions/runs/35047743001/job/104641200322)).
-The raw restore bitmap changed from 0 to 2; RAM and every other serialized CPU
-field were identical. This occurred after fresh restore of a guest-initiated
-UART stop with init-valued SSE state, seed 3 and XCR0 3. All 48 immediate A-to-B
-comparisons and all 48 continuation comparisons passed in the same run. An
-earlier run also failed an extra preparation after reused restore
-([run 35047329499, replica 2](https://github.com/pH14/harmony/actions/runs/35047329499/job/104639902214)).
-Intel's fixed-P-core matrix passes. A passing retry does not remove these
-failures or establish raw identity stability across extra entries.
-
-The ordinary two-boot Linux smoke also reproduced the same field difference
-([run 35048054460](https://github.com/pH14/harmony/actions/runs/35048054460)). At
-checkpoint 14847, the event context and RAM digest match, and the retained suffix
-has exactly one changed byte: raw restore presence 2 versus 0 in VCPU's XSRB
-field. Both reported hashes reconstruct from the retained suffixes and matching
-RAM digest. Original RAM bytes were not retained, so this is digest-strength RAM
-attribution, not a bytewise RAM comparison. Avoiding duplicate preparation calls
-would not close this ordinary execution witness.
+On fixed-core AMD, an extra host-only preparation entry can change the published
+hash with no guest instruction executed. The raw restore bitmap changes from 0
+to 2 while RAM and every other serialized CPU field stay identical. The ordinary
+two-boot Linux check reproduces the same field difference: matching event context
+and RAM digest, and exactly one changed byte in VCPU's XSRB field. RAM is
+compared there by digest rather than bytewise. Intel's fixed-P-core matrix
+passes. Avoiding duplicate preparation calls does not remove the difference, and
+a passing retry does not establish raw identity stability across extra entries.
 
 Controlled guest identity separates logical state from raw restoration metadata.
 `controlled_guest::linux_identity` matches the exact reviewed kernel and composed
 initramfs digests, RAM size and command line before enabling the profile. The compiled
 input catalog lives in `workloads/guest-images/admission/controlled-profiles.rs`;
-its entries come from that directory's approved composition manifests. The minimal Linux smoke image is bound to
+its entries come from that directory's approved composition manifests. The minimal Linux check image is bound to
 its `minimal-component.json` baseline and fixed init script. Unknown or changed
 inputs retain generic
 strict identity. The workload-free platform archive is not itself an approved
@@ -270,5 +260,4 @@ continue to represent those broader states with strict raw identity.
 
 The published API regression remains required on AMD and Intel under supported
 core placement. A successful scoped regression does not establish raw bitmap
-stability or support for arbitrary guest code. The PR remains draft until the
-required current-head checks, including the qualified Linux smoke, pass.
+stability or support for arbitrary guest code.

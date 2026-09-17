@@ -1,0 +1,168 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Deeper analysis of the assembled product and its workload adapters. Pull
+# requests get the Miri tests the change reaches; whole-crate interpretation,
+# coverage and mutation run on a schedule. Both routings are registered in
+# scripts/ci_contract.py.
+name: Checks / Harmony / Analysis
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "40 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harmony-analysis-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+  PINNED_NIGHTLY: nightly-2026-06-16
+
+jobs:
+  miri:
+    name: Miri — ${{ matrix.name }}
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [machine, nes-guest]
+    env:
+      HARMONY_MIRI_PR_SMOKE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Determine whether this crate is affected
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: miri
+          target: ${{ matrix.name }}
+      - name: Install pinned nightly and Miri
+        if: steps.scope.outputs.enabled == 'true'
+        run: rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
+        with:
+          shared-key: harmony-miri
+      - name: Interpret the tests this change reaches
+        if: steps.scope.outputs.enabled == 'true'
+        env:
+          MIRIFLAGS: ${{ steps.scope.outputs.miriflags }}
+          MIRI_COMMAND: ${{ steps.scope.outputs.command }}
+        run: |
+          set -euo pipefail
+          read -r -a command <<<"${MIRI_COMMAND}"
+          cargo "+${PINNED_NIGHTLY}" miri test "${command[@]}"
+
+  miri-whole-crate:
+    name: Miri — ${{ matrix.name }} (Whole Crate)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: machine
+            command: --manifest-path workloads/nes-machine/Cargo.toml
+          - name: nes-guest
+            command: --manifest-path workloads/nes-guest/Cargo.toml --lib --test agent --bins
+    env:
+      MIRIFLAGS: -Zmiri-permissive-provenance
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned nightly and Miri
+        run: rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-miri-whole-crate
+      - name: Interpret the whole crate
+        env:
+          MIRI_COMMAND: ${{ matrix.command }}
+        run: |
+          set -euo pipefail
+          read -r -a command <<<"${MIRI_COMMAND}"
+          cargo "+${PINNED_NIGHTLY}" miri test "${command[@]}"
+
+  coverage:
+    name: Coverage
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component llvm-tools-preview
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-coverage
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      - name: Region coverage of the assembled CLI
+        run: |
+          # shellcheck disable=SC2046
+          cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
+            $(python3 scripts/ci_contract.py package-flags Harmony) \
+            --fail-under-regions 70
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: harmony-coverage-${{ github.run_id }}
+          path: lcov.info
+          if-no-files-found: warn
+
+  mutants:
+    name: Mutation Testing — Shard ${{ matrix.shard }}/4
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      CARGO_INCREMENTAL: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-mutants
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants@27.1.0,cargo-nextest
+      - name: Mutate the assembled CLI
+        run: |
+          # shellcheck disable=SC2046
+          scripts/run-mutants.sh "$GITHUB_WORKSPACE/mutants/cli" \
+            --profile mutants --no-shuffle --sharding round-robin \
+            --shard ${{ matrix.shard }}/4 --minimum-test-timeout=180 \
+            $(python3 scripts/ci_contract.py package-flags Harmony) \
+            --cargo-test-arg=--profile --cargo-test-arg=mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: harmony-mutants-${{ matrix.shard }}
+          path: ${{ github.workspace }}/mutants
+          if-no-files-found: warn

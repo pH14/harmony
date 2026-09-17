@@ -185,11 +185,11 @@ carry the separate logical frame count.
 
 ## Continuous evaluation
 
-[Product smokes](../../../../.github/workflows/product-smoke.yml) run a bounded
-seed-1 Easy smoke on affected PRs and main changes.
-[Search evaluation acceptance](../../../../.github/workflows/search-eval.yml)
-qualifies all three AI levels through manual dispatch.
-[The NES benchmark](../../../../.github/workflows/nova-nightly.yml) follows
+The `STB` job in
+[Checks / Dissonance Workloads / NES](../../../../.github/workflows/dissonance-workloads-nes-checks.yml)
+runs a bounded seed-1 Easy search on affected pull requests and main changes.
+[Benchmarks / Dissonance Workloads / NES](../../../../.github/workflows/dissonance-workloads-nes-benchmarks.yml)
+qualifies all three AI levels on a schedule or a dispatch. It follows
 Nova's source-build/search/film pattern and checks full recorded campaign replay;
 scheduled and manually selected STB runs cross all three levels with registered seeds 1, 2,
 and 3. Easy and Fair run exact 2,000-execution soaks. Hard searches up to

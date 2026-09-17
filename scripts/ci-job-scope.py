@@ -7,13 +7,13 @@ import os
 from pathlib import Path
 import subprocess
 
-from ci_scope import SMOKES, selected
+from ci_scope import SCENARIOS, selected
 from miri_scope import TARGETS, selected_targets
 from quality_scope import kani_required
 
 
 def changed_paths(kind, event, base, before):
-    if event not in {"pull_request", "push"} or (kind == "miri" and event != "pull_request"):
+    if event not in {"pull_request", "push"}:
         raise ValueError(f"unsupported event for {kind}: {event}")
     if event == "pull_request":
         if not base:
@@ -21,7 +21,7 @@ def changed_paths(kind, event, base, before):
         command = ["git", "diff", "--no-renames", "--name-only", "-z", f"{base}...HEAD"]
     elif not before or before == "0" * 40:
         command = ["git", "ls-files", "-z"]
-    elif kind == "smoke":
+    elif kind in SCENARIOS:
         command = ["git", "diff", "--no-renames", "--name-only", "-z", f"{before}...HEAD"]
     else:
         command = ["git", "diff", "--no-renames", "--name-only", "-z", before, "HEAD"]
@@ -30,10 +30,10 @@ def changed_paths(kind, event, base, before):
 
 def selection(kind, target, paths):
     paths = list(paths)
-    if kind == "smoke":
-        if target not in SMOKES:
-            raise ValueError(f"unknown smoke: {target}")
-        return {"enabled": selected(paths)[target]}
+    if kind in SCENARIOS:
+        if target:
+            raise ValueError(f"{kind} does not accept a target")
+        return {"enabled": selected(paths)[kind]}
     if kind == "miri":
         if target not in {item["name"] for item in TARGETS}:
             raise ValueError(f"unknown Miri target: {target}")
@@ -51,7 +51,7 @@ def selection(kind, target, paths):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kind", choices=("smoke", "kani", "public_api", "miri"), required=True)
+    parser.add_argument("--kind", choices=(*SCENARIOS, "kani", "public_api", "miri"), required=True)
     parser.add_argument("--target", default="")
     args = parser.parse_args()
     paths = changed_paths(args.kind, os.environ.get("EVENT_NAME", ""),

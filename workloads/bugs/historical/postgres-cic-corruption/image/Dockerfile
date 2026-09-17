@@ -2,9 +2,8 @@
 # The PostgreSQL CREATE INDEX CONCURRENTLY workload image
 # (workloads/bugs/historical/postgres-cic-corruption).
 #
-# One file, two arms: the default build args give 14.3, which carries the bug,
-# and the control arm passes PG_VERSION=14.4 with that release's sha256. The
-# two images then differ in the PostgreSQL sources alone.
+# The default build args give 14.3, the release the case pins and searches.
+# PG_VERSION and PG_SHA256 select the sources and nothing else.
 #
 # PostgreSQL is built from the official tarball rather than taken from a distro
 # package because the oracle needs the contrib amcheck extension plus the

@@ -33,6 +33,9 @@ fn repo_root() -> PathBuf {
 fn require_artifact(name: &str) -> Vec<u8> {
     let candidates = [
         repo_root()
+            .join("consonance/harmony-linux/build/x86_64")
+            .join(name),
+        repo_root()
             .join("consonance/harmony-linux/build")
             .join(name),
         repo_root()
@@ -45,8 +48,9 @@ fn require_artifact(name: &str) -> Vec<u8> {
         }
     }
     panic!(
-        "guest artifact `{name}` not found in consonance/harmony-linux/build or consonance/harmony-linux/linux — build \
-         it first: `make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux image`."
+        "guest artifact `{name}` not found in consonance/harmony-linux/build/x86_64, consonance/harmony-linux/build or \
+         consonance/harmony-linux/linux — build it first: `make -C consonance/harmony-linux fetch && make -C \
+         consonance/harmony-linux/linux image`."
     );
 }
 
