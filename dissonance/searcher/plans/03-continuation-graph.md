@@ -1,26 +1,32 @@
 # Step 5: continuation replay governed by feedback
 
-Base: the step 4 merge commit (the strategy portfolio). The bank, the
-replay placement and the accounting on `backup/searcher-groundwork-with-step3`
-are correct and are the starting shapes for this step; the trigger, the
-share and the outcome feedback are rewritten here. Line numbers below name
-that branch where they name code that is not on the base.
+Base: the step 4 merge commit (the strategy portfolio). The base still holds
+the capped bank from main (`continuation.rs`: `EXIT_CAP`, `QUEUE_CAP`,
+`ACTION_CAP`, `reserve_bytes`) and the three continuation mixture
+identifiers; this step deletes them. The edge recording, `retain_slots`,
+the replay placement at the reconstructed reservations,
+`continuation_reservation_matches` and `ContinuationAccounting` on
+`backup/searcher-groundwork-with-step3` are correct in shape and are the
+starting point for the parts of the same name below. The pending queue,
+the trigger, the share and the feedback are new. Line numbers name the
+branch they are from.
 
 ## What it is
 
 Continuation replay propagates a better state at one slot to the slots
 reached from it. The archive records one edge per ordered pair of depth-0
-slots, holding the cheapest known tail between them. When a slot's holder is
-replaced by a strictly preferred state, each of that slot's exits is queued,
-and a queued exit is replayed from the new holder. A result that lands at
-the recorded destination and is strictly preferred there queues that slot's
-exits in turn. That chain is a wave.
+slots, holding the cheapest known tail between them. When a slot's holder
+is replaced by a strictly preferred state, the slot is queued, and a
+reservation that takes the queue replays that slot's exits from the new
+holder, a few at a time. A result that lands at the recorded destination
+and is strictly preferred there queues that slot in turn. That chain is a
+wave.
 
 ## What the first build measured
 
-Built with a trigger on any replacement and a fixed share of one reservation
-in two or four, it lost to continuations-off on every SMB and Metroid cell.
-The run reports say why.
+Built with a trigger on any replacement and a fixed share of one
+reservation in two or four, it lost to continuations-off on every SMB and
+Metroid cell. The run reports say why.
 
 | Run | Replays | Landed at the recorded destination | Replaced the holder there | Pending at the end |
 |---|---|---|---|---|
@@ -42,21 +48,27 @@ other draw strategies have, so it could not turn itself down.
 
 | Piece | First build | After |
 |---|---|---|
-| trigger | any replacement, including cheaper at equal preference | a strictly preferred replacement only: `preference_cmp` returned `Greater` for the candidate against the displaced holder. Under the portfolio, a champion strictly improved under its own preference; one pending entry per edge whichever champion improved |
-| share | one reservation in `CONTINUATION_RESERVATION_STRIDE` (`campaign.rs` 41, 91) whenever anything is pending | a reservation attempts a continuation with probability `e / (e + 256)`, where `e` is `energy_share(barren, scale)` for a fourth entry in `MixtureEnergy` (`draw.rs` 179) and `scale` is one constant, `CONTINUATION_ENERGY_SCALE = 6`, the value the panels use for the draw strategies; fresh is one in two, fully barren is one in 257 |
+| when the bank exists | always | only for a workload that declares a preference (after step 4, a non-empty preference list; the trait default declares none). Without one no edge is recorded, nothing is charged, and the stream is unchanged |
+| trigger | any replacement, including cheaper at equal preference | a strictly preferred replacement only: `preference_cmp` returned `Greater` for the candidate against the displaced holder, under the preference the replacement was chosen for. The slot is queued once whichever champion improved |
+| pending queue | one entry per edge, pushed eagerly for every exit of the improved slot (`continuation.rs` 119-132 on the backup branch) | one entry per slot: `pending: BTreeMap<u64, Group>` keyed by an insertion sequence, and `pending_slot: BTreeMap<Group, Pending { sequence, parent, wave, cursor: Option<Group> }>`. Queuing a slot is two map inserts, or an update of parent, wave and cursor if it is already pending. Popping takes the front slot's next exit after `cursor` from its `exits` set, advances the cursor, and removes the slot when its exits are exhausted. `remove_slot` deletes both map entries by sequence. No node is ever left behind |
+| share | one reservation in `CONTINUATION_RESERVATION_STRIDE` (`campaign.rs` 41, 91 on the backup branch) whenever anything is pending | a reservation attempts a continuation with probability `e / (e + 256)`, where `e = energy_share(continuation_barren, CONTINUATION_ENERGY_SCALE)` (`energy_share` at `draw.rs` 183 on `origin/searcher-groundwork`) and the scale is one constant, 6. Fresh is one in two, fully barren is one in 257 |
 | the draw | none | when the queue is non-empty, `RomuDuoJrRand::with_seed(campaign_seed ^ reservation_index).below(e + 256) < e`; no worker random state, so replay recomputes it at the reconstructed reservation |
-| feedback | replays bump no counter and reward no strategy | `record_outcome(EnergyStrategy::Continuation, new_slot)` on the job's admission, as the three draw strategies do at `campaign.rs` 857-880; a landed or replaced result is reported and not rewarded, since a wave would otherwise reward itself |
-| queue | one pending entry per edge, oldest first, tombstones counted, at most 8 taken per reservation | unchanged |
+| feedback | replays bump no counter and reward no strategy | `continuation_barren` is its own field beside `MixtureEnergy`, never in the array that `splice_weights` and `biased_weight` normalise (`draw.rs` 190-205), so the table, splice and alphabet weights are unchanged. A continuation job's admission resets it when the job opened a new slot and increments it otherwise; a landed or replaced result is reported and not rewarded, since a wave would otherwise reward itself |
 | edges and memory | one edge per slot pair, charged per edge, `retain_slots` on compaction | unchanged |
 | replay | pops at the reconstructed reservation (prefill and replenish), checks the record | unchanged, plus the recorded `continuation_energy` must equal the rebuilt one |
 | record | destination, wave, tail | plus `continuation_energy: u16` on every job at a reservation where the queue was non-empty |
-| accounting | edges, pending, jobs, execution work, landed, replaced, longest wave | plus the barren counter, `e`, reservations that drew for a continuation, reservations that took one, and jobs that opened a new slot |
-| enablement | always on | always on; a workload with no preference never triggers, so SMB pays nothing |
+| accounting | edges, pending, jobs, execution work, landed, replaced, longest wave | plus `continuation_barren`, `e`, reservations that drew, reservations that took a continuation, and jobs that opened a new slot |
 
-Bounds: pending entries never exceed the edge count; a reservation takes at
-most 8 queue entries; at most one reservation in two is a continuation, and
-after `8 * scale` barren jobs in a row, one in 257. One productive job
-returns the share to one in two.
+Work per path: recording an edge at admission is one lookup and one insert,
+queuing a slot at a replacement is two map operations, a reservation takes
+at most 8 exits, and `remove_slot` is proportional to that slot's degree.
+Nothing enumerates a slot's exits at admission or replacement time.
+
+Bounds: pending slots never exceed the slots with edges; a reservation takes
+at most 8 exits; the attempt probability is at most one half and, after
+`8 * CONTINUATION_ENERGY_SCALE` barren jobs in a row, one in 257. One job
+that opens a new slot restores it. Exact seeded draws are what a test
+checks, never a share over a run.
 
 The dispatch loop keeps its checks: skip a stale parent, bound the tail to
 the suffix shape's maximum, skip a fully archived prefix, record the tail as
@@ -64,82 +76,108 @@ a splice record, pin the origin. Results pass through ordinary retention.
 
 ## Steps
 
-### 1. Bank and replay
+### 1. Delete the old bank and identifiers
 
-Take `continuation.rs`, the `insert_after` edge recording, `retain_slots`
-in compaction, the pop loop at the prefill and replenish reservations, and
-`continuation_reservation_matches` from the backup branch. Delete
-`CONTINUATION_RESERVATION_STRIDE` and `continuation_reservation`.
+Remove the capped `ContinuationBank`, `enable_continuations`, the three
+continuation mixture identifiers, `isolates_continuations` and
+`uses_continuations`. `benchmarks/search/ci.json` names
+`energy_splice_continuation_v1:6` and moves to `energy_splice:6`.
 
-### 2. Trigger
+### 2. Bank
+
+Write `continuation.rs` with the edge maps, `exits`, `entrances`,
+`retain_slots` and `remove_slot` from the backup branch, and the per-slot
+pending queue from the table. `improved(slot, parent, wave)` queues or
+updates; `pop()` returns the next exit of the front slot as a
+`Continuation` or `None`. The bank is constructed only when the workload
+declares a preference; otherwise the archive holds no bank and
+`insert_after` records nothing.
+
+### 3. Trigger
 
 In `insert_after`, call `improved` only when the replacement was chosen on
-`Ordering::Greater`, never on the equal-preference cheaper path. Under the
-portfolio, that is the comparison under the preference whose champion is
-displaced; coalesce so an entry improving two champions queues each exit
-once.
+`Ordering::Greater` under some preference, never on the equal-preference
+cheaper path. Step 4 records which preference a replacement was chosen
+under; read that.
 
-### 3. Share and feedback
+### 4. Share and feedback
 
-Add `Continuation` to `EnergyStrategy` and a fourth barren counter to
-`MixtureEnergy`, with `continuation_energy(scale) -> u16` returning `e`.
-At each reservation with a non-empty queue, make the seeded draw above; on
-a hit, take up to 8 entries. A job's admission calls `record_outcome` with
-the continuation strategy and whether it opened a new slot. The scale is the
-one constant under every mixture, since `alphabet_only` carries none.
+Add `continuation_barren: u64` to the coordinator state beside
+`mixture_energy`, `continuation_energy() -> u16` computing `e`, and the
+seeded draw at each reservation with a non-empty queue. On a hit, take up
+to 8 exits through the dispatch loop. A continuation job's admission
+updates the counter from whether it opened a new slot, in
+`record_mixture_outcome` (`campaign.rs` 855 on `origin/searcher-groundwork`)
+or beside it; the three draw strategies' outcomes are untouched.
 
-### 4. Record and replay
+### 5. Record and replay
 
 Add `continuation_energy` to the job record at reservations where the queue
-was non-empty. Replay rebuilds the counter from replayed admissions, recomputes
-`e` and the draw at each reconstructed reservation, and errors on a mismatch
-naming the sequence. Set `CAMPAIGN_SCHEMA_VERSION` up by one.
+was non-empty. Replay rebuilds the counter from replayed admissions,
+recomputes `e` and the draw at each reconstructed reservation, and errors on
+a mismatch naming the sequence. Set `CAMPAIGN_SCHEMA_VERSION` up by one.
 
-### 5. Accounting
+### 6. Accounting
 
-Extend `ContinuationAccounting` with the fields in the table. Report it on
-every progress record as the backup branch does.
+Extend `ContinuationAccounting` with the fields in the table and report it
+on every progress record.
 
-### 6. Tests
+### 7. Tests
 
-- The bank tests from the backup branch pass unchanged.
-- A cheaper arrival at equal preference queues nothing; a strictly preferred
-  arrival queues each exit once.
-- A key with no `preference_cmp` runs a whole fixture campaign with zero
-  continuation jobs and a stream identical to the same campaign on the base
-  commit apart from the schema version and the new record field.
-- After `8 * scale` barren continuation jobs the share is at the floor; one
-  job that opens a new slot restores it.
-- Live and replay agree on the counter, `e`, every draw, edge count, pending
-  count and memory charge, with several reservations in flight, stale
-  attempts, and a memory budget tight enough to compact. Base this on the
-  fixture in `campaign_continuation_tests.rs`.
+- Bank: a cheaper tail replaces a pair's edge and a costlier one does not;
+  queuing a slot twice updates its parent and resets its cursor and leaves
+  one entry; popping walks a slot's exits in set order and removes the slot
+  when exhausted; deleting and recreating one slot many times leaves the
+  queue's physical size equal to its reported size and keeps the order of
+  unrelated slots; `remove_slot` releases the edge charge and the pending
+  entry.
+- Trigger: a cheaper arrival at equal preference queues nothing; a strictly
+  preferred arrival queues the slot once, also when it improves two
+  champions.
+- No preference: a key with the default `preference_cmp` runs a fixture
+  campaign under memory pressure with no bank, zero edges, zero continuation
+  charge, and a stream equal to the base commit's apart from the schema
+  version and the new record field.
+- Feedback: after `8 * CONTINUATION_ENERGY_SCALE` barren jobs the draw
+  is at the floor; one job that opens a new slot restores it; landed and
+  replaced results without a new slot increment the counter; the table,
+  splice and alphabet weights are the same before and after any
+  continuation outcome.
+- A slot with 500 exits improved 100 times performs no work proportional
+  to 500 at replacement time, measured by a counter on the bank.
+- Replay: live and replay agree on the counter, `e`, every draw, edge count,
+  pending count and memory charge, with several reservations in flight,
+  stale attempts, and a memory budget tight enough to compact. Base this on
+  the fixture in `campaign_continuation_tests.rs` on the backup branch and
+  replace its share-over-the-run assertion with exact seeded draw checks.
 - A replay whose recorded `continuation_energy` disagrees with the rebuilt
   value fails naming the sequence.
 
-### 7. Docs
+### 8. Docs
 
 Rewrite the continuation paragraphs in `dissonance/searcher/README.md`:
 what a wave is, what an edge holds, the trigger, the share rule and its
-floor, and the accounting fields.
+floor, when the bank exists, and the accounting fields.
 
 ## Checks after merge
 
 From `README.md`: local checks, SMB regression, quick panel, long panel with
-both manifests, throughput.
+both manifests, throughput, memory.
+
+The SMB regression must match the step 4 run cell for cell, since SMB
+declares no preference and holds no bank. If it differs, find why before
+the panels.
 
 Read the continuation accounting before any milestone number: the share of
 reservations taken over the run, how many jobs landed, how many replaced,
-how many opened a new slot, and the longest wave. If the share sits at the
-floor for most of the run, the feedback is doing its job and the mechanism
-costs almost nothing; that is a valid outcome and the mechanism stays in.
-Then compare occupied cells, items and tanks per seed with the step 4 run,
-and watch the film for the seeds that differ.
+how many opened a new slot, and the longest wave. Then compare occupied
+cells, items and tanks per seed with the step 4 run, and watch the film for
+the seeds that differ. Read throughput and memory against step 4 as well;
+edge recording and the bank's charge are paid whatever the share.
 
-The SMB regression must match the step 4 run cell for cell, since SMB never
-triggers. If it differs, find why before the panels.
-
-This step is an experiment. It is rejected only if a panel is worse with the
-share at the floor, which would mean the bookkeeping itself is on a hot
-path; a share that stays high and a panel that is no better is a result to
-write down, not a reason to drop it.
+This step is an experiment. Apply the README's regression rule against the
+step 4 run at matched executions: every seed behind on a milestone step 4
+reached on every seed is a rejection, whatever the share was. A share that
+sat at the floor with the panels level is the feedback working and the
+mechanism stays. A share that stayed high with the panels level is a result
+to write down.
