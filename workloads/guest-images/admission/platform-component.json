@@ -1,11 +1,11 @@
 {
-  "rootfs_sha256": "54ffb8242d0ddcb2594858b581d5d23c054feb4efeb7965c9eef090b66e90a83",
-  "archive_sha256": "ee6b601b9f3dc04f1547fbe5394df62933dd20e1b57139a1c0fe3d6cd40f3f70",
+  "rootfs_sha256": "ed170afe346941138ed8f2f35a8c8744c99a6d04fbb92ddfc484517a5ea1a4f2",
+  "archive_sha256": "58170efcd5928bf53bfffc55517693c947c90812b7ea6bedf1b241dbf45d4c04",
   "version": 2,
   "elf_sha256": {
     "/bin/busybox": "ed276986a91b1c13f6da78900446dfa4311e841d87d8f770ae3ca10b18767b70",
     "/usr/bin/runc": "ce6353a8273004c5f917277846dd521c7185b653ca46cfe538cc16b1be254cc9",
-    "/usr/lib/harmony/supervisor": "6cc0b938db15ccff58e8db84e02ffec09b496d4deb752f2c62dd625c5dc21875"
+    "/usr/lib/harmony/supervisor": "4ca157d121c758fe251e196c43807ff193d36ba46b8e284dc105c57fd31c48b9"
   },
   "xstate": {
     "/bin/busybox": {
