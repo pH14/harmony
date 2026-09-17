@@ -20,7 +20,7 @@ pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_BLUE_ACTIONS: usize = 4_096;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "blue_badges_route_events_battle_map_cell4_preference_party_hp_then_levels_v3";
+    "blue_badges_route_events_map_battle_cell4_preference_party_hp_then_levels_v4";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "uniform_macro_kind_and_slot_v1";
 
@@ -87,6 +87,7 @@ impl ArchiveKey for BlueArchiveKey {
         match depth {
             0 => place,
             1 => BlueArchiveGroup {
+                battle: 0,
                 cell_x: 0,
                 cell_y: 0,
                 ..place

@@ -280,3 +280,25 @@ relation considers map cells equal, so no map cell can dominate another. It is
 not the full historical cross-location preference/Pareto implementation, and
 it does not restore the prototype's improvement-replay queues. Its separate
 identifier permits an ablation without changing any existing selector's behavior.
+
+## Group bands
+
+`Archive::set_group_bands` gives one class an alternative draw rule at one
+group depth. The caller supplies a band index per group and a band count;
+groups it does not name fall in the last band. The draw then allocates mass by
+band rather than by group: band `b` gets `2^-(b+1)` of the class's draws, the
+last band repeats the share of the one before it so the schedule sums to one,
+and a band splits its share evenly among the groups it holds. Bands set on one
+class and depth leave every other class and depth on the selector policy's own
+weights, and `set_group_bands(None)` restores the policy everywhere.
+
+Allocating by band rather than by group is the point. A workload that wants
+draws to reach a place its archive barely covers cannot get there by weighting
+each group, because a corridor holding ten times the entries outvotes the
+target unless the per-group weight beats that ratio, and the ratio is not known
+in advance. A band share is independent of how many groups or entries fall
+inside it.
+
+Selection exhaustion still applies. A band that holds few groups reaches the
+exhaustion threshold sooner under its larger share, so the realised share of a
+long run sits below the scheduled one.

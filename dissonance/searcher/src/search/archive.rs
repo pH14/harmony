@@ -44,6 +44,34 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn record(lineage: &mut Self::Lineage, key: Self);
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupBands<G: Ord> {
+    pub class: G,
+    pub depth: usize,
+    pub bands: BTreeMap<G, usize>,
+    pub count: usize,
+}
+
+impl<G: Copy + Ord> GroupBands<G> {
+    pub fn band_of(&self, group: G) -> usize {
+        self.bands
+            .get(&group)
+            .copied()
+            .unwrap_or(self.count.saturating_sub(1))
+            .min(self.count.saturating_sub(1))
+    }
+
+    fn share(&self, band: usize) -> usize {
+        let last = self.count.saturating_sub(1);
+        1_usize
+            << (self
+                .count
+                .saturating_sub(1 + band.min(last).min(last.saturating_sub(1))))
+    }
+}
+
+const BAND_SHARE_SCALE: usize = 1 << 20;
+
 pub const MAX_ARCHIVE_ENTRIES: usize = 4_194_304;
 pub const MAX_ENTRIES_PER_KEY: usize = 2;
 #[cfg(not(test))]
@@ -552,6 +580,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     deepest_leaf: Vec<(K, usize)>,
     pub selector_policy: SelectorPolicy,
     group_barren: Vec<BTreeMap<K::Group, u64>>,
+    group_bands: Option<GroupBands<K::Group>>,
     action_cost: fn(&A) -> u64,
     live_progress: Option<(K, u64)>,
     frontier_cap: Option<usize>,
@@ -1050,6 +1079,7 @@ where
             deepest_leaf: Vec::new(),
             selector_policy: SelectorPolicy::GroupUniform,
             group_barren: vec![BTreeMap::new(); K::groups().saturating_sub(2)],
+            group_bands: None,
             action_cost,
             live_progress: None,
             frontier_cap: None,
@@ -2063,6 +2093,15 @@ where
         self.lineages.get(id)
     }
 
+    pub fn set_group_bands(&mut self, bands: Option<GroupBands<K::Group>>) {
+        self.group_bands = bands.filter(|bands| bands.count > 1 && bands.depth >= 1);
+    }
+
+    #[must_use]
+    pub fn group_bands(&self) -> Option<&GroupBands<K::Group>> {
+        self.group_bands.as_ref()
+    }
+
     #[must_use]
     pub fn entry_key(&self, id: usize) -> Option<K> {
         self.entries.get(id).map(|entry| entry.key)
@@ -2576,7 +2615,8 @@ where
                 }
                 let mut groups = deepest.keys().copied().collect::<Vec<_>>();
                 let frontier = deepest.values().copied().collect::<Vec<_>>();
-                let index = self.draw_group_index(rand, depth, &groups, Some(&frontier), None)?;
+                let index =
+                    self.draw_group_index(rand, class.0, depth, &groups, Some(&frontier), None)?;
                 let chosen = groups.swap_remove(index);
                 cells.retain(|(key, _)| key.group(depth) == chosen);
             }
@@ -2598,7 +2638,7 @@ where
                         (members.novelty(), self.cheapest_offered(offered))
                     })
                     .collect::<Vec<_>>();
-                self.draw_group_index(rand, 1, &cell_groups, None, Some(&ranked))?
+                self.draw_group_index(rand, class.0, 1, &cell_groups, None, Some(&ranked))?
             } else {
                 let count = NonZeroUsize::new(cells.len()).ok_or("cell draw over no cells")?;
                 rand.below(count)
@@ -2652,7 +2692,8 @@ where
                     .iter()
                     .map(|group| self.deepest_live_band(class, depth, *group))
                     .collect::<Result<Vec<_>, _>>()?;
-                let index = self.draw_group_index(rand, depth, &groups, Some(&frontier), None)?;
+                let index =
+                    self.draw_group_index(rand, class, depth, &groups, Some(&frontier), None)?;
                 parent = groups[index];
             }
 
@@ -2678,7 +2719,14 @@ where
                             )
                         })
                         .collect::<Vec<_>>();
-                    groups[self.draw_group_index(rand, cell_depth, &groups, None, Some(&ranked))?]
+                    groups[self.draw_group_index(
+                        rand,
+                        class,
+                        cell_depth,
+                        &groups,
+                        None,
+                        Some(&ranked),
+                    )?]
                 } else {
                     groups[rand
                         .below(NonZeroUsize::new(groups.len()).ok_or("cell draw over no cells")?)]
@@ -2686,7 +2734,7 @@ where
             } else {
                 let only = [class];
                 if class_depth >= 1 {
-                    let _ = self.draw_group_index(rand, cell_depth, &only, None, None)?;
+                    let _ = self.draw_group_index(rand, class, cell_depth, &only, None, None)?;
                 } else {
                     let _ = rand.below(NonZeroUsize::new(1).ok_or("cell draw over no cells")?);
                 }
@@ -2740,15 +2788,55 @@ where
         Ok(current)
     }
 
+    fn draw_band_index(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        class: K::Group,
+        depth: usize,
+        groups: &[K::Group],
+    ) -> Result<Option<usize>, Box<dyn Error>> {
+        let Some(bands) = self
+            .group_bands
+            .as_ref()
+            .filter(|bands| bands.depth == depth && bands.class == class)
+        else {
+            return Ok(None);
+        };
+        let mut occupancy = vec![0_usize; bands.count];
+        for group in groups {
+            occupancy[bands.band_of(*group)] += 1;
+        }
+        let weights = groups
+            .iter()
+            .map(|group| {
+                let band = bands.band_of(*group);
+                (bands.share(band) * BAND_SHARE_SCALE / occupancy[band]).max(1)
+            })
+            .collect::<Vec<_>>();
+        let total = NonZeroUsize::new(weights.iter().sum()).ok_or("band weights sum to zero")?;
+        let mut draw = rand.below(total);
+        for (index, weight) in weights.iter().enumerate() {
+            if draw < *weight {
+                return Ok(Some(index));
+            }
+            draw -= weight;
+        }
+        Err("band draw exceeded its weight total".into())
+    }
+
     fn draw_group_index(
         &self,
         rand: &mut RomuDuoJrRand,
+        class: K::Group,
         depth: usize,
         groups: &[K::Group],
         frontier: Option<&[K::Group]>,
         cells: Option<&[(Option<usize>, Option<u64>)]>,
     ) -> Result<usize, Box<dyn Error>> {
         let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
+        if let Some(index) = self.draw_band_index(rand, class, depth, groups)? {
+            return Ok(index);
+        }
         let (scales, ranked_by_frontier) = match &self.selector_policy {
             SelectorPolicy::Energy(scales) => (scales, false),
             SelectorPolicy::EnergyFrontier(scales)
@@ -3368,8 +3456,8 @@ mod tests {
     use std::cmp::Ordering;
 
     use super::{
-        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, HISTORY_COMPACTION_MIN_DROPS, Input,
-        InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, RetireThresholds,
+        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, GroupBands, HISTORY_COMPACTION_MIN_DROPS,
+        Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, RetireThresholds,
         SELECTION_EXHAUSTION_THRESHOLD, SelectorAccounting, SelectorDraw, SelectorPath,
         SelectorPolicy, selector_policy_from_identifier,
     };
@@ -4316,6 +4404,97 @@ mod tests {
         archive.unpin_job_origin(keyframe_id);
         assert!(archive.entries[0].snapshot.is_none());
         assert_eq!(archive.resident_snapshot_bytes(), 0);
+    }
+
+    #[test]
+    fn group_bands_split_draws_by_band_share_not_by_group_count() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        let groups = 10_u16;
+        for group in 1..=groups {
+            archive
+                .insert(
+                    None,
+                    u64::from(group),
+                    ArchiveCandidate {
+                        suffix: vec![u8::try_from(group).expect("suffix byte")],
+                        key: FlatKey([0, group, 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+
+        let draws = 4_096;
+        let share_of_target = |archive: &mut Archive<u8, FlatKey<3>, (), ()>| {
+            let mut rand = RomuDuoJrRand::with_seed(7);
+            let mut hits = 0;
+            for _ in 0..draws {
+                let (selected, _) = archive
+                    .select_parent(&mut rand, 8)
+                    .expect("select a parent");
+                if archive.entry_key(selected).expect("selected key").0[1] == 1 {
+                    hits += 1;
+                }
+            }
+            f64::from(hits) / f64::from(draws)
+        };
+
+        let even = share_of_target(&mut archive);
+        assert!(
+            (even - 0.1).abs() < 0.03,
+            "ten equal groups should each take a tenth of the draws, got {even}"
+        );
+
+        archive.set_group_bands(Some(GroupBands {
+            class: [0, 0, 0, 0],
+            depth: 1,
+            bands: BTreeMap::from([([0, 1, 0, 0], 0)]),
+            count: 2,
+        }));
+        let banded = share_of_target(&mut archive);
+        assert!(
+            (0.35..0.5).contains(&banded),
+            "the near band holds one group of ten and should take close to half the draws \
+             before selection exhaustion retires it, got {banded}"
+        );
+
+        archive.set_group_bands(None);
+        let restored = share_of_target(&mut archive);
+        assert!(
+            (restored - 0.1).abs() < 0.03,
+            "clearing the bands should restore the even draw, got {restored}"
+        );
+    }
+
+    #[test]
+    fn group_bands_apply_only_to_their_own_class_and_depth() {
+        let bands = GroupBands {
+            class: [0, 0, 0, 0],
+            depth: 1,
+            bands: BTreeMap::from([([0, 1, 0, 0], 0)]),
+            count: 3,
+        };
+        assert_eq!(bands.band_of([0, 1, 0, 0]), 0);
+        assert_eq!(bands.band_of([0, 2, 0, 0]), 2);
+        assert_eq!(bands.share(0), 4);
+        assert_eq!(bands.share(1), 2);
+        assert_eq!(bands.share(2), 2);
+
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_group_bands(Some(bands.clone()));
+        assert_eq!(archive.group_bands(), Some(&bands));
+        archive.set_group_bands(Some(GroupBands {
+            count: 1,
+            ..bands.clone()
+        }));
+        assert_eq!(
+            archive.group_bands(),
+            None,
+            "a single band is no bias and is dropped"
+        );
     }
 
     #[test]
