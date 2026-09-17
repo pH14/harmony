@@ -35,7 +35,6 @@ pub const LIST_SCROLL_OFFSET: u16 = 0xcc36;
 pub const JOY_IGNORE: u16 = 0xcd6b;
 pub const ENEMY_MON_HP: u16 = 0xcfe6;
 pub const BATTLE_RESULT: u16 = 0xcf0b;
-pub const BATTLE_RESULT_WON: u8 = 0;
 pub const BATTLE_MON_LEVEL: u16 = 0xd022;
 pub const BATTLE_MON_HP: u16 = 0xd015;
 pub const BATTLE_MON_MOVES: u16 = 0xd01c;
@@ -223,7 +222,7 @@ impl BlueState {
                 .party
                 .iter()
                 .take(usize::from(self.party_count))
-                .all(|mon| mon.hp == 0)
+                .all(|mon| mon.hp == 0 && mon.max_hp > 0)
     }
 
     #[must_use]
@@ -831,17 +830,18 @@ impl BlueTarget {
         Ok(())
     }
 
-    fn party_hp(&self, slot: u8) -> u16 {
-        let base = PARTY_MONS + PARTY_MON_BYTES * u16::from(slot) + PARTY_MON_HP;
+    fn party_word(&self, slot: u8, field: u16) -> u16 {
+        let base = PARTY_MONS + PARTY_MON_BYTES * u16::from(slot) + field;
         (u16::from(self.peek(base)) << 8) | u16::from(self.peek(base + 1))
     }
 
     fn party_wiped(&self) -> bool {
         let count = self.peek(PARTY_COUNT).min(PARTY_SLOTS);
-        if count == 0 || (0..count).any(|slot| self.party_hp(slot) > 0) {
-            return false;
-        }
-        self.peek(IS_IN_BATTLE) != 0 || self.peek(BATTLE_RESULT) != BATTLE_RESULT_WON
+        count > 0
+            && (0..count).all(|slot| {
+                self.party_word(slot, PARTY_MON_HP) == 0
+                    && self.party_word(slot, PARTY_MON_MAX_HP) > 0
+            })
     }
 
     fn spent(&self) -> bool {
@@ -904,7 +904,7 @@ impl BlueTarget {
         let mut fainted = false;
         let mut live = false;
         for slot in 0..count {
-            if self.party_hp(slot) == 0 {
+            if self.party_word(slot, PARTY_MON_HP) == 0 {
                 fainted = true;
             } else {
                 live = true;
@@ -922,7 +922,7 @@ impl BlueTarget {
             return Ok(true);
         }
         let count = self.peek(PARTY_COUNT).min(PARTY_SLOTS);
-        let Some(slot) = (0..count).find(|slot| self.party_hp(*slot) > 0) else {
+        let Some(slot) = (0..count).find(|slot| self.party_word(*slot, PARTY_MON_HP) > 0) else {
             return Ok(false);
         };
         self.move_cursor_to(slot, PARTY_SLOTS)?;
@@ -1336,8 +1336,17 @@ mod tests {
     fn a_whiteout_needs_a_party_and_every_member_fainted() {
         let empty = decode_state(&wram_with(&[]), 0);
         assert!(!empty.whited_out());
-        let fainted = decode_state(&wram_with(&[(PARTY_COUNT, 1), (PARTY_MONS, 7)]), 0);
+        let fainted = decode_state(
+            &wram_with(&[
+                (PARTY_COUNT, 1),
+                (PARTY_MONS, 7),
+                (PARTY_MONS + PARTY_MON_MAX_HP + 1, 25),
+            ]),
+            0,
+        );
         assert!(fainted.whited_out());
+        let unwritten = decode_state(&wram_with(&[(PARTY_COUNT, 1), (PARTY_MONS, 7)]), 0);
+        assert!(!unwritten.whited_out());
         let alive = decode_state(
             &wram_with(&[
                 (PARTY_COUNT, 1),

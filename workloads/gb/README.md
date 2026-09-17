@@ -177,10 +177,12 @@ Pokédex, entered Viridian Forest, entered Pewter, entered Pewter Gym, and the
 Boulder Badge. Victory is the badge. The three "entered" bits come from map ids
 rather than event flags, and every bit latches once set.
 
-A whiteout — a party that is not empty with every member at zero HP — is
-terminal and is never admitted. The game's blackout handler heals the party
-before control returns, so the condition is latched the moment it appears during
-an action rather than read from the state the action ends in.
+A whiteout — a party that is not empty with every member at zero HP and a real
+maximum — is terminal and is never admitted. The game's blackout handler heals the
+party before control returns, so the condition is latched the moment it appears
+during an action rather than read from the state the action ends in. The maximum
+HP has to be non-zero because a party record is filled over several frames when a
+member joins, and reading it mid-write shows a member at zero.
 
 ## Fixtures
 
@@ -191,16 +193,31 @@ choosing the first preset name for the player and the rival.
 takes Squirtle, wins the rival battle, fetches Oak's parcel from the Viridian
 Poké Mart, delivers it, crosses Viridian Forest, grinds on Route 2 with trips to
 the Pewter Pokémon Center, and beats the gym. `fixtures/brock-itinerary.json` is
-the `blue-probe plan` itinerary that produced it.
+the `blue-probe plan` itinerary that produced it, and `fixtures/brock-trace.json`
+is the archive key and milestone flags after each of its actions, written by
+`blue-probe trace`.
 
 ## Binaries
 
 `blue-campaign` runs a campaign. `blue-film` renders a recorded tape to MP4 and
 needs `ffmpeg`. `blue-probe` is the authoring and debugging tool: `setup`,
-`state`, `dump`, `plan`, `route`, `alphabet`, and `shot`. `dump` prints the
+`state`, `dump`, `plan`, `route`, `trace`, `alphabet`, and `shot`. `dump` prints the
 walkability grid, the tile ids, the screen tile map, the warp table and the
 sprite table; `shot` writes one frame as a PPM. `BLUE_TRACE=1` prints the decoded
 state after every applied action.
+
+## Scripts
+
+`scripts/jev-offline.py` sends live archive entries from a campaign report to the
+TypeSafe Jev decision model and scores its answers against the scripted route. It
+asks one `choice` over the batch, one `score` per entry against the milestone
+ladder, and one `noul` per entry for a dead end, all in a single request. It needs
+`TYPESAFE_API_KEY` and reports cost and latency per batch.
+
+```sh
+uv run workloads/gb/scripts/jev-offline.py <run>/report.json \
+  --trace workloads/gb/fixtures/brock-trace.json --out /tmp/jev.json
+```
 
 ## Checks
 
