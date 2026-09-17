@@ -1062,6 +1062,9 @@ impl Evaluation for BlueGame {
                 evidence.whiteouts = evidence.whiteouts.saturating_add(1);
             } else {
                 evidence.observed_maps.observe(observation.state.map);
+                evidence
+                    .graph
+                    .record(observation.state.map, &observation.links);
             }
         }
         merge_milestones(&mut evidence.aggregate, action.milestones);
