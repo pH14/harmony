@@ -609,6 +609,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     portfolio_selections: Vec<u64>,
     portfolio_replacements: Vec<u64>,
     portfolio_cross_improvements: u64,
+    replacement_preferences: Vec<u8>,
     lineages: Vec<K::Lineage>,
     deepest_leaf: Vec<(K, usize)>,
     pub selector_policy: SelectorPolicy,
@@ -1146,6 +1147,7 @@ where
             portfolio_selections: vec![0; K::preferences().max(1)],
             portfolio_replacements: vec![0; K::preferences().max(1)],
             portfolio_cross_improvements: 0,
+            replacement_preferences: Vec::new(),
             lineages: Vec::new(),
             deepest_leaf: Vec::new(),
             selector_policy: SelectorPolicy::GroupUniform,
@@ -2367,10 +2369,17 @@ where
         if won_preferences.len() > 1 {
             self.portfolio_cross_improvements = self.portfolio_cross_improvements.saturating_add(1);
         }
+        let mut replacement_preferences = 0_u8;
         if !displaced.is_empty() {
             for preference in &won_preferences {
                 if let Some(count) = self.portfolio_replacements.get_mut(*preference) {
                     *count = count.saturating_add(1);
+                }
+                let strictly_preferred = displaced.iter().any(|replaced| {
+                    key.preference_cmp(*preference, self.entries[*replaced].key) == Ordering::Greater
+                });
+                if strictly_preferred && *preference < 8 {
+                    replacement_preferences |= 1 << preference;
                 }
             }
         }
@@ -2432,6 +2441,7 @@ where
         self.active_count = self.active_count.saturating_add(1);
         self.lineages.push(lineage);
         self.cost_in_group.push(candidate_cost_in_group);
+        self.replacement_preferences.push(replacement_preferences);
         let cell_depth = Self::cell_depth();
         match &mut self.live_progress {
             Some((deepest, cheapest)) => {
@@ -3525,6 +3535,11 @@ where
         (exclusive, shared)
     }
 
+    #[must_use]
+    pub fn replacement_preferences(&self, id: usize) -> u8 {
+        self.replacement_preferences.get(id).copied().unwrap_or(0)
+    }
+
     pub fn selector_report(&self) -> SelectorAccounting {
         let mut accounting = self.selector_accounting.clone();
         let preferences = K::preferences().max(1);
@@ -4252,6 +4267,19 @@ mod tests {
             )
             .expect("insert preferred entry");
         assert!(archive.selector_report().portfolio.is_none());
+    }
+
+    #[test]
+    fn a_replacement_records_the_preference_it_won_under() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        insert_portfolio(&mut archive, 1, 10, 20);
+        insert_portfolio(&mut archive, 2, 5, 200);
+        assert_eq!(archive.replacement_preferences(0), 0);
+        assert_eq!(archive.replacement_preferences(1), 0);
+        let took_missiles = insert_portfolio(&mut archive, 3, 11, 21).expect("missile champion");
+        assert_eq!(archive.replacement_preferences(took_missiles), 0b01);
+        let took_both = insert_portfolio(&mut archive, 4, 60, 240).expect("both champions");
+        assert_eq!(archive.replacement_preferences(took_both), 0b11);
     }
 
     fn flat_archive<const DEPTHS: usize>(
