@@ -9,8 +9,8 @@ recording, and replay. Workloads supply associated types through `CampaignTypes`
 and implement four contracts. `Workload` composes those contracts for a full campaign.
 
 The archive groups entries at several ordered depths. A workload provides the
-key and any same-location state preference; the generic archive uses only the
-resulting ordering and retains bounded representatives. Campaigns reserve jobs
+key and an ordered list of same-location state preferences; the generic archive
+uses only the resulting ordering and retains bounded representatives. Campaigns reserve jobs
 in a deterministic admission window, allow physical workers to execute them,
 and process results in recorded admission order. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
@@ -83,7 +83,7 @@ group as a magnitude:
 | --- | --- |
 | Is this a new place? | `Eq` on the group. `Ord` only lets maps store it. |
 | Is this band, class or leaf further along? | `ArchiveKey::progress_cmp`, default `Ordering::Equal`. |
-| Which of two states at one slot survives? | `ArchiveKey::preference_cmp`, default `Ordering::Equal`. |
+| Which states at one slot survive? | `ArchiveKey::preference_cmp` at each of `ArchiveKey::preferences()` indices, default one index comparing `Ordering::Equal`. |
 
 `progress_cmp` must be a total preorder: any two groups compare, comparing them
 in either order gives reversed results, and the relation is transitive over
@@ -92,6 +92,19 @@ instead of a dominance scan. `check_total_preorder` checks those properties over
 a slice of groups; every workload that declares a `progress_cmp` calls it from a
 test. A workload with no progress notion leaves the default, and its places are
 then all peers.
+
+A slot keeps the top `slot_capacity()` entries under each preference, and its
+contents are the union of those sets. A candidate enters when it reaches that
+set under any one preference; an entry leaves when it holds a place under none.
+One entry can hold a place under several preferences and is stored once. The
+final holder draw picks a preference with equal probability and then draws among
+that preference's holders under the existing weighting; a key with one
+preference consumes no draw for the choice and selects exactly as it did before.
+The stream header carries `preference_portfolio`, and a recording whose
+portfolio differs from the compiled key is rejected. `selector.portfolio`
+reports the preference count, holders held under one preference and under
+several, draws and replacements per preference, and admissions that improved
+more than one preference at once.
 
 Each contract depends on `CampaignTypes` and can be implemented independently.
 A complete adapter receives the aggregate `Workload` implementation automatically.
@@ -283,8 +296,9 @@ fixed conservative capacity reserve against the logical memory budget before
 bootstrap. Pending attempts do not pin historical snapshots: stale parents are
 skipped. Dispatch records the complete action tail, so later donor reclamation
 cannot change serial replay. Only same-slot `preference_cmp` is consulted;
-preferences are never compared between unrelated locations. A workload that
-reports no preference improvements gets no continuation attempts.
+preferences are never compared between unrelated locations. An improvement under
+any one preference triggers an attempt. A workload that reports no preference
+improvements gets no continuation attempts.
 
 These are experiments, not new defaults. Promote policies based on paired workload
 panels, fresh completion results, and resource costs through

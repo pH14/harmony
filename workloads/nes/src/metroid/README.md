@@ -21,8 +21,9 @@ marks decoded health >=8000 as terminal. The damage routine stores a BCD
 subtraction before testing borrow and clearing lethal damage, and a frame
 boundary can expose that intermediate value. Six energy tanks cap normal health
 at 6999, so an underflowed reading is the largest health any endpoint can
-report; because health is the last term of the archive preference, that endpoint
-takes the single slot at its location from every legitimate endpoint beside it.
+report; because health is the last term of the missile-first preference and the
+leading resource term of the health-first one, that endpoint takes a slot at its
+location from every legitimate endpoint beside it.
 Raw health stays unchanged for replay inspection. Decoding stops at the first
 frame the policy calls terminal while the action itself runs to its end, so a
 terminal endpoint holds an observation and an emulator state from different
@@ -39,7 +40,8 @@ predicate: `nes-progress` names it, and `metroid-film` defaults to it.
 16-pixel positions through 32-pixel cells, 128-pixel regions, map cells, and
 inventory counts. Posture and door-transition state distinguish possible
 continuations. Health and missile stock are same-slot preference, not extra
-spatial slots. The key's tank count subtracts the 75 missiles each boss kill
+spatial slots, and the two preferences order that pair against each other in
+opposite ways. The key's tank count subtracts the 75 missiles each boss kill
 awards, so a kill does not relabel every map cell the killer reaches as holding
 fifteen more tanks than the cells beside it; the kill still counts through the
 item term. Item and tank counts describe discovered capabilities; no
@@ -55,9 +57,17 @@ retained-input table.
 
 `progress_cmp` compares the item count and nothing else, so that is the whole
 progress relation the selector reads. Tanks are capacity, so they live in the
-preference, which decides which of two states keeps one slot. Field declaration
-order no longer ranks anything: two places with equal items are peers whatever
-their area byte, map row or column.
+preferences, which decide which states keep a location's slots. Field
+declaration order no longer ranks anything: two places with equal items are
+peers whatever their area byte, map row or column.
+
+The key declares two preferences. Both lead with items then tanks; the first
+then ranks missiles before health and the second health before missiles. A
+location keeps the best state under each, so at most two, and one state holds
+both places when it leads on both. The two disagree only on a resource trade:
+ten missiles at twenty health takes the first, five missiles at two hundred
+health takes the second, and a route that needs the survivable state no longer
+loses it to the stocked one.
 
 The legacy primary progress watermark records equipment bit count **plus boss
 defeats**, and missile capacity.
