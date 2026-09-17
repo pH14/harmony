@@ -341,6 +341,18 @@ pub struct SelectorAccounting {
     pub concentration: ConcentrationAccounting,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<RetirementAccounting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portfolio: Option<PortfolioAccounting>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PortfolioAccounting {
+    pub preferences: usize,
+    pub exclusive_holders: u64,
+    pub shared_holders: u64,
+    pub selections_by_preference: Vec<u64>,
+    pub replacements_by_preference: Vec<u64>,
+    pub cross_preference_improvements: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -594,6 +606,9 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     selector_accounting: SelectorAccounting,
     cost_in_group: Vec<u64>,
     replacement_cost_displaced: u64,
+    portfolio_selections: Vec<u64>,
+    portfolio_replacements: Vec<u64>,
+    portfolio_cross_improvements: u64,
     lineages: Vec<K::Lineage>,
     deepest_leaf: Vec<(K, usize)>,
     pub selector_policy: SelectorPolicy,
@@ -1128,6 +1143,9 @@ where
             },
             cost_in_group: Vec::new(),
             replacement_cost_displaced: 0,
+            portfolio_selections: vec![0; K::preferences().max(1)],
+            portfolio_replacements: vec![0; K::preferences().max(1)],
+            portfolio_cross_improvements: 0,
             lineages: Vec::new(),
             deepest_leaf: Vec::new(),
             selector_policy: SelectorPolicy::GroupUniform,
@@ -2192,7 +2210,12 @@ where
             .map(|(deepest, cheapest)| (deepest, cheapest, self.retained))
     }
 
-    fn rank_slot_preferences(&self, slot: &[usize], key: K, cost_in_group: u64) -> Vec<bool> {
+    fn rank_slot_preferences(
+        &self,
+        slot: &[usize],
+        key: K,
+        cost_in_group: u64,
+    ) -> (Vec<bool>, Vec<usize>) {
         let capacity = K::slot_capacity().max(1);
         let preferences = K::preferences().max(1);
         let members: Vec<(K, u64, u64)> = slot
@@ -2200,6 +2223,8 @@ where
             .map(|id| (self.entries[*id].key, self.cost_in_group[*id], self.entries[*id].id))
             .chain(std::iter::once((key, cost_in_group, self.next_entry_id)))
             .collect();
+        let candidate = members.len().saturating_sub(1);
+        let mut won = Vec::new();
         let mut retained = vec![false; members.len()];
         let mut order: Vec<usize> = (0..members.len()).collect();
         for preference in 0..preferences {
@@ -2214,9 +2239,12 @@ where
             });
             for index in order.iter().take(capacity) {
                 retained[*index] = true;
+                if *index == candidate {
+                    won.push(preference);
+                }
             }
         }
-        retained
+        (retained, won)
     }
 
     fn cost_in_group_of(&self, parent_id: Option<usize>, suffix: &[A], key: K) -> u64 {
@@ -2286,7 +2314,8 @@ where
         let candidate_cost_in_group = self.cost_in_group_of(parent_id, &suffix, key);
         let slot = self.slots.entry(key.group(0)).or_default().clone();
         let new_slot = slot.is_empty();
-        let ranked = self.rank_slot_preferences(&slot, key, candidate_cost_in_group);
+        let (ranked, won_preferences) =
+            self.rank_slot_preferences(&slot, key, candidate_cost_in_group);
         let admitted = ranked.last().copied().unwrap_or(true);
         let displaced: Vec<usize> = slot
             .iter()
@@ -2333,6 +2362,16 @@ where
                     self.next_entry_id,
                     &suffix,
                 );
+            }
+        }
+        if won_preferences.len() > 1 {
+            self.portfolio_cross_improvements = self.portfolio_cross_improvements.saturating_add(1);
+        }
+        if !displaced.is_empty() {
+            for preference in &won_preferences {
+                if let Some(count) = self.portfolio_replacements.get_mut(*preference) {
+                    *count = count.saturating_add(1);
+                }
             }
         }
         for replaced in displaced {
@@ -3081,6 +3120,11 @@ where
         } else {
             None
         };
+        if let Some(preference) = drawn_preference {
+            if let Some(count) = self.portfolio_selections.get_mut(preference) {
+                *count = count.saturating_add(1);
+            }
+        }
         let preferred = match drawn_preference {
             Some(preference) => window
                 .iter()
@@ -3460,8 +3504,41 @@ where
     }
 
     #[must_use]
+    fn portfolio_holders(&self, preferences: usize) -> (u64, u64) {
+        let mut exclusive = 0_u64;
+        let mut shared = 0_u64;
+        for slot in self.slots.values() {
+            for id in slot {
+                if !self.active.get(*id).copied().unwrap_or(false) {
+                    continue;
+                }
+                let held = (0..preferences)
+                    .filter(|preference| self.is_preference_champion(*id, *preference))
+                    .count();
+                match held {
+                    0 => {}
+                    1 => exclusive = exclusive.saturating_add(1),
+                    _ => shared = shared.saturating_add(1),
+                }
+            }
+        }
+        (exclusive, shared)
+    }
+
     pub fn selector_report(&self) -> SelectorAccounting {
         let mut accounting = self.selector_accounting.clone();
+        let preferences = K::preferences().max(1);
+        if preferences > 1 {
+            let (exclusive, shared) = self.portfolio_holders(preferences);
+            accounting.portfolio = Some(PortfolioAccounting {
+                preferences,
+                exclusive_holders: exclusive,
+                shared_holders: shared,
+                selections_by_preference: self.portfolio_selections.clone(),
+                replacements_by_preference: self.portfolio_replacements.clone(),
+                cross_preference_improvements: self.portfolio_cross_improvements,
+            });
+        }
         if self.persistent_key_counts() {
             accounting.key_counts = Some(KeyCountAccounting {
                 capacity: KEY_COUNT_CAPACITY,
@@ -4137,6 +4214,44 @@ mod tests {
         insert_portfolio(&mut archive, 1, 10, 20);
         assert!(archive.is_preference_champion(0, 0));
         assert!(archive.is_preference_champion(0, 1));
+    }
+
+    #[test]
+    fn the_portfolio_report_counts_holders_and_draws() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        insert_portfolio(&mut archive, 1, 10, 20);
+        insert_portfolio(&mut archive, 2, 5, 200);
+        let mut rand = RomuDuoJrRand::with_seed(0x7ea1_f0f0);
+        for _ in 0..64 {
+            archive
+                .select_parent(&mut rand, 64)
+                .expect("draw a portfolio parent");
+        }
+        let report = archive.selector_report();
+        let portfolio = report.portfolio.expect("portfolio accounting is reported");
+        assert_eq!(portfolio.preferences, 2);
+        assert_eq!(portfolio.exclusive_holders, 2);
+        assert_eq!(portfolio.shared_holders, 0);
+        assert_eq!(portfolio.selections_by_preference.len(), 2);
+        assert!(portfolio.selections_by_preference.iter().all(|count| *count > 0));
+    }
+
+    #[test]
+    fn one_preference_reports_no_portfolio() {
+        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![1],
+                    key: PreferredKey { slot: 7, quality: 2 },
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert preferred entry");
+        assert!(archive.selector_report().portfolio.is_none());
     }
 
     fn flat_archive<const DEPTHS: usize>(
