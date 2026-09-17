@@ -662,7 +662,9 @@ impl Reporting for BlueGame {
         deepest: BlueArchiveKey,
         scopes: &[BlueArchiveGroup],
     ) -> Option<GroupBands<BlueArchiveGroup>> {
-        let target = self.goal_map(evidence, deepest)?;
+        let target = self.goal_map(evidence, deepest);
+        GOAL_TARGET.store(target.map_or(u64::MAX, u64::from), Ordering::Relaxed);
+        let target = target?;
         let hops = evidence.graph.hops_to(target);
         hops.get(&target)?;
         let deepest_events = scopes
@@ -682,7 +684,6 @@ impl Reporting for BlueGame {
         if here.is_empty() {
             return None;
         }
-        GOAL_TARGET.store(u64::from(target), Ordering::Relaxed);
         GOAL_BAND_MAPS.store(hops.len() as u64, Ordering::Relaxed);
         GOAL_SCOPES.store(here.len() as u64, Ordering::Relaxed);
         let mut bands = BTreeMap::new();
