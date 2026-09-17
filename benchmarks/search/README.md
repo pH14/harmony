@@ -126,12 +126,8 @@ as a separate stress condition.
 | `ci.json` | Source-built Nova (level and whole-game origins) and STB through the common runner, with full small-campaign replay and a frame cap. No licensed commercial ROM is used. |
 | `nightly.json` | Scheduled/manual source-built capability panel: the five registered isolated Nova levels, whole-game Nova, and STB Easy/Fair/Hard across seeds 1–3. Long runs use bounded witness replay; isolated levels and STB Hard retain their distinct outcome semantics. |
 | `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
-| `alphabet-control.json`, `alphabet-continuation.json` | The same development pilot origins and budgets, comparing alphabet-only mutation with separately accounted quarter-share continuation replay. These exploratory panels do not require every case to solve. |
-| `continuation-accounting-control.json`, `continuation-accounting-isolated.json` | The same development sample comparing original energy-splice continuation accounting with v2, which keeps triggered outcomes separate from ordinary exploration and mutation energy. |
-| `metroid-long-horizon-continuation.json` | Three reused development seeds at 3 million executions, 4 workers and 8 GiB; continuation replay against the alphabet-only arm of `metroid-long-horizon.json`. |
 | `metroid-long-horizon-energy-splice.json` | The same three seeds and budgets drawing through the retained-input table, against the alphabet-only arm of `metroid-long-horizon.json`. |
 | `throughput-checkpoint.json` | The 18-cell throughput panel with the adopted two-result-slot profile, for an isolated comparison of unchanged policies before and after implementation changes. |
-| `evaluation-continuation.json` | Frozen candidate for the full panel: learned continuation replay with the original parent selector. Selected from the completed pilots before any full-panel outcome was observed. |
 | `evaluation.json` | Main-mechanism control: five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
 | `smb-reference.json` | Practical fresh whole-game SMB recipe: 24 workers, 2,048 MiB, count weighting, two-reservation window/two result slots, 600,000 executions and 120 million frames. Five fresh validation seeds; every cell must solve. |
 | `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, five seeds. Every cell must solve within its declared budget. |
@@ -168,11 +164,10 @@ origins, seed panel, ROM/core, adapter policies and resource budgets fixed. The
 comparison command rejects mismatches rather than quietly combining them.
 Engine experiments are described in [SYNTHESIS.md](SYNTHESIS.md); prototype claims
 are not accepted merely because a previous single seed succeeded.
-The full candidate is frozen in `evaluation-continuation.json`;
-[`candidate-registration-005.json`](candidate-registration-005.json) records
-the choice before any completed full-panel outcome was observed. Run it with
-the same runner allocation as `evaluation.json`, changing only the output
-directory, then compare the complete matrices.
+[`candidate-registration-005.json`](candidate-registration-005.json) records a
+continuation candidate registered against the capped bank the searcher no
+longer holds. Its manifest is gone with that mechanism; register a fresh
+candidate against the slot graph before running a full panel.
 
 The completed 190-cell fresh comparison and development evidence are retained
 in [`results`](results/README.md), including failed seeds and resource costs.
@@ -357,8 +352,8 @@ The HTML export includes these fields and links to verified tapes. Older missing
 observations display as unavailable. Resource figures, budgets, stop reasons, and
 failures remain in every row; milestone timings are censored at each run's budget.
 
-`metroid-long-horizon.json`, `metroid-long-horizon-continuation.json` and
-`metroid-long-horizon-energy-splice.json` register a **development diagnostic**
+`metroid-long-horizon.json` and `metroid-long-horizon-energy-splice.json`
+register a **development diagnostic**
 using historical seeds 3, 4, and 5: four workers, 8 GiB logical archive,
 3 million executions, 400 million admitted frames, 4096 actions, and
 `one_to_six`. Every arm uses the same current adapter and executable. Only the

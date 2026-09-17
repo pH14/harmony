@@ -262,43 +262,54 @@ Every live progress line carries the whole of `SelectorAccounting` under
 `selector`, so a run's class draw shares and energy resets can be read over
 time rather than only from the final census.
 
+Continuation replay carries a better state at one slot to the slots reached
+from it. The archive keeps one edge per ordered pair of depth-0 slots holding
+the cheapest action tail observed between them, together with the donor and
+leaf it came from. When a replacement wins its slot under `preference_cmp`
+with `Ordering::Greater`, that slot is queued. A reservation that takes the
+queue replays one of the slot's exits from its new holder. A result that lands
+at the recorded destination and wins there queues that slot in turn; that chain
+is a wave, and `longest_wave` reports the deepest one.
+
+The queue holds one entry per slot, not per edge. Queuing a slot is two map
+operations whatever its degree. A pop takes the front slot's next exit after
+its cursor, advances the cursor and moves the slot to the back, so slots
+rotate and a slot improved on every reservation cannot hold the front. A slot
+whose exits run out leaves the queue, and removing a slot releases its edges,
+its own pending entry, and the pending entry of any source slot it leaves
+without exits.
+
+The share is governed by the same barren feedback the mixture strategies use,
+kept in its own counter so the table, splice and alphabet weights are
+unchanged. With `e = energy_share(continuation_barren, 6)`, a reservation
+attempts a continuation with probability `e / (e + 256)`: one in two when fresh,
+one in 257 after 48 consecutive continuation jobs that opened no new slot. One
+continuation job that opens a new slot resets the counter. The draw is
+`RomuDuoJrRand::with_seed(campaign_seed ^ reservation)`, so replay recomputes it
+at each reconstructed reservation and rejects a record whose `continuation_energy`
+disagrees. A reservation that takes the queue examines at most 8 exits, skipping
+stale parents, prefixes already archived, and parents at the action limit.
+
+The bank exists only for a workload whose key declares a preference. Without
+one nothing is recorded, nothing is charged, and the stream is unchanged.
+Edges and pending entries are charged as they are held rather than reserved up
+front, and compaction drops the edges of slots the archive no longer holds.
+Dispatch records the complete action tail, so later donor reclamation cannot
+change serial replay. Only same-slot `preference_cmp` is consulted; preferences
+are never compared between unrelated locations.
+
+`ContinuationAccounting` rides every live progress line under `continuations`:
+`edges` and `pending` for the bank's size, `jobs`, `execution_work`, `landed`,
+`replaced` and `opened_new_slot` for what the replays did, `longest_wave`,
+and `barren`, `energy`, `reservations_drawn` and `reservations_taken` for the
+share the feedback settled on.
+
 Search experiments use independent versioned identifiers:
 
 - `hierarchy_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
   each within-cell cost weight by one plus that entry's admitted selections.
   Cheap members get early attempts, while repeatedly sampled members yield some
   probability to alternatives. No workload field is added.
-- `energy_splice_continuation_v1:<scale>` retries transitions learned during the
-  current campaign when a strictly preferred state replaces a same-slot holder.
-  At most one in four reservations can do this; empty queues use ordinary energy
-  splice draws. This is continuation replay: applying a previously discovered
-  action tail from a new state and evaluating the resulting state normally.
-  It is distinct from verification replay, which checks a recorded execution.
-- `alphabet_continuation_v1` uses the same bounded, quarter-share learned exits
-  with alphabet-only ordinary draws. A retry increments only continuation
-  accounting and the cache-use bit; it does not consume entry/key selection
-  counts, mark exploration barren, or reward the ordinary mutation strategy.
-  Results still pass through normal retention and may trigger another improved
-  same-slot continuation. This separates route repair from ordinary exploration
-  without adding a workload preference tier. The older energy-splice continuation
-  identifier preserves its original combined accounting and mutation behavior.
-
-`energy_splice_continuation_v2:<scale>` applies the same separate accounting
-with ordinary energy-splice mutation. Its continuation outcomes neither reward
-nor penalize the ordinary splice strategy. Version 1 had credited those outcomes
-to splice energy, so its existing comparisons describe that combined mechanism;
-they do not isolate the effect of triggered replay. The v2 identifier enables a
-paired test of the separation while preserving recorded v1 behavior.
-
-The continuation bank retains at most 8,192 observed exits, eight destinations
-per source slot, 128 actions per exit, and 1,024 pending attempts. It charges a
-fixed conservative capacity reserve against the logical memory budget before
-bootstrap. Pending attempts do not pin historical snapshots: stale parents are
-skipped. Dispatch records the complete action tail, so later donor reclamation
-cannot change serial replay. Only same-slot `preference_cmp` is consulted;
-preferences are never compared between unrelated locations. An improvement under
-any one preference triggers an attempt. A workload that reports no preference
-improvements gets no continuation attempts.
 
 These are experiments, not new defaults. Promote policies based on paired workload
 panels, fresh completion results, and resource costs through
