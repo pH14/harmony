@@ -495,6 +495,24 @@ class DisplayNameTests(unittest.TestCase):
                             "        replica: [1, 2]\n    steps: []")
         self.assertFalse(self.check(labelled, (ci_contract.Job("Snapshot Identity — Replica <N>", "pr", 15),)))
 
+    def test_an_include_entry_refines_the_combination_it_matches(self):
+        job = {"name": "Nova — Replica ${{ matrix.replica }}",
+               "strategy": {"matrix": {"replica": [1, 2],
+                                       "include": [{"replica": 1, "extra": True}]}}}
+        self.assertEqual(LINTS._job_display_names(job), ["Nova — Replica 1", "Nova — Replica 2"])
+        self.assertEqual(LINTS._matrix_rows(job),
+                         [{"replica": 1, "extra": True}, {"replica": 2}])
+
+    def test_an_excluded_combination_is_not_displayed(self):
+        job = {"name": "Nova — Replica ${{ matrix.replica }}",
+               "strategy": {"matrix": {"replica": [1, 2], "exclude": [{"replica": 2}]}}}
+        self.assertEqual(LINTS._job_display_names(job), ["Nova — Replica 1"])
+
+    def test_an_include_entry_the_axes_cannot_hold_becomes_its_own_job(self):
+        job = {"name": "Nova — Replica ${{ matrix.replica }}",
+               "strategy": {"matrix": {"replica": [1], "include": [{"replica": 2}]}}}
+        self.assertEqual(LINTS._job_display_names(job), ["Nova — Replica 1", "Nova — Replica 2"])
+
     def test_display_names_expand_only_what_the_file_declares(self):
         job = {"name": "Nova — Replica ${{ matrix.replica }}",
                "strategy": {"matrix": {"replica": [1, 2]}}}
@@ -627,10 +645,54 @@ class NesMediaTests(unittest.TestCase):
         self.assertTrue(any("no pr job" in v.text
                             for v in LINTS.check_nes_media(ROOT, "Dissonance Workloads", "checks", full)))
 
+    def plant(self, root, workflow, steps):
+        """A file whose jobs carry the registered names and the given steps."""
+        import ci_contract as contract
+
+        for capture in contract.CAPTURE_ACTIONS + contract.CAPTURE_SCRIPTS:
+            target = root / capture
+            if capture.endswith((".rs", ".py")):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("")
+            else:
+                target.mkdir(parents=True, exist_ok=True)
+                (target / "action.yml").write_text("runs:\n  using: composite\n  steps: []\n")
+        body = "".join(
+            f"  job{index}:\n    name: {LINTS.VARIANT_RE.sub('One', job.name)}\n"
+            f"    steps:\n{steps}"
+            for index, job in enumerate(workflow.jobs))
+        path = root / workflow.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("name: x\non:\n  pull_request:\njobs:\n" + body)
+
+    def test_a_capture_step_the_job_can_skip_does_not_count(self):
+        workflow = self.composition("checks")
+        steps = ("      - run: nes-film --out film\n        if: false\n"
+                 "      - uses: ./.github/actions/stb-evaluation\n"
+                 "      - run: python3 scripts/verify-nes-films.py film/film.json\n")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plant(root, workflow, steps)
+            violations = LINTS.check_nes_media(root, "Dissonance Workloads", "checks", workflow)
+        self.assertTrue(any("no step it always runs captures with it" in v.text
+                            for v in violations), violations)
+
+    def test_a_capture_step_the_change_selection_guards_still_counts(self):
+        workflow = self.composition("checks")
+        steps = ("      - run: nes-film --out film\n"
+                 "        if: steps.scope.outputs.enabled == 'true'\n"
+                 "      - uses: ./.github/actions/stb-evaluation\n"
+                 "      - run: python3 scripts/verify-nes-films.py film/film.json\n")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plant(root, workflow, steps)
+            self.assertFalse(LINTS.check_nes_media(root, "Dissonance Workloads", "checks", workflow))
+
     def test_an_unregistered_or_missing_capture_is_reported(self):
         workflow = self.composition("benchmarks")
         for capture, expected in [("scripts/invented-capture.py", "unregistered capture"),
-                                  (".github/actions/stb-evaluation", "never runs it")]:
+                                  (".github/actions/stb-evaluation",
+                                   "no step it always runs captures with it")]:
             with self.subTest(capture=capture):
                 jobs = tuple(job._replace(media=(capture,)) if job.media else job
                              for job in workflow.jobs)
@@ -642,13 +704,17 @@ class NesMediaTests(unittest.TestCase):
         workflow = self.composition("checks")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "workloads/nes/src/bin").mkdir(parents=True)
-            (root / "workloads/nes/src/bin/nes-film.rs").write_text("")
-            path = root / workflow.path
-            path.parent.mkdir(parents=True)
-            path.write_text("run: nes-film --out film\n")
+            self.plant(root, workflow, "      - run: nes-film --out film\n")
             violations = LINTS.check_nes_media(root, "Dissonance Workloads", "checks", workflow)
         self.assertTrue(any("real audio stream" in v.text for v in violations), violations)
+
+    def test_a_longer_name_containing_the_capture_does_not_satisfy_it(self):
+        self.assertFalse(LINTS.names_capture(
+            "python3 scripts/verify-nes-films.py film/film.json",
+            "workloads/nes/src/bin/nes-film.rs"))
+        self.assertTrue(LINTS.names_capture(
+            "workloads/nes/target/release/nes-film --game nova",
+            "workloads/nes/src/bin/nes-film.rs"))
 
     def test_the_repository_registers_a_capture_for_every_filming_job(self):
         self.assertTrue(ci_contract.MEDIA_REQUIRED)

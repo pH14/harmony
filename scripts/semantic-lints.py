@@ -333,24 +333,56 @@ def _ci_policy() -> dict:
 
 
 def referenced_paths(repo_root: Path, content: str) -> list[str]:
-    """The local actions, scripts and manifests a workflow runs, in a fixed order."""
+    """The local actions, scripts and manifests a workflow runs, in a fixed order.
+
+    A composite action is followed into its own file, so a script a workflow
+    reaches only through an action counts as part of that workflow.
+    """
     found: set[str] = set()
-    for match in LOCAL_ACTION_RE.finditer(content):
-        found.add(match.group(1).rstrip("/") + "/action.yml")
-    found.update(LOCAL_SCRIPT_RE.findall(content))
+    pending = [content]
+    visited: set[str] = set()
+    while pending:
+        text = pending.pop()
+        found.update(LOCAL_SCRIPT_RE.findall(text))
+        for match in LOCAL_ACTION_RE.finditer(text):
+            rel = match.group(1).rstrip("/") + "/action.yml"
+            found.add(rel)
+            if rel in visited or not (repo_root / rel).is_file():
+                continue
+            visited.add(rel)
+            pending.append((repo_root / rel).read_text(errors="replace"))
     return sorted(rel for rel in found if (repo_root / rel).is_file())
 
 
-def _bounded_texts(repo_root: Path, paths: list[str]) -> dict[str, str]:
-    texts: dict[str, str] = {}
+def _bounded_texts(repo_root: Path, paths: list[str]) -> dict[str, dict]:
+    """Bounded excerpts, each beside the digest of the whole file it came from.
+
+    The excerpt bounds the prompt; the digest keeps a judgment tied to the
+    entire dependency, so a change past the excerpt invalidates it.
+    """
+    texts: dict[str, dict] = {}
     budget = CONTEXT_TOTAL_LIMIT
     for rel in paths:
-        if len(texts) >= CONTEXT_FILE_COUNT or budget <= 0:
-            break
-        body = (repo_root / rel).read_text(errors="replace")[:CONTEXT_FILE_LIMIT]
-        texts[rel] = body
-        budget -= len(body)
+        whole = (repo_root / rel).read_text(errors="replace")
+        entry = {"sha256": hashlib.sha256(whole.encode()).hexdigest()}
+        if len(texts) < CONTEXT_FILE_COUNT and budget > 0:
+            entry["text"] = whole[:CONTEXT_FILE_LIMIT]
+            entry["truncated"] = len(whole) > CONTEXT_FILE_LIMIT
+            budget -= len(entry["text"])
+        texts[rel] = entry
     return texts
+
+
+def _dependencies(repo_root: Path, path: str, content: str) -> list[str]:
+    """Every file a workflow's judgment depends on: what it runs and what it films."""
+    import ci_contract
+
+    paths = set(referenced_paths(repo_root, content))
+    workflow = ci_contract.by_path(path)
+    if workflow is not None:
+        for job in workflow.jobs:
+            paths.update(job.media)
+    return sorted(rel for rel in paths if (repo_root / rel).is_file())
 
 
 def context_for(repo_root: Path, path: str, content: str) -> dict | None:
@@ -377,7 +409,7 @@ def context_for(repo_root: Path, path: str, content: str) -> dict | None:
             "policy": _ci_policy(),
             "registered": registered,
             "other_workflows": other,
-            "referenced": _bounded_texts(repo_root, referenced_paths(repo_root, content)),
+            "referenced": _bounded_texts(repo_root, _dependencies(repo_root, path, content)),
             "documentation": _bounded_texts(
                 repo_root, [rel for rel in CI_CONTRACT_DOCUMENTATION
                             if (repo_root / rel).is_file()]),
@@ -767,7 +799,8 @@ def dependent_workflows(repo_root: Path, changed: set[str]) -> list[str]:
         if not source.is_file():
             continue
         content = source.read_text(errors="replace")
-        context = set(referenced_paths(repo_root, content)) | set(CI_CONTRACT_DOCUMENTATION)
+        context = set(_dependencies(repo_root, workflow.path, content))
+        context |= set(CI_CONTRACT_DOCUMENTATION)
         context.add("scripts/ci_contract.py")
         if context & changed:
             dependents.append(workflow.path)

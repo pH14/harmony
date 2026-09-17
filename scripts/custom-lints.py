@@ -518,19 +518,37 @@ def _variant_pattern(registered: str) -> re.Pattern[str]:
 
 
 def _matrix_rows(job: dict) -> list[dict]:
-    """The value combinations a statically declared matrix expands to."""
+    """The value combinations a statically declared matrix expands to.
+
+    Follows GitHub's order: expand the axes, drop the excluded combinations,
+    then merge each include entry into every combination it does not
+    contradict, or add it as its own combination when it contradicts all.
+    """
     matrix = (job.get("strategy") or {}).get("matrix")
     if not isinstance(matrix, dict):
         return []
+    axes = {key: values for key, values in matrix.items()
+            if key not in {"include", "exclude"} and isinstance(values, list)}
     rows = [{}]
-    for key, values in matrix.items():
-        if key in {"include", "exclude"} or not isinstance(values, list):
-            continue
+    for key, values in axes.items():
         rows = [dict(row, **{key: value}) for row in rows for value in values]
-    include = matrix.get("include")
-    if isinstance(include, list):
-        entries = [entry for entry in include if isinstance(entry, dict)]
-        rows = (rows + entries) if rows != [{}] else entries
+    if not axes:
+        rows = []
+    exclude = [entry for entry in (matrix.get("exclude") or []) if isinstance(entry, dict)]
+    rows = [row for row in rows
+            if not any(all(row.get(key) == value for key, value in entry.items())
+                       for entry in exclude)]
+    for entry in (matrix.get("include") or []):
+        if not isinstance(entry, dict):
+            continue
+        targets = [] if not axes else [
+            row for row in rows
+            if all(row.get(key) == value for key, value in entry.items() if key in axes)]
+        if not targets:
+            rows.append(dict(entry))
+            continue
+        for row in targets:
+            row.update({key: value for key, value in entry.items() if key not in axes})
     return rows
 
 
@@ -1024,6 +1042,45 @@ def check_nes_backend(repo_root: Path, composition: str, entry: dict, role: str,
     return []
 
 
+# Conditions that do not narrow which changes a step covers.
+UNRESERVED_CONDITIONS = frozenset({
+    "always()", "success()", "!cancelled()", "steps.scope.outputs.enabled == 'true'",
+})
+
+
+def _step_always_runs(step: dict) -> bool:
+    """True when nothing but change selection or a failed job can skip the step."""
+    condition = _strip_outer_parentheses(
+        str(step.get("if", "")).replace("${{", "").replace("}}", "").strip())
+    if not condition:
+        return True
+    return all(_strip_outer_parentheses(part) in UNRESERVED_CONDITIONS
+               for part in _split_condition(condition, "&&"))
+
+
+def _reachable_text(repo_root: Path, job: dict) -> str:
+    """What a job runs unconditionally, including the local actions it uses."""
+    parts = []
+    for step in job.get("steps", []):
+        if not isinstance(step, dict) or not _step_always_runs(step):
+            continue
+        uses = str(step.get("uses", ""))
+        parts.append(uses)
+        parts.append(str(step.get("run", "")))
+        if uses.startswith("./"):
+            action = repo_root / uses[2:].split("@")[0] / "action.yml"
+            if action.is_file():
+                parts.append(action.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
+def _jobs_named(data: dict, registered_name: str) -> list[tuple[str, dict]]:
+    """The file's jobs whose display name the registry entry covers."""
+    pattern = _variant_pattern(registered_name)
+    return [(job_id, job) for job_id, job in data["jobs"].items()
+            if any(pattern.fullmatch(display) for display in _job_display_names(job))]
+
+
 def check_nes_media(repo_root: Path, composition: str, role: str, workflow) -> list[Violation]:
     """Each composition films its scenarios, in a bounded check and in its benchmark."""
     import ci_contract
@@ -1034,14 +1091,13 @@ def check_nes_media(repo_root: Path, composition: str, role: str, workflow) -> l
     if not filming:
         violations.append(Violation("ci-nes-media", workflow.path, 0,
             f"no {trigger} job in the {composition} NES {role} captures video with game audio"))
-    text = (repo_root / workflow.path).read_text(encoding="utf-8")
-    verified = text
+    try:
+        data = _parse_workflow(repo_root / workflow.path)
+    except ValueError:
+        return violations
     for job in filming:
-        for capture in job.media:
-            action = repo_root / capture / "action.yml"
-            if action.is_file():
-                verified += action.read_text(encoding="utf-8")
-    for job in filming:
+        matched = _jobs_named(data, job.name)
+        reachable = "\n".join(_reachable_text(repo_root, entry[1]) for entry in matched)
         for capture in job.media:
             if capture not in ci_contract.CAPTURE_ACTIONS + ci_contract.CAPTURE_SCRIPTS:
                 violations.append(Violation("ci-nes-media", "scripts/ci_contract.py", 0,
@@ -1049,12 +1105,15 @@ def check_nes_media(repo_root: Path, composition: str, role: str, workflow) -> l
             elif not (repo_root / capture).exists():
                 violations.append(Violation("ci-nes-media", capture, 0,
                     f"{workflow.name} / {job.name} names a capture that does not exist"))
-            elif capture_reference(capture) not in text:
+            elif not matched:
                 violations.append(Violation("ci-nes-media", workflow.path, 0,
-                    f"{job.name} registers {capture} but the file never runs it"))
-    if MEDIA_VERIFIER not in verified:
-        violations.append(Violation("ci-nes-media", workflow.path, 0,
-            f"the {composition} NES {role} never checks its media for a real audio stream"))
+                    f"no job displays '{job.name}', so nothing runs {capture}"))
+            elif not names_capture(reachable, capture):
+                violations.append(Violation("ci-nes-media", workflow.path, 0,
+                    f"{job.name} registers {capture} but no step it always runs captures with it"))
+        if matched and MEDIA_VERIFIER not in reachable:
+            violations.append(Violation("ci-nes-media", workflow.path, 0,
+                f"{job.name} captures media without checking it for a real audio stream"))
     return violations
 
 
@@ -1063,6 +1122,12 @@ def capture_reference(capture: str) -> str:
     if capture.endswith(".rs"):
         return Path(capture).stem
     return capture
+
+
+def names_capture(text: str, capture: str) -> bool:
+    """True when the text runs the capture itself, not a longer name containing it."""
+    reference = capture_reference(capture)
+    return re.search(r"(?<![\w.-])" + re.escape(reference) + r"(?![\w.-])", text) is not None
 
 
 

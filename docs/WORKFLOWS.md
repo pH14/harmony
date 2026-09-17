@@ -119,9 +119,11 @@ the job.
 Both NES compositions publish video with game audio: a bounded capture in the
 Checks workflow and every scenario in the Benchmarks workflow.
 
-`workloads/nes/src/bin/nes-film.rs` is the one renderer. It reads the input and
-`result.json` a run already recorded, replays them, and writes `film.json`
-beside `witness.mp4`. Nothing renders from a second search.
+`workloads/nes/src/bin/nes-film.rs` renders every evaluation matrix. It reads
+the input and `result.json` a run already recorded, replays them, and writes
+`film.json` beside `witness.mp4`. The Super Tilt Bro campaign renders its own
+`witness.mp4` through `stb-campaign` against the champion it recorded. Nothing
+renders from a second search.
 
 - A native run's film requires the replayed witness to equal the one the run
   recorded.
@@ -134,8 +136,16 @@ beside `witness.mp4`. Nothing renders from a second search.
   left out of the video, so the film is a trailing window ending at the recorded
   endpoint plus `--tail-frames`. The ceiling, the clip policy and the dropped
   frame count are in `film.json` under `clip` and in the published report.
-- `scripts/verify-nes-films.py` checks each film's digest, frame count, audio
-  stream, mean volume and duration floor. A silent track fails.
+- `scripts/verify-nes-films.py` checks every film, whether a matrix produced it
+  or a workload wrote it directly. It checks the digest, frame count, audio
+  stream, mean volume, duration floor, and that the decoded audio covers the
+  video rather than a padded fragment of it. Against a `films.json` index it
+  also checks each film against the digest, input and identity that index
+  recorded for the cell, and against the input the cell's own run recorded, so
+  one cell's film cannot stand in for another's. A silent track fails.
+- The verifier writes its verdict per cell to `film-verification.json`, and the
+  published roster and report count a film as media only when that record
+  accepts it.
 
 A scenario that produced no renderable input is recorded as unavailable with a
 reason and appears in the report that way. A failed render fails its job. No run
@@ -212,7 +222,7 @@ under a `ci-` rule cannot be recorded in the lint baseline.
 | `ci-analysis-grouping` | Coverage, Miri, mutation and proofs sit in the owning component's Analysis workflow. |
 | `ci-host-compatibility` | Each supported host keeps a bounded job. |
 | `ci-nes-compositions` | Both NES compositions keep a check and a benchmark and run their registered backend. |
-| `ci-nes-media` | Both compositions film their scenarios and check the media. |
+| `ci-nes-media` | Both compositions film their scenarios and check the media, in steps the registered job always runs. |
 | `ci-nes-case-jobs` | The public case roster maps one-to-one onto independent jobs. |
 | `ci-miri-coverage` | Each Analysis workflow lists exactly the Miri targets it owns. |
 | `ci-historical-arms` | No case or matrix restores a fixed-version comparison arm. |
@@ -220,9 +230,13 @@ under a `ci-` rule cannot be recorded in the lint baseline.
 `scripts/semantic-lints.py` asks a judge what a parser cannot decide. It skips
 without `TYPESAFE_API_KEY`, so deterministic correctness never depends on it. A
 workflow is judged alongside its registry entry, the ownership policy, the local
-actions, scripts and manifests it runs, and `docs/WORKFLOWS.md`. A change to any
-of those reselects and rejudges the workflow. Findings under these rules are
-fixed rather than recorded in the semantic baseline.
+actions, scripts and manifests it runs, the renderers its jobs register as
+media, and `docs/WORKFLOWS.md`. A composite action is followed into its own
+file, so a script the workflow reaches only through an action counts too. The
+prompt carries a bounded excerpt of each of those files and the digest of the
+whole file, so a change anywhere in one reselects the workflow and invalidates
+its cached judgment. Findings under these rules are fixed rather than recorded
+in the semantic baseline.
 
 | Rule | Asks |
 | --- | --- |

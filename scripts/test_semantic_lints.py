@@ -522,10 +522,46 @@ class CiArchitectureTests(RequiresApiKey):
         for workflow in ci_contract.WORKFLOWS:
             content = (ROOT / workflow.path).read_text()
             context = LINTS.context_for(ROOT, workflow.path, content)
+            excerpts = [entry["text"] for entry in context["referenced"].values()
+                        if "text" in entry]
             with self.subTest(workflow=workflow.name):
-                self.assertLessEqual(len(context["referenced"]), LINTS.CONTEXT_FILE_COUNT)
-                body = sum(len(value) for value in context["referenced"].values())
-                self.assertLessEqual(body, LINTS.CONTEXT_TOTAL_LIMIT + LINTS.CONTEXT_FILE_LIMIT)
+                self.assertLessEqual(len(excerpts), LINTS.CONTEXT_FILE_COUNT)
+                self.assertLessEqual(sum(len(body) for body in excerpts),
+                                     LINTS.CONTEXT_TOTAL_LIMIT + LINTS.CONTEXT_FILE_LIMIT)
+                self.assertTrue(all(len(entry["sha256"]) == 64
+                                    for entry in context["referenced"].values()))
+
+    def test_a_script_reached_through_an_action_is_a_dependency(self):
+        path = ci_contract.by_name("Benchmarks / Dissonance Workloads / NES").path
+        content = (ROOT / path).read_text()
+        self.assertNotIn("scripts/verify-nes-films.py", content)
+        self.assertIn("scripts/verify-nes-films.py", LINTS.referenced_paths(ROOT, content))
+        self.assertIn(path, LINTS.select_files(ROOT, ["scripts/verify-nes-films.py"]))
+
+    def test_a_registered_media_renderer_is_a_dependency(self):
+        path = ci_contract.by_name("Benchmarks / Harmony Workloads / NES").path
+        content = (ROOT / path).read_text()
+        self.assertIn("workloads/nes/src/bin/nes-film.rs",
+                      LINTS._dependencies(ROOT, path, content))
+        self.assertIn(path, LINTS.select_files(ROOT, ["workloads/nes/src/bin/nes-film.rs"]))
+
+    def test_a_change_past_the_context_excerpt_invalidates_the_judgment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = self.workflow_path()
+            content = ("name: Checks / Repository\non:\n  pull_request:\n"
+                       "jobs:\n  one:\n    steps:\n"
+                       "      - run: python3 scripts/verify-nes-films.py\n")
+            self.plant(root, path, content)
+            self.plant(root, "docs/WORKFLOWS.md", "The registry owns every workflow.\n")
+            padding = "# " + "x" * (LINTS.CONTEXT_FILE_LIMIT + 32) + "\n"
+            self.plant(root, "scripts/verify-nes-films.py", padding + "MARKER = 1\n")
+            first = LINTS._cache_key(path, content, LINTS.questions_for(path),
+                                     LINTS.context_for(root, path, content))
+            self.plant(root, "scripts/verify-nes-films.py", padding + "MARKER = 2\n")
+            second = LINTS._cache_key(path, content, LINTS.questions_for(path),
+                                      LINTS.context_for(root, path, content))
+            self.assertNotEqual(first, second)
 
     def test_a_changed_dependency_reselects_and_rejudges_the_workflow(self):
         path = ci_contract.by_name("Checks / Dissonance Workloads / NES").path
