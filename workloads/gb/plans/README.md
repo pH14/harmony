@@ -298,13 +298,16 @@ Added while running step 5:
 - The adviser reaches the second milestone sooner on every seed and no further on
   any: Oak's parcel at 994 against 1,407, 743 against 2,064, and 1,987 against
   4,021. Neither advised seed past that point delivered the parcel.
-- The advised arm whites out far more: 250, 124 and 522 against 9, 8 and 114.
-  The weight it puts on the fighting kinds is spent on wild battles it loses. The
-  seed that won is the plain seed with the most whiteouts, so fighting is what
-  the route needs and losing the fights is what the adviser buys.
-- The panel is paired on one box, both arms at six workers, and compared at
-  matched executions rather than matched wall time. The advised arm runs about
-  15% more executions per second, since a weighted draw picks cheaper macros.
+- The advised arm whites out 24, 15 and 4 times as often per execution: 250, 124
+  and 522 against 9, 8 and 114. The weight it puts on the fighting kinds is spent
+  on wild battles it loses. The seed that won is the plain seed with the most
+  whiteouts, so fighting is what the route needs and losing the fights is what
+  the adviser buys.
+- The panel is paired on one box, both arms at six workers, each given 1,800
+  seconds. A weighted draw picks cheaper macros, so the advised arm fits 6% to
+  15% more executions into the same time. Give both arms the same execution
+  budget instead: any total drawn from the run rather than from the milestone
+  index has to be stated as a rate.
 
 ## Working rules
 

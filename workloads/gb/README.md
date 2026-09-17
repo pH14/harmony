@@ -197,8 +197,11 @@ the model tell a house from a route.
 
 ## Campaign results
 
-Three seeds, both arms side by side on one arm64 box at six workers each,
-compared at matched executions.
+Three seeds, both arms side by side on one arm64 box at six workers each, each
+arm given the same 1,800 seconds of wall time. A weighted draw picks cheaper
+macros, so the advised arm fits 6% to 15% more executions into that time. The
+milestone comparison below is indexed by execution number and does not depend on
+the totals; the whiteout counts do, so they are given as a rate per execution.
 
 | Arm | Seed | Executions | Maps | Milestones | Whiteouts |
 | --- | --- | --- | --- | --- | --- |
@@ -213,10 +216,11 @@ The plain searcher wins the game on seed 20260907, taking the Boulder Badge at
 execution 37,249 with a level 13 party. The badge crosses on one seed of three.
 
 The adviser reaches Oak's parcel sooner on every seed and no further on any:
-execution 994 against 1,407, 743 against 2,064, and 1,987 against 4,021. It also
-whites out four to twenty times as often. The weight it puts on the fighting
-kinds is spent losing wild battles rather than winning the trainer battles the
-route needs, and the seed that won is the plain seed that fought the most.
+execution 994 against 1,407, 743 against 2,064, and 1,987 against 4,021. It
+whites out 24, 15 and 4 times as often per execution. The weight it puts on the
+fighting kinds is spent losing wild battles rather than winning the trainer
+battles the route needs, and the seed that won is the plain seed that fought the
+most.
 
 ## Archive key
 
