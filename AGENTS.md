@@ -13,7 +13,8 @@ deterministic execution.
 - Preserve unrelated work and surface meaningful scope expansions before
   undertaking them.
 - Use repository scripts and CI configuration to determine the checks relevant
-  to changed code.
+  to changed code. `docs/WORKFLOWS.md` is the CI contract and
+  `scripts/ci_contract.py` is the registry it describes.
 - Document the safety invariant beside every `unsafe` block and exercise unsafe
   logic under Miri.
 - Record follow-up work in GitHub issues and preserve implementation history in

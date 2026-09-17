@@ -1,212 +1,253 @@
-# GitHub Actions conventions
+# Continuous integration contract
 
-Use flat `Category / Subject` check display names. PR workflow names are just
-`Checks` or `Smoke`; their jobs supply the descriptive subject, so GitHub shows
-`Smoke / Native NES search`, not `Smoke / Products / Native NES search`.
-The separate PR workflow files retain their existing triggers and routing.
-Other workflow names use `Category / Subject` directly.
+`scripts/ci_contract.py` is the registry: every workflow, its owner, its jobs,
+their trigger classes and their budgets. `scripts/custom-lints.py` checks the
+checked-in workflows against it, `scripts/semantic-lints.py` asks a judge the
+questions a parser cannot answer, and this document explains what the registry
+means. A new workflow is registered once, in the registry.
 
-Subjects use sentence case: capitalize the first word, proper names, and
-acronyms only. Use `Public API compatibility`, not `Public Api Compatibility`.
-Every job needs an explicit descriptive name; generic names such as `Products`, `Quality`, and `Report` are rejected. Matrix expressions remain
-unchanged, preserving crate and case identifiers. `ci-workflow-prefix` and
-`ci-display-name` in `scripts/custom-lints.py` enforce this contract; register
-new proper names/acronyms in `CI_NAME_TERMS` rather than weakening casing rules.
+## Organization
 
-| Category | Purpose | Trigger |
+A workflow name reads `Category / Owner` or `Category / Owner / Workload`.
+
+- **Category**: `Checks`, `Benchmarks` or `Release`.
+- **Owner**: a component (`Repository`, `Consonance`, `Dissonance`, `Harmony`)
+  or a composition (`Harmony Host Compatibility`, `Dissonance Workloads`,
+  `Harmony Workloads`).
+- **Workload**: the workload family a composition workflow covers, such as
+  `NES`, `OCI` or `Historical Bugs`.
+
+A component owns its own code. A composition owns an assembly of components
+executing a workload. `Analysis` groups a component's coverage, Miri, mutation
+testing and proofs under that component, so `Checks / Consonance / Analysis`
+analyses Consonance and nothing else.
+
+`Smoke`, `Acceptance`, `Nightly`, `Validation`, `Test` and `Quality` are retired
+categories. They described when a workflow ran or how thorough it was instead of
+what owns it, and the linter rejects them.
+
+## The workflow tree
+
+| Workflow | File | Automatic triggers |
 | --- | --- | --- |
-| Checks | Static analysis, unit tests, API snapshots | PRs and pushes to main |
-| Smoke | Short end-to-end workloads (under 15 min) | PRs and pushes to main |
-| Acceptance | Long-running workload tests | Nightly schedule or manual dispatch |
-| Benchmarks | Performance and search campaigns | Nightly schedule or manual dispatch |
-| Nightly | Extended validation (Miri, mutation) | Nightly schedule |
-| Release | Build and publish artifacts | Version tags |
+| `Checks / Repository` | `repository-checks.yml` | pull_request, push |
+| `Checks / Harmony Host Compatibility` | `harmony-host-compatibility.yml` | pull_request, push |
+| `Checks / Consonance` | `consonance-checks.yml` | pull_request, push |
+| `Checks / Consonance / Analysis` | `consonance-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
+| `Checks / Consonance / Hardware Qualification` | `consonance-hardware-qualification.yml` | schedule, workflow_dispatch |
+| `Checks / Consonance / Guest Runtime Qualification` | `consonance-runtime-qualification.yml` | schedule, workflow_dispatch |
+| `Checks / Consonance / Kernel XSAVE Qualification` | `consonance-kernel-xsave-qualification.yml` | workflow_dispatch |
+| `Checks / Dissonance` | `dissonance-checks.yml` | pull_request, push |
+| `Checks / Dissonance / Analysis` | `dissonance-analysis.yml` | schedule, workflow_dispatch |
+| `Checks / Harmony` | `harmony-checks.yml` | pull_request, push |
+| `Checks / Harmony / Analysis` | `harmony-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
+| `Checks / Dissonance Workloads / NES` | `dissonance-workloads-nes-checks.yml` | pull_request, push |
+| `Checks / Harmony Workloads / NES` | `harmony-workloads-nes-checks.yml` | pull_request, push, schedule, workflow_dispatch |
+| `Checks / Harmony Workloads / OCI` | `harmony-workloads-oci-checks.yml` | pull_request, push, schedule, workflow_dispatch |
+| `Benchmarks / Dissonance Workloads / NES` | `dissonance-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
+| `Benchmarks / Harmony Workloads / NES` | `harmony-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
+| `Benchmarks / Harmony Workloads / Historical Bugs` | `harmony-workloads-historical-bugs.yml` | schedule, workflow_dispatch |
+| `Release / Harmony` | `release.yml` | push (version tags) |
 
-Automatic per-PR jobs must finish within 15 minutes (`ci-pr-job-timeout`
-lint). Short workloads that verify basic function are smoke tests. Long-running
-workloads are acceptance tests that run on an off-hours schedule. Timeout
-exceptions in comments are not accepted. Coverage and mutation belong in Nightly.
-Miri's full crate suites remain schedule/manual only (their existing 240- and
-320-minute ceilings are intentionally retained). Relevant PR changes select a
-per-crate Miri matrix with a 15-minute ceiling; dependency and toolchain
-changes select every target. The static bounded matrix lists every registered
-crate, but only affected crates install or run Miri. Unselected entries finish
-as explicitly reported not-applicable jobs. The scheduled suite remains the
-broad safety net.
-Guest-backed PR smokes consume verified cached artifacts or an exact artifact
-handoff from the scheduled/manual builder. Changed guest inputs require an
-exact build and qualification before the platform smoke can qualify the PR.
-The expensive builder runs through manual dispatch on the proposed branch.
-Missing artifacts fail the smoke; they are never treated as passing evidence.
+`Checks / Dissonance / Analysis` ships coverage only. The searcher has no
+mutation baseline, and adding one is separate work.
 
-Consonance's OCI platform smoke requires a verified runtime manifest. Its
-scheduled/manual job builds the kernel, runtime, and tiny OCI fixture and runs
-extended replay before publishing artifacts. A PR can consume that exact
-artifact across branches; run the workflow manually on the proposed branch
-when its source key has no qualified artifact yet. A smoke against older
-verified artifacts is recorded as `host-only`. The separate guest qualification
-check requires successful hardware execution with `exact-input` artifacts.
-Neither missing manifests nor file presence alone qualifies this platform.
-PostgreSQL uses the same runtime while retaining its application assertions.
-The platform smoke also verifies the controlled minimal fixture and requires two
-clean same-seed Linux boots with identical execution logs. The KVM smoke runs
-the fixed-core published snapshot/replay identity matrix, including fresh and
-reused vCPUs, extra host entries and floating-point/vector negative controls.
-Broader snapshot hardware cohorts remain in scheduled/manual x86 acceptance.
+## Dissonance Workloads and Harmony Workloads
 
-## Current workflows
+The same game runs two ways, and neither substitutes for the other.
 
-| Workflow | Automatic triggers |
+- **`Dissonance Workloads / NES`** drives native QuickNES through the Dissonance
+  adapter. It exercises the search loop, the archive and the game's own
+  interpretation without a virtual machine.
+- **`Harmony Workloads / NES`** runs the same game inside a Consonance guest. It
+  exercises snapshot and restore, the guest protocol and the assembled product.
+
+`scripts/ci_contract.py` registers the pair in `NES_COMPOSITIONS` with the
+backend each one runs, and the linter requires each composition to keep a
+bounded Checks workflow and a full Benchmarks workflow, and requires each
+workflow to actually run its registered backend. A Harmony composition reduced
+to native execution alone fails `ci-nes-compositions`.
+
+## Bounded checks and full benchmarks
+
+Every job declares a trigger class.
+
+- **`pr`** jobs run on pull requests and on pushes to main, and finish inside 15
+  minutes. This bound holds for `pull_request`, `pull_request_target` and
+  `merge_group`.
+- **`full`** jobs run on a schedule or a manual dispatch and declare their own
+  ceiling.
+
+A job a pull request reaches never starts a full capability search, whatever
+budget it declares. `ci_contract.FULL_SEARCH_COMMANDS` lists the commands that
+start one, and `ci-trigger-routing` rejects them in a `pr` job.
+
+A Checks workflow holds `full` work only through an exception registered beside
+the job, which states why the work cannot fit the bound:
+
+| Workflow | Job | Minutes | Reason |
+| --- | --- | --- | --- |
+| `Checks / Consonance / Analysis` | `Miri — <Crate> (Whole Crate)` | 320 | Interpreting a whole unsafe crate under Miri takes hours, so pull requests get the tests the change reaches. |
+| `Checks / Consonance / Analysis` | `Coverage` | 30 | An instrumented build and run of every Consonance crate exceeds the pull request budget. |
+| `Checks / Consonance / Analysis` | `Mutation Testing — Shard <N>/16` | 320 | Mutation testing rebuilds the component once per mutant. |
+| `Checks / Dissonance / Analysis` | `Coverage` | 30 | An instrumented build and run of the searcher exceeds the pull request budget. |
+| `Checks / Harmony / Analysis` | `Miri — <Crate> (Whole Crate)` | 240 | Interpreting a whole adapter crate under Miri takes hours, so pull requests get the tests the change reaches. |
+| `Checks / Harmony / Analysis` | `Coverage` | 30 | An instrumented build and run of the CLI exceeds the pull request budget. |
+| `Checks / Harmony / Analysis` | `Mutation Testing — Shard <N>/4` | 320 | Mutation testing rebuilds the CLI once per mutant. |
+| `Checks / Harmony Workloads / NES` | `Backend Equivalence` | 75 | Comparing the native and Consonance backends builds the exact guest runtime and both game images. |
+| `Checks / Harmony Workloads / OCI` | `Docker` | 90 | Building the pinned Docker workload image and booting it twice under nested KVM exceeds the pull request budget. |
+| `Checks / Harmony Workloads / OCI` | `K3s` | 90 | Building the pinned K3s workload image and bringing a cluster up twice exceeds the pull request budget. |
+
+An exception narrows which jobs may mix trigger classes; it does not let a `pr`
+job run longer.
+
+## Change selection
+
+`.github/actions/ci-scope` is the single selector. A job that selects work runs
+it once, unconditionally, under the id `scope`, after a complete-history
+checkout, and guards its own steps with `steps.scope.outputs.enabled` joined by
+`&&`. `ci_contract.SCOPE_KINDS` records which workflow owns each kind.
+
+An unselected job finishes successfully with a summary saying it was not
+applicable. A selection or diff error fails closed. A selected test that fails
+still fails its job and still uploads the evidence it produced. A required
+hardware test is never downgraded to a successful skip: missing artifacts fail
+the job.
+
+## Audiovisual evidence
+
+Both NES compositions publish video with game audio: a bounded capture in the
+Checks workflow and every scenario in the Benchmarks workflow.
+
+`workloads/nes/src/bin/nes-film.rs` is the one renderer. It reads the input and
+`result.json` a run already recorded, replays them, and writes `film.json`
+beside `witness.mp4`. Nothing renders from a second search.
+
+- A native run's film requires the replayed witness to equal the one the run
+  recorded.
+- A VM-backed run's film is rendered natively with `--recorded-backend
+  consonance`. It compares the recorded semantic endpoint, because a whole-VM
+  run's snapshot digest differs from a native one by construction. `film.json`
+  sets `endpoint_bridged` and leaves `evidence_verified` false. Nothing is
+  captured inside the guest, and no report claims otherwise.
+- `--max-frames` bounds the render. Frames past the ceiling are emulated and
+  left out of the video, so the film is a trailing window ending at the recorded
+  endpoint plus `--tail-frames`. The ceiling, the clip policy and the dropped
+  frame count are in `film.json` under `clip` and in the published report.
+- `scripts/verify-nes-films.py` checks each film's digest, frame count, audio
+  stream, mean volume and duration floor. A silent track fails.
+
+A scenario that produced no renderable input is recorded as unavailable with a
+reason and appears in the report that way. A failed render fails its job. No run
+reports a success film it did not produce.
+
+Public exports carry the asset licence notices for the artifacts they contain
+and exclude ROMs and emulator binaries.
+
+## Historical bugs
+
+`Benchmarks / Harmony Workloads / Historical Bugs` searches the current build of
+each affected workload for the bug its case describes, through Consonance. Each
+scenario job is named after the bug.
+
+There is no fixed-version comparison. A case records which upstream versions the
+bug affects and which fixed it as provenance; it never declares an execution
+arm, a control version or a replay mode over a second build.
+`ci_contract.FORBIDDEN_HISTORICAL_KEYS` lists the keys a case may not carry and
+`ci-historical-arms` rejects them, along with any matrix dimension that would
+restore the arm. A separate Historical Bugs Checks workflow does not exist; the
+full search lives in Benchmarks and pull requests do not run it.
+
+## Naming
+
+- Title Case, with the canonical spellings in `ci_contract.CANONICAL_TERMS`
+  (`macOS`, `etcd`, `K3s`, `QuickNES`, `PostgreSQL`, `NES`, `OCI`, `API`,
+  `Arm64` and the rest) preserved exactly.
+- `ci_contract.SMALL_WORDS` stay lowercase unless they open or close a name.
+- A display name identifies a responsibility or a workload scenario. It never
+  names a trigger, and generic names such as `Unit Tests`, `Build` or `Verify`
+  are rejected. Contextual names such as `Nova`, `Coverage` and `Results` are
+  kept.
+- A job name never repeats the workflow hierarchy; the workflow name already
+  carries the owner.
+- A matrix variant is a ` — <Variant>` suffix with an explicit label:
+  `Nova — Replica <N>`, `Mutation Testing — Shard <N>/16`. A bare `(1)` is
+  rejected, and so is a job whose matrix would display one name twice.
+- Matrix values and machine identifiers pass through unchanged. The linter
+  checks static text and the values a statically declared matrix supplies; it
+  does not guess the capitalization of data a runner produces.
+
+## Extending the registry
+
+1. Add or change the `Workflow` and `Job` entries in `scripts/ci_contract.py`:
+   the path, the qualified name, the owner, each job's display name, trigger
+   class, budget, any exception, its `ci-scope` kind and any media it must
+   capture.
+2. Write the workflow file so its name, triggers and job display names match.
+3. Run `python3 scripts/custom-lints.py`. Every difference between the file and
+   the registry is reported with the rule that owns it.
+
+A new NES scenario also needs its case in `benchmarks/search/nightly.json` and a
+matrix entry in the owning benchmark workflow; `ci-nes-case-jobs` requires the
+two to match exactly.
+
+## Where each rule is enforced
+
+`scripts/custom-lints.py` checks what a parser can decide. It parses every
+workflow with PyYAML 6.0.3 and fails closed on a missing parser, invalid YAML,
+duplicate mapping keys, a malformed trigger or an unregistered file. Findings
+under a `ci-` rule cannot be recorded in the lint baseline.
+
+| Rule | Covers |
 | --- | --- |
-| Checks (`quality.yml`) | PRs and main; lint/build/unit tests, Kani proofs, and public API compatibility |
-| Checks (`nightly.yml`) | Relevant PRs; bounded memory-safety checks |
-| Smoke (`product-smoke.yml`) | PRs and main; selected native NES, STB, PostgreSQL, VM, and KVM checks |
-| Nightly / Memory safety | Nightly/manual full Miri suites |
-| Nightly / Extended quality | Nightly/manual coverage and full-tree mutation |
-| Acceptance / Search evaluation | Manual common-runner and STB qualification |
-| Acceptance / Consonance platform | Nightly/manual exact build and extended replay |
-| Acceptance / Consonance x86 | Nightly/manual hardware and determinism suites |
-| Acceptance / Workload backends | Nightly/manual backend and nested-runtime suites |
-| Benchmarks / NES | Nightly/manual independent public case jobs and aggregate roster |
-| Benchmarks / Historical bugs | Nightly/manual search and replay panel |
-| Release / Harmony | Version tags |
+| `ci-workflow-registration` | Every workflow file is registered, once, under one name and path. |
+| `ci-workflow-parse` | Parsing fails closed. |
+| `ci-workflow-name` | Category, owner and retired categories. |
+| `ci-workflow-triggers` | Declared triggers match the registry. |
+| `ci-display-name` | Title Case, responsibility, variant suffixes, uniqueness inside a workflow. |
+| `ci-pr-job-timeout` | Declared budgets, and the 15-minute bound on pull request work. |
+| `ci-trigger-routing` | A `pr` job runs on pull requests, a `full` job proves it does not, and no pull request job starts a full search. |
+| `ci-trigger-exception` | Mixed trigger classes carry a registered reason. |
+| `ci-scope-routing` | One selector per job, complete checkout, guarded steps. |
+| `ci-analysis-grouping` | Coverage, Miri, mutation and proofs sit in the owning component's Analysis workflow. |
+| `ci-host-compatibility` | Each supported host keeps a bounded job. |
+| `ci-nes-compositions` | Both NES compositions keep a check and a benchmark and run their registered backend. |
+| `ci-nes-media` | Both compositions film their scenarios and check the media. |
+| `ci-nes-case-jobs` | The public case roster maps one-to-one onto independent jobs. |
+| `ci-miri-coverage` | Each Analysis workflow lists exactly the Miri targets it owns. |
+| `ci-historical-arms` | No case or matrix restores a fixed-version comparison arm. |
 
-`scripts/ci_scope.py` is the single selector for product smokes. Search-core and
-ordinary NES changes select the native NES smoke; STB-specific changes select
-STB. Fault changes select PostgreSQL. Platform changes select the OCI smoke;
-VMM/backend changes also select the hardware execution/restore/replay smoke.
-Shared process interfaces and CLI changes select the relevant consumers.
-Dependency, toolchain, and selector changes conservatively select all consumers.
-Documentation changes do not select product smokes. Portable quality checks run
-in six independent jobs: repository scripts and custom lints, workspace lint
-and unit tests, guest crates, Dissonance search, workload support, and NES
-packages. A seventh independent job judges changed file content with the
-Jev-backed semantic lint. It uses the `Checks` environment, limits secret access
-to the judge step, and checks out two commits for the first-parent diff.
-Semantic lint unit tests remain in the portable repository checks. Each
-quality job retains the 15-minute bound and runs on every PR and main push. Rust jobs cache their own manifest directories under separate keys;
-there is no dependency chain or shared build-artifact handoff. Keeping lint,
-build, and tests for each manifest together reuses compilation within a job.
-All six jobs are required quality evidence alongside applicable proofs and API
-checks. Public-API checks run for
-platform/dependency changes; proof and Miri selection retain their own narrow
-rules and tests.
+`scripts/semantic-lints.py` asks a judge what a parser cannot decide. It skips
+without `TYPESAFE_API_KEY`, so deterministic correctness never depends on it. A
+workflow is judged alongside its registry entry, the ownership policy, the local
+actions, scripts and manifests it runs, and `docs/WORKFLOWS.md`. A change to any
+of those reselects and rejudges the workflow. Findings under these rules are
+fixed rather than recorded in the semantic baseline.
 
-There are no standalone selection checks. Each smoke, Kani, public API, and
-Miri job checks out full commit history with `filter: blob:none` and invokes `.github/actions/ci-scope` as its
-first local step. `scripts/ci-job-scope.py` computes the same complete Git diff
-as the previous routing jobs and delegates to the existing selectors. It does
-not use GitHub's changed-file API or introduce new native path-filter limits.
-Rename detection is disabled so moves select checks for both source and
-destination paths without fetching historical blobs for rename scoring.
-The blob filter avoids downloading every historical file revision into every
-runner; the current working tree is materialized, and Git can fetch old blobs
-on demand if a diff needs them. Changes to the shared routing implementation
-conservatively select all tests. Miri and Kani selector changes also select
-their own checks; the Miri workflow trigger includes its selector and tests.
+| Rule | Asks |
+| --- | --- |
+| `ci-owner-mismatch` | Does the work belong to the owner the name claims? |
+| `ci-job-name-meaning` | Do job names describe a method instead of a responsibility? |
+| `ci-disguised-search` | Is a full capability search presented as a bounded check? |
+| `ci-duplicate-suite` | Do two suites assert the same thing over the same inputs at the same budget? |
+| `ci-media-disconnected` | Is claimed video evidence produced from the run's own recorded input? |
+| `ci-fixed-version-direction` | Does documentation direct a fixed-version comparison campaign? |
+| `ci-boundary-contradiction` | Does documentation contradict the component and composition boundaries? |
 
-Every subsequent setup, test, cache, and artifact step is guarded by that job's
-selection output. A selected test failure still fails its job and still uploads
-available failure evidence. A diff/selection error fails closed. Unselected
-jobs briefly allocate a runner and finish successfully with a summary saying
-`Not applicable` and `Test steps were not run`; they do not install tools,
-restore caches, run tests, or upload empty artifacts. This preserves test
-selection, not the old skipped-job status or runner allocation behavior.
-Exact guest qualification remains a real evidence check after selected
-platform execution; a successful host-only smoke cannot qualify guest inputs.
+## Verification
 
-Nova-through-Consonance search is intentionally a nightly/manual acceptance
-campaign, not a separate PR smoke. Native NES exercises the shared search loop;
-the faults and platform smokes cover the Consonance execution path on PRs.
+```sh
+python3 -m unittest discover -s scripts -p 'test_custom_lints.py'
+python3 -m unittest discover -s scripts -p 'test_semantic_lints.py'
+python3 -m unittest discover -s scripts -p 'test_ci_*.py'
+python3 -m unittest discover -s scripts -p 'test_*scope.py'
+python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
+python3 scripts/custom-lints.py
+node --test scripts/benchmark-report.test.cjs
+```
 
-Full-tree mutation runs in sixteen nightly shards with a 320-minute ceiling;
-the coverage floor remains 90%. It no longer depends on a PR diff. These jobs
-can be dispatched before merge when deeper evidence is needed. They are not
-automatic PR requirements.
-
-NES uses one independent job per registered case, retaining all three seeds in
-each job. Nova whole-game work cannot delay or fail the STB jobs. Each case
-uploads its own compact export; `scripts/nes-nightly-report.py` combines the
-rosters and links the complete case reports. Missing, duplicate, or mismatched
-evidence fails the report while retaining a visible row for every expected
-cell. Search errors retain their original status and fail the owning job.
-The case-job ceiling is 210 minutes: the three whole-game seeds need two
-CPU-admission waves (up to 114 minutes including finish budgets), plus cold
-builds and evidence export. The ceiling does not increase any search budget.
-
-The historical panel remains the single owner of PostgreSQL and etcd searches.
-Do not introduce a second case-specific workflow. GitHub retains workflow
-registry entries from branch-only runs even when their file is absent on main;
-inspect `gh workflow list --all` and run history before disabling an obsolete
-entry. Disabling preserves its old runs and is separate from repository lint.
-
-## Skill evaluation boundary
-
-The skill evaluator is not part of this checkout. When its `benchmarks/skills/`
-prerequisite lands, keep its two CI purposes separate:
-
-| Workflow | Automatic triggers | Owns |
-| --- | --- | --- |
-| Checks (Skill evaluator job) | Relevant PRs | Bounded sandbox, build, guest-delivery, and grading checks without model calls; each job stays within 15 minutes. |
-| Acceptance / Skill guest qualification | Manual dispatch | Guest qualification with a trusted `guest_artifact_run_id`, in a separate workflow with a 45-minute ceiling. |
-| Benchmarks / Developer skills | Nightly schedule; manual dispatch | Real-model investigation, integration, and end-to-end panels under their declared budgets. The job must fail before starting a paid attempt when provider credentials are missing. |
-
-The no-model runner and fixture qualification belong in a `Skill evaluator`
-job under `Checks`, alongside the other qualification harness checks. The benchmark
-workflow should invoke the shared runner for its panels without copying those
-checks or adding a real-model pull-request job. Do not add these workflows
-until the evaluator sources are present on the base branch; branch-only
-workflow definitions must not point at an absent `benchmarks/skills/` tree.
-
-## Job conventions
-
-`scripts/custom-lints.py` parses every workflow using PyYAML 6.0.3. Missing parser
-dependencies, invalid YAML, duplicate mapping keys, and invalid trigger shapes
-fail validation. CI rules cannot be waived through the lint baseline.
-
-`ci-workflow-triggers` confines Acceptance, Benchmarks, and Nightly to schedule,
-manual, or reusable invocation. Checks and Smoke cannot use schedules.
-`ci-pr-only-jobs` rejects nightly/manual jobs embedded in PR workflows even when
-an event guard skips them. The timeout rule includes pull_request_target and
-merge_group; bounds must be positive and at most 15 minutes.
-`ci-pr-extended-validation` rejects direct cargo-mutants and cargo-llvm-cov
-commands and the known `scripts/coverage.sh` wrapper in PR jobs, including jobs
-with short timeouts. `ci-pr-workflow-registration` requires PR workflows to use
-registered file paths and categories; adding a new PR workflow is an explicit
-contract change, not a way to bypass smoke routing under a Checks name.
-`ci-pr-smoke-routing` requires every smoke to use the shared inline selector
-with its registered consumer identity. `ci-pr-check-routing` does the same for
-Kani, public API, and Miri checks, and compares the static Miri matrix against
-the registered targets. Both enforce blob-filtered full-history checkout and selection
-guards on every setup/test/artifact step. Separate routing jobs, unguarded
-steps (including `always()` uploads), and missing Miri targets fail validation.
-Each smoke consumer is one bounded job; added smoke matrices fail validation.
-
-`ci-nes-case-jobs` compares the Benchmarks / NES case matrices to
-`benchmarks/search/nightly.json` and requires its owning `nova-nightly.yml`
-workflow to remain tracked while the manifest exists. Each case must occur exactly once in a static
-`matrix.case` list, run through `eval.py run` with `--case ${{ matrix.case }}`,
-and use `fail-fast: false`. Adding a game to the public roster therefore requires
-adding its cases to the workflow. The report must run with `always()` and depend
-on every campaign matrix.
-
-Run the regression tests with `python3 -m unittest discover -s scripts -p 'test_custom_lints.py'`
-and `python3 -m unittest discover -s scripts -p 'test_ci_*.py'`.
-They include the old monolithic panel, omitted and
-duplicated cases, mixed triggers, short-timeout expensive commands, YAML parse
-failures, the removed timeout exemption, sentence-case display names, and
-inline-selection bypasses. Selector parity tests cover docs-only and mixed
-changes, large diffs, Miri arguments/flags, and diff failures.
-The lint/build/unit-test job runs them
-before invoking the linter.
-
-These checks validate declared workflow structure. They do not determine the
-cost of arbitrary scripts, prove the correctness of change selectors, or inspect
-GitHub's retained registry of branch-only workflows. Selector tests and a
-separate registry audit remain necessary for those boundaries.
-
-Use `fail-fast: false` on case matrices so one failure does not cancel other
-cases. Benchmark workflows end with an always-running `report` job that links
-each case's status, duration, and evidence artifacts.
-
-Hardware qualification runs separately from public self-hosted CI.
+These checks read declared structure. They do not measure the cost of an
+arbitrary script, prove a change selector correct, or see GitHub's retained
+registry of branch-only workflows. Inspect `gh workflow list --all` before
+disabling an obsolete registry entry; disabling one preserves its old runs and
+is separate from repository lint.

@@ -72,10 +72,11 @@ scenario produces is a fresh discovery on the affected version and that
 finding's own same-version confirmation.
 
 The PostgreSQL image builder publishes a checksum-verified artifact keyed by
-the image sources and case manifest. PR smoke checks require that exact cache
-entry or artifact handoff; a prefix cache cannot qualify changed image sources.
-When neither exists, dispatch the historical workflow on the proposed branch
-and rerun the smoke after its image job publishes the handoff.
+the image sources and case manifest. The bounded PostgreSQL check requires that
+exact cache entry or artifact handoff; a prefix cache cannot qualify changed
+image sources. When neither exists, dispatch
+`Benchmarks / Harmony Workloads / Historical Bugs` on the proposed branch and
+rerun the check after its image job publishes the handoff.
 
 The roster's CI column is `runnable` or `deferred: <reason>`. A search miss,
 an infrastructure failure, and a found-but-replay-unverified candidate are

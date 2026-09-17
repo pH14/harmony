@@ -5,7 +5,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: g1-kernel-${{ github.ref }}
+  group: consonance-kernel-xsave-qualification-${{ github.ref }}
   cancel-in-progress: true
 defaults:
   run:

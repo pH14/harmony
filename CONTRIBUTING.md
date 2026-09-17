@@ -36,12 +36,12 @@ cargo fmt --all -- --check
 cargo deny check
 ```
 
-The pre-push hook runs the fast subset. `.github/workflows/quality.yml` defines
-the portable PR check, including formal checks,
-public-API snapshots, cross-architecture checks, and standalone guest crates.
-Coverage and full-tree mutation run nightly or manually through
-`.github/workflows/extended-quality.yml`.
-The mutation job uses cargo-mutants 27.1.0 and round-robin shards; the local
+The pre-push hook runs the fast subset. Each component owns its own bounded
+pull request check, and each component's `Analysis` workflow owns its coverage,
+Miri, mutation testing and proofs on a schedule or a manual dispatch.
+[docs/WORKFLOWS.md](docs/WORKFLOWS.md) is the contract, and
+`scripts/ci_contract.py` is the registry it describes.
+The mutation jobs use cargo-mutants 27.1.0 and round-robin shards; the local
 quality-tool installer pins the same version for matching results.
 
 ## dissonance workspace

@@ -126,23 +126,25 @@ the retained checkpoint indices and identify terminal cases with no available
 exact pair. This is a fresh paired reproduction, not recovery of an earlier
 sequential run. The ordinary same-input boot check remains the acceptance check.
 
-PR acceptance combines the portable contract suite and selected Miri checks
-with bounded hardware checks in `product-smoke.yml`. The KVM job requires the
+`Checks / Consonance` combines the portable contract suite with bounded
+hardware checks on every pull request, and `Checks / Consonance / Analysis`
+carries the Miri, coverage, mutation and proof work. The KVM job requires the
 published snapshot identity/replay matrix and serviced-exit checks. The platform
 job compares two complete same-seed Linux execution logs, requiring guest
-readiness, nonzero events and zero differences. The scheduled/manual
-`x86-virtual-time.yml` retains broader serviced-exit, RF, PAE translation and
-guest-written XSAVE coverage, including dirty reused vCPUs. Scheduled/manual
-workload acceptance retains the full-state workload restore oracle.
-After a failed smoke check reports a `StateHash` event index, the ignored
+readiness, nonzero events and zero differences. The scheduled and dispatched
+`Checks / Consonance / Hardware Qualification` retains broader serviced-exit,
+RF, PAE translation and guest-written XSAVE coverage, including dirty reused
+vCPUs, and `Checks / Harmony Workloads / OCI` retains the full-state workload
+restore oracle.
+After a failed bounded check reports a `StateHash` event index, the ignored
 `x2_component_diff_selected_checkpoint` diagnostic replays that boundary with
 `X2_CKPT_EVENT` and retains its reference or first-divergent raw captures under
 `X2_REPORT_DIR`. Each replay finishes its boot and destroys the VM before the
 next replay starts. A no-divergence replay remains diagnostic evidence rather
 than qualification.
 
-Linux snapshot smoke fixtures come from the shared source-keyed platform
-publisher. The smoke requires exact source provenance, verifies the manifest,
+Linux snapshot fixtures come from the shared source-keyed platform
+publisher. The bounded check requires exact source provenance, verifies the manifest,
 and uses its direct Linux fixture. The scheduled/manual producer builds the
 Nix kernel once, packages the runtime fixture without another kernel build,
 and publishes only after platform replay passes. Execution stays bounded
@@ -226,7 +228,7 @@ earlier run also failed an extra preparation after reused restore
 Intel's fixed-P-core matrix passes. A passing retry does not remove these
 failures or establish raw identity stability across extra entries.
 
-The ordinary two-boot Linux smoke also reproduced the same field difference
+The ordinary two-boot Linux check also reproduced the same field difference
 ([run 35048054460](https://github.com/pH14/harmony/actions/runs/35048054460)). At
 checkpoint 14847, the event context and RAM digest match, and the retained suffix
 has exactly one changed byte: raw restore presence 2 versus 0 in VCPU's XSRB
@@ -239,7 +241,7 @@ Controlled guest identity separates logical state from raw restoration metadata.
 `controlled_guest::linux_identity` matches the exact reviewed kernel and composed
 initramfs digests, RAM size and command line before enabling the profile. The compiled
 input catalog lives in `workloads/guest-images/admission/controlled-profiles.rs`;
-its entries come from that directory's approved composition manifests. The minimal Linux smoke image is bound to
+its entries come from that directory's approved composition manifests. The minimal Linux check image is bound to
 its `minimal-component.json` baseline and fixed init script. Unknown or changed
 inputs retain generic
 strict identity. The workload-free platform archive is not itself an approved
@@ -271,4 +273,4 @@ continue to represent those broader states with strict raw identity.
 The published API regression remains required on AMD and Intel under supported
 core placement. A successful scoped regression does not establish raw bitmap
 stability or support for arbitrary guest code. The PR remains draft until the
-required current-head checks, including the qualified Linux smoke, pass.
+required current-head checks, including the qualified Linux boot check, pass.

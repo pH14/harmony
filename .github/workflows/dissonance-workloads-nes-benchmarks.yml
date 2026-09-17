@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nes-search-${{ github.ref }}
+  group: dissonance-nes-benchmarks-${{ github.ref }}
   cancel-in-progress: false
 
 defaults:
