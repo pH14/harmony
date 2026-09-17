@@ -170,6 +170,12 @@ them. If no seed reaches Brock, diagnose from the film before step 4, since
 the goal of steps 4 and 5 is to speed up a search that can already solve, per
 `measure-window-before-campaign`.
 
+Added while running step 3:
+
+- The panel is its own file, `benchmarks/search/blue-pilot.json`. The cases in
+  `pilot.json` all run through the common runner and Blue runs through
+  `blue-campaign`.
+
 ### Step 4: Jev offline test
 
 A PEP 723 Python script under `workloads/gb/scripts` that takes a step 3

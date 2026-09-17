@@ -1,0 +1,35 @@
+{
+  "format": "harmony-search-eval-v1",
+  "id": "blue-pilot-v1",
+  "runner": "blue-campaign",
+  "seeds": [
+    20260905,
+    20260906,
+    20260907
+  ],
+  "workers": [
+    8
+  ],
+  "memory_mib": [
+    2048
+  ],
+  "search": {
+    "executions": 200000,
+    "actions": 1024,
+    "wall_seconds": 1800,
+    "selector": "energy_frontier_cheapest:3,6,12,24",
+    "suffix": "one_to_six",
+    "mixture": "alphabet_only",
+    "verification": "witness"
+  },
+  "cases": [
+    {
+      "id": "blue-brock",
+      "game": "blue",
+      "origin": "power-on new-game genesis through the naming screens to Red's bedroom",
+      "rom_sha256": "2a951313c2640e8c2cb21f25d1db019ae6245d9c7121f754fa61afd7bee6452d",
+      "core": "gambatte",
+      "search": {}
+    }
+  ]
+}
