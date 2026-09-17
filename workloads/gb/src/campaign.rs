@@ -607,10 +607,19 @@ impl Reporting for BlueGame {
         let target = goal_map(deepest)?;
         let hops = evidence.graph.hops_to(target);
         hops.get(&target)?;
+        let deepest_events = scopes
+            .iter()
+            .filter(|scope| scope.badges == deepest.badges && scope.route == deepest.route)
+            .map(|scope| scope.events)
+            .max()?;
         let here = scopes
             .iter()
             .copied()
-            .filter(|scope| scope.badges == deepest.badges && scope.route == deepest.route)
+            .filter(|scope| {
+                scope.badges == deepest.badges
+                    && scope.route == deepest.route
+                    && scope.events == deepest_events
+            })
             .collect::<BTreeSet<_>>();
         if here.is_empty() {
             return None;
@@ -1217,15 +1226,15 @@ mod tests {
         assert_eq!(bands.count, GOAL_BANDS);
         assert_eq!(
             bands.scopes.len(),
-            2,
-            "every event count at this milestone state is in scope, and no other state is"
+            1,
+            "only the deepest event count at this milestone state is in scope"
         );
         assert!(
             bands
                 .scopes
                 .iter()
-                .all(|scope| scope.route == deepest.route),
-            "a shallower milestone state stays out of scope"
+                .all(|scope| scope.route == deepest.route && scope.events == 11),
+            "a shallower milestone state and a shallower event count stay out of scope"
         );
         let band_of = |map: u8| {
             bands.band_of(
