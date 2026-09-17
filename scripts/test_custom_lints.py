@@ -25,12 +25,12 @@ SPEC.loader.exec_module(LINTS)
 
 
 def workflow(job: str, body: str) -> str:
-    return f"""name: Checks
+    return f"""name: Checks / Repository
 on:
   pull_request:
 jobs:
   {job}:
-    name: Bounded validation
+    name: Test / Bounded validation
     runs-on: ubuntu-latest
 {body}
 """
@@ -187,18 +187,18 @@ class WorkflowTimeoutLintTests(unittest.TestCase):
         self.assertEqual([v.rule for v in violations], ["ci-pr-job-timeout"])
 
     def test_exception_for_another_job_does_not_apply(self) -> None:
-        content = f"""name: Checks
+        content = f"""name: Checks / Repository
 on:
   pull_request:
 jobs:
   other:
-    name: Other validation
+    name: Test / Other validation
     runs-on: ubuntu-latest
     # ci-pr-job-timeout-exception: mutants -- wrong job name
     timeout-minutes: 90
     steps: []
   mutants:
-    name: Mutation testing
+    name: Test / Mutation testing
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps: []
@@ -222,8 +222,8 @@ jobs:
             self.assertIn("ci-workflow-parse", [v.rule for v in self.check(workflow("job", "    timeout-minutes: 15"))])
 
     def test_category_controls_triggers_even_with_short_jobs(self):
-        for category in ("Benchmarks", "Acceptance", "Nightly"):
-            content = workflow("short", "    timeout-minutes: 1").replace("name: Checks", "name: " + category + " / Search campaign")
+        for category in ("Benchmarks", "Validation"):
+            content = workflow("short", "    timeout-minutes: 1").replace("name: Checks / Repository", "name: " + category + " / Search campaign")
             self.assertIn("ci-workflow-triggers", [v.rule for v in self.check(content)])
 
     def test_checks_cannot_mix_schedule_and_pr(self):
@@ -258,6 +258,55 @@ jobs:
 
 
 class DisplayNameTests(unittest.TestCase):
+    def test_workflow_categories_require_static_descriptive_subjects(self):
+        for category in LINTS.CI_WORKFLOW_PREFIXES:
+            self.assertTrue(LINTS._qualified_display_name(category + " / Memory safety", LINTS.CI_WORKFLOW_PREFIXES))
+            self.assertFalse(LINTS._qualified_display_name(category, LINTS.CI_WORKFLOW_PREFIXES))
+        for name in ("Smoke / Native NES", "Acceptance / Runtime", "Nightly / Memory safety",
+                     "Checks / Products", "Checks / ${{ matrix.name }}", "Checks / Memory Safety",
+                     "Checks / Memory safety / Extra", "Checks /  Memory safety"):
+            self.assertFalse(LINTS._qualified_display_name(name, LINTS.CI_WORKFLOW_PREFIXES))
+
+    def test_job_roles_require_subjects_and_allow_matrix_details(self):
+        for role in LINTS.CI_JOB_PREFIXES:
+            self.assertTrue(LINTS._qualified_display_name(role + " / NES campaign — ${{ matrix.case }}",
+                                                        LINTS.CI_JOB_PREFIXES, matrix=True))
+        for name in ("Native NES search", "Smoke / NES campaign", "Test", "Test / Report",
+                     "Test / ${{ matrix.case }}", "${{ matrix.role }} / NES campaign",
+                     "Test / NES Campaign", "Test / NES campaign / Extra"):
+            self.assertFalse(LINTS._qualified_display_name(name, LINTS.CI_JOB_PREFIXES, matrix=True))
+
+    def test_inventory_rejects_duplicate_workflow_and_job_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = [".github/workflows/one.yml", ".github/workflows/two.yml"]
+            content = """name: Validation / Memory safety
+on: workflow_dispatch
+jobs:
+  first:
+    name: Test / Memory safety
+    steps: []
+  second:
+    name: Test / Memory safety
+    steps: []
+"""
+            for path in paths:
+                (root / path).parent.mkdir(parents=True, exist_ok=True)
+                (root / path).write_text(content)
+            violations = LINTS.check_workflow_rules(root, paths)
+            self.assertEqual(len(violations), 3)
+            self.assertTrue(all(v.rule == "ci-display-name" for v in violations))
+            self.assertTrue(any("already used" in v.text for v in violations))
+            self.assertTrue(any("repeats display name" in v.text for v in violations))
+
+    def test_bare_workflow_and_missing_job_name_fail_inventory_validation(self):
+        for name in ("Checks", "Smoke", "Acceptance / Runtime", "Nightly / Memory safety"):
+            content = workflow("bounded", "    timeout-minutes: 15\n    steps: []")
+            content = content.replace("Checks / Repository", name).replace("    name: Test / Bounded validation\n", "")
+            violations = WorkflowTimeoutLintTests().check(content)
+            self.assertIn("ci-workflow-prefix", {v.rule for v in violations})
+            self.assertIn("ci-display-name", {v.rule for v in violations})
+
     def test_sentence_case_preserves_proper_names_and_acronyms(self):
         for name in ("Native NES search", "STB search and replay", "PostgreSQL fault search",
                      "VM execution and restore", "KVM deterministic replay", "Kani proofs",
@@ -273,13 +322,13 @@ class DisplayNameTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(LINTS._sentence_case_name(name))
 
-    def test_real_workflows_use_flat_names_and_reject_bad_job_names(self):
+    def test_real_workflows_use_qualified_names_and_reject_bad_job_names(self):
         root = SCRIPT.parent.parent
-        for path, category in LINTS.PR_WORKFLOWS.items():
+        for path, name in LINTS.PR_WORKFLOWS.items():
             with self.subTest(path=path):
                 content = (root / path).read_text()
                 parsed = LINTS._parse_workflow(root / path)
-                self.assertEqual(parsed["name"], category)
+                self.assertEqual(parsed["name"], name)
                 with tempfile.TemporaryDirectory() as directory:
                     copy_root = Path(directory)
                     target = copy_root / path
@@ -290,7 +339,7 @@ class DisplayNameTests(unittest.TestCase):
                     for bad_name in ("Checks", "Choose Tests From Changed Files", "public api checks"):
                         target.write_text(content.replace("name: " + first_name, "name: " + bad_name, 1))
                         self.assertIn("ci-display-name", {v.rule for v in LINTS.check_workflow_rules(copy_root, [path])})
-                    target.write_text(content.replace("name: " + category + "\n", "name: " + category + " / Products\n", 1))
+                    target.write_text(content.replace("name: " + name + "\n", "name: Checks / Products\n", 1))
                     self.assertIn("ci-display-name", {v.rule for v in LINTS.check_workflow_rules(copy_root, [path])})
 
 
@@ -310,7 +359,7 @@ class SmokeRoutingTests(unittest.TestCase):
             path.parent.mkdir(parents=True)
             path.write_text(original)
             self.assertFalse(LINTS.check_workflow_rules(root, [self.path]))
-            path.write_text(original.replace("name: Smoke\n", "name: Checks\n"))
+            path.write_text(original.replace("name: Checks / Product smokes\n", "name: Checks / Repository\n"))
             rules = {v.rule for v in LINTS.check_workflow_rules(root, [self.path])}
             self.assertIn("ci-pr-smoke-routing", rules)
             self.assertIn("ci-pr-workflow-registration", rules)

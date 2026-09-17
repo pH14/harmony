@@ -1,0 +1,19 @@
+[package]
+name = "gb-machine"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[workspace]
+
+[features]
+test-loopback = []
+
+[dependencies]
+# Pinned for reproducibility; upgrade deliberately.
+libc = "=0.2.189"
+serde = { version = "=1.0.228", features = ["derive"] }
+sha2 = "=0.10.9"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }

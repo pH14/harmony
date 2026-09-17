@@ -31,7 +31,7 @@ defaults:
 
 jobs:
   manifest:
-    name: Read historical case manifests
+    name: Check / Read historical case manifests
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -70,7 +70,7 @@ jobs:
           } >>"${GITHUB_STEP_SUMMARY}"
 
   guest:
-    name: Build the canonical platform runtime
+    name: Build / Canonical platform runtime
     needs: manifest
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -111,7 +111,7 @@ jobs:
           retention-days: 1
 
   tools:
-    name: Build Harmony
+    name: Build / Harmony executable
     needs: manifest
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -131,7 +131,7 @@ jobs:
           retention-days: 1
 
   images:
-    name: Build ${{ matrix.id }} workload images
+    name: Build / Workload images — ${{ matrix.id }}
     needs: manifest
     strategy:
       fail-fast: false
@@ -191,7 +191,7 @@ jobs:
           retention-days: 1
 
   search:
-    name: Search ${{ matrix.id }} · ${{ matrix.arm }} arm
+    name: Search / Historical case — ${{ matrix.id }}, ${{ matrix.arm }} arm
     needs: [manifest, guest, images, tools]
     strategy:
       fail-fast: false
@@ -246,7 +246,7 @@ jobs:
           retention-days: 30
 
   differential:
-    name: Differential replay ${{ matrix.id }}
+    name: Replay / Differential replay ${{ matrix.id }}
     needs: [manifest, guest, images, tools, search]
     if: always()
     strategy:
@@ -364,7 +364,7 @@ jobs:
           retention-days: 30
 
   report:
-    name: Render historical panel
+    name: Report / Historical panel
     needs: [manifest, guest, tools, images, search, differential]
     if: always()
     runs-on: ubuntu-24.04

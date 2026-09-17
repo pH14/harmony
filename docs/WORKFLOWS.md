@@ -1,31 +1,36 @@
 # GitHub Actions conventions
 
-Use flat `Category / Subject` check display names. PR workflow names are just
-`Checks` or `Smoke`; their jobs supply the descriptive subject, so GitHub shows
-`Smoke / Native NES search`, not `Smoke / Products / Native NES search`.
-The separate PR workflow files retain their existing triggers and routing.
-Other workflow names use `Category / Subject` directly.
+Every workflow uses a unique `Category / Subject` name, including PR workflows:
+`Checks / Repository`, `Checks / Memory safety`, and `Checks / Product smokes`.
+Every job uses `Role / Subject`: `Test / Native NES search`,
+`Build / Linux guest image`, or `Report / NES campaign report`.
+Allowed job roles are `Check`, `Test`, `Build`, `Search`, `Replay`, `Report`, and
+`Publish`. Roles describe the job's primary purpose; setup and artifact steps
+stay in their owning job. Job names must be unique within a workflow.
 
 Subjects use sentence case: capitalize the first word, proper names, and
-acronyms only. Use `Public API compatibility`, not `Public Api Compatibility`.
-Every job needs an explicit descriptive name; generic names such as `Products`, `Quality`, and `Report` are rejected. Matrix expressions remain
-unchanged, preserving crate and case identifiers. `ci-workflow-prefix` and
-`ci-display-name` in `scripts/custom-lints.py` enforce this contract; register
-new proper names/acronyms in `CI_NAME_TERMS` rather than weakening casing rules.
+acronyms only. Generic subjects such as `Products`, `Quality`, and `Report` are
+rejected. Matrix expressions are allowed only in job subjects, alongside static
+descriptive text. `ci-workflow-prefix` and `ci-display-name` enforce the naming
+contract; register proper names/acronyms in `CI_NAME_TERMS`.
 
 | Category | Purpose | Trigger |
 | --- | --- | --- |
-| Checks | Static analysis, unit tests, API snapshots | PRs and pushes to main |
-| Smoke | Short end-to-end workloads (under 15 min) | PRs and pushes to main |
-| Acceptance | Long-running workload tests | Nightly schedule or manual dispatch |
-| Benchmarks | Performance and search campaigns | Nightly schedule or manual dispatch |
-| Nightly | Extended validation (Miri, mutation) | Nightly schedule |
+| Checks | Bounded static checks, unit tests, proofs, Miri, and product smokes | PRs and pushes to main, according to each workflow's routing |
+| Validation | Deeper correctness and replay qualification, full Miri, coverage, mutation | Schedule or manual dispatch |
+| Benchmarks | Performance and search capability measurements | Schedule or manual dispatch |
 | Release | Build and publish artifacts | Version tags |
+
+Nightly describes a schedule, not a category. Smoke describes a bounded test,
+not a separate workflow category. Validation asks whether execution and replay
+are correct; Benchmarks measures how much search or performance a budget buys.
+An unsolved search case can be valid benchmark evidence; missing or incorrect
+replay evidence cannot qualify a runtime.
 
 Automatic per-PR jobs must finish within 15 minutes (`ci-pr-job-timeout`
 lint). Short workloads that verify basic function are smoke tests. Long-running
-workloads are acceptance tests that run on an off-hours schedule. Timeout
-exceptions in comments are not accepted. Coverage and mutation belong in Nightly.
+correctness tests run in Validation on a schedule or manual dispatch. Timeout
+exceptions in comments are not accepted. Coverage and mutation belong in Validation.
 Miri's full crate suites remain schedule/manual only (their existing 240- and
 320-minute ceilings are intentionally retained). Relevant PR changes select a
 per-crate Miri matrix with a 15-minute ceiling; dependency and toolchain
@@ -52,21 +57,22 @@ The platform smoke also verifies the controlled minimal fixture and requires two
 clean same-seed Linux boots with identical execution logs. The KVM smoke runs
 the fixed-core published snapshot/replay identity matrix, including fresh and
 reused vCPUs, extra host entries and floating-point/vector negative controls.
-Broader snapshot hardware cohorts remain in scheduled/manual x86 acceptance.
+Broader snapshot hardware cohorts remain in Validation / Consonance x86.
 
 ## Current workflows
 
 | Workflow | Automatic triggers |
 | --- | --- |
-| Checks (`quality.yml`) | PRs and main; lint/build/unit tests, Kani proofs, and public API compatibility |
-| Checks (`nightly.yml`) | Relevant PRs; bounded memory-safety checks |
-| Smoke (`product-smoke.yml`) | PRs and main; selected native NES, STB, PostgreSQL, VM, and KVM checks |
-| Nightly / Memory safety | Nightly/manual full Miri suites |
-| Nightly / Extended quality | Nightly/manual coverage and full-tree mutation |
-| Acceptance / Search evaluation | Manual common-runner and STB qualification |
-| Acceptance / Consonance platform | Nightly/manual exact build and extended replay |
-| Acceptance / Consonance x86 | Nightly/manual hardware and determinism suites |
-| Acceptance / Workload backends | Nightly/manual backend and nested-runtime suites |
+| Checks / Repository (`quality.yml`) | PRs and main; lint/build/unit tests, Kani proofs, and public API compatibility |
+| Checks / Memory safety (`nightly.yml`) | Relevant PRs; bounded memory-safety checks |
+| Checks / Product smokes (`product-smoke.yml`) | PRs and main; selected native NES, STB, PostgreSQL, VM, and KVM checks |
+| Validation / Memory safety | Nightly/manual full Miri suites |
+| Validation / Extended quality | Nightly/manual coverage and full-tree mutation |
+| Validation / Search evaluation | Manual common-runner and STB qualification |
+| Validation / Consonance platform | Nightly/manual exact build and extended replay |
+| Validation / Consonance x86 | Nightly/manual hardware and determinism suites |
+| Validation / Workload backends | Nightly/manual backend and nested-runtime suites |
+| Validation / Kernel XSAVE qualification | Manual kernel XSAVE fixture and replica checks |
 | Benchmarks / NES | Nightly/manual independent public case jobs and aggregate roster |
 | Benchmarks / Historical bugs | Nightly/manual search and replay panel |
 | Release / Harmony | Version tags |
@@ -115,7 +121,7 @@ selection, not the old skipped-job status or runner allocation behavior.
 Exact guest qualification remains a real evidence check after selected
 platform execution; a successful host-only smoke cannot qualify guest inputs.
 
-Nova-through-Consonance search is intentionally a nightly/manual acceptance
+Nova-through-Consonance search is a scheduled/manual validation
 campaign, not a separate PR smoke. Native NES exercises the shared search loop;
 the faults and platform smokes cover the Consonance execution path on PRs.
 
@@ -140,6 +146,21 @@ registry entries from branch-only runs even when their file is absent on main;
 inspect `gh workflow list --all` and run history before disabling an obsolete
 entry. Disabling preserves its old runs and is separate from repository lint.
 
+## Coverage ownership
+
+| Repeated component | PR evidence | Deeper evidence | Measurement |
+| --- | --- | --- | --- |
+| Memory safety | Selected bounded per-crate Miri | Full crate suites in Validation / Memory safety | None |
+| NES search | Bounded native and STB smoke | Validation / Search evaluation verifies full small-campaign replay, cartridge RAM snapshots, and the STB contract; Validation / Workload backends verifies guest/native equivalence and replicated VM search | Benchmarks / NES runs the registered multi-seed capability panel |
+| Consonance platform | Execution/restore and exact guest artifact consumption | Validation / Consonance platform owns exact builds and extended replay; Validation / Consonance x86 owns broad hardware cohorts | Historical bug searches consume the qualified runtime |
+| PostgreSQL faults | Bounded single-case search and replay | Runtime qualification belongs to the platform suites | Benchmarks / Historical bugs owns the multi-case search panel |
+
+These layers share components but have different assertions, origins, and
+budgets. The manual search qualification is not another scheduled capability
+panel. Full Miri and broad hardware suites extend selected PR coverage. Keep
+runtime qualification in Validation and capability measurements in Benchmarks;
+reuse shared runners rather than copying their implementations.
+
 ## Skill evaluation boundary
 
 The skill evaluator is not part of this checkout. When its `benchmarks/skills/`
@@ -147,12 +168,12 @@ prerequisite lands, keep its two CI purposes separate:
 
 | Workflow | Automatic triggers | Owns |
 | --- | --- | --- |
-| Checks (Skill evaluator job) | Relevant PRs | Bounded sandbox, build, guest-delivery, and grading checks without model calls; each job stays within 15 minutes. |
-| Acceptance / Skill guest qualification | Manual dispatch | Guest qualification with a trusted `guest_artifact_run_id`, in a separate workflow with a 45-minute ceiling. |
+| Checks / Repository (Skill evaluator job) | Relevant PRs | Bounded sandbox, build, guest-delivery, and grading checks without model calls; each job stays within 15 minutes. |
+| Validation / Skill guest qualification | Manual dispatch | Guest qualification with a trusted `guest_artifact_run_id`, in a separate workflow with a 45-minute ceiling. |
 | Benchmarks / Developer skills | Nightly schedule; manual dispatch | Real-model investigation, integration, and end-to-end panels under their declared budgets. The job must fail before starting a paid attempt when provider credentials are missing. |
 
-The no-model runner and fixture qualification belong in a `Skill evaluator`
-job under `Checks`, alongside the other qualification harness checks. The benchmark
+The no-model runner and fixture qualification belong in a `Test / Skill evaluator`
+job under `Checks / Repository`, alongside the other qualification harness checks. The benchmark
 workflow should invoke the shared runner for its panels without copying those
 checks or adding a real-model pull-request job. Do not add these workflows
 until the evaluator sources are present on the base branch; branch-only
@@ -164,8 +185,8 @@ workflow definitions must not point at an absent `benchmarks/skills/` tree.
 dependencies, invalid YAML, duplicate mapping keys, and invalid trigger shapes
 fail validation. CI rules cannot be waived through the lint baseline.
 
-`ci-workflow-triggers` confines Acceptance, Benchmarks, and Nightly to schedule,
-manual, or reusable invocation. Checks and Smoke cannot use schedules.
+`ci-workflow-triggers` confines Validation and Benchmarks to schedule,
+manual, or reusable invocation. Checks cannot use schedules.
 `ci-pr-only-jobs` rejects nightly/manual jobs embedded in PR workflows even when
 an event guard skips them. The timeout rule includes pull_request_target and
 merge_group; bounds must be positive and at most 15 minutes.

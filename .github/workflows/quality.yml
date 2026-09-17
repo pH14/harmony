@@ -1,4 +1,4 @@
-name: Checks
+name: Checks / Repository
 
 on:
   push:
@@ -16,7 +16,7 @@ env:
 
 jobs:
   repository:
-    name: Repository checks
+    name: Check / Repository checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -76,7 +76,7 @@ jobs:
         run: make -C workloads/faults/runtime check
 
   workspace:
-    name: Workspace lint and unit tests
+    name: Test / Workspace lint and unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -112,7 +112,7 @@ jobs:
             --all-features --all-targets -- -D warnings
 
   guests:
-    name: Guest crate checks
+    name: Test / Guest crate checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -172,7 +172,7 @@ jobs:
           done
 
   search:
-    name: Dissonance search checks
+    name: Test / Dissonance search checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -199,7 +199,7 @@ jobs:
           cargo deny --manifest-path dissonance/Cargo.toml check
 
   support:
-    name: Workload support checks
+    name: Test / Workload support checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -231,7 +231,7 @@ jobs:
           done
 
   nes:
-    name: NES package checks
+    name: Test / NES package checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -260,8 +260,39 @@ jobs:
           cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml --all-features
           cargo deny --manifest-path workloads/nes/Cargo.toml check --config deny.toml
 
+  gameboy:
+    name: Test / Game Boy package checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-gameboy
+          workspaces: |
+            workloads/gb -> target
+            workloads/gb-machine -> target
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.9
+      - name: Game Boy workload package checks
+        run: |
+          cargo fmt --manifest-path workloads/gb-machine/Cargo.toml --all -- --check
+          cargo fmt --manifest-path workloads/gb/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path workloads/gb-machine/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path workloads/gb-machine/Cargo.toml --all-features
+          cargo build --locked --manifest-path workloads/gb/Cargo.toml --release
+          cargo clippy --locked --manifest-path workloads/gb/Cargo.toml --release --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path workloads/gb/Cargo.toml --release --all-features
+          cargo deny --manifest-path workloads/gb/Cargo.toml check --config deny.toml
+
   semantic:
-    name: Semantic content lints
+    name: Check / Semantic content lints
     runs-on: ubuntu-latest
     environment: Checks
     timeout-minutes: 15
@@ -278,7 +309,7 @@ jobs:
         run: python3 scripts/semantic-lints.py --changed-from HEAD^1
 
   kani:
-    name: Kani proofs
+    name: Check / Kani proofs
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -323,7 +354,7 @@ jobs:
           cargo kani --manifest-path workloads/fault-policy/Cargo.toml
 
   public-api:
-    name: Public API compatibility
+    name: Check / Public API compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:

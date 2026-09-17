@@ -45,6 +45,7 @@ class MiriScopeTests(unittest.TestCase):
         self.assertEqual(self.names(["consonance/vmm-backend/src/kvm.rs"]), {"vmm-backend"})
         self.assertEqual(self.names(["consonance/snapshot-store/src/lib.rs"]), {"snapshot-store"})
         self.assertEqual(self.names(["workloads/nes-machine/src/lib.rs"]), {"machine"})
+        self.assertEqual(self.names(["workloads/gb-machine/src/gambatte.rs"]), {"gb-machine"})
         self.assertEqual(self.names(["workloads/nes-guest/src/lib.rs"]), {"nes-guest"})
         self.assertEqual(
             self.names(["consonance/harmony-linux/supervisor/src/lib.rs"]),

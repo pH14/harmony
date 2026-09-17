@@ -1,4 +1,4 @@
-name: Checks
+name: Checks / Memory safety
 
 on:
   pull_request:
@@ -9,6 +9,7 @@ on:
       - consonance/vm-state/**
       - consonance/vmm-backend/**
       - consonance/snapshot-store/**
+      - workloads/gb-machine/**
       - workloads/nes-machine/**
       - workloads/nes-guest/**
       - consonance/harmony-linux/**
@@ -29,13 +30,13 @@ on:
       - scripts/test_miri_scope.py
 jobs:
   miri-pr:
-    name: Memory safety — ${{ matrix.name }}
+    name: Test / Memory safety — ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        name: [vmm-core, hypercall-doorbell, hypercall-doorbell-round-trip, consonance-client, vm-state, vmm-backend, snapshot-store, machine, nes-guest, harmony-supervisor]
+        name: [vmm-core, hypercall-doorbell, hypercall-doorbell-round-trip, consonance-client, vm-state, vmm-backend, snapshot-store, machine, gb-machine, nes-guest, harmony-supervisor]
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
       HARMONY_MIRI_PR_SMOKE: "1"

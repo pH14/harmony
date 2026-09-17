@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Acceptance / Consonance x86
+name: Validation / Consonance x86
 
 on:
 
@@ -24,7 +24,7 @@ env:
 
 jobs:
   probe:
-    name: Runner CPU features
+    name: Check / Runner CPU features
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -72,7 +72,7 @@ jobs:
           if-no-files-found: error
 
   x1-minimal-guest:
-    name: Minimal guest determinism
+    name: Test / Minimal guest determinism
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -104,7 +104,7 @@ jobs:
           if-no-files-found: error
 
   guest-image:
-    name: Linux guest image
+    name: Build / Linux guest image
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -137,7 +137,7 @@ jobs:
           if-no-files-found: error
 
   n6-instruction-sweep:
-    name: Instruction timing sweep
+    name: Test / Instruction timing sweep
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: guest-image
     runs-on: ubuntu-24.04
@@ -184,7 +184,7 @@ jobs:
           if-no-files-found: error
 
   go-runtime:
-    name: Go runtime determinism
+    name: Test / Go runtime determinism
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: guest-image
     runs-on: ubuntu-24.04
@@ -229,7 +229,7 @@ jobs:
           if-no-files-found: error
 
   x2-linux-virtual_time:
-    name: Linux virtual time
+    name: Test / Linux virtual time
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: guest-image
     runs-on: ubuntu-24.04
@@ -301,7 +301,7 @@ jobs:
           if-no-files-found: error
 
   x2-intel-hunt:
-    name: Intel determinism search
+    name: Test / Intel determinism search
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: guest-image
     runs-on: ubuntu-24.04
@@ -347,7 +347,7 @@ jobs:
           if-no-files-found: error
 
   check:
-    name: Hardware qualification results
+    name: Report / Hardware qualification results
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -369,7 +369,7 @@ jobs:
   # tree. Supported-contract tests are required on every replica; AMD stale-PAE
   # observations remain informational. Every test has an external wall bound.
   snapshot-hardware:
-    name: Snapshot hardware replica ${{ matrix.replica }}
+    name: Test / Snapshot hardware replica ${{ matrix.replica }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:

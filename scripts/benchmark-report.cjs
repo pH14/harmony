@@ -10,7 +10,7 @@ module.exports = async ({github, context, core}) => {
     .addRaw('Case failures remain failures. Missing evidence is not a passing result. Reports and any videos are linked below.\n')
     .addTable([
       [{data:'Job / case',header:true},{data:'Result',header:true},{data:'Duration',header:true}],
-      ...jobs.filter(j => j.name !== 'NES campaign report').map(j => [link(j.html_url,j.name), escape(j.conclusion || j.status),
+      ...jobs.filter(j => j.name !== 'Report / NES campaign report').map(j => [link(j.html_url,j.name), escape(j.conclusion || j.status),
         j.completed_at && j.started_at ? `${Math.round((Date.parse(j.completed_at)-Date.parse(j.started_at))/1000)} s` : '—'])
     ]).addHeading('Evidence', 2)
     .addList(availableArtifacts.map(a => link(`${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}/artifacts/${a.id}`,a.name)))

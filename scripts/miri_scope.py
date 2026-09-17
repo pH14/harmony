@@ -49,6 +49,11 @@ TARGETS = (
         "paths": ("workloads/nes-machine/**",),
     },
     {
+        "name": "gb-machine",
+        "command": "--manifest-path workloads/gb-machine/Cargo.toml",
+        "paths": ("workloads/gb-machine/**",),
+    },
+    {
         "name": "nes-guest",
         "command": "--manifest-path workloads/nes-guest/Cargo.toml --lib --test agent --bins",
         "paths": ("workloads/nes-guest/**",),

@@ -39,12 +39,14 @@ workload_support = [
     "consonance/oci",
     "workloads/nes-protocol",
     "workloads/nes-machine",
+    "workloads/gb-machine",
 ]
 guest_linux_platform = [
     "consonance/harmony-linux/runtime-fixture",
     "consonance/harmony-linux/supervisor",
 ]
 workload_packages = [
+    "workloads/gb",
     "workloads/nes-guest",
     "workloads/fault-policy",
     "workloads/faults",
