@@ -56,7 +56,7 @@ jobs:
         if: steps.scope.outputs.enabled == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends binutils cc65 curl g++ git
+          sudo apt-get install --yes --no-install-recommends binutils cc65 curl ffmpeg g++ git
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.enabled == 'true'
         with:
@@ -96,6 +96,7 @@ jobs:
         run: |
           cargo build --locked --release --manifest-path workloads/nes/Cargo.toml \
             -p nes-workload --features consonance --bin nova-consonance-observation-oracle
+          cargo build --locked --release --manifest-path workloads/nes/Cargo.toml --bin nes-film
           cargo build --locked --release -p harmony-cli
       - name: Whole-VM and direct observations agree
         if: steps.scope.outputs.enabled == 'true'
@@ -142,6 +143,23 @@ jobs:
           if not any(json.loads(line).get("event") == "job" for line in stream[1:]):
               raise SystemExit("the Harmony NES check recorded no job event")
           PY
+      - name: Capture the guest-produced tape natively with game audio
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          cp workloads/nes/NOVA-ARTIFACT-LICENSE.md harmony-nes-check/ARTIFACT-LICENSE.md
+          cp workloads/nes/nova-versions.env harmony-nes-check/
+          workloads/nes/target/release/nes-film --game nova \
+            --rom "${NOVA_BUILD}/nova.nes" \
+            --core "${NOVA_BUILD}/quicknes_libretro.so" \
+            --rom-sha256 "$(sha256sum "${NOVA_BUILD}/nova.nes" | cut -d' ' -f1)" \
+            --core-sha256 "$(sha256sum "${NOVA_BUILD}/quicknes_libretro.so" | cut -d' ' -f1)" \
+            --input harmony-nes-check/search/witness-input.json \
+            --evidence harmony-nes-check/search/result.json \
+            --recorded-backend consonance \
+            --out harmony-nes-check/film --max-frames 4096
+          python3 scripts/verify-nes-films.py harmony-nes-check/film/film.json --min-seconds 2
+          python3 -c 'import json; film=json.load(open("harmony-nes-check/film/film.json")); assert film["endpoint_bridged"] and not film["evidence_verified"]; print(film["provenance"])'
       - uses: actions/upload-artifact@v4
         if: always() && steps.scope.outputs.enabled == 'true'
         with:

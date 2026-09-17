@@ -376,7 +376,7 @@ fn render_video(
         .stdin(Stdio::piped())
         .spawn()?;
     let mut video_output = BufWriter::new(encoder.stdin.take().ok_or("missing encoder input")?);
-    let rendered = target.render_input(input, tail_frames, &mut video_output, &mut audio_output);
+    let rendered = target.render_input(input, tail_frames, 0, &mut video_output, &mut audio_output);
     let flushed = video_output.flush();
     drop(video_output);
     let status = encoder.wait()?;

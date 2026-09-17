@@ -1288,6 +1288,36 @@ where
     replay_campaign_checkpointed(game, stream_bytes, origin_report, origin_checkpoint)
 }
 
+impl<M, P> crate::film::Endpointed for SmbGame<M, P>
+where
+    M: SmbMachineKind<P>,
+    P: SnapshotState,
+{
+    fn headless_endpoint(&self, input: &SmbInput) -> Result<serde_json::Value, Box<dyn Error>> {
+        let mut target = self
+            .new_target()
+            .map_err(|error| -> Box<dyn Error> { error.into() })?;
+        target.reset();
+        for action in &input.actions {
+            target.apply(action);
+            if target.exit_kind() != ExitKind::Ok {
+                return Err(
+                    "the recorded Super Mario Bros input crashed during headless replay".into(),
+                );
+            }
+        }
+        Ok(serde_json::to_value(target.observe().decoded)?)
+    }
+
+    fn input_frames(&self, input: &SmbInput) -> u64 {
+        input
+            .actions
+            .iter()
+            .map(|action| u64::from(action.bounded_hold_frames()))
+            .sum()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::search::rollout::Outcome;

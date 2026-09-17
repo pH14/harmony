@@ -220,6 +220,91 @@ class EvaluationTests(unittest.TestCase):
         (cell/'resources.jsonl').write_text('{}\n')
         return item
 
+    def film_args(self, matrix, binary, max_frames=72000, tail_frames=180):
+        return argparse.Namespace(matrix=matrix, binary=binary, max_frames=max_frames, tail_frames=tail_frames)
+
+    def renderable(self, matrix):
+        item = self.matrix(matrix)
+        cell = matrix/item['cell']
+        eval.write_json(cell/'request.private.json', {
+            'game': 'nova', 'level': 9, 'rom': '/assets/nova.nes', 'core': '/assets/core.so',
+            'rom_sha256': 'a'*64, 'core_sha256': 'b'*64})
+        eval.write_json(cell/'campaign/witness-input.json', {'actions': [{'buttons': 0, 'hold_frames': 2}]})
+        eval.write_json(cell/'campaign/result.json', {'solved': True, 'witness': {'victory': True}})
+        return item
+
+    def test_the_render_command_carries_the_recorded_scenario_identity(self):
+        request = {'game': 'nova', 'level': 9, 'whole_game': True, 'rom': '/r.nes', 'core': '/c.so',
+                   'rom_sha256': 'a'*64, 'core_sha256': 'b'*64}
+        command = eval.film_command(Path('nes-film'), request, Path('run/campaign'), Path('run/film'), 4096, 180)
+        self.assertIn('--whole-game', command)
+        self.assertEqual(command[command.index('--level')+1], '9')
+        self.assertEqual(command[command.index('--max-frames')+1], '4096')
+        self.assertEqual(command[command.index('--evidence')+1], 'run/campaign/result.json')
+        self.assertNotIn('--ai', command)
+        stb = eval.film_command(Path('nes-film'), {**request, 'game': 'stb', 'level': None, 'ai': 'easy',
+                                                   'whole_game': False}, Path('c'), Path('f'), 100, 10)
+        self.assertEqual(stb[stb.index('--ai')+1], 'easy')
+        self.assertNotIn('--level', stb)
+        self.assertNotIn('--whole-game', stb)
+
+    def test_a_run_with_no_renderable_input_reports_media_unavailable(self):
+        matrix = self.root/'matrix'
+        item = self.matrix(matrix)
+        eval.write_json(matrix/item['cell']/'request.private.json', {'game': 'nova'})
+        with self.assertRaises(ValueError):
+            eval.film(self.film_args(matrix, Path('/nonexistent/nes-film')))
+        index = eval.read_json(matrix/'films.json')
+        self.assertEqual(index['films'], [])
+        self.assertEqual(index['unavailable'][0]['cell'], item['cell'])
+        self.assertIn('no renderable input', index['unavailable'][0]['reason'])
+        self.assertEqual(index['failed'], [])
+
+    def test_a_failed_render_fails_the_command_and_stays_in_the_index(self):
+        matrix = self.root/'matrix'
+        item = self.renderable(matrix)
+        binary = self.root/'nes-film'
+        binary.write_text('#!/bin/sh\necho rendering refused >&2\nexit 3\n')
+        binary.chmod(0o755)
+        with self.assertRaises(ValueError):
+            eval.film(self.film_args(matrix, binary))
+        index = eval.read_json(matrix/'films.json')
+        self.assertEqual(index['films'], [])
+        self.assertEqual(index['failed'][0]['exit_code'], 3)
+        self.assertIn('rendering refused', (matrix/item['cell']/'film/render.log').read_text())
+
+    def test_a_rendered_film_reaches_the_index_report_and_export(self):
+        matrix, public = self.root/'matrix', self.root/'public'
+        item = self.renderable(matrix)
+        binary = self.root/'nes-film'
+        binary.write_text('#!/bin/sh\nout=$(echo "$@" | tr " " "\\n" | grep -A1 -x -- --out | tail -1)\n'
+                          'printf x > "$out/witness.mp4"\n'
+                          'cat > "$out/film.json" <<\'JSON\'\n'
+                          '{"format":"nes-film-v1","endpoint_verified":true,"clip":{"policy":"whole input",'
+                          '"skipped_frames":0},"video":{"frames":300,"audio_frames":7350},'
+                          '"capture":{"duration_seconds":5.0,"mp4_sha256":"c"}}\nJSON\n')
+        binary.chmod(0o755)
+        eval.film(self.film_args(matrix, binary))
+        index = eval.read_json(matrix/'films.json')
+        self.assertEqual(index['films'][0]['cell'], item['cell'])
+        self.assertEqual(index['unavailable'], [])
+        eval.export(matrix, public)
+        self.assertTrue((public/item['cell']/'film/witness.mp4').is_file())
+        self.assertIn('film with game audio', (public/'index.html').read_text())
+        media = eval.read_json(public/'roster.json')[0]['media']
+        self.assertTrue(media['available'])
+        self.assertEqual(media['mp4'], item['cell'] + '/film/witness.mp4')
+        self.assertIn('films.json', eval.read_json(public/'checksums.json'))
+
+    def test_a_panel_without_a_media_index_records_every_cell_as_unavailable(self):
+        matrix, public = self.root/'matrix', self.root/'public'
+        self.matrix(matrix)
+        eval.export(matrix, public)
+        media = eval.read_json(public/'roster.json')[0]['media']
+        self.assertFalse(media['available'])
+        self.assertIn('no media', media['reason'])
+
+
     def test_comparison_refuses_changed_policies_budgets_and_missing_cells(self):
         a, b = self.root/'a', self.root/'b'
         original = self.matrix(a)

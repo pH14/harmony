@@ -63,7 +63,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            build-essential curl git unzip python3 python3-pil cc65
+            build-essential cc65 curl ffmpeg git python3 python3-pil unzip
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: workloads/nes -> target
@@ -109,6 +109,14 @@ jobs:
           status=$?
           echo "run_status=${status}" >>"${GITHUB_ENV}"
           exit "${status}"
+      - name: Render each scenario's own recorded input with game audio
+        if: always()
+        uses: ./.github/actions/nes-film
+        with:
+          matrix: ${{ env.RUN_ROOT }}
+          binary: ${{ env.BUILD_ROOT }}/nes-film
+          max-frames: "72000"
+          min-seconds: "5"
       - name: Export compact roster and report
         if: always()
         run: |
@@ -119,6 +127,29 @@ jobs:
             echo 'The common runner produced no matrix index.' >&2
             exit 1
           fi
+          case "$NES_CASE" in
+            nova-*)
+              cp workloads/nes/NOVA-ARTIFACT-LICENSE.md "${PUBLIC_ROOT}/ARTIFACT-LICENSE.md"
+              cp workloads/nes/nova-versions.env "${PUBLIC_ROOT}/"
+              ;;
+            stb-*)
+              cp workloads/nes/STB-ARTIFACT-LICENSE.md "${PUBLIC_ROOT}/ARTIFACT-LICENSE.md"
+              cp "${ASSET_ROOT}/stb/UPSTREAM-LICENSE.txt" "${ASSET_ROOT}/stb/UPSTREAM-CREDITS.asm" \
+                "${ASSET_ROOT}/stb/stb-versions.env" "${PUBLIC_ROOT}/"
+              ;;
+          esac
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path('/tmp/nes-search-public')
+          checksums = json.loads((root / 'checksums.json').read_text())
+          for path in sorted(root.rglob('*')):
+              if path.is_file() and path.name != 'checksums.json':
+                  checksums[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
+          (root / 'checksums.json').write_text(json.dumps(checksums, sort_keys=True, separators=(',', ':')))
+          PY
       - name: Require the declared capability outcome
         if: matrix.require_victory
         env:
@@ -181,7 +212,7 @@ jobs:
         continue-on-error: true
         with:
           pattern: nes-public-search-*-${{ github.run_id }}
-          path: nes-nightly-report/cases
+          path: nes-benchmark-report/cases
       - name: Merge case rosters and account for missing evidence
         run: python3 scripts/nes-nightly-report.py --cases nes-benchmark-report/cases --out nes-benchmark-report
       - uses: actions/upload-artifact@v4

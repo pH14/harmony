@@ -176,6 +176,7 @@ pub struct StbVideoMetadata {
     pub audio_sample_rate: u32,
     pub audio_channels: u8,
     pub audio_frames: u64,
+    pub skipped_frames: u64,
     pub input_endpoint: StbMechanicalState,
 }
 
@@ -352,6 +353,7 @@ impl StbTarget<QuickNesMachine> {
         &mut self,
         input: &StbInput,
         tail_frames: u32,
+        skip_frames: u64,
         video_output: &mut dyn Write,
         audio_output: &mut dyn Write,
     ) -> Result<StbVideoMetadata, Box<dyn Error>> {
@@ -363,8 +365,15 @@ impl StbTarget<QuickNesMachine> {
         self.machine.set_audio_capture(true);
         let result = (|| {
             let mut metadata = None;
+            let mut skip = skip_frames;
             for action in &input.actions {
-                self.render_action(*action, video_output, audio_output, &mut metadata)?;
+                self.render_action(
+                    *action,
+                    video_output,
+                    audio_output,
+                    &mut metadata,
+                    &mut skip,
+                )?;
                 if decode_state(&read_wram(&self.machine)?)?.match_over() {
                     break;
                 }
@@ -378,6 +387,7 @@ impl StbTarget<QuickNesMachine> {
                     video_output,
                     audio_output,
                     &mut metadata,
+                    &mut skip,
                 )?;
                 remaining -= hold;
             }
@@ -386,6 +396,7 @@ impl StbTarget<QuickNesMachine> {
                 return Err("QuickNES produced no audio samples".into());
             }
             metadata.input_endpoint = endpoint;
+            metadata.skipped_frames = skip_frames - skip;
             Ok(metadata)
         })();
         self.machine.set_audio_capture(false);
@@ -399,6 +410,7 @@ impl StbTarget<QuickNesMachine> {
         video_output: &mut dyn Write,
         audio_output: &mut dyn Write,
         metadata: &mut Option<StbVideoMetadata>,
+        skip: &mut u64,
     ) -> Result<(), Box<dyn Error>> {
         let start = self.machine.snapshot()?;
         self.machine
@@ -412,6 +424,11 @@ impl StbTarget<QuickNesMachine> {
                 .machine
                 .take_video_frame()
                 .ok_or("QuickNES omitted a requested video frame")?;
+            if *skip > 0 {
+                *skip -= 1;
+                self.machine.take_audio_samples();
+                continue;
+            }
             match metadata {
                 Some(existing)
                     if (existing.width, existing.height) != (frame.width, frame.height) =>
@@ -427,6 +444,7 @@ impl StbTarget<QuickNesMachine> {
                         audio_sample_rate: QUICKNES_AUDIO_SAMPLE_RATE,
                         audio_channels: QUICKNES_AUDIO_CHANNELS,
                         audio_frames: 0,
+                        skipped_frames: 0,
                         input_endpoint: StbMechanicalState::default(),
                     });
                 }

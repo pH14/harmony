@@ -116,6 +116,7 @@ jobs:
             -p nes-workload --features consonance \
             --bin nova-consonance-campaign \
             --bin nova-consonance-observation-oracle
+          cargo build --locked --release --manifest-path workloads/nes/Cargo.toml --bin nes-film
       - name: Build the x86 in-place restore oracle
         run: cargo build --locked --release --manifest-path workloads/tools/Cargo.toml --bin kvm_x86_nova_probe
       - name: Grant nested KVM access
@@ -168,7 +169,6 @@ jobs:
               --platform-initramfs consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
               --image consonance/harmony-linux/build/nes.oci \
               --rom "${NOVA_BUILD}/nova.nes" \
-              --core "${NOVA_BUILD}/quicknes_libretro.so" \
               --output nova-consonance-report \
               --seed 20260901 \
               --executions 10000 \
@@ -208,9 +208,8 @@ jobs:
               raise SystemExit(
                   f"campaign peak RSS {peak_rss} exceeded process budget {budget_bytes}"
               )
-          video = summary.get("video") or {}
-          if not video.get("mp4_sha256"):
-              raise SystemExit("campaign did not produce a hashed film")
+          if not summary.get("best_input_frames"):
+              raise SystemExit("campaign retained no renderable input")
           PY
           cp consonance/harmony-linux/build/x86_64/runtime-manifest.json \
             nova-consonance-report/platform-runtime-manifest.json
@@ -226,11 +225,38 @@ jobs:
             echo
             echo "The game-blind Dissonance searcher drove QuickNES and Nova inside the Linux guest."
             echo "Every mutation restored a Consonance whole-VM snapshot and supplied an opaque SDK controller payload."
-            echo "The champion tape was replayed headlessly through QuickNES into a video with game audio."
             echo
             printf '\140\140\140json\n'
             cat nova-consonance-report/campaign-summary.json
             printf '\140\140\140\n'
+          } >>"${GITHUB_STEP_SUMMARY}"
+      - name: Render the recorded tape natively and bridge it to the guest endpoint
+        run: |
+          set -euo pipefail
+          cp workloads/nes/NOVA-ARTIFACT-LICENSE.md nova-consonance-report/ARTIFACT-LICENSE.md
+          cp workloads/nes/nova-versions.env nova-consonance-report/
+          workloads/nes/target/release/nes-film \
+            --game nova \
+            --rom "${NOVA_BUILD}/nova.nes" \
+            --core "${NOVA_BUILD}/quicknes_libretro.so" \
+            --rom-sha256 "$(sha256sum "${NOVA_BUILD}/nova.nes" | cut -d' ' -f1)" \
+            --core-sha256 "$(sha256sum "${NOVA_BUILD}/quicknes_libretro.so" | cut -d' ' -f1)" \
+            --input nova-consonance-report/best-input.json \
+            --evidence nova-consonance-report/result.json \
+            --recorded-backend consonance \
+            --out nova-consonance-report/film \
+            --max-frames 72000
+          python3 scripts/verify-nes-films.py nova-consonance-report/film/film.json --min-seconds 5
+          {
+            echo "## Nova film"
+            echo
+            echo "The Consonance whole-VM search recorded the tape. Native QuickNES replayed that tape to"
+            echo "produce this video with game audio; nothing was captured inside the guest. The native"
+            echo "replay's endpoint equals the endpoint the whole-VM search recorded for the same tape."
+            echo
+            printf '\140\140\140json\n'
+            python3 -c 'import json,sys; film=json.load(open("nova-consonance-report/film/film.json")); json.dump({k:film[k] for k in ("recorded_backend","provenance","endpoint_bridged","clip","video","capture")}, sys.stdout, indent=2)'
+            printf '\n\140\140\140\n'
           } >>"${GITHUB_STEP_SUMMARY}"
       - name: Retain exact NES image for failed admission or execution review
         uses: actions/upload-artifact@v4
@@ -272,6 +298,12 @@ jobs:
           import json
           from pathlib import Path
 
+          def film_audio(summary_path):
+              film = summary_path.with_name("film") / "film.json"
+              if not film.is_file():
+                  return None
+              return json.loads(film.read_text())["capture"]["audio_pcm_sha256"]
+
           summaries = sorted(Path("replicas").glob("**/campaign-summary.json"))
           if len(summaries) != 4:
               raise SystemExit(f"expected 4 campaign summaries, found {len(summaries)}")
@@ -285,7 +317,7 @@ jobs:
                   summary_path,
                   runner,
                   summary.get("stream_sha256"),
-                  (summary.get("video") or {}).get("audio_pcm_sha256"),
+                  film_audio(summary_path),
               ))
 
           for field_index, field_name in [(2, "stream_sha256"), (3, "audio_pcm_sha256")]:

@@ -373,7 +373,7 @@ fn render_video(
     let mut target = game
         .new_target()
         .map_err(|error| -> Box<dyn Error> { error.into() })?;
-    let video = target.render_input(input, tail_frames, &mut video_output, &mut audio_output)?;
+    let video = target.render_input(input, tail_frames, 0, &mut video_output, &mut audio_output)?;
     drop(video_output);
     drop(audio_output);
     let audio_pcm_sha256 = sha256(&fs::read(&audio_path)?);

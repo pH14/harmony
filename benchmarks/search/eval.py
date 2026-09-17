@@ -475,7 +475,26 @@ def progress_summary(item):
     return progress if progress is not None else 'unavailable'
 
 
-def roster_row(item):
+def film_index(matrix):
+    """Per-cell media state, so a missing film reads as missing rather than absent."""
+    index = read_json(Path(matrix) / 'films.json')
+    if not index:
+        return {}
+    rows = {}
+    for row in index.get('films', []):
+        rows[row['cell']] = {'available': True, 'mp4': row['cell'] + '/film/witness.mp4',
+                             'frames': row['video']['frames'], 'audio_frames': row['video']['audio_frames'],
+                             'duration_seconds': row['capture']['duration_seconds'],
+                             'mp4_sha256': row['capture']['mp4_sha256'],
+                             'endpoint_verified': row['endpoint_verified'], 'clip': row['clip']}
+    for row in index.get('unavailable', []):
+        rows[row['cell']] = {'available': False, 'reason': row['reason']}
+    for row in index.get('failed', []):
+        rows[row['cell']] = {'available': False, 'reason': 'rendering failed with exit code ' + str(row['exit_code'])}
+    return rows
+
+
+def roster_row(item, films=None):
     request = item.get('search_request', {})
     result = item.get('result') or {}
     return {
@@ -511,6 +530,7 @@ def roster_row(item):
             'peak_disk_logical_bytes_sampled': item.get('peak_disk_logical_bytes_sampled'),
             'cpu_seconds': item.get('cpu_seconds'),
         },
+        'media': (films or {}).get(item.get('cell'), {'available': False, 'reason': 'no media was rendered for this panel'}),
         'failure': None if item.get('status') == 'complete' else {
             'status': item.get('status', 'unavailable'),
             'exit_code': item.get('exit_code'),
@@ -519,8 +539,8 @@ def roster_row(item):
     }
 
 
-def roster(results):
-    return [roster_row(item) for item in sorted(results, key=lambda x: x.get('cell', ''))]
+def roster(results, films=None):
+    return [roster_row(item, films) for item in sorted(results, key=lambda x: x.get('cell', ''))]
 
 
 def metroid_html(results):
@@ -573,12 +593,12 @@ def metroid_html(results):
             + ''.join(discoveries) + '</ul></details>')
 
 
-def report_html(results, title):
+def report_html(results, title, films=None):
     def number(value):
         return 'unavailable' if value is None else f'{value:,.1f}' if isinstance(value, float) else f'{value:,}'
     rows = []
     for item in results:
-        row = roster_row(item)
+        row = roster_row(item, films)
         cell = html.escape(row['cell'])
         budgets = row['budgets']
         budget_text = ('exec ≤' + number(budgets['executions']) +
@@ -587,18 +607,82 @@ def report_html(results, title):
         mechanism_text = html.escape(json.dumps(row['mechanism'], sort_keys=True, separators=(',', ':')))
         progress_text = html.escape(json.dumps(row['progress'], sort_keys=True, separators=(',', ':')))
         replay_text = html.escape(row['replay']['confirmation'])
+        media = row['media']
+        media_text = (f'<a href="{html.escape(media["mp4"])}">film with game audio</a> · '
+                      + number(media['duration_seconds']) + 's'
+                      + ('' if media['clip']['skipped_frames'] == 0
+                         else ' · ' + html.escape(media['clip']['policy']))
+                      ) if media.get('available') else html.escape(media.get('reason', 'unavailable'))
         rows.append('<tr>' + ''.join('<td>' + str(x) + '</td>' for x in [
             f'<a href="{cell}/summary.json">{cell}</a>',
             html.escape(row['game']), html.escape(row['origin']), html.escape(str(row['seed'])),
             html.escape(budget_text), mechanism_text, html.escape(row['outcome']), progress_text,
-            replay_text]) + resource_cells(item) + '</tr>')
+            replay_text, media_text]) + resource_cells(item) + '</tr>')
     panels = ''.join('<li>' + html.escape(json.dumps(row, sort_keys=True)) + '</li>' for row in aggregates(results))
     return '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>''' + html.escape(title) + '''</title><style>body{font:15px/1.55 system-ui;margin:2rem;color:#162132;background:#f7f9fc}table{border-collapse:collapse;background:white;white-space:nowrap}th,td{padding:.55rem;text-align:right;border-bottom:1px solid #dce3ef}th:first-child,td:first-child{text-align:left}a{color:#1356a0}li{margin:.8rem 0;overflow-wrap:anywhere}.scroll{overflow:auto}h1{font-size:1.6rem}</style>
 <h1>''' + html.escape(title) + '''</h1><p>Fresh search runs with frozen workload policies. Independent stage and level fixtures are separate from whole-game completion. Missing victories are censored at the recorded budget; failures remain visible.</p>
-<p>Each row records the game, origin, seed, search mechanism, execution/frame/wall budgets, progress and outcome, replay confirmation, and resource costs. Frames include admitted emulator work and replay/probes inside search. Throughput excludes witness verification and external export. Peak RSS is the operating system's process maximum; disk peaks sample the cell output directory. Shared assets/builds and temporary files outside that directory are excluded. See each summary for phase measurements, process-group RSS, logical archive memory, I/O and provenance.</p>
-<div class="scroll"><table><thead><tr><th>Cell</th><th>Game</th><th>Origin</th><th>Seed</th><th>Budgets</th><th>Mechanism</th><th>Outcome</th><th>Progress</th><th>Replay</th>''' + RESOURCE_HEADERS + '</tr></thead><tbody>' + ''.join(rows) + '''</tbody></table></div>
-''' + metroid_html(results) + '''<h2>Seed panels</h2><p>Wilson 95% intervals describe uncertainty in solve fractions. Time-to-victory medians include successes only and are not estimates for censored runs. Three-seed pilots are exploratory.</p><ul>''' + panels + '''</ul><p><a href="results.json">Results JSON</a> · <a href="roster.json">Roster JSON</a> · <a href="suite.json">Frozen matrix</a> · <a href="matrix.json">Build and host</a> · <a href="checksums.json">SHA-256 manifest</a></p></html>'''
+<p>Each row records the game, origin, seed, search mechanism, execution/frame/wall budgets, progress and outcome, replay confirmation, media, and resource costs. Every film is a native QuickNES replay of the input its own run recorded, carries game audio, and ends at the endpoint that run verified; a clipped film states the policy and keeps the endpoint. Frames include admitted emulator work and replay/probes inside search. Throughput excludes witness verification and external export. Peak RSS is the operating system's process maximum; disk peaks sample the cell output directory. Shared assets/builds and temporary files outside that directory are excluded. See each summary for phase measurements, process-group RSS, logical archive memory, I/O and provenance.</p>
+<div class="scroll"><table><thead><tr><th>Cell</th><th>Game</th><th>Origin</th><th>Seed</th><th>Budgets</th><th>Mechanism</th><th>Outcome</th><th>Progress</th><th>Replay</th><th>Media</th>''' + RESOURCE_HEADERS + '</tr></thead><tbody>' + ''.join(rows) + '''</tbody></table></div>
+''' + metroid_html(results) + '''<h2>Seed panels</h2><p>Wilson 95% intervals describe uncertainty in solve fractions. Time-to-victory medians include successes only and are not estimates for censored runs. Three-seed pilots are exploratory.</p><ul>''' + panels + '''</ul><p><a href="results.json">Results JSON</a> · <a href="roster.json">Roster JSON</a> · <a href="suite.json">Frozen matrix</a> · <a href="matrix.json">Build and host</a> · <a href="films.json">Media index</a> · <a href="checksums.json">SHA-256 manifest</a></p></html>'''
+
+
+def film_command(binary, request, campaign, out, max_frames, tail_frames):
+    command = [str(binary), '--game', request['game'], '--rom', request['rom'], '--core', request['core'],
+               '--rom-sha256', request['rom_sha256'], '--core-sha256', request['core_sha256'],
+               '--input', str(campaign / 'witness-input.json'), '--evidence', str(campaign / 'result.json'),
+               '--out', str(out), '--max-frames', str(max_frames), '--tail-frames', str(tail_frames)]
+    if request.get('level') is not None: command += ['--level', str(request['level'])]
+    if request.get('ai') is not None: command += ['--ai', str(request['ai'])]
+    if request.get('whole_game'): command.append('--whole-game')
+    return command
+
+
+def film(args):
+    """Render every recorded run's own input, and account for the ones with none."""
+    if not (args.matrix / 'results.json').is_file():
+        write_json(args.matrix / 'films.json', {'format': SCHEMA, 'films': [], 'failed': [],
+                                                'unavailable': [{'cell': None, 'case': None, 'status': 'error',
+                                                                 'reason': 'the runner produced no matrix index'}]})
+        raise ValueError('the runner produced no matrix index; media is unavailable for the whole panel')
+    results = load_results(args.matrix)
+    films, unavailable, failures = [], [], []
+    for item in results:
+        cell = item['cell']
+        root = args.matrix / cell
+        campaign = root / 'campaign'
+        request = read_json(root / 'request.private.json')
+        reason = None
+        if request is None:
+            reason = 'the runner recorded no search request'
+        elif not (campaign / 'witness-input.json').is_file():
+            reason = 'the search produced no renderable input: ' + item['status']
+        elif not (campaign / 'result.json').is_file():
+            reason = 'the search recorded no result to verify the input against: ' + item['status']
+        if reason:
+            unavailable.append({'cell': cell, 'case': item['case'], 'status': item['status'], 'reason': reason})
+            continue
+        out = root / 'film'
+        out.mkdir(exist_ok=True)
+        command = film_command(args.binary, request, campaign, out, args.max_frames, args.tail_frames)
+        with (out / 'render.log').open('wb') as log:
+            completed = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
+        record = read_json(out / 'film.json')
+        if completed.returncode != 0 or record is None:
+            failures.append({'cell': cell, 'case': item['case'], 'status': item['status'],
+                             'exit_code': completed.returncode,
+                             'log': str((out / 'render.log').relative_to(args.matrix))})
+            continue
+        films.append({'cell': cell, 'case': item['case'], 'origin': item['origin'], **record})
+    index = {'format': SCHEMA, 'suite': read_json(args.matrix / 'suite.json')['id'],
+             'max_frames': args.max_frames, 'tail_frames': args.tail_frames,
+             'films': films, 'unavailable': unavailable, 'failed': failures}
+    write_json(args.matrix / 'films.json', index)
+    print(json.dumps({'films': len(films), 'unavailable': len(unavailable), 'failed': len(failures)}), flush=True)
+    if failures:
+        raise ValueError('mandatory media failed for ' + ', '.join(row['cell'] for row in failures))
+    if not films and results:
+        raise ValueError('no registered cell produced a film; media is unavailable for the whole panel')
 
 
 def export(matrix, out):
@@ -609,7 +693,8 @@ def export(matrix, out):
     # Explicit allowlist. Verify every path before creating a partial public export.
     for item in results:
         for name in ('summary.json', 'resources.jsonl', 'campaign/identity.json', 'campaign/result.json',
-                     'campaign/campaign.json', 'campaign/progress.jsonl', 'campaign/witness-input.json', 'campaign/victory-input.json'):
+                     'campaign/campaign.json', 'campaign/progress.jsonl', 'campaign/witness-input.json',
+                     'campaign/victory-input.json', 'film/film.json', 'film/witness.mp4', 'film/render.log'):
             relative = Path(item['cell']) / name
             source = matrix / relative
             if source.resolve() != matrix.resolve() / relative:
@@ -623,19 +708,22 @@ def export(matrix, out):
             if source.resolve() != matrix.resolve() / relative:
                 raise ValueError('export refuses symlinks: ' + str(relative))
             if source.is_file(): sources.append((source, relative))
-    for name in ('results.json', 'suite.json', 'matrix.json'):
+    for name in ('results.json', 'suite.json', 'matrix.json', 'films.json'):
         source = matrix / name
         if source.resolve() != matrix.resolve() / name:
             raise ValueError('export refuses symlinks: ' + name)
+        if name == 'films.json' and not source.is_file():
+            continue
         sources.append((source, Path(name)))
     out.mkdir(parents=True)
     for source, relative in sources:
         destination = out / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
-    (out / 'index.html').write_text(report_html(results, read_json(matrix / 'suite.json')['id']))
+    films = film_index(matrix)
+    (out / 'index.html').write_text(report_html(results, read_json(matrix / 'suite.json')['id'], films))
     write_json(out / 'aggregates.json', aggregates(results))
-    write_json(out / 'roster.json', roster(results))
+    write_json(out / 'roster.json', roster(results, films))
     checksums = {str(p.relative_to(out)): digest(p) for p in sorted(out.rglob('*')) if p.is_file()}
     write_json(out / 'checksums.json', checksums)
 
@@ -649,7 +737,7 @@ def build_binary(args):
     args.out.mkdir(parents=True)
     environment = {**os.environ, 'HARMONY_SEARCH_SOURCE_SHA256': before['source_tree_sha256']}
     command = ['cargo', 'build', '--release', '--locked', '--manifest-path', str(root / 'workloads/nes/Cargo.toml'),
-               '--bin', 'nes-eval', '--target-dir', str(args.out.resolve() / 'target'), '-j', str(args.jobs)]
+               '--bin', 'nes-eval', '--bin', 'nes-film', '--target-dir', str(args.out.resolve() / 'target'), '-j', str(args.jobs)]
     with (args.out / 'build.log').open('wb') as log:
         subprocess.run(command, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT, check=True)
     after = source_identity(root)
@@ -657,7 +745,10 @@ def build_binary(args):
         raise ValueError('source changed during compilation; discard this build and retry')
     binary = args.out / 'nes-eval'
     shutil.copy2(args.out / 'target/release/nes-eval', binary)
+    film_binary = args.out / 'nes-film'
+    shutil.copy2(args.out / 'target/release/nes-film', film_binary)
     metadata = {'format': 'harmony-search-build-v1', **before, 'binary_sha256': digest(binary),
+                'film_binary_sha256': digest(film_binary),
                 'rustc': subprocess.check_output(['rustc', '-Vv'], text=True),
                 'cargo': subprocess.check_output(['cargo', '-V'], text=True).strip(),
                 'profile': 'release', 'locked': True, 'rustflags': environment.get('RUSTFLAGS', '')}
@@ -670,6 +761,7 @@ def main():
     run=subs.add_parser('run');run.add_argument('suite',type=Path);run.add_argument('--assets',type=Path,required=True);run.add_argument('--binary',type=Path,required=True);run.add_argument('--out',type=Path,required=True);run.add_argument('--build-info',type=Path);run.add_argument('--case',action='append');run.add_argument('--jobs',type=int,default=1);run.add_argument('--cpus',type=int);run.add_argument('--memory-capacity-mib',type=int,default=8192);run.add_argument('--overhead-mib',type=int,default=1024);run.add_argument('--sample-seconds',type=float,default=1);run.add_argument('--finish-seconds',type=int,default=600);run.add_argument('--disk-limit-gib',type=float,default=8)
     cmp=subs.add_parser('compare');cmp.add_argument('baseline',type=Path);cmp.add_argument('candidate',type=Path);cmp.add_argument('--out',type=Path,required=True)
     exp=subs.add_parser('export');exp.add_argument('matrix',type=Path);exp.add_argument('--out',type=Path,required=True)
+    reel=subs.add_parser('film');reel.add_argument('matrix',type=Path);reel.add_argument('--binary',type=Path,required=True);reel.add_argument('--max-frames',type=int,default=72000);reel.add_argument('--tail-frames',type=int,default=180)
     build=subs.add_parser('build');build.add_argument('--root',type=Path,default=Path(__file__).resolve().parents[2]);build.add_argument('--out',type=Path,required=True);build.add_argument('--jobs',type=int,default=os.cpu_count())
     identity=subs.add_parser('source');identity.add_argument('root',type=Path);identity.add_argument('--out',type=Path,required=True)
     args=parser.parse_args()
@@ -678,6 +770,7 @@ def main():
         if args.command=='build':build_binary(args)
         if args.command=='compare':write_json(args.out,compare(args.baseline,args.candidate))
         if args.command=='export':export(args.matrix,args.out)
+        if args.command=='film':film(args)
         if args.command=='source':write_json(args.out,source_identity(args.root))
     except (ValueError,KeyError,OSError,subprocess.CalledProcessError) as error:
         parser.exit(2,str(error)+'\n')

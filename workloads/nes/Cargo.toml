@@ -22,6 +22,10 @@ thiserror = "2"
 consonance = ["machine/consonance"]
 
 [[bin]]
+name = "nes-film"
+path = "src/bin/nes-film.rs"
+
+[[bin]]
 name = "nova-consonance-campaign"
 path = "src/bin/nova-consonance-campaign.rs"
 required-features = ["consonance"]

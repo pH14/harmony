@@ -235,6 +235,31 @@ re-executes the complete stream and compares the report and portable checkpoint.
 These modes and verification time are explicit in the matrix. No large-run
 full-campaign verification is implied by a witness-only result.
 
+## Films
+
+```sh
+python3 benchmarks/search/eval.py film /private/runs/evaluation-001 \
+  --binary /private/builds/search-001/nes-film --max-frames 72000
+```
+
+`film` renders each completed cell's own recorded input to an MP4 with game
+audio through the `nes-film` renderer described in the
+[NES package README](../../workloads/nes/README.md). It reads the cell's
+`witness-input.json` and `result.json`, so it never starts a second search. A
+cell that produced no renderable input is recorded as unavailable with a reason;
+a render that fails is recorded as failed and fails the command. `films.json`
+indexes all three states beside each cell's `film/render.log`.
+`scripts/verify-nes-films.py` then rechecks every film's digest, frame count,
+audio stream, mean volume and duration.
+
+`eval.py build` builds `nes-film` alongside `nes-eval` and records its hash.
+`--max-frames` bounds each render. A long input is still emulated in full and
+rendered as a trailing window ending at the recorded endpoint; the ceiling, the
+clip policy and the dropped frame count are in each `film.json`. The HTML report
+carries a Media column linking the film with its duration and clip policy, and a
+cell with no media stays in the roster as unavailable instead of disappearing
+from it.
+
 ## Compare and publish
 
 ```sh
@@ -245,7 +270,8 @@ python3 benchmarks/search/eval.py export /private/runs/candidate \
 ```
 
 The export is a standalone HTML report plus allowlisted JSON/JSONL, discovered
-controller inputs and SHA-256 checksums. It excludes ROMs, cores, snapshots,
+controller inputs, rendered films with their `film.json` and render log, and
+SHA-256 checksums. It excludes ROMs, cores, snapshots,
 full streams, private requests, arbitrary files and logs. Symlinks are rejected.
 Copy the export directory to your static publication location; publishing is a
 separate operator action. Source-built STB artifacts also carry the license

@@ -51,11 +51,14 @@ jobs:
         if: steps.scope.outputs.enabled == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends binutils cc65 curl g++ git
+          sudo apt-get install --yes --no-install-recommends binutils cc65 curl ffmpeg g++ git
       - uses: Swatinem/rust-cache@v2
         if: steps.scope.outputs.enabled == 'true'
         with:
           shared-key: dissonance-nes-nova
+          workspaces: |
+            . -> target
+            workloads/nes -> target
       - name: Reproduce the pinned Nova ROM and QuickNES core
         if: steps.scope.outputs.enabled == 'true'
         run: |
@@ -97,6 +100,22 @@ jobs:
           if prepared["execution"]["backend"] != "native":
               raise SystemExit("the native Nova check did not run on the native backend")
           PY
+      - name: Capture a short replay with game audio
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --manifest-path workloads/nes/Cargo.toml --bin nes-film
+          cp workloads/nes/NOVA-ARTIFACT-LICENSE.md nova-native-check/ARTIFACT-LICENSE.md
+          cp workloads/nes/nova-versions.env nova-native-check/
+          workloads/nes/target/release/nes-film --game nova \
+            --rom "${NOVA_BUILD}/nova.nes" \
+            --core "${NOVA_BUILD}/quicknes_libretro.so" \
+            --rom-sha256 "$(sha256sum "${NOVA_BUILD}/nova.nes" | cut -d' ' -f1)" \
+            --core-sha256 "$(sha256sum "${NOVA_BUILD}/quicknes_libretro.so" | cut -d' ' -f1)" \
+            --input nova-native-check/search/witness-input.json \
+            --evidence nova-native-check/search/result.json \
+            --out nova-native-check/film --max-frames 4096
+          python3 scripts/verify-nes-films.py nova-native-check/film/film.json --min-seconds 2
       - uses: actions/upload-artifact@v4
         if: always() && steps.scope.outputs.enabled == 'true'
         with:

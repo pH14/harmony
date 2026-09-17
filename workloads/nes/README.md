@@ -28,6 +28,31 @@ line per action endpoint, for state the campaign report sums away: the map cell
 a Metroid route crossed, and the per-weapon Mega Man 2 meters behind the decoded
 sum.
 
+`src/film.rs` also holds the benchmark capture contract. `Endpointed` returns a
+game's decoded endpoint and frame count for a recorded input, `Filmable` adds
+rendering that input to raw video and audio, and `Reel` owns the FFmpeg
+pipeline: it rejects an empty or wrong-geometry render, muxes the PCM track back
+in, and hashes both the track and the MP4. `nes-film` is the one renderer both
+compositions use. It reads the input and `result.json` a campaign already
+recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
+own input rather than a second search.
+
+`nes-film --recorded-backend native` requires the replayed witness to equal the
+one the run recorded. `--recorded-backend consonance` compares the recorded
+semantic endpoint instead, because a whole-VM run's snapshot digest differs from
+a native one by construction. Such a film is a native QuickNES replay of a tape
+the VM search recorded: `film.json` sets `endpoint_bridged` and leaves
+`evidence_verified` false, and nothing is captured inside the guest.
+
+`--max-frames` bounds the render. A `nova-full` input can hold 8192 actions of
+up to 120 frames each, so an unbounded film would run for hours. Frames past the
+ceiling are still emulated and are left out of the video, making the film a
+trailing window ending at the recorded endpoint plus `--tail-frames`. The
+ceiling, the clip policy and the dropped frame count are recorded in `film.json`
+under `clip`. `scripts/verify-nes-films.py` checks the MP4 against those
+numbers: digest, frame count, a real audio stream, audible volume and a duration
+floor.
+
 Campaign recordings use the current Dissonance schedule policy version 3 and
 bounded progress policy. Replay rejects recordings from superseded policy
 namespaces before constructing a replay target.

@@ -414,6 +414,63 @@ class NesCompositionTests(unittest.TestCase):
         self.assertEqual([v.rule for v in violations], ["ci-nes-compositions"] * 2)
 
 
+class NesMediaTests(unittest.TestCase):
+    def composition(self, role):
+        entry = ci_contract.NES_COMPOSITIONS["Dissonance Workloads"]
+        return ci_contract.by_name(entry[role])
+
+    def test_every_registered_composition_films_its_scenarios(self):
+        for composition, entry in ci_contract.NES_COMPOSITIONS.items():
+            for role in ("checks", "benchmarks"):
+                with self.subTest(composition=composition, role=role):
+                    workflow = ci_contract.by_name(entry[role])
+                    self.assertFalse(LINTS.check_nes_media(ROOT, composition, role, workflow))
+
+    def test_a_composition_that_films_nothing_is_reported(self):
+        workflow = self.composition("checks")
+        stripped = workflow._replace(jobs=tuple(job._replace(media=()) for job in workflow.jobs))
+        violations = LINTS.check_nes_media(ROOT, "Dissonance Workloads", "checks", stripped)
+        self.assertIn("ci-nes-media", [v.rule for v in violations])
+        self.assertTrue(any("captures video with game audio" in v.text for v in violations))
+
+    def test_filming_only_outside_the_bounded_budget_is_reported(self):
+        workflow = self.composition("checks")
+        full = workflow._replace(jobs=tuple(job._replace(trigger="full") for job in workflow.jobs))
+        self.assertTrue(any("no pr job" in v.text
+                            for v in LINTS.check_nes_media(ROOT, "Dissonance Workloads", "checks", full)))
+
+    def test_an_unregistered_or_missing_capture_is_reported(self):
+        workflow = self.composition("benchmarks")
+        for capture, expected in [("scripts/invented-capture.py", "unregistered capture"),
+                                  (".github/actions/stb-evaluation", "never runs it")]:
+            with self.subTest(capture=capture):
+                jobs = tuple(job._replace(media=(capture,)) if job.media else job
+                             for job in workflow.jobs)
+                violations = LINTS.check_nes_media(ROOT, "Dissonance Workloads", "benchmarks",
+                                                   workflow._replace(jobs=jobs))
+                self.assertTrue(any(expected in v.text for v in violations), violations)
+
+    def test_media_that_is_never_checked_for_audio_is_reported(self):
+        workflow = self.composition("checks")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "workloads/nes/src/bin").mkdir(parents=True)
+            (root / "workloads/nes/src/bin/nes-film.rs").write_text("")
+            path = root / workflow.path
+            path.parent.mkdir(parents=True)
+            path.write_text("run: nes-film --out film\n")
+            violations = LINTS.check_nes_media(root, "Dissonance Workloads", "checks", workflow)
+        self.assertTrue(any("real audio stream" in v.text for v in violations), violations)
+
+    def test_the_repository_registers_a_capture_for_every_filming_job(self):
+        self.assertTrue(ci_contract.MEDIA_REQUIRED)
+        for (workflow, job), media in ci_contract.MEDIA_REQUIRED.items():
+            with self.subTest(workflow=workflow, job=job):
+                self.assertTrue(media)
+                for capture in media:
+                    self.assertTrue((ROOT / capture).exists(), capture)
+
+
 class NesCaseCoverageTests(unittest.TestCase):
     PATH = ci_contract.by_name(
         ci_contract.NES_COMPOSITIONS["Dissonance Workloads"]["benchmarks"]).path

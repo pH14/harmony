@@ -478,6 +478,7 @@ UNKNOWN_VALUE = "\x00"
 # The game runs natively through Dissonance and inside a Consonance VM through
 # Harmony. Neither composition substitutes for the other.
 NES_COMPOSITIONS_REQUIRED = ("Dissonance Workloads", "Harmony Workloads")
+MEDIA_VERIFIER = "scripts/verify-nes-films.py"
 
 
 def _display_shape(name: str) -> str:
@@ -857,7 +858,53 @@ def check_nes_compositions(repo_root: Path, tracked: set[str]) -> list[Violation
             if workflow.path not in tracked or not (repo_root / workflow.path).is_file():
                 violations.append(Violation("ci-nes-compositions", workflow.path, 0,
                     f"the {composition} NES composition needs its {role} workflow"))
+                continue
+            violations += check_nes_media(repo_root, composition, role, workflow)
     return violations
+
+
+def check_nes_media(repo_root: Path, composition: str, role: str, workflow) -> list[Violation]:
+    """Each composition films its scenarios, in a bounded check and in its benchmark."""
+    import ci_contract
+
+    trigger = "pr" if role == "checks" else "full"
+    violations = []
+    filming = [job for job in workflow.jobs if job.media and job.trigger == trigger]
+    if not filming:
+        violations.append(Violation("ci-nes-media", workflow.path, 0,
+            f"no {trigger} job in the {composition} NES {role} captures video with game audio"))
+    text = (repo_root / workflow.path).read_text(encoding="utf-8")
+    verified = text
+    for job in filming:
+        for capture in job.media:
+            action = repo_root / capture / "action.yml"
+            if action.is_file():
+                verified += action.read_text(encoding="utf-8")
+    for job in filming:
+        for capture in job.media:
+            if capture not in ci_contract.CAPTURE_ACTIONS + ci_contract.CAPTURE_SCRIPTS:
+                violations.append(Violation("ci-nes-media", "scripts/ci_contract.py", 0,
+                    f"{workflow.name} / {job.name} names an unregistered capture: {capture}"))
+            elif not (repo_root / capture).exists():
+                violations.append(Violation("ci-nes-media", capture, 0,
+                    f"{workflow.name} / {job.name} names a capture that does not exist"))
+            elif capture_reference(capture) not in text:
+                violations.append(Violation("ci-nes-media", workflow.path, 0,
+                    f"{job.name} registers {capture} but the file never runs it"))
+    if MEDIA_VERIFIER not in verified:
+        violations.append(Violation("ci-nes-media", workflow.path, 0,
+            f"the {composition} NES {role} never checks its media for a real audio stream"))
+    return violations
+
+
+def capture_reference(capture: str) -> str:
+    """How a workflow names a capture: an action by path, a binary by its name."""
+    if capture.endswith(".rs"):
+        return Path(capture).stem
+    return capture
+
+
+
 
 
 def check_nes_case_coverage(repo_root: Path, tracked: set[str]) -> list[Violation]:
@@ -1413,6 +1460,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "ci-scope-routing": "Select work inside the job that owns it: one ./.github/actions/ci-scope step under the registered kind, a complete diff checkout, and selected steps guarded with && on the selector's output.",
         "ci-nes-case-jobs": "Map every public NES manifest case exactly once to the case matrix, select it with --case, disable fail-fast, and retain an always-running Results job.",
+        "ci-nes-media": "Both NES compositions publish video with game audio: a bounded capture in the Checks workflow and every scenario in the Benchmarks workflow. Register the capture in scripts/ci_contract.py and check the media with scripts/verify-nes-films.py.",
         "ci-nes-compositions": "Both NES compositions stay: Dissonance runs the game on native QuickNES and Harmony runs it inside a Consonance VM. Each keeps a bounded check and a full benchmark.",
         "ci-miri-coverage": "The Analysis workflow of each component must list exactly the Miri targets scripts/miri_scope.py registers and scripts/ci_contract.py assigns to it.",
         "lab-notes-not-tracked": (

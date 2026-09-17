@@ -104,7 +104,8 @@ CAPTURE_ACTIONS = (
 )
 CAPTURE_SCRIPTS = (
     "benchmarks/search/eval.py",
-    "workloads/nes/src/bin/nova-consonance-campaign.rs",
+    "workloads/nes/src/bin/nes-film.rs",
+    "scripts/verify-nes-films.py",
 )
 
 MIRI_FLAGS_DEFAULT = "-Zmiri-permissive-provenance"
@@ -380,7 +381,8 @@ DISSONANCE_NES_CHECKS = Workflow(
     owner="Dissonance Workloads",
     triggers=("pull_request", "push"),
     jobs=(
-        Job("Nova", "pr", 15, scope="dissonance_nes"),
+        Job("Nova", "pr", 15, media=("workloads/nes/src/bin/nes-film.rs",),
+            scope="dissonance_nes"),
         Job("STB", "pr", 15, media=(".github/actions/stb-evaluation",), scope="dissonance_stb"),
     ),
 )
@@ -391,7 +393,8 @@ HARMONY_NES_CHECKS = Workflow(
     owner="Harmony Workloads",
     triggers=("pull_request", "push", "schedule", "workflow_dispatch"),
     jobs=(
-        Job("Nova", "pr", 15, scope="harmony_nes"),
+        Job("Nova", "pr", 15, media=("workloads/nes/src/bin/nes-film.rs",),
+            scope="harmony_nes"),
         Job("Backend Equivalence", "full", 75,
             exception="Comparing the native and Consonance backends builds the "
                       "exact guest runtime and both game images."),
@@ -423,9 +426,9 @@ DISSONANCE_NES_BENCHMARKS = Workflow(
     owner="Dissonance Workloads",
     triggers=("schedule", "workflow_dispatch"),
     jobs=(
-        Job("Nova — Level <N>", "full", 210),
-        Job("Nova — Full Game", "full", 210),
-        Job("STB — <Difficulty>", "full", 210),
+        Job("Nova — Level <N>", "full", 210, media=(".github/actions/nes-film",)),
+        Job("Nova — Full Game", "full", 210, media=(".github/actions/nes-film",)),
+        Job("STB — <Difficulty>", "full", 210, media=(".github/actions/nes-film",)),
         Job("Results", "full", 5),
     ),
 )
@@ -436,7 +439,8 @@ HARMONY_NES_BENCHMARKS = Workflow(
     owner="Harmony Workloads",
     triggers=("schedule", "workflow_dispatch"),
     jobs=(
-        Job("Nova — Replica <N>", "full", 120),
+        Job("Nova — Replica <N>", "full", 120,
+            media=("workloads/nes/src/bin/nes-film.rs",)),
         Job("Results", "full", 15),
     ),
 )

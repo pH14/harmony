@@ -32,25 +32,24 @@ mod real {
         fs,
         io::{BufWriter, Write},
         path::PathBuf,
-        process::Command,
     };
 
     use nes_workload::{
+        film::Endpointed,
+        nova::campaign::NovaCampaignRun,
         nova::{
             archive::MAX_ARCHIVE_ENTRIES,
             campaign::{
                 NovaCampaignConfig, NovaCampaignOrigin, NovaGame, run_nova_campaign_checkpointed,
             },
-            target::NovaInput,
         },
-        search::campaign::TargetExecution,
         search::{
             archive::{RetentionPolicy, RetireThresholds, SelectorPolicy},
             draw::{DrawMixture, SuffixShape},
         },
+        witness::replay_witness,
     };
     use serde_json::json;
-    use sha2::{Digest, Sha256};
 
     const PERSISTENT_VM_MEMORY_MIB: usize = 128;
     const NON_ARCHIVE_PROCESS_OVERHEAD_MIB: usize = 448;
@@ -66,7 +65,6 @@ mod real {
         platform_initramfs: PathBuf,
         image: PathBuf,
         rom: PathBuf,
-        core: PathBuf,
         output: PathBuf,
         seed: u64,
         executions: u64,
@@ -91,7 +89,6 @@ mod real {
             let mut platform_initramfs = None;
             let mut image = None;
             let mut rom = None;
-            let mut core = None;
             let mut output = None;
             let mut seed = 1_u64;
             let mut executions = 10_000_u64;
@@ -117,7 +114,6 @@ mod real {
                     }
                     "--image" => image = Some(PathBuf::from(value)),
                     "--rom" => rom = Some(PathBuf::from(value)),
-                    "--core" => core = Some(PathBuf::from(value)),
                     "--output" => output = Some(PathBuf::from(value)),
                     "--seed" => seed = parse_number("seed", value)?,
                     "--executions" => executions = parse_number("executions", value)?,
@@ -138,7 +134,6 @@ mod real {
                 platform_initramfs: platform_initramfs.ok_or("missing --platform-initramfs")?,
                 image: image.ok_or("missing --image")?,
                 rom: rom.ok_or("missing --rom")?,
-                core: core.ok_or("missing --core")?,
                 output: output.ok_or("missing --output")?,
                 seed,
                 executions,
@@ -292,7 +287,6 @@ mod real {
         drop(progress);
         drop(checkpoint);
         let emulator_backend = game.emulator_identity().to_owned();
-        drop(game);
         let best_input = report
             .objective_witness
             .as_ref()
@@ -305,7 +299,20 @@ mod real {
             args.output.join("best-input.json"),
             serde_json::to_vec_pretty(best_input)?,
         )?;
-        let media = render(&args, &rom, best_input)?;
+        let witness = replay_witness(&game, &NovaCampaignRun, best_input)?;
+        let endpoint = game.headless_endpoint(best_input)?;
+        let best_input_frames = game.input_frames(best_input);
+        fs::write(
+            args.output.join("result.json"),
+            serde_json::to_vec_pretty(&json!({
+                "format": "harmony-search-result-v1",
+                "backend": "consonance",
+                "solved": report.objectives_reached > 0,
+                "witness": witness,
+                "endpoint": endpoint,
+            }))?,
+        )?;
+        drop(game);
         let peak_rss_bytes = process_peak_rss_bytes()?;
         let summary = json!({
             "mode": if args.fixed_execution_soak {
@@ -336,7 +343,7 @@ mod real {
             "progress_curve": report.archive.progress_curve,
             "jobs_per_worker": report.jobs_per_worker,
             "best_input_actions": best_input.actions.len(),
-            "video": media,
+            "best_input_frames": best_input_frames,
         });
         fs::write(
             args.output.join("campaign-summary.json"),
@@ -344,87 +351,6 @@ mod real {
         )?;
         println!("{}", serde_json::to_string_pretty(&summary)?);
         Ok(())
-    }
-
-    fn render(
-        args: &Args,
-        rom: &[u8],
-        input: &NovaInput,
-    ) -> Result<serde_json::Value, Box<dyn Error>> {
-        let core_bytes = fs::read(&args.core)?;
-        let core_sha256 = format!("{:x}", Sha256::digest(&core_bytes));
-        let renderer = NovaGame::new(rom, &args.core, &core_sha256);
-        let mut target = renderer
-            .new_target()
-            .map_err(|error| -> Box<dyn Error> { error.into() })?;
-        let video_path = args.output.join("best.rgb");
-        let audio_path = args.output.join("best.s16le");
-        let mut video_output = BufWriter::new(fs::File::create(&video_path)?);
-        let mut audio_output = BufWriter::new(fs::File::create(&audio_path)?);
-        let video = target.render_input(input, 180, &mut video_output, &mut audio_output)?;
-        drop(video_output);
-        drop(audio_output);
-        let mp4_path = args.output.join("best.mp4");
-        let geometry = format!("{}x{}", video.width, video.height);
-        let sample_rate = video.audio_sample_rate.to_string();
-        let channels = video.audio_channels.to_string();
-        let status = Command::new("ffmpeg")
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "rawvideo",
-                "-pixel_format",
-                "rgb24",
-                "-video_size",
-            ])
-            .arg(geometry)
-            .args(["-framerate", "60", "-i"])
-            .arg(&video_path)
-            .args(["-f", "s16le", "-ar", &sample_rate, "-ac", &channels, "-i"])
-            .arg(&audio_path)
-            .args([
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "medium",
-                "-crf",
-                "18",
-                "-pix_fmt",
-                "yuv420p",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-af",
-                "apad",
-                "-shortest",
-                "-movflags",
-                "+faststart",
-                "-y",
-            ])
-            .arg(&mp4_path)
-            .status()?;
-        if !status.success() {
-            return Err(format!("ffmpeg failed with {status}").into());
-        }
-        let result = json!({
-            "metadata": video,
-            "audio_pcm_sha256": format!("{:x}", Sha256::digest(fs::read(&audio_path)?)),
-            "mp4_sha256": format!("{:x}", Sha256::digest(fs::read(&mp4_path)?)),
-        });
-        fs::write(
-            args.output.join("video.json"),
-            serde_json::to_vec_pretty(&result)?,
-        )?;
-        fs::remove_file(video_path)?;
-        fs::remove_file(audio_path)?;
-        Ok(result)
     }
 
     #[cfg(test)]
@@ -444,8 +370,6 @@ mod real {
                 "image.oci",
                 "--rom",
                 "rom",
-                "--core",
-                "core",
                 "--output",
                 "output",
             ]
