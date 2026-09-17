@@ -64,11 +64,16 @@ def validate(path: Path, case: dict) -> dict:
         require(case, path, "oracle", key)
     for key in ("ram_mib",):
         require(case, path, "run", key)
-    for key in ("seed", "workers", "actions", "wall_minutes"):
+    for key in ("workers", "actions", "wall_minutes"):
         require(case, path, "search", key)
+    # A seed is an input to a sampling procedure, so the run supplies one and
+    # records it. Committing one invites an expectation the next code change
+    # breaks.
+    if "seed" in case["search"]:
+        raise SystemExit(f"{path}: search.seed is supplied by the run, not the case")
     for group, keys in (
         ("run", ("ram_mib",)),
-        ("search", ("seed", "workers", "actions", "wall_minutes")),
+        ("search", ("workers", "actions", "wall_minutes")),
     ):
         for key in keys:
             value = case[group][key]
@@ -150,7 +155,6 @@ def validate(path: Path, case: dict) -> dict:
         "oracle_assertion": case["oracle"]["assertion"],
         "oracle_evidence": case["oracle"]["evidence"],
         "ram_mib": case["run"]["ram_mib"],
-        "seed": case["search"]["seed"],
         "workers": case["search"]["workers"],
         "actions": case["search"]["actions"],
         "wall_minutes": case["search"]["wall_minutes"],

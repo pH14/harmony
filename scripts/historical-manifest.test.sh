@@ -18,6 +18,7 @@ test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .display_
 test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .display_name' <<<"${all}")" = "etcd Data Inconsistency"
 test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .workload_version' <<<"${all}")" = 14.3
 test "$(jq -r '[.include[] | has("arm")] | any' <<<"${all}")" = false
+test "$(jq -r '[.include[] | has("seed")] | any' <<<"${all}")" = false
 test "$(jq '.include | length' <<<"${runnable}")" -eq 2
 test "$(jq -r '[.include[].id] | sort | join(",")' <<<"${runnable}")" = etcd-3.5-inconsistency,postgres-cic-corruption
 test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .planned_replay_sessions' <<<"${runnable}")" -eq 2
@@ -92,6 +93,16 @@ except SystemExit as error:
     assert "ci.display_name" in str(error)
 else:
     raise SystemExit("manifest accepted a runnable case with no scenario job name")
+
+case = json.loads(case_path.read_text())
+case["search"] = copy.deepcopy(case["search"])
+case["search"]["seed"] = 1
+try:
+    module.validate(case_path, case)
+except SystemExit as error:
+    assert "search.seed" in str(error)
+else:
+    raise SystemExit("manifest accepted a committed seed")
 PY
 
 printf 'historical manifest checks passed\n'
