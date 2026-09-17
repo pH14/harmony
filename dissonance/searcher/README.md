@@ -302,3 +302,10 @@ inside it.
 Selection exhaustion still applies. A band that holds few groups reaches the
 exhaustion threshold sooner under its larger share, so the realised share of a
 long run sits below the scheduled one.
+
+`Reporting::group_bands` is where a workload supplies the table. The coordinator
+calls it at each progress curve point with the deepest live key and the live
+groups at `Reporting::BAND_SCOPE_DEPTH`, and installs whatever it returns.
+Returning `None` puts every class back on the selector policy. The hook takes
+`&self` and `&mut Self::Evidence` so a workload can cache what it costs to work
+a target out, and the answer survives to the next call.

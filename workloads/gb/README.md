@@ -125,6 +125,45 @@ to make. One macro can cross two warps, so a graph built from parent and child
 map ids puts maps one hop apart that are two apart, and a distance taken from it
 is wrong in the direction that matters.
 
+## Goal gradient
+
+`--goal-advice` aims part of the deepest class at the map its next milestone
+lands on. It needs `TYPESAFE_API_KEY`; without the flag the archive draws on the
+selector policy alone.
+
+The target comes from Jev. At each progress curve point the campaign takes the
+deepest live key, reads the first milestone its route flags do not hold, and
+asks one `choice` question over the twenty-seven maps between Pallet Town and
+Pewter City: which map is the search standing on the moment that milestone
+becomes true. The question carries the route the search is on, so the model
+places itself on a supplied route rather than working the route out. The answer
+is cached per badges-and-route pair, asked at most three times, and every later
+curve point reads the cache.
+
+One answer is not enough. The question is asked three times and the probability
+each map draws is summed. The leading map becomes the target when it holds more
+share than every other map combined, or twice the share of the next map. Seven
+of the eight milestones clear that on every panel. `got_parcel` does not: the
+model splits evenly over Viridian Mart, Pallet Town and Oak's lab, and an even
+split names no target, so that milestone runs on the selector policy alone. A
+target taken from an even split points backwards as often as forwards.
+
+The bands come from `hops_to` on the map graph. The target is band 0, one hop
+is band 1, two hops band 2, and everything else band 3, so the target's own
+groups take half the class's draws. The scope is the deepest event count at the
+deepest milestone state, not the whole class. Widening it to every event count
+at that state was measured worse: 11 milestones against 15 over three seeds, and
+one seed fell from five milestones back to two. The entries the gradient leaves
+alone keep drawing on the archive's own novelty and cost ranking.
+
+The run identity carries `goal_adviser`, so a stream recorded with the gradient
+does not resolve against a run without it. The answers themselves are not in the
+stream: a replay of a goal-advised run would reach the API again, which is why
+`--verify-replay` refuses `--goal-advice`.
+
+`tests/goal.rs` checks the model's answers against the route. It reaches the API
+and is ignored by default.
+
 ## Actions
 
 Every action is a macro that the target expands into button presses, reading a

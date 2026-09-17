@@ -34,7 +34,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     advice::{
         ADVICE_POLICY_IDENTIFIER, AdviceCheckpoint, AdviceContext, AdviceTable, BlueAdviser,
-        reserve_bytes, sample_advised_action,
+        GOAL_POLICY_IDENTIFIER, reserve_bytes, sample_advised_action,
     },
     archive::{
         BlueArchiveEntryReport, BlueArchiveGroup, BlueArchiveKey, BlueArchiveReport, BlueInput,
@@ -54,14 +54,29 @@ pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "blue-gambatte-snapshot-checkpoint-
 static GOAL_TARGET: AtomicU64 = AtomicU64::new(u64::MAX);
 static GOAL_BAND_MAPS: AtomicU64 = AtomicU64::new(0);
 static GOAL_SCOPES: AtomicU64 = AtomicU64::new(0);
+static GOAL_CALLS: AtomicU64 = AtomicU64::new(0);
+static GOAL_FAILURES: AtomicU64 = AtomicU64::new(0);
+static GOAL_INPUT_TOKENS: AtomicU64 = AtomicU64::new(0);
 
 const GOAL_BAND_DEPTH: usize = 1;
 const GOAL_BANDS: usize = 4;
-const GOAL_MAPS: [u8; 8] = [40, 42, 40, 40, 51, 2, 54, 54];
+const GOAL_ATTEMPTS: u8 = 3;
+const GOAL_VOTES: u8 = 3;
 
-fn goal_map(deepest: BlueArchiveKey) -> Option<u8> {
-    let reached = usize::try_from(deepest.route.count_ones()).ok()?;
-    GOAL_MAPS.get(reached).copied()
+#[must_use]
+pub fn decided(shares: &BTreeMap<u8, f64>) -> Option<u8> {
+    let mass: f64 = shares.values().sum();
+    let mut ranked = shares.iter().collect::<Vec<_>>();
+    ranked.sort_by(|left, right| right.1.total_cmp(left.1));
+    let (map, top) = ranked.first().map(|(map, share)| (**map, **share))?;
+    let runner_up = ranked.get(1).map_or(0.0, |(_, share)| **share);
+    (top * 2.0 >= mass || top >= runner_up * 2.0).then_some(map)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GoalAnswer {
+    map: Option<u8>,
+    attempts: u8,
 }
 
 const MACRO_VOCABULARY_FIELD: &str = "macro_vocabulary";
@@ -69,6 +84,7 @@ const KEY_POLICY_FIELD: &str = "key_policy";
 const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const ADVISER_FIELD: &str = "alphabet_adviser";
+const GOAL_ADVISER_FIELD: &str = "goal_adviser";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const MACRO_VOCABULARY_IDENTIFIER: &str =
     "walk_interact_battle_move_item_switch_advance_slot256_v1";
@@ -90,6 +106,7 @@ pub struct BlueGame {
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
     adviser: Option<BlueAdviser>,
+    goal_adviser: Option<BlueAdviser>,
     pending: Mutex<BTreeSet<AdviceContext>>,
     advice_calls: AtomicU64,
     advice_failures: AtomicU64,
@@ -138,6 +155,7 @@ impl BlueGame {
             champion_input_path: None,
             milestone_input_dir: None,
             adviser: None,
+            goal_adviser: None,
             pending: Mutex::new(BTreeSet::new()),
             advice_calls: AtomicU64::new(0),
             advice_failures: AtomicU64::new(0),
@@ -152,8 +170,43 @@ impl BlueGame {
     }
 
     #[must_use]
+    pub fn with_goal_adviser(mut self, adviser: BlueAdviser) -> Self {
+        self.goal_adviser = Some(adviser);
+        self
+    }
+
+    #[must_use]
     pub fn advises(&self) -> bool {
         self.adviser.is_some()
+    }
+
+    fn goal_map(&self, evidence: &mut BlueCampaignEvidence, deepest: BlueArchiveKey) -> Option<u8> {
+        let adviser = self.goal_adviser.as_ref()?;
+        let context = AdviceContext::of(deepest);
+        let answer = evidence
+            .goals
+            .entry((deepest.badges, deepest.route))
+            .or_default();
+        if answer.map.is_none() && answer.attempts < GOAL_ATTEMPTS {
+            answer.attempts += 1;
+            let mut total: BTreeMap<u8, f64> = BTreeMap::new();
+            for _ in 0..GOAL_VOTES {
+                GOAL_CALLS.fetch_add(1, Ordering::Relaxed);
+                match adviser.goal_shares(context) {
+                    Ok((shares, tokens)) => {
+                        GOAL_INPUT_TOKENS.fetch_add(tokens, Ordering::Relaxed);
+                        for (map, share) in shares {
+                            *total.entry(map).or_default() += share;
+                        }
+                    }
+                    Err(_) => {
+                        GOAL_FAILURES.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+            answer.map = decided(&total);
+        }
+        answer.map
     }
 
     #[must_use]
@@ -245,6 +298,7 @@ impl MapCoverage {
 pub struct BlueCampaignEvidence {
     observed_maps: MapCoverage,
     graph: MapGraph,
+    goals: BTreeMap<(u8, u8), GoalAnswer>,
     named_progress: NamedProgress,
     aggregate: BlueMilestones,
     watermark: BlueProgressWatermark,
@@ -512,6 +566,9 @@ impl Reporting for BlueGame {
             },
             "goal_banded_maps": GOAL_BAND_MAPS.load(Ordering::Relaxed),
             "goal_scopes": GOAL_SCOPES.load(Ordering::Relaxed),
+            "goal_calls": GOAL_CALLS.load(Ordering::Relaxed),
+            "goal_failures": GOAL_FAILURES.load(Ordering::Relaxed),
+            "goal_input_tokens": GOAL_INPUT_TOKENS.load(Ordering::Relaxed),
             "observation_filter": "live gameplay observations supplied to this accumulator"
         }))
     }
@@ -600,11 +657,12 @@ impl Reporting for BlueGame {
     }
 
     fn group_bands(
-        evidence: &BlueCampaignEvidence,
+        &self,
+        evidence: &mut BlueCampaignEvidence,
         deepest: BlueArchiveKey,
         scopes: &[BlueArchiveGroup],
     ) -> Option<GroupBands<BlueArchiveGroup>> {
-        let target = goal_map(deepest)?;
+        let target = self.goal_map(evidence, deepest)?;
         let hops = evidence.graph.hops_to(target);
         hops.get(&target)?;
         let deepest_events = scopes
@@ -701,6 +759,14 @@ impl InputPolicy for BlueGame {
             (DURATION_POLICY_FIELD, draw),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (ADVISER_FIELD, adviser),
+            (
+                GOAL_ADVISER_FIELD,
+                if self.goal_adviser.is_some() {
+                    GOAL_POLICY_IDENTIFIER
+                } else {
+                    ADVISER_NONE
+                },
+            ),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -1163,27 +1229,82 @@ pub fn replay_blue_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_goal_map_follows_the_milestones_already_reached() {
-        let key = |route: u8| BlueArchiveKey {
-            badges: 0,
-            route,
-            events: 0,
-            battle: 0,
-            map: 0,
-            cell_x: 0,
-            cell_y: 0,
-            party_hp: 0,
-            party_levels: 0,
+    fn a_goal_advised_stream_does_not_resolve_without_the_goal_adviser() {
+        let plain = game();
+        let advised = game().with_goal_adviser(BlueAdviser::refusing());
+        let run = BlueCampaignRun { advise: false };
+        assert!(advised.resolve_recorded(&advised.policies(&run)).is_ok());
+        assert!(plain.resolve_recorded(&advised.policies(&run)).is_err());
+        assert!(advised.resolve_recorded(&plain.policies(&run)).is_err());
+    }
+
+    #[test]
+    fn a_target_needs_a_majority_or_twice_the_next_map() {
+        let shares = |pairs: &[(u8, f64)]| pairs.iter().copied().collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            decided(&shares(&[(40, 1.79), (0, 1.20), (39, 0.02)])),
+            Some(40),
+            "more share than every other map combined"
+        );
+        assert_eq!(
+            decided(&shares(&[(51, 1.36), (50, 0.61), (13, 0.51), (1, 0.52)])),
+            Some(51),
+            "twice the next map even without a majority"
+        );
+        assert_eq!(
+            decided(&shares(&[(40, 0.91), (42, 0.89), (0, 0.77)])),
+            None,
+            "a three-way split names no target"
+        );
+        assert_eq!(decided(&BTreeMap::new()), None);
+    }
+
+    #[test]
+    fn a_run_without_a_goal_adviser_has_no_target_and_asks_nobody() {
+        let mut evidence = BlueCampaignEvidence::default();
+        let deepest = BlueArchiveKey {
+            route: 0b11,
+            ..BlueArchiveKey::default()
         };
-        assert_eq!(goal_map(key(0)), Some(40));
-        assert_eq!(goal_map(key(0b1)), Some(42));
-        assert_eq!(goal_map(key(0b11)), Some(40));
-        assert_eq!(goal_map(key(0b111)), Some(40));
-        assert_eq!(goal_map(key(0b1111)), Some(51));
-        assert_eq!(goal_map(key(0b1_1111)), Some(2));
-        assert_eq!(goal_map(key(0b11_1111)), Some(54));
-        assert_eq!(goal_map(key(0b111_1111)), Some(54));
-        assert_eq!(goal_map(key(0xff)), None);
+        assert_eq!(game().goal_map(&mut evidence, deepest), None);
+        assert!(evidence.goals.is_empty());
+    }
+
+    #[test]
+    fn a_goal_is_asked_once_per_milestone_state_and_given_up_on_after_three_tries() {
+        let mut evidence = BlueCampaignEvidence::default();
+        let game = game().with_goal_adviser(BlueAdviser::refusing());
+        let deepest = BlueArchiveKey {
+            route: 0b11,
+            ..BlueArchiveKey::default()
+        };
+        evidence.goals.insert(
+            (0, 0b11),
+            GoalAnswer {
+                map: Some(40),
+                attempts: 1,
+            },
+        );
+        assert_eq!(game.goal_map(&mut evidence, deepest), Some(40));
+        assert_eq!(
+            evidence.goals[&(0, 0b11)].attempts,
+            1,
+            "an answer the cache already holds does not reach the API again"
+        );
+        let advanced = BlueArchiveKey {
+            route: 0b111,
+            ..deepest
+        };
+        for _ in 0..5 {
+            assert_eq!(game.goal_map(&mut evidence, advanced), None);
+        }
+        assert_eq!(
+            evidence.goals[&(0, 0b111)].attempts,
+            GOAL_ATTEMPTS,
+            "an unanswered milestone state stops asking after three tries"
+        );
+        let carried = evidence.goals[&(0, 0b11)];
+        assert_eq!(carried.map, Some(40));
     }
 
     #[test]
@@ -1220,7 +1341,16 @@ mod tests {
             }
             .group(scope_depth),
         ];
-        let bands = <BlueGame as Reporting>::group_bands(&evidence, deepest, &scopes)
+        evidence.goals.insert(
+            (0, 0b11),
+            GoalAnswer {
+                map: Some(40),
+                attempts: 1,
+            },
+        );
+        let game = game().with_goal_adviser(BlueAdviser::refusing());
+        let bands = game
+            .group_bands(&mut evidence, deepest, &scopes)
             .expect("the graph holds Oak's lab");
         assert_eq!(bands.depth, GOAL_BAND_DEPTH);
         assert_eq!(bands.count, GOAL_BANDS);

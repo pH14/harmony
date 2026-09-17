@@ -347,6 +347,21 @@ What the two checks before the build measured, on the six 60,000-execution seeds
   model the draws the gradient itself creates, so treat the shares as the
   direction of the effect and not its size.
 
+What building it changed from the plan:
+
+- The per-entry weight hook became a per-band draw share. A per-entry exponent
+  cannot beat an entry-count ratio it does not know in advance; a band share is
+  independent of how many entries fall inside it. `4^-d` is what the band
+  schedule already gives the target at four bands.
+- The goal record is the target map alone. The tile, the NPC and the done
+  condition are not needed: the milestone state advancing re-aims the target on
+  its own, and nothing has to retire.
+- One question is not enough per goal. Asked three times and summed, the leading
+  map becomes the target when it holds more share than every other map combined
+  or twice the share of the next map. `got_parcel` clears neither, so it runs
+  with no gradient. Every accepted target matched the route on five consecutive
+  panels.
+
 Score it on the same six seeds at 60,000 executions, by deepest milestone reached
 and by the share of draws each milestone class takes.
 

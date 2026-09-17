@@ -22,6 +22,11 @@ pub const ADVICE_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 pub const ADVICE_MODEL: &str = "jev-latest";
 pub const ADVICE_KEY_VARIABLE: &str = "TYPESAFE_API_KEY";
 pub const ADVICE_TIMEOUT_SECONDS: u32 = 30;
+pub const GOAL_POLICY_IDENTIFIER: &str = "jev_choice_over_region_maps_by_milestone_v1";
+pub const GOAL_REGION: [u8; 27] = [
+    0, 1, 2, 12, 13, 14, 33, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 54,
+    55, 56, 57,
+];
 
 pub const KINDS: usize = ACTION_KINDS.len();
 pub const WEIGHT_FLOOR: u16 = 16;
@@ -340,7 +345,8 @@ impl AdviceContext {
         }
     }
 
-    fn reached(self) -> Vec<&'static str> {
+    #[must_use]
+    pub fn reached(self) -> Vec<&'static str> {
         MILESTONE_NAMES
             .iter()
             .enumerate()
@@ -349,7 +355,8 @@ impl AdviceContext {
             .collect()
     }
 
-    fn next_milestone(self) -> &'static str {
+    #[must_use]
+    pub fn next_milestone(self) -> &'static str {
         MILESTONE_NAMES
             .iter()
             .enumerate()
@@ -598,6 +605,78 @@ impl BlueAdviser {
         Ok((weights, tokens))
     }
 
+    pub fn goal_shares(
+        &self,
+        context: AdviceContext,
+    ) -> Result<(BTreeMap<u8, f64>, u64), Box<dyn Error>> {
+        let milestone = context.next_milestone();
+        let criteria = GOAL_REGION
+            .iter()
+            .map(|map| {
+                (
+                    map_name(*map).to_owned(),
+                    serde_json::Value::from(format!(
+                        "{milestone} is completed on {}",
+                        map_name(*map)
+                    )),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let body = serde_json::json!({
+            "state": {
+                "goal": GOAL,
+                "reached": context.reached(),
+                "next_milestone": milestone,
+            },
+            "model": self.model,
+            "questions": {
+                "target": {
+                    "type": "choice",
+                    "instructions": format!(
+                        "The search already holds the milestones listed under reached and is \
+                         trying to reach {milestone}. Which map is the search standing on at \
+                         the moment {milestone} becomes true? It may be a map the search has \
+                         not visited yet."
+                    ),
+                    "criteria": criteria,
+                }
+            },
+        });
+        let path = std::env::temp_dir().join(format!(
+            "blue-goal-{}-{}-{}.json",
+            std::process::id(),
+            context.badges,
+            context.route,
+        ));
+        std::fs::write(&path, serde_json::to_vec(&body)?)?;
+        let answer = self.post(&path);
+        let _ = std::fs::remove_file(&path);
+        let answer: serde_json::Value = serde_json::from_slice(&answer?)?;
+        let probabilities = answer
+            .get("answers")
+            .and_then(|answers| answers.get("target"))
+            .and_then(|target| target.get("probabilities"))
+            .and_then(serde_json::Value::as_object)
+            .ok_or("Jev answered without a probability for the target map")?;
+        let shares = GOAL_REGION
+            .iter()
+            .copied()
+            .map(|map| {
+                let share = probabilities
+                    .get(map_name(map))
+                    .and_then(serde_json::Value::as_f64)
+                    .ok_or("Jev answered without a probability for every map in the region")?;
+                Ok((map, share))
+            })
+            .collect::<Result<BTreeMap<_, _>, Box<dyn Error>>>()?;
+        let tokens = answer
+            .get("usage")
+            .and_then(|usage| usage.get("input_tokens"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        Ok((shares, tokens))
+    }
+
     fn post(&self, body: &std::path::Path) -> Result<Vec<u8>, Box<dyn Error>> {
         let mut child = Command::new("curl")
             .arg("--disable")
@@ -649,8 +728,36 @@ pub fn sample_advised_action(
 }
 
 #[cfg(test)]
+impl BlueAdviser {
+    #[must_use]
+    pub fn refusing() -> Self {
+        Self {
+            key: String::new(),
+            endpoint: String::new(),
+            model: ADVICE_MODEL.to_owned(),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_goal_region_names_every_map_on_the_route_to_brock() {
+        assert!(GOAL_REGION.windows(2).all(|pair| pair[0] < pair[1]));
+        for map in GOAL_REGION {
+            assert_ne!(map_name(map), "unknown_map");
+            assert!(!map_name(map).starts_with("unused_map"));
+        }
+        for map in [0_u8, 40, 42, 51, 2, 54] {
+            assert!(
+                GOAL_REGION.contains(&map),
+                "{} is on the route",
+                map_name(map)
+            );
+        }
+    }
 
     #[test]
     fn every_map_id_has_a_name() {

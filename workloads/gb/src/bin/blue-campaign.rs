@@ -39,6 +39,7 @@ struct Args {
     mixture: DrawMixture,
     verify_replay: bool,
     advise: bool,
+    goal_advice: bool,
     selector: SelectorPolicy,
 }
 
@@ -67,6 +68,7 @@ impl Args {
         let mut mixture = DrawMixture::AlphabetOnly;
         let mut verify_replay = false;
         let mut advise = false;
+        let mut goal_advice = false;
         let mut selector = SelectorPolicy::EnergyFrontierCheapest(thresholds());
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
@@ -76,6 +78,10 @@ impl Args {
             }
             if flag == "--advise" {
                 advise = true;
+                continue;
+            }
+            if flag == "--goal-advice" {
+                goal_advice = true;
                 continue;
             }
             let value = args
@@ -124,6 +130,7 @@ impl Args {
             mixture,
             verify_replay,
             advise,
+            goal_advice,
             selector,
         })
     }
@@ -161,6 +168,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         let adviser = BlueAdviser::from_environment()
             .ok_or("--advise needs TYPESAFE_API_KEY in the environment")?;
         game = game.with_adviser(adviser);
+    }
+    if args.goal_advice {
+        if args.verify_replay {
+            return Err("--verify-replay cannot check a run whose goals came from the API".into());
+        }
+        let adviser = BlueAdviser::from_environment()
+            .ok_or("--goal-advice needs TYPESAFE_API_KEY in the environment")?;
+        game = game.with_goal_adviser(adviser);
     }
     let config = BlueCampaignConfig {
         campaign_seed: args.seed,
