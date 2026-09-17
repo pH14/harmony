@@ -363,6 +363,17 @@ REPOSITORY_CHECKS = Workflow(
     ),
 )
 
+HARMONY_HOST_COMPATIBILITY = Workflow(
+    path=f"{WORKFLOW_DIR}/harmony-host-compatibility.yml",
+    name="Checks / Harmony Host Compatibility",
+    owner="Harmony Host Compatibility",
+    triggers=("pull_request", "push"),
+    jobs=(
+        Job("macOS Arm64", "pr", 15),
+        Job("Linux Arm64", "pr", 15),
+    ),
+)
+
 DISSONANCE_NES_CHECKS = Workflow(
     path=f"{WORKFLOW_DIR}/dissonance-workloads-nes-checks.yml",
     name="Checks / Dissonance Workloads / NES",
@@ -459,6 +470,7 @@ RELEASE = Workflow(
 
 WORKFLOWS = (
     REPOSITORY_CHECKS,
+    HARMONY_HOST_COMPATIBILITY,
     CONSONANCE_CHECKS,
     CONSONANCE_ANALYSIS,
     CONSONANCE_HARDWARE,

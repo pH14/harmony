@@ -3,6 +3,7 @@
 """The registry describes CI that exists, owns every check, and stays consistent."""
 
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -195,6 +196,47 @@ class CompositionTests(unittest.TestCase):
             for key in ci_contract.FORBIDDEN_HISTORICAL_KEYS:
                 with self.subTest(case=path.parent.name, key=key):
                     self.assertNotIn(key, case)
+
+
+class HostCompatibilityTests(unittest.TestCase):
+    def setUp(self):
+        import yaml
+
+        self.workflow = ci_contract.by_name("Checks / Harmony Host Compatibility")
+        self.data = yaml.safe_load((ROOT / self.workflow.path).read_text())
+
+    def test_both_hosts_are_checked_on_every_pull_request(self):
+        self.assertEqual([job.name for job in self.workflow.jobs], ["macOS Arm64", "Linux Arm64"])
+        for job in self.workflow.jobs:
+            with self.subTest(job=job.name):
+                self.assertEqual(job.trigger, "pr")
+
+    def test_each_job_names_an_explicit_runner(self):
+        runners = {job["name"]: job["runs-on"] for job in self.data["jobs"].values()}
+        self.assertEqual(runners, {"macOS Arm64": "macos-14", "Linux Arm64": "ubuntu-24.04-arm"})
+        for name, runner in runners.items():
+            with self.subTest(job=name):
+                self.assertNotIn("latest", runner)
+
+    def test_a_host_job_runs_more_than_a_compile(self):
+        for job in self.data["jobs"].values():
+            commands = "\n".join(str(step.get("run", "")) for step in job["steps"])
+            with self.subTest(job=job["name"]):
+                self.assertIn("cargo nextest run --workspace", commands)
+                self.assertIn("scripts/check-portable-tests.sh", commands)
+                self.assertIn("preflight --json", commands)
+
+    def test_a_host_job_claims_no_live_hypervisor(self):
+        text = (ROOT / self.workflow.path).read_text()
+        self.assertIn("not evidence that HVF or Arm KVM executes a guest", text)
+        for job in self.data["jobs"].values():
+            commands = "\n".join(
+                line for step in job["steps"]
+                for line in str(step.get("run", "")).splitlines()
+                if not line.lstrip().startswith("#"))
+            with self.subTest(job=job["name"]):
+                self.assertIsNone(re.search(r"test .*hypervisor.*=", commands))
+                self.assertNotIn("/dev/kvm", commands)
 
 
 class NamingTests(unittest.TestCase):

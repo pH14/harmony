@@ -1,0 +1,120 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Checks / Harmony Host Compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harmony-host-compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+  # Hosted Apple Silicon runs under Apple's Virtualization Framework and offers
+  # no nested virtualization, and hosted Linux Arm64 offers no usable /dev/kvm.
+  # These jobs therefore compile and link the host-gated backends and run the
+  # portable tests; they are not evidence that HVF or Arm KVM executes a guest
+  # correctly. That evidence comes from a host with a real hypervisor.
+  # A host whose portable suite silently stopped selecting tests must fail
+  # rather than report a green skip, so each run checks this floor.
+  PORTABLE_TEST_FLOOR: 1000
+
+jobs:
+  macos-arm64:
+    name: macOS Arm64
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-host-compatibility-macos
+          workspaces: |
+            . -> target
+            dissonance -> target
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Compile and link the macOS backend
+        run: |
+          set -euo pipefail
+          cargo build -p vmm-backend -p vmm-core --bins
+          # hvf.rs is the only caller of Hypervisor.framework, and a missing
+          # framework or a changed symbol surfaces at link time on this host
+          # alone.
+          otool -L target/debug/hvf_probe | grep -q 'Hypervisor.framework'
+          otool -L target/debug/hvf_state_oracle | grep -q 'Hypervisor.framework'
+      - name: Run the portable Consonance, Harmony and Dissonance tests
+        run: |
+          set -euo pipefail
+          cargo nextest run --workspace --no-fail-fast 2>&1 | tee host-tests.log
+          cargo nextest run --manifest-path dissonance/Cargo.toml --workspace \
+            --no-fail-fast 2>&1 | tee -a host-tests.log
+          scripts/check-portable-tests.sh host-tests.log "$PORTABLE_TEST_FLOOR"
+      - name: Start the assembled CLI on this host
+        run: |
+          set -euo pipefail
+          cargo run -q -p harmony-cli -- --help
+          cargo run -q -p harmony-cli -- preflight --json | tee preflight.json
+          test "$(jq -r .os preflight.json)" = macos
+          test "$(jq -r .isa preflight.json)" = arm64
+          # Reported, never required: a hosted runner has no nested hypervisor.
+          jq -r '"hypervisor state: \(.hypervisor.state)"' preflight.json
+
+  linux-arm64:
+    name: Linux Arm64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: harmony-host-compatibility-linux-arm64
+          workspaces: |
+            . -> target
+            dissonance -> target
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Compile and link the Arm64 Linux backend
+        run: |
+          set -euo pipefail
+          cargo build -p vmm-backend -p vmm-core --bins
+          # These binaries exist only where the Arm64 KVM ioctl surface
+          # compiles, so their absence is the failure this host reports.
+          test -x target/debug/arm64_kvm_id_probe
+          test -x target/debug/kvm_arm64_boot
+      - name: Run the portable Consonance, Harmony and Dissonance tests
+        run: |
+          set -euo pipefail
+          cargo nextest run --workspace --no-fail-fast 2>&1 | tee host-tests.log
+          cargo nextest run --manifest-path dissonance/Cargo.toml --workspace \
+            --no-fail-fast 2>&1 | tee -a host-tests.log
+          scripts/check-portable-tests.sh host-tests.log "$PORTABLE_TEST_FLOOR"
+      - name: Start the assembled CLI on this host
+        run: |
+          set -euo pipefail
+          cargo run -q -p harmony-cli -- --help
+          cargo run -q -p harmony-cli -- preflight --json | tee preflight.json
+          test "$(jq -r .os preflight.json)" = linux
+          test "$(jq -r .isa preflight.json)" = arm64
+          # Reported, never required: a hosted runner has no usable /dev/kvm.
+          jq -r '"hypervisor state: \(.hypervisor.state)"' preflight.json
