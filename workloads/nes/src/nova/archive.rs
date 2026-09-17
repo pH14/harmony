@@ -110,7 +110,7 @@ impl ArchiveKey for NovaArchiveKey {
         1
     }
 
-    fn preference_cmp(self, other: Self) -> Ordering {
+    fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
     }
 
@@ -296,7 +296,7 @@ mod tests {
         let strong = archive_key(state(100, 4, 1));
         assert_eq!(weak.group(0), strong.group(0));
         assert_eq!(weak.group(1), strong.group(1));
-        assert_eq!(strong.preference_cmp(weak), Ordering::Greater);
+        assert_eq!(strong.preference_cmp(0, weak), Ordering::Greater);
         assert_eq!(NovaArchiveKey::slot_capacity(), 1);
     }
 

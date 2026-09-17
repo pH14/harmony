@@ -114,7 +114,7 @@ impl ArchiveKey for MetroidArchiveKey {
         1
     }
 
-    fn preference_cmp(self, other: Self) -> Ordering {
+    fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
     }
 
@@ -339,7 +339,7 @@ mod tests {
         let strong = archive_key(state(100, 300, 0));
         assert_eq!(weak.group(0), strong.group(0));
         assert_eq!(weak.group(1), strong.group(1));
-        assert_eq!(strong.preference_cmp(weak), Ordering::Greater);
+        assert_eq!(strong.preference_cmp(0, weak), Ordering::Greater);
         assert_eq!(MetroidArchiveKey::slot_capacity(), 1);
     }
 
@@ -347,7 +347,7 @@ mod tests {
     fn an_item_outranks_every_resource_in_the_preference() {
         let stocked = archive_key(state(100, 300, 0));
         let equipped = archive_key(state(100, 10, 0b1));
-        assert_eq!(equipped.preference_cmp(stocked), Ordering::Greater);
+        assert_eq!(equipped.preference_cmp(0, stocked), Ordering::Greater);
     }
 
     #[test]

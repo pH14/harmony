@@ -36,7 +36,10 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn progress_cmp(_left: Self::Group, _right: Self::Group) -> Ordering {
         Ordering::Equal
     }
-    fn preference_cmp(self, _other: Self) -> Ordering {
+    fn preferences() -> usize {
+        1
+    }
+    fn preference_cmp(self, _preference: usize, _other: Self) -> Ordering {
         Ordering::Equal
     }
     type Lineage: Clone + Default;
@@ -2261,11 +2264,11 @@ where
                 let right_entry = &self.entries[*right];
                 left_entry
                     .key
-                    .preference_cmp(right_entry.key)
+                    .preference_cmp(0, right_entry.key)
                     .then_with(|| self.cost_in_group[*right].cmp(&self.cost_in_group[*left]))
                     .then_with(|| right_entry.id.cmp(&left_entry.id))
             });
-            worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
+            worst.filter(|id| match key.preference_cmp(0, self.entries[*id].key) {
                 Ordering::Greater => true,
                 Ordering::Equal => candidate_cost_in_group < self.cost_in_group[*id],
                 Ordering::Less => false,
@@ -2297,7 +2300,7 @@ where
         }
         if let Some(bank) = &mut self.continuations {
             if replace.is_some_and(|replaced| {
-                key.preference_cmp(self.entries[replaced].key) == Ordering::Greater
+                key.preference_cmp(0, self.entries[replaced].key) == Ordering::Greater
             }) {
                 bank.improved(key.group(0), self.next_entry_id);
             }
@@ -3889,7 +3892,7 @@ mod tests {
             1
         }
 
-        fn preference_cmp(self, other: Self) -> Ordering {
+        fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
             self.quality.cmp(&other.quality)
         }
 

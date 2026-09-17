@@ -131,7 +131,7 @@ impl ArchiveKey for Mm2ArchiveKey {
         (left.bosses, left.boss_damage).cmp(&(right.bosses, right.boss_damage))
     }
 
-    fn preference_cmp(self, other: Self) -> Ordering {
+    fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
     }
 
@@ -334,7 +334,7 @@ mod tests {
         assert_eq!(weak.group(0), strong.group(0));
         assert_eq!(weak.group(1), strong.group(1));
         assert_ne!(weak.group(2), strong.group(2));
-        assert_eq!(strong.preference_cmp(weak), Ordering::Greater);
+        assert_eq!(strong.preference_cmp(0, weak), Ordering::Greater);
         assert_eq!(Mm2ArchiveKey::slot_capacity(), 1);
     }
 

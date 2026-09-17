@@ -40,7 +40,7 @@ impl ArchiveKey for TestKey {
     fn slot_capacity() -> usize {
         1
     }
-    fn preference_cmp(self, other: Self) -> std::cmp::Ordering {
+    fn preference_cmp(self, _preference: usize, other: Self) -> std::cmp::Ordering {
         (self.0 / 16).cmp(&(other.0 / 16))
     }
     type Lineage = ();

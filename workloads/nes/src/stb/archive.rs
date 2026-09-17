@@ -118,7 +118,7 @@ impl ArchiveKey for StbArchiveKey {
         1
     }
 
-    fn preference_cmp(self, other: Self) -> Ordering {
+    fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
     }
 
@@ -374,7 +374,7 @@ mod tests {
         let weak = archive_key(state(100, 0, 4)).expect("live archive key");
         let strong = archive_key(state(100, 80, 4)).expect("live archive key");
         assert_eq!(weak.group(0), strong.group(0));
-        assert_eq!(strong.preference_cmp(weak), Ordering::Greater);
+        assert_eq!(strong.preference_cmp(0, weak), Ordering::Greater);
         assert_eq!(StbArchiveKey::slot_capacity(), 1);
     }
 
