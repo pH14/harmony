@@ -3094,11 +3094,8 @@ where
             .min()
     }
 
-    fn is_preference_champion(&self, id: usize, preference: usize) -> bool {
+    fn champions_slot(&self, slot: &[usize], id: usize, preference: usize) -> bool {
         let capacity = K::slot_capacity().max(1);
-        let Some(slot) = self.slots.get(&self.entries[id].key.group(0)) else {
-            return true;
-        };
         let better = slot
             .iter()
             .filter(|other| **other != id)
@@ -3118,6 +3115,14 @@ where
         better < capacity
     }
 
+    #[cfg(test)]
+    fn is_preference_champion(&self, id: usize, preference: usize) -> bool {
+        let Some(slot) = self.slots.get(&self.entries[id].key.group(0)) else {
+            return true;
+        };
+        self.champions_slot(slot, id, preference)
+    }
+
     fn draw_from_cell(
         &mut self,
         rand: &mut RomuDuoJrRand,
@@ -3130,17 +3135,31 @@ where
         } else {
             None
         };
-        if let Some(preference) = drawn_preference {
-            if let Some(count) = self.portfolio_selections.get_mut(preference) {
-                *count = count.saturating_add(1);
-            }
+        if let Some(preference) = drawn_preference
+            && let Some(count) = self.portfolio_selections.get_mut(preference)
+        {
+            *count = count.saturating_add(1);
         }
         let preferred = match drawn_preference {
-            Some(preference) => window
-                .iter()
-                .copied()
-                .filter(|id| self.is_preference_champion(*id, preference))
-                .collect(),
+            Some(preference) => {
+                let mut cached: Option<(K::Group, Option<&Vec<usize>>)> = None;
+                window
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        let group = self.entries[*id].key.group(0);
+                        let slot = match cached {
+                            Some((seen, slot)) if seen == group => slot,
+                            _ => {
+                                let slot = self.slots.get(&group);
+                                cached = Some((group, slot));
+                                slot
+                            }
+                        };
+                        slot.is_none_or(|slot| self.champions_slot(slot, *id, preference))
+                    })
+                    .collect()
+            }
             None => Vec::new(),
         };
         let window: &[usize] = if preferred.is_empty() {
@@ -3523,7 +3542,7 @@ where
                     continue;
                 }
                 let held = (0..preferences)
-                    .filter(|preference| self.is_preference_champion(*id, *preference))
+                    .filter(|preference| self.champions_slot(slot, *id, *preference))
                     .count();
                 match held {
                     0 => {}
