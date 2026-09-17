@@ -291,23 +291,14 @@ Added while building step 5:
 
 Added while running step 5:
 
-- The plain searcher reaches the Boulder Badge. Seed 20260907 took all eight
-  milestones and won at execution 37,249, over 25 maps and a level 13 party. The
-  other two plain seeds stop at Oak's parcel with 12 maps, so the badge crosses
-  on one seed of three.
+- The plain searcher reaches the Boulder Badge, and not on every seed. Score any
+  change against the deepest milestone rather than the first.
 - The adviser reaches the second milestone sooner on every seed and no further on
-  any: Oak's parcel at 994 against 1,407, 743 against 2,064, and 1,987 against
-  4,021. Neither advised seed past that point delivered the parcel.
-- The advised arm whites out 24, 15 and 4 times as often per execution: 250, 124
-  and 522 against 9, 8 and 114. The weight it puts on the fighting kinds is spent
-  on wild battles it loses. The seed that won is the plain seed with the most
-  whiteouts, so fighting is what the route needs and losing the fights is what
-  the adviser buys.
-- The panel is paired on one box, both arms at six workers, each given 1,800
-  seconds. A weighted draw picks cheaper macros, so the advised arm fits 6% to
-  15% more executions into the same time. Give both arms the same execution
-  budget instead: any total drawn from the run rather than from the milestone
-  index has to be stated as a rate.
+  any, and it whites out several times as often per execution. The comparison is
+  in `workloads/gb/README.md`.
+- Give both arms the same execution budget rather than the same wall time. A
+  weighted draw picks cheaper macros, so equal wall time hands the advised arm
+  more executions, and any per-run total then has to be stated as a rate.
 
 ## Working rules
 

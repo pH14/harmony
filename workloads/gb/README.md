@@ -195,32 +195,24 @@ cannot match.
 Map names come from `constants/map_constants.asm` in pokered. They are what lets
 the model tell a house from a route.
 
-## Campaign results
+## What the search reaches
 
-Three seeds, both arms side by side on one arm64 box at six workers each, each
-arm given the same 1,800 seconds of wall time. A weighted draw picks cheaper
-macros, so the advised arm fits 6% to 15% more executions into that time. The
-milestone comparison below is indexed by execution number and does not depend on
-the totals; the whiteout counts do, so they are given as a rate per execution.
+The plain searcher reaches the Boulder Badge from a new game, in tens of
+thousands of executions at six workers. It does not reach it on every seed: on a
+three-seed panel one seed took all eight milestones over 25 maps with a level 13
+party, and the other two stopped at Oak's parcel with 12 maps. Score a change
+against the deepest milestone, since the badge crosses on a minority of seeds.
 
-| Arm | Seed | Executions | Maps | Milestones | Whiteouts |
-| --- | --- | --- | --- | --- | --- |
-| plain | 20260905 | 41,425 | 12 | 2 | 9 |
-| plain | 20260906 | 40,276 | 12 | 2 | 8 |
-| plain | 20260907 | 41,141 | 25 | 8 | 114 |
-| advised | 20260905 | 47,609 | 12 | 2 | 250 |
-| advised | 20260906 | 42,716 | 12 | 2 | 124 |
-| advised | 20260907 | 45,981 | 12 | 2 | 522 |
+The adviser changes where the effort goes rather than how far it gets. It reaches
+Oak's parcel 1.4 to 2.8 times sooner on every seed and reaches nothing past it,
+and it whites out 4 to 24 times as often per execution. The weight it puts on the
+fighting macros is spent losing wild battles rather than winning the trainer
+battles the route needs, and the seed that won is the one whose plain arm fought
+the most.
 
-The plain searcher wins the game on seed 20260907, taking the Boulder Badge at
-execution 37,249 with a level 13 party. The badge crosses on one seed of three.
-
-The adviser reaches Oak's parcel sooner on every seed and no further on any:
-execution 994 against 1,407, 743 against 2,064, and 1,987 against 4,021. It
-whites out 24, 15 and 4 times as often per execution. The weight it puts on the
-fighting kinds is spent losing wild battles rather than winning the trainer
-battles the route needs, and the seed that won is the plain seed that fought the
-most.
+Give both arms the same execution budget rather than the same wall time. A
+weighted draw picks cheaper macros, so equal wall time hands the advised arm more
+executions, and any per-run total then has to be stated as a rate.
 
 ## Archive key
 
