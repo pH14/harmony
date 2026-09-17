@@ -563,6 +563,25 @@ class CiArchitectureTests(RequiresApiKey):
             with self.subTest(path=path):
                 self.assertFalse(set(LINTS.WORKFLOW_QUESTION_IDS) <= set(LINTS.questions_for(path)))
 
+    def test_the_seed_question_follows_the_workflows_and_their_scripts(self):
+        for path in (self.workflow_path(), "scripts/historical-search.sh"):
+            with self.subTest(path=path):
+                self.assertIn("seed_outcome_pinned", LINTS.questions_for(path))
+        for path in ("docs/WORKFLOWS.md", "workloads/nes/src/film.rs",
+                     "scripts/historical-manifest.py"):
+            with self.subTest(path=path):
+                self.assertNotIn("seed_outcome_pinned", LINTS.questions_for(path))
+
+    def test_a_workflow_requiring_one_seed_to_find_the_bug_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = self.workflow_path()
+            self.plant(root, path, "name: Checks / Repository\non:\n  pull_request:\n")
+            failures, _, _, _, _, _ = LINTS.run(
+                root, [path], {},
+                post=make_post(full_answers(file_kind="config", seed_outcome_pinned=0.97)))
+            self.assertEqual([rule for rule, _, _ in failures], ["ci-pinned-seed-outcome"])
+
     def test_documentation_questions_follow_the_documentation_scope(self):
         for path in ("docs/WORKFLOWS.md", "workloads/bugs/historical/README.md",
                      "consonance/vmm-core/README.md", "CONTRIBUTING.md"):

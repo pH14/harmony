@@ -343,6 +343,46 @@ class HistoricalArmTests(unittest.TestCase):
                          ["ci-historical-arms"])
 
 
+class PinnedSeedOutcomeTests(unittest.TestCase):
+    def check(self, rel: str, content: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(content)
+            return [v.rule for v in LINTS.check_pinned_seed_outcomes(root, [rel])]
+
+    def test_the_repository_pins_no_seed_outcome(self):
+        self.assertFalse(LINTS.check_pinned_seed_outcomes(ROOT, LINTS.tracked_files(ROOT)))
+
+    def test_a_literal_seed_in_an_expected_pattern_is_rejected(self):
+        rel = ".github/workflows/example-benchmarks.yml"
+        content = ("          grep -Eq 'ORACLE_OK actions=[0-9]+ seed=0000000001352825' "
+                   "report.txt\n")
+        self.assertEqual(self.check(rel, content), ["ci-pinned-seed-outcome"])
+
+    def test_a_seed_shape_is_accepted(self):
+        rel = ".github/workflows/example-benchmarks.yml"
+        content = "          grep -Eq 'ORACLE_OK seed=[0-9a-f]{16}' report.txt\n"
+        self.assertFalse(self.check(rel, content))
+
+    def test_a_seed_the_job_supplies_as_input_is_accepted(self):
+        rel = ".github/workflows/example-benchmarks.yml"
+        content = "          tools/campaign --seed 20260901 --executions 10\n"
+        self.assertFalse(self.check(rel, content))
+
+    def test_a_pinned_seed_across_a_line_continuation_is_rejected(self):
+        rel = "scripts/example.sh"
+        content = ("grep -Eq \\\n"
+                   "    'ORACLE_OK seed=1352825' \\\n"
+                   "    report.txt\n")
+        self.assertEqual(self.check(rel, content), ["ci-pinned-seed-outcome"])
+
+    def test_a_seed_outside_an_assertion_is_accepted(self):
+        rel = ".github/workflows/example-benchmarks.yml"
+        content = "          PACKAGE_SEED: \"20260901\"\n"
+        self.assertFalse(self.check(rel, content))
+
+
 class JobContractTests(unittest.TestCase):
     def check(self, body: str, job=None, triggers=("pull_request", "push"), name="Guest Memory"):
         job = job if job is not None else ci_contract.Job("Guest Memory", "pr", 15)
