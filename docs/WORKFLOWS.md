@@ -180,6 +180,11 @@ and exclude ROMs and emulator binaries.
 each affected workload for the bug its case describes, through Consonance. Each
 scenario job is named after the bug.
 
+A case declares no seed. The run supplies one and the report records it, so a
+case's search budget is what has to reach the bug rather than a committed seed
+landing where it once landed. `ci-pinned-seed-outcome` rejects a literal seed
+value in an expected-output pattern and a case manifest that commits a seed.
+
 There is no fixed-version comparison. A case records which upstream versions the
 bug affects and which fixed it as provenance; it never declares an execution
 arm, a control version or a replay mode over a second build.
