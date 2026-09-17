@@ -458,42 +458,73 @@ def check_misplaced_workload_files(files: list[str]) -> list[Violation]:
 
 
 # ---------------------------------------------------------------------------
-# CI workflow name prefix check
+# CI workflow rules. scripts/ci_contract.py is the registry of workflow names,
+# owners, triggers and budgets; these checks hold the files to it.
 # ---------------------------------------------------------------------------
 
-CI_WORKFLOW_PREFIXES = ["Acceptance", "Benchmarks", "Checks", "Nightly", "Release", "Smoke"]
-
 PR_JOB_MAX_TIMEOUT_MINUTES = 15
-PR_WORKFLOWS = {
-    ".github/workflows/quality.yml": "Checks",
-    ".github/workflows/nightly.yml": "Checks",
-    ".github/workflows/product-smoke.yml": "Smoke",
-}
-CI_NAME_TERMS = {
-    "API", "CLI", "CPU", "KVM", "NES", "STB", "VM",
-    "Consonance", "Dissonance", "Docker", "Go", "Harmony", "Intel",
-    "K3s", "Kani", "Linux", "Miri", "Nova", "PostgreSQL", "QuickNES",
-    "XSAVE",
-}
-CI_GENERIC_NAMES = {"products", "quality", "checks", "smoke", "test", "tests", "job", "report"}
+
+# Events that can put a job in front of a pull request.
+PR_EVENTS = {"pull_request", "pull_request_target", "merge_group"}
+
+TRIGGER_WORDS_RE = re.compile(r"\b(scheduled|manual|nightly)\b", re.IGNORECASE)
+BARE_ORDINAL_RE = re.compile(r"\(\s*\d+\s*\)")
+MATRIX_EXPRESSION_RE = re.compile(r"\$\{\{.*?\}\}")
+VARIANT_RE = re.compile(r"<[^>]+>")
+
+# Stands in for a value only the runner knows.
+UNKNOWN_VALUE = "\x00"
+
+# The game runs natively through Dissonance and inside a Consonance VM through
+# Harmony. Neither composition substitutes for the other.
+NES_COMPOSITIONS_REQUIRED = ("Dissonance Workloads", "Harmony Workloads")
 
 
-def _sentence_case_name(name: str) -> bool:
-    """Check static display text without interpreting matrix expressions."""
-    static = re.sub(r"\$\{\{.*?\}\}", "", name)
-    words = re.findall(r"[A-Za-z][A-Za-z0-9]*", static)
-    if not words or name.strip().lower() in CI_GENERIC_NAMES or " / " in name:
-        return False
-    for index, word in enumerate(words):
-        canonical = next((term for term in CI_NAME_TERMS if term.lower() == word.lower()), None)
-        if canonical is not None:
-            if word != canonical:
-                return False
+def _display_shape(name: str) -> str:
+    """Collapse the values a matrix supplies at run time into one token."""
+    return MATRIX_EXPRESSION_RE.sub(UNKNOWN_VALUE, str(name)).strip()
+
+
+def _variant_pattern(registered: str) -> re.Pattern[str]:
+    """Match a registered name against the values its variants can take."""
+    return re.compile(".+".join(re.escape(part) for part in VARIANT_RE.split(registered)))
+
+
+def _matrix_values(job: dict) -> dict[str, list]:
+    matrix = (job.get("strategy") or {}).get("matrix")
+    if not isinstance(matrix, dict):
+        return {}
+    values: dict[str, list] = {}
+    include = matrix.get("include")
+    if isinstance(include, list):
+        for entry in include:
+            if not isinstance(entry, dict):
+                return {}
+            for key, value in entry.items():
+                values.setdefault(key, []).append(value)
+    for key, value in matrix.items():
+        if key in {"include", "exclude"} or not isinstance(value, list):
             continue
-        expected = word[:1].upper() + word[1:].lower() if index == 0 else word.lower()
-        if word != expected:
-            return False
-    return True
+        values.setdefault(key, []).extend(value)
+    return values
+
+
+def _job_display_names(job: dict) -> list[str]:
+    """Every display name a job produces, with unknown values left as a token."""
+    name = job.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return []
+    names = {name}
+    for key, options in _matrix_values(job).items():
+        expression = re.compile(r"\$\{\{\s*matrix\." + re.escape(key) + r"\s*\}\}")
+        expanded = set()
+        for candidate in names:
+            if expression.search(candidate):
+                expanded.update(expression.sub(str(option), candidate) for option in options)
+            else:
+                expanded.add(candidate)
+        names = expanded
+    return sorted({_display_shape(candidate) for candidate in names})
 
 # Event names that cannot be a pull-request run.
 NON_PR_EVENTS = {"push", "schedule", "workflow_dispatch"}
@@ -625,234 +656,322 @@ def _parse_workflow(abs_path: Path) -> dict:
     return data
 
 
-def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
-    """Validate the complete tracked-file inventory, not a changed-file subset."""
+def _workflow_triggers(data: dict) -> set[str] | None:
+    triggers = data.get("on", data.get(True, {}))
+    if isinstance(triggers, str):
+        triggers = {triggers: None}
+    if isinstance(triggers, list) and all(isinstance(item, str) for item in triggers):
+        triggers = {item: None for item in triggers}
+    if not isinstance(triggers, dict) or not triggers or not all(isinstance(item, str) for item in triggers):
+        return None
+    return set(triggers)
+
+
+def check_registry_names(workflows=None) -> list[Violation]:
+    """Hold the registry's own display names to the naming rules."""
+    import ci_contract
+
+    path = "scripts/ci_contract.py"
     violations = []
-    nes_manifest = "benchmarks/search/nightly.json"
-    nes_workflow = ".github/workflows/nova-nightly.yml"
-    if nes_manifest in files or (repo_root / nes_manifest).is_file():
-        if nes_workflow not in files or not (repo_root / nes_workflow).is_file():
-            violations.append(Violation("ci-nes-case-jobs", nes_workflow, 0,
-                "the registered public NES manifest requires its tracked owning workflow"))
-    for rel_path in files:
-        if not rel_path.startswith(".github/workflows/") or not rel_path.endswith((".yml", ".yaml")):
-            continue
-        abs_path = repo_root / rel_path
-        if not abs_path.is_file():
-            continue
-
-        try:
-            data = _parse_workflow(abs_path)
-        except (OSError, ValueError) as error:
-            violations.append(Violation("ci-workflow-parse", rel_path, 0, str(error)))
-            continue
-        name = str(data.get("name", "")).strip()
-        if not name:
-            violations.append(Violation(
-                rule="ci-workflow-prefix",
-                path=rel_path,
-                line=0,
-                text="workflow file has no 'name:' field",
-            ))
-        else:
-            prefix = name.split("/")[0].strip() if "/" in name else name
-            flat = name in {"Checks", "Smoke"}
-            if prefix not in CI_WORKFLOW_PREFIXES or (not flat and not re.fullmatch(r"\S+ / \S.*", name)):
-                violations.append(Violation(
-                    rule="ci-workflow-prefix",
-                    path=rel_path,
-                    line=0,
-                    text=f"workflow name '{name}' does not start with an allowed prefix",
-                ))
-            elif prefix in {"Checks", "Smoke"} and not flat:
-                violations.append(Violation("ci-display-name", rel_path, 0,
-                    "Checks and Smoke workflow names must be the category alone; descriptive subjects belong on jobs"))
-            elif not flat and not _sentence_case_name(name.split(" / ", 1)[1]):
-                violations.append(Violation("ci-display-name", rel_path, 0,
-                    f"workflow subject must be descriptive sentence case: {name}"))
-        for job_id, job in data["jobs"].items():
-            job_name = job.get("name")
-            if not isinstance(job_name, str) or not _sentence_case_name(job_name):
-                violations.append(Violation("ci-display-name", rel_path, 0,
-                    f"job '{job_id}' needs a descriptive sentence-case display name (capitalize proper names and registered acronyms only)"))
-
-        triggers = data.get("on", data.get(True, {}))
-        if isinstance(triggers, str):
-            triggers = {triggers: None}
-        if isinstance(triggers, list) and all(isinstance(t, str) for t in triggers):
-            triggers = {t: None for t in triggers}
-        if not isinstance(triggers, dict) or not triggers or not all(isinstance(t, str) for t in triggers):
-            violations.append(Violation("ci-workflow-parse", rel_path, 0, "workflow has no valid triggers"))
-            continue
-        category = str(data.get("name", "")).split(" / ")[0]
-        if category in {"Acceptance", "Benchmarks", "Nightly"}:
-            forbidden = set(triggers) - {"schedule", "workflow_dispatch", "workflow_call"}
-        elif category in {"Checks", "Smoke"}:
-            forbidden = set(triggers) & {"schedule"}
-        else:
-            forbidden = set()
-        if forbidden:
-            violations.append(Violation("ci-workflow-triggers", rel_path, 0,
-                f"{category} workflow has forbidden triggers: {', '.join(sorted(forbidden))}"))
-        if rel_path == ".github/workflows/nova-nightly.yml" or str(data.get("name", "")) == "Benchmarks / NES":
-            violations.extend(check_nes_job_coverage(repo_root, rel_path, data))
-        if not set(triggers) & {"pull_request", "pull_request_target", "merge_group"}:
-            continue
-        if PR_WORKFLOWS.get(rel_path) != category:
-            violations.append(Violation("ci-pr-workflow-registration", rel_path, 0,
-                "PR workflows must use a registered path and category; register new checks explicitly"))
-        if category == "Smoke" or rel_path == ".github/workflows/product-smoke.yml":
-            violations.extend(check_pr_smoke_routing(rel_path, data))
-        if rel_path in {".github/workflows/quality.yml", ".github/workflows/nightly.yml"}:
-            violations.extend(check_pr_check_routing(rel_path, data))
-        for job_name, job in (data.get("jobs") or {}).items():
-            if not isinstance(job, dict):
-                continue
-            timeout = job.get("timeout-minutes")
-            job_if = str(job.get("if", ""))
-            if _job_skips_pr(job_if):
-                violations.append(Violation("ci-pr-only-jobs", rel_path, 0,
-                    f"job '{job_name}' belongs in a separate schedule/manual workflow"))
-                continue
-            commands = "\n".join(str(step.get("run", "")) for step in job.get("steps", []) if isinstance(step, dict))
-            if re.search(r"\bcargo(?:\s+\+\S+)?\s+(?:mutants|llvm-cov)\b|\bscripts/coverage\.sh\b", commands):
-                violations.append(Violation("ci-pr-extended-validation", rel_path, 0,
-                    f"job '{job_name}' runs mutation or coverage; move it to Nightly"))
-            # Every automatic PR job must declare its bound. Treat a missing
-            # or malformed value as a violation instead of silently allowing
-            # an unbounded runner.
-            if (
-                isinstance(timeout, (int, float))
-                and not isinstance(timeout, bool)
-                and 0 < timeout <= PR_JOB_MAX_TIMEOUT_MINUTES
-            ):
-                continue
-            detail = (
-                f"has timeout-minutes={timeout}"
-                if timeout is not None
-                else "has no timeout-minutes"
-            )
-            violations.append(Violation(
-                rule="ci-pr-job-timeout",
-                path=rel_path,
-                line=0,
-                text=f"job '{job_name}' {detail} (must set <= {PR_JOB_MAX_TIMEOUT_MINUTES} for PR jobs)",
-            ))
+    for workflow in ci_contract.WORKFLOWS if workflows is None else workflows:
+        if workflow.category not in ci_contract.CATEGORIES:
+            violations.append(Violation("ci-workflow-name", path, 0,
+                f"'{workflow.name}' uses category '{workflow.category}'; "
+                f"the categories are {', '.join(ci_contract.CATEGORIES)}"))
+        for retired in ci_contract.RETIRED_CATEGORIES:
+            if re.search(rf"(?:^|[ /]){re.escape(retired)}(?:[ /]|$)", workflow.name):
+                violations.append(Violation("ci-workflow-name", path, 0,
+                    f"'{workflow.name}' uses the retired category '{retired}'"))
+        subjects = [(workflow.name, f"workflow '{workflow.name}'")]
+        subjects += [(job.name, f"job '{job.name}' in '{workflow.name}'") for job in workflow.jobs]
+        for text, subject in subjects:
+            for problem in ci_contract.title_case_violations(text):
+                violations.append(Violation("ci-display-name", path, 0, f"{subject}: {problem}"))
+            if TRIGGER_WORDS_RE.search(VARIANT_RE.sub("", text)):
+                violations.append(Violation("ci-display-name", path, 0,
+                    f"{subject} names a trigger; a display name identifies responsibility"))
+            if BARE_ORDINAL_RE.search(text):
+                violations.append(Violation("ci-display-name", path, 0,
+                    f"{subject} carries a bare ordinal; label the replica or shard"))
     return violations
 
 
-def check_pr_smoke_routing(path: str, workflow: dict) -> list[Violation]:
-    """Keep automatic product smokes behind the tested consumer selector."""
-    from ci_scope import SMOKES
+def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
+    """Validate the complete tracked-file inventory, not a changed-file subset."""
+    import ci_contract
 
+    violations = check_registry_names()
+    tracked = {path for path in files
+               if path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml"))}
+    registered = set(ci_contract.registered_paths())
+    for path in sorted(registered - tracked):
+        violations.append(Violation("ci-workflow-registration", path, 0,
+            "scripts/ci_contract.py registers this workflow but no file is tracked at that path"))
+    for path in sorted(tracked - registered):
+        violations.append(Violation("ci-workflow-registration", path, 0,
+            "workflow is not registered in scripts/ci_contract.py"))
+    for rel_path in sorted(tracked & registered):
+        if (repo_root / rel_path).is_file():
+            violations.extend(check_workflow_file(repo_root, rel_path, ci_contract.by_path(rel_path)))
+    violations.extend(check_nes_compositions(repo_root, tracked))
+    violations.extend(check_nes_case_coverage(repo_root, tracked))
+    violations.extend(check_miri_matrices(repo_root, tracked))
+    return violations
+
+
+def check_workflow_file(repo_root: Path, rel_path: str, workflow) -> list[Violation]:
+    """Hold one workflow file to the name, triggers and jobs it is registered with."""
+    violations = []
+    try:
+        data = _parse_workflow(repo_root / rel_path)
+    except (OSError, ValueError) as error:
+        return [Violation("ci-workflow-parse", rel_path, 0, str(error))]
+    name = str(data.get("name", "")).strip()
+    if name != workflow.name:
+        violations.append(Violation("ci-workflow-name", rel_path, 0,
+            f"workflow is named '{name}' and registered as '{workflow.name}'"))
+    triggers = _workflow_triggers(data)
+    if triggers is None:
+        violations.append(Violation("ci-workflow-parse", rel_path, 0, "workflow has no valid triggers"))
+        return violations
+    if triggers != set(workflow.triggers):
+        violations.append(Violation("ci-workflow-triggers", rel_path, 0,
+            f"triggers {sorted(triggers)} do not match the registered {sorted(workflow.triggers)}"))
+    violations.extend(check_workflow_jobs(rel_path, workflow, data, bool(triggers & PR_EVENTS)))
+    return violations
+
+
+def check_workflow_jobs(rel_path: str, workflow, data: dict, pr_triggered: bool) -> list[Violation]:
+    """Match every job to the responsibility the registry gives it."""
+    patterns = [(job, _variant_pattern(job.name)) for job in workflow.jobs]
+    violations = []
+    claimed: set[str] = set()
+    for job_id, job in data["jobs"].items():
+        displays = _job_display_names(job)
+        if not displays:
+            violations.append(Violation("ci-display-name", rel_path, 0,
+                f"job '{job_id}' has no display name"))
+            continue
+        registered = None
+        for display in displays:
+            candidates = [entry for entry in patterns if entry[1].fullmatch(display)]
+            if not candidates:
+                violations.append(Violation("ci-display-name", rel_path, 0,
+                    f"job '{job_id}' displays '{display}', which no job registered "
+                    f"under '{workflow.name}' owns"))
+                continue
+            candidates.sort(key=lambda entry: (len(VARIANT_RE.findall(entry[0].name)),
+                                               -len(VARIANT_RE.sub("", entry[0].name))))
+            registered = candidates[0][0]
+            claimed.add(registered.name)
+        if registered is not None:
+            violations.extend(check_job_contract(rel_path, job_id, job, registered, pr_triggered))
+    for job in workflow.jobs:
+        if job.name not in claimed:
+            violations.append(Violation("ci-display-name", rel_path, 0,
+                f"no job displays the registered '{job.name}'"))
+    return violations
+
+
+def check_job_contract(rel_path: str, job_id: str, job: dict, registered, pr_triggered: bool) -> list[Violation]:
+    """Enforce the routing and budget the registry records for one job."""
+    violations = []
+    timeout = job.get("timeout-minutes")
+    declared = isinstance(timeout, int) and not isinstance(timeout, bool)
+    runs_on_pr = pr_triggered and not _job_skips_pr(str(job.get("if", "")))
+    if registered.trigger == "pr":
+        if pr_triggered and not runs_on_pr:
+            violations.append(Violation("ci-trigger-routing", rel_path, 0,
+                f"job '{job_id}' is a registered pull request check but its guard excludes pull requests"))
+        if not declared or not 0 < timeout <= PR_JOB_MAX_TIMEOUT_MINUTES:
+            violations.append(Violation("ci-pr-job-timeout", rel_path, 0,
+                f"job '{job_id}' has timeout-minutes={timeout} and must set "
+                f"<= {PR_JOB_MAX_TIMEOUT_MINUTES}"))
+    else:
+        if runs_on_pr:
+            violations.append(Violation("ci-trigger-routing", rel_path, 0,
+                f"job '{job_id}' reaches pull requests but is registered as schedule or dispatch work"))
+        if pr_triggered and not registered.exception:
+            violations.append(Violation("ci-trigger-exception", rel_path, 0,
+                f"job '{job_id}' mixes trigger classes without a registered exception"))
+        if timeout is None:
+            violations.append(Violation("ci-pr-job-timeout", rel_path, 0,
+                f"job '{job_id}' declares no timeout-minutes"))
+    if declared and timeout != registered.timeout_minutes:
+        violations.append(Violation("ci-pr-job-timeout", rel_path, 0,
+            f"job '{job_id}' has timeout-minutes={timeout}; the registry records "
+            f"{registered.timeout_minutes}"))
+    violations.extend(check_job_scope(rel_path, job_id, job, registered))
+    return violations
+
+
+def check_job_scope(rel_path: str, job_id: str, job: dict, registered) -> list[Violation]:
+    """Change selection belongs inside the job that owns the work."""
     def problem(message):
-        return [Violation("ci-pr-smoke-routing", path, 0, message)]
+        return [Violation("ci-scope-routing", rel_path, 0, f"job '{job_id}' {message}")]
 
-    if path != ".github/workflows/product-smoke.yml":
-        return problem("PR smokes must be registered in product-smoke.yml and scripts/ci_scope.py")
-    if workflow.get("name") != "Smoke":
-        return problem("the registered product workflow must retain its Smoke category")
-    jobs = workflow["jobs"]
-    expected = set(SMOKES) | {"guest-qualification"}
-    if set(jobs) != expected:
-        return problem("product smoke jobs must match the selector's registered consumers and qualification check")
-    for name in SMOKES:
-        job = jobs[name]
-        if "strategy" in job or not _inline_scope_valid(job, "smoke", name):
-            return problem(f"smoke '{name}' must select work inside its own bounded job and guard every test step")
-    qualification = jobs["guest-qualification"]
-    if (qualification.get("needs") != ["platform"]
-            or qualification.get("if") != "always() && needs.platform.outputs.enabled == 'true'"
-            or jobs["platform"].get("outputs", {}).get("enabled") != "${{ steps.scope.outputs.enabled }}"
-            or jobs["platform"].get("outputs", {}).get("scope") != "${{ steps.provenance.outputs.scope }}"):
-        return problem("guest qualification must retain exact-input evidence for selected platform tests")
+    steps = [step for step in job.get("steps", []) if isinstance(step, dict)]
+    selectors = [step for step in steps
+                 if str(step.get("uses", "")).rstrip("/").endswith(".github/actions/ci-scope")]
+    if not registered.scope:
+        if selectors:
+            return problem("selects work under a kind the registry does not record")
+        return []
+    if len(selectors) != 1:
+        return problem(f"must select '{registered.scope}' exactly once")
+    selector = selectors[0]
+    kind = (selector.get("with") or {}).get("kind")
+    if kind != registered.scope:
+        return problem(f"selects '{kind}' and is registered for '{registered.scope}'")
+    if selector.get("id") != "scope" or "if" in selector or selector.get("continue-on-error", False):
+        return problem("must run the selector unconditionally under the id 'scope'")
+    checkout = next((step for step in steps if "actions/checkout" in str(step.get("uses", ""))), None)
+    if checkout is None or (checkout.get("with") or {}).get("fetch-depth") != 0:
+        return problem("must check out the complete diff the selector reads")
+    guarded = False
+    for step in steps:
+        condition = _strip_outer_parentheses(
+            str(step.get("if", "")).replace("${{", "").replace("}}", "").strip())
+        if "steps.scope.outputs.enabled" not in condition:
+            continue
+        if len(_split_condition(condition, "||")) > 1:
+            return problem("must require its selection with &&, never behind an || fallback")
+        guarded = True
+    if not guarded:
+        return problem("must guard its selected work with steps.scope.outputs.enabled")
     return []
 
 
-def _inline_scope_valid(job: dict, kind: str, target: str | None = None) -> bool:
-    if "needs" in job or "if" in job:
-        return False
-    steps = job.get("steps", [])
-    if len(steps) < 3:
-        return False
-    checkout, scope = steps[:2]
-    expected = {"kind": kind, **({"target": target} if target is not None else {})}
-    if (checkout.get("uses") != "actions/checkout@v4" or checkout.get("with", {}).get("fetch-depth") != 0
-            or checkout.get("with", {}).get("filter") != "blob:none"
-            or "if" in checkout or scope.get("uses") != "./.github/actions/ci-scope"
-            or scope.get("id") != "scope" or scope.get("with") != expected or "if" in scope
-            or scope.get("continue-on-error", False)):
-        return False
-    selection_guard = "steps.scope.outputs.enabled == 'true'"
-    for step in steps[2:]:
-        guard = str(step.get("if", "")).replace("${{", "").replace("}}", "").strip()
-        guard = _strip_outer_parentheses(guard)
-        if len(_split_condition(guard, "||")) > 1:
-            return False
-        if selection_guard not in [_strip_outer_parentheses(part) for part in _split_condition(guard, "&&")]:
-            return False
-    return True
+def check_nes_compositions(repo_root: Path, tracked: set[str]) -> list[Violation]:
+    """Both NES compositions keep a bounded check and a full benchmark."""
+    import ci_contract
+
+    violations = []
+    for composition in NES_COMPOSITIONS_REQUIRED:
+        if composition not in ci_contract.NES_COMPOSITIONS:
+            violations.append(Violation("ci-nes-compositions", "scripts/ci_contract.py", 0,
+                f"the {composition} NES composition is not registered"))
+    for composition, entry in ci_contract.NES_COMPOSITIONS.items():
+        for role in ("checks", "benchmarks"):
+            workflow = ci_contract.by_name(entry[role])
+            if workflow.path not in tracked or not (repo_root / workflow.path).is_file():
+                violations.append(Violation("ci-nes-compositions", workflow.path, 0,
+                    f"the {composition} NES composition needs its {role} workflow"))
+    return violations
 
 
-def check_pr_check_routing(path: str, workflow: dict) -> list[Violation]:
-    from miri_scope import TARGETS
-
-    jobs = workflow["jobs"]
-    if path == ".github/workflows/quality.yml":
-        valid = (set(jobs) == {"repository", "workspace", "guests", "search", "support", "nes", "semantic", "kani", "public-api"}
-                 and _inline_scope_valid(jobs["kani"], "kani")
-                 and _inline_scope_valid(jobs["public-api"], "public_api"))
-    else:
-        job = jobs.get("miri-pr", {})
-        strategy = job.get("strategy", {})
-        matrix = strategy.get("matrix", {})
-        valid = (set(jobs) == {"miri-pr"} and _inline_scope_valid(job, "miri", "${{ matrix.name }}")
-                 and strategy.get("fail-fast") is False
-                 and matrix == {"name": [target["name"] for target in TARGETS]})
-    if valid:
-        return []
-    return [Violation("ci-pr-check-routing", path, 0,
-        "checks must select work inside their real jobs; keep full diff checkout, per-step guards, and complete Miri target coverage")]
-
-
-def check_nes_job_coverage(repo_root: Path, path: str, workflow: dict) -> list[Violation]:
+def check_nes_case_coverage(repo_root: Path, tracked: set[str]) -> list[Violation]:
     """Require the public roster to map one-to-one to independently runnable jobs."""
-    def problem(message):
-        return [Violation("ci-nes-case-jobs", path, 0, message)]
+    import ci_contract
 
+    composition = ci_contract.NES_COMPOSITIONS.get("Dissonance Workloads")
+    if composition is None:
+        return []
+    workflow = ci_contract.by_name(composition["benchmarks"])
+    manifest = "benchmarks/search/nightly.json"
+
+    def problem(message):
+        return [Violation("ci-nes-case-jobs", workflow.path, 0, message)]
+
+    if manifest not in tracked and not (repo_root / manifest).is_file():
+        return []
+    if workflow.path not in tracked or not (repo_root / workflow.path).is_file():
+        return problem("the registered public NES manifest requires its tracked owning workflow")
     try:
-        suite = json.loads((repo_root / "benchmarks/search/nightly.json").read_text())
-        expected = [case["id"] for case in suite["cases"]]
+        expected = [case["id"] for case in json.loads((repo_root / manifest).read_text())["cases"]]
     except (OSError, ValueError, KeyError, TypeError) as error:
         return problem(f"cannot read public NES case manifest: {error}")
     if not expected or len(expected) != len(set(expected)):
         return problem("public NES manifest must contain unique, nonempty cases")
+    try:
+        data = _parse_workflow(repo_root / workflow.path)
+    except (OSError, ValueError) as error:
+        return [Violation("ci-workflow-parse", workflow.path, 0, str(error))]
     actual = []
     campaign_jobs = []
-    for name, job in workflow["jobs"].items():
-        commands = "\n".join(str(step.get("run", "")) for step in job.get("steps", []) if isinstance(step, dict))
+    for job_id, job in data["jobs"].items():
+        commands = "\n".join(str(step.get("run", "")) for step in job.get("steps", [])
+                             if isinstance(step, dict))
         if "eval.py run" not in commands:
             continue
-        campaign_jobs.append(name)
+        campaign_jobs.append(job_id)
         strategy = job.get("strategy", {})
-        matrix = strategy.get("matrix", {})
-        cases = matrix.get("case") if isinstance(matrix, dict) else None
-        if (not isinstance(cases, list) or set(matrix) != {"case"} or not all(isinstance(case, str) for case in cases)
+        matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+        include = matrix.get("include") if isinstance(matrix, dict) else None
+        if (not isinstance(include, list) or set(matrix) != {"include"}
+                or not all(isinstance(entry, dict) and isinstance(entry.get("case"), str)
+                           and isinstance(entry.get("name"), str) for entry in include)
                 or strategy.get("fail-fast") is not False
                 or not re.search(r"--case\s+[\"']?\$\{\{\s*matrix\.case\s*\}\}", commands)
-                or "benchmarks/search/nightly.json" not in commands):
-            return problem(f"job '{name}' must run nightly.json with --case matrix.case, a static case matrix and fail-fast: false")
-        actual.extend(cases)
+                or manifest not in commands):
+            return problem(f"job '{job_id}' must run {manifest} with --case matrix.case, "
+                           "a static include matrix naming every scenario, and fail-fast: false")
+        actual.extend(entry["case"] for entry in include)
     if sorted(actual) != sorted(expected):
         return problem("NES case matrices must cover every public manifest case exactly once")
-    report = workflow["jobs"].get("report", {})
+    report = next((job for job in data["jobs"].values() if job.get("name") == "Results"), None)
+    if report is None:
+        return problem("the benchmark workflow must publish a Results job")
     needs = report.get("needs", [])
     if isinstance(needs, str):
         needs = [needs]
     if (str(report.get("if", "")).replace("${{", "").replace("}}", "").strip() != "always()"
             or not set(campaign_jobs).issubset(needs)):
-        return problem("report must use always() and depend on every campaign matrix")
+        return problem("Results must use always() and depend on every campaign matrix")
     return []
+
+
+def _miri_matrix_names(data: dict, suffix: str) -> list[str]:
+    wanted = f"Miri — ${{{{ matrix.name }}}}{suffix}"
+    for job in data["jobs"].values():
+        if job.get("name") != wanted:
+            continue
+        matrix = (job.get("strategy") or {}).get("matrix")
+        if not isinstance(matrix, dict):
+            return []
+        include = matrix.get("include")
+        if isinstance(include, list):
+            return [entry.get("name") for entry in include if isinstance(entry, dict)]
+        names = matrix.get("name")
+        return list(names) if isinstance(names, list) else []
+    return []
+
+
+def check_miri_matrices(repo_root: Path, tracked: set[str]) -> list[Violation]:
+    """Each component's Analysis workflow lists exactly the targets it owns."""
+    import ci_contract
+    from miri_scope import TARGETS, whole_crate_targets
+
+    violations = []
+    bounded: dict[str, list[str]] = {}
+    whole: dict[str, list[str]] = {}
+    for target in TARGETS:
+        owner = ci_contract.MIRI_OWNERS.get(target["name"])
+        if owner is None:
+            violations.append(Violation("ci-miri-coverage", "scripts/miri_scope.py", 0,
+                f"Miri target '{target['name']}' has no registered owning component"))
+            continue
+        bounded.setdefault(owner, []).append(target["name"])
+    for target in whole_crate_targets():
+        owner = ci_contract.MIRI_OWNERS.get(target["name"])
+        if owner is not None:
+            whole.setdefault(owner, []).append(target["name"])
+    for owner, workflow_name in ci_contract.MIRI_ANALYSIS_WORKFLOWS.items():
+        workflow = ci_contract.by_name(workflow_name)
+        if workflow.path not in tracked or not (repo_root / workflow.path).is_file():
+            continue
+        try:
+            data = _parse_workflow(repo_root / workflow.path)
+        except (OSError, ValueError) as error:
+            violations.append(Violation("ci-workflow-parse", workflow.path, 0, str(error)))
+            continue
+        for expected, suffix in ((bounded.get(owner, []), ""), (whole.get(owner, []), " (Whole Crate)")):
+            listed = _miri_matrix_names(data, suffix)
+            if sorted(listed) != sorted(expected):
+                violations.append(Violation("ci-miri-coverage", workflow.path, 0,
+                    f"the Miri{suffix} matrix lists {sorted(listed)} and "
+                    f"scripts/miri_scope.py registers {sorted(expected)} for {owner}"))
+    return violations
 
 
 # ---------------------------------------------------------------------------
@@ -1271,28 +1390,31 @@ def main(argv: list[str] | None = None) -> int:
             "and update any workflow steps that reference it."
         ),
         "ci-pr-job-timeout": (
-            f"Automatic per-PR jobs must not exceed {PR_JOB_MAX_TIMEOUT_MINUTES} minutes. "
-            "Very short workloads are smoke tests (Smoke category). Long-running "
-            "workloads are acceptance tests that run on an off-hours schedule "
-            "(Acceptance category). If the job must run on every PR, split it into "
-            "smaller pieces or move the expensive part behind a schedule or "
-            "workflow_dispatch trigger. Comment-based timeout exceptions are not allowed."
+            f"Every job a pull request reaches must finish inside "
+            f"{PR_JOB_MAX_TIMEOUT_MINUTES} minutes, and every job's declared bound must "
+            "match the budget scripts/ci_contract.py records for it. Split the work, or "
+            "register the long run as a schedule or dispatch job with its reason."
         ),
         "ci-workflow-parse": "Install PyYAML==6.0.3 and fix malformed or duplicate YAML fields; workflow checks never silently skip parsing.",
-        "ci-workflow-triggers": "Acceptance, Benchmarks and Nightly allow only schedule/manual/reusable triggers. Checks and Smoke cannot be scheduled.",
-        "ci-pr-only-jobs": "Keep nightly/manual jobs out of PR workflows, including jobs hidden behind event guards.",
-        "ci-pr-extended-validation": "Run coverage and mutation in Nightly workflows; a short timeout does not make them PR checks.",
-        "ci-pr-workflow-registration": "Register new PR workflows and their category in PR_WORKFLOWS; route product smokes through the existing selector.",
-        "ci-display-name": "Use descriptive sentence-case subjects, preserving registered proper names/acronyms. Checks and Smoke are category-only workflow names; job names supply the flat display subject. Do not use generic names such as Checks, Products or Quality.",
-        "ci-pr-smoke-routing": "Register PR product smokes through the tested consumer selector; do not add independent broad triggers or unbounded matrices.",
-        "ci-pr-check-routing": "Keep selection inside real checks, not separate routing jobs. Every expensive or artifact step must require its selection output; the Miri matrix must match registered targets.",
-        "ci-nes-case-jobs": "Map every public NES manifest case exactly once to the case matrix, select it with --case, disable fail-fast, and retain an always-running report.",
-        "ci-workflow-prefix": (
-            "Every GitHub Actions workflow name must start with one of the "
-            "defined categories: Acceptance, Benchmarks, Checks, Nightly, Release, Smoke. "
-            "Use 'Checks' or 'Smoke' with descriptive job names, or 'Category / Description' for other workflows. If none of these "
-            "categories fit, ask the project owner whether to create a new one."
+        "ci-workflow-registration": "Every workflow file is registered in scripts/ci_contract.py with its component owner, jobs, triggers and budgets. Add the entry, or delete the file.",
+        "ci-workflow-name": (
+            "A workflow name is 'Category / Component' or 'Category / Composition / Workload', "
+            "in Title Case, using the categories Checks, Benchmarks and Release. The file name "
+            "must match its registered name exactly."
         ),
+        "ci-workflow-triggers": "A workflow's triggers must match the ones scripts/ci_contract.py registers for it.",
+        "ci-trigger-routing": "A job registered for pull requests must run on them, and a job registered as schedule or dispatch work must prove it excludes them with an event guard.",
+        "ci-trigger-exception": "A workflow reachable from a pull request may hold schedule-only jobs only through an exception registered in scripts/ci_contract.py, which states why the work cannot fit the bounded budget.",
+        "ci-display-name": (
+            "Display names are Title Case, identify a responsibility or a workload scenario, "
+            "and carry variants as ' — <Variant>' with an explicit replica or shard label. "
+            "Testing methods belong in step names, triggers belong in nothing. Every job in a "
+            "file must be registered in scripts/ci_contract.py and every registered job must exist."
+        ),
+        "ci-scope-routing": "Select work inside the job that owns it: one ./.github/actions/ci-scope step under the registered kind, a complete diff checkout, and selected steps guarded with && on the selector's output.",
+        "ci-nes-case-jobs": "Map every public NES manifest case exactly once to the case matrix, select it with --case, disable fail-fast, and retain an always-running Results job.",
+        "ci-nes-compositions": "Both NES compositions stay: Dissonance runs the game on native QuickNES and Harmony runs it inside a Consonance VM. Each keeps a bounded check and a full benchmark.",
+        "ci-miri-coverage": "The Analysis workflow of each component must list exactly the Miri targets scripts/miri_scope.py registers and scripts/ci_contract.py assigns to it.",
         "lab-notes-not-tracked": (
             "Lab notes, run reports, and campaign results must not be checked "
             "into the repository. They belong in external storage. Remove the "

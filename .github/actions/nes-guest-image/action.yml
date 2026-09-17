@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Recover the ROM-free NES guest image
+description: >-
+  Restore the generic NES OCI layout whose sources match this commit, from this
+  branch's cache or from the publishing run's artifact. The layout carries the
+  guest agent and the static QuickNES core and holds no game ROM.
+outputs:
+  key:
+    description: The source key the restore asked for
+    value: ${{ steps.key.outputs.value }}
+  hit:
+    description: Whether an exact layout was recovered
+    value: ${{ steps.check.outputs.hit }}
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      run: |
+        platform=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key \
+          --architecture x86_64)
+        echo "value=${platform}-${{ hashFiles('workloads/nes-guest/**', 'scripts/build-quicknes-core.sh') }}" >>"$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: consonance/harmony-linux/build/nes.oci
+        key: nes-guest-image-v1-${{ steps.key.outputs.value }}
+    - id: handoff
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        ARTIFACT: nes-guest-image-v1-${{ steps.key.outputs.value }}
+      run: |
+        run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
+          -f name="$ARTIFACT" -F per_page=100 \
+          --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | last | .workflow_run.id // empty')
+        echo "run_id=$run_id" >>"$GITHUB_OUTPUT"
+    - if: steps.handoff.outputs.run_id != ''
+      uses: actions/download-artifact@v4
+      with:
+        github-token: ${{ github.token }}
+        run-id: ${{ steps.handoff.outputs.run_id }}
+        name: nes-guest-image-v1-${{ steps.key.outputs.value }}
+        path: consonance/harmony-linux/build/nes.oci
+    - id: check
+      shell: bash
+      run: |
+        if [[ -s consonance/harmony-linux/build/nes.oci/index.json ]]; then
+          echo "hit=true" >>"$GITHUB_OUTPUT"
+        else
+          echo "hit=false" >>"$GITHUB_OUTPUT"
+        fi

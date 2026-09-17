@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Benchmarks / Historical bugs
+# Fresh searches for known historical defects on their pinned affected
+# versions, executed through Consonance. Each scenario job is named after the
+# bug it looks for; there is no execution-arm dimension and no fixed-version
+# comparison. Pull requests exercise the shared infrastructure through
+# Checks / Harmony Workloads / OCI instead of rediscovering these bugs.
+name: Benchmarks / Harmony Workloads / Historical Bugs
 
 # Historical searches are deliberately off the pull-request path. Pull
 # requests have their own short smoke checks; these campaigns run on the
@@ -31,7 +36,7 @@ defaults:
 
 jobs:
   manifest:
-    name: Read historical case manifests
+    name: Case Manifests
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -64,7 +69,7 @@ jobs:
           } >>"${GITHUB_STEP_SUMMARY}"
 
   guest:
-    name: Build the canonical platform runtime
+    name: Guest Runtime
     needs: manifest
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -105,7 +110,7 @@ jobs:
           retention-days: 1
 
   tools:
-    name: Build Harmony
+    name: Harmony
     needs: manifest
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -125,7 +130,7 @@ jobs:
           retention-days: 1
 
   images:
-    name: Build ${{ matrix.id }} workload images
+    name: Workload Images — ${{ matrix.id }}
     needs: manifest
     strategy:
       fail-fast: false
@@ -182,7 +187,7 @@ jobs:
           retention-days: 1
 
   search:
-    name: Search ${{ matrix.id }}
+    name: ${{ matrix.display_name }}
     needs: [manifest, guest, images, tools]
     strategy:
       fail-fast: false
@@ -271,7 +276,7 @@ jobs:
           retention-days: 30
 
   report:
-    name: Render historical panel
+    name: Results
     needs: [manifest, guest, tools, images, search]
     if: always()
     runs-on: ubuntu-24.04

@@ -1,0 +1,252 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Consonance's deeper analysis. Pull requests get the Miri tests the change
+# reaches and the affected proofs; whole-crate interpretation, coverage and
+# mutation run on a schedule because they cost hours. Both routings are
+# registered in scripts/ci_contract.py.
+name: Checks / Consonance / Analysis
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: consonance-analysis-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+  HARMONY_KANI_VERSION: 0.67.0
+  PINNED_NIGHTLY: nightly-2026-06-16
+
+jobs:
+  miri:
+    name: Miri — ${{ matrix.name }}
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        name:
+          - vmm-core
+          - hypercall-doorbell
+          - hypercall-doorbell-round-trip
+          - consonance-client
+          - vm-state
+          - vmm-backend
+          - snapshot-store
+          - harmony-supervisor
+    env:
+      HARMONY_MIRI_PR_SMOKE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Determine whether this crate is affected
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: miri
+          target: ${{ matrix.name }}
+      - name: Install pinned nightly and Miri
+        if: steps.scope.outputs.enabled == 'true'
+        run: rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
+        with:
+          shared-key: consonance-miri
+      - name: Interpret the tests this change reaches
+        if: steps.scope.outputs.enabled == 'true'
+        env:
+          MIRIFLAGS: ${{ steps.scope.outputs.miriflags }}
+          MIRI_COMMAND: ${{ steps.scope.outputs.command }}
+        run: |
+          set -euo pipefail
+          read -r -a command <<<"${MIRI_COMMAND}"
+          cargo "+${PINNED_NIGHTLY}" miri test "${command[@]}"
+
+  miri-whole-crate:
+    name: Miri — ${{ matrix.name }} (Whole Crate)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: vmm-core
+            command: -p vmm-core
+            miriflags: -Zmiri-permissive-provenance
+          - name: hypercall-doorbell
+            command: -p hypercall-doorbell --features linux-device
+            miriflags: -Zmiri-permissive-provenance
+          - name: consonance-client
+            command: -p consonance-client
+            miriflags: -Zmiri-permissive-provenance
+          - name: vm-state
+            command: -p vm-state
+            miriflags: -Zmiri-permissive-provenance
+          - name: vmm-backend
+            command: -p vmm-backend --all-features
+            miriflags: -Zmiri-permissive-provenance
+          - name: snapshot-store
+            command: -p snapshot-store --lib
+            miriflags: -Zmiri-permissive-provenance -Zmiri-disable-isolation
+          - name: harmony-supervisor
+            command: --manifest-path consonance/harmony-linux/supervisor/Cargo.toml --lib --bins
+            miriflags: -Zmiri-permissive-provenance
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned nightly and Miri
+        run: rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: consonance-miri-whole-crate
+      - name: Interpret the whole crate
+        env:
+          MIRIFLAGS: ${{ matrix.miriflags }}
+          MIRI_COMMAND: ${{ matrix.command }}
+        run: |
+          set -euo pipefail
+          read -r -a command <<<"${MIRI_COMMAND}"
+          cargo "+${PINNED_NIGHTLY}" miri test "${command[@]}"
+
+  coverage:
+    name: Coverage
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component llvm-tools-preview
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: consonance-coverage
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      - name: Region coverage of the Consonance crates
+        # The excluded files are the host hypervisor bindings and the live
+        # session paths, which need a hypervisor this runner cannot provide.
+        run: |
+          # shellcheck disable=SC2046
+          cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
+            $(python3 scripts/ci_contract.py package-flags Consonance) \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/bin/(hvf_boot|hvf_control_probe|hvf_control_server|kvm_arm64_boot|kvm_arm64_control_server)\.rs|consonance/client/src/session/live\.rs' \
+            --fail-under-regions 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: consonance-coverage-${{ github.run_id }}
+          path: lcov.info
+          if-no-files-found: warn
+
+  mutants:
+    name: Mutation Testing — Shard ${{ matrix.shard }}/16
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    env:
+      CARGO_INCREMENTAL: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: consonance-mutants
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants@27.1.0,cargo-nextest
+      - name: Mutate the Consonance crates
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/mutants/consonance"
+          # shellcheck disable=SC2046
+          scripts/run-mutants.sh "$GITHUB_WORKSPACE/mutants/consonance" \
+            --profile mutants --no-shuffle --sharding round-robin \
+            --shard ${{ matrix.shard }}/16 --minimum-test-timeout=180 \
+            $(python3 scripts/ci_contract.py package-flags Consonance) \
+            --cargo-test-arg=--profile --cargo-test-arg=mutants
+      - name: Mutate the guest SDK
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/mutants/sdk"
+          scripts/run-mutants.sh "$GITHUB_WORKSPACE/mutants/sdk" \
+            --manifest-path consonance/harmony-linux/sdk/Cargo.toml --in-place \
+            --profile mutants --no-shuffle --sharding round-robin \
+            --shard ${{ matrix.shard }}/16 --minimum-test-timeout=180
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: consonance-mutants-${{ matrix.shard }}
+          path: ${{ github.workspace }}/mutants
+          if-no-files-found: warn
+
+  proofs:
+    name: Proofs
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Determine whether a proof input changed
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: kani
+      - name: Install stable toolchain
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
+        with:
+          shared-key: consonance-proofs
+      - name: Cache the Kani toolchain
+        if: steps.scope.outputs.enabled == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-kani
+            ~/.cargo/bin/kani
+            ~/.kani
+          key: kani-${{ runner.os }}-${{ env.HARMONY_KANI_VERSION }}
+      - name: Install Kani
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          if ! cargo kani --version 2>/dev/null | grep -Fq "${HARMONY_KANI_VERSION}"; then
+            cargo install --locked --force --version "${HARMONY_KANI_VERSION}" kani-verifier
+          fi
+          cargo kani setup
+      - name: Verify the virtual clock, APIC, backend and fault policy proofs
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          cargo kani -p vtime
+          cargo kani -p lapic
+          cargo kani -p vmm-backend
+          cargo kani --manifest-path workloads/fault-policy/Cargo.toml

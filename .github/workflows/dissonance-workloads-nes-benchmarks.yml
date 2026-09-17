@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: Benchmarks / NES
+name: Benchmarks / Dissonance Workloads / NES
 
-# Search capability runs are separate from pull-request checks. This public
-# panel uses only source-built games; licensed runs are kept on the private
-# host through benchmarks/search/run-private.sh.
+# Full NES capability searches through the Dissonance adapter against native
+# QuickNES. Bounded per-pull-request coverage of the same composition lives in
+# Checks / Dissonance Workloads / NES. This public panel uses only source-built
+# games; licensed runs stay on the private host through
+# benchmarks/search/run-private.sh.
 on:
   schedule:
     - cron: "30 6 * * *"
@@ -29,7 +31,7 @@ defaults:
 
 jobs:
   public:
-    name: NES · ${{ matrix.case }}
+    name: ${{ matrix.name }}
     if: github.event_name == 'schedule' || inputs.panel == 'public'
     runs-on: ubuntu-24.04
     timeout-minutes: 210
@@ -37,7 +39,16 @@ jobs:
       fail-fast: false
       max-parallel: 9
       matrix:
-        case: [nova-level-1, nova-level-9, nova-level-17, nova-level-25, nova-level-33, nova-full, stb-easy, stb-fair, stb-hard]
+        include:
+          - { name: Nova — Level 1, case: nova-level-1 }
+          - { name: Nova — Level 9, case: nova-level-9 }
+          - { name: Nova — Level 17, case: nova-level-17 }
+          - { name: Nova — Level 25, case: nova-level-25 }
+          - { name: Nova — Level 33, case: nova-level-33 }
+          - { name: Nova — Full Game, case: nova-full }
+          - { name: STB — Easy, case: stb-easy }
+          - { name: STB — Fair, case: stb-fair }
+          - { name: STB — Hard, case: stb-hard, require_victory: true }
     env:
       ASSET_ROOT: /tmp/nes-search-assets
       BUILD_ROOT: /tmp/nes-search-build
@@ -108,6 +119,28 @@ jobs:
             echo 'The common runner produced no matrix index.' >&2
             exit 1
           fi
+      - name: Require the declared capability outcome
+        if: matrix.require_victory
+        env:
+          CASE: ${{ matrix.case }}
+        run: |
+          python3 - "${PUBLIC_ROOT}/roster.json" <<'PY'
+          import json
+          import os
+          import sys
+
+          case = os.environ["CASE"]
+          rows = [row for row in json.load(open(sys.argv[1])) if row["case"] == case]
+          if not rows:
+              raise SystemExit(f"{case}: the panel produced no rows")
+          solved = [row for row in rows if row.get("solved")]
+          if not solved:
+              outcomes = ", ".join(sorted({row["outcome"] for row in rows}))
+              raise SystemExit(
+                  f"{case}: no registered seed reached a victory; outcomes were {outcomes}"
+              )
+          print(f"{case}: {len(solved)} of {len(rows)} seeds reached a victory")
+          PY
       - name: Publish run summary
         if: always()
         run: |
@@ -134,7 +167,7 @@ jobs:
           retention-days: 30
 
   report:
-    name: NES campaign report
+    name: Results
     needs: [public]
     if: always()
     runs-on: ubuntu-latest
@@ -150,12 +183,12 @@ jobs:
           pattern: nes-public-search-*-${{ github.run_id }}
           path: nes-nightly-report/cases
       - name: Merge case rosters and account for missing evidence
-        run: python3 scripts/nes-nightly-report.py --cases nes-nightly-report/cases --out nes-nightly-report
+        run: python3 scripts/nes-nightly-report.py --cases nes-benchmark-report/cases --out nes-benchmark-report
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: nes-public-roster-${{ github.run_id }}
-          path: nes-nightly-report
+          path: nes-benchmark-report
           if-no-files-found: error
           retention-days: 30
       - uses: actions/github-script@v7

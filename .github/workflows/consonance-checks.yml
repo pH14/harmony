@@ -1,0 +1,408 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Checks / Consonance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: consonance-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+
+jobs:
+  guest-memory:
+    name: Guest Memory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: consonance-guest-memory
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Lint the guest memory crates
+        run: |
+          cargo clippy -p guest-image -p oci-support -p vmm-core --all-features --all-targets -- -D warnings
+      - name: Image assembly and rootfs staging
+        run: cargo nextest run --all-features -p guest-image -p oci-support
+      - name: Guest RAM, loaders and the run loop
+        run: |
+          set -euo pipefail
+          filter=$(python3 scripts/ci_contract.py nextest-filter vmm-core 'Guest Memory')
+          cargo nextest run --all-features -p vmm-core --lib -E "$filter"
+          cargo nextest run --all-features -p vmm-core --test linux_loader_proptest
+      - name: Account for every vmm-core module test
+        run: python3 scripts/check-test-partition.py vmm-core
+
+  cpu-state:
+    name: CPU State
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Determine whether the hardware steps are applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: consonance_kvm
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: consonance-cpu-state
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Lint the architectural state crates
+        run: |
+          cargo clippy --release -p vm-state -p vmm-backend --all-features --all-targets -- -D warnings
+      - name: Architectural state codecs and the backend contract
+        run: |
+          set -euo pipefail
+          cargo nextest run --release --all-features -p vm-state -p vmm-backend
+          filter=$(python3 scripts/ci_contract.py nextest-filter vmm-core 'CPU State')
+          cargo nextest run --release --all-features -p vmm-core --lib -E "$filter"
+          cargo nextest run --release --all-features -p vmm-core \
+            --test x86_cpu_snapshots --test arm64_skeleton --test arm64_tcg_smoke
+      - name: Grant /dev/kvm access
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          mkdir -p cpu-state-evidence
+      - name: Serviced exits are snapshottable on real KVM
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          cargo test --locked --release -p vmm-backend --test kvm_smoke --no-run
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          { printf 'PINNED_CPU=%s\n' "$cpu"; lscpu; uname -a; } | tee cpu-state-evidence/host.txt
+          for test in \
+            serviced_pio_is_exactly_snapshottable_without_guest_execution \
+            serviced_msr_is_exactly_snapshottable_without_guest_execution \
+            serviced_exception_payload_round_trips_and_empty_restore_clears_it \
+            serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu; do
+            timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release \
+              -p vmm-backend --test kvm_smoke "$test" \
+              -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee "cpu-state-evidence/$test.txt"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "cpu-state-evidence/$test.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scope.outputs.enabled == 'true'
+        with:
+          name: consonance-cpu-state-${{ github.run_id }}
+          path: cpu-state-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+  device-state:
+    name: Device State
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: consonance-device-state
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Lint the device crates
+        run: cargo clippy -p lapic -p gicv3 -p telemetry --all-features --all-targets -- -D warnings
+      - name: Interrupt controllers, timers and the observation tap
+        run: |
+          set -euo pipefail
+          cargo nextest run --all-features -p lapic -p gicv3 -p telemetry
+          filter=$(python3 scripts/ci_contract.py nextest-filter vmm-core 'Device State')
+          cargo nextest run --all-features -p vmm-core --lib -E "$filter"
+
+  virtual-time:
+    name: Virtual Time
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Determine whether the hardware steps are applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: consonance_platform
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: consonance-virtual-time
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Lint the virtual clock crate
+        run: cargo clippy --release -p vtime --all-features --all-targets -- -D warnings
+      - name: Clock, timer queue and advancement
+        run: |
+          set -euo pipefail
+          cargo nextest run --release --all-features -p vtime
+          filter=$(python3 scripts/ci_contract.py nextest-filter vmm-core 'Virtual Time')
+          cargo nextest run --release --all-features -p vmm-core --lib -E "$filter"
+          cargo nextest run --release --all-features -p vmm-core --test virtual_time
+      - name: Restore the qualified guest runtime
+        id: runtime
+        if: steps.scope.outputs.enabled == 'true'
+        uses: ./.github/actions/platform-runtime
+        with:
+          report: virtual-time-evidence
+      - name: Grant /dev/kvm access
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Ten same-seed runs produce one normalized log
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          cargo test --locked --release -p vmm-core --test x86_kvm_virtual_time --no-run
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          timeout -k 10 300 taskset -c "$cpu" cargo test --locked --release -p vmm-core \
+            --test x86_kvm_virtual_time x1_ten_same_seed_runs_produce_one_normalized_log \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee virtual-time-evidence/x1.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' virtual-time-evidence/x1.txt
+      - name: Two complete same-seed Linux boots agree
+        if: steps.scope.outputs.enabled == 'true'
+        env:
+          X2_ORIGINAL_WITNESS_REPORT: ${{ github.workspace }}/virtual-time-evidence/original-sequential-witness
+          X2_BOOTS: "2"
+          X2_WALL_SECS: "55"
+        run: |
+          set -euo pipefail
+          python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify-initramfs \
+            consonance/harmony-linux/build/x86_64/initramfs.cpio.gz \
+            --baseline workloads/guest-images/admission/minimal-component.json \
+            --output virtual-time-evidence/admission.json
+          cp consonance/harmony-linux/build/x86_64/runtime-manifest.json \
+            virtual-time-evidence/runtime-manifest.json
+          timeout -k 10 240 cargo test --locked --release -p vmm-core \
+            --test x86_kvm_linux_virtual_time x2_same_seed_boots_one_normalized_log \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee virtual-time-evidence/x2.txt
+          grep -Fqx 'X2_BOOTS=2' virtual-time-evidence/x2.txt
+          grep -Eq '^X2_EVENTS=[1-9][0-9]*$' virtual-time-evidence/x2.txt
+          grep -Fqx 'X2_DIVERGENCES=0' virtual-time-evidence/x2.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' virtual-time-evidence/x2.txt
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scope.outputs.enabled == 'true'
+        with:
+          name: consonance-virtual-time-${{ github.run_id }}
+          path: virtual-time-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+  snapshot-and-restore:
+    name: Snapshot and Restore
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Determine whether the hardware steps are applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: consonance_kvm
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: consonance-snapshot-restore
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Lint the snapshot crates
+        run: cargo clippy --release -p snapshot-store -p unison --all-features --all-targets -- -D warnings
+      - name: Layered stores, branching and divergence bisection
+        run: |
+          set -euo pipefail
+          cargo nextest run --release --all-features -p snapshot-store -p unison
+          filter=$(python3 scripts/ci_contract.py nextest-filter vmm-core 'Snapshot and Restore')
+          cargo nextest run --release --all-features -p vmm-core --lib -E "$filter"
+          cargo nextest run --release --all-features -p vmm-core --test snapshot_branch --test event_loop
+      - name: Grant /dev/kvm access
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          mkdir -p snapshot-evidence
+      - name: Save, restore and recapture on real KVM
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          cargo test --locked --release -p vmm-backend --test kvm_smoke --no-run
+          cargo test --locked --release -p vmm-core --lib --no-run
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release \
+            -p vmm-backend --test kvm_smoke save_restore_round_trips_on_real_kvm \
+            -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/restore.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-evidence/restore.txt
+          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p vmm-core --lib \
+            controlled_guest::live_tests::public_snapshot_replay_recapture_preserves_xsave_identity \
+            -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/identity.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-evidence/identity.txt
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scope.outputs.enabled == 'true'
+        with:
+          name: consonance-snapshot-restore-${{ github.run_id }}
+          path: snapshot-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+  execution-protocol:
+    name: Execution Protocol
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: consonance-execution-protocol
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Lint the contract surface crates
+        run: |
+          cargo clippy -p consonance-client -p control-proto -p environment -p execution-proto \
+            -p hypercall-doorbell -p hypercall-proto -p process-proto \
+            --all-features --all-targets -- -D warnings
+      - name: Control, hypercall and deterministic input contracts
+        run: |
+          set -euo pipefail
+          cargo nextest run --all-features -p consonance-client -p control-proto -p environment \
+            -p execution-proto -p hypercall-doorbell -p hypercall-proto -p process-proto
+          filter=$(python3 scripts/ci_contract.py nextest-filter vmm-core 'Execution Protocol')
+          cargo nextest run --all-features -p vmm-core --lib -E "$filter"
+          cargo nextest run --all-features -p vmm-core --test protocol
+
+  guest-runtime:
+    name: Guest Runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: consonance-guest-runtime
+          workspaces: |
+            consonance/harmony-linux/sdk -> target
+            consonance/harmony-linux/supervisor -> target
+            consonance/harmony-linux/runtime-fixture -> target
+      - name: Guest SDK on its own manifest
+        run: |
+          set -euo pipefail
+          manifest=consonance/harmony-linux/sdk/Cargo.toml
+          cargo clippy --manifest-path "$manifest" --all-features --all-targets -- -D warnings
+          cargo test --manifest-path "$manifest" --all-features
+          # The guest runs bare metal, so a std leak has to fail here rather
+          # than in a host-only test run.
+          rustup target add x86_64-unknown-none
+          cargo build --manifest-path "$manifest" --lib --target x86_64-unknown-none
+      - name: Supervisor and runtime fixture
+        run: |
+          set -euo pipefail
+          rustup target add x86_64-unknown-linux-musl
+          for component in supervisor runtime-fixture; do
+            manifest="consonance/harmony-linux/$component/Cargo.toml"
+            cargo clippy --locked --manifest-path "$manifest" --all-targets -- -D warnings
+            cargo test --locked --manifest-path "$manifest"
+            cargo clippy --locked --manifest-path "$manifest" \
+              --target x86_64-unknown-linux-musl --all-targets -- -D warnings
+          done
+      - name: Instrumentation ABI carried by the guest
+        run: make -C consonance/harmony-linux test-libvoidstar
+
+  public-api:
+    name: Public API
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PINNED_NIGHTLY: nightly-2026-06-16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Determine whether this test is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: public_api
+      - name: Install toolchains
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+          rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
+        with:
+          shared-key: consonance-public-api
+      - uses: taiki-e/install-action@v2
+        if: steps.scope.outputs.enabled == 'true'
+        with:
+          tool: cargo-public-api@0.52.0
+      - name: Frozen public surfaces
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          cargo test \
+            -p hypercall-proto -p hypercall-doorbell -p snapshot-store -p unison -p vtime \
+            -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p telemetry \
+            -p environment -p control-proto \
+            --test public_api -- --ignored --nocapture
+          # The guest SDK is out-of-workspace, so it freezes on its own manifest.
+          cargo test --manifest-path consonance/harmony-linux/sdk/Cargo.toml \
+            --test public_api -- --ignored --nocapture

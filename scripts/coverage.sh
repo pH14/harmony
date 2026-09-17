@@ -7,8 +7,8 @@
 #   - html/index.html      human-readable HTML report
 #
 # Region coverage is the project's chosen metric (see CONTRIBUTING.md);
-# this script only *reports* — the gating floor lives in
-# .github/workflows/extended-quality.yml. Runs on macOS and Linux; no /dev/kvm needed.
+# this script only *reports* — the floor that fails CI lives in each component's
+# Analysis workflow. Runs on macOS and Linux; no /dev/kvm needed.
 set -euo pipefail
 
 if ! cargo llvm-cov --version >/dev/null 2>&1; then

@@ -1,0 +1,129 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Checks / Repository
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+
+jobs:
+  formatting-and-lints:
+    name: Formatting and Lints
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Format every workspace and out-of-workspace manifest
+        run: |
+          set -euo pipefail
+          for manifest in $(python3 scripts/ci_contract.py manifests); do
+            cargo fmt --manifest-path "$manifest" --all -- --check
+          done
+      - name: Deterministic repository lints
+        run: |
+          python3 -m pip install PyYAML==6.0.3
+          python3 -m unittest discover -s scripts -p 'test_custom_lints.py'
+          python3 -m unittest discover -s scripts -p 'test_ci_*.py'
+          python3 -m unittest discover -s scripts -p 'test_*scope.py'
+          python3 -m unittest discover -s scripts -p test_semantic_lints.py
+          python3 scripts/custom-lints.py
+          python3 scripts/strip-comments.py --check
+
+  dependency-boundaries:
+    name: Dependency Boundaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.9
+      - name: Declared crate boundaries
+        run: |
+          python3 -m unittest discover -s scripts -p test_check_dependency_boundaries.py
+          python3 scripts/check-dependency-boundaries.py
+      - name: Licenses and advisories for every manifest
+        run: |
+          set -euo pipefail
+          python3 scripts/ci_contract.py deny | xargs -L1 cargo deny
+
+  semantic-lints:
+    name: Semantic Lints
+    runs-on: ubuntu-latest
+    environment: Checks
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Judge changed file content
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: python3 scripts/semantic-lints.py --changed-from HEAD^1
+
+  tooling:
+    name: Tooling
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Benchmark and report tooling
+        run: |
+          node --test scripts/benchmark-report.test.cjs
+          python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
+      - name: Historical scenario tooling
+        run: |
+          scripts/historical-manifest.test.sh
+          scripts/historical-oracle.test.sh
+          scripts/historical-replay.test.sh
+          scripts/historical-search.test.sh
+          python3 scripts/render-historical-bugs.py --check
+      - name: Guest runtime and admission tooling
+        run: |
+          bash consonance/harmony-linux/linux/test-patch-series.sh
+          bash consonance/harmony-linux/linux/test-publish-check.sh
+          bash consonance/harmony-linux/linux/test-xsave-canonical.sh
+          python3 consonance/harmony-linux/scripts/test_x86_xstate_admission.py -v
+          python3 consonance/harmony-linux/scripts/test_nix_runtime_artifacts.py -v
+          python3 workloads/guest-images/test_verify_prepared_admission.py -v
+      - name: Determinism model self-tests
+        run: |
+          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
+          python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
+          python3 scripts/fit-vtime-costs.py --self-test
