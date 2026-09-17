@@ -131,6 +131,10 @@ impl ArchiveKey for Mm2ArchiveKey {
         (left.bosses, left.boss_damage).cmp(&(right.bosses, right.boss_damage))
     }
 
+    fn preferences() -> usize {
+        1
+    }
+
     fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
     }

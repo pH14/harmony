@@ -5,7 +5,7 @@ use std::{
     error::Error,
     fmt::Debug,
     io::Write,
-    num::NonZeroU64,
+    num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -20,9 +20,9 @@ use crate::search::archive::{
     retention_policy_from_identifier, retention_policy_identifier, selector_policy_identifier,
 };
 use crate::search::draw::{
-    DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
-    draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
-    suffix_shape_from_identifier, suffix_shape_identifier,
+    CONTINUATION_ENERGY_SCALE, DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
+    draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_share,
+    energy_strategy, suffix_shape_from_identifier, suffix_shape_identifier,
 };
 use crate::search::draw_tables::{
     DEFAULT_DRAW_TABLE_PARAMETERS, DRAW_TABLE_POLICY_FIELD, DrawTableHeader, DrawTables,
@@ -644,6 +644,8 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub sequence: u64,
     pub worker: u32,
     pub parent_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_energy: Option<u16>,
     pub mutation_seed: u64,
     pub execution_work: u64,
     pub result_sha256: String,
@@ -863,15 +865,12 @@ fn record_mixture_outcome(
     splice_weight: u8,
     new_slot: bool,
 ) -> Result<(), Box<dyn Error>> {
-    if mixture.isolates_continuations() && path == SelectorPath::Continuation {
+    if path == SelectorPath::Continuation {
         return Ok(());
     }
     if matches!(
         mixture,
-        DrawMixture::Energy { .. }
-            | DrawMixture::EnergySplice { .. }
-            | DrawMixture::EnergySpliceContinuation { .. }
-            | DrawMixture::EnergySpliceContinuationIsolated { .. }
+        DrawMixture::Energy { .. } | DrawMixture::EnergySplice { .. }
     ) {
         energy.record_outcome(
             energy_strategy(mutation_seed, mixture_weight, splice_weight)?,
@@ -879,6 +878,24 @@ fn record_mixture_outcome(
         );
     }
     Ok(())
+}
+
+pub(crate) const CONTINUATION_EXITS_PER_RESERVATION: usize = 8;
+
+#[must_use]
+pub(crate) fn continuation_energy_share(barren: u64) -> u16 {
+    u16::try_from(energy_share(barren, CONTINUATION_ENERGY_SCALE)).unwrap_or(u16::MAX)
+}
+
+#[must_use]
+pub(crate) fn draws_continuation(campaign_seed: u64, reservation: u64, energy: u16) -> bool {
+    let energy = u64::from(energy);
+    let Some(bound) = NonZeroUsize::new(usize::try_from(energy.saturating_add(256)).unwrap_or(512))
+    else {
+        return false;
+    };
+    let draw = RomuDuoJrRand::with_seed(campaign_seed ^ reservation).below(bound);
+    u64::try_from(draw).unwrap_or(u64::MAX) < energy
 }
 
 fn stop_reservations_after_objective(
@@ -1042,6 +1059,7 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     probe_refused: u64,
     max_actions: usize,
     pub(crate) mixture_energy: MixtureEnergy,
+    pub(crate) continuation_barren: u64,
 }
 
 impl<G: Workload + ?Sized> CoordinatorCore<G> {
@@ -1080,6 +1098,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             probe_refused: 0,
             max_actions,
             mixture_energy: MixtureEnergy::default(),
+            continuation_barren: 0,
         }
     }
 
@@ -1595,7 +1614,7 @@ pub const PREFERENCE_PORTFOLIO_PREFIX: &str = "preference_portfolio_v1:";
 pub fn preference_portfolio_identifier<K: ArchiveKey>() -> String {
     format!(
         "{PREFERENCE_PORTFOLIO_PREFIX}{},{}",
-        K::preferences().max(1),
+        K::preferences(),
         K::slot_capacity().max(1)
     )
 }
@@ -2090,6 +2109,8 @@ struct PendingJob<G: Workload + ?Sized> {
     snapshot_id: u64,
     worker: u32,
     parent_id: u64,
+    continuation_energy: Option<u16>,
+    continuation_wave: u32,
     mutation_seed: u64,
     mixture_weight: u8,
     splice_weight: u8,
@@ -2442,7 +2463,7 @@ where
     );
     core.archive.selector_policy = config.selector.clone();
     core.archive
-        .enable_continuations(config.mixture.uses_continuations());
+        .enable_continuations(config.suffix.max_actions());
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the bootstrap target: {error}").into()
@@ -2562,8 +2583,16 @@ where
                 let rand = &mut rands[worker as usize];
                 let max_actions = core.max_actions;
                 let mut consecutive_skips = 0_u64;
-                if reserved.wrapping_add(1).is_multiple_of(4) {
-                    while let Some(continuation) = core.archive.pop_continuation() {
+                let continuation_energy = (core.archive.continuation_pending() > 0)
+                    .then(|| continuation_energy_share(core.continuation_barren));
+                if continuation_energy
+                    .is_some_and(|energy| draws_continuation(config.campaign_seed, *reserved, energy))
+                {
+                    let mut taken = 0_usize;
+                    while taken < CONTINUATION_EXITS_PER_RESERVATION
+                        && let Some(continuation) = core.archive.pop_continuation()
+                    {
+                        taken = taken.saturating_add(1);
                         let Some(parent_index) = core.archive.index_of_id(continuation.parent)
                         else {
                             continue;
@@ -2620,6 +2649,8 @@ where
                                 snapshot_id,
                                 worker,
                                 parent_id,
+                                continuation_energy,
+                                continuation_wave: continuation.wave.saturating_add(1),
                                 mutation_seed,
                                 mixture_weight,
                                 splice_weight,
@@ -2645,9 +2676,7 @@ where
                         DrawMixture::Energy { scale } => {
                             (core.mixture_energy.biased_weight(scale), 0)
                         }
-                        DrawMixture::EnergySplice { scale }
-                        | DrawMixture::EnergySpliceContinuation { scale }
-                        | DrawMixture::EnergySpliceContinuationIsolated { scale } => {
+                        DrawMixture::EnergySplice { scale } => {
                             core.mixture_energy.splice_weights(scale)
                         }
                         _ => (DEFAULT_MIXTURE_WEIGHT, 0),
@@ -2800,6 +2829,8 @@ where
                             snapshot_id,
                             worker,
                             parent_id,
+                            continuation_energy,
+                            continuation_wave: 0,
                             mutation_seed,
                             mixture_weight,
                             splice_weight,
@@ -2931,6 +2962,8 @@ where
                         .and_then(|draw| duration_policies.context_checkpoint(draw.context));
                     let objectives_before = core.objectives_reached;
                     let admission_started = profile_now(coordinator_profile.enabled);
+                    core.archive
+                        .set_admission_wave(pending_job.continuation_wave);
                     let (sequence, decisions, duration_admission) = core.admit_job_tracking(
                         workload,
                         pending_job.parent_id,
@@ -2966,8 +2999,8 @@ where
                         .archive
                         .index_of_id(pending_job.parent_id)
                         .ok_or("completed job parent is no longer resident")?;
-                    let isolated_continuation = config.mixture.isolates_continuations()
-                        && pending_job.selector.path == SelectorPath::Continuation;
+                    let isolated_continuation =
+                        pending_job.selector.path == SelectorPath::Continuation;
                     if isolated_continuation {
                         core.archive.record_isolated_continuation(parent_index);
                     } else {
@@ -2987,6 +3020,13 @@ where
                             !retained_ids.is_empty(),
                             opened_depths,
                         );
+                    }
+                    if isolated_continuation {
+                        core.continuation_barren = if new_slot_descendant {
+                            0
+                        } else {
+                            core.continuation_barren.saturating_add(1)
+                        };
                     }
                     record_mixture_outcome(
                         &mut core.mixture_energy,
@@ -3039,6 +3079,7 @@ where
                         .saturating_add(profile_elapsed(bookkeeping_started));
                     let stream_started = profile_now(coordinator_profile.enabled);
                     writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
+                        continuation_energy: pending_job.continuation_energy,
                         sequence,
                         worker: pending_job.worker,
                         parent_id: pending_job.parent_id,
@@ -3494,7 +3535,7 @@ where
     core.bounded_progress_curve = true;
     core.archive.selector_policy = replay_selector.clone();
     core.archive
-        .enable_continuations(replay_mixture.uses_continuations());
+        .enable_continuations(replay_suffix.max_actions());
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
@@ -3699,9 +3740,7 @@ where
             }
             CampaignStreamRecord::Job(job) => {
                 if job.selector.path == SelectorPath::Continuation
-                    && (!replay_mixture.uses_continuations()
-                        || !job.sequence.is_multiple_of(4)
-                        || job.mixture_weight != 0
+                    && (job.mixture_weight != 0
                         || job.splice_weight != u8::MAX
                         || !matches!(&job.splice, Some(CampaignSpliceRecord::Tail { .. })))
                 {
@@ -3914,9 +3953,7 @@ where
                 }
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector)?;
-                if replay_mixture.isolates_continuations()
-                    && job.selector.path == SelectorPath::Continuation
-                {
+                if job.selector.path == SelectorPath::Continuation {
                     core.archive.record_isolated_continuation(parent_index);
                 } else {
                     core.archive.record_selection(parent_index, &job.selector);
@@ -5614,7 +5651,3 @@ mod tests {
         assert_eq!(round_trip, job);
     }
 }
-
-#[cfg(test)]
-#[path = "campaign_continuation_tests.rs"]
-mod continuation_tests;

@@ -118,6 +118,10 @@ impl ArchiveKey for StbArchiveKey {
         1
     }
 
+    fn preferences() -> usize {
+        1
+    }
+
     fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
     }

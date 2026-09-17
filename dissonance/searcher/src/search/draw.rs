@@ -13,6 +13,8 @@ pub const SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER: &str =
 
 pub const SUFFIX_COST_BOUND_MAX_ACTIONS: u64 = 3;
 
+pub(crate) const CONTINUATION_ENERGY_SCALE: u64 = 6;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SuffixShape {
     OneOrTwo,
@@ -22,6 +24,14 @@ pub enum SuffixShape {
 }
 
 impl SuffixShape {
+    #[must_use]
+    pub(crate) fn max_actions(self) -> usize {
+        match self {
+            Self::OneOrTwo => 2,
+            Self::OneToSix | Self::OneToSixBounded => 6,
+        }
+    }
+
     pub(crate) fn bound_cost<A>(
         self,
         suffix: &mut Vec<A>,
@@ -63,9 +73,6 @@ pub fn suffix_shape_from_identifier(identifier: &str) -> Result<SuffixShape, Box
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DrawMixture {
-    EnergySpliceContinuation {
-        scale: u64,
-    },
     #[default]
     AlphabetOnly,
     BiasedHalf,
@@ -75,28 +82,6 @@ pub enum DrawMixture {
     EnergySplice {
         scale: u64,
     },
-    AlphabetContinuation,
-    EnergySpliceContinuationIsolated {
-        scale: u64,
-    },
-}
-
-impl DrawMixture {
-    pub(crate) fn isolates_continuations(self) -> bool {
-        matches!(
-            self,
-            Self::AlphabetContinuation | Self::EnergySpliceContinuationIsolated { .. }
-        )
-    }
-
-    pub(crate) fn uses_continuations(self) -> bool {
-        matches!(
-            self,
-            Self::EnergySpliceContinuation { .. }
-                | Self::AlphabetContinuation
-                | Self::EnergySpliceContinuationIsolated { .. }
-        )
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,14 +102,7 @@ pub const MIXTURE_ENERGY_SPLICE_PREFIX: &str = "energy_splice:";
 #[must_use]
 pub(crate) fn draw_mixture_identifier(mixture: DrawMixture) -> String {
     match mixture {
-        DrawMixture::EnergySpliceContinuation { scale } => {
-            format!("energy_splice_continuation_v1:{scale}")
-        }
-        DrawMixture::EnergySpliceContinuationIsolated { scale } => {
-            format!("energy_splice_continuation_v2:{scale}")
-        }
         DrawMixture::AlphabetOnly => MIXTURE_ALPHABET_ONLY_IDENTIFIER.to_owned(),
-        DrawMixture::AlphabetContinuation => "alphabet_continuation_v1".to_owned(),
         DrawMixture::BiasedHalf => MIXTURE_BIASED_HALF_IDENTIFIER.to_owned(),
         DrawMixture::Energy { scale } => format!("{MIXTURE_ENERGY_PREFIX}{scale}"),
         DrawMixture::EnergySplice { scale } => format!("{MIXTURE_ENERGY_SPLICE_PREFIX}{scale}"),
@@ -132,20 +110,6 @@ pub(crate) fn draw_mixture_identifier(mixture: DrawMixture) -> String {
 }
 
 pub fn draw_mixture_from_identifier(identifier: &str) -> Result<DrawMixture, Box<dyn Error>> {
-    if let Some(scale) = identifier.strip_prefix("energy_splice_continuation_v2:") {
-        let scale = scale.parse::<u64>()?;
-        if scale == 0 {
-            return Err("energy mixture scale must be nonzero".into());
-        }
-        return Ok(DrawMixture::EnergySpliceContinuationIsolated { scale });
-    }
-    if let Some(scale) = identifier.strip_prefix("energy_splice_continuation_v1:") {
-        let scale = scale.parse::<u64>()?;
-        if scale == 0 {
-            return Err("energy mixture scale must be nonzero".into());
-        }
-        return Ok(DrawMixture::EnergySpliceContinuation { scale });
-    }
     if let Some(scale) = identifier.strip_prefix(MIXTURE_ENERGY_SPLICE_PREFIX) {
         let scale = scale.parse::<u64>()?;
         if scale == 0 {
@@ -162,7 +126,6 @@ pub fn draw_mixture_from_identifier(identifier: &str) -> Result<DrawMixture, Box
     }
     match identifier {
         MIXTURE_ALPHABET_ONLY_IDENTIFIER => Ok(DrawMixture::AlphabetOnly),
-        "alphabet_continuation_v1" => Ok(DrawMixture::AlphabetContinuation),
         MIXTURE_BIASED_HALF_IDENTIFIER => Ok(DrawMixture::BiasedHalf),
         _ => Err(format!("draw mixture {identifier} is not recognized").into()),
     }
@@ -180,7 +143,7 @@ pub(crate) struct MixtureEnergy {
     barren: [u64; 3],
 }
 
-fn energy_share(barren: u64, scale: u64) -> u64 {
+pub(crate) fn energy_share(barren: u64, scale: u64) -> u64 {
     let halvings = u32::try_from((barren / scale).min(8)).unwrap_or(8);
     (256_u64 >> halvings).max(1)
 }
@@ -250,16 +213,11 @@ where
 {
     let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
     let energy_biased = match mixture {
-        DrawMixture::Energy { .. }
-        | DrawMixture::EnergySplice { .. }
-        | DrawMixture::EnergySpliceContinuation { .. }
-        | DrawMixture::EnergySpliceContinuationIsolated { .. } => Some(
+        DrawMixture::Energy { .. } | DrawMixture::EnergySplice { .. } => Some(
             rand.below(NonZeroUsize::new(256).ok_or("invalid mixture weight bound")?)
                 < usize::from(mixture_weight),
         ),
-        DrawMixture::AlphabetOnly | DrawMixture::AlphabetContinuation | DrawMixture::BiasedHalf => {
-            None
-        }
+        DrawMixture::AlphabetOnly | DrawMixture::BiasedHalf => None,
     };
     let length = match shape {
         SuffixShape::OneOrTwo => {
@@ -334,9 +292,6 @@ mod tests {
             DrawMixture::BiasedHalf,
             DrawMixture::Energy { scale: 6 },
             DrawMixture::EnergySplice { scale: 6 },
-            DrawMixture::EnergySpliceContinuation { scale: 6 },
-            DrawMixture::AlphabetContinuation,
-            DrawMixture::EnergySpliceContinuationIsolated { scale: 6 },
         ] {
             assert_eq!(
                 draw_mixture_from_identifier(&draw_mixture_identifier(mixture))
@@ -349,51 +304,7 @@ mod tests {
         assert!(draw_mixture_from_identifier("energy_splice_continuation_v2:0").is_err());
     }
 
-    #[test]
-    fn isolated_energy_continuation_keeps_ordinary_suffixes_identical() {
-        for seed in 0..512 {
-            for shape in [SuffixShape::OneOrTwo, SuffixShape::OneToSix] {
-                let draw = |mixture| {
-                    draw_suffix(
-                        shape,
-                        mixture,
-                        85,
-                        seed,
-                        |rand| Ok(Some(rand.next_u64())),
-                        |rand| Ok(rand.next_u64()),
-                    )
-                    .unwrap()
-                };
-                assert_eq!(
-                    draw(DrawMixture::EnergySpliceContinuation { scale: 6 }),
-                    draw(DrawMixture::EnergySpliceContinuationIsolated { scale: 6 })
-                );
-            }
-        }
-    }
 
-    #[test]
-    fn alphabet_continuation_keeps_ordinary_suffixes_identical() {
-        for seed in 0..512 {
-            for shape in [SuffixShape::OneOrTwo, SuffixShape::OneToSix] {
-                let draw = |mixture| {
-                    draw_suffix(
-                        shape,
-                        mixture,
-                        255,
-                        seed,
-                        |_| panic!("alphabet continuation consulted a biased table"),
-                        |rand| Ok(rand.next_u64()),
-                    )
-                    .unwrap()
-                };
-                assert_eq!(
-                    draw(DrawMixture::AlphabetOnly),
-                    draw(DrawMixture::AlphabetContinuation)
-                );
-            }
-        }
-    }
 
     #[test]
     fn a_declining_biased_draw_consumes_nothing() {

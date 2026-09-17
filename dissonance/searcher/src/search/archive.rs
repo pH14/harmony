@@ -37,7 +37,7 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
         Ordering::Equal
     }
     fn preferences() -> usize {
-        1
+        0
     }
     fn preference_cmp(self, _preference: usize, _other: Self) -> Ordering {
         Ordering::Equal
@@ -648,6 +648,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     historical_entries_dropped: u64,
     input_reconstructions: Cell<u64>,
     continuations: Option<ContinuationBank<K::Group, A>>,
+    continuation_wave: u32,
     key_counts: KeyCounts<K::Group>,
 }
 
@@ -1186,6 +1187,7 @@ where
             historical_entries_dropped: 0,
             input_reconstructions: Cell::new(0),
             continuations: None,
+            continuation_wave: 0,
             key_counts: KeyCounts::default(),
         }
     }
@@ -1605,6 +1607,17 @@ where
                 if !self.keyframe[index] {
                     self.resident_snapshot_order.push_back(index);
                 }
+            }
+        }
+
+        if self.continuations.is_some() {
+            let live_slots = self
+                .entries
+                .iter()
+                .map(|entry| entry.key.group(0))
+                .collect::<BTreeSet<_>>();
+            if let Some(bank) = &mut self.continuations {
+                bank.retain_slots(&live_slots);
             }
         }
 
@@ -2355,27 +2368,6 @@ where
         if self.active_count >= self.max_entries {
             return Err("archive population limit did not retire an entry".into());
         }
-        let improves_a_holder = self.continuations.is_some()
-            && won_preferences.iter().any(|preference| {
-                slot.iter().any(|held| {
-                    key.preference_cmp(*preference, self.entries[*held].key) == Ordering::Greater
-                })
-            });
-        if let Some(bank) = &mut self.continuations {
-            if improves_a_holder {
-                bank.improved(key.group(0), self.next_entry_id);
-            }
-            if let Some(parent) = parent_id {
-                let entry = &self.entries[parent];
-                bank.record(
-                    entry.key.group(0),
-                    key.group(0),
-                    entry.id,
-                    self.next_entry_id,
-                    &suffix,
-                );
-            }
-        }
         if won_preferences.len() > 1 {
             self.portfolio_cross_improvements = self.portfolio_cross_improvements.saturating_add(1);
         }
@@ -2392,6 +2384,23 @@ where
                 if strictly_preferred && *preference < 8 {
                     replacement_preferences |= 1 << preference;
                 }
+            }
+        }
+        if let Some(bank) = &mut self.continuations {
+            if replacement_preferences != 0 {
+                bank.improved(key.group(0), self.next_entry_id, self.continuation_wave);
+            }
+            if let Some(parent) = parent_id {
+                let tail_cost: u64 = suffix.iter().map(|action| (self.action_cost)(action)).sum();
+                let entry = &self.entries[parent];
+                bank.record(
+                    entry.key.group(0),
+                    key.group(0),
+                    entry.id,
+                    self.next_entry_id,
+                    &suffix,
+                    tail_cost,
+                );
             }
         }
         for replaced in displaced {
@@ -3318,12 +3327,27 @@ where
         self.stored_input_actions
     }
 
-    pub(crate) fn enable_continuations(&mut self, enabled: bool) {
-        self.continuations = enabled.then(ContinuationBank::default);
+    pub(crate) fn enable_continuations(&mut self, action_cap: usize) {
+        self.continuations =
+            (K::preferences() > 0).then(|| ContinuationBank::new(action_cap));
     }
 
-    pub(crate) fn pop_continuation(&mut self) -> Option<Continuation<A>> {
+    pub(crate) fn set_admission_wave(&mut self, wave: u32) {
+        self.continuation_wave = wave;
+    }
+
+    pub(crate) fn pop_continuation(&mut self) -> Option<Continuation<K::Group, A>> {
         self.continuations.as_mut()?.pop()
+    }
+
+    #[must_use]
+    pub(crate) fn continuation_edges(&self) -> usize {
+        self.continuations.as_ref().map_or(0, ContinuationBank::edge_count)
+    }
+
+    #[must_use]
+    pub(crate) fn continuation_pending(&self) -> usize {
+        self.continuations.as_ref().map_or(0, ContinuationBank::pending_count)
     }
 
     #[must_use]
@@ -3337,11 +3361,11 @@ where
                     0
                 },
             )
-            .saturating_add(if self.continuations.is_some() {
-                ContinuationBank::<K::Group, A>::reserve_bytes()
-            } else {
-                0
-            })
+            .saturating_add(
+                self.continuations
+                    .as_ref()
+                    .map_or(0, ContinuationBank::memory_bytes),
+            )
     }
 
     #[must_use]
