@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_less_boss_award_map_spatial_16_posture_door_area_last_preference_missiles_first_ridley_bit1_v10";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_less_boss_award_map_spatial_16_posture_door_area_last_preference_missiles_then_health_ridley_bit1_v11";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -114,8 +114,15 @@ impl ArchiveKey for MetroidArchiveKey {
         1
     }
 
-    fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
-        self.preference().cmp(&other.preference())
+    fn preferences() -> usize {
+        2
+    }
+
+    fn preference_cmp(self, preference: usize, other: Self) -> Ordering {
+        match preference {
+            0 => self.preference().cmp(&other.preference()),
+            _ => self.health_preference().cmp(&other.health_preference()),
+        }
     }
 
     type Lineage = ();
@@ -130,6 +137,10 @@ impl ArchiveKey for MetroidArchiveKey {
 impl MetroidArchiveKey {
     fn preference(self) -> (u8, u8, u8, u16) {
         (self.items, self.tanks, self.missiles, self.health)
+    }
+
+    fn health_preference(self) -> (u8, u8, u16, u8) {
+        (self.items, self.tanks, self.health, self.missiles)
     }
 }
 
@@ -341,6 +352,27 @@ mod tests {
         assert_eq!(weak.group(1), strong.group(1));
         assert_eq!(strong.preference_cmp(0, weak), Ordering::Greater);
         assert_eq!(MetroidArchiveKey::slot_capacity(), 1);
+    }
+
+    #[test]
+    fn the_two_preferences_disagree_on_a_resource_trade() {
+        let mut stocked_state = state(100, 20, 0);
+        stocked_state.missiles = 10;
+        let mut healthy_state = state(100, 200, 0);
+        healthy_state.missiles = 5;
+        let stocked = archive_key(stocked_state);
+        let healthy = archive_key(healthy_state);
+        assert_eq!(MetroidArchiveKey::preferences(), 2);
+        assert_eq!(stocked.preference_cmp(0, healthy), Ordering::Greater);
+        assert_eq!(healthy.preference_cmp(1, stocked), Ordering::Greater);
+    }
+
+    #[test]
+    fn an_item_outranks_every_resource_under_both_preferences() {
+        let stocked = archive_key(state(100, 300, 0));
+        let equipped = archive_key(state(10, 10, 0b1));
+        assert_eq!(equipped.preference_cmp(0, stocked), Ordering::Greater);
+        assert_eq!(equipped.preference_cmp(1, stocked), Ordering::Greater);
     }
 
     #[test]
