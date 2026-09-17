@@ -50,11 +50,11 @@ other draw strategies have, so it could not turn itself down.
 |---|---|---|
 | when the bank exists | always | only for a workload that declares a preference (after step 4, a non-empty preference list; the trait default declares none). Without one no edge is recorded, nothing is charged, and the stream is unchanged |
 | trigger | any replacement, including cheaper at equal preference | a strictly preferred replacement only: `preference_cmp` returned `Greater` for the candidate against the displaced holder, under the preference the replacement was chosen for. The slot is queued once whichever champion improved |
-| pending queue | one entry per edge, pushed eagerly for every exit of the improved slot (`continuation.rs` 119-132 on the backup branch) | one entry per slot: `pending: BTreeMap<u64, Group>` keyed by an insertion sequence, and `pending_slot: BTreeMap<Group, Pending { sequence, parent, wave, cursor: Option<Group> }>`. Queuing a slot is two map inserts, or an update of parent, wave and cursor if it is already pending. Popping takes the front slot's next exit after `cursor` from its `exits` set, advances the cursor, and removes the slot when its exits are exhausted. `remove_slot` deletes both map entries by sequence. No node is ever left behind |
+| pending queue | one entry per edge, pushed eagerly for every exit of the improved slot (`continuation.rs` 119-132 on the backup branch) | one entry per slot: `pending: BTreeMap<u64, Group>` keyed by an insertion sequence, and `pending_slot: BTreeMap<Group, Pending { sequence, parent, wave, cursor: Option<Group> }>`. Queuing a slot is two map inserts, or an update of parent, wave and cursor if it is already pending. Popping takes the front slot's next exit after `cursor` from its `exits` set, advances the cursor, and moves the slot to the back under a fresh sequence, so slots rotate and a slot improved on every reservation cannot hold the front; a slot whose exits are exhausted is removed instead. `remove_slot` deletes both map entries by sequence, and when removing a slot empties a source slot's `exits` set, that source's pending entry goes too. No node is ever left behind |
 | share | one reservation in `CONTINUATION_RESERVATION_STRIDE` (`campaign.rs` 41, 91 on the backup branch) whenever anything is pending | a reservation attempts a continuation with probability `e / (e + 256)`, where `e = energy_share(continuation_barren, CONTINUATION_ENERGY_SCALE)` (`energy_share` at `draw.rs` 183 on `origin/searcher-groundwork`) and the scale is one constant, 6. Fresh is one in two, fully barren is one in 257 |
 | the draw | none | when the queue is non-empty, `RomuDuoJrRand::with_seed(campaign_seed ^ reservation_index).below(e + 256) < e`; no worker random state, so replay recomputes it at the reconstructed reservation |
 | feedback | replays bump no counter and reward no strategy | `continuation_barren` is its own field beside `MixtureEnergy`, never in the array that `splice_weights` and `biased_weight` normalise (`draw.rs` 190-205), so the table, splice and alphabet weights are unchanged. A continuation job's admission resets it when the job opened a new slot and increments it otherwise; a landed or replaced result is reported and not rewarded, since a wave would otherwise reward itself |
-| edges and memory | one edge per slot pair, charged per edge, `retain_slots` on compaction | unchanged |
+| edges and memory | one edge per slot pair, charged per edge, `retain_slots` on compaction | unchanged for edges; each pending entry is charged its two map nodes when queued and released when removed |
 | replay | pops at the reconstructed reservation (prefill and replenish), checks the record | unchanged, plus the recorded `continuation_energy` must equal the rebuilt one |
 | record | destination, wave, tail | plus `continuation_energy: u16` on every job at a reservation where the queue was non-empty |
 | accounting | edges, pending, jobs, execution work, landed, replaced, longest wave | plus `continuation_barren`, `e`, reservations that drew, reservations that took a continuation, and jobs that opened a new slot |
@@ -126,11 +126,14 @@ on every progress record.
 
 - Bank: a cheaper tail replaces a pair's edge and a costlier one does not;
   queuing a slot twice updates its parent and resets its cursor and leaves
-  one entry; popping walks a slot's exits in set order and removes the slot
-  when exhausted; deleting and recreating one slot many times leaves the
-  queue's physical size equal to its reported size and keeps the order of
-  unrelated slots; `remove_slot` releases the edge charge and the pending
-  entry.
+  one entry at its old position; popping walks a slot's exits in set order,
+  moves the slot to the back after each exit, and removes it when
+  exhausted; two pending slots A and B where A has many exits and is
+  improved between every pop still alternate, so B's exits run; deleting
+  and recreating one slot many times leaves the queue's physical size equal
+  to its reported size and keeps the order of unrelated slots;
+  `remove_slot` releases the edge charge, the slot's pending entry, and the
+  pending entry of a source slot left with no exits.
 - Trigger: a cheaper arrival at equal preference queues nothing; a strictly
   preferred arrival queues the slot once, also when it improves two
   champions.
@@ -176,8 +179,10 @@ the seeds that differ. Read throughput and memory against step 4 as well;
 edge recording and the bank's charge are paid whatever the share.
 
 This step is an experiment. Apply the README's regression rule against the
-step 4 run at matched executions: every seed behind on a milestone step 4
-reached on every seed is a rejection, whatever the share was. A share that
-sat at the floor with the panels level is the feedback working and the
-mechanism stays. A share that stayed high with the panels level is a result
-to write down.
+step 4 run, comparing at matched executions and again at matched execution
+work, since continuation jobs cost more or less than ordinary ones: every
+seed behind on a milestone step 4 reached on every seed, or every seed
+behind on occupied cells, is a rejection, whatever the share was. A share
+that sat at the floor with the panels level is the feedback working and
+the mechanism stays. A share that stayed high with the panels level is a
+result to write down.
