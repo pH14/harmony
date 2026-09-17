@@ -33,7 +33,6 @@ searches: class selection and progress use the same policy.
 | slot contents | one holder | the union of champions, compared by preference, then path cost, then a stable tie-break |
 | candidate judging | against the parent's preference | against every preference |
 | slot draw | the cheapest-member weighting | equal seeded probability over preferences, then that preference's champion |
-| continuation trigger | a replacement holder | either champion improving, with the champion and parent generation on the pending entry |
 | record | selector draw | plus the portfolio identity, the preference order and the selected preference |
 | accounting | per-slot totals | plus exclusive and shared holders, selections and replacements per preference, cross-preference improvements, and portfolio memory |
 
@@ -42,11 +41,9 @@ preference or is pinned by an admitted reservation. Eviction, a missing
 membership and deterministic replenishment each need a written rule; memory
 pressure must leave no dangling champion and no retry loop.
 
-Continuations keep the reservation share, the tail bound, the stale-work bound
-and the accounting isolation they have after step 3. Identical work for a
-parent serving both preferences is coalesced, so preferences do not double the
-continuation entitlement. A replayed tail can land somewhere other than its
-recorded destination; judge the result that arrives.
+Continuation replay comes after this step and defines its trigger against
+the portfolio in `03-continuation-graph.md`; this step records which
+preference a replacement was chosen under so that trigger can read it.
 
 Membership indexes, extra retained states, pending work and retained history
 are charged to the same logical budget. Report resident set size beside it.
@@ -63,7 +60,7 @@ energy for the other.
 4. Insert the preference choice at the final slot-holder draw, after the
    existing hierarchy has already chosen the place. Read the selector as it
    stands first and write down any change to the sampling rules.
-5. Audit the continuation queue against the new trigger.
+5. Record, on each replacement, the preference it was chosen under.
 6. Record the portfolio identity, the preference order and the selected
    preference. Reject an incompatible recording through the existing policy and
    schema checks.

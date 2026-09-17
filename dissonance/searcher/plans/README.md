@@ -17,7 +17,7 @@ step's actual base before editing.
 | 2 | `02-energy-reset-depth.md` | step 1 merge | a productive draw resets energy only at the depths where the child is new | local checks, SMB regression, quick panel |
 | 3 | `04-input-table-in-searcher.md` | step 2 merge | the retained-input table leaves the SMB driver and every workload gets it | local checks, SMB regression with exact comparison, quick panel, long panel with the energy-splice manifest |
 | 4 | `05-strategy-portfolio.md` | step 3 merge | a workload declares an ordered list of preferences and a slot retains the union of their champions | local checks, SMB regression, quick panel, long panel with both manifests, throughput, memory |
-| 5 | `03-continuation-graph.md` | step 4 merge | replay of a recorded continuation, redesigned in the plan before any code | local checks, SMB regression, quick panel, long panel with both manifests, throughput |
+| 5 | `03-continuation-graph.md` | step 4 merge | continuation replay triggered by strictly preferred replacements only, with its share set by the same barren feedback as the draw strategies | local checks, SMB regression identical to step 4, quick panel, long panel with both manifests, throughput |
 
 The order matters. Step 1 removes selector policy variants that step 2 would
 otherwise have to handle. Step 3 rewrites the input policy surface and is
@@ -28,8 +28,9 @@ are experiments and can be rejected on their results. Step 4 runs after the
 groundwork because it changes what a slot retains, and each earlier step
 changes how slots are drawn from, scored or filled; measuring it against a
 moving baseline would not answer anything. Step 5 was built once and measured
-worse on both workloads at every reservation rate tried, so it is redesigned
-from its plan rather than rebuilt from that branch.
+worse on both workloads at every reservation rate tried; its plan now says
+what the run reports showed and what changes, and names the parts of that
+build that carry over.
 
 Steps 1 to 3 are semantic commits in one pull request. Push each step when its
 tests pass and run the review described in the shipping-code skill. Steps 4
