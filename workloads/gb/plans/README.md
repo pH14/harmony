@@ -293,9 +293,14 @@ Added while running step 5:
 
 - The plain searcher reaches the Boulder Badge, and not on every seed. Score any
   change against the deepest milestone rather than the first.
-- The adviser reaches the second milestone sooner on every seed and no further on
-  any, and it whites out several times as often per execution. The comparison is
+- The adviser is faster to the early milestones on every seed and slower to every
+  milestone past them, and it whites out several times as often per execution. It
+  did not take the badge inside a budget the plain arm won in. The comparison is
   in `workloads/gb/README.md`.
+- How each macro is described to the model is part of the policy. Rewording one
+  macro moved a seed from two milestones to seven. Describe a macro by what it
+  does in the place being asked about, and by both meanings when
+  `ActionKind::in_context` can remap it.
 - Give both arms the same execution budget rather than the same wall time. A
   weighted draw picks cheaper macros, so equal wall time hands the advised arm
   more executions, and any per-run total then has to be stated as a rate.

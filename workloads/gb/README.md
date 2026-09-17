@@ -197,18 +197,29 @@ the model tell a house from a route.
 
 ## What the search reaches
 
-The plain searcher reaches the Boulder Badge from a new game, in tens of
-thousands of executions at six workers. It does not reach it on every seed: on a
+The plain searcher reaches the Boulder Badge from a new game, at six workers and
+tens of thousands of executions. It does not reach it on every seed: on a
 three-seed panel one seed took all eight milestones over 25 maps with a level 13
-party, and the other two stopped at Oak's parcel with 12 maps. Score a change
-against the deepest milestone, since the badge crosses on a minority of seeds.
+party, one reached Viridian Forest, and one stopped at Oak's parcel. Score a
+change against the deepest milestone, since the badge crosses on a minority of
+seeds.
 
-The adviser changes where the effort goes rather than how far it gets. It reaches
-Oak's parcel 1.4 to 2.8 times sooner on every seed and reaches nothing past it,
-and it whites out 4 to 24 times as often per execution. The weight it puts on the
-fighting macros is spent losing wild battles rather than winning the trainer
-battles the route needs, and the seed that won is the one whose plain arm fought
-the most.
+The adviser is faster to the early milestones and slower to the deep ones. It
+reaches Oak's parcel 1.2 to 6.7 times sooner on every seed. Past that it is
+behind the plain arm at every milestone, by about two times to the Pokédex and
+two and a half times to the gym, and it did not take the badge inside a budget
+the plain arm won in. It whites out 16 to 24 times as often per execution,
+because the weight it puts on the fighting macros is spent losing wild battles
+rather than winning the trainer battles the route needs.
+
+How each macro is described to the model is part of the policy, and a wrong
+description costs more than the weighting gains. `advance` is the macro that
+pushes text along, and the route spends a quarter of its actions on it inside
+conversations no archive key can see. Described only as a way to run from a wild
+battle it drew a third of its fair share of the weight, and the run that later
+reached the gym stopped at Oak's parcel instead. Describe a macro by what it does
+in the place being asked about, and by both meanings when
+`ActionKind::in_context` can remap it.
 
 Give both arms the same execution budget rather than the same wall time. A
 weighted draw picks cheaper macros, so equal wall time hands the advised arm more
