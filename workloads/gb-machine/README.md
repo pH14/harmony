@@ -27,7 +27,11 @@ it.
 
 Search runs with audio and video disabled. Replay-only callers turn on video
 and stereo PCM capture. Gambatte renders both regardless of what the frontend
-reports, so turning capture on does not change what the machine computes.
+reports, so turning capture on does not change what the machine computes. The
+adapter answers every core option from a fixed table, which pins the emulator
+identity the snapshots carry. The audio resampler is set to `cc` because the
+core runs one regardless and `sinc` is the more expensive of the two; the
+choice does not reach work RAM.
 
 Build the pinned core with [`../../scripts/build-gambatte-core.sh`](../../scripts/build-gambatte-core.sh),
 which prints its SHA-256. The hash differs per architecture; callers pass the
@@ -40,15 +44,20 @@ Headless throughput, one machine, video and audio off, measured by the
 
 | Host | Frames per second | 30-frame actions per second |
 | --- | --- | --- |
-| Apple M-series, macOS | 9,800 | 330 |
-| CIX CP8180 aarch64, Debian 13 | 8,560 | 285 |
+| Apple M-series, macOS | 11,380 | 379 |
+| CIX CP8180 aarch64, Debian 13 | 8,680 | 289 |
+
+The CIX figure is one of its 2.5 GHz cores. Its 1.8 GHz cores run the same core
+at 2,200 frames per second, a quarter of that rather than the seven tenths the
+clocks suggest, so a run that wants a predictable rate pins its workers.
 
 `run_chord` runs one chord and appends each frame's work RAM to `frames`, and
 is an action boundary, which matters for the first hazard below. A caller that
 expands a macro into single frames calls `begin_action` once at the boundary
 and then `hold_frame` per frame, reading RAM between frames. Such a caller
-turns `set_wram_capture` off, since appending 8 KiB per frame costs more than
-the frames themselves; `read` then serves the few bytes a macro polls.
+turns `set_wram_capture` off, since 8 KiB per frame over the thousand-odd frames
+an execution runs is hundreds of megabytes it never reads; `read` then serves the
+few bytes a macro polls. The copy itself costs about one percent.
 
 ## Determinism
 

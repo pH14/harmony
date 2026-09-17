@@ -77,7 +77,7 @@ define_gambatte_options!(
     ),
     (b"gambatte_dark_filter_level", b"0\0", "dark_filter=0"),
     (b"gambatte_mix_frames", b"disabled\0", "mix_frames=disabled"),
-    (b"gambatte_audio_resampler", b"sinc\0", "resampler=sinc"),
+    (b"gambatte_audio_resampler", b"cc\0", "resampler=cc"),
     (
         b"gambatte_up_down_allowed",
         b"disabled\0",
