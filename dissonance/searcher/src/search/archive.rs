@@ -46,7 +46,7 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GroupBands<G: Ord> {
-    pub scope: G,
+    pub scopes: BTreeSet<G>,
     pub depth: usize,
     pub bands: BTreeMap<G, usize>,
     pub count: usize,
@@ -2094,7 +2094,22 @@ where
     }
 
     pub fn set_group_bands(&mut self, bands: Option<GroupBands<K::Group>>) {
-        self.group_bands = bands.filter(|bands| bands.count > 1 && bands.depth >= 1);
+        self.group_bands =
+            bands.filter(|bands| bands.count > 1 && bands.depth >= 1 && !bands.scopes.is_empty());
+    }
+
+    #[must_use]
+    pub fn live_groups_at(&self, depth: usize) -> Vec<K::Group> {
+        let mut groups = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(id, _)| self.active.get(*id).copied().unwrap_or(false))
+            .map(|(_, entry)| entry.key.group(depth))
+            .collect::<Vec<_>>();
+        groups.sort_unstable();
+        groups.dedup();
+        groups
     }
 
     #[must_use]
@@ -2800,7 +2815,7 @@ where
         let Some(bands) = self
             .group_bands
             .as_ref()
-            .filter(|bands| bands.depth == depth && bands.scope == scope)
+            .filter(|bands| bands.depth == depth && bands.scopes.contains(&scope))
         else {
             return Ok(None);
         };
@@ -3456,6 +3471,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::cmp::Ordering;
+    use std::collections::BTreeSet;
 
     use super::{
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, GroupBands, HISTORY_COMPACTION_MIN_DROPS,
@@ -4451,7 +4467,7 @@ mod tests {
         );
 
         archive.set_group_bands(Some(GroupBands {
-            scope: [0, 0, 0, 0],
+            scopes: BTreeSet::from([[0, 0, 0, 0]]),
             depth: 1,
             bands: BTreeMap::from([([0, 1, 0, 0], 0)]),
             count: 2,
@@ -4474,7 +4490,7 @@ mod tests {
     #[test]
     fn group_bands_apply_only_to_their_own_scope_and_depth() {
         let bands = GroupBands {
-            scope: [0, 0, 0, 0],
+            scopes: BTreeSet::from([[0, 0, 0, 0]]),
             depth: 1,
             bands: BTreeMap::from([([0, 1, 0, 0], 0)]),
             count: 3,

@@ -32,13 +32,13 @@ pub type BlueArchive = Archive<BlueAction, BlueArchiveKey, BlueMilestones, BlueS
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct BlueArchiveGroup {
-    badges: u8,
-    route: u8,
-    events: u16,
-    battle: u8,
-    map: u8,
-    cell_x: u8,
-    cell_y: u8,
+    pub badges: u8,
+    pub route: u8,
+    pub events: u16,
+    pub battle: u8,
+    pub map: u8,
+    pub cell_x: u8,
+    pub cell_y: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]

@@ -182,9 +182,11 @@ pub trait Reporting: CampaignTypes {
         evidence: &Self::Evidence,
         state: ArchiveReportState<Self>,
     ) -> Self::ArchiveReport;
+    const BAND_SCOPE_DEPTH: usize = 0;
     fn group_bands(
         _evidence: &Self::Evidence,
         _deepest: Self::Key,
+        _scopes: &[<Self::Key as ArchiveKey>::Group],
     ) -> Option<GroupBands<<Self::Key as ArchiveKey>::Group>> {
         None
     }
@@ -1414,7 +1416,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         let Some((deepest, _, _)) = self.archive.live_progress() else {
             return;
         };
-        let bands = G::group_bands(&self.evidence, deepest);
+        let depth = G::BAND_SCOPE_DEPTH.min(G::Key::groups().saturating_sub(1));
+        let scopes = self.archive.live_groups_at(depth);
+        let bands = G::group_bands(&self.evidence, deepest, &scopes);
         if bands.as_ref() != self.archive.group_bands() {
             self.archive.set_group_bands(bands);
         }

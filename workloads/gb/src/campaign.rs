@@ -53,9 +53,9 @@ pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "blue-gambatte-snapshot-checkpoint-
 
 static GOAL_TARGET: AtomicU64 = AtomicU64::new(u64::MAX);
 static GOAL_BAND_MAPS: AtomicU64 = AtomicU64::new(0);
+static GOAL_SCOPES: AtomicU64 = AtomicU64::new(0);
 
 const GOAL_BAND_DEPTH: usize = 1;
-const GOAL_SCOPE_DEPTH: usize = 2;
 const GOAL_BANDS: usize = 4;
 const GOAL_MAPS: [u8; 8] = [40, 42, 40, 40, 51, 2, 54, 54];
 
@@ -497,6 +497,8 @@ impl CampaignTypes for BlueGame {
 }
 
 impl Reporting for BlueGame {
+    const BAND_SCOPE_DEPTH: usize = 2;
+
     fn diagnostics(evidence: &BlueCampaignEvidence) -> Option<serde_json::Value> {
         Some(serde_json::json!({
             "maps_visited": evidence.observed_maps.count(),
@@ -509,6 +511,7 @@ impl Reporting for BlueGame {
                 map => Some(map),
             },
             "goal_banded_maps": GOAL_BAND_MAPS.load(Ordering::Relaxed),
+            "goal_scopes": GOAL_SCOPES.load(Ordering::Relaxed),
             "observation_filter": "live gameplay observations supplied to this accumulator"
         }))
     }
@@ -599,26 +602,36 @@ impl Reporting for BlueGame {
     fn group_bands(
         evidence: &BlueCampaignEvidence,
         deepest: BlueArchiveKey,
+        scopes: &[BlueArchiveGroup],
     ) -> Option<GroupBands<BlueArchiveGroup>> {
         let target = goal_map(deepest)?;
         let hops = evidence.graph.hops_to(target);
         hops.get(&target)?;
+        let here = scopes
+            .iter()
+            .copied()
+            .filter(|scope| scope.badges == deepest.badges && scope.route == deepest.route)
+            .collect::<BTreeSet<_>>();
+        if here.is_empty() {
+            return None;
+        }
         GOAL_TARGET.store(u64::from(target), Ordering::Relaxed);
         GOAL_BAND_MAPS.store(hops.len() as u64, Ordering::Relaxed);
-        let scope = deepest.group(GOAL_SCOPE_DEPTH);
-        let bands = hops
-            .iter()
-            .map(|(map, hops)| {
+        GOAL_SCOPES.store(here.len() as u64, Ordering::Relaxed);
+        let mut bands = BTreeMap::new();
+        for scope in &here {
+            for (map, hops) in &hops {
                 let group = BlueArchiveKey {
+                    events: scope.events,
                     map: *map,
                     ..deepest
                 }
                 .group(GOAL_BAND_DEPTH);
-                (group, (*hops).min(GOAL_BANDS - 1))
-            })
-            .collect();
+                bands.insert(group, (*hops).min(GOAL_BANDS - 1));
+            }
+        }
         Some(GroupBands {
-            scope,
+            scopes: here,
             depth: GOAL_BAND_DEPTH,
             bands,
             count: GOAL_BANDS,
@@ -1180,17 +1193,50 @@ mod tests {
             party_hp: 17,
             party_levels: 7,
         };
-        let bands = <BlueGame as Reporting>::group_bands(&evidence, deepest)
+        let scope_depth = <BlueGame as Reporting>::BAND_SCOPE_DEPTH;
+        let scopes = [
+            BlueArchiveKey {
+                events: 9,
+                ..deepest
+            }
+            .group(scope_depth),
+            BlueArchiveKey {
+                events: 11,
+                ..deepest
+            }
+            .group(scope_depth),
+            BlueArchiveKey {
+                route: 0b1,
+                ..deepest
+            }
+            .group(scope_depth),
+        ];
+        let bands = <BlueGame as Reporting>::group_bands(&evidence, deepest, &scopes)
             .expect("the graph holds Oak's lab");
         assert_eq!(bands.depth, GOAL_BAND_DEPTH);
         assert_eq!(bands.count, GOAL_BANDS);
         assert_eq!(
-            bands.scope,
-            deepest.group(GOAL_SCOPE_DEPTH),
-            "bands attach to one milestone state, not to every state in the class"
+            bands.scopes.len(),
+            2,
+            "every event count at this milestone state is in scope, and no other state is"
         );
-        let band_of =
-            |map: u8| bands.band_of(BlueArchiveKey { map, ..deepest }.group(GOAL_BAND_DEPTH));
+        assert!(
+            bands
+                .scopes
+                .iter()
+                .all(|scope| scope.route == deepest.route),
+            "a shallower milestone state stays out of scope"
+        );
+        let band_of = |map: u8| {
+            bands.band_of(
+                BlueArchiveKey {
+                    events: 11,
+                    map,
+                    ..deepest
+                }
+                .group(GOAL_BAND_DEPTH),
+            )
+        };
         assert_eq!(band_of(40), 0, "Oak's lab is the target");
         assert_eq!(band_of(0), 1, "Pallet Town is one hop away");
         assert_eq!(band_of(12), 2, "Route 1 is two hops away");
