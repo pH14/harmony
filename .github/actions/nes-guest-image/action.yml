@@ -16,10 +16,7 @@ runs:
   steps:
     - id: key
       shell: bash
-      run: |
-        platform=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key \
-          --architecture x86_64)
-        echo "value=${platform}-${{ hashFiles('workloads/nes-guest/**', 'scripts/build-quicknes-core.sh') }}" >>"$GITHUB_OUTPUT"
+      run: echo "value=$(python3 scripts/nes-guest-image-key.py)" >>"$GITHUB_OUTPUT"
     - id: cache
       uses: actions/cache/restore@v4
       with:

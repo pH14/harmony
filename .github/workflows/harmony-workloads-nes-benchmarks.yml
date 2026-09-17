@@ -64,9 +64,11 @@ jobs:
           workloads/nes/scripts/build-nova-rom.sh "${NOVA_BUILD}"
           HARMONY_QUICKNES_STATIC_OUTPUT="${NOVA_BUILD}/libquicknes_libretro.a" \
             scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
-      - name: Compute platform source key
+      - name: Compute platform and guest image source keys
         id: platform-source
-        run: echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
+        run: |
+          echo "key=$(python3 consonance/harmony-linux/scripts/runtime-artifacts.py source-key --architecture x86_64)" >>"$GITHUB_OUTPUT"
+          echo "guest-image-key=$(python3 scripts/nes-guest-image-key.py)" >>"$GITHUB_OUTPUT"
       - name: Restore the canonical platform runtime
         id: platform-cache
         uses: actions/cache/restore@v4
@@ -99,7 +101,7 @@ jobs:
         if: matrix.replica == 1
         uses: actions/upload-artifact@v4
         with:
-          name: nes-guest-image-v1-${{ steps.platform-source.outputs.key }}-${{ hashFiles('workloads/nes-guest/**', 'scripts/build-quicknes-core.sh') }}
+          name: nes-guest-image-v1-${{ steps.platform-source.outputs.guest-image-key }}
           path: consonance/harmony-linux/build/nes.oci
           if-no-files-found: error
           retention-days: 30
@@ -109,7 +111,7 @@ jobs:
         continue-on-error: true
         with:
           path: consonance/harmony-linux/build/nes.oci
-          key: nes-guest-image-v1-${{ steps.platform-source.outputs.key }}-${{ hashFiles('workloads/nes-guest/**', 'scripts/build-quicknes-core.sh') }}
+          key: nes-guest-image-v1-${{ steps.platform-source.outputs.guest-image-key }}
       - name: Build the Consonance-backed Dissonance campaign
         run: |
           cargo build --locked --release --manifest-path workloads/nes/Cargo.toml \
