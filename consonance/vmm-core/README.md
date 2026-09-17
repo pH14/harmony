@@ -178,8 +178,8 @@ and execution accounting. Raw XSAVE presence remains restoration metadata; its
 identity treatment depends on the verified guest profile below. The execution
 requirement is one qualified host core type
 for related boots and restores; see the backend README for affinity admission and
-its limits. Cross-type migration is not supported. Cross-host and broader XSAVE
-state qualification remain follow-up work.
+its limits. Cross-type migration is not supported. Cross-host placement and broader
+XSAVE state lie outside the qualified set.
 
 The shipped Linux guest follows architectural page-table update and invalidation
 rules and cannot replace its kernel through kexec. Required PAE continuation
@@ -216,26 +216,14 @@ CPU state, MXCSR, devices and control state remain part of the comparison. The
 existing diagnostic trace counters remain excluded across replay. Artifact
 checksums still cover every original byte, including raw restoration metadata.
 
-The seeded check reproduced a published hash change on fixed-core AMD after a
-third host-only preparation entry, with no guest instruction executed
-([run 35047743001, replica 2](https://github.com/pH14/harmony/actions/runs/35047743001/job/104641200322)).
-The raw restore bitmap changed from 0 to 2; RAM and every other serialized CPU
-field were identical. This occurred after fresh restore of a guest-initiated
-UART stop with init-valued SSE state, seed 3 and XCR0 3. All 48 immediate A-to-B
-comparisons and all 48 continuation comparisons passed in the same run. An
-earlier run also failed an extra preparation after reused restore
-([run 35047329499, replica 2](https://github.com/pH14/harmony/actions/runs/35047329499/job/104639902214)).
-Intel's fixed-P-core matrix passes. A passing retry does not remove these
-failures or establish raw identity stability across extra entries.
-
-The ordinary two-boot Linux check also reproduced the same field difference
-([run 35048054460](https://github.com/pH14/harmony/actions/runs/35048054460)). At
-checkpoint 14847, the event context and RAM digest match, and the retained suffix
-has exactly one changed byte: raw restore presence 2 versus 0 in VCPU's XSRB
-field. Both reported hashes reconstruct from the retained suffixes and matching
-RAM digest. Original RAM bytes were not retained, so this is digest-strength RAM
-attribution, not a bytewise RAM comparison. Avoiding duplicate preparation calls
-would not close this ordinary execution witness.
+On fixed-core AMD, an extra host-only preparation entry can change the published
+hash with no guest instruction executed. The raw restore bitmap changes from 0
+to 2 while RAM and every other serialized CPU field stay identical. The ordinary
+two-boot Linux check reproduces the same field difference: matching event context
+and RAM digest, and exactly one changed byte in VCPU's XSRB field. RAM is
+compared there by digest rather than bytewise. Intel's fixed-P-core matrix
+passes. Avoiding duplicate preparation calls does not remove the difference, and
+a passing retry does not establish raw identity stability across extra entries.
 
 Controlled guest identity separates logical state from raw restoration metadata.
 `controlled_guest::linux_identity` matches the exact reviewed kernel and composed
@@ -272,5 +260,4 @@ continue to represent those broader states with strict raw identity.
 
 The published API regression remains required on AMD and Intel under supported
 core placement. A successful scoped regression does not establish raw bitmap
-stability or support for arbitrary guest code. The PR remains draft until the
-required current-head checks, including the qualified Linux boot check, pass.
+stability or support for arbitrary guest code.
