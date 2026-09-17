@@ -226,6 +226,7 @@ under a `ci-` rule cannot be recorded in the lint baseline.
 | `ci-nes-case-jobs` | The public case roster maps one-to-one onto independent jobs. |
 | `ci-miri-coverage` | Each Analysis workflow lists exactly the Miri targets it owns. |
 | `ci-historical-arms` | No case or matrix restores a fixed-version comparison arm. |
+| `ci-pinned-seed-outcome` | No expected-output pattern pins a literal seed value. |
 
 `scripts/semantic-lints.py` asks a judge what a parser cannot decide. It skips
 without `TYPESAFE_API_KEY`, so deterministic correctness never depends on it. A
@@ -247,6 +248,7 @@ in the semantic baseline.
 | `ci-media-disconnected` | Is claimed video evidence produced from the run's own recorded input? |
 | `ci-fixed-version-direction` | Does documentation direct a fixed-version comparison campaign? |
 | `ci-boundary-contradiction` | Does documentation contradict the component and composition boundaries? |
+| `ci-pinned-seed-outcome` | Does a check require a particular search outcome from one fixed seed? |
 
 ## Verification
 

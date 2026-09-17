@@ -161,7 +161,7 @@ jobs:
               --sequences 4 \
               --actions-per-sequence 4 \
             2>&1 | tee nova-consonance-report/observation-oracle.txt
-          grep -Eq 'NOVA_CONSONANCE_OBSERVATION_ORACLE_OK sequences=4 actions=[1-9][0-9]* seed=0000000001352825 stream_sha256=[0-9a-f]{64}$' \
+          grep -Eq 'NOVA_CONSONANCE_OBSERVATION_ORACLE_OK sequences=4 actions=[1-9][0-9]* seed=[0-9a-f]{16} stream_sha256=[0-9a-f]{64}$' \
             nova-consonance-report/observation-oracle.txt
       - name: Search Nova through whole-VM Consonance branches
         run: |
