@@ -3041,12 +3041,53 @@ where
             .min()
     }
 
+    fn is_preference_champion(&self, id: usize, preference: usize) -> bool {
+        let capacity = K::slot_capacity().max(1);
+        let Some(slot) = self.slots.get(&self.entries[id].key.group(0)) else {
+            return true;
+        };
+        let better = slot
+            .iter()
+            .filter(|other| **other != id)
+            .filter(|other| {
+                let other = **other;
+                match self.entries[other]
+                    .key
+                    .preference_cmp(preference, self.entries[id].key)
+                {
+                    Ordering::Greater => true,
+                    Ordering::Less => false,
+                    Ordering::Equal => (self.cost_in_group[other], self.entries[other].id)
+                        < (self.cost_in_group[id], self.entries[id].id),
+                }
+            })
+            .count();
+        better < capacity
+    }
+
     fn draw_from_cell(
         &mut self,
         rand: &mut RomuDuoJrRand,
         cell: Vec<usize>,
     ) -> Result<(usize, ConcentrationDraw), Box<dyn Error>> {
         let window = &cell[cell.len().saturating_sub(CONCENTRATION_WINDOW)..];
+        let preferences = K::preferences().max(1);
+        let preferred = if preferences > 1 {
+            let preference =
+                rand.below(NonZeroUsize::new(preferences).ok_or("empty preference list")?);
+            window
+                .iter()
+                .copied()
+                .filter(|id| self.is_preference_champion(*id, preference))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let window: &[usize] = if preferred.is_empty() {
+            window
+        } else {
+            &preferred
+        };
         let mut entered_window = 0_u64;
         for id in window {
             if !self.in_window_ever[*id] {
@@ -4052,6 +4093,43 @@ mod tests {
         assert_eq!(insert_portfolio(&mut archive, 3, 11, 21), Some(2));
         assert_eq!(archive.slots.get(&7), Some(&vec![1, 2]));
         assert_eq!(archive.active, vec![false, true, true]);
+    }
+
+    #[test]
+    fn each_preference_champion_is_drawn() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        insert_portfolio(&mut archive, 1, 10, 20);
+        insert_portfolio(&mut archive, 2, 5, 200);
+        assert_eq!(archive.slots.get(&7), Some(&vec![0, 1]));
+        let mut rand = RomuDuoJrRand::with_seed(0x51de_5eed);
+        let mut drawn = [0_u32; 2];
+        for _ in 0..512 {
+            let (id, _) = archive
+                .select_parent(&mut rand, 64)
+                .expect("draw a portfolio parent");
+            drawn[id] += 1;
+        }
+        assert!(drawn[0] > 0, "missile champion was never drawn");
+        assert!(drawn[1] > 0, "health champion was never drawn");
+    }
+
+    #[test]
+    fn a_champion_of_one_preference_is_not_a_champion_of_the_other() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        insert_portfolio(&mut archive, 1, 10, 20);
+        insert_portfolio(&mut archive, 2, 5, 200);
+        assert!(archive.is_preference_champion(0, 0));
+        assert!(!archive.is_preference_champion(0, 1));
+        assert!(!archive.is_preference_champion(1, 0));
+        assert!(archive.is_preference_champion(1, 1));
+    }
+
+    #[test]
+    fn a_sole_holder_is_the_champion_of_every_preference() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        insert_portfolio(&mut archive, 1, 10, 20);
+        assert!(archive.is_preference_champion(0, 0));
+        assert!(archive.is_preference_champion(0, 1));
     }
 
     fn flat_archive<const DEPTHS: usize>(
