@@ -9,22 +9,28 @@ manifest=${here}/historical-manifest.py
 python3 "${manifest}" --check
 all=$(python3 "${manifest}" --matrix)
 runnable=$(python3 "${manifest}" --runnable-matrix)
-search=$(python3 "${manifest}" --search-matrix)
-replay=$(python3 "${manifest}" --replay-matrix)
 
 test "$(jq '.include | length' <<<"${all}")" -eq 2
 test "$(jq -r '[.include[] | select(.ci_status == "runnable")] | length' <<<"${all}")" -eq 2
-test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .search_timeout_minutes' <<<"${all}")" -eq 170
-test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .search_timeout_minutes' <<<"${all}")" -eq 320
+test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .job_timeout_minutes' <<<"${all}")" -eq 230
+test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .job_timeout_minutes' <<<"${all}")" -eq 320
+test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .display_name' <<<"${all}")" = "PostgreSQL Index Corruption"
+test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .display_name' <<<"${all}")" = "etcd Data Inconsistency"
+test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .workload_version' <<<"${all}")" = 14.3
+test "$(jq -r '[.include[] | has("arm")] | any' <<<"${all}")" = false
 test "$(jq '.include | length' <<<"${runnable}")" -eq 2
 test "$(jq -r '[.include[].id] | sort | join(",")' <<<"${runnable}")" = etcd-3.5-inconsistency,postgres-cic-corruption
-test "$(jq '.include | length' <<<"${search}")" -eq 2
-test "$(jq -r '[.include[] | select(.id == "postgres-cic-corruption") | .arm] | .[0]' <<<"${search}")" = vulnerable
-test "$(jq -r '[.include[] | select(.id == "etcd-3.5-inconsistency") | .arm] | .[0]' <<<"${search}")" = vulnerable
-test "$(jq -r '[.include[] | select(.id == "etcd-3.5-inconsistency") | .planned_replay_sessions] | unique | .[0]' <<<"${search}")" -eq 0
-test "$(jq '.include | length' <<<"${replay}")" -eq 1
-test "$(jq -r '.include[0].id' <<<"${replay}")" = postgres-cic-corruption
-test "$(jq -r '.include[0].planned_replay_sessions' <<<"${replay}")" -eq 3
+test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .planned_replay_sessions' <<<"${runnable}")" -eq 2
+test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .planned_replay_sessions' <<<"${runnable}")" -eq 0
+
+if python3 "${manifest}" --search-matrix >/dev/null 2>&1; then
+    printf 'FAIL the manifest still emits a per-arm search matrix\n'
+    exit 1
+fi
+if python3 "${manifest}" --replay-matrix >/dev/null 2>&1; then
+    printf 'FAIL the manifest still emits a fixed-version replay matrix\n'
+    exit 1
+fi
 
 python3 - "${manifest}" <<'PY'
 import copy
@@ -40,7 +46,7 @@ spec.loader.exec_module(module)
 case_path = module.ROOT / "workloads/bugs/historical/postgres-cic-corruption/case.json"
 case = json.loads(case_path.read_text())
 case["ci"] = copy.deepcopy(case["ci"])
-case["ci"]["replay_max_sessions"] = 2
+case["ci"]["replay_max_sessions"] = 1
 try:
     module.validate(case_path, case)
 except SystemExit as error:
@@ -48,16 +54,44 @@ except SystemExit as error:
 else:
     raise SystemExit("manifest accepted a replay cap below its aggregate plan")
 
-case_path = module.ROOT / "workloads/bugs/historical/etcd-3.5-inconsistency/case.json"
+case = json.loads(case_path.read_text())
+case["arms"] = {"vulnerable": {"version": "14.3"}, "control": {"version": "14.4"}}
+try:
+    module.validate(case_path, case)
+except SystemExit as error:
+    assert "arms are not supported" in str(error)
+else:
+    raise SystemExit("manifest accepted a fixed-version comparison arm")
+
 case = json.loads(case_path.read_text())
 case["ci"] = copy.deepcopy(case["ci"])
 case["ci"]["search_arms"] = ["vulnerable", "control"]
 try:
     module.validate(case_path, case)
 except SystemExit as error:
-    assert "declared arms" in str(error)
+    assert "search_arms is not supported" in str(error)
 else:
-    raise SystemExit("manifest accepted a search arm without a workload image")
+    raise SystemExit("manifest accepted a declared search arm")
+
+case = json.loads(case_path.read_text())
+case["search"] = copy.deepcopy(case["search"])
+case["search"]["wall_minutes"] = 340
+try:
+    module.validate(case_path, case)
+except SystemExit as error:
+    assert "360-minute job limit" in str(error)
+else:
+    raise SystemExit("manifest accepted a case that cannot finish inside a GitHub job")
+
+case = json.loads(case_path.read_text())
+case["ci"] = copy.deepcopy(case["ci"])
+del case["ci"]["display_name"]
+try:
+    module.validate(case_path, case)
+except SystemExit as error:
+    assert "ci.display_name" in str(error)
+else:
+    raise SystemExit("manifest accepted a runnable case with no scenario job name")
 PY
 
 printf 'historical manifest checks passed\n'

@@ -1,27 +1,23 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Replay one current-run input against one arm of a historical case.
+# Replay one declared clean sample against a historical case's affected version.
 #
-#   historical-replay.sh discovery <first-bug-input.json>
 #   historical-replay.sh sample <sample.json>
 #
-# The campaign itself already performs one fresh replay for every finding. A
-# discovery replay therefore defaults to the fixed arm only; it provides the
-# differential check without replaying the vulnerable finding a second time.
-# Samples replay the vulnerable arm twice so the oracle can compare the two
-# fresh state digests. Differential control coverage comes from discovery.
+# The campaign itself already performs one fresh replay for every finding.
+# Samples replay twice so the oracle can compare the two fresh state digests,
+# which covers fresh starts and no-find paths.
 set -euo pipefail
 
 mode=${1:?mode is required}
 input=${2:?input is required}
 
 : "${CASE_ID:?}" "${RAM_MIB:?}"
-: "${VULNERABLE_VERSION:?}" "${IMAGE_PREFIX:?}"
+: "${WORKLOAD_VERSION:?}" "${IMAGE_PREFIX:?}"
 : "${SOFTWARE_NAME:?}" "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
 
 case "${mode}" in
-    discovery) default_arms=control; default_repeats=1 ;;
-    sample) default_arms=vulnerable; default_repeats=2 ;;
+    sample) default_repeats=2 ;;
     *) echo "historical-replay: unknown mode ${mode}" >&2; exit 2 ;;
 esac
 
@@ -38,7 +34,6 @@ test -x "${harmony}" && test -s "${kernel}" && test -s "${base_initramfs}"
 
 oracle=$(dirname "$0")/historical-oracle.sh
 knobs=${KNOBS:-}
-arms=${REPLAY_ARMS:-${default_arms}}
 repeats=${REPLAY_REPEATS:-${default_repeats}}
 timeout_seconds=${REPLAY_TIMEOUT_SECONDS:-1800}
 max_sessions=${MAX_REPLAY_SESSIONS:-2}
@@ -62,83 +57,67 @@ actions=$(jq -r 'if type == "array" then length else (.actions | length) end' "$
     exit 1
 }
 
-IFS=',' read -r -a arm_list <<<"${arms}"
-session_count=$(( ${#arm_list[@]} * repeats ))
-if (( session_count > max_sessions )); then
-    echo "historical-replay: infra-failure (replay cap ${max_sessions} would be exceeded by ${session_count} sessions)" >&2
+if (( repeats > max_sessions )); then
+    echo "historical-replay: infra-failure (replay cap ${max_sessions} would be exceeded by ${repeats} sessions)" >&2
     exit 1
 fi
 
 mkdir -p reports
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
-rows=()
 verdict=0
 
-replay_arm() {
-    local arm=$1 version
-    case "${arm}" in
-        vulnerable) version=${VULNERABLE_VERSION} ;;
-        control) version=${CONTROL_VERSION:?} ;;
-        *) rows+=("| ${arm} | — | — | — | fail: infra-failure (unknown arm) |"); verdict=1; return ;;
-    esac
+label="${mode}-$(basename "${input}" .json)"
+out="reports/${CASE_ID}.${label}"
+console="reports/${CASE_ID}.${label}.console.txt"
+rm -rf "${out}"
+status=0
+timeout -k 30 "${timeout_seconds}" "${harmony}" search --package faults \
+    "oci-images/${IMAGE_PREFIX}-${WORKLOAD_VERSION}.oci" \
+    --backend consonance \
+    --kernel "${kernel}" \
+    --base-initramfs "${base_initramfs}" \
+    --replay "${input}" \
+    --repeat "${repeats}" \
+    --ram-mib "${RAM_MIB}" \
+    --knobs "${knobs}" \
+    --out "${out}" >"${console}" 2>&1 || status=$?
+tail -n 40 "${console}" || true
 
-    local out="reports/${CASE_ID}.${arm}.${mode}"
-    local console="reports/${CASE_ID}.${arm}.${mode}.console.txt"
-    rm -rf "${out}"
-    local status=0
-    timeout -k 30 "${timeout_seconds}" "${harmony}" search --package faults \
-        "oci-images/${IMAGE_PREFIX}-${version}.oci" \
-        --backend consonance \
-        --kernel "${kernel}" \
-        --base-initramfs "${base_initramfs}" \
-        --replay "${input}" \
-        --repeat "${repeats}" \
-        --ram-mib "${RAM_MIB}" \
-        --knobs "${knobs}" \
-        --out "${out}" >"${console}" 2>&1 || status=$?
-    tail -n 40 "${console}" || true
-
-    local report="${out}/report.json"
-    if [[ ! -s "${report}" ]]; then
-        rows+=("| ${arm} | ${version} | ${repeats} | — | fail: infra-failure (no report, exit ${status}) |")
-        verdict=1
-        return
-    fi
-
-    local ok=pass
+report="${out}/report.json"
+if [[ ! -s "${report}" ]]; then
+    row="| ${WORKLOAD_VERSION} | ${repeats} | — | fail: infra-failure (no report, exit ${status}) |"
+    verdict=1
+    hash_count=0
+else
+    ok=pass
     if (( status != 0 )); then
         ok="fail: infra-failure (CLI exit ${status})"
         verdict=1
-    elif ! ok=$("${oracle}" "${mode}" "${report}" "${arm}" "${repeats}" "${actions}"); then
+    elif ! ok=$("${oracle}" "${mode}" "${report}" "${repeats}" "${actions}"); then
         verdict=1
     fi
-    local hash_count
     hash_count=$(jq -r '[.replays[].state_hash] | unique | length' "${report}")
     jq -n \
-        --arg mode "${mode}" --arg case_id "${CASE_ID}" --arg arm "${arm}" \
-        --arg version "${version}" --arg input "${input}" \
+        --arg mode "${mode}" --arg case_id "${CASE_ID}" \
+        --arg version "${WORKLOAD_VERSION}" --arg input "${input}" \
         --arg status "${status}" --arg oracle "${ok}" \
         --argjson repeats "${repeats}" --argjson actions "${actions}" \
         --argjson state_hashes "${hash_count}" \
-        '{mode:$mode, case_id:$case_id, arm:$arm, version:$version,
+        '{mode:$mode, case_id:$case_id, version:$version,
           input:$input, repeats:$repeats, actions:$actions,
           cli_exit_status:($status|tonumber), state_hash_count:$state_hashes,
           oracle:$oracle}' >"${out}/panel-status.json"
-    rows+=("| ${arm} | ${version} | ${repeats} | ${hash_count} | ${ok} (cli exit ${status}) |")
-}
-
-for arm in "${arm_list[@]}"; do
-    replay_arm "${arm}"
-done
+    row="| ${WORKLOAD_VERSION} | ${repeats} | ${hash_count} | ${ok} (cli exit ${status}) |"
+fi
 
 {
     echo "## ${mode} replay — ${input}"
     echo
-    echo "| arm | ${SOFTWARE_NAME} | sessions | state-hash count | verdict |"
-    echo "|---|---|---:|---:|---|"
-    printf '%s\n' "${rows[@]}"
+    echo "| ${SOFTWARE_NAME} | sessions | state-hash count | verdict |"
+    echo "|---|---:|---:|---|"
+    echo "${row}"
     echo
-    echo "Replay cap: ${max_sessions} sessions; requested: ${session_count}."
+    echo "Replay cap: ${max_sessions} sessions; requested: ${repeats}."
 } >>"${summary}"
 
 exit "${verdict}"

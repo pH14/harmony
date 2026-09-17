@@ -6,10 +6,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Render the historical-bug roster table into workloads/bugs/historical/README.md.
 
-Reads every ``workloads/bugs/historical/*/case.json`` and, optionally, a directory of
-report files produced by ``.github/workflows/historical-bugs.yml``. Report
-directories are named ``<case id>.<arm>.<mode>`` and hold the ``report.json``
-the CLI wrote, so a report attaches to a case without any extra bookkeeping.
+Reads every ``workloads/bugs/historical/*/case.json`` and, optionally, a directory
+of report files produced by the historical-bug benchmark workflow. Report
+directories are named ``<case id>.<mode>`` and hold the ``report.json`` the CLI
+wrote, so a report attaches to a case without any extra bookkeeping.
 
 ``--check`` compares the rendered table with what is committed and exits
 non-zero when they differ, so quality CI can enforce the table later.
@@ -27,20 +27,15 @@ END = "<!-- render-historical-bugs:end -->"
 
 COLUMNS = (
     "bug",
-    "versions",
+    "searched version",
+    "upstream fix",
     "status",
     "CI",
     "discovery",
-    "latest replay",
-    "latest control",
+    "latest sample replay",
     "executions to first hit",
     "replay command",
 )
-
-# Report directory names carry the arm and the mode; the current panel's fresh
-# discovery replay feeds the replay columns and a search feeds the executions
-# column.
-REPLAY_MODES = ("discovery",)
 
 
 def repo_root() -> Path:
@@ -56,33 +51,35 @@ def load_cases(root: Path) -> list[dict]:
     return cases
 
 
-def load_reports(reports_dir: Path | None) -> dict[tuple[str, str, str], dict]:
-    """Newest report per (case id, arm, mode), keyed by report file mtime."""
-    found: dict[tuple[str, str, str], tuple[float, dict]] = {}
+def load_reports(reports_dir: Path | None) -> dict[tuple[str, str], dict]:
+    """Newest report per (case id, mode), keyed by report file mtime."""
+    found: dict[tuple[str, str], tuple[float, dict]] = {}
     if reports_dir is None:
         return {}
     for path in sorted(reports_dir.rglob("report.json")):
         parts = path.parent.name.split(".")
-        if len(parts) < 3:
+        if len(parts) < 2:
             continue
         mode = parts[-1]
-        arm = parts[-2]
-        case_id = ".".join(parts[:-2])
+        case_id = ".".join(parts[:-1])
         try:
             report = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
             continue
-        key = (case_id, arm, mode)
+        key = (case_id, mode)
         stamp = path.stat().st_mtime
         if key not in found or stamp >= found[key][0]:
             found[key] = (stamp, report)
     return {key: report for key, (_, report) in found.items()}
 
 
-def replay_outcome(reports: dict, case_id: str, arm: str) -> str:
-    """The newest replay verdict for one arm, as plain words."""
-    for mode in reversed(REPLAY_MODES):
-        report = reports.get((case_id, arm, mode))
+def replay_outcome(reports: dict, case_id: str) -> str:
+    """The newest declared-sample replay verdict, as plain words."""
+    modes = sorted(
+        mode for reported_case, mode in reports if reported_case == case_id and mode.startswith("sample")
+    )
+    for mode in reversed(modes):
+        report = reports.get((case_id, mode))
         if report is None:
             continue
         replays = report.get("replays") or []
@@ -95,7 +92,7 @@ def replay_outcome(reports: dict, case_id: str, arm: str) -> str:
 
 
 def first_hit(reports: dict, case_id: str) -> str:
-    report = reports.get((case_id, "vulnerable", "search"))
+    report = reports.get((case_id, "search"))
     if report is None:
         return "—"
     if not report.get("bug_found"):
@@ -108,7 +105,7 @@ def replay_command(case: dict) -> str:
     """Show the command shape for a reproducer from the current run."""
     if case.get("ci", {}).get("status", "runnable") != "runnable":
         return "—"
-    version = case.get("arms", {}).get("vulnerable", {}).get("version", "?")
+    version = case.get("workload", {}).get("version", "?")
     run = case.get("run", {})
     knobs = " ".join(f"{key}={value}" for key, value in run.get("knobs", {}).items())
     command = [
@@ -134,12 +131,12 @@ def render(cases: list[dict], reports: dict) -> str:
     for case in cases:
         case_id = case["id"]
         versions = case.get("versions", {})
-        arms = case.get("arms", {})
-        vulnerable = arms.get("vulnerable", {}).get("version", versions.get("affected", "?"))
-        fixed = arms.get("control", {}).get("version", versions.get("fixed", "?"))
+        searched = case.get("workload", {}).get("version", versions.get("affected", "?"))
+        fixed = versions.get("fixed", "?")
         row = (
             f"[{case_id}]({case_id}/README.md)",
-            f"{vulnerable} / {fixed}",
+            searched,
+            fixed,
             case.get("status", "?"),
             case.get("ci", {}).get("status", "runnable")
             + (
@@ -148,8 +145,7 @@ def render(cases: list[dict], reports: dict) -> str:
                 else ""
             ),
             case.get("discovery_mode", "?"),
-            replay_outcome(reports, case_id, "vulnerable"),
-            replay_outcome(reports, case_id, "control"),
+            replay_outcome(reports, case_id),
             first_hit(reports, case_id),
             replay_command(case),
         )
@@ -175,7 +171,7 @@ def main() -> int:
         "--reports",
         type=Path,
         default=None,
-        help="directory holding <case>.<arm>.<mode>/report.json trees",
+        help="directory holding <case>.<mode>/report.json trees",
     )
     parser.add_argument(
         "--check",

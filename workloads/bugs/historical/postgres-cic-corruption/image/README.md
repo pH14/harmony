@@ -1,28 +1,21 @@
 # The CREATE INDEX CONCURRENTLY workload image
 
-One `Dockerfile` builds both arms of the case. The build args select the
-PostgreSQL release and nothing else, so the two images differ in the
-PostgreSQL sources alone.
+One `Dockerfile` builds the case's pinned PostgreSQL release. The build args
+select that release and nothing else.
 
-| arm | `PG_VERSION` | `PG_SHA256` |
-|---|---|---|
-| vulnerable | `14.3` (default) | `279057368bf59a919c05ada8f95c5e04abb43e74b9a2a69c3d46a20e07a9af38` |
-| control | `14.4` | `c23b6237c5231c791511bdc79098617d6852e9e3bdf360efd8b5d15a1a3d8f6a` |
+| `PG_VERSION` | `PG_SHA256` |
+|---|---|
+| `14.3` (default) | `279057368bf59a919c05ada8f95c5e04abb43e74b9a2a69c3d46a20e07a9af38` |
 
 The same pins live in `../case.json`, which is what the workflow reads.
 
-## Build both arms
+## Build the image
 
 ```sh
 cd workloads/bugs/historical/postgres-cic-corruption/image
 
 docker build --tag harmony-pgcic:14.3 .
 docker save --output pgcic-14.3.oci harmony-pgcic:14.3
-
-docker build --tag harmony-pgcic:14.4 \
-    --build-arg PG_VERSION=14.4 \
-    --build-arg PG_SHA256=c23b6237c5231c791511bdc79098617d6852e9e3bdf360efd8b5d15a1a3d8f6a .
-docker save --output pgcic-14.4.oci harmony-pgcic:14.4
 ```
 
 `harmony search --package faults` takes the `docker save` tar directly.
@@ -47,13 +40,13 @@ rootfs is unpacked into guest RAM on every boot, so the tree keeps only
 `postgres`, `psql`, `pg_isready`, `pg_amcheck` and `pg_ctl`, with binaries
 stripped and headers, docs and LLVM bitcode dropped.
 
-Each arm is about 173 MB: a 67 MB cluster, a 16 MB PostgreSQL tree and the
+The image is about 173 MB: a 67 MB cluster, a 16 MB PostgreSQL tree and the
 Debian base.
 
-## Check the arms without Harmony
+## Check the image without Harmony
 
 Start the churn, start the build while it runs, then check. Hook 3 prints
-`@always 2 0` on the 14.3 image and `@always 2 1` on 14.4.
+`@always 2 0` when it reports a heap tuple with no index entry.
 
 ```sh
 docker run --rm --privileged harmony-pgcic:14.3 /bin/sh -c '

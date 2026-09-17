@@ -36,8 +36,10 @@ Each entry is a directory containing:
   **expected difficulty** (order-of-magnitude branches-to-find), the
   **tunable knob** if difficulty is adjustable, and provenance links for `historical/` entries.
 - The workload source / image recipe, once implemented.
-- A **nominal control**: every entry must define a no-fault configuration under which the bug
-  never fires. False-positive rate is measured, not assumed.
+- Declared clean trajectories for entries whose fault surface admits a no-fault configuration,
+  so the false-positive rate on that configuration is measured rather than assumed. A different
+  release of the software is not such a configuration: a recorded input can execute differently
+  there, so a clean run on it says nothing about the scenario the entry exercises.
 
 Harnesses use portable checks where their logic is portable and hardware checks
 for checks that require `/dev/kvm`.

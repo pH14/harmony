@@ -52,9 +52,8 @@ hittable when `zfs_dmu_offset_next_sync=1` became the default in **2.1.4**.
   `zfs_dmu_offset_next_sync` (=1 default, =0 shrinks the window drastically — a difficulty
   dial), `zfs_txg_timeout`, file count/size, number of concurrent loops. Record measured
   branches-to-find at (parallelism=1, =4) here once run.
-- **Nominal control**: two options, use both — (a) same workload on zfs-2.2.2 (fixed), must be
-  clean; (b) same workload with `cp --sparse=never` (reader never consults SEEK_HOLE), must be
-  clean even on 2.2.0.
+- Declared clean trajectory: the same workload on the same pinned zfs-2.2.0 with
+  `cp --sparse=never`, so the reader never consults `SEEK_HOLE` — must be clean.
 
 ## Kernel note
 

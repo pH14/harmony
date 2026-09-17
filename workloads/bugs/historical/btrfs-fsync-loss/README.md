@@ -61,8 +61,8 @@ bug cannot fire.
   is the whole gap between second fsync and next commit; commit interval defaults to 30s).
   Generalized op-tree search: harder — record measured branches-to-find for both modes.
 - Knobs: btrfs `commit=` mount interval (shrinks the window), op-tree depth/breadth.
-- **Nominal control**: identical sequence and kill schedule on a ≥5.14 kernel (or with the fix
-  backported) — `foo` must always survive in `B/`.
+- Declared clean trajectories: kill schedules outside the commit gap, on the same pinned
+  kernel — `foo` must always survive in `B/`.
 
 ## Kernel note
 

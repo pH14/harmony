@@ -24,7 +24,6 @@ chmod +x "${work}/tools/harmony"
 printf x >"${work}/guest/bzImage"
 printf x >"${work}/guest/initramfs-oci.cpio.gz"
 printf x >"${work}/oci-images/pgcic-14.3.oci"
-printf x >"${work}/oci-images/pgcic-14.4.oci"
 printf '[{"Wait":50}]\n' >"${work}/input.json"
 
 run=$(jq -cn '{run:1,bug:false,stop:"Deadline",state_hash:"abc",violations:[],sometimes:[24],actions_applied:1,settle_actions:0,settle_ticks:0,guest_horizons:1,check:null}')
@@ -34,19 +33,21 @@ summary="${work}/summary.md"
 (
     cd "${work}"
     export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
-    export VULNERABLE_VERSION=14.3 CONTROL_VERSION=14.4 IMAGE_PREFIX=pgcic
-    export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 REPLAY_ARMS=vulnerable
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
+    export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24
     export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
     export FAKE_REPORT="${work}/report.json" GITHUB_STEP_SUMMARY="${summary}"
     "${here}/historical-replay.sh" sample "${work}/input.json"
 )
 grep -q 'Replay cap: 2 sessions; requested: 2.' "${summary}"
+jq -e '.mode == "sample" and .repeats == 2 and .oracle == "pass"' \
+    "${work}/reports/pgcic.sample-input/panel-status.json" >/dev/null
 
 if (
     cd "${work}"
     export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
-    export VULNERABLE_VERSION=14.3 CONTROL_VERSION=14.4 IMAGE_PREFIX=pgcic
-    export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 REPLAY_ARMS=vulnerable
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
+    export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24
     export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
     export FAKE_REPORT="${work}/report.json" FAKE_EXIT_STATUS=23 GITHUB_STEP_SUMMARY="${summary}"
     "${here}/historical-replay.sh" sample "${work}/input.json"
@@ -54,18 +55,31 @@ if (
     printf 'FAIL replay masked a nonzero CLI exit\n'
     exit 1
 fi
-grep -q 'fail: infra-failure (CLI exit 23)' "${work}/reports/pgcic.vulnerable.sample/panel-status.json"
+grep -q 'fail: infra-failure (CLI exit 23)' "${work}/reports/pgcic.sample-input/panel-status.json"
 
 if (
     cd "${work}"
     export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
-    export VULNERABLE_VERSION=14.3 CONTROL_VERSION=14.4 IMAGE_PREFIX=pgcic
-    export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24 REPLAY_ARMS=vulnerable,control
-    export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=3 REPLAY_TIMEOUT_SECONDS=10
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
+    export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24
+    export REPLAY_REPEATS=3 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
     export FAKE_REPORT="${work}/report.json" GITHUB_STEP_SUMMARY="${summary}"
     "${here}/historical-replay.sh" sample "${work}/input.json"
 ); then
     printf 'FAIL replay cap allowed an over-budget sample\n'
+    exit 1
+fi
+
+if (
+    cd "${work}"
+    export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
+    export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24
+    export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
+    export FAKE_REPORT="${work}/report.json" GITHUB_STEP_SUMMARY="${summary}"
+    "${here}/historical-replay.sh" discovery "${work}/input.json"
+); then
+    printf 'FAIL replay still accepts a fixed-version comparison mode\n'
     exit 1
 fi
 printf 'historical replay budget checks passed\n'
