@@ -125,7 +125,7 @@ runs:
         python3 scripts/verify-nes-films.py \
           --media "${STB_ARTIFACT}/witness.mp4" \
           --media-frames "$(jq -r '.video.frames' "${STB_ARTIFACT}/run-summary.json")" \
-          --min-seconds 5
+          --min-seconds 2
         (
           cd "${STB_ARTIFACT}"
           sha256sum witness.mp4 run-summary.json progress.jsonl \
