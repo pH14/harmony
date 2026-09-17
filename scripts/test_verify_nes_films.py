@@ -156,6 +156,20 @@ class FilmVerificationTests(unittest.TestCase):
         self.assertEqual(report['verified'], ['nova-s1'])
         self.assertIn('stb-s1', report['problems'])
 
+    def test_a_film_the_check_cannot_read_replaces_an_earlier_acceptance(self):
+        self.film(name='nova-s1')
+        index = self.index(['nova-s1'])
+        first = self.run_main('--index', index, '--matrix', self.root)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(json.loads((self.root / VERIFY.REPORT_NAME).read_text())['verified'],
+                         ['nova-s1'])
+        (self.root / 'nova-s1/film/witness.mp4').write_bytes(b'not an mp4')
+        second = self.run_main('--index', index, '--matrix', self.root)
+        self.assertEqual(second.returncode, 1)
+        report = json.loads((self.root / VERIFY.REPORT_NAME).read_text())
+        self.assertEqual(report['verified'], [])
+        self.assertIn('nova-s1', report['problems'])
+
     def test_bare_media_is_checked_against_the_frames_its_workload_reported(self):
         mp4 = self.root / 'witness.mp4'
         synthesize(mp4)

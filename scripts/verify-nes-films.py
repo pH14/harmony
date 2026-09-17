@@ -152,14 +152,21 @@ def main():
         print(f'{len(records)} films to check, fewer than the required {arguments.require}',
               file=sys.stderr)
         return 1
-    verdicts = {cell: verify(record, arguments.min_seconds, expected, input_path)
-                for cell, record, expected, input_path in records}
+    report_path = None
     if arguments.index:
+        report_path = (arguments.matrix or arguments.index.parent) / REPORT_NAME
+        report_path.unlink(missing_ok=True)
+    verdicts = {}
+    for cell, record, expected, input_path in records:
+        try:
+            verdicts[cell] = verify(record, arguments.min_seconds, expected, input_path)
+        except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+            verdicts[cell] = [f'{record}: the media check could not read this film: {error}']
+    if report_path is not None:
         report = {'format': 'nes-film-verification-v1',
                   'verified': sorted(cell for cell, problems in verdicts.items() if not problems),
                   'problems': {cell: problems for cell, problems in verdicts.items() if problems}}
-        matrix = arguments.matrix or arguments.index.parent
-        (matrix / REPORT_NAME).write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+        report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
     problems = [problem for found in verdicts.values() for problem in found]
     for problem in problems:
         print('::error::' + problem, file=sys.stderr)

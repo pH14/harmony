@@ -538,11 +538,12 @@ def _matrix_rows(job: dict) -> list[dict]:
     rows = [row for row in rows
             if not any(all(row.get(key) == value for key, value in entry.items())
                        for entry in exclude)]
+    original = list(rows)
     for entry in (matrix.get("include") or []):
         if not isinstance(entry, dict):
             continue
         targets = [] if not axes else [
-            row for row in rows
+            row for row in original
             if all(row.get(key) == value for key, value in entry.items() if key in axes)]
         if not targets:
             rows.append(dict(entry))
@@ -1058,8 +1059,14 @@ def _step_always_runs(step: dict) -> bool:
                for part in _split_condition(condition, "&&"))
 
 
-def _reachable_text(repo_root: Path, job: dict) -> str:
-    """What a job runs unconditionally, including the local actions it uses."""
+def _reachable_text(repo_root: Path, job: dict, seen: frozenset[str] = frozenset()) -> str:
+    """What a job runs unconditionally, following the local actions it uses.
+
+    A local action's own steps are filtered the same way, so a capture or check
+    disabled inside a composite action does not count as run.
+    """
+    import yaml
+
     parts = []
     for step in job.get("steps", []):
         if not isinstance(step, dict) or not _step_always_runs(step):
@@ -1067,10 +1074,19 @@ def _reachable_text(repo_root: Path, job: dict) -> str:
         uses = str(step.get("uses", ""))
         parts.append(uses)
         parts.append(str(step.get("run", "")))
-        if uses.startswith("./"):
-            action = repo_root / uses[2:].split("@")[0] / "action.yml"
-            if action.is_file():
-                parts.append(action.read_text(encoding="utf-8"))
+        if not uses.startswith("./"):
+            continue
+        relative = uses[2:].split("@")[0]
+        action = repo_root / relative / "action.yml"
+        if not action.is_file() or relative in seen:
+            continue
+        try:
+            data = yaml.safe_load(action.read_text(encoding="utf-8"))
+        except yaml.YAMLError:
+            continue
+        composite = (data or {}).get("runs")
+        if isinstance(composite, dict) and isinstance(composite.get("steps"), list):
+            parts.append(_reachable_text(repo_root, composite, seen | {relative}))
     return "\n".join(parts)
 
 

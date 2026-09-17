@@ -513,6 +513,14 @@ class DisplayNameTests(unittest.TestCase):
                "strategy": {"matrix": {"replica": [1], "include": [{"replica": 2}]}}}
         self.assertEqual(LINTS._job_display_names(job), ["Nova — Replica 1", "Nova — Replica 2"])
 
+    def test_two_include_entries_the_axes_cannot_hold_stay_separate(self):
+        job = {"name": "Nova — Replica ${{ matrix.replica }}",
+               "strategy": {"matrix": {"replica": [1], "include": [
+                   {"replica": 2, "extra": "first"}, {"replica": 2, "extra": "second"}]}}}
+        self.assertEqual(LINTS._matrix_rows(job),
+                         [{"replica": 1}, {"replica": 2, "extra": "first"},
+                          {"replica": 2, "extra": "second"}])
+
     def test_display_names_expand_only_what_the_file_declares(self):
         job = {"name": "Nova — Replica ${{ matrix.replica }}",
                "strategy": {"matrix": {"replica": [1, 2]}}}
@@ -676,6 +684,21 @@ class NesMediaTests(unittest.TestCase):
             violations = LINTS.check_nes_media(root, "Dissonance Workloads", "checks", workflow)
         self.assertTrue(any("no step it always runs captures with it" in v.text
                             for v in violations), violations)
+
+    def test_a_check_disabled_inside_a_composite_action_does_not_count(self):
+        workflow = self.composition("checks")
+        steps = ("      - run: nes-film --out film\n"
+                 "      - uses: ./.github/actions/stb-evaluation\n"
+                 "      - uses: ./.github/actions/nes-film\n")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plant(root, workflow, steps)
+            (root / ".github/actions/nes-film/action.yml").write_text(
+                "runs:\n  using: composite\n  steps:\n"
+                "    - run: python3 scripts/verify-nes-films.py --index films.json\n"
+                "      if: false\n")
+            violations = LINTS.check_nes_media(root, "Dissonance Workloads", "checks", workflow)
+        self.assertTrue(any("real audio stream" in v.text for v in violations), violations)
 
     def test_a_capture_step_the_change_selection_guards_still_counts(self):
         workflow = self.composition("checks")
