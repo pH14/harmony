@@ -193,13 +193,29 @@ sit on the route and its dead-end answers cover the places the searcher spent
 draws on without progress. If they do not, stop here and write up the
 comparison. Record cost and latency per batch.
 
+Added while running step 4:
+
+- `blue-probe trace` writes the archive key and the milestone flags after each
+  action of the scripted route to `workloads/gb/fixtures/brock-trace.json`.
+  This step needs a position-by-position record of the route and the campaign
+  report does not carry one.
+- Of the three questions only `score` carries usable signal, so step 5 asks
+  `score` and not `choice`. Measured over 271 live entries: Jev's score orders
+  a pair of on-route entries by true route position 65% of the time against
+  the archive's own preference at 54%. The `choice` answer reproduces the score
+  ordering and adds nothing. The `noul` dead-end answer does not separate the
+  two populations, 0.35 on the route against 0.36 off it.
+- The comparison reports each ordering's agreement with the route, not only
+  whether a top pick stands on a route tile. Standing one tile off the scripted
+  path is not the same as being behind, and every entry holding the starter
+  inside Oak's lab reads as off-route under the tile test.
+
 ### Step 5: Jev in the draw
 
-Only after step 4 passes. In `workloads/gb/src/campaign.rs`, every N
-admissions the workload sends the current state's generated alphabet to Jev
-with one `choice` question, "which action leads soonest to the next
-milestone", and multiplies each action's draw weight by its probability plus a
-floor. The floor keeps every action reachable so a wrong answer slows the
+Only after step 4 passes. In `workloads/gb/src/campaign.rs`, the workload
+sends the current state's generated alphabet to Jev with one `score` question
+per action, "how much does this action advance the route to Brock", and
+multiplies each action's draw weight by its score plus a floor. The floor keeps every action reachable so a wrong answer slows the
 search rather than trapping it (`never-revert-draw-strategy`). The answer and
 its usage go into the campaign stream beside the duration draw, and replay
 reads the record and never calls the API. The switch is a run policy

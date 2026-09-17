@@ -227,6 +227,14 @@ uv run workloads/gb/scripts/jev-offline.py <run>/report.json \
   --trace workloads/gb/fixtures/brock-trace.json --out /tmp/jev.json
 ```
 
+Archive entries are stored as a suffix on a parent, so the script walks the
+parent chain to recover how many actions reached an entry.
+
+Two orderings are compared against the route: Jev's score, and the archive's own
+preference of badges, then route flags, then set event bits, then fewest actions.
+Each is scored by the fraction of entry pairs it puts in the same order as the
+scripted route.
+
 ## Checks
 
 ```sh
