@@ -4289,6 +4289,76 @@ mod tests {
             .expect("insert portfolio entry")
     }
 
+    fn insert_portfolio_at(
+        archive: &mut Archive<u8, PortfolioKey, (), ()>,
+        parent: Option<usize>,
+        suffix: Vec<u8>,
+        slot: u8,
+        missiles: u8,
+        health: u8,
+    ) -> Option<usize> {
+        archive
+            .insert(
+                parent,
+                0,
+                ArchiveCandidate {
+                    suffix,
+                    key: PortfolioKey {
+                        slot,
+                        missiles,
+                        health,
+                    },
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert portfolio entry")
+    }
+
+    fn portfolio_bank() -> Archive<u8, PortfolioKey, (), ()> {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        archive.enable_continuations(4);
+        archive
+    }
+
+    #[test]
+    fn a_cheaper_arrival_at_equal_preference_queues_no_slot() {
+        let mut archive = portfolio_bank();
+        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
+        insert_portfolio_at(&mut archive, Some(origin), vec![2, 2], 2, 10, 20).expect("exit");
+        assert_eq!(archive.continuation_pending(), 0);
+        insert_portfolio_at(&mut archive, Some(origin), vec![3], 2, 10, 20).expect("cheaper");
+        assert_eq!(archive.continuation_pending(), 0);
+    }
+
+    #[test]
+    fn a_strictly_preferred_arrival_queues_its_slot_once() {
+        let mut archive = portfolio_bank();
+        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
+        insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 10, 20).expect("exit");
+        insert_portfolio_at(&mut archive, Some(origin), vec![3], 1, 12, 30).expect("preferred");
+        assert_eq!(archive.continuation_pending(), 1);
+        insert_portfolio_at(&mut archive, Some(origin), vec![4], 1, 14, 40).expect("both again");
+        assert_eq!(archive.continuation_pending(), 1);
+    }
+
+    #[test]
+    fn a_slot_with_no_exits_is_never_queued() {
+        let mut archive = portfolio_bank();
+        insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
+        insert_portfolio_at(&mut archive, None, vec![2], 1, 12, 30).expect("preferred");
+        assert_eq!(archive.continuation_pending(), 0);
+    }
+
+    #[test]
+    fn a_key_declaring_no_preference_holds_no_bank() {
+        let mut archive = Archive::<u8, FlatKey<1>, (), ()>::new(|_| 1);
+        archive.enable_continuations(4);
+        assert_eq!(archive.continuation_pending(), 0);
+        assert_eq!(archive.continuation_report().edges, 0);
+        assert!(archive.continuations.is_none());
+    }
+
     #[test]
     fn a_slot_keeps_the_champion_of_every_preference() {
         let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);

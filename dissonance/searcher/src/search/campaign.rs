@@ -919,10 +919,9 @@ fn continuation_reservation_matches<G: Workload + ?Sized>(
     sequence: u64,
 ) -> Result<(), Box<dyn Error>> {
     if recorded_energy != energy {
-        return Err(format!(
-            "record {sequence} disagrees with the rebuilt continuation share"
-        )
-        .into());
+        return Err(
+            format!("record {sequence} disagrees with the rebuilt continuation share").into(),
+        );
     }
     let recorded = selector.path == SelectorPath::Continuation;
     match (taken, recorded) {
@@ -4254,19 +4253,25 @@ where
 }
 
 #[cfg(test)]
+#[path = "campaign_continuation_tests.rs"]
+mod continuation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
         CampaignConfig, CampaignCounters, CampaignJobRecord, CampaignJobResult, CampaignOrigin,
-        CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes,
-        CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, DrawTables, DurationAdmission,
+        CampaignProgressRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
+        CampaignTypes, ContinuationAccounting, CoordinatorCore,
+        DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, DrawTables, DurationAdmission,
         EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LiveCoordinatorProfile,
         MAX_PROGRESS_CURVE_POINTS, Reporting, RomuDuoJrRand, SPLICE_ACTION_CAP, TargetExecution,
         WorkloadPolicies, admission_window_depth, archive_entry_limit_is_valid,
-        compact_progress_curve, completed_results_within_bound, execution_work_delta,
-        finish_record, is_zero_usize, live_coordinator_profile, memory_is_within_reserve,
-        postcard_value_sha256, profile_elapsed, profile_now, progress_checkpoint_due,
-        progress_policy_is_supported, record_compaction_elapsed, replay_campaign_checkpointed,
+        compact_progress_curve, completed_results_within_bound, continuation_energy_share,
+        draws_continuation, execution_work_delta, finish_record, is_zero_usize,
+        live_coordinator_profile, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
+        profile_now, progress_checkpoint_due, progress_policy_is_supported,
+        record_compaction_elapsed, record_mixture_outcome, replay_campaign_checkpointed,
         replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
         run_campaign_checkpointed, schedule_policy_identifier, schedule_policy_is_supported,
         schedule_policy_window, stop_reservations_after_objective,
@@ -4275,7 +4280,9 @@ mod tests {
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
         SelectorPath, SelectorPolicy, entries_by_suffix,
     };
-    use crate::search::draw::{DrawMixture, MixtureDraw, SuffixShape};
+    use crate::search::draw::{
+        CONTINUATION_ENERGY_SCALE, DrawMixture, MixtureDraw, MixtureEnergy, SuffixShape,
+    };
     use crate::search::rollout::{ExecutionDisposition, Outcome, Rollout, execute_suffix};
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
@@ -5855,5 +5862,119 @@ mod tests {
         let round_trip: CampaignJobRecord<EmpiricalStepCheckpoint> =
             serde_json::from_slice(&written).expect("job round-trips");
         assert_eq!(round_trip, job);
+    }
+    #[test]
+    fn a_key_without_a_preference_runs_and_replays_with_no_continuation_bank() {
+        let config = CampaignConfig {
+            campaign_seed: 31,
+            workers: 2,
+            execution_budget: 200,
+            action_limit: 32,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: false,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 32,
+            reservations_per_worker: 2,
+            memory_budget_mib: Some(8),
+            materialize_final_artifacts: true,
+            run: (),
+            suffix: SuffixShape::OneOrTwo,
+            mixture: DrawMixture::EnergySplice { scale: 6 },
+            retention: RetentionPolicy::Unprobed,
+            selector: SelectorPolicy::GroupUniform,
+            objective_witness_path: None,
+        };
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+        };
+        let mut stream = Vec::new();
+        let mut progress = Vec::new();
+        let live = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            Some(&mut progress),
+        )
+        .expect("campaign without a preference");
+        let text = std::str::from_utf8(&stream).expect("stream is utf-8");
+        assert!(!text.contains("\"path\":\"continuation\""));
+        assert!(!text.contains("continuation_energy"));
+        let progress = String::from_utf8(progress).expect("progress is utf-8");
+        let last: CampaignProgressRecord<serde_json::Value> =
+            serde_json::from_str(progress.lines().last().expect("a progress line"))
+                .expect("progress record parses");
+        assert_eq!(last.continuations, ContinuationAccounting::default());
+        assert_eq!(
+            replay_campaign_checkpointed(&workload, &stream, None, None)
+                .expect("replay without a preference"),
+            live
+        );
+    }
+
+    #[test]
+    fn the_continuation_share_starts_at_one_in_two_and_falls_to_the_floor() {
+        assert_eq!(continuation_energy_share(0), 256);
+        let floor = 8 * CONTINUATION_ENERGY_SCALE;
+        assert_eq!(continuation_energy_share(floor), 1);
+        assert_eq!(continuation_energy_share(floor * 4), 1);
+        assert!(continuation_energy_share(CONTINUATION_ENERGY_SCALE) < 256);
+    }
+
+    #[test]
+    fn the_continuation_draw_is_seeded_by_the_campaign_and_the_reservation() {
+        let taken = |energy| {
+            (0..512)
+                .filter(|reservation| draws_continuation(11, *reservation, energy))
+                .count()
+        };
+        assert!(taken(256) > 200 && taken(256) < 312);
+        assert!(taken(1) < 12);
+        assert_eq!(
+            draws_continuation(11, 3, 256),
+            draws_continuation(11, 3, 256)
+        );
+        assert!(
+            (0..512).any(|reservation| draws_continuation(11, reservation, 256)
+                != draws_continuation(12, reservation, 256))
+        );
+    }
+
+    #[test]
+    fn a_continuation_outcome_leaves_the_draw_weights_alone() {
+        let mut energy = MixtureEnergy::default();
+        let mixture = DrawMixture::EnergySplice { scale: 4 };
+        let before = energy.splice_weights(4);
+        for seed in 0..64_u64 {
+            record_mixture_outcome(
+                &mut energy,
+                mixture,
+                SelectorPath::Continuation,
+                seed,
+                128,
+                128,
+                seed % 3 == 0,
+            )
+            .expect("continuation outcome");
+        }
+        assert_eq!(energy.splice_weights(4), before);
+        assert_eq!(
+            energy.biased_weight(4),
+            MixtureEnergy::default().biased_weight(4)
+        );
+        for _ in 0..16 {
+            record_mixture_outcome(
+                &mut energy,
+                mixture,
+                SelectorPath::Uniform,
+                1,
+                128,
+                128,
+                false,
+            )
+            .expect("ordinary outcome");
+        }
+        assert_ne!(energy.splice_weights(4), before);
     }
 }
