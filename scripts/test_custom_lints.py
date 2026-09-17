@@ -208,6 +208,141 @@ class RegistryNameTests(unittest.TestCase):
                          self.rules(registered(jobs=(ci_contract.Job("Snapshot Identity — Replica <N>", "pr", 15),))))
 
 
+class RegistryStructureTests(unittest.TestCase):
+    def rules(self, *workflows) -> list[str]:
+        return [v.rule for v in LINTS.check_registry_names(workflows)]
+
+    def test_two_workflows_cannot_share_a_name_or_a_path(self):
+        rules = self.rules(registered(name="Checks / Consonance"),
+                           registered(name="Checks / Consonance"))
+        self.assertEqual(rules.count("ci-workflow-registration"), 2)
+
+    def test_a_bare_category_names_no_owner(self):
+        for name in ("Checks", "Checks / Everything", "Checks / Consonance / Guest / Memory"):
+            with self.subTest(name=name):
+                self.assertIn("ci-workflow-name", self.rules(registered(name=name)))
+
+    def test_a_job_cannot_repeat_the_workflow_hierarchy(self):
+        for job in ("Consonance / Guest Memory", "Checks / Guest Memory"):
+            with self.subTest(job=job):
+                self.assertIn("ci-display-name",
+                              self.rules(registered(jobs=(ci_contract.Job(job, "pr", 15),))))
+
+    def test_a_generic_job_name_is_rejected_and_a_contextual_one_is_kept(self):
+        for job in ("Unit Tests", "Tests", "Build", "Verify", "unit tests"):
+            with self.subTest(job=job):
+                self.assertIn("ci-display-name",
+                              self.rules(registered(jobs=(ci_contract.Job(job, "pr", 15),))))
+        for job in ("Nova", "Coverage", "Results", "Guest Memory"):
+            with self.subTest(job=job):
+                self.assertNotIn("ci-display-name",
+                                 self.rules(registered(jobs=(ci_contract.Job(job, "pr", 15),))))
+
+    def test_a_job_cannot_be_registered_twice_in_one_workflow(self):
+        jobs = (ci_contract.Job("Guest Memory", "pr", 15), ci_contract.Job("Guest Memory", "pr", 15))
+        self.assertIn("ci-display-name", self.rules(registered(jobs=jobs)))
+
+    def test_a_variant_uses_the_registered_separator(self):
+        for job in ("Nova - <N>", "Nova: <N>", "Nova <N>"):
+            with self.subTest(job=job):
+                self.assertIn("ci-display-name",
+                              self.rules(registered(jobs=(ci_contract.Job(job, "pr", 15),))))
+
+    def test_analysis_belongs_to_the_component_that_owns_the_code(self):
+        for job in ("Coverage", "Miri — <Crate>", "Mutation Testing — Shard <N>/4", "Proofs"):
+            with self.subTest(job=job):
+                bounded = registered(name="Checks / Consonance",
+                                     jobs=(ci_contract.Job(job, "full", 30, exception="long"),))
+                self.assertIn("ci-analysis-grouping", self.rules(bounded))
+                analysis = registered(name="Checks / Consonance / Analysis",
+                                      jobs=(ci_contract.Job(job, "full", 30, exception="long"),))
+                self.assertNotIn("ci-analysis-grouping", self.rules(analysis))
+
+    def test_a_registered_budget_stays_inside_the_bound(self):
+        self.assertIn("ci-pr-job-timeout",
+                      self.rules(registered(jobs=(ci_contract.Job("Guest Memory", "pr", 45),))))
+        self.assertIn("ci-trigger-exception",
+                      self.rules(registered(jobs=(ci_contract.Job("Coverage", "full", 45),))))
+        self.assertIn("ci-trigger-routing",
+                      self.rules(registered(jobs=(ci_contract.Job("Guest Memory", "weekly", 15),))))
+
+    def test_a_workflow_without_a_job_owns_nothing(self):
+        self.assertIn("ci-display-name", self.rules(registered(jobs=())))
+
+
+class HostCompatibilityTests(unittest.TestCase):
+    def workflow(self, jobs):
+        return registered(name=LINTS.HOST_COMPATIBILITY_WORKFLOW, owner="Harmony Host Compatibility",
+                          path=".github/workflows/harmony-host-compatibility.yml", jobs=jobs)
+
+    def test_the_repository_checks_every_supported_host(self):
+        self.assertFalse([v for v in LINTS.check_registry_names()
+                          if v.rule == "ci-host-compatibility"])
+
+    def test_a_missing_composition_is_reported(self):
+        rules = [v.rule for v in LINTS.check_host_compatibility([registered()])]
+        self.assertEqual(rules, ["ci-host-compatibility"])
+
+    def test_a_dropped_or_scheduled_host_is_reported(self):
+        jobs = (ci_contract.Job("macOS Arm64", "pr", 15),)
+        self.assertEqual([v.rule for v in LINTS.check_host_compatibility([self.workflow(jobs)])],
+                         ["ci-host-compatibility"])
+        jobs += (ci_contract.Job("Linux Arm64", "full", 45),)
+        self.assertEqual([v.rule for v in LINTS.check_host_compatibility([self.workflow(jobs)])],
+                         ["ci-host-compatibility"])
+        jobs = (ci_contract.Job("macOS Arm64", "pr", 15), ci_contract.Job("Linux Arm64", "pr", 15))
+        self.assertFalse(LINTS.check_host_compatibility([self.workflow(jobs)]))
+
+
+class HistoricalArmTests(unittest.TestCase):
+    def case(self, **changes) -> dict:
+        case = {"software": "PostgreSQL", "workload": {"version": "14.3"},
+                "ci": {"display_name": "PostgreSQL Index Corruption"}}
+        case.update(changes)
+        return case
+
+    def check(self, case=None, workflows=None) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files, registered_paths = set(), set()
+            if case is not None:
+                rel = f"{ci_contract.HISTORICAL_CASE_ROOT}/postgres-cic-corruption/case.json"
+                (root / rel).parent.mkdir(parents=True)
+                (root / rel).write_text(json.dumps(case))
+                files.add(rel)
+            for rel, content in (workflows or {}).items():
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(content)
+                registered_paths.add(rel)
+            return [v.rule for v in LINTS.check_historical_arms(root, files, registered_paths)]
+
+    def test_the_repository_declares_no_comparison_arm(self):
+        self.assertFalse([v for v in LINTS.check_workflow_rules(ROOT, LINTS.tracked_files(ROOT))
+                          if v.rule == "ci-historical-arms"])
+
+    def test_a_current_case_passes(self):
+        self.assertFalse(self.check(case=self.case()))
+
+    def test_a_reintroduced_arm_is_rejected(self):
+        for key in ci_contract.FORBIDDEN_HISTORICAL_KEYS:
+            with self.subTest(key=key):
+                self.assertEqual(self.check(case=self.case(**{key: ["current", "fixed"]})),
+                                 ["ci-historical-arms"])
+        nested = self.case(search={"replay_arms": ["current"]})
+        self.assertEqual(self.check(case=nested), ["ci-historical-arms"])
+
+    def test_a_case_names_the_scenario_its_job_displays(self):
+        self.assertEqual(self.check(case={"software": "PostgreSQL"}), ["ci-historical-arms"])
+
+    def test_a_workflow_cannot_carry_an_execution_arm_axis(self):
+        rel = ".github/workflows/example-checks.yml"
+        jobs = job_text("scenario", "${{ matrix.display_name }}",
+                        "    timeout-minutes: 15\n    strategy:\n      matrix:\n"
+                        "        arm: [current, fixed]\n    steps: []")
+        self.assertEqual(self.check(case=self.case(), workflows={rel: workflow_text(jobs=jobs)}),
+                         ["ci-historical-arms"])
+
+
 class JobContractTests(unittest.TestCase):
     def check(self, body: str, job=None, triggers=("pull_request", "push"), name="Guest Memory"):
         job = job if job is not None else ci_contract.Job("Guest Memory", "pr", 15)
@@ -278,6 +413,19 @@ class JobContractTests(unittest.TestCase):
                                    job=ci_contract.Job("Guest Memory", "pr", 90), triggers=(event,))
                 self.assertIn("ci-pr-job-timeout", rules)
 
+    def test_a_short_budget_cannot_hide_a_full_capability_search(self):
+        for command in ci_contract.FULL_SEARCH_COMMANDS:
+            with self.subTest(command=command):
+                body = f"    timeout-minutes: 15\n    steps:\n      - run: {command} --out run\n"
+                self.assertEqual(self.check(body), ["ci-trigger-routing"])
+
+    def test_a_scheduled_job_may_run_a_full_capability_search(self):
+        job = ci_contract.Job("Coverage", "full", 210)
+        body = ("    timeout-minutes: 210\n    steps:\n"
+                "      - run: benchmarks/search/eval.py run suite.json --out run\n")
+        self.assertFalse(self.check(body, job=job, triggers=("schedule", "workflow_dispatch"),
+                                    name="Coverage"))
+
     def test_ci_errors_cannot_be_hidden_in_baseline(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -329,6 +477,23 @@ class DisplayNameTests(unittest.TestCase):
         registry = (ci_contract.Job("Docker", "pr", 15), ci_contract.Job("K3s", "pr", 15))
         self.assertFalse(self.check(jobs, registry))
         self.assertEqual(self.check(jobs, registry[:1]).count("ci-display-name"), 1)
+
+    def test_two_jobs_cannot_display_the_same_name(self):
+        jobs = (job_text("first", "Guest Memory", "    timeout-minutes: 15\n    steps: []")
+                + job_text("second", "Guest Memory", "    timeout-minutes: 15\n    steps: []"))
+        rules = self.check(jobs, (ci_contract.Job("Guest Memory", "pr", 15),))
+        self.assertEqual(rules.count("ci-display-name"), 1)
+
+    def test_a_matrix_cannot_repeat_one_display_name(self):
+        jobs = job_text("replicas", "Snapshot Identity",
+                        "    timeout-minutes: 15\n    strategy:\n      matrix:\n"
+                        "        replica: [1, 2]\n    steps: []")
+        rules = self.check(jobs, (ci_contract.Job("Snapshot Identity", "pr", 15),))
+        self.assertEqual(rules, ["ci-display-name"])
+        labelled = job_text("replicas", "Snapshot Identity — Replica ${{ matrix.replica }}",
+                            "    timeout-minutes: 15\n    strategy:\n      matrix:\n"
+                            "        replica: [1, 2]\n    steps: []")
+        self.assertFalse(self.check(labelled, (ci_contract.Job("Snapshot Identity — Replica <N>", "pr", 15),)))
 
     def test_display_names_expand_only_what_the_file_declares(self):
         job = {"name": "Nova — Replica ${{ matrix.replica }}",
@@ -412,6 +577,29 @@ class NesCompositionTests(unittest.TestCase):
         with mock.patch.object(ci_contract, "NES_COMPOSITIONS", {}):
             violations = LINTS.check_nes_compositions(ROOT, set())
         self.assertEqual([v.rule for v in violations], ["ci-nes-compositions"] * 2)
+
+    def test_every_composition_runs_the_backend_it_is_registered_with(self):
+        for composition, entry in ci_contract.NES_COMPOSITIONS.items():
+            for role in ("checks", "benchmarks"):
+                with self.subTest(composition=composition, role=role):
+                    workflow = ci_contract.by_name(entry[role])
+                    self.assertFalse(LINTS.check_nes_backend(ROOT, composition, entry, role, workflow))
+
+    def test_a_vm_composition_running_only_native_is_reported(self):
+        entry = ci_contract.NES_COMPOSITIONS["Harmony Workloads"]
+        workflow = ci_contract.by_name(entry["checks"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / workflow.path).parent.mkdir(parents=True)
+            (root / workflow.path).write_text("run: harmony search --backend native game.nes\n")
+            violations = LINTS.check_nes_backend(root, "Harmony Workloads", entry, "checks", workflow)
+        self.assertEqual([v.rule for v in violations], ["ci-nes-compositions"])
+        self.assertIn("never runs the consonance backend", violations[0].text)
+
+    def test_an_unregistered_backend_is_reported(self):
+        violations = LINTS.check_nes_backend(ROOT, "Harmony Workloads", {"backend": "invented"},
+                                             "checks", ci_contract.by_name("Checks / Harmony Workloads / NES"))
+        self.assertEqual([v.rule for v in violations], ["ci-nes-compositions"])
 
 
 class NesMediaTests(unittest.TestCase):

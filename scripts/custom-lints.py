@@ -480,6 +480,32 @@ UNKNOWN_VALUE = "\x00"
 NES_COMPOSITIONS_REQUIRED = ("Dissonance Workloads", "Harmony Workloads")
 MEDIA_VERIFIER = "scripts/verify-nes-films.py"
 
+# Harmony is built and tested on every host it claims to support.
+HOST_COMPATIBILITY_WORKFLOW = "Checks / Harmony Host Compatibility"
+HOST_COMPATIBILITY_JOBS = ("macOS Arm64", "Linux Arm64")
+
+# Job names that describe a method instead of what the job covers. Contextual
+# names such as Nova, Coverage and Results identify a workload or a
+# responsibility and stay allowed.
+GENERIC_JOB_NAMES = frozenset({
+    "build", "build and test", "check", "checks", "ci", "e2e", "integration",
+    "integration test", "integration tests", "job", "lint", "lints", "main",
+    "run", "test", "tests", "unit test", "unit tests", "validate", "verify",
+})
+
+# Analysis of a component's own code belongs in that component's Analysis
+# workflow, never beside its bounded correctness checks.
+ANALYSIS_JOB_PREFIXES = ("Coverage", "Miri", "Mutation Testing", "Proofs")
+ANALYSIS_SUFFIX = " / Analysis"
+
+# A variant suffix uses the registered separator alone.
+WRONG_VARIANT_SEPARATOR_RE = re.compile(r"\S\s*[-\u2013:]\s*<")
+
+# Matrix dimensions that would restore a fixed-version comparison arm.
+FORBIDDEN_MATRIX_KEYS = frozenset({
+    "arm", "arms", "control", "control_version", "fixed_version", "version_arm",
+})
+
 
 def _display_shape(name: str) -> str:
     """Collapse the values a matrix supplies at run time into one token."""
@@ -491,41 +517,44 @@ def _variant_pattern(registered: str) -> re.Pattern[str]:
     return re.compile(".+".join(re.escape(part) for part in VARIANT_RE.split(registered)))
 
 
-def _matrix_values(job: dict) -> dict[str, list]:
+def _matrix_rows(job: dict) -> list[dict]:
+    """The value combinations a statically declared matrix expands to."""
     matrix = (job.get("strategy") or {}).get("matrix")
     if not isinstance(matrix, dict):
-        return {}
-    values: dict[str, list] = {}
+        return []
+    rows = [{}]
+    for key, values in matrix.items():
+        if key in {"include", "exclude"} or not isinstance(values, list):
+            continue
+        rows = [dict(row, **{key: value}) for row in rows for value in values]
     include = matrix.get("include")
     if isinstance(include, list):
-        for entry in include:
-            if not isinstance(entry, dict):
-                return {}
-            for key, value in entry.items():
-                values.setdefault(key, []).append(value)
-    for key, value in matrix.items():
-        if key in {"include", "exclude"} or not isinstance(value, list):
-            continue
-        values.setdefault(key, []).extend(value)
-    return values
+        entries = [entry for entry in include if isinstance(entry, dict)]
+        rows = (rows + entries) if rows != [{}] else entries
+    return rows
 
 
-def _job_display_names(job: dict) -> list[str]:
-    """Every display name a job produces, with unknown values left as a token."""
+def _job_display_occurrences(job: dict) -> list[str]:
+    """Every display name a job produces, one per matrix row, repeats included."""
     name = job.get("name")
     if not isinstance(name, str) or not name.strip():
         return []
-    names = {name}
-    for key, options in _matrix_values(job).items():
-        expression = re.compile(r"\$\{\{\s*matrix\." + re.escape(key) + r"\s*\}\}")
-        expanded = set()
-        for candidate in names:
-            if expression.search(candidate):
-                expanded.update(expression.sub(str(option), candidate) for option in options)
-            else:
-                expanded.add(candidate)
-        names = expanded
-    return sorted({_display_shape(candidate) for candidate in names})
+    rows = _matrix_rows(job)
+    if not rows:
+        return [_display_shape(name)]
+    occurrences = []
+    for row in rows:
+        candidate = name
+        for key, value in row.items():
+            candidate = re.sub(r"\$\{\{\s*matrix\." + re.escape(str(key)) + r"\s*\}\}",
+                               str(value).replace("\\", "\\\\"), candidate)
+        occurrences.append(_display_shape(candidate))
+    return occurrences
+
+
+def _job_display_names(job: dict) -> list[str]:
+    """The distinct display names a job produces, with unknown values as a token."""
+    return sorted(set(_job_display_occurrences(job)))
 
 # Event names that cannot be a pull-request run.
 NON_PR_EVENTS = {"push", "schedule", "workflow_dispatch"}
@@ -669,12 +698,29 @@ def _workflow_triggers(data: dict) -> set[str] | None:
 
 
 def check_registry_names(workflows=None) -> list[Violation]:
-    """Hold the registry's own display names to the naming rules."""
+    """Hold the registry's own structure and display names to the naming rules."""
     import ci_contract
 
     path = "scripts/ci_contract.py"
+    registry = list(ci_contract.WORKFLOWS if workflows is None else workflows)
+    owners = set(ci_contract.COMPONENTS) | set(ci_contract.COMPOSITIONS)
     violations = []
-    for workflow in ci_contract.WORKFLOWS if workflows is None else workflows:
+    seen_names: set[str] = set()
+    seen_paths: set[str] = set()
+    for workflow in registry:
+        if workflow.name in seen_names:
+            violations.append(Violation("ci-workflow-registration", path, 0,
+                f"'{workflow.name}' is registered twice; a qualified name names one workflow"))
+        seen_names.add(workflow.name)
+        if workflow.path in seen_paths:
+            violations.append(Violation("ci-workflow-registration", path, 0,
+                f"'{workflow.path}' is registered twice"))
+        seen_paths.add(workflow.path)
+        parts = workflow.name.split(" / ")
+        if len(parts) not in (2, 3) or parts[1] != workflow.owner or workflow.owner not in owners:
+            violations.append(Violation("ci-workflow-name", path, 0,
+                f"'{workflow.name}' must read 'Category / Owner' or "
+                f"'Category / Owner / Workload' and name a registered owner"))
         if workflow.category not in ci_contract.CATEGORIES:
             violations.append(Violation("ci-workflow-name", path, 0,
                 f"'{workflow.name}' uses category '{workflow.category}'; "
@@ -685,15 +731,90 @@ def check_registry_names(workflows=None) -> list[Violation]:
                     f"'{workflow.name}' uses the retired category '{retired}'"))
         subjects = [(workflow.name, f"workflow '{workflow.name}'")]
         subjects += [(job.name, f"job '{job.name}' in '{workflow.name}'") for job in workflow.jobs]
-        for text, subject in subjects:
-            for problem in ci_contract.title_case_violations(text):
+        for text_value, subject in subjects:
+            for problem in ci_contract.title_case_violations(text_value):
                 violations.append(Violation("ci-display-name", path, 0, f"{subject}: {problem}"))
-            if TRIGGER_WORDS_RE.search(VARIANT_RE.sub("", text)):
+            if TRIGGER_WORDS_RE.search(VARIANT_RE.sub("", text_value)):
                 violations.append(Violation("ci-display-name", path, 0,
                     f"{subject} names a trigger; a display name identifies responsibility"))
-            if BARE_ORDINAL_RE.search(text):
+            if BARE_ORDINAL_RE.search(text_value):
                 violations.append(Violation("ci-display-name", path, 0,
                     f"{subject} carries a bare ordinal; label the replica or shard"))
+        violations.extend(check_registry_jobs(workflow))
+    violations.extend(check_host_compatibility(registry))
+    return violations
+
+
+def check_registry_jobs(workflow) -> list[Violation]:
+    """One workflow's registered jobs: unique, descriptive names and declared budgets."""
+    import ci_contract
+
+    path = "scripts/ci_contract.py"
+    violations = []
+    if not workflow.jobs:
+        violations.append(Violation("ci-display-name", path, 0,
+            f"'{workflow.name}' registers no job"))
+    analysis = workflow.name.endswith(ANALYSIS_SUFFIX)
+    pr_reachable = bool(set(workflow.triggers) & PR_EVENTS)
+    seen: set[str] = set()
+    for job in workflow.jobs:
+        subject = f"job '{job.name}' in '{workflow.name}'"
+        if job.name in seen:
+            violations.append(Violation("ci-display-name", path, 0,
+                f"{subject} is registered twice; job names are unique inside a workflow"))
+        seen.add(job.name)
+        if job.name.strip().lower() in GENERIC_JOB_NAMES:
+            violations.append(Violation("ci-display-name", path, 0,
+                f"{subject} names a method; name the responsibility or the scenario"))
+        if " / " in job.name:
+            violations.append(Violation("ci-display-name", path, 0,
+                f"{subject} repeats the hierarchy; the workflow name already carries the owner"))
+        if "<" in job.name and not job.name.startswith("<"):
+            if ci_contract.VARIANT_SEPARATOR not in job.name:
+                violations.append(Violation("ci-display-name", path, 0,
+                    f"{subject} carries a variant without the registered "
+                    f"'{ci_contract.VARIANT_SEPARATOR.strip()}' separator"))
+            if WRONG_VARIANT_SEPARATOR_RE.search(job.name):
+                violations.append(Violation("ci-display-name", path, 0,
+                    f"{subject} separates its variant with a different character"))
+        if not analysis and job.name.startswith(ANALYSIS_JOB_PREFIXES):
+            violations.append(Violation("ci-analysis-grouping", path, 0,
+                f"{subject} belongs in that component's Analysis workflow"))
+        if job.trigger not in ci_contract.TRIGGER_CLASSES:
+            violations.append(Violation("ci-trigger-routing", path, 0,
+                f"{subject} declares the trigger class '{job.trigger}'; "
+                f"the classes are {', '.join(ci_contract.TRIGGER_CLASSES)}"))
+        if not isinstance(job.timeout_minutes, int) or job.timeout_minutes <= 0:
+            violations.append(Violation("ci-pr-job-timeout", path, 0,
+                f"{subject} declares no budget"))
+        elif job.trigger == "pr" and job.timeout_minutes > ci_contract.PR_BOUNDED_MINUTES:
+            violations.append(Violation("ci-pr-job-timeout", path, 0,
+                f"{subject} reaches pull requests with a "
+                f"{job.timeout_minutes} minute budget"))
+        if job.trigger == "full" and pr_reachable and not job.exception:
+            violations.append(Violation("ci-trigger-exception", path, 0,
+                f"{subject} is schedule work in a pull request workflow "
+                f"without a registered reason"))
+    return violations
+
+
+def check_host_compatibility(registry) -> list[Violation]:
+    """Every host Harmony claims to support keeps a bounded job of its own."""
+    path = "scripts/ci_contract.py"
+    workflow = next((item for item in registry if item.name == HOST_COMPATIBILITY_WORKFLOW), None)
+    if workflow is None:
+        return [Violation("ci-host-compatibility", path, 0,
+            f"'{HOST_COMPATIBILITY_WORKFLOW}' is not registered")]
+    jobs = {job.name: job for job in workflow.jobs}
+    violations = []
+    for host in HOST_COMPATIBILITY_JOBS:
+        job = jobs.get(host)
+        if job is None:
+            violations.append(Violation("ci-host-compatibility", path, 0,
+                f"no job checks Harmony on {host}"))
+        elif job.trigger != "pr":
+            violations.append(Violation("ci-host-compatibility", path, 0,
+                f"the {host} host check does not run on pull requests"))
     return violations
 
 
@@ -717,6 +838,7 @@ def check_workflow_rules(repo_root: Path, files: list[str]) -> list[Violation]:
     violations.extend(check_nes_compositions(repo_root, tracked))
     violations.extend(check_nes_case_coverage(repo_root, tracked))
     violations.extend(check_miri_matrices(repo_root, tracked))
+    violations.extend(check_historical_arms(repo_root, set(files), registered))
     return violations
 
 
@@ -771,11 +893,24 @@ def check_workflow_jobs(rel_path: str, workflow, data: dict, pr_triggered: bool)
         if job.name not in claimed:
             violations.append(Violation("ci-display-name", rel_path, 0,
                 f"no job displays the registered '{job.name}'"))
+    occurrences: dict[str, list[str]] = {}
+    for job_id, job in data["jobs"].items():
+        for display in _job_display_occurrences(job):
+            if UNKNOWN_VALUE in display:
+                continue
+            occurrences.setdefault(display, []).append(job_id)
+    for display, job_ids in sorted(occurrences.items()):
+        if len(job_ids) > 1:
+            violations.append(Violation("ci-display-name", rel_path, 0,
+                f"'{display}' is displayed {len(job_ids)} times, by "
+                f"{', '.join(sorted(set(job_ids)))}"))
     return violations
 
 
 def check_job_contract(rel_path: str, job_id: str, job: dict, registered, pr_triggered: bool) -> list[Violation]:
     """Enforce the routing and budget the registry records for one job."""
+    import ci_contract
+
     violations = []
     timeout = job.get("timeout-minutes")
     declared = isinstance(timeout, int) and not isinstance(timeout, bool)
@@ -798,6 +933,14 @@ def check_job_contract(rel_path: str, job_id: str, job: dict, registered, pr_tri
         if timeout is None:
             violations.append(Violation("ci-pr-job-timeout", rel_path, 0,
                 f"job '{job_id}' declares no timeout-minutes"))
+    if runs_on_pr:
+        commands = "\n".join(str(step.get("run", "")) for step in job.get("steps", [])
+                             if isinstance(step, dict))
+        for command in ci_contract.FULL_SEARCH_COMMANDS:
+            if command in commands:
+                violations.append(Violation("ci-trigger-routing", rel_path, 0,
+                    f"job '{job_id}' runs the full capability search '{command}' "
+                    f"on pull requests"))
     if declared and timeout != registered.timeout_minutes:
         violations.append(Violation("ci-pr-job-timeout", rel_path, 0,
             f"job '{job_id}' has timeout-minutes={timeout}; the registry records "
@@ -859,8 +1002,26 @@ def check_nes_compositions(repo_root: Path, tracked: set[str]) -> list[Violation
                 violations.append(Violation("ci-nes-compositions", workflow.path, 0,
                     f"the {composition} NES composition needs its {role} workflow"))
                 continue
+            violations += check_nes_backend(repo_root, composition, entry, role, workflow)
             violations += check_nes_media(repo_root, composition, role, workflow)
     return violations
+
+
+def check_nes_backend(repo_root: Path, composition: str, entry: dict, role: str, workflow) -> list[Violation]:
+    """A composition's workflow runs the backend the composition is registered with."""
+    import ci_contract
+
+    backend = entry.get("backend", "")
+    markers = ci_contract.BACKEND_MARKERS.get(backend)
+    if not markers:
+        return [Violation("ci-nes-compositions", "scripts/ci_contract.py", 0,
+            f"the {composition} NES composition names the unregistered backend '{backend}'")]
+    text = (repo_root / workflow.path).read_text(encoding="utf-8")
+    if not any(marker in text for marker in markers):
+        return [Violation("ci-nes-compositions", workflow.path, 0,
+            f"the {composition} NES {role} never runs the {backend} backend "
+            f"the composition is registered with")]
+    return []
 
 
 def check_nes_media(repo_root: Path, composition: str, role: str, workflow) -> list[Violation]:
@@ -968,6 +1129,61 @@ def check_nes_case_coverage(repo_root: Path, tracked: set[str]) -> list[Violatio
     return []
 
 
+def _nested_keys(value) -> set[str]:
+    """Every mapping key in a document, at any depth."""
+    keys: set[str] = set()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            keys.add(str(key))
+            keys |= _nested_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            keys |= _nested_keys(child)
+    return keys
+
+
+def check_historical_arms(repo_root: Path, files: set[str], registered: set[str]) -> list[Violation]:
+    """A historical scenario searches the current build alone, with no comparison arm."""
+    import ci_contract
+
+    violations = []
+    prefix = ci_contract.HISTORICAL_CASE_ROOT + "/"
+    cases = sorted(path for path in files
+                   if path.startswith(prefix) and path.endswith("/case.json"))
+    if not cases:
+        return violations
+    for rel_path in cases:
+        try:
+            case = json.loads((repo_root / rel_path).read_text())
+        except (OSError, ValueError) as error:
+            violations.append(Violation("ci-historical-arms", rel_path, 0,
+                f"cannot read the case manifest: {error}"))
+            continue
+        for key in sorted(_nested_keys(case) & set(ci_contract.FORBIDDEN_HISTORICAL_KEYS)):
+            violations.append(Violation("ci-historical-arms", rel_path, 0,
+                f"the case declares '{key}'; a scenario runs the current build alone"))
+        display = ((case.get("ci") or {}) if isinstance(case.get("ci"), dict) else {}).get("display_name")
+        if not isinstance(display, str) or not display.strip():
+            violations.append(Violation("ci-historical-arms", rel_path, 0,
+                "the case declares no ci.display_name to name its scenario job"))
+    for rel_path in sorted(registered):
+        if not (repo_root / rel_path).is_file():
+            continue
+        try:
+            data = _parse_workflow(repo_root / rel_path)
+        except (OSError, ValueError):
+            continue
+        for job_id, job in data["jobs"].items():
+            matrix = (job.get("strategy") or {}).get("matrix")
+            if not isinstance(matrix, dict):
+                continue
+            for key in sorted(_nested_keys(matrix) & FORBIDDEN_MATRIX_KEYS):
+                violations.append(Violation("ci-historical-arms", rel_path, 0,
+                    f"job '{job_id}' declares the matrix dimension '{key}'; "
+                    "a scenario has no execution-arm axis"))
+    return violations
+
+
 def _miri_matrix_names(data: dict, suffix: str) -> list[str]:
     wanted = f"Miri — ${{{{ matrix.name }}}}{suffix}"
     for job in data["jobs"].values():
@@ -1004,7 +1220,15 @@ def check_miri_matrices(repo_root: Path, tracked: set[str]) -> list[Violation]:
         if owner is not None:
             whole.setdefault(owner, []).append(target["name"])
     for owner, workflow_name in ci_contract.MIRI_ANALYSIS_WORKFLOWS.items():
-        workflow = ci_contract.by_name(workflow_name)
+        workflow = next((item for item in ci_contract.WORKFLOWS if item.name == workflow_name), None)
+        if workflow is None:
+            violations.append(Violation("ci-analysis-grouping", "scripts/ci_contract.py", 0,
+                f"'{workflow_name}' owns {owner}'s Miri targets but is not registered"))
+            continue
+        if workflow.owner != owner or not workflow.name.endswith(ANALYSIS_SUFFIX):
+            violations.append(Violation("ci-analysis-grouping", "scripts/ci_contract.py", 0,
+                f"'{workflow_name}' holds {owner}'s Miri targets and is "
+                f"{workflow.owner}'s workflow"))
         if workflow.path not in tracked or not (repo_root / workflow.path).is_file():
             continue
         try:
@@ -1450,7 +1674,7 @@ def main(argv: list[str] | None = None) -> int:
             "must match its registered name exactly."
         ),
         "ci-workflow-triggers": "A workflow's triggers must match the ones scripts/ci_contract.py registers for it.",
-        "ci-trigger-routing": "A job registered for pull requests must run on them, and a job registered as schedule or dispatch work must prove it excludes them with an event guard.",
+        "ci-trigger-routing": "A job registered for pull requests must run on them, a job registered as schedule or dispatch work must prove it excludes them with an event guard, and no job a pull request reaches may start a full capability search however short its declared budget.",
         "ci-trigger-exception": "A workflow reachable from a pull request may hold schedule-only jobs only through an exception registered in scripts/ci_contract.py, which states why the work cannot fit the bounded budget.",
         "ci-display-name": (
             "Display names are Title Case, identify a responsibility or a workload scenario, "
@@ -1463,6 +1687,9 @@ def main(argv: list[str] | None = None) -> int:
         "ci-nes-media": "Both NES compositions publish video with game audio: a bounded capture in the Checks workflow and every scenario in the Benchmarks workflow. Register the capture in scripts/ci_contract.py and check the media with scripts/verify-nes-films.py.",
         "ci-nes-compositions": "Both NES compositions stay: Dissonance runs the game on native QuickNES and Harmony runs it inside a Consonance VM. Each keeps a bounded check and a full benchmark.",
         "ci-miri-coverage": "The Analysis workflow of each component must list exactly the Miri targets scripts/miri_scope.py registers and scripts/ci_contract.py assigns to it.",
+        "ci-analysis-grouping": "Coverage, Miri, mutation testing and proofs belong in the owning component's Analysis workflow, beside each other and apart from its bounded correctness checks.",
+        "ci-host-compatibility": f"Harmony is built and tested on every host it supports. '{HOST_COMPATIBILITY_WORKFLOW}' keeps a bounded pull request job for each of {', '.join(HOST_COMPATIBILITY_JOBS)}.",
+        "ci-historical-arms": "A historical scenario searches the current build alone. Cases carry the affected and fixed versions as provenance, never as an execution arm, a matrix dimension or a replay mode.",
         "lab-notes-not-tracked": (
             "Lab notes, run reports, and campaign results must not be checked "
             "into the repository. They belong in external storage. Remove the "

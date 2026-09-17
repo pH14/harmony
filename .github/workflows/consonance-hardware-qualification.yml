@@ -24,7 +24,7 @@ env:
 
 jobs:
   probe:
-    name: Runner CPU Features
+    name: Runner CPU Features — Replica ${{ matrix.replica }}
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -72,7 +72,7 @@ jobs:
           if-no-files-found: error
 
   x1-minimal-guest:
-    name: Minimal Guest Determinism
+    name: Minimal Guest Determinism — Replica ${{ matrix.replica }}
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -184,7 +184,7 @@ jobs:
           if-no-files-found: error
 
   go-runtime:
-    name: Go Runtime Determinism
+    name: Go Runtime Determinism — Replica ${{ matrix.replica }}
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: guest-image
     runs-on: ubuntu-24.04
@@ -229,7 +229,7 @@ jobs:
           if-no-files-found: error
 
   x2-linux-virtual_time:
-    name: Linux Virtual Time
+    name: Linux Virtual Time — Replica ${{ matrix.replica }}
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: guest-image
     runs-on: ubuntu-24.04
@@ -301,7 +301,7 @@ jobs:
           if-no-files-found: error
 
   x2-intel-hunt:
-    name: Intel Determinism Search
+    name: Intel Determinism Search — Replica ${{ matrix.replica }}
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: guest-image
     runs-on: ubuntu-24.04

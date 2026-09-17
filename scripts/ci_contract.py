@@ -108,6 +108,14 @@ CAPTURE_SCRIPTS = (
     "scripts/verify-nes-films.py",
 )
 
+# Commands that run a full capability search. A job a pull request reaches
+# never invokes one, whatever budget it declares.
+FULL_SEARCH_COMMANDS = (
+    "benchmarks/search/eval.py run",
+    "nova-consonance-campaign",
+    "scripts/historical-search.sh",
+)
+
 MIRI_FLAGS_DEFAULT = "-Zmiri-permissive-provenance"
 
 # Every manifest that owns formatting, lints and tests. A workspace root covers
@@ -257,16 +265,16 @@ CONSONANCE_HARDWARE = Workflow(
     owner="Consonance",
     triggers=("schedule", "workflow_dispatch"),
     jobs=(
-        Job("Runner CPU Features", "full", 45),
-        Job("Minimal Guest Determinism", "full", 45),
+        Job("Runner CPU Features — Replica <N>", "full", 45),
+        Job("Minimal Guest Determinism — Replica <N>", "full", 45),
         Job("Linux Guest Image", "full", 90),
         Job("Instruction Timing Sweep", "full", 60,
             test_targets=("vmm-core:n6_x86_instruction_sweep",)),
-        Job("Go Runtime Determinism", "full", 60,
+        Job("Go Runtime Determinism — Replica <N>", "full", 60,
             test_targets=("vmm-core:go_runtime_x86",)),
-        Job("Linux Virtual Time", "full", 90,
+        Job("Linux Virtual Time — Replica <N>", "full", 90,
             test_targets=("vmm-core:x86_kvm_linux_virtual_time",)),
-        Job("Intel Determinism Search", "full", 45),
+        Job("Intel Determinism Search — Replica <N>", "full", 45),
         Job("Snapshot Identity — Replica <N>", "full", 15,
             test_targets=("vmm-core:x86_cpu_snapshots",)),
         Job("Results", "full", 45),
@@ -507,6 +515,14 @@ NES_COMPOSITIONS = {
         "benchmarks": HARMONY_NES_BENCHMARKS.name,
         "backend": "consonance",
     },
+}
+
+# How a workflow file shows which backend it executes a composition on. A
+# composition keeps at least one marker for the backend it is registered with.
+BACKEND_MARKERS = {
+    "native": ("--backend native", "nes-eval"),
+    "consonance": ("--backend consonance", "--features consonance",
+                   "nova-consonance-campaign"),
 }
 
 # Jobs that must publish a film with a real audio stream, and the registered
