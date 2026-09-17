@@ -253,6 +253,13 @@ the `blue-probe plan` itinerary that produced it, and `fixtures/brock-trace.json
 is the archive key and milestone flags after each of its actions, written by
 `blue-probe trace`.
 
+## Witnesses
+
+`blue-campaign --output <dir>` writes `<dir>/milestones/<bit>-<name>.json` the
+first time a milestone is reached, and `<dir>/champion-input.json` for the
+deepest lineage. The bit prefix is there so the highest-numbered file in the
+directory is the deepest milestone; the names alone sort the wrong way.
+
 ## Binaries
 
 `blue-campaign` runs a campaign. `blue-film` renders a recorded tape to MP4 and

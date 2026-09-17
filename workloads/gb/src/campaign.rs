@@ -43,7 +43,7 @@ use crate::{
         longest_action_frames, merge_milestones, merge_progress_watermark, milestone_key,
         milestones, progress_watermark, sample_action,
     },
-    progress::NamedProgress,
+    progress::{MILESTONE_NAMES, NamedProgress},
     target::{BlueAction, BlueObservation, BlueSnapshot, BlueState, BlueTarget},
 };
 
@@ -184,7 +184,11 @@ impl BlueGame {
         if let Some(directory) = &self.milestone_input_dir {
             std::fs::create_dir_all(directory)?;
             for name in names {
-                let path = directory.join(format!("{name}.json"));
+                let bit = MILESTONE_NAMES
+                    .iter()
+                    .position(|milestone| milestone == name)
+                    .unwrap_or(MILESTONE_NAMES.len());
+                let path = directory.join(format!("{bit}-{name}.json"));
                 let temporary = path.with_extension("json.tmp");
                 std::fs::write(&temporary, serde_json::to_vec(input)?)?;
                 std::fs::rename(temporary, path)?;
