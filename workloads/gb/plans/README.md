@@ -305,6 +305,51 @@ Added while running step 5:
   weighted draw picks cheaper macros, so equal wall time hands the advised arm
   more executions, and any per-run total then has to be stated as a rate.
 
+## Step 6 — aim the stalled class at a named goal
+
+The searcher stalls with its deepest class holding a minority of the draws. Give
+that class a target and bias its draws toward the target, resetting on a stall.
+
+Three pieces, each its own commit:
+
+1. A generic per-entry weight hook in `dissonance/searcher`, in its own commit
+   with no workload using it yet. It multiplies an entry's weight in the walk and
+   has a floor, so no entry reaches zero.
+2. A goal record named once per stall: target map, target tile or NPC, and the
+   done condition. The workload asks the model for it and stores it typed.
+3. The gradient itself, derived in code from warp-graph hop distance to the
+   target map plus the per-map collision data, applied to the stalled class only,
+   retired when the done condition fires or a barren budget runs out.
+
+Jev keeps its step-5 draw adviser and gains the named goal in its instructions.
+
+What the two checks before the build measured, on the six 60,000-execution seeds:
+
+- Ask the model for the goal in two questions, not one. Asked what milestone to
+  reach next, it answers `delivered_parcel` on all four stalled seeds, blind, at
+  0.49 to 0.71. Asked in the same breath which map to aim at, it never answers
+  `oaks_lab`. Asked which map completes the milestone it just named, it answers
+  `oaks_lab` at 0.79 to 0.85.
+- Offer every map in the region, not the maps the archive has reached. The seed
+  stalled before Pewter needs a target it has never stood on, and given only its
+  own maps it picks the forest gatehouse it came in through.
+- The workload's existing route string is what makes the map answer reliable.
+  With the route, the target map is first on 6 of 6 seeds at 0.79 to 1.00.
+  Without it, only the two seeds past the parcel wall land; the four stalled
+  seeds spread evenly over Pallet Town's three buildings at about 0.2 each. The
+  model places itself along a route it is handed rather than deriving one.
+- Weight the hop distance at `4^-d` or steeper. Route 1 holds ten times the
+  states Oak's lab holds across two hops, so a per-hop factor below the square
+  root of that leaves Route 1 dominant: `2^-d` gives the lab 15.8% against Route
+  1's 42.2%, `4^-d` gives 39.5% against 26.4%, `16^-d` gives 82.0% against 3.4%.
+  Set the floor below the weight of the deepest hop the target sits behind.
+- That arithmetic is a static reweighting of a finished archive. It does not
+  model the draws the gradient itself creates, so treat the shares as the
+  direction of the effect and not its size.
+
+Score it on the same six seeds at 60,000 executions, by deepest milestone reached
+and by the share of draws each milestone class takes.
+
 ## Working rules
 
 - Read `CLAUDE.md`, `REVIEWING.md`, `dissonance/searcher/README.md`,
