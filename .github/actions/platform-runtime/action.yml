@@ -78,7 +78,7 @@ runs:
         python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify \
           --architecture "$ARCHITECTURE" \
           --artifacts "consonance/harmony-linux/build/$ARCHITECTURE" \
-          --output "$REPORT/provenance.json"
+          --output "$REPORT/provenance.json" || true
         scope=$(python3 -c 'import json,os,sys; print(json.load(open(sys.argv[1]))["scope"])' \
           "$REPORT/provenance.json")
         echo "scope=$scope" >>"$GITHUB_OUTPUT"

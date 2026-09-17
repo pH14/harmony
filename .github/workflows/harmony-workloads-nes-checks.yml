@@ -202,19 +202,23 @@ jobs:
           HARMONY_QUICKNES_STATIC_OUTPUT="${NOVA_BUILD}/libquicknes_libretro.a" \
             scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
       - name: Restore the qualified guest runtime
+        id: runtime
         uses: ./.github/actions/platform-runtime
         with:
           require-exact: 'false'
           report: package-backend-report
       - name: Build the canonical guest runtime when none was published
+        if: steps.runtime.outputs.scope != 'exact-input'
         run: |
           set -euo pipefail
-          if [[ ! -s consonance/harmony-linux/build/x86_64/bzImage ]]; then
-            make -C consonance/harmony-linux fetch
-            HARMONY_RDTSC_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt" \
-            HARMONY_RDRAND_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt" \
-              consonance/harmony-linux/scripts/build-platform-runtime.sh
-          fi
+          rm -rf consonance/harmony-linux/build/x86_64
+          make -C consonance/harmony-linux fetch
+          HARMONY_RDTSC_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt" \
+          HARMONY_RDRAND_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt" \
+            consonance/harmony-linux/scripts/build-platform-runtime.sh
+      - name: Verify the guest runtime matches this source
+        run: |
+          set -euo pipefail
           python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
             --artifacts consonance/harmony-linux/build/x86_64 \
             --output package-backend-report/platform-provenance.json
