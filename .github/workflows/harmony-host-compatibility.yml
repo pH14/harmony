@@ -69,11 +69,17 @@ jobs:
         run: |
           set -euo pipefail
           cargo run -q -p harmony-cli -- --help
-          cargo run -q -p harmony-cli -- preflight --json | tee preflight.json
+          # Preflight exits non-zero on a host that cannot run a guest, and
+          # a hosted runner has no nested hypervisor. This job checks that the CLI
+          # runs and identifies the host, so the readiness verdict is reported.
+          status=0
+          cargo run -q -p harmony-cli -- preflight --json >preflight.json || status=$?
+          cat preflight.json
           test "$(jq -r .os preflight.json)" = macos
           test "$(jq -r .isa preflight.json)" = arm64
-          # Reported, never required: a hosted runner has no nested hypervisor.
-          jq -r '"hypervisor state: \(.hypervisor.state)"' preflight.json
+          jq -e 'has("ready") and has("blockers")' preflight.json >/dev/null
+          jq -r '"hypervisor state: \(.hypervisor.state); ready: \(.ready)"' preflight.json
+          echo "preflight exit: ${status}"
 
   linux-arm64:
     name: Linux Arm64
@@ -113,8 +119,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo run -q -p harmony-cli -- --help
-          cargo run -q -p harmony-cli -- preflight --json | tee preflight.json
+          # Preflight exits non-zero on a host that cannot run a guest, and
+          # a hosted runner has no usable /dev/kvm. This job checks that the CLI
+          # runs and identifies the host, so the readiness verdict is reported.
+          status=0
+          cargo run -q -p harmony-cli -- preflight --json >preflight.json || status=$?
+          cat preflight.json
           test "$(jq -r .os preflight.json)" = linux
           test "$(jq -r .isa preflight.json)" = arm64
-          # Reported, never required: a hosted runner has no usable /dev/kvm.
-          jq -r '"hypervisor state: \(.hypervisor.state)"' preflight.json
+          jq -e 'has("ready") and has("blockers")' preflight.json >/dev/null
+          jq -r '"hypervisor state: \(.hypervisor.state); ready: \(.ready)"' preflight.json
+          echo "preflight exit: ${status}"
