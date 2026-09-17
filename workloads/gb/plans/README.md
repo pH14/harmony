@@ -263,6 +263,26 @@ Added while building step 5:
   a drawn kind onto one the live state can run, so `battle_move` walks when no
   battle is running. Described as a battle move alone it is rated useless in a
   town, and that rating lands on walking.
+- Conversation text is what the key cannot see, and `advance` is what crosses
+  it. Of the scripted route's 463 actions, 191 sit in runs of three or more that
+  share one archive key, the longest run is six, and 119 of those 191 actions are
+  `advance`. The five longest runs are all the same shape: walk up to someone,
+  press A, then push the text through. Described only as a way to run from a wild
+  battle, `advance` drew 5% of the weight in Oak's lab against a uniform 17%.
+- The per-map script bytes at `wGameProgressFlags` do not close that gap. They
+  are the game's own record of where each map's script stands, but they move 22
+  times over the 463 actions: adding their sum to the key takes it from 135
+  distinct keys to 144 and leaves the longest same-key run at six.
+- Conversation text is what the key cannot see, and `advance` is what crosses
+  it. Of the scripted route's 463 actions, 191 sit in runs of three or more that
+  share one archive key, the longest run is six, and 119 of those 191 actions are
+  `advance`. The five longest runs are all the same shape: walk up to someone,
+  press A, then push the text through. Described only as a way to run from a wild
+  battle, `advance` drew 5% of the weight in Oak's lab against a uniform 17%.
+- The per-map script bytes at `wGameProgressFlags` do not close that gap. They
+  are the game's own record of where each map's script stands, but they move 22
+  times over the 463 actions: adding their sum to the key takes it from 135
+  distinct keys to 144 and leaves the longest same-key run at six.
 - An advised run is not replay-checked. The recorded table is what a replayed
   draw reads, and rebuilding the counters would mean reaching the API again, so
   `--verify-replay` refuses `--advise`.

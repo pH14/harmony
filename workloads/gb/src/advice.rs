@@ -41,15 +41,17 @@ from a saved position.";
 const KIND_DESCRIPTIONS: [&str; KINDS] = [
     "walk to a warp, a door, a counter, or a nearby tile on this map, and \
      attack with a move instead when a battle is running",
-    "press A at the tile ahead and read the text through to the end, and \
-     advance the text instead when a battle is running",
+    "press A at the tile ahead, which opens a conversation with the person or \
+     sign there, and advances the text instead when a battle is running",
     "attack with one of the active Pokemon's moves, and walk to a tile on this \
      map instead when no battle is running",
     "use an item from the bag, and press A at the tile ahead instead when no \
      battle is running",
     "switch to another party member, and press A at the tile ahead instead when \
      no battle is running",
-    "run from a wild battle, or press B until control returns",
+    "press B until the game hands control back, which is what carries a \
+     conversation from its first text box through to its end, and what runs \
+     from a wild battle",
 ];
 
 pub const MAP_NAMES: [&str; 248] = [
