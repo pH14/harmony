@@ -34,6 +34,17 @@ MILESTONE_NAMES = [
     "boulder_badge",
 ]
 
+# Mirrors ActionKind::frame_budget in workloads/gb/src/target.rs. The searcher
+# orders equal progress by accumulated frames, so the baseline must too.
+ACTION_FRAMES = {
+    "WalkTo": 1_650,
+    "Interact": 750,
+    "BattleMove": 1_350,
+    "UseItem": 1_050,
+    "Switch": 1_050,
+    "Advance": 1_050,
+}
+
 GOAL = (
     "A search is playing Pokemon Blue from a new game. The goal is Brock's "
     "Boulder Badge in the Pewter City gym. The route is: take a starter from "
@@ -61,46 +72,74 @@ def render(entry):
         "party_hp": key["party_hp"],
         "party_levels": key["party_levels"],
         "actions_to_reach": entry["actions_to_reach"],
+        "frames_to_reach": entry["frames_to_reach"],
     }
 
 
+def suffix_cost(actions):
+    return sum(ACTION_FRAMES[action["kind"]] for action in actions)
+
+
 def load_entries(reports):
-    """Entries are stored as a suffix plus a parent, so lengths are walked."""
+    """Entries are stored as a suffix plus a parent, so the prefix is walked.
+
+    Entry ids restart in every campaign, so the seed goes in the id the
+    questions are keyed by."""
     entries = []
     for path in reports:
         report = json.loads(Path(path).read_text())
         archive = report.get("archive", report)
-        lengths = {}
+        seed = archive["seed"]
+        reached = {}
         for entry in archive["entries"]:
             if "input" in entry:
-                length = len(entry["input"]["actions"])
+                actions = entry["input"]["actions"]
+                walked = (len(actions), suffix_cost(actions))
             else:
-                parent = lengths.get(entry["parent_id"])
+                parent = reached.get(entry["parent_id"])
                 if parent is None:
                     continue
-                length = parent + len(entry["input_suffix"])
-            lengths[entry["id"]] = length
+                suffix = entry["input_suffix"]
+                walked = (
+                    parent[0] + len(suffix),
+                    parent[1] + suffix_cost(suffix),
+                )
+            reached[entry["id"]] = walked
             entries.append(
-                {"seed": archive["seed"], "actions_to_reach": length, **entry}
+                {
+                    **entry,
+                    "seed": seed,
+                    "id": f"{seed}:{entry['id']}",
+                    "actions_to_reach": walked[0],
+                    "frames_to_reach": walked[1],
+                }
             )
     return entries
 
 
 def route_positions(trace_path):
-    """Map each (map, cell) on the scripted route to how far along it is."""
+    """Map each place on the scripted route to how far along it is.
+
+    The route crosses the same cells twice, so the badges and route flags are
+    part of the place; without them a late revisit reads as early progress."""
     trace = json.loads(Path(trace_path).read_text())
     positions = {}
     total = len(trace["points"])
     for point in trace["points"]:
-        key = point["key"]
-        place = (key["map"], key["cell_x"], key["cell_y"])
+        place = place_of(point)
         positions.setdefault(place, point["action"] / max(total - 1, 1))
     return positions
 
 
 def place_of(entry):
     key = entry["key"]
-    return (key["map"], key["cell_x"], key["cell_y"])
+    return (
+        key["badges"],
+        key["route"],
+        key["map"],
+        key["cell_x"],
+        key["cell_y"],
+    )
 
 
 def questions_for(batch):
@@ -173,13 +212,13 @@ def ask(client, key, batch, retries):
 
 
 def searcher_rank(entry):
-    """The archive's own preference: progress first, then fewer actions."""
+    """The archive's own preference: progress first, then cheaper in frames."""
     key = entry["key"]
     return (
         -bin(key["badges"]).count("1"),
         -bin(key["route"]).count("1"),
         -key["events"],
-        entry["actions_to_reach"],
+        entry["frames_to_reach"],
     )
 
 

@@ -17,7 +17,7 @@ use crate::{
     target::{ACTION_KINDS, BlueAction},
 };
 
-pub const ADVICE_POLICY_IDENTIFIER: &str = "jev_score_per_macro_kind_by_place_v1";
+pub const ADVICE_POLICY_IDENTIFIER: &str = "jev_choice_over_macro_kinds_by_place_v1";
 pub const ADVICE_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 pub const ADVICE_MODEL: &str = "jev-latest";
 pub const ADVICE_KEY_VARIABLE: &str = "TYPESAFE_API_KEY";
@@ -26,7 +26,6 @@ pub const ADVICE_TIMEOUT_SECONDS: u32 = 30;
 pub const KINDS: usize = ACTION_KINDS.len();
 pub const WEIGHT_FLOOR: u16 = 16;
 pub const WEIGHT_CEILING: u16 = 256;
-const SCORE_CEILING: f64 = 3.0;
 const MAX_CONTEXTS_PER_RECORD: usize = 8;
 pub const MAX_ADVISED_CONTEXTS: usize = 512;
 const CONTEXT_OVERHEAD_BYTES: usize = 64;
@@ -40,19 +39,17 @@ Pewter City, and beat Brock. Each draw picks one macro and the search runs it \
 from a saved position.";
 
 const KIND_DESCRIPTIONS: [&str; KINDS] = [
-    "walk to a warp, a door, a counter, or a nearby tile on this map",
-    "press A at the tile ahead and read the text through to the end",
-    "in a battle, attack with one of the active Pokemon's moves",
-    "use an item from the bag",
-    "switch to another party member",
+    "walk to a warp, a door, a counter, or a nearby tile on this map, and \
+     attack with a move instead when a battle is running",
+    "press A at the tile ahead and read the text through to the end, and \
+     advance the text instead when a battle is running",
+    "attack with one of the active Pokemon's moves, and walk to a tile on this \
+     map instead when no battle is running",
+    "use an item from the bag, and press A at the tile ahead instead when no \
+     battle is running",
+    "switch to another party member, and press A at the tile ahead instead when \
+     no battle is running",
     "run from a wild battle, or press B until control returns",
-];
-
-const SCORE_CRITERIA: [&str; 4] = [
-    "this macro cannot run in this place and wastes the draw",
-    "this macro runs here but never moves the search toward the next milestone",
-    "this macro helps in this place some of the time",
-    "this macro is the main way to reach the next milestone from this place",
 ];
 
 pub const MAP_NAMES: [&str; 248] = [
@@ -103,10 +100,10 @@ pub const MAP_NAMES: [&str; 248] = [
     "viridian_nickname_house",
     "viridian_gym",
     "digletts_cave_route_2",
-    "viridian_forest_north_gate",
+    "viridian_forest_north_gatehouse",
     "route_2_trade_house",
-    "route_2_gate",
-    "viridian_forest_south_gate",
+    "route_2_gatehouse",
+    "viridian_forest_south_gatehouse",
     "viridian_forest",
     "museum_1f",
     "museum_2f",
@@ -126,24 +123,24 @@ pub const MAP_NAMES: [&str; 248] = [
     "cerulean_mart",
     "mt_moon_pokecenter",
     "cerulean_trashed_house_copy",
-    "route_5_gate",
+    "route_5_gatehouse",
     "underground_path_route_5",
     "daycare",
-    "route_6_gate",
+    "route_6_gatehouse",
     "underground_path_route_6",
     "underground_path_route_6_copy",
-    "route_7_gate",
+    "route_7_gatehouse",
     "underground_path_route_7",
     "underground_path_route_7_copy",
-    "route_8_gate",
+    "route_8_gatehouse",
     "underground_path_route_8",
     "rock_tunnel_pokecenter",
     "rock_tunnel_1f",
     "power_plant",
-    "route_11_gate_1f",
+    "route_11_gatehouse_1f",
     "digletts_cave_route_11",
-    "route_11_gate_2f",
-    "route_12_gate_1f",
+    "route_11_gatehouse_2f",
+    "route_12_gatehouse_1f",
     "bills_house",
     "vermilion_pokecenter",
     "pokemon_fan_club",
@@ -212,7 +209,7 @@ pub const MAP_NAMES: [&str; 248] = [
     "fuchsia_bills_grandpas_house",
     "fuchsia_pokecenter",
     "wardens_house",
-    "safari_zone_gate",
+    "safari_zone_gatehouse",
     "fuchsia_gym",
     "fuchsia_meeting_room",
     "seafoam_islands_b1f",
@@ -240,18 +237,18 @@ pub const MAP_NAMES: [&str; 248] = [
     "silph_co_1f",
     "saffron_pokecenter",
     "mr_psychics_house",
-    "route_15_gate_1f",
-    "route_15_gate_2f",
-    "route_16_gate_1f",
-    "route_16_gate_2f",
+    "route_15_gatehouse_1f",
+    "route_15_gatehouse_2f",
+    "route_16_gatehouse_1f",
+    "route_16_gatehouse_2f",
     "route_16_fly_house",
     "route_12_super_rod_house",
-    "route_18_gate_1f",
-    "route_18_gate_2f",
+    "route_18_gatehouse_1f",
+    "route_18_gatehouse_2f",
     "seafoam_islands_1f",
-    "route_22_gate",
+    "route_22_gatehouse",
     "victory_road_2f",
-    "route_12_gate_2f",
+    "route_12_gatehouse_2f",
     "vermilion_trade_house",
     "digletts_cave",
     "victory_road_3f",
@@ -390,10 +387,10 @@ pub fn uniform_weights() -> AdviceWeights {
 }
 
 #[must_use]
-fn weight_of(score: f64) -> u16 {
-    let share = (score.max(0.0) / SCORE_CEILING).min(1.0);
+fn weight_of(probability: f64) -> u16 {
+    let share = probability.clamp(0.0, 1.0);
     let span = f64::from(WEIGHT_CEILING - WEIGHT_FLOOR);
-    WEIGHT_FLOOR.saturating_add(u16::try_from((share * span) as i64).unwrap_or(0))
+    WEIGHT_FLOOR.saturating_add(u16::try_from((share * span).round() as i64).unwrap_or(0))
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -460,9 +457,15 @@ impl AdviceTable {
     }
 
     pub fn fill(&mut self, adviser: &BlueAdviser, pending: &BTreeSet<AdviceContext>) {
-        for context in pending.iter().take(MAX_CONTEXTS_PER_RECORD) {
-            if self.weights.contains_key(context) || self.weights.len() >= MAX_ADVISED_CONTEXTS {
-                continue;
+        let wanted = pending
+            .iter()
+            .filter(|context| !self.weights.contains_key(context))
+            .copied()
+            .take(MAX_CONTEXTS_PER_RECORD)
+            .collect::<Vec<_>>();
+        for context in &wanted {
+            if self.weights.len() >= MAX_ADVISED_CONTEXTS {
+                break;
             }
             self.calls += 1;
             match adviser.ask(*context) {
@@ -533,26 +536,30 @@ impl BlueAdviser {
     }
 
     fn body(&self, context: AdviceContext) -> serde_json::Value {
-        let mut questions = serde_json::Map::new();
-        for (index, kind) in ACTION_KINDS.iter().enumerate() {
-            questions.insert(
-                (*kind).name().to_owned(),
-                serde_json::json!({
-                    "type": "score",
-                    "instructions": format!(
-                        "The search is standing in {}. How useful is the macro that will {} for reaching {}?",
-                        map_name(context.map),
-                        KIND_DESCRIPTIONS[index],
-                        context.next_milestone(),
-                    ),
-                    "criteria": SCORE_CRITERIA,
-                }),
-            );
-        }
+        let criteria = ACTION_KINDS
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                (
+                    (*kind).name().to_owned(),
+                    serde_json::Value::from(KIND_DESCRIPTIONS[index]),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
         serde_json::json!({
             "state": context.state(),
             "model": self.model,
-            "questions": questions,
+            "questions": {
+                "pick": {
+                    "type": "choice",
+                    "instructions": format!(
+                        "The search is standing in {}. Which macro should the draw pick most often to reach {} soonest?",
+                        map_name(context.map),
+                        context.next_milestone(),
+                    ),
+                    "criteria": criteria,
+                }
+            },
         })
     }
 
@@ -568,17 +575,18 @@ impl BlueAdviser {
         let answer = self.post(&path);
         let _ = std::fs::remove_file(&path);
         let answer: serde_json::Value = serde_json::from_slice(&answer?)?;
-        let answers = answer
+        let probabilities = answer
             .get("answers")
-            .ok_or("Jev answered without an answers object")?;
+            .and_then(|answers| answers.get("pick"))
+            .and_then(|pick| pick.get("probabilities"))
+            .ok_or("Jev answered without a probability for the macro choice")?;
         let mut weights = uniform_weights();
         for (index, kind) in ACTION_KINDS.iter().enumerate() {
-            let score = answers
+            let probability = probabilities
                 .get((*kind).name())
-                .and_then(|answer| answer.get("score"))
                 .and_then(serde_json::Value::as_f64)
-                .ok_or("Jev answered without a score for every macro")?;
-            weights[index] = weight_of(score);
+                .ok_or("Jev answered without a probability for every macro")?;
+            weights[index] = weight_of(probability);
         }
         let tokens = answer
             .get("usage")
@@ -590,6 +598,7 @@ impl BlueAdviser {
 
     fn post(&self, body: &std::path::Path) -> Result<Vec<u8>, Box<dyn Error>> {
         let mut child = Command::new("curl")
+            .arg("--disable")
             .arg("--config")
             .arg("-")
             .stdin(Stdio::piped())
@@ -666,13 +675,13 @@ mod tests {
     }
 
     #[test]
-    fn a_score_becomes_a_weight_between_the_floor_and_the_ceiling() {
+    fn a_probability_becomes_a_weight_between_the_floor_and_the_ceiling() {
         assert_eq!(weight_of(-1.0), WEIGHT_FLOOR);
         assert_eq!(weight_of(0.0), WEIGHT_FLOOR);
-        assert_eq!(weight_of(SCORE_CEILING), WEIGHT_CEILING);
-        assert_eq!(weight_of(SCORE_CEILING * 2.0), WEIGHT_CEILING);
-        assert!(weight_of(1.5) > WEIGHT_FLOOR);
-        assert!(weight_of(1.5) < WEIGHT_CEILING);
+        assert_eq!(weight_of(1.0), WEIGHT_CEILING);
+        assert_eq!(weight_of(2.0), WEIGHT_CEILING);
+        assert!(weight_of(0.5) > WEIGHT_FLOOR);
+        assert!(weight_of(0.5) < WEIGHT_CEILING);
     }
 
     #[test]
@@ -731,6 +740,35 @@ mod tests {
         restored.load(&checkpoint).unwrap();
         assert_eq!(restored.weights_for(context), weights);
         assert_eq!(restored.advised(), 1);
+    }
+
+    #[test]
+    fn an_answered_place_does_not_hold_a_slot_in_the_next_round() {
+        let mut table = AdviceTable::default();
+        let answered = (0..MAX_CONTEXTS_PER_RECORD)
+            .map(|index| AdviceContext {
+                badges: 0,
+                route: 0,
+                map: u8::try_from(index).unwrap(),
+            })
+            .collect::<Vec<_>>();
+        for context in &answered {
+            table.weights.insert(*context, uniform_weights());
+        }
+        let fresh = AdviceContext {
+            badges: 0,
+            route: 3,
+            map: 42,
+        };
+        let mut pending = answered.iter().copied().collect::<BTreeSet<_>>();
+        pending.insert(fresh);
+        let wanted = pending
+            .iter()
+            .filter(|context| !table.weights.contains_key(context))
+            .copied()
+            .take(MAX_CONTEXTS_PER_RECORD)
+            .collect::<Vec<_>>();
+        assert_eq!(wanted, vec![fresh]);
     }
 
     #[test]

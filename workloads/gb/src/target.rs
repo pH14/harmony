@@ -34,6 +34,7 @@ pub const BATTLE_AND_START_SAVED_MENU_ITEM: u16 = 0xcc2d;
 pub const LIST_SCROLL_OFFSET: u16 = 0xcc36;
 pub const JOY_IGNORE: u16 = 0xcd6b;
 pub const ENEMY_MON_HP: u16 = 0xcfe6;
+pub const ENEMY_MON_MAX_HP: u16 = 0xcff4;
 pub const BATTLE_RESULT: u16 = 0xcf0b;
 pub const BATTLE_MON_LEVEL: u16 = 0xd022;
 pub const BATTLE_MON_HP: u16 = 0xd015;
@@ -120,6 +121,7 @@ pub const PRESS_FRAMES: u32 = 8;
 pub const RELEASE_FRAMES: u32 = 8;
 pub const SETTLE_FRAMES: u32 = 12;
 pub const MAP_LOAD_FRAMES: u32 = 150;
+pub const BATTLE_STAGES: u8 = 8;
 pub const MENU_WAIT_FRAMES: u32 = 600;
 pub const TEXT_TAPS: u32 = 32;
 pub const WALK_FRAME_BUDGET: u64 = 1_500;
@@ -195,6 +197,8 @@ pub struct BlueState {
     pub in_battle: u8,
     pub battle_type: u8,
     pub opponent: u8,
+    pub enemy_hp: u16,
+    pub enemy_max_hp: u16,
     pub text_box: u8,
     pub menu_item: u8,
     pub max_menu_item: u8,
@@ -238,6 +242,19 @@ impl BlueState {
     #[must_use]
     pub fn in_battle(self) -> bool {
         self.in_battle != 0
+    }
+
+    #[must_use]
+    pub fn battle_stage(self) -> u8 {
+        if !self.in_battle() || self.enemy_max_hp == 0 {
+            return 0;
+        }
+        let left = u32::from(self.enemy_hp.min(self.enemy_max_hp));
+        let parts = left * u32::from(BATTLE_STAGES) / u32::from(self.enemy_max_hp);
+        (u32::from(BATTLE_STAGES) + 1 - parts)
+            .min(u32::from(BATTLE_STAGES))
+            .try_into()
+            .unwrap_or(BATTLE_STAGES)
     }
 
     #[must_use]
@@ -293,6 +310,8 @@ pub fn decode_state(wram: &[u8], latched: u8) -> BlueState {
         in_battle: byte(wram, IS_IN_BATTLE),
         battle_type: byte(wram, BATTLE_TYPE),
         opponent: byte(wram, CURRENT_OPPONENT),
+        enemy_hp: big_endian_word(wram, ENEMY_MON_HP),
+        enemy_max_hp: big_endian_word(wram, ENEMY_MON_MAX_HP),
         text_box: byte(wram, TEXT_BOX_ID),
         menu_item: byte(wram, CURRENT_MENU_ITEM),
         max_menu_item: byte(wram, MAX_MENU_ITEM),

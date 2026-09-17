@@ -20,7 +20,7 @@ pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_BLUE_ACTIONS: usize = 4_096;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "blue_badges_route_events_map_cell4_preference_party_hp_then_levels_v2";
+    "blue_badges_route_events_battle_map_cell4_preference_party_hp_then_levels_v3";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "uniform_macro_kind_and_slot_v1";
 
@@ -35,6 +35,7 @@ pub struct BlueArchiveGroup {
     badges: u8,
     route: u8,
     events: u16,
+    battle: u8,
     map: u8,
     cell_x: u8,
     cell_y: u8,
@@ -45,6 +46,7 @@ pub struct BlueArchiveKey {
     pub badges: u8,
     pub route: u8,
     pub events: u16,
+    pub battle: u8,
     pub map: u8,
     pub cell_x: u8,
     pub cell_y: u8,
@@ -77,6 +79,7 @@ impl ArchiveKey for BlueArchiveKey {
             badges: self.badges,
             route: self.route,
             events: self.events,
+            battle: self.battle,
             map: self.map,
             cell_x: self.cell_x,
             cell_y: self.cell_y,
@@ -89,6 +92,7 @@ impl ArchiveKey for BlueArchiveKey {
                 ..place
             },
             2 => BlueArchiveGroup {
+                battle: 0,
                 map: 0,
                 cell_x: 0,
                 cell_y: 0,
@@ -129,6 +133,7 @@ pub fn archive_key(state: BlueState) -> BlueArchiveKey {
         badges: state.badges,
         route: state.route_flags,
         events: state.events_set,
+        battle: state.battle_stage(),
         map: state.map,
         cell_x: state.x / CELL_STEPS,
         cell_y: state.y / CELL_STEPS,
@@ -257,12 +262,34 @@ mod tests {
             badges,
             route,
             events,
+            battle: 0,
             map,
             cell_x: x / CELL_STEPS,
             cell_y: y / CELL_STEPS,
             party_hp: hp,
             party_levels: levels,
         }
+    }
+
+    fn fighting(stage: u8, hp: u32) -> BlueArchiveKey {
+        BlueArchiveKey {
+            battle: stage,
+            ..keyed(0, 1, 5, 40, 4, 6, hp, 5)
+        }
+    }
+
+    #[test]
+    fn a_turn_of_a_fight_is_a_new_place_even_though_it_costs_health() {
+        let standing = fighting(0, 20);
+        let started = fighting(1, 20);
+        let halfway = fighting(4, 14);
+        assert_ne!(standing.group(0), started.group(0));
+        assert_ne!(started.group(0), halfway.group(0));
+        assert_eq!(
+            BlueArchiveKey::progress_cmp(halfway.group(0), standing.group(0)),
+            Ordering::Equal
+        );
+        assert_eq!(standing.group(2), halfway.group(2));
     }
 
     #[test]

@@ -28,7 +28,6 @@ pub struct NamedProgress {
     pub format: &'static str,
     pub first_seen: BTreeMap<&'static str, Option<FirstSeen>>,
     pub max_party_levels: u32,
-    pub maps_seen: u32,
 }
 
 impl Default for NamedProgress {
@@ -37,7 +36,6 @@ impl Default for NamedProgress {
             format: "blue-named-progress-v1",
             first_seen: MILESTONE_NAMES.iter().map(|name| (*name, None)).collect(),
             max_party_levels: 0,
-            maps_seen: 0,
         }
     }
 }

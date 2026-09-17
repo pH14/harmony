@@ -150,6 +150,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         .with_champion_input_path(args.output.join("champion-input.json"))
         .with_milestone_input_dir(args.output.join("milestones"));
     if args.advise {
+        if args.verify_replay {
+            return Err(
+                "--verify-replay cannot check an advised run: the adviser's \
+                        answers are recorded per stream record, and a replay that \
+                        reaches the API again is not the same run"
+                    .into(),
+            );
+        }
         let adviser = BlueAdviser::from_environment()
             .ok_or("--advise needs TYPESAFE_API_KEY in the environment")?;
         game = game.with_adviser(adviser);

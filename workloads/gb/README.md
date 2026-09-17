@@ -184,7 +184,11 @@ counts a failure. At most eight places are asked per record and the table holds
 512 places.
 
 The table goes into the campaign stream as a draw checkpoint at each record, and
-a replayed advised run reads the weights out of the record.
+a replayed advised run draws from the weights in that record. The campaign result
+of an advised run is not replay-checked: the recorded table is what the draw
+reads, and a replay would have to reach the API again to rebuild the same
+counters. `--verify-replay` refuses `--advise` rather than compare two runs that
+cannot match.
 
 Map names come from `constants/map_constants.asm` in pokered. They are what lets
 the model tell a house from a route.
@@ -192,10 +196,11 @@ the model tell a house from a route.
 ## Archive key
 
 Groups run coarse to fine: badges, then the seven route flags, then the number of
-set event bits, then the map id, then the 4-tile cell of the player.
-`progress_cmp` ranks a group by how many badge bits it holds, then by how many
-route flags, then by that event count, so a named milestone outranks any amount of
-script progress and position never ranks at all.
+set event bits, then the stage of the fight, then the map id, then the 4-tile cell
+of the player. `progress_cmp` ranks a group by how many badge bits it holds, then
+by how many route flags, then by that event count, so a named milestone outranks
+any amount of script progress, and neither the fight nor the position ranks at
+all.
 
 The event count is the game's own progress record and it is what makes a scripted
 sequence visible. Oak's speech in the lab takes ten actions and sets three event
@@ -203,6 +208,18 @@ bits along the way. Without the count in the key those ten actions occupy two
 slots, and the lineage that walks to the Poke Ball without hearing the speech holds
 the slot that the lineage which heard it needs, so the starter is unreachable from
 the slot that owns the tile.
+
+The fight stage is 0 out of battle, and 1 to 8 in one as the opponent's remaining
+health falls. It is what makes a fight winnable. The player does not move during
+a battle and every turn costs health, so without it the eight actions of the
+rival battle in Oak's lab share one slot, and the preference hands that slot back
+to the lineage that has not fought. A plain run spent 59,517 executions inside
+Pallet Town and its buildings for that reason; with the stage in the key a
+12,000-execution run reaches twelve maps and Oak's parcel.
+
+The stage is a place and not a rank, so a fight in progress never outranks a
+milestone. It is dropped at the same depth as the map, so the pooled groups above
+that depth still hold every lineage at a place whether or not it is fighting.
 
 The preference inside a slot is party HP and then party levels. The plan asked
 for fewest actions first; the archive already breaks a preference tie by lower
@@ -260,12 +277,17 @@ uv run workloads/gb/scripts/jev-offline.py <run>/report.json \
 ```
 
 Archive entries are stored as a suffix on a parent, so the script walks the
-parent chain to recover how many actions reached an entry.
+parent chain to recover the actions and the frames that reached an entry. Entry
+ids restart in every campaign, so the seed goes in the id the questions use.
 
 Two orderings are compared against the route: Jev's score, and the archive's own
-preference of badges, then route flags, then set event bits, then fewest actions.
+preference of badges, then route flags, then set event bits, then fewest frames.
 Each is scored by the fraction of entry pairs it puts in the same order as the
 scripted route.
+
+A place on the route is the badges byte, the route flags, the map and the cell.
+The route crosses Pallet Town and Oak's lab twice, so a place without the flags
+would give a late revisit the depth of the early one.
 
 ## Checks
 

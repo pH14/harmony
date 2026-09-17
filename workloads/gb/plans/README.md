@@ -175,6 +175,17 @@ Added while running step 3:
 - The panel is its own file, `benchmarks/search/blue-pilot.json`. The cases in
   `pilot.json` all run through the common runner and Blue runs through
   `blue-campaign`.
+- The archive key carries the stage of the fight, between the event count and
+  the map: 0 out of battle, 1 to 8 in one as the opponent's remaining health
+  falls. The first plain seed spent 59,517 executions inside Pallet Town and its
+  buildings and never crossed Route 1. Every one of its 24 lineages holding the
+  starter sat in Oak's lab, and 293 of its 325 entries were at full health. The
+  rival battle that blocks the lab door is eight actions at one cell, the player
+  does not move during a battle, and each turn costs health, so the preference
+  handed the slot back to the lineage that had not fought. With the stage in the
+  key a 12,000-execution run reaches twelve maps and Oak's parcel.
+- The stage is a place and not a rank. A fight in progress is not more progress
+  than a milestone, so `progress_cmp` does not read it.
 
 ### Step 4: Jev offline test
 
@@ -199,16 +210,24 @@ Added while running step 4:
   action of the scripted route to `workloads/gb/fixtures/brock-trace.json`.
   This step needs a position-by-position record of the route and the campaign
   report does not carry one.
-- Of the three questions only `score` carries usable signal, so step 5 asks
-  `score` and not `choice`. Measured over 271 live entries: Jev's score orders
-  a pair of on-route entries by true route position 65% of the time against
-  the archive's own preference at 54%. The `choice` answer reproduces the score
-  ordering and adds nothing. The `noul` dead-end answer does not separate the
-  two populations, 0.35 on the route against 0.36 off it.
+- Jev's ranking beats the archive's own. Measured over 271 live entries: Jev's
+  score orders a pair of on-route entries by true route position 83% of the
+  time against the archive's own preference at 75%. Nine batches of 32 cost
+  0.6 cents and the median request took 0.28 s.
+- Of the three questions, `score` is the one that ranks positions. The `choice`
+  answer reproduces the score ordering and adds nothing over it. The `noul`
+  dead-end answer does not separate the two populations, 0.31 on the route
+  against 0.33 off it.
 - The comparison reports each ordering's agreement with the route, not only
   whether a top pick stands on a route tile. Standing one tile off the scripted
   path is not the same as being behind, and every entry holding the starter
   inside Oak's lab reads as off-route under the tile test.
+- A place on the route is the badges byte, the route flags, the map and the
+  cell. The route crosses Pallet Town and Oak's lab twice, so without the flags
+  a late revisit reads as early progress and a correct ranking scores zero.
+- The baseline orders equal progress by accumulated frames, which is what the
+  archive's cheapest-first rule uses. Action count is not the same ordering: one
+  walk costs 1,650 frames and two interactions cost 1,500.
 
 ### Step 5: Jev in the draw
 
@@ -230,6 +249,19 @@ Added while building step 5:
 - The draw weights the macro kind, not the slot inside it. A slot index only
   means something against the live alphabet and `expand_suffix` never sees the
   live state, so a weight on a slot would be a weight on nothing.
+- The question is `choice` over the six kinds, not `score` per kind. Step 4
+  found `choice` no better than `score` for ranking positions; over six kinds
+  its answer is a distribution that has to sum to one, and it separates them
+  far more sharply. Asked in Oak's lab it puts 0.92 on interact; asked on
+  Route 1 it puts 0.95 on walk. The same places scored one at a time come back
+  between 0.6 and 1.9 on a four-rung scale, which is almost no separation.
+- Each kind is described by both of its meanings. `ActionKind::in_context` maps
+  a drawn kind onto one the live state can run, so `battle_move` walks when no
+  battle is running. Described as a battle move alone it is rated useless in a
+  town, and that rating lands on walking.
+- An advised run is not replay-checked. The recorded table is what a replayed
+  draw reads, and rebuilding the counters would mean reaching the API again, so
+  `--verify-replay` refuses `--advise`.
 - A place is the badges byte, the route flags and the map id, taken from the
   parent key through `duration_request`, which is the only hook that carries any
   part of the parent's position into the draw. Cells are left out: a per-cell
