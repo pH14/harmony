@@ -166,12 +166,13 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
                 continue;
             };
             let next = self.exits.get(&slot).and_then(|exits| match held.cursor {
-                Some(cursor) => exits.range((
-                    std::ops::Bound::Excluded(cursor),
-                    std::ops::Bound::Unbounded,
-                ))
-                .next()
-                .copied(),
+                Some(cursor) => exits
+                    .range((
+                        std::ops::Bound::Excluded(cursor),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .next()
+                    .copied(),
                 None => exits.iter().next().copied(),
             });
             let Some(to) = next else {

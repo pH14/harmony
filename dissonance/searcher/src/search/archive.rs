@@ -322,6 +322,22 @@ pub struct ConcentrationDraw {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ContinuationAccounting {
+    pub edges: usize,
+    pub pending: usize,
+    pub jobs: u64,
+    pub execution_work: u64,
+    pub landed: u64,
+    pub replaced: u64,
+    pub opened_new_slot: u64,
+    pub longest_wave: u32,
+    pub barren: u64,
+    pub energy: u16,
+    pub reservations_drawn: u64,
+    pub reservations_taken: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SelectorAccounting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_counts: Option<KeyCountAccounting>,
@@ -649,6 +665,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     input_reconstructions: Cell<u64>,
     continuations: Option<ContinuationBank<K::Group, A>>,
     continuation_wave: u32,
+    continuation_accounting: ContinuationAccounting,
     key_counts: KeyCounts<K::Group>,
 }
 
@@ -1188,6 +1205,7 @@ where
             input_reconstructions: Cell::new(0),
             continuations: None,
             continuation_wave: 0,
+            continuation_accounting: ContinuationAccounting::default(),
             key_counts: KeyCounts::default(),
         }
     }
@@ -3328,8 +3346,7 @@ where
     }
 
     pub(crate) fn enable_continuations(&mut self, action_cap: usize) {
-        self.continuations =
-            (K::preferences() > 0).then(|| ContinuationBank::new(action_cap));
+        self.continuations = (K::preferences() > 0).then(|| ContinuationBank::new(action_cap));
     }
 
     pub(crate) fn set_admission_wave(&mut self, wave: u32) {
@@ -3341,13 +3358,70 @@ where
     }
 
     #[must_use]
-    pub(crate) fn continuation_edges(&self) -> usize {
-        self.continuations.as_ref().map_or(0, ContinuationBank::edge_count)
+    pub(crate) fn continuation_pending(&self) -> usize {
+        self.continuations
+            .as_ref()
+            .map_or(0, ContinuationBank::pending_count)
     }
 
     #[must_use]
-    pub(crate) fn continuation_pending(&self) -> usize {
-        self.continuations.as_ref().map_or(0, ContinuationBank::pending_count)
+    pub fn continuation_report(&self) -> ContinuationAccounting {
+        ContinuationAccounting {
+            edges: self
+                .continuations
+                .as_ref()
+                .map_or(0, ContinuationBank::edge_count),
+            pending: self.continuation_pending(),
+            ..self.continuation_accounting.clone()
+        }
+    }
+
+    pub(crate) fn record_continuation_outcome(
+        &mut self,
+        landed: bool,
+        replaced: bool,
+        opened_new_slot: bool,
+        wave: u32,
+    ) {
+        let accounting = &mut self.continuation_accounting;
+        accounting.jobs = accounting.jobs.saturating_add(1);
+        if landed {
+            accounting.landed = accounting.landed.saturating_add(1);
+        }
+        if replaced {
+            accounting.replaced = accounting.replaced.saturating_add(1);
+        }
+        if opened_new_slot {
+            accounting.opened_new_slot = accounting.opened_new_slot.saturating_add(1);
+        }
+        accounting.longest_wave = accounting.longest_wave.max(wave);
+    }
+
+    pub(crate) fn record_continuation_reservation(
+        &mut self,
+        barren: u64,
+        energy: u16,
+        taken: bool,
+    ) {
+        let accounting = &mut self.continuation_accounting;
+        accounting.barren = barren;
+        accounting.energy = energy;
+        accounting.reservations_drawn = accounting.reservations_drawn.saturating_add(1);
+        if taken {
+            accounting.reservations_taken = accounting.reservations_taken.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn add_continuation_execution_work(&mut self, work: u64) {
+        self.continuation_accounting.execution_work = self
+            .continuation_accounting
+            .execution_work
+            .saturating_add(work);
+    }
+
+    #[must_use]
+    pub(crate) fn slot_of(&self, id: usize) -> Option<K::Group> {
+        self.entries.get(id).map(|entry| entry.key.group(0))
     }
 
     #[must_use]

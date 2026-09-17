@@ -304,8 +304,6 @@ mod tests {
         assert!(draw_mixture_from_identifier("energy_splice_continuation_v2:0").is_err());
     }
 
-
-
     #[test]
     fn a_declining_biased_draw_consumes_nothing() {
         for seed in 0..512_u64 {

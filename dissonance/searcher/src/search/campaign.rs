@@ -15,13 +15,14 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
-    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, CampaignSpliceTail, Input,
-    ProgressPoint, RetentionPolicy, SelectorAccounting, SelectorDraw, SelectorPath, SelectorPolicy,
-    retention_policy_from_identifier, retention_policy_identifier, selector_policy_identifier,
+    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, CampaignSpliceTail,
+    ContinuationAccounting, Input, ProgressPoint, RetentionPolicy, SelectorAccounting,
+    SelectorDraw, SelectorPath, SelectorPolicy, retention_policy_from_identifier,
+    retention_policy_identifier, selector_policy_identifier,
 };
 use crate::search::draw::{
-    CONTINUATION_ENERGY_SCALE, DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
-    draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_share,
+    CONTINUATION_ENERGY_SCALE, DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy,
+    SuffixShape, draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_share,
     energy_strategy, suffix_shape_from_identifier, suffix_shape_identifier,
 };
 use crate::search::draw_tables::{
@@ -48,7 +49,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 5;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 6;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
@@ -837,6 +838,148 @@ fn memory_is_within_reserve(bytes: usize, reserve: usize) -> bool {
 
 fn resident_memory_is_within_budget(bytes: usize, memory_budget_mib: Option<usize>) -> bool {
     memory_budget_mib.is_none_or(|budget_mib| bytes <= budget_mib.saturating_mul(1024 * 1024))
+}
+
+struct ContinuationReservation<G: Workload + ?Sized> {
+    parent_index: usize,
+    parent_id: u64,
+    donor: u64,
+    leaf: u64,
+    destination: <G::Key as ArchiveKey>::Group,
+    wave: u32,
+    suffix: Vec<G::Action>,
+}
+
+fn take_continuation<G: Workload + ?Sized>(
+    core: &mut CoordinatorCore<G>,
+    suffix: SuffixShape,
+    action_cost: fn(&G::Action) -> u64,
+    max_action_cost: u64,
+) -> Option<ContinuationReservation<G>> {
+    let max_actions = core.max_actions;
+    let mut examined = 0_usize;
+    while examined < CONTINUATION_EXITS_PER_RESERVATION
+        && let Some(continuation) = core.archive.pop_continuation()
+    {
+        examined = examined.saturating_add(1);
+        let Some(parent_index) = core.archive.index_of_id(continuation.parent) else {
+            continue;
+        };
+        if !core.archive.active[parent_index]
+            || core.archive.entries[parent_index].input_len >= max_actions
+        {
+            continue;
+        }
+        let mut actions = continuation.actions;
+        suffix.bound_cost(&mut actions, action_cost, max_action_cost);
+        if core.all_prefixes_archived(parent_index, &actions) {
+            continue;
+        }
+        return Some(ContinuationReservation {
+            parent_index,
+            parent_id: continuation.parent,
+            donor: continuation.donor,
+            leaf: continuation.leaf,
+            destination: continuation.destination,
+            wave: continuation.wave,
+            suffix: actions,
+        });
+    }
+    None
+}
+
+fn continuation_attempt<G: Workload + ?Sized>(
+    core: &mut CoordinatorCore<G>,
+    campaign_seed: u64,
+    reservation: u64,
+    suffix: SuffixShape,
+    action_cost: fn(&G::Action) -> u64,
+    max_action_cost: u64,
+) -> (Option<u16>, Option<ContinuationReservation<G>>) {
+    let Some(energy) = (core.archive.continuation_pending() > 0)
+        .then(|| continuation_energy_share(core.continuation_barren))
+    else {
+        return (None, None);
+    };
+    let takes = draws_continuation(campaign_seed, reservation, energy);
+    core.archive
+        .record_continuation_reservation(core.continuation_barren, energy, takes);
+    let taken = takes
+        .then(|| take_continuation(core, suffix, action_cost, max_action_cost))
+        .flatten();
+    (Some(energy), taken)
+}
+
+fn continuation_reservation_matches<G: Workload + ?Sized>(
+    taken: Option<&ContinuationReservation<G>>,
+    energy: Option<u16>,
+    selector: &SelectorDraw,
+    splice: Option<&CampaignSpliceRecord>,
+    recorded_energy: Option<u16>,
+    sequence: u64,
+) -> Result<(), Box<dyn Error>> {
+    if recorded_energy != energy {
+        return Err(format!(
+            "record {sequence} disagrees with the rebuilt continuation share"
+        )
+        .into());
+    }
+    let recorded = selector.path == SelectorPath::Continuation;
+    match (taken, recorded) {
+        (None, false) => Ok(()),
+        (None, true) => Err(format!(
+            "record {sequence} is a continuation job the replayed queue did not produce"
+        )
+        .into()),
+        (Some(_), false) => Err(format!(
+            "the replayed queue produced a continuation at record {sequence}, which is an ordinary job"
+        )
+        .into()),
+        (Some(taken), true) => {
+            let Some(CampaignSpliceRecord::Tail {
+                donor_id,
+                leaf_id,
+                tail_postcard,
+            }) = splice
+            else {
+                return Err(
+                    format!("continuation record {sequence} lacks its complete tail").into(),
+                );
+            };
+            let tail: Vec<G::Action> = postcard::from_bytes(tail_postcard)?;
+            if *donor_id != taken.donor || *leaf_id != taken.leaf || tail != taken.suffix {
+                return Err(format!(
+                    "continuation record {sequence} disagrees with the replayed queue entry"
+                )
+                .into());
+            }
+            Ok(())
+        }
+    }
+}
+
+fn continuation_arrival<G: Workload>(
+    archive: &Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
+    destination: Option<<G::Key as ArchiveKey>::Group>,
+    decisions: &[CampaignAdmissionDecision],
+) -> (bool, bool) {
+    let Some(destination) = destination else {
+        return (false, false);
+    };
+    decisions
+        .iter()
+        .fold((false, false), |(landed, replaced), decision| {
+            let (id, retained) = match decision {
+                CampaignAdmissionDecision::Retained { id } => (*id, true),
+                CampaignAdmissionDecision::Duplicate { id } => (*id, false),
+                _ => return (landed, replaced),
+            };
+            let arrived = archive
+                .index_of_id(id)
+                .and_then(|index| archive.slot_of(index))
+                .is_some_and(|slot| slot == destination);
+            (landed || arrived, replaced || (arrived && retained))
+        })
 }
 
 fn retained_archive_indexes<G: Workload>(
@@ -2111,6 +2254,7 @@ struct PendingJob<G: Workload + ?Sized> {
     parent_id: u64,
     continuation_energy: Option<u16>,
     continuation_wave: u32,
+    continuation_destination: Option<<G::Key as ArchiveKey>::Group>,
     mutation_seed: u64,
     mixture_weight: u8,
     splice_weight: u8,
@@ -2229,6 +2373,8 @@ pub struct CampaignProgressRecord<K> {
     pub barren_groups: usize,
     #[serde(default)]
     pub selector: SelectorAccounting,
+    #[serde(default)]
+    pub continuations: ContinuationAccounting,
 }
 
 fn write_live_progress<G: Workload>(
@@ -2298,6 +2444,7 @@ fn write_live_progress<G: Workload>(
         historical_cells: core.archive.historical_cell_count(),
         barren_groups: core.archive.barren_group_count(),
         selector: core.archive.selector_report(),
+        continuations: core.archive.continuation_report(),
     })?;
     sink.write_all(line.as_bytes())?;
     sink.write_all(b"\n")?;
@@ -2583,87 +2730,72 @@ where
                 let rand = &mut rands[worker as usize];
                 let max_actions = core.max_actions;
                 let mut consecutive_skips = 0_u64;
-                let continuation_energy = (core.archive.continuation_pending() > 0)
-                    .then(|| continuation_energy_share(core.continuation_barren));
-                if continuation_energy
-                    .is_some_and(|energy| draws_continuation(config.campaign_seed, *reserved, energy))
-                {
-                    let mut taken = 0_usize;
-                    while taken < CONTINUATION_EXITS_PER_RESERVATION
-                        && let Some(continuation) = core.archive.pop_continuation()
+                let (continuation_energy, continuation) = continuation_attempt(
+                    core,
+                    config.campaign_seed,
+                    *reserved,
+                    config.suffix,
+                    action_cost,
+                    max_action_cost,
+                );
+                if let Some(continuation) = continuation {
+                    let parent_index = continuation.parent_index;
+                    let suffix = continuation.suffix;
+                    let (mixture_weight, splice_weight) = (0, u8::MAX);
+                    let mut mutation_seed = rand.next_u64();
+                    while energy_strategy(mutation_seed, mixture_weight, splice_weight)?
+                        != EnergyStrategy::Splice
                     {
-                        taken = taken.saturating_add(1);
-                        let Some(parent_index) = core.archive.index_of_id(continuation.parent)
-                        else {
-                            continue;
-                        };
-                        if !core.archive.active[parent_index]
-                            || core.archive.entries[parent_index].input_len >= max_actions
-                        {
-                            continue;
-                        }
-                        let mut suffix = continuation.actions;
-                        config
-                            .suffix
-                            .bound_cost(&mut suffix, action_cost, max_action_cost);
-                        if core.all_prefixes_archived(parent_index, &suffix) {
-                            continue;
-                        }
-                        let (mixture_weight, splice_weight) = (0, u8::MAX);
-                        let mut mutation_seed = rand.next_u64();
-                        while energy_strategy(mutation_seed, mixture_weight, splice_weight)?
-                            != EnergyStrategy::Splice
-                        {
-                            mutation_seed = rand.next_u64();
-                        }
-                        let parent_id = continuation.parent;
-                        let selector = SelectorDraw {
-                            path: SelectorPath::Continuation,
-                            classes_skipped: 0,
-                            counter_reset: false,
-                            concentration: None,
-                            class_rank: None,
-                            preference: None,
-                        };
-                        let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
-                        let splice = Some(CampaignSpliceRecord::Tail {
-                            donor_id: continuation.donor,
-                            leaf_id: continuation.leaf,
-                            tail_postcard: postcard::to_allocvec(&suffix)?,
-                        });
-                        *reserved = reserved.saturating_add(1);
-                        core.archive.pin_metadata(parent_id)?;
-                        let (snapshot, replay, snapshot_id) =
-                            core.archive.pin_job_origin(parent_index)?;
-                        let entry = &core.archive.entries[parent_index];
-                        return Ok(Some((
-                            JobSpec {
-                                reservation: 0,
-                                snapshot,
-                                replay,
-                                parent_actions: entry.input_len,
-                                parent_milestones: entry.milestones,
-                                suffix,
-                            },
-                            PendingJob {
-                                snapshot_id,
-                                worker,
-                                parent_id,
-                                continuation_energy,
-                                continuation_wave: continuation.wave.saturating_add(1),
-                                mutation_seed,
-                                mixture_weight,
-                                splice_weight,
-                                splice,
-                                selector,
-                                draw_checkpoint_before,
-                                duration_draw: None,
-                                duration_admission_sequence_at_draw: None,
-                                duration_remaining_work: None,
-                                duration_checkpoint_at_draw: None,
-                            },
-                        )));
+                        mutation_seed = rand.next_u64();
                     }
+                    let parent_id = continuation.parent_id;
+                    let selector = SelectorDraw {
+                        path: SelectorPath::Continuation,
+                        classes_skipped: 0,
+                        counter_reset: false,
+                        concentration: None,
+                        class_rank: None,
+                        preference: None,
+                    };
+                    let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
+                    let splice = Some(CampaignSpliceRecord::Tail {
+                        donor_id: continuation.donor,
+                        leaf_id: continuation.leaf,
+                        tail_postcard: postcard::to_allocvec(&suffix)?,
+                    });
+                    *reserved = reserved.saturating_add(1);
+                    core.archive.pin_metadata(parent_id)?;
+                    let (snapshot, replay, snapshot_id) =
+                        core.archive.pin_job_origin(parent_index)?;
+                    let entry = &core.archive.entries[parent_index];
+                    return Ok(Some((
+                        JobSpec {
+                            reservation: 0,
+                            snapshot,
+                            replay,
+                            parent_actions: entry.input_len,
+                            parent_milestones: entry.milestones,
+                            suffix,
+                        },
+                        PendingJob {
+                            snapshot_id,
+                            worker,
+                            parent_id,
+                            continuation_energy,
+                            continuation_wave: continuation.wave.saturating_add(1),
+                            continuation_destination: Some(continuation.destination),
+                            mutation_seed,
+                            mixture_weight,
+                            splice_weight,
+                            splice,
+                            selector,
+                            draw_checkpoint_before,
+                            duration_draw: None,
+                            duration_admission_sequence_at_draw: None,
+                            duration_remaining_work: None,
+                            duration_checkpoint_at_draw: None,
+                        },
+                    )));
                 }
                 loop {
                     let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
@@ -2831,6 +2963,7 @@ where
                             parent_id,
                             continuation_energy,
                             continuation_wave: 0,
+                            continuation_destination: None,
                             mutation_seed,
                             mixture_weight,
                             splice_weight,
@@ -3027,6 +3160,18 @@ where
                         } else {
                             core.continuation_barren.saturating_add(1)
                         };
+                        let (landed, replaced) = continuation_arrival::<G>(
+                            &core.archive,
+                            pending_job.continuation_destination,
+                            &decisions,
+                        );
+                        core.archive.record_continuation_outcome(
+                            landed,
+                            replaced,
+                            new_slot_descendant,
+                            pending_job.continuation_wave,
+                        );
+                        core.archive.add_continuation_execution_work(execution_work);
                     }
                     record_mixture_outcome(
                         &mut core.mixture_energy,
@@ -3595,12 +3740,26 @@ where
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
     let mut replay_job_snapshots =
         BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, u64)>::new();
+    let mut replay_continuations = BTreeMap::<usize, ContinuationReservation<G>>::new();
+    let mut replay_continuation_energy = BTreeMap::<usize, Option<u16>>::new();
     core.archive.preserve_inactive_snapshots(false)?;
     for (job_slot, parent_id) in replay_job_parents
         .iter()
         .take(replay_window_depth)
         .enumerate()
     {
+        let (energy, continuation) = continuation_attempt(
+            &mut core,
+            header.campaign_seed,
+            u64::try_from(job_slot)?,
+            replay_suffix,
+            action_cost,
+            max_action_cost,
+        );
+        replay_continuation_energy.insert(job_slot, energy);
+        if let Some(continuation) = continuation {
+            replay_continuations.insert(job_slot, continuation);
+        }
         let parent_index = core
             .archive
             .index_of_id(*parent_id)
@@ -3750,6 +3909,17 @@ where
                 }
                 let replay_job_slot = replay_job_index;
                 replay_job_index = replay_job_index.saturating_add(1);
+                let taken_continuation = replay_continuations.remove(&replay_job_slot);
+                continuation_reservation_matches::<G>(
+                    taken_continuation.as_ref(),
+                    replay_continuation_energy
+                        .remove(&replay_job_slot)
+                        .ok_or("recorded job has no reconstructed reservation")?,
+                    &job.selector,
+                    job.splice.as_ref(),
+                    job.continuation_energy,
+                    job.sequence,
+                )?;
                 let parent_index = core
                     .archive
                     .index_of_id(job.parent_id)
@@ -3883,6 +4053,10 @@ where
                     .map(|draw| draw.duration);
                 drop(snapshot);
                 let objectives_before = core.objectives_reached;
+                let continuation_wave = taken_continuation
+                    .as_ref()
+                    .map_or(0, |taken| taken.wave.saturating_add(1));
+                core.archive.set_admission_wave(continuation_wave);
                 let (sequence, decisions, duration_admission) =
                     core.admit_job_tracking(workload, job.parent_id, result, |action| {
                         tracked_duration.is_some_and(|duration| {
@@ -3955,6 +4129,26 @@ where
                 verify_selector_annotation(&job.selector)?;
                 if job.selector.path == SelectorPath::Continuation {
                     core.archive.record_isolated_continuation(parent_index);
+                    let new_slot_descendant = retained_archive_indexes(&core, &decisions)
+                        .iter()
+                        .any(|id| core.archive.opened_new_slot(*id));
+                    core.continuation_barren = if new_slot_descendant {
+                        0
+                    } else {
+                        core.continuation_barren.saturating_add(1)
+                    };
+                    let (landed, replaced) = continuation_arrival::<G>(
+                        &core.archive,
+                        taken_continuation.as_ref().map(|taken| taken.destination),
+                        &decisions,
+                    );
+                    core.archive.record_continuation_outcome(
+                        landed,
+                        replaced,
+                        new_slot_descendant,
+                        continuation_wave,
+                    );
+                    core.archive.add_continuation_execution_work(execution_work);
                 } else {
                     core.archive.record_selection(parent_index, &job.selector);
                     let retained_ids = retained_archive_indexes(&core, &decisions);
@@ -3982,6 +4176,18 @@ where
                     replay_job_parents.get(replay_job_slot.saturating_add(replay_window_depth))
                 {
                     let next_slot = replay_job_slot.saturating_add(replay_window_depth);
+                    let (energy, continuation) = continuation_attempt(
+                        &mut core,
+                        header.campaign_seed,
+                        u64::try_from(next_slot)?,
+                        replay_suffix,
+                        action_cost,
+                        max_action_cost,
+                    );
+                    replay_continuation_energy.insert(next_slot, energy);
+                    if let Some(continuation) = continuation {
+                        replay_continuations.insert(next_slot, continuation);
+                    }
                     let parent_index = core
                         .archive
                         .index_of_id(*parent_id)
@@ -4859,7 +5065,7 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":5,"format":"campaign-v1","campaign_seed":7,"workers":2,
+    const RECORDED_HEADER: &str = r#"{"schema_version":6,"format":"campaign-v1","campaign_seed":7,"workers":2,
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
