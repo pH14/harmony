@@ -48,7 +48,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 4;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 5;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
@@ -609,6 +609,7 @@ pub struct CampaignStreamHeader<T> {
     pub draw_header: Option<T>,
     pub retention_policy: String,
     pub parent_scheduler: String,
+    pub preference_portfolio: String,
     pub executor_mode: String,
     pub worker_seed_derivation: String,
     pub workload_identity_sha256: String,
@@ -1587,6 +1588,17 @@ fn resolve_origin<G: Workload>(
     })
 }
 
+pub const PREFERENCE_PORTFOLIO_PREFIX: &str = "preference_portfolio_v1:";
+
+#[must_use]
+pub fn preference_portfolio_identifier<K: ArchiveKey>() -> String {
+    format!(
+        "{PREFERENCE_PORTFOLIO_PREFIX}{},{}",
+        K::preferences().max(1),
+        K::slot_capacity().max(1)
+    )
+}
+
 fn stream_header<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
@@ -1627,6 +1639,7 @@ fn stream_header<G: Workload>(
         draw_header,
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
         parent_scheduler: selector_policy_identifier(&config.selector),
+        preference_portfolio: preference_portfolio_identifier::<G::Key>(),
         executor_mode: "snapshot_resume_archive".to_owned(),
         worker_seed_derivation: "sha256(campaign_seed_le || worker_index_le)[0..8] as u64 le"
             .to_owned(),
@@ -2580,6 +2593,7 @@ where
                             counter_reset: false,
                             concentration: None,
                             class_rank: None,
+                            preference: None,
                         };
                         let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
                         let splice = Some(CampaignSpliceRecord::Tail {
@@ -3325,6 +3339,9 @@ where
         serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
     if header.schema_version != CAMPAIGN_SCHEMA_VERSION {
         return Err("campaign stream schema version is not recognized".into());
+    }
+    if header.preference_portfolio != preference_portfolio_identifier::<G::Key>() {
+        return Err("campaign stream preference portfolio does not match the key".into());
     }
     if !archive_entry_limit_is_valid(header.archive_entry_limit) {
         return Err("recorded archive entry limit is outside the compiled bound".into());
@@ -4804,7 +4821,7 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":4,"format":"campaign-v1","campaign_seed":7,"workers":2,
+    const RECORDED_HEADER: &str = r#"{"schema_version":5,"format":"campaign-v1","campaign_seed":7,"workers":2,
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
@@ -4812,7 +4829,7 @@ mod tests {
 "key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
 "chord_policy":"chord_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
-"parent_scheduler":"hierarchy_uniform_128","executor_mode":"snapshot_resume_archive",
+"parent_scheduler":"hierarchy_uniform_128","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
 "worker_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 
@@ -5566,6 +5583,7 @@ mod tests {
             counter_reset: false,
             concentration: None,
             class_rank: None,
+            preference: None,
         };
     }
 

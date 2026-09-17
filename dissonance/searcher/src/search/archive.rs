@@ -311,6 +311,8 @@ pub struct SelectorDraw {
     pub concentration: Option<ConcentrationDraw>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class_rank: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preference: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -2561,6 +2563,7 @@ where
                     counter_reset: false,
                     concentration: None,
                     class_rank: None,
+                    preference: None,
                 },
             ));
         }
@@ -2571,7 +2574,7 @@ where
             if let Some(cell) =
                 self.walk_to_cell(rand, &mut classes_skipped, &mut class_rank, counter_reset)?
             {
-                let (id, concentration) = self.draw_from_cell(rand, cell)?;
+                let (id, concentration, preference) = self.draw_from_cell(rand, cell)?;
                 return Ok((
                     id,
                     SelectorDraw {
@@ -2580,6 +2583,7 @@ where
                         counter_reset,
                         concentration: Some(concentration),
                         class_rank,
+                        preference,
                     },
                 ));
             }
@@ -3069,19 +3073,21 @@ where
         &mut self,
         rand: &mut RomuDuoJrRand,
         cell: Vec<usize>,
-    ) -> Result<(usize, ConcentrationDraw), Box<dyn Error>> {
+    ) -> Result<(usize, ConcentrationDraw, Option<u8>), Box<dyn Error>> {
         let window = &cell[cell.len().saturating_sub(CONCENTRATION_WINDOW)..];
         let preferences = K::preferences().max(1);
-        let preferred = if preferences > 1 {
-            let preference =
-                rand.below(NonZeroUsize::new(preferences).ok_or("empty preference list")?);
-            window
+        let drawn_preference = if preferences > 1 {
+            Some(rand.below(NonZeroUsize::new(preferences).ok_or("empty preference list")?))
+        } else {
+            None
+        };
+        let preferred = match drawn_preference {
+            Some(preference) => window
                 .iter()
                 .copied()
                 .filter(|id| self.is_preference_champion(*id, preference))
-                .collect()
-        } else {
-            Vec::new()
+                .collect(),
+            None => Vec::new(),
         };
         let window: &[usize] = if preferred.is_empty() {
             window
@@ -3151,6 +3157,7 @@ where
                 window_size: u64::try_from(window.len())?,
                 entered_window,
             },
+            drawn_preference.map(|preference| u8::try_from(preference).unwrap_or(u8::MAX)),
         ))
     }
 
@@ -4288,6 +4295,7 @@ mod tests {
             counter_reset: false,
             concentration: None,
             class_rank: None,
+            preference: None,
         };
         for id in 0..archive.entries.len() {
             archive.record_selection(id, &draw);
@@ -4349,6 +4357,7 @@ mod tests {
             counter_reset: false,
             concentration: None,
             class_rank: None,
+            preference: None,
         };
         for step in 0..256 {
             let parent = archive
@@ -4817,6 +4826,7 @@ mod tests {
             counter_reset: false,
             concentration: None,
             class_rank: None,
+            preference: None,
         };
         for _ in 0..4 {
             archive.record_selection(1, &draw);
@@ -4875,6 +4885,7 @@ mod tests {
                 counter_reset: false,
                 concentration: None,
                 class_rank: None,
+                preference: None,
             },
         );
         assert!(!archive.entry_unexhausted(id));
@@ -4896,6 +4907,7 @@ mod tests {
             counter_reset: false,
             concentration: None,
             class_rank: None,
+            preference: None,
         };
         for _ in 0..19 {
             archive.record_selection(0, &draw);
@@ -5431,6 +5443,7 @@ mod tests {
                     counter_reset: true,
                     concentration: None,
                     class_rank: None,
+                    preference: None,
                 };
                 archive.record_selection(0, &draw);
                 continue;
@@ -5442,6 +5455,7 @@ mod tests {
                 counter_reset: false,
                 concentration: None,
                 class_rank: None,
+                preference: None,
             };
             archive.record_selection(id, &draw);
             archive.record_selection_outcome(id, step % 3 == 0, 0);
@@ -5465,6 +5479,7 @@ mod tests {
             counter_reset: false,
             concentration: None,
             class_rank: None,
+            preference: None,
         };
         archive.record_selection(0, &draw);
 
@@ -5703,6 +5718,7 @@ mod tests {
             counter_reset: false,
             concentration: None,
             class_rank: None,
+            preference: None,
         };
         archive.record_selection(0, &barren_draw);
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e30);
@@ -5842,6 +5858,7 @@ mod tests {
             counter_reset: false,
             concentration: None,
             class_rank: None,
+            preference: None,
         };
         for _ in 0..9 {
             archive.record_selection(0, &barren_draw);
@@ -5912,7 +5929,7 @@ mod tests {
         let cell = (0..40_usize).collect::<Vec<_>>();
         let mut cheapest_block = 0_u64;
         for _ in 0..4_096 {
-            let (id, _) = archive
+            let (id, _, _) = archive
                 .draw_from_cell(&mut rand, cell.clone())
                 .expect("cheapest cell draw");
             if id < 16 {
@@ -5949,7 +5966,7 @@ mod tests {
         let mut repeated = 0;
         let mut distant = 0;
         for _ in 0..4096 {
-            let (id, _) = archive
+            let (id, _, _) = archive
                 .draw_from_cell(&mut rand, (0..40).collect())
                 .unwrap();
             repeated += usize::from(id < 4);
@@ -6012,6 +6029,7 @@ mod tests {
             counter_reset: false,
             concentration: None,
             class_rank: None,
+            preference: None,
         };
         archive.record_selection(0, &barren_draw);
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e31);
@@ -6041,6 +6059,7 @@ mod tests {
             counter_reset: false,
             concentration: None,
             class_rank: None,
+            preference: None,
         };
         for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
             archive.record_selection(0, &exhausting_draw);
@@ -6077,6 +6096,7 @@ mod tests {
             counter_reset: false,
             concentration: None,
             class_rank: None,
+            preference: None,
         };
         for id in 0..keys.len() {
             for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
@@ -6150,6 +6170,7 @@ mod tests {
             counter_reset: false,
             concentration: None,
             class_rank: None,
+            preference: None,
         };
         for id in 1..=128 {
             for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
