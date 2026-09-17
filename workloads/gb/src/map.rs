@@ -186,7 +186,11 @@ impl Overworld {
         if from == to {
             return Some(Vec::new());
         }
-        if usize::from(to.0) >= self.width || usize::from(to.1) >= self.height {
+        if usize::from(to.0) >= self.width
+            || usize::from(to.1) >= self.height
+            || usize::from(from.0) >= self.width
+            || usize::from(from.1) >= self.height
+        {
             return None;
         }
         let mut arrived_by = vec![u8::MAX; self.width * self.height];

@@ -35,6 +35,7 @@ pub const LIST_SCROLL_OFFSET: u16 = 0xcc36;
 pub const JOY_IGNORE: u16 = 0xcd6b;
 pub const ENEMY_MON_HP: u16 = 0xcfe6;
 pub const BATTLE_RESULT: u16 = 0xcf0b;
+pub const BATTLE_RESULT_WON: u8 = 0;
 pub const BATTLE_MON_LEVEL: u16 = 0xd022;
 pub const BATTLE_MON_HP: u16 = 0xd015;
 pub const BATTLE_MON_MOVES: u16 = 0xd01c;
@@ -128,7 +129,7 @@ pub const BATTLE_MOVE_FRAME_BUDGET: u64 = 1_200;
 pub const USE_ITEM_FRAME_BUDGET: u64 = 900;
 pub const SWITCH_FRAME_BUDGET: u64 = 900;
 pub const ADVANCE_FRAME_BUDGET: u64 = 900;
-pub const MAX_ACTION_FRAME_BUDGET: u64 = WALK_FRAME_BUDGET;
+pub const MAX_ACTION_FRAME_BUDGET: u64 = WALK_FRAME_BUDGET + MAP_LOAD_FRAMES as u64;
 pub const NEARBY_TILES: u8 = 6;
 pub const RANDOM_WALK_TILES: [u8; 3] = [1, 2, 4];
 
@@ -360,6 +361,11 @@ pub const ACTION_KINDS: [ActionKind; 6] = [
 impl ActionKind {
     #[must_use]
     pub fn frame_budget(self) -> u64 {
+        self.macro_frame_budget() + u64::from(MAP_LOAD_FRAMES)
+    }
+
+    #[must_use]
+    pub fn macro_frame_budget(self) -> u64 {
         match self {
             Self::WalkTo => WALK_FRAME_BUDGET,
             Self::Interact => INTERACT_FRAME_BUDGET,
@@ -679,6 +685,7 @@ pub struct BlueTarget {
     action_frames: u64,
     budget: u64,
     latched_flags: u8,
+    action_whiteout: bool,
 }
 
 impl std::fmt::Debug for BlueTarget {
@@ -743,6 +750,7 @@ impl BlueTarget {
             execution_work: 0,
             action_frames: 0,
             budget: 0,
+            action_whiteout: false,
             latched_flags: state.route_flags,
         })
     }
@@ -816,7 +824,24 @@ impl BlueTarget {
 
     fn tap(&mut self, buttons: u8) -> Result<(), MachineError> {
         self.hold(buttons, PRESS_FRAMES)?;
-        self.hold(0, RELEASE_FRAMES)
+        self.hold(0, RELEASE_FRAMES)?;
+        if self.party_wiped() {
+            self.action_whiteout = true;
+        }
+        Ok(())
+    }
+
+    fn party_hp(&self, slot: u8) -> u16 {
+        let base = PARTY_MONS + PARTY_MON_BYTES * u16::from(slot) + PARTY_MON_HP;
+        (u16::from(self.peek(base)) << 8) | u16::from(self.peek(base + 1))
+    }
+
+    fn party_wiped(&self) -> bool {
+        let count = self.peek(PARTY_COUNT).min(PARTY_SLOTS);
+        if count == 0 || (0..count).any(|slot| self.party_hp(slot) > 0) {
+            return false;
+        }
+        self.peek(IS_IN_BATTLE) != 0 || self.peek(BATTLE_RESULT) != BATTLE_RESULT_WON
     }
 
     fn spent(&self) -> bool {
@@ -859,9 +884,52 @@ impl BlueTarget {
             if self.battle_menu_open() {
                 return Ok(true);
             }
+            if self.replace_fainted()? {
+                continue;
+            }
             self.tap(B)?;
         }
         Ok(false)
+    }
+
+    fn battle_mon_hp(&self) -> u16 {
+        (u16::from(self.peek(BATTLE_MON_HP)) << 8) | u16::from(self.peek(BATTLE_MON_HP + 1))
+    }
+
+    fn replacement_wanted(&self) -> bool {
+        if self.peek(IS_IN_BATTLE) == 0 || self.battle_mon_hp() != 0 {
+            return false;
+        }
+        let count = self.peek(PARTY_COUNT).min(PARTY_SLOTS);
+        let mut fainted = false;
+        let mut live = false;
+        for slot in 0..count {
+            if self.party_hp(slot) == 0 {
+                fainted = true;
+            } else {
+                live = true;
+            }
+        }
+        fainted && live
+    }
+
+    fn replace_fainted(&mut self) -> Result<bool, MachineError> {
+        if !self.replacement_wanted() {
+            return Ok(false);
+        }
+        if self.peek(TEXT_BOX_ID) == TWO_OPTION_MENU {
+            self.tap(A)?;
+            return Ok(true);
+        }
+        let count = self.peek(PARTY_COUNT).min(PARTY_SLOTS);
+        let Some(slot) = (0..count).find(|slot| self.party_hp(*slot) > 0) else {
+            return Ok(false);
+        };
+        self.move_cursor_to(slot, PARTY_SLOTS)?;
+        self.tap(A)?;
+        self.settle()?;
+        self.tap(A)?;
+        Ok(true)
     }
 
     fn choose_battle_menu(&mut self, entry: u8) -> Result<bool, MachineError> {
@@ -938,6 +1006,9 @@ impl BlueTarget {
         while !self.spent() {
             if self.peek(IS_IN_BATTLE) == 0 || self.battle_menu_open() {
                 break;
+            }
+            if self.replace_fainted()? {
+                continue;
             }
             self.tap(B)?;
         }
@@ -1090,7 +1161,9 @@ impl BlueTarget {
     fn run_macro(&mut self, action: &BlueAction) -> Result<(), MachineError> {
         self.machine.begin_action()?;
         self.action_frames = 0;
-        self.budget = action.kind.frame_budget();
+        self.action_whiteout = false;
+        let ceiling = action.kind.frame_budget();
+        self.budget = action.kind.macro_frame_budget();
         let alphabet = self.alphabet();
         let map = self.peek(CUR_MAP);
         match action.kind.in_context(alphabet.in_battle) {
@@ -1102,9 +1175,7 @@ impl BlueTarget {
             ActionKind::Advance => self.advance(&alphabet),
         }?;
         if self.peek(CUR_MAP) != map {
-            self.budget = self
-                .action_frames
-                .saturating_add(u64::from(MAP_LOAD_FRAMES));
+            self.budget = ceiling;
             self.hold(0, MAP_LOAD_FRAMES)?;
         }
         Ok(())
@@ -1122,7 +1193,7 @@ impl BlueTarget {
             state,
             alphabet_size: u16::try_from(alphabet(&self.wram, &self.rom, state).size())
                 .unwrap_or(u16::MAX),
-            dead: state.whited_out(),
+            dead: state.whited_out() || self.action_whiteout,
         })
     }
 }

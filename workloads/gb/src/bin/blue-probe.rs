@@ -614,8 +614,10 @@ impl Planner {
         limit: usize,
     ) -> Result<(), Box<dyn Error>> {
         let mut corner = false;
+        let mut rounds = 0;
         let start = self.actions.len();
-        while self.actions.len() - start < limit {
+        while self.actions.len() - start < limit && rounds < limit {
+            rounds += 1;
             let state = self.target.state();
             if state.party[0].level >= level {
                 return Ok(());

@@ -141,6 +141,14 @@ reported separately as execution work.
 | `use_item`, `switch`, `advance` | 900 |
 | `interact` | 600 |
 
+An action that changes map holds 150 idle frames afterwards so the new map is
+loaded before the state is read. Those frames are held back from the macro's own
+budget rather than added to it, so the ceiling bounds the whole action.
+
+When the active party member faints and another is alive, the game opens a
+replacement menu that B cannot leave. Every macro that waits on the battle menu
+answers it: yes to the prompt, then the first living party member.
+
 ## Alphabet
 
 In a battle: four move slots, up to four bag slots, one entry per party member,
@@ -170,7 +178,9 @@ Boulder Badge. Victory is the badge. The three "entered" bits come from map ids
 rather than event flags, and every bit latches once set.
 
 A whiteout — a party that is not empty with every member at zero HP — is
-terminal and is never admitted.
+terminal and is never admitted. The game's blackout handler heals the party
+before control returns, so the condition is latched the moment it appears during
+an action rather than read from the state the action ends in.
 
 ## Fixtures
 

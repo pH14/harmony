@@ -208,7 +208,7 @@ judge by film first, then the milestone table.
   README, plus the same three for `workloads/gb-machine` and `workloads/gb`,
   plus `scripts/custom-lints.py`, `scripts/strip-comments.py --check` and
   `scripts/check-dependency-boundaries.py`.
-- Steps 1 and 2 are one pull request. Steps 3 to 5 each get their own.
+- All five steps land in one pull request, one commit per step.
 - Keep each step to its plan. If a step needs something the plan does not
   say, add it to this file in the same pull request.
 - When stuck for more than a couple of hours on one problem, stop and write
