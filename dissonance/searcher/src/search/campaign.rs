@@ -15,9 +15,10 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
-    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, CampaignSpliceTail, Input,
-    ProgressPoint, RetentionPolicy, SelectorAccounting, SelectorDraw, SelectorPath, SelectorPolicy,
-    retention_policy_from_identifier, retention_policy_identifier, selector_policy_identifier,
+    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, CampaignSpliceTail, GroupBands,
+    Input, ProgressPoint, RetentionPolicy, SelectorAccounting, SelectorDraw, SelectorPath,
+    SelectorPolicy, retention_policy_from_identifier, retention_policy_identifier,
+    selector_policy_identifier,
 };
 use crate::search::draw::{
     DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
@@ -181,6 +182,12 @@ pub trait Reporting: CampaignTypes {
         evidence: &Self::Evidence,
         state: ArchiveReportState<Self>,
     ) -> Self::ArchiveReport;
+    fn group_bands(
+        _evidence: &Self::Evidence,
+        _deepest: Self::Key,
+    ) -> Option<GroupBands<<Self::Key as ArchiveKey>::Group>> {
+        None
+    }
 }
 
 pub trait InputPolicy: CampaignTypes {
@@ -1398,8 +1405,19 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         if sequence.is_multiple_of(self.curve_interval) {
             self.push_curve_point();
             self.compact_progress_curve_if_needed();
+            self.refresh_group_bands();
         }
         Ok((sequence, decisions, duration))
+    }
+
+    fn refresh_group_bands(&mut self) {
+        let Some((deepest, _, _)) = self.archive.live_progress() else {
+            return;
+        };
+        let bands = G::group_bands(&self.evidence, deepest);
+        if bands.as_ref() != self.archive.group_bands() {
+            self.archive.set_group_bands(bands);
+        }
     }
 
     fn push_curve_point(&mut self) {

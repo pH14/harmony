@@ -100,6 +100,7 @@ mod tests {
             state,
             alphabet_size: 1,
             dead: false,
+            links: Vec::new(),
         }
     }
 

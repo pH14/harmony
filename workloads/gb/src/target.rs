@@ -661,6 +661,7 @@ pub struct BlueObservation {
     pub state: BlueState,
     pub alphabet_size: u16,
     pub dead: bool,
+    pub links: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -691,6 +692,7 @@ impl BlueSnapshot {
                 state,
                 alphabet_size: 0,
                 dead: false,
+                links: Vec::new(),
             },
             failed: false,
         }
@@ -762,6 +764,7 @@ impl BlueTarget {
             state,
             alphabet_size: u16::try_from(alphabet(&wram, rom, state).size()).unwrap_or(u16::MAX),
             dead: state.whited_out(),
+            links: crate::graph::map_links(&wram).1,
         };
         Ok(Self {
             machine,
@@ -1225,6 +1228,7 @@ impl BlueTarget {
             alphabet_size: u16::try_from(alphabet(&self.wram, &self.rom, state).size())
                 .unwrap_or(u16::MAX),
             dead: state.whited_out() || self.action_whiteout,
+            links: crate::graph::map_links(&self.wram).1,
         })
     }
 }

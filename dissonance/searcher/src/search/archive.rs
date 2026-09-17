@@ -46,7 +46,7 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GroupBands<G: Ord> {
-    pub class: G,
+    pub scope: G,
     pub depth: usize,
     pub bands: BTreeMap<G, usize>,
     pub count: usize,
@@ -2595,6 +2595,7 @@ where
             if cells.is_empty() {
                 continue;
             }
+            let mut scope = class.0;
             for depth in (2..Self::coarsest_depth()).rev() {
                 let mut deepest = BTreeMap::<K::Group, K::Group>::new();
                 for (key, _) in &cells {
@@ -2616,8 +2617,9 @@ where
                 let mut groups = deepest.keys().copied().collect::<Vec<_>>();
                 let frontier = deepest.values().copied().collect::<Vec<_>>();
                 let index =
-                    self.draw_group_index(rand, class.0, depth, &groups, Some(&frontier), None)?;
+                    self.draw_group_index(rand, scope, depth, &groups, Some(&frontier), None)?;
                 let chosen = groups.swap_remove(index);
+                scope = chosen;
                 cells.retain(|(key, _)| key.group(depth) == chosen);
             }
             if cells.is_empty() {
@@ -2638,7 +2640,7 @@ where
                         (members.novelty(), self.cheapest_offered(offered))
                     })
                     .collect::<Vec<_>>();
-                self.draw_group_index(rand, class.0, 1, &cell_groups, None, Some(&ranked))?
+                self.draw_group_index(rand, scope, 1, &cell_groups, None, Some(&ranked))?
             } else {
                 let count = NonZeroUsize::new(cells.len()).ok_or("cell draw over no cells")?;
                 rand.below(count)
@@ -2693,7 +2695,7 @@ where
                     .map(|group| self.deepest_live_band(class, depth, *group))
                     .collect::<Result<Vec<_>, _>>()?;
                 let index =
-                    self.draw_group_index(rand, class, depth, &groups, Some(&frontier), None)?;
+                    self.draw_group_index(rand, parent, depth, &groups, Some(&frontier), None)?;
                 parent = groups[index];
             }
 
@@ -2721,7 +2723,7 @@ where
                         .collect::<Vec<_>>();
                     groups[self.draw_group_index(
                         rand,
-                        class,
+                        parent,
                         cell_depth,
                         &groups,
                         None,
@@ -2734,7 +2736,7 @@ where
             } else {
                 let only = [class];
                 if class_depth >= 1 {
-                    let _ = self.draw_group_index(rand, class, cell_depth, &only, None, None)?;
+                    let _ = self.draw_group_index(rand, parent, cell_depth, &only, None, None)?;
                 } else {
                     let _ = rand.below(NonZeroUsize::new(1).ok_or("cell draw over no cells")?);
                 }
@@ -2791,14 +2793,14 @@ where
     fn draw_band_index(
         &self,
         rand: &mut RomuDuoJrRand,
-        class: K::Group,
+        scope: K::Group,
         depth: usize,
         groups: &[K::Group],
     ) -> Result<Option<usize>, Box<dyn Error>> {
         let Some(bands) = self
             .group_bands
             .as_ref()
-            .filter(|bands| bands.depth == depth && bands.class == class)
+            .filter(|bands| bands.depth == depth && bands.scope == scope)
         else {
             return Ok(None);
         };
@@ -2827,14 +2829,14 @@ where
     fn draw_group_index(
         &self,
         rand: &mut RomuDuoJrRand,
-        class: K::Group,
+        scope: K::Group,
         depth: usize,
         groups: &[K::Group],
         frontier: Option<&[K::Group]>,
         cells: Option<&[(Option<usize>, Option<u64>)]>,
     ) -> Result<usize, Box<dyn Error>> {
         let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
-        if let Some(index) = self.draw_band_index(rand, class, depth, groups)? {
+        if let Some(index) = self.draw_band_index(rand, scope, depth, groups)? {
             return Ok(index);
         }
         let (scales, ranked_by_frontier) = match &self.selector_policy {
@@ -4449,7 +4451,7 @@ mod tests {
         );
 
         archive.set_group_bands(Some(GroupBands {
-            class: [0, 0, 0, 0],
+            scope: [0, 0, 0, 0],
             depth: 1,
             bands: BTreeMap::from([([0, 1, 0, 0], 0)]),
             count: 2,
@@ -4470,9 +4472,9 @@ mod tests {
     }
 
     #[test]
-    fn group_bands_apply_only_to_their_own_class_and_depth() {
+    fn group_bands_apply_only_to_their_own_scope_and_depth() {
         let bands = GroupBands {
-            class: [0, 0, 0, 0],
+            scope: [0, 0, 0, 0],
             depth: 1,
             bands: BTreeMap::from([([0, 1, 0, 0], 0)]),
             count: 3,

@@ -14,7 +14,7 @@ use std::{
 
 use searcher::{
     search::{
-        archive::RetentionPolicy,
+        archive::{ArchiveKey, GroupBands, RetentionPolicy},
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
@@ -37,18 +37,32 @@ use crate::{
         reserve_bytes, sample_advised_action,
     },
     archive::{
-        BlueArchiveEntryReport, BlueArchiveKey, BlueArchiveReport, BlueInput, BlueMilestoneInputs,
-        BlueMilestoneTimes, BlueMilestones, BlueProgressWatermark, DURATION_IDENTIFIER,
-        KEY_POLICY_IDENTIFIER, MAX_BLUE_ACTIONS, REPLACEMENT_IDENTIFIER, action_time, archive_key,
-        longest_action_frames, merge_milestones, merge_progress_watermark, milestone_key,
-        milestones, progress_watermark, sample_action,
+        BlueArchiveEntryReport, BlueArchiveGroup, BlueArchiveKey, BlueArchiveReport, BlueInput,
+        BlueMilestoneInputs, BlueMilestoneTimes, BlueMilestones, BlueProgressWatermark,
+        DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MAX_BLUE_ACTIONS, REPLACEMENT_IDENTIFIER,
+        action_time, archive_key, longest_action_frames, merge_milestones,
+        merge_progress_watermark, milestone_key, milestones, progress_watermark, sample_action,
     },
+    graph::MapGraph,
     progress::{MILESTONE_NAMES, NamedProgress},
     target::{BlueAction, BlueObservation, BlueSnapshot, BlueState, BlueTarget},
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "blue-gambatte-campaign-stream-v1";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "blue-gambatte-snapshot-checkpoint-v1";
+
+static GOAL_TARGET: AtomicU64 = AtomicU64::new(u64::MAX);
+static GOAL_BAND_MAPS: AtomicU64 = AtomicU64::new(0);
+
+const GOAL_BAND_DEPTH: usize = 1;
+const GOAL_SCOPE_DEPTH: usize = 2;
+const GOAL_BANDS: usize = 4;
+const GOAL_MAPS: [u8; 8] = [40, 42, 40, 40, 51, 2, 54, 54];
+
+fn goal_map(deepest: BlueArchiveKey) -> Option<u8> {
+    let reached = usize::try_from(deepest.route.count_ones()).ok()?;
+    GOAL_MAPS.get(reached).copied()
+}
 
 const MACRO_VOCABULARY_FIELD: &str = "macro_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -230,6 +244,7 @@ impl MapCoverage {
 #[derive(Clone, Default)]
 pub struct BlueCampaignEvidence {
     observed_maps: MapCoverage,
+    graph: MapGraph,
     named_progress: NamedProgress,
     aggregate: BlueMilestones,
     watermark: BlueProgressWatermark,
@@ -488,6 +503,12 @@ impl Reporting for BlueGame {
             "milestones_reached": evidence.named_progress.reached(),
             "named_progress": evidence.named_progress,
             "whiteouts": evidence.whiteouts,
+            "graph_maps": evidence.graph.maps(),
+            "goal_target_map": match GOAL_TARGET.load(Ordering::Relaxed) {
+                u64::MAX => None,
+                map => Some(map),
+            },
+            "goal_banded_maps": GOAL_BAND_MAPS.load(Ordering::Relaxed),
             "observation_filter": "live gameplay observations supplied to this accumulator"
         }))
     }
@@ -544,6 +565,9 @@ impl Reporting for BlueGame {
                 .observe(observation, sequence, action_end);
             if !observation.dead {
                 evidence.observed_maps.observe(observation.state.map);
+                evidence
+                    .graph
+                    .record(observation.state.map, &observation.links);
             }
         }
     }
@@ -570,6 +594,35 @@ impl Reporting for BlueGame {
 
     fn result_sha256(&self, result: &BlueCampaignJobResult) -> Result<String, Box<dyn Error>> {
         blue_result_sha256(result)
+    }
+
+    fn group_bands(
+        evidence: &BlueCampaignEvidence,
+        deepest: BlueArchiveKey,
+    ) -> Option<GroupBands<BlueArchiveGroup>> {
+        let target = goal_map(deepest)?;
+        let hops = evidence.graph.hops_to(target);
+        hops.get(&target)?;
+        GOAL_TARGET.store(u64::from(target), Ordering::Relaxed);
+        GOAL_BAND_MAPS.store(hops.len() as u64, Ordering::Relaxed);
+        let scope = deepest.group(GOAL_SCOPE_DEPTH);
+        let bands = hops
+            .iter()
+            .map(|(map, hops)| {
+                let group = BlueArchiveKey {
+                    map: *map,
+                    ..deepest
+                }
+                .group(GOAL_BAND_DEPTH);
+                (group, (*hops).min(GOAL_BANDS - 1))
+            })
+            .collect();
+        Some(GroupBands {
+            scope,
+            depth: GOAL_BAND_DEPTH,
+            bands,
+            count: GOAL_BANDS,
+        })
     }
 
     fn archive_report(
@@ -1084,6 +1137,64 @@ pub fn replay_blue_campaign_checkpointed(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_goal_map_follows_the_milestones_already_reached() {
+        let key = |route: u8| BlueArchiveKey {
+            badges: 0,
+            route,
+            events: 0,
+            battle: 0,
+            map: 0,
+            cell_x: 0,
+            cell_y: 0,
+            party_hp: 0,
+            party_levels: 0,
+        };
+        assert_eq!(goal_map(key(0)), Some(40));
+        assert_eq!(goal_map(key(0b1)), Some(42));
+        assert_eq!(goal_map(key(0b11)), Some(40));
+        assert_eq!(goal_map(key(0b111)), Some(40));
+        assert_eq!(goal_map(key(0b1111)), Some(51));
+        assert_eq!(goal_map(key(0b1_1111)), Some(2));
+        assert_eq!(goal_map(key(0b11_1111)), Some(54));
+        assert_eq!(goal_map(key(0b111_1111)), Some(54));
+        assert_eq!(goal_map(key(0xff)), None);
+    }
+
+    #[test]
+    fn group_bands_scope_one_milestone_state_and_band_by_hops() {
+        let mut evidence = BlueCampaignEvidence::default();
+        evidence.graph.record(0, &[12, 40, 37]);
+        evidence.graph.record(12, &[0, 1]);
+        let deepest = BlueArchiveKey {
+            badges: 0,
+            route: 0b11,
+            events: 9,
+            battle: 8,
+            map: 12,
+            cell_x: 8,
+            cell_y: 7,
+            party_hp: 17,
+            party_levels: 7,
+        };
+        let bands = <BlueGame as Reporting>::group_bands(&evidence, deepest)
+            .expect("the graph holds Oak's lab");
+        assert_eq!(bands.depth, GOAL_BAND_DEPTH);
+        assert_eq!(bands.count, GOAL_BANDS);
+        assert_eq!(
+            bands.scope,
+            deepest.group(GOAL_SCOPE_DEPTH),
+            "bands attach to one milestone state, not to every state in the class"
+        );
+        let band_of =
+            |map: u8| bands.band_of(BlueArchiveKey { map, ..deepest }.group(GOAL_BAND_DEPTH));
+        assert_eq!(band_of(40), 0, "Oak's lab is the target");
+        assert_eq!(band_of(0), 1, "Pallet Town is one hop away");
+        assert_eq!(band_of(12), 2, "Route 1 is two hops away");
+        assert_eq!(band_of(1), 3, "Viridian City is three hops away");
+        assert_eq!(band_of(99), 3, "a map with no node falls in the last band");
+    }
+
     use super::*;
     use crate::target::ActionKind;
 
@@ -1125,6 +1236,7 @@ mod tests {
             state,
             alphabet_size: 3,
             dead: false,
+            links: Vec::new(),
         };
         let action = BlueCampaignActionResult {
             action: BlueAction::new(ActionKind::WalkTo, 0),
