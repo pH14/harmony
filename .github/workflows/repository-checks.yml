@@ -109,6 +109,7 @@ jobs:
           python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
       - name: Historical scenario tooling
         run: |
+          scripts/check-portable-tests.test.sh
           scripts/historical-manifest.test.sh
           scripts/historical-oracle.test.sh
           scripts/historical-replay.test.sh

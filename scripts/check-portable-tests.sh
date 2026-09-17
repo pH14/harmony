@@ -13,7 +13,8 @@ floor="${2:?usage: check-portable-tests.sh <nextest log> <floor>}"
 total=0
 while read -r count; do
     total=$((total + count))
-done < <(sed -n 's/.*Summary \[[^]]*\][[:space:]]*\([0-9][0-9]*\) tests run.*/\1/p' "$log")
+done < <(sed $'s/\033\[[0-9;]*m//g' "$log" |
+    sed -n 's/.*Summary \[[^]]*\][[:space:]]*\([0-9][0-9]*\) tests run.*/\1/p')
 
 echo "portable tests run: $total (floor $floor)"
 if [ "$total" -lt "$floor" ]; then
