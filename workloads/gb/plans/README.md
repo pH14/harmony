@@ -244,6 +244,10 @@ and an identity that says so.
 Run the paired three-seed comparison against step 3 at matched executions and
 judge by film first, then the milestone table.
 
+The two arms run side by side on one box, six workers each, so a seed sees the
+same machine in both arms. That is why `blue-pilot.json` declares six workers
+rather than eight.
+
 Added while building step 5:
 
 - The draw weights the macro kind, not the slot inside it. A slot index only
