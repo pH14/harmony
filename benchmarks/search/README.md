@@ -251,7 +251,10 @@ cell that produced no renderable input is recorded as unavailable with a reason;
 a render that fails is recorded as failed and fails the command. `films.json`
 indexes all three states beside each cell's `film/render.log`.
 `scripts/verify-nes-films.py` then rechecks every film's digest, frame count,
-audio stream, mean volume and duration.
+audio stream, mean volume, audio coverage and duration, and checks each film
+against the digest, input and identity `films.json` recorded for its cell. It
+writes its verdict per cell to `film-verification.json`, and the roster and HTML
+report count a film as media only when that record accepts it.
 
 `eval.py build` builds `nes-film` alongside `nes-eval` and records its hash.
 `--max-frames` bounds each render. A long input is still emulated in full and

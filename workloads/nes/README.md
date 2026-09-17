@@ -31,9 +31,9 @@ sum.
 `src/film.rs` also holds the benchmark capture contract. `Endpointed` returns a
 game's decoded endpoint and frame count for a recorded input, `Filmable` adds
 rendering that input to raw video and audio, and `Reel` owns the FFmpeg
-pipeline: it rejects an empty or wrong-geometry render, muxes the PCM track back
-in, and hashes both the track and the MP4. `nes-film` is the one renderer both
-compositions use. It reads the input and `result.json` a campaign already
+pipeline: it rejects an empty or wrong-geometry render and a PCM track too short
+to cover the video, muxes the track back in, and hashes both the track and the
+MP4. `nes-film` renders the evaluation matrices of both compositions. It reads the input and `result.json` a campaign already
 recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
 own input rather than a second search.
 
@@ -50,8 +50,10 @@ ceiling are still emulated and are left out of the video, making the film a
 trailing window ending at the recorded endpoint plus `--tail-frames`. The
 ceiling, the clip policy and the dropped frame count are recorded in `film.json`
 under `clip`. `scripts/verify-nes-films.py` checks the MP4 against those
-numbers: digest, frame count, a real audio stream, audible volume and a duration
-floor.
+numbers: digest, frame count, a real audio stream, audible volume, audio that
+covers the video, and a duration floor. Its `--media` mode applies the same
+checks to an MP4 a workload wrote without a `film.json`, which is how the Super
+Tilt Bro campaign's own witness is checked.
 
 Campaign recordings use the current Dissonance schedule policy version 3 and
 bounded progress policy. Replay rejects recordings from superseded policy

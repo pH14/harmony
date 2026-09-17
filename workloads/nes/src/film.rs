@@ -358,6 +358,14 @@ impl Reel {
         if metadata.audio_frames == 0 {
             return Err("this replay produced no audio samples".into());
         }
+        let covering = metadata.frames * u64::from(metadata.audio_sample_rate) / FPS;
+        if metadata.audio_frames * 100 < covering * 99 {
+            return Err(format!(
+                "this replay produced {} audio samples, too few to cover {} video frames",
+                metadata.audio_frames, metadata.frames
+            )
+            .into());
+        }
         if (metadata.width, metadata.height) != (NES_WIDTH, NES_HEIGHT) {
             return Err("unexpected pinned QuickNES video geometry".into());
         }

@@ -476,12 +476,27 @@ def progress_summary(item):
 
 
 def film_index(matrix):
-    """Per-cell media state, so a missing film reads as missing rather than absent."""
+    """Per-cell media state, so a missing film reads as missing rather than absent.
+
+    A rendered film counts as media only once verify-nes-films.py has accepted
+    it, so a report can never advertise media its own check rejected.
+    """
     index = read_json(Path(matrix) / 'films.json')
     if not index:
         return {}
+    verification = read_json(Path(matrix) / 'film-verification.json')
+    verified = set((verification or {}).get('verified', []))
+    rejected = (verification or {}).get('problems', {})
     rows = {}
     for row in index.get('films', []):
+        if verification is None:
+            rows[row['cell']] = {'available': False,
+                                 'reason': 'the film was never checked for a real audio stream'}
+            continue
+        if row['cell'] not in verified:
+            rows[row['cell']] = {'available': False, 'reason': 'the media check rejected this film: '
+                                 + '; '.join(rejected.get(row['cell'], ['no verdict was recorded']))}
+            continue
         rows[row['cell']] = {'available': True, 'mp4': row['cell'] + '/film/witness.mp4',
                              'frames': row['video']['frames'], 'audio_frames': row['video']['audio_frames'],
                              'duration_seconds': row['capture']['duration_seconds'],
@@ -708,11 +723,12 @@ def export(matrix, out):
             if source.resolve() != matrix.resolve() / relative:
                 raise ValueError('export refuses symlinks: ' + str(relative))
             if source.is_file(): sources.append((source, relative))
-    for name in ('results.json', 'suite.json', 'matrix.json', 'films.json'):
+    for name in ('results.json', 'suite.json', 'matrix.json', 'films.json',
+                 'film-verification.json'):
         source = matrix / name
         if source.resolve() != matrix.resolve() / name:
             raise ValueError('export refuses symlinks: ' + name)
-        if name == 'films.json' and not source.is_file():
+        if name in ('films.json', 'film-verification.json') and not source.is_file():
             continue
         sources.append((source, Path(name)))
     out.mkdir(parents=True)

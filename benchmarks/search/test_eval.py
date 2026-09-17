@@ -288,6 +288,8 @@ class EvaluationTests(unittest.TestCase):
         index = eval.read_json(matrix/'films.json')
         self.assertEqual(index['films'][0]['cell'], item['cell'])
         self.assertEqual(index['unavailable'], [])
+        eval.write_json(matrix/'film-verification.json',
+                        {'verified': [item['cell']], 'problems': {}})
         eval.export(matrix, public)
         self.assertTrue((public/item['cell']/'film/witness.mp4').is_file())
         self.assertIn('film with game audio', (public/'index.html').read_text())
@@ -295,6 +297,34 @@ class EvaluationTests(unittest.TestCase):
         self.assertTrue(media['available'])
         self.assertEqual(media['mp4'], item['cell'] + '/film/witness.mp4')
         self.assertIn('films.json', eval.read_json(public/'checksums.json'))
+        self.assertIn('film-verification.json', eval.read_json(public/'checksums.json'))
+
+    def test_a_film_the_media_check_rejected_is_not_published_as_media(self):
+        matrix, public = self.root/'matrix', self.root/'public'
+        item = self.renderable(matrix)
+        eval.write_json(matrix/'films.json', {'films': [
+            {'cell': item['cell'], 'endpoint_verified': True, 'clip': {'policy': 'whole input'},
+             'video': {'frames': 300, 'audio_frames': 7350},
+             'capture': {'duration_seconds': 5.0, 'mp4_sha256': 'c'}}], 'unavailable': [], 'failed': []})
+        eval.write_json(matrix/'film-verification.json',
+                        {'verified': [], 'problems': {item['cell']: ['the audio track is silent']}})
+        eval.export(matrix, public)
+        media = eval.read_json(public/'roster.json')[0]['media']
+        self.assertFalse(media['available'])
+        self.assertIn('the audio track is silent', media['reason'])
+        self.assertNotIn('film with game audio', (public/'index.html').read_text())
+
+    def test_a_film_nothing_checked_is_not_published_as_media(self):
+        matrix, public = self.root/'matrix', self.root/'public'
+        item = self.renderable(matrix)
+        eval.write_json(matrix/'films.json', {'films': [
+            {'cell': item['cell'], 'endpoint_verified': True, 'clip': {'policy': 'whole input'},
+             'video': {'frames': 300, 'audio_frames': 7350},
+             'capture': {'duration_seconds': 5.0, 'mp4_sha256': 'c'}}], 'unavailable': [], 'failed': []})
+        eval.export(matrix, public)
+        media = eval.read_json(public/'roster.json')[0]['media']
+        self.assertFalse(media['available'])
+        self.assertIn('never checked', media['reason'])
 
     def test_a_panel_without_a_media_index_records_every_cell_as_unavailable(self):
         matrix, public = self.root/'matrix', self.root/'public'
