@@ -2190,6 +2190,33 @@ where
             .map(|(deepest, cheapest)| (deepest, cheapest, self.retained))
     }
 
+    fn rank_slot_preferences(&self, slot: &[usize], key: K, cost_in_group: u64) -> Vec<bool> {
+        let capacity = K::slot_capacity().max(1);
+        let preferences = K::preferences().max(1);
+        let members: Vec<(K, u64, u64)> = slot
+            .iter()
+            .map(|id| (self.entries[*id].key, self.cost_in_group[*id], self.entries[*id].id))
+            .chain(std::iter::once((key, cost_in_group, self.next_entry_id)))
+            .collect();
+        let mut retained = vec![false; members.len()];
+        let mut order: Vec<usize> = (0..members.len()).collect();
+        for preference in 0..preferences {
+            order.sort_by(|left, right| {
+                let (left_key, left_cost, left_id) = members[*left];
+                let (right_key, right_cost, right_id) = members[*right];
+                left_key
+                    .preference_cmp(preference, right_key)
+                    .reverse()
+                    .then_with(|| left_cost.cmp(&right_cost))
+                    .then_with(|| left_id.cmp(&right_id))
+            });
+            for index in order.iter().take(capacity) {
+                retained[*index] = true;
+            }
+        }
+        retained
+    }
+
     fn cost_in_group_of(&self, parent_id: Option<usize>, suffix: &[A], key: K) -> u64 {
         let cost_of = |actions: &[A]| -> u64 {
             actions
@@ -2257,26 +2284,15 @@ where
         let candidate_cost_in_group = self.cost_in_group_of(parent_id, &suffix, key);
         let slot = self.slots.entry(key.group(0)).or_default().clone();
         let new_slot = slot.is_empty();
-        let slot_full = slot.len() >= K::slot_capacity().max(1);
-        let replace = if slot_full {
-            let worst = slot.iter().copied().min_by(|left, right| {
-                let left_entry = &self.entries[*left];
-                let right_entry = &self.entries[*right];
-                left_entry
-                    .key
-                    .preference_cmp(0, right_entry.key)
-                    .then_with(|| self.cost_in_group[*right].cmp(&self.cost_in_group[*left]))
-                    .then_with(|| right_entry.id.cmp(&left_entry.id))
-            });
-            worst.filter(|id| match key.preference_cmp(0, self.entries[*id].key) {
-                Ordering::Greater => true,
-                Ordering::Equal => candidate_cost_in_group < self.cost_in_group[*id],
-                Ordering::Less => false,
-            })
-        } else {
-            None
-        };
-        if slot_full && replace.is_none() {
+        let ranked = self.rank_slot_preferences(&slot, key, candidate_cost_in_group);
+        let admitted = ranked.last().copied().unwrap_or(true);
+        let displaced: Vec<usize> = slot
+            .iter()
+            .copied()
+            .zip(&ranked)
+            .filter_map(|(id, retained)| (!retained).then_some(id))
+            .collect();
+        if !admitted {
             self.rejected = self.rejected.saturating_add(1);
             return Ok((None, key));
         }
@@ -2299,8 +2315,10 @@ where
             return Err("archive population limit did not retire an entry".into());
         }
         if let Some(bank) = &mut self.continuations {
-            if replace.is_some_and(|replaced| {
-                key.preference_cmp(0, self.entries[replaced].key) == Ordering::Greater
+            if displaced.iter().any(|replaced| {
+                (0..K::preferences().max(1)).any(|preference| {
+                    key.preference_cmp(preference, self.entries[*replaced].key) == Ordering::Greater
+                })
             }) {
                 bank.improved(key.group(0), self.next_entry_id);
             }
@@ -2315,7 +2333,7 @@ where
                 );
             }
         }
-        if let Some(replaced) = replace {
+        for replaced in displaced {
             self.replacement_cost_displaced = self.replacement_cost_displaced.saturating_add(1);
             self.deactivate(replaced);
         }
@@ -3929,6 +3947,111 @@ mod tests {
         assert_eq!(archive.slots.get(&7), Some(&vec![1]));
         assert_eq!(insert(&mut archive, 3, 1), None);
         assert_eq!(archive.active, vec![false, true]);
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct PortfolioKey {
+        slot: u8,
+        missiles: u8,
+        health: u8,
+    }
+
+    impl ArchiveKey for PortfolioKey {
+        type Group = u8;
+
+        fn groups() -> usize {
+            1
+        }
+
+        fn group(self, depth: usize) -> Self::Group {
+            assert_eq!(depth, 0);
+            self.slot
+        }
+
+        fn slot_capacity() -> usize {
+            1
+        }
+
+        fn preferences() -> usize {
+            2
+        }
+
+        fn preference_cmp(self, preference: usize, other: Self) -> Ordering {
+            match preference {
+                0 => (self.missiles, self.health).cmp(&(other.missiles, other.health)),
+                _ => (self.health, self.missiles).cmp(&(other.health, other.missiles)),
+            }
+        }
+
+        type Lineage = ();
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    fn insert_portfolio(
+        archive: &mut Archive<u8, PortfolioKey, (), ()>,
+        input: u8,
+        missiles: u8,
+        health: u8,
+    ) -> Option<usize> {
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![input],
+                    key: PortfolioKey {
+                        slot: 7,
+                        missiles,
+                        health,
+                    },
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert portfolio entry")
+    }
+
+    #[test]
+    fn a_slot_keeps_the_champion_of_every_preference() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        assert_eq!(insert_portfolio(&mut archive, 1, 10, 20), Some(0));
+        assert_eq!(insert_portfolio(&mut archive, 2, 5, 200), Some(1));
+        assert_eq!(archive.active, vec![true, true]);
+        assert_eq!(archive.slots.get(&7), Some(&vec![0, 1]));
+    }
+
+    #[test]
+    fn a_candidate_losing_every_preference_is_rejected() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        insert_portfolio(&mut archive, 1, 10, 20);
+        insert_portfolio(&mut archive, 2, 5, 200);
+        assert_eq!(insert_portfolio(&mut archive, 3, 4, 19), None);
+        assert_eq!(archive.slots.get(&7), Some(&vec![0, 1]));
+    }
+
+    #[test]
+    fn one_entry_winning_both_preferences_is_stored_once() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        insert_portfolio(&mut archive, 1, 10, 20);
+        insert_portfolio(&mut archive, 2, 5, 200);
+        assert_eq!(insert_portfolio(&mut archive, 3, 60, 240), Some(2));
+        assert_eq!(archive.slots.get(&7), Some(&vec![2]));
+        assert_eq!(archive.active, vec![false, false, true]);
+    }
+
+    #[test]
+    fn a_candidate_taking_one_preference_leaves_the_other_champion() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        insert_portfolio(&mut archive, 1, 10, 20);
+        insert_portfolio(&mut archive, 2, 5, 200);
+        assert_eq!(insert_portfolio(&mut archive, 3, 11, 21), Some(2));
+        assert_eq!(archive.slots.get(&7), Some(&vec![1, 2]));
+        assert_eq!(archive.active, vec![false, true, true]);
     }
 
     fn flat_archive<const DEPTHS: usize>(
