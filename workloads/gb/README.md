@@ -18,6 +18,7 @@ lives here.
 | --- | --- |
 | `target.rs` | the RAM map, state decoding, the macro actions, and `Target` |
 | `map.rs` | the overworld collision model and its breadth-first routing |
+| `graph.rs` | the map-to-map graph read from the game's own tables |
 | `archive.rs` | the archive key, the milestones, and the action draw |
 | `campaign.rs` | the searcher contracts and the campaign entry points |
 | `progress.rs` | the eight named milestones and when each was first seen |
@@ -101,6 +102,28 @@ Talking reaches one step. When the tile the player faces is one of the three
 tiles in `wTilesetTalkingOverTiles` it reaches two, which is how the Poké Mart
 cashier and the Pokémon Center nurse are reachable across their counters. The
 alphabet generates both kinds of approach tile.
+
+## Map graph
+
+`graph.rs` builds a graph whose nodes are maps and whose edges are the links the
+game itself declares for the map the player is standing on. Two tables give
+them. The four connection headers at `$D371`, `$D37C`, `$D387` and `$D392` name
+the map joined on the north, south, west and east edges, each valid only when
+its bit is set in `wCurMapConnections` at `$D370`; the bits are east 0, west 1,
+south 2, north 3. The warp table at `wWarpEntries` names a destination map in
+the fourth byte of each entry. A destination of `$FF` means the map the player
+last came from, so it is skipped; the reverse edge covers it, since Pallet
+Town's own warp table names Oak's lab.
+
+Edges are recorded in both directions, which puts a named destination in the
+graph before anything has stood on it and read its tables. A map that no visited
+map's tables name has no node and no distance. `hops_to` is a breadth-first
+distance from a target map over that graph.
+
+This is the game's declared data rather than the transitions a search was seen
+to make. One macro can cross two warps, so a graph built from parent and child
+map ids puts maps one hop apart that are two apart, and a distance taken from it
+is wrong in the direction that matters.
 
 ## Actions
 

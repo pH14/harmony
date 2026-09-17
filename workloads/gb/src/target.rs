@@ -63,9 +63,16 @@ pub const X_COORD: u16 = 0xd362;
 pub const CUR_MAP_TILESET: u16 = 0xd367;
 pub const CUR_MAP_HEIGHT: u16 = 0xd368;
 pub const CUR_MAP_WIDTH: u16 = 0xd369;
+pub const CUR_MAP_CONNECTIONS: u16 = 0xd370;
+pub const NORTH_CONNECTION_MAP: u16 = 0xd371;
+pub const SOUTH_CONNECTION_MAP: u16 = 0xd37c;
+pub const WEST_CONNECTION_MAP: u16 = 0xd387;
+pub const EAST_CONNECTION_MAP: u16 = 0xd392;
 pub const NUMBER_OF_WARPS: u16 = 0xd3ae;
 pub const WARP_ENTRIES: u16 = 0xd3af;
 pub const WARP_ENTRY_BYTES: u16 = 4;
+pub const WARP_DESTINATION_MAP: u16 = 3;
+pub const LAST_MAP: u8 = 0xff;
 pub const MAX_WARPS: u8 = 32;
 pub const NUM_SIGNS: u16 = 0xd4b0;
 pub const SIGN_COORDS: u16 = 0xd4b1;
@@ -789,6 +796,11 @@ impl BlueTarget {
     #[must_use]
     pub fn alphabet(&self) -> Alphabet {
         alphabet(&self.wram, &self.rom, self.observation.state)
+    }
+
+    #[must_use]
+    pub fn map_links(&self) -> (u8, Vec<u8>) {
+        crate::graph::map_links(&self.wram)
     }
 
     #[must_use]
