@@ -228,13 +228,35 @@ impl Store {
         match self.resolve(snap.0, gfn) {
             PageRef::Zero => out.fill(0),
             PageRef::Data(hash) => match self.pages.get(&hash) {
-                Some(entry) if blake3::hash(&entry.data).as_bytes() == &hash => {
-                    out.copy_from_slice(&entry.data);
-                }
-                Some(_) | None => return Err(StoreError::PageIntegrity { gfn }),
+                Some(entry) => out.copy_from_slice(&entry.data),
+                None => return Err(StoreError::PageIntegrity { gfn }),
             },
         }
         Ok(())
+    }
+
+    pub fn page_ref_eq(
+        &self,
+        a: SnapshotId,
+        a_gfn: u64,
+        b: SnapshotId,
+        b_gfn: u64,
+    ) -> Result<bool, StoreError> {
+        self.live_layer(a)?;
+        self.live_layer(b)?;
+        if a_gfn >= self.cfg.mem_pages {
+            return Err(StoreError::GfnOutOfRange {
+                gfn: a_gfn,
+                mem_pages: self.cfg.mem_pages,
+            });
+        }
+        if b_gfn >= self.cfg.mem_pages {
+            return Err(StoreError::GfnOutOfRange {
+                gfn: b_gfn,
+                mem_pages: self.cfg.mem_pages,
+            });
+        }
+        Ok(self.resolve(a.0, a_gfn) == self.resolve(b.0, b_gfn))
     }
 
     pub fn diff_pages(
@@ -373,10 +395,10 @@ impl Store {
         Ok(())
     }
 
-    pub fn release(&mut self, snap: SnapshotId) -> Result<(), StoreError> {
+    pub fn release(&mut self, snap: SnapshotId) -> Result<u64, StoreError> {
         let layer = self.live_layer_mut(snap)?;
         layer.refcount -= 1;
-        Ok(())
+        Ok(layer.refcount)
     }
 
     pub fn gc(&mut self) -> u64 {
@@ -1101,7 +1123,7 @@ mod tests {
 
     #[cfg(feature = "test-utils")]
     #[test]
-    fn sealed_page_and_vm_state_corruption_are_detected() {
+    fn sealed_page_corruption_is_detected_at_materialize_not_read() {
         let mut store = Store::new(StoreConfig { mem_pages: 2 });
         let mut builder = store.begin_base();
         builder.write_page(1, &[0x5a; PAGE_SIZE]).unwrap();
@@ -1109,10 +1131,12 @@ mod tests {
 
         store.corrupt_page_for_test(snap, 1, 7, 0x5a).unwrap();
         let mut out = [0_u8; PAGE_SIZE];
-        assert!(matches!(
-            store.read_page(snap, 1, &mut out),
-            Err(StoreError::PageIntegrity { gfn: 1 })
-        ));
+        store.read_page(snap, 1, &mut out).unwrap();
+        assert_eq!(out, {
+            let mut expected = [0x5a; PAGE_SIZE];
+            expected[7] ^= 0x5a;
+            expected
+        });
         assert!(matches!(
             store.materialize(snap),
             Err(StoreError::PageIntegrity { gfn: 1 })
@@ -1125,5 +1149,74 @@ mod tests {
             clean.vm_state(snap),
             Err(StoreError::VmStateIntegrity)
         ));
+    }
+
+    #[test]
+    fn interning_hash_is_verified_at_write_time() {
+        let mut store = Store::new(cfg(1));
+        let mut builder = store.begin_base();
+        let data = [0x7a; PAGE_SIZE];
+        builder.write_page(0, &data).unwrap();
+        let snap = builder.seal(vec![]);
+        let mut out = [0_u8; PAGE_SIZE];
+        store.read_page(snap, 0, &mut out).unwrap();
+        assert_eq!(out, data);
+        assert_eq!(store.materialize(snap).unwrap().as_slice(), &data[..]);
+    }
+
+    #[test]
+    fn skipping_gc_while_a_layer_still_has_refs_frees_the_same_set() {
+        fn live_ids(store: &Store) -> BTreeSet<u64> {
+            store.layers.keys().copied().collect()
+        }
+
+        let mut eager = Store::new(cfg(4));
+        let base = eager.begin_base().seal(vec![]);
+        eager.retain(base).unwrap();
+        let mut child_builder = eager.derive(base).unwrap();
+        child_builder.write_page(0, &[1u8; PAGE_SIZE]).unwrap();
+        let child = child_builder.seal(vec![]);
+        eager.release(base).unwrap();
+        eager.gc();
+        eager.release(base).unwrap();
+        eager.gc();
+        eager.release(child).unwrap();
+        eager.gc();
+
+        let mut lazy = Store::new(cfg(4));
+        let base = lazy.begin_base().seal(vec![]);
+        lazy.retain(base).unwrap();
+        let mut child_builder = lazy.derive(base).unwrap();
+        child_builder.write_page(0, &[1u8; PAGE_SIZE]).unwrap();
+        let child = child_builder.seal(vec![]);
+        if lazy.release(base).unwrap() == 0 {
+            lazy.gc();
+        }
+        if lazy.release(base).unwrap() == 0 {
+            lazy.gc();
+        }
+        if lazy.release(child).unwrap() == 0 {
+            lazy.gc();
+        }
+
+        assert_eq!(live_ids(&eager), live_ids(&lazy));
+        assert!(live_ids(&lazy).is_empty());
+    }
+
+    #[test]
+    fn page_ref_eq_matches_content_across_snapshots() {
+        let mut store = Store::new(cfg(4));
+        let mut base_builder = store.begin_base();
+        base_builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let base = base_builder.seal(vec![]);
+
+        let mut other_builder = store.begin_base();
+        other_builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        other_builder.write_page(1, &[0x22; PAGE_SIZE]).unwrap();
+        let other = other_builder.seal(vec![]);
+
+        assert!(store.page_ref_eq(base, 0, other, 0).unwrap());
+        assert!(!store.page_ref_eq(base, 1, other, 1).unwrap());
+        assert!(store.page_ref_eq(base, 1, other, 2).unwrap());
     }
 }

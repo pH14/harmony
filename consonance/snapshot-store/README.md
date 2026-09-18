@@ -14,10 +14,13 @@ previous write, and writes equal to the inherited content are discarded.
 
 `read_page` resolves the nearest layer that wrote a frame. Layers are immutable
 after sealing; a lookup cache makes repeated reads efficient. Page contents are
-interned store-wide by BLAKE3, while the all-zero page is implicit. `vm_state`
-is opaque but its seal-time digest is checked before it is returned. Corrupted
-page data or state produces an integrity error rather than silently returning
-bytes.
+interned store-wide by BLAKE3 hash, computed once when the page is written,
+while the all-zero page is implicit; `read_page` trusts the interned copy and
+does not rehash it on every read. `vm_state` is opaque but its seal-time
+digest is checked before it is returned. `materialize` rehashes every resolved
+page in one pass and produces an integrity error, rather than silently
+returning bytes, if host memory corrupted a page between intern and
+materialize.
 
 Snapshot IDs are reference-counted. `retain` adds a live reference,
 `release` makes an ID unobservable at zero, and `gc` removes layers no longer

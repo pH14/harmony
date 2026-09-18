@@ -45,8 +45,9 @@ pub fn snapshot_store::Store::flatten_base(&mut self, snapshot_store::SnapshotId
 pub fn snapshot_store::Store::gc(&mut self) -> u64
 pub fn snapshot_store::Store::materialize(&self, snapshot_store::SnapshotId) -> core::result::Result<snapshot_store::Mapping, snapshot_store::StoreError>
 pub fn snapshot_store::Store::new(snapshot_store::StoreConfig) -> snapshot_store::Store
+pub fn snapshot_store::Store::page_ref_eq(&self, snapshot_store::SnapshotId, u64, snapshot_store::SnapshotId, u64) -> core::result::Result<bool, snapshot_store::StoreError>
 pub fn snapshot_store::Store::read_page(&self, snapshot_store::SnapshotId, u64, &mut [u8]) -> core::result::Result<(), snapshot_store::StoreError>
-pub fn snapshot_store::Store::release(&mut self, snapshot_store::SnapshotId) -> core::result::Result<(), snapshot_store::StoreError>
+pub fn snapshot_store::Store::release(&mut self, snapshot_store::SnapshotId) -> core::result::Result<u64, snapshot_store::StoreError>
 pub fn snapshot_store::Store::retain(&mut self, snapshot_store::SnapshotId) -> core::result::Result<(), snapshot_store::StoreError>
 pub fn snapshot_store::Store::stats(&self, snapshot_store::SnapshotId) -> core::result::Result<snapshot_store::SnapStats, snapshot_store::StoreError>
 pub fn snapshot_store::Store::store_stats(&self) -> snapshot_store::StoreStats
