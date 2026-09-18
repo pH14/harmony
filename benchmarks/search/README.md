@@ -118,6 +118,14 @@ slots after the isolated 18-pair execution comparison reproduced every stream.
 The dedicated SMB regression panel retains its original one-reservation profile
 as a separate stress condition.
 
+A Metroid case may carry `root_input`, the path to a milestone input recorded
+by an earlier run. The campaign then starts from the state that input reaches
+instead of power-on, every recorded input is relative to that state, and
+`gained` counts items and tanks taken beyond it. `{seed}` in the path is
+replaced with the cell's seed, so each seed can continue its own line. The
+workload identity names the root, so `compare` refuses to combine a rooted run
+with a power-on run.
+
 ## Registered panels
 
 | Manifest | Purpose |

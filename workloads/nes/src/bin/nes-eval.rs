@@ -3,7 +3,7 @@
 use nes_workload::{
     metroid::{
         campaign::{MetroidCampaignRun, MetroidGame},
-        target::MetroidTerminalPolicy,
+        target::{GenesisDepth, MetroidInput, MetroidTerminalPolicy, power_on_walk},
     },
     mm2::{
         campaign::{Mm2CampaignRun, Mm2Game},
@@ -37,7 +37,7 @@ use sha2::{Digest, Sha256};
 use std::{
     error::Error,
     fs,
-    io::{self, BufWriter, LineWriter, Write},
+    io::{self, BufReader, BufWriter, LineWriter, Write},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -90,6 +90,8 @@ struct Request {
     ai: Option<String>,
     #[serde(default)]
     metroid_terminal: Option<String>,
+    #[serde(default)]
+    root_input: Option<PathBuf>,
 }
 
 struct StreamDigest {
@@ -112,6 +114,30 @@ impl Write for StreamDigest {
         }
         Ok(())
     }
+}
+
+fn metroid_game(
+    rom: &[u8],
+    core_path: &Path,
+    core_sha256: &str,
+    root_input: Option<&Path>,
+) -> Result<MetroidGame> {
+    let Some(root_input) = root_input else {
+        return Ok(MetroidGame::new(rom, core_path, core_sha256));
+    };
+    let input: MetroidInput = serde_json::from_reader(BufReader::new(fs::File::open(root_input)?))?;
+    if input.actions.is_empty() {
+        return Err("root input carries no actions".into());
+    }
+    let mut prefix = power_on_walk();
+    prefix.extend(input.actions.iter().copied());
+    Ok(MetroidGame::new_rooted(
+        rom,
+        core_path,
+        core_sha256,
+        prefix,
+        GenesisDepth::Rooted,
+    ))
 }
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -398,7 +424,7 @@ fn main() -> Result<()> {
             started,
         ),
         "metroid" => evaluate(
-            MetroidGame::new(&rom, p, h)
+            metroid_game(&rom, p, h, request.root_input.as_deref())?
                 .with_milestone_input_dir(out.join("milestone-inputs"))
                 .with_terminal_policy(match request.metroid_terminal.as_deref() {
                     Some(identifier) => MetroidTerminalPolicy::parse(identifier)?,

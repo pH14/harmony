@@ -21,8 +21,8 @@ use crate::{
         },
         progress::NamedProgress,
         target::{
-            ButtonChord, MetroidInput, MetroidObservations, MetroidSnapshot, MetroidTarget,
-            MetroidTerminalPolicy, power_on_walk, preference_tuple,
+            ButtonChord, GenesisDepth, MetroidInput, MetroidObservations, MetroidSnapshot,
+            MetroidTarget, MetroidTerminalPolicy, power_on_walk, preference_tuple,
         },
     },
     search::{
@@ -65,6 +65,7 @@ pub struct MetroidGame {
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
     terminal_policy: MetroidTerminalPolicy,
+    depth: GenesisDepth,
 }
 
 impl MetroidGame {
@@ -80,13 +81,28 @@ impl MetroidGame {
         core_sha256: &str,
         prefix: Vec<ButtonChord>,
     ) -> Self {
+        Self::new_rooted(rom, core_path, core_sha256, prefix, GenesisDepth::NewGame)
+    }
+
+    #[must_use]
+    pub fn new_rooted(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        prefix: Vec<ButtonChord>,
+        depth: GenesisDepth,
+    ) -> Self {
         let mut prefix_digest = Sha256::new();
         for chord in &prefix {
             prefix_digest.update([chord.buttons, chord.hold_frames]);
         }
+        let genesis = match depth {
+            GenesisDepth::NewGame => "metroid-new-game-v1",
+            GenesisDepth::Rooted => "metroid-rooted-v1",
+        };
         let identity = format!(
             "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;\
-             genesis=metroid-new-game-v1:prefix-sha256={:x};\
+             genesis={genesis}:prefix-sha256={:x};\
              image=cartridge-ram-declared-v1;\
              result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v4;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
@@ -103,6 +119,7 @@ impl MetroidGame {
             champion_input_path: None,
             milestone_input_dir: None,
             terminal_policy: MetroidTerminalPolicy::default(),
+            depth,
         }
     }
 
@@ -658,11 +675,12 @@ impl TargetExecution for MetroidGame {
     }
 
     fn new_target(&self) -> Result<MetroidTarget, String> {
-        MetroidTarget::from_rom_bytes_after(
+        MetroidTarget::from_rom_bytes_rooted(
             &self.rom,
             &self.core_path,
             &self.core_sha256,
             &self.prefix,
+            self.depth,
         )
         .map(|target| target.with_terminal_policy(self.terminal_policy))
         .map_err(|error| error.to_string())

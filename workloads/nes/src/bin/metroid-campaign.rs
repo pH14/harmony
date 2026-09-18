@@ -16,6 +16,7 @@ use nes_workload::{
             MetroidCampaignConfig, MetroidCampaignOrigin, MetroidGame,
             replay_metroid_campaign_checkpointed, run_metroid_campaign_checkpointed,
         },
+        target::{GenesisDepth, MetroidInput, power_on_walk},
     },
     search::{
         archive::{RetentionPolicy, RetireThresholds, SelectorPolicy},
@@ -37,6 +38,7 @@ struct Args {
     mixture: DrawMixture,
     verify_replay: bool,
     selector: SelectorPolicy,
+    root_input: Option<PathBuf>,
 }
 
 impl Args {
@@ -59,6 +61,7 @@ impl Args {
             entry: 3,
             groups: vec![6, 12, 2, 16],
         });
+        let mut root_input = None;
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             if flag == "--verify-replay" {
@@ -72,6 +75,7 @@ impl Args {
                 "--core" => core = Some(PathBuf::from(value)),
                 "--rom" => rom = Some(PathBuf::from(value)),
                 "--output" => output = Some(PathBuf::from(value)),
+                "--root-input" => root_input = Some(PathBuf::from(value)),
                 "--seed" => seed = parse_number("seed", value)?,
                 "--executions" => executions = parse_number("executions", value)?,
                 "--workers" => workers = parse_number("workers", value)?,
@@ -112,6 +116,7 @@ impl Args {
             mixture,
             verify_replay,
             selector,
+            root_input,
         })
     }
 }
@@ -128,12 +133,36 @@ where
         .map_err(|error| format!("{name}: {error}").into())
 }
 
+fn metroid_game(
+    rom: &[u8],
+    core_path: &std::path::Path,
+    core_sha256: &str,
+    root_input: Option<&std::path::Path>,
+) -> Result<MetroidGame, Box<dyn Error>> {
+    let Some(root_input) = root_input else {
+        return Ok(MetroidGame::new(rom, core_path, core_sha256));
+    };
+    let input: MetroidInput = serde_json::from_slice(&fs::read(root_input)?)?;
+    if input.actions.is_empty() {
+        return Err("root input carries no actions".into());
+    }
+    let mut prefix = power_on_walk();
+    prefix.extend(input.actions.iter().copied());
+    Ok(MetroidGame::new_rooted(
+        rom,
+        core_path,
+        core_sha256,
+        prefix,
+        GenesisDepth::Rooted,
+    ))
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse_from(env::args_os().skip(1))?;
     fs::create_dir_all(&args.output)?;
     let rom = fs::read(&args.rom)?;
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&args.core)?));
-    let game = MetroidGame::new(&rom, &args.core, &core_sha256)
+    let game = metroid_game(&rom, &args.core, &core_sha256, args.root_input.as_deref())?
         .with_champion_input_path(args.output.join("champion-input.json"));
     let config = MetroidCampaignConfig {
         campaign_seed: args.seed,

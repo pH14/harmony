@@ -44,6 +44,21 @@ const HEALTH_HIGH: usize = 0x107;
 const HEALTH_LOW: usize = 0x106;
 pub const STARTING_HEALTH_TENTHS: u16 = 300;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenesisDepth {
+    NewGame,
+    Rooted,
+}
+
+impl GenesisDepth {
+    fn accepts(self, health: u16) -> bool {
+        match self {
+            Self::NewGame => health == STARTING_HEALTH_TENTHS,
+            Self::Rooted => health > 0,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MetroidTerminalPolicy {
     Legacy,
@@ -335,7 +350,7 @@ impl MetroidTarget {
         let mut machine = QuickNesMachine::from_rom_bytes(&image, core_path, core_sha256)?;
         machine.set_video_capture(true);
         machine.set_audio_capture(true);
-        Self::from_machine(machine, &power_on_walk())
+        Self::from_machine(machine, &power_on_walk(), GenesisDepth::NewGame)
     }
 
     pub fn drain_frames(&mut self) -> Vec<VideoFrame> {
@@ -352,16 +367,28 @@ impl MetroidTarget {
         core_sha256: &str,
         prefix: &[ButtonChord],
     ) -> Result<Self, MachineError> {
+        Self::from_rom_bytes_rooted(rom, core_path, core_sha256, prefix, GenesisDepth::NewGame)
+    }
+
+    pub fn from_rom_bytes_rooted(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        prefix: &[ButtonChord],
+        depth: GenesisDepth,
+    ) -> Result<Self, MachineError> {
         let image = nes::with_cartridge_ram(rom)?;
         Self::from_machine(
             QuickNesMachine::from_rom_bytes(&image, core_path, core_sha256)?,
             prefix,
+            depth,
         )
     }
 
     fn from_machine(
         mut machine: QuickNesMachine,
         prefix: &[ButtonChord],
+        depth: GenesisDepth,
     ) -> Result<Self, MachineError> {
         let mut genesis_prefix = prefix.to_vec();
         for chunk in prefix.chunks(64) {
@@ -372,7 +399,7 @@ impl MetroidTarget {
             let wram = machine.read_wram()?;
             let cartridge = machine.read_save_ram()?;
             let state = decode_state(&wram, &cartridge)?;
-            if state.in_play() && state.health == STARTING_HEALTH_TENTHS {
+            if state.in_play() && depth.accepts(state.health) {
                 break;
             }
             if waited >= PLAY_WAIT_FRAMES {
@@ -855,9 +882,19 @@ mod observation_tests {
         machine.poke_wram(HEALTH_HIGH, 3);
         machine.write_save_ram(ENERGY_TANKS, &[1]).unwrap();
         machine.write_save_ram(MISSILE_CAPACITY, &[20]).unwrap();
-        let mut target = MetroidTarget::from_machine(machine, &[]).unwrap();
+        let mut target = MetroidTarget::from_machine(machine, &[], GenesisDepth::NewGame).unwrap();
         target.diagnostic_set_resources(79, 0).unwrap();
         target
+    }
+
+    #[test]
+    fn a_rooted_genesis_accepts_any_live_health_and_a_new_game_does_not() {
+        assert!(GenesisDepth::NewGame.accepts(STARTING_HEALTH_TENTHS));
+        assert!(!GenesisDepth::NewGame.accepts(STARTING_HEALTH_TENTHS - 1));
+        assert!(!GenesisDepth::NewGame.accepts(0));
+        assert!(GenesisDepth::Rooted.accepts(STARTING_HEALTH_TENTHS));
+        assert!(GenesisDepth::Rooted.accepts(1));
+        assert!(!GenesisDepth::Rooted.accepts(0));
     }
 
     #[test]

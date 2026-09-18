@@ -139,7 +139,8 @@ def expand_suite(suite, selected=None):
         settings={**suite['search'],**case.get('search',{})}
         if set(settings)-ALLOWED_SEARCH: raise ValueError('unknown search settings')
         for seed,workers,memory in itertools.product(suite['seeds'],suite['workers'],suite['memory_mib']):
-            request={**settings,**{k:case[k] for k in ('game','level','stage','ai','whole_game') if k in case},'seed':seed,'workers':workers,'memory_mib':memory}
+            request={**settings,**{k:case[k] for k in ('game','level','stage','ai','whole_game','root_input') if k in case},'seed':seed,'workers':workers,'memory_mib':memory}
+            if 'root_input' in request: request['root_input']=str(request['root_input']).format(seed=seed)
             for field in ('seed','workers','memory_mib','executions','actions','window','wall_seconds'):
                 val=request[field]
                 if type(val) is not int or val<0 or (field!='seed' and val==0): raise ValueError('invalid '+field)
@@ -161,6 +162,10 @@ def resolve_assets(job, assets):
         if name!='core' and actual!=job['case']['rom_sha256']: raise ValueError('ROM differs from frozen suite: '+name)
         prefix='core' if name=='core' else 'rom'
         request[prefix]=str(Path(item['path']).resolve());request[prefix+'_sha256']=actual
+    if request.get('root_input'):
+        root=Path(request['root_input'])
+        if not root.is_file(): raise ValueError('root input is missing: '+str(root))
+        request['root_input']=str(root.resolve())
     return request
 
 
