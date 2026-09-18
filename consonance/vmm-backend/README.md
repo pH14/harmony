@@ -25,8 +25,10 @@ effect, so a write that never precedes a state read costs no extra entry at
 all. `save`, `prepare_snapshot`, `restore`, and `retire_pending_completion`
 retire an acknowledged write with one immediate-exit entry before they read or
 replace the vCPU, so a restore never leaves an in-kernel completion to land on
-the restored registers. An MMIO exit stays unacknowledged until `finish_exit`,
-so `run()`, `prepare_snapshot`, and `restore` reject it with
+the restored registers. The acknowledgement is derived from the decoded exit at
+every decode site, so a device access surfaced by that drain is unacknowledged
+like any other MMIO exit. An MMIO exit stays unacknowledged until
+`finish_exit`, so `run()`, `prepare_snapshot`, and `restore` reject it with
 `PendingCompletion` and no guest entry, and `save` reads the vCPU as it stands;
 `finish_exit` completes the MMIO callback and returns any further device access
 required by the same instruction. Callers service these continuations until `finish_exit` returns
@@ -98,13 +100,15 @@ retain the complete raw bitmap. The core layer projects only validated init
 x87/SSE restoration metadata for verified controlled guests; generic identity
 remains strict. The reproduced AMD failure and scoped contract are documented under
 [Published XSAVE identity check](../vmm-core/README.md#published-xsave-identity-check). `save()`
-and hashing remain reads; callers prepare a boundary explicitly after restoring
-RAM and CPU state or servicing an exit. Pending CPU events remain present; a
+retires an acknowledged write completion with the same guarded entry before it
+reads and is otherwise a read; callers prepare a boundary explicitly after
+restoring RAM and CPU state or servicing an exit. Pending CPU events remain present; a
 staged write completion with no value left to supply is a different condition
 and preparation consumes it as part of its own guarded entry, but a pending
 read/MSR response awaiting an explicit value is not consumed and still fails
-preparation closed. KVM restore rejects pending read/MSR responses, staged
-completions and queued completion exits before any CPU ioctl or state
+preparation closed. KVM restore retires an acknowledged write completion with
+that guarded entry first and rejects pending read/MSR responses, unacknowledged
+staged completions and queued completion exits before any CPU ioctl or state
 mutation, since committing a stale exit's completion after restore would apply
 it to the wrong instruction. A rejected restore leaves completion and interrupt
 state intact. Raw backend save remains

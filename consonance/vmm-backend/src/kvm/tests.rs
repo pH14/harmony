@@ -346,15 +346,15 @@ fn apply_complete_fault_and_ok_set_msr_error() {
 fn retire_staged_completion_is_a_noop_without_a_stage() {
     let s = SynRun::new();
     let mut pending = Pending::None;
-    let mut staged = false;
+    let mut stage = Stage::CLEAR;
     let mut entries = 0;
-    retire_staged_completion(s.page(), &mut pending, &mut staged, || {
+    retire_staged_completion(s.page(), &mut pending, &mut stage, || {
         entries += 1;
         Ok(())
     })
     .unwrap();
     assert_eq!(entries, 0, "a no-pending retirement must not enter KVM");
-    assert!(!staged);
+    assert!(!stage.staged);
     assert_eq!(pending, Pending::None);
     assert_eq!(s.page().immediate_exit(), 0);
 }
@@ -366,10 +366,10 @@ fn retire_staged_completion_uses_one_immediate_entry_and_preserves_next_exit() {
         data_offset: PIO_OFF as u64,
         size: 1,
     };
-    let mut staged = true;
+    let mut stage = Stage::AWAITING_FINISH;
     let mut entries = 0;
     let mut next_scripted_exit = Some(KVM_EXIT_HLT);
-    retire_staged_completion(s.page(), &mut pending, &mut staged, || {
+    retire_staged_completion(s.page(), &mut pending, &mut stage, || {
         entries += 1;
         assert_eq!(s.page().immediate_exit(), 1);
         assert_eq!(next_scripted_exit, Some(KVM_EXIT_HLT));
@@ -378,7 +378,7 @@ fn retire_staged_completion_uses_one_immediate_entry_and_preserves_next_exit() {
     .unwrap();
     assert_eq!(entries, 1);
     assert_eq!(next_scripted_exit.take(), Some(KVM_EXIT_HLT));
-    assert!(!staged);
+    assert!(!stage.staged);
     assert_eq!(pending, Pending::None);
     assert_eq!(s.page().immediate_exit(), 0);
 }
@@ -387,8 +387,8 @@ fn retire_staged_completion_uses_one_immediate_entry_and_preserves_next_exit() {
 fn retire_staged_completion_error_clears_one_shot_and_keeps_stage() {
     let s = SynRun::new();
     let mut pending = Pending::None;
-    let mut staged = true;
-    let error = retire_staged_completion(s.page(), &mut pending, &mut staged, || {
+    let mut stage = Stage::AWAITING_FINISH;
+    let error = retire_staged_completion(s.page(), &mut pending, &mut stage, || {
         assert_eq!(s.page().immediate_exit(), 1);
         Err(std::io::Error::from_raw_os_error(libc::EIO))
     })
@@ -396,7 +396,7 @@ fn retire_staged_completion_error_clears_one_shot_and_keeps_stage() {
     assert!(matches!(error, BackendError::Io(_)));
     assert_eq!(s.page().immediate_exit(), 0);
     assert!(
-        staged,
+        stage.staged,
         "an uncertain completion remains conservatively staged"
     );
     assert_eq!(pending, Pending::None);
@@ -406,16 +406,16 @@ fn retire_staged_completion_error_clears_one_shot_and_keeps_stage() {
 fn retire_staged_write_completion_without_pending_uses_immediate_entry() {
     let s = SynRun::new();
     let mut pending = Pending::None;
-    let mut staged = true;
+    let mut stage = Stage::AWAITING_FINISH;
     let mut entries = 0;
-    retire_staged_completion(s.page(), &mut pending, &mut staged, || {
+    retire_staged_completion(s.page(), &mut pending, &mut stage, || {
         entries += 1;
         assert_eq!(s.page().immediate_exit(), 1);
         Err(std::io::Error::from_raw_os_error(libc::EINTR))
     })
     .unwrap();
     assert_eq!(entries, 1);
-    assert!(!staged);
+    assert!(!stage.staged);
     assert_eq!(pending, Pending::None);
     assert_eq!(s.page().immediate_exit(), 0);
 }
@@ -427,9 +427,9 @@ fn finish_staged_completion_returns_mmio_load_continuation_and_updates_pending()
         data_offset: PIO_OFF as u64,
         size: 1,
     };
-    let mut staged = true;
+    let mut stage = Stage::AWAITING_FINISH;
     let mut entries = 0;
-    let next = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+    let next = finish_staged_completion(s.page(), &mut pending, &mut stage, || {
         entries += 1;
         assert_eq!(s.page().immediate_exit(), 1);
         set_reason(&s, KVM_EXIT_MMIO);
@@ -455,7 +455,10 @@ fn finish_staged_completion_returns_mmio_load_continuation_and_updates_pending()
         })
     );
     assert_eq!(pending, Pending::MmioLoad { len: 4 });
-    assert!(!staged, "a read continuation now awaits its host value");
+    assert!(
+        !stage.staged,
+        "a read continuation now awaits its host value"
+    );
     assert_eq!(s.page().immediate_exit(), 0);
 }
 
@@ -463,8 +466,8 @@ fn finish_staged_completion_returns_mmio_load_continuation_and_updates_pending()
 fn finish_staged_completion_returns_mmio_store_continuation_and_keeps_stage() {
     let s = SynRun::new();
     let mut pending = Pending::None;
-    let mut staged = true;
-    let next = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+    let mut stage = Stage::AWAITING_FINISH;
+    let next = finish_staged_completion(s.page(), &mut pending, &mut stage, || {
         assert_eq!(s.page().immediate_exit(), 1);
         set_reason(&s, KVM_EXIT_MMIO);
         // SAFETY: union sub-field writes to the owned synthetic run page.
@@ -489,7 +492,10 @@ fn finish_staged_completion_returns_mmio_store_continuation_and_keeps_stage() {
         })
     );
     assert_eq!(pending, Pending::None);
-    assert!(staged, "a store continuation still has a KVM callback");
+    assert!(
+        stage.staged,
+        "a store continuation still has a KVM callback"
+    );
     assert_eq!(s.page().immediate_exit(), 0);
 }
 
@@ -497,8 +503,8 @@ fn finish_staged_completion_returns_mmio_store_continuation_and_keeps_stage() {
 fn finish_staged_completion_returns_pio_read_continuation_and_arms_pending() {
     let s = SynRun::new();
     let mut pending = Pending::None;
-    let mut staged = true;
-    let next = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+    let mut stage = Stage::AWAITING_FINISH;
+    let next = finish_staged_completion(s.page(), &mut pending, &mut stage, || {
         assert_eq!(s.page().immediate_exit(), 1);
         set_reason(&s, KVM_EXIT_IO);
         // SAFETY: union sub-field writes to the owned synthetic run page.
@@ -530,7 +536,10 @@ fn finish_staged_completion_returns_pio_read_continuation_and_arms_pending() {
             size: 2,
         }
     );
-    assert!(!staged, "a PIO read continuation awaits its host value");
+    assert!(
+        !stage.staged,
+        "a PIO read continuation awaits its host value"
+    );
     assert_eq!(s.page().immediate_exit(), 0);
 }
 
@@ -538,9 +547,9 @@ fn finish_staged_completion_returns_pio_read_continuation_and_arms_pending() {
 fn finish_staged_completion_eintr_reaches_a_no_entry_fixpoint() {
     let s = SynRun::new();
     let mut pending = Pending::MmioLoad { len: 8 };
-    let mut staged = true;
+    let mut stage = Stage::AWAITING_FINISH;
     let mut entries = 0;
-    let first = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+    let first = finish_staged_completion(s.page(), &mut pending, &mut stage, || {
         entries += 1;
         assert_eq!(s.page().immediate_exit(), 1);
         Err(std::io::Error::from_raw_os_error(libc::EINTR))
@@ -549,10 +558,10 @@ fn finish_staged_completion_eintr_reaches_a_no_entry_fixpoint() {
     assert_eq!(first, None);
     assert_eq!(entries, 1);
     assert_eq!(pending, Pending::None);
-    assert!(!staged);
+    assert!(!stage.staged);
     assert_eq!(s.page().immediate_exit(), 0);
 
-    let second = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+    let second = finish_staged_completion(s.page(), &mut pending, &mut stage, || {
         entries += 1;
         Ok(())
     })
@@ -569,8 +578,8 @@ fn finish_staged_completion_raw_error_preserves_state_and_clears_flag() {
         data_offset: PIO_OFF as u64,
         size: 2,
     };
-    let mut staged = true;
-    let error = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+    let mut stage = Stage::AWAITING_FINISH;
+    let error = finish_staged_completion(s.page(), &mut pending, &mut stage, || {
         assert_eq!(s.page().immediate_exit(), 1);
         Err(std::io::Error::from_raw_os_error(libc::EIO))
     })
@@ -584,7 +593,10 @@ fn finish_staged_completion_raw_error_preserves_state_and_clears_flag() {
             size: 2,
         }
     );
-    assert!(staged, "an uncertain completion remains staged for retry");
+    assert!(
+        stage.staged,
+        "an uncertain completion remains staged for retry"
+    );
     assert_eq!(s.page().immediate_exit(), 0);
 }
 
@@ -598,8 +610,8 @@ fn finish_staged_completion_rejects_non_device_continuations_without_mutation() 
         let s = SynRun::new();
         let original_pending = Pending::MmioLoad { len: 4 };
         let mut pending = original_pending;
-        let mut staged = true;
-        let error = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+        let mut stage = Stage::AWAITING_FINISH;
+        let error = finish_staged_completion(s.page(), &mut pending, &mut stage, || {
             assert_eq!(s.page().immediate_exit(), 1);
             set_reason(&s, reason);
             Ok(())
@@ -608,7 +620,7 @@ fn finish_staged_completion_rejects_non_device_continuations_without_mutation() 
 
         assert!(matches!(error, BackendError::Internal(_)));
         assert_eq!(pending, original_pending);
-        assert!(staged);
+        assert!(stage.staged);
         assert_eq!(s.page().immediate_exit(), 0);
     }
 }
@@ -617,7 +629,7 @@ fn finish_staged_completion_rejects_non_device_continuations_without_mutation() 
 fn retire_staged_completion_rejects_continuation_without_dropping_it() {
     let s = SynRun::new();
     let mut pending = Pending::None;
-    let mut staged = true;
+    let mut stage = Stage::AWAITING_FINISH;
     set_reason(&s, KVM_EXIT_MMIO);
     // SAFETY: union sub-field writes to the owned synthetic run page.
     unsafe {
@@ -628,11 +640,11 @@ fn retire_staged_completion_rejects_continuation_without_dropping_it() {
         mmio.data[0] = 0x42;
     }
 
-    let error = retire_staged_completion(s.page(), &mut pending, &mut staged, || Ok(()))
+    let error = retire_staged_completion(s.page(), &mut pending, &mut stage, || Ok(()))
         .expect_err("the legacy retire wrapper cannot discard a continuation");
     assert!(matches!(error, BackendError::PendingCompletion));
     assert_eq!(pending, Pending::None);
-    assert!(staged, "the returned store remains serviceable");
+    assert!(stage.staged, "the returned store remains serviceable");
     assert_eq!(s.page().immediate_exit(), 0);
 }
 
@@ -1058,8 +1070,8 @@ fn snapshot_preparation_requires_interruption_and_clears_its_request() {
         let run = SynRun::new();
         let mut entered = false;
         let mut pending = Pending::None;
-        let mut staged = false;
-        let result = prepare_snapshot_run(run.page(), 7, &mut pending, &mut staged, || {
+        let mut stage = Stage::CLEAR;
+        let result = prepare_snapshot_run(run.page(), 7, &mut pending, &mut stage, || {
             entered = true;
             assert_eq!(run.page().immediate_exit(), 1);
             // SAFETY: the synthetic run page is owned and initialized for the entire test.
@@ -1084,8 +1096,8 @@ fn snapshot_preparation_drains_a_staged_completion_in_the_same_run() {
     let run = SynRun::new();
     let mut entries = 0;
     let mut pending = Pending::None;
-    let mut staged = true;
-    let result = prepare_snapshot_run(run.page(), 9, &mut pending, &mut staged, || {
+    let mut stage = Stage::AWAITING_FINISH;
+    let result = prepare_snapshot_run(run.page(), 9, &mut pending, &mut stage, || {
         entries += 1;
         assert_eq!(run.page().immediate_exit(), 1);
         // SAFETY: the synthetic run page is owned and initialized for the entire test.
@@ -1094,7 +1106,7 @@ fn snapshot_preparation_drains_a_staged_completion_in_the_same_run() {
     });
     assert_eq!(entries, 1);
     assert_eq!(result.unwrap(), None);
-    assert!(!staged);
+    assert!(!stage.staged);
     assert_eq!(pending, Pending::None);
     assert_eq!(run.page().immediate_exit(), 0);
 }
@@ -1112,9 +1124,9 @@ fn snapshot_preparation_rejects_run_inputs_before_entering() {
             }
         }
         let mut pending = Pending::None;
-        let mut staged = false;
+        let mut stage = Stage::CLEAR;
         assert!(matches!(
-            prepare_snapshot_run(run.page(), 7, &mut pending, &mut staged, || panic!(
+            prepare_snapshot_run(run.page(), 7, &mut pending, &mut stage, || panic!(
                 "must not enter with armed inputs"
             )),
             Err(BackendError::InvalidState)
@@ -1128,7 +1140,109 @@ fn snapshot_preparation_rejects_run_inputs_before_entering() {
 #[test]
 fn acknowledged_out_then_finish_exit_then_restore_drains_with_one_entry() {
     let s = SynRun::new();
-    set_reason(&s, KVM_EXIT_IO);
+    set_out_tick(&s);
+
+    let (exit, mut pending) = decode_exit(s.page()).unwrap().unwrap();
+    let mut stage = Stage::of(&exit, pending);
+    assert!(stage.drains_on_state_read());
+    check_completion_clear(pending, stage, false)
+        .expect("an acknowledged OUT keeps run, state reads, and restore available");
+
+    let mut entries = 0;
+    let continuation = finish_staged_completion(s.page(), &mut pending, &mut stage, || {
+        entries += 1;
+        assert_eq!(s.page().immediate_exit(), 1);
+        Err(std::io::Error::from_raw_os_error(libc::EINTR))
+    })
+    .unwrap();
+    assert_eq!(continuation, None);
+    assert_eq!(entries, 1, "restore retires the OUT with exactly one entry");
+    assert_eq!(stage, Stage::CLEAR);
+    assert_eq!(pending, Pending::None);
+    assert_eq!(s.page().immediate_exit(), 0);
+    check_completion_clear(pending, stage, false).unwrap();
+}
+
+#[test]
+fn unacknowledged_mmio_write_blocks_state_reads_before_finish_exit() {
+    let s = SynRun::new();
+    set_mmio_store(&s, 0xFEE0_0080, 0x20);
+
+    let (exit, pending) = decode_exit(s.page()).unwrap().unwrap();
+    let stage = Stage::of(&exit, pending);
+    assert_eq!(stage, Stage::AWAITING_FINISH);
+    assert!(!stage.drains_on_state_read());
+    assert!(matches!(
+        check_completion_clear(pending, stage, false),
+        Err(BackendError::PendingCompletion)
+    ));
+    assert!(matches!(
+        check_completion_clear(pending, stage, true),
+        Err(BackendError::PendingCompletion)
+    ));
+    check_completion_clear(pending, Stage::CLEAR, false)
+        .expect("finish_exit's own entry clears the stage and reopens state reads");
+}
+
+#[test]
+fn mmio_write_continuation_of_an_acknowledged_out_drain_is_unacknowledged() {
+    let s = SynRun::new();
+    set_out_tick(&s);
+
+    let (exit, mut pending) = decode_exit(s.page()).unwrap().unwrap();
+    let mut stage = Stage::of(&exit, pending);
+    assert!(stage.drains_on_state_read());
+
+    let mut entries = 0;
+    let continuation = prepare_snapshot_run(s.page(), 3, &mut pending, &mut stage, || {
+        entries += 1;
+        assert_eq!(s.page().immediate_exit(), 1);
+        set_mmio_store(&s, 0xFEE0_00B0, 0);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(entries, 1);
+    assert_eq!(
+        continuation,
+        Some(Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(0xFEE0_00B0),
+            size: 4,
+            write: Some(0)
+        }))
+    );
+    assert_eq!(pending, Pending::None);
+    assert_eq!(
+        stage,
+        Stage::AWAITING_FINISH,
+        "a store continuation waits for finish_exit even when the drained OUT was acknowledged"
+    );
+    assert!(
+        !stage.drains_on_state_read(),
+        "save reads the vCPU as it stands without an entry"
+    );
+    assert!(matches!(
+        check_completion_clear(pending, stage, true),
+        Err(BackendError::PendingCompletion)
+    ));
+    assert!(matches!(
+        check_completion_clear(pending, stage, false),
+        Err(BackendError::PendingCompletion)
+    ));
+
+    let mut finish_entries = 0;
+    let next = finish_staged_completion(s.page(), &mut pending, &mut stage, || {
+        finish_entries += 1;
+        Err(std::io::Error::from_raw_os_error(libc::EINTR))
+    })
+    .unwrap();
+    assert_eq!(next, None);
+    assert_eq!(finish_entries, 1);
+    assert_eq!(stage, Stage::CLEAR);
+    check_completion_clear(pending, stage, false).unwrap();
+}
+
+fn set_out_tick(s: &SynRun) {
+    set_reason(s, KVM_EXIT_IO);
     // SAFETY: union sub-field writes of an owned, zeroed kvm_run.
     unsafe {
         let io = &mut (*s.run()).__bindgen_anon_1.io;
@@ -1139,56 +1253,16 @@ fn acknowledged_out_then_finish_exit_then_restore_drains_with_one_entry() {
         io.data_offset = PIO_OFF as u64;
     }
     s.set_byte(PIO_OFF, 1);
-
-    let (exit, mut pending) = decode_exit(s.page()).unwrap().unwrap();
-    let mut staged = decoded_exit_stages_completion(&exit, pending);
-    let acknowledged = decoded_exit_is_acknowledged(&exit);
-    assert!(staged);
-    assert!(acknowledged);
-    check_completion_clear(pending, staged, acknowledged, false)
-        .expect("an acknowledged OUT keeps run, state reads, and restore available");
-
-    let mut entries = 0;
-    let continuation = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
-        entries += 1;
-        assert_eq!(s.page().immediate_exit(), 1);
-        Err(std::io::Error::from_raw_os_error(libc::EINTR))
-    })
-    .unwrap();
-    assert_eq!(continuation, None);
-    assert_eq!(entries, 1, "restore retires the OUT with exactly one entry");
-    assert!(!staged);
-    assert_eq!(pending, Pending::None);
-    assert_eq!(s.page().immediate_exit(), 0);
-    check_completion_clear(pending, staged, false, false).unwrap();
 }
 
-#[test]
-fn unacknowledged_mmio_write_blocks_state_reads_before_finish_exit() {
-    let s = SynRun::new();
-    set_reason(&s, KVM_EXIT_MMIO);
-    // SAFETY: union sub-field writes of an owned, zeroed kvm_run.
+fn set_mmio_store(s: &SynRun, gpa: u64, value: u32) {
+    set_reason(s, KVM_EXIT_MMIO);
+    // SAFETY: union sub-field writes of an owned kvm_run.
     unsafe {
         let m = &mut (*s.run()).__bindgen_anon_1.mmio;
-        m.phys_addr = 0xFEE0_0080;
+        m.phys_addr = gpa;
         m.len = 4;
         m.is_write = 1;
-        m.data[..4].copy_from_slice(&0x20u32.to_le_bytes());
+        m.data[..4].copy_from_slice(&value.to_le_bytes());
     }
-
-    let (exit, pending) = decode_exit(s.page()).unwrap().unwrap();
-    let staged = decoded_exit_stages_completion(&exit, pending);
-    let acknowledged = decoded_exit_is_acknowledged(&exit);
-    assert!(staged);
-    assert!(!acknowledged);
-    assert!(matches!(
-        check_completion_clear(pending, staged, acknowledged, false),
-        Err(BackendError::PendingCompletion)
-    ));
-    assert!(matches!(
-        check_completion_clear(pending, staged, acknowledged, true),
-        Err(BackendError::PendingCompletion)
-    ));
-    check_completion_clear(pending, false, false, false)
-        .expect("finish_exit's own entry clears the stage and reopens state reads");
 }

@@ -211,17 +211,38 @@ pub(crate) fn decoded_exit_stages_completion(exit: &Exit<X86>, pending: Pending)
     exit.stages_completion() && pending == Pending::None
 }
 
-pub(crate) fn decoded_exit_is_acknowledged(exit: &Exit<X86>) -> bool {
-    matches!(exit, Exit::Arch(X86Exit::Io { write: Some(_), .. }))
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Stage {
+    pub(crate) staged: bool,
+    pub(crate) acknowledged: bool,
 }
 
-pub(crate) fn check_completion_clear(
-    pending: Pending,
-    staged: bool,
-    acknowledged: bool,
-    queued: bool,
-) -> Result<()> {
-    if pending != Pending::None || queued || (staged && !acknowledged) {
+impl Stage {
+    pub(crate) const CLEAR: Self = Self {
+        staged: false,
+        acknowledged: false,
+    };
+
+    pub(crate) const AWAITING_FINISH: Self = Self {
+        staged: true,
+        acknowledged: false,
+    };
+
+    pub(crate) fn of(exit: &Exit<X86>, pending: Pending) -> Self {
+        let staged = decoded_exit_stages_completion(exit, pending);
+        Self {
+            staged,
+            acknowledged: staged && matches!(exit, Exit::Arch(X86Exit::Io { write: Some(_), .. })),
+        }
+    }
+
+    pub(crate) fn drains_on_state_read(self) -> bool {
+        self.staged && self.acknowledged
+    }
+}
+
+pub(crate) fn check_completion_clear(pending: Pending, stage: Stage, queued: bool) -> Result<()> {
+    if pending != Pending::None || queued || (stage.staged && !stage.acknowledged) {
         return Err(BackendError::PendingCompletion);
     }
     Ok(())
@@ -323,7 +344,7 @@ pub(crate) fn prepare_snapshot_run<F>(
     page: RunPage,
     cr8: u64,
     pending: &mut Pending,
-    staged: &mut bool,
+    stage: &mut Stage,
     mut enter: F,
 ) -> Result<Option<Exit<X86>>>
 where
@@ -333,8 +354,8 @@ where
         return Err(BackendError::InvalidState);
     }
     page.set_cr8(cr8);
-    if *staged {
-        return finish_staged_completion(page, pending, staged, enter);
+    if stage.staged {
+        return finish_staged_completion(page, pending, stage, enter);
     }
     page.set_immediate_exit(true);
     let result = enter();
@@ -351,13 +372,13 @@ where
 pub(crate) fn finish_staged_completion<F>(
     page: RunPage,
     pending: &mut Pending,
-    staged: &mut bool,
+    stage: &mut Stage,
     mut enter: F,
 ) -> Result<Option<Exit<X86>>>
 where
     F: FnMut() -> std::result::Result<(), std::io::Error>,
 {
-    if !*staged {
+    if !stage.staged {
         return Ok(None);
     }
 
@@ -367,7 +388,7 @@ where
 
     match result {
         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
-            *staged = false;
+            *stage = Stage::CLEAR;
             *pending = Pending::None;
             Ok(None)
         }
@@ -389,7 +410,7 @@ where
             }
 
             *pending = next_pending;
-            *staged = decoded_exit_stages_completion(&exit, next_pending);
+            *stage = Stage::of(&exit, next_pending);
             Ok(Some(exit))
         }
     }
@@ -399,13 +420,13 @@ where
 pub(crate) fn retire_staged_completion<F>(
     page: RunPage,
     pending: &mut Pending,
-    staged: &mut bool,
+    stage: &mut Stage,
     enter: F,
 ) -> Result<()>
 where
     F: FnMut() -> std::result::Result<(), std::io::Error>,
 {
-    match finish_staged_completion(page, pending, staged, enter)? {
+    match finish_staged_completion(page, pending, stage, enter)? {
         None => Ok(()),
         Some(_) => Err(BackendError::PendingCompletion),
     }

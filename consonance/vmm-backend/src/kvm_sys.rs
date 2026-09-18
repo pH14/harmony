@@ -57,8 +57,7 @@ pub struct KvmBackend {
     cpuid_installed: bool,
     msr_filter_installed: bool,
     pending: Pending,
-    completion_staged: bool,
-    completion_acknowledged: bool,
+    completion: Stage,
     completion_exit: Option<Exit<X86>>,
     pending_irq: Option<u8>,
     readiness_current: bool,
@@ -110,8 +109,7 @@ impl KvmBackend {
             cpuid_installed: false,
             msr_filter_installed: false,
             pending: Pending::None,
-            completion_staged: false,
-            completion_acknowledged: false,
+            completion: Stage::CLEAR,
             completion_exit: None,
             pending_irq: None,
             readiness_current: true,
@@ -150,17 +148,16 @@ impl KvmBackend {
     fn finish_staged_exit(&mut self) -> Result<Option<Exit<X86>>> {
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
-        let next =
-            finish_staged_completion(page, &mut self.pending, &mut self.completion_staged, || {
-                // SAFETY: the owned vCPU fd references the mapped run page and
-                // this entry is restricted to consuming its staged completion.
-                let rc = unsafe { raw_kvm_run(fd) };
-                if rc < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            })?;
+        let next = finish_staged_completion(page, &mut self.pending, &mut self.completion, || {
+            // SAFETY: the owned vCPU fd references the mapped run page and
+            // this entry is restricted to consuming its staged completion.
+            let rc = unsafe { raw_kvm_run(fd) };
+            if rc < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        })?;
         if let Some(exit) = &next {
             self.counts.bump(exit.reason());
         }
@@ -207,7 +204,7 @@ impl KvmBackend {
                 }
                 return Err(BackendError::Io(err));
             }
-            self.completion_staged = false;
+            self.completion = Stage::CLEAR;
             self.readiness_current = true;
             #[cfg(feature = "xsave-diagnostics")]
             {
@@ -232,8 +229,7 @@ impl KvmBackend {
                 Some((exit, pending)) => {
                     self.counts.bump(exit.reason());
                     self.pending = pending;
-                    self.completion_staged = decoded_exit_stages_completion(&exit, pending);
-                    self.completion_acknowledged = decoded_exit_is_acknowledged(&exit);
+                    self.completion = Stage::of(&exit, pending);
                     return Ok(exit);
                 }
                 None => continue,
@@ -544,8 +540,7 @@ impl KvmBackend {
     fn check_completion_clear(&self) -> Result<()> {
         check_completion_clear(
             self.pending,
-            self.completion_staged,
-            self.completion_acknowledged,
+            self.completion,
             self.completion_exit.is_some(),
         )
     }
@@ -559,7 +554,7 @@ impl KvmBackend {
             self.run_page(),
             sregs.cr8,
             &mut self.pending,
-            &mut self.completion_staged,
+            &mut self.completion,
             || {
                 // SAFETY: the owned vCPU has a run page requesting immediate exit and,
                 // when a completion was staged, no pending value left to supply.
@@ -580,7 +575,7 @@ impl KvmBackend {
     }
 
     fn drain_staged_completion(&mut self) -> Result<()> {
-        if !(self.completion_staged && self.completion_acknowledged) {
+        if !self.completion.drains_on_state_read() {
             return Ok(());
         }
         self.run_guarded_entry()
@@ -725,7 +720,7 @@ impl Backend for KvmBackend {
         let scalar_completion = matches!(self.pending, Pending::IoIn { .. } | Pending::Rdmsr);
         apply_complete_read(self.run_page(), self.pending, value)?;
         self.pending = Pending::None;
-        self.completion_staged = true;
+        self.completion = Stage::AWAITING_FINISH;
         if scalar_completion {
             self.finish_or_queue_exit()?;
         }
@@ -738,7 +733,7 @@ impl Backend for KvmBackend {
         }
         apply_complete_fault(self.run_page(), self.pending)?;
         self.pending = Pending::None;
-        self.completion_staged = true;
+        self.completion = Stage::AWAITING_FINISH;
         self.finish_or_queue_exit()
     }
 
@@ -748,7 +743,7 @@ impl Backend for KvmBackend {
         }
         apply_complete_ok(self.run_page(), self.pending)?;
         self.pending = Pending::None;
-        self.completion_staged = true;
+        self.completion = Stage::AWAITING_FINISH;
         self.finish_or_queue_exit()
     }
 
@@ -771,7 +766,7 @@ impl Backend for KvmBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
-        if self.completion_acknowledged {
+        if self.completion.acknowledged {
             return Ok(None);
         }
         self.finish_staged_exit()
@@ -885,6 +880,11 @@ mod xsave_diagnostic {
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    const ACKNOWLEDGED_WRITE: Stage = Stage {
+        staged: true,
+        acknowledged: true,
+    };
+
     #[test]
     #[ignore = "live x86 KVM snapshot preparation; requires /dev/kvm"]
     fn snapshot_preparation_preserves_state_except_raw_presence() {
@@ -940,7 +940,7 @@ mod xsave_diagnostic {
                 assert_eq!(backend.pending_irq, Some(0x40));
                 assert_eq!(backend.readiness_current, readiness);
                 assert_eq!(backend.pending, Pending::None);
-                assert!(!backend.completion_staged);
+                assert_eq!(backend.completion, Stage::CLEAR);
                 assert!(backend.completion_exit.is_none());
                 assert_eq!(observed.sregs.cr8, 7);
                 println!(
@@ -959,17 +959,16 @@ mod xsave_diagnostic {
             ));
             assert_eq!(backend.save().unwrap(), after);
             backend.pending = Pending::None;
-            backend.completion_staged = true;
-            backend.completion_acknowledged = false;
+            backend.completion = Stage::AWAITING_FINISH;
             assert!(matches!(
                 backend.prepare_snapshot(),
                 Err(BackendError::PendingCompletion)
             ));
             assert_eq!(backend.save().unwrap(), after);
-            assert!(backend.completion_staged);
-            backend.completion_acknowledged = true;
+            assert_eq!(backend.completion, Stage::AWAITING_FINISH);
+            backend.completion = ACKNOWLEDGED_WRITE;
             backend.prepare_snapshot().unwrap();
-            assert!(!backend.completion_staged);
+            assert_eq!(backend.completion, Stage::CLEAR);
             after = backend.save().unwrap();
             backend.pending_irq = None;
             assert!(matches!(
@@ -1017,8 +1016,11 @@ mod xsave_diagnostic {
         ];
         for (pending, staged, queued) in cases {
             backend.pending = pending;
-            backend.completion_staged = staged;
-            backend.completion_acknowledged = false;
+            backend.completion = if staged {
+                Stage::AWAITING_FINISH
+            } else {
+                Stage::CLEAR
+            };
             backend.completion_exit = queued.then_some(Exit::Common(CommonExit::Idle));
             backend.pending_irq = Some(0x40);
             let counts = backend.exit_counts();
@@ -1034,13 +1036,13 @@ mod xsave_diagnostic {
                 Err(BackendError::PendingCompletion)
             ));
             assert_eq!(backend.pending, pending);
-            assert_eq!(backend.completion_staged, staged);
+            assert_eq!(backend.completion.staged, staged);
             assert_eq!(format!("{:?}", backend.completion_exit), queued_before);
             assert_eq!(backend.pending_irq, Some(0x40));
             assert_eq!(backend.exit_counts(), counts);
             assert_eq!(backend.readiness_current, readiness);
             backend.pending = Pending::None;
-            backend.completion_staged = false;
+            backend.completion = Stage::CLEAR;
             backend.completion_exit = None;
             assert_eq!(backend.save().unwrap(), before);
         }
@@ -1058,17 +1060,15 @@ mod xsave_diagnostic {
         replacement.regs.rip ^= 0x100;
 
         backend.pending = Pending::None;
-        backend.completion_staged = true;
-        backend.completion_acknowledged = true;
+        backend.completion = ACKNOWLEDGED_WRITE;
         let counts = backend.exit_counts();
         assert_eq!(backend.save().unwrap(), before);
-        assert!(!backend.completion_staged);
+        assert_eq!(backend.completion, Stage::CLEAR);
         assert_eq!(backend.exit_counts(), counts);
 
-        backend.completion_staged = true;
-        backend.completion_acknowledged = true;
+        backend.completion = ACKNOWLEDGED_WRITE;
         backend.restore(&replacement).unwrap();
-        assert!(!backend.completion_staged);
+        assert_eq!(backend.completion, Stage::CLEAR);
         assert_eq!(backend.pending, Pending::None);
         assert_eq!(backend.exit_counts(), counts);
         assert_eq!(backend.save().unwrap(), replacement);
