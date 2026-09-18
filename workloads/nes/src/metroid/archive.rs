@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_then_health_ridley_bit1_v12";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_v12";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -122,7 +122,7 @@ impl ArchiveKey for MetroidArchiveKey {
     }
 
     fn preferences() -> usize {
-        2
+        1
     }
 
     fn preference_cmp(self, preference: usize, other: Self) -> Ordering {
@@ -377,24 +377,22 @@ mod tests {
     }
 
     #[test]
-    fn the_two_preferences_disagree_on_a_resource_trade() {
+    fn the_only_preference_ranks_missiles_before_health() {
         let mut stocked_state = state(100, 20, 0);
         stocked_state.missiles = 10;
         let mut healthy_state = state(100, 200, 0);
         healthy_state.missiles = 5;
         let stocked = archive_key(stocked_state);
         let healthy = archive_key(healthy_state);
-        assert_eq!(MetroidArchiveKey::preferences(), 2);
+        assert_eq!(MetroidArchiveKey::preferences(), 1);
         assert_eq!(stocked.preference_cmp(0, healthy), Ordering::Greater);
-        assert_eq!(healthy.preference_cmp(1, stocked), Ordering::Greater);
     }
 
     #[test]
-    fn an_item_outranks_every_resource_under_both_preferences() {
+    fn an_item_outranks_every_resource_under_the_preference() {
         let stocked = archive_key(state(100, 300, 0));
         let equipped = archive_key(state(10, 10, 0b1));
         assert_eq!(equipped.preference_cmp(0, stocked), Ordering::Greater);
-        assert_eq!(equipped.preference_cmp(1, stocked), Ordering::Greater);
     }
 
     #[test]
