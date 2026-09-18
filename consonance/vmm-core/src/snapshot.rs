@@ -188,6 +188,16 @@ impl SnapshotEngine {
         Ok(page)
     }
 
+    pub fn pages_equal(
+        &self,
+        a: SnapshotId,
+        a_gfn: u64,
+        b: SnapshotId,
+        b_gfn: u64,
+    ) -> Result<bool, SnapshotError> {
+        Ok(self.store.page_ref_eq(a, a_gfn, b, b_gfn)?)
+    }
+
     pub fn vm_state<S: SnapshotRecords>(&self, snap: SnapshotId) -> Result<S, SnapshotError> {
         Ok(S::decode(self.store.vm_state(snap)?)?)
     }
@@ -200,7 +210,7 @@ impl SnapshotEngine {
         Ok(self.store.retain(snap)?)
     }
 
-    pub fn release(&mut self, snap: SnapshotId) -> Result<(), SnapshotError> {
+    pub fn release(&mut self, snap: SnapshotId) -> Result<u64, SnapshotError> {
         Ok(self.store.release(snap)?)
     }
 
