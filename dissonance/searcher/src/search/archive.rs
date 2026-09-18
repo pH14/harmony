@@ -2404,8 +2404,14 @@ where
                 }
             }
         }
+        let improves_a_holder = self.continuations.is_some()
+            && won_preferences.iter().any(|preference| {
+                slot.iter().any(|held| {
+                    key.preference_cmp(*preference, self.entries[*held].key) == Ordering::Greater
+                })
+            });
         if let Some(bank) = &mut self.continuations {
-            if replacement_preferences != 0 {
+            if improves_a_holder {
                 bank.improved(key.group(0), self.next_entry_id, self.continuation_wave);
             }
             if let Some(parent) = parent_id {
@@ -4460,44 +4466,19 @@ mod tests {
         );
     }
 
-    fn insert_portfolio_at(
-        archive: &mut Archive<u8, PortfolioKey, (), ()>,
-        parent: Option<usize>,
-        slot: u8,
-        input: u8,
-        missiles: u8,
-        health: u8,
-    ) -> Option<usize> {
-        archive
-            .insert(
-                parent,
-                0,
-                ArchiveCandidate {
-                    suffix: vec![input],
-                    key: PortfolioKey {
-                        slot,
-                        missiles,
-                        health,
-                    },
-                    milestones: (),
-                },
-                (),
-            )
-            .expect("insert portfolio entry")
-    }
-
     #[test]
     fn taking_one_preference_from_a_surviving_holder_queues_its_exits() {
         let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
-        archive.enable_continuations(true);
-        let holder = insert_portfolio_at(&mut archive, None, 7, 1, 10, 20)
+        archive.enable_continuations(4);
+        let holder = insert_portfolio_at(&mut archive, None, vec![1], 7, 10, 20)
             .expect("the first holder is kept");
-        insert_portfolio_at(&mut archive, Some(holder), 8, 2, 10, 20).expect("an exit is recorded");
+        insert_portfolio_at(&mut archive, Some(holder), vec![2], 8, 10, 20)
+            .expect("an exit is recorded");
         assert!(
             archive.pop_continuation().is_none(),
             "recording an exit queues nothing on its own"
         );
-        insert_portfolio_at(&mut archive, None, 7, 3, 5, 200)
+        insert_portfolio_at(&mut archive, None, vec![3], 7, 5, 200)
             .expect("the health candidate is admitted beside the missile holder");
         assert_eq!(archive.slots.get(&7).map(Vec::len), Some(2));
         assert!(
