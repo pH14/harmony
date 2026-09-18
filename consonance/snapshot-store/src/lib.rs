@@ -1152,6 +1152,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "materialize mmaps a tempfile, which Miri cannot execute"
+    )]
     fn interning_hash_is_verified_at_write_time() {
         let mut store = Store::new(cfg(1));
         let mut builder = store.begin_base();
