@@ -3198,7 +3198,7 @@ mod tests {
         miri,
         ignore = "snapshot materialization and page hashing use mmap-backed production paths"
     )]
-    fn materialize_still_catches_page_corruption_that_in_place_restore_no_longer_reads() {
+    fn in_place_restore_read_failure_leaves_guest_memory_untouched() {
         let mut s = server_tracked();
         hello(&mut s);
         s.vmm
@@ -3229,12 +3229,13 @@ mod tests {
                 bytes: vec![0xA5],
             })
             .unwrap();
+        let before = s.vmm.as_ref().unwrap().guest_memory().to_vec();
         s.engine
             .corrupt_page_for_test(store_id, 2, 0, 0x01)
             .unwrap();
 
-        assert!(s.restore_in_place(store_id, &vm_state).is_ok());
-        assert!(s.engine.materialize(store_id).is_err());
+        assert!(s.restore_in_place(store_id, &vm_state).is_err());
+        assert_eq!(s.vmm.as_ref().unwrap().guest_memory(), before);
     }
 
     #[test]

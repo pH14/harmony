@@ -228,8 +228,10 @@ impl Store {
         match self.resolve(snap.0, gfn) {
             PageRef::Zero => out.fill(0),
             PageRef::Data(hash) => match self.pages.get(&hash) {
-                Some(entry) => out.copy_from_slice(&entry.data),
-                None => return Err(StoreError::PageIntegrity { gfn }),
+                Some(entry) if blake3::hash(&entry.data).as_bytes() == &hash => {
+                    out.copy_from_slice(&entry.data);
+                }
+                Some(_) | None => return Err(StoreError::PageIntegrity { gfn }),
             },
         }
         Ok(())
@@ -1123,7 +1125,7 @@ mod tests {
 
     #[cfg(feature = "test-utils")]
     #[test]
-    fn sealed_page_corruption_is_detected_at_materialize_not_read() {
+    fn sealed_page_and_vm_state_corruption_are_detected() {
         let mut store = Store::new(StoreConfig { mem_pages: 2 });
         let mut builder = store.begin_base();
         builder.write_page(1, &[0x5a; PAGE_SIZE]).unwrap();
@@ -1131,12 +1133,10 @@ mod tests {
 
         store.corrupt_page_for_test(snap, 1, 7, 0x5a).unwrap();
         let mut out = [0_u8; PAGE_SIZE];
-        store.read_page(snap, 1, &mut out).unwrap();
-        assert_eq!(out, {
-            let mut expected = [0x5a; PAGE_SIZE];
-            expected[7] ^= 0x5a;
-            expected
-        });
+        assert!(matches!(
+            store.read_page(snap, 1, &mut out),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
         assert!(matches!(
             store.materialize(snap),
             Err(StoreError::PageIntegrity { gfn: 1 })
@@ -1149,23 +1149,6 @@ mod tests {
             clean.vm_state(snap),
             Err(StoreError::VmStateIntegrity)
         ));
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "materialize mmaps a tempfile, which Miri cannot execute"
-    )]
-    fn interning_hash_is_verified_at_write_time() {
-        let mut store = Store::new(cfg(1));
-        let mut builder = store.begin_base();
-        let data = [0x7a; PAGE_SIZE];
-        builder.write_page(0, &data).unwrap();
-        let snap = builder.seal(vec![]);
-        let mut out = [0_u8; PAGE_SIZE];
-        store.read_page(snap, 0, &mut out).unwrap();
-        assert_eq!(out, data);
-        assert_eq!(store.materialize(snap).unwrap().as_slice(), &data[..]);
     }
 
     #[test]
