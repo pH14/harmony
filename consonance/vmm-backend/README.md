@@ -19,16 +19,18 @@ an ISA-specific exit enum.
 Backends install a guest-visible CPU policy before the first run. Read-style
 exits require the matching completion response. The x86 KVM backend completes
 PIO reads and MSR callbacks eagerly with an immediate-exit entry. A PIO write
-leaves its completion staged instead: the next real `KVM_RUN`, whether that is
-the following `run()` entry or the merged entry inside `prepare_snapshot`,
-retires it as a side effect, so a write that never precedes a snapshot costs no
-extra entry at all. `finish_exit` also completes MMIO callbacks and returns any
-further device access required by the same instruction. Callers service these
-continuations until `finish_exit` returns `None` before exposing a stopped
-execution. No completion entry executes the successor instruction or injects an
-interrupt; snapshot capture performs no entry beyond the one it needs to retire
-a staged completion. An MSR fault queues its exception without executing the
-handler.
+leaves its completion staged and already acknowledged: `run()` accepts it
+without a `finish_exit` call and the next real `KVM_RUN` retires it as a side
+effect, so a write that never precedes a state read costs no extra entry at
+all. `save`, `prepare_snapshot`, and `retire_pending_completion` retire a staged
+write with one immediate-exit entry before reading the vCPU. An MMIO exit stays
+unacknowledged until `finish_exit`, so `run()` rejects it with
+`PendingCompletion` and no guest entry; `finish_exit` completes the MMIO
+callback and returns any further device access required by the same
+instruction. Callers service these continuations until `finish_exit` returns
+`None` before exposing a stopped execution. No completion entry executes the
+successor instruction or injects an interrupt. An MSR fault queues its
+exception without executing the handler.
 
 KVM construction enables the exception-payload API so pending exceptions remain
 distinct from injected ones and restores replace the complete exception record.

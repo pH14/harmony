@@ -13,9 +13,7 @@ use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
 
 use crate::arch::x86::Injection;
 use crate::arch::x86::VcpuState;
-#[cfg(test)]
-use crate::arch::x86::X86Exit;
-use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Policy};
+use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Exit, X86Policy};
 use crate::arch::x86::{
     canonicalize_regs, canonicalize_sregs, canonicalize_xsave_with_restore_bv, restore_xsave_image,
 };
@@ -58,6 +56,7 @@ pub struct KvmBackend {
     msr_filter_installed: bool,
     pending: Pending,
     completion_staged: bool,
+    completion_acknowledged: bool,
     completion_exit: Option<Exit<X86>>,
     pending_irq: Option<u8>,
     readiness_current: bool,
@@ -110,6 +109,7 @@ impl KvmBackend {
             msr_filter_installed: false,
             pending: Pending::None,
             completion_staged: false,
+            completion_acknowledged: false,
             completion_exit: None,
             pending_irq: None,
             readiness_current: true,
@@ -231,6 +231,8 @@ impl KvmBackend {
                     self.counts.bump(exit.reason());
                     self.pending = pending;
                     self.completion_staged = decoded_exit_stages_completion(&exit, pending);
+                    self.completion_acknowledged =
+                        matches!(exit, Exit::Arch(X86Exit::Io { write: Some(_), .. }));
                     return Ok(exit);
                 }
                 None => continue,
@@ -685,7 +687,10 @@ impl Backend for KvmBackend {
         if !self.configured() {
             return Err(BackendError::NotConfigured);
         }
-        if self.pending != Pending::None || self.completion_exit.is_some() {
+        if self.pending != Pending::None
+            || self.completion_exit.is_some()
+            || (self.completion_staged && !self.completion_acknowledged)
+        {
             return Err(BackendError::PendingCompletion);
         }
         self.enter_guest()
@@ -762,6 +767,9 @@ impl Backend for KvmBackend {
         }
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
+        }
+        if self.completion_acknowledged {
+            return Ok(None);
         }
         self.finish_staged_exit()
     }
@@ -1005,16 +1013,19 @@ mod xsave_diagnostic {
             backend.pending_irq = Some(0x40);
             let readiness = backend.readiness_current;
             let queued_before = format!("{:?}", backend.completion_exit);
-            assert_eq!(backend.save().unwrap(), before);
             assert!(matches!(
                 backend.restore(&replacement),
                 Err(BackendError::PendingCompletion)
             ));
             let only_a_staged_completion = pending == Pending::None && staged && !queued;
             if only_a_staged_completion {
-                backend.prepare_snapshot().unwrap();
+                let counts = backend.exit_counts();
+                assert_eq!(backend.save().unwrap(), before);
                 assert!(!backend.completion_staged);
+                assert_eq!(backend.exit_counts(), counts);
+                backend.prepare_snapshot().unwrap();
             } else {
+                assert_eq!(backend.save().unwrap(), before);
                 let counts = backend.exit_counts();
                 assert!(matches!(
                     backend.prepare_snapshot(),
