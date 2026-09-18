@@ -266,6 +266,15 @@ party, one reached Viridian Forest, and one stopped at Oak's parcel. Score a
 change against the deepest milestone, since the badge crosses on a minority of
 seeds.
 
+The goal gradient is behind the same searcher without it. On six seeds at 60,000
+executions, six workers, one binary and one flag apart, the control reaches 24
+milestones and delivers the parcel on four seeds; the gradient reaches 20 and
+delivers on three. Taking the target map from the model instead of a table
+changes neither number. The gradient is not uniformly worse: it takes one seed
+from two milestones to five, and two other seeds from five down to two. Score it
+against a control built from the same binary and the same key, since an earlier
+reading against a control on a different key read as a clean win.
+
 The adviser is faster to the early milestones and slower to the deep ones. It
 reaches Oak's parcel 1.2 to 6.7 times sooner on every seed. Past that it is
 behind the plain arm at every milestone, by about two times to the Pokédex and
