@@ -820,7 +820,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             }
             Request::Read { gpa, len } => self.read(*gpa, *len),
             Request::Regs => {
-                let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
                 Ok(Ok(Reply::Regs(regs_view(vmm))))
             }
             Request::Exec { cmd, deadline } => self.exec(cmd, *deadline),
@@ -1628,7 +1628,7 @@ fn page_console(serial: &[u8], offset: usize) -> (u32, Vec<u8>) {
     (total, serial[start..end].to_vec())
 }
 
-fn regs_view<B: Backend<A: Vendor>>(vmm: &Vmm<B>) -> RegsView {
+fn regs_view<B: Backend<A: Vendor>>(vmm: &mut Vmm<B>) -> RegsView {
     let vns = vmm.effective_vns().unwrap_or(0);
     let mut view = <B::A as Vendor>::regs_view(&vmm.inspect_vcpu());
     view.moment = Moment(vns);
@@ -4975,7 +4975,7 @@ mod tests {
         fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
             self.0.retire_pending_completion()
         }
-        fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
+        fn save(&mut self) -> vmm_backend::Result<vmm_backend::VcpuState> {
             self.0.save()
         }
         fn validate_restore_state(
@@ -6242,7 +6242,7 @@ mod tests {
         fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
             self.inner.retire_pending_completion()
         }
-        fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
+        fn save(&mut self) -> vmm_backend::Result<vmm_backend::VcpuState> {
             self.inner.save()
         }
         fn restore(&mut self, s: &vmm_backend::VcpuState) -> vmm_backend::Result<()> {
@@ -7013,7 +7013,7 @@ mod tests {
         fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
             self.0.retire_pending_completion()
         }
-        fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
+        fn save(&mut self) -> vmm_backend::Result<vmm_backend::VcpuState> {
             self.0.save()
         }
         fn restore(&mut self, s: &vmm_backend::VcpuState) -> vmm_backend::Result<()> {

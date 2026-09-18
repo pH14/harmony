@@ -854,7 +854,7 @@ fn arm64_state_components_localizes_a_gic_only_divergence() {
         );
     }
 
-    let unwired = vmm(vec![]);
+    let mut unwired = vmm(vec![]);
     assert!(!unwired.state_components().iter().any(|(l, _)| *l == "gic"));
 }
 
@@ -1007,7 +1007,7 @@ fn arm64_boot_composes_a_ready_vmm() {
 
     let image = image_loader::wrap_image(&[0x42u8; 256], 0, 0xA);
     let backend = MockArm64Backend::new();
-    let v = bringup::boot(backend, &image, "console=ttyAMA0", 16 * 1024 * 1024).unwrap();
+    let mut v = bringup::boot(backend, &image, "console=ttyAMA0", 16 * 1024 * 1024).unwrap();
 
     let vcpu = v.inspect_vcpu();
     assert_eq!(vcpu.core.pc, 0x4000_0000);

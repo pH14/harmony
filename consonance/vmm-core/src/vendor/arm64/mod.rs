@@ -447,8 +447,8 @@ impl Vendor for Arm64 {
         vmm.complete_irq_delivery_arm64();
     }
 
-    fn guest_interruptible<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Result<bool, VmmError> {
-        Ok(vmm.backend().save()?.core.pstate & dispatch::PSTATE_I == 0)
+    fn guest_interruptible<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<bool, VmmError> {
+        Ok(vmm.backend_mut().save()?.core.pstate & dispatch::PSTATE_I == 0)
     }
 
     fn pending_deliverable_interrupt<B: Backend<A = Self>>(

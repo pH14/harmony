@@ -96,7 +96,7 @@ fn classify(
     }
 }
 
-fn checkpoint_hash(backend: &MockBackend, checkpoint: VirtualTimeCheckpoint) -> [u8; 32] {
+fn checkpoint_hash(backend: &mut MockBackend, checkpoint: VirtualTimeCheckpoint) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"m0-test-full-state-v1\0");
     hasher.update(checkpoint.vns.to_le_bytes());

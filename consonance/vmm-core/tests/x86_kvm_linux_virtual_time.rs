@@ -443,7 +443,7 @@ fn print_window(tag: &str, log: &NormalizedLog, idx: u64) {
     }
 }
 
-fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
+fn dump_normalized_log(path: &str, run: &BootRun, vmm: &mut StockVmm) {
     use std::fmt::Write as _;
     let mut out = String::new();
     for e in &run.log.events {
@@ -554,7 +554,7 @@ fn x2_virtual_time_stock_boot_smoke() {
         let run = run_boot_bounded(&mut vmm, false, bound);
         let path =
             std::env::var("X2_LOG_DUMP").expect("X2_DUMP_AT_STEPS requires X2_LOG_DUMP for output");
-        dump_normalized_log(&path, &run, &vmm);
+        dump_normalized_log(&path, &run, &mut vmm);
         println!(
             "X2_MIDBOOT_STEPS={} events={}",
             run.steps,
@@ -570,7 +570,7 @@ fn x2_virtual_time_stock_boot_smoke() {
     let run = run_boot(&mut vmm, true);
     report_run("smoke", &run);
     if let Ok(path) = std::env::var("X2_LOG_DUMP") {
-        dump_normalized_log(&path, &run, &vmm);
+        dump_normalized_log(&path, &run, &mut vmm);
     }
     println!("X2_SMOKE_TERMINAL={:?}", run.reason);
     println!("X2_SMOKE_STEPS={}", run.steps);
@@ -702,12 +702,12 @@ fn x2_component_diff_two_boots() {
         );
     }
 
-    dump_state_diff(&vmm_a, &vmm_b);
+    dump_state_diff(&mut vmm_a, &mut vmm_b);
 }
 
 type StockVmm = Vmm<Box<dyn vmm_backend::Backend<A = vmm_backend::X86>>>;
 
-fn dump_state_diff(vmm_a: &StockVmm, vmm_b: &StockVmm) {
+fn dump_state_diff(vmm_a: &mut StockVmm, vmm_b: &mut StockVmm) {
     let comps_a = vmm_a.state_components();
     let comps_b = vmm_b.state_components();
     assert_eq!(
@@ -1103,7 +1103,7 @@ fn x2_component_diff_first_checkpoint() {
                 hex(&ref_hash),
                 hex(&hash)
             );
-            dump_state_diff(&vmm_ref, &vmm);
+            dump_state_diff(&mut vmm_ref, &mut vmm);
             return;
         }
     }

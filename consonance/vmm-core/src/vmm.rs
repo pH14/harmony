@@ -355,12 +355,17 @@ where
         Self::with_backing(backend, RamBacking::Owned(guest_ram))
     }
 
-    pub fn vcpu_record(&self) -> Result<VcpuOf<B>, VmmError> {
+    pub fn vcpu_record(&mut self) -> Result<VcpuOf<B>, VmmError> {
         Ok(self.backend.save()?)
     }
 
+    #[cfg(test)]
     pub(crate) fn backend(&self) -> &B {
         &self.backend
+    }
+
+    pub(crate) fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
     }
 
     pub(crate) fn devices(&self) -> &<B::A as Vendor>::Devices {
@@ -719,15 +724,15 @@ where
         <B::A as Vendor>::serial_capture(&self.devices)
     }
 
-    pub fn inspect_vcpu(&self) -> VcpuOf<B> {
+    pub fn inspect_vcpu(&mut self) -> VcpuOf<B> {
         self.current_vcpu()
     }
 
-    pub fn has_inflight_event_injection(&self) -> bool {
+    pub fn has_inflight_event_injection(&mut self) -> bool {
         <B::A as Vendor>::vcpu_has_inflight_injection(&self.current_vcpu())
     }
 
-    pub fn has_active_event_injection(&self) -> bool {
+    pub fn has_active_event_injection(&mut self) -> bool {
         <B::A as Vendor>::vcpu_has_active_injection(&self.current_vcpu())
     }
 
@@ -1233,7 +1238,7 @@ where
         Ok((hasher.finalize().into(), suffix, memory_prefix_hash))
     }
 
-    pub fn state_components(&self) -> Vec<(&'static str, [u8; 32])> {
+    pub fn state_components(&mut self) -> Vec<(&'static str, [u8; 32])> {
         fn dig(bytes: &[u8]) -> [u8; 32] {
             let mut h = Sha256::new();
             h.update(bytes);
@@ -2471,7 +2476,7 @@ where
         self.vtime.as_ref().map(VtimeWiring::virtual_time_vns)
     }
 
-    pub(crate) fn current_vcpu(&self) -> VcpuOf<B> {
+    pub(crate) fn current_vcpu(&mut self) -> VcpuOf<B> {
         match &self.saved_state {
             Some(s) => s.clone(),
             None => self.backend.save().unwrap_or_default(),
@@ -3638,7 +3643,7 @@ mod tests {
             );
         }
 
-        let plain = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let mut plain = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         assert!(
             !plain
                 .state_components()
@@ -4755,7 +4760,7 @@ mod tests {
 
     #[test]
     fn state_components_breakdown_is_stable_and_covers_state() {
-        let v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
+        let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         let comps = v.state_components();
         assert_eq!(comps, v.state_components(), "pure: two calls agree");
         let labels: Vec<&str> = comps.iter().map(|(l, _)| *l).collect();
@@ -4786,7 +4791,7 @@ mod tests {
         for expect in ["vtim:cfg", "vtim:eff-vns", "vtim:entropy"] {
             assert!(wlabels.contains(&expect), "missing {expect}: {wlabels:?}");
         }
-        let v2 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
+        let mut v2 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         assert_eq!(v.state_components(), v2.state_components());
         let mut v3 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         v3.report_stream = vec![0xDEAD_BEEF];
@@ -4798,7 +4803,7 @@ mod tests {
             ..Default::default()
         };
         raw_backend.set_state(raw_state);
-        let raw = Vmm::new(raw_backend, GuestRam::new(0x1000).unwrap());
+        let mut raw = Vmm::new(raw_backend, GuestRam::new(0x1000).unwrap());
         assert!(
             raw.state_components()
                 .iter()
@@ -4809,8 +4814,8 @@ mod tests {
             xsave_restore_bv: Some(2),
             ..Default::default()
         });
-        let raw_two = Vmm::new(raw_two_backend, GuestRam::new(0x1000).unwrap());
-        let component = |vmm: &Vmm<MockBackend>, name| {
+        let mut raw_two = Vmm::new(raw_two_backend, GuestRam::new(0x1000).unwrap());
+        let component = |vmm: &mut Vmm<MockBackend>, name| {
             vmm.state_components()
                 .into_iter()
                 .find(|(label, _)| *label == name)
@@ -4818,13 +4823,13 @@ mod tests {
                 .1
         };
         assert_eq!(
-            component(&raw, "xsave-header"),
-            component(&raw_two, "xsave-header"),
+            component(&mut raw, "xsave-header"),
+            component(&mut raw_two, "xsave-header"),
             "raw provenance stays out of the canonical XSAVE header component"
         );
         assert_ne!(
-            component(&raw, "xsave-restore-bv"),
-            component(&raw_two, "xsave-restore-bv"),
+            component(&mut raw, "xsave-restore-bv"),
+            component(&mut raw_two, "xsave-restore-bv"),
             "the diagnostic provenance component still distinguishes raw values"
         );
     }
@@ -5944,7 +5949,7 @@ mod tests {
         fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
             self.0.complete_arch(c)
         }
-        fn save(&self) -> vmm_backend::Result<VcpuState> {
+        fn save(&mut self) -> vmm_backend::Result<VcpuState> {
             Err(vmm_backend::BackendError::Memory("induced save failure"))
         }
         fn restore(&mut self, s: &VcpuState) -> vmm_backend::Result<()> {
@@ -6005,7 +6010,7 @@ mod tests {
         fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
             self.inner.complete_arch(c)
         }
-        fn save(&self) -> vmm_backend::Result<VcpuState> {
+        fn save(&mut self) -> vmm_backend::Result<VcpuState> {
             let calls = self.save_calls.get();
             self.save_calls.set(calls + 1);
             if calls >= self.fail_after {
@@ -6191,7 +6196,7 @@ mod tests {
             self.inner.prepare_snapshot()
         }
 
-        fn save(&self) -> vmm_backend::Result<VcpuState> {
+        fn save(&mut self) -> vmm_backend::Result<VcpuState> {
             if !self.current_continuations.is_empty() || self.inner.has_pending() {
                 return Err(vmm_backend::BackendError::PendingCompletion);
             }
@@ -7345,7 +7350,7 @@ mod tests {
 
     #[test]
     fn has_inflight_event_injection_reflects_the_live_vcpu() {
-        let quiescent = full_vmm(nonzero_state(), vec![], 0, 1);
+        let mut quiescent = full_vmm(nonzero_state(), vec![], 0, 1);
         assert!(
             !quiescent.has_inflight_event_injection(),
             "a quiescent vCPU is not a non-quiescent point"
@@ -7353,7 +7358,7 @@ mod tests {
         let mut st = nonzero_state();
         st.events.interrupt_injected = 1;
         st.events.interrupt_nr = 0x34;
-        let in_flight = full_vmm(st, vec![], 0, 1);
+        let mut in_flight = full_vmm(st, vec![], 0, 1);
         assert!(
             in_flight.has_inflight_event_injection(),
             "an injected-but-undelivered interrupt is a non-quiescent point"
@@ -7362,14 +7367,14 @@ mod tests {
 
     #[test]
     fn has_active_event_injection_reflects_the_live_vcpu() {
-        let quiescent = full_vmm(nonzero_state(), vec![], 0, 1);
+        let mut quiescent = full_vmm(nonzero_state(), vec![], 0, 1);
         assert!(
             !quiescent.has_active_event_injection(),
             "a quiescent vCPU carries no active event"
         );
         let mut residual = nonzero_state();
         residual.events.interrupt_nr = 0x34;
-        let residual_vmm = full_vmm(residual, vec![], 0, 1);
+        let mut residual_vmm = full_vmm(residual, vec![], 0, 1);
         assert!(
             residual_vmm.has_inflight_event_injection(),
             "an inert residual is still a would-reject point"
@@ -7381,7 +7386,7 @@ mod tests {
         let mut st = nonzero_state();
         st.events.interrupt_injected = 1;
         st.events.interrupt_nr = 0x34;
-        let in_flight = full_vmm(st, vec![], 0, 1);
+        let mut in_flight = full_vmm(st, vec![], 0, 1);
         assert!(
             in_flight.has_active_event_injection(),
             "an injected-but-undelivered interrupt is a genuine active injection"

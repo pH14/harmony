@@ -776,7 +776,7 @@ impl Backend for HvfBackend {
         Ok(())
     }
 
-    fn save(&self) -> Result<Arm64VcpuState> {
+    fn save(&mut self) -> Result<Arm64VcpuState> {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }

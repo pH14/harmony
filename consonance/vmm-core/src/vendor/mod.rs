@@ -59,7 +59,7 @@ pub trait Vendor: Arch + Sized {
 
     fn complete_irq_delivery<B: Backend<A = Self>>(vmm: &mut Vmm<B>);
 
-    fn guest_interruptible<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Result<bool, VmmError>;
+    fn guest_interruptible<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<bool, VmmError>;
 
     fn pending_deliverable_interrupt<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,

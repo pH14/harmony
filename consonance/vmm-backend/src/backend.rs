@@ -78,7 +78,7 @@ pub trait Backend {
         Ok(())
     }
 
-    fn save(&self) -> Result<<Self::A as Arch>::VcpuState>;
+    fn save(&mut self) -> Result<<Self::A as Arch>::VcpuState>;
 
     fn validate_restore_state(&self, _state: &<Self::A as Arch>::VcpuState) -> Result<()> {
         Ok(())
@@ -172,7 +172,7 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         (**self).prepare_snapshot()
     }
 
-    fn save(&self) -> Result<<Self::A as Arch>::VcpuState> {
+    fn save(&mut self) -> Result<<Self::A as Arch>::VcpuState> {
         (**self).save()
     }
 
@@ -312,7 +312,7 @@ mod tests {
             self.debug_hits.clone()
         }
 
-        fn save(&self) -> Result<VcpuState> {
+        fn save(&mut self) -> Result<VcpuState> {
             Ok(VcpuState::default())
         }
 

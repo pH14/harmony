@@ -537,6 +537,44 @@ impl KvmBackend {
         self.msr_filter_installed = true;
         Ok(())
     }
+
+    fn run_guarded_entry(&mut self) -> Result<()> {
+        if self.pending != Pending::None || self.completion_exit.is_some() {
+            return Err(BackendError::PendingCompletion);
+        }
+        // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
+        let sregs = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
+        let fd = self.vcpu.as_raw_fd();
+        let continuation = prepare_snapshot_run(
+            self.run_page(),
+            sregs.cr8,
+            &mut self.pending,
+            &mut self.completion_staged,
+            || {
+                // SAFETY: the owned vCPU has a run page requesting immediate exit and,
+                // when a completion was staged, no pending value left to supply.
+                let rc = unsafe { raw_kvm_run(fd) };
+                if rc < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            },
+        )?;
+        if let Some(exit) = continuation {
+            self.counts.bump(exit.reason());
+            self.completion_exit = Some(exit);
+            return Err(BackendError::PendingCompletion);
+        }
+        Ok(())
+    }
+
+    fn drain_staged_completion(&mut self) -> Result<()> {
+        if !self.completion_staged {
+            return Ok(());
+        }
+        self.run_guarded_entry()
+    }
 }
 
 impl Backend for KvmBackend {
@@ -732,37 +770,11 @@ impl Backend for KvmBackend {
         if !self.configured() {
             return Err(BackendError::NotConfigured);
         }
-        if self.pending != Pending::None || self.completion_exit.is_some() {
-            return Err(BackendError::PendingCompletion);
-        }
-        // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
-        let sregs = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
-        let fd = self.vcpu.as_raw_fd();
-        let continuation = prepare_snapshot_run(
-            self.run_page(),
-            sregs.cr8,
-            &mut self.pending,
-            &mut self.completion_staged,
-            || {
-                // SAFETY: the owned vCPU has a run page requesting immediate exit and,
-                // when a completion was staged, no pending value left to supply.
-                let rc = unsafe { raw_kvm_run(fd) };
-                if rc < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            },
-        )?;
-        if let Some(exit) = continuation {
-            self.counts.bump(exit.reason());
-            self.completion_exit = Some(exit);
-            return Err(BackendError::PendingCompletion);
-        }
-        Ok(())
+        self.run_guarded_entry()
     }
 
-    fn save(&self) -> Result<VcpuState> {
+    fn save(&mut self) -> Result<VcpuState> {
+        self.drain_staged_completion()?;
         let regs = self.vcpu.get_regs().map_err(kvm_err)?;
         // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_sregs2` writes a full
         // `kvm_sregs2` (incl. flags/PDPTRs). Excluded under Miri.

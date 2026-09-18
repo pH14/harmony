@@ -658,7 +658,7 @@ impl<B: Backend> VirtualTimeRunLoop<B> {
     where
         C: FnOnce(&mut B, &vmm_backend::Exit<B::A>) -> Result<ClassifiedExit, VirtualTimeError>,
         D: FnMut(&mut B, InterruptDelivery) -> Result<(), VirtualTimeError>,
-        H: FnOnce(&B, VirtualTimeCheckpoint) -> [u8; 32],
+        H: FnOnce(&mut B, VirtualTimeCheckpoint) -> [u8; 32],
         B::A: std::fmt::Debug,
     {
         if self.terminal {
@@ -681,7 +681,7 @@ impl<B: Backend> VirtualTimeRunLoop<B> {
     ) -> Result<&NormalizedEvent, VirtualTimeError>
     where
         D: FnMut(&mut B, InterruptDelivery) -> Result<(), VirtualTimeError>,
-        H: FnOnce(&B, VirtualTimeCheckpoint) -> [u8; 32],
+        H: FnOnce(&mut B, VirtualTimeCheckpoint) -> [u8; 32],
     {
         let event_index = self.next_event_index;
         self.next_event_index = self
@@ -725,7 +725,7 @@ impl<B: Backend> VirtualTimeRunLoop<B> {
             event_index,
         };
         let state_hash =
-            (checkpoint_due || classified.terminal).then(|| hash(&self.backend, checkpoint));
+            (checkpoint_due || classified.terminal).then(|| hash(&mut self.backend, checkpoint));
 
         self.raw.push(RawEvent {
             event_index,

@@ -369,7 +369,7 @@ impl Backend for MockBackend {
         Ok(())
     }
 
-    fn save(&self) -> Result<VcpuState> {
+    fn save(&mut self) -> Result<VcpuState> {
         Ok(self.state.clone())
     }
 

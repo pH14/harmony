@@ -502,7 +502,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
         Ok(Step::Continued)
     }
 
-    pub(crate) fn guest_rip(&self) -> u64 {
+    pub(crate) fn guest_rip(&mut self) -> u64 {
         self.backend.save().map(|s| s.regs.rip).unwrap_or_default()
     }
 
