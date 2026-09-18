@@ -3,7 +3,7 @@
 use nes_workload::{
     metroid::{
         campaign::{MetroidCampaignRun, MetroidGame},
-        target::{GenesisDepth, MetroidInput, MetroidTerminalPolicy, power_on_walk},
+        target::{GenesisDepth, MetroidInput, MetroidTerminalPolicy},
     },
     mm2::{
         campaign::{Mm2CampaignRun, Mm2Game},
@@ -19,8 +19,9 @@ use nes_workload::{
             selector_policy_from_identifier,
         },
         campaign::{
-            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, ResultBuffering, Workload,
-            replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
+            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, ResultBuffering,
+            TargetExecution, Workload, replay_campaign_checkpointed,
+            run_campaign_checkpointed_with_options,
         },
         draw::{draw_mixture_from_identifier, suffix_shape_from_identifier},
     },
@@ -129,7 +130,10 @@ fn metroid_game(
     if input.actions.is_empty() {
         return Err("root input carries no actions".into());
     }
-    let mut prefix = power_on_walk();
+    let mut prefix = MetroidGame::new(rom, core_path, core_sha256)
+        .new_target()?
+        .genesis_prefix()
+        .to_vec();
     prefix.extend(input.actions.iter().copied());
     Ok(MetroidGame::new_rooted(
         rom,
