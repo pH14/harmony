@@ -25,7 +25,7 @@ pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spa
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
-const BOSS_DAMAGE_BUCKET: u8 = 8;
+const BOSS_DAMAGE_BUCKET: u8 = 4;
 
 pub type MetroidArchive =
     Archive<ButtonChord, MetroidArchiveKey, MetroidMilestones, MetroidSnapshot>;
@@ -497,7 +497,7 @@ mod tests {
         })
         .complete(Some((MetroidArchiveKey::default(), &lineage)));
         assert_eq!(arriving.boss_damage, 0);
-        assert_eq!(hurt.boss_damage, 5);
+        assert_eq!(hurt.boss_damage, 10);
         assert_eq!(
             MetroidArchiveKey::progress_cmp(hurt.group(1), arriving.group(1)),
             Ordering::Greater
