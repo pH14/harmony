@@ -132,7 +132,7 @@ fn arm64_restore_rejects_a_foreign_blob() {
 
 #[test]
 fn arm64_restore_rejects_a_contract_mismatch() {
-    let v = vmm(vec![]);
+    let mut v = vmm(vec![]);
     let mut s = v.save_vm_state().unwrap();
     s.contract_hash = [0xEE; 32];
     let mut fresh = vmm(vec![]);
@@ -823,8 +823,8 @@ fn arm64_state_components_localizes_a_gic_only_divergence() {
         v
     };
 
-    let a = make(None);
-    let b = make(Some(40));
+    let mut a = make(None);
+    let mut b = make(Some(40));
 
     assert_ne!(a.state_hash().unwrap(), b.state_hash().unwrap());
 
@@ -868,7 +868,7 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
     };
 
     let base = Arm64VcpuState::default();
-    let baseline = make(base);
+    let mut baseline = make(base);
     let baseline_components = baseline.state_components();
 
     let mut general = base;
@@ -892,7 +892,7 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
         ("vtimer", vtimer),
         ("interrupts", interrupts),
     ] {
-        let candidate = make(state);
+        let mut candidate = make(state);
         assert_ne!(
             baseline.state_hash().unwrap(),
             candidate.state_hash().unwrap(),
@@ -933,7 +933,7 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
     use vmm_core::vmm::VtimeWiring;
     use vtime::VClockConfig;
 
-    let restore = |source: &Vmm<MockArm64Backend>, target: &mut Vmm<MockArm64Backend>| {
+    let restore = |source: &mut Vmm<MockArm64Backend>, target: &mut Vmm<MockArm64Backend>| {
         let snapshot = source.save_vm_state().unwrap();
         target
             .restore_snapshot(source.guest_memory(), &snapshot)
@@ -942,7 +942,7 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
         assert_eq!(target.save_vm_state().unwrap(), snapshot);
     };
 
-    let serial_base = vmm(vec![]);
+    let mut serial_base = vmm(vec![]);
     let mut serial = vmm(vec![Exit::Common(CommonExit::Mmio {
         gpa: Gpa(PL011.0),
         size: 1,
@@ -953,7 +953,7 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
         serial.state_hash().unwrap(),
         serial_base.state_hash().unwrap()
     );
-    restore(&serial, &mut vmm(vec![]));
+    restore(&mut serial, &mut vmm(vec![]));
 
     let mut pending_gic = clockevent_gic();
     pending_gic.raise(PVCLOCK_PPI).unwrap();
@@ -967,7 +967,7 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
     );
     let mut gic_target = vmm(vec![]);
     gic_target.wire_gic(clockevent_gic());
-    restore(&gic_pending, &mut gic_target);
+    restore(&mut gic_pending, &mut gic_target);
 
     let config = VClockConfig {
         guest_hz: CNTFRQ_HZ,
@@ -982,22 +982,22 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
         vm
     };
 
-    let time_base = timed(0, 7);
-    let time_changed = timed(9, 7);
+    let mut time_base = timed(0, 7);
+    let mut time_changed = timed(9, 7);
     assert_ne!(
         time_changed.state_hash().unwrap(),
         time_base.state_hash().unwrap()
     );
-    restore(&time_changed, &mut timed(0, 7));
+    restore(&mut time_changed, &mut timed(0, 7));
 
-    let entropy_base = timed(0, 7);
+    let mut entropy_base = timed(0, 7);
     let mut entropy_changed = timed(0, 7);
     entropy_changed.reseed_entropy(8).unwrap();
     assert_ne!(
         entropy_changed.state_hash().unwrap(),
         entropy_base.state_hash().unwrap()
     );
-    restore(&entropy_changed, &mut timed(0, 7));
+    restore(&mut entropy_changed, &mut timed(0, 7));
 }
 
 #[test]

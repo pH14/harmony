@@ -794,9 +794,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             }
             Request::Hash { scope } => match scope {
                 HashScope::Whole => {
-                    let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                    let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
                     let mut suffix = vmm.state_blob_suffix()?;
                     self.capture_control_state().append_hash(&mut suffix);
+                    let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
                     Ok(Ok(Reply::Hash(hash_state_blob_parts(
                         vmm.guest_memory(),
                         &suffix,
@@ -1927,7 +1928,7 @@ mod tests {
             environment::channel::RecordedEnv::new(0, Box::new(BrokenCapture)),
             &config,
         );
-        assert!(s.vmm.as_ref().unwrap().state_hash().is_err());
+        assert!(s.vmm.as_mut().unwrap().state_hash().is_err());
         assert!(matches!(s.snapshot(), Err(ServeError::Service(_))));
         assert!(s.vmm.is_none());
         assert!(s.sdk_snaps.is_empty());
@@ -2303,7 +2304,7 @@ mod tests {
         let mut s = payload_server();
         hello(&mut s);
         let origin = snap(&mut s);
-        let before = s.vmm().unwrap().state_hash().unwrap();
+        let before = s.vmm_mut().unwrap().state_hash().unwrap();
         for config in [
             ServiceConfig {
                 identity: b"different-service".to_vec(),
@@ -2333,7 +2334,7 @@ mod tests {
                 .unwrap(),
                 Err(ControlError::Unsupported)
             );
-            assert_eq!(s.vmm().unwrap().state_hash().unwrap(), before);
+            assert_eq!(s.vmm_mut().unwrap().state_hash().unwrap(), before);
         }
     }
 
@@ -2699,7 +2700,7 @@ mod tests {
     )]
     fn taking_the_session_trace_returns_and_drains_completed_segments() {
         let mut server = accumulated_session_server();
-        let before = server.vmm().unwrap().state_hash().unwrap();
+        let before = server.vmm_mut().unwrap().state_hash().unwrap();
         let viewed = server.session_virtual_time_trace().unwrap();
         let taken = server.take_session_virtual_time_trace().unwrap();
         assert_eq!(taken, viewed);
@@ -2708,10 +2709,10 @@ mod tests {
         let live_only = server.take_session_virtual_time_trace().unwrap();
         assert_eq!(live_only.segments().len(), 1);
         assert_eq!(live_only.segments()[0], taken.segments()[2]);
-        assert_eq!(server.vmm().unwrap().state_hash().unwrap(), before);
+        assert_eq!(server.vmm_mut().unwrap().state_hash().unwrap(), before);
         for _ in 0..8 {
             assert_eq!(server.take_session_virtual_time_trace().unwrap(), live_only);
-            assert_eq!(server.vmm().unwrap().state_hash().unwrap(), before);
+            assert_eq!(server.vmm_mut().unwrap().state_hash().unwrap(), before);
         }
     }
 
@@ -2881,7 +2882,7 @@ mod tests {
             set_controlled_profile(&mut target, target_profile);
             hello(&mut target);
             let before = target.snapshot_store_stats();
-            let before_hash = target.vmm().unwrap().state_hash().unwrap();
+            let before_hash = target.vmm_mut().unwrap().state_hash().unwrap();
             let result = target.import_portable_snapshot(artifact.as_slice());
             assert!(matches!(
                 result,
@@ -2891,7 +2892,7 @@ mod tests {
             ));
             assert_eq!(target.snapshot_store_stats(), before);
             assert_eq!(target.latest_snapshot(), None);
-            assert_eq!(target.vmm().unwrap().state_hash().unwrap(), before_hash);
+            assert_eq!(target.vmm_mut().unwrap().state_hash().unwrap(), before_hash);
         }
     }
 
@@ -3958,7 +3959,7 @@ mod tests {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let h = hash(&mut s);
-        assert_ne!(Some(h), s.vmm().map(|v| v.state_hash().unwrap()));
+        assert_ne!(Some(h), s.vmm_mut().map(|v| v.state_hash().unwrap()));
         s.exec_nonce = 1;
         assert_ne!(
             hash(&mut s),
@@ -4575,10 +4576,10 @@ mod tests {
     }
 
     impl ImportStateBefore {
-        fn capture(destination: &ControlServer<MockBackend>) -> Self {
+        fn capture(destination: &mut ControlServer<MockBackend>) -> Self {
             Self {
                 ram: destination.vmm().unwrap().guest_memory().to_vec(),
-                hash: destination.vmm().unwrap().state_hash().unwrap(),
+                hash: destination.vmm_mut().unwrap().state_hash().unwrap(),
                 stats: destination.snapshot_store_stats(),
                 latest: destination.latest_snapshot(),
                 recorded: destination.recorded.clone(),
@@ -4600,7 +4601,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(destination.vmm().unwrap().guest_memory(), before.ram);
         assert_eq!(
-            destination.vmm().unwrap().state_hash().unwrap(),
+            destination.vmm_mut().unwrap().state_hash().unwrap(),
             before.hash
         );
         assert_eq!(destination.snapshot_store_stats(), before.stats);
@@ -4631,7 +4632,7 @@ mod tests {
             let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
             hello(&mut destination);
             seed_import_session_state(&mut destination);
-            let before = ImportStateBefore::capture(&destination);
+            let before = ImportStateBefore::capture(&mut destination);
             let result = destination
                 .import_portable_snapshot(full.as_slice())
                 .map(|_| ());
@@ -4663,7 +4664,7 @@ mod tests {
             hello(&mut destination);
             let destination_base = snap(&mut destination);
             seed_import_session_state(&mut destination);
-            let before = ImportStateBefore::capture(&destination);
+            let before = ImportStateBefore::capture(&mut destination);
             let result = destination
                 .import_sparse_snapshot(destination_base, sparse)
                 .map(|_| ());
@@ -5040,7 +5041,7 @@ mod tests {
                 .is_ok()
         );
         let before_ram = destination.vmm().unwrap().guest_memory().to_vec();
-        let before_hash = destination.vmm().unwrap().state_hash().unwrap();
+        let before_hash = destination.vmm_mut().unwrap().state_hash().unwrap();
         let before_stats = destination.snapshot_store_stats();
         assert!(matches!(
             destination.import_portable_snapshot(artifact.as_slice()),
@@ -5050,7 +5051,7 @@ mod tests {
         ));
         assert_eq!(destination.vmm().unwrap().guest_memory(), before_ram);
         assert_eq!(
-            destination.vmm().unwrap().state_hash().unwrap(),
+            destination.vmm_mut().unwrap().state_hash().unwrap(),
             before_hash
         );
         assert_eq!(destination.snapshot_store_stats(), before_stats);
@@ -5959,7 +5960,7 @@ mod tests {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let base = snap(&mut s);
-        let before = s.vmm().unwrap().state_hash().unwrap();
+        let before = s.vmm_mut().unwrap().state_hash().unwrap();
 
         assert_eq!(
             s.handle(&Request::Branch {
@@ -5979,7 +5980,7 @@ mod tests {
             })
         );
         assert_eq!(
-            s.vmm().unwrap().state_hash().unwrap(),
+            s.vmm_mut().unwrap().state_hash().unwrap(),
             before,
             "a rejected branch env fault must leave the old VM untouched"
         );
@@ -6083,7 +6084,7 @@ mod tests {
         ));
         assert_eq!(perturb(&mut s, 0x80, 300), Ok(Reply::Unit));
         assert!(matches!(arr_run(&mut s), Ok(Reply::Stop(_))));
-        let h_live = arr_hash(&s);
+        let h_live = arr_hash(&mut s);
         let recorded = s.recorded_env().clone();
         assert_eq!(recorded.effects().len(), 2, "both faults recorded");
 
@@ -6102,7 +6103,7 @@ mod tests {
         assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
         assert_eq!(
             h_live,
-            arr_hash(&r),
+            arr_hash(&mut r),
             "recorded env reproduces the multi-run hash"
         );
         let _ = base;
@@ -6311,8 +6312,8 @@ mod tests {
         })
         .unwrap()
     }
-    fn arr_hash<B: Backend<A: Vendor>>(s: &ControlServer<B>) -> [u8; 32] {
-        s.vmm().unwrap().state_hash().unwrap()
+    fn arr_hash<B: Backend<A: Vendor>>(s: &mut ControlServer<B>) -> [u8; 32] {
+        s.vmm_mut().unwrap().state_hash().unwrap()
     }
 
     #[test]
@@ -6386,7 +6387,13 @@ mod tests {
             let (mut s, base) = setup();
             let before_hash = whole(&mut s);
             let before_counts = s.vmm().unwrap().exit_counts();
-            let before_vm = s.vmm().unwrap().save_vm_state().unwrap().encode().unwrap();
+            let before_vm = s
+                .vmm_mut()
+                .unwrap()
+                .save_vm_state()
+                .unwrap()
+                .encode()
+                .unwrap();
             if path != 0 {
                 let cut = arr_snap(&mut s);
                 assert_eq!(whole(&mut s), before_hash, "save executed no input");
@@ -6396,7 +6403,12 @@ mod tests {
                     "save entered no guest"
                 );
                 assert_eq!(
-                    s.vmm().unwrap().save_vm_state().unwrap().encode().unwrap(),
+                    s.vmm_mut()
+                        .unwrap()
+                        .save_vm_state()
+                        .unwrap()
+                        .encode()
+                        .unwrap(),
                     before_vm
                 );
                 if path >= 2 {
@@ -6423,7 +6435,12 @@ mod tests {
                         "cold restore retained complete state"
                     );
                     assert_eq!(
-                        s.vmm().unwrap().save_vm_state().unwrap().encode().unwrap(),
+                        s.vmm_mut()
+                            .unwrap()
+                            .save_vm_state()
+                            .unwrap()
+                            .encode()
+                            .unwrap(),
                         before_vm
                     );
                 }
@@ -6459,7 +6476,12 @@ mod tests {
             assert_eq!(s.recorded.reseeds().get(&2), Some(&99));
             let endpoint = (
                 whole(&mut s),
-                s.vmm().unwrap().save_vm_state().unwrap().encode().unwrap(),
+                s.vmm_mut()
+                    .unwrap()
+                    .save_vm_state()
+                    .unwrap()
+                    .encode()
+                    .unwrap(),
                 s.recorded.encode(),
                 s.vmm().unwrap().sdk_events().to_vec(),
                 s.vmm().unwrap().effective_vns(),
@@ -6624,7 +6646,7 @@ mod tests {
                 .unwrap(),
                 Ok(Reply::Stop(StopReason::Deadline { .. }))
             ));
-            arr_hash(&s)
+            arr_hash(&mut s)
         };
 
         assert_eq!(
@@ -6832,7 +6854,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(matches!(arr_run(&mut s), Ok(Reply::Stop(_))));
-        let h_live = arr_hash(&s);
+        let h_live = arr_hash(&mut s);
         let e = s.recorded_env().clone();
 
         let mut r = exit_boundary_server();
@@ -6850,7 +6872,7 @@ mod tests {
         assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
         assert_eq!(
             h_live,
-            arr_hash(&r),
+            arr_hash(&mut r),
             "recorded_env() after a replay reproduces the live hash (right stream)"
         );
     }
@@ -6910,7 +6932,7 @@ mod tests {
                         match arr_run(&mut s) {
                             Ok(Reply::Stop(_)) => {
                                 let e = s.recorded_env().clone();
-                                let h_live = arr_hash(&s);
+                                let h_live = arr_hash(&mut s);
                                 let mut r = exit_boundary_server();
                                 arr_hello(&mut r);
                                 let base_r = arr_snap(&mut r);
@@ -6919,7 +6941,7 @@ mod tests {
                                     env: Reproducer { blob_version: EnvSpec::BLOB_VERSION, bytes: e.encode() },
                                 }).unwrap().unwrap();
                                 prop_assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
-                                prop_assert_eq!(h_live, arr_hash(&r), "recorded_env() must reproduce the live hash");
+                                prop_assert_eq!(h_live, arr_hash(&mut r), "recorded_env() must reproduce the live hash");
                             }
                             Ok(other) => prop_assert!(false, "unexpected run reply: {other:?}"),
                             Err(_) => { /* loud rejection — the model skips this op */ }
@@ -7086,7 +7108,7 @@ mod tests {
                         match arr_run(&mut s) {
                             Ok(Reply::Stop(_)) => {
                                 let e = s.recorded_env().clone();
-                                let h_live = arr_hash(&s);
+                                let h_live = arr_hash(&mut s);
                                 let mut r = idle_server();
                                 arr_hello(&mut r);
                                 let base_r = arr_snap(&mut r);
@@ -7095,7 +7117,7 @@ mod tests {
                                     env: Reproducer { blob_version: EnvSpec::BLOB_VERSION, bytes: e.encode() },
                                 }).unwrap().unwrap();
                                 prop_assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
-                                prop_assert_eq!(h_live, arr_hash(&r), "idle-path recorded_env() must reproduce the live hash");
+                                prop_assert_eq!(h_live, arr_hash(&mut r), "idle-path recorded_env() must reproduce the live hash");
                             }
                             Ok(other) => prop_assert!(false, "unexpected run reply: {other:?}"),
                             Err(_) => { /* loud rejection — skip */ }
@@ -7143,7 +7165,7 @@ mod tests {
             s.handle(&Request::Branch { snap: base, env })
                 .unwrap()
                 .unwrap();
-            arr_hash(&s)
+            arr_hash(&mut s)
         };
         let h_marker = branch_hash(marker_env(7, &[(0, 0x1111)]));
         let h_seed = branch_hash(seeded_env(0x1111));
@@ -7175,7 +7197,7 @@ mod tests {
             .unwrap()
             .unwrap();
             assert!(matches!(arr_run(&mut s), Ok(Reply::Stop(_))));
-            (arr_hash(&s), s.recorded_env().clone())
+            (arr_hash(&mut s), s.recorded_env().clone())
         };
         let (h1, rec1) = run_leg(0x2222);
         let (h1_again, _) = run_leg(0x2222);
@@ -7197,7 +7219,11 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
-        assert_eq!(arr_hash(&r), h1, "recorded_env replays the reseed schedule");
+        assert_eq!(
+            arr_hash(&mut r),
+            h1,
+            "recorded_env replays the reseed schedule"
+        );
     }
 
     #[test]

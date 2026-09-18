@@ -226,8 +226,8 @@ fn public_continue(
         }
     }
     assert!(stopped, "bounded guest must reach HLT");
-    assert_eq!(server.vmm().unwrap().serial_output(), b"AB");
-    let memory = server.vmm().unwrap().guest_memory();
+    assert_eq!(server.vmm_mut().unwrap().serial_output(), b"AB");
+    let memory = server.vmm_mut().unwrap().guest_memory();
     assert_eq!(
         &memory[0x2010..0x2014],
         &if active { 0x3f80_u32 } else { 0x1f80_u32 }.to_le_bytes()
@@ -270,8 +270,8 @@ fn assert_public_identity_negative_controls() {
         .unwrap()
         .unwrap();
     assert_eq!(server.vmm_mut().unwrap().step().unwrap(), Step::Continued);
-    let memory = server.vmm().unwrap().guest_memory().to_vec();
-    let mut baseline = server.vmm().unwrap().save_vm_state().unwrap();
+    let memory = server.vmm_mut().unwrap().guest_memory().to_vec();
+    let mut baseline = server.vmm_mut().unwrap().save_vm_state().unwrap();
     baseline.xcrs.xcr0 = 7;
     baseline.xsave.0[576..592].fill(0x5a);
     baseline.xsave.0[512..520].copy_from_slice(&7_u64.to_le_bytes());
@@ -304,13 +304,13 @@ fn assert_public_identity_negative_controls() {
         assert_ne!(changed.xsave.0[offset], replacement);
         changed.xsave.0[offset] = replacement;
         let mut server = restore_target(&changed);
-        let observed = server.vmm().unwrap().save_vm_state().unwrap();
+        let observed = server.vmm_mut().unwrap().save_vm_state().unwrap();
         assert_eq!(
             observed.xsave.0[offset], replacement,
             "{label} mutation must survive restore"
         );
         assert_eq!(
-            server.vmm().unwrap().guest_memory(),
+            server.vmm_mut().unwrap().guest_memory(),
             memory,
             "negative control RAM must be identical"
         );
@@ -366,11 +366,11 @@ fn public_snapshot_replay_recapture_preserves_xsave_identity() {
                         server.set_restore_mode(mode);
                         if after_out {
                             assert_eq!(server.vmm_mut().unwrap().step().unwrap(), Step::Continued);
-                            assert_eq!(server.vmm().unwrap().serial_output(), b"A");
+                            assert_eq!(server.vmm_mut().unwrap().serial_output(), b"A");
                         }
                         let (a, a_bytes, a_hash) = public_capture(&mut server);
                         let a_raw = server
-                            .vmm()
+                            .vmm_mut()
                             .unwrap()
                             .save_vm_state()
                             .unwrap()
@@ -379,9 +379,9 @@ fn public_snapshot_replay_recapture_preserves_xsave_identity() {
                         assert_ne!(a, a_again);
                         assert_eq!(a_hash, a_again_hash, "repeated A capture hash");
                         assert!(a_bytes == a_again_bytes, "repeated A capture bytes");
-                        let source_xsave = server.vmm().unwrap().save_vm_state().unwrap().xsave;
+                        let source_xsave = server.vmm_mut().unwrap().save_vm_state().unwrap().xsave;
                         let expected = public_continue(&mut server, active);
-                        let dirty_xsave = server.vmm().unwrap().save_vm_state().unwrap().xsave;
+                        let dirty_xsave = server.vmm_mut().unwrap().save_vm_state().unwrap().xsave;
                         assert_ne!(
                             source_xsave, dirty_xsave,
                             "guest continuation must dirty FP state before replay"
@@ -409,8 +409,8 @@ fn public_snapshot_replay_recapture_preserves_xsave_identity() {
                             usize::from(mode == RestoreMode::Memcpy)
                         );
                         let (b, b_bytes, b_hash) = public_capture(&mut server);
-                        let b_state = server.vmm().unwrap().save_vm_state().unwrap();
-                        let b_memory = server.vmm().unwrap().guest_memory().to_vec();
+                        let b_state = server.vmm_mut().unwrap().save_vm_state().unwrap();
+                        let b_memory = server.vmm_mut().unwrap().guest_memory().to_vec();
                         let b_raw = b_state.xsave_restore_bv;
                         let case = format!(
                             "seed={seed}, xcr0={xcr0}, active={active}, after_out={after_out}, mode={mode:?}"
@@ -434,10 +434,10 @@ fn public_snapshot_replay_recapture_preserves_xsave_identity() {
                         for cycle in 0..3 {
                             server.vmm_mut().unwrap().prepare_snapshot().unwrap();
                             let (_, prepared_bytes, prepared_hash) = public_capture(&mut server);
-                            let prepared_state = server.vmm().unwrap().save_vm_state().unwrap();
+                            let prepared_state = server.vmm_mut().unwrap().save_vm_state().unwrap();
                             let mut without_presence_change = prepared_state.clone();
                             without_presence_change.xsave_restore_bv = b_state.xsave_restore_bv;
-                            let ram_equal = server.vmm().unwrap().guest_memory() == b_memory;
+                            let ram_equal = server.vmm_mut().unwrap().guest_memory() == b_memory;
                             let portable_equal = compare_public_identity_portable_execution_state(
                                 &b_bytes,
                                 &prepared_bytes,

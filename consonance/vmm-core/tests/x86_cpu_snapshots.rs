@@ -278,7 +278,7 @@ struct Capture {
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn capture_at_warmup_boundary<B: Backend<A = X86>>(vmm: &Vmm<B>) -> Capture {
+fn capture_at_warmup_boundary<B: Backend<A = X86>>(vmm: &mut Vmm<B>) -> Capture {
     let live = vmm
         .vcpu_record()
         .expect("read warmup PIO boundary vCPU state");
@@ -534,7 +534,7 @@ mod live_kvm {
         moment: Option<u64>,
     }
 
-    fn capture_full_vmm(vmm: &Vmm<KvmBackend>) -> MmioCapture {
+    fn capture_full_vmm(vmm: &mut Vmm<KvmBackend>) -> MmioCapture {
         let state = vmm.save_vm_state().expect("save full MMIO VM state");
         let encoded_state = state.encode().expect("encode full MMIO VM state");
         let decoded = vm_state::VmState::decode(&encoded_state).expect("decode full MMIO VM state");
@@ -700,7 +700,7 @@ mod live_kvm {
     }
 
     fn capture_mmio_boundary(
-        vmm: &Vmm<KvmBackend>,
+        vmm: &mut Vmm<KvmBackend>,
         before_vns: u64,
         active_xmm: bool,
     ) -> MmioCapture {
@@ -822,7 +822,7 @@ mod live_kvm {
             save_and_continue.step().expect("service saved ADD MMIO"),
             Step::Continued
         );
-        let save_stop = capture_mmio_boundary(&save_and_continue, save_before_vns, active_xmm);
+        let save_stop = capture_mmio_boundary(&mut save_and_continue, save_before_vns, active_xmm);
         retain_capture(
             report.as_deref(),
             "save-and-continue-stop",
@@ -836,7 +836,7 @@ mod live_kvm {
             .expect("read saved boundary vCPU")
             .regs
             .rbx;
-        let repeated = capture_full_vmm(&save_and_continue);
+        let repeated = capture_full_vmm(&mut save_and_continue);
         assert_mmio_xmm(&repeated, active_xmm, false);
         retain_capture(
             report.as_deref(),
@@ -876,7 +876,7 @@ mod live_kvm {
         let mut cold = fresh_mmio_vmm(active_xmm);
         cold.restore_snapshot(&save_stop.memory, &save_stop.state)
             .expect("restore full MMIO VM snapshot");
-        let cold_stop = capture_full_vmm(&cold);
+        let cold_stop = capture_full_vmm(&mut cold);
         assert_mmio_xmm(&cold_stop, active_xmm, false);
         retain_capture(
             report.as_deref(),
@@ -978,7 +978,7 @@ mod live_kvm {
         wire_snapshot_path(&mut save_and_continue);
         run_warmup(&mut save_and_continue);
         switch_guest_pdpt_to_b(&mut save_and_continue);
-        let capture = capture_at_warmup_boundary(&save_and_continue);
+        let capture = capture_at_warmup_boundary(&mut save_and_continue);
         assert_eq!(
             capture.memory[PDPT_GPA..PDPT_GPA + 8],
             PDPT_B_ENTRY.to_le_bytes()
@@ -1098,7 +1098,7 @@ mod live_kvm {
         run_guest_pdpt_warmup(&mut source);
         let counts = source.exit_counts();
         let time = source.effective_vns();
-        let saved = capture_full_vmm(&source);
+        let saved = capture_full_vmm(&mut source);
         assert_eq!(saved.state.sregs.pdptrs[0], PDPT_B_ENTRY);
         assert_eq!(
             saved.memory[PDPT_GPA..PDPT_GPA + 8],
@@ -1108,7 +1108,7 @@ mod live_kvm {
             saved.state.regs.rip,
             (WARMUP_RIP + GUEST_PDPT_WRITE_LEN + 6) as u64
         );
-        assert!(capture_full_vmm(&source) == saved);
+        assert!(capture_full_vmm(&mut source) == saved);
         assert_eq!(source.exit_counts(), counts);
         assert_eq!(source.effective_vns(), time);
         let observed = run_guest_pdpt_endpoint(&mut source);
@@ -1128,7 +1128,7 @@ mod live_kvm {
 
         let mut cold = fresh();
         cold.restore_snapshot(&saved.memory, &saved.state).unwrap();
-        assert!(capture_full_vmm(&cold) == saved);
+        assert!(capture_full_vmm(&mut cold) == saved);
         let cold_endpoint = run_guest_pdpt_endpoint(&mut cold);
         retain_endpoint(report.as_deref(), "cold", &cold_endpoint, &[]);
         assert!(cold_endpoint == expected);
@@ -1136,7 +1136,7 @@ mod live_kvm {
         source
             .restore_snapshot(&saved.memory, &saved.state)
             .unwrap();
-        assert!(capture_full_vmm(&source) == saved);
+        assert!(capture_full_vmm(&mut source) == saved);
         let reused_endpoint = run_guest_pdpt_endpoint(&mut source);
         retain_endpoint(report.as_deref(), "reused", &reused_endpoint, &[]);
         assert!(reused_endpoint == expected);
@@ -1181,7 +1181,7 @@ mod live_kvm {
         let save_before_serial = save_and_continue.serial().to_vec();
         let save_before_counts = save_and_continue.exit_counts();
         let save_before_vns = save_and_continue.effective_vns();
-        let save_stop = capture_full_vmm(&save_and_continue);
+        let save_stop = capture_full_vmm(&mut save_and_continue);
         retain_capture(
             report.as_deref(),
             "save-and-continue-stop",
@@ -1195,7 +1195,7 @@ mod live_kvm {
         assert_eq!(save_and_continue.serial(), save_before_serial.as_slice());
         assert_eq!(save_and_continue.exit_counts(), save_before_counts);
         assert_eq!(save_and_continue.effective_vns(), save_before_vns);
-        let save_repeated = capture_full_vmm(&save_and_continue);
+        let save_repeated = capture_full_vmm(&mut save_and_continue);
         retain_capture(
             report.as_deref(),
             "save-and-continue-stop-repeat",
@@ -1245,7 +1245,7 @@ mod live_kvm {
         let cold_before_serial = cold_observed.serial().to_vec();
         let cold_before_counts = cold_observed.exit_counts();
         let cold_before_vns = cold_observed.effective_vns();
-        let cold_stop = capture_full_vmm(&cold_observed);
+        let cold_stop = capture_full_vmm(&mut cold_observed);
         retain_capture(
             report.as_deref(),
             "cold-observed-stop",
@@ -1256,7 +1256,7 @@ mod live_kvm {
         assert_eq!(cold_observed.serial(), cold_before_serial.as_slice());
         assert_eq!(cold_observed.exit_counts(), cold_before_counts);
         assert_eq!(cold_observed.effective_vns(), cold_before_vns);
-        let cold_repeated = capture_full_vmm(&cold_observed);
+        let cold_repeated = capture_full_vmm(&mut cold_observed);
         retain_capture(
             report.as_deref(),
             "cold-observed-stop-repeat",
@@ -1546,7 +1546,7 @@ mod live_kvm {
         let save_before_serial = save_and_continue.serial().to_vec();
         let save_before_counts = save_and_continue.exit_counts();
         let save_before_vns = save_and_continue.effective_vns();
-        let save_stop = capture_full_vmm(&save_and_continue);
+        let save_stop = capture_full_vmm(&mut save_and_continue);
         retain_capture(
             report.as_deref(),
             "save-and-continue-stop",
@@ -1568,7 +1568,7 @@ mod live_kvm {
         );
         assert_eq!(save_stop.state.regs.rip, warmup_rip as u64);
         assert_eq!(save_stop.state.regs.rbx, 0);
-        let save_repeated = capture_full_vmm(&save_and_continue);
+        let save_repeated = capture_full_vmm(&mut save_and_continue);
         retain_capture(
             report.as_deref(),
             "save-and-continue-stop-repeat",
@@ -1648,7 +1648,7 @@ mod live_kvm {
         let cold_before_serial = cold_observed.serial().to_vec();
         let cold_before_counts = cold_observed.exit_counts();
         let cold_before_vns = cold_observed.effective_vns();
-        let cold_stop = capture_full_vmm(&cold_observed);
+        let cold_stop = capture_full_vmm(&mut cold_observed);
         retain_capture(
             report.as_deref(),
             "cold-observed-stop",
@@ -1659,7 +1659,7 @@ mod live_kvm {
         assert_eq!(cold_observed.serial(), cold_before_serial.as_slice());
         assert_eq!(cold_observed.exit_counts(), cold_before_counts);
         assert_eq!(cold_observed.effective_vns(), cold_before_vns);
-        let cold_repeated = capture_full_vmm(&cold_observed);
+        let cold_repeated = capture_full_vmm(&mut cold_observed);
         retain_capture(
             report.as_deref(),
             "cold-observed-stop-repeat",

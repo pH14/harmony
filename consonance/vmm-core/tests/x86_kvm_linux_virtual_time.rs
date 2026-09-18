@@ -972,7 +972,7 @@ fn run_to_selected_checkpoint(vmm: &mut StockVmm, target: u64) -> SelectedCheckp
     panic!("selected-checkpoint replay did not reach event {target} within {max_steps} steps");
 }
 
-fn capture_selected_checkpoint(vmm: &StockVmm, target: u64, steps: u64) -> SelectedCheckpoint {
+fn capture_selected_checkpoint(vmm: &mut StockVmm, target: u64, steps: u64) -> SelectedCheckpoint {
     let trace = vmm
         .virtual_time_trace()
         .expect("boot_linux_stock_virtual_time wires the virtual_time trace");
@@ -982,6 +982,7 @@ fn capture_selected_checkpoint(vmm: &StockVmm, target: u64, steps: u64) -> Selec
         .last()
         .cloned()
         .expect("selected-checkpoint replay has a normalized event");
+    let log = trace.normalized_log().clone();
     assert_eq!(event.event_index, target);
     assert!(
         event.state_hash.is_some(),
@@ -997,7 +998,7 @@ fn capture_selected_checkpoint(vmm: &StockVmm, target: u64, steps: u64) -> Selec
     SelectedCheckpoint {
         event,
         steps,
-        log: trace.normalized_log().clone(),
+        log,
         memory: vmm.guest_memory().to_vec(),
         vm_state,
         state_blob: vmm

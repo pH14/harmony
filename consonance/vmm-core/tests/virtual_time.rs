@@ -461,10 +461,10 @@ fn state_vmm(vns: u64, seed: u64) -> Vmm<MockBackend> {
 
 #[test]
 fn state_blob_carries_assigned_vtime_and_entropy_at_work_zero() {
-    let baseline = state_vmm(17, 0xCAFE);
-    let same = state_vmm(17, 0xCAFE);
-    let changed_vtime = state_vmm(18, 0xCAFE);
-    let changed_entropy = state_vmm(17, 0xBABE);
+    let mut baseline = state_vmm(17, 0xCAFE);
+    let mut same = state_vmm(17, 0xCAFE);
+    let mut changed_vtime = state_vmm(18, 0xCAFE);
+    let mut changed_entropy = state_vmm(17, 0xBABE);
 
     assert!(has_chunk(&baseline.state_blob().unwrap(), b"VTIM"));
     assert_eq!(baseline.state_hash().unwrap(), same.state_hash().unwrap());

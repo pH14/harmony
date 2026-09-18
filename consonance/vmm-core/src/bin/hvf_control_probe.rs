@@ -26,7 +26,7 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let vmm = match bringup::boot_hvf_control(
+    let mut vmm = match bringup::boot_hvf_control(
         &image,
         &initramfs,
         "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt",
