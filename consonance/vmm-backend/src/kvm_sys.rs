@@ -13,7 +13,9 @@ use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
 
 use crate::arch::x86::Injection;
 use crate::arch::x86::VcpuState;
-use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Exit, X86Policy};
+#[cfg(test)]
+use crate::arch::x86::X86Exit;
+use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Policy};
 use crate::arch::x86::{
     canonicalize_regs, canonicalize_sregs, canonicalize_xsave_with_restore_bv, restore_xsave_image,
 };
@@ -229,9 +231,6 @@ impl KvmBackend {
                     self.counts.bump(exit.reason());
                     self.pending = pending;
                     self.completion_staged = decoded_exit_stages_completion(&exit, pending);
-                    if matches!(exit, Exit::Arch(X86Exit::Io { write: Some(_), .. })) {
-                        self.finish_or_queue_exit()?;
-                    }
                     return Ok(exit);
                 }
                 None => continue,
@@ -648,8 +647,7 @@ impl Backend for KvmBackend {
         if !self.configured() {
             return Err(BackendError::NotConfigured);
         }
-        if self.pending != Pending::None || self.completion_exit.is_some() || self.completion_staged
-        {
+        if self.pending != Pending::None || self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
         self.enter_guest()
@@ -734,22 +732,34 @@ impl Backend for KvmBackend {
         if !self.configured() {
             return Err(BackendError::NotConfigured);
         }
-        if self.pending != Pending::None || self.completion_staged || self.completion_exit.is_some()
-        {
+        if self.pending != Pending::None || self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
         // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
         let sregs = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
         let fd = self.vcpu.as_raw_fd();
-        prepare_snapshot_run(self.run_page(), sregs.cr8, || {
-            // SAFETY: the owned vCPU has no pending completion; the mapped run page requests immediate exit.
-            let rc = unsafe { raw_kvm_run(fd) };
-            if rc < 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        })
+        let continuation = prepare_snapshot_run(
+            self.run_page(),
+            sregs.cr8,
+            &mut self.pending,
+            &mut self.completion_staged,
+            || {
+                // SAFETY: the owned vCPU has a run page requesting immediate exit and,
+                // when a completion was staged, no pending value left to supply.
+                let rc = unsafe { raw_kvm_run(fd) };
+                if rc < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            },
+        )?;
+        if let Some(exit) = continuation {
+            self.counts.bump(exit.reason());
+            self.completion_exit = Some(exit);
+            return Err(BackendError::PendingCompletion);
+        }
+        Ok(())
     }
 
     fn save(&self) -> Result<VcpuState> {
@@ -929,12 +939,9 @@ mod xsave_diagnostic {
             assert_eq!(backend.save().unwrap(), after);
             backend.pending = Pending::None;
             backend.completion_staged = true;
-            assert!(matches!(
-                backend.prepare_snapshot(),
-                Err(BackendError::PendingCompletion)
-            ));
-            assert_eq!(backend.save().unwrap(), after);
-            backend.completion_staged = false;
+            backend.prepare_snapshot().unwrap();
+            assert!(!backend.completion_staged);
+            after = backend.save().unwrap();
             backend.pending_irq = None;
             assert!(matches!(
                 backend.run().unwrap(),
@@ -984,7 +991,6 @@ mod xsave_diagnostic {
             backend.completion_staged = staged;
             backend.completion_exit = queued.then_some(Exit::Common(CommonExit::Idle));
             backend.pending_irq = Some(0x40);
-            let counts = backend.exit_counts();
             let readiness = backend.readiness_current;
             let queued_before = format!("{:?}", backend.completion_exit);
             assert_eq!(backend.save().unwrap(), before);
@@ -992,20 +998,26 @@ mod xsave_diagnostic {
                 backend.restore(&replacement),
                 Err(BackendError::PendingCompletion)
             ));
-            assert!(matches!(
-                backend.prepare_snapshot(),
-                Err(BackendError::PendingCompletion)
-            ));
-            assert_eq!(backend.pending, pending);
-            assert_eq!(backend.completion_staged, staged);
-            assert_eq!(format!("{:?}", backend.completion_exit), queued_before);
+            let only_a_staged_completion = pending == Pending::None && staged && !queued;
+            if only_a_staged_completion {
+                backend.prepare_snapshot().unwrap();
+                assert!(!backend.completion_staged);
+            } else {
+                let counts = backend.exit_counts();
+                assert!(matches!(
+                    backend.prepare_snapshot(),
+                    Err(BackendError::PendingCompletion)
+                ));
+                assert_eq!(backend.pending, pending);
+                assert_eq!(backend.completion_staged, staged);
+                assert_eq!(format!("{:?}", backend.completion_exit), queued_before);
+                assert_eq!(backend.exit_counts(), counts);
+            }
             assert_eq!(backend.pending_irq, Some(0x40));
-            assert_eq!(backend.exit_counts(), counts);
             assert_eq!(backend.readiness_current, readiness);
             backend.pending = Pending::None;
             backend.completion_staged = false;
             backend.completion_exit = None;
-            assert_eq!(backend.save().unwrap(), before);
         }
         backend.restore(&replacement).unwrap();
         assert_eq!(backend.save().unwrap(), replacement);

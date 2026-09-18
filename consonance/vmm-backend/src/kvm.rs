@@ -303,7 +303,13 @@ pub(crate) fn apply_complete_ok(page: RunPage, pending: Pending) -> Result<()> {
     }
 }
 
-pub(crate) fn prepare_snapshot_run<F>(page: RunPage, cr8: u64, mut enter: F) -> Result<()>
+pub(crate) fn prepare_snapshot_run<F>(
+    page: RunPage,
+    cr8: u64,
+    pending: &mut Pending,
+    staged: &mut bool,
+    mut enter: F,
+) -> Result<Option<Exit<X86>>>
 where
     F: FnMut() -> std::result::Result<(), std::io::Error>,
 {
@@ -311,11 +317,14 @@ where
         return Err(BackendError::InvalidState);
     }
     page.set_cr8(cr8);
+    if *staged {
+        return finish_staged_completion(page, pending, staged, enter);
+    }
     page.set_immediate_exit(true);
     let result = enter();
     page.set_immediate_exit(false);
     match result {
-        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(None),
         Err(error) => Err(BackendError::Io(error)),
         Ok(()) => Err(BackendError::Internal(
             "snapshot preparation did not return without guest entry",
