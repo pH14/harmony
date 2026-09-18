@@ -21,10 +21,11 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_less_boss_award_map_spatial_16_posture_door_area_last_preference_missiles_then_health_ridley_bit1_v11";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_then_health_ridley_bit1_v12";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
+const BOSS_DAMAGE_BUCKET: u8 = 8;
 
 pub type MetroidArchive =
     Archive<ButtonChord, MetroidArchiveKey, MetroidMilestones, MetroidSnapshot>;
@@ -33,6 +34,7 @@ pub type MetroidArchive =
 pub struct MetroidArchiveGroup {
     items: u8,
     tanks: u8,
+    boss_damage: u8,
     map_x: u8,
     map_y: u8,
     x: u8,
@@ -46,6 +48,8 @@ pub struct MetroidArchiveGroup {
 pub struct MetroidArchiveKey {
     pub items: u8,
     pub tanks: u8,
+    pub boss_damage: u8,
+    pub boss_health: u8,
     pub area: u8,
     pub map_x: u8,
     pub map_y: u8,
@@ -65,13 +69,14 @@ impl ArchiveKey for MetroidArchiveKey {
     }
 
     fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
-        left.items.cmp(&right.items)
+        (left.items, left.boss_damage).cmp(&(right.items, right.boss_damage))
     }
 
     fn group(self, depth: usize) -> Self::Group {
         let location = MetroidArchiveGroup {
             items: self.items,
             tanks: self.tanks,
+            boss_damage: self.boss_damage,
             area: self.area,
             map_x: self.map_x,
             map_y: self.map_y,
@@ -97,6 +102,7 @@ impl ArchiveKey for MetroidArchiveKey {
             3 => MetroidArchiveGroup {
                 items: self.items,
                 tanks: self.tanks,
+                boss_damage: self.boss_damage,
                 area: self.area,
                 map_x: self.map_x,
                 map_y: self.map_y,
@@ -105,6 +111,7 @@ impl ArchiveKey for MetroidArchiveKey {
             _ => MetroidArchiveGroup {
                 items: self.items,
                 tanks: self.tanks,
+                boss_damage: self.boss_damage,
                 ..MetroidArchiveGroup::default()
             },
         }
@@ -125,13 +132,26 @@ impl ArchiveKey for MetroidArchiveKey {
         }
     }
 
-    type Lineage = ();
+    type Lineage = MetroidLineage;
 
-    fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
-        self
+    fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self {
+        let highest = parent
+            .map_or(0, |(_, lineage)| lineage.boss_health_highest)
+            .max(self.boss_health);
+        Self {
+            boss_damage: highest.saturating_sub(self.boss_health) / BOSS_DAMAGE_BUCKET,
+            ..self
+        }
     }
 
-    fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    fn record(lineage: &mut Self::Lineage, key: Self) {
+        lineage.boss_health_highest = lineage.boss_health_highest.max(key.boss_health);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MetroidLineage {
+    boss_health_highest: u8,
 }
 
 impl MetroidArchiveKey {
@@ -152,6 +172,8 @@ pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
     MetroidArchiveKey {
         items,
         tanks,
+        boss_damage: 0,
+        boss_health: state.boss_health,
         area: state.area,
         map_x: state.map_x,
         map_y: state.map_y,
@@ -457,6 +479,63 @@ mod tests {
             .collect::<Vec<_>>();
         crate::search::archive::check_total_preorder::<MetroidArchiveKey>(&groups)
             .expect("Metroid progress relation");
+    }
+
+    #[test]
+    fn damaging_a_boss_advances_progress_within_one_item_count() {
+        let lineage = MetroidLineage {
+            boss_health_highest: 64,
+        };
+        let arriving = archive_key(MetroidMechanicalState {
+            equipment: 0b1,
+            boss_health: 64,
+            ..MetroidMechanicalState::default()
+        })
+        .complete(Some((MetroidArchiveKey::default(), &lineage)));
+        let hurt = archive_key(MetroidMechanicalState {
+            equipment: 0b1,
+            boss_health: 24,
+            ..MetroidMechanicalState::default()
+        })
+        .complete(Some((MetroidArchiveKey::default(), &lineage)));
+        assert_eq!(arriving.boss_damage, 0);
+        assert_eq!(hurt.boss_damage, 5);
+        assert_eq!(
+            MetroidArchiveKey::progress_cmp(hurt.group(1), arriving.group(1)),
+            Ordering::Greater
+        );
+        assert_ne!(hurt.group(0), arriving.group(0));
+    }
+
+    #[test]
+    fn a_lineage_remembers_the_highest_boss_health_it_saw() {
+        let mut lineage = MetroidLineage::default();
+        let arriving = archive_key(MetroidMechanicalState {
+            boss_health: 64,
+            ..MetroidMechanicalState::default()
+        });
+        MetroidArchiveKey::record(&mut lineage, arriving);
+        assert_eq!(lineage.boss_health_highest, 64);
+        let hurt = archive_key(MetroidMechanicalState {
+            boss_health: 10,
+            ..MetroidMechanicalState::default()
+        });
+        MetroidArchiveKey::record(&mut lineage, hurt);
+        assert_eq!(lineage.boss_health_highest, 64);
+        assert_eq!(
+            hurt.complete(Some((arriving, &lineage))).boss_damage,
+            (64 - 10) / BOSS_DAMAGE_BUCKET
+        );
+    }
+
+    #[test]
+    fn no_boss_in_the_room_is_no_damage() {
+        let key = archive_key(MetroidMechanicalState::default()).complete(Some((
+            MetroidArchiveKey::default(),
+            &MetroidLineage::default(),
+        )));
+        assert_eq!(key.boss_health, 0);
+        assert_eq!(key.boss_damage, 0);
     }
 
     #[test]

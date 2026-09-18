@@ -40,6 +40,14 @@ pub const POSTURE_GROUNDED: u8 = 0;
 pub const POSTURE_AIRBORNE: u8 = 1;
 pub const POSTURE_OTHER: u8 = 2;
 
+const ENEMY_SLOT_BASE: usize = 0x400;
+const ENEMY_SLOT_STRIDE: usize = 0x10;
+const ENEMY_SLOTS: usize = 6;
+const ENEMY_HIT_POINTS: usize = 0x0b;
+const ENEMY_SPECIAL_ATTRIBUTES: usize = 0x0f;
+const ENEMY_MINI_BOSS_BIT: u8 = 1 << 6;
+const ENEMY_HIT_POINTS_ABSENT: u8 = 0xff;
+
 const HEALTH_HIGH: usize = 0x107;
 const HEALTH_LOW: usize = 0x106;
 pub const STARTING_HEALTH_TENTHS: u16 = 300;
@@ -119,6 +127,7 @@ pub struct MetroidMechanicalState {
     pub missiles: u8,
     pub missile_capacity: u8,
     pub energy_tanks: u8,
+    pub boss_health: u8,
     pub bosses: u8,
     pub ending: bool,
 }
@@ -183,6 +192,20 @@ fn bcd(byte: u8) -> u16 {
     u16::from(byte >> 4) * 10 + u16::from(byte & 0x0f)
 }
 
+fn mini_boss_health(wram: &[u8]) -> Result<u8, MachineError> {
+    for slot in 0..ENEMY_SLOTS {
+        let base = ENEMY_SLOT_BASE + slot * ENEMY_SLOT_STRIDE;
+        if read_byte(wram, base + ENEMY_SPECIAL_ATTRIBUTES)? & ENEMY_MINI_BOSS_BIT == 0 {
+            continue;
+        }
+        let health = read_byte(wram, base + ENEMY_HIT_POINTS)?;
+        if health != ENEMY_HIT_POINTS_ABSENT {
+            return Ok(health);
+        }
+    }
+    Ok(0)
+}
+
 pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalState, MachineError> {
     let (map_x, map_y) = samus_screen(wram)?;
     Ok(MetroidMechanicalState {
@@ -202,6 +225,7 @@ pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalSt
         missiles: read_byte(cartridge, MISSILES)?,
         missile_capacity: read_byte(cartridge, MISSILE_CAPACITY)?,
         energy_tanks: read_byte(cartridge, ENERGY_TANKS)?,
+        boss_health: mini_boss_health(wram)?,
         bosses: u8::from(read_byte(cartridge, KRAID_STATUS)? & KRAID_DEFEATED_BIT != 0)
             + u8::from(read_byte(cartridge, RIDLEY_STATUS)? & RIDLEY_DEFEATED_BIT != 0),
         ending: read_byte(cartridge, ENDING)? != 0,

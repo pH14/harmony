@@ -55,11 +55,20 @@ The adapter supplies its controller vocabulary as the alphabet sampler and
 nothing else about drawing; the searcher owns the suffix draw and the
 retained-input table.
 
-`progress_cmp` compares the item count and nothing else, so that is the whole
-progress relation the selector reads. Tanks are capacity, so they live in the
-preferences, which decide which states keep a location's slots. Field
-declaration order no longer ranks anything: two places with equal items are
-peers whatever their area byte, map row or column.
+`progress_cmp` compares the item count then the boss damage, so that is the
+whole progress relation the selector reads. Tanks are capacity, so they live in
+the preferences, which decide which states keep a location's slots. Field
+declaration order no longer ranks anything: two places with equal items and
+equal boss damage are peers whatever their area byte, map row or column.
+
+Boss damage is how far a lineage has worn down the mini boss sharing its room.
+The game keeps six enemy slots at `$0400`, sixteen bytes apart, with the current
+hit points at offset `$0b` and a mini-boss mark in bit 6 of offset `$0f`; `$ff`
+hit points mean the slot holds nothing that can be hurt. The key carries the
+remaining hit points, and the lineage carries the highest reading it has seen,
+so the damage is their difference in buckets of eight. Without it a state that
+has landed ten hits on Kraid shares a cell with one standing in the doorway, and
+no ordering can prefer the first.
 
 The key declares two preferences. Both lead with items then tanks; the first
 then ranks missiles before health and the second health before missiles. A
