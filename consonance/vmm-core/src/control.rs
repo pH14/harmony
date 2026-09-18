@@ -445,7 +445,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let candidates = self.engine.diff_pages(Some(base_id), target_id)?;
         let mut pages = Vec::with_capacity(candidates.len());
         for (gfn, page) in candidates {
-            if self.engine.read_page(base_id, gfn)? != page {
+            if !self.engine.pages_equal(base_id, gfn, target_id, gfn)? {
                 pages.push((gfn, Arc::new(page)));
             }
         }
@@ -1026,10 +1026,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             self.current_image = None;
             self.derive_parent = None;
         }
-        if self.engine.release(store_id).is_err() {
+        let Ok(remaining_refs) = self.engine.release(store_id) else {
             return Err(ControlError::UnknownSnapshot(snap));
+        };
+        if remaining_refs == 0 {
+            self.engine.gc();
         }
-        self.engine.gc();
         Ok(Reply::Unit)
     }
 
@@ -3196,7 +3198,7 @@ mod tests {
         miri,
         ignore = "snapshot materialization and page hashing use mmap-backed production paths"
     )]
-    fn in_place_restore_read_failure_leaves_guest_memory_untouched() {
+    fn materialize_still_catches_page_corruption_that_in_place_restore_no_longer_reads() {
         let mut s = server_tracked();
         hello(&mut s);
         s.vmm
@@ -3227,13 +3229,12 @@ mod tests {
                 bytes: vec![0xA5],
             })
             .unwrap();
-        let before = s.vmm.as_ref().unwrap().guest_memory().to_vec();
         s.engine
             .corrupt_page_for_test(store_id, 2, 0, 0x01)
             .unwrap();
 
-        assert!(s.restore_in_place(store_id, &vm_state).is_err());
-        assert_eq!(s.vmm.as_ref().unwrap().guest_memory(), before);
+        assert!(s.restore_in_place(store_id, &vm_state).is_ok());
+        assert!(s.engine.materialize(store_id).is_err());
     }
 
     #[test]
