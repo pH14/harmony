@@ -100,33 +100,56 @@ nothing else; the control's mixture identifier carries no continuation
 variant, so it runs no continuations at all. The run directories and their
 exports stay on ms02 and the laptop.
 
-Over the six cells the graph drew 1,174,934 reservations, took 7,787, and
-dispatched 7,473 jobs. Of those jobs 1,576 landed at their destination (21%),
-1,201 replaced the occupant, and 177 opened a new slot (2.4%). The longest
-chain was 21. Every cell ended with its share at the floor of 1 in 257 and
-between 7,487 and 13,742 slots queued and never served.
+A review of the portfolio found that this trigger fired only when a candidate
+removed an entry from the slot entirely, so a candidate taking one preference
+from a holder that kept another queued nothing. `milestones/contfix-on-20260918.json`
+holds the same panel re-run with the trigger corrected to fire whenever the
+candidate is strictly preferred over a prior slot member under a preference it
+won. The control builds no bank and its search is unchanged, so it is reused.
 
-Occupied cells at 200,000 executions:
+Totals over the six cells:
 
-| seed | graph on | graph off | difference |
+| | corrected trigger | first trigger |
+|---|---|---|
+| reservations drawn | 1,175,585 | 1,174,934 |
+| reservations taken | 7,721 | 7,787 |
+| jobs | 7,566 | 7,473 |
+| landed at the destination | 1,577 | 1,576 |
+| replaced the occupant | 1,261 | 1,201 |
+| opened a new slot | 196 | 177 |
+| longest chain | 21 | 21 |
+| queued and never served | 65,371 | 58,621 |
+
+The corrected trigger queues about a tenth more attempts and serves almost none
+of them. Both arms land one job in five and open a new slot on one job in
+forty, and both end every cell with the share at its floor of 1 in 257.
+
+Map squares holding a live entry at 200,000 executions:
+
+| seed | corrected | first | no graph |
 |---|---|---|---|
-| 3 | 23,879 | 30,048 | -20.5% |
-| 4 | 14,748 | 14,697 | +0.3% |
-| 5 | 24,458 | 21,089 | +16.0% |
-| 6 | 19,096 | 12,749 | +49.8% |
-| 7 | 22,681 | 15,094 | +50.3% |
-| 8 | 26,073 | 19,947 | +30.7% |
+| 3 | 72 | 74 | 76 |
+| 4 | 42 | 42 | 41 |
+| 5 | 47 | 51 | 47 |
+| 6 | 46 | 46 | 41 |
+| 7 | 56 | 55 | 55 |
+| 8 | 78 | 84 | 59 |
 
-Beyond the root the graph took an energy tank on seed 5 and Kraid's area on
-seed 8, where the control reached neither; the control took an energy tank on
-seed 3, where the graph did not. Seed 8's new lineage reaches Kraid himself at
-four energy and no missiles.
+Beyond the root the corrected arm took an energy tank on seed 3 and Kraid's
+area on seed 8. The control reached Kraid's area on no seed and took its seed 3
+tank 45,862 executions later. No milestone the control reached is missing from the
+corrected arm.
+
+The heatmaps show where the difference sits. On seed 8 the control covers one
+horizontal corridor and stops; both graph arms descend the shaft below it,
+which is the route into Kraid's area.
 
 The share reaching its floor on every cell follows from the feedback rule. The
 barren counter resets only when a job opens a new slot and the share is
 `256 >> min(barren / 6, 8)`, so any mechanism whose jobs open a new slot less
-often than about one in six settles at the floor. This one opens a new slot on
-one job in forty-two and still produces 15% more places than the control.
+often than about one in six settles at the floor. Widening the trigger does not
+change that, which places the next measurement on the counter rather than on
+what queues an attempt.
 
 ## Complete-session design audit
 
