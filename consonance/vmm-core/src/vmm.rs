@@ -809,17 +809,15 @@ where
         Ok(())
     }
 
-    fn check_snapshot_ready(&self) -> Result<(), VmmError> {
+    fn ensure_snapshot_ready(&mut self) -> Result<(), VmmError> {
         if !self.snapshot_ready {
-            return Err(VmmError::Backend(
-                vmm_backend::BackendError::PendingCompletion,
-            ));
+            self.prepare_snapshot()?;
         }
         Ok(())
     }
 
-    pub fn save_vm_state(&self) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
-        self.check_snapshot_ready()?;
+    pub fn save_vm_state(&mut self) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
+        self.ensure_snapshot_ready()?;
         let vcpu = match &self.saved_state {
             Some(s) => s.clone(),
             None => self.backend.save()?,
@@ -1061,9 +1059,6 @@ where
         self.pvclock_refresh()?;
         <B::A as Vendor>::post_exit(self)?;
         let next = <B::A as Vendor>::finish_exit(self)?;
-        if next.is_none() {
-            self.prepare_snapshot()?;
-        }
         if trace_started {
             let event_index = self
                 .virtual_time_trace
@@ -1140,15 +1135,15 @@ where
         })
     }
 
-    pub fn state_blob(&self) -> Result<Vec<u8>, VmmError> {
+    pub fn state_blob(&mut self) -> Result<Vec<u8>, VmmError> {
         let mut out = Vec::new();
         put_chunk(&mut out, b"MEM\0", self.ram.as_bytes());
         out.extend_from_slice(&self.state_blob_suffix()?);
         Ok(out)
     }
 
-    pub(crate) fn state_blob_suffix(&self) -> Result<Vec<u8>, VmmError> {
-        self.check_snapshot_ready()?;
+    pub(crate) fn state_blob_suffix(&mut self) -> Result<Vec<u8>, VmmError> {
+        self.ensure_snapshot_ready()?;
         let mut out = Vec::new();
         let vcpu = match &self.saved_state {
             Some(state) => state.clone(),
@@ -1223,11 +1218,11 @@ where
         v
     }
 
-    pub fn state_hash(&self) -> Result<[u8; 32], VmmError> {
+    pub fn state_hash(&mut self) -> Result<[u8; 32], VmmError> {
         self.state_hash_preimage().map(|(hash, _, _)| hash)
     }
 
-    fn state_hash_preimage(&self) -> Result<StateHashPreimage, VmmError> {
+    fn state_hash_preimage(&mut self) -> Result<StateHashPreimage, VmmError> {
         let mut hasher = Sha256::new();
         hasher.update(b"MEM\0");
         hasher.update((self.ram.as_bytes().len() as u64).to_le_bytes());
@@ -2789,7 +2784,7 @@ mod tests {
 
     #[test]
     fn state_hash_streaming_keeps_the_frozen_blob_digest() {
-        let vmm = vtime_vmm(Vec::new(), 0x5eed);
+        let mut vmm = vtime_vmm(Vec::new(), 0x5eed);
         let mut expected = Sha256::new();
         expected.update(vmm.state_blob().unwrap());
         let expected: [u8; 32] = expected.finalize().into();
@@ -2828,7 +2823,8 @@ mod tests {
             let mut hashes = Vec::new();
             let mut persisted = Vec::new();
             for raw in [0, 2, 3] {
-                let vmm = identity_profile_vmm(identity_profile_state(raw), Some([1; 32]), hashing);
+                let mut vmm =
+                    identity_profile_vmm(identity_profile_state(raw), Some([1; 32]), hashing);
                 let before = vmm.save_vm_state().unwrap();
                 assert_eq!(before.xsave_restore_bv, Some(raw));
                 hashes.push(vmm.state_hash().unwrap());
@@ -2840,11 +2836,11 @@ mod tests {
             assert!(hashes.windows(2).all(|pair| pair[0] == pair[1]));
             assert!(persisted.windows(2).all(|pair| pair[0] != pair[1]));
             for profile in [None, Some([2; 32])] {
-                let other = identity_profile_vmm(identity_profile_state(0), profile, hashing);
+                let mut other = identity_profile_vmm(identity_profile_state(0), profile, hashing);
                 assert_ne!(other.state_hash().unwrap(), hashes[0]);
             }
-            let generic0 = identity_profile_vmm(identity_profile_state(0), None, hashing);
-            let generic2 = identity_profile_vmm(identity_profile_state(2), None, hashing);
+            let mut generic0 = identity_profile_vmm(identity_profile_state(0), None, hashing);
+            let mut generic2 = identity_profile_vmm(identity_profile_state(2), None, hashing);
             assert_ne!(
                 generic0.state_hash().unwrap(),
                 generic2.state_hash().unwrap()
@@ -2862,7 +2858,7 @@ mod tests {
                 let mut state = identity_profile_state(bit);
                 state.xsave[512..520].copy_from_slice(&bit.to_le_bytes());
                 state.xsave[offset] = byte;
-                let vmm = identity_profile_vmm(state.clone(), Some([1; 32]), hashing);
+                let mut vmm = identity_profile_vmm(state.clone(), Some([1; 32]), hashing);
                 assert_ne!(vmm.state_hash().unwrap(), baseline);
                 assert_eq!(vmm.save_vm_state().unwrap().xsave.0, state.xsave);
             }
@@ -2879,7 +2875,7 @@ mod tests {
     #[test]
     fn controlled_identity_restore_rejects_other_profiles_before_mutation() {
         for source_profile in [None, Some([1; 32]), Some([2; 32])] {
-            let source = identity_profile_vmm(identity_profile_state(3), source_profile, true);
+            let mut source = identity_profile_vmm(identity_profile_state(3), source_profile, true);
             let snapshot = source.save_vm_state().unwrap();
             for target_profile in [None, Some([1; 32]), Some([2; 32])] {
                 let mut target =
@@ -3542,7 +3538,7 @@ mod tests {
             v.map_doorbell_pages().unwrap();
             v
         };
-        let a = make();
+        let mut a = make();
         let mut b = make();
         assert_eq!(a.state_hash().unwrap(), b.state_hash().unwrap());
         b.doorbell_pages.as_mut().unwrap().as_mut_bytes()[7] ^= 0xFF;
@@ -3613,7 +3609,7 @@ mod tests {
             v.map_doorbell_pages().unwrap();
             v
         };
-        let a = make();
+        let mut a = make();
         let mut b = make();
         b.doorbell_pages.as_mut().unwrap().as_mut_bytes()[3] ^= 0xFF;
 
@@ -4298,7 +4294,7 @@ mod tests {
         ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings"
     )]
     fn state_hash_folds_the_sdk_stream_and_is_absent_when_unwired() {
-        let unwired = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let mut unwired = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         let unwired_hash = unwired.state_hash().unwrap();
         let mut wired = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         enable_nominal(&mut wired, 7);
@@ -4417,7 +4413,7 @@ mod tests {
         );
         insn.run().unwrap();
 
-        let msr = run_msr();
+        let mut msr = run_msr();
         assert_eq!(
             msr.backend.completions(),
             insn.backend.completions(),
@@ -4527,15 +4523,15 @@ mod tests {
             v
         }
 
-        let stock = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
+        let mut stock = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         assert!(
             !contains_tag(&stock.state_blob().unwrap(), b"VTIM"),
             "stock Vmm must not emit a VTIM chunk (M1/M2 hash unchanged)"
         );
-        let stock2 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
+        let mut stock2 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         assert_eq!(stock.state_hash().unwrap(), stock2.state_hash().unwrap());
 
-        let a = wired(1, contract_vclock_config());
+        let mut a = wired(1, contract_vclock_config());
         assert!(contains_tag(&a.state_blob().unwrap(), b"VTIM"));
         assert_ne!(
             a.state_hash().unwrap(),
@@ -4543,7 +4539,7 @@ mod tests {
             "wiring vtime must change the hash"
         );
 
-        let b = wired(2, contract_vclock_config());
+        let mut b = wired(2, contract_vclock_config());
         assert_ne!(
             a.state_hash().unwrap(),
             b.state_hash().unwrap(),
@@ -4582,7 +4578,7 @@ mod tests {
             );
         }
 
-        let a2 = wired(1, contract_vclock_config());
+        let mut a2 = wired(1, contract_vclock_config());
         assert_eq!(a.state_hash().unwrap(), a2.state_hash().unwrap());
     }
 
@@ -4719,7 +4715,7 @@ mod tests {
     #[test]
     fn observable_digest_tracks_report_stream_but_state_hash_does_not() {
         let mut a = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
-        let b = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
+        let mut b = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         a.report_stream = vec![0xAA, 0xBB];
         assert_eq!(
             a.state_hash().unwrap(),
@@ -4971,12 +4967,12 @@ mod tests {
         fn has(blob: &[u8], tag: &[u8; 4]) -> bool {
             blob.windows(4).any(|w| w == tag)
         }
-        let stock = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
+        let mut stock = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         let stock_blob = stock.state_blob().unwrap();
         assert!(!has(&stock_blob, b"LAPC"));
         assert!(!has(&stock_blob, b"LEGY"));
 
-        let linux = linux_vmm(vec![]);
+        let mut linux = linux_vmm(vec![]);
         let blob = linux.state_blob().unwrap();
         assert!(has(&blob, b"LAPC"));
         assert!(has(&blob, b"LEGY"));
@@ -5079,7 +5075,7 @@ mod tests {
 
     #[test]
     fn lapic_register_state_is_in_the_hash() {
-        let base = linux_vmm(vec![]);
+        let mut base = linux_vmm(vec![]);
         let mut modified = linux_vmm(vec![Exit::Common(CommonExit::Mmio {
             gpa: Gpa(0xFEE0_0080),
             size: 4,
@@ -5756,18 +5752,12 @@ mod tests {
             Err(VmmError::Backend(vmm_backend::BackendError::Internal(message)))
                 if message.contains("during an active event")
         ));
-        assert!(matches!(
-            target.save_vm_state(),
-            Err(VmmError::Backend(
-                vmm_backend::BackendError::PendingCompletion
-            ))
-        ));
-        assert!(matches!(
-            target.state_hash(),
-            Err(VmmError::Backend(
-                vmm_backend::BackendError::PendingCompletion
-            ))
-        ));
+        assert!(
+            target.save_vm_state().is_ok(),
+            "the backend's vcpu state was already committed before the trace \
+             classification failed, so it carries nothing pending and prepares on demand"
+        );
+        assert!(target.state_hash().is_ok());
     }
 
     #[test]
@@ -6293,18 +6283,55 @@ mod tests {
         );
         vmm.wire_snapshot_hashing();
         assert_eq!(vmm.step().unwrap(), Step::Continued);
-        assert_eq!(vmm.backend.preparation_runs, 1);
+        assert_eq!(vmm.backend.preparation_runs, 0);
         assert_eq!(vmm.backend.ordinary_runs, 1);
         assert_eq!(vmm.backend.finish_runs, 1);
         let counts = vmm.exit_counts();
         let time = vmm.effective_vns();
         let state = vmm.save_vm_state().unwrap();
+        assert_eq!(vmm.backend.preparation_runs, 1);
         let hash = vmm.state_hash().unwrap();
         assert_eq!(vmm.save_vm_state().unwrap(), state);
         assert_eq!(vmm.state_hash().unwrap(), hash);
         assert_eq!(vmm.backend.preparation_runs, 1);
         assert_eq!(vmm.exit_counts(), counts);
         assert_eq!(vmm.effective_vns(), time);
+    }
+
+    #[test]
+    fn n_exits_then_one_save_prepares_once_and_matches_eager_per_exit_preparation() {
+        let ordinary = vec![
+            apic_read(lapic::APIC_VERSION),
+            apic_read(lapic::APIC_VERSION),
+            apic_read(lapic::APIC_VERSION),
+        ];
+        let continuations = vec![Vec::new(); ordinary.len()];
+
+        let mut lazy = boxed_continuation_vmm(ordinary.clone(), continuations.clone(), 7);
+        for _ in 0..ordinary.len() {
+            assert_eq!(lazy.step().unwrap(), Step::Continued);
+        }
+        assert_eq!(lazy.backend.preparation_runs, 0);
+        let bytes = lazy.save_vm_state().unwrap().encode().unwrap();
+        assert_eq!(
+            lazy.backend.preparation_runs, 1,
+            "one on-demand save after N exits prepares exactly once"
+        );
+        assert_eq!(lazy.save_vm_state().unwrap().encode().unwrap(), bytes);
+        assert_eq!(lazy.backend.preparation_runs, 1);
+
+        let mut eager = boxed_continuation_vmm(ordinary, continuations, 7);
+        for _ in 0..eager.backend.ordinary.len() {
+            assert_eq!(eager.step().unwrap(), Step::Continued);
+            eager.prepare_snapshot().unwrap();
+        }
+        assert_eq!(eager.backend.preparation_runs, 3);
+        assert_eq!(
+            eager.save_vm_state().unwrap().encode().unwrap(),
+            bytes,
+            "lazy on-demand preparation reproduces the same snapshot bytes as preparing on \
+             every exit"
+        );
     }
 
     #[test]
@@ -6400,8 +6427,12 @@ mod tests {
         vmm.backend.complete_hypercall(0).unwrap();
         vmm.backend.retire_pending_completion().unwrap();
         assert!(vmm.restore_vm_state(&before).is_err());
-        assert!(vmm.save_vm_state().is_err());
-        assert!(vmm.state_hash().is_err());
+        assert!(
+            vmm.save_vm_state().is_ok(),
+            "the failed restore's backend mutation already committed a vcpu with nothing \
+             pending, so save prepares on demand and succeeds"
+        );
+        assert!(vmm.state_hash().is_ok());
         vmm.virtual_time_trace = None;
         vmm.restore_vm_state(&before).unwrap();
         assert_eq!(vmm.save_vm_state().unwrap(), before);
@@ -6432,9 +6463,6 @@ mod tests {
         vmm.backend.complete_read(0).unwrap();
         vmm.backend.retire_pending_completion().unwrap();
         assert!(vmm.backend.save().is_ok());
-        assert!(vmm.save_vm_state().is_err());
-        assert!(vmm.state_hash().is_err());
-        vmm.prepare_snapshot().unwrap();
         assert!(vmm.save_vm_state().is_ok());
         assert!(vmm.state_hash().is_ok());
     }
@@ -6615,7 +6643,7 @@ mod tests {
 
     #[test]
     fn save_vm_state_fails_closed_on_backend_save_error() {
-        let v = Vmm::new(
+        let mut v = Vmm::new(
             SaveFailBackend(configured_mock(vec![])),
             GuestRam::new(0x1000).unwrap(),
         );
@@ -6686,7 +6714,7 @@ mod tests {
 
     #[test]
     fn lifecycle_restore_rejects_malformed_state_before_mutation() {
-        let source = full_vmm(nonzero_state(), vec![], 0, 7);
+        let mut source = full_vmm(nonzero_state(), vec![], 0, 7);
         let mut snapshot = source.save_vm_state().unwrap();
         snapshot.set_engine_state(vec![b'V', b'M', b'E', 1, 4, 0, 0]);
         let mut destination = full_vmm(VcpuState::default(), vec![], 0, 9);
@@ -6801,7 +6829,7 @@ mod tests {
 
     #[test]
     fn output_completion_must_be_retired_before_restoring_registers() {
-        let src = full_vmm(VcpuState::default(), vec![], 500, 1);
+        let mut src = full_vmm(VcpuState::default(), vec![], 500, 1);
         let snap = src.save_vm_state().unwrap();
         let mut tgt = full_vmm(
             VcpuState::default(),
@@ -6905,7 +6933,7 @@ mod tests {
         let in_flight = |events: vmm_backend::VcpuEvents, name: &str| {
             let mut st = nonzero_state();
             st.events = events;
-            let a = full_vmm(st, vec![], 0, 1);
+            let mut a = full_vmm(st, vec![], 0, 1);
             let s = a
                 .save_vm_state()
                 .unwrap_or_else(|e| panic!("{name}: an in-flight point must snapshot, got {e:?}"));
@@ -6952,7 +6980,7 @@ mod tests {
         let rejects = |events: vmm_backend::VcpuEvents, needle: &str| {
             let mut st = nonzero_state();
             st.events = events;
-            let v = full_vmm(st, vec![], 0, 1);
+            let mut v = full_vmm(st, vec![], 0, 1);
             match v.save_vm_state() {
                 Err(VmmError::ContractViolation(msg)) => assert!(
                     msg.contains(needle),
@@ -6970,7 +6998,7 @@ mod tests {
             },
             "triple_fault_pending",
         );
-        let v_ok = full_vmm(nonzero_state(), vec![], 0, 1);
+        let mut v_ok = full_vmm(nonzero_state(), vec![], 0, 1);
         assert!(
             v_ok.save_vm_state().is_ok(),
             "a quiescent point still snapshots"
@@ -7074,7 +7102,7 @@ mod tests {
         for (name, events) in cases {
             let mut state = nonzero_state();
             state.events = events;
-            let source = full_vmm(state, vec![], 0, 1);
+            let mut source = full_vmm(state, vec![], 0, 1);
             let saved = source
                 .save_vm_state()
                 .unwrap_or_else(|error| panic!("{name} vector 31 must save: {error:?}"));
@@ -7155,7 +7183,7 @@ mod tests {
         for (events, needle) in invalid {
             let mut state = nonzero_state();
             state.events = events;
-            let vmm = full_vmm(state, vec![], 0, 1);
+            let mut vmm = full_vmm(state, vec![], 0, 1);
             match vmm.save_vm_state() {
                 Err(VmmError::ContractViolation(message)) => assert!(
                     message.contains(needle),
@@ -7170,7 +7198,7 @@ mod tests {
 
     #[test]
     fn restore_canonicalizes_raw_events_from_an_external_blob() {
-        let a = full_vmm(nonzero_state(), vec![], 0, 1);
+        let mut a = full_vmm(nonzero_state(), vec![], 0, 1);
         let mut s = a.save_vm_state().expect("quiescent save");
         let raw = vmm_backend::VcpuEvents {
             interrupt_nr: 0x34,
@@ -7214,7 +7242,7 @@ mod tests {
             marked.events.interrupt_nr = 0x99;
             let mut b = full_vmm(marked, vec![], 0, 1);
             let before = b.backend.save().unwrap();
-            let a = full_vmm(nonzero_state(), vec![], 0, 1);
+            let mut a = full_vmm(nonzero_state(), vec![], 0, 1);
             let mut s = a.save_vm_state().unwrap();
             let mut dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
             dev.events = bad;
@@ -7278,7 +7306,7 @@ mod tests {
 
     #[test]
     fn restore_vm_state_rejects_invalid_xsave_provenance_before_mutation() {
-        let source = full_vmm(nonzero_state(), vec![], 0, 1);
+        let mut source = full_vmm(nonzero_state(), vec![], 0, 1);
         let mut snapshot = source.save_vm_state().unwrap();
         snapshot.xsave_restore_bv = Some(u64::MAX);
 
@@ -7472,10 +7500,10 @@ mod tests {
 
     #[test]
     fn snapshot_hashing_is_disabled_by_default() {
-        let v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
+        let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         assert!(!v.snapshot_hashing_wired());
         assert!(!has_tag(&v.state_blob().unwrap(), b"VMST"));
-        let v2 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
+        let mut v2 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         assert_eq!(v.state_hash().unwrap(), v2.state_hash().unwrap());
     }
 
@@ -7485,7 +7513,7 @@ mod tests {
         ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings"
     )]
     fn wiring_snapshot_hashing_folds_the_canonical_blob_into_the_hash() {
-        let base = full_vmm(VcpuState::default(), vec![], 0, 1);
+        let mut base = full_vmm(VcpuState::default(), vec![], 0, 1);
         let base_hash_unwired = base.state_hash().unwrap();
 
         let mut on = full_vmm(VcpuState::default(), vec![], 0, 1);
