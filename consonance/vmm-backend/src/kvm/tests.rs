@@ -1057,7 +1057,9 @@ fn snapshot_preparation_requires_interruption_and_clears_its_request() {
     for outcome in 0..3 {
         let run = SynRun::new();
         let mut entered = false;
-        let result = prepare_snapshot_run(run.page(), 7, || {
+        let mut pending = Pending::None;
+        let mut staged = false;
+        let result = prepare_snapshot_run(run.page(), 7, &mut pending, &mut staged, || {
             entered = true;
             assert_eq!(run.page().immediate_exit(), 1);
             // SAFETY: the synthetic run page is owned and initialized for the entire test.
@@ -1070,8 +1072,31 @@ fn snapshot_preparation_requires_interruption_and_clears_its_request() {
         });
         assert!(entered);
         assert_eq!(result.is_ok(), outcome == 0);
+        if outcome == 0 {
+            assert_eq!(result.unwrap(), None);
+        }
         assert_eq!(run.page().immediate_exit(), 0);
     }
+}
+
+#[test]
+fn snapshot_preparation_drains_a_staged_completion_in_the_same_run() {
+    let run = SynRun::new();
+    let mut entries = 0;
+    let mut pending = Pending::None;
+    let mut staged = true;
+    let result = prepare_snapshot_run(run.page(), 9, &mut pending, &mut staged, || {
+        entries += 1;
+        assert_eq!(run.page().immediate_exit(), 1);
+        // SAFETY: the synthetic run page is owned and initialized for the entire test.
+        assert_eq!(unsafe { (*run.run()).cr8 }, 9);
+        Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+    });
+    assert_eq!(entries, 1);
+    assert_eq!(result.unwrap(), None);
+    assert!(!staged);
+    assert_eq!(pending, Pending::None);
+    assert_eq!(run.page().immediate_exit(), 0);
 }
 
 #[test]
@@ -1086,8 +1111,12 @@ fn snapshot_preparation_rejects_run_inputs_before_entering() {
                 _ => (*run.run()).immediate_exit = 1,
             }
         }
+        let mut pending = Pending::None;
+        let mut staged = false;
         assert!(matches!(
-            prepare_snapshot_run(run.page(), 7, || panic!("must not enter with armed inputs")),
+            prepare_snapshot_run(run.page(), 7, &mut pending, &mut staged, || panic!(
+                "must not enter with armed inputs"
+            )),
             Err(BackendError::InvalidState)
         ));
         // SAFETY: the run page remains owned and live after the rejected preparation.
