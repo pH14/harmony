@@ -486,9 +486,9 @@ impl Reporting for MetroidGame {
         let (mut underflows, mut health) = (0_u64, 0_u16);
         let mut maps = MapCoverage::default();
         let mut areas = [[0_u8; 2]; 256];
-        let mut cells = BTreeMap::<(u8, u8, u8), [u64; 5]>::new();
-        let mut kit = BTreeMap::<(u8, u8, u8, u8), [u64; 2]>::new();
-        for (snapshot, selections) in snapshots {
+        let mut cells = BTreeMap::<(u8, u8, u8), [u64; 4]>::new();
+        let mut kit = BTreeMap::<(u8, u8, u8, u8), u64>::new();
+        for (snapshot, _) in snapshots {
             active += 1;
             let Some(snapshot) = snapshot else {
                 missing += 1;
@@ -512,12 +512,11 @@ impl Reporting for MetroidGame {
                 cell[1].max(u64::from(state.health)),
                 cell[2].max(u64::from(state.missiles)),
                 cell[3] | u64::from(state.equipment),
-                cell[4].saturating_add(selections),
             ];
             let held = kit
                 .entry((state.area, state.map_x, state.map_y, state.equipment))
                 .or_default();
-            *held = [held[0] + 1, held[1].saturating_add(selections)];
+            *held += 1;
         }
         Some(serde_json::json!({
             "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
@@ -536,14 +535,14 @@ impl Reporting for MetroidGame {
                 .iter()
                 .map(|((area, x, y), best)| (format!("{area}:{x}:{y}"), *best))
                 .collect::<BTreeMap<_, _>>(),
-            "live_entries_by_map_cell_format": "area:map_x:map_y -> [entries, max health, max missiles, equipment union, selections]",
+            "live_entries_by_map_cell_format": "area:map_x:map_y -> [entries, max health, max missiles, equipment union]",
             "live_entries_by_map_cell_and_equipment": kit
                 .iter()
                 .map(|((area, x, y, equipment), best)| {
                     (format!("{area}:{x}:{y}:{equipment}"), *best)
                 })
                 .collect::<BTreeMap<_, _>>(),
-            "live_entries_by_map_cell_and_equipment_format": "area:map_x:map_y:equipment bits -> [entries, selections]"
+            "live_entries_by_map_cell_and_equipment_format": "area:map_x:map_y:equipment bits -> entries"
         }))
     }
     fn merge_witness_diagnostics(
@@ -1034,11 +1033,11 @@ mod tests {
         assert_eq!(census["active_entries"], 4);
         assert_eq!(census["missing_snapshots"], 1);
         let cells = &census["live_entries_by_map_cell"];
-        assert_eq!(cells["17:3:4"], serde_json::json!([2, 250, 0, 0b0101, 7]));
-        assert_eq!(cells["17:9:1"], serde_json::json!([1, 300, 0, 0b0001, 0]));
+        assert_eq!(cells["17:3:4"], serde_json::json!([2, 250, 0, 0b0101]));
+        assert_eq!(cells["17:9:1"], serde_json::json!([1, 300, 0, 0b0001]));
         let kit = &census["live_entries_by_map_cell_and_equipment"];
-        assert_eq!(kit["17:3:4:1"], serde_json::json!([1, 7]));
-        assert_eq!(kit["17:3:4:4"], serde_json::json!([1, 0]));
+        assert_eq!(kit["17:3:4:1"], serde_json::json!(1));
+        assert_eq!(kit["17:3:4:4"], serde_json::json!(1));
     }
 
     #[test]

@@ -27,7 +27,7 @@ fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
 }
 
 pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
-    type Group: Copy + Ord;
+    type Group: Copy + Ord + Debug;
     fn groups() -> usize;
     fn group(self, depth: usize) -> Self::Group;
     fn slot_capacity() -> usize {
@@ -353,6 +353,8 @@ pub struct SelectorAccounting {
     pub energy_resets: Vec<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub productive_by_mask: BTreeMap<u32, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub draws_by_cell: BTreeMap<String, u64>,
     pub concentration: ConcentrationAccounting,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<RetirementAccounting>,
@@ -629,6 +631,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     deepest_leaf: Vec<(K, usize)>,
     pub selector_policy: SelectorPolicy,
     group_barren: Vec<BTreeMap<K::Group, u64>>,
+    draws_by_cell: BTreeMap<K::Group, u64>,
     action_cost: fn(&A) -> u64,
     live_progress: Option<(K, u64)>,
     frontier_cap: Option<usize>,
@@ -1169,6 +1172,7 @@ where
             deepest_leaf: Vec::new(),
             selector_policy: SelectorPolicy::GroupUniform,
             group_barren: vec![BTreeMap::new(); K::groups().saturating_sub(1)],
+            draws_by_cell: BTreeMap::new(),
             action_cost,
             live_progress: None,
             frontier_cap: None,
@@ -3559,6 +3563,8 @@ where
         if self.persistent_key_counts() {
             self.key_counts.record(key.group(0), self.selected[id]);
         }
+        let cell = key.group(Self::class_depth().saturating_sub(1));
+        *self.draws_by_cell.entry(cell).or_insert(0) += 1;
         if let Some(members) = self
             .classes
             .get_mut(&ProgressOrdered::<K>(key.group(Self::class_depth())))
@@ -3706,6 +3712,11 @@ where
 
     pub fn selector_report(&self) -> SelectorAccounting {
         let mut accounting = self.selector_accounting.clone();
+        accounting.draws_by_cell = self
+            .draws_by_cell
+            .iter()
+            .map(|(cell, draws)| (format!("{cell:?}"), *draws))
+            .collect();
         let preferences = K::preferences().max(1);
         if preferences > 1 {
             let (exclusive, shared) = self.portfolio_holders(preferences);
