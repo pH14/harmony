@@ -34,6 +34,100 @@ parent scheduler identity (`room_cell_uniform_128` against
 five), and the mixture (`alphabet_only` against `energy_splice:6`). The table
 names the candidates; it does not attribute the difference to one of them.
 
+## Continuation slot graph acceptance panels
+
+The slot graph's step ran the checks its plan names: local checks, the SMB
+regression, the quick panel, and the long panel with both mixture manifests.
+Each was run on the step's build and on the previous step's build, so every
+comparison is against the same box on the same day. The milestone records are
+`milestones/quick-{on,off}-20260918.json` and
+`milestones/long-{alpha,splice}-{on,off}-20260918.json`. The run directories
+and their exports stay on ms02 and the laptop.
+
+**SMB regression.** Five seeds times 256 and 2,048 MiB, 24 workers, twenty
+runs. All twenty solve on both builds, and all ten cells match exactly between
+them: same executions, same admitted frames. Super Mario Bros declares no
+preferences, so the graph never activates and the two builds run the same
+search.
+
+**Quick panel.** Three seeds, eight workers, 2,048 MiB, six games. Eleven of
+eighteen cells solve on both builds, on the same games and the same seeds.
+Metroid reaches three areas, one item and three tanks on every seed under
+both. Total panel wall time was 3,402 s with the graph and 3,376 s without,
+and peak resident set size matched within 0.2 GB on every cell. Super Tilt Bro
+and Nova level 1 take 10 to 25 percent more executions to solve with the graph
+on; Mega Man 2 is faster on one seed and slower on two.
+
+**Long panel.** Seeds 3, 4 and 5, four workers, 8,192 MiB, 3,000,000
+executions, run under both `metroid-long-horizon.json` and
+`metroid-long-horizon-energy-splice.json`.
+
+| | graph on | graph off |
+|---|---|---|
+| `alphabet_only`, items per seed | 2, 1, 1 | 1, 1, 1 |
+| `energy_splice:6`, items per seed | 1, 1, 1 | 1, 1, 1 |
+| areas and tanks, both mixtures | 3 and 3 | 3 and 3 |
+| wall, `alphabet_only` | 9,924 s | 9,876 s |
+| wall, `energy_splice:6` | 8,920 s | 8,903 s |
+| peak resident set size | 5.1 and 6.0 GB | 4.9 and 5.8 GB |
+
+Seed 3 under `alphabet_only` took the long beam at execution 2,800,129 with
+the graph on and no second item without it. That is the only milestone
+difference in the twelve cells. Executions to the earlier milestones go both
+ways across seeds. Neither build reaches bombs, Kraid's area or Ridley's area
+on any seed, so both sit at the same distance from
+`metroid-long-horizon-008.json`, which is main on 2026-09-08 and reached
+Ridley's area on all three seeds.
+
+Continuation accounting at 3,000,000 executions from power-on: about 3,000,000
+reservations drawn, 12,400 to 13,800 taken, 12,200 to 13,500 jobs, 1,420 to
+1,780 landed, and 31 to 118 opening a new slot. Every cell ended at the share
+floor. Landing 12 to 13 percent of jobs from power-on compares with 21 percent
+from the rooted start below, and opening a new slot on 0.25 to 0.9 percent
+compares with 2.4 percent there. The mechanism pays more the deeper the run
+already is, which follows from replaying exits between slots that already have
+exits.
+
+## Continuation slot graph on a rooted start
+
+`milestones/contgraph-on-20260918.json` and
+`milestones/contgraph-off-20260918.json` hold the paired panel that measures
+the continuation slot graph. Both arms run 200,000 executions, four workers,
+4,096 MiB, seeds 3 through 8, from a rooted genesis built from the deepest
+milestone input arm D published for that seed. The arms differ by the four
+commits that replace the capped continuation bank with the slot graph and
+nothing else; the control's mixture identifier carries no continuation
+variant, so it runs no continuations at all. The run directories and their
+exports stay on ms02 and the laptop.
+
+Over the six cells the graph drew 1,174,934 reservations, took 7,787, and
+dispatched 7,473 jobs. Of those jobs 1,576 landed at their destination (21%),
+1,201 replaced the occupant, and 177 opened a new slot (2.4%). The longest
+chain was 21. Every cell ended with its share at the floor of 1 in 257 and
+between 7,487 and 13,742 slots queued and never served.
+
+Occupied cells at 200,000 executions:
+
+| seed | graph on | graph off | difference |
+|---|---|---|---|
+| 3 | 23,879 | 30,048 | -20.5% |
+| 4 | 14,748 | 14,697 | +0.3% |
+| 5 | 24,458 | 21,089 | +16.0% |
+| 6 | 19,096 | 12,749 | +49.8% |
+| 7 | 22,681 | 15,094 | +50.3% |
+| 8 | 26,073 | 19,947 | +30.7% |
+
+Beyond the root the graph took an energy tank on seed 5 and Kraid's area on
+seed 8, where the control reached neither; the control took an energy tank on
+seed 3, where the graph did not. Seed 8's new lineage reaches Kraid himself at
+four energy and no missiles.
+
+The share reaching its floor on every cell follows from the feedback rule. The
+barren counter resets only when a job opens a new slot and the share is
+`256 >> min(barren / 6, 8)`, so any mechanism whose jobs open a new slot less
+often than about one in six settles at the floor. This one opens a new slot on
+one job in forty-two and still produces 15% more places than the control.
+
 ## Complete-session design audit
 
 [`transcript-remine-012.json`](transcript-remine-012.json) identifies the complete

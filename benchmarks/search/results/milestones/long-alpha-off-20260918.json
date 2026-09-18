@@ -1,0 +1,118 @@
+{
+ "cells": [
+  {
+   "arm": "metroid-full",
+   "build": "871f05a698b4",
+   "case": "metroid-full",
+   "cell": "metroid-full-s3-w4-m8192",
+   "executions_budget": 3000000,
+   "executions_reached": 3000000,
+   "exit_code": 0,
+   "first_execution": {
+    "brinstar": 1,
+    "energy_tank": 859535,
+    "missile_capacity": 230272,
+    "morph_ball": 273,
+    "norfair": 240939
+   },
+   "key_policy": "metroid_items_tanks_less_boss_award_map_spatial_16_posture_door_area_last_preference_missiles_then_health_ridley_bit1_v11",
+   "memory_mib": 8192,
+   "milestones": {
+    "areas": 3,
+    "gained": true,
+    "items": 1,
+    "tanks": 3
+   },
+   "mixture": "alphabet_only",
+   "root_input": null,
+   "seed": 3,
+   "selector": "hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2,16",
+   "status": "complete",
+   "workers": 4
+  },
+  {
+   "arm": "metroid-full",
+   "build": "871f05a698b4",
+   "case": "metroid-full",
+   "cell": "metroid-full-s4-w4-m8192",
+   "executions_budget": 3000000,
+   "executions_reached": 3000000,
+   "exit_code": 0,
+   "first_execution": {
+    "brinstar": 1,
+    "energy_tank": 984468,
+    "missile_capacity": 203080,
+    "morph_ball": 486,
+    "norfair": 219404
+   },
+   "key_policy": "metroid_items_tanks_less_boss_award_map_spatial_16_posture_door_area_last_preference_missiles_then_health_ridley_bit1_v11",
+   "memory_mib": 8192,
+   "milestones": {
+    "areas": 3,
+    "gained": true,
+    "items": 1,
+    "tanks": 3
+   },
+   "mixture": "alphabet_only",
+   "root_input": null,
+   "seed": 4,
+   "selector": "hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2,16",
+   "status": "complete",
+   "workers": 4
+  },
+  {
+   "arm": "metroid-full",
+   "build": "871f05a698b4",
+   "case": "metroid-full",
+   "cell": "metroid-full-s5-w4-m8192",
+   "executions_budget": 3000000,
+   "executions_reached": 3000000,
+   "exit_code": 0,
+   "first_execution": {
+    "brinstar": 1,
+    "energy_tank": 536586,
+    "missile_capacity": 332488,
+    "morph_ball": 69,
+    "norfair": 342768
+   },
+   "key_policy": "metroid_items_tanks_less_boss_award_map_spatial_16_posture_door_area_last_preference_missiles_then_health_ridley_bit1_v11",
+   "memory_mib": 8192,
+   "milestones": {
+    "areas": 3,
+    "gained": true,
+    "items": 1,
+    "tanks": 3
+   },
+   "mixture": "alphabet_only",
+   "root_input": null,
+   "seed": 5,
+   "selector": "hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2,16",
+   "status": "complete",
+   "workers": 4
+  }
+ ],
+ "format": "harmony-metroid-milestones-v1",
+ "matrix": "long-alpha-off-20260918",
+ "milestones": [
+  "brinstar",
+  "morph_ball",
+  "missile_capacity",
+  "norfair",
+  "energy_tank",
+  "bombs",
+  "long_beam",
+  "ice_beam",
+  "high_jump",
+  "varia_suit",
+  "wave_beam",
+  "screw_attack",
+  "kraid_area",
+  "kraid_defeated",
+  "ridley_area",
+  "ridley_defeated",
+  "tourian",
+  "mother_brain_defeated",
+  "escape_started",
+  "ending"
+ ]
+}
