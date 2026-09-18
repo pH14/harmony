@@ -14,6 +14,26 @@ Git commits by exact source-hash equality against freshly extracted Git trees.
 Build 005 is `02463cae`. Its executable and original source-copy metadata remain
 immutable; later commits are not retroactively attributed to that measured build.
 
+## Metroid milestone tables
+
+[`milestones/`](milestones/) holds one record per Metroid matrix, written by
+[`../milestones.py`](../milestones.py). Each record carries, per cell, the
+build, seed, worker and memory settings, the selector, mixture and key policy,
+the executions reached, the final item, tank and area counts, and the execution
+at which each named milestone was first seen. The source is the last progress
+record of each cell, which is cumulative, so no run is repeated to produce the
+table. `metroid-long-horizon-008.json` is included; it is main on 2026-09-08 at
+3 million executions on seeds 3, 4 and 5.
+
+Reading across the records, main's 2026-09-08 control reached Ridley's area on
+all three seeds at 1.49 to 1.62 million executions and bombs at 0.95 to 1.12
+million. The groundwork arms at 9 million reach bombs at 4.5 to 8.8 million and
+Ridley's area on one cell of twelve. Three settings differ between them: the
+parent scheduler identity (`room_cell_uniform_128` against
+`hierarchy_uniform_128`), the retiring-selector threshold count (four against
+five), and the mixture (`alphabet_only` against `energy_splice:6`). The table
+names the candidates; it does not attribute the difference to one of them.
+
 ## Complete-session design audit
 
 [`transcript-remine-012.json`](transcript-remine-012.json) identifies the complete
