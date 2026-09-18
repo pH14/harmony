@@ -445,7 +445,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let candidates = self.engine.diff_pages(Some(base_id), target_id)?;
         let mut pages = Vec::with_capacity(candidates.len());
         for (gfn, page) in candidates {
-            if self.engine.read_page(base_id, gfn)? != page {
+            if !self.engine.pages_equal(base_id, gfn, target_id, gfn)? {
                 pages.push((gfn, Arc::new(page)));
             }
         }
@@ -1026,10 +1026,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             self.current_image = None;
             self.derive_parent = None;
         }
-        if self.engine.release(store_id).is_err() {
+        let Ok(remaining_refs) = self.engine.release(store_id) else {
             return Err(ControlError::UnknownSnapshot(snap));
+        };
+        if remaining_refs == 0 {
+            self.engine.gc();
         }
-        self.engine.gc();
         Ok(Reply::Unit)
     }
 

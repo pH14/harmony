@@ -193,8 +193,9 @@ pub fn vmm_core::snapshot::SnapshotEngine::materialize(&self, snapshot_store::Sn
 pub fn vmm_core::snapshot::SnapshotEngine::max_chain_len(&self) -> u32
 pub fn vmm_core::snapshot::SnapshotEngine::mem_pages(&self) -> u64
 pub fn vmm_core::snapshot::SnapshotEngine::new(usize) -> vmm_core::snapshot::SnapshotEngine
+pub fn vmm_core::snapshot::SnapshotEngine::pages_equal(&self, snapshot_store::SnapshotId, u64, snapshot_store::SnapshotId, u64) -> core::result::Result<bool, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::read_page(&self, snapshot_store::SnapshotId, u64) -> core::result::Result<[u8; 4096], vmm_core::snapshot::SnapshotError>
-pub fn vmm_core::snapshot::SnapshotEngine::release(&mut self, snapshot_store::SnapshotId) -> core::result::Result<(), vmm_core::snapshot::SnapshotError>
+pub fn vmm_core::snapshot::SnapshotEngine::release(&mut self, snapshot_store::SnapshotId) -> core::result::Result<u64, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::retain(&mut self, snapshot_store::SnapshotId) -> core::result::Result<(), vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::set_max_chain_len(&mut self, u32)
 pub fn vmm_core::snapshot::SnapshotEngine::snapshot_base(&mut self, &[u8], &[u8]) -> core::result::Result<snapshot_store::SnapshotId, vmm_core::snapshot::SnapshotError>

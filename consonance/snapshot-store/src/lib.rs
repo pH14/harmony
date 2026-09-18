@@ -237,6 +237,42 @@ impl Store {
         Ok(())
     }
 
+    pub fn page_ref_eq(
+        &self,
+        a: SnapshotId,
+        a_gfn: u64,
+        b: SnapshotId,
+        b_gfn: u64,
+    ) -> Result<bool, StoreError> {
+        self.live_layer(a)?;
+        self.live_layer(b)?;
+        if a_gfn >= self.cfg.mem_pages {
+            return Err(StoreError::GfnOutOfRange {
+                gfn: a_gfn,
+                mem_pages: self.cfg.mem_pages,
+            });
+        }
+        if b_gfn >= self.cfg.mem_pages {
+            return Err(StoreError::GfnOutOfRange {
+                gfn: b_gfn,
+                mem_pages: self.cfg.mem_pages,
+            });
+        }
+        let a_ref = self.resolve(a.0, a_gfn);
+        if let PageRef::Data(hash) = a_ref
+            && !self.pages.contains_key(&hash)
+        {
+            return Err(StoreError::PageIntegrity { gfn: a_gfn });
+        }
+        let b_ref = self.resolve(b.0, b_gfn);
+        if let PageRef::Data(hash) = b_ref
+            && !self.pages.contains_key(&hash)
+        {
+            return Err(StoreError::PageIntegrity { gfn: b_gfn });
+        }
+        Ok(a_ref == b_ref)
+    }
+
     pub fn diff_pages(
         &self,
         from: Option<SnapshotId>,
@@ -373,10 +409,10 @@ impl Store {
         Ok(())
     }
 
-    pub fn release(&mut self, snap: SnapshotId) -> Result<(), StoreError> {
+    pub fn release(&mut self, snap: SnapshotId) -> Result<u64, StoreError> {
         let layer = self.live_layer_mut(snap)?;
         layer.refcount -= 1;
-        Ok(())
+        Ok(layer.refcount)
     }
 
     pub fn gc(&mut self) -> u64 {
@@ -1124,6 +1160,85 @@ mod tests {
         assert!(matches!(
             clean.vm_state(snap),
             Err(StoreError::VmStateIntegrity)
+        ));
+    }
+
+    #[test]
+    fn skipping_gc_while_a_layer_still_has_refs_frees_the_same_set() {
+        fn live_ids(store: &Store) -> BTreeSet<u64> {
+            store.layers.keys().copied().collect()
+        }
+
+        let mut eager = Store::new(cfg(4));
+        let base = eager.begin_base().seal(vec![]);
+        eager.retain(base).unwrap();
+        let mut child_builder = eager.derive(base).unwrap();
+        child_builder.write_page(0, &[1u8; PAGE_SIZE]).unwrap();
+        let child = child_builder.seal(vec![]);
+        eager.release(base).unwrap();
+        eager.gc();
+        eager.release(base).unwrap();
+        eager.gc();
+        eager.release(child).unwrap();
+        eager.gc();
+
+        let mut lazy = Store::new(cfg(4));
+        let base = lazy.begin_base().seal(vec![]);
+        lazy.retain(base).unwrap();
+        let mut child_builder = lazy.derive(base).unwrap();
+        child_builder.write_page(0, &[1u8; PAGE_SIZE]).unwrap();
+        let child = child_builder.seal(vec![]);
+        if lazy.release(base).unwrap() == 0 {
+            lazy.gc();
+        }
+        if lazy.release(base).unwrap() == 0 {
+            lazy.gc();
+        }
+        if lazy.release(child).unwrap() == 0 {
+            lazy.gc();
+        }
+
+        assert_eq!(live_ids(&eager), live_ids(&lazy));
+        assert!(live_ids(&lazy).is_empty());
+    }
+
+    #[test]
+    fn page_ref_eq_matches_content_across_snapshots() {
+        let mut store = Store::new(cfg(4));
+        let mut base_builder = store.begin_base();
+        base_builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let base = base_builder.seal(vec![]);
+
+        let mut other_builder = store.begin_base();
+        other_builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        other_builder.write_page(1, &[0x22; PAGE_SIZE]).unwrap();
+        let other = other_builder.seal(vec![]);
+
+        assert!(store.page_ref_eq(base, 0, other, 0).unwrap());
+        assert!(!store.page_ref_eq(base, 1, other, 1).unwrap());
+        assert!(store.page_ref_eq(base, 1, other, 2).unwrap());
+    }
+
+    #[test]
+    fn page_ref_eq_reports_integrity_error_for_a_missing_entry() {
+        let mut store = Store::new(cfg(2));
+        let mut base_builder = store.begin_base();
+        base_builder.write_page(0, &[0x33; PAGE_SIZE]).unwrap();
+        let base = base_builder.seal(vec![]);
+        let other = store.begin_base().seal(vec![]);
+
+        let PageRef::Data(hash) = store.resolve(base.0, 0) else {
+            panic!("expected a data page ref");
+        };
+        store.pages.remove(&hash);
+
+        assert!(matches!(
+            store.page_ref_eq(base, 0, other, 0),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+        assert!(matches!(
+            store.page_ref_eq(other, 0, base, 0),
+            Err(StoreError::PageIntegrity { gfn: 0 })
         ));
     }
 }
