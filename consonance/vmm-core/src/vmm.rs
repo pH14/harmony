@@ -6134,7 +6134,12 @@ mod tests {
             self.current_continuations = continuations;
             self.ordinary_runs += 1;
             self.inner.push_exit(exit);
-            self.inner.run()
+            let exit = self.inner.run()?;
+            let mut state = self.inner.save()?;
+            state.regs.rip += 2;
+            state.regs.rax = state.regs.rax.wrapping_add(1);
+            self.inner.set_state(state);
+            Ok(exit)
         }
 
         fn inject(&mut self, event: vmm_backend::Injection) -> vmm_backend::Result<()> {
@@ -6305,38 +6310,84 @@ mod tests {
 
     #[test]
     fn n_exits_then_one_save_prepares_once_and_matches_eager_per_exit_preparation() {
+        let tick = Exit::Arch(X86Exit::Io {
+            port: VIRTUAL_TIME_TICK_PORT,
+            size: 4,
+            write: Some(1),
+        });
         let ordinary = vec![
             apic_read(lapic::APIC_VERSION),
+            tick.clone(),
             apic_read(lapic::APIC_VERSION),
+            tick.clone(),
+            tick.clone(),
             apic_read(lapic::APIC_VERSION),
+            tick,
         ];
         let continuations = vec![Vec::new(); ordinary.len()];
 
         let mut lazy = boxed_continuation_vmm(ordinary.clone(), continuations.clone(), 7);
-        for _ in 0..ordinary.len() {
+        let mut eager = boxed_continuation_vmm(ordinary.clone(), continuations, 7);
+        let mut lazy_states = Vec::new();
+        let mut eager_states = Vec::new();
+
+        for _ in 0..4 {
             assert_eq!(lazy.step().unwrap(), Step::Continued);
         }
         assert_eq!(lazy.backend.preparation_runs, 0);
-        let bytes = lazy.save_vm_state().unwrap().encode().unwrap();
+        let after_out = lazy.save_vm_state().unwrap();
         assert_eq!(
             lazy.backend.preparation_runs, 1,
             "one on-demand save after N exits prepares exactly once"
         );
-        assert_eq!(lazy.save_vm_state().unwrap().encode().unwrap(), bytes);
+        assert_eq!(lazy.save_vm_state().unwrap(), after_out);
         assert_eq!(lazy.backend.preparation_runs, 1);
+        lazy_states.push(after_out.encode().unwrap());
 
-        let mut eager = boxed_continuation_vmm(ordinary, continuations, 7);
-        for _ in 0..eager.backend.ordinary.len() {
+        for _ in 0..4 {
             assert_eq!(eager.step().unwrap(), Step::Continued);
             eager.prepare_snapshot().unwrap();
         }
-        assert_eq!(eager.backend.preparation_runs, 3);
+        assert_eq!(eager.backend.preparation_runs, 4);
+        eager_states.push(eager.save_vm_state().unwrap().encode().unwrap());
         assert_eq!(
-            eager.save_vm_state().unwrap().encode().unwrap(),
-            bytes,
-            "lazy on-demand preparation reproduces the same snapshot bytes as preparing on \
-             every exit"
+            lazy_states, eager_states,
+            "an OUT followed by a save reproduces the eager per-exit snapshot bytes"
         );
+
+        assert_eq!(lazy.step().unwrap(), Step::Continued);
+        lazy.retire_pending_completion().unwrap();
+        lazy.restore_vm_state(&after_out).unwrap();
+        lazy_states.push(lazy.save_vm_state().unwrap().encode().unwrap());
+        assert_eq!(
+            lazy_states[0], lazy_states[1],
+            "an OUT followed by a restore returns to the saved bytes"
+        );
+
+        assert_eq!(eager.step().unwrap(), Step::Continued);
+        eager.prepare_snapshot().unwrap();
+        eager.retire_pending_completion().unwrap();
+        eager.restore_vm_state(&after_out).unwrap();
+        eager_states.push(eager.save_vm_state().unwrap().encode().unwrap());
+
+        for _ in 0..2 {
+            assert_eq!(lazy.step().unwrap(), Step::Continued);
+            assert_eq!(eager.step().unwrap(), Step::Continued);
+            eager.prepare_snapshot().unwrap();
+        }
+        lazy_states.push(lazy.save_vm_state().unwrap().encode().unwrap());
+        eager_states.push(eager.save_vm_state().unwrap().encode().unwrap());
+        assert_eq!(
+            lazy_states, eager_states,
+            "lazy on-demand preparation reproduces the same snapshot bytes as preparing on \
+             every exit across advancing vCPU state, an OUT then save, and an OUT then restore"
+        );
+        assert_ne!(
+            lazy_states[0], lazy_states[2],
+            "the vCPU state advances across exits so the comparison is not vacuous"
+        );
+        assert_eq!(lazy.backend.ordinary_runs, eager.backend.ordinary_runs);
+        assert_eq!(lazy.backend.ordinary_runs, 7);
     }
 
     #[test]

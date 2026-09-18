@@ -1124,3 +1124,71 @@ fn snapshot_preparation_rejects_run_inputs_before_entering() {
         assert_eq!(run.page().immediate_exit(), u8::from(field == 2));
     }
 }
+
+#[test]
+fn acknowledged_out_then_finish_exit_then_restore_drains_with_one_entry() {
+    let s = SynRun::new();
+    set_reason(&s, KVM_EXIT_IO);
+    // SAFETY: union sub-field writes of an owned, zeroed kvm_run.
+    unsafe {
+        let io = &mut (*s.run()).__bindgen_anon_1.io;
+        io.direction = 1;
+        io.size = 4;
+        io.port = 0x0CA3;
+        io.count = 1;
+        io.data_offset = PIO_OFF as u64;
+    }
+    s.set_byte(PIO_OFF, 1);
+
+    let (exit, mut pending) = decode_exit(s.page()).unwrap().unwrap();
+    let mut staged = decoded_exit_stages_completion(&exit, pending);
+    let acknowledged = decoded_exit_is_acknowledged(&exit);
+    assert!(staged);
+    assert!(acknowledged);
+    check_completion_clear(pending, staged, acknowledged, false)
+        .expect("an acknowledged OUT keeps run, state reads, and restore available");
+
+    let mut entries = 0;
+    let continuation = finish_staged_completion(s.page(), &mut pending, &mut staged, || {
+        entries += 1;
+        assert_eq!(s.page().immediate_exit(), 1);
+        Err(std::io::Error::from_raw_os_error(libc::EINTR))
+    })
+    .unwrap();
+    assert_eq!(continuation, None);
+    assert_eq!(entries, 1, "restore retires the OUT with exactly one entry");
+    assert!(!staged);
+    assert_eq!(pending, Pending::None);
+    assert_eq!(s.page().immediate_exit(), 0);
+    check_completion_clear(pending, staged, false, false).unwrap();
+}
+
+#[test]
+fn unacknowledged_mmio_write_blocks_state_reads_before_finish_exit() {
+    let s = SynRun::new();
+    set_reason(&s, KVM_EXIT_MMIO);
+    // SAFETY: union sub-field writes of an owned, zeroed kvm_run.
+    unsafe {
+        let m = &mut (*s.run()).__bindgen_anon_1.mmio;
+        m.phys_addr = 0xFEE0_0080;
+        m.len = 4;
+        m.is_write = 1;
+        m.data[..4].copy_from_slice(&0x20u32.to_le_bytes());
+    }
+
+    let (exit, pending) = decode_exit(s.page()).unwrap().unwrap();
+    let staged = decoded_exit_stages_completion(&exit, pending);
+    let acknowledged = decoded_exit_is_acknowledged(&exit);
+    assert!(staged);
+    assert!(!acknowledged);
+    assert!(matches!(
+        check_completion_clear(pending, staged, acknowledged, false),
+        Err(BackendError::PendingCompletion)
+    ));
+    assert!(matches!(
+        check_completion_clear(pending, staged, acknowledged, true),
+        Err(BackendError::PendingCompletion)
+    ));
+    check_completion_clear(pending, false, false, false)
+        .expect("finish_exit's own entry clears the stage and reopens state reads");
+}

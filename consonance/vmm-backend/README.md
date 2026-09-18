@@ -22,12 +22,14 @@ PIO reads and MSR callbacks eagerly with an immediate-exit entry. A PIO write
 leaves its completion staged and already acknowledged: `run()` accepts it
 without a `finish_exit` call and the next real `KVM_RUN` retires it as a side
 effect, so a write that never precedes a state read costs no extra entry at
-all. `save`, `prepare_snapshot`, and `retire_pending_completion` retire a staged
-write with one immediate-exit entry before reading the vCPU. An MMIO exit stays
-unacknowledged until `finish_exit`, so `run()` rejects it with
-`PendingCompletion` and no guest entry; `finish_exit` completes the MMIO
-callback and returns any further device access required by the same
-instruction. Callers service these continuations until `finish_exit` returns
+all. `save`, `prepare_snapshot`, `restore`, and `retire_pending_completion`
+retire an acknowledged write with one immediate-exit entry before they read or
+replace the vCPU, so a restore never leaves an in-kernel completion to land on
+the restored registers. An MMIO exit stays unacknowledged until `finish_exit`,
+so `run()`, `prepare_snapshot`, and `restore` reject it with
+`PendingCompletion` and no guest entry, and `save` reads the vCPU as it stands;
+`finish_exit` completes the MMIO callback and returns any further device access
+required by the same instruction. Callers service these continuations until `finish_exit` returns
 `None` before exposing a stopped execution. No completion entry executes the
 successor instruction or injects an interrupt. An MSR fault queues its
 exception without executing the handler.

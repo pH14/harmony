@@ -211,6 +211,22 @@ pub(crate) fn decoded_exit_stages_completion(exit: &Exit<X86>, pending: Pending)
     exit.stages_completion() && pending == Pending::None
 }
 
+pub(crate) fn decoded_exit_is_acknowledged(exit: &Exit<X86>) -> bool {
+    matches!(exit, Exit::Arch(X86Exit::Io { write: Some(_), .. }))
+}
+
+pub(crate) fn check_completion_clear(
+    pending: Pending,
+    staged: bool,
+    acknowledged: bool,
+    queued: bool,
+) -> Result<()> {
+    if pending != Pending::None || queued || (staged && !acknowledged) {
+        return Err(BackendError::PendingCompletion);
+    }
+    Ok(())
+}
+
 fn decode_io(page: RunPage) -> Result<(Exit<X86>, Pending)> {
     let (direction, size, port, count, data_offset) = page.io();
     if count != 1 {
