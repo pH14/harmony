@@ -2222,7 +2222,13 @@ where
         let preferences = K::preferences().max(1);
         let members: Vec<(K, u64, u64)> = slot
             .iter()
-            .map(|id| (self.entries[*id].key, self.cost_in_group[*id], self.entries[*id].id))
+            .map(|id| {
+                (
+                    self.entries[*id].key,
+                    self.cost_in_group[*id],
+                    self.entries[*id].id,
+                )
+            })
             .chain(std::iter::once((key, cost_in_group, self.next_entry_id)))
             .collect();
         let candidate = members.len().saturating_sub(1);
@@ -2376,7 +2382,8 @@ where
                     *count = count.saturating_add(1);
                 }
                 let strictly_preferred = displaced.iter().any(|replaced| {
-                    key.preference_cmp(*preference, self.entries[*replaced].key) == Ordering::Greater
+                    key.preference_cmp(*preference, self.entries[*replaced].key)
+                        == Ordering::Greater
                 });
                 if strictly_preferred && *preference < 8 {
                     replacement_preferences |= 1 << preference;
@@ -3107,8 +3114,10 @@ where
                 {
                     Ordering::Greater => true,
                     Ordering::Less => false,
-                    Ordering::Equal => (self.cost_in_group[other], self.entries[other].id)
-                        < (self.cost_in_group[id], self.entries[id].id),
+                    Ordering::Equal => {
+                        (self.cost_in_group[other], self.entries[other].id)
+                            < (self.cost_in_group[id], self.entries[id].id)
+                    }
                 }
             })
             .count();
@@ -4267,7 +4276,12 @@ mod tests {
         assert_eq!(portfolio.exclusive_holders, 2);
         assert_eq!(portfolio.shared_holders, 0);
         assert_eq!(portfolio.selections_by_preference.len(), 2);
-        assert!(portfolio.selections_by_preference.iter().all(|count| *count > 0));
+        assert!(
+            portfolio
+                .selections_by_preference
+                .iter()
+                .all(|count| *count > 0)
+        );
     }
 
     #[test]
@@ -4279,7 +4293,10 @@ mod tests {
                 0,
                 ArchiveCandidate {
                     suffix: vec![1],
-                    key: PreferredKey { slot: 7, quality: 2 },
+                    key: PreferredKey {
+                        slot: 7,
+                        quality: 2,
+                    },
                     milestones: (),
                 },
                 (),
