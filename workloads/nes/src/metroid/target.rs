@@ -528,6 +528,22 @@ impl MetroidTarget {
         self.machine.now().0
     }
 
+    #[must_use]
+    pub fn diagnostic_enemy_slots(&self) -> Vec<(u8, u8, u8, u8, u8)> {
+        (0..ENEMY_SLOTS)
+            .map(|slot| {
+                let base = ENEMY_SLOT_BASE + slot * ENEMY_SLOT_STRIDE;
+                (
+                    self.current_wram[base],
+                    self.current_wram[base + 1],
+                    self.current_wram[base + ENEMY_HIT_POINTS],
+                    self.current_wram[base + ENEMY_SPECIAL_ATTRIBUTES],
+                    self.current_wram[0x30],
+                )
+            })
+            .collect()
+    }
+
     pub fn diagnostic_set_resources(
         &mut self,
         health: u16,

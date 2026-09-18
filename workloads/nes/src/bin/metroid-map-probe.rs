@@ -8,7 +8,7 @@ use nes_workload::{
 };
 use sha2::{Digest, Sha256};
 
-const USAGE: &str = "usage: metroid-map-probe <input.json> [--root ROOT_INPUT.json] \
+const USAGE: &str = "usage: metroid-map-probe <input.json> [--root ROOT_INPUT.json] [--set-resources HEALTH,MISSILES@ACTIONS] \
      [--wram START:LEN] [--terminal-policy IDENTIFIER]";
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -16,11 +16,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input_path = PathBuf::from(args.next().ok_or(USAGE)?);
     let mut terminal_policy = MetroidTerminalPolicy::Legacy;
     let mut root_input = None;
+    let mut intervention: Option<(u16, u8, usize)> = None;
     let mut wram_window = None;
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--root" => {
                 root_input = Some(PathBuf::from(args.next().ok_or(USAGE)?));
+            }
+            "--set-resources" => {
+                let value = args.next().ok_or(USAGE)?;
+                let (resources, after) = value.split_once('@').ok_or(USAGE)?;
+                let (health, missiles) = resources.split_once(',').ok_or(USAGE)?;
+                intervention = Some((health.parse()?, missiles.parse()?, after.parse()?));
             }
             "--wram" => {
                 let value = args.next().ok_or(USAGE)?;
@@ -78,7 +85,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             break;
         }
         target.apply(action);
+        if let Some((health, missiles, after)) = intervention
+            && after == index + 1
+        {
+            target.diagnostic_set_resources(health, missiles)?;
+        }
         let state = target.mechanical_state();
+        let slots: Vec<String> = target
+            .diagnostic_enemy_slots()
+            .iter()
+            .map(|(y, x, hp, attribs, _)| format!("{y:02x}/{x:02x}/{hp:02x}/{attribs:02x}"))
+            .collect();
+        print!("{} ", slots.join(","));
         println!(
             "{index} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             target.frames_clocked(),

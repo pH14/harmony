@@ -76,6 +76,8 @@ impl Default for NamedProgress {
                     "norfair",
                     "kraid_area",
                     "ridley_area",
+                    "kraid_room",
+                    "ridley_room",
                     "tourian",
                     "mother_brain_defeated",
                     "escape_started",
@@ -126,6 +128,13 @@ impl NamedProgress {
         }
         if let Some(area) = area_name(state.area) {
             note(area);
+        }
+        if state.boss_health > 0 {
+            match state.area {
+                0x12 => note("kraid_room"),
+                0x14 => note("ridley_room"),
+                _ => {}
+            }
         }
         if observation.boss_defeats.kraid {
             note("kraid_defeated");
