@@ -18,12 +18,17 @@ an ISA-specific exit enum.
 
 Backends install a guest-visible CPU policy before the first run. Read-style
 exits require the matching completion response. The x86 KVM backend completes
-PIO and MSR callbacks eagerly with an immediate-exit entry. `finish_exit` also
-completes MMIO callbacks and returns any further device access required by the
-same instruction. Callers service these continuations until `finish_exit`
-returns `None` before exposing a stopped execution. No completion entry executes
-the successor instruction or injects an interrupt; snapshot capture performs no
-entry at all. An MSR fault queues its exception without executing the handler.
+PIO reads and MSR callbacks eagerly with an immediate-exit entry. A PIO write
+leaves its completion staged instead: the next real `KVM_RUN`, whether that is
+the following `run()` entry or the merged entry inside `prepare_snapshot`,
+retires it as a side effect, so a write that never precedes a snapshot costs no
+extra entry at all. `finish_exit` also completes MMIO callbacks and returns any
+further device access required by the same instruction. Callers service these
+continuations until `finish_exit` returns `None` before exposing a stopped
+execution. No completion entry executes the successor instruction or injects an
+interrupt; snapshot capture performs no entry beyond the one it needs to retire
+a staged completion. An MSR fault queues its exception without executing the
+handler.
 
 KVM construction enables the exception-payload API so pending exceptions remain
 distinct from injected ones and restores replace the complete exception record.
@@ -73,12 +78,15 @@ before guest RAM or backend state is changed.
 
 `Backend::prepare_snapshot` reconciles backend execution state before a logical
 boundary is published. The default implementation is inert. KVM uses a guarded
-`KVM_RUN` with `immediate_exit` after all userspace I/O completions have retired.
-It requires `EINTR`, refuses staged/queued completions and armed synchronized
-register inputs, and clears its immediate-exit request on success or error.
-It mirrors CR8 from the current CPU state into the shared run page before entry;
-restore also synchronizes that field, preventing a stale run page from replacing
-restored CR8. This path does not inject queued interrupts or count a guest exit.
+`KVM_RUN` with `immediate_exit`. When a completion is already staged (a PIO
+write left pending by the lazy path above), that same guarded entry retires it
+first, so preparation and completion share one `KVM_RUN` instead of two. It
+still refuses a pending read/MSR value awaiting an explicit completion and an
+already-queued completion exit, and requires `EINTR` from the entry it does
+run, clearing its immediate-exit request on success or error. It mirrors CR8
+from the current CPU state into the shared run page before entry; restore also
+synchronizes that field, preventing a stale run page from replacing restored
+CR8. This path does not inject queued interrupts or count a guest exit.
 
 The immediate-exit operation does not guarantee stable XSAVE presence bits,
 either across repeated preparation or subsequent guest entry. Backend snapshots
@@ -87,11 +95,15 @@ x87/SSE restoration metadata for verified controlled guests; generic identity
 remains strict. The reproduced AMD failure and scoped contract are documented under
 [Published XSAVE identity check](../vmm-core/README.md#published-xsave-identity-check). `save()`
 and hashing remain reads; callers prepare a boundary explicitly after restoring
-RAM and CPU state or servicing an exit. Pending CPU events remain present;
-unretired userspace instruction completion is a different condition and must
-not be consumed by preparation. KVM restore also rejects pending read/MSR responses, staged completions and
-queued completion exits before any CPU ioctl or state mutation. A rejected
-restore leaves completion and interrupt state intact. Raw backend save remains
+RAM and CPU state or servicing an exit. Pending CPU events remain present; a
+staged write completion with no value left to supply is a different condition
+and preparation consumes it as part of its own guarded entry, but a pending
+read/MSR response awaiting an explicit value is not consumed and still fails
+preparation closed. KVM restore rejects pending read/MSR responses, staged
+completions and queued completion exits before any CPU ioctl or state
+mutation, since committing a stale exit's completion after restore would apply
+it to the wrong instruction. A rejected restore leaves completion and interrupt
+state intact. Raw backend save remains
 available during exit servicing for CPUID resolution and tracing; it is not
 itself a sealable snapshot boundary. Snapshot publication must enforce the
 completion boundary at the VMM layer. KVM may refresh shared run-page output metadata.
