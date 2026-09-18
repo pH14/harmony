@@ -258,7 +258,19 @@ impl Store {
                 mem_pages: self.cfg.mem_pages,
             });
         }
-        Ok(self.resolve(a.0, a_gfn) == self.resolve(b.0, b_gfn))
+        let a_ref = self.resolve(a.0, a_gfn);
+        if let PageRef::Data(hash) = a_ref
+            && !self.pages.contains_key(&hash)
+        {
+            return Err(StoreError::PageIntegrity { gfn: a_gfn });
+        }
+        let b_ref = self.resolve(b.0, b_gfn);
+        if let PageRef::Data(hash) = b_ref
+            && !self.pages.contains_key(&hash)
+        {
+            return Err(StoreError::PageIntegrity { gfn: b_gfn });
+        }
+        Ok(a_ref == b_ref)
     }
 
     pub fn diff_pages(
@@ -1205,5 +1217,28 @@ mod tests {
         assert!(store.page_ref_eq(base, 0, other, 0).unwrap());
         assert!(!store.page_ref_eq(base, 1, other, 1).unwrap());
         assert!(store.page_ref_eq(base, 1, other, 2).unwrap());
+    }
+
+    #[test]
+    fn page_ref_eq_reports_integrity_error_for_a_missing_entry() {
+        let mut store = Store::new(cfg(2));
+        let mut base_builder = store.begin_base();
+        base_builder.write_page(0, &[0x33; PAGE_SIZE]).unwrap();
+        let base = base_builder.seal(vec![]);
+        let other = store.begin_base().seal(vec![]);
+
+        let PageRef::Data(hash) = store.resolve(base.0, 0) else {
+            panic!("expected a data page ref");
+        };
+        store.pages.remove(&hash);
+
+        assert!(matches!(
+            store.page_ref_eq(base, 0, other, 0),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+        assert!(matches!(
+            store.page_ref_eq(other, 0, base, 0),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
     }
 }
