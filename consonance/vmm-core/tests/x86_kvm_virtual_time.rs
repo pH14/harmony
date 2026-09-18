@@ -134,7 +134,7 @@ fn deliver(
     Ok(())
 }
 
-fn checkpoint_hash(backend: &KvmBackend, checkpoint: VirtualTimeCheckpoint) -> [u8; 32] {
+fn checkpoint_hash(backend: &mut KvmBackend, checkpoint: VirtualTimeCheckpoint) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"x1-live-state-v1\0");
     hasher.update(checkpoint.vns.to_le_bytes());

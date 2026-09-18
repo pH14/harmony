@@ -1194,7 +1194,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         })
     }
 
-    fn save(&self) -> Result<Arm64VcpuState> {
+    fn save(&mut self) -> Result<Arm64VcpuState> {
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }

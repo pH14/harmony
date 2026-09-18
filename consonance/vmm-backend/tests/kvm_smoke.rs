@@ -415,7 +415,7 @@ fn assert_mmio_completion_boundary(
 }
 
 fn endpoint(
-    backend: &KvmBackend,
+    backend: &mut KvmBackend,
     mem: &mut GuestMem,
     operation: MmioOperation,
 ) -> (VcpuState, Vec<u8>) {
@@ -497,7 +497,7 @@ fn serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu() {
                 "{}: successor run",
                 operation.name()
             );
-            endpoints.push(endpoint(&backend, &mut mem, operation));
+            endpoints.push(endpoint(&mut backend, &mut mem, operation));
         }
 
         assert_eq!(
@@ -632,7 +632,7 @@ fn complete_msr(backend: &mut KvmBackend, operation: MsrOperation, response: Msr
 }
 
 fn assert_msr_completion_boundary(
-    backend: &KvmBackend,
+    backend: &mut KvmBackend,
     operation: MsrOperation,
     response: MsrResponse,
     counts: ExitCounts,
@@ -812,7 +812,7 @@ fn serviced_msr_is_exactly_snapshottable_without_guest_execution() {
                             counts,
                         ));
                     } else {
-                        assert_msr_completion_boundary(&backend, operation, response, counts);
+                        assert_msr_completion_boundary(&mut backend, operation, response, counts);
                     }
                 }
                 let counts_before_hlt = backend.exit_counts();

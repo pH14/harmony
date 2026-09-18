@@ -172,7 +172,7 @@ fn allow_fixed_msr_returns_constant() {
 
 #[test]
 fn state_hash_is_pure_and_covers_every_component() {
-    let baseline = {
+    let mut baseline = {
         let mut v = vmm_with(hello_script());
         v.run().unwrap();
         v
@@ -180,14 +180,14 @@ fn state_hash_is_pure_and_covers_every_component() {
     let h0 = baseline.state_hash().unwrap();
     assert_eq!(h0, baseline.state_hash().unwrap());
 
-    let same = {
+    let mut same = {
         let mut v = vmm_with(hello_script());
         v.run().unwrap();
         v
     };
     assert_eq!(h0, same.state_hash().unwrap());
 
-    let diff_serial = {
+    let mut diff_serial = {
         let mut script = uart_init();
         for &b in &HELLO[..HELLO.len() - 1] {
             script.push(io_in(0x3FD));
@@ -204,7 +204,7 @@ fn state_hash_is_pure_and_covers_every_component() {
         "serial divergence breaks the hash"
     );
 
-    let diff_code = {
+    let mut diff_code = {
         let mut script = uart_init();
         for &b in HELLO {
             script.push(io_in(0x3FD));
@@ -221,7 +221,7 @@ fn state_hash_is_pure_and_covers_every_component() {
         "terminal code divergence breaks the hash"
     );
 
-    let diff_mem = {
+    let mut diff_mem = {
         let mut mock = MockBackend::with_exits(hello_script());
         mock.set_policy(&X86Policy {
             cpuid: cpuid_model(),
@@ -240,7 +240,7 @@ fn state_hash_is_pure_and_covers_every_component() {
         "memory divergence breaks the hash"
     );
 
-    let diff_reg = {
+    let mut diff_reg = {
         let mut mock = MockBackend::with_exits(hello_script());
         mock.set_policy(&X86Policy {
             cpuid: cpuid_model(),

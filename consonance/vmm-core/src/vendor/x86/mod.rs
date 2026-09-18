@@ -97,8 +97,8 @@ impl Vendor for X86 {
         vmm.complete_irq_delivery();
     }
 
-    fn guest_interruptible<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Result<bool, VmmError> {
-        Ok(vmm.backend().save()?.regs.rflags & dispatch::RFLAGS_IF != 0)
+    fn guest_interruptible<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<bool, VmmError> {
+        Ok(vmm.backend_mut().save()?.regs.rflags & dispatch::RFLAGS_IF != 0)
     }
 
     fn pending_deliverable_interrupt<B: Backend<A = Self>>(

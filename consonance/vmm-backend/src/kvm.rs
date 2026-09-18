@@ -211,6 +211,43 @@ pub(crate) fn decoded_exit_stages_completion(exit: &Exit<X86>, pending: Pending)
     exit.stages_completion() && pending == Pending::None
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Stage {
+    pub(crate) staged: bool,
+    pub(crate) acknowledged: bool,
+}
+
+impl Stage {
+    pub(crate) const CLEAR: Self = Self {
+        staged: false,
+        acknowledged: false,
+    };
+
+    pub(crate) const AWAITING_FINISH: Self = Self {
+        staged: true,
+        acknowledged: false,
+    };
+
+    pub(crate) fn of(exit: &Exit<X86>, pending: Pending) -> Self {
+        let staged = decoded_exit_stages_completion(exit, pending);
+        Self {
+            staged,
+            acknowledged: staged && matches!(exit, Exit::Arch(X86Exit::Io { write: Some(_), .. })),
+        }
+    }
+
+    pub(crate) fn drains_on_state_read(self) -> bool {
+        self.staged && self.acknowledged
+    }
+}
+
+pub(crate) fn check_completion_clear(pending: Pending, stage: Stage, queued: bool) -> Result<()> {
+    if pending != Pending::None || queued || (stage.staged && !stage.acknowledged) {
+        return Err(BackendError::PendingCompletion);
+    }
+    Ok(())
+}
+
 fn decode_io(page: RunPage) -> Result<(Exit<X86>, Pending)> {
     let (direction, size, port, count, data_offset) = page.io();
     if count != 1 {
@@ -303,7 +340,13 @@ pub(crate) fn apply_complete_ok(page: RunPage, pending: Pending) -> Result<()> {
     }
 }
 
-pub(crate) fn prepare_snapshot_run<F>(page: RunPage, cr8: u64, mut enter: F) -> Result<()>
+pub(crate) fn prepare_snapshot_run<F>(
+    page: RunPage,
+    cr8: u64,
+    pending: &mut Pending,
+    stage: &mut Stage,
+    mut enter: F,
+) -> Result<Option<Exit<X86>>>
 where
     F: FnMut() -> std::result::Result<(), std::io::Error>,
 {
@@ -311,11 +354,14 @@ where
         return Err(BackendError::InvalidState);
     }
     page.set_cr8(cr8);
+    if stage.staged {
+        return finish_staged_completion(page, pending, stage, enter);
+    }
     page.set_immediate_exit(true);
     let result = enter();
     page.set_immediate_exit(false);
     match result {
-        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(None),
         Err(error) => Err(BackendError::Io(error)),
         Ok(()) => Err(BackendError::Internal(
             "snapshot preparation did not return without guest entry",
@@ -326,13 +372,13 @@ where
 pub(crate) fn finish_staged_completion<F>(
     page: RunPage,
     pending: &mut Pending,
-    staged: &mut bool,
+    stage: &mut Stage,
     mut enter: F,
 ) -> Result<Option<Exit<X86>>>
 where
     F: FnMut() -> std::result::Result<(), std::io::Error>,
 {
-    if !*staged {
+    if !stage.staged {
         return Ok(None);
     }
 
@@ -342,7 +388,7 @@ where
 
     match result {
         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
-            *staged = false;
+            *stage = Stage::CLEAR;
             *pending = Pending::None;
             Ok(None)
         }
@@ -364,7 +410,7 @@ where
             }
 
             *pending = next_pending;
-            *staged = decoded_exit_stages_completion(&exit, next_pending);
+            *stage = Stage::of(&exit, next_pending);
             Ok(Some(exit))
         }
     }
@@ -374,13 +420,13 @@ where
 pub(crate) fn retire_staged_completion<F>(
     page: RunPage,
     pending: &mut Pending,
-    staged: &mut bool,
+    stage: &mut Stage,
     enter: F,
 ) -> Result<()>
 where
     F: FnMut() -> std::result::Result<(), std::io::Error>,
 {
-    match finish_staged_completion(page, pending, staged, enter)? {
+    match finish_staged_completion(page, pending, stage, enter)? {
         None => Ok(()),
         Some(_) => Err(BackendError::PendingCompletion),
     }

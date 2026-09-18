@@ -163,7 +163,7 @@ impl Backend for NoDeadlineBackend {
     fn complete_arch(&mut self, completion: X86Completion) -> Result<()> {
         self.0.complete_arch(completion)
     }
-    fn save(&self) -> Result<VcpuState> {
+    fn save(&mut self) -> Result<VcpuState> {
         self.0.save()
     }
     fn restore(&mut self, state: &VcpuState) -> Result<()> {

@@ -292,7 +292,7 @@ mod tests {
         fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
             self.inner.complete_arch(c)
         }
-        fn save(&self) -> vmm_backend::Result<VcpuState> {
+        fn save(&mut self) -> vmm_backend::Result<VcpuState> {
             self.inner.save()
         }
         fn restore(&mut self, state: &VcpuState) -> vmm_backend::Result<()> {

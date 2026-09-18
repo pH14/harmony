@@ -256,7 +256,7 @@ mod tests {
     fn compose_loads_image_places_dtb_and_sets_entry() {
         let ram_len = 16 * 1024 * 1024;
         let backend = MockArm64Backend::new();
-        let vmm = compose(backend, &tiny_image(), "console=ttyAMA0", ram_len).unwrap();
+        let mut vmm = compose(backend, &tiny_image(), "console=ttyAMA0", ram_len).unwrap();
 
         let vcpu = vmm.inspect_vcpu();
         assert_eq!(vcpu.core.pc, RAM_BASE);
@@ -284,7 +284,7 @@ mod tests {
     fn compose_linux_places_external_initramfs_and_describes_exact_range() {
         let ram_len = 16 * 1024 * 1024;
         let initramfs = vec![0xC3; 0x2345];
-        let vmm = compose_inner(
+        let mut vmm = compose_inner(
             MockArm64Backend::new(),
             &tiny_image(),
             Some(&initramfs),

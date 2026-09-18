@@ -202,7 +202,7 @@ fn main() -> std::process::ExitCode {
             session_trace.checkpoint_count(),
             hex(session_trace.digest()),
         );
-        let Some(vmm) = server.vmm() else {
+        let Some(vmm) = server.vmm_mut() else {
             eprintln!("HVF control session {session} ended without a live VM");
             return std::process::ExitCode::FAILURE;
         };

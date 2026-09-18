@@ -202,7 +202,7 @@ fn main() -> std::process::ExitCode {
             session_trace.checkpoint_count(),
             hex(session_trace.digest()),
         );
-        let Some(vmm) = server.vmm() else {
+        let Some(vmm) = server.vmm_mut() else {
             eprintln!("KVM control session {session} ended without a live VM");
             return std::process::ExitCode::FAILURE;
         };
@@ -210,11 +210,13 @@ fn main() -> std::process::ExitCode {
             eprintln!("KVM control session {session} ended without a virtual_time trace");
             return std::process::ExitCode::FAILURE;
         };
+        let portable_events = trace.normalized_log().events.len();
+        let normalized_digest = hex(trace.normalized_digest());
         println!(
             "KVM_CONTROL_SESSION_STATE session={session} portable_events={} \
              normalized_digest={} state_hash={}",
-            trace.normalized_log().events.len(),
-            hex(trace.normalized_digest()),
+            portable_events,
+            normalized_digest,
             hex(match vmm.state_hash() {
                 Ok(hash) => hash,
                 Err(error) => {

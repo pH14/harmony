@@ -358,7 +358,7 @@ fn run_control_child() -> Result<(), String> {
         .map_err(|error| format!("control child portable export failed: {error}"))?;
     if let Some(state_path) = std::env::var_os("HARMONY_CONSONANCE_ORACLE_STATE_BLOB") {
         let state = server
-            .vmm()
+            .vmm_mut()
             .ok_or("control child VM unavailable for state export")?
             .state_blob()
             .map_err(|error| format!("control child raw state export failed: {error}"))?;
@@ -1437,7 +1437,7 @@ fn run() -> Result<(), String> {
             let at = run_to_snapshot(server, profile)?;
             let (events, frame, events_len) = sdk_events_evidence(server, profile)?;
             let state = server
-                .vmm()
+                .vmm_mut()
                 .ok_or("oracle VM unavailable")?
                 .state_blob()
                 .map_err(|error| format!("endpoint state export failed: {error}"))?;
@@ -1671,7 +1671,7 @@ fn run() -> Result<(), String> {
             }
             let expected_artifact = export_snapshot(server, edge.child)?;
             let in_place_state = server
-                .vmm()
+                .vmm_mut()
                 .ok_or("oracle VM unavailable")?
                 .state_blob()
                 .map_err(|error| format!("in-place state export failed: {error}"))?;
@@ -1708,7 +1708,7 @@ fn run() -> Result<(), String> {
                     &mut cold_profile,
                 )?;
                 let fresh_state = cold
-                    .vmm()
+                    .vmm_mut()
                     .ok_or("cold oracle VM unavailable")?
                     .state_blob()
                     .map_err(|error| format!("fresh state export failed: {error}"))?;
@@ -2231,7 +2231,7 @@ fn run() -> Result<(), String> {
         Box::new(move || boot(&factory_kernel, &factory_initramfs));
     let mut server = ControlServer::new(live, factory);
     let fresh_components = server
-        .vmm()
+        .vmm_mut()
         .ok_or("fresh composed VM is unavailable")?
         .state_components();
     #[cfg(target_arch = "x86_64")]
@@ -2313,7 +2313,7 @@ fn run() -> Result<(), String> {
     let fresh_by_label: std::collections::BTreeMap<_, _> =
         fresh_components.iter().copied().collect();
     let used_components = server
-        .vmm()
+        .vmm_mut()
         .ok_or("used setup VM is unavailable")?
         .state_components();
     let changed_components = used_components

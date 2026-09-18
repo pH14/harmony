@@ -358,7 +358,18 @@ impl Backend for MockBackend {
         Ok(())
     }
 
-    fn save(&self) -> Result<VcpuState> {
+    fn prepare_snapshot(&mut self) -> Result<()> {
+        if !self.is_configured() {
+            return Err(BackendError::NotConfigured);
+        }
+        if self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
+        self.completion_staged = false;
+        Ok(())
+    }
+
+    fn save(&mut self) -> Result<VcpuState> {
         Ok(self.state.clone())
     }
 

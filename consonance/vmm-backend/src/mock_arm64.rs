@@ -303,7 +303,7 @@ impl Backend for MockArm64Backend {
         })
     }
 
-    fn save(&self) -> Result<Arm64VcpuState> {
+    fn save(&mut self) -> Result<Arm64VcpuState> {
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }

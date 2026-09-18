@@ -156,7 +156,9 @@ impl Arm64Devices {
 }
 
 impl<B: Backend<A = Arm64>> Vmm<B> {
-    pub fn arm64_architectural_state(&self) -> Result<super::Arm64ArchitecturalState, VmmError> {
+    pub fn arm64_architectural_state(
+        &mut self,
+    ) -> Result<super::Arm64ArchitecturalState, VmmError> {
         let mut vcpu = self.backend.save()?;
         let backend_gic = vcpu.gic.take().map(|gic| records::gic_from_backend(&gic));
         let userspace_gic = self.devices.gic.as_ref().map(gicv3::Gicv3::snapshot);
@@ -172,7 +174,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         Ok(super::Arm64ArchitecturalState { vcpu, gic })
     }
 
-    pub fn canonical_arm64_gic_state(&self) -> Result<Option<gicv3::GicState>, VmmError> {
+    pub fn canonical_arm64_gic_state(&mut self) -> Result<Option<gicv3::GicState>, VmmError> {
         let vcpu = self.backend.save()?;
         match (vcpu.gic.as_ref(), self.devices.gic.as_ref()) {
             (Some(_), Some(_)) => Err(VmmError::ContractViolation(
