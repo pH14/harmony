@@ -266,29 +266,34 @@ Continuation replay carries a better state at one slot to the slots reached
 from it. The archive keeps one edge per ordered pair of depth-0 slots holding
 the cheapest action tail observed between them, together with the donor and
 leaf it came from. When a replacement wins its slot under `preference_cmp`
-with `Ordering::Greater`, that slot is queued. A reservation that takes the
-queue replays one of the slot's exits from its new holder. A result that lands
+with `Ordering::Greater`, that slot is queued at the index of the lowest
+preference it took. A reservation that takes the queue replays one of the
+slot's exits from its new holder, and only when that holder beats every current
+holder of the destination slot under the preference it won. A result that lands
 at the recorded destination and wins there queues that slot in turn; that chain
 is a wave, and `longest_wave` reports the deepest one.
 
-The queue holds one entry per slot, not per edge. Queuing a slot is two map
-operations whatever its degree. A pop takes the front slot's next exit after
-its cursor, advances the cursor and moves the slot to the back, so slots
-rotate and a slot improved on every reservation cannot hold the front. A slot
+The queue holds one entry per slot, not per edge, ordered by preference index
+and then by arrival. Queuing a slot is two map operations whatever its degree,
+and a slot queued again under a lower preference index moves to that tier
+keeping its place within it. A pop takes the next exit after the front slot's
+cursor, advances the cursor and moves the slot to the back of its own tier, so
+slots rotate and a slot improved on every reservation cannot hold the front.
+One pop in four takes the highest tier present instead of the lowest, so a
+preference that improves rarely still propagates. A slot
 whose exits run out leaves the queue, and removing a slot releases its edges,
 its own pending entry, and the pending entry of any source slot it leaves
 without exits.
 
-The share is governed by the same barren feedback the mixture strategies use,
-kept in its own counter so the table, splice and alphabet weights are
-unchanged. With `e = energy_share(continuation_barren, 6)`, a reservation
-attempts a continuation with probability `e / (e + 256)`: one in two when fresh,
-one in 257 after 48 consecutive continuation jobs that opened no new slot. One
-continuation job that opens a new slot resets the counter. The draw is
-`RomuDuoJrRand::with_seed(campaign_seed ^ reservation)`, so replay recomputes it
-at each reconstructed reservation and rejects a record whose `continuation_energy`
-disagrees. A reservation that takes the queue examines at most 8 exits, skipping
-stale parents, prefixes already archived, and parents at the action limit.
+One reservation in four attempts a continuation while the queue is not empty.
+The share is fixed rather than fed back from how the replays are doing: one in
+eight starves the chain and one in two crowds out ordinary exploration. The
+draw is `RomuDuoJrRand::with_seed(campaign_seed ^ reservation)`, so replay
+recomputes it at each reconstructed reservation and rejects a record whose
+`continuation_energy` disagrees; the tier draw salts the same seed. A
+reservation that takes the queue examines at most 8 exits, skipping stale
+parents, prefixes already archived, parents at the action limit, and exits the
+holder does not beat.
 
 The bank exists only for a workload whose key declares a preference. Without
 one nothing is recorded, nothing is charged, and the stream is unchanged.
@@ -301,8 +306,7 @@ are never compared between unrelated locations.
 `ContinuationAccounting` rides every live progress line under `continuations`:
 `edges` and `pending` for the bank's size, `jobs`, `execution_work`, `landed`,
 `replaced` and `opened_new_slot` for what the replays did, `longest_wave`,
-and `barren`, `energy`, `reservations_drawn` and `reservations_taken` for the
-share the feedback settled on.
+and `energy`, `reservations_drawn` and `reservations_taken` for the share.
 
 Search experiments use independent versioned identifiers:
 

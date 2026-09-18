@@ -16,6 +16,7 @@ pub(crate) struct Continuation<K, A> {
     pub leaf: u64,
     pub destination: K,
     pub wave: u32,
+    pub tier: u8,
     pub actions: Vec<A>,
 }
 
@@ -30,6 +31,7 @@ struct Edge<A> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Pending<K> {
     sequence: u64,
+    tier: u8,
     parent: u64,
     wave: u32,
     cursor: Option<K>,
@@ -40,7 +42,7 @@ pub(crate) struct ContinuationBank<K: Ord, A> {
     edges: BTreeMap<(K, K), Edge<A>>,
     exits: BTreeMap<K, BTreeSet<K>>,
     entrances: BTreeMap<K, BTreeSet<K>>,
-    pending: BTreeMap<u64, K>,
+    pending: BTreeMap<(u8, u64), K>,
     pending_slot: BTreeMap<K, Pending<K>>,
     next_sequence: u64,
     memory_bytes: usize,
@@ -131,25 +133,33 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
         }
     }
 
-    pub fn improved(&mut self, slot: K, parent: u64, wave: u32) {
+    pub fn improved(&mut self, slot: K, parent: u64, wave: u32, tier: u8) {
         self.improved_work = self.improved_work.saturating_add(1);
         if !self.exits.contains_key(&slot) {
             return;
         }
         match self.pending_slot.get_mut(&slot) {
             Some(held) => {
+                let previous = (held.tier, held.sequence);
                 held.parent = parent;
                 held.wave = wave;
                 held.cursor = None;
+                if tier < held.tier {
+                    held.tier = tier;
+                    let sequence = held.sequence;
+                    self.pending.remove(&previous);
+                    self.pending.insert((tier, sequence), slot);
+                }
             }
             None => {
                 let sequence = self.next_sequence;
                 self.next_sequence = self.next_sequence.saturating_add(1);
-                self.pending.insert(sequence, slot);
+                self.pending.insert((tier, sequence), slot);
                 self.pending_slot.insert(
                     slot,
                     Pending {
                         sequence,
+                        tier,
                         parent,
                         wave,
                         cursor: None,
@@ -160,11 +170,11 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
         }
     }
 
-    pub fn pop(&mut self) -> Option<Continuation<K, A>> {
+    pub fn pop(&mut self, from_highest_tier: bool) -> Option<Continuation<K, A>> {
         loop {
-            let (sequence, slot) = self.pending.iter().next().map(|(k, v)| (*k, *v))?;
+            let (key, slot) = self.next_pending(from_highest_tier)?;
             let Some(held) = self.pending_slot.get(&slot).copied() else {
-                self.pending.remove(&sequence);
+                self.pending.remove(&key);
                 continue;
             };
             let next = self.exits.get(&slot).and_then(|exits| match held.cursor {
@@ -191,12 +201,13 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
                 leaf: edge.leaf,
                 destination: to,
                 wave: held.wave,
+                tier: held.tier,
                 actions: edge.actions.clone(),
             };
-            self.pending.remove(&sequence);
+            self.pending.remove(&key);
             let refreshed = self.next_sequence;
             self.next_sequence = self.next_sequence.saturating_add(1);
-            self.pending.insert(refreshed, slot);
+            self.pending.insert((held.tier, refreshed), slot);
             if let Some(entry) = self.pending_slot.get_mut(&slot) {
                 entry.sequence = refreshed;
                 entry.cursor = Some(to);
@@ -205,9 +216,21 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
         }
     }
 
+    fn next_pending(&self, from_highest_tier: bool) -> Option<((u8, u64), K)> {
+        if from_highest_tier {
+            let (highest, _) = self.pending.keys().next_back().copied()?;
+            return self
+                .pending
+                .range((highest, 0)..=(highest, u64::MAX))
+                .next()
+                .map(|(key, slot)| (*key, *slot));
+        }
+        self.pending.iter().next().map(|(key, slot)| (*key, *slot))
+    }
+
     fn drop_pending(&mut self, slot: K) {
         if let Some(held) = self.pending_slot.remove(&slot) {
-            self.pending.remove(&held.sequence);
+            self.pending.remove(&(held.tier, held.sequence));
             self.memory_bytes = self.memory_bytes.saturating_sub(Self::pending_bytes());
         }
     }
@@ -273,18 +296,54 @@ mod tests {
         bank.record(1, 2, 20, 21, &[8], 200);
         let charged = bank.memory_bytes();
         assert_eq!(bank.edge_count(), 1);
-        bank.improved(1, 5, 0);
-        let taken = bank.pop().expect("edge");
+        bank.improved(1, 5, 0, 0);
+        let taken = bank.pop(false).expect("edge");
         assert_eq!((taken.donor, taken.leaf, taken.actions), (10, 11, vec![7]));
         bank.record(1, 2, 30, 31, &[9, 9], 50);
         assert_eq!(bank.edge_count(), 1);
         assert_ne!(bank.memory_bytes(), charged);
-        bank.improved(1, 5, 0);
-        let taken = bank.pop().expect("edge");
+        bank.improved(1, 5, 0, 0);
+        let taken = bank.pop(false).expect("edge");
         assert_eq!(
             (taken.donor, taken.leaf, taken.actions),
             (30, 31, vec![9, 9])
         );
+    }
+
+    #[test]
+    fn a_lower_tier_slot_is_served_before_an_older_higher_tier_one() {
+        let mut bank = bank();
+        bank.record(1, 2, 10, 11, &[7], 1);
+        bank.record(4, 5, 14, 15, &[9], 1);
+        bank.improved(4, 200, 0, 1);
+        bank.improved(1, 100, 0, 0);
+        assert_eq!(bank.pop(false).expect("lowest tier first").parent, 100);
+        assert_eq!(bank.pop(false).expect("then the higher tier").parent, 200);
+    }
+
+    #[test]
+    fn the_highest_tier_pop_skips_the_queue_ahead_of_it() {
+        let mut bank = bank();
+        bank.record(1, 2, 10, 11, &[7], 1);
+        bank.record(4, 5, 14, 15, &[9], 1);
+        bank.improved(1, 100, 0, 0);
+        bank.improved(4, 200, 0, 1);
+        let taken = bank.pop(true).expect("highest tier");
+        assert_eq!((taken.parent, taken.tier), (200, 1));
+    }
+
+    #[test]
+    fn a_better_tier_moves_a_queued_slot_forward_and_a_worse_one_leaves_it() {
+        let mut bank = bank();
+        bank.record(1, 2, 10, 11, &[7], 1);
+        bank.record(4, 5, 14, 15, &[9], 1);
+        bank.improved(1, 100, 0, 1);
+        bank.improved(4, 200, 0, 1);
+        bank.improved(4, 300, 0, 0);
+        assert_eq!(bank.queue_len(), 2);
+        assert_eq!(bank.pop(false).expect("promoted slot").parent, 300);
+        bank.improved(1, 400, 0, 2);
+        assert_eq!(bank.pop(false).expect("still its own tier").tier, 1);
     }
 
     #[test]
@@ -303,17 +362,17 @@ mod tests {
         bank.record(1, 2, 10, 11, &[7], 1);
         bank.record(1, 3, 12, 13, &[8], 1);
         bank.record(4, 5, 14, 15, &[9], 1);
-        bank.improved(1, 100, 0);
-        bank.improved(4, 200, 0);
+        bank.improved(1, 100, 0, 0);
+        bank.improved(4, 200, 0, 0);
         let charged = bank.memory_bytes();
-        assert_eq!(bank.pop().expect("first exit").destination, 2);
-        bank.improved(1, 300, 2);
+        assert_eq!(bank.pop(false).expect("first exit").destination, 2);
+        bank.improved(1, 300, 2, 0);
         assert_eq!(bank.pending_count(), 2);
         assert_eq!(bank.queue_len(), 2);
         assert_eq!(bank.memory_bytes(), charged);
-        let next = bank.pop().expect("rotated to the other slot");
+        let next = bank.pop(false).expect("rotated to the other slot");
         assert_eq!((next.destination, next.parent), (5, 200));
-        let back = bank.pop().expect("back to the reset slot");
+        let back = bank.pop(false).expect("back to the reset slot");
         assert_eq!((back.destination, back.parent, back.wave), (2, 300, 2));
     }
 
@@ -322,10 +381,10 @@ mod tests {
         let mut bank = bank();
         bank.record(1, 2, 10, 11, &[7], 1);
         bank.record(1, 3, 12, 13, &[8], 1);
-        bank.improved(1, 100, 0);
-        assert_eq!(bank.pop().expect("first").destination, 2);
-        assert_eq!(bank.pop().expect("second").destination, 3);
-        assert!(bank.pop().is_none());
+        bank.improved(1, 100, 0, 0);
+        assert_eq!(bank.pop(false).expect("first").destination, 2);
+        assert_eq!(bank.pop(false).expect("second").destination, 3);
+        assert!(bank.pop(false).is_none());
         assert_eq!(bank.pending_count(), 0);
         assert_eq!(bank.queue_len(), 0);
     }
@@ -337,13 +396,13 @@ mod tests {
             bank.record(1, to, 10, 11, &[7], 1);
         }
         bank.record(2, 90, 20, 21, &[8], 1);
-        bank.improved(1, 100, 0);
-        bank.improved(2, 200, 0);
+        bank.improved(1, 100, 0, 0);
+        bank.improved(2, 200, 0, 0);
         let mut reached_b = false;
         for _ in 0..4 {
-            let taken = bank.pop().expect("a pending exit");
+            let taken = bank.pop(false).expect("a pending exit");
             reached_b |= taken.destination == 90;
-            bank.improved(1, 100, 0);
+            bank.improved(1, 100, 0, 0);
         }
         assert!(reached_b);
     }
@@ -355,7 +414,7 @@ mod tests {
             bank.record(251, to, 10, 11, &[7], 1);
         }
         for _ in 0..100 {
-            bank.improved(251, 1, 0);
+            bank.improved(251, 1, 0, 0);
         }
         assert_eq!(bank.improved_work(), 100);
     }
@@ -365,30 +424,30 @@ mod tests {
         let mut bank = bank();
         bank.record(1, 2, 10, 11, &[7], 1);
         bank.record(3, 2, 12, 13, &[8], 1);
-        bank.improved(1, 100, 0);
-        bank.improved(3, 300, 0);
+        bank.improved(1, 100, 0, 0);
+        bank.improved(3, 300, 0, 0);
         assert_eq!(bank.pending_count(), 2);
         bank.remove_slot(2);
         assert_eq!(bank.edge_count(), 0);
         assert_eq!(bank.pending_count(), 0);
         assert_eq!(bank.queue_len(), 0);
         assert_eq!(bank.memory_bytes(), 0);
-        assert!(bank.pop().is_none());
+        assert!(bank.pop(false).is_none());
     }
 
     #[test]
     fn deleting_and_recreating_a_slot_leaves_the_queue_the_size_it_reports() {
         let mut bank = bank();
         bank.record(1, 2, 10, 11, &[7], 1);
-        bank.improved(1, 100, 0);
+        bank.improved(1, 100, 0, 0);
         for _ in 0..50 {
             bank.record(3, 4, 12, 13, &[8], 1);
-            bank.improved(3, 300, 0);
+            bank.improved(3, 300, 0, 0);
             bank.remove_slot(3);
         }
         assert_eq!(bank.queue_len(), bank.pending_count());
         assert_eq!(bank.pending_count(), 1);
-        assert_eq!(bank.pop().expect("the untouched slot").parent, 100);
+        assert_eq!(bank.pop(false).expect("the untouched slot").parent, 100);
     }
 
     #[test]
@@ -396,11 +455,11 @@ mod tests {
         let mut bank = bank();
         bank.record(1, 2, 10, 11, &[7], 1);
         bank.record(3, 4, 12, 13, &[8], 1);
-        bank.improved(1, 100, 0);
-        bank.improved(3, 300, 0);
+        bank.improved(1, 100, 0, 0);
+        bank.improved(3, 300, 0, 0);
         bank.retain_slots(&BTreeSet::from([1, 2]));
         assert_eq!(bank.edge_count(), 1);
         assert_eq!(bank.pending_count(), 1);
-        assert_eq!(bank.pop().expect("the live slot").destination, 2);
+        assert_eq!(bank.pop(false).expect("the live slot").destination, 2);
     }
 }

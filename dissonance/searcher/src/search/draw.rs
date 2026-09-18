@@ -13,8 +13,6 @@ pub const SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER: &str =
 
 pub const SUFFIX_COST_BOUND_MAX_ACTIONS: u64 = 3;
 
-pub(crate) const CONTINUATION_ENERGY_SCALE: u64 = 6;
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SuffixShape {
     OneOrTwo,

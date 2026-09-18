@@ -331,7 +331,6 @@ pub struct ContinuationAccounting {
     pub replaced: u64,
     pub opened_new_slot: u64,
     pub longest_wave: u32,
-    pub barren: u64,
     pub energy: u16,
     pub reservations_drawn: u64,
     pub reservations_taken: u64,
@@ -2404,15 +2403,23 @@ where
                 }
             }
         }
-        let improves_a_holder = self.continuations.is_some()
-            && won_preferences.iter().any(|preference| {
+        let queue_tier = won_preferences
+            .iter()
+            .filter(|preference| {
                 slot.iter().any(|held| {
-                    key.preference_cmp(*preference, self.entries[*held].key) == Ordering::Greater
+                    key.preference_cmp(**preference, self.entries[*held].key) == Ordering::Greater
                 })
-            });
+            })
+            .min()
+            .map(|preference| u8::try_from(*preference).unwrap_or(u8::MAX));
         if let Some(bank) = &mut self.continuations {
-            if improves_a_holder {
-                bank.improved(key.group(0), self.next_entry_id, self.continuation_wave);
+            if let Some(tier) = queue_tier {
+                bank.improved(
+                    key.group(0),
+                    self.next_entry_id,
+                    self.continuation_wave,
+                    tier,
+                );
             }
             if let Some(parent) = parent_id {
                 let tail_cost: u64 = suffix.iter().map(|action| (self.action_cost)(action)).sum();
@@ -3359,8 +3366,32 @@ where
         self.continuation_wave = wave;
     }
 
-    pub(crate) fn pop_continuation(&mut self) -> Option<Continuation<K::Group, A>> {
-        self.continuations.as_mut()?.pop()
+    pub(crate) fn pop_continuation(
+        &mut self,
+        from_highest_tier: bool,
+    ) -> Option<Continuation<K::Group, A>> {
+        self.continuations.as_mut()?.pop(from_highest_tier)
+    }
+
+    #[must_use]
+    pub(crate) fn outranks_slot_holders(
+        &self,
+        parent_index: usize,
+        destination: K::Group,
+        tier: u8,
+    ) -> bool {
+        let Some(entry) = self.entries.get(parent_index) else {
+            return false;
+        };
+        let key = entry.key;
+        let preference = usize::from(tier);
+        self.slots.get(&destination).is_none_or(|holders| {
+            holders.iter().all(|held| {
+                self.entries.get(*held).is_none_or(|holder| {
+                    key.preference_cmp(preference, holder.key) == Ordering::Greater
+                })
+            })
+        })
     }
 
     #[must_use]
@@ -3403,14 +3434,8 @@ where
         accounting.longest_wave = accounting.longest_wave.max(wave);
     }
 
-    pub(crate) fn record_continuation_reservation(
-        &mut self,
-        barren: u64,
-        energy: u16,
-        taken: bool,
-    ) {
+    pub(crate) fn record_continuation_reservation(&mut self, energy: u16, taken: bool) {
         let accounting = &mut self.continuation_accounting;
-        accounting.barren = barren;
         accounting.energy = energy;
         accounting.reservations_drawn = accounting.reservations_drawn.saturating_add(1);
         if taken {
@@ -4475,16 +4500,33 @@ mod tests {
         insert_portfolio_at(&mut archive, Some(holder), vec![2], 8, 10, 20)
             .expect("an exit is recorded");
         assert!(
-            archive.pop_continuation().is_none(),
+            archive.pop_continuation(false).is_none(),
             "recording an exit queues nothing on its own"
         );
         insert_portfolio_at(&mut archive, None, vec![3], 7, 5, 200)
             .expect("the health candidate is admitted beside the missile holder");
         assert_eq!(archive.slots.get(&7).map(Vec::len), Some(2));
         assert!(
-            archive.pop_continuation().is_some(),
+            archive.pop_continuation(false).is_some(),
             "improving one preference queues the slot's exits"
         );
+    }
+
+    #[test]
+    fn a_queued_slot_reaches_a_neighbour_only_by_beating_every_holder_there() {
+        let mut archive = portfolio_bank();
+        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
+        insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 20, 20)
+            .expect("the neighbour slot holds a stocked state");
+        let weaker = insert_portfolio_at(&mut archive, None, vec![3], 1, 12, 30)
+            .expect("a candidate that takes a preference in its own slot");
+        assert_eq!(archive.continuation_pending(), 1);
+        let taken = archive.pop_continuation(false).expect("the slot is queued");
+        assert_eq!((taken.destination, taken.tier), (2, 0));
+        assert!(!archive.outranks_slot_holders(weaker, taken.destination, taken.tier));
+        let stronger = insert_portfolio_at(&mut archive, None, vec![4], 1, 30, 40)
+            .expect("a candidate that also beats the neighbour");
+        assert!(archive.outranks_slot_holders(stronger, taken.destination, taken.tier));
     }
 
     #[test]

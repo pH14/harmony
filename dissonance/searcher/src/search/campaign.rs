@@ -21,9 +21,9 @@ use crate::search::archive::{
     retention_policy_identifier, selector_policy_identifier,
 };
 use crate::search::draw::{
-    CONTINUATION_ENERGY_SCALE, DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy,
-    SuffixShape, draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_share,
-    energy_strategy, suffix_shape_from_identifier, suffix_shape_identifier,
+    DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
+    draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
+    suffix_shape_from_identifier, suffix_shape_identifier,
 };
 use crate::search::draw_tables::{
     DEFAULT_DRAW_TABLE_PARAMETERS, DRAW_TABLE_POLICY_FIELD, DrawTableHeader, DrawTables,
@@ -852,6 +852,7 @@ struct ContinuationReservation<G: Workload + ?Sized> {
 
 fn take_continuation<G: Workload + ?Sized>(
     core: &mut CoordinatorCore<G>,
+    from_highest_tier: bool,
     suffix: SuffixShape,
     action_cost: fn(&G::Action) -> u64,
     max_action_cost: u64,
@@ -859,7 +860,7 @@ fn take_continuation<G: Workload + ?Sized>(
     let max_actions = core.max_actions;
     let mut examined = 0_usize;
     while examined < CONTINUATION_EXITS_PER_RESERVATION
-        && let Some(continuation) = core.archive.pop_continuation()
+        && let Some(continuation) = core.archive.pop_continuation(from_highest_tier)
     {
         examined = examined.saturating_add(1);
         let Some(parent_index) = core.archive.index_of_id(continuation.parent) else {
@@ -868,6 +869,13 @@ fn take_continuation<G: Workload + ?Sized>(
         if !core.archive.active[parent_index]
             || core.archive.entries[parent_index].input_len >= max_actions
         {
+            continue;
+        }
+        if !core.archive.outranks_slot_holders(
+            parent_index,
+            continuation.destination,
+            continuation.tier,
+        ) {
             continue;
         }
         let mut actions = continuation.actions;
@@ -896,16 +904,23 @@ fn continuation_attempt<G: Workload + ?Sized>(
     action_cost: fn(&G::Action) -> u64,
     max_action_cost: u64,
 ) -> (Option<u16>, Option<ContinuationReservation<G>>) {
-    let Some(energy) = (core.archive.continuation_pending() > 0)
-        .then(|| continuation_energy_share(core.continuation_barren))
-    else {
+    if core.archive.continuation_pending() == 0 {
         return (None, None);
-    };
-    let takes = draws_continuation(campaign_seed, reservation, energy);
-    core.archive
-        .record_continuation_reservation(core.continuation_barren, energy, takes);
+    }
+    let energy = CONTINUATION_ATTEMPT_SHARE;
+    let takes = draws_continuation(campaign_seed, reservation);
+    core.archive.record_continuation_reservation(energy, takes);
     let taken = takes
-        .then(|| take_continuation(core, suffix, action_cost, max_action_cost))
+        .then(|| {
+            let from_highest_tier = draws_highest_tier(campaign_seed, reservation);
+            take_continuation(
+                core,
+                from_highest_tier,
+                suffix,
+                action_cost,
+                max_action_cost,
+            )
+        })
         .flatten();
     (Some(energy), taken)
 }
@@ -1024,20 +1039,32 @@ fn record_mixture_outcome(
 
 pub(crate) const CONTINUATION_EXITS_PER_RESERVATION: usize = 8;
 
-#[must_use]
-pub(crate) fn continuation_energy_share(barren: u64) -> u16 {
-    u16::try_from(energy_share(barren, CONTINUATION_ENERGY_SCALE)).unwrap_or(u16::MAX)
+pub(crate) const CONTINUATION_ATTEMPT_IN: usize = 4;
+
+pub(crate) const CONTINUATION_HIGHEST_TIER_IN: usize = 4;
+
+const CONTINUATION_ATTEMPT_SHARE: u16 = 64;
+
+const CONTINUATION_TIER_SALT: u64 = 0x9e37_79b9_7f4a_7c15;
+
+fn draws_one_in(seed: u64, one_in: usize) -> bool {
+    let Some(bound) = NonZeroUsize::new(one_in) else {
+        return false;
+    };
+    RomuDuoJrRand::with_seed(seed).below(bound) == 0
 }
 
 #[must_use]
-pub(crate) fn draws_continuation(campaign_seed: u64, reservation: u64, energy: u16) -> bool {
-    let energy = u64::from(energy);
-    let Some(bound) = NonZeroUsize::new(usize::try_from(energy.saturating_add(256)).unwrap_or(512))
-    else {
-        return false;
-    };
-    let draw = RomuDuoJrRand::with_seed(campaign_seed ^ reservation).below(bound);
-    u64::try_from(draw).unwrap_or(u64::MAX) < energy
+pub(crate) fn draws_continuation(campaign_seed: u64, reservation: u64) -> bool {
+    draws_one_in(campaign_seed ^ reservation, CONTINUATION_ATTEMPT_IN)
+}
+
+#[must_use]
+pub(crate) fn draws_highest_tier(campaign_seed: u64, reservation: u64) -> bool {
+    draws_one_in(
+        campaign_seed ^ reservation ^ CONTINUATION_TIER_SALT,
+        CONTINUATION_HIGHEST_TIER_IN,
+    )
 }
 
 fn stop_reservations_after_objective(
@@ -1201,7 +1228,6 @@ pub(crate) struct CoordinatorCore<G: Workload + ?Sized> {
     probe_refused: u64,
     max_actions: usize,
     pub(crate) mixture_energy: MixtureEnergy,
-    pub(crate) continuation_barren: u64,
 }
 
 impl<G: Workload + ?Sized> CoordinatorCore<G> {
@@ -1240,7 +1266,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             probe_refused: 0,
             max_actions,
             mixture_energy: MixtureEnergy::default(),
-            continuation_barren: 0,
         }
     }
 
@@ -3154,11 +3179,6 @@ where
                         );
                     }
                     if isolated_continuation {
-                        core.continuation_barren = if new_slot_descendant {
-                            0
-                        } else {
-                            core.continuation_barren.saturating_add(1)
-                        };
                         let (landed, replaced) = continuation_arrival::<G>(
                             &core.archive,
                             pending_job.continuation_destination,
@@ -4131,11 +4151,6 @@ where
                     let new_slot_descendant = retained_archive_indexes(&core, &decisions)
                         .iter()
                         .any(|id| core.archive.opened_new_slot(*id));
-                    core.continuation_barren = if new_slot_descendant {
-                        0
-                    } else {
-                        core.continuation_barren.saturating_add(1)
-                    };
                     let (landed, replaced) = continuation_arrival::<G>(
                         &core.archive,
                         taken_continuation.as_ref().map(|taken| taken.destination),
@@ -4267,8 +4282,8 @@ mod tests {
         EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LiveCoordinatorProfile,
         MAX_PROGRESS_CURVE_POINTS, Reporting, RomuDuoJrRand, SPLICE_ACTION_CAP, TargetExecution,
         WorkloadPolicies, admission_window_depth, archive_entry_limit_is_valid,
-        compact_progress_curve, completed_results_within_bound, continuation_energy_share,
-        draws_continuation, execution_work_delta, finish_record, is_zero_usize,
+        compact_progress_curve, completed_results_within_bound, draws_continuation,
+        draws_highest_tier, execution_work_delta, finish_record, is_zero_usize,
         live_coordinator_profile, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
         profile_now, progress_checkpoint_due, progress_policy_is_supported,
         record_compaction_elapsed, record_mixture_outcome, replay_campaign_checkpointed,
@@ -4280,9 +4295,7 @@ mod tests {
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
         SelectorPath, SelectorPolicy, entries_by_suffix,
     };
-    use crate::search::draw::{
-        CONTINUATION_ENERGY_SCALE, DrawMixture, MixtureDraw, MixtureEnergy, SuffixShape,
-    };
+    use crate::search::draw::{DrawMixture, MixtureDraw, MixtureEnergy, SuffixShape};
     use crate::search::rollout::{ExecutionDisposition, Outcome, Rollout, execute_suffix};
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
@@ -5914,30 +5927,37 @@ mod tests {
     }
 
     #[test]
-    fn the_continuation_share_starts_at_one_in_two_and_falls_to_the_floor() {
-        assert_eq!(continuation_energy_share(0), 256);
-        let floor = 8 * CONTINUATION_ENERGY_SCALE;
-        assert_eq!(continuation_energy_share(floor), 1);
-        assert_eq!(continuation_energy_share(floor * 4), 1);
-        assert!(continuation_energy_share(CONTINUATION_ENERGY_SCALE) < 256);
+    fn the_continuation_draw_takes_a_fixed_one_reservation_in_four() {
+        let taken = (0..4096)
+            .filter(|reservation| draws_continuation(11, *reservation))
+            .count();
+        assert!(
+            (896..1152).contains(&taken),
+            "one in four of 4096 reservations, got {taken}"
+        );
     }
 
     #[test]
     fn the_continuation_draw_is_seeded_by_the_campaign_and_the_reservation() {
-        let taken = |energy| {
-            (0..512)
-                .filter(|reservation| draws_continuation(11, *reservation, energy))
-                .count()
-        };
-        assert!(taken(256) > 200 && taken(256) < 312);
-        assert!(taken(1) < 12);
-        assert_eq!(
-            draws_continuation(11, 3, 256),
-            draws_continuation(11, 3, 256)
+        assert_eq!(draws_continuation(11, 3), draws_continuation(11, 3));
+        assert!(
+            (0..512).any(|reservation| draws_continuation(11, reservation)
+                != draws_continuation(12, reservation))
+        );
+    }
+
+    #[test]
+    fn the_highest_tier_draw_is_one_pop_in_four_and_independent_of_the_attempt() {
+        let taken = (0..4096)
+            .filter(|reservation| draws_highest_tier(11, *reservation))
+            .count();
+        assert!(
+            (896..1152).contains(&taken),
+            "one in four of 4096 reservations, got {taken}"
         );
         assert!(
-            (0..512).any(|reservation| draws_continuation(11, reservation, 256)
-                != draws_continuation(12, reservation, 256))
+            (0..512).any(|reservation| draws_highest_tier(11, reservation)
+                != draws_continuation(11, reservation))
         );
     }
 
