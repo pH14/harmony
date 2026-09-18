@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("# root {}", path.display());
     }
     println!(
-        "action frames area map_x map_y x y mode pose health equipment missiles capacity tanks bosses"
+        "action frames area map_x map_y x y mode pose health equipment missiles capacity tanks bosses boss_health"
     );
     for (index, action) in input.actions.iter().enumerate() {
         if target.is_dead() || target.is_victory() || target.exit_kind() != ExitKind::Ok {
@@ -80,7 +80,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         target.apply(action);
         let state = target.mechanical_state();
         println!(
-            "{index} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+            "{index} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
             target.frames_clocked(),
             state.area,
             state.map_x,
@@ -94,7 +94,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             state.missiles,
             state.missile_capacity,
             state.energy_tanks,
-            state.bosses
+            state.bosses,
+            state.boss_health
         );
         if let Some((start, len)) = wram_window {
             let wram = target.current_wram();
