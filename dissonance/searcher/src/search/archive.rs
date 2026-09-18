@@ -1545,6 +1545,8 @@ where
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.opened_depths = retain_marked(std::mem::take(&mut self.opened_depths), &keep);
         self.cost_in_group = retain_marked(std::mem::take(&mut self.cost_in_group), &keep);
+        self.replacement_preferences =
+            retain_marked(std::mem::take(&mut self.replacement_preferences), &keep);
         self.lineages = retain_marked(std::mem::take(&mut self.lineages), &keep);
         self.snapshot_selectable =
             retain_marked(std::mem::take(&mut self.snapshot_selectable), &keep);
@@ -2353,12 +2355,14 @@ where
         if self.active_count >= self.max_entries {
             return Err("archive population limit did not retire an entry".into());
         }
-        if let Some(bank) = &mut self.continuations {
-            if displaced.iter().any(|replaced| {
-                (0..K::preferences().max(1)).any(|preference| {
-                    key.preference_cmp(preference, self.entries[*replaced].key) == Ordering::Greater
+        let improves_a_holder = self.continuations.is_some()
+            && won_preferences.iter().any(|preference| {
+                slot.iter().any(|held| {
+                    key.preference_cmp(*preference, self.entries[*held].key) == Ordering::Greater
                 })
-            }) {
+            });
+        if let Some(bank) = &mut self.continuations {
+            if improves_a_holder {
                 bank.improved(key.group(0), self.next_entry_id);
             }
             if let Some(parent) = parent_id {
@@ -3106,6 +3110,7 @@ where
         let better = slot
             .iter()
             .filter(|other| **other != id)
+            .filter(|other| self.entries.get(**other).is_some())
             .filter(|other| {
                 let other = **other;
                 match self.entries[other]
@@ -3144,11 +3149,6 @@ where
         } else {
             None
         };
-        if let Some(preference) = drawn_preference
-            && let Some(count) = self.portfolio_selections.get_mut(preference)
-        {
-            *count = count.saturating_add(1);
-        }
         let preferred = match drawn_preference {
             Some(preference) => {
                 let mut cached: Option<(K::Group, Option<&Vec<usize>>)> = None;
@@ -3417,6 +3417,11 @@ where
             }
             self.rebuild_live_selector_index();
         }
+        if let Some(preference) = draw.preference
+            && let Some(count) = self.portfolio_selections.get_mut(usize::from(preference))
+        {
+            *count = count.saturating_add(1);
+        }
         let was_sampleable = self.entry_unexhausted(id);
         self.selected[id] = self.selected[id].saturating_add(1);
         self.since_retained[id] = self.since_retained[id].saturating_add(1);
@@ -3547,7 +3552,9 @@ where
         let mut shared = 0_u64;
         for slot in self.slots.values() {
             for id in slot {
-                if !self.active.get(*id).copied().unwrap_or(false) {
+                if !self.active.get(*id).copied().unwrap_or(false)
+                    || self.entries.get(*id).is_none()
+                {
                     continue;
                 }
                 let held = (0..preferences)
@@ -4266,9 +4273,10 @@ mod tests {
         insert_portfolio(&mut archive, 2, 5, 200);
         let mut rand = RomuDuoJrRand::with_seed(0x7ea1_f0f0);
         for _ in 0..64 {
-            archive
+            let (id, draw) = archive
                 .select_parent(&mut rand, 64)
                 .expect("draw a portfolio parent");
+            archive.record_selection(id, &draw);
         }
         let report = archive.selector_report();
         let portfolio = report.portfolio.expect("portfolio accounting is reported");
@@ -4282,6 +4290,117 @@ mod tests {
                 .iter()
                 .all(|count| *count > 0)
         );
+    }
+
+    fn insert_portfolio_at(
+        archive: &mut Archive<u8, PortfolioKey, (), ()>,
+        parent: Option<usize>,
+        slot: u8,
+        input: u8,
+        missiles: u8,
+        health: u8,
+    ) -> Option<usize> {
+        archive
+            .insert(
+                parent,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![input],
+                    key: PortfolioKey {
+                        slot,
+                        missiles,
+                        health,
+                    },
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert portfolio entry")
+    }
+
+    #[test]
+    fn taking_one_preference_from_a_surviving_holder_queues_its_exits() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        archive.enable_continuations(true);
+        let holder = insert_portfolio_at(&mut archive, None, 7, 1, 10, 20)
+            .expect("the first holder is kept");
+        insert_portfolio_at(&mut archive, Some(holder), 8, 2, 10, 20).expect("an exit is recorded");
+        assert!(
+            archive.pop_continuation().is_none(),
+            "recording an exit queues nothing on its own"
+        );
+        insert_portfolio_at(&mut archive, None, 7, 3, 5, 200)
+            .expect("the health candidate is admitted beside the missile holder");
+        assert_eq!(archive.slots.get(&7).map(Vec::len), Some(2));
+        assert!(
+            archive.pop_continuation().is_some(),
+            "improving one preference queues the slot's exits"
+        );
+    }
+
+    #[test]
+    fn the_portfolio_report_survives_draining_the_entries() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        insert_portfolio(&mut archive, 1, 10, 20);
+        insert_portfolio(&mut archive, 2, 5, 200);
+        let before = archive.selector_report();
+        let (entries, _) = archive.take_entry_reports_and_snapshots();
+        assert_eq!(entries.len(), 2);
+        let portfolio = before.portfolio.expect("portfolio accounting is reported");
+        assert_eq!(portfolio.exclusive_holders, 2);
+        let after = archive.selector_report();
+        assert_eq!(
+            after
+                .portfolio
+                .expect("portfolio accounting is still reported")
+                .exclusive_holders,
+            0
+        );
+    }
+
+    #[test]
+    fn a_recorded_draw_counts_its_preference_selection() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        insert_portfolio(&mut archive, 1, 10, 20);
+        insert_portfolio(&mut archive, 2, 5, 200);
+        let draw = SelectorDraw {
+            path: SelectorPath::HierarchyWalk,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+            class_rank: None,
+            preference: Some(1),
+        };
+        archive.record_selection(0, &draw);
+        let portfolio = archive
+            .selector_report()
+            .portfolio
+            .expect("portfolio accounting is reported");
+        assert_eq!(portfolio.selections_by_preference, vec![0, 1]);
+    }
+
+    #[test]
+    fn compaction_keeps_each_entry_with_its_replacement_preferences() {
+        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
+        insert_portfolio(&mut archive, 1, 1, 1);
+        let replacing = insert_portfolio(&mut archive, 2, 9, 9).expect("the replacement is kept");
+        assert_ne!(archive.replacement_preferences(replacing), 0);
+        let marked = archive.replacement_preferences(replacing);
+        let before = archive.entries.len();
+        archive
+            .compact_history_for_final_report()
+            .expect("compaction succeeds");
+        assert!(
+            archive.entries.len() < before,
+            "compaction dropped an entry"
+        );
+        let surviving = archive
+            .entries
+            .iter()
+            .position(|entry| entry.key.missiles == 9)
+            .expect("the replacement survives compaction");
+        assert_eq!(archive.replacement_preferences(surviving), marked);
+        assert_eq!(archive.replacement_preferences.len(), archive.entries.len());
     }
 
     #[test]

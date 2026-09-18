@@ -1511,6 +1511,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         campaign_seed: u64,
         materialize_final_artifacts: bool,
     ) -> (G::ArchiveReport, Vec<(u64, G::Snapshot)>) {
+        let selector = self.archive.selector_report();
         let (entries, snapshots) = if materialize_final_artifacts {
             self.archive.take_entry_reports_and_snapshots()
         } else {
@@ -1528,7 +1529,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 terminal_endpoints: self.terminal_endpoints,
                 terminal_objectives: self.terminal_objectives,
                 execution_failures: self.execution_failures,
-                selector: self.archive.selector_report(),
+                selector,
             },
         );
         (report, snapshots)
