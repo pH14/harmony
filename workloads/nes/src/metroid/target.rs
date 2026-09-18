@@ -377,6 +377,16 @@ impl MetroidTarget {
         Self::from_machine(machine, &power_on_walk(), GenesisDepth::NewGame)
     }
 
+    #[must_use]
+    pub fn current_wram(&self) -> &[u8] {
+        &self.current_wram
+    }
+
+    pub fn start_capturing(&mut self) {
+        self.machine.set_video_capture(true);
+        self.machine.set_audio_capture(true);
+    }
+
     pub fn drain_frames(&mut self) -> Vec<VideoFrame> {
         self.machine.take_video_frames()
     }
