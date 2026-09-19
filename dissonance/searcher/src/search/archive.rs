@@ -2347,13 +2347,8 @@ where
         let parent_ctx =
             parent_id.map(|id| (previous.unwrap_or(self.entries[id].key), &self.lineages[id]));
         let key = key.complete(parent_ctx);
-        let depth = Self::coarsest_depth();
-        let mut lineage = match parent_id {
-            Some(id) if self.entries[id].key.group(depth) == key.group(depth) => {
-                self.lineages[id].clone()
-            }
-            _ => K::Lineage::default(),
-        };
+        let mut lineage =
+            parent_id.map_or_else(K::Lineage::default, |id| self.lineages[id].clone());
         K::record(&mut lineage, key);
         let candidate_cost_in_group = self.cost_in_group_of(parent_id, &suffix, key);
         let slot = self.slots.entry(key.group(0)).or_default().clone();
@@ -5741,7 +5736,7 @@ mod tests {
     }
 
     #[test]
-    fn lineage_is_inherited_only_within_the_coarsest_group() {
+    fn lineage_is_inherited_across_classes() {
         let mut archive = Archive::<u8, LineageKey, (), ()>::new(|_| 1);
         let parent = archive
             .insert(
@@ -5785,7 +5780,7 @@ mod tests {
 
         assert_eq!(archive.lineage(parent), Some(&vec![1]));
         assert_eq!(archive.lineage(same), Some(&vec![1, 2]));
-        assert_eq!(archive.lineage(different), Some(&vec![3]));
+        assert_eq!(archive.lineage(different), Some(&vec![1, 3]));
     }
 
     #[test]
