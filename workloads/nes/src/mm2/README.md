@@ -59,6 +59,11 @@ game-world frames after the menu closes. The bank-based decoder is tied to
 the pinned ROM and frame-boundary observation protocol; new cores or ROMs
 must recheck opening, closing, and gameplay traces.
 
+Boss-entry milestones require an active encounter or a confirmed defeat.
+The boss HP byte can remain 28 after Game Over/Continue even though the boss
+phase has reset to zero at the stage start. Stream format v3 records the
+corrected milestone semantics; nonzero boss HP alone is not entry evidence.
+
 The v21 key uses 16-pixel retention slots pooled into 32-pixel cells,
 128-pixel regions, screens, and stages. Weapon/menu rows distinguish local
 endpoints but are pooled at coarser levels. Health and energy prefer

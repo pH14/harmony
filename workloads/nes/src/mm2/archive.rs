@@ -226,11 +226,12 @@ pub struct Mm2ArchiveReport {
 
 #[must_use]
 pub fn milestones(state: Mm2MechanicalState, genesis_weapons: u8) -> Mm2Milestones {
+    let defeated_boss =
+        state.weapons_obtained & !genesis_weapons != 0 || state.boss_phase >= BOSS_PHASE_DEFEATED;
     Mm2Milestones {
         max_screen: state.screen,
-        reached_boss: state.boss_health != 0,
-        defeated_boss: state.weapons_obtained & !genesis_weapons != 0
-            || state.boss_phase >= BOSS_PHASE_DEFEATED,
+        reached_boss: defeated_boss || state.boss_fight_underway(),
+        defeated_boss,
     }
 }
 
@@ -311,6 +312,21 @@ mod tests {
             weapons_obtained: weapons,
             ..Mm2MechanicalState::default()
         }
+    }
+
+    #[test]
+    fn stale_boss_health_after_continue_does_not_report_an_encounter() {
+        let mut restarted = state(128, 28, 255);
+        restarted.stage = 11;
+        restarted.screen = 22;
+        restarted.room = 22;
+        restarted.boss_health = 28;
+        assert!(!milestones(restarted, 255).reached_boss);
+        restarted.boss_phase = 2;
+        assert!(milestones(restarted, 255).reached_boss);
+        restarted.boss_phase = BOSS_PHASE_DEFEATED;
+        restarted.boss_health = 0;
+        assert!(milestones(restarted, 255).reached_boss);
     }
 
     #[test]
