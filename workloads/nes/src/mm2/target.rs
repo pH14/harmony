@@ -1914,6 +1914,92 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the explicitly supplied ROM, QuickNES core, and oracle tape"]
+    fn whole_game_replays_the_preserved_power_on_oracle_without_hidden_work() {
+        use sha2::{Digest, Sha256};
+        use std::{env, fs};
+
+        let rom_path = env::var("HARMONY_MM2_ROM").expect("HARMONY_MM2_ROM");
+        let core_path = env::var("HARMONY_QUICKNES_CORE").expect("HARMONY_QUICKNES_CORE");
+        let input_path = env::var("HARMONY_MM2_ORACLE_INPUT").expect("HARMONY_MM2_ORACLE_INPUT");
+        let rom = fs::read(&rom_path).expect("read MM2 ROM");
+        let input: Mm2Input = serde_json::from_slice(
+            &fs::read(&input_path).expect("read preserved MM2 oracle input"),
+        )
+        .expect("decode preserved MM2 oracle input");
+        let prefix = power_on_walk();
+        assert!(input.actions.len() > prefix.len());
+        assert_eq!(&input.actions[..prefix.len()], prefix.as_slice());
+
+        let core_sha256 = format!(
+            "{:x}",
+            Sha256::digest(fs::read(&core_path).expect("read QuickNES core"))
+        );
+        let mut target =
+            Mm2Target::from_rom_bytes_whole_game(&rom, Path::new(&core_path), &core_sha256)
+                .expect("construct whole-game target");
+        assert!(target.is_whole_game());
+        assert_eq!(target.genesis_prefix(), prefix.as_slice());
+
+        let expected_work = input.actions[prefix.len()..]
+            .iter()
+            .map(|action| u64::from(action.bounded_hold_frames()))
+            .sum::<u64>();
+        let ending_action = 6_697;
+        let mut restored = false;
+        for (absolute_index, action) in input.actions.iter().enumerate().skip(prefix.len()) {
+            target.apply(action);
+            assert_eq!(target.exit_kind(), ExitKind::Ok, "action {absolute_index}");
+            if absolute_index < ending_action {
+                assert!(
+                    !target.ending_reached(),
+                    "ending reported at action {absolute_index}"
+                );
+            }
+            if absolute_index == ending_action {
+                assert!(target.ending_reached(), "ending missing at action {absolute_index}");
+            }
+            if absolute_index == 1_000 {
+                let snapshot = target.snapshot().expect("snapshot at oracle checkpoint");
+                let observation = target.observe();
+                let work = target.execution_work();
+                target
+                    .restore(&snapshot)
+                    .expect("restore oracle checkpoint");
+                assert_eq!(target.observe(), observation);
+                assert_eq!(target.execution_work(), work);
+                restored = true;
+            }
+        }
+        assert!(restored);
+        assert_eq!(target.execution_work(), expected_work);
+        assert!(target.ending_reached());
+        let endpoint = target.mechanical_state();
+        assert_eq!(
+            (
+                endpoint.stage,
+                endpoint.room,
+                endpoint.screen,
+                endpoint.health,
+                endpoint.lives,
+                endpoint.boss_phase,
+                endpoint.weapons_obtained,
+                endpoint.scene,
+            ),
+            (
+                ENDING_SCENE_STAGE,
+                0,
+                0,
+                6,
+                2,
+                ENDING_BOSS_PHASE,
+                u8::MAX,
+                Mm2Scene::Ending,
+            )
+        );
+    }
+
+    #[test]
     fn intermediate_wily5_awards_do_not_trigger_settling_wait() {
         let partial = Mm2MechanicalState {
             stage: WILY5_STAGE,
