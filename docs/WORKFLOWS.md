@@ -160,6 +160,11 @@ and exclude ROMs and emulator binaries.
 each affected workload for the bug its case describes, through Consonance. Each
 scenario job is named after the bug.
 
+A case declares no seed. The run supplies one and the report records it, so a
+case's search budget is what has to reach the bug rather than a committed seed
+landing where it once landed. `ci-pinned-seed-outcome` rejects a literal seed
+value in an expected-output pattern and a case manifest that commits a seed.
+
 There is no fixed-version comparison. A case records which upstream versions the
 bug affects and which fixed it as provenance; it never declares an execution
 arm, a control version or a replay mode over a second build.
@@ -226,6 +231,7 @@ under a `ci-` rule cannot be recorded in the lint baseline.
 | `ci-nes-case-jobs` | The public case roster maps one-to-one onto independent jobs. |
 | `ci-miri-coverage` | Each Analysis workflow lists exactly the Miri targets it owns. |
 | `ci-historical-arms` | No case or matrix restores a fixed-version comparison arm. |
+| `ci-pinned-seed-outcome` | No expected-output pattern pins a literal seed value. |
 
 `scripts/semantic-lints.py` asks a judge what a parser cannot decide. It skips
 without `TYPESAFE_API_KEY`, so deterministic correctness never depends on it. A
@@ -247,6 +253,7 @@ in the semantic baseline.
 | `ci-media-disconnected` | Is claimed video evidence produced from the run's own recorded input? |
 | `ci-fixed-version-direction` | Does documentation direct a fixed-version comparison campaign? |
 | `ci-boundary-contradiction` | Does documentation contradict the component and composition boundaries? |
+| `ci-pinned-seed-outcome` | Does a check require a particular search outcome from one fixed seed? |
 
 ## Verification
 

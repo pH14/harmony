@@ -59,10 +59,9 @@
     "knobs": {}
   },
   "search": {
-    "seed": 1,
-    "workers": 4,
+        "workers": 4,
     "actions": 48,
-    "executions": 5000,
+    "executions": 20000,
     "wall_minutes": 300
   },
   "discovery_mode": "guided",

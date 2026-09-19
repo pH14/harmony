@@ -1210,6 +1210,61 @@ def check_nes_case_coverage(repo_root: Path, tracked: set[str]) -> list[Violatio
     return []
 
 
+# A seed is an input to a sampling procedure, never a property of its result.
+# Any change to the workload, the guest or the searcher moves where a given seed
+# lands, so an expected-output pattern that pins a literal seed value asserts a
+# coincidence and fails on the next unrelated change.
+SEED_ASSERTION_RE = re.compile(
+    r"(?<![\w-])(?:grep|rg|jq\s+-e|assert\w*|expect\w*)(?![\w-])"
+)
+PINNED_SEED_RE = re.compile(
+    r"seed\s*[=:]\s*[\"\']?(?:0x)?[0-9a-fA-F]{2,}(?![\w\-.])", re.IGNORECASE
+)
+
+
+def _seed_assertion_file(path: str) -> bool:
+    if path.startswith(".github/workflows/") and path.endswith(".yml"):
+        return True
+    return path.startswith("scripts/") and path.endswith(".sh")
+
+
+def _statements(lines: list[str]):
+    """Each shell statement with its first line number, backslash joins folded."""
+    buffer, start = "", 0
+    for number, line in enumerate(lines, 1):
+        stripped = line.rstrip("\n")
+        if not buffer:
+            start = number
+        if stripped.rstrip().endswith("\\"):
+            buffer += stripped.rstrip()[:-1]
+            continue
+        yield start, buffer + stripped
+        buffer = ""
+    if buffer:
+        yield start, buffer
+
+
+def check_pinned_seed_outcomes(repo_root: Path, files: list[str]) -> list[Violation]:
+    """No check requires a literal seed to produce a particular result."""
+    violations = []
+    for rel_path in sorted(f for f in files if _seed_assertion_file(f)):
+        abs_path = repo_root / rel_path
+        if not abs_path.is_file():
+            continue
+        try:
+            lines = abs_path.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        for number, statement in _statements(lines):
+            if not SEED_ASSERTION_RE.search(statement):
+                continue
+            match = PINNED_SEED_RE.search(statement)
+            if match:
+                violations.append(Violation("ci-pinned-seed-outcome", rel_path, number,
+                                            match.group(0)))
+    return violations
+
+
 def _nested_keys(value) -> set[str]:
     """Every mapping key in a document, at any depth."""
     keys: set[str] = set()
@@ -1648,6 +1703,7 @@ def main(argv: list[str] | None = None) -> int:
     misplaced_violations = check_misplaced_workload_files(files)
     numbered_violations = check_numbered_names(root, files)
     workflow_violations = check_workflow_rules(root, files)
+    seed_violations = check_pinned_seed_outcomes(root, files)
     github_dir_violations = check_github_dir_files(files)
     golden_violations = check_golden_outputs(root, files)
     docs_violations = check_docs_allowlist(files)
@@ -1655,7 +1711,7 @@ def main(argv: list[str] | None = None) -> int:
     lab_violations = check_lab_notes(files)
 
     # Merge file-level violations into the baseline system.
-    all_file_violations = vocabulary_violations + comment_violations + misplaced_violations + numbered_violations + workflow_violations + github_dir_violations + golden_violations + docs_violations + toplevel_violations
+    all_file_violations = vocabulary_violations + comment_violations + misplaced_violations + numbered_violations + workflow_violations + seed_violations + github_dir_violations + golden_violations + docs_violations + toplevel_violations
     new_file_violations: list[Violation] = []
     for v in all_file_violations:
         key = _violation_key(v)
@@ -1668,7 +1724,7 @@ def main(argv: list[str] | None = None) -> int:
     errors: list[str] = []
 
     if args.update_baseline:
-        ci_errors = [v for v in workflow_violations if v.rule.startswith("ci-")]
+        ci_errors = [v for v in workflow_violations + seed_violations if v.rule.startswith("ci-")]
         if vocabulary_violations:
             print("cannot baseline prohibited vocabulary; rename every occurrence first", file=sys.stderr)
             return 1
@@ -1770,6 +1826,13 @@ def main(argv: list[str] | None = None) -> int:
         "ci-miri-coverage": "The Analysis workflow of each component must list exactly the Miri targets scripts/miri_scope.py registers and scripts/ci_contract.py assigns to it.",
         "ci-analysis-grouping": "Coverage, Miri, mutation testing and proofs belong in the owning component's Analysis workflow, beside each other and apart from its bounded correctness checks.",
         "ci-host-compatibility": f"Harmony is built and tested on every host it supports. '{HOST_COMPATIBILITY_WORKFLOW}' keeps a bounded pull request job for each of {', '.join(HOST_COMPATIBILITY_JOBS)}.",
+        "ci-pinned-seed-outcome": (
+            "A seed is an input to a search, not a property of its result. Match the "
+            "shape of a derived value instead of its literal digits. To show that the "
+            "search reaches a bug, give it a budget that reaches the bug and let the "
+            "run supply its own seed. A fixed seed is evidence only when the check "
+            "compares two runs of the same build against each other."
+        ),
         "ci-historical-arms": "A historical scenario searches the current build alone. Cases carry the affected and fixed versions as provenance, never as an execution arm, a matrix dimension or a replay mode.",
         "lab-notes-not-tracked": (
             "Lab notes, run reports, and campaign results must not be checked "
