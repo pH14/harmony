@@ -423,8 +423,6 @@ const CNTV_CTL_EL0: u64 = sysreg_id(3, 3, 14, 3, 1);
 const CNTV_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 0, 2);
 const MDSCR_EL1: u64 = sysreg_id(2, 0, 0, 2, 2);
 
-const KVM_SCTLR_NONPORTABLE_BITS: u64 = (1 << 57) | (1 << 37);
-const KVM_TCR_NONPORTABLE_BITS: u64 = 1 << 36;
 const CNTV_CTL_WRITABLE_BITS: u64 = 0b11;
 
 const fn dbgbvr(index: u64) -> u64 {
@@ -615,8 +613,6 @@ pub(crate) fn validate_restore_vcpu_state(s: &Arm64VcpuState) -> Result<()> {
         || !s.vtimer.masked
         || s.vtimer.offset != 0
         || s.vtimer.cntv_ctl_el0 & !CNTV_CTL_WRITABLE_BITS != 0
-        || s.sysregs.sctlr_el1 & KVM_SCTLR_NONPORTABLE_BITS != 0
-        || s.sysregs.tcr_el1 & KVM_TCR_NONPORTABLE_BITS != 0
         || s.interrupts.irq
         || s.interrupts.fiq
         || u32::try_from(s.simd_fp.fpsr).is_err()
@@ -701,8 +697,6 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
     for &(id, sel) in SYSREGS {
         *sys_field(&mut s.sysregs, sel) = k.get_one_reg(id)?;
     }
-    s.sysregs.sctlr_el1 &= !KVM_SCTLR_NONPORTABLE_BITS;
-    s.sysregs.tcr_el1 &= !KVM_TCR_NONPORTABLE_BITS;
     for (index, q) in s.simd_fp.q.iter_mut().enumerate() {
         *q = k.get_one_reg128(core_reg_sized(
             KVM_REG_SIZE_U128,
@@ -1702,8 +1696,6 @@ mod tests {
             sysreg_id(3, 3, 14, 3, 2),
             "the architectural CVAL encoding is KVM_REG_ARM_TIMER_CNT"
         );
-        assert_eq!(KVM_SCTLR_NONPORTABLE_BITS, 0x0200_0020_0000_0000);
-        assert_eq!(KVM_TCR_NONPORTABLE_BITS, 0x0000_0010_0000_0000);
         assert_eq!(GICR_ISACTIVER0, 0x1_0300);
 
         assert_eq!(
@@ -2169,6 +2161,9 @@ mod tests {
     fn save_strips_and_restore_rejects_host_pstate_residue() {
         const TCO: u64 = 1 << 25;
         const BTYPE: u64 = 0b11 << 10;
+        const TCR_AS: u64 = 1 << 36;
+        const SCTLR_EPAN: u64 = 1 << 57;
+        const SCTLR_ITFSB: u64 = 1 << 37;
 
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
@@ -2176,16 +2171,20 @@ mod tests {
             .unwrap();
         fake.set_one_reg(core_reg(CORE_SPSR_EL1), 0x6000_0005 | TCO | BTYPE)
             .unwrap();
-        fake.set_one_reg(SYSREGS[0].0, 0x1234 | KVM_SCTLR_NONPORTABLE_BITS)
+        fake.set_one_reg(SYSREGS[0].0, 0x1234 | SCTLR_EPAN | SCTLR_ITFSB)
             .unwrap();
-        fake.set_one_reg(SYSREGS[3].0, 0x5678 | KVM_TCR_NONPORTABLE_BITS)
-            .unwrap();
+        fake.set_one_reg(SYSREGS[3].0, 0x5678 | TCR_AS).unwrap();
 
         let saved = save_vcpu(&fake).unwrap();
         assert_eq!(saved.core.pstate, 0xc5);
         assert_eq!(saved.core.spsr_el1, 0x6000_0005);
-        assert_eq!(saved.sysregs.sctlr_el1, 0x1234);
-        assert_eq!(saved.sysregs.tcr_el1, 0x5678);
+        assert_eq!(saved.sysregs.sctlr_el1, 0x1234 | SCTLR_EPAN | SCTLR_ITFSB);
+        assert_eq!(saved.sysregs.tcr_el1, 0x5678 | TCR_AS);
+
+        let mut destination = FakeKvm::new();
+        destination.vcpu_init().unwrap();
+        restore_vcpu(&mut destination, &saved).unwrap();
+        assert_eq!(save_vcpu(&destination).unwrap().sysregs, saved.sysregs);
 
         let mut noncanonical = saved;
         noncanonical.core.pstate |= TCO | BTYPE;
@@ -2211,10 +2210,6 @@ mod tests {
         timer_offset.vtimer.offset = 1;
         let mut timer_ctl_reserved = valid;
         timer_ctl_reserved.vtimer.cntv_ctl_el0 = 1 << 2;
-        let mut sctlr_residue = valid;
-        sctlr_residue.sysregs.sctlr_el1 = KVM_SCTLR_NONPORTABLE_BITS;
-        let mut tcr_residue = valid;
-        tcr_residue.sysregs.tcr_el1 = KVM_TCR_NONPORTABLE_BITS;
         let mut irq = valid;
         irq.interrupts.irq = true;
         let mut fiq = valid;
@@ -2226,8 +2221,6 @@ mod tests {
             ("host-timer-unmasked", timer_unmasked),
             ("host-timer-offset", timer_offset),
             ("host-timer-control-reserved", timer_ctl_reserved),
-            ("SCTLR substrate residue", sctlr_residue),
-            ("TCR substrate residue", tcr_residue),
             ("pending IRQ", irq),
             ("pending FIQ", fiq),
         ] {
