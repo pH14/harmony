@@ -209,6 +209,7 @@ pub struct Mm2MechanicalState {
     pub wily_machine_shell_broken: bool,
     pub camera_state: u8,
     pub enemy_damage: u8,
+    pub castle_clears: u8,
     pub weapon_energies: [u8; WEAPON_ENERGY_BYTES],
     pub stage_select_cursor: u8,
     pub scene: Mm2Scene,
@@ -335,6 +336,7 @@ fn decode_state_with_expected_stage(
             && (WILY_MACHINE_REFILL_PHASE..BOSS_PHASE_DEFEATED).contains(&boss_phase),
         camera_state: read_byte(wram, CAMERA_STATE)?,
         enemy_damage: 0,
+        castle_clears: 0,
         weapon_energies,
         stage_select_cursor: MENU_CLOSED,
         scene: Mm2Scene::Unknown,
@@ -546,6 +548,7 @@ pub struct Mm2Snapshot {
     trusted_stage: Option<u8>,
     ending_reached: bool,
     final_stage_seen: bool,
+    castle_completion_mask: u8,
 }
 
 impl Mm2Snapshot {
@@ -568,6 +571,7 @@ impl Mm2Snapshot {
             trusted_stage: None,
             ending_reached: false,
             final_stage_seen: false,
+            castle_completion_mask: 0,
         }
     }
 
@@ -623,6 +627,8 @@ pub struct Mm2Target {
     genesis_ending_reached: bool,
     final_stage_seen: bool,
     genesis_final_stage_seen: bool,
+    castle_completion_mask: u8,
+    genesis_castle_completion_mask: u8,
 }
 
 struct RenderTracking {
@@ -633,6 +639,7 @@ struct RenderTracking {
     whole_game: bool,
     final_stage_seen: bool,
     ending_reached: bool,
+    castle_completion_mask: u8,
 }
 
 impl RenderTracking {
@@ -641,6 +648,7 @@ impl RenderTracking {
         prior_state: Mm2MechanicalState,
         expected_stage: Option<u8>,
         whole_game: bool,
+        castle_completion_mask: u8,
     ) -> Self {
         Self {
             prior_wram,
@@ -650,6 +658,7 @@ impl RenderTracking {
             whole_game,
             final_stage_seen: final_completion_marker(prior_state),
             ending_reached: prior_state.scene == Mm2Scene::Ending,
+            castle_completion_mask,
         }
     }
 
@@ -662,10 +671,17 @@ impl RenderTracking {
             self.ending_reached = self.ending_reached
                 || ending_transition_seen(self.prior_state, state)
                 || (self.final_stage_seen && ending_scene_marker(state));
+            if progress_reset(self.prior_state, state) {
+                self.castle_completion_mask = 0;
+            }
+            if let Some(bit) = castle_clear_bit(self.prior_state, state) {
+                self.castle_completion_mask |= bit;
+            }
             if !is_wily5_stage_borrow(&wram, self.expected_stage) {
                 self.expected_stage = Some(state.stage);
             }
             state.scene = scene_for_wram(self.ending_reached);
+            state.castle_clears = castle_clear_count(self.castle_completion_mask);
             state.stage_select_cursor = if state.scene == Mm2Scene::StageSelect {
                 state.stage
             } else {
@@ -715,6 +731,7 @@ const MENU_MODE_STAGE_SELECT: u8 = 0x90;
 const FINAL_STAGE: u8 = MM2_LAST_WILY_STAGE + 1;
 const ENDING_SCENE_STAGE: u8 = 5;
 const ENDING_BOSS_PHASE: u8 = 0xff;
+const CASTLE_COMPLETION_MASK: u8 = 0x3f;
 const STAGE_SELECT_WALK_ROUNDS: usize = 16;
 
 fn at_stage_select(wram: &[u8]) -> bool {
@@ -731,6 +748,28 @@ fn final_completion_marker(state: Mm2MechanicalState) -> bool {
     state.stage == FINAL_STAGE
         && state.boss_phase == ENDING_BOSS_PHASE
         && state.weapons_obtained == u8::MAX
+}
+
+fn castle_clear_bit(previous: Mm2MechanicalState, state: Mm2MechanicalState) -> Option<u8> {
+    if (MM2_FIRST_WILY_STAGE..=MM2_LAST_WILY_STAGE).contains(&previous.stage)
+        && state.stage == previous.stage.saturating_add(1)
+        && previous.boss_phase == ENDING_BOSS_PHASE
+    {
+        Some(1 << (previous.stage - MM2_FIRST_WILY_STAGE))
+    } else {
+        None
+    }
+}
+
+fn progress_reset(previous: Mm2MechanicalState, state: Mm2MechanicalState) -> bool {
+    previous.weapons_obtained != 0 && state.weapons_obtained == 0
+}
+
+fn castle_clear_count(mask: u8) -> u8 {
+    (mask & CASTLE_COMPLETION_MASK)
+        .count_ones()
+        .try_into()
+        .unwrap_or(u8::MAX)
 }
 
 fn ending_transition_seen(previous: Mm2MechanicalState, state: Mm2MechanicalState) -> bool {
@@ -920,6 +959,8 @@ impl Mm2Target {
             genesis_ending_reached: false,
             final_stage_seen: false,
             genesis_final_stage_seen: false,
+            castle_completion_mask: 0,
+            genesis_castle_completion_mask: 0,
         })
     }
 
@@ -961,6 +1002,8 @@ impl Mm2Target {
             genesis_ending_reached: false,
             final_stage_seen: false,
             genesis_final_stage_seen: false,
+            castle_completion_mask: 0,
+            genesis_castle_completion_mask: 0,
         })
     }
 
@@ -998,6 +1041,7 @@ impl Mm2Target {
         self.genesis_trusted_stage = self.trusted_stage;
         self.genesis_ending_reached = self.ending_reached;
         self.genesis_final_stage_seen = self.final_stage_seen;
+        self.genesis_castle_completion_mask = self.castle_completion_mask;
         self.genesis_prefix.extend_from_slice(actions);
         self.action_observations = vec![self.observation.clone()];
         self.execution_work = 0;
@@ -1072,6 +1116,11 @@ impl Mm2Target {
     #[must_use]
     pub fn ending_reached(&self) -> bool {
         self.ending_reached
+    }
+
+    #[must_use]
+    pub fn castle_clears(&self) -> u8 {
+        castle_clear_count(self.castle_completion_mask)
     }
 
     #[must_use]
@@ -1150,6 +1199,7 @@ impl Mm2Target {
                     Some(self.genesis_observation.decoded.stage)
                 },
                 self.whole_game,
+                self.castle_completion_mask,
             );
             for action in &input.actions {
                 self.render_action(
@@ -1213,6 +1263,7 @@ impl Mm2Target {
                 self.trusted_stage = tracking.expected_stage;
                 self.final_stage_seen = tracking.final_stage_seen;
                 self.ending_reached = tracking.ending_reached;
+                self.castle_completion_mask = tracking.castle_completion_mask;
             }
             self.observation.frame_count = self.observation.frame_count.saturating_add(1);
             let frame = self
@@ -1335,6 +1386,7 @@ impl Target for Mm2Target {
         self.trusted_stage = self.genesis_trusted_stage;
         self.ending_reached = self.genesis_ending_reached;
         self.final_stage_seen = self.genesis_final_stage_seen;
+        self.castle_completion_mask = self.genesis_castle_completion_mask;
     }
 
     fn apply(&mut self, action: &Self::Action) {
@@ -1410,10 +1462,17 @@ impl Target for Mm2Target {
                 self.ending_reached = self.ending_reached
                     || ending_transition_seen(previous, state)
                     || (self.final_stage_seen && ending_scene_marker(state));
+                if progress_reset(previous, state) {
+                    self.castle_completion_mask = 0;
+                }
+                if let Some(bit) = castle_clear_bit(previous, state) {
+                    self.castle_completion_mask |= bit;
+                }
                 if !is_wily5_stage_borrow(wram, self.trusted_stage) {
                     self.trusted_stage = Some(state.stage);
                 }
                 state.scene = scene_for_wram(self.ending_reached);
+                state.castle_clears = castle_clear_count(self.castle_completion_mask);
                 state.stage_select_cursor = if state.scene == Mm2Scene::StageSelect {
                     state.stage
                 } else {
@@ -1460,6 +1519,7 @@ impl Target for Mm2Target {
             let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
                 || preference_tuple(state) != preference_tuple(prior_state)
                 || ablation_identity_changed(state, prior_state)
+                || state.castle_clears != prior_state.castle_clears
                 || dead != died;
             died = dead;
             if boundary {
@@ -1503,6 +1563,7 @@ impl Target for Mm2Target {
                     self.trusted_stage = Some(endpoint_state.stage);
                 }
                 endpoint_state.scene = scene_for_wram(self.ending_reached);
+                endpoint_state.castle_clears = castle_clear_count(self.castle_completion_mask);
                 endpoint_state.stage_select_cursor =
                     if endpoint_state.scene == Mm2Scene::StageSelect {
                         endpoint_state.stage
@@ -1566,6 +1627,7 @@ impl Target for Mm2Target {
             trusted_stage: self.trusted_stage,
             ending_reached: self.ending_reached,
             final_stage_seen: self.final_stage_seen,
+            castle_completion_mask: self.castle_completion_mask,
         })
     }
 
@@ -1589,6 +1651,7 @@ impl Target for Mm2Target {
         self.trusted_stage = snapshot.trusted_stage;
         self.ending_reached = snapshot.ending_reached;
         self.final_stage_seen = snapshot.final_stage_seen;
+        self.castle_completion_mask = snapshot.castle_completion_mask;
         Ok(())
     }
 }
@@ -1908,6 +1971,76 @@ mod tests {
     }
 
     #[test]
+    fn castle_completion_uses_each_source_stage_transition_once() {
+        let mut mask = 0;
+        for stage in MM2_FIRST_WILY_STAGE..=MM2_LAST_WILY_STAGE {
+            let previous = Mm2MechanicalState {
+                stage,
+                boss_phase: ENDING_BOSS_PHASE,
+                ..Mm2MechanicalState::default()
+            };
+            let next = Mm2MechanicalState {
+                stage: stage + 1,
+                ..previous
+            };
+            let bit = castle_clear_bit(previous, next).expect("Wily clear transition");
+            mask |= bit;
+            mask |= bit;
+            assert_eq!(castle_clear_count(mask), stage - MM2_FIRST_WILY_STAGE + 1);
+        }
+        assert_eq!(mask, CASTLE_COMPLETION_MASK);
+
+        let clear = Mm2MechanicalState {
+            stage: MM2_FIRST_WILY_STAGE,
+            boss_phase: ENDING_BOSS_PHASE,
+            ..Mm2MechanicalState::default()
+        };
+        assert_eq!(castle_clear_bit(clear, clear), None);
+        assert_eq!(
+            castle_clear_bit(
+                Mm2MechanicalState {
+                    boss_phase: BOSS_PHASE_DEFEATED,
+                    ..clear
+                },
+                Mm2MechanicalState {
+                    stage: MM2_FIRST_WILY_STAGE + 1,
+                    ..clear
+                },
+            ),
+            None
+        );
+        assert_eq!(castle_clear_count(0x3f), 6);
+        assert_eq!(castle_clear_count(0xff), 6);
+        assert_eq!(castle_clear_count(1 | 1), 1);
+    }
+
+    #[test]
+    fn castle_completion_resets_only_when_the_dedicated_weapon_flag_is_cleared() {
+        let progressed = Mm2MechanicalState {
+            weapons_obtained: 0x20,
+            ..Mm2MechanicalState::default()
+        };
+        assert!(progress_reset(
+            progressed,
+            Mm2MechanicalState {
+                weapons_obtained: 0,
+                ..progressed
+            }
+        ));
+        assert!(!progress_reset(
+            progressed,
+            Mm2MechanicalState {
+                weapons_obtained: 0x20,
+                ..progressed
+            }
+        ));
+        assert!(!progress_reset(
+            Mm2MechanicalState::default(),
+            Mm2MechanicalState::default()
+        ));
+    }
+
+    #[test]
     fn whole_game_scene_stays_unknown_without_a_trusted_lifecycle_event() {
         assert_eq!(scene_for_wram(false), Mm2Scene::Unknown);
         assert_eq!(scene_for_wram(true), Mm2Scene::Ending);
@@ -1947,9 +2080,20 @@ mod tests {
             .sum::<u64>();
         let ending_action = 6_697;
         let mut restored = false;
+        let mut observed_clear_counts = Vec::new();
         for (absolute_index, action) in input.actions.iter().enumerate().skip(prefix.len()) {
+            let previous_clears = target.castle_clears();
             target.apply(action);
             assert_eq!(target.exit_kind(), ExitKind::Ok, "action {absolute_index}");
+            let current_clears = target.castle_clears();
+            assert!(
+                current_clears == previous_clears
+                    || current_clears == previous_clears.saturating_add(1),
+                "unexpected castle clear jump at action {absolute_index}: {previous_clears} -> {current_clears}"
+            );
+            if current_clears > previous_clears {
+                observed_clear_counts.push(current_clears);
+            }
             if absolute_index < ending_action {
                 assert!(
                     !target.ending_reached(),
@@ -1966,17 +2110,21 @@ mod tests {
                 let snapshot = target.snapshot().expect("snapshot at oracle checkpoint");
                 let observation = target.observe();
                 let work = target.execution_work();
+                let castle_clears = target.castle_clears();
                 target
                     .restore(&snapshot)
                     .expect("restore oracle checkpoint");
                 assert_eq!(target.observe(), observation);
                 assert_eq!(target.execution_work(), work);
+                assert_eq!(target.castle_clears(), castle_clears);
+                assert_eq!(target.mechanical_state().castle_clears, castle_clears);
                 restored = true;
             }
         }
         assert!(restored);
         assert_eq!(target.execution_work(), expected_work);
         assert!(target.ending_reached());
+        assert_eq!(observed_clear_counts, vec![1, 2, 3, 4, 5, 6]);
         let endpoint = target.mechanical_state();
         assert_eq!(
             (
@@ -2000,6 +2148,7 @@ mod tests {
                 Mm2Scene::Ending,
             )
         );
+        assert_eq!(endpoint.castle_clears, 6);
         let raw = target.machine.read_wram().expect("read ending RAM");
         assert_eq!(raw[STAGE], ENDING_SCENE_STAGE);
         assert_eq!(raw[BOSS_PHASE], ENDING_BOSS_PHASE);
