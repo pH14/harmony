@@ -135,6 +135,12 @@ impl ArchiveKey for MetroidArchiveKey {
     type Lineage = MetroidLineage;
 
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self {
+        if self.boss_health == 0 {
+            return Self {
+                boss_damage: parent.map_or(0, |(key, _)| key.boss_damage),
+                ..self
+            };
+        }
         let highest = parent
             .map_or(0, |(_, lineage)| lineage.boss_health_highest)
             .max(self.boss_health);
@@ -503,6 +509,39 @@ mod tests {
             Ordering::Greater
         );
         assert_ne!(hurt.group(0), arriving.group(0));
+    }
+
+    #[test]
+    fn an_absent_boss_reading_carries_the_parent_damage() {
+        let lineage = MetroidLineage {
+            boss_health_highest: 96,
+        };
+        let parent = MetroidArchiveKey {
+            boss_damage: 6,
+            boss_health: 72,
+            ..MetroidArchiveKey::default()
+        };
+        let flash = MetroidArchiveKey {
+            boss_health: 0,
+            ..MetroidArchiveKey::default()
+        }
+        .complete(Some((parent, &lineage)));
+        assert_eq!(flash.boss_damage, 6);
+        assert_eq!(
+            MetroidArchiveKey {
+                boss_health: 0,
+                ..MetroidArchiveKey::default()
+            }
+            .complete(None)
+            .boss_damage,
+            0
+        );
+        let back = MetroidArchiveKey {
+            boss_health: 96,
+            ..MetroidArchiveKey::default()
+        }
+        .complete(Some((flash, &lineage)));
+        assert_eq!(back.boss_damage, 0);
     }
 
     #[test]
