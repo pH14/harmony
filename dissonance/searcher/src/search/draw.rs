@@ -22,6 +22,10 @@ pub enum SuffixShape {
 }
 
 impl SuffixShape {
+    pub(crate) const fn adaptive_horizon(self) -> bool {
+        matches!(self, Self::OneToSix)
+    }
+
     pub(crate) fn bound_cost<A>(
         self,
         suffix: &mut Vec<A>,

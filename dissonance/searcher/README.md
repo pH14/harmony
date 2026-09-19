@@ -200,6 +200,24 @@ generic policy through a two-worker campaign with short and long contexts,
 ordered feedback, exact replay, and planted draw, checkpoint, and remaining
 work changes that replay rejects. It does not measure a workload speedup.
 
+## Adaptive barren horizons
+
+Ordinary `OneToSix` suffixes extend after barren selection feedback. The
+searcher uses the selected entry's existing `since_retained` streak to append
+that many deterministic alphabet actions to the ordinary suffix, capped by the
+remaining action-limit capacity. The archive representative stays unchanged;
+the appended actions execute and count as ordinary logical work, and replay
+reconstructs them from the recorded streak. `OneToSixBounded` deliberately
+keeps its existing three-times-maximum-action-cost bound and receives no
+extension.
+
+This is a fixed engine policy rather than a workload or runtime knob. It can
+cross waits that produce no new key at the cost of longer rollouts from barren
+parents, while the action limit bounds each rollout and the work counter charges
+every appended action. The engine schema version identifies the semantics, and
+the generic regression fixture covers a seven-step wait, a same-key cycle, the
+bounded shape, and exact live/replay equality.
+
 ## Search evaluation policies
 
 Five selector policies exist. `hierarchy_uniform_128` draws uniformly over live
@@ -334,4 +352,3 @@ report record that budget only when present. Already reserved jobs drain
 normally; evaluators must score first-objective work against the threshold and
 account for any drained overshoot. Omitting the option leaves the campaign
 without a work-budget cutoff.
-

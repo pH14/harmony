@@ -2164,6 +2164,15 @@ where
     }
 
     #[must_use]
+    pub(crate) fn adaptive_horizon_extension(&self, id: usize, remaining_actions: usize) -> usize {
+        self.since_retained
+            .get(id)
+            .copied()
+            .and_then(|streak| usize::try_from(streak).ok())
+            .map_or(0, |streak| streak.min(remaining_actions))
+    }
+
+    #[must_use]
     pub fn replacement_cost_displaced(&self) -> u64 {
         self.replacement_cost_displaced
     }

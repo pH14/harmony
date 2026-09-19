@@ -48,7 +48,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 4;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 5;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
@@ -309,6 +309,20 @@ pub trait InputPolicy: CampaignTypes {
         mutation_seed: u64,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         self.expand_recorded_or_live(run, state, shape, mixture, before, mutation_seed, true)
+    }
+
+    fn extend_suffix_with_horizon(
+        &self,
+        run: &Self::Run,
+        suffix: &mut Vec<Self::Action>,
+        mutation_seed: u64,
+        additional_actions: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
+        for _ in 0..additional_actions {
+            suffix.push(self.sample_alphabet(run, &mut rand)?);
+        }
+        Ok(())
     }
     #[allow(clippy::too_many_arguments)]
     fn expand_recorded_or_live(
@@ -2703,6 +2717,17 @@ where
                     } else {
                         None
                     };
+                    let adaptive_extension = if spliced.is_none()
+                        && duration_draw.is_none()
+                        && config.suffix.adaptive_horizon()
+                    {
+                        let remaining_actions = max_actions
+                            .saturating_sub(core.archive.entries[parent_index].input_len);
+                        core.archive
+                            .adaptive_horizon_extension(parent_index, remaining_actions)
+                    } else {
+                        0
+                    };
                     let duration_remaining_work = duration_draw.and(remaining_work);
                     let duration_admission_sequence_at_draw = duration_draw.map(|_| core.sequence);
                     let mut suffix = match (spliced, duration_draw) {
@@ -2731,6 +2756,17 @@ where
                             mutation_seed,
                         )?,
                     };
+                    let extension = adaptive_extension.min(
+                        max_actions
+                            .saturating_sub(core.archive.entries[parent_index].input_len)
+                            .saturating_sub(suffix.len()),
+                    );
+                    workload.extend_suffix_with_horizon(
+                        &config.run,
+                        &mut suffix,
+                        mutation_seed,
+                        extension,
+                    )?;
                     config
                         .suffix
                         .bound_cost(&mut suffix, action_cost, max_action_cost);
@@ -3631,6 +3667,18 @@ where
                 if duration_checkpoint_before != skip.duration_checkpoint_before {
                     return Err("replayed skip duration state diverged before expansion".into());
                 }
+                let adaptive_extension = if spliced.is_none()
+                    && duration_draw.is_none()
+                    && replay_suffix.adaptive_horizon()
+                {
+                    let remaining_actions = header
+                        .action_limit
+                        .saturating_sub(core.archive.entries[parent_index].input_len);
+                    core.archive
+                        .adaptive_horizon_extension(parent_index, remaining_actions)
+                } else {
+                    0
+                };
                 let mut suffix = match (spliced, duration_draw) {
                     (Some(tail), _) => tail,
                     (None, draw) => workload.expand_suffix_recorded_duration(
@@ -3647,6 +3695,18 @@ where
                         draw,
                     )?,
                 };
+                let extension = adaptive_extension.min(
+                    header
+                        .action_limit
+                        .saturating_sub(core.archive.entries[parent_index].input_len)
+                        .saturating_sub(suffix.len()),
+                );
+                workload.extend_suffix_with_horizon(
+                    &replay_run,
+                    &mut suffix,
+                    skip.mutation_seed,
+                    extension,
+                )?;
                 replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
@@ -3768,6 +3828,18 @@ where
                 if duration_checkpoint_before != job.duration_checkpoint_before {
                     return Err("replayed job duration state diverged before expansion".into());
                 }
+                let adaptive_extension = if spliced.is_none()
+                    && duration_draw.is_none()
+                    && replay_suffix.adaptive_horizon()
+                {
+                    let remaining_actions = header
+                        .action_limit
+                        .saturating_sub(core.archive.entries[parent_index].input_len);
+                    core.archive
+                        .adaptive_horizon_extension(parent_index, remaining_actions)
+                } else {
+                    0
+                };
                 let mut suffix = match (spliced, duration_draw) {
                     (Some(tail), _) => tail,
                     (None, draw) => workload.expand_suffix_recorded_duration(
@@ -3784,6 +3856,18 @@ where
                         draw,
                     )?,
                 };
+                let extension = adaptive_extension.min(
+                    header
+                        .action_limit
+                        .saturating_sub(core.archive.entries[parent_index].input_len)
+                        .saturating_sub(suffix.len()),
+                );
+                workload.extend_suffix_with_horizon(
+                    &replay_run,
+                    &mut suffix,
+                    job.mutation_seed,
+                    extension,
+                )?;
                 replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
                 let job_execution_work_before = workload.execution_work(&target);
                 let result = workload.execute_job(
@@ -4800,7 +4884,7 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":4,"format":"campaign-v1","campaign_seed":7,"workers":2,
+    const RECORDED_HEADER: &str = r#"{"schema_version":5,"format":"campaign-v1","campaign_seed":7,"workers":2,
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
