@@ -1,0 +1,26 @@
+{
+  "input_sha256": "95cb39ef895e6e8b09cb170cbb4bd0783a62aa18cb8f090151f859f1cffebd90",
+  "film_path": "/private/tmp/mm2-completion-20260919/mm2-ending.mp4",
+  "film_sha256": "4adc819706634158973dba5652a45c7234066ef67876d998bc8a73a1814666bb",
+  "film_duration_seconds": 337.15,
+  "film_from_action": 6468,
+  "independent_visual_review": {
+    "alien_defeat_seconds": [
+      95,
+      98
+    ],
+    "postfight_wily_seconds": [
+      126,
+      130
+    ],
+    "credits_start_seconds_approx": 150,
+    "visible_text": [
+      "THANK YOU FOR PLAYING\u2026",
+      "PRESENTED BY CAPCOM U.S.A."
+    ],
+    "death_after_winning_blow": false,
+    "literal_the_end_card_observed": false
+  },
+  "postwin_health": 6,
+  "postwin_lives": 2
+}

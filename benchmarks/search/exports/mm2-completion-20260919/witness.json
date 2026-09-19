@@ -1,0 +1,18 @@
+{
+  "format": "mm2-completion-witness-v1",
+  "input": "wily5-prefix.json",
+  "input_sha256": "d1d2b2531fcbf96e3bab2840c1ffbebeb593dde607e21de478b11e72824a7140",
+  "actions": 5082,
+  "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+  "endpoint": {
+    "stage": 12,
+    "screen": 24,
+    "room": 24,
+    "x": 128,
+    "y": 148,
+    "health": 28,
+    "lives": 3,
+    "weapon": 0
+  },
+  "verification": "Continuous power-on mm2-replay and independent film review of Wily4 defeat and Wily5 arrival; normal Game Over and Continue occurred earlier in Wily4."
+}

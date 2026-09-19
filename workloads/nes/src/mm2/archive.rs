@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     mm2::target::{
         BOSS_DAMAGE_BUCKET, BOSS_PHASE_DEFEATED, ButtonChord, ENEMY_DAMAGE_BUCKET, MENU_CLOSED,
-        Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, preference_tuple,
+        Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, WILY5_REFIGHTS_COMPLETE,
+        WILY5_STAGE, preference_tuple,
     },
     search::{
         archive::{
@@ -21,7 +22,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_MM2_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_location_boss_bar_loaded_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v19";
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_location_boss_bar_loaded_confirmed_enemy_spatial_16_posture_weapon_bank_menu_energy_platforms_boobeam_targets_crash_shots_wily5_refighting_mask_refight_boss_machine_shell_preference_v24";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -42,6 +43,11 @@ pub struct Mm2ArchiveGroup {
     room: u8,
     boss_damage: u8,
     enemy_damage: u8,
+    boobeam_targets: u16,
+    crash_shots: u8,
+    refighting_mask: u8,
+    refight_boss: u8,
+    wily_machine_shell_broken: bool,
     x: u8,
     y: u8,
     posture: u8,
@@ -58,6 +64,11 @@ pub struct Mm2ArchiveKey {
     pub room: u8,
     pub boss_damage: u8,
     pub enemy_damage: u8,
+    pub boobeam_targets: u16,
+    pub crash_shots: u8,
+    pub refighting_mask: u8,
+    pub refight_boss: u8,
+    pub wily_machine_shell_broken: bool,
     pub x: u8,
     pub y: u8,
     pub posture: u8,
@@ -82,6 +93,11 @@ impl ArchiveKey for Mm2ArchiveKey {
             room: self.room,
             boss_damage: self.boss_damage,
             enemy_damage: self.enemy_damage,
+            boobeam_targets: self.boobeam_targets,
+            crash_shots: self.crash_shots,
+            refighting_mask: self.refighting_mask,
+            refight_boss: self.refight_boss,
+            wily_machine_shell_broken: self.wily_machine_shell_broken,
             x: self.x,
             y: self.y,
             posture: self.posture,
@@ -113,11 +129,15 @@ impl ArchiveKey for Mm2ArchiveKey {
                 bosses: self.bosses,
                 stage: self.stage,
                 screen: self.screen,
+                refighting_mask: self.refighting_mask,
+                wily_machine_shell_broken: self.wily_machine_shell_broken,
                 ..Mm2ArchiveGroup::default()
             },
             _ => Mm2ArchiveGroup {
                 bosses: self.bosses,
                 stage: self.stage,
+                refighting_mask: self.refighting_mask,
+                wily_machine_shell_broken: self.wily_machine_shell_broken,
                 ..Mm2ArchiveGroup::default()
             },
         }
@@ -128,7 +148,18 @@ impl ArchiveKey for Mm2ArchiveKey {
     }
 
     fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
-        (left.bosses, left.boss_damage).cmp(&(right.bosses, right.boss_damage))
+        (
+            left.bosses,
+            left.refighting_mask.count_ones(),
+            left.wily_machine_shell_broken,
+            left.boss_damage,
+        )
+            .cmp(&(
+                right.bosses,
+                right.refighting_mask.count_ones(),
+                right.wily_machine_shell_broken,
+                right.boss_damage,
+            ))
     }
 
     fn preference_cmp(self, other: Self) -> Ordering {
@@ -160,6 +191,11 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
         room: state.room,
         boss_damage: state.boss_damage() / BOSS_DAMAGE_BUCKET,
         enemy_damage: state.enemy_damage / ENEMY_DAMAGE_BUCKET,
+        boobeam_targets: state.boobeam_targets,
+        crash_shots: state.crash_shots,
+        refighting_mask: state.refighting_mask,
+        refight_boss: state.refight_boss,
+        wily_machine_shell_broken: state.wily_machine_shell_broken,
         x: state.x / 16,
         y: state.y / 16,
         posture: state.posture(),
@@ -226,11 +262,14 @@ pub struct Mm2ArchiveReport {
 
 #[must_use]
 pub fn milestones(state: Mm2MechanicalState, genesis_weapons: u8) -> Mm2Milestones {
+    let boss_defeated = state.boss_phase >= BOSS_PHASE_DEFEATED;
+    let defeated_boss = state.weapons_obtained & !genesis_weapons != 0
+        || (boss_defeated
+            && (state.stage != WILY5_STAGE || state.refighting_mask == WILY5_REFIGHTS_COMPLETE));
     Mm2Milestones {
         max_screen: state.screen,
-        reached_boss: state.boss_health != 0,
-        defeated_boss: state.weapons_obtained & !genesis_weapons != 0
-            || state.boss_phase >= BOSS_PHASE_DEFEATED,
+        reached_boss: defeated_boss || state.boss_fight_underway() || boss_defeated,
+        defeated_boss,
     }
 }
 
@@ -314,6 +353,21 @@ mod tests {
     }
 
     #[test]
+    fn stale_boss_health_after_continue_does_not_report_an_encounter() {
+        let mut restarted = state(128, 28, 255);
+        restarted.stage = 11;
+        restarted.screen = 22;
+        restarted.room = 22;
+        restarted.boss_health = 28;
+        assert!(!milestones(restarted, 255).reached_boss);
+        restarted.boss_phase = 2;
+        assert!(milestones(restarted, 255).reached_boss);
+        restarted.boss_phase = BOSS_PHASE_DEFEATED;
+        restarted.boss_health = 0;
+        assert!(milestones(restarted, 255).reached_boss);
+    }
+
+    #[test]
     fn a_wily_boss_that_grants_no_weapon_still_reports_as_defeated() {
         let genesis = 0x40;
         let mut cleared = state(100, 28, genesis);
@@ -394,6 +448,131 @@ mod tests {
         let mut elsewhere = first;
         elsewhere.room = 99;
         assert_eq!(first.complete(Some((elsewhere, &()))), first.complete(None));
+    }
+
+    #[test]
+    fn wily4_target_and_crash_identities_are_retained_without_progress_ordering() {
+        let mut first_state = state(100, 28, 0);
+        first_state.stage = 11;
+        first_state.boss_phase = 2;
+        first_state.boobeam_targets = 0b11;
+        first_state.crash_shots = 2;
+        let first = archive_key(first_state);
+        let mut mask_state = first_state;
+        mask_state.boobeam_targets = 0b10;
+        let mask = archive_key(mask_state);
+        let mut shots_state = first_state;
+        shots_state.crash_shots = 6;
+        let shots = archive_key(shots_state);
+
+        for depth in 0..=2 {
+            assert_ne!(first.group(depth), mask.group(depth));
+            assert_ne!(first.group(depth), shots.group(depth));
+        }
+        assert_eq!(first.group(3), mask.group(3));
+        assert_eq!(first.group(3), shots.group(3));
+        assert_eq!(first.group(4), mask.group(4));
+        assert_eq!(first.group(4), shots.group(4));
+        assert_eq!(
+            Mm2ArchiveKey::progress_cmp(first.group(0), mask.group(0)),
+            Ordering::Equal
+        );
+        assert_eq!(
+            Mm2ArchiveKey::progress_cmp(first.group(0), shots.group(0)),
+            Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn wily5_refight_mask_is_retained_at_all_depths_and_boss_identity_is_local() {
+        let mut active_state = state(100, 28, 0);
+        active_state.stage = 12;
+        active_state.boss_phase = 2;
+        active_state.refighting_mask = 0x05;
+        active_state.refight_boss = 3;
+        let active = archive_key(active_state);
+        let mut hub_state = active_state;
+        hub_state.boss_phase = 0;
+        hub_state.refight_boss = 0xff;
+        let hub = archive_key(hub_state);
+        let mut empty_state = active_state;
+        empty_state.refighting_mask = 0;
+        let empty = archive_key(empty_state);
+
+        for depth in 0..=4 {
+            assert_ne!(active.group(depth), empty.group(depth));
+        }
+        for depth in 0..=2 {
+            assert_ne!(active.group(depth), hub.group(depth));
+        }
+        assert_eq!(active.group(3), hub.group(3));
+        assert_eq!(active.group(4), hub.group(4));
+    }
+
+    #[test]
+    fn machine_second_form_survives_health_reset_and_outranks_first_form() {
+        let mut first = state(100, 4, 255);
+        first.stage = WILY5_STAGE;
+        first.refighting_mask = WILY5_REFIGHTS_COMPLETE;
+        first.refight_boss = 12;
+        first.boss_phase = 3;
+        first.boss_health = 2;
+        let mut second = first;
+        second.wily_machine_shell_broken = true;
+        second.boss_phase = 5;
+        second.boss_health = 28;
+        for depth in 0..=4 {
+            let left = archive_key(first).group(depth);
+            let right = archive_key(second).group(depth);
+            assert_ne!(left, right);
+            assert_eq!(Mm2ArchiveKey::progress_cmp(right, left), Ordering::Greater);
+        }
+    }
+
+    #[test]
+    fn wily5_milestones_require_all_refights_for_stage_clear() {
+        let mut intermediate = state(100, 28, 0);
+        intermediate.stage = 12;
+        intermediate.boss_phase = BOSS_PHASE_DEFEATED;
+        intermediate.refighting_mask = 0x7f;
+        let value = milestones(intermediate, 0);
+        assert!(value.reached_boss);
+        assert!(!value.defeated_boss);
+
+        intermediate.refighting_mask = WILY5_REFIGHTS_COMPLETE;
+        let complete = milestones(intermediate, 0);
+        assert!(complete.reached_boss);
+        assert!(complete.defeated_boss);
+    }
+
+    #[test]
+    fn wily5_progress_uses_refight_count_before_boss_damage() {
+        let mut fewer = state(100, 28, 0);
+        fewer.stage = 12;
+        fewer.refighting_mask = 0x03;
+        fewer.boss_phase = 2;
+        fewer.boss_health = 4;
+        let mut more = fewer;
+        more.refighting_mask = 0x07;
+        more.boss_health = 28;
+        assert_eq!(
+            Mm2ArchiveKey::progress_cmp(archive_key(more).group(0), archive_key(fewer).group(0)),
+            Ordering::Greater
+        );
+
+        let mut equal_count_left = more;
+        equal_count_left.refighting_mask = 0x05;
+        let mut equal_count_right = equal_count_left;
+        equal_count_right.refighting_mask = 0x06;
+        equal_count_left.boss_health = 10;
+        equal_count_right.boss_health = 10;
+        assert_eq!(
+            Mm2ArchiveKey::progress_cmp(
+                archive_key(equal_count_left).group(0),
+                archive_key(equal_count_right).group(0)
+            ),
+            Ordering::Equal
+        );
     }
 
     #[test]
