@@ -145,6 +145,15 @@ checkpoint as part of their existing output. `--resume-snapshots` requires
 `--resume-archive`, and both modes preserve the existing root-input identity in
 the new campaign stream.
 
+`mm2-snapshot-inspect SNAPSHOTS.bin` emits one JSON record per retained
+snapshot, including its archive id, decoded mechanical state, frame count, and
+the serialized death and dying-run status. It emits only nonfailed,
+nonterminal, non-dying snapshots by default; pass `--all` to include filtered
+records. The filter uses the recorded observation status rather than treating
+health alone as proof of survival. Passing this status filter does not establish
+future survival; replay and film are still required. Post-menu transients can
+also use the dying state byte, so `--all` is useful when auditing exclusions.
+
 `mm2-branches STAGE PREFIX.json ROOT.json BANK.json OUTPUT.json` evaluates
 an explicit JSON array of `Mm2Input` suffixes from one restored root snapshot.
 It uses `HARMONY_MM2_ROM` and `HARMONY_QUICKNES_CORE`, records input hashes,
