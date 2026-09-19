@@ -46,6 +46,12 @@ weapon menu. The v2 controller identifier corrects the prototype's stale
 vocabulary is the adapter's alphabet sampler and nothing else about drawing;
 the searcher owns the suffix draw and the retained-input table.
 
+The `mm2-campaign` CLI accepts the opt-in `--coherent-world` diagnostic. It
+marks a live, same-stage observation terminal when the player screen byte and
+camera room byte differ by more than one while the raw scroll-direction byte
+(`$37`) is idle. The option is experimental, defaults off, and is included in
+the `Mm2Game` identity so streams and snapshots cannot mix the two policies.
+
 The v20 key uses 16-pixel retention slots pooled into 32-pixel cells,
 128-pixel regions, screens, and stages. Weapon/menu rows distinguish local
 endpoints but are pooled at coarser levels. Health and energy prefer

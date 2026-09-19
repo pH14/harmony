@@ -14,6 +14,7 @@ pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
 const CAMERA_STATE: usize = 0x1b;
 const CAMERA_STATE_SCROLLING: u8 = 0x80;
+const SCROLL_DIRECTION: usize = 0x37;
 const FALL_STEP_LIMIT: u8 = 64;
 const FALL_RUN_LIMIT: u16 = 256;
 const ENEMY_HEALTH_TABLE_START: usize = 0x6d0;
@@ -259,6 +260,18 @@ pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
     })
 }
 
+fn coherent_world_violation(
+    genesis_stage: u8,
+    state: Mm2MechanicalState,
+    scroll_direction: u8,
+) -> bool {
+    state.stage == genesis_stage
+        && scroll_direction == 0
+        && state.health > 0
+        && !state.is_dying()
+        && state.screen.abs_diff(state.room) > 1
+}
+
 fn enemy_damage_between(prior: &[u8], current: &[u8]) -> u8 {
     (ENEMY_HEALTH_TABLE_START..ENEMY_HEALTH_TABLE_END)
         .filter_map(|address| {
@@ -355,6 +368,7 @@ pub struct Mm2Snapshot {
     emulator_state: Vec<u8>,
     observation: Mm2Observations,
     failed: bool,
+    coherent_world: bool,
 }
 
 impl Mm2Snapshot {
@@ -372,6 +386,7 @@ impl Mm2Snapshot {
                 log_line: String::new(),
             },
             failed: false,
+            coherent_world: false,
         }
     }
 
@@ -419,6 +434,7 @@ pub struct Mm2Target {
     genesis_weapons: u8,
     genesis_prefix: Vec<ButtonChord>,
     execution_work: u64,
+    coherent_world: bool,
 }
 
 struct RenderTracking {
@@ -540,10 +556,29 @@ impl Mm2Target {
         prefix: &[ButtonChord],
         stage: Mm2Stage,
     ) -> Result<Self, MachineError> {
+        Self::from_rom_bytes_after_with_coherent_world(
+            rom,
+            core_path,
+            core_sha256,
+            prefix,
+            stage,
+            false,
+        )
+    }
+
+    pub fn from_rom_bytes_after_with_coherent_world(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        prefix: &[ButtonChord],
+        stage: Mm2Stage,
+        coherent_world: bool,
+    ) -> Result<Self, MachineError> {
         Self::from_machine(
             QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?,
             prefix,
             stage,
+            coherent_world,
         )
     }
 
@@ -551,6 +586,7 @@ impl Mm2Target {
         mut machine: QuickNesMachine,
         prefix: &[ButtonChord],
         stage: Mm2Stage,
+        coherent_world: bool,
     ) -> Result<Self, MachineError> {
         let mut genesis_prefix = prefix.to_vec();
         for chunk in prefix.chunks(64) {
@@ -618,6 +654,7 @@ impl Mm2Target {
             genesis_weapons: state.weapons_obtained,
             genesis_prefix,
             execution_work: 0,
+            coherent_world,
         })
     }
 
@@ -711,6 +748,11 @@ impl Mm2Target {
     }
 
     #[must_use]
+    pub fn coherent_world(&self) -> bool {
+        self.coherent_world
+    }
+
+    #[must_use]
     pub fn last_action_observations(&self) -> &[Mm2Observations] {
         &self.action_observations
     }
@@ -735,7 +777,15 @@ impl Mm2Target {
             self.machine.run(StopConditions::default(), None)?;
             let mut alive = true;
             for wram in self.machine.frames() {
-                if decode_state(wram)?.is_dead() {
+                let state = decode_state(wram)?;
+                if state.is_dead()
+                    || (self.coherent_world
+                        && coherent_world_violation(
+                            self.genesis_observation.decoded.stage,
+                            state,
+                            wram[SCROLL_DIRECTION],
+                        ))
+                {
                     alive = false;
                     break;
                 }
@@ -1004,6 +1054,8 @@ impl Target for Mm2Target {
                 0
             };
             let fell_out = fall_run > FALL_RUN_LIMIT;
+            let coherent_violation = self.coherent_world
+                && coherent_world_violation(genesis.stage, state, wram[SCROLL_DIRECTION]);
             previous = state;
             if state.screen != prior_state.screen || state.stage != prior_state.stage {
                 enemy_damage = 0;
@@ -1023,7 +1075,8 @@ impl Target for Mm2Target {
                 || state.lives < genesis.lives
                 || state.stage < genesis.stage
                 || escaped
-                || fell_out;
+                || fell_out
+                || coherent_violation;
             let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
                 || preference_tuple(state) != preference_tuple(prior_state)
                 || dead != died;
@@ -1108,10 +1161,14 @@ impl Target for Mm2Target {
             emulator_state,
             observation: self.observation.clone(),
             failed: self.failed,
+            coherent_world: self.coherent_world,
         })
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
+        if snapshot.coherent_world != self.coherent_world {
+            return Err("Mega Man 2 snapshot coherent-world policy does not match".into());
+        }
         self.machine
             .restore_bytes(&snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
@@ -1165,6 +1222,37 @@ mod tests {
         };
         assert!(!pit.is_dead());
         assert!(pit.is_dying());
+    }
+
+    #[test]
+    fn coherent_world_rejects_idle_same_stage_screen_gaps_only() {
+        let normal = Mm2MechanicalState {
+            stage: 11,
+            screen: 33,
+            room: 31,
+            health: FULL_HEALTH,
+            player_state: PLAYER_STATE_AIRBORNE,
+            ..Mm2MechanicalState::default()
+        };
+        assert!(coherent_world_violation(11, normal, 0));
+        assert!(!coherent_world_violation(11, normal, 1));
+        assert!(!coherent_world_violation(
+            11,
+            Mm2MechanicalState {
+                screen: 32,
+                ..normal
+            },
+            0
+        ));
+        assert!(!coherent_world_violation(10, normal, 0));
+        assert!(!coherent_world_violation(
+            11,
+            Mm2MechanicalState {
+                player_state: PLAYER_STATE_DYING,
+                ..normal
+            },
+            0,
+        ));
     }
 
     #[test]

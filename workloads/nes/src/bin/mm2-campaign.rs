@@ -43,6 +43,7 @@ struct Args {
     stage: Mm2Stage,
     marketing_soak: bool,
     fixed_execution_soak: bool,
+    coherent_world: bool,
     host: String,
     memory_budget_mib: Option<usize>,
     prefix_input: Option<PathBuf>,
@@ -80,6 +81,7 @@ impl Args {
         let mut stage = Mm2Stage::default();
         let mut marketing_soak = false;
         let mut fixed_execution_soak = false;
+        let mut coherent_world = false;
         let mut host = "github-actions".to_owned();
         let mut memory_budget_mib = None;
         let mut prefix_input = None;
@@ -101,6 +103,10 @@ impl Args {
             }
             if flag == "--fixed-execution-soak" {
                 fixed_execution_soak = true;
+                continue;
+            }
+            if flag == "--coherent-world" {
+                coherent_world = true;
                 continue;
             }
             if flag == "--save-checkpoint" {
@@ -169,6 +175,7 @@ impl Args {
             stage,
             marketing_soak,
             fixed_execution_soak,
+            coherent_world,
             host,
             memory_budget_mib,
             prefix_input,
@@ -231,8 +238,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(path) => serde_json::from_slice::<Mm2Input>(&fs::read(path)?)?.actions,
         None => power_on_walk(),
     };
-    let mut game = Mm2Game::new_at_stage_after(&rom, &args.core, &core_sha256, prefix, args.stage)
-        .with_champion_input_path(args.output.join("champion-input.json"));
+    let mut game = Mm2Game::new_at_stage_after_with_coherent_world(
+        &rom,
+        &args.core,
+        &core_sha256,
+        prefix,
+        args.stage,
+        args.coherent_world,
+    )
+    .with_champion_input_path(args.output.join("champion-input.json"));
     if let Some(path) = &args.root_input {
         let root: Mm2Input = serde_json::from_slice(&fs::read(path)?)?;
         fs::write(
@@ -605,6 +619,17 @@ mod tests {
             .expect("soak arguments parse");
         assert!(soak.fixed_execution_soak);
         assert_eq!(soak.seed, 42);
+    }
+
+    #[test]
+    fn coherent_world_is_explicit_and_valueless() {
+        let ordinary = Args::parse_from(required_args(&[])).expect("ordinary arguments parse");
+        assert!(!ordinary.coherent_world);
+
+        let diagnostic = Args::parse_from(required_args(&["--coherent-world", "--seed", "42"]))
+            .expect("coherent-world arguments parse");
+        assert!(diagnostic.coherent_world);
+        assert_eq!(diagnostic.seed, 42);
     }
 
     #[test]
