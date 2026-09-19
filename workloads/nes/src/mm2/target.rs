@@ -280,6 +280,14 @@ fn live_platforms(wram: &[u8]) -> Result<u8, MachineError> {
     Ok(count)
 }
 
+fn dying_run_for_frame(previous: u32, state: Mm2MechanicalState) -> u32 {
+    if state.is_dying() {
+        previous.saturating_add(1)
+    } else {
+        0
+    }
+}
+
 fn read_byte(bytes: &[u8], address: usize) -> Result<u8, MachineError> {
     bytes.get(address).copied().ok_or_else(|| {
         MachineError::Backend(format!("Mega Man 2 RAM address {address:#x} is absent"))
@@ -315,6 +323,8 @@ pub struct Mm2Observations {
     pub dead: bool,
     #[serde(default)]
     pub fall_run: u16,
+    #[serde(default)]
+    pub dying_run: u32,
     pub log_line: String,
 }
 
@@ -347,6 +357,7 @@ impl Mm2Snapshot {
                 changed_indices: Vec::new(),
                 dead: false,
                 fall_run: 0,
+                dying_run: 0,
                 log_line: String::new(),
             },
             failed: false,
@@ -550,6 +561,7 @@ impl Mm2Target {
             changed_indices: Vec::new(),
             dead: false,
             fall_run: 0,
+            dying_run: 0,
             log_line: "frame=0 changed=[]".to_owned(),
         };
         Ok(Self {
@@ -570,6 +582,38 @@ impl Mm2Target {
     #[must_use]
     pub fn genesis_prefix(&self) -> &[ButtonChord] {
         &self.genesis_prefix
+    }
+
+    pub fn advance_genesis(&mut self, actions: &[ButtonChord]) -> Result<(), MachineError> {
+        for action in actions {
+            if self.failed || self.is_dead() || self.defeated_a_boss() {
+                return Err(MachineError::Backend(
+                    "root input reached a terminal state".into(),
+                ));
+            }
+            let before = self.execution_work;
+            self.apply(action);
+            if self.execution_work.saturating_sub(before) != u64::from(action.bounded_hold_frames())
+            {
+                return Err(MachineError::Backend(
+                    "root action inserted unrecorded transition frames".into(),
+                ));
+            }
+        }
+        if self.failed || self.is_dead() || self.defeated_a_boss() {
+            return Err(MachineError::Backend(
+                "root input ended in a terminal state".into(),
+            ));
+        }
+        let genesis = self.machine.snapshot()?;
+        self.machine.drop_snapshot(self.genesis)?;
+        self.genesis = genesis;
+        self.genesis_wram = self.current_wram;
+        self.genesis_observation = self.observation.clone();
+        self.genesis_prefix.extend_from_slice(actions);
+        self.action_observations = vec![self.observation.clone()];
+        self.execution_work = 0;
+        Ok(())
     }
 
     #[must_use]
@@ -811,6 +855,7 @@ impl Mm2Target {
             changed_indices: changed_indices.clone(),
             dead: state.is_dead(),
             fall_run: 0,
+            dying_run: 0,
             log_line: format!("frame={frame_count} changed={changed_indices:?}"),
         }
     }
@@ -880,7 +925,7 @@ impl Target for Mm2Target {
         let mut observations = Vec::new();
         let genesis = self.genesis_observation.decoded;
         let mut died = self.observation.dead;
-        let mut dying_frames = 0_u32;
+        let mut dying_run = self.observation.dying_run;
         let mut fall_run = self.observation.fall_run;
         let mut enemy_damage = self.observation.decoded.enemy_damage;
         let mut prior_frame = self.current_wram;
@@ -915,14 +960,10 @@ impl Target for Mm2Target {
             let escaped = prior_state.boss_phase >= BOSS_PHASE_FIGHTING
                 && prior_state.boss_phase < BOSS_PHASE_DEFEATED
                 && state.screen != prior_state.screen;
-            dying_frames = if state.is_dying() {
-                dying_frames.saturating_add(1)
-            } else {
-                0
-            };
+            dying_run = dying_run_for_frame(dying_run, state);
             let dead = died
                 || state.is_dead()
-                || dying_frames >= DYING_FRAMES
+                || dying_run >= DYING_FRAMES
                 || state.lives < genesis.lives
                 || state.stage < genesis.stage
                 || escaped
@@ -939,6 +980,7 @@ impl Target for Mm2Target {
                 let mut observation = self.make_observation(frame_count, state, wram, &prior_wram);
                 observation.dead = dead;
                 observation.fall_run = fall_run;
+                observation.dying_run = dying_run;
                 observations.push(observation);
                 prior_wram = *wram;
                 prior_state = state;
@@ -963,6 +1005,7 @@ impl Target for Mm2Target {
                 self.make_observation(endpoint_frame, endpoint_state, &endpoint_wram, &prior_wram);
             observation.dead = died;
             observation.fall_run = fall_run;
+            observation.dying_run = dying_run;
             observations.push(observation);
         }
         self.action_observations = observations;
@@ -1140,5 +1183,47 @@ mod tests {
         wram[0x6c1] = 0;
         let dead = decode_state(&wram).expect("decode");
         assert_eq!(dead.boss_damage(), FULL_BOSS_HEALTH);
+    }
+
+    #[test]
+    fn dying_run_is_equivalent_when_a_death_spans_short_actions() {
+        let dying = Mm2MechanicalState {
+            player_state: PLAYER_STATE_DYING,
+            ..Mm2MechanicalState::default()
+        };
+        let mut unsplit = 0_u32;
+        for _ in 0..DYING_FRAMES {
+            unsplit = dying_run_for_frame(unsplit, dying);
+        }
+
+        let mut split = 0_u32;
+        for _ in 0..(DYING_FRAMES / 2) {
+            split = dying_run_for_frame(split, dying);
+        }
+        assert!(split < DYING_FRAMES);
+        for _ in 0..(DYING_FRAMES - DYING_FRAMES / 2) {
+            split = dying_run_for_frame(split, dying);
+        }
+
+        assert_eq!(split, unsplit);
+        assert!(split >= DYING_FRAMES);
+    }
+
+    #[test]
+    fn a_short_dying_flash_resets_before_the_terminal_threshold() {
+        let dying = Mm2MechanicalState {
+            player_state: PLAYER_STATE_DYING,
+            ..Mm2MechanicalState::default()
+        };
+        let standing = Mm2MechanicalState {
+            player_state: PLAYER_STATE_STANDING,
+            ..dying
+        };
+        let mut run = 0_u32;
+        for _ in 0..(DYING_FRAMES - 1) {
+            run = dying_run_for_frame(run, dying);
+        }
+        assert!(run < DYING_FRAMES);
+        assert_eq!(dying_run_for_frame(run, standing), 0);
     }
 }

@@ -41,8 +41,8 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v1";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v1";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v2";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v2";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -51,7 +51,7 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_start_taps_no_select_v2";
-const TERMINAL_POLICY_IDENTIFIER: &str = "death_or_first_boss_defeated";
+const TERMINAL_POLICY_IDENTIFIER: &str = "death_or_first_boss_defeated_persistent_dying_v2";
 
 const VIABILITY_PROBE_MASKS: [u8; 4] = [0, 0x01, 0x80, 0x81];
 const VIABILITY_PROBE_FRAMES: u16 = 60;
@@ -67,6 +67,7 @@ pub struct Mm2Game {
     stage: Mm2Stage,
     identity: String,
     champion_input_path: Option<PathBuf>,
+    root_actions: Vec<ButtonChord>,
 }
 
 impl Mm2Game {
@@ -103,7 +104,20 @@ impl Mm2Game {
             stage,
             identity,
             champion_input_path: None,
+            root_actions: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_root_actions(mut self, actions: Vec<ButtonChord>) -> Self {
+        let mut digest = Sha256::new();
+        for action in &actions {
+            digest.update([action.buttons, action.hold_frames]);
+        }
+        self.identity
+            .push_str(&format!(";root-input-sha256={:x}", digest.finalize()));
+        self.root_actions = actions;
+        self
     }
 
     #[must_use]
@@ -597,14 +611,20 @@ impl TargetExecution for Mm2Game {
     }
 
     fn new_target(&self) -> Result<Mm2Target, String> {
-        Mm2Target::from_rom_bytes_after(
+        let mut target = Mm2Target::from_rom_bytes_after(
             &self.rom,
             &self.core_path,
             &self.core_sha256,
             &self.prefix,
             self.stage,
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        if !self.root_actions.is_empty() {
+            target
+                .advance_genesis(&self.root_actions)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(target)
     }
 
     fn reset(&self, target: &mut Mm2Target) {

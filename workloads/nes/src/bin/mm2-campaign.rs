@@ -12,7 +12,7 @@ use std::{
 
 use nes_workload::{
     mm2::{
-        archive::MAX_ARCHIVE_ENTRIES,
+        archive::{MAX_ARCHIVE_ENTRIES, selector_policy_from_identifier},
         campaign::{
             Mm2CampaignConfig, Mm2CampaignOrigin, Mm2Game, replay_mm2_campaign_checkpointed,
             run_mm2_campaign_checkpointed,
@@ -20,7 +20,9 @@ use nes_workload::{
         target::{Mm2Input, Mm2MechanicalState, Mm2Stage, Mm2VideoMetadata, power_on_walk},
     },
     search::{
-        archive::{RetentionPolicy, RetireThresholds, SelectorPolicy},
+        archive::{
+            RetentionPolicy, RetireThresholds, SelectorPolicy, retention_policy_from_identifier,
+        },
         campaign::TargetExecution,
         draw::{DrawMixture, SuffixShape, draw_mixture_from_identifier},
     },
@@ -43,7 +45,10 @@ struct Args {
     host: String,
     memory_budget_mib: Option<usize>,
     prefix_input: Option<PathBuf>,
+    root_input: Option<PathBuf>,
     mixture: DrawMixture,
+    selector: SelectorPolicy,
+    retention: RetentionPolicy,
 }
 
 struct RenderedMedia {
@@ -74,7 +79,13 @@ impl Args {
         let mut host = "github-actions".to_owned();
         let mut memory_budget_mib = None;
         let mut prefix_input = None;
+        let mut root_input = None;
         let mut mixture = DrawMixture::AlphabetOnly;
+        let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
+            entry: 3,
+            groups: vec![6, 12, 2, 16],
+        });
+        let mut retention = RetentionPolicy::Unprobed;
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             if flag == "--marketing-soak" {
@@ -109,9 +120,20 @@ impl Args {
                 "--prefix-input" => {
                     prefix_input = Some(PathBuf::from(value));
                 }
+                "--root-input" => root_input = Some(PathBuf::from(value)),
                 "--mixture" => {
                     mixture = draw_mixture_from_identifier(
                         &value.into_string().map_err(|_| "mixture is not UTF-8")?,
+                    )?;
+                }
+                "--selector" => {
+                    selector = selector_policy_from_identifier(
+                        &value.into_string().map_err(|_| "selector is not UTF-8")?,
+                    )?;
+                }
+                "--retention" => {
+                    retention = retention_policy_from_identifier(
+                        &value.into_string().map_err(|_| "retention is not UTF-8")?,
                     )?;
                 }
                 other => return Err(format!("unknown argument {other:?}").into()),
@@ -131,7 +153,10 @@ impl Args {
             host,
             memory_budget_mib,
             prefix_input,
+            root_input,
             mixture,
+            selector,
+            retention,
         })
     }
 }
@@ -157,8 +182,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(path) => serde_json::from_slice::<Mm2Input>(&fs::read(path)?)?.actions,
         None => power_on_walk(),
     };
-    let game = Mm2Game::new_at_stage_after(&rom, &args.core, &core_sha256, prefix, args.stage)
+    let mut game = Mm2Game::new_at_stage_after(&rom, &args.core, &core_sha256, prefix, args.stage)
         .with_champion_input_path(args.output.join("champion-input.json"));
+    if let Some(path) = &args.root_input {
+        let root: Mm2Input = serde_json::from_slice(&fs::read(path)?)?;
+        fs::write(
+            args.output.join("root-input.json"),
+            serde_json::to_vec_pretty(&root)?,
+        )?;
+        game = game.with_root_actions(root.actions);
+    }
     let config = campaign_config(&args);
     if args.marketing_soak {
         run_marketing_soak(&game, &config, &args.output)
@@ -179,11 +212,8 @@ fn campaign_config(args: &Args) -> Mm2CampaignConfig {
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
-        retention: RetentionPolicy::Unprobed,
-        selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 3,
-            groups: vec![6, 12, 2, 16],
-        }),
+        retention: args.retention,
+        selector: args.selector.clone(),
         suffix: SuffixShape::OneToSix,
         mixture: args.mixture,
         victory_input_path: Some(args.output.join("victory-input.json")),

@@ -2,9 +2,32 @@
 
 # Mega Man 2 workload
 
+`mm2-campaign --root-input INPUT.json` runs a diagnostic from a recorded
+stage-relative input after the usual stage setup and optional continuous
+`--prefix-input`. Every root action is replayed through the target; terminal
+roots are rejected. The root becomes the reset point and participates in the
+workload identity. Generated victory prefixes include its actions. Search
+outputs are relative to that root, so concatenate `root-input.json` before
+the searched suffix when using `mm2-film` with the original stage prefix.
+Rooted progress is a diagnostic and must be replayed from power-on before it
+counts as continuous game progress.
+
+`--selector` accepts the existing recorded selector-policy identifier. The
+default remains `hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2,16`.
+For a retry-limit ablation, change only its first threshold, for example to
+64; the engine's hard exhaustion ceiling still applies.
+`--retention` selects `unprobed` (the default) or the existing
+`probe_at_admission` survival check. Compare its extra emulated work as well
+as retained progress.
+
 This package carries the native Mega Man 2 adapter onto the refactored campaign
 contracts. The generic engine receives opaque keys, typed actions, observations,
 and snapshots. This module owns every RAM address and game interpretation.
+
+Death-animation hysteresis is part of each observation and snapshot. Its
+consecutive-frame count persists across action boundaries; splitting a hold
+into shorter inputs must not reset the death timer. Stream and snapshot
+formats are version 2 for this serialized state and terminal-policy change.
 
 Registered cases start from power-on menus selecting one of the eight ordinary
 Robot Master stages. A stage clear is reported as an independent stage result;
@@ -58,6 +81,21 @@ endpoint, the last of which is the energy-tank count rather than a meter. The
 decoded state keeps only their sum, which cannot say whether the one weapon a
 wall needs still has ammunition. Both stop once a boss is down, because the
 target refuses actions from there.
+
+mm2-replay is the raw power-on replay path. It loads the external ROM and
+QuickNES core directly, replays every action in an input archive, and never
+adds stage setup or stops at a death or boss clear. It prints the ROM, core, and
+input hashes, the number of recorded and applied actions, the raw emulator frame
+count, and the decoded endpoint. To capture a film beginning at a zero-based
+action index while still replaying the complete tape, pass
+--film-from ACTION_INDEX --film-output OUTPUT.mp4. The film includes that
+action and all following actions; the replay report still covers the entire
+input archive.
+Pass --trace-output TRACE.jsonl to emit one JSON object per action after the
+film start index (or action zero when no film is requested). Each trace object
+includes the decoded state, action, raw frame count, object IDs, flags, X/Y
+tables, the 0x6c0..0x6df health region, and the 12 weapon-energy bytes. Use
+--trace-from INDEX to choose a trace start without changing film capture.
 
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md).
 The source lineage and discarded search claims are listed in the
