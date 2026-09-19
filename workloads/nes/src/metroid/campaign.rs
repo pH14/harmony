@@ -403,7 +403,8 @@ fn execute_suffix(
                 .snapshot()
                 .ok_or("failed to snapshot Metroid suffix")?;
             Some(CampaignCandidate {
-                key: archive_key(target.mechanical_state()),
+                key: archive_key(target.mechanical_state())
+                    .with_boss_health_seen(target.boss_health_seen()),
                 viable: true,
                 snapshot,
             })
@@ -772,7 +773,7 @@ impl Evaluation for MetroidGame {
     }
 
     fn current_key(&self, target: &MetroidTarget) -> Result<MetroidArchiveKey, Box<dyn Error>> {
-        Ok(archive_key(target.mechanical_state()))
+        Ok(archive_key(target.mechanical_state()).with_boss_health_seen(target.boss_health_seen()))
     }
 
     fn complete_candidate_key(
@@ -959,6 +960,7 @@ mod tests {
         let observation = MetroidObservations {
             frame_count: 99,
             decoded: decode_state(&wram, &[0; 8192]).unwrap(),
+            boss_health_seen: 0,
             boss_defeats: BossDefeats::default(),
             mother_brain_status: 0,
             tourian_events: TourianEvents::default(),

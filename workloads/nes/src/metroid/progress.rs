@@ -182,6 +182,7 @@ mod tests {
         MetroidObservations {
             frame_count: 10,
             decoded: decode_state(&wram, &cartridge).unwrap(),
+            boss_health_seen: 0,
             boss_defeats: BossDefeats {
                 kraid: kraid & 1 != 0,
                 ridley: ridley & 2 != 0,

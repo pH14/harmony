@@ -260,6 +260,7 @@ pub fn preference_tuple(state: MetroidMechanicalState) -> (u8, u8, u16, u8) {
 pub struct MetroidObservations {
     pub frame_count: u64,
     pub decoded: MetroidMechanicalState,
+    pub boss_health_seen: u8,
     pub boss_defeats: BossDefeats,
     pub mother_brain_status: u8,
     pub tourian_events: TourianEvents,
@@ -283,6 +284,7 @@ impl MetroidSnapshot {
             observation: MetroidObservations {
                 frame_count: 0,
                 decoded,
+                boss_health_seen: decoded.boss_health,
                 boss_defeats: BossDefeats::default(),
                 mother_brain_status: 0,
                 tourian_events: TourianEvents::default(),
@@ -454,6 +456,7 @@ impl MetroidTarget {
         let observation = MetroidObservations {
             frame_count: 0,
             decoded: state,
+            boss_health_seen: state.boss_health,
             boss_defeats: decode_boss_defeats(&cartridge)?,
             mother_brain_status: read_byte(&wram, 0x98)?,
             tourian_events: TourianEvents::default(),
@@ -493,6 +496,11 @@ impl MetroidTarget {
     #[must_use]
     pub fn mechanical_state(&self) -> MetroidMechanicalState {
         self.observation.decoded
+    }
+
+    #[must_use]
+    pub fn boss_health_seen(&self) -> u8 {
+        self.observation.boss_health_seen
     }
 
     #[must_use]
@@ -634,6 +642,7 @@ impl MetroidTarget {
     fn make_observation(
         frame_count: u64,
         state: MetroidMechanicalState,
+        boss_health_seen: u8,
         wram: &[u8; WRAM_SIZE],
         prior_wram: &[u8; WRAM_SIZE],
         boss_defeats: BossDefeats,
@@ -652,6 +661,7 @@ impl MetroidTarget {
         MetroidObservations {
             frame_count,
             decoded: state,
+            boss_health_seen,
             boss_defeats,
             mother_brain_status: wram[0x98],
             tourian_events,
@@ -772,6 +782,7 @@ impl Target for MetroidTarget {
             .read_wram()
             .map_err(|error| error.to_string())?;
         self.observation = snapshot.observation.clone();
+        self.observation.boss_health_seen = self.observation.decoded.boss_health;
         self.observation.dead = self.terminal_policy.is_dead(self.observation.decoded);
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
@@ -788,18 +799,21 @@ fn decode_action_observations(
 ) -> Result<(Vec<MetroidObservations>, [u8; WRAM_SIZE]), MachineError> {
     let boss_defeats = decode_boss_defeats(cartridge)?;
     let mut prior_state = initial.decoded;
+    let mut boss_health_seen = initial.boss_health_seen;
     let mut observations = Vec::new();
     let mut tourian_events = TourianEvents::default();
     for (offset, wram) in frames.iter().enumerate() {
         let state = decode_state(wram, cartridge)?;
         let frame_count = initial.frame_count + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
         tourian_events.observe(state, wram[0x98]);
+        boss_health_seen = boss_health_seen.max(state.boss_health);
         let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
             || policy.is_dead(state) != policy.is_dead(prior_state);
         if boundary || offset + 1 == frames.len() {
             let mut observation = MetroidTarget::make_observation(
                 frame_count,
                 state,
+                boss_health_seen,
                 wram,
                 &prior_wram,
                 boss_defeats,
@@ -1041,6 +1055,7 @@ mod observation_tests {
         let initial = MetroidTarget::make_observation(
             0,
             decode_state(&start, &cartridge).unwrap(),
+            0,
             &start,
             &start,
             BossDefeats::default(),
@@ -1101,6 +1116,7 @@ mod observation_tests {
             let initial = MetroidTarget::make_observation(
                 400,
                 decode_state(&wram, &cartridge).unwrap(),
+                0,
                 &wram,
                 &wram,
                 BossDefeats::default(),
@@ -1137,5 +1153,51 @@ mod observation_tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn an_execution_keeps_its_highest_present_boss_reading() {
+        let cartridge = [0; 8192];
+        let mut entry = [0; WRAM_SIZE];
+        entry[GAME_MODE] = GAME_MODE_PLAYING;
+        entry[HEALTH_LOW] = 0x50;
+        let slot = ENEMY_SLOT_BASE + 2 * ENEMY_SLOT_STRIDE;
+        entry[slot + ENEMY_SPECIAL_ATTRIBUTES] = ENEMY_MINI_BOSS_BIT;
+        entry[slot + ENEMY_HIT_POINTS] = 0x60;
+        let mut hurt = entry;
+        hurt[slot + ENEMY_HIT_POINTS] = 0x30;
+        let mut flash = hurt;
+        flash[slot + ENEMY_HIT_POINTS] = ENEMY_HIT_POINTS_ABSENT;
+        let mut initial = MetroidTarget::make_observation(
+            0,
+            decode_state(&entry, &cartridge).unwrap(),
+            0,
+            &entry,
+            &entry,
+            BossDefeats::default(),
+            TourianEvents::default(),
+        );
+        initial.boss_health_seen = 0x20;
+        let (observations, _) = decode_action_observations(
+            &[entry, hurt, flash],
+            &cartridge,
+            &initial,
+            entry,
+            MetroidTerminalPolicy::Legacy,
+        )
+        .unwrap();
+        let last = observations.last().unwrap();
+        assert_eq!(last.decoded.boss_health, 0);
+        assert_eq!(last.boss_health_seen, 0x60);
+        let (observations, _) = decode_action_observations(
+            &[hurt],
+            &cartridge,
+            &initial,
+            entry,
+            MetroidTerminalPolicy::Legacy,
+        )
+        .unwrap();
+        assert_eq!(observations[0].decoded.boss_health, 0x30);
+        assert_eq!(observations[0].boss_health_seen, 0x30);
     }
 }

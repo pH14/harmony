@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_v12";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_v13";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -50,6 +50,7 @@ pub struct MetroidArchiveKey {
     pub tanks: u8,
     pub boss_damage: u8,
     pub boss_health: u8,
+    pub boss_health_seen: u8,
     pub area: u8,
     pub map_x: u8,
     pub map_y: u8,
@@ -143,6 +144,7 @@ impl ArchiveKey for MetroidArchiveKey {
         }
         let highest = parent
             .map_or(0, |(_, lineage)| lineage.boss_health_highest)
+            .max(self.boss_health_seen)
             .max(self.boss_health);
         Self {
             boss_damage: highest.saturating_sub(self.boss_health) / BOSS_DAMAGE_BUCKET,
@@ -151,7 +153,10 @@ impl ArchiveKey for MetroidArchiveKey {
     }
 
     fn record(lineage: &mut Self::Lineage, key: Self) {
-        lineage.boss_health_highest = lineage.boss_health_highest.max(key.boss_health);
+        lineage.boss_health_highest = lineage
+            .boss_health_highest
+            .max(key.boss_health_seen)
+            .max(key.boss_health);
     }
 }
 
@@ -161,6 +166,14 @@ pub struct MetroidLineage {
 }
 
 impl MetroidArchiveKey {
+    #[must_use]
+    pub fn with_boss_health_seen(self, boss_health_seen: u8) -> Self {
+        Self {
+            boss_health_seen: boss_health_seen.max(self.boss_health),
+            ..self
+        }
+    }
+
     fn preference(self) -> (u8, u8, u8, u16) {
         (self.items, self.tanks, self.missiles, self.health)
     }
@@ -180,6 +193,7 @@ pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
         tanks,
         boss_damage: 0,
         boss_health: state.boss_health,
+        boss_health_seen: state.boss_health,
         area: state.area,
         map_x: state.map_x,
         map_y: state.map_y,
@@ -562,6 +576,36 @@ mod tests {
         assert_eq!(
             hurt.complete(Some((arriving, &lineage))).boss_damage,
             (64 - 10) / BOSS_DAMAGE_BUCKET
+        );
+    }
+
+    #[test]
+    fn the_highest_reading_within_one_execution_sets_the_damage() {
+        let mut lineage = MetroidLineage::default();
+        let first_retained = archive_key(MetroidMechanicalState {
+            boss_health: 48,
+            ..MetroidMechanicalState::default()
+        })
+        .with_boss_health_seen(96)
+        .complete(Some((MetroidArchiveKey::default(), &lineage)));
+        assert_eq!(first_retained.boss_damage, 12);
+        MetroidArchiveKey::record(&mut lineage, first_retained);
+        assert_eq!(lineage.boss_health_highest, 96);
+        let later = archive_key(MetroidMechanicalState {
+            boss_health: 40,
+            ..MetroidMechanicalState::default()
+        })
+        .with_boss_health_seen(48)
+        .complete(Some((first_retained, &lineage)));
+        assert_eq!(later.boss_damage, 14);
+        assert_eq!(
+            archive_key(MetroidMechanicalState {
+                boss_health: 64,
+                ..MetroidMechanicalState::default()
+            })
+            .with_boss_health_seen(10)
+            .boss_health_seen,
+            64
         );
     }
 
