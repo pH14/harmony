@@ -48,7 +48,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 5;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 6;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
@@ -311,19 +311,6 @@ pub trait InputPolicy: CampaignTypes {
         self.expand_recorded_or_live(run, state, shape, mixture, before, mutation_seed, true)
     }
 
-    fn extend_suffix_with_horizon(
-        &self,
-        run: &Self::Run,
-        suffix: &mut Vec<Self::Action>,
-        mutation_seed: u64,
-        additional_actions: usize,
-    ) -> Result<(), Box<dyn Error>> {
-        let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
-        for _ in 0..additional_actions {
-            suffix.push(self.sample_alphabet(run, &mut rand)?);
-        }
-        Ok(())
-    }
     #[allow(clippy::too_many_arguments)]
     fn expand_recorded_or_live(
         &self,
@@ -663,6 +650,8 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub decisions: Vec<CampaignAdmissionDecision>,
     pub mixture_weight: u8,
     pub splice_weight: u8,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub adaptive_horizon_extension: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub splice: Option<CampaignSpliceRecord>,
 
@@ -693,6 +682,8 @@ pub struct CampaignSkipRecord<C, K = ()> {
     pub mutation_seed: u64,
     pub mixture_weight: u8,
     pub splice_weight: u8,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub adaptive_horizon_extension: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub splice: Option<CampaignSpliceRecord>,
 
@@ -1799,6 +1790,43 @@ fn verify_duration_draw(
     Ok(())
 }
 
+const ADAPTIVE_HORIZON_SEED_DOMAIN: u64 = 0x8f52_4d31_7ac9_e608;
+
+fn extend_suffix_with_horizon<G: InputPolicy + ?Sized>(
+    workload: &G,
+    run: &G::Run,
+    suffix: &mut Vec<G::Action>,
+    mutation_seed: u64,
+    additional_actions: usize,
+) -> Result<(), Box<dyn Error>> {
+    let mut rand = RomuDuoJrRand::with_seed(mutation_seed ^ ADAPTIVE_HORIZON_SEED_DOMAIN);
+    for _ in 0..additional_actions {
+        suffix.push(workload.sample_alphabet(run, &mut rand)?);
+    }
+    Ok(())
+}
+
+fn extend_recorded_suffix_with_horizon<G: InputPolicy + ?Sized>(
+    workload: &G,
+    run: &G::Run,
+    suffix: &mut Vec<G::Action>,
+    remaining_actions: usize,
+    eligible: bool,
+    mutation_seed: u64,
+    additional_actions: usize,
+) -> Result<(), Box<dyn Error>> {
+    if additional_actions == 0 {
+        return Ok(());
+    }
+    if !eligible {
+        return Err("recorded adaptive horizon extension is ineligible".into());
+    }
+    if additional_actions > remaining_actions {
+        return Err("recorded adaptive horizon extension exceeds action limit".into());
+    }
+    extend_suffix_with_horizon(workload, run, suffix, mutation_seed, additional_actions)
+}
+
 fn validate_duration_draw<G: Workload + ?Sized>(
     workload: &G,
     run: &G::Run,
@@ -2093,6 +2121,7 @@ struct PendingJob<G: Workload + ?Sized> {
     mutation_seed: u64,
     mixture_weight: u8,
     splice_weight: u8,
+    adaptive_horizon_extension: usize,
     splice: Option<CampaignSpliceRecord>,
     selector: SelectorDraw,
     draw_checkpoint_before: Option<EmpiricalStepCheckpoint>,
@@ -2622,6 +2651,7 @@ where
                                 mutation_seed,
                                 mixture_weight,
                                 splice_weight,
+                                adaptive_horizon_extension: 0,
                                 splice,
                                 selector,
                                 draw_checkpoint_before,
@@ -2761,7 +2791,8 @@ where
                             .saturating_sub(core.archive.entries[parent_index].input_len)
                             .saturating_sub(suffix.len()),
                     );
-                    workload.extend_suffix_with_horizon(
+                    extend_suffix_with_horizon(
+                        workload,
                         &config.run,
                         &mut suffix,
                         mutation_seed,
@@ -2783,6 +2814,7 @@ where
                             mutation_seed,
                             mixture_weight,
                             splice_weight,
+                            adaptive_horizon_extension: extension,
                             splice,
                             selector,
                             draw_checkpoint_before,
@@ -2823,6 +2855,7 @@ where
                             mutation_seed,
                             mixture_weight,
                             splice_weight,
+                            adaptive_horizon_extension: extension,
                             splice,
                             selector,
                             draw_checkpoint_before,
@@ -3067,6 +3100,7 @@ where
                         decisions,
                         mixture_weight: pending_job.mixture_weight,
                         splice_weight: pending_job.splice_weight,
+                        adaptive_horizon_extension: pending_job.adaptive_horizon_extension,
                         splice: pending_job.splice,
                         selector: pending_job.selector,
                         draw_checkpoint_before: pending_job.draw_checkpoint_before,
@@ -3667,18 +3701,9 @@ where
                 if duration_checkpoint_before != skip.duration_checkpoint_before {
                     return Err("replayed skip duration state diverged before expansion".into());
                 }
-                let adaptive_extension = if spliced.is_none()
+                let horizon_eligible = spliced.is_none()
                     && duration_draw.is_none()
-                    && replay_suffix.adaptive_horizon()
-                {
-                    let remaining_actions = header
-                        .action_limit
-                        .saturating_sub(core.archive.entries[parent_index].input_len);
-                    core.archive
-                        .adaptive_horizon_extension(parent_index, remaining_actions)
-                } else {
-                    0
-                };
+                    && replay_suffix.adaptive_horizon();
                 let mut suffix = match (spliced, duration_draw) {
                     (Some(tail), _) => tail,
                     (None, draw) => workload.expand_suffix_recorded_duration(
@@ -3695,17 +3720,18 @@ where
                         draw,
                     )?,
                 };
-                let extension = adaptive_extension.min(
-                    header
-                        .action_limit
-                        .saturating_sub(core.archive.entries[parent_index].input_len)
-                        .saturating_sub(suffix.len()),
-                );
-                workload.extend_suffix_with_horizon(
+                let remaining_actions = header
+                    .action_limit
+                    .saturating_sub(core.archive.entries[parent_index].input_len)
+                    .saturating_sub(suffix.len());
+                extend_recorded_suffix_with_horizon(
+                    workload,
                     &replay_run,
                     &mut suffix,
+                    remaining_actions,
+                    horizon_eligible,
                     skip.mutation_seed,
-                    extension,
+                    skip.adaptive_horizon_extension,
                 )?;
                 replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
                 if !core.all_prefixes_archived(parent_index, &suffix) {
@@ -3828,18 +3854,9 @@ where
                 if duration_checkpoint_before != job.duration_checkpoint_before {
                     return Err("replayed job duration state diverged before expansion".into());
                 }
-                let adaptive_extension = if spliced.is_none()
+                let horizon_eligible = spliced.is_none()
                     && duration_draw.is_none()
-                    && replay_suffix.adaptive_horizon()
-                {
-                    let remaining_actions = header
-                        .action_limit
-                        .saturating_sub(core.archive.entries[parent_index].input_len);
-                    core.archive
-                        .adaptive_horizon_extension(parent_index, remaining_actions)
-                } else {
-                    0
-                };
+                    && replay_suffix.adaptive_horizon();
                 let mut suffix = match (spliced, duration_draw) {
                     (Some(tail), _) => tail,
                     (None, draw) => workload.expand_suffix_recorded_duration(
@@ -3856,17 +3873,18 @@ where
                         draw,
                     )?,
                 };
-                let extension = adaptive_extension.min(
-                    header
-                        .action_limit
-                        .saturating_sub(core.archive.entries[parent_index].input_len)
-                        .saturating_sub(suffix.len()),
-                );
-                workload.extend_suffix_with_horizon(
+                let remaining_actions = header
+                    .action_limit
+                    .saturating_sub(core.archive.entries[parent_index].input_len)
+                    .saturating_sub(suffix.len());
+                extend_recorded_suffix_with_horizon(
+                    workload,
                     &replay_run,
                     &mut suffix,
+                    remaining_actions,
+                    horizon_eligible,
                     job.mutation_seed,
-                    extension,
+                    job.adaptive_horizon_extension,
                 )?;
                 replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
                 let job_execution_work_before = workload.execution_work(&target);
@@ -4884,7 +4902,7 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":5,"format":"campaign-v1","campaign_seed":7,"workers":2,
+    const RECORDED_HEADER: &str = r#"{"schema_version":6,"format":"campaign-v1","campaign_seed":7,"workers":2,
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,

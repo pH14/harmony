@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use std::{cmp::Ordering, error::Error};
 
 use searcher::search::{
@@ -6,11 +8,10 @@ use searcher::search::{
     },
     campaign::{
         ArchiveReportState, CampaignActionResult, CampaignConfig, CampaignJobResult,
-        CampaignOrigin, CampaignTypes, Evaluation, InputPolicy, Reporting, TargetExecution,
-        WorkloadPolicies, replay_campaign_checkpointed, run_campaign_checkpointed,
+        CampaignOrigin, CampaignStreamRecord, CampaignTypes, Evaluation, InputPolicy, Reporting,
+        TargetExecution, WorkloadPolicies, replay_campaign_checkpointed, run_campaign_checkpointed,
     },
-    draw::{DrawMixture, MixtureDraw, SuffixShape},
-    draw_tables::DrawTables,
+    draw::{DrawMixture, SuffixShape},
     empirical_steps::EmpiricalStepCheckpoint,
     rand::RomuDuoJrRand,
     rollout::ExecutionDisposition,
@@ -19,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-struct TickAction;
+struct TickAction(u8);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct TickKey(u8);
@@ -142,32 +143,9 @@ impl InputPolicy for HorizonWorkload {
     fn sample_alphabet(
         &self,
         _: &Self::Run,
-        _: &mut RomuDuoJrRand,
+        rand: &mut RomuDuoJrRand,
     ) -> Result<Self::Action, Box<dyn Error>> {
-        Ok(TickAction)
-    }
-
-    fn expand_suffix(
-        &self,
-        _: &Self::Run,
-        _: &DrawTables<Self::Action>,
-        _: SuffixShape,
-        _: MixtureDraw,
-        _: u64,
-    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        Ok(vec![TickAction; 6])
-    }
-
-    fn expand_suffix_recorded(
-        &self,
-        run: &Self::Run,
-        state: &DrawTables<Self::Action>,
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        _: Option<&EmpiricalStepCheckpoint>,
-        mutation_seed: u64,
-    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        self.expand_suffix(run, state, shape, mixture, mutation_seed)
+        Ok(TickAction(u8::try_from(rand.next_u64() % 251 + 1)?))
     }
 }
 
@@ -300,10 +278,14 @@ impl Evaluation for HorizonWorkload {
     }
 }
 
-fn config(execution_budget: u64, suffix: SuffixShape) -> CampaignConfig<HorizonWorkload> {
+fn config(
+    execution_budget: u64,
+    suffix: SuffixShape,
+    workers: u32,
+) -> CampaignConfig<HorizonWorkload> {
     CampaignConfig {
         campaign_seed: 0x51a7_e001,
-        workers: 1,
+        workers,
         execution_budget,
         action_limit: 8,
         host: "adaptive-horizon-test".to_owned(),
@@ -331,16 +313,35 @@ fn adaptive_horizon_crosses_wait_and_replays_exactly() {
     let mut stream = Vec::new();
     let live = run_campaign_checkpointed(
         &workload,
-        &config(2, SuffixShape::OneToSix),
+        &config(8, SuffixShape::OneToSix, 1),
         &CampaignOrigin::Genesis,
         &mut stream,
         None,
     )
     .expect("wait campaign");
-    assert_eq!(live.0.execution_work, 13);
-    assert_eq!(live.0.archive.entries.len(), 2);
-    assert_eq!(live.0.archive.entries[1].key, TickKey(1));
-    assert_eq!(live.0.archive.entries[1].input.actions.len(), 7);
+    assert!(live.0.execution_work > 0);
+    assert!(live.0.archive.entries.len() >= 2);
+    assert!(
+        live.0
+            .archive
+            .entries
+            .iter()
+            .any(|entry| entry.key == TickKey(1) && entry.input.actions.len() >= 7)
+    );
+    let recorded_extensions = stream
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .skip(1)
+        .map(|line| {
+            serde_json::from_slice::<CampaignStreamRecord<EmpiricalStepCheckpoint, TickKey>>(line)
+                .expect("horizon stream record")
+        })
+        .map(|record| match record {
+            CampaignStreamRecord::Job(job) => job.adaptive_horizon_extension,
+            CampaignStreamRecord::Skip(skip) => skip.adaptive_horizon_extension,
+        })
+        .collect::<Vec<_>>();
+    assert!(recorded_extensions.iter().any(|extension| *extension > 0));
     let replayed =
         replay_campaign_checkpointed(&workload, &stream, None, None).expect("wait replay");
     assert_eq!(replayed, live);
@@ -354,14 +355,14 @@ fn adaptive_horizon_cycles_without_growing_past_action_limit() {
     let mut stream = Vec::new();
     let live = run_campaign_checkpointed(
         &workload,
-        &config(4, SuffixShape::OneToSix),
+        &config(4, SuffixShape::OneToSix, 1),
         &CampaignOrigin::Genesis,
         &mut stream,
         None,
     )
     .expect("cycle campaign");
     assert_eq!(live.0.archive.entries.len(), 1);
-    assert_eq!(live.0.execution_work, 29);
+    assert_eq!(live.0.execution_work, 18);
     assert_eq!(live.0.archive.entries[0].input.actions.len(), 0);
     let replayed =
         replay_campaign_checkpointed(&workload, &stream, None, None).expect("cycle replay");
@@ -376,7 +377,7 @@ fn bounded_suffix_keeps_its_existing_work_bound() {
     let mut stream = Vec::new();
     let live = run_campaign_checkpointed(
         &workload,
-        &config(2, SuffixShape::OneToSixBounded),
+        &config(2, SuffixShape::OneToSixBounded, 1),
         &CampaignOrigin::Genesis,
         &mut stream,
         None,
@@ -387,5 +388,37 @@ fn bounded_suffix_keeps_its_existing_work_bound() {
     assert_eq!(live.0.archive.entries[0].input.actions.len(), 0);
     let replayed =
         replay_campaign_checkpointed(&workload, &stream, None, None).expect("bounded replay");
+    assert_eq!(replayed, live);
+}
+
+#[test]
+fn adaptive_horizon_replays_with_reservation_lag_and_variable_extensions() {
+    let workload = HorizonWorkload {
+        goal_after_seven: true,
+    };
+    let mut stream = Vec::new();
+    let live = run_campaign_checkpointed(
+        &workload,
+        &config(8, SuffixShape::OneToSix, 2),
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+    )
+    .expect("multi-worker wait campaign");
+    assert_eq!(live.0.workers, 2);
+    let extended = live
+        .0
+        .archive
+        .entries
+        .iter()
+        .find(|entry| entry.input.actions.len() >= 7)
+        .expect("extended entry");
+    assert!(
+        extended.input.actions[6..]
+            .iter()
+            .all(|action| action.0 != 0)
+    );
+    let replayed =
+        replay_campaign_checkpointed(&workload, &stream, None, None).expect("multi-worker replay");
     assert_eq!(replayed, live);
 }

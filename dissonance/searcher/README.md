@@ -207,7 +207,8 @@ searcher uses the selected entry's existing `since_retained` streak to append
 that many deterministic alphabet actions to the ordinary suffix, capped by the
 remaining action-limit capacity. The archive representative stays unchanged;
 the appended actions execute and count as ordinary logical work, and replay
-reconstructs them from the recorded streak. `OneToSixBounded` deliberately
+reconstructs them from the extension count recorded at reservation time.
+`OneToSixBounded` deliberately
 keeps its existing three-times-maximum-action-cost bound and receives no
 extension.
 
