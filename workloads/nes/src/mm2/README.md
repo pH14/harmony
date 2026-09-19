@@ -61,10 +61,10 @@ must recheck opening, closing, and gameplay traces.
 
 Boss-entry milestones require an active encounter or a confirmed defeat.
 The boss HP byte can remain 28 after Game Over/Continue even though the boss
-phase has reset to zero at the stage start. Stream format v3 records the
+phase has reset to zero at the stage start. Stream format v4 records the
 corrected milestone semantics; nonzero boss HP alone is not entry evidence.
 
-The v21 key uses 16-pixel retention slots pooled into 32-pixel cells,
+The v22 key uses 16-pixel retention slots pooled into 32-pixel cells,
 128-pixel regions, screens, and stages. Weapon/menu rows distinguish local
 endpoints but are pooled at coarser levels. Health and energy prefer
 representatives without multiplying spatial slots. It removes the prototype's
@@ -78,6 +78,18 @@ weapon, so a cleared boss is a granted weapon or that same defeated phase byte.
 The generic progress-aware selector consumes that relation. Historical frontier
 selectors retain their original identity ordering for controlled baselines.
 Summed energy remains a documented resource-preference tradeoff, not dominance.
+The Wily4 retention ablation adds two local resource identities without changing
+progress ordering. During an active stage-11 boss encounter, active object
+slots 20 through 29 whose IDs are 109 (Boobeam traps) or 87 (barriers) form a
+ten-bit `boobeam_targets` mask, with bit `slot - 20`; all other stages, boss
+phases, IDs, and inactive slots decode to zero. `crash_shots` is the Crash
+Bomber energy byte capped at 28 and divided by four. Both identities are gated
+to the same stage-11 phase-2-through-0xfd encounter window and decode to zero
+outside it. Both values participate in retention groups through depth 2, while
+the progress relation still compares only boss count and boss damage. This is
+an ablation hypothesis: preserving the
+remaining barrier/trap layout and usable Crash supply may separate endpoints
+with equal accumulated damage.
 Enemy damage requires a health decrease on an active enemy with a confirmed
 hit flag, preserving its object and spawn identity or its killed-object
 transition. Twenty HP is a real initial health value, not an idle sentinel.

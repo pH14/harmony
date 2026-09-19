@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_MM2_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_location_boss_bar_loaded_confirmed_enemy_spatial_16_posture_weapon_bank_menu_energy_platforms_preference_v21";
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_location_boss_bar_loaded_confirmed_enemy_spatial_16_posture_weapon_bank_menu_energy_platforms_boobeam_targets_crash_shots_preference_v22";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -42,6 +42,8 @@ pub struct Mm2ArchiveGroup {
     room: u8,
     boss_damage: u8,
     enemy_damage: u8,
+    boobeam_targets: u16,
+    crash_shots: u8,
     x: u8,
     y: u8,
     posture: u8,
@@ -58,6 +60,8 @@ pub struct Mm2ArchiveKey {
     pub room: u8,
     pub boss_damage: u8,
     pub enemy_damage: u8,
+    pub boobeam_targets: u16,
+    pub crash_shots: u8,
     pub x: u8,
     pub y: u8,
     pub posture: u8,
@@ -82,6 +86,8 @@ impl ArchiveKey for Mm2ArchiveKey {
             room: self.room,
             boss_damage: self.boss_damage,
             enemy_damage: self.enemy_damage,
+            boobeam_targets: self.boobeam_targets,
+            crash_shots: self.crash_shots,
             x: self.x,
             y: self.y,
             posture: self.posture,
@@ -160,6 +166,8 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
         room: state.room,
         boss_damage: state.boss_damage() / BOSS_DAMAGE_BUCKET,
         enemy_damage: state.enemy_damage / ENEMY_DAMAGE_BUCKET,
+        boobeam_targets: state.boobeam_targets,
+        crash_shots: state.crash_shots,
         x: state.x / 16,
         y: state.y / 16,
         posture: state.posture(),
@@ -410,6 +418,39 @@ mod tests {
         let mut elsewhere = first;
         elsewhere.room = 99;
         assert_eq!(first.complete(Some((elsewhere, &()))), first.complete(None));
+    }
+
+    #[test]
+    fn wily4_target_and_crash_identities_are_retained_without_progress_ordering() {
+        let mut first_state = state(100, 28, 0);
+        first_state.stage = 11;
+        first_state.boss_phase = 2;
+        first_state.boobeam_targets = 0b11;
+        first_state.crash_shots = 2;
+        let first = archive_key(first_state);
+        let mut mask_state = first_state;
+        mask_state.boobeam_targets = 0b10;
+        let mask = archive_key(mask_state);
+        let mut shots_state = first_state;
+        shots_state.crash_shots = 6;
+        let shots = archive_key(shots_state);
+
+        for depth in 0..=2 {
+            assert_ne!(first.group(depth), mask.group(depth));
+            assert_ne!(first.group(depth), shots.group(depth));
+        }
+        assert_eq!(first.group(3), mask.group(3));
+        assert_eq!(first.group(3), shots.group(3));
+        assert_eq!(first.group(4), mask.group(4));
+        assert_eq!(first.group(4), shots.group(4));
+        assert_eq!(
+            Mm2ArchiveKey::progress_cmp(first.group(0), mask.group(0)),
+            Ordering::Equal
+        );
+        assert_eq!(
+            Mm2ArchiveKey::progress_cmp(first.group(0), shots.group(0)),
+            Ordering::Equal
+        );
     }
 
     #[test]

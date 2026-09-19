@@ -51,6 +51,12 @@ const ITEM_OBJECT_FIRST: u8 = 0x38;
 const ITEM_OBJECT_LAST: u8 = 0x3a;
 const BOSS_HEALTH: usize = 0x6c1;
 const BOSS_PHASE: usize = 0xb1;
+const BOOBEAM_STAGE: u8 = 11;
+const BOOBEAM_TARGET_FIRST_SLOT: usize = 20;
+const BOOBEAM_TARGET_LAST_SLOT: usize = 29;
+const BOOBEAM_TRAP_ID: u8 = 109;
+const BOOBEAM_BARRIER_ID: u8 = 87;
+const CRASH_WEAPON_ENERGY_INDEX: usize = 7;
 
 const BOSS_PHASE_FIGHTING: u8 = 0x02;
 const BOSS_PHASE_NONE: u8 = 0x00;
@@ -176,6 +182,8 @@ pub struct Mm2MechanicalState {
     pub weapons_obtained: u8,
     pub boss_health: u8,
     pub boss_phase: u8,
+    pub boobeam_targets: u16,
+    pub crash_shots: u8,
     pub camera_state: u8,
     pub enemy_damage: u8,
 }
@@ -227,8 +235,10 @@ impl Mm2MechanicalState {
 }
 
 pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
+    let stage = read_byte(wram, STAGE)?;
+    let boss_phase = read_byte(wram, BOSS_PHASE)?;
     Ok(Mm2MechanicalState {
-        stage: read_byte(wram, STAGE)?,
+        stage,
         screen: read_byte(wram, PLAYER_SCREEN)?,
         room: read_byte(wram, LEVEL_ROOM)?,
         x: read_byte(wram, PLAYER_X)?,
@@ -254,10 +264,42 @@ pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
         },
         weapons_obtained: read_byte(wram, WEAPONS_OBTAINED)?,
         boss_health: read_byte(wram, BOSS_HEALTH)?,
-        boss_phase: read_byte(wram, BOSS_PHASE)?,
+        boss_phase,
+        boobeam_targets: boobeam_targets(wram, stage, boss_phase)?,
+        crash_shots: crash_shots(wram, stage, boss_phase)?,
         camera_state: read_byte(wram, CAMERA_STATE)?,
         enemy_damage: 0,
     })
+}
+
+fn boobeam_targets(wram: &[u8], stage: u8, boss_phase: u8) -> Result<u16, MachineError> {
+    if !wily4_boss_active(stage, boss_phase) {
+        return Ok(0);
+    }
+    let mut targets = 0_u16;
+    for slot in BOOBEAM_TARGET_FIRST_SLOT..=BOOBEAM_TARGET_LAST_SLOT {
+        let id = read_byte(wram, OBJECT_ID_TABLE + slot)?;
+        let flags = read_byte(wram, OBJECT_FLAG_TABLE + slot)?;
+        if flags & OBJECT_ACTIVE != 0 && (id == BOOBEAM_TRAP_ID || id == BOOBEAM_BARRIER_ID) {
+            targets |= 1_u16 << (slot - BOOBEAM_TARGET_FIRST_SLOT);
+        }
+    }
+    Ok(targets)
+}
+
+fn crash_shots(wram: &[u8], stage: u8, boss_phase: u8) -> Result<u8, MachineError> {
+    if !wily4_boss_active(stage, boss_phase) {
+        return Ok(0);
+    }
+    Ok(read_byte(wram, WEAPON_ENERGY + CRASH_WEAPON_ENERGY_INDEX)?.min(28) / 4)
+}
+
+fn wily4_boss_active(stage: u8, boss_phase: u8) -> bool {
+    stage == BOOBEAM_STAGE && (BOSS_PHASE_FIGHTING..BOSS_PHASE_DEFEATED).contains(&boss_phase)
+}
+
+fn ablation_identity_changed(left: Mm2MechanicalState, right: Mm2MechanicalState) -> bool {
+    left.boobeam_targets != right.boobeam_targets || left.crash_shots != right.crash_shots
 }
 
 fn coherent_world_violation(
@@ -1079,6 +1121,7 @@ impl Target for Mm2Target {
                 || coherent_violation;
             let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
                 || preference_tuple(state) != preference_tuple(prior_state)
+                || ablation_identity_changed(state, prior_state)
                 || dead != died;
             died = dead;
             if boundary {
@@ -1290,6 +1333,63 @@ mod tests {
         assert_eq!((state.health, state.lives, state.player_state), (28, 2, 5));
         assert_eq!(state.bosses_beaten(), 1);
         assert_eq!(spatial_bucket(state), (6, 11, 0, 0, 7, 5));
+    }
+
+    #[test]
+    fn wily4_targets_and_crash_shots_decode_from_stable_slots() {
+        let mut wram = vec![0_u8; WRAM_SIZE];
+        wram[STAGE] = BOOBEAM_STAGE;
+        wram[BOSS_PHASE] = BOSS_PHASE_FIGHTING;
+        wram[WEAPON_ENERGY + CRASH_WEAPON_ENERGY_INDEX] = 31;
+        wram[OBJECT_ID_TABLE + 20] = BOOBEAM_TRAP_ID;
+        wram[OBJECT_FLAG_TABLE + 20] = OBJECT_ACTIVE;
+        wram[OBJECT_ID_TABLE + 21] = BOOBEAM_BARRIER_ID;
+        wram[OBJECT_FLAG_TABLE + 21] = OBJECT_ACTIVE;
+        wram[OBJECT_ID_TABLE + 22] = BOOBEAM_TRAP_ID;
+        wram[OBJECT_ID_TABLE + 29] = BOOBEAM_BARRIER_ID;
+        wram[OBJECT_FLAG_TABLE + 29] = OBJECT_ACTIVE;
+        wram[OBJECT_ID_TABLE + 30] = BOOBEAM_TRAP_ID;
+        wram[OBJECT_FLAG_TABLE + 30] = OBJECT_ACTIVE;
+
+        let state = decode_state(&wram).expect("decode Wily4 targets");
+        assert_eq!(state.boobeam_targets, 0b10_0000_0011);
+        assert_eq!(state.crash_shots, 7);
+
+        wram[BOSS_PHASE] = BOSS_PHASE_DEFEATED;
+        assert_eq!(
+            decode_state(&wram).expect("defeated boss").boobeam_targets,
+            0
+        );
+        assert_eq!(decode_state(&wram).expect("defeated boss").crash_shots, 0);
+        wram[BOSS_PHASE] = BOSS_PHASE_NONE;
+        let hub = decode_state(&wram).expect("boss hub");
+        assert_eq!(hub.boobeam_targets, 0);
+        assert_eq!(hub.crash_shots, 0);
+        wram[BOSS_PHASE] = BOSS_PHASE_FIGHTING;
+        wram[STAGE] = 10;
+        let other_stage = decode_state(&wram).expect("other stage");
+        assert_eq!(other_stage.boobeam_targets, 0);
+        assert_eq!(other_stage.crash_shots, 0);
+    }
+
+    #[test]
+    fn wily4_ablation_identity_changes_emit_boundaries() {
+        let first = Mm2MechanicalState::default();
+        assert!(!ablation_identity_changed(first, first));
+        assert!(ablation_identity_changed(
+            first,
+            Mm2MechanicalState {
+                boobeam_targets: 1,
+                ..first
+            }
+        ));
+        assert!(ablation_identity_changed(
+            first,
+            Mm2MechanicalState {
+                crash_shots: 1,
+                ..first
+            }
+        ));
     }
 
     #[test]
