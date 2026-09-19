@@ -149,6 +149,14 @@ same band, and a screen count cannot say which end of a shaft the archive sits
 at or which end the selector draws. Both read only cached active endpoints, so
 they are lower bounds where snapshots are missing.
 
+The published champion witness uses a report-only ordering of factual progress:
+defeated-boss count, castle clears, refight count, Wily Machine shell state,
+live boss and enemy damage, and active encounter status precede raw stage and
+location labels. A stale boss RAM value in a death or menu state therefore
+cannot outrank a real active encounter. This ordering does not alter archive
+keys or selector behavior; `first_boss` remains the independent first-encounter
+witness.
+
 `mm2-film` replays a stage prefix and a searched tape to video, starting the
 capture at stage genesis: the capture buffers are bounded, and a chain prefix
 long enough to reach a castle stage would overflow them during construction.

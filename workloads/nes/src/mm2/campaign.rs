@@ -20,7 +20,8 @@ use crate::{
             progress_watermark, sample_chord,
         },
         target::{
-            ButtonChord, Mm2Input, Mm2Observations, Mm2Snapshot, Mm2Stage, Mm2Target,
+            ButtonChord, Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, Mm2Stage,
+            Mm2Target,
             power_on_walk, preference_tuple, walk_to_stage_select,
         },
     },
@@ -57,7 +58,8 @@ const VIABILITY_PROBE_MASKS: [u8; 4] = [0, 0x01, 0x80, 0x81];
 const VIABILITY_PROBE_FRAMES: u16 = 60;
 
 type Mm2Preference = (u8, u8, u16);
-type Mm2ChampionKey = (Mm2ProgressWatermark, Mm2Preference);
+type Mm2ChampionProgress = (u8, u8, u8, bool, u8, u8, bool, u8, u8, u8, u8, u8);
+type Mm2ChampionKey = (Mm2ChampionProgress, Mm2Preference);
 
 pub struct Mm2Game {
     rom: Vec<u8>,
@@ -462,13 +464,40 @@ fn update_first_inputs(
     }
 }
 
+fn champion_encounter_active(state: Mm2MechanicalState) -> bool {
+    state.boss_fight_underway()
+        && matches!(state.player_state, 0x02 | 0x03 | 0x06 | 0x09 | 0x0a)
+}
+
 fn action_champion_key(observations: &[Mm2Observations]) -> Option<Mm2ChampionKey> {
     observations
         .last()
         .filter(|observation| !observation.dead)
         .map(|observation| {
             let state = observation.decoded;
-            (progress_watermark(state), preference_tuple(state))
+            (
+                (
+                    state.bosses_beaten(),
+                    state.castle_clears,
+                    state
+                        .refighting_mask
+                        .count_ones()
+                        .try_into()
+                        .unwrap_or(u8::MAX),
+                    state.wily_machine_shell_broken,
+                    champion_encounter_active(state)
+                        .then(|| state.boss_damage())
+                        .unwrap_or(0),
+                    state.enemy_damage,
+                    champion_encounter_active(state),
+                    state.stage,
+                    state.screen,
+                    state.room,
+                    state.x,
+                    state.y,
+                ),
+                preference_tuple(state),
+            )
         })
 }
 
@@ -932,6 +961,56 @@ pub fn replay_mm2_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn observation(state: Mm2MechanicalState) -> Mm2Observations {
+        Mm2Observations {
+            frame_count: 0,
+            decoded: state,
+            changed_indices: Vec::new(),
+            dead: false,
+            fall_run: 0,
+            dying_run: 0,
+            log_line: String::new(),
+        }
+    }
+
+    #[test]
+    fn champion_prefers_factual_boss_progress_over_stage_aliases_and_resets() {
+        let stage_select_alias = Mm2MechanicalState {
+            stage: 8,
+            boss_phase: 2,
+            boss_health: 10,
+            health: 28,
+            ..Mm2MechanicalState::default()
+        };
+        let flash_boss = Mm2MechanicalState {
+            stage: 5,
+            boss_phase: 2,
+            boss_health: 20,
+            player_state: 0x03,
+            ..Mm2MechanicalState::default()
+        };
+        assert!(
+            action_champion_key(&[observation(flash_boss)])
+                > action_champion_key(&[observation(stage_select_alias)])
+        );
+
+        let more_bosses = Mm2MechanicalState {
+            weapons_obtained: 1,
+            stage: 0,
+            ..Mm2MechanicalState::default()
+        };
+        let more_castle_and_refights = Mm2MechanicalState {
+            castle_clears: 6,
+            refighting_mask: 0xff,
+            stage: 12,
+            ..Mm2MechanicalState::default()
+        };
+        assert!(
+            action_champion_key(&[observation(more_bosses)])
+                > action_champion_key(&[observation(more_castle_and_refights)])
+        );
+    }
 
     #[test]
     fn the_census_reports_where_the_live_archive_sits_and_what_the_selector_drew() {
