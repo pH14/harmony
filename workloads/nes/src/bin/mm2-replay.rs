@@ -103,6 +103,8 @@ fn write_trace(
         "raw_frame_count": machine.now().0,
         "state": state,
         "wram": {
+            "enemy_indices_0x100_0x110": &wram[0x100..0x110],
+            "enemy_hit_flags_0x110_0x120": &wram[0x110..0x120],
             "object_ids_0x400_0x420": &wram[0x400..0x420],
             "object_flags_0x420_0x440": &wram[0x420..0x440],
             "object_x_0x460_0x480": &wram[0x460..0x480],

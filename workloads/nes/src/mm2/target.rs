@@ -18,7 +18,9 @@ const FALL_STEP_LIMIT: u8 = 64;
 const FALL_RUN_LIMIT: u16 = 256;
 const ENEMY_HEALTH_TABLE_START: usize = 0x6d0;
 const ENEMY_HEALTH_TABLE_END: usize = 0x6e0;
-const ENEMY_HEALTH_IDLE: u8 = 0x14;
+const ENEMY_INDEX_TABLE: usize = 0x100;
+const ENEMY_HIT_FLAGS: usize = 0x110;
+const KILLED_OBJECT: u8 = 0x06;
 const ENEMY_HIT_CAP: u8 = 4;
 const ENEMY_DAMAGE_CAP: u8 = 24;
 const STAGE: usize = 0x2a;
@@ -259,10 +261,19 @@ pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
 
 fn enemy_damage_between(prior: &[u8], current: &[u8]) -> u8 {
     (ENEMY_HEALTH_TABLE_START..ENEMY_HEALTH_TABLE_END)
-        .filter_map(|slot| {
-            let before = *prior.get(slot)?;
-            let after = *current.get(slot)?;
-            (before != ENEMY_HEALTH_IDLE && after < before)
+        .filter_map(|address| {
+            let enemy = address - ENEMY_HEALTH_TABLE_START;
+            let slot = enemy + 16;
+            let before = *prior.get(address)?;
+            let after = *current.get(address)?;
+            let active = *prior.get(OBJECT_FLAG_TABLE + slot)? & OBJECT_ACTIVE != 0;
+            let hit = *current.get(ENEMY_HIT_FLAGS + enemy)? != 0;
+            let same_enemy = prior.get(OBJECT_ID_TABLE + slot)
+                == current.get(OBJECT_ID_TABLE + slot)
+                && prior.get(ENEMY_INDEX_TABLE + enemy) == current.get(ENEMY_INDEX_TABLE + enemy);
+            let killed =
+                after == 0 && current.get(OBJECT_ID_TABLE + slot).copied() == Some(KILLED_OBJECT);
+            (active && hit && (same_enemy || killed) && after < before)
                 .then(|| before.saturating_sub(after).min(ENEMY_HIT_CAP))
         })
         .fold(0_u8, u8::saturating_add)
@@ -408,6 +419,37 @@ pub struct Mm2Target {
     genesis_weapons: u8,
     genesis_prefix: Vec<ButtonChord>,
     execution_work: u64,
+}
+
+struct RenderTracking {
+    prior_wram: [u8; WRAM_SIZE],
+    prior_state: Mm2MechanicalState,
+    enemy_damage: u8,
+}
+
+impl RenderTracking {
+    fn new(prior_wram: [u8; WRAM_SIZE], prior_state: Mm2MechanicalState) -> Self {
+        Self {
+            prior_wram,
+            prior_state,
+            enemy_damage: prior_state.enemy_damage,
+        }
+    }
+
+    fn update(&mut self, wram: [u8; WRAM_SIZE]) -> Result<Mm2MechanicalState, MachineError> {
+        let mut state = decode_state(&wram)?;
+        if state.screen != self.prior_state.screen || state.stage != self.prior_state.stage {
+            self.enemy_damage = 0;
+        }
+        self.enemy_damage = self
+            .enemy_damage
+            .saturating_add(enemy_damage_between(&self.prior_wram, &wram))
+            .min(ENEMY_DAMAGE_CAP);
+        state.enemy_damage = self.enemy_damage;
+        self.prior_wram = wram;
+        self.prior_state = state;
+        Ok(state)
+    }
 }
 
 fn idle_chords(frames: u32) -> Vec<ButtonChord> {
@@ -726,10 +768,17 @@ impl Mm2Target {
         self.machine.set_audio_capture(true);
         let result = (|| {
             let mut metadata = None;
+            let mut tracking = RenderTracking::new(self.current_wram, self.observation.decoded);
             for action in &input.actions {
-                self.render_action(*action, video_output, audio_output, &mut metadata)?;
+                self.render_action(
+                    *action,
+                    video_output,
+                    audio_output,
+                    &mut metadata,
+                    &mut tracking,
+                )?;
             }
-            let input_endpoint = decode_state(&self.machine.read_wram()?)?;
+            let input_endpoint = tracking.prior_state;
             let mut remaining = tail_frames;
             while remaining > 0 {
                 let hold = remaining.min(u32::from(MAX_HOLD_FRAMES));
@@ -739,6 +788,7 @@ impl Mm2Target {
                     video_output,
                     audio_output,
                     &mut metadata,
+                    &mut tracking,
                 )?;
                 remaining -= u32::from(hold);
             }
@@ -760,6 +810,7 @@ impl Mm2Target {
         video_output: &mut dyn Write,
         audio_output: &mut dyn Write,
         metadata: &mut Option<Mm2VideoMetadata>,
+        tracking: &mut RenderTracking,
     ) -> Result<(), Box<dyn Error>> {
         let start = self.machine.snapshot()?;
         self.machine
@@ -772,6 +823,11 @@ impl Mm2Target {
             {
                 break;
             }
+            let wram = self.machine.read_wram()?;
+            let state = tracking.update(wram)?;
+            self.current_wram = wram;
+            self.observation.decoded = state;
+            self.observation.frame_count = self.observation.frame_count.saturating_add(1);
             let frame = self
                 .machine
                 .take_video_frame()
@@ -997,10 +1053,11 @@ impl Target for Mm2Target {
                 .last()
                 .is_some_and(|observation| observation.frame_count == endpoint_frame)
         {
-            let Ok(endpoint_state) = decode_state(&endpoint_wram) else {
+            let Ok(mut endpoint_state) = decode_state(&endpoint_wram) else {
                 self.failed = true;
                 return;
             };
+            endpoint_state.enemy_damage = enemy_damage;
             let mut observation =
                 self.make_observation(endpoint_frame, endpoint_state, &endpoint_wram, &prior_wram);
             observation.dead = died;
@@ -1133,17 +1190,40 @@ mod tests {
 
     #[test]
     fn enemy_damage_counts_hits_on_live_slots_only() {
-        let mut prior = vec![ENEMY_HEALTH_IDLE; WRAM_SIZE];
+        let mut prior = vec![0; WRAM_SIZE];
+        prior[0x43f] = 0x87;
+        prior[0x41f] = 0x4e;
+        prior[0x10f] = 44;
+        prior[0x6df] = 20;
         let mut current = prior.clone();
-        current[0x6dc] = 0x10;
+        current[0x6df] = 6;
         assert_eq!(enemy_damage_between(&prior, &current), 0);
-        prior[0x6dc] = 0x12;
-        assert_eq!(enemy_damage_between(&prior, &current), 2);
-        current[0x6dc] = 0;
+        current[0x11f] = 1;
         assert_eq!(enemy_damage_between(&prior, &current), ENEMY_HIT_CAP);
-        prior[0x6d1] = 0x10;
-        current[0x6d1] = ENEMY_HEALTH_IDLE;
+
+        current[0x10f] = 45;
+        assert_eq!(enemy_damage_between(&prior, &current), 0);
+        current[0x10f] = 44;
+        prior[0x43f] = 0;
+        assert_eq!(enemy_damage_between(&prior, &current), 0);
+    }
+
+    #[test]
+    fn enemy_damage_counts_a_confirmed_kill_without_counting_a_despawn() {
+        let mut prior = vec![0; WRAM_SIZE];
+        prior[0x43f] = 0x87;
+        prior[0x41f] = 0x4e;
+        prior[0x10f] = 44;
+        prior[0x6df] = 6;
+        let mut current = prior.clone();
+        current[0x6df] = 0;
+        current[0x41f] = KILLED_OBJECT;
+        current[0x10f] = 255;
+        assert_eq!(enemy_damage_between(&prior, &current), 0);
+        current[0x11f] = 1;
         assert_eq!(enemy_damage_between(&prior, &current), ENEMY_HIT_CAP);
+        current[0x41f] = 53;
+        assert_eq!(enemy_damage_between(&prior, &current), 0);
     }
 
     #[test]
