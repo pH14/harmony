@@ -61,10 +61,10 @@ must recheck opening, closing, and gameplay traces.
 
 Boss-entry milestones require an active encounter or a confirmed defeat.
 The boss HP byte can remain 28 after Game Over/Continue even though the boss
-phase has reset to zero at the stage start. Stream format v4 records the
+phase has reset to zero at the stage start. Stream format v5 records the
 corrected milestone semantics; nonzero boss HP alone is not entry evidence.
 
-The v22 key uses 16-pixel retention slots pooled into 32-pixel cells,
+The v23 key uses 16-pixel retention slots pooled into 32-pixel cells,
 128-pixel regions, screens, and stages. Weapon/menu rows distinguish local
 endpoints but are pooled at coarser levels. Health and energy prefer
 representatives without multiplying spatial slots. It removes the prototype's
@@ -90,6 +90,23 @@ the progress relation still compares only boss count and boss damage. This is
 an ablation hypothesis: preserving the
 remaining barrier/trap layout and usable Crash supply may separate endpoints
 with equal accumulated damage.
+The Wily5 extension records the refight completion mask from `$BC` at stage 12
+and keeps it at every retention depth; it is zero outside Wily5. The eight mask
+bits correspond in order to Heat, Air, Wood, Bubble, Quick, Flash, Metal, and
+Crash. While a Wily5 boss is actively
+fighting (phase `0x02` through `0xfd`), `refight_boss` records `$B3` in local
+retention groups 0 through 2. The hub, phase-1 boss intro, defeated phase, and
+other stages use sentinel `0xff`, preventing a stale boss ID from splitting
+hub states. Progress compares the completed-refight count before boss damage,
+so raw mask values with the same bit count are equal in progress ordering.
+An intermediate Wily5 phase-`0xfe` observation is a reached encounter but a
+stage clear only when `$BC == 0xff`; target terminal stopping remains based on
+the existing stage/weapon objective.
+During Wily5 teleport setup the ROM briefly borrows a Robot Master stage ID in
+the raw stage byte while the player status is `0x0b`. The target decoder treats
+that specific borrow as semantic stage 12 only when its trusted genesis is
+Wily5, so it cannot become a false death or a separate stage class; refight
+fields remain stage-gated and preserve `$BC` through the borrow.
 Enemy damage requires a health decrease on an active enemy with a confirmed
 hit flag, preserving its object and spawn identity or its killed-object
 transition. Twenty HP is a real initial health value, not an idle sentinel.
