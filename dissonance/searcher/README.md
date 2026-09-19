@@ -245,7 +245,11 @@ behind the frontier forever. The class depth is an ordinary pooled depth: the
 finest pooled depth up to the class, and `group_barren` holds a counter at each
 of them. `SelectorAccounting`'s `class_draws_by_rank` reports the share each
 rank received. Bands inside a class are ranked the same way, over the distinct
-progress levels of their frontier groups.
+progress levels of their frontier groups. Among bands at one progress level,
+`group_newest` holds the id of the newest cell opened under each pooled group,
+and a band ranks one level behind every peer that opened a newer cell, capped
+at eight, so the draw follows the most recent opening inside a class whose
+bands are otherwise peers.
 
 A productive selection clears the parent's barren counter at a pooled depth
 only when a retained child's group at that depth had not been seen before. A

@@ -631,6 +631,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     deepest_leaf: Vec<(K, usize)>,
     pub selector_policy: SelectorPolicy,
     group_barren: Vec<BTreeMap<K::Group, u64>>,
+    group_newest: Vec<BTreeMap<K::Group, usize>>,
     draws_by_cell: BTreeMap<K::Group, u64>,
     action_cost: fn(&A) -> u64,
     live_progress: Option<(K, u64)>,
@@ -1172,6 +1173,7 @@ where
             deepest_leaf: Vec::new(),
             selector_policy: SelectorPolicy::GroupUniform,
             group_barren: vec![BTreeMap::new(); K::groups().saturating_sub(1)],
+            group_newest: vec![BTreeMap::new(); K::groups().saturating_sub(1)],
             draws_by_cell: BTreeMap::new(),
             action_cost,
             live_progress: None,
@@ -1596,6 +1598,15 @@ where
                 .filter_map(|(entry, active)| active.then_some(entry.key.group(offset + 1)))
                 .collect::<BTreeSet<_>>();
             barren.retain(|group, _| live_groups.contains(group));
+        }
+        for (offset, newest) in self.group_newest.iter_mut().enumerate() {
+            let live_groups = self
+                .entries
+                .iter()
+                .zip(&self.active)
+                .filter_map(|(entry, active)| active.then_some(entry.key.group(offset + 1)))
+                .collect::<BTreeSet<_>>();
+            newest.retain(|group, _| live_groups.contains(group));
         }
 
         self.id_to_index.clear();
@@ -2150,6 +2161,21 @@ where
 
         let cell_depth = Self::cell_depth();
         let class_depth = Self::class_depth();
+        if live {
+            let opened = self
+                .classes
+                .get(&ProgressOrdered::<K>(class))
+                .and_then(|cells| cells.get(&key.group(cell_depth)))
+                .map(|members| members.opened);
+            if let Some(opened) = opened {
+                for depth in (cell_depth + 1)..=class_depth {
+                    if let Some(newest) = self.group_newest.get_mut(depth - 1) {
+                        let held = newest.entry(key.group(depth)).or_insert(opened);
+                        *held = (*held).max(opened);
+                    }
+                }
+            }
+        }
         if cell_depth < class_depth {
             update_child(
                 &mut self.live_children[cell_depth],
@@ -3045,6 +3071,33 @@ where
             }
             _ => (Vec::new(), Vec::new()),
         };
+        let opened_under = groups
+            .iter()
+            .map(|group| {
+                self.group_newest
+                    .get(depth - 1)
+                    .and_then(|map| map.get(group))
+                    .copied()
+            })
+            .collect::<Vec<_>>();
+        let level_of = |level: K::Group| {
+            ranked
+                .partition_point(|band| K::progress_cmp(band.0, level) != Ordering::Greater)
+                .saturating_sub(1)
+        };
+        let mut opened_by_level: Vec<Vec<usize>> = vec![Vec::new(); ranked.len()];
+        if let Some(frontier) = frontier {
+            for (opened, level) in opened_under.iter().zip(frontier) {
+                if let (Some(opened), Some(bucket)) =
+                    (opened, opened_by_level.get_mut(level_of(*level)))
+                {
+                    bucket.push(*opened);
+                }
+            }
+            for bucket in &mut opened_by_level {
+                bucket.sort_unstable();
+            }
+        }
         let mut weights = Vec::with_capacity(groups.len());
         for (index, group) in groups.iter().enumerate() {
             let barren = self
@@ -3061,7 +3114,22 @@ where
                     let behind = ranked.partition_point(|band| {
                         K::progress_cmp(band.0, level) != Ordering::Greater
                     });
-                    (ranked.len().saturating_sub(behind), 16)
+                    let peers = opened_by_level
+                        .get(behind.saturating_sub(1))
+                        .map_or(&[][..], Vec::as_slice);
+                    let newer = match opened_under[index] {
+                        Some(mine) => peers
+                            .len()
+                            .saturating_sub(peers.partition_point(|other| *other <= mine)),
+                        None => peers.len(),
+                    };
+                    (
+                        ranked
+                            .len()
+                            .saturating_sub(behind)
+                            .saturating_add(newer.min(8)),
+                        16,
+                    )
                 }
                 (None, Some(cells)) => {
                     let (opened, cost) = cells[index];
@@ -3503,6 +3571,13 @@ where
             .map(BTreeMap::len)
             .sum::<usize>()
             .saturating_mul(Self::historical_group_memory_charge(size_of::<u64>()))
+            .saturating_add(
+                self.group_newest
+                    .iter()
+                    .map(BTreeMap::len)
+                    .sum::<usize>()
+                    .saturating_mul(Self::historical_group_memory_charge(size_of::<usize>())),
+            )
     }
 
     #[must_use]
@@ -6988,6 +7063,34 @@ mod tests {
     }
 
     #[test]
+    fn a_band_that_opened_the_newer_cell_takes_more_walk_draws() {
+        let keys = [
+            ordering_key::<true>(0, 0, 1, 0, 0),
+            ordering_key::<true>(0, 0, 1, 0, 1),
+            ordering_key::<true>(0, 0, 2, 0, 2),
+            ordering_key::<true>(0, 0, 2, 0, 3),
+        ];
+        let counts = ordering_walk_counts(&keys);
+        let older = counts[0] + counts[1];
+        let newer = counts[2] + counts[3];
+        assert!(
+            newer > older.saturating_mul(3) / 2 && older > 0,
+            "the band holding the newest cell takes the larger share: {counts:?}"
+        );
+        let reversed = [
+            ordering_key::<true>(0, 0, 2, 0, 0),
+            ordering_key::<true>(0, 0, 2, 0, 1),
+            ordering_key::<true>(0, 0, 1, 0, 2),
+            ordering_key::<true>(0, 0, 1, 0, 3),
+        ];
+        let counts = ordering_walk_counts(&reversed);
+        assert!(
+            counts[2] + counts[3] > (counts[0] + counts[1]).saturating_mul(3) / 2,
+            "the share follows the newest cell, not the label: {counts:?}"
+        );
+    }
+
+    #[test]
     fn the_leading_class_does_not_take_every_walk_draw() {
         let mut keys = vec![ordering_key::<true>(1, 2, 0, 0, 0)];
         for cell in 0..10 {
@@ -7058,15 +7161,15 @@ mod tests {
     }
 
     #[test]
-    fn a_key_without_a_progress_notion_has_only_peers() {
+    fn a_key_without_a_progress_notion_ranks_bands_by_their_newest_cell_only() {
         for bands in [[1_u16, 2], [200, 100]] {
             let counts = ordering_walk_counts(&[
                 ordering_key::<false>(0, 0, bands[0], 0, 0),
                 ordering_key::<false>(0, 0, bands[1], 0, 1),
             ]);
             assert!(
-                counts[0].abs_diff(counts[1]) < ORDERING_TOLERANCE,
-                "bands without a progress notion are peers: {counts:?} under {bands:?}"
+                counts[1] > counts[0] && counts[1] < counts[0].saturating_mul(3),
+                "the band with the newer cell takes twice the draws: {counts:?} under {bands:?}"
             );
         }
     }
