@@ -215,6 +215,12 @@ archive selector counters so archive warm starts preserve the feedback.
 keeps its existing three-times-maximum-action-cost bound and receives no
 extension.
 
+The live archive counter does not change the campaign stream schema: each
+reservation records its chosen extension, so existing streams remain exact
+replay inputs. Older archive reports may omit the counter and import with a
+zero warm-start streak; that is an archive warm start rather than a replay of
+the prior selector history.
+
 This is a fixed engine policy rather than a workload or runtime knob. It can
 cross waits that produce no new key at the cost of longer rollouts from barren
 parents, while the action limit bounds each rollout and the work counter charges
