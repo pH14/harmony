@@ -41,8 +41,8 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v6";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v6";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v7";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v7";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -69,9 +69,28 @@ pub struct Mm2Game {
     champion_input_path: Option<PathBuf>,
     root_actions: Vec<ButtonChord>,
     coherent_world: bool,
+    whole_game: bool,
 }
 
 impl Mm2Game {
+    #[must_use]
+    pub fn new_whole_game(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
+        let mut game = Self::new_at_stage(rom, core_path, core_sha256, Mm2Stage::default());
+        game.whole_game = true;
+        game.identity = format!(
+            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis=mm2-whole-game-stage-select-v1;result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}",
+            machine::quicknes::QUICKNES_REVISION,
+            machine::quicknes::QUICKNES_BUILD,
+            machine::quicknes::QUICKNES_OPTIONS,
+        );
+        game
+    }
+
+    #[must_use]
+    pub fn is_whole_game(&self) -> bool {
+        self.whole_game
+    }
+
     #[must_use]
     pub fn new_at_stage(rom: &[u8], core_path: &Path, core_sha256: &str, stage: Mm2Stage) -> Self {
         Self::new_at_stage_after(rom, core_path, core_sha256, power_on_walk(), stage)
@@ -127,6 +146,7 @@ impl Mm2Game {
             champion_input_path: None,
             root_actions: Vec::new(),
             coherent_world,
+            whole_game: false,
         }
     }
 
@@ -329,6 +349,24 @@ fn admission_is_viable(
     Ok(viable)
 }
 
+fn target_outcome(target: &Mm2Target) -> Outcome {
+    let objective = if target.is_whole_game() {
+        target.ending_reached()
+    } else {
+        target.defeated_a_boss()
+    };
+    Outcome {
+        objective_reached: target.exit_kind() == ExitKind::Ok && objective,
+        disposition: if target.exit_kind() != ExitKind::Ok {
+            ExecutionDisposition::Failed
+        } else if objective || (!target.is_whole_game() && target.is_dead()) {
+            ExecutionDisposition::Terminal
+        } else {
+            ExecutionDisposition::Runnable
+        },
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_suffix(
     target: &mut Mm2Target,
@@ -343,16 +381,7 @@ fn execute_suffix(
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
-    let parent_outcome = Outcome {
-        objective_reached: target.exit_kind() == ExitKind::Ok && target.defeated_a_boss(),
-        disposition: if target.exit_kind() != ExitKind::Ok {
-            ExecutionDisposition::Failed
-        } else if target.is_dead() || target.defeated_a_boss() {
-            ExecutionDisposition::Terminal
-        } else {
-            ExecutionDisposition::Runnable
-        },
-    };
+    let parent_outcome = target_outcome(target);
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
         return Ok(CampaignJobResult {
@@ -372,20 +401,12 @@ fn execute_suffix(
         } else {
             target.last_action_observations().to_vec()
         };
-        let raw_objective = target.exit_kind() == ExitKind::Ok && target.defeated_a_boss();
-        let objective_reached = raw_objective && !objective_seen;
-        objective_seen |= raw_objective;
-        let disposition = if target.exit_kind() != ExitKind::Ok {
-            ExecutionDisposition::Failed
-        } else if target.is_dead() || target.defeated_a_boss() {
-            ExecutionDisposition::Terminal
-        } else {
-            ExecutionDisposition::Runnable
-        };
+        let raw_outcome = target_outcome(target);
         let outcome = Outcome {
-            objective_reached,
-            disposition,
+            objective_reached: raw_outcome.objective_reached && !objective_seen,
+            disposition: raw_outcome.disposition,
         };
+        objective_seen |= raw_outcome.objective_reached;
         let candidate = if matches!(outcome.disposition, ExecutionDisposition::Runnable) {
             let snapshot = target
                 .snapshot()
@@ -475,6 +496,7 @@ impl Reporting for Mm2Game {
         let mut entries = vec![0_u64; 256];
         let mut selected = vec![0_u64; 256];
         let mut rows = BTreeMap::<(u8, u8), [u64; 2]>::new();
+        let mut contexts = BTreeMap::<(u8, u8, u8), [u64; 5]>::new();
         for (snapshot, selections) in snapshots {
             active += 1;
             let Some(snapshot) = snapshot else {
@@ -492,6 +514,14 @@ impl Reporting for Mm2Game {
             selected[here] = selected[here].saturating_add(selections);
             let row = rows.entry((state.screen, state.y / 16)).or_default();
             *row = [row[0] + 1, row[1].saturating_add(selections)];
+            let context = contexts
+                .entry((state.stage, state.weapons_obtained, state.screen))
+                .or_default();
+            context[0] += 1;
+            context[1] = context[1].saturating_add(selections);
+            context[2] = context[2].max(u64::from(state.health));
+            context[3] = context[3].max(u64::from(state.boss_damage()));
+            context[4] = context[4].max(u64::from(state.weapon_energy));
         }
         let deepest = usize::from(screen);
         Some(serde_json::json!({
@@ -522,6 +552,8 @@ impl Reporting for Mm2Game {
                 .map(|((here, row), best)| (format!("{here}:{row}"), *best))
                 .collect::<BTreeMap<_, _>>(),
             "live_entries_by_screen_row_format": "screen:16-pixel row from the top -> [entries, selections]",
+            "live_entries_by_context": contexts.iter().map(|((stage, inventory, screen), values)| (format!("{stage}:{inventory:02x}:{screen}"), *values)).collect::<BTreeMap<_, _>>(),
+            "live_entries_by_context_format": "stage:inventory-mask:screen -> [entries, selections, max health, max boss damage, max summed energy]",
             "temporary_screen_table_bytes": 256 * 4
         }))
     }
@@ -590,7 +622,14 @@ impl InputPolicy for Mm2Game {
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
-            (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
+            (
+                TERMINAL_POLICY_FIELD,
+                if self.whole_game {
+                    "ending_only_death_retry_runnable_v1"
+                } else {
+                    TERMINAL_POLICY_IDENTIFIER
+                },
+            ),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -638,6 +677,17 @@ impl TargetExecution for Mm2Game {
     }
 
     fn new_target(&self) -> Result<Mm2Target, String> {
+        if self.whole_game {
+            if !self.root_actions.is_empty() {
+                return Err("whole-game campaign cannot use manually supplied root actions".into());
+            }
+            return Mm2Target::from_rom_bytes_whole_game(
+                &self.rom,
+                &self.core_path,
+                &self.core_sha256,
+            )
+            .map_err(|error| error.to_string());
+        }
         let mut target = Mm2Target::from_rom_bytes_after_with_coherent_world(
             &self.rom,
             &self.core_path,
@@ -724,13 +774,7 @@ impl TargetExecution for Mm2Game {
 
 impl Evaluation for Mm2Game {
     fn execution_disposition(&self, target: &Mm2Target) -> ExecutionDisposition {
-        if target.exit_kind() != ExitKind::Ok {
-            ExecutionDisposition::Failed
-        } else if target.is_dead() || target.defeated_a_boss() {
-            ExecutionDisposition::Terminal
-        } else {
-            ExecutionDisposition::Runnable
-        }
+        target_outcome(target).disposition
     }
 
     fn objective_reached(
@@ -738,7 +782,7 @@ impl Evaluation for Mm2Game {
         _run: &Mm2CampaignRun,
         target: &Mm2Target,
     ) -> Result<bool, Box<dyn Error>> {
-        Ok(target.exit_kind() == ExitKind::Ok && target.defeated_a_boss())
+        Ok(target_outcome(target).objective_reached)
     }
 
     fn current_key(&self, target: &Mm2Target) -> Result<Mm2ArchiveKey, Box<dyn Error>> {
@@ -944,6 +988,30 @@ mod tests {
             game.emulator_identity()
                 .contains("genesis=mm2-stage-select-v2:3:prefix-sha256=")
         );
+    }
+
+    #[test]
+    fn whole_game_policy_cannot_resolve_an_isolated_stage_stream() {
+        let whole = Mm2Game::new_whole_game(&[1, 2, 3], Path::new("core.so"), &"a".repeat(64));
+        let isolated = Mm2Game::new_at_stage(
+            &[1, 2, 3],
+            Path::new("core.so"),
+            &"a".repeat(64),
+            Mm2Stage::default(),
+        );
+        assert!(
+            whole
+                .resolve_recorded(&isolated.policies(&Mm2CampaignRun))
+                .is_err()
+        );
+        assert!(
+            whole
+                .resolve_recorded(&whole.policies(&Mm2CampaignRun))
+                .is_ok()
+        );
+        assert!(whole.is_whole_game());
+        assert!(whole.root_actions.is_empty());
+        assert_eq!(whole.prefix(), power_on_walk());
     }
 
     #[test]

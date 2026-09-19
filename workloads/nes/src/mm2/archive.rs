@@ -21,8 +21,8 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
-pub const MAX_MM2_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_location_boss_bar_loaded_confirmed_enemy_spatial_16_posture_weapon_bank_menu_energy_platforms_boobeam_targets_crash_shots_wily5_refighting_mask_refight_boss_machine_shell_preference_v24";
+pub const MAX_MM2_ACTIONS: usize = 32_768;
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_mechanics_inventory_identity_uniform_resources_v25";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -44,7 +44,9 @@ pub struct Mm2ArchiveGroup {
     boss_damage: u8,
     enemy_damage: u8,
     boobeam_targets: u16,
-    crash_shots: u8,
+    capabilities: u8,
+    menu_registers: [u8; 3],
+    weapon_energies: [u8; 12],
     refighting_mask: u8,
     refight_boss: u8,
     wily_machine_shell_broken: bool,
@@ -65,7 +67,9 @@ pub struct Mm2ArchiveKey {
     pub boss_damage: u8,
     pub enemy_damage: u8,
     pub boobeam_targets: u16,
-    pub crash_shots: u8,
+    pub capabilities: u8,
+    pub menu_registers: [u8; 3],
+    pub weapon_energies: [u8; 12],
     pub refighting_mask: u8,
     pub refight_boss: u8,
     pub wily_machine_shell_broken: bool,
@@ -88,13 +92,16 @@ impl ArchiveKey for Mm2ArchiveKey {
 
     fn group(self, depth: usize) -> Self::Group {
         let location = Mm2ArchiveGroup {
+            bosses: self.bosses,
+            capabilities: self.capabilities,
+            menu_registers: self.menu_registers,
+            weapon_energies: self.weapon_energies,
             stage: self.stage,
             screen: self.screen,
             room: self.room,
             boss_damage: self.boss_damage,
             enemy_damage: self.enemy_damage,
             boobeam_targets: self.boobeam_targets,
-            crash_shots: self.crash_shots,
             refighting_mask: self.refighting_mask,
             refight_boss: self.refight_boss,
             wily_machine_shell_broken: self.wily_machine_shell_broken,
@@ -109,6 +116,8 @@ impl ArchiveKey for Mm2ArchiveKey {
         match depth {
             0 => location,
             1 => Mm2ArchiveGroup {
+                weapon_energies: [0; 12],
+                menu_registers: [0; 3],
                 x: self.x / 2,
                 y: self.y / 2,
                 weapon: 0,
@@ -116,6 +125,8 @@ impl ArchiveKey for Mm2ArchiveKey {
                 ..location
             },
             2 => Mm2ArchiveGroup {
+                weapon_energies: [0; 12],
+                menu_registers: [0; 3],
                 bosses: self.bosses,
                 x: self.x / 8,
                 y: self.y / 8,
@@ -128,6 +139,7 @@ impl ArchiveKey for Mm2ArchiveKey {
             3 => Mm2ArchiveGroup {
                 bosses: self.bosses,
                 stage: self.stage,
+                capabilities: self.capabilities,
                 screen: self.screen,
                 refighting_mask: self.refighting_mask,
                 wily_machine_shell_broken: self.wily_machine_shell_broken,
@@ -136,6 +148,7 @@ impl ArchiveKey for Mm2ArchiveKey {
             _ => Mm2ArchiveGroup {
                 bosses: self.bosses,
                 stage: self.stage,
+                capabilities: self.capabilities,
                 refighting_mask: self.refighting_mask,
                 wily_machine_shell_broken: self.wily_machine_shell_broken,
                 ..Mm2ArchiveGroup::default()
@@ -192,7 +205,13 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
         boss_damage: state.boss_damage() / BOSS_DAMAGE_BUCKET,
         enemy_damage: state.enemy_damage / ENEMY_DAMAGE_BUCKET,
         boobeam_targets: state.boobeam_targets,
-        crash_shots: state.crash_shots,
+        capabilities: state.weapons_obtained,
+        menu_registers: if state.current_bank == 0x0d {
+            [state.current_bank, state.menu_cursor, state.menu_page]
+        } else {
+            [0; 3]
+        },
+        weapon_energies: state.weapon_energies,
         refighting_mask: state.refighting_mask,
         refight_boss: state.refight_boss,
         wily_machine_shell_broken: state.wily_machine_shell_broken,
@@ -382,12 +401,12 @@ mod tests {
     }
 
     #[test]
-    fn one_location_uses_resources_only_for_preference() {
-        let weak = archive_key(state(100, 4, 0));
+    fn health_prefers_a_representative_without_splitting_capability_identity() {
+        let weak = archive_key(state(100, 4, 0x40));
         let strong = archive_key(state(100, 20, 0x40));
         assert_eq!(weak.group(0), strong.group(0));
         assert_eq!(weak.group(1), strong.group(1));
-        assert_ne!(weak.group(2), strong.group(2));
+        assert_eq!(weak.group(2), strong.group(2));
         assert_eq!(strong.preference_cmp(weak), Ordering::Greater);
         assert_eq!(Mm2ArchiveKey::slot_capacity(), 1);
     }
@@ -435,6 +454,36 @@ mod tests {
     }
 
     #[test]
+    fn resource_identity_is_uniform_and_pooled_above_the_local_slot() {
+        let first = archive_key(state(100, 28, 0xff));
+        for weapon in 0..12 {
+            let mut second = first;
+            second.weapon_energies[weapon] = 1;
+            assert_ne!(first.group(0), second.group(0));
+            for depth in 1..Mm2ArchiveKey::groups() {
+                assert_eq!(first.group(depth), second.group(depth));
+            }
+            assert_eq!(
+                Mm2ArchiveKey::progress_cmp(first.group(0), second.group(0)),
+                Ordering::Equal
+            );
+        }
+    }
+
+    #[test]
+    fn equal_count_capability_sets_remain_distinct_without_progress_ordering() {
+        let first = archive_key(state(100, 28, 1));
+        let second = archive_key(state(100, 28, 2));
+        for depth in 0..Mm2ArchiveKey::groups() {
+            assert_ne!(first.group(depth), second.group(depth));
+            assert_eq!(
+                Mm2ArchiveKey::progress_cmp(first.group(depth), second.group(depth)),
+                Ordering::Equal
+            );
+        }
+    }
+
+    #[test]
     fn milestones_are_relative_to_genesis_weapons() {
         let value = milestones(state(0, 28, 0x40), 0x40);
         assert!(!value.defeated_boss);
@@ -451,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn wily4_target_and_crash_identities_are_retained_without_progress_ordering() {
+    fn wily4_target_identity_is_local_and_crash_advice_is_not_a_key() {
         let mut first_state = state(100, 28, 0);
         first_state.stage = 11;
         first_state.boss_phase = 2;
@@ -467,7 +516,7 @@ mod tests {
 
         for depth in 0..=2 {
             assert_ne!(first.group(depth), mask.group(depth));
-            assert_ne!(first.group(depth), shots.group(depth));
+            assert_eq!(first.group(depth), shots.group(depth));
         }
         assert_eq!(first.group(3), mask.group(3));
         assert_eq!(first.group(3), shots.group(3));

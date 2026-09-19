@@ -12,7 +12,9 @@ use std::{
 
 use nes_workload::{
     mm2::{
-        archive::{MAX_ARCHIVE_ENTRIES, Mm2ArchiveReport, selector_policy_from_identifier},
+        archive::{
+            MAX_ARCHIVE_ENTRIES, MAX_MM2_ACTIONS, Mm2ArchiveReport, selector_policy_from_identifier,
+        },
         campaign::{
             Mm2CampaignCheckpoint, Mm2CampaignConfig, Mm2CampaignOrigin, Mm2Game,
             Mm2SnapshotCheckpoint, SNAPSHOT_CHECKPOINT_FORMAT, replay_mm2_campaign_checkpointed,
@@ -44,6 +46,7 @@ struct Args {
     marketing_soak: bool,
     fixed_execution_soak: bool,
     coherent_world: bool,
+    whole_game: bool,
     host: String,
     memory_budget_mib: Option<usize>,
     prefix_input: Option<PathBuf>,
@@ -78,10 +81,14 @@ impl Args {
         let mut executions = 4_000_u64;
         let mut workers = 2_u32;
         let mut action_limit = 4096_usize;
+        let mut supplied_action_limit = false;
         let mut stage = Mm2Stage::default();
         let mut marketing_soak = false;
         let mut fixed_execution_soak = false;
         let mut coherent_world = false;
+        let mut whole_game = false;
+        let mut diagnostic_policy = false;
+        let mut supplied_stage = false;
         let mut host = "github-actions".to_owned();
         let mut memory_budget_mib = None;
         let mut prefix_input = None;
@@ -97,6 +104,16 @@ impl Args {
         let mut retention = RetentionPolicy::Unprobed;
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
+            if flag == "--whole-game" {
+                whole_game = true;
+                continue;
+            }
+            if matches!(
+                flag.to_str(),
+                Some("--selector" | "--retention" | "--mixture")
+            ) {
+                diagnostic_policy = true;
+            }
             if flag == "--marketing-soak" {
                 marketing_soak = true;
                 continue;
@@ -123,8 +140,12 @@ impl Args {
                 "--seed" => seed = parse_number("seed", value)?,
                 "--executions" => executions = parse_number("executions", value)?,
                 "--workers" => workers = parse_number("workers", value)?,
-                "--action-limit" => action_limit = parse_number("action-limit", value)?,
+                "--action-limit" => {
+                    action_limit = parse_number("action-limit", value)?;
+                    supplied_action_limit = true;
+                }
                 "--stage" => {
+                    supplied_stage = true;
                     stage =
                         Mm2Stage::parse(&value.into_string().map_err(|_| "stage is not UTF-8")?)?;
                 }
@@ -158,6 +179,18 @@ impl Args {
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
+        if whole_game && !supplied_action_limit {
+            action_limit = MAX_MM2_ACTIONS;
+        }
+        if whole_game
+            && (supplied_stage
+                || coherent_world
+                || prefix_input.is_some()
+                || root_input.is_some()
+                || diagnostic_policy)
+        {
+            return Err("--whole-game uses power-on stage selection and the fixed search policy; stage, prefix, root, coherent-world, and policy overrides are diagnostic-only".into());
+        }
         if resume_snapshots.is_some() && resume_archive.is_none() {
             return Err("--resume-snapshots requires --resume-archive".into());
         }
@@ -176,6 +209,7 @@ impl Args {
             marketing_soak,
             fixed_execution_soak,
             coherent_world,
+            whole_game,
             host,
             memory_budget_mib,
             prefix_input,
@@ -238,14 +272,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(path) => serde_json::from_slice::<Mm2Input>(&fs::read(path)?)?.actions,
         None => power_on_walk(),
     };
-    let mut game = Mm2Game::new_at_stage_after_with_coherent_world(
-        &rom,
-        &args.core,
-        &core_sha256,
-        prefix,
-        args.stage,
-        args.coherent_world,
-    )
+    let mut game = if args.whole_game {
+        Mm2Game::new_whole_game(&rom, &args.core, &core_sha256)
+    } else {
+        Mm2Game::new_at_stage_after_with_coherent_world(
+            &rom,
+            &args.core,
+            &core_sha256,
+            prefix,
+            args.stage,
+            args.coherent_world,
+        )
+    }
     .with_champion_input_path(args.output.join("champion-input.json"));
     if let Some(path) = &args.root_input {
         let root: Mm2Input = serde_json::from_slice(&fs::read(path)?)?;
@@ -317,7 +355,7 @@ fn run_marketing_soak(
         let genesis_prefix = game.new_target()?.genesis_prefix().to_vec();
         let mut next = genesis_prefix.clone();
         next.extend(victory.actions.iter().copied());
-        if !game.stage().is_wily() {
+        if !game.is_whole_game() && !game.stage().is_wily() {
             next.extend(game.walk_to_stage_select(&next)?);
         }
         fs::write(
@@ -343,6 +381,7 @@ fn run_marketing_soak(
         "workload_identity_sha256": game.workload_identity_sha256(),
         "checkpoint_sha256": checkpoint_sha256,
         "stage": game.stage().number(),
+        "whole_game": game.is_whole_game(),
         "campaign_seed": live.campaign_seed,
         "workers": live.workers,
         "execution_budget": live.execution_budget,
@@ -630,6 +669,28 @@ mod tests {
             .expect("coherent-world arguments parse");
         assert!(diagnostic.coherent_world);
         assert_eq!(diagnostic.seed, 42);
+    }
+
+    #[test]
+    fn whole_game_rejects_guided_origins_and_policy_overrides() {
+        let whole = Args::parse_from(required_args(&["--whole-game"])).expect("whole game");
+        assert!(whole.whole_game);
+        for flags in [
+            vec!["--stage", "air"],
+            vec!["--prefix-input", "prefix.json"],
+            vec!["--root-input", "root.json"],
+            vec!["--coherent-world"],
+            vec![
+                "--selector",
+                "hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2,16",
+            ],
+            vec!["--retention", "unprobed"],
+            vec!["--mixture", "alphabet_only"],
+        ] {
+            let mut arguments = vec!["--whole-game"];
+            arguments.extend(flags);
+            assert!(Args::parse_from(required_args(&arguments)).is_err());
+        }
     }
 
     #[test]
