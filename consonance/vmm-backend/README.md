@@ -80,6 +80,17 @@ vCPU. ARM KVM and HVF expose pure restore-shape checks through the `Backend`
 trait, so portable snapshot import rejects their known invalid vCPU records
 before guest RAM or backend state is changed.
 
+ARM KVM saves the guest's system registers as the guest left them and never
+normalizes a value the guest wrote. TCR_EL1.AS selects 8-bit or 16-bit ASIDs and
+the identity baseline advertises 16-bit, so clearing it left the guest kernel
+issuing ASIDs the hardware no longer distinguished and processes shared TLB
+entries. For SCTLR_EL1 and TCR_EL1, `KVM_SET_ONE_REG` and `KVM_GET_ONE_REG`
+read and write the saved vCPU context rather than the architectural register, so
+a restore cannot tell from those calls whether the host implements a field the
+saved value uses. Restoring onto a host that lacks such a feature can therefore
+resume the guest with that field reading zero; the feature identity registers
+carry their own admission check, and these two do not.
+
 ## Preparing x86 KVM snapshot boundaries
 
 `Backend::prepare_snapshot` reconciles backend execution state before a logical
