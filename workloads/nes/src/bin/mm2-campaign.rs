@@ -12,9 +12,10 @@ use std::{
 
 use nes_workload::{
     mm2::{
-        archive::{MAX_ARCHIVE_ENTRIES, selector_policy_from_identifier},
+        archive::{MAX_ARCHIVE_ENTRIES, Mm2ArchiveReport, selector_policy_from_identifier},
         campaign::{
-            Mm2CampaignConfig, Mm2CampaignOrigin, Mm2Game, replay_mm2_campaign_checkpointed,
+            Mm2CampaignCheckpoint, Mm2CampaignConfig, Mm2CampaignOrigin, Mm2Game,
+            Mm2SnapshotCheckpoint, SNAPSHOT_CHECKPOINT_FORMAT, replay_mm2_campaign_checkpointed,
             run_mm2_campaign_checkpointed,
         },
         target::{Mm2Input, Mm2MechanicalState, Mm2Stage, Mm2VideoMetadata, power_on_walk},
@@ -23,7 +24,7 @@ use nes_workload::{
         archive::{
             RetentionPolicy, RetireThresholds, SelectorPolicy, retention_policy_from_identifier,
         },
-        campaign::TargetExecution,
+        campaign::{Reporting, TargetExecution},
         draw::{DrawMixture, SuffixShape, draw_mixture_from_identifier},
     },
     target::{ExitKind, Target},
@@ -46,6 +47,9 @@ struct Args {
     memory_budget_mib: Option<usize>,
     prefix_input: Option<PathBuf>,
     root_input: Option<PathBuf>,
+    resume_archive: Option<PathBuf>,
+    resume_snapshots: Option<PathBuf>,
+    save_checkpoint: bool,
     mixture: DrawMixture,
     selector: SelectorPolicy,
     retention: RetentionPolicy,
@@ -80,6 +84,9 @@ impl Args {
         let mut memory_budget_mib = None;
         let mut prefix_input = None;
         let mut root_input = None;
+        let mut resume_archive = None;
+        let mut resume_snapshots = None;
+        let mut save_checkpoint = false;
         let mut mixture = DrawMixture::AlphabetOnly;
         let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 3,
@@ -94,6 +101,10 @@ impl Args {
             }
             if flag == "--fixed-execution-soak" {
                 fixed_execution_soak = true;
+                continue;
+            }
+            if flag == "--save-checkpoint" {
+                save_checkpoint = true;
                 continue;
             }
             let value = args
@@ -121,6 +132,8 @@ impl Args {
                     prefix_input = Some(PathBuf::from(value));
                 }
                 "--root-input" => root_input = Some(PathBuf::from(value)),
+                "--resume-archive" => resume_archive = Some(PathBuf::from(value)),
+                "--resume-snapshots" => resume_snapshots = Some(PathBuf::from(value)),
                 "--mixture" => {
                     mixture = draw_mixture_from_identifier(
                         &value.into_string().map_err(|_| "mixture is not UTF-8")?,
@@ -139,6 +152,12 @@ impl Args {
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
+        if resume_snapshots.is_some() && resume_archive.is_none() {
+            return Err("--resume-snapshots requires --resume-archive".into());
+        }
+        if save_checkpoint && !marketing_soak {
+            return Err("--save-checkpoint requires --marketing-soak".into());
+        }
         Ok(Self {
             core: core.ok_or("missing --core")?,
             rom: rom.ok_or("missing --rom")?,
@@ -154,6 +173,9 @@ impl Args {
             memory_budget_mib,
             prefix_input,
             root_input,
+            resume_archive,
+            resume_snapshots,
+            save_checkpoint,
             mixture,
             selector,
             retention,
@@ -171,6 +193,33 @@ where
         .map_err(|_| format!("{name} is not UTF-8"))?
         .replace('_', "")
         .parse()?)
+}
+
+fn resume_origin(args: &Args) -> Result<Mm2CampaignOrigin, Box<dyn Error>> {
+    let Some(archive_path) = args.resume_archive.as_ref() else {
+        return Ok(Mm2CampaignOrigin::Genesis);
+    };
+    let archive_bytes = fs::read(archive_path)?;
+    let archive: Mm2ArchiveReport = serde_json::from_slice(&archive_bytes)?;
+    let checkpoint = args
+        .resume_snapshots
+        .as_ref()
+        .map(|path| -> Result<Mm2CampaignCheckpoint, Box<dyn Error>> {
+            let bytes = fs::read(path)?;
+            let snapshots = Mm2SnapshotCheckpoint::from_bytes(&bytes, SNAPSHOT_CHECKPOINT_FORMAT)?;
+            Ok(Mm2CampaignCheckpoint {
+                path: path.to_string_lossy().into_owned(),
+                file_sha256: sha256(&bytes),
+                snapshots,
+            })
+        })
+        .transpose()?;
+    Ok(Mm2CampaignOrigin::Archive {
+        path: archive_path.to_string_lossy().into_owned(),
+        file_sha256: sha256(&archive_bytes),
+        report: Box::new(archive),
+        checkpoint,
+    })
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -192,11 +241,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
         game = game.with_root_actions(root.actions);
     }
+    let origin = resume_origin(&args)?;
     let config = campaign_config(&args);
     if args.marketing_soak {
-        run_marketing_soak(&game, &config, &args.output)
+        run_marketing_soak(&game, &config, &args.output, &origin, args.save_checkpoint)
     } else {
-        run_qualified_campaign(&game, &config, &args.output)
+        run_qualified_campaign(&game, &config, &args.output, &origin)
     }
 }
 
@@ -224,20 +274,24 @@ fn run_marketing_soak(
     game: &Mm2Game,
     config: &Mm2CampaignConfig,
     output: &std::path::Path,
+    origin: &Mm2CampaignOrigin,
+    save_checkpoint: bool,
 ) -> Result<(), Box<dyn Error>> {
     let mut stream = BufWriter::new(fs::File::create(output.join("stream.jsonl"))?);
     let mut progress = BufWriter::new(fs::File::create(output.join("progress.jsonl"))?);
-    let (live, checkpoint) = run_mm2_campaign_checkpointed(
-        game,
-        config,
-        &Mm2CampaignOrigin::Genesis,
-        &mut stream,
-        Some(&mut progress),
-    )?;
+    let (live, checkpoint) =
+        run_mm2_campaign_checkpointed(game, config, origin, &mut stream, Some(&mut progress))?;
     stream.flush()?;
     drop(stream);
     progress.flush()?;
     drop(progress);
+    let checkpoint_sha256 = if save_checkpoint {
+        let bytes = checkpoint.to_bytes()?;
+        fs::write(output.join("snapshots.bin"), &bytes)?;
+        Some(sha256(&bytes))
+    } else {
+        None
+    };
     drop(checkpoint);
 
     let best_input = live
@@ -271,6 +325,9 @@ fn run_marketing_soak(
         },
         "fixed_execution_soak": config.continue_after_victory,
         "verification": "champion_endpoint_reported",
+        "origin": &live.origin,
+        "workload_identity_sha256": game.workload_identity_sha256(),
+        "checkpoint_sha256": checkpoint_sha256,
         "stage": game.stage().number(),
         "campaign_seed": live.campaign_seed,
         "workers": live.workers,
@@ -326,26 +383,34 @@ fn run_marketing_soak(
     Ok(())
 }
 
+fn replay_origin(
+    origin: &Mm2CampaignOrigin,
+) -> (Option<&Mm2ArchiveReport>, Option<&Mm2CampaignCheckpoint>) {
+    match origin {
+        Mm2CampaignOrigin::Archive {
+            report, checkpoint, ..
+        } => (Some(report.as_ref()), checkpoint.as_ref()),
+        Mm2CampaignOrigin::Genesis | Mm2CampaignOrigin::SnapshotRoot { .. } => (None, None),
+    }
+}
+
 fn run_qualified_campaign(
     game: &Mm2Game,
     config: &Mm2CampaignConfig,
     output: &std::path::Path,
+    origin: &Mm2CampaignOrigin,
 ) -> Result<(), Box<dyn Error>> {
     let stream_path = output.join("stream.jsonl");
     let stream_file = fs::File::create(&stream_path)?;
     let mut stream = BufWriter::new(stream_file);
-    let (live, checkpoint) = run_mm2_campaign_checkpointed(
-        game,
-        config,
-        &Mm2CampaignOrigin::Genesis,
-        &mut stream,
-        None,
-    )?;
+    let (live, checkpoint) =
+        run_mm2_campaign_checkpointed(game, config, origin, &mut stream, None)?;
     drop(stream);
 
     let stream_bytes = fs::read(&stream_path)?;
+    let (origin_report, origin_checkpoint) = replay_origin(origin);
     let (replayed, replayed_checkpoint) =
-        replay_mm2_campaign_checkpointed(game, &stream_bytes, None, None)?;
+        replay_mm2_campaign_checkpointed(game, &stream_bytes, origin_report, origin_checkpoint)?;
     let report_bytes = serde_json::to_vec_pretty(&live)?;
     let replayed_report_bytes = serde_json::to_vec_pretty(&replayed)?;
     let checkpoint_bytes = checkpoint.to_bytes()?;
@@ -520,7 +585,7 @@ fn sha256(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, OsString, campaign_config};
+    use super::{Args, OsString, PathBuf, campaign_config};
 
     fn required_args(extra: &[&str]) -> Vec<OsString> {
         let mut args = ["--core", "core", "--rom", "rom", "--output", "output"]
@@ -555,5 +620,29 @@ mod tests {
         let soak = Args::parse_from(required_args(&["--fixed-execution-soak"]))
             .expect("soak arguments parse");
         assert!(campaign_config(&soak).continue_after_victory);
+    }
+
+    #[test]
+    fn archive_resume_flags_parse_and_checkpoint_save_is_marketing_only() {
+        let args = Args::parse_from(required_args(&[
+            "--resume-archive",
+            "archive.json",
+            "--resume-snapshots",
+            "snapshots.bin",
+            "--marketing-soak",
+            "--save-checkpoint",
+        ]))
+        .expect("archive resume arguments parse");
+        assert_eq!(args.resume_archive, Some(PathBuf::from("archive.json")));
+        assert_eq!(args.resume_snapshots, Some(PathBuf::from("snapshots.bin")));
+        assert!(args.save_checkpoint);
+    }
+
+    #[test]
+    fn malformed_archive_resume_flags_are_rejected() {
+        assert!(
+            Args::parse_from(required_args(&["--resume-snapshots", "snapshots.bin",])).is_err()
+        );
+        assert!(Args::parse_from(required_args(&["--save-checkpoint"])).is_err());
     }
 }

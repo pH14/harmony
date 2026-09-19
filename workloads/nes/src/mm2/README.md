@@ -46,7 +46,7 @@ weapon menu. The v2 controller identifier corrects the prototype's stale
 vocabulary is the adapter's alphabet sampler and nothing else about drawing;
 the searcher owns the suffix draw and the retained-input table.
 
-The v19 key uses 16-pixel retention slots pooled into 32-pixel cells,
+The v20 key uses 16-pixel retention slots pooled into 32-pixel cells,
 128-pixel regions, screens, and stages. Weapon/menu rows distinguish local
 endpoints but are pooled at coarser levels. Health and energy prefer
 representatives without multiplying spatial slots. It removes the prototype's
@@ -60,6 +60,14 @@ weapon, so a cleared boss is a granted weapon or that same defeated phase byte.
 The generic progress-aware selector consumes that relation. Historical frontier
 selectors retain their original identity ordering for controlled baselines.
 Summed energy remains a documented resource-preference tradeoff, not dominance.
+Enemy damage requires a health decrease on an active enemy with a confirmed
+hit flag, preserving its object and spawn identity or its killed-object
+transition. Twenty HP is a real initial health value, not an idle sentinel.
+The accumulator survives action endpoints, reset and snapshot restore. A
+recorded Leaf Shield hit on Sniper Armor changes its health from 20 to 6 while
+the player remains alive; the per-hit reward is capped at four. These semantics
+follow the game's [damage handler](https://github.com/lsmmega/mm2/blob/master/home/weapons_enemies_damage.asm)
+and are checked against the recorded frame trace.
 The v17 prototype is preserved in the preceding commit and benchmark build;
 replay rejects a different recorded policy instead of silently reinterpreting it.
 
@@ -100,3 +108,26 @@ tables, the 0x6c0..0x6df health region, and the 12 weapon-energy bytes. Use
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md).
 The source lineage and discarded search claims are listed in the
 [synthesis record](../../../../benchmarks/search/SYNTHESIS.md).
+
+`mm2-campaign --resume-archive ARCHIVE.json` imports the retained archive from
+an earlier run as a warm start. Add `--resume-snapshots SNAPSHOTS.bin` when
+the matching retained snapshots are available; the checkpoint format and file
+hash are recorded in the new stream origin. The import rebuilds the archive
+under the current ROM, core, root, selector, retention, and workload identity
+settings. It is an archive warm start, not an exact continuation of the prior
+campaign's random schedule or worker state.
+
+Marketing soaks may write their returned retained snapshots with
+`--save-checkpoint`, which creates `snapshots.bin` beside `archive.json`.
+This flag requires `--marketing-soak`; qualified campaigns always write their
+checkpoint as part of their existing output. `--resume-snapshots` requires
+`--resume-archive`, and both modes preserve the existing root-input identity in
+the new campaign stream.
+
+`mm2-branches STAGE PREFIX.json ROOT.json BANK.json OUTPUT.json` evaluates
+an explicit JSON array of `Mm2Input` suffixes from one restored root snapshot.
+It uses `HARMONY_MM2_ROM` and `HARMONY_QUICKNES_CORE`, records input hashes,
+per-action observations, actual work and terminal status, and stops a branch
+at death or stage completion. Include a tail in each suffix when testing
+landing or survival. This is a controlled local probe, not a campaign or an
+independent power-on verification; replay a successful composed tape separately.
