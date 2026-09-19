@@ -32,7 +32,7 @@ and snapshots. This module owns every RAM address and game interpretation.
 Death-animation hysteresis is part of each observation and snapshot. Its
 consecutive-frame count persists across action boundaries; splitting a hold
 into shorter inputs must not reset the death timer. Stream and snapshot
-formats are version 7, including the whole-game lifecycle and raw resource observations.
+formats are version 8, including the whole-game lifecycle and raw resource observations.
 
 Registered cases start from power-on menus selecting one of the eight ordinary
 Robot Master stages. A stage clear is reported as an independent stage result;
@@ -64,8 +64,11 @@ game-world frames after the menu closes. The bank-based decoder is tied to
 the pinned ROM and frame-boundary observation protocol; new cores or ROMs
 must recheck opening, closing, and gameplay traces. The same bank and scratch
 bytes also occur in Game Over and password code; they are not a universal scene
-classifier. The whole-game key retains the raw `$29/$fd/$fe` tuple locally
-when bank `$0d` is active, without treating it as proof of a particular menu.
+classifier. Raw bank/cursor/page observations remain available for diagnosis.
+The key keeps only candidate menu selections within the source-defined page
+and row bounds; all other bank-`$0d` scratch values share one unknown/transition
+value. This avoids treating thousands of reused scratch combinations as new
+controllable states. A valid tuple still does not prove a particular scene.
 `$f7` is the PPU-control shadow, not a game-mode byte. Whole-game execution
 uses no `$f7` scene predicate or health-based terminal exclusion.
 
@@ -74,7 +77,7 @@ The boss HP byte can remain 28 after Game Over/Continue even though the boss
 phase has reset to zero at the stage start. The current stream records the
 corrected milestone semantics; nonzero boss HP alone is not entry evidence.
 
-The v25 key uses 16-pixel retention slots pooled into 32-pixel cells,
+The v26 key uses 16-pixel retention slots pooled into 32-pixel cells,
 128-pixel regions, screens, and stages. Exact acquired-weapon masks distinguish
 capability identities at every depth; their popcounts determine progress.
 Different sets with equal counts have equal progress and remain separate.
@@ -92,6 +95,14 @@ A Wily boss grants no weapon, so encounter completion also observes the defeated
 phase. The documented Wily4 object mask still distinguishes live trap/barrier
 objects without a target priority or resource prescription. The searcher owns
 selection, retention, rollout length, mutation, and continuation reuse.
+
+Whole-game `castle_clears` records confirmed castle boss-clear transitions:
+source stage 8 through 13 advances by one after boss phase `$ff`. A completion
+bitmask prevents repeated clears from increasing the count, survives Continue,
+and resets with new-game progress. It is snapshot state, not a coordinate rank
+or route reward. Progress compares this count before the current refight and
+boss-damage fields, so entering the next castle stage remains an improvement
+after encounter-local fields reset.
 
 The Wily5 extension records the refight completion mask from `$BC` at stage 12
 and keeps it at every retention depth; it is zero outside Wily5. The eight mask

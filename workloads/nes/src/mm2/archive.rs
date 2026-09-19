@@ -22,7 +22,8 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_MM2_ACTIONS: usize = 32_768;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_mechanics_inventory_identity_uniform_resources_v25";
+pub const KEY_POLICY_IDENTIFIER: &str =
+    "mm2_mechanics_inventory_identity_uniform_resources_castle_clears_v26";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -38,6 +39,7 @@ pub type Mm2Archive = Archive<ButtonChord, Mm2ArchiveKey, Mm2Milestones, Mm2Snap
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ArchiveGroup {
     bosses: u8,
+    castle_clears: u8,
     stage: u8,
     screen: u8,
     room: u8,
@@ -45,7 +47,6 @@ pub struct Mm2ArchiveGroup {
     enemy_damage: u8,
     boobeam_targets: u16,
     capabilities: u8,
-    menu_registers: [u8; 3],
     weapon_energies: [u8; 12],
     refighting_mask: u8,
     refight_boss: u8,
@@ -61,6 +62,7 @@ pub struct Mm2ArchiveGroup {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ArchiveKey {
     pub bosses: u8,
+    pub castle_clears: u8,
     pub stage: u8,
     pub screen: u8,
     pub room: u8,
@@ -68,7 +70,6 @@ pub struct Mm2ArchiveKey {
     pub enemy_damage: u8,
     pub boobeam_targets: u16,
     pub capabilities: u8,
-    pub menu_registers: [u8; 3],
     pub weapon_energies: [u8; 12],
     pub refighting_mask: u8,
     pub refight_boss: u8,
@@ -93,8 +94,8 @@ impl ArchiveKey for Mm2ArchiveKey {
     fn group(self, depth: usize) -> Self::Group {
         let location = Mm2ArchiveGroup {
             bosses: self.bosses,
+            castle_clears: self.castle_clears,
             capabilities: self.capabilities,
-            menu_registers: self.menu_registers,
             weapon_energies: self.weapon_energies,
             stage: self.stage,
             screen: self.screen,
@@ -111,13 +112,11 @@ impl ArchiveKey for Mm2ArchiveKey {
             weapon: self.weapon,
             platforms: self.platforms,
             menu: self.menu,
-            ..Mm2ArchiveGroup::default()
         };
         match depth {
             0 => location,
             1 => Mm2ArchiveGroup {
                 weapon_energies: [0; 12],
-                menu_registers: [0; 3],
                 x: self.x / 2,
                 y: self.y / 2,
                 weapon: 0,
@@ -126,8 +125,8 @@ impl ArchiveKey for Mm2ArchiveKey {
             },
             2 => Mm2ArchiveGroup {
                 weapon_energies: [0; 12],
-                menu_registers: [0; 3],
                 bosses: self.bosses,
+                castle_clears: self.castle_clears,
                 x: self.x / 8,
                 y: self.y / 8,
                 posture: 0,
@@ -138,6 +137,7 @@ impl ArchiveKey for Mm2ArchiveKey {
             },
             3 => Mm2ArchiveGroup {
                 bosses: self.bosses,
+                castle_clears: self.castle_clears,
                 stage: self.stage,
                 capabilities: self.capabilities,
                 screen: self.screen,
@@ -147,6 +147,7 @@ impl ArchiveKey for Mm2ArchiveKey {
             },
             _ => Mm2ArchiveGroup {
                 bosses: self.bosses,
+                castle_clears: self.castle_clears,
                 stage: self.stage,
                 capabilities: self.capabilities,
                 refighting_mask: self.refighting_mask,
@@ -163,12 +164,14 @@ impl ArchiveKey for Mm2ArchiveKey {
     fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
         (
             left.bosses,
+            left.castle_clears,
             left.refighting_mask.count_ones(),
             left.wily_machine_shell_broken,
             left.boss_damage,
         )
             .cmp(&(
                 right.bosses,
+                right.castle_clears,
                 right.refighting_mask.count_ones(),
                 right.wily_machine_shell_broken,
                 right.boss_damage,
@@ -197,6 +200,7 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
     let (bosses, health, energy) = preference_tuple(state);
     Mm2ArchiveKey {
         bosses,
+        castle_clears: state.castle_clears,
         health,
         energy,
         stage: state.stage,
@@ -206,11 +210,6 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
         enemy_damage: state.enemy_damage / ENEMY_DAMAGE_BUCKET,
         boobeam_targets: state.boobeam_targets,
         capabilities: state.weapons_obtained,
-        menu_registers: if state.current_bank == 0x0d {
-            [state.current_bank, state.menu_cursor, state.menu_page]
-        } else {
-            [0; 3]
-        },
         weapon_energies: state.weapon_energies,
         refighting_mask: state.refighting_mask,
         refight_boss: state.refight_boss,
@@ -248,6 +247,7 @@ pub struct Mm2MilestoneInputs {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ProgressWatermark {
     pub bosses: u8,
+    pub castle_clears: u8,
     pub stage: u8,
     pub screen: u8,
     pub room: u8,
@@ -307,6 +307,7 @@ pub fn milestone_key(value: Mm2Milestones) -> (bool, bool, u8) {
 pub fn progress_watermark(state: Mm2MechanicalState) -> Mm2ProgressWatermark {
     Mm2ProgressWatermark {
         bosses: state.bosses_beaten(),
+        castle_clears: state.castle_clears,
         stage: state.stage,
         screen: state.screen,
         room: state.room,
@@ -466,6 +467,29 @@ mod tests {
             assert_eq!(
                 Mm2ArchiveKey::progress_cmp(first.group(0), second.group(0)),
                 Ordering::Equal
+            );
+        }
+    }
+
+    #[test]
+    fn confirmed_castle_completion_outranks_reset_encounter_state() {
+        let mut old = state(100, 28, 0xff);
+        old.castle_clears = 4;
+        old.stage = 12;
+        old.refighting_mask = 0xff;
+        old.wily_machine_shell_broken = true;
+        let mut next = old;
+        next.castle_clears = 5;
+        next.stage = 13;
+        next.refighting_mask = 0;
+        next.wily_machine_shell_broken = false;
+        for depth in 0..Mm2ArchiveKey::groups() {
+            assert_eq!(
+                Mm2ArchiveKey::progress_cmp(
+                    archive_key(next).group(depth),
+                    archive_key(old).group(depth)
+                ),
+                Ordering::Greater
             );
         }
     }

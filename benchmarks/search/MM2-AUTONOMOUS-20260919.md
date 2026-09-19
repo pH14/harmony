@@ -69,3 +69,54 @@ Qualification stream SHA-256:
 `b547be50d2c046c1ec64b2c2a6066d7c92926f5a47f2484986a5c9c3d7527abf`.
 Qualification checkpoint SHA-256:
 `8b3b2dab1e685e66e55904db9c7ded5136c99314b5b820ab902c1e057cb6c9b3`.
+
+## Observation audit after the first controls
+
+Both fresh 100K controls reached multiple screens in all eight ordinary stages,
+with no boss entry or kill. Seed 1 used 14,672,002 emulated frames and retained
+49,371 active representatives; seed 2 used 14,746,809 frames and retained 46,795.
+These counts alone are not progress evidence.
+
+Seed 1 contained 18,206 retained endpoints whose bank-`0x0d` `$fd/$fe` values
+were outside the source-defined weapon-menu cursor range. Across all bank-`0x0d`
+entries there were 2,209 distinct raw pairs. The experimental raw tuple in v25
+therefore split reused drawing/animation scratch into excessive local identities.
+V26 removes that tuple from the key, bounds candidate menu selections by the
+source's page/row ranges, and preserves raw bytes only as diagnostic observations.
+Valid range alone is not a scene detector: Game Over reuses the same registers.
+
+The generic horizon prototype passed its constant-action fixture but failed
+real two-worker replay at job 2 (196 measured work units versus 97 recorded).
+The live choice used reservation-time barren feedback, while replay initially
+recomputed from admission-time feedback. That prototype is unqualified. The fix
+records the chosen extension with the job and validates replay bounds; it needs
+multiworker variable-action and real-game replay checks before long runs.
+
+The preserved assisted tape passed the new target oracle: all 6,800 actions,
+exact supplied-frame work, snapshot restoration, and ending at action 6697.
+The six source-backed castle transitions were observed exactly once each.
+The boot-only film independently confirms the fixed 17-action, 1,512-frame
+prelude ends on the stage-selection grid. Boot tape SHA-256:
+`d19eda0b7d33793a968db230a00746f5518892ffe4d1efa231b2113418cea96`.
+None of these oracle inputs seed a qualifying campaign.
+
+## Repaired replay qualification
+
+The fixed core records its reservation-time horizon extension on job and skip
+records (generic schema 6) and keeps extension policy private to the engine.
+Default variable-length/variable-action multiworker tests now cover reservation
+lag. A fresh 2,000-execution real-game run with the unchanged v25 adapter passed
+full report/snapshot replay on msr1. Stream SHA-256:
+`338e0dd06f412e6c48843420c51a2c757a0282bd1ea7374434e600c882de6ba3`.
+
+The integrated v26 adapter (bounded menu identities and confirmed castle clears)
+also passed a fresh 2,000-execution replay on the Mac, with stream SHA-256:
+`153111dbb1a80a62ab6d09296420f78a11ef45388e320ce2c3a51a9b77aae108`.
+MM2 stream/checkpoint format is v8. Its 45 active MM2 library tests and seven
+CLI tests passed; the external-ROM oracle is separately opt-in. Targeted Clippy
+passed. These are qualification checks, not game-completion claims.
+
+At 23:02 UTC, the paired v25 seed-1 horizon arm and the integrated v26 seed-1
+power-on campaign began fresh 100K budgets with five workers each. The longer
+unchanged seed-1 control continues from its complete autonomous 100K archive;
+archive import is a warm start, not an exact continuation of the random schedule.

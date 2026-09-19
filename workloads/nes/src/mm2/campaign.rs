@@ -41,8 +41,8 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v7";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v7";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v8";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v8";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -490,7 +490,7 @@ impl Reporting for Mm2Game {
         snapshots: impl Iterator<Item = (Option<&'a Mm2Snapshot>, u64)>,
     ) -> Option<serde_json::Value> {
         let (mut active, mut missing) = (0_u64, 0_u64);
-        let (mut weapons, mut stage, mut screen) = (0, 0, 0);
+        let (mut weapons, mut stage, mut screen, mut castle_clears) = (0, 0, 0, 0);
         let mut health = vec![0_u8; 256];
         let mut energy = vec![0_u16; 256];
         let mut entries = vec![0_u64; 256];
@@ -505,6 +505,7 @@ impl Reporting for Mm2Game {
             };
             let state = snapshot.state();
             weapons |= state.weapons_obtained;
+            castle_clears = castle_clears.max(state.castle_clears);
             stage = stage.max(state.stage);
             screen = screen.max(state.screen);
             let here = usize::from(state.screen);
@@ -528,6 +529,7 @@ impl Reporting for Mm2Game {
             "scope": "union/maxima over cached active endpoints; not one trajectory; lower bounds when snapshots are missing",
             "active_entries": active, "missing_snapshots": missing,
             "weapons_union": weapons, "max_stage": stage, "max_screen": screen,
+            "max_castle_clears": castle_clears,
             "deepest_screen_max_health": health[deepest],
             "deepest_screen_max_weapon_energy": energy[deepest],
             "live_entries_by_screen": entries
