@@ -30,11 +30,11 @@ const WEAPONS_OBTAINED: usize = 0x9a;
 const LIVES: usize = 0xa8;
 const PLAYER_SCREEN: usize = 0x440;
 const LEVEL_ROOM: usize = 0x20;
-const GAME_MODE: usize = 0x04;
+const CURRENT_BANK: usize = 0x29;
 const SELECTED_WEAPON: usize = 0xa9;
 const MENU_CURSOR: usize = 0xfd;
 const MENU_PAGE: usize = 0xfe;
-const GAME_MODE_MENU: u8 = 0x03;
+const MENU_BANK: u8 = 0x0d;
 const MENU_ROWS: u8 = 8;
 pub const MENU_CLOSED: u8 = 0xff;
 const DYING_FRAMES: u32 = 30;
@@ -245,7 +245,7 @@ pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
         lives: read_byte(wram, LIVES)?,
         player_state: read_byte(wram, PLAYER_STATE)?,
         weapon: read_byte(wram, SELECTED_WEAPON)?,
-        menu: if read_byte(wram, GAME_MODE)? == GAME_MODE_MENU {
+        menu: if read_byte(wram, CURRENT_BANK)? == MENU_BANK {
             read_byte(wram, MENU_PAGE)?
                 .wrapping_mul(MENU_ROWS)
                 .wrapping_add(read_byte(wram, MENU_CURSOR)?)
@@ -1253,6 +1253,22 @@ mod tests {
             },
             0,
         ));
+    }
+
+    #[test]
+    fn menu_detection_uses_menu_bank_instead_of_sprite_scratch() {
+        let mut wram = vec![0_u8; WRAM_SIZE];
+        wram[CURRENT_BANK] = 0x0e;
+        wram[0x04] = 3;
+        wram[MENU_CURSOR] = 15;
+        assert_eq!(decode_state(&wram).expect("gameplay").menu, MENU_CLOSED);
+
+        wram[CURRENT_BANK] = MENU_BANK;
+        wram[0x04] = 0;
+        wram[MENU_CURSOR] = 5;
+        assert_eq!(decode_state(&wram).expect("opening menu").menu, 5);
+        wram[MENU_PAGE] = 1;
+        assert_eq!(decode_state(&wram).expect("second menu page").menu, 13);
     }
 
     #[test]

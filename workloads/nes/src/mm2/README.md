@@ -52,7 +52,14 @@ camera room byte differ by more than one while the raw scroll-direction byte
 (`$37`) is idle. The option is experimental, defaults off, and is included in
 the `Mm2Game` identity so streams and snapshots cannot mix the two policies.
 
-The v20 key uses 16-pixel retention slots pooled into 32-pixel cells,
+Menu decoding uses the current bank byte at `$29` (`$0d` for the menu),
+followed by the existing cursor/page bytes. `$04` is sprite/menu scratch,
+not a game mode: a recorded open/close probe shows it becoming three in
+game-world frames after the menu closes. The bank-based decoder is tied to
+the pinned ROM and frame-boundary observation protocol; new cores or ROMs
+must recheck opening, closing, and gameplay traces.
+
+The v21 key uses 16-pixel retention slots pooled into 32-pixel cells,
 128-pixel regions, screens, and stages. Weapon/menu rows distinguish local
 endpoints but are pooled at coarser levels. Health and energy prefer
 representatives without multiplying spatial slots. It removes the prototype's

@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_MM2_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_location_boss_bar_loaded_confirmed_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v20";
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_location_boss_bar_loaded_confirmed_enemy_spatial_16_posture_weapon_bank_menu_energy_platforms_preference_v21";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
