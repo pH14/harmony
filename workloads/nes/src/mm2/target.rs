@@ -244,7 +244,10 @@ impl Mm2MechanicalState {
             0
         } else if self.boss_phase >= BOSS_PHASE_DEFEATED {
             FULL_BOSS_HEALTH
-        } else if self.boss_phase >= BOSS_PHASE_FIGHTING && self.boss_health > 0 {
+        } else if self.boss_phase >= BOSS_PHASE_FIGHTING
+            && self.boss_fight_underway()
+            && self.boss_health > 0
+        {
             FULL_BOSS_HEALTH.saturating_sub(self.boss_health)
         } else {
             0
@@ -253,7 +256,15 @@ impl Mm2MechanicalState {
 
     #[must_use]
     pub fn boss_fight_underway(self) -> bool {
-        self.boss_phase != BOSS_PHASE_NONE && self.boss_phase < BOSS_PHASE_DEFEATED
+        self.boss_phase != BOSS_PHASE_NONE
+            && self.boss_phase < BOSS_PHASE_DEFEATED
+            && self.can_continue_boss_fight()
+    }
+
+    fn can_continue_boss_fight(self) -> bool {
+        self.health > 0
+            && self.player_state != PLAYER_STATE_DYING
+            && self.player_state != PLAYER_STATE_FALLEN
     }
 
     #[must_use]
@@ -1910,6 +1921,8 @@ mod tests {
         let mut wram = vec![0_u8; WRAM_SIZE];
         wram[STAGE] = WILY5_STAGE;
         wram[CURRENT_BOSS] = WILY_MACHINE_BOSS;
+        wram[PLAYER_STATE] = PLAYER_STATE_STANDING;
+        wram[PLAYER_HEALTH] = FULL_HEALTH;
         wram[BOSS_PHASE] = WILY_MACHINE_REFILL_PHASE;
         for health in 1..=FULL_BOSS_HEALTH {
             wram[BOSS_HEALTH] = health;
@@ -2288,6 +2301,8 @@ mod tests {
     fn a_boss_on_screen_without_a_loaded_meter_takes_no_damage() {
         let mut wram = vec![0_u8; WRAM_SIZE];
         wram[0xb1] = BOSS_PHASE_FIGHTING;
+        wram[PLAYER_STATE] = PLAYER_STATE_STANDING;
+        wram[PLAYER_HEALTH] = FULL_HEALTH;
         wram[0x6c1] = 0;
         let approaching = decode_state(&wram).expect("decode");
         assert_eq!(approaching.boss_damage(), 0);
@@ -2303,6 +2318,8 @@ mod tests {
         let mut wram = vec![0_u8; WRAM_SIZE];
         wram[0x6c1] = 20;
         wram[0xb1] = 1;
+        wram[PLAYER_STATE] = PLAYER_STATE_STANDING;
+        wram[PLAYER_HEALTH] = FULL_HEALTH;
         let filling = decode_state(&wram).expect("decode");
         assert_eq!(filling.boss_damage(), 0);
         wram[0xb1] = 2;
@@ -2319,6 +2336,41 @@ mod tests {
         wram[0x6c1] = 0;
         let dead = decode_state(&wram).expect("decode");
         assert_eq!(dead.boss_damage(), FULL_BOSS_HEALTH);
+    }
+
+    #[test]
+    fn dead_or_menu_player_does_not_report_stale_boss_progress() {
+        let mut wram = vec![0_u8; WRAM_SIZE];
+        wram[BOSS_PHASE] = BOSS_PHASE_FIGHTING;
+        wram[BOSS_HEALTH] = 4;
+        wram[PLAYER_HEALTH] = 0;
+        wram[PLAYER_STATE] = PLAYER_STATE_DYING;
+        let dying = decode_state(&wram).expect("dying encounter");
+        assert_eq!(dying.boss_damage(), 0);
+        assert!(!dying.boss_fight_underway());
+
+        wram[PLAYER_HEALTH] = FULL_HEALTH;
+        let menu = decode_state(&wram).expect("menu encounter");
+        assert_eq!(menu.boss_damage(), 0);
+        assert!(!menu.boss_fight_underway());
+
+        wram[PLAYER_STATE] = PLAYER_STATE_STANDING;
+        let active = decode_state(&wram).expect("active encounter");
+        assert_eq!(active.boss_damage(), FULL_BOSS_HEALTH - 4);
+        assert!(active.boss_fight_underway());
+    }
+
+    #[test]
+    fn defeated_phase_preserves_a_simultaneous_boss_clear_and_death() {
+        let state = Mm2MechanicalState {
+            boss_phase: BOSS_PHASE_DEFEATED,
+            boss_health: 0,
+            health: 0,
+            player_state: PLAYER_STATE_DYING,
+            ..Mm2MechanicalState::default()
+        };
+        assert_eq!(state.boss_damage(), FULL_BOSS_HEALTH);
+        assert!(!state.boss_fight_underway());
     }
 
     #[test]

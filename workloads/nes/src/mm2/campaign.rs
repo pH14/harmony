@@ -42,7 +42,7 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v8";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v9";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v8";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
@@ -466,7 +466,6 @@ fn update_first_inputs(
 
 fn champion_encounter_active(state: Mm2MechanicalState) -> bool {
     state.boss_fight_underway()
-        && matches!(state.player_state, 0x02 | 0x03 | 0x06 | 0x09 | 0x0a)
 }
 
 fn action_champion_key(observations: &[Mm2Observations]) -> Option<Mm2ChampionKey> {
@@ -987,6 +986,7 @@ mod tests {
             stage: 5,
             boss_phase: 2,
             boss_health: 20,
+            health: 8,
             player_state: 0x03,
             ..Mm2MechanicalState::default()
         };

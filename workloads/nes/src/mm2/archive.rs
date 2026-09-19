@@ -23,7 +23,7 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_MM2_ACTIONS: usize = 32_768;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "mm2_mechanics_inventory_identity_uniform_resources_castle_clears_v26";
+    "mm2_mechanics_inventory_identity_uniform_resources_castle_clears_actionable_boss_v27";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -368,6 +368,7 @@ mod tests {
             health,
             lives: 2,
             weapons_obtained: weapons,
+            player_state: 0x03,
             ..Mm2MechanicalState::default()
         }
     }
@@ -385,6 +386,23 @@ mod tests {
         restarted.boss_phase = BOSS_PHASE_DEFEATED;
         restarted.boss_health = 0;
         assert!(milestones(restarted, 255).reached_boss);
+    }
+
+    #[test]
+    fn dead_boss_phase_does_not_retain_partial_damage_in_the_archive_key() {
+        let mut dead = state(128, 0, 255);
+        dead.stage = 11;
+        dead.boss_phase = 2;
+        dead.boss_health = 4;
+        dead.player_state = 0;
+        let key = archive_key(dead);
+        assert_eq!(key.boss_damage, 0);
+        assert!(!milestones(dead, 255).reached_boss);
+
+        dead.player_state = 0x03;
+        dead.health = 8;
+        assert_eq!(archive_key(dead).boss_damage, 24 / BOSS_DAMAGE_BUCKET);
+        assert!(milestones(dead, 255).reached_boss);
     }
 
     #[test]

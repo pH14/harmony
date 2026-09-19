@@ -22,7 +22,7 @@ normal identity checks and must originate from this same whole-game policy.
 
 `--selector`, `--retention`, and `--mixture` are diagnostic controls for isolated
 stage experiments, not whole-game policy knobs. The ordinary fixed selector is
-`hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2,16`; retention is
+`hierarchy_uniform_128_v2_energy_frontier_cheapest:3,6,12,2,16`; retention is
 `unprobed`. Their generic implementations remain in the searcher.
 
 This package carries the native Mega Man 2 adapter onto the refactored campaign
@@ -32,7 +32,10 @@ and snapshots. This module owns every RAM address and game interpretation.
 Death-animation hysteresis is part of each observation and snapshot. Its
 consecutive-frame count persists across action boundaries; splitting a hold
 into shorter inputs must not reset the death timer. Stream and snapshot
-formats are version 8, including the whole-game lifecycle and raw resource observations.
+stream format is version 9 and the snapshot format remains version 8. The stream
+version includes the whole-game lifecycle, raw resource observations, and the
+source-backed guard that excludes stale dead-player boss phases from actionable
+partial-damage progress.
 
 Registered cases start from power-on menus selecting one of the eight ordinary
 Robot Master stages. A stage clear is reported as an independent stage result;
@@ -76,8 +79,13 @@ Boss-entry milestones require an active encounter or a confirmed defeat.
 The boss HP byte can remain 28 after Game Over/Continue even though the boss
 phase has reset to zero at the stage start. The current stream records the
 corrected milestone semantics; nonzero boss HP alone is not entry evidence.
+Raw boss phase and HP bytes remain in every decoded state. Derived partial boss
+damage and active-fight status require a live player status and nonzero player
+health, so stale phase/HP left by death and menu code cannot become actionable
+progress. A defeated phase remains a source-backed clear marker, including a
+same-frame player death.
 
-The v26 key uses 16-pixel retention slots pooled into 32-pixel cells,
+The v27 key uses 16-pixel retention slots pooled into 32-pixel cells,
 128-pixel regions, screens, and stages. Exact acquired-weapon masks distinguish
 capability identities at every depth; their popcounts determine progress.
 Different sets with equal counts have equal progress and remain separate.
@@ -160,6 +168,9 @@ witness.
 `mm2-film` replays a stage prefix and a searched tape to video, starting the
 capture at stage genesis: the capture buffers are bounded, and a chain prefix
 long enough to reach a castle stage would overflow them during construction.
+Campaign film output streams RGB frames through a single-thread FFmpeg encoder
+and then muxes the recorded PCM audio; temporary storage holds compressed video
+and PCM rather than the complete raw RGB frame sequence.
 `mm2-energy-probe` prints the twelve weapon-energy bytes at each action
 endpoint, the last of which is the energy-tank count rather than a meter. The
 decoded state now also retains the individual bytes. The isolated-stage tools
