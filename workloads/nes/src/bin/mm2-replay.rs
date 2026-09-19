@@ -8,7 +8,10 @@ use std::{
     path::PathBuf,
 };
 
-use machine::{Machine, StopConditions, nes::reproducer, quicknes::QuickNesMachine};
+use machine::{
+    Machine, Moment, StopConditions, StopMask, StopReason, nes::reproducer,
+    quicknes::QuickNesMachine,
+};
 use nes_workload::{
     film::{FPS, Film},
     mm2::target::{Mm2Input, decode_state},
@@ -71,20 +74,6 @@ fn parse_args() -> Result<ReplayOptions, Box<dyn Error>> {
         trace_output,
         trace_from,
     })
-}
-
-fn apply_action(
-    machine: &mut QuickNesMachine,
-    action: machine::nes::ButtonChord,
-) -> Result<(), Box<dyn Error>> {
-    let snapshot = machine.snapshot()?;
-    let result = (|| {
-        machine.branch(snapshot, &reproducer(std::slice::from_ref(&action)))?;
-        machine.run(StopConditions::default(), None)?;
-        Ok::<(), Box<dyn Error>>(())
-    })();
-    let drop_result = machine.drop_snapshot(snapshot);
-    result.and(drop_result.map_err(Into::into))
 }
 
 fn write_trace(
@@ -160,6 +149,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let core_sha256 = format!("{:x}", Sha256::digest(&core));
     let input_sha256 = format!("{:x}", Sha256::digest(&input_bytes));
     let mut machine = QuickNesMachine::from_rom_bytes(&rom, &core_path, &core_sha256)?;
+    let power_on = machine.snapshot()?;
+    machine.branch(power_on, &reproducer(&input.actions))?;
+    machine.drop_snapshot(power_on)?;
     let mut film = None;
     let mut film_frames = 0_u64;
     let mut trace = options
@@ -183,7 +175,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             machine.set_video_capture(true);
             machine.set_audio_capture(true);
         }
-        apply_action(&mut machine, action)?;
+        let deadline = Moment(machine.now().0 + u64::from(action.bounded_hold_frames()));
+        if !matches!(
+            machine.run(
+                StopConditions {
+                    deadline: Some(deadline),
+                    on: StopMask::NONE
+                },
+                None
+            )?,
+            StopReason::Deadline { .. }
+        ) {
+            return Err("raw replay stopped before its next action boundary".into());
+        }
         if film_request
             .as_ref()
             .is_some_and(|request| request.first_action <= index)
@@ -225,7 +229,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "{}",
         serde_json::json!({
-            "format": "mm2-raw-replay-v1",
+            "format": "mm2-raw-replay-v2",
+            "restore_policy": "power_on_only",
             "input": input_path,
             "rom": rom_path,
             "core": core_path,

@@ -93,7 +93,10 @@ target refuses actions from there.
 mm2-replay is the raw power-on replay path. It loads the external ROM and
 QuickNES core directly, replays every action in an input archive, and never
 adds stage setup or stops at a death or boss clear. It prints the ROM, core, and
-input hashes, the number of recorded and applied actions, the raw emulator frame
+input hashes. It stages the full controller tape once at power-on and advances
+to action boundaries without intermediate snapshot restores, independently
+checking the searcher's use of restore. The report also includes the
+number of recorded and applied actions, the raw emulator frame
 count, and the decoded endpoint. To capture a film beginning at a zero-based
 action index while still replaying the complete tape, pass
 --film-from ACTION_INDEX --film-output OUTPUT.mp4. The film includes that
