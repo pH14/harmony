@@ -406,7 +406,7 @@ METROID_MILESTONES = {
     'high_jump': 'High Jump', 'screw_attack': 'Screw Attack', 'varia_suit': 'Varia Suit',
     'wave_beam': 'Wave Beam', 'ice_beam': 'Ice Beam', 'brinstar': 'Brinstar',
     'norfair': 'Norfair', 'kraid_area': "Kraid's area", 'ridley_area': "Ridley's area",
-    'kraid_room': "Kraid's room", 'ridley_room': "Ridley's room",
+    'kraid_door': "Kraid's door", 'kraid_room': "Kraid's room", 'ridley_room': "Ridley's room",
     'tourian': 'Tourian', 'kraid_defeated': 'Kraid defeated', 'ridley_defeated': 'Ridley defeated',
     'mother_brain_defeated': 'Mother Brain defeated', 'escape_started': 'Escape started',
     'ending': 'Ending', 'missile_capacity': 'Missile capacity gained', 'energy_tank': 'Energy tank gained',

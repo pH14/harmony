@@ -76,6 +76,7 @@ impl Default for NamedProgress {
                     "norfair",
                     "kraid_area",
                     "ridley_area",
+                    "kraid_door",
                     "kraid_room",
                     "ridley_room",
                     "tourian",
@@ -128,6 +129,9 @@ impl NamedProgress {
         }
         if let Some(area) = area_name(state.area) {
             note(area);
+        }
+        if state.area == 0x12 && state.map_x == 9 && state.map_y == 29 {
+            note("kraid_door");
         }
         if state.boss_health > 0 {
             match state.area {
