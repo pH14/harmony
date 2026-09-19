@@ -28,7 +28,7 @@ pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
     crate::search::archive::selector_policy_from_identifier(
         identifier,
-        Mm2ArchiveKey::groups().saturating_sub(2),
+        Mm2ArchiveKey::groups().saturating_sub(1),
     )
 }
 
@@ -412,5 +412,24 @@ mod tests {
             assert_ne!(chord.buttons & 0xc0, 0xc0);
         }
         assert!((40..=140).contains(&starts), "start taps: {starts}");
+    }
+
+    #[test]
+    fn the_progress_relation_is_a_total_preorder() {
+        let keys = [
+            archive_key(state(0x20, 28, 0)),
+            archive_key(state(0x90, 10, 0b1)),
+            archive_key(state(0x90, 28, 0b11)),
+            archive_key(Mm2MechanicalState {
+                stage: 3,
+                boss_health: 12,
+                ..state(0x40, 20, 0b1)
+            }),
+        ];
+        let groups = (0..Mm2ArchiveKey::groups())
+            .flat_map(|depth| keys.iter().map(move |key| key.group(depth)))
+            .collect::<Vec<_>>();
+        crate::search::archive::check_total_preorder::<Mm2ArchiveKey>(&groups)
+            .expect("Mega Man 2 progress relation");
     }
 }

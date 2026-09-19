@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, num::NonZeroUsize};
+use std::{cmp::Ordering, error::Error, num::NonZeroUsize};
 
 use crate::search::archive::{
     Archive, ArchiveEntryReport, ArchiveKey, SelectorAccounting, SelectorPolicy, entries_by_suffix,
@@ -12,7 +12,7 @@ pub use crate::smb::target::ROOM_IDENTITY_BYTES;
 pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
     crate::search::archive::selector_policy_from_identifier(
         identifier,
-        SmbArchiveKey::groups().saturating_sub(2),
+        SmbArchiveKey::groups().saturating_sub(1),
     )
 }
 use crate::search::rand::RomuDuoJrRand;
@@ -81,6 +81,10 @@ impl ArchiveKey for SmbArchiveKey {
 
     fn groups() -> usize {
         5
+    }
+
+    fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
+        (left.world, left.level, left.progress).cmp(&(right.world, right.level, right.progress))
     }
 
     fn group(self, depth: usize) -> Self::Group {
@@ -348,7 +352,7 @@ pub(crate) fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16
 #[cfg(test)]
 mod tests {
     use super::{SmbArchiveKey, SmbRoomIdentity};
-    use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey};
+    use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey, check_total_preorder};
     use crate::smb::target::{SmbObservations, SmbProgressWatermark};
 
     #[test]
@@ -505,5 +509,47 @@ mod tests {
             (key.world, key.level)
         );
         assert_eq!(SmbArchiveKey::groups(), 5);
+    }
+
+    #[test]
+    fn the_progress_relation_is_a_total_preorder() {
+        let groups = [0_usize, 1, 2, 3, 4]
+            .into_iter()
+            .flat_map(|depth| {
+                [
+                    key(0, [0, 0]),
+                    key(41, [1, 0]),
+                    key(41, [2, 3]),
+                    key(900, [0, 0]),
+                    SmbArchiveKey {
+                        world: 1,
+                        level: 1,
+                        ..key(900, [4, 4])
+                    },
+                ]
+                .map(|candidate| candidate.group(depth))
+            })
+            .collect::<Vec<_>>();
+        check_total_preorder::<SmbArchiveKey>(&groups).expect("SMB progress relation");
+    }
+
+    #[test]
+    fn progress_outranks_every_identity_field() {
+        let behind = key(41, [9, 9]);
+        let ahead = SmbArchiveKey {
+            player_y_bucket: 0,
+            state_fingerprint: 0,
+            time_bucket: 0,
+            room: SmbRoomIdentity::default(),
+            ..key(900, [0, 0])
+        };
+        assert_eq!(
+            SmbArchiveKey::progress_cmp(ahead.group(0), behind.group(0)),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            SmbArchiveKey::progress_cmp(ahead.group(2), behind.group(2)),
+            std::cmp::Ordering::Greater
+        );
     }
 }

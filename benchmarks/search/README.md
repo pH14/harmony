@@ -128,7 +128,8 @@ as a separate stress condition.
 | `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
 | `alphabet-control.json`, `alphabet-continuation.json` | The same development pilot origins and budgets, comparing alphabet-only mutation with separately accounted quarter-share continuation replay. These exploratory panels do not require every case to solve. |
 | `continuation-accounting-control.json`, `continuation-accounting-isolated.json` | The same development sample comparing original energy-splice continuation accounting with v2, which keeps triggered outcomes separate from ordinary exploration and mutation energy. |
-| `metroid-long-horizon-semantic.json`, `metroid-long-horizon-continuation.json` | Three reused development seeds at 3 million executions, 4 workers and 8 GiB; semantic parent selection with alphabet-only mutation versus the new continuation policy. |
+| `metroid-long-horizon-continuation.json` | Three reused development seeds at 3 million executions, 4 workers and 8 GiB; continuation replay against the alphabet-only arm of `metroid-long-horizon.json`. |
+| `metroid-long-horizon-energy-splice.json` | The same three seeds and budgets drawing through the retained-input table, against the alphabet-only arm of `metroid-long-horizon.json`. |
 | `throughput-checkpoint.json` | The 18-cell throughput panel with the adopted two-result-slot profile, for an isolated comparison of unchanged policies before and after implementation changes. |
 | `evaluation-continuation.json` | Frozen candidate for the full panel: learned continuation replay with the original parent selector. Selected from the completed pilots before any full-panel outcome was observed. |
 | `evaluation.json` | Main-mechanism control: five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
@@ -142,9 +143,14 @@ The practical SMB reference validates on 20260910–20260914. Before any broad
 evaluation cell ran, its seeds were moved to the separate, preregistered panel
 20260920–20260924, preserving unobserved trials for
 validating a mechanism selected from the development runs. Performance panels have explicit
-frame, execution and wall ceilings. SMB's dedicated regression panel keeps the
-400,000-execution check; the broad eight-worker panel allows 600,000 executions
-under an 80-million-frame cap. The practical SMB reference allows 600,000
+frame, execution and wall ceilings. SMB's dedicated regression panel allows
+2,000,000 executions under a 400-million-frame cap and a 1,800-second wall; the
+broad eight-worker panel allows 600,000 executions under an 80-million-frame
+cap. The regression panel's earlier 400,000-execution ceiling sat inside the
+spread of its own solve points, measured from 267,067 to 685,954 executions
+across its ten cells, so which cells solved varied run to run. Its ceiling is a
+floor for whether a run completes at all; compare runs by the recorded
+`executions_to_first_victory`, not by whether a cell cleared the ceiling. The practical SMB reference allows 600,000
 executions and 120 million frames at 24 workers. It solved all four development
 seeds (including seed 1) in 122–167 seconds and all five fresh validation seeds
 in 89–251 seconds, including witness verification. One validation seed needed
@@ -351,14 +357,14 @@ The HTML export includes these fields and links to verified tapes. Older missing
 observations display as unavailable. Resource figures, budgets, stop reasons, and
 failures remain in every row; milestone timings are censored at each run's budget.
 
-`metroid-long-horizon.json` and `metroid-long-horizon-semantic.json` register a
-**development diagnostic** using historical seeds 3, 4, and 5: four workers,
-8 GiB logical archive, 3 million executions, 400 million admitted frames, 4096
-actions, `one_to_six`, and alphabet draws. Both arms use the same current adapter
-and executable. Only the parent selector differs. These restore the earlier
-work/memory scale and isolate semantic frontier weighting without count weighting.
-They do not reproduce the historical improvement-replay implementation, exact
-reservation schedule, platform, or action stream. These reused seeds are not
+`metroid-long-horizon.json`, `metroid-long-horizon-continuation.json` and
+`metroid-long-horizon-energy-splice.json` register a **development diagnostic**
+using historical seeds 3, 4, and 5: four workers, 8 GiB logical archive,
+3 million executions, 400 million admitted frames, 4096 actions, and
+`one_to_six`. Every arm uses the same current adapter and executable. Only the
+mutation mixture differs. These restore the earlier
+work/memory scale. They do not reproduce the historical improvement-replay
+implementation, exact reservation schedule, platform, or action stream. These reused seeds are not
 fresh validation evidence. The earlier 005 Metroid panel used 500,000 executions,
 2 GiB, eight workers, a capped suffix, and energy splice; it cannot establish
 preservation of the earlier 3-million-execution results.

@@ -19,7 +19,9 @@ corrects wrapped coordinates and transition states that caused false deaths in
 the earlier experiments. Controller sampling covers nine directions times four
 A/B combinations plus ordinary Start taps; Start is necessary to operate the
 weapon menu. The v2 controller identifier corrects the prototype's stale
-`no_start` label. No control is selected based on a named situation.
+`no_start` label. No control is selected based on a named situation. That
+vocabulary is the adapter's alphabet sampler and nothing else about drawing;
+the searcher owns the suffix draw and the retained-input table.
 
 The v19 key uses 16-pixel retention slots pooled into 32-pixel cells,
 128-pixel regions, screens, and stages. Weapon/menu rows distinguish local

@@ -24,8 +24,12 @@ namespaces are rejected before replay because their snapshot accounting differs.
 
 Empirical step tables fold retained suffixes into an incremental hash and a
 deterministic frequency map capped at 4,096 distinct steps. The compact table
-is the only supported representation. Workloads identify their input policies
-and reject unknown or retired identifiers during replay.
+is the only supported representation. Every campaign keeps one, in
+`search::draw_tables`, so a workload gets the biased draw without owning any of
+the bookkeeping. `DrawTables` folds each retained suffix as its record closes,
+publishes an `EmpiricalStepCheckpoint` the stream records beside every draw,
+and keeps the table versions a serial replay still needs. Workloads identify
+their input policies and reject unknown or retired identifiers during replay.
 
 Physical executors default to at most one running or completed-but-unadmitted
 job each. `run_campaign_checkpointed_with_options` can explicitly allow two
@@ -38,6 +42,20 @@ memory is outside the archive's logical budget and must be measured in host RSS.
 Benchmark callers record this physical execution choice in their run identity.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
+`memory_budget_mib` is split before bootstrap: the workload's draw-state reserve
+and the adaptive duration reserve are subtracted, and the archive gets the rest
+as its own limit. The draw state and the duration histories are checked against
+their reserves on every admission and fail the campaign when either exceeds one.
+The archive's limit is enforced incrementally, a bounded number of eviction
+visits per admission, so resident bytes sit above the limit while maintenance
+catches up. Maintenance does not always converge below the limit: history
+compaction batches and declines to run below `HISTORY_COMPACTION_MIN_DROPS`,
+and entry dropping stops at one surviving active entry, so a campaign can
+carry an over-budget tail of retained history to its end. Final compaction
+bypasses the batching threshold and rejects an archive that is still over its
+limit. Because of that lag, the archive's resident bytes are not checked
+against the whole budget during the campaign.
+
 ## Workload boundary
 
 `searcher` is independently buildable. Workload packages implement its typed
@@ -46,21 +64,45 @@ campaign and target contracts:
 | Contract | Workload responsibility |
 | --- | --- |
 | `TargetExecution` | Construct, drive, restore, and snapshot targets; capture observations and account for deterministic execution work. |
-| `InputPolicy` | Define the action vocabulary, draw suffixes, retain policy history, and checkpoint draw state. |
+| `InputPolicy` | Define the action vocabulary and the policy identifiers a recording must match. |
 | `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
+
+An `ArchiveKey` answers three separate questions, and nothing else reads a
+group as a magnitude:
+
+| Question | Answered by |
+| --- | --- |
+| Is this a new place? | `Eq` on the group. `Ord` only lets maps store it. |
+| Is this band, class or leaf further along? | `ArchiveKey::progress_cmp`, default `Ordering::Equal`. |
+| Which of two states at one slot survives? | `ArchiveKey::preference_cmp`, default `Ordering::Equal`. |
+
+`progress_cmp` must be a total preorder: any two groups compare, comparing them
+in either order gives reversed results, and the relation is transitive over
+every triple. The searcher relies on that to take a maximum in one indexed pass
+instead of a dominance scan. `check_total_preorder` checks those properties over
+a slice of groups; every workload that declares a `progress_cmp` calls it from a
+test. A workload with no progress notion leaves the default, and its places are
+then all peers.
 
 Each contract depends on `CampaignTypes` and can be implemented independently.
 A complete adapter receives the aggregate `Workload` implementation automatically.
 The `tests/interfaces.rs` fixture implements execution alone and exercises it
 through a function bounded only by `TargetExecution`.
 
-Stateful input policies provide a serializable `DrawCheckpoint` and optional
-`DrawHeader`. Campaign records carry those types directly; the coordinator
-only asks the policy for a checkpoint's history version when retaining replay
-state. It does not interpret the checkpoint payload. Stateless policies use
-`()`. Policy state and retained checkpoint history must fit the declared memory
-reserve.
+`InputPolicy` requires four things of a workload: the action limit, the action
+cost ceiling, the policy identifiers a recording must match, and
+`sample_alphabet`, which draws one action from the workload's vocabulary. The
+searcher supplies the rest. `expand_suffix` mixes `sample_alphabet` with a step
+drawn from the retained-input table, `finish_stream_record` folds the record's
+retained suffixes back into it, and `remember_draw_version` keeps the versions
+a replay still names. A workload that embeds a duration choice in its actions
+overrides `expand_duration_recorded_or_live` and draws through
+`DrawTables::draw` itself. That one method serves the live and replay paths,
+so a recorded run reaches the workload with the table version the stream
+named.
+`draw_table_parameters` sizes the table; its default reserve is 2 MiB and must
+fit the campaign's memory budget.
 
 Streams require the current engine `schema_version` in addition to the
 workload's format identifier. Missing or unsupported engine versions are
@@ -160,8 +202,43 @@ work changes that replay rejects. It does not measure a workload speedup.
 
 ## Search evaluation policies
 
-Selector identifiers describe the generic hierarchy and retain their exact
-selection behavior. Search experiments use independent versioned identifiers:
+Five selector policies exist. `hierarchy_uniform_128` draws uniformly over live
+groups. `hierarchy_uniform_128_retire:<thresholds>` drops a group once its
+barren counter passes a threshold. The three `energy_frontier_cheapest`
+identifiers weight the draw by barren energy, by progress rank, and by cost.
+
+The coarsest group is a class. Every class holding a live cell receives draws.
+The walk ranks classes by how many distinct progress levels are ahead of them,
+capped at eight, and weights a class `1 << ((8 - rank) * 3)` times its barren
+energy, so the leading class takes most of the draws, a class that stops
+producing falls away, and no live class takes zero. The factor of eight per
+rank is what keeps a deep run moving; a factor of two spreads the draws far
+enough behind the frontier that a workload with many finished classes stops
+finishing. Without the energy term a workload whose
+classes form a chain of finished and unfinished stages spends half its draws
+behind the frontier forever. The class depth is an ordinary pooled depth: the
+`energy_frontier_cheapest` identifiers carry one scale per depth from the
+finest pooled depth up to the class, and `group_barren` holds a counter at each
+of them. `SelectorAccounting`'s `class_draws_by_rank` reports the share each
+rank received. Bands inside a class are ranked the same way, over the distinct
+progress levels of their frontier groups.
+
+A productive selection clears the parent's barren counter at a pooled depth
+only when a retained child's group at that depth had not been seen before. A
+child that opens a new coarse group necessarily opens the finer groups
+containing it, so it still clears every depth below. A child that is new only
+at the finest pooled depth clears that depth alone, so a place that keeps
+producing fine novelty inside ground the search already covers no longer holds
+its coarser counters at zero. `Retire` clears every depth on any productive
+selection; `hierarchy_uniform_128` clears none. `SelectorAccounting` reports
+`energy_resets`, the counters cleared at each depth, and `productive_by_mask`, a
+histogram over productive selections of which depths the selection opened.
+
+Every live progress line carries the whole of `SelectorAccounting` under
+`selector`, so a run's class draw shares and energy resets can be read over
+time rather than only from the final census.
+
+Search experiments use independent versioned identifiers:
 
 - `hierarchy_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
   each within-cell cost weight by one plus that entry's admitted selections.
@@ -251,19 +328,6 @@ Genesis and snapshot-root bootstrap still require a current key and retained
 snapshot; a terminal target without a snapshot is reported as an execution
 error.
 
-`hierarchy_uniform_128_energy_progress_cheapest_count_v1:<thresholds>` is a
-separate experiment that uses `ArchiveKey::progress_cmp` for class preference
-and frontier weighting. Equivalent/incomparable coarsest classes share draws;
-identity still orders maps, never the potentially partial progress relation.
-Each selection draws one maximal eligible class; it does not fall through to
-other classes when that class yields no cell. Semantic frontier rank saturates
-at 16, matching the weighting span, rather than counting the entire tail.
-Within a pooled subtree it chooses a maximal observed descendant as its progress
-representative. Generic tests relabel locations and expose the numeric-label
-bias in the legacy control. This policy changes parent selection; ordinary
-splice donor ranking retains its historical key ordering and remains a separate
-ablation concern for nonlinear workloads.
-
 `run_campaign_checkpointed_with_options` accepts an optional deterministic work
 budget without changing existing `CampaignConfig` callers. The stream and
 report record that budget only when present. Already reserved jobs drain
@@ -271,12 +335,3 @@ normally; evaluators must score first-objective work against the threshold and
 account for any drained overshoot. Omitting the option leaves the campaign
 without a work-budget cutoff.
 
-`hierarchy_uniform_128_energy_progress_cheapest_v1:<thresholds>` isolates semantic
-progress weighting from entry-count weighting. It uses the same progress walk
-and cheapest-cell preference as the count variant, with the original per-entry
-weights. This recovers the location-neutral frontier behavior of the historical
-Pareto experiment: within an inventory class, its declared progress
-relation considers map cells equal, so no map cell can dominate another. It is
-not the full historical cross-location preference/Pareto implementation, and
-it does not restore the prototype's improvement-replay queues. Its separate
-identifier permits an ablation without changing any existing selector's behavior.

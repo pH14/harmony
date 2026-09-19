@@ -4,6 +4,7 @@ pub mod archive;
 pub mod campaign;
 mod continuation;
 pub mod draw;
+pub mod draw_tables;
 pub mod duration;
 pub mod empirical_steps;
 mod key_counts;

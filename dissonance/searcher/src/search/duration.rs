@@ -152,9 +152,17 @@ where
     deserializer.deserialize_seq(RecentVisitor)
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct DurationPolicy {
     recent: VecDeque<Observation>,
+}
+
+impl Clone for DurationPolicy {
+    fn clone(&self) -> Self {
+        let mut policy = Self::new();
+        policy.recent.extend(self.recent.iter().copied());
+        policy
+    }
 }
 
 impl Default for DurationPolicy {
@@ -167,12 +175,25 @@ impl DurationPolicy {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            recent: VecDeque::new(),
+            recent: VecDeque::with_capacity(RECENT_OBSERVATIONS),
         }
     }
 
     #[must_use]
     pub fn draw(&self, rand: &mut RomuDuoJrRand, max_duration: NonZeroU64) -> u64 {
+        Self::draw_from(&self.recent, rand, max_duration)
+    }
+
+    #[must_use]
+    pub fn draw_without_history(rand: &mut RomuDuoJrRand, max_duration: NonZeroU64) -> u64 {
+        Self::draw_from(&VecDeque::new(), rand, max_duration)
+    }
+
+    fn draw_from(
+        recent: &VecDeque<Observation>,
+        rand: &mut RomuDuoJrRand,
+        max_duration: NonZeroU64,
+    ) -> u64 {
         let scales = (u64::BITS - max_duration.get().leading_zeros()) as usize;
         let scale_bound = NonZeroUsize::new(scales).expect("positive duration has a scale");
         if rand.next_u64() & 1 == 0 {
@@ -180,7 +201,7 @@ impl DurationPolicy {
         }
         let mut successes = [0_u128; u64::BITS as usize];
         let mut costs = [0_u128; u64::BITS as usize];
-        for observation in &self.recent {
+        for observation in recent {
             let scale = observation.duration.get().trailing_zeros() as usize;
             successes[scale] += u128::from(observation.useful);
             costs[scale] += u128::from(observation.execution_cost.get());
@@ -296,13 +317,14 @@ impl<C: Copy + Ord> DurationPolicies<C> {
         rand: &mut RomuDuoJrRand,
         max_duration: NonZeroU64,
     ) -> DurationDraw<C> {
-        let empty = DurationPolicy::new();
-        let policy = self.policies.get(&context).unwrap_or(&empty);
+        let duration = match self.policies.get(&context) {
+            Some(policy) => policy.draw(rand, max_duration),
+            None => DurationPolicy::draw_without_history(rand, max_duration),
+        };
         DurationDraw {
             context,
             max_duration,
-            duration: NonZeroU64::new(policy.draw(rand, max_duration))
-                .expect("duration policy draws a positive duration"),
+            duration: NonZeroU64::new(duration).expect("duration policy draws a positive duration"),
         }
     }
 
@@ -543,5 +565,71 @@ mod tests {
         for _ in 0..128 {
             assert_eq!(policy.draw(&mut rand, positive(1)), 1);
         }
+    }
+
+    #[test]
+    fn a_cloned_history_stays_within_its_memory_reserve_once_refilled() {
+        let mut source = DurationPolicy::new();
+        for _ in 0..(RECENT_OBSERVATIONS - 1) {
+            source
+                .observe(positive(1), true, positive(1))
+                .expect("observe");
+        }
+        let mut policy = source.clone();
+        for _ in 0..RECENT_OBSERVATIONS {
+            policy
+                .observe(positive(2), true, positive(1))
+                .expect("observe");
+        }
+        let reserve = std::mem::size_of::<DurationPolicy>()
+            + RECENT_OBSERVATIONS * std::mem::size_of::<Observation>();
+        assert!(policy.memory_bytes() <= reserve);
+    }
+
+    #[test]
+    fn a_partially_filled_checkpoint_stays_within_its_memory_reserve_once_refilled() {
+        let mut source = DurationPolicy::new();
+        for _ in 0..(RECENT_OBSERVATIONS - 1) {
+            source
+                .observe(positive(1), true, positive(1))
+                .expect("observe");
+        }
+        let contexts = (0..u32::try_from(MAX_DURATION_CONTEXTS).expect("context count"))
+            .map(|context| DurationContextCheckpoint {
+                context,
+                history: source.checkpoint(),
+            })
+            .collect();
+        let mut policies = DurationPolicies::from_checkpoint(DurationPoliciesCheckpoint {
+            policy: DURATION_POLICIES_IDENTIFIER.to_owned(),
+            contexts,
+        })
+        .expect("restore");
+        for context in 0..u32::try_from(MAX_DURATION_CONTEXTS).expect("context count") {
+            for _ in 0..RECENT_OBSERVATIONS {
+                policies
+                    .observe(context, positive(2), true, positive(1))
+                    .expect("observe");
+            }
+        }
+        assert_eq!(policies.policies.len(), MAX_DURATION_CONTEXTS);
+        assert!(policies.memory_bytes() <= DurationPolicies::<u32>::memory_reserve_bytes());
+    }
+
+    #[test]
+    fn a_saturated_context_history_stays_within_its_memory_reserve() {
+        let mut policies = DurationPolicies::<u32>::new();
+        for context in 0..u32::try_from(MAX_DURATION_CONTEXTS * 2).expect("context count") {
+            for _ in 0..(RECENT_OBSERVATIONS * 2) {
+                policies
+                    .observe(context, positive(1), true, positive(1))
+                    .expect("observe");
+                policies
+                    .observe(context, positive(2), false, positive(1))
+                    .expect("observe");
+            }
+        }
+        assert_eq!(policies.policies.len(), MAX_DURATION_CONTEXTS);
+        assert!(policies.memory_bytes() <= DurationPolicies::<u32>::memory_reserve_bytes());
     }
 }

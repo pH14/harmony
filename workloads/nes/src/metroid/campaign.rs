@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     error::Error,
     io::Write,
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -34,7 +34,9 @@ use crate::{
             Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
             postcard_value_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
         },
-        draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        draw::{DrawMixture, SuffixShape},
+        draw_tables::DrawTableHeader,
+        rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
@@ -53,9 +55,6 @@ const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_select_tap
 
 type MetroidPreference = (u8, u8, u16, u8);
 type MetroidChampionKey = (MetroidProgressWatermark, MetroidPreference);
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct MetroidNoTableHeader;
 
 pub struct MetroidGame {
     rom: Vec<u8>,
@@ -205,7 +204,7 @@ impl MapCoverage {
 pub type MetroidCampaignOrigin = CampaignOrigin<MetroidGame>;
 pub type MetroidCampaignCheckpoint = CampaignCheckpoint<MetroidSnapshot>;
 pub type MetroidSnapshotCheckpoint = SnapshotCheckpoint<MetroidSnapshot>;
-pub type MetroidCampaignStreamHeader = CampaignStreamHeader<MetroidNoTableHeader>;
+pub type MetroidCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
 pub type MetroidCampaignModeReport = CampaignModeReport<ButtonChord, MetroidArchiveReport>;
 pub type MetroidCampaignProgressRecord = CampaignProgressRecord<MetroidArchiveKey>;
 type MetroidCampaignActionResult = CampaignActionResult<MetroidGame>;
@@ -451,9 +450,6 @@ impl CampaignTypes for MetroidGame {
     type Evidence = MetroidCampaignEvidence;
     type ArchiveReport = MetroidArchiveReport;
     type Run = MetroidCampaignRun;
-    type DrawState = ();
-    type DrawHeader = MetroidNoTableHeader;
-    type DrawCheckpoint = ();
 }
 
 impl Reporting for MetroidGame {
@@ -607,18 +603,6 @@ impl InputPolicy for MetroidGame {
         u64::from(crate::metroid::archive::LONGEST_HOLD_FRAMES)
     }
 
-    fn draw_state_memory_reserve_bytes(
-        &self,
-        _run: &MetroidCampaignRun,
-        _max_actions: usize,
-    ) -> usize {
-        0
-    }
-
-    fn draw_state_memory_bytes(&self, _state: &()) -> usize {
-        0
-    }
-
     fn policies(&self, _run: &MetroidCampaignRun) -> WorkloadPolicies {
         [
             (
@@ -655,74 +639,12 @@ impl InputPolicy for MetroidGame {
         Ok(MetroidCampaignRun)
     }
 
-    fn initial_draw_state(
+    fn sample_alphabet(
         &self,
         _run: &MetroidCampaignRun,
-        _origin: Option<(&str, &MetroidArchiveReport)>,
-    ) -> Result<((), Option<MetroidNoTableHeader>), Box<dyn Error>> {
-        Ok(((), None))
-    }
-
-    fn draw_checkpoint(&self, _state: &()) -> Result<Option<()>, Box<dyn Error>> {
-        Ok(None)
-    }
-
-    fn expand_suffix(
-        &self,
-        _run: &MetroidCampaignRun,
-        _state: &(),
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        mutation_seed: u64,
-    ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        draw_suffix(
-            shape,
-            mixture.mixture,
-            mixture.weight,
-            mutation_seed,
-            |_| Ok(None),
-            sample_chord,
-        )
-    }
-
-    fn expand_suffix_recorded(
-        &self,
-        run: &MetroidCampaignRun,
-        state: &(),
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        before: Option<&()>,
-        mutation_seed: u64,
-    ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        if before.is_some() {
-            return Err("Metroid stream unexpectedly records a draw table".into());
-        }
-        self.expand_suffix(run, state, shape, mixture, mutation_seed)
-    }
-
-    fn finish_stream_record(
-        &self,
-        _run: &MetroidCampaignRun,
-        _state: &mut (),
-        _retained: &[(usize, &[ButtonChord])],
-    ) -> Result<Option<()>, Box<dyn Error>> {
-        Ok(None)
-    }
-
-    fn retained_inputs_need_full(&self, _run: &MetroidCampaignRun) -> bool {
-        false
-    }
-
-    fn remember_draw_version(
-        &self,
-        _state: &mut (),
-        required: &BTreeSet<u64>,
-    ) -> Result<(), Box<dyn Error>> {
-        if required.is_empty() {
-            Ok(())
-        } else {
-            Err("Metroid stream requires an unsupported draw-table version".into())
-        }
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<ButtonChord, Box<dyn Error>> {
+        sample_chord(rand)
     }
 }
 

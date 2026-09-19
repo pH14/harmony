@@ -131,16 +131,12 @@ progress. Terminal observations have no archive key because their gameplay
 payload is phase-invalid; terminal knockout counts come from the validated
 observation event instead.
 
-The legacy generic archive selectors use `Ord` for both map identity and
-progress walks. `StbArchiveKey::Ord` therefore compares the
-objective progress prefix first and uses identity fields only as a deterministic
-tie-break. Coordinates consequently retain a residual positional tie bias when
-two endpoints have equal objective progress, even though they are not intended
-as progress measures. The adapter documents this coupling rather than
-pretending that coordinates are progress. The new generic `progress_cmp` hook
-is available, but this imported STB policy retains its default `Ord` relation.
-Adopting an objective-only relation needs a separately versioned fixed-policy
-comparison before it can replace this baseline.
+`StbArchiveKey::Ord` identifies a place and orders the archive's maps. It is not
+a progress measure, and the selector no longer reads it as one. This adapter
+leaves `progress_cmp` at its default, so every STB place is a peer and only
+energy, cell recency and cost decide the draw. Declaring an objective-only
+progress relation needs a separately versioned fixed-policy comparison before it
+can replace this baseline.
 
 `ButtonChord` uses the QuickNES/NES serial layout: A `0x01`, B `0x02`, Select
 `0x04`, Start `0x08`, Up `0x10`, Down `0x20`, Left `0x40`, and Right `0x80`.
@@ -149,9 +145,11 @@ the adapter supplies the generic layout and leaves the source conversion to
 the ROM. Search chords combine nine non-conflicting direction states with the
 four A/B states. Select is excluded because it has no gameplay action in this
 mode; Start is excluded because it pauses the match. Durations are sampled as
-short holds of 2--12 frames or long holds of 48--120 frames. The primary
-campaign uses ordinary `Unprobed` admission, `OneToSix` suffixes, and the
-game-neutral `AlphabetOnly` draw mixture. The repaired survival helper is
+short holds of 2--12 frames or long holds of 48--120 frames. That vocabulary is the adapter's alphabet
+sampler and nothing else about drawing; the searcher owns the suffix draw and
+the retained-input table. The primary campaign uses ordinary `Unprobed`
+admission, `OneToSix` suffixes, and the game-neutral `AlphabetOnly` draw
+mixture, which never consults the table. The repaired survival helper is
 standalone probe code; `ProbeAtAdmission` is explicitly rejected because
 the primary mode has no demonstrated admission problem.
 

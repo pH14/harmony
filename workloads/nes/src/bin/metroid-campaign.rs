@@ -57,7 +57,7 @@ impl Args {
         let mut verify_replay = false;
         let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 3,
-            groups: vec![6, 12, 2],
+            groups: vec![6, 12, 2, 16],
         });
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
@@ -83,11 +83,9 @@ impl Args {
                 "--selector" => {
                     let thresholds = RetireThresholds {
                         entry: 3,
-                        groups: vec![6, 12, 2],
+                        groups: vec![6, 12, 2, 16],
                     };
                     selector = match value.to_string_lossy().as_ref() {
-                        "energy" => SelectorPolicy::Energy(thresholds),
-                        "frontier" => SelectorPolicy::EnergyFrontier(thresholds),
                         "frontier-cheapest" => SelectorPolicy::EnergyFrontierCheapest(thresholds),
                         "pareto-cheapest" => SelectorPolicy::EnergyFrontierCheapest(thresholds),
                         other => return Err(format!("unknown selector {other}").into()),

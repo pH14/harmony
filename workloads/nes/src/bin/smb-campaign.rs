@@ -22,8 +22,8 @@ use nes_workload::{
     smb::campaign::{
         SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignModeReport,
         SmbCampaignOrigin, SmbGame, SmbSnapshotCheckpoint, SmbTerminalPredicate,
-        button_vocabulary_from_identifier, chord_policy_from_identifier,
-        replay_smb_campaign_checkpointed, run_smb_campaign_checkpointed,
+        button_vocabulary_from_identifier, replay_smb_campaign_checkpointed,
+        run_smb_campaign_checkpointed,
     },
 };
 use serde::Serialize;
@@ -82,11 +82,10 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         .into_owned();
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
     let mut wall_budget = None;
-    let chord = chord_policy_from_identifier("chord_draw_recorded_53:all,0,128,3,1,64,1024")?;
     let mut retention = RetentionPolicy::Unprobed;
     let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
         entry: 3,
-        groups: vec![6, 12, 2],
+        groups: vec![6, 12, 2, 16],
     });
     let mut vocabulary = SmbButtonVocabulary::default();
     let mut terminal = SmbTerminalPredicate::GameVictory;
@@ -208,7 +207,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         reservations_per_worker,
         memory_budget_mib,
         materialize_final_artifacts: write_final_artifacts,
-        chord,
         retention,
         selector,
         suffix,
