@@ -13,21 +13,22 @@ use std::{
 use nes_workload::{
     mm2::{
         archive::{
-            MAX_ARCHIVE_ENTRIES, MAX_MM2_ACTIONS, Mm2ArchiveReport, selector_policy_from_identifier,
+            selector_policy_from_identifier, Mm2ArchiveReport, MAX_ARCHIVE_ENTRIES, MAX_MM2_ACTIONS,
         },
         campaign::{
-            Mm2CampaignCheckpoint, Mm2CampaignConfig, Mm2CampaignOrigin, Mm2Game,
-            Mm2SnapshotCheckpoint, SNAPSHOT_CHECKPOINT_FORMAT, replay_mm2_campaign_checkpointed,
-            run_mm2_campaign_checkpointed,
+            replay_mm2_campaign_checkpointed, run_mm2_campaign_checkpointed, Mm2CampaignCheckpoint,
+            Mm2CampaignConfig, Mm2CampaignOrigin, Mm2CampaignRun, Mm2Game, Mm2SnapshotCheckpoint,
+            SNAPSHOT_CHECKPOINT_FORMAT,
         },
-        target::{Mm2Input, Mm2MechanicalState, Mm2Stage, Mm2VideoMetadata, power_on_walk},
+        target::{power_on_walk, Mm2Input, Mm2MechanicalState, Mm2Stage, Mm2VideoMetadata},
     },
     search::{
         archive::{
-            RetentionPolicy, RetireThresholds, SelectorPolicy, retention_policy_from_identifier,
+            retention_policy_from_identifier, RetentionPolicy, RetireThresholds, SelectorPolicy,
         },
+        archive_manifest::ArchiveManifest,
         campaign::{Reporting, TargetExecution},
-        draw::{DrawMixture, SuffixShape, draw_mixture_from_identifier},
+        draw::{draw_mixture_from_identifier, DrawMixture, SuffixShape},
     },
     target::{ExitKind, Target},
 };
@@ -236,21 +237,43 @@ where
         .parse()?)
 }
 
-fn resume_origin(args: &Args) -> Result<Mm2CampaignOrigin, Box<dyn Error>> {
+fn archive_manifest_path(archive_path: &std::path::Path) -> PathBuf {
+    archive_path.with_file_name("archive.manifest.json")
+}
+
+fn resume_origin(args: &Args, game: &Mm2Game) -> Result<Mm2CampaignOrigin, Box<dyn Error>> {
     let Some(archive_path) = args.resume_archive.as_ref() else {
         return Ok(Mm2CampaignOrigin::Genesis);
     };
     let archive_bytes = fs::read(archive_path)?;
+    let manifest_path = archive_manifest_path(archive_path);
+    let manifest_bytes = fs::read(&manifest_path).map_err(|error| {
+        format!(
+            "archive resume requires sibling manifest {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: ArchiveManifest = serde_json::from_slice(&manifest_bytes)?;
+    let snapshot_bytes = args.resume_snapshots.as_ref().map(fs::read).transpose()?;
+    manifest.validate(
+        game,
+        &Mm2CampaignRun,
+        &archive_bytes,
+        snapshot_bytes.as_deref(),
+    )?;
     let archive: Mm2ArchiveReport = serde_json::from_slice(&archive_bytes)?;
     let checkpoint = args
         .resume_snapshots
         .as_ref()
         .map(|path| -> Result<Mm2CampaignCheckpoint, Box<dyn Error>> {
-            let bytes = fs::read(path)?;
-            let snapshots = Mm2SnapshotCheckpoint::from_bytes(&bytes, SNAPSHOT_CHECKPOINT_FORMAT)?;
+            let bytes = snapshot_bytes
+                .as_ref()
+                .expect("snapshot bytes validated before checkpoint construction");
+            let snapshots =
+                Mm2SnapshotCheckpoint::from_bytes(bytes.as_slice(), SNAPSHOT_CHECKPOINT_FORMAT)?;
             Ok(Mm2CampaignCheckpoint {
                 path: path.to_string_lossy().into_owned(),
-                file_sha256: sha256(&bytes),
+                file_sha256: sha256(bytes),
                 snapshots,
             })
         })
@@ -293,7 +316,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
         game = game.with_root_actions(root.actions);
     }
-    let origin = resume_origin(&args)?;
+    let origin = resume_origin(&args, &game)?;
     let config = campaign_config(&args);
     if args.marketing_soak {
         run_marketing_soak(&game, &config, &args.output, &origin, args.save_checkpoint)
@@ -337,13 +360,14 @@ fn run_marketing_soak(
     drop(stream);
     progress.flush()?;
     drop(progress);
-    let checkpoint_sha256 = if save_checkpoint {
+    let snapshot_bytes = if save_checkpoint {
         let bytes = checkpoint.to_bytes()?;
         fs::write(output.join("snapshots.bin"), &bytes)?;
-        Some(sha256(&bytes))
+        Some(bytes)
     } else {
         None
     };
+    let checkpoint_sha256 = snapshot_bytes.as_deref().map(sha256);
     drop(checkpoint);
 
     let best_input = live
@@ -380,7 +404,7 @@ fn run_marketing_soak(
         "origin": &live.origin,
         "workload_identity_sha256": game.workload_identity_sha256(),
         "checkpoint_sha256": checkpoint_sha256,
-        "stage": game.stage().number(),
+        "stage": if game.is_whole_game() { None } else { Some(game.stage().number()) },
         "whole_game": game.is_whole_game(),
         "campaign_seed": live.campaign_seed,
         "workers": live.workers,
@@ -401,9 +425,17 @@ fn run_marketing_soak(
         "first_reached": live.archive.first_reached,
         "progress_curve": &live.archive.progress_curve,
     });
+    let archive_bytes = serde_json::to_vec_pretty(&live.archive)?;
+    fs::write(output.join("archive.json"), &archive_bytes)?;
+    let manifest = ArchiveManifest::build(
+        game,
+        &Mm2CampaignRun,
+        &archive_bytes,
+        snapshot_bytes.as_deref(),
+    );
     fs::write(
-        output.join("archive.json"),
-        serde_json::to_vec_pretty(&live.archive)?,
+        output.join("archive.manifest.json"),
+        serde_json::to_vec_pretty(&manifest)?,
     )?;
     drop(live);
 
@@ -475,11 +507,19 @@ fn run_qualified_campaign(
     }
 
     fs::write(output.join("campaign-report.json"), &report_bytes)?;
-    fs::write(
-        output.join("archive.json"),
-        serde_json::to_vec_pretty(&live.archive)?,
-    )?;
+    let archive_bytes = serde_json::to_vec_pretty(&live.archive)?;
+    fs::write(output.join("archive.json"), &archive_bytes)?;
     fs::write(output.join("snapshots.bin"), &checkpoint_bytes)?;
+    let manifest = ArchiveManifest::build(
+        game,
+        &Mm2CampaignRun,
+        &archive_bytes,
+        Some(&checkpoint_bytes),
+    );
+    fs::write(
+        output.join("archive.manifest.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
 
     let best_input = live
         .objective_witness
@@ -498,7 +538,7 @@ fn run_qualified_campaign(
         },
         "fixed_execution_soak": config.continue_after_victory,
         "replay_verified": replay_verified,
-        "stage": game.stage().number(),
+        "stage": if game.is_whole_game() { None } else { Some(game.stage().number()) },
         "stream_sha256": live.stream_sha256,
         "report_sha256": sha256(&report_bytes),
         "checkpoint_sha256": sha256(&checkpoint_bytes),
@@ -506,6 +546,7 @@ fn run_qualified_campaign(
         "executions": live.executions_completed,
         "execution_budget_exact": live.executions_completed == live.execution_budget,
         "retained_representatives": live.archive.entries.len(),
+        "whole_game": game.is_whole_game(),
         "progress": live.archive.progress_watermark,
         "milestones": live.archive.milestones,
         "victories": live.objectives_reached,
@@ -638,7 +679,13 @@ fn sha256(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, OsString, PathBuf, campaign_config};
+    use super::{
+        archive_manifest_path, campaign_config, resume_origin, Args, Mm2Game, OsString, PathBuf,
+    };
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn required_args(extra: &[&str]) -> Vec<OsString> {
         let mut args = ["--core", "core", "--rom", "rom", "--output", "output"]
@@ -730,5 +777,31 @@ mod tests {
             Args::parse_from(required_args(&["--resume-snapshots", "snapshots.bin",])).is_err()
         );
         assert!(Args::parse_from(required_args(&["--save-checkpoint"])).is_err());
+    }
+
+    #[test]
+    fn archive_resume_requires_fixed_sibling_manifest() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("mm2-manifest-test-{suffix}"));
+        fs::create_dir_all(&directory).expect("test directory");
+        let archive_path = directory.join("archive.json");
+        fs::write(&archive_path, b"{}").expect("archive fixture");
+        let archive_argument = archive_path.to_str().expect("archive path");
+        let args = Args::parse_from(required_args(&["--resume-archive", archive_argument]))
+            .expect("archive arguments parse");
+        let game = Mm2Game::new_whole_game(&[], std::path::Path::new("core"), &"a".repeat(64));
+        let error = match resume_origin(&args, &game) {
+            Ok(_) => panic!("missing manifest must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("archive.manifest.json"));
+        assert_eq!(
+            archive_manifest_path(&archive_path),
+            directory.join("archive.manifest.json")
+        );
+        fs::remove_dir_all(directory).expect("test directory cleanup");
     }
 }

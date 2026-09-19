@@ -188,6 +188,13 @@ under the current ROM, core, root, selector, retention, and workload identity
 settings. It is an archive warm start, not an exact continuation of the prior
 campaign's random schedule or worker state.
 
+Every archive output has a sibling `archive.manifest.json`. The manifest binds
+the exact archive bytes, the optional snapshot bytes, the ROM/core workload
+identity, and the resolved policy map. Archive warm starts require this sibling
+and reject missing, changed, or cross-workload artifacts before importing them;
+qualified runs always include a snapshot hash, while marketing runs include one
+when `--save-checkpoint` is used.
+
 Marketing soaks may write their returned retained snapshots with
 `--save-checkpoint`, which creates `snapshots.bin` beside `archive.json`.
 This flag requires `--marketing-soak`; qualified campaigns always write their

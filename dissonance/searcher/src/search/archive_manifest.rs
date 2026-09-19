@@ -188,7 +188,6 @@ mod tests {
             _evidence: &Self::Evidence,
             _state: ArchiveReportState<Self>,
         ) -> Self::ArchiveReport {
-            ()
         }
     }
 
