@@ -61,10 +61,10 @@ must recheck opening, closing, and gameplay traces.
 
 Boss-entry milestones require an active encounter or a confirmed defeat.
 The boss HP byte can remain 28 after Game Over/Continue even though the boss
-phase has reset to zero at the stage start. Stream format v5 records the
+phase has reset to zero at the stage start. Stream format v6 records the
 corrected milestone semantics; nonzero boss HP alone is not entry evidence.
 
-The v23 key uses 16-pixel retention slots pooled into 32-pixel cells,
+The v24 key uses 16-pixel retention slots pooled into 32-pixel cells,
 128-pixel regions, screens, and stages. Weapon/menu rows distinguish local
 endpoints but are pooled at coarser levels. Health and energy prefer
 representatives without multiplying spatial slots. It removes the prototype's
@@ -99,6 +99,13 @@ retention groups 0 through 2. The hub, phase-1 boss intro, defeated phase, and
 other stages use sentinel `0xff`, preventing a stale boss ID from splitting
 hub states. Progress compares the completed-refight count before boss damage,
 so raw mask values with the same bit count are equal in progress ordering.
+For Wily Machine specifically (stage12, bossID12), AI states4 through0xfd
+identify the broken-shell form. This bit is retained at every depth and ranks
+after refight count but before damage. AI state4 refills its health bar from1
+to28; it contributes zero damage. Treating that refill as damage previously
+ranked its earliest frame above the actual second fight. The field is gated
+out for other bosses, other stages, and defeat. The AI state is not a general
+boss-form enum; these meanings were verified on a continuous transition tape.
 An intermediate Wily5 phase-`0xfe` observation is a reached encounter but a
 stage clear only when `$BC == 0xff`; target terminal stopping remains based on
 the existing stage/weapon objective.
@@ -152,7 +159,8 @@ input archive.
 Pass --trace-output TRACE.jsonl to emit one JSON object per action after the
 film start index (or action zero when no film is requested). Each trace object
 includes the decoded state, action, raw frame count, object IDs, flags, X/Y
-tables, the 0x6c0..0x6df health region, and the 12 weapon-energy bytes. Use
+tables, object temporary state, boss RAM0xb0..0xbf, difficulty, the
+0x6c0..0x6df health region, and the 12 weapon-energy bytes. Use
 --trace-from INDEX to choose a trace start without changing film capture.
 
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md).

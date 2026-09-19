@@ -52,6 +52,8 @@ const ITEM_OBJECT_LAST: u8 = 0x3a;
 const BOSS_HEALTH: usize = 0x6c1;
 const BOSS_PHASE: usize = 0xb1;
 const CURRENT_BOSS: usize = 0xb3;
+const WILY_MACHINE_BOSS: u8 = 12;
+const WILY_MACHINE_REFILL_PHASE: u8 = 4;
 const WILY5_REFIGHTING_MASK: usize = 0xbc;
 const BOOBEAM_STAGE: u8 = 11;
 pub const WILY5_STAGE: u8 = 12;
@@ -192,6 +194,7 @@ pub struct Mm2MechanicalState {
     pub crash_shots: u8,
     pub refighting_mask: u8,
     pub refight_boss: u8,
+    pub wily_machine_shell_broken: bool,
     pub camera_state: u8,
     pub enemy_damage: u8,
 }
@@ -216,7 +219,9 @@ impl Mm2MechanicalState {
 
     #[must_use]
     pub fn boss_damage(self) -> u8 {
-        if self.boss_phase >= BOSS_PHASE_DEFEATED {
+        if self.wily_machine_shell_broken && self.boss_phase == WILY_MACHINE_REFILL_PHASE {
+            0
+        } else if self.boss_phase >= BOSS_PHASE_DEFEATED {
             FULL_BOSS_HEALTH
         } else if self.boss_phase >= BOSS_PHASE_FIGHTING && self.boss_health > 0 {
             FULL_BOSS_HEALTH.saturating_sub(self.boss_health)
@@ -293,6 +298,9 @@ fn decode_state_with_expected_stage(
         crash_shots: crash_shots(wram, stage, boss_phase)?,
         refighting_mask: refighting_mask(wram, stage)?,
         refight_boss: refight_boss(wram, stage, boss_phase)?,
+        wily_machine_shell_broken: stage == WILY5_STAGE
+            && read_byte(wram, CURRENT_BOSS)? == WILY_MACHINE_BOSS
+            && (WILY_MACHINE_REFILL_PHASE..BOSS_PHASE_DEFEATED).contains(&boss_phase),
         camera_state: read_byte(wram, CAMERA_STATE)?,
         enemy_damage: 0,
     })
@@ -372,6 +380,7 @@ fn ablation_identity_changed(left: Mm2MechanicalState, right: Mm2MechanicalState
         || left.crash_shots != right.crash_shots
         || left.refighting_mask != right.refighting_mask
         || left.refight_boss != right.refight_boss
+        || left.wily_machine_shell_broken != right.wily_machine_shell_broken
 }
 
 fn coherent_world_violation(
@@ -1526,6 +1535,43 @@ mod tests {
                 .expect("active stage")
                 .stage,
             7
+        );
+    }
+
+    #[test]
+    fn machine_refill_is_not_damage_and_form_identity_is_encounter_specific() {
+        let mut wram = vec![0_u8; WRAM_SIZE];
+        wram[STAGE] = WILY5_STAGE;
+        wram[CURRENT_BOSS] = WILY_MACHINE_BOSS;
+        wram[BOSS_PHASE] = WILY_MACHINE_REFILL_PHASE;
+        for health in 1..=FULL_BOSS_HEALTH {
+            wram[BOSS_HEALTH] = health;
+            let state = decode_state(&wram).expect("machine refill");
+            assert!(state.wily_machine_shell_broken);
+            assert_eq!(state.boss_damage(), 0);
+        }
+        wram[BOSS_PHASE] = 5;
+        wram[BOSS_HEALTH] = 20;
+        let second = decode_state(&wram).expect("second form");
+        assert!(second.wily_machine_shell_broken);
+        assert_eq!(second.boss_damage(), 8);
+        wram[BOSS_PHASE] = 3;
+        assert!(
+            !decode_state(&wram)
+                .expect("first form")
+                .wily_machine_shell_broken
+        );
+        wram[BOSS_PHASE] = WILY_MACHINE_REFILL_PHASE;
+        wram[CURRENT_BOSS] = 4;
+        let quick = decode_state(&wram).expect("other refight");
+        assert!(!quick.wily_machine_shell_broken);
+        assert_eq!(quick.boss_damage(), 8);
+        wram[CURRENT_BOSS] = WILY_MACHINE_BOSS;
+        wram[STAGE] = BOOBEAM_STAGE;
+        assert!(
+            !decode_state(&wram)
+                .expect("other stage")
+                .wily_machine_shell_broken
         );
     }
 

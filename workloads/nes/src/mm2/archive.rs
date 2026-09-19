@@ -22,7 +22,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_MM2_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_location_boss_bar_loaded_confirmed_enemy_spatial_16_posture_weapon_bank_menu_energy_platforms_boobeam_targets_crash_shots_wily5_refighting_mask_refight_boss_preference_v23";
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_location_boss_bar_loaded_confirmed_enemy_spatial_16_posture_weapon_bank_menu_energy_platforms_boobeam_targets_crash_shots_wily5_refighting_mask_refight_boss_machine_shell_preference_v24";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -47,6 +47,7 @@ pub struct Mm2ArchiveGroup {
     crash_shots: u8,
     refighting_mask: u8,
     refight_boss: u8,
+    wily_machine_shell_broken: bool,
     x: u8,
     y: u8,
     posture: u8,
@@ -67,6 +68,7 @@ pub struct Mm2ArchiveKey {
     pub crash_shots: u8,
     pub refighting_mask: u8,
     pub refight_boss: u8,
+    pub wily_machine_shell_broken: bool,
     pub x: u8,
     pub y: u8,
     pub posture: u8,
@@ -95,6 +97,7 @@ impl ArchiveKey for Mm2ArchiveKey {
             crash_shots: self.crash_shots,
             refighting_mask: self.refighting_mask,
             refight_boss: self.refight_boss,
+            wily_machine_shell_broken: self.wily_machine_shell_broken,
             x: self.x,
             y: self.y,
             posture: self.posture,
@@ -127,12 +130,14 @@ impl ArchiveKey for Mm2ArchiveKey {
                 stage: self.stage,
                 screen: self.screen,
                 refighting_mask: self.refighting_mask,
+                wily_machine_shell_broken: self.wily_machine_shell_broken,
                 ..Mm2ArchiveGroup::default()
             },
             _ => Mm2ArchiveGroup {
                 bosses: self.bosses,
                 stage: self.stage,
                 refighting_mask: self.refighting_mask,
+                wily_machine_shell_broken: self.wily_machine_shell_broken,
                 ..Mm2ArchiveGroup::default()
             },
         }
@@ -146,11 +151,13 @@ impl ArchiveKey for Mm2ArchiveKey {
         (
             left.bosses,
             left.refighting_mask.count_ones(),
+            left.wily_machine_shell_broken,
             left.boss_damage,
         )
             .cmp(&(
                 right.bosses,
                 right.refighting_mask.count_ones(),
+                right.wily_machine_shell_broken,
                 right.boss_damage,
             ))
     }
@@ -188,6 +195,7 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
         crash_shots: state.crash_shots,
         refighting_mask: state.refighting_mask,
         refight_boss: state.refight_boss,
+        wily_machine_shell_broken: state.wily_machine_shell_broken,
         x: state.x / 16,
         y: state.y / 16,
         posture: state.posture(),
@@ -499,6 +507,26 @@ mod tests {
         }
         assert_eq!(active.group(3), hub.group(3));
         assert_eq!(active.group(4), hub.group(4));
+    }
+
+    #[test]
+    fn machine_second_form_survives_health_reset_and_outranks_first_form() {
+        let mut first = state(100, 4, 255);
+        first.stage = WILY5_STAGE;
+        first.refighting_mask = WILY5_REFIGHTS_COMPLETE;
+        first.refight_boss = 12;
+        first.boss_phase = 3;
+        first.boss_health = 2;
+        let mut second = first;
+        second.wily_machine_shell_broken = true;
+        second.boss_phase = 5;
+        second.boss_health = 28;
+        for depth in 0..=4 {
+            let left = archive_key(first).group(depth);
+            let right = archive_key(second).group(depth);
+            assert_ne!(left, right);
+            assert_eq!(Mm2ArchiveKey::progress_cmp(right, left), Ordering::Greater);
+        }
     }
 
     #[test]
