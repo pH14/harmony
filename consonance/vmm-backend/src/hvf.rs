@@ -53,6 +53,10 @@ const HV_SYS_REG_CNTV_CTL_EL0: u16 = 0xdf19;
 const HV_SYS_REG_CNTV_CVAL_EL0: u16 = 0xdf1a;
 const HV_SYS_REG_SP_EL1: u16 = 0xe208;
 
+const TLB_FLUSH_STUB: [u32; 4] = [0xd508_831f, 0xd503_3b9f, 0xd503_3fdf, 0xd400_0002];
+
+const SCTLR_M: u64 = 1;
+
 const ESR_EC_WFX: u64 = 0x01;
 const ESR_EC_HVC64: u64 = 0x16;
 const ESR_EC_SYSREG: u64 = 0x18;
@@ -270,6 +274,15 @@ fn decode_data_abort(exit: HvVcpuExit) -> Result<DataAbort> {
     })
 }
 
+fn flush_stub_gpa(regions: &[(u64, usize)]) -> u64 {
+    regions
+        .iter()
+        .map(|&(gpa, len)| gpa + len as u64)
+        .max()
+        .unwrap_or(0)
+        .next_multiple_of(HV_PAGE_SIZE as u64)
+}
+
 fn canonical_sysreg(iss: u64) -> u32 {
     ((iss & 0x003f_ffff) & !(0x1f << 5) & !1) as u32
 }
@@ -326,6 +339,13 @@ pub struct HvfBackend {
     counts: ExitCounts,
     regions: Vec<(u64, usize)>,
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    flush_stub: Option<FlushStub>,
+}
+
+struct FlushStub {
+    gpa: u64,
+    page: *mut u8,
+    layout: std::alloc::Layout,
 }
 
 impl HvfBackend {
@@ -381,7 +401,78 @@ impl HvfBackend {
             counts: ExitCounts::default(),
             regions: Vec::new(),
             cancel_run: std::sync::Arc::default(),
+            flush_stub: None,
         })
+    }
+
+    fn ensure_flush_stub(&mut self) -> Result<u64> {
+        if let Some(stub) = &self.flush_stub {
+            return Ok(stub.gpa);
+        }
+        let gpa = flush_stub_gpa(&self.regions);
+        let layout = std::alloc::Layout::from_size_align(HV_PAGE_SIZE, HV_PAGE_SIZE)
+            .map_err(|_| BackendError::Internal("HVF flush stub layout"))?;
+        // SAFETY: the layout has a non-zero size, so this is a valid allocation
+        // request; the pointer is checked for null before any use.
+        let page = unsafe { std::alloc::alloc_zeroed(layout) };
+        if page.is_null() {
+            return Err(BackendError::Memory("HVF flush stub allocation failed"));
+        }
+        for (slot, word) in TLB_FLUSH_STUB.iter().enumerate() {
+            // SAFETY: the allocation is HV_PAGE_SIZE bytes and the stub is four
+            // words, so every write lands inside it.
+            unsafe { page.add(slot * 4).cast::<u32>().write(*word) };
+        }
+        // SAFETY: the allocation is live for as long as this backend, nothing
+        // else refers to it, and its layout gives it the alignment and length
+        // the framework requires.
+        let mapped = hv("hv_vm_map", unsafe {
+            hv_vm_map(
+                page.cast(),
+                gpa,
+                HV_PAGE_SIZE,
+                HV_MEMORY_READ | HV_MEMORY_EXEC,
+            )
+        });
+        if let Err(error) = mapped {
+            // SAFETY: the allocation came from this layout and nothing mapped it.
+            unsafe { std::alloc::dealloc(page, layout) };
+            return Err(error);
+        }
+        self.invalidate_instruction_cache(page as usize, HV_PAGE_SIZE);
+        self.flush_stub = Some(FlushStub { gpa, page, layout });
+        Ok(gpa)
+    }
+
+    fn flush_guest_translations(&mut self) -> Result<()> {
+        let gpa = self.ensure_flush_stub()?;
+        let sctlr = self.sysreg(HV_SYS_REG_SCTLR_EL1)?;
+        self.set_sysreg(HV_SYS_REG_SCTLR_EL1, sctlr & !SCTLR_M)?;
+        self.set_reg(HV_REG_CPSR, PSTATE_DAIF | PSTATE_MODE_EL1H)?;
+        self.set_reg(HV_REG_PC, gpa)?;
+        // SAFETY: this is the owning thread and the vCPU is live.
+        hv("hv_vcpu_set_pending_interrupt", unsafe {
+            hv_vcpu_set_pending_interrupt(self.vcpu, HV_INTERRUPT_TYPE_IRQ, false)
+        })?;
+        for _ in 0..2 {
+            // SAFETY: the vCPU is live and this call runs on its owning thread.
+            hv("hv_vcpu_run", unsafe { hv_vcpu_run(self.vcpu) })?;
+            // SAFETY: HVF owns this exit page for the vCPU lifetime and run has
+            // completed its write before returning.
+            let raw = unsafe { *self.exit.as_ptr() };
+            if raw.reason == HV_EXIT_REASON_CANCELED {
+                continue;
+            }
+            if raw.reason == HV_EXIT_REASON_EXCEPTION
+                && exit_ec(raw.exception.syndrome) == ESR_EC_HVC64
+            {
+                return Ok(());
+            }
+            break;
+        }
+        Err(BackendError::Internal(
+            "HVF translation flush stub did not reach its hypercall",
+        ))
     }
 
     pub fn exit_handle(&self) -> HvfExitHandle {
@@ -610,6 +701,14 @@ impl HvfBackend {
 
 impl Drop for HvfBackend {
     fn drop(&mut self) {
+        if let Some(stub) = self.flush_stub.take() {
+            // SAFETY: this backend mapped the stub page at that address and is
+            // the sole owner of the allocation behind it.
+            unsafe {
+                let _ = hv_vm_unmap(stub.gpa, HV_PAGE_SIZE);
+                std::alloc::dealloc(stub.page, stub.layout);
+            }
+        }
         for &(gpa, len) in self.regions.iter().rev() {
             // SAFETY: every entry records a successful map owned by this VM.
             let _ = unsafe { hv_vm_unmap(gpa, len) };
@@ -661,7 +760,13 @@ impl Backend for HvfBackend {
             .0
             .checked_add(host.len() as u64)
             .ok_or(BackendError::Memory("region wraps address space"))?;
-        for &(mapped_gpa, mapped_len) in &self.regions {
+        let stub = self.flush_stub.as_ref().map(|stub| stub.gpa);
+        for (mapped_gpa, mapped_len) in self
+            .regions
+            .iter()
+            .copied()
+            .chain(stub.map(|gpa| (gpa, HV_PAGE_SIZE)))
+        {
             let mapped_end = mapped_gpa + mapped_len as u64;
             if gpa.0 < mapped_end && mapped_gpa < end {
                 return Err(BackendError::Memory("region overlaps an existing map"));
@@ -896,6 +1001,7 @@ impl Backend for HvfBackend {
             return Err(BackendError::PendingCompletion);
         }
         validate_restore_vcpu_state(state)?;
+        self.flush_guest_translations()?;
         for (reg, value) in state.core.x.iter().copied().enumerate() {
             self.set_reg(reg as u32, value)?;
         }
@@ -1008,6 +1114,28 @@ mod tests {
                 physical_address: ipa,
             },
         }
+    }
+
+    #[test]
+    fn flush_stub_broadcasts_a_stage_one_invalidate_then_exits() {
+        let sys = |op0: u32, op1: u32, crn: u32, crm: u32, op2: u32, rt: u32| {
+            0xd500_0000 | (op0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
+        };
+        let barrier = |crm: u32, op2: u32| 0xd503_301f | (crm << 8) | (op2 << 5);
+        assert_eq!(TLB_FLUSH_STUB[0], sys(1, 0, 8, 3, 0, 31));
+        assert_eq!(TLB_FLUSH_STUB[1], barrier(0b1011, 4));
+        assert_eq!(TLB_FLUSH_STUB[2], barrier(0b1111, 6));
+        assert_eq!(TLB_FLUSH_STUB[3], 0xd400_0002);
+    }
+
+    #[test]
+    fn flush_stub_sits_above_every_mapped_region() {
+        assert_eq!(flush_stub_gpa(&[]), 0);
+        assert_eq!(flush_stub_gpa(&[(0x4000_0000, 0x8000_0000)]), 0xc000_0000);
+        assert_eq!(
+            flush_stub_gpa(&[(0x4000_0000, 0x4000), (0x1000_0000, 0x1000_0000)]),
+            0x4000_4000
+        );
     }
 
     #[test]

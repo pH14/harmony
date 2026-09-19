@@ -72,6 +72,28 @@ conditionally in [`__set_sregs2`](https://github.com/torvalds/linux/blob/v6.12/a
 write sequence and error handling; KVM integration coverage exercises restored
 continuations across a branching snapshot tree.
 
+HVF restoration invalidates the guest's stage-1 translations before it writes
+the restored vCPU state. Hypervisor.framework exposes no TLB call, so the
+backend maps a private page above the guest's regions holding
+`tlbi vmalle1is; dsb ish; isb; hvc #0` and runs it with the MMU off. Without it
+a restore rewinds guest RAM and registers while the hardware keeps translations
+the abandoned execution installed, and the guest reads the wrong physical page
+through an address the restored page tables map elsewhere. That reads as
+narrow, register-shaped corruption in an arbitrary guest process rather than as
+a fault, and it is what made the arm64 guest runtime crash under HVF
+(issue #359). `hvf_tlb_probe` reads a page through a translation it warmed,
+replaces the page-table entry, restores, and reads again; it fails when the
+guest sees the old page. Its second stage repeats the sequence with a
+guest-issued `tlbi` so a stage that cannot observe the replacement at all is
+distinguishable from a stale translation. Both probe stages need a real
+hypervisor, so they run on a host, not on a CI runner. Stage 2 never changes
+across a restore and needs no maintenance: the host allocation behind guest RAM
+keeps its address.
+
+A watchdog cancellation requested before the stub's guest entry is consumed by
+that entry and retires no instruction, so the stub entry is retried once. The
+cancellation latch outlives the exit and `run` still refuses the guest.
+
 The HVF state oracle uses the default policy with virtual timer masking enabled
 and a zero timer offset. It round trips valid general, SIMD/floating-point,
 system-register, debug, timer, and pending-interrupt records, and rejects
@@ -89,7 +111,10 @@ read and write the saved vCPU context rather than the architectural register, so
 a restore cannot tell from those calls whether the host implements a field the
 saved value uses. Restoring onto a host that lacks such a feature can therefore
 resume the guest with that field reading zero; the feature identity registers
-carry their own admission check, and these two do not.
+carry their own admission check, and these two do not. ARM KVM does no
+stage-1 translation invalidation on restore either; whether it needs the
+maintenance HVF needs is unmeasured, and an Arm KVM host is where that is
+settled.
 
 ## Preparing x86 KVM snapshot boundaries
 
