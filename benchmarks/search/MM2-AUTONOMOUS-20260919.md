@@ -120,3 +120,91 @@ At 23:02 UTC, the paired v25 seed-1 horizon arm and the integrated v26 seed-1
 power-on campaign began fresh 100K budgets with five workers each. The longer
 unchanged seed-1 control continues from its complete autonomous 100K archive;
 archive import is a warm start, not an exact continuation of the random schedule.
+
+## First paired horizon results and current barrier
+
+The v25 100K arms completed with no boss entry or kill. Control seeds 1/2
+used 14.67/14.75M frames and reached screen 9. The resettable-horizon arms
+used 16.56/16.68M frames and reached screens 11/12. Screen maxima across
+stages are only scouting indicators; these results do not establish a gain
+per unit of emulator work. The control warm start added 400K jobs, reaching
+screen 20 without a boss encounter.
+
+The integrated v26 fresh seed-1 run used 16,568,558 frames over 100K jobs.
+It retained 38,874 active representatives, including stage 5 screen 17 at
+health 2. A separate fresh seed-2 500K campaign is running. Films of the
+v25 controls show actual low-health frontiers: Quick Man screen 9 at health
+2; Metal Man screen 8 at health 4 after autonomous deaths, Continue, and
+stage reselection. These are live gameplay endpoints, not completion.
+
+The actual Wily 6 intro diagnostic did not cross its wait with either
+unchanged or resettable-horizon core (2K jobs, one worker, same root and seed).
+The latter spent 423,458 versus 297,960 frames, but extensions never exceeded
+5 extra actions: selector resets were clearing horizon feedback. Commit
+4947531d introduces a separate counter driven only by actual unproductive
+admissions and retained descendants. A 20-step constant-cell wait fixture
+with default retirement now passes, including replay and archive import;
+a real-game probe is still required.
+
+A separate route-replay experiment freezes commit 44d3b92f with the same
+v26 adapter and resettable core. The only experimental source edit changes
+the CLI's default mixture from AlphabetOnly to AlphabetContinuation; no
+route or preferred action is supplied. Both binaries are stored under
+`/root/mm2-autonomous-20260919/experiment-bins/`. The arm passed a fresh
+2K-job, two-worker full report/snapshot replay before its 100K comparison.
+Readouts must include surviving improved arrivals, frontier health, boss
+encounters, and work; continuation job counts alone are not success.
+
+The v26 seed-1 archive was produced before manifest output existed. Its
+manifest was backfilled from its own recorded genesis header and exact
+archive/snapshot hashes, with no external inputs. Archive SHA-256:
+`858f7126d02fa676db0f3082f891535397c3bc7797e93e7724e1382ccb9e2090`.
+Snapshot SHA-256:
+`8568970b7d53f84059933ec541108e54342764120965a33809bc714acd27dc7e`.
+The new CLI must validate this manifest before any warm start.
+
+The first v26 route-replay arm completed 100K jobs using 15,516,113 frames.
+It had 8,891 continuation jobs (538,147 frames), 7,165 retained admissions,
+and 3,144 of those IDs present in the export. Export presence alone does not
+prove an entry is active: historical ancestors can remain in the report.
+A conservative same-destination check found 43 health-improving admissions
+whose original route leaf was still comparable. Of these, 37 were the unique
+maximum-health entry in their exact slot across the final export; with zero
+population drops, they establish surviving improved representatives. This
+undercounts outcomes whose original leaf disappeared and makes no claim for
+the others. The arm reached Metal Man screen 9 at health 10 (control screen 5,
+health 4), but only stage 5 screen 4 (control screen 17). Neither found a boss.
+A second paired seed is required before choosing the mechanism.
+
+The v26 seed-1 control reproduced exactly on Mac and msr1: 16,568,558 frames,
+38,874 active entries, and the same progress. The emulator binary hashes
+remain platform-specific and manifest validation keeps those identities exact.
+
+## First autonomous boss encounter
+
+The fresh v26 seed-2 500K run completed 85,261,808 emulated frames, retaining
+140,599 active entries. First boss encounter was recorded at job 332542;
+no boss clear yet. Film verifies Crash Man, a death, an ordinary retry from
+full health, and 16 damage on the second attempt. The final export contains
+positive-health combat entries only in stage 7 screen 19, with health up to
+20 and boss-damage bucket up to 9 (18 damage). Other stage aliases carrying
+boss damage have zero player health: damage RAM survives death through menus.
+This is an evaluation-lifecycle issue to check before trusting pooled damage
+priority. Per-context census maxima are independent; max health and max damage
+in one row need not describe the same entry.
+
+The copied champion diagnostic replay used the exact boot plus discovered
+input (473 actions, 22,558 frames), SHA-256
+`733f607f4904c01b10f1d991846e403a1083606a51844f770e2fe439a8050b2c`.
+Film: `/private/tmp/mm2-autonomous-20260919/v26-s2-boss-witness-tail.mp4`.
+
+The completed v26 seed-2 bundle's manifest was backfilled from its own
+recorded genesis header and exact producer outputs. Archive SHA-256:
+`49eff797a2ebf71f658807e8332b3123cb642234c94bcdf47a32e7f6943306a8`.
+Snapshot SHA-256:
+`545ad6701f15b811c30a23e314cc17eb2684d88d2ed6455e81a8ff1eb285be05`.
+
+The persistent-horizon real intro probe now crosses the wait and reaches
+Alien phase 2, dealing 4 damage, where its control remains phase 1. Full
+report/snapshot replay passes. These rooted inputs diagnose the generic
+mechanism only; they remain excluded from the autonomous campaign.
