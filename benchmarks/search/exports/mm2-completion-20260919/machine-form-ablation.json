@@ -1,0 +1,132 @@
+{
+  "schema": "mm2-machine-form-ablation-v1",
+  "comparison": "single-paired-run",
+  "scope": {
+    "seed": 3,
+    "workers": 6,
+    "execution_budget": 100000,
+    "stage": 12,
+    "origin": "genesis",
+    "source_artifact_dirs": {
+      "remote_parent": "/root/mm2-completion-20260919/runs",
+      "local_parent": "/private/tmp",
+      "v23_basename": "wily5-machine-lowboss-v23-s3-100k",
+      "v24_basename": "wily5-machine-lowboss-v24-s3-100k"
+    },
+    "prefix_sha256": "64aafa7ffef3b7191692980dbbda9efc350ebc00e729a21fff7442213ce5b8f7",
+    "resume_input_sha256": "7d357b0ef1f85ba71c5ccebb6671b0c34f4b3950f5b21d2af7b4a3d4e9dcd570",
+    "root_input_file_sha256": "395566faf051eb625da4bff944e4905581b5d8f1bd5728be3aec0ee1a34f5ccb",
+    "backend_root_input_sha256": "e1499947789e7e4def1903b3e5224563dbb53aae97f1a7a5538bcbcc1128183a",
+    "workload_identity_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+    "emulator": {
+      "quicknes_libretro_git": "26bb785c9deddb66a17717b21bb4e328f03ade32",
+      "backend_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+      "debug": false,
+      "optimize": "-O2"
+    }
+  },
+  "definitions": {
+    "machine_state": "stage == 12 and refight_boss == 12",
+    "first_form": "boss_phase in [2, 3]",
+    "refill_transition": "boss_phase == 4",
+    "post_refill_second_form": "5 <= boss_phase < 254",
+    "raw_damage": "28 - boss_health; only interpreted as second-form progress for post_refill_second_form",
+    "live_filter": "dead == false and failed == false and dying_run == 0",
+    "coherent_world": "not used as a filter; both campaigns ran with coherent-world off"
+  },
+  "runs": {
+    "v23": {
+      "snapshot_format": "mm2-quicknes-snapshot-checkpoint-v5",
+      "archive_sha256": "c03f7bf927bf48124136b207af83454ed089c6436f5b13a3d04075794d1638e9",
+      "snapshots_sha256": "ab1c14fb6245c3ced2687a8d229280dd94a15e9233fbc2768dbc19325d53f2d9",
+      "checkpoint_sha256": "ab1c14fb6245c3ced2687a8d229280dd94a15e9233fbc2768dbc19325d53f2d9",
+      "execution_work_frames_emulated": 10885111,
+      "victories": 0,
+      "counts": {
+        "all": {
+          "first_form": 3614,
+          "refill_transition": 15673,
+          "post_refill_second_form": 2646
+        },
+        "live": {
+          "first_form": 3109,
+          "refill_transition": 13432,
+          "post_refill_second_form": 2411
+        }
+      },
+      "max_raw_damage": {
+        "first_form": 26,
+        "refill_transition_observed_only": 28,
+        "post_refill_second_form": 2
+      },
+      "best_post_refill_live_witness": {
+        "snapshot_id": 1409,
+        "frame_count": 1948,
+        "boss_phase": 6,
+        "boss_health": 26,
+        "raw_damage": 2,
+        "health": 4,
+        "dead": false,
+        "dying_run": 0,
+        "stage": 12,
+        "refight_boss": 12,
+        "room": 42,
+        "screen": 41,
+        "x": 19,
+        "y": 180
+      }
+    },
+    "v24": {
+      "snapshot_format": "mm2-quicknes-snapshot-checkpoint-v6",
+      "archive_sha256": "3b3195d9c0154584a947c2168d3491a648bdd77221a88d1a17a523d42039f319",
+      "snapshots_sha256": "1d461c8010b069c32f5dc099885cd49059c163a01e59357d9ce9335eefb32c41",
+      "checkpoint_sha256": "1d461c8010b069c32f5dc099885cd49059c163a01e59357d9ce9335eefb32c41",
+      "execution_work_frames_emulated": 10123327,
+      "victories": 0,
+      "counts": {
+        "all": {
+          "first_form": 3671,
+          "refill_transition": 3619,
+          "post_refill_second_form": 9467
+        },
+        "live": {
+          "first_form": 3012,
+          "refill_transition": 3019,
+          "post_refill_second_form": 7610
+        }
+      },
+      "max_raw_damage": {
+        "first_form": 26,
+        "refill_transition_observed_only": 28,
+        "post_refill_second_form": 8
+      },
+      "best_post_refill_live_witness": {
+        "snapshot_id": 14205,
+        "frame_count": 2409,
+        "boss_phase": 5,
+        "boss_health": 20,
+        "raw_damage": 8,
+        "health": 4,
+        "dead": false,
+        "dying_run": 0,
+        "stage": 12,
+        "refight_boss": 12,
+        "room": 42,
+        "screen": 41,
+        "x": 19,
+        "y": 180
+      }
+    }
+  },
+  "interpretation": {
+    "paired_result": "v24 reaches raw second-form damage 8 versus v23 raw second-form damage 2 under the matched seed-3 100k runs",
+    "game_clear": false,
+    "broad_speedup": false,
+    "downstream_v24_maxdamage8_root_failed": true,
+    "limitations": [
+      "This is one paired run, not a broad speedup estimate.",
+      "No run defeated the game; the comparison is limited to Wily Machine second-form progress.",
+      "The refill transition is excluded from second-form damage because boss HP is being restored there."
+    ]
+  }
+}

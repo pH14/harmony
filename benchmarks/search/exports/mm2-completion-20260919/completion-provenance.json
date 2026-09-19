@@ -1,0 +1,188 @@
+{
+  "actual_actions": 6800,
+  "candidate": "/private/tmp/mm2-completion-20260919/mm2-ending-full.json",
+  "components": {
+    "clear_champion": {
+      "actions": 28,
+      "actions_sha256": "9cde1c5659b5e7a355bb97c785b501ad2ba9bb1ec855b4e27027e40f665f6998",
+      "path": "/private/tmp/mm2-completion-20260919/wily6-alien-clear-champion.json",
+      "sha256": "4150962cadb22fef0d3a43b871f44176db0afc3df999726dbb7c310059654cfc"
+    },
+    "damage_full": {
+      "actions": 6652,
+      "actions_sha256": "299fd759a485d2458117283f646804e5b6b14105ba9487c75b5d42b2b031ed40",
+      "path": "/private/tmp/mm2-completion-20260919/wily6-alien-damage24-full.json",
+      "sha256": "3e4174d92f9d143cb04b11d9ca8101d1a3a1d7117dad600500a9a5c9504eeec3"
+    },
+    "damage_root": {
+      "actions": 184,
+      "actions_sha256": "9941f5f136bd570da065746fc242f153dc5e56e665644b042a02736799cb9098",
+      "path": "/private/tmp/mm2-completion-20260919/wily6-alien-damage24-root.json",
+      "sha256": "39a05bb2cab9df96ce05ff264d2ca252db56ef29bc14bb0b83b90759d49df5d2"
+    },
+    "ending": {
+      "actions": 6800,
+      "actions_sha256": "37ba59d7795e3f8ac768b047639ee20ce024a5bb8182c25f9e4bfa6b5128cbd4",
+      "path": "/private/tmp/mm2-completion-20260919/mm2-ending-full.json",
+      "sha256": "95cb39ef895e6e8b09cb170cbb4bd0783a62aa18cb8f090151f859f1cffebd90"
+    },
+    "prefix": {
+      "actions": 6468,
+      "actions_sha256": "5b7277884c0bec732f2f94283ec255c79568b4d943d35a4658b036ebb4e1151d",
+      "path": "/private/tmp/mm2-completion-20260919/wily6-prefix.json",
+      "sha256": "3e13e27afe6acda4968ae25634e4fbb9f06a2b1035271e35ff870932a91c0f90"
+    }
+  },
+  "composition": {
+    "actions_count_exact_6800": true,
+    "clear_champion_exact_after_damage": true,
+    "clear_occurrences_in_final": [
+      6652
+    ],
+    "damage_full_exact_prefix_plus_root": true,
+    "damage_root_exact_at_6468": true,
+    "final_input_sha_matches_linux_report": true,
+    "final_input_sha_matches_report": true,
+    "linux_report_actions_6800": true,
+    "linux_report_restore_policy_power_on_only": true,
+    "neutral_120_actions_exact_at_tail": true,
+    "no_prefix_duplication_in_damage_root": true,
+    "prefix_exact_at_0": true,
+    "report_actions_6800": true,
+    "report_restore_policy_power_on_only": true,
+    "root_occurrences_in_final": [
+      6468
+    ],
+    "root_occurs_once": true
+  },
+  "expected_actions": 6800,
+  "format": "mm2-final-provenance-audit-v1",
+  "replay_source": {
+    "interpretation": "One snapshot/branch stages the complete input from power-on; the per-action loop only runs to each deadline and contains no snapshot restore.",
+    "path": "workloads/nes/src/bin/mm2-replay.rs",
+    "per_action_deadline_run_lines": "179-199",
+    "power_on_snapshot_and_single_branch_lines": "161-163",
+    "report_restore_policy_lines": "237-256"
+  },
+  "reports": {
+    "linux": {
+      "actions_applied": 6800,
+      "actions_recorded": 6800,
+      "core_sha256": "5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0",
+      "endpoint": {
+        "boobeam_targets": 0,
+        "boss_health": 0,
+        "boss_phase": 255,
+        "camera_state": 0,
+        "crash_shots": 0,
+        "enemy_damage": 0,
+        "equipped_energy": 10,
+        "health": 6,
+        "lives": 2,
+        "menu": 0,
+        "platforms": 0,
+        "player_state": 3,
+        "refight_boss": 255,
+        "refighting_mask": 0,
+        "room": 0,
+        "screen": 0,
+        "stage": 5,
+        "weapon": 4,
+        "weapon_energy": 194,
+        "weapons_obtained": 255,
+        "wily_machine_shell_broken": false,
+        "x": 0,
+        "y": 0
+      },
+      "input_sha256": "95cb39ef895e6e8b09cb170cbb4bd0783a62aa18cb8f090151f859f1cffebd90",
+      "path": "/private/tmp/mm2-completion-20260919/mm2-ending-linux-report.json",
+      "raw_frame_count": 254990,
+      "restore_policy": "power_on_only",
+      "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+      "sha256": "953aee49349d6d254c407f22541d3805cface90afbb774ba0546a2aac7dd0d1c"
+    },
+    "local": {
+      "actions_applied": 6800,
+      "actions_recorded": 6800,
+      "core_sha256": "47cb5d0872e4a293c81de5dc0b5c975bf389514f4fc15075fdba4d172eff83b4",
+      "endpoint": {
+        "boobeam_targets": 0,
+        "boss_health": 0,
+        "boss_phase": 255,
+        "camera_state": 0,
+        "crash_shots": 0,
+        "enemy_damage": 0,
+        "equipped_energy": 10,
+        "health": 6,
+        "lives": 2,
+        "menu": 0,
+        "platforms": 0,
+        "player_state": 3,
+        "refight_boss": 255,
+        "refighting_mask": 0,
+        "room": 0,
+        "screen": 0,
+        "stage": 5,
+        "weapon": 4,
+        "weapon_energy": 194,
+        "weapons_obtained": 255,
+        "wily_machine_shell_broken": false,
+        "x": 0,
+        "y": 0
+      },
+      "input_sha256": "95cb39ef895e6e8b09cb170cbb4bd0783a62aa18cb8f090151f859f1cffebd90",
+      "path": "/private/tmp/mm2-completion-20260919/mm2-ending-report.json",
+      "raw_frame_count": 254990,
+      "restore_policy": "power_on_only",
+      "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+      "sha256": "2083e5007abb96c116d362d61cb834073b5484e604c1af83b39d1b2813d9ffe1"
+    }
+  },
+  "trace": {
+    "action_index_range": [
+      6468,
+      6799
+    ],
+    "first_stage14": {
+      "action_index": 6696,
+      "raw_frame_count": 242630,
+      "state": {
+        "boss_phase": 255,
+        "health": 6,
+        "lives": 2,
+        "menu": 255,
+        "player_state": 3,
+        "room": 1,
+        "screen": 32,
+        "stage": 14,
+        "x": 74,
+        "y": 196
+      }
+    },
+    "immediate_followup": {
+      "action_index": 6697,
+      "raw_frame_count": 242750,
+      "state": {
+        "boss_phase": 255,
+        "health": 6,
+        "lives": 2,
+        "menu": 193,
+        "player_state": 3,
+        "room": 1,
+        "screen": 32,
+        "stage": 5,
+        "x": 74,
+        "y": 196
+      }
+    },
+    "interpretation": "Stage 14 appears at action 6696 for one traced boundary, then the next boundary reports stage 5 while the ending/display RAM is reused; this is an observed trace transition, not a visual-ending claim.",
+    "path": "/private/tmp/mm2-completion-20260919/mm2-ending-trace.jsonl",
+    "records": 332,
+    "sha256": "6e17f37af216fae57ef26070bbf0ebb4b2747a333619badd2d0a3895c208c680",
+    "stage_record_counts": {
+      "13": 228,
+      "14": 1,
+      "5": 103
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "actions": 5835,
+  "sha256": "bad8bed12f2278b6142898e01da64329303564f2cf527f0f01bb8f65a83f7e73",
+  "endpoint": {
+    "boobeam_targets": 0,
+    "boss_health": 0,
+    "boss_phase": 0,
+    "camera_state": 0,
+    "crash_shots": 0,
+    "enemy_damage": 0,
+    "equipped_energy": 0,
+    "health": 14,
+    "lives": 3,
+    "menu": 255,
+    "platforms": 0,
+    "player_state": 11,
+    "refight_boss": 255,
+    "refighting_mask": 255,
+    "room": 41,
+    "screen": 41,
+    "stage": 12,
+    "weapon": 2,
+    "weapon_energy": 147,
+    "weapons_obtained": 255,
+    "x": 129,
+    "y": 68
+  },
+  "raw_frame_count": 204951,
+  "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+  "core_sha256": "47cb5d0872e4a293c81de5dc0b5c975bf389514f4fc15075fdba4d172eff83b4",
+  "evidence": "Exact prefix through action5834 of continuous wily5-v23-current-full.json; film independently reviewed."
+}

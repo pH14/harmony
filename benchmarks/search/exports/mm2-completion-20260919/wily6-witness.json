@@ -1,0 +1,33 @@
+{
+  "actions": 6468,
+  "sha256": "3e13e27afe6acda4968ae25634e4fbb9f06a2b1035271e35ff870932a91c0f90",
+  "endpoint": {
+    "boobeam_targets": 0,
+    "boss_health": 0,
+    "boss_phase": 0,
+    "camera_state": 0,
+    "crash_shots": 0,
+    "enemy_damage": 0,
+    "equipped_energy": 0,
+    "health": 28,
+    "lives": 2,
+    "menu": 255,
+    "platforms": 0,
+    "player_state": 3,
+    "refight_boss": 255,
+    "refighting_mask": 0,
+    "room": 25,
+    "screen": 25,
+    "stage": 13,
+    "weapon": 0,
+    "weapon_energy": 212,
+    "weapons_obtained": 255,
+    "wily_machine_shell_broken": false,
+    "x": 128,
+    "y": 180
+  },
+  "raw_frame_count": 234761,
+  "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+  "core_sha256": "47cb5d0872e4a293c81de5dc0b5c975bf389514f4fc15075fdba4d172eff83b4",
+  "evidence": "Prefix through action6467 of continuous wily6-arrival-full.json, following independently filmed Machine clear."
+}
