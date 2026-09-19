@@ -258,6 +258,13 @@ where
         serde_json::from_value(value["archive"]["champion_input"].clone())?
     };
     write_json(&out.join("witness-input.json"), &witness)?;
+    if let Some(deepest) = game
+        .source_entries(&report.archive)
+        .iter()
+        .max_by(|left, right| G::Key::progress_cmp(left.key.group(1), right.key.group(1)))
+    {
+        write_json(&out.join("deepest-input.json"), &deepest.input)?;
+    }
     if full {
         write_json(&out.join("checkpoint.json"), &checkpoint)?;
     }
