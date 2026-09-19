@@ -484,9 +484,11 @@ fn action_champion_key(observations: &[Mm2Observations]) -> Option<Mm2ChampionKe
                         .try_into()
                         .unwrap_or(u8::MAX),
                     state.wily_machine_shell_broken,
-                    champion_encounter_active(state)
-                        .then(|| state.boss_damage())
-                        .unwrap_or(0),
+                    if champion_encounter_active(state) {
+                        state.boss_damage()
+                    } else {
+                        0
+                    },
                     state.enemy_damage,
                     champion_encounter_active(state),
                     state.stage,
