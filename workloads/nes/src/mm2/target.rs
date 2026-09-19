@@ -1957,7 +1957,10 @@ mod tests {
                 );
             }
             if absolute_index == ending_action {
-                assert!(target.ending_reached(), "ending missing at action {absolute_index}");
+                assert!(
+                    target.ending_reached(),
+                    "ending missing at action {absolute_index}"
+                );
             }
             if absolute_index == 1_000 {
                 let snapshot = target.snapshot().expect("snapshot at oracle checkpoint");
@@ -1997,6 +2000,12 @@ mod tests {
                 Mm2Scene::Ending,
             )
         );
+        let raw = target.machine.read_wram().expect("read ending RAM");
+        assert_eq!(raw[STAGE], ENDING_SCENE_STAGE);
+        assert_eq!(raw[BOSS_PHASE], ENDING_BOSS_PHASE);
+        assert_eq!(raw[PLAYER_HEALTH], 6);
+        assert_eq!(raw[LIVES], 2);
+        assert_eq!(raw[WEAPONS_OBTAINED], u8::MAX);
     }
 
     #[test]
