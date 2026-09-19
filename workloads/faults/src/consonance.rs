@@ -203,6 +203,13 @@ pub struct FaultTarget {
     root_seal: u64,
 }
 
+#[cfg(target_os = "macos")]
+impl Drop for FaultTarget {
+    fn drop(&mut self) {
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+}
+
 impl FaultTarget {
     pub fn new(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<Self, String> {
         let config = Arc::new(Config {

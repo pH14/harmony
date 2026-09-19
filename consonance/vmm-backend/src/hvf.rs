@@ -130,6 +130,10 @@ core::arch::global_asm!(
     "b _hv_vcpu_set_simd_fp_reg",
 );
 
+unsafe extern "C" {
+    fn sys_icache_invalidate(start: *mut c_void, len: usize);
+}
+
 #[link(name = "Hypervisor", kind = "framework")]
 unsafe extern "C" {
     fn hv_vm_create(config: *mut c_void) -> i32;
@@ -321,6 +325,7 @@ pub struct HvfBackend {
     accepted_irq: Option<GicIntId>,
     counts: ExitCounts,
     regions: Vec<(u64, usize)>,
+    cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl HvfBackend {
@@ -375,6 +380,7 @@ impl HvfBackend {
             accepted_irq: None,
             counts: ExitCounts::default(),
             regions: Vec::new(),
+            cancel_run: std::sync::Arc::default(),
         })
     }
 
@@ -676,8 +682,25 @@ impl Backend for HvfBackend {
     }
 
     fn run(&mut self) -> Result<Exit<Arm64>> {
+        if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(BackendError::Internal("HVF run canceled by host"));
+        }
         self.ensure_runnable()?;
         self.enter_guest()
+    }
+
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        Some(std::sync::Arc::clone(&self.cancel_run))
+    }
+
+    fn invalidate_instruction_cache(&mut self, host_addr: usize, len: usize) {
+        if len == 0 {
+            return;
+        }
+        // SAFETY: the range names bytes inside the guest RAM allocation this
+        // backend mapped and still holds, and the call only performs cache
+        // maintenance on them.
+        unsafe { sys_icache_invalidate(host_addr as *mut c_void, len) };
     }
 
     fn inject(&mut self, event: Arm64Injection) -> Result<()> {

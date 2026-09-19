@@ -104,6 +104,7 @@ fn compose_inner<B: Backend<A = Arm64>>(
     unsafe {
         backend.map_memory(Gpa(RAM_BASE), ram.as_mut_bytes())?;
     }
+    backend.invalidate_instruction_cache(ram.as_bytes().as_ptr() as usize, dtb_end);
 
     let entry_state = entry::boot_entry(loaded.entry_gpa, dtb_gpa);
     let mut state = backend.save()?;
@@ -176,6 +177,37 @@ pub fn boot_hvf_control(
         guest_ram_len,
         true,
         0,
+    )?;
+    vmm.wire_gic(super::board::new_gic());
+    vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(
+        vtime::VClockConfig {
+            guest_hz: super::board::CNTFRQ_HZ,
+            guest_base: 0,
+            vns_base: 0,
+        },
+        0,
+    )?);
+    vmm.enable_pvclock();
+    Ok(vmm)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+pub fn boot_selected_control(
+    image: &[u8],
+    initramfs: &[u8],
+    bootargs: &str,
+    guest_ram_len: usize,
+    seed: u64,
+) -> Result<Vmm<Box<dyn Backend<A = Arm64>>>, VmmError> {
+    let backend: Box<dyn Backend<A = Arm64>> = Box::new(vmm_backend::HvfBackend::new()?);
+    let mut vmm = compose_inner(
+        backend,
+        image,
+        Some(initramfs),
+        bootargs,
+        guest_ram_len,
+        true,
+        seed,
     )?;
     vmm.wire_gic(super::board::new_gic());
     vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(

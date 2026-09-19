@@ -148,6 +148,13 @@ impl RamBacking {
     }
 }
 
+fn extend_written(written: &mut Vec<(usize, usize)>, offset: usize, len: usize) {
+    match written.last_mut() {
+        Some(last) if last.0 + last.1 == offset => last.1 += len,
+        _ => written.push((offset, len)),
+    }
+}
+
 fn valid_guest_ram_len(len: usize, page_size: usize) -> bool {
     len != 0 && len.is_multiple_of(page_size)
 }
@@ -699,9 +706,17 @@ where
         }
 
         let ram = self.ram.as_mut_bytes();
+        let base = ram.as_mut_ptr() as usize;
         for &(offset, end, page) in &validated {
             ram[offset..end].copy_from_slice(page);
         }
+        let mut offsets: Vec<usize> = validated.iter().map(|&(offset, _, _)| offset).collect();
+        offsets.sort_unstable();
+        let mut written: Vec<(usize, usize)> = Vec::new();
+        for offset in offsets {
+            extend_written(&mut written, offset, PAGE_SIZE);
+        }
+        self.invalidate_written_instructions(base, &written);
         self.host_dirty_wholesale = true;
         Ok(())
     }
@@ -737,6 +752,7 @@ where
     }
 
     pub fn restore_guest_memory(&mut self, image: &[u8]) -> Result<(), VmmError> {
+        const PAGE_SIZE: usize = 4096;
         let ram = self.ram.as_mut_bytes();
         if image.len() != ram.len() {
             return Err(VmmError::ContractViolation(format!(
@@ -745,9 +761,29 @@ where
                 ram.len()
             )));
         }
-        ram.copy_from_slice(image);
+        let base = ram.as_mut_ptr() as usize;
+        let mut written: Vec<(usize, usize)> = Vec::new();
+        for (index, (target, source)) in ram
+            .chunks_mut(PAGE_SIZE)
+            .zip(image.chunks(PAGE_SIZE))
+            .enumerate()
+        {
+            if target == source {
+                continue;
+            }
+            target.copy_from_slice(source);
+            extend_written(&mut written, index * PAGE_SIZE, source.len());
+        }
+        self.invalidate_written_instructions(base, &written);
         self.host_dirty_wholesale = true;
         Ok(())
+    }
+
+    fn invalidate_written_instructions(&mut self, base: usize, written: &[(usize, usize)]) {
+        for &(offset, len) in written {
+            self.backend
+                .invalidate_instruction_cache(base + offset, len);
+        }
     }
 
     pub fn save_vtime(&self) -> Result<Option<VtimeSnapshot>, VmmError> {
@@ -2365,6 +2401,9 @@ where
                     )));
                 };
                 dst.copy_from_slice(bytes);
+                let host_addr = dst.as_ptr() as usize;
+                self.backend
+                    .invalidate_instruction_cache(host_addr, bytes.len());
                 self.mark_host_dirty(*gpa, bytes.len() as u64);
                 Ok(())
             }
@@ -2378,6 +2417,9 @@ where
                 for (current, mask) in dst.iter_mut().zip(bytes) {
                     *current ^= mask;
                 }
+                let host_addr = dst.as_ptr() as usize;
+                self.backend
+                    .invalidate_instruction_cache(host_addr, bytes.len());
                 self.mark_host_dirty(*gpa, bytes.len() as u64);
                 Ok(())
             }
