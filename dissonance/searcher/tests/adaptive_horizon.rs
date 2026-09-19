@@ -4,12 +4,14 @@ use std::{cmp::Ordering, error::Error};
 
 use searcher::search::{
     archive::{
-        ArchiveEntryReport, ArchiveKey, Input, RetentionPolicy, SelectorPolicy, entries_by_suffix,
+        ArchiveEntryReport, ArchiveKey, Input, RetentionPolicy, RetireThresholds, SelectorPolicy,
+        entries_by_suffix,
     },
     campaign::{
-        ArchiveReportState, CampaignActionResult, CampaignConfig, CampaignJobResult,
-        CampaignOrigin, CampaignStreamRecord, CampaignTypes, Evaluation, InputPolicy, Reporting,
-        TargetExecution, WorkloadPolicies, replay_campaign_checkpointed, run_campaign_checkpointed,
+        ArchiveReportState, CampaignActionResult, CampaignCheckpoint, CampaignConfig,
+        CampaignJobResult, CampaignOrigin, CampaignStreamRecord, CampaignTypes, Evaluation,
+        InputPolicy, Reporting, TargetExecution, WorkloadPolicies, replay_campaign_checkpointed,
+        run_campaign_checkpointed,
     },
     draw::{DrawMixture, SuffixShape},
     empirical_steps::EmpiricalStepCheckpoint,
@@ -71,7 +73,7 @@ struct HorizonTarget {
 }
 
 struct HorizonWorkload {
-    goal_after_seven: bool,
+    goal_after: u8,
 }
 
 impl CampaignTypes for HorizonWorkload {
@@ -125,7 +127,7 @@ impl Reporting for HorizonWorkload {
 
 impl InputPolicy for HorizonWorkload {
     fn max_action_limit(&self) -> usize {
-        8
+        64
     }
 
     fn max_action_cost(&self) -> u64 {
@@ -205,12 +207,12 @@ impl Evaluation for HorizonWorkload {
         _: &Self::Run,
         target: &Self::Target,
     ) -> Result<bool, Box<dyn Error>> {
-        Ok(self.goal_after_seven && target.ticks >= 7)
+        Ok(self.goal_after != 0 && target.ticks >= self.goal_after)
     }
 
     fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
         Ok(TickKey(u8::from(
-            self.goal_after_seven && target.ticks >= 7,
+            self.goal_after != 0 && target.ticks >= self.goal_after,
         )))
     }
 
@@ -282,12 +284,13 @@ fn config(
     execution_budget: u64,
     suffix: SuffixShape,
     workers: u32,
+    action_limit: usize,
 ) -> CampaignConfig<HorizonWorkload> {
     CampaignConfig {
         campaign_seed: 0x51a7_e001,
         workers,
         execution_budget,
-        action_limit: 8,
+        action_limit,
         host: "adaptive-horizon-test".to_owned(),
         wall_budget: None,
         stop_rollout_on_objective: false,
@@ -300,20 +303,21 @@ fn config(
         suffix,
         mixture: DrawMixture::AlphabetOnly,
         retention: RetentionPolicy::Unprobed,
-        selector: SelectorPolicy::GroupUniform,
+        selector: SelectorPolicy::Retire(RetireThresholds {
+            entry: 3,
+            groups: Vec::new(),
+        }),
         objective_witness_path: None,
     }
 }
 
 #[test]
 fn adaptive_horizon_crosses_wait_and_replays_exactly() {
-    let workload = HorizonWorkload {
-        goal_after_seven: true,
-    };
+    let workload = HorizonWorkload { goal_after: 20 };
     let mut stream = Vec::new();
     let live = run_campaign_checkpointed(
         &workload,
-        &config(8, SuffixShape::OneToSix, 1),
+        &config(32, SuffixShape::OneToSix, 1, 64),
         &CampaignOrigin::Genesis,
         &mut stream,
         None,
@@ -326,7 +330,7 @@ fn adaptive_horizon_crosses_wait_and_replays_exactly() {
             .archive
             .entries
             .iter()
-            .any(|entry| entry.key == TickKey(1) && entry.input.actions.len() >= 7)
+            .any(|entry| entry.key == TickKey(1) && entry.input.actions.len() >= 20)
     );
     let recorded_extensions = stream
         .split(|byte| *byte == b'\n')
@@ -348,21 +352,70 @@ fn adaptive_horizon_crosses_wait_and_replays_exactly() {
 }
 
 #[test]
-fn adaptive_horizon_cycles_without_growing_past_action_limit() {
-    let workload = HorizonWorkload {
-        goal_after_seven: false,
+fn adaptive_horizon_counters_survive_archive_import() {
+    let source_workload = HorizonWorkload { goal_after: 7 };
+    let mut source_stream = Vec::new();
+    let source = run_campaign_checkpointed(
+        &source_workload,
+        &config(8, SuffixShape::OneToSix, 1, 8),
+        &CampaignOrigin::Genesis,
+        &mut source_stream,
+        None,
+    )
+    .expect("source campaign");
+    let source_root = source
+        .0
+        .archive
+        .entries
+        .iter()
+        .find(|entry| entry.key == TickKey(0))
+        .expect("source root");
+    assert!(
+        source_root
+            .selector
+            .as_ref()
+            .is_some_and(|counters| counters.horizon_unproductive > 0),
+        "source archive did not retain horizon feedback: {:?}",
+        source.0.archive.entries
+    );
+    let origin = CampaignOrigin::Archive {
+        path: "adaptive-horizon-source.json".to_owned(),
+        file_sha256: "source".to_owned(),
+        report: Box::new(source.0.archive.clone()),
+        checkpoint: Some(CampaignCheckpoint {
+            path: "adaptive-horizon-source.snapshots".to_owned(),
+            file_sha256: "snapshots".to_owned(),
+            snapshots: source.1,
+        }),
     };
+    let workload = HorizonWorkload { goal_after: 7 };
+    let mut stream = Vec::new();
+    run_campaign_checkpointed(
+        &workload,
+        &config(1, SuffixShape::OneToSix, 1, 64),
+        &origin,
+        &mut stream,
+        None,
+    )
+    .expect("archive import campaign");
+    assert!(String::from_utf8_lossy(&stream).contains("adaptive_horizon_extension"));
+}
+
+#[test]
+fn adaptive_horizon_cycles_without_growing_past_action_limit() {
+    let workload = HorizonWorkload { goal_after: 0 };
     let mut stream = Vec::new();
     let live = run_campaign_checkpointed(
         &workload,
-        &config(4, SuffixShape::OneToSix, 1),
+        &config(4, SuffixShape::OneToSix, 1, 8),
         &CampaignOrigin::Genesis,
         &mut stream,
         None,
     )
     .expect("cycle campaign");
     assert_eq!(live.0.archive.entries.len(), 1);
-    assert_eq!(live.0.execution_work, 18);
+    assert!(live.0.execution_work <= 32);
+    assert!(String::from_utf8_lossy(&stream).contains("adaptive_horizon_extension"));
     assert_eq!(live.0.archive.entries[0].input.actions.len(), 0);
     let replayed =
         replay_campaign_checkpointed(&workload, &stream, None, None).expect("cycle replay");
@@ -371,13 +424,11 @@ fn adaptive_horizon_cycles_without_growing_past_action_limit() {
 
 #[test]
 fn bounded_suffix_keeps_its_existing_work_bound() {
-    let workload = HorizonWorkload {
-        goal_after_seven: true,
-    };
+    let workload = HorizonWorkload { goal_after: 20 };
     let mut stream = Vec::new();
     let live = run_campaign_checkpointed(
         &workload,
-        &config(2, SuffixShape::OneToSixBounded, 1),
+        &config(2, SuffixShape::OneToSixBounded, 1, 8),
         &CampaignOrigin::Genesis,
         &mut stream,
         None,
@@ -393,13 +444,11 @@ fn bounded_suffix_keeps_its_existing_work_bound() {
 
 #[test]
 fn adaptive_horizon_replays_with_reservation_lag_and_variable_extensions() {
-    let workload = HorizonWorkload {
-        goal_after_seven: true,
-    };
+    let workload = HorizonWorkload { goal_after: 20 };
     let mut stream = Vec::new();
     let live = run_campaign_checkpointed(
         &workload,
-        &config(8, SuffixShape::OneToSix, 2),
+        &config(32, SuffixShape::OneToSix, 2, 64),
         &CampaignOrigin::Genesis,
         &mut stream,
         None,

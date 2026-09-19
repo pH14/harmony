@@ -203,11 +203,14 @@ work changes that replay rejects. It does not measure a workload speedup.
 ## Adaptive barren horizons
 
 Ordinary `OneToSix` suffixes extend after barren selection feedback. The
-searcher uses the selected entry's existing `since_retained` streak to append
-that many deterministic alphabet actions to the ordinary suffix, capped by the
-remaining action-limit capacity. The archive representative stays unchanged;
-the appended actions execute and count as ordinary logical work, and replay
-reconstructs them from the extension count recorded at reservation time.
+searcher keeps a persistent per-entry streak of admissions that retain no
+descendant and appends that many deterministic alphabet actions to the
+ordinary suffix, capped by the remaining action-limit capacity. Selector
+counter-window resets do not clear this streak; a retained descendant resets
+it. The archive representative stays unchanged; the appended actions execute
+and count as ordinary logical work, and replay reconstructs them from the
+extension count recorded at reservation time. The streak is included in
+archive selector counters so archive warm starts preserve the feedback.
 `OneToSixBounded` deliberately
 keeps its existing three-times-maximum-action-cost bound and receives no
 extension.

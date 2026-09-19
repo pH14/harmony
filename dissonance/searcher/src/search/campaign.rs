@@ -1204,6 +1204,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         for (index, entry) in source_entries.iter().enumerate() {
             index_of.insert(entry.id, index);
             if entry.input.actions.is_empty() {
+                self.archive
+                    .restore_selector_counters(genesis_id, entry.selector)?;
                 imported.push(Some(genesis_id));
                 continue;
             }
@@ -1308,6 +1310,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 snapshot,
             )? {
                 Some(id) if id == inserted_before => {
+                    self.archive.restore_selector_counters(id, entry.selector)?;
                     counts.imported = counts.imported.saturating_add(1);
                     imported.push(Some(id));
                 }

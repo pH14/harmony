@@ -405,6 +405,8 @@ pub struct ProgressPoint<M, P = ()> {
 pub struct EntrySelectorCounters {
     pub selected: u64,
     pub productive: u64,
+    #[serde(default)]
+    pub horizon_unproductive: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -582,6 +584,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     selected: Vec<u64>,
     productive: Vec<u64>,
     since_retained: Vec<u64>,
+    horizon_unproductive: Vec<u64>,
     in_window_ever: Vec<bool>,
     opened_slot: Vec<bool>,
     opened_depths: Vec<u32>,
@@ -1110,6 +1113,7 @@ where
             selected: Vec::new(),
             productive: Vec::new(),
             since_retained: Vec::new(),
+            horizon_unproductive: Vec::new(),
             in_window_ever: Vec::new(),
             opened_slot: Vec::new(),
             opened_depths: Vec::new(),
@@ -1516,6 +1520,8 @@ where
         self.selected = retain_marked(std::mem::take(&mut self.selected), &keep);
         self.productive = retain_marked(std::mem::take(&mut self.productive), &keep);
         self.since_retained = retain_marked(std::mem::take(&mut self.since_retained), &keep);
+        self.horizon_unproductive =
+            retain_marked(std::mem::take(&mut self.horizon_unproductive), &keep);
         self.in_window_ever = retain_marked(std::mem::take(&mut self.in_window_ever), &keep);
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.opened_depths = retain_marked(std::mem::take(&mut self.opened_depths), &keep);
@@ -1796,7 +1802,7 @@ where
             .saturating_add(suffix_len.saturating_mul(size_of::<A>()))
             .saturating_add(size_of::<K::Lineage>())
             .saturating_add(size_of::<(K, usize)>())
-            .saturating_add(4_usize.saturating_mul(size_of::<u64>()))
+            .saturating_add(5_usize.saturating_mul(size_of::<u64>()))
             .saturating_add(4_usize.saturating_mul(size_of::<usize>()))
             .saturating_add(128)
             .saturating_add(new_nodes.saturating_mul(Self::prefix_node_memory_charge()))
@@ -2165,11 +2171,28 @@ where
 
     #[must_use]
     pub(crate) fn adaptive_horizon_extension(&self, id: usize, remaining_actions: usize) -> usize {
-        self.since_retained
+        self.horizon_unproductive
             .get(id)
             .copied()
             .and_then(|streak| usize::try_from(streak).ok())
             .map_or(0, |streak| streak.min(remaining_actions))
+    }
+
+    pub(crate) fn restore_selector_counters(
+        &mut self,
+        id: usize,
+        counters: Option<EntrySelectorCounters>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(counters) = counters else {
+            return Ok(());
+        };
+        if id >= self.entries.len() {
+            return Err("archive selector counters name an unknown entry".into());
+        }
+        self.selected[id] = counters.selected;
+        self.productive[id] = counters.productive;
+        self.horizon_unproductive[id] = counters.horizon_unproductive;
+        Ok(())
     }
 
     #[must_use]
@@ -2390,6 +2413,7 @@ where
         self.selected.push(0);
         self.productive.push(0);
         self.since_retained.push(0);
+        self.horizon_unproductive.push(0);
         self.in_window_ever.push(false);
         self.opened_slot.push(new_slot);
         let mut opened = u32::from(new_slot);
@@ -3352,11 +3376,13 @@ where
 
     pub fn record_selection_outcome(&mut self, id: usize, retained_descendant: bool, opened: u32) {
         if !retained_descendant {
+            self.horizon_unproductive[id] = self.horizon_unproductive[id].saturating_add(1);
             return;
         }
         let was_sampleable = self.entry_unexhausted(id);
         self.productive[id] = self.productive[id].saturating_add(1);
         self.since_retained[id] = 0;
+        self.horizon_unproductive[id] = 0;
         if !was_sampleable && self.entry_unexhausted(id) {
             self.set_entry_sampleable(id, true);
         }
@@ -3465,6 +3491,7 @@ where
                 selector: Some(EntrySelectorCounters {
                     selected: self.selected[id],
                     productive: self.productive[id],
+                    horizon_unproductive: self.horizon_unproductive[id],
                 }),
             };
             reports.push(report);
