@@ -38,6 +38,7 @@ const MENU_PAGE: usize = 0xfe;
 const MENU_BANK: u8 = 0x0d;
 const MENU_ROWS: u8 = 8;
 pub const MENU_CLOSED: u8 = 0xff;
+pub const MENU_UNKNOWN: u8 = 0xfe;
 const DYING_FRAMES: u32 = 30;
 const PLAYER_X: usize = 0x460;
 const PLAYER_Y: usize = 0x4a0;
@@ -294,13 +295,7 @@ fn decode_state_with_expected_stage(
         .map_err(|_| {
             MachineError::Backend("Mega Man 2 weapon energy table is incomplete".into())
         })?;
-    let menu = if read_byte(wram, CURRENT_BANK)? == MENU_BANK {
-        read_byte(wram, MENU_PAGE)?
-            .wrapping_mul(MENU_ROWS)
-            .wrapping_add(read_byte(wram, MENU_CURSOR)?)
-    } else {
-        MENU_CLOSED
-    };
+    let menu = menu_selection(wram)?;
     let state = Mm2MechanicalState {
         stage,
         screen: read_byte(wram, PLAYER_SCREEN)?,
@@ -362,6 +357,24 @@ fn semantic_stage(
         WILY5_STAGE
     } else {
         raw_stage
+    }
+}
+
+fn menu_selection(wram: &[u8]) -> Result<u8, MachineError> {
+    if read_byte(wram, CURRENT_BANK)? != MENU_BANK {
+        return Ok(MENU_CLOSED);
+    }
+    let page = read_byte(wram, MENU_PAGE)?;
+    let cursor = read_byte(wram, MENU_CURSOR)?;
+    let rows = match page {
+        0 => MENU_ROWS,
+        1 => MENU_ROWS - 1,
+        _ => return Ok(MENU_UNKNOWN),
+    };
+    if cursor < rows {
+        Ok(page * MENU_ROWS + cursor)
+    } else {
+        Ok(MENU_UNKNOWN)
     }
 }
 
@@ -1742,6 +1755,30 @@ mod tests {
         assert_eq!(decode_state(&wram).expect("opening menu").menu, 5);
         wram[MENU_PAGE] = 1;
         assert_eq!(decode_state(&wram).expect("second menu page").menu, 13);
+    }
+
+    #[test]
+    fn menu_selection_collapses_invalid_register_pairs_to_unknown() {
+        let mut wram = vec![0_u8; WRAM_SIZE];
+        wram[CURRENT_BANK] = MENU_BANK;
+        for page in 0..=u8::MAX {
+            for cursor in 0..=u8::MAX {
+                wram[MENU_PAGE] = page;
+                wram[MENU_CURSOR] = cursor;
+                let expected = match page {
+                    0 if cursor < MENU_ROWS => cursor,
+                    1 if cursor < MENU_ROWS - 1 => MENU_ROWS + cursor,
+                    _ => MENU_UNKNOWN,
+                };
+                assert_eq!(menu_selection(&wram).expect("menu registers"), expected);
+            }
+        }
+        for bank in [0, MENU_BANK - 1, MENU_BANK + 1, u8::MAX] {
+            wram[CURRENT_BANK] = bank;
+            wram[MENU_PAGE] = 1;
+            wram[MENU_CURSOR] = 5;
+            assert_eq!(menu_selection(&wram).expect("non-menu bank"), MENU_CLOSED);
+        }
     }
 
     #[test]
