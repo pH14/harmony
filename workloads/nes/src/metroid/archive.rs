@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_v14";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_stock_band_preference_missiles_only_ridley_bit1_v15";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -42,6 +42,7 @@ pub struct MetroidArchiveGroup {
     posture: u8,
     door: u8,
     area: u8,
+    stock: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -60,6 +61,7 @@ pub struct MetroidArchiveKey {
     pub door: u8,
     pub health: u16,
     pub missiles: u8,
+    pub stock: u8,
 }
 
 impl ArchiveKey for MetroidArchiveKey {
@@ -85,6 +87,7 @@ impl ArchiveKey for MetroidArchiveKey {
             y: self.y,
             posture: self.posture,
             door: self.door,
+            stock: self.stock,
         };
         match depth {
             0 => location,
@@ -107,6 +110,7 @@ impl ArchiveKey for MetroidArchiveKey {
                 area: self.area,
                 map_x: self.map_x,
                 map_y: self.map_y,
+                stock: self.stock,
                 ..MetroidArchiveGroup::default()
             },
             _ => MetroidArchiveGroup {
@@ -201,6 +205,16 @@ impl MetroidArchiveKey {
 
 const POSITION_BUCKET: u8 = 16;
 
+fn stock_band(missiles: u8, capacity: u8) -> u8 {
+    if missiles == 0 {
+        0
+    } else if u16::from(missiles) * 2 < u16::from(capacity) {
+        1
+    } else {
+        2
+    }
+}
+
 #[must_use]
 pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
     let (items, tanks, health, missiles) = preference_tuple(state);
@@ -219,6 +233,7 @@ pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
         door: state.door,
         health,
         missiles,
+        stock: stock_band(missiles, state.missile_capacity),
     }
 }
 
@@ -446,6 +461,32 @@ mod tests {
         let there = archive_key(moved);
         assert_ne!(here.group(3), there.group(3));
         assert_eq!(here.group(4), there.group(4));
+    }
+
+    #[test]
+    fn missile_stock_bands_separate_places_below_the_map_cell() {
+        let mut empty = state(100, 300, 0);
+        empty.missile_capacity = 30;
+        let mut low = empty;
+        low.missiles = 14;
+        let mut high = empty;
+        high.missiles = 15;
+        let mut full = empty;
+        full.missiles = 30;
+        let (empty, low, high, full) = (
+            archive_key(empty),
+            archive_key(low),
+            archive_key(high),
+            archive_key(full),
+        );
+        for depth in 0..=3 {
+            assert_ne!(empty.group(depth), low.group(depth));
+            assert_ne!(low.group(depth), high.group(depth));
+            assert_eq!(high.group(depth), full.group(depth));
+        }
+        assert_eq!(empty.group(4), full.group(4));
+        assert_eq!(stock_band(0, 0), 0);
+        assert_eq!(stock_band(1, 0), 2);
     }
 
     #[test]

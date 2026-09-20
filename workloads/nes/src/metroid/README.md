@@ -39,8 +39,14 @@ predicate: `nes-progress` names it, and `metroid-film` defaults to it.
 `archive.rs` records the experimental adapter policy explicitly. It pools
 16-pixel positions through 32-pixel cells, 128-pixel regions, map cells, and
 inventory counts. Posture and door-transition state distinguish possible
-continuations. Health and missile stock are same-slot preference, not extra
-spatial slots, and the two preferences order that pair against each other in
+continuations. Health is same-slot preference, not an extra spatial slot. Missile stock
+enters the location groups as a three-way band of the capacity: none, under
+half, and half or more. Missiles open doors, Zebetites and Mother Brain, so a
+place reached with a stocked lineage is a different place from the same cell
+reached empty; the exact count stays a preference within the band. Without the
+band every arrival at a far cell competes for one slot against the drained
+lineages that reach it most often, and the descent to a boss arrives empty.
+The two preferences order health and missiles against each other in
 opposite ways. The key's tank count subtracts the 75 missiles each boss kill
 awards, so a kill does not relabel every map cell the killer reaches as holding
 fifteen more tanks than the cells beside it; the kill still counts through the
