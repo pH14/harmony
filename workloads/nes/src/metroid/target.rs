@@ -105,6 +105,7 @@ const KRAID_STATUS: usize = 0x87b;
 const RIDLEY_STATUS: usize = 0x87c;
 const KRAID_DEFEATED_BIT: u8 = 1;
 const RIDLEY_DEFEATED_BIT: u8 = 2;
+const STATUE_RAISED_BIT: u8 = 0x80;
 const ENDING: usize = 0x883;
 const ENERGY_TANKS: usize = 0x877;
 
@@ -226,16 +227,25 @@ pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalSt
         missile_capacity: read_byte(cartridge, MISSILE_CAPACITY)?,
         energy_tanks: read_byte(cartridge, ENERGY_TANKS)?,
         boss_health: mini_boss_health(wram)?,
-        bosses: u8::from(read_byte(cartridge, KRAID_STATUS)? & KRAID_DEFEATED_BIT != 0)
-            + u8::from(read_byte(cartridge, RIDLEY_STATUS)? & RIDLEY_DEFEATED_BIT != 0),
+        bosses: u8::from(boss_defeated(
+            read_byte(cartridge, KRAID_STATUS)?,
+            KRAID_DEFEATED_BIT,
+        )) + u8::from(boss_defeated(
+            read_byte(cartridge, RIDLEY_STATUS)?,
+            RIDLEY_DEFEATED_BIT,
+        )),
         ending: read_byte(cartridge, ENDING)? != 0,
     })
 }
 
+fn boss_defeated(status: u8, defeated_bit: u8) -> bool {
+    status & (defeated_bit | STATUE_RAISED_BIT) != 0
+}
+
 fn decode_boss_defeats(cartridge: &[u8]) -> Result<BossDefeats, MachineError> {
     Ok(BossDefeats {
-        kraid: read_byte(cartridge, KRAID_STATUS)? & KRAID_DEFEATED_BIT != 0,
-        ridley: read_byte(cartridge, RIDLEY_STATUS)? & RIDLEY_DEFEATED_BIT != 0,
+        kraid: boss_defeated(read_byte(cartridge, KRAID_STATUS)?, KRAID_DEFEATED_BIT),
+        ridley: boss_defeated(read_byte(cartridge, RIDLEY_STATUS)?, RIDLEY_DEFEATED_BIT),
     })
 }
 
@@ -1199,5 +1209,30 @@ mod observation_tests {
         .unwrap();
         assert_eq!(observations[0].decoded.boss_health, 0x30);
         assert_eq!(observations[0].boss_health_seen, 0x30);
+    }
+}
+
+#[cfg(test)]
+mod boss_status_tests {
+    use super::*;
+
+    #[test]
+    fn statue_room_rewrite_keeps_both_defeats() {
+        for (kraid, ridley, expected) in [
+            (0x00, 0x00, (false, false)),
+            (0x01, 0x00, (true, false)),
+            (0x01, 0x02, (true, true)),
+            (0x82, 0x82, (true, true)),
+        ] {
+            let mut cartridge = vec![0u8; CARTRIDGE_RAM_SIZE];
+            cartridge[KRAID_STATUS] = kraid;
+            cartridge[RIDLEY_STATUS] = ridley;
+            let defeats = decode_boss_defeats(&cartridge).unwrap();
+            assert_eq!((defeats.kraid, defeats.ridley), expected);
+            let counted = u8::from(expected.0) + u8::from(expected.1);
+            let bosses = u8::from(boss_defeated(kraid, KRAID_DEFEATED_BIT))
+                + u8::from(boss_defeated(ridley, RIDLEY_DEFEATED_BIT));
+            assert_eq!(bosses, counted);
+        }
     }
 }

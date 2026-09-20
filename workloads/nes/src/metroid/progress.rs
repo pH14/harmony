@@ -188,8 +188,8 @@ mod tests {
             decoded: decode_state(&wram, &cartridge).unwrap(),
             boss_health_seen: 0,
             boss_defeats: BossDefeats {
-                kraid: kraid & 1 != 0,
-                ridley: ridley & 2 != 0,
+                kraid: kraid & 0x81 != 0,
+                ridley: ridley & 0x82 != 0,
             },
             mother_brain_status: 0,
             tourian_events: TourianEvents::default(),
@@ -216,13 +216,13 @@ mod tests {
     }
 
     #[test]
-    fn boss_bits_are_distinct_and_statue_bits_are_not_defeats() {
+    fn boss_bits_are_distinct_and_the_statue_room_rewrite_counts_both() {
         for (kraid, ridley, count) in [
             (0, 0, 0),
             (1, 0, 1),
             (0, 2, 1),
             (1, 2, 2),
-            (0x80, 0x80, 0),
+            (0x82, 0x82, 2),
             (0, 1, 0),
         ] {
             let observation = observation(0, 0x10, kraid, ridley);
@@ -231,11 +231,11 @@ mod tests {
             progress.observe(&observation, 1, 10);
             assert_eq!(
                 progress.first_seen["kraid_defeated"].is_some(),
-                kraid & 1 != 0
+                kraid & 0x81 != 0
             );
             assert_eq!(
                 progress.first_seen["ridley_defeated"].is_some(),
-                ridley & 2 != 0
+                ridley & 0x82 != 0
             );
         }
     }
