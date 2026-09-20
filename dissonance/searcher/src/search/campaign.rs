@@ -2133,12 +2133,26 @@ struct PendingJob<G: Workload + ?Sized> {
     adaptive_horizon_extension: usize,
     adaptive_horizon_full_capacity: bool,
     splice: Option<CampaignSpliceRecord>,
+    splice_metadata: Vec<u64>,
     selector: SelectorDraw,
     draw_checkpoint_before: Option<EmpiricalStepCheckpoint>,
     duration_draw: Option<DurationDraw<G::Key>>,
     duration_admission_sequence_at_draw: Option<u64>,
     duration_remaining_work: Option<NonZeroU64>,
     duration_checkpoint_at_draw: Option<DurationCheckpoint>,
+}
+
+fn splice_metadata_ids(splice: &Option<CampaignSpliceRecord>) -> Vec<u64> {
+    let Some(CampaignSpliceRecord::Tail {
+        donor_id, leaf_id, ..
+    }) = splice.as_ref()
+    else {
+        return Vec::new();
+    };
+    let mut ids = vec![*donor_id, *leaf_id];
+    ids.sort_unstable();
+    ids.dedup();
+    ids
 }
 
 struct CompletedJob<G: Workload + ?Sized> {
@@ -2484,6 +2498,8 @@ where
         .enable_adaptive_horizon(config.suffix.adaptive_horizon());
     core.archive
         .enable_continuations(config.mixture.uses_continuations());
+    core.archive
+        .enable_route_reuse(config.mixture.uses_route_reuse());
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the bootstrap target: {error}").into()
@@ -2666,6 +2682,7 @@ where
                                 adaptive_horizon_extension: 0,
                                 adaptive_horizon_full_capacity: false,
                                 splice,
+                                splice_metadata: Vec::new(),
                                 selector,
                                 draw_checkpoint_before,
                                 duration_draw: None,
@@ -2684,6 +2701,7 @@ where
                         .ok_or("selected archive slot is missing")?;
                     let mutation_seed = rand.next_u64();
                     let (mixture_weight, splice_weight) = match config.mixture {
+                        DrawMixture::AlphabetRouteReuse => (0, 64),
                         DrawMixture::Energy { scale } => {
                             (core.mixture_energy.biased_weight(scale), 0)
                         }
@@ -2699,11 +2717,20 @@ where
                         if energy_strategy(mutation_seed, mixture_weight, splice_weight)?
                             == EnergyStrategy::Splice
                         {
-                            match core.archive.splice_tail_for_campaign(
-                                parent_index,
-                                max_actions,
-                                SPLICE_ACTION_CAP,
-                            ) {
+                            let tail = if config.mixture.uses_route_reuse() {
+                                core.archive.route_splice_tail_for_campaign(
+                                    parent_index,
+                                    max_actions,
+                                    SPLICE_ACTION_CAP,
+                                )
+                            } else {
+                                core.archive.splice_tail_for_campaign(
+                                    parent_index,
+                                    max_actions,
+                                    SPLICE_ACTION_CAP,
+                                )
+                            };
+                            match tail {
                                 Some(CampaignSpliceTail {
                                     donor_id,
                                     leaf_id,
@@ -2852,6 +2879,14 @@ where
                         consecutive_skips = consecutive_skips.saturating_add(1);
                         continue;
                     }
+                    let splice_metadata = if config.mixture.uses_route_reuse() {
+                        splice_metadata_ids(&splice)
+                    } else {
+                        Vec::new()
+                    };
+                    for id in &splice_metadata {
+                        core.archive.pin_metadata(*id)?;
+                    }
                     *reserved = reserved.saturating_add(1);
                     core.archive.pin_metadata(parent_id)?;
                     let (snapshot, replay, snapshot_id) =
@@ -2876,6 +2911,7 @@ where
                             adaptive_horizon_extension: extension,
                             adaptive_horizon_full_capacity,
                             splice,
+                            splice_metadata,
                             selector,
                             draw_checkpoint_before,
                             duration_draw,
@@ -3099,6 +3135,9 @@ where
                     }
                     core.archive.unpin_job_origin(pending_job.snapshot_id);
                     core.archive.unpin_metadata(pending_job.parent_id);
+                    for metadata_id in &pending_job.splice_metadata {
+                        core.archive.unpin_metadata(*metadata_id);
+                    }
                     let compaction_started = profile_now(coordinator_profile.enabled);
                     let compactions_before = core.archive.history_compactions();
                     core.archive.maintain_memory_budget()?;
@@ -3450,13 +3489,20 @@ where
     let mut required_draw_versions = DrawVersionSchedule::default();
     let mut replay_job_parents = Vec::<u64>::new();
     let mut replay_job_metadata = Vec::<Vec<u64>>::new();
+    let route_reuse_stream = header.mixture_policy == "alphabet_route_reuse_v1";
     for (index, line) in record_lines.iter().enumerate() {
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
             serde_json::from_str(line)?;
         let before = match record {
             CampaignStreamRecord::Job(job) => {
                 replay_job_parents.push(job.parent_id);
-                replay_job_metadata.push(vec![job.parent_id]);
+                let mut metadata = vec![job.parent_id];
+                if route_reuse_stream {
+                    metadata.extend(splice_metadata_ids(&job.splice));
+                }
+                metadata.sort_unstable();
+                metadata.dedup();
+                replay_job_metadata.push(metadata);
                 job.draw_checkpoint_before
             }
             CampaignStreamRecord::Skip(skip) => skip.draw_checkpoint_before,
@@ -3570,6 +3616,8 @@ where
         .enable_adaptive_horizon(replay_suffix.adaptive_horizon());
     core.archive
         .enable_continuations(replay_mixture.uses_continuations());
+    core.archive
+        .enable_route_reuse(replay_mixture.uses_route_reuse());
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
@@ -3663,7 +3711,7 @@ where
                     .ok_or("recorded skip names a parent the archive does not hold")?;
                 let strategy =
                     energy_strategy(skip.mutation_seed, skip.mixture_weight, skip.splice_weight)?;
-                let spliced = replay_splice::<G>(strategy, skip.splice)?;
+                let spliced = replay_splice::<G>(strategy, skip.splice.clone())?;
                 let draw_checkpoint_before = skip.draw_checkpoint_before;
                 if spliced.is_some()
                     && (skip.duration_draw.is_some()
@@ -3822,6 +3870,23 @@ where
                 let strategy =
                     energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?;
                 let spliced = replay_splice::<G>(strategy, job.splice.clone())?;
+                if replay_mixture.uses_route_reuse()
+                    && let Some(CampaignSpliceRecord::Tail {
+                        donor_id, leaf_id, ..
+                    }) = job.splice.as_ref()
+                {
+                    core.archive.validate_route_splice(
+                        job.parent_id,
+                        *donor_id,
+                        *leaf_id,
+                        header
+                            .action_limit
+                            .saturating_sub(core.archive.entries[parent_index].input_len),
+                        spliced
+                            .as_deref()
+                            .ok_or("route splice provenance lacks its tail")?,
+                    )?;
+                }
                 let draw_checkpoint_before = job.draw_checkpoint_before;
                 if spliced.is_some()
                     && (job.duration_draw.is_some()

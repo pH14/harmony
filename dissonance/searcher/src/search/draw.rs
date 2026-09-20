@@ -80,6 +80,7 @@ pub enum DrawMixture {
         scale: u64,
     },
     AlphabetContinuation,
+    AlphabetRouteReuse,
     EnergySpliceContinuationIsolated {
         scale: u64,
     },
@@ -100,6 +101,10 @@ impl DrawMixture {
                 | Self::AlphabetContinuation
                 | Self::EnergySpliceContinuationIsolated { .. }
         )
+    }
+
+    pub(crate) fn uses_route_reuse(self) -> bool {
+        matches!(self, Self::AlphabetRouteReuse)
     }
 }
 
@@ -129,6 +134,7 @@ pub(crate) fn draw_mixture_identifier(mixture: DrawMixture) -> String {
         }
         DrawMixture::AlphabetOnly => MIXTURE_ALPHABET_ONLY_IDENTIFIER.to_owned(),
         DrawMixture::AlphabetContinuation => "alphabet_continuation_v1".to_owned(),
+        DrawMixture::AlphabetRouteReuse => "alphabet_route_reuse_v1".to_owned(),
         DrawMixture::BiasedHalf => MIXTURE_BIASED_HALF_IDENTIFIER.to_owned(),
         DrawMixture::Energy { scale } => format!("{MIXTURE_ENERGY_PREFIX}{scale}"),
         DrawMixture::EnergySplice { scale } => format!("{MIXTURE_ENERGY_SPLICE_PREFIX}{scale}"),
@@ -167,6 +173,7 @@ pub fn draw_mixture_from_identifier(identifier: &str) -> Result<DrawMixture, Box
     match identifier {
         MIXTURE_ALPHABET_ONLY_IDENTIFIER => Ok(DrawMixture::AlphabetOnly),
         "alphabet_continuation_v1" => Ok(DrawMixture::AlphabetContinuation),
+        "alphabet_route_reuse_v1" => Ok(DrawMixture::AlphabetRouteReuse),
         MIXTURE_BIASED_HALF_IDENTIFIER => Ok(DrawMixture::BiasedHalf),
         _ => Err(format!("draw mixture {identifier} is not recognized").into()),
     }
@@ -261,9 +268,10 @@ where
             rand.below(NonZeroUsize::new(256).ok_or("invalid mixture weight bound")?)
                 < usize::from(mixture_weight),
         ),
-        DrawMixture::AlphabetOnly | DrawMixture::AlphabetContinuation | DrawMixture::BiasedHalf => {
-            None
-        }
+        DrawMixture::AlphabetOnly
+        | DrawMixture::AlphabetContinuation
+        | DrawMixture::AlphabetRouteReuse
+        | DrawMixture::BiasedHalf => None,
     };
     let length = match shape {
         SuffixShape::OneOrTwo => {
@@ -340,6 +348,7 @@ mod tests {
             DrawMixture::EnergySplice { scale: 6 },
             DrawMixture::EnergySpliceContinuation { scale: 6 },
             DrawMixture::AlphabetContinuation,
+            DrawMixture::AlphabetRouteReuse,
             DrawMixture::EnergySpliceContinuationIsolated { scale: 6 },
         ] {
             assert_eq!(
@@ -394,6 +403,10 @@ mod tests {
                 assert_eq!(
                     draw(DrawMixture::AlphabetOnly),
                     draw(DrawMixture::AlphabetContinuation)
+                );
+                assert_eq!(
+                    draw(DrawMixture::AlphabetOnly),
+                    draw(DrawMixture::AlphabetRouteReuse)
                 );
             }
         }

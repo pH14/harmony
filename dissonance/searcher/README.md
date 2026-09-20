@@ -68,7 +68,7 @@ campaign and target contracts:
 | `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
 
-An `ArchiveKey` answers three separate questions, and nothing else reads a
+An `ArchiveKey` answers four separate questions, and nothing else reads a
 group as a magnitude:
 
 | Question | Answered by |
@@ -76,6 +76,7 @@ group as a magnitude:
 | Is this a new place? | `Eq` on the group. `Ord` only lets maps store it. |
 | Is this band, class or leaf further along? | `ArchiveKey::progress_cmp`, default `Ordering::Equal`. |
 | Which of two states at one slot survives? | `ArchiveKey::preference_cmp`, default `Ordering::Equal`. |
+| Which observed route context can donate an exit? | `ArchiveKey::route_context`, default `None`. |
 
 `progress_cmp` must be a total preorder: any two groups compare, comparing them
 in either order gives reversed results, and the relation is transitive over
@@ -309,6 +310,19 @@ skipped. Dispatch records the complete action tail, so later donor reclamation
 cannot change serial replay. Only same-slot `preference_cmp` is consulted;
 preferences are never compared between unrelated locations. A workload that
 reports no preference improvements gets no continuation attempts.
+
+`alphabet_route_reuse_v1` is an opt-in route-reuse experiment. It gives 25% of
+ordinary reservations a chance to copy a bounded tail from an observed
+descendant whose donor has the same nonempty `route_context`; the other
+reservations use alphabet-only mutation. The context is only a candidate
+matching projection. The exact archive key remains the retention identity, and
+the copied tail executes from the selected parent's snapshot and is judged by
+ordinary retention, terminal, and resource rules. The donor index contains
+active entries only, is rebuilt after history compaction and archive import,
+and charges its ordered membership against the logical memory budget. A route
+tail records donor and leaf IDs and is replay-validated while those metadata
+entries are pinned for the in-flight reservation. Missing or incompatible
+contexts produce an ordinary empty splice result.
 
 These are experiments, not new defaults. Promote policies based on paired workload
 panels, fresh completion results, and resource costs through

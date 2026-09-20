@@ -37,6 +37,10 @@ impl ArchiveKey for TestKey {
         self.0 % 16
     }
 
+    fn route_context(self) -> Option<Self::Group> {
+        Some(self.0 % 4)
+    }
+
     fn slot_capacity() -> usize {
         1
     }
@@ -353,6 +357,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         (4, true, 1),
         (1, false, 2),
         (4, false, 2),
+        (4, false, 3),
     ] {
         let config = CampaignConfig {
             campaign_seed: 947,
@@ -372,6 +377,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             mixture: match mode {
                 1 => DrawMixture::AlphabetContinuation,
                 2 => DrawMixture::EnergySpliceContinuationIsolated { scale: 6 },
+                3 => DrawMixture::AlphabetRouteReuse,
                 _ => DrawMixture::EnergySpliceContinuation { scale: 6 },
             },
             retention: RetentionPolicy::Unprobed,
@@ -461,17 +467,93 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             .lines()
             .filter(|line| line.contains("\"path\":\"continuation\""))
             .count();
-        assert!(
-            continuation_count > 0,
-            "fixture must actually exercise continuation dispatch"
-        );
+        let route_count = text
+            .lines()
+            .filter(|line| line.contains("\"tail_postcard\""))
+            .count();
+        if mode == 3 {
+            assert!(
+                route_count > 0,
+                "fixture must exercise route reuse dispatch"
+            );
+            let cross_group_route = text
+                .lines()
+                .filter_map(|line| {
+                    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+                    (value.get("event")?.as_str()? == "job").then_some(())?;
+                    let parent_id = value.get("parent_id")?.as_u64()?;
+                    let donor_id = value.get("splice")?.get("donor_id")?.as_u64()?;
+                    let parent = live
+                        .archive
+                        .entries
+                        .iter()
+                        .find(|entry| entry.id == parent_id)?;
+                    let donor = live
+                        .archive
+                        .entries
+                        .iter()
+                        .find(|entry| entry.id == donor_id)?;
+                    Some(parent.key.group(0) != donor.key.group(0))
+                })
+                .any(|different_group| different_group);
+            assert!(
+                cross_group_route,
+                "route reuse must dispatch an observed tail across exact archive groups"
+            );
+            let warm_origin = CampaignOrigin::Archive {
+                path: "warm-route-test.json".to_owned(),
+                file_sha256: "0".repeat(64),
+                report: Box::new(live.archive.clone()),
+                checkpoint: None,
+            };
+            let mut warm_bytes = Vec::new();
+            let (warm_live, _) = run_campaign_checkpointed(
+                &TestWorkload,
+                &config,
+                &warm_origin,
+                &mut warm_bytes,
+                None,
+            )
+            .unwrap();
+            let warm_text = std::str::from_utf8(&warm_bytes).unwrap();
+            let warm_cross_group_route = warm_text
+                .lines()
+                .filter_map(|line| {
+                    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+                    (value.get("event")?.as_str()? == "job").then_some(())?;
+                    let parent_id = value.get("parent_id")?.as_u64()?;
+                    let donor_id = value.get("splice")?.get("donor_id")?.as_u64()?;
+                    let parent = warm_live
+                        .archive
+                        .entries
+                        .iter()
+                        .find(|entry| entry.id == parent_id)?;
+                    let donor = warm_live
+                        .archive
+                        .entries
+                        .iter()
+                        .find(|entry| entry.id == donor_id)?;
+                    Some(parent.key.group(0) != donor.key.group(0))
+                })
+                .any(|different_group| different_group);
+            assert!(
+                warm_cross_group_route,
+                "warm route reuse must dispatch an observed tail across exact archive groups"
+            );
+        } else {
+            assert!(
+                continuation_count > 0,
+                "fixture must actually exercise continuation dispatch"
+            );
+        }
         let dispatch_count = text
             .lines()
             .filter(|line| line.contains("\"path\":"))
             .count();
         assert!(
-            continuation_count * 2 <= dispatch_count,
-            "continuations exceeded their reservation share: {continuation_count} of {dispatch_count}"
+            (continuation_count.max(route_count)) * 2 <= dispatch_count,
+            "splice dispatch exceeded its reservation share: {} of {dispatch_count}",
+            continuation_count.max(route_count)
         );
         assert!(
             live.snapshot_evictions > 0,
@@ -557,14 +639,29 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             replay_campaign_checkpointed(&TestWorkload, &bounded_stream, None, None).unwrap(),
             (bounded, bounded_checkpoint)
         );
-        let tampered = text.replacen(&draw_mixture_identifier(config.mixture), "alphabet_only", 1);
+        let tampered_identifier = if mode == 3 {
+            "not_a_mixture"
+        } else {
+            "alphabet_only"
+        };
+        let tampered = text.replacen(
+            &draw_mixture_identifier(config.mixture),
+            tampered_identifier,
+            1,
+        );
         assert!(
             replay_campaign_checkpointed(&TestWorkload, tampered.as_bytes(), None, None).is_err()
         );
         let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
         let line = lines
             .iter_mut()
-            .find(|line| line.contains("\"path\":\"continuation\""))
+            .find(|line| {
+                if mode == 3 {
+                    line.contains("\"event\":\"job\"") && line.contains("\"tail_postcard\"")
+                } else {
+                    line.contains("\"path\":\"continuation\"")
+                }
+            })
             .unwrap();
         let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
         value["splice"]["tail_postcard"] = serde_json::json!([1, 255, 120]);
@@ -573,6 +670,28 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
                 .is_err()
         );
+        if mode == 3 {
+            let mut provenance_lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+            let provenance_line = provenance_lines
+                .iter_mut()
+                .find(|line| {
+                    line.contains("\"event\":\"job\"") && line.contains("\"tail_postcard\"")
+                })
+                .unwrap();
+            let mut provenance: serde_json::Value = serde_json::from_str(provenance_line).unwrap();
+            provenance["splice"]["donor_id"] = serde_json::json!(u64::MAX);
+            *provenance_line = serde_json::to_string(&provenance).unwrap();
+            assert!(
+                replay_campaign_checkpointed(
+                    &TestWorkload,
+                    provenance_lines.join("\n").as_bytes(),
+                    None,
+                    None,
+                )
+                .is_err(),
+                "route splice provenance corruption was accepted"
+            );
+        }
     }
 }
 

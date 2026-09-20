@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::search::{
-    continuation::{Continuation, ContinuationBank},
+    continuation::{ACTION_CAP, Continuation, ContinuationBank},
     key_counts::{KEY_COUNT_CAPACITY, KeyCounts},
     rand::RomuDuoJrRand,
 };
@@ -38,6 +38,9 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     }
     fn preference_cmp(self, _other: Self) -> Ordering {
         Ordering::Equal
+    }
+    fn route_context(self) -> Option<Self::Group> {
+        None
     }
     type Lineage: Clone + Default;
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self;
@@ -608,8 +611,10 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     live_group_cells: LiveGroupCells<K>,
     active_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
     live_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
+    route_donors: BTreeMap<K::Group, BTreeSet<DonorRank<K>>>,
     preserve_inactive_snapshots: bool,
     adaptive_horizon: bool,
+    route_reuse: bool,
     metadata_pins: BTreeMap<u64, u32>,
     inflight_snapshot_pins: BTreeMap<u64, u32>,
     inflight_snapshot_charges: BTreeMap<u64, usize>,
@@ -1145,8 +1150,10 @@ where
             live_group_cells: vec![BTreeMap::new(); K::groups()],
             active_skip_groups: BTreeMap::new(),
             live_skip_groups: BTreeMap::new(),
+            route_donors: BTreeMap::new(),
             preserve_inactive_snapshots: false,
             adaptive_horizon: false,
+            route_reuse: false,
             metadata_pins: BTreeMap::new(),
             inflight_snapshot_pins: BTreeMap::new(),
             inflight_snapshot_charges: BTreeMap::new(),
@@ -1182,6 +1189,15 @@ where
 
     pub(crate) fn enable_adaptive_horizon(&mut self, enabled: bool) {
         self.adaptive_horizon = enabled;
+    }
+
+    pub(crate) fn enable_route_reuse(&mut self, enabled: bool) {
+        self.route_reuse = enabled;
+        if !enabled {
+            self.route_donors.clear();
+        } else if let Some(cap) = self.frontier_cap {
+            self.rebuild_selector_index(cap);
+        }
     }
 
     pub(crate) fn establish_liveness_anchor(&mut self, max_actions: usize) {
@@ -1605,6 +1621,36 @@ where
             .enumerate()
             .map(|(index, entry)| (entry.key, index))
             .collect();
+        if self.route_reuse {
+            for child in 0..self.entries.len() {
+                let child_key = self.entries[child].key;
+                let mut ancestor = self.entries[child]
+                    .parent_id
+                    .and_then(|parent| self.id_to_index.get(&parent).copied());
+                while let Some(current) = ancestor {
+                    let previous = self.deepest_leaf[current];
+                    if leaf_order(previous, (child_key, child)) != Ordering::Less {
+                        break;
+                    }
+                    self.deepest_leaf[current] = (child_key, child);
+                    ancestor = self.entries[current]
+                        .parent_id
+                        .and_then(|parent| self.id_to_index.get(&parent).copied());
+                }
+            }
+        }
+        self.route_donors.clear();
+        let active_ids = self
+            .active
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(index, active)| active.then_some(index))
+            .collect::<Vec<_>>();
+        for index in active_ids {
+            let leaf = self.deepest_leaf[index];
+            self.insert_route_donor(index, leaf);
+        }
         self.history_memory_bytes = Self::prefix_node_memory_charge()
             .saturating_add(
                 self.entries
@@ -1829,6 +1875,20 @@ where
     fn auxiliary_history_memory_bytes(&self) -> usize {
         self.novelty_memory_bytes()
             .saturating_add(self.barren_memory_bytes())
+            .saturating_add(self.route_donor_memory_bytes())
+    }
+
+    fn route_donor_memory_bytes(&self) -> usize {
+        self.route_donors
+            .values()
+            .map(|donors| {
+                donors.len().saturating_mul(
+                    size_of::<K::Group>()
+                        .saturating_add(size_of::<DonorRank<K>>())
+                        .saturating_add(64),
+                )
+            })
+            .sum()
     }
 
     pub(crate) fn all_extensions_retained(&self, parent_id: usize, actions: &[A]) -> bool {
@@ -1866,6 +1926,7 @@ where
         self.frontier_cap = Some(max_actions);
         self.active_ids = ActiveIds::from_ids(self.active_ids(max_actions));
         self.classes = BTreeMap::new();
+        self.route_donors.clear();
         self.live_children.iter_mut().for_each(BTreeMap::clear);
         self.live_group_cells.iter_mut().for_each(BTreeMap::clear);
         self.active_skip_groups.clear();
@@ -1958,6 +2019,7 @@ where
     }
 
     fn index_remove(&mut self, id: usize) {
+        self.remove_route_donor(id);
         if self.frontier_cap.is_none() {
             return;
         }
@@ -2008,6 +2070,7 @@ where
         let cell = key.group(Self::cell_depth());
         let sampleable = self.entry_unexhausted(id);
         let deepest = self.deepest_leaf[id];
+        self.insert_route_donor(id, deepest);
         let members = self
             .classes
             .entry(class)
@@ -2038,6 +2101,8 @@ where
     }
 
     fn update_index_deepest_leaf(&mut self, id: usize, previous: (K, usize), current: (K, usize)) {
+        self.remove_route_donor_rank(id, previous);
+        self.insert_route_donor(id, current);
         if self.frontier_cap.is_none() {
             return;
         }
@@ -2064,6 +2129,45 @@ where
             leaf_id: current.1,
             donor_id: id,
         });
+    }
+
+    fn insert_route_donor(&mut self, id: usize, leaf: (K, usize)) {
+        if !self.route_reuse {
+            return;
+        }
+        let Some(context) = self.entries[id].key.route_context() else {
+            return;
+        };
+        self.route_donors
+            .entry(context)
+            .or_default()
+            .insert(DonorRank {
+                leaf_key: leaf.0,
+                leaf_id: leaf.1,
+                donor_id: id,
+            });
+    }
+
+    fn remove_route_donor_rank(&mut self, id: usize, leaf: (K, usize)) {
+        let Some(context) = self.entries[id].key.route_context() else {
+            return;
+        };
+        let Some(donors) = self.route_donors.get_mut(&context) else {
+            return;
+        };
+        donors.remove(&DonorRank {
+            leaf_key: leaf.0,
+            leaf_id: leaf.1,
+            donor_id: id,
+        });
+        if donors.is_empty() {
+            self.route_donors.remove(&context);
+        }
+    }
+
+    fn remove_route_donor(&mut self, id: usize) {
+        let leaf = self.deepest_leaf[id];
+        self.remove_route_donor_rank(id, leaf);
     }
 
     fn insert_active_cell(&mut self, key: K) {
@@ -2522,6 +2626,48 @@ where
         })
     }
 
+    pub(crate) fn route_splice_tail_for_campaign(
+        &mut self,
+        parent: usize,
+        max_actions: usize,
+        cap: usize,
+    ) -> Option<CampaignSpliceTail<A>> {
+        if self.frontier_cap != Some(max_actions) {
+            self.rebuild_selector_index(max_actions);
+        }
+        let parent_key = self.entries[parent].key;
+        let context = parent_key.route_context()?;
+        let cap = cap.min(max_actions.saturating_sub(self.entries[parent].input_len));
+        if cap == 0 {
+            return None;
+        }
+        let ranks = self
+            .route_donors
+            .get(&context)?
+            .iter()
+            .rev()
+            .copied()
+            .collect::<Vec<_>>();
+        for rank in ranks {
+            let donor_id = rank.donor_id;
+            if donor_id == parent {
+                continue;
+            }
+            let (leaf_key, leaf_id) = self.deepest_leaf[donor_id];
+            if !leaf_advances((leaf_key, leaf_id), (self.entries[donor_id].key, donor_id)) {
+                continue;
+            }
+            if let Ok(actions) = self.recorded_route_splice_tail(parent, donor_id, leaf_id, cap) {
+                return Some(CampaignSpliceTail {
+                    donor_id,
+                    leaf_id,
+                    actions,
+                });
+            }
+        }
+        None
+    }
+
     pub(crate) fn recorded_splice_tail(
         &self,
         parent: usize,
@@ -2570,6 +2716,81 @@ where
             return Err("splice leaf has no actions past its donor");
         }
         Ok(suffix.iter().take(cap).cloned().collect())
+    }
+
+    pub(crate) fn recorded_route_splice_tail(
+        &self,
+        parent: usize,
+        donor: usize,
+        leaf: usize,
+        cap: usize,
+    ) -> Result<Vec<A>, &'static str> {
+        let parent_entry = self
+            .entries
+            .get(parent)
+            .ok_or("route splice parent id is outside the archive")?;
+        let donor_entry = self
+            .entries
+            .get(donor)
+            .ok_or("route splice donor id is outside the archive")?;
+        let leaf_entry = self
+            .entries
+            .get(leaf)
+            .ok_or("route splice leaf id is outside the archive")?;
+        if donor == parent {
+            return Err("route splice donor is the selected parent");
+        }
+        let (Some(parent_context), Some(donor_context)) = (
+            parent_entry.key.route_context(),
+            donor_entry.key.route_context(),
+        ) else {
+            return Err("route splice requires an explicit route context");
+        };
+        if parent_context != donor_context {
+            return Err("route splice donor is outside the parent's route context");
+        }
+        let donor_input = self
+            .input_index
+            .materialize(donor_entry.input_node, donor_entry.input_len)
+            .ok_or("route splice donor prefix is unavailable")?;
+        let leaf_input = self
+            .input_index
+            .materialize(leaf_entry.input_node, leaf_entry.input_len)
+            .ok_or("route splice leaf prefix is unavailable")?;
+        if !leaf_input.starts_with(&donor_input) {
+            return Err("route splice leaf is not a descendant of its donor");
+        }
+        if !leaf_advances((leaf_entry.key, leaf), (donor_entry.key, donor)) {
+            return Err("route splice leaf does not advance past its donor");
+        }
+        let suffix = &leaf_input[donor_input.len()..];
+        if suffix.is_empty() {
+            return Err("route splice leaf has no actions past its donor");
+        }
+        Ok(suffix.iter().take(cap).cloned().collect())
+    }
+
+    pub(crate) fn validate_route_splice(
+        &self,
+        parent_id: u64,
+        donor_id: u64,
+        leaf_id: u64,
+        cap: usize,
+        actions: &[A],
+    ) -> Result<(), &'static str> {
+        let parent = self
+            .index_of_id(parent_id)
+            .ok_or("route splice provenance names a missing parent")?;
+        let donor = self
+            .index_of_id(donor_id)
+            .ok_or("route splice provenance names a missing donor")?;
+        let leaf = self
+            .index_of_id(leaf_id)
+            .ok_or("route splice provenance names a missing leaf")?;
+        let expected = self.recorded_route_splice_tail(parent, donor, leaf, cap.min(ACTION_CAP))?;
+        (expected == actions)
+            .then_some(())
+            .ok_or("route splice provenance disagrees with its tail")
     }
 
     fn active_ids(&self, max_actions: usize) -> Vec<usize> {
@@ -3954,6 +4175,10 @@ mod tests {
                 *component = 0;
             }
             group
+        }
+
+        fn route_context(self) -> Option<Self::Group> {
+            Some([0, self.0[1], 0, 0])
         }
 
         type Lineage = ();
@@ -5451,6 +5676,62 @@ mod tests {
                 .splice_tail_for_campaign(leaf, MAX_COMPLETION_ACTIONS, 8)
                 .is_none(),
             "the deepest entry has no deeper cell-mate"
+        );
+    }
+
+    #[test]
+    fn route_splice_reuses_a_context_exit_across_exact_keys() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.enable_route_reuse(true);
+        let insert = |archive: &mut Archive<u8, FlatKey<3>, (), ()>,
+                      parent: Option<usize>,
+                      components: [u16; 4],
+                      actions: Vec<u8>| {
+            let parent_len = parent.map_or(0, |id| archive.entries[id].input_len);
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix: actions[parent_len..].to_vec(),
+                        key: FlatKey(components),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert route entry")
+                .expect("retain route entry")
+        };
+        let donor = insert(&mut archive, None, [1, 2, 3, 4], vec![0]);
+        let parent = insert(&mut archive, None, [9, 2, 3, 4], vec![9]);
+        let middle = insert(&mut archive, Some(donor), [1, 2, 3, 6], vec![0, 1]);
+        let leaf = insert(&mut archive, Some(middle), [1, 2, 3, 7], vec![0, 1, 2]);
+        let dispatched = archive
+            .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+            .expect("route context dispatch");
+        assert_eq!(dispatched.leaf_id, leaf);
+        assert_eq!(dispatched.actions, vec![2]);
+        let parent_id = archive.stable_id(parent).unwrap();
+        let donor_id = archive.stable_id(dispatched.donor_id).unwrap();
+        let leaf_id = archive.stable_id(leaf).unwrap();
+        archive
+            .validate_route_splice(parent_id, donor_id, leaf_id, 64, &dispatched.actions)
+            .expect("route provenance validates");
+        archive.rebuild_selector_index(MAX_COMPLETION_ACTIONS);
+        assert!(
+            archive
+                .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+                .is_some()
+        );
+        assert!(archive.deactivate(parent));
+        archive
+            .compact_history_for_final_report()
+            .expect("compact route donor index");
+        let parent = insert(&mut archive, None, [10, 2, 3, 4], vec![8]);
+        assert!(
+            archive
+                .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+                .is_some()
         );
     }
 
