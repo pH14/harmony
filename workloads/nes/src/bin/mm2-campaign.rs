@@ -853,15 +853,15 @@ mod tests {
     fn whole_game_rejects_guided_origins_and_policy_overrides() {
         let whole = Args::parse_from(required_args(&["--whole-game"])).expect("whole game");
         assert!(whole.whole_game);
+        let selector = "hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2,16";
+        Args::parse_from(required_args(&["--selector", selector]))
+            .expect("diagnostic selector is supported");
         for flags in [
             vec!["--stage", "air"],
             vec!["--prefix-input", "prefix.json"],
             vec!["--root-input", "root.json"],
             vec!["--coherent-world"],
-            vec![
-                "--selector",
-                "hierarchy_uniform_128_v2_energy_frontier_cheapest:3,6,12,2,16",
-            ],
+            vec!["--selector", selector],
             vec!["--retention", "unprobed"],
             vec!["--mixture", "alphabet_only"],
         ] {

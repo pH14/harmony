@@ -22,7 +22,7 @@ normal identity checks and must originate from this same whole-game policy.
 
 `--selector`, `--retention`, and `--mixture` are diagnostic controls for isolated
 stage experiments, not whole-game policy knobs. The ordinary fixed selector is
-`hierarchy_uniform_128_v2_energy_frontier_cheapest:3,6,12,2,16`; retention is
+`hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2,16`; retention is
 `unprobed`. Their generic implementations remain in the searcher.
 
 This package carries the native Mega Man 2 adapter onto the refactored campaign
