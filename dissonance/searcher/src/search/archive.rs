@@ -612,6 +612,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     active_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
     live_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
     route_donors: BTreeMap<K::Group, BTreeSet<DonorRank<K>>>,
+    route_donor_memory_bytes: usize,
     preserve_inactive_snapshots: bool,
     adaptive_horizon: bool,
     route_reuse: bool,
@@ -1151,6 +1152,7 @@ where
             active_skip_groups: BTreeMap::new(),
             live_skip_groups: BTreeMap::new(),
             route_donors: BTreeMap::new(),
+            route_donor_memory_bytes: 0,
             preserve_inactive_snapshots: false,
             adaptive_horizon: false,
             route_reuse: false,
@@ -1194,7 +1196,7 @@ where
     pub(crate) fn enable_route_reuse(&mut self, enabled: bool) {
         self.route_reuse = enabled;
         if !enabled {
-            self.route_donors.clear();
+            self.clear_route_donors();
         } else if let Some(cap) = self.frontier_cap {
             self.rebuild_selector_index(cap);
         }
@@ -1639,7 +1641,7 @@ where
                 }
             }
         }
-        self.route_donors.clear();
+        self.clear_route_donors();
         let active_ids = self
             .active
             .iter()
@@ -1878,17 +1880,19 @@ where
             .saturating_add(self.route_donor_memory_bytes())
     }
 
+    fn route_donor_entry_memory_charge() -> usize {
+        size_of::<K::Group>()
+            .saturating_add(size_of::<DonorRank<K>>())
+            .saturating_add(64)
+    }
+
     fn route_donor_memory_bytes(&self) -> usize {
-        self.route_donors
-            .values()
-            .map(|donors| {
-                donors.len().saturating_mul(
-                    size_of::<K::Group>()
-                        .saturating_add(size_of::<DonorRank<K>>())
-                        .saturating_add(64),
-                )
-            })
-            .sum()
+        self.route_donor_memory_bytes
+    }
+
+    fn clear_route_donors(&mut self) {
+        self.route_donors.clear();
+        self.route_donor_memory_bytes = 0;
     }
 
     pub(crate) fn all_extensions_retained(&self, parent_id: usize, actions: &[A]) -> bool {
@@ -1926,7 +1930,7 @@ where
         self.frontier_cap = Some(max_actions);
         self.active_ids = ActiveIds::from_ids(self.active_ids(max_actions));
         self.classes = BTreeMap::new();
-        self.route_donors.clear();
+        self.clear_route_donors();
         self.live_children.iter_mut().for_each(BTreeMap::clear);
         self.live_group_cells.iter_mut().for_each(BTreeMap::clear);
         self.active_skip_groups.clear();
@@ -2138,7 +2142,8 @@ where
         let Some(context) = self.entries[id].key.route_context() else {
             return;
         };
-        self.route_donors
+        let inserted = self
+            .route_donors
             .entry(context)
             .or_default()
             .insert(DonorRank {
@@ -2146,21 +2151,34 @@ where
                 leaf_id: leaf.1,
                 donor_id: id,
             });
+        if inserted {
+            self.route_donor_memory_bytes = self
+                .route_donor_memory_bytes
+                .saturating_add(Self::route_donor_entry_memory_charge());
+        }
     }
 
     fn remove_route_donor_rank(&mut self, id: usize, leaf: (K, usize)) {
         let Some(context) = self.entries[id].key.route_context() else {
             return;
         };
-        let Some(donors) = self.route_donors.get_mut(&context) else {
-            return;
-        };
-        donors.remove(&DonorRank {
+        let rank = DonorRank {
             leaf_key: leaf.0,
             leaf_id: leaf.1,
             donor_id: id,
-        });
-        if donors.is_empty() {
+        };
+        let (removed, empty) = {
+            let Some(donors) = self.route_donors.get_mut(&context) else {
+                return;
+            };
+            (donors.remove(&rank), donors.is_empty())
+        };
+        if removed {
+            self.route_donor_memory_bytes = self
+                .route_donor_memory_bytes
+                .saturating_sub(Self::route_donor_entry_memory_charge());
+        }
+        if empty {
             self.route_donors.remove(&context);
         }
     }
@@ -3809,7 +3827,7 @@ mod tests {
     };
     use crate::search::rand::RomuDuoJrRand;
     use serde::{Deserialize, Serialize};
-    use std::{cell::Cell, collections::BTreeMap, sync::Arc};
+    use std::{cell::Cell, collections::BTreeMap, mem::size_of, sync::Arc};
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
     struct TestAction {
@@ -5733,6 +5751,17 @@ mod tests {
                 .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
                 .is_some()
         );
+        let full_route_memory_sum = archive
+            .route_donors
+            .values()
+            .map(|donors| {
+                donors.len()
+                    * (size_of::<<FlatKey<3> as ArchiveKey>::Group>()
+                        + size_of::<DonorRank<FlatKey<3>>>()
+                        + 64)
+            })
+            .sum::<usize>();
+        assert_eq!(archive.route_donor_memory_bytes(), full_route_memory_sum);
     }
 
     #[test]
