@@ -130,6 +130,7 @@ pub struct MetroidMechanicalState {
     pub energy_tanks: u8,
     pub boss_health: u8,
     pub bosses: u8,
+    pub statues: u8,
     pub ending: bool,
 }
 
@@ -139,6 +140,7 @@ impl MetroidMechanicalState {
         u8::try_from(self.equipment.count_ones())
             .unwrap_or(u8::MAX)
             .saturating_add(self.bosses)
+            .saturating_add(self.statues)
     }
 
     #[must_use]
@@ -234,12 +236,18 @@ pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalSt
             read_byte(cartridge, RIDLEY_STATUS)?,
             RIDLEY_DEFEATED_BIT,
         )),
+        statues: u8::from(statue_raised(read_byte(cartridge, KRAID_STATUS)?))
+            + u8::from(statue_raised(read_byte(cartridge, RIDLEY_STATUS)?)),
         ending: read_byte(cartridge, ENDING)? != 0,
     })
 }
 
 fn boss_defeated(status: u8, defeated_bit: u8) -> bool {
     status & (defeated_bit | STATUE_RAISED_BIT) != 0
+}
+
+fn statue_raised(status: u8) -> bool {
+    status & STATUE_RAISED_BIT != 0
 }
 
 fn decode_boss_defeats(cartridge: &[u8]) -> Result<BossDefeats, MachineError> {
@@ -1234,5 +1242,21 @@ mod boss_status_tests {
                 + u8::from(boss_defeated(ridley, RIDLEY_DEFEATED_BIT));
             assert_eq!(bosses, counted);
         }
+    }
+
+    #[test]
+    fn raised_statues_count_as_progress_beyond_the_defeats() {
+        let mut cartridge = vec![0u8; CARTRIDGE_RAM_SIZE];
+        let wram = vec![0u8; 0x800];
+        cartridge[KRAID_STATUS] = 0x01;
+        cartridge[RIDLEY_STATUS] = 0x02;
+        let before = decode_state(&wram, &cartridge).unwrap();
+        cartridge[KRAID_STATUS] = 0x82;
+        cartridge[RIDLEY_STATUS] = 0x82;
+        let after = decode_state(&wram, &cartridge).unwrap();
+        assert_eq!((before.bosses, before.statues), (2, 0));
+        assert_eq!((after.bosses, after.statues), (2, 2));
+        assert_eq!(after.items(), before.items() + 2);
+        assert_eq!(after.collectibles(), before.collectibles());
     }
 }

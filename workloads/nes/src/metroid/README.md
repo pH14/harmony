@@ -44,7 +44,12 @@ spatial slots, and the two preferences order that pair against each other in
 opposite ways. The key's tank count subtracts the 75 missiles each boss kill
 awards, so a kill does not relabel every map cell the killer reaches as holding
 fifteen more tanks than the cells beside it; the kill still counts through the
-item term. Item and tank counts describe discovered capabilities; no
+item term. The Brinstar statue room rewrites both boss bytes to `0x82` when
+Samus approaches the statues: bit 7 still counts as the defeat, and each raised
+statue adds one more item. The raise opens the passage beneath the statues
+without changing position, health or stock, so without that term the opened
+state is a same-key duplicate of the entry that triggered it and is never
+admitted. Item and tank counts describe discovered capabilities; no
 particular item, room, door target, or route is supplied. Coverage and pickup
 counters are reporting evidence across explored branches, not proof that one
 trajectory achieved their union. The inherited count representation and
