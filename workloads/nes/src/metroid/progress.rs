@@ -84,6 +84,7 @@ impl Default for NamedProgress {
                     "tourian_far",
                     "tourian_bottom",
                     "tourian_approach",
+                    "tourian_end",
                     "mother_brain_room",
                     "mother_brain_defeated",
                     "escape_started",
@@ -158,6 +159,9 @@ impl NamedProgress {
             note("tourian_bottom");
             if state.map_x <= 8 {
                 note("tourian_approach");
+            }
+            if state.map_x <= 4 {
+                note("tourian_end");
             }
         }
         if observation.boss_defeats.kraid {
@@ -302,6 +306,10 @@ mod tests {
         observation.decoded.map_x = 8;
         progress.observe(&observation, 5, 50);
         assert!(progress.first_seen["tourian_approach"].is_some());
+        assert!(progress.first_seen["tourian_end"].is_none());
+        observation.decoded.map_x = 4;
+        progress.observe(&observation, 6, 60);
+        assert!(progress.first_seen["tourian_end"].is_some());
     }
 
     #[test]
