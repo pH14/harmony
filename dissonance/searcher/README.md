@@ -251,16 +251,18 @@ of them. `SelectorAccounting`'s `class_draws_by_rank` reports the share each
 rank received. Bands inside a class are ranked the same way, over the distinct
 progress levels of their frontier groups.
 
-At pooled-group and final pooled-cell ties, `hierarchy_uniform_128_v2` and the
+At pooled-group ties above the final cell, `hierarchy_uniform_128_v2` and the
 energy variants use a persistent first-discovery ordinal for each live group. The
 ordinal survives history compaction and archive import, so a replaced entry
 cannot make an old route look newly discovered. Within each equal-progress peer
-set, the oldest-to-newest ordinals multiply the existing weight by
+set at those depths, the oldest-to-newest ordinals multiply the existing weight by
 `(peer_count + peer_rank) / peer_count`. The multiplier is in `[1, 2)`, so older
 routes keep a useful bounded share even when there are fewer than eight peers,
 and insertion order cannot erase them. Progress ordering and barren energy stay
 primary because the multiplier is applied after their weight. Recency only breaks
-equal-progress ties.
+equal-progress pooled-group ties. The final cell retains its existing eight-peer
+novelty blocks, but uses the persistent ordinal so compaction and import do not
+reset cell age.
 Discovery ordinals are included in archive reports and cost their explicit `u64`
 map storage in the memory accounting.
 

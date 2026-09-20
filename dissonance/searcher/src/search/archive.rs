@@ -285,6 +285,8 @@ const CHEAPEST_RANK_SCALE: usize = 4;
 
 const CELL_NOVELTY_DRAWS: u64 = 4;
 
+const CELL_NOVELTY_RANK_SCALE: usize = 8;
+
 const CLASS_RANK_CAP: u8 = 8;
 const CLASS_RANK_SHIFT: u32 = 3;
 
@@ -3026,25 +3028,13 @@ where
             }
             None => Vec::new(),
         };
-        let (cell_recency, cheapest) = match cells {
+        let (newest, cheapest) = match cells {
             Some(cells) if frontier.is_none() => {
-                let mut order = cells
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, cell)| cell.0.map(|ordinal| (ordinal, index)))
-                    .collect::<Vec<_>>();
-                order.sort_unstable_by_key(|(ordinal, _)| *ordinal);
-                let count = u64::try_from(order.len()).unwrap_or(u64::MAX).max(1);
-                let mut recency = vec![(1_u64, 1_u64); cells.len()];
-                for (position, (_, index)) in order.into_iter().enumerate() {
-                    recency[index] = (
-                        count.saturating_add(u64::try_from(position).unwrap_or(u64::MAX)),
-                        count,
-                    );
-                }
+                let mut newest = cells.iter().filter_map(|cell| cell.0).collect::<Vec<_>>();
+                newest.sort_unstable();
                 let mut cheapest = cells.iter().filter_map(|cell| cell.1).collect::<Vec<_>>();
                 cheapest.sort_unstable();
-                (recency, cheapest)
+                (newest, cheapest)
             }
             _ => (Vec::new(), Vec::new()),
         };
@@ -3111,9 +3101,20 @@ where
                     )
                 }
                 (None, Some(cells)) => {
-                    let (_, cost) = cells[index];
-                    let (numerator, denominator) =
-                        cell_recency.get(index).copied().unwrap_or((1, 1));
+                    let (opened, cost) = cells[index];
+                    let novelty = match opened {
+                        Some(opened) => {
+                            let position = newest
+                                .binary_search(&opened)
+                                .map_err(|_| "energy cell is missing from its own novelty table")?;
+                            u64::try_from(
+                                newest.len().saturating_sub(position.saturating_add(1))
+                                    / CELL_NOVELTY_RANK_SCALE,
+                            )
+                            .unwrap_or(u64::MAX)
+                        }
+                        None => 8,
+                    };
                     let costlier = cost.map_or(0, |cost| {
                         u64::try_from(
                             cheapest.partition_point(|cheaper| *cheaper < cost)
@@ -3121,7 +3122,7 @@ where
                         )
                         .unwrap_or(u64::MAX)
                     });
-                    (costlier, 16, numerator, denominator)
+                    (novelty.saturating_add(costlier), 16, 1, 1)
                 }
                 (None, None) => (0, 8, 1, 1),
             };
@@ -6808,7 +6809,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_without_a_progress_notion_keeps_a_bounded_discovery_bias() {
+    fn a_key_without_a_progress_notion_keeps_a_bounded_pooled_bias() {
         for bands in [[1_u16, 2], [200, 100]] {
             let counts = ordering_walk_counts(&[
                 ordering_key::<false>(0, 0, bands[0], 0, 0),
@@ -6816,7 +6817,7 @@ mod tests {
             ]);
             assert!(
                 counts[1] > counts[0] && counts[1] < counts[0].saturating_mul(2),
-                "equal-progress bands keep a bounded discovery bias: {counts:?} under {bands:?}"
+                "equal-progress pooled bands keep a bounded discovery bias: {counts:?} under {bands:?}"
             );
         }
     }
