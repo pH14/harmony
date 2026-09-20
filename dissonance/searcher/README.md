@@ -252,9 +252,12 @@ at eight, so the draw follows the most recent opening inside a class whose
 bands are otherwise peers.
 
 A productive selection clears the parent's barren counter at a pooled depth
-only when a retained child's group at that depth had not been seen before. A
-child that opens a new coarse group necessarily opens the finer groups
-containing it, so it still clears every depth below. A child that is new only
+only when a retained child's group at that depth had not been seen before, or
+when the child displaces a slot holder it strictly outranks under a
+preference. Such an arrival also becomes its cell's newest opening, so a place
+reached again with more of what the preference counts draws like a place
+reached for the first time. A child that opens a new coarse group necessarily
+opens the finer groups containing it, so it still clears every depth below. A child that is new only
 at the finest pooled depth clears that depth alone, so a place that keeps
 producing fine novelty inside ground the search already covers no longer holds
 its coarser counters at zero. `Retire` clears every depth on any productive

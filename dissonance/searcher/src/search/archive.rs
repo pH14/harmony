@@ -2070,6 +2070,10 @@ where
         let cell = key.group(Self::cell_depth());
         let sampleable = self.entry_unexhausted(id);
         let deepest = self.deepest_leaf[id];
+        let improved = self
+            .replacement_preferences
+            .get(id)
+            .is_some_and(|won| *won != 0);
         let members = self
             .classes
             .entry(class)
@@ -2078,7 +2082,7 @@ where
             .or_default();
         let new_cell = members.ids.is_empty();
         let was_live = !members.sampleable.is_empty();
-        if new_cell {
+        if new_cell || improved {
             members.opened = id;
         }
         members.ids.insert(id);
@@ -2096,6 +2100,14 @@ where
         }
         if !was_live && sampleable {
             self.set_cell_live(key, true);
+        }
+        if improved && !new_cell {
+            for depth in (Self::cell_depth() + 1)..=Self::class_depth() {
+                if let Some(newest) = self.group_newest.get_mut(depth - 1) {
+                    let held = newest.entry(key.group(depth)).or_insert(id);
+                    *held = (*held).max(id);
+                }
+            }
         }
     }
 
@@ -2543,6 +2555,11 @@ where
         for (offset, seen) in self.groups_seen.iter_mut().enumerate() {
             if seen.insert(key.group(offset + 1)) {
                 opened |= 1 << (offset + 1);
+            }
+        }
+        if replacement_preferences != 0 {
+            for depth in 1..K::groups() {
+                opened |= 1 << depth;
             }
         }
         self.opened_depths.push(opened);
@@ -4452,6 +4469,93 @@ mod tests {
         assert_eq!(archive.continuation_pending(), 1);
         insert_portfolio_at(&mut archive, Some(origin), vec![4], 1, 14, 40).expect("both again");
         assert_eq!(archive.continuation_pending(), 1);
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct StockedKey {
+        place: [u16; 3],
+        stock: u8,
+    }
+
+    impl ArchiveKey for StockedKey {
+        type Group = [u16; 3];
+
+        fn groups() -> usize {
+            3
+        }
+
+        fn group(self, depth: usize) -> Self::Group {
+            let mut group = self.place;
+            for component in group.iter_mut().take(depth) {
+                *component = 0;
+            }
+            group
+        }
+
+        fn slot_capacity() -> usize {
+            1
+        }
+
+        fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
+            self.stock.cmp(&other.stock)
+        }
+
+        type Lineage = ();
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    fn insert_stocked(
+        archive: &mut Archive<u8, StockedKey, (), ()>,
+        parent: Option<usize>,
+        input: u8,
+        place: [u16; 3],
+        stock: u8,
+    ) -> Option<usize> {
+        archive
+            .insert(
+                parent,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![input],
+                    key: StockedKey { place, stock },
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert stocked entry")
+    }
+
+    #[test]
+    fn a_better_stocked_arrival_reopens_its_place() {
+        let mut archive = Archive::<u8, StockedKey, (), ()>::new(|_| 1);
+        archive.rebuild_selector_index(64);
+        let first = insert_stocked(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
+        assert_eq!(archive.opened_depths(first), 0b111);
+        let beside = insert_stocked(&mut archive, Some(first), 2, [2, 1, 1], 5).expect("beside");
+        assert_eq!(archive.opened_depths(beside), 0b001);
+        assert!(insert_stocked(&mut archive, Some(first), 3, [1, 1, 1], 5).is_none());
+        let better = insert_stocked(&mut archive, Some(first), 4, [1, 1, 1], 6).expect("better");
+        assert!(!archive.opened_new_slot(better));
+        assert_eq!(archive.opened_depths(better), 0b110);
+        let key = archive.entries[better].key;
+        let cell = archive
+            .classes
+            .get(&ProgressOrdered::<StockedKey>(key.group(Archive::<
+                u8,
+                StockedKey,
+                (),
+                (),
+            >::class_depth(
+            ))))
+            .and_then(|cells| cells.get(&key.group(1)))
+            .map(|members| members.opened);
+        assert_eq!(cell, Some(better));
+        assert_eq!(archive.group_newest[1].get(&key.group(2)), Some(&better));
     }
 
     #[test]
