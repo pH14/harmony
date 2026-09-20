@@ -182,6 +182,14 @@ impl ArchiveKey for Mm2ArchiveKey {
         self.preference().cmp(&other.preference())
     }
 
+    fn route_context(self) -> Option<Self::Group> {
+        Some(Mm2ArchiveGroup {
+            bosses: 0,
+            capabilities: 0,
+            ..self.group(0)
+        })
+    }
+
     type Lineage = ();
     fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
         self
@@ -522,6 +530,32 @@ mod tests {
                 Mm2ArchiveKey::progress_cmp(first.group(depth), second.group(depth)),
                 Ordering::Equal
             );
+        }
+    }
+
+    #[test]
+    fn route_context_preserves_mechanics_without_merging_inventory_slots() {
+        let original = archive_key(state(100, 28, 0));
+        let upgraded = archive_key(state(100, 12, 0x40));
+        assert_ne!(original.group(0), upgraded.group(0));
+        assert_eq!(original.route_context(), upgraded.route_context());
+
+        let mut changed = upgraded;
+        changed.weapon = changed.weapon.wrapping_add(1);
+        assert_ne!(upgraded.route_context(), changed.route_context());
+        changed = upgraded;
+        changed.menu = changed.menu.wrapping_add(1);
+        assert_ne!(upgraded.route_context(), changed.route_context());
+        changed = upgraded;
+        changed.boss_damage = changed.boss_damage.wrapping_add(1);
+        assert_ne!(upgraded.route_context(), changed.route_context());
+        changed = upgraded;
+        changed.stage = changed.stage.wrapping_add(1);
+        assert_ne!(upgraded.route_context(), changed.route_context());
+        for resource in 0..12 {
+            changed = upgraded;
+            changed.weapon_energies[resource] = changed.weapon_energies[resource].wrapping_add(1);
+            assert_ne!(upgraded.route_context(), changed.route_context());
         }
     }
 

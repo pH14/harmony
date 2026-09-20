@@ -95,6 +95,15 @@ old Crash-only, encounter-gated ammunition identity. It is a resource-diversity
 hypothesis, not a dominance claim; summed energy remains the representative
 preference tradeoff. No weapon is preferred for any obstacle.
 
+The experimental route context preserves the finest retention group's physical
+fields, selected weapon, menu, encounter state, and all twelve weapon/item
+resource bytes, while omitting acquired-weapon identity and its count. It identifies candidate
+matches for the generic searcher's route-reuse experiment; it does not promise
+that a recorded route will work from a different state. Full capability
+identity remains in every retention group. The searcher chooses and executes
+observed tails and evaluates their actual arrivals. The default campaign
+policy does not enable this experiment.
+
 Weapon/menu observations distinguish local endpoints but are pooled at coarser
 levels. Stage, room and screen bytes identify locations; progress uses boss
 clears and current boss damage, not coordinate ordering. Boss damage is zero
