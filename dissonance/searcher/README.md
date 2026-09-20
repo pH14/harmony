@@ -237,8 +237,8 @@ the bounded shape, archive import, and exact live/replay equality.
 
 ## Search evaluation policies
 
-Five selector policies exist. `hierarchy_uniform_128_v2` draws uniformly over live
-groups. `hierarchy_uniform_128_v2_retire:<thresholds>` drops a group once its
+Five selector policies exist. `hierarchy_uniform_128` draws uniformly over live
+groups. `hierarchy_uniform_128_retire:<thresholds>` drops a group once its
 barren counter passes a threshold. The three `energy_frontier_cheapest`
 identifiers weight the draw by barren energy, by progress rank, and by cost.
 
@@ -258,21 +258,6 @@ of them. `SelectorAccounting`'s `class_draws_by_rank` reports the share each
 rank received. Bands inside a class are ranked the same way, over the distinct
 progress levels of their frontier groups.
 
-At pooled-group ties above the final cell, `hierarchy_uniform_128_v2` and the
-energy variants use a persistent first-discovery ordinal for each live group. The
-ordinal survives history compaction and archive import, so a replaced entry
-cannot make an old route look newly discovered. Within each equal-progress peer
-set at those depths, the oldest-to-newest ordinals multiply the existing weight by
-`(peer_count + peer_rank) / peer_count`. The multiplier is in `[1, 2)`, so older
-routes keep a useful bounded share even when there are fewer than eight peers,
-and insertion order cannot erase them. Progress ordering and barren energy stay
-primary because the multiplier is applied after their weight. Recency only breaks
-equal-progress pooled-group ties. The final cell retains its existing eight-peer
-novelty blocks, but uses the persistent ordinal so compaction and import do not
-reset cell age.
-Discovery ordinals are included in archive reports and cost their explicit `u64`
-map storage in the memory accounting.
-
 A productive selection clears the parent's barren counter at a pooled depth
 only when a retained child's group at that depth had not been seen before. A
 child that opens a new coarse group necessarily opens the finer groups
@@ -280,7 +265,7 @@ containing it, so it still clears every depth below. A child that is new only
 at the finest pooled depth clears that depth alone, so a place that keeps
 producing fine novelty inside ground the search already covers no longer holds
 its coarser counters at zero. `Retire` clears every depth on any productive
-selection; `hierarchy_uniform_128_v2` clears none. `SelectorAccounting` reports
+selection; `hierarchy_uniform_128` clears none. `SelectorAccounting` reports
 `energy_resets`, the counters cleared at each depth, and `productive_by_mask`, a
 histogram over productive selections of which depths the selection opened.
 
@@ -290,7 +275,7 @@ time rather than only from the final census.
 
 Search experiments use independent versioned identifiers:
 
-- `hierarchy_uniform_128_v2_energy_frontier_cheapest_count_v1:<thresholds>` divides
+- `hierarchy_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
   each within-cell cost weight by one plus that entry's admitted selections.
   Cheap members get early attempts, while repeatedly sampled members yield some
   probability to alternatives. No workload field is added.
@@ -332,7 +317,7 @@ fixture exercises actual continuation dispatch, snapshot eviction, concurrent
 reservations, exact report/checkpoint replay, and planted recording corruption
 without a workload runtime or external artifact.
 
-`hierarchy_uniform_128_v2_energy_frontier_cheapest_key_count_v1:<thresholds>` is a
+`hierarchy_uniform_128_energy_frontier_cheapest_key_count_v1:<thresholds>` is a
 separate count-history experiment. It uses the larger of an entry's selection
 count and the remembered count of its depth-0 retention key. A cache of 16,384
 recently selected keys survives entry replacement and metadata compaction within

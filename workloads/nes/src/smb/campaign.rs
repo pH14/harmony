@@ -1662,7 +1662,7 @@ mod tests {
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
         for identifier in [
-            "hierarchy_uniform_128_v2",
+            "hierarchy_uniform_128",
             "probe_at_admission",
             "fewest_frames_in_level",
             "whole_tree",
@@ -1868,7 +1868,7 @@ mod tests {
             .expect("retiring campaign");
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
-        assert!(header.contains("hierarchy_uniform_128_v2_retire:2,4,8,16,32"));
+        assert!(header.contains("hierarchy_uniform_128_retire:2,4,8,16,32"));
         assert!(live.archive.selector.retirement.is_some());
         let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay retiring");
         assert_eq!(
@@ -1892,7 +1892,7 @@ mod tests {
             .expect("energy campaign");
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
-        assert!(header.contains("hierarchy_uniform_128_v2_energy_frontier_cheapest:2,4,8,16,32"));
+        assert!(header.contains("hierarchy_uniform_128_energy_frontier_cheapest:2,4,8,16,32"));
         assert!(live.archive.selector.retirement.is_some());
         let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay energy");
         assert_eq!(
@@ -1961,9 +1961,9 @@ mod tests {
             );
         }
         assert!(retention_policy_from_identifier("no_probe").is_err());
-        assert!(selector_policy_from_identifier("hierarchy_uniform_128_v2_retire:3,6,12").is_err());
+        assert!(selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6,12").is_err());
         assert!(
-            selector_policy_from_identifier("hierarchy_uniform_128_v2_retire:3,6,12,4,0").is_err()
+            selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6,12,4,0").is_err()
         );
     }
 
@@ -1976,7 +1976,7 @@ mod tests {
             .expect("live campaign");
         let text = String::from_utf8(stream).expect("stream is utf-8");
         for (from, to) in [
-            ("hierarchy_uniform_128_v2", "concentrated_recency_128"),
+            ("hierarchy_uniform_128", "concentrated_recency_128"),
             ("probe_at_admission", "probe_at_admission_snapback_16"),
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),

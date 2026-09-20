@@ -1211,8 +1211,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             index_of.insert(entry.id, index);
             if entry.input.actions.is_empty() {
                 self.archive
-                    .restore_discovery_ordinals(entry.key, &entry.discovery_ordinals);
-                self.archive
                     .restore_selector_counters(genesis_id, entry.selector)?;
                 imported.push(Some(genesis_id));
                 continue;
@@ -1306,8 +1304,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 .get(parent_input_len..)
                 .ok_or("source archive input is shorter than its imported parent")?
                 .to_vec();
-            self.archive
-                .restore_discovery_ordinals(entry.key, &entry.discovery_ordinals);
             let inserted_before = self.archive.entries.len();
             match self.archive.insert(
                 Some(parent_id),
@@ -4950,7 +4946,7 @@ mod tests {
 "key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
 "chord_policy":"chord_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
-"parent_scheduler":"hierarchy_uniform_128_v2","executor_mode":"snapshot_resume_archive",
+"parent_scheduler":"hierarchy_uniform_128","executor_mode":"snapshot_resume_archive",
 "worker_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 
@@ -5268,7 +5264,6 @@ mod tests {
                 key: TestKey(0),
                 milestones: (),
                 selector: None,
-                discovery_ordinals: Vec::new(),
             };
         let source = TestArchiveReport {
             entries: vec![
