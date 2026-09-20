@@ -1708,6 +1708,7 @@ mod tests {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca34, 4, 8_192);
         config.retention = crate::search::archive::RetentionPolicy::Unprobed;
+        config.suffix = SuffixShape::OneOrTwo;
         config.action_limit = 16;
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 64;
