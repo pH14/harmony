@@ -2812,7 +2812,7 @@ where
                         .saturating_sub(core.archive.entries[parent_index].input_len)
                         .saturating_sub(suffix.len());
                     let adaptive_horizon_full_capacity =
-                        extension != 0 && extension == remaining_after_suffix;
+                        adaptive_extension != 0 && extension == remaining_after_suffix;
                     extend_suffix_with_horizon(
                         workload,
                         &config.run,
@@ -3906,8 +3906,11 @@ where
                     .action_limit
                     .saturating_sub(core.archive.entries[parent_index].input_len)
                     .saturating_sub(suffix.len());
-                let adaptive_horizon_full_capacity = job.adaptive_horizon_extension != 0
-                    && job.adaptive_horizon_extension == remaining_actions;
+                let adaptive_horizon_full_capacity = if job.adaptive_horizon_extension == 0 {
+                    job.adaptive_horizon_full_capacity && remaining_actions == 0
+                } else {
+                    job.adaptive_horizon_extension == remaining_actions
+                };
                 if adaptive_horizon_full_capacity != job.adaptive_horizon_full_capacity {
                     return Err("recorded adaptive horizon capacity marker diverged".into());
                 }

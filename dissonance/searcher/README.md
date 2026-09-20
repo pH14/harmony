@@ -209,7 +209,9 @@ ordinary suffix: streaks one, two, three, and four request one, two, four, and
 eight actions. The extension is capped by the remaining action-limit capacity.
 An entry that reaches ordinary retirement remains eligible only through this
 bounded horizon retry window; after a failed full-capacity trial it returns to
-the short uniform floor and future retries carry no extension. Selector
+the short uniform floor and future retries carry no extension. A retry counts
+as full capacity when the ordinary suffix itself leaves no room for an
+appended action. Selector
 counter-window resets do not clear this streak; a retained descendant resets
 it. The archive representative stays unchanged; the appended actions execute
 and count as ordinary logical work, and replay reconstructs them from the

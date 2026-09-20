@@ -412,7 +412,7 @@ fn adaptive_horizon_counters_survive_archive_import() {
         .as_mut()
         .expect("imported selector counters");
     imported_counters.horizon_unproductive = 20;
-    imported_counters.horizon_failed_extension = 0;
+    imported_counters.horizon_failed_extension = 8;
     let origin = CampaignOrigin::Archive {
         path: "adaptive-horizon-source.json".to_owned(),
         file_sha256: "source".to_owned(),
@@ -430,7 +430,7 @@ fn adaptive_horizon_counters_survive_archive_import() {
     let mut stream = Vec::new();
     run_campaign_checkpointed(
         &workload,
-        &config(1, SuffixShape::OneToSix, 1, 64),
+        &config(1, SuffixShape::OneToSix, 1, 16),
         &origin,
         &mut stream,
         None,
@@ -450,6 +450,83 @@ fn adaptive_horizon_counters_survive_archive_import() {
         })
         .collect::<Vec<_>>();
     assert!(imported_extensions.iter().any(|extension| *extension > 0));
+}
+
+#[test]
+fn adaptive_horizon_records_a_zero_extension_full_trial() {
+    let source_workload = HorizonWorkload {
+        goal_after: 7,
+        distractors: false,
+    };
+    let mut source_stream = Vec::new();
+    let source = run_campaign_checkpointed(
+        &source_workload,
+        &config(8, SuffixShape::OneToSix, 1, 64),
+        &CampaignOrigin::Genesis,
+        &mut source_stream,
+        None,
+    )
+    .expect("source campaign");
+    let mut imported_report = source.0.archive.clone();
+    let target = imported_report
+        .entries
+        .iter_mut()
+        .find(|entry| entry.key == TickKey(1))
+        .expect("goal entry");
+    target
+        .selector
+        .as_mut()
+        .expect("goal selector counters")
+        .horizon_unproductive = 20;
+    let target_id = target.id;
+    let action_limit = target.input.actions.len().saturating_add(1);
+    let source_checkpoint = CampaignCheckpoint {
+        path: "adaptive-horizon-zero-extension.snapshots".to_owned(),
+        file_sha256: "snapshots".to_owned(),
+        snapshots: source.1.clone(),
+    };
+    let replay_report = imported_report.clone();
+    let origin = CampaignOrigin::Archive {
+        path: "adaptive-horizon-zero-extension.json".to_owned(),
+        file_sha256: "source".to_owned(),
+        report: Box::new(imported_report),
+        checkpoint: Some(source_checkpoint.clone()),
+    };
+    let mut stream = Vec::new();
+    let live = run_campaign_checkpointed(
+        &source_workload,
+        &config(64, SuffixShape::OneToSix, 1, action_limit),
+        &origin,
+        &mut stream,
+        None,
+    )
+    .expect("zero-extension campaign");
+    let target_jobs = stream
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .skip(1)
+        .filter_map(|line| {
+            serde_json::from_slice::<CampaignStreamRecord<EmpiricalStepCheckpoint, TickKey>>(line)
+                .ok()
+        })
+        .filter_map(|record| match record {
+            CampaignStreamRecord::Job(job) if job.parent_id == target_id => Some(job),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        target_jobs.iter().any(|job| {
+            job.adaptive_horizon_extension == 0 && job.adaptive_horizon_full_capacity
+        })
+    );
+    let replayed = replay_campaign_checkpointed(
+        &source_workload,
+        &stream,
+        Some(&replay_report),
+        Some(&source_checkpoint),
+    )
+    .expect("zero replay");
+    assert_eq!(replayed, live);
 }
 
 #[test]
