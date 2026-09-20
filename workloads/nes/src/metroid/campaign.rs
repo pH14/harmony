@@ -161,6 +161,26 @@ impl MetroidGame {
         Ok(())
     }
 
+    fn publish_stocked(
+        &self,
+        improved: &[(&str, &str)],
+        input: &MetroidInput,
+    ) -> Result<(), Box<dyn Error>> {
+        if improved.is_empty() {
+            return Ok(());
+        }
+        if let Some(directory) = &self.milestone_input_dir {
+            std::fs::create_dir_all(directory)?;
+            for (name, stock) in improved {
+                let path = directory.join(format!("{name}-{stock}.json"));
+                let temporary = path.with_extension("json.tmp");
+                std::fs::write(&temporary, serde_json::to_vec(input)?)?;
+                std::fs::rename(temporary, path)?;
+            }
+        }
+        Ok(())
+    }
+
     fn publish_champion(&self, input: &MetroidInput) -> Result<(), Box<dyn Error>> {
         if let Some(path) = &self.champion_input_path {
             std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
@@ -194,6 +214,8 @@ pub struct MetroidCampaignEvidence {
     champion_milestones: MetroidMilestones,
     champion_key: Option<MetroidChampionKey>,
     genesis_area: Option<u8>,
+    best_energy: BTreeMap<&'static str, (u16, u8)>,
+    best_missiles: BTreeMap<&'static str, (u8, u16)>,
 }
 
 #[derive(Clone)]
@@ -878,9 +900,38 @@ impl Evaluation for MetroidGame {
             || (action.milestones.gained && evidence.first_inputs.first_gain.is_none());
         let champion = action_champion_key(&action.observations)
             .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        if first_input_needed || champion.is_some() || !discoveries.is_empty() {
+        let mut improved = Vec::new();
+        if let Some(last) = action.observations.last().filter(|last| !last.dead) {
+            let state = last.decoded;
+            for name in NamedProgress::reached(last) {
+                let by_energy = (state.health, state.missiles);
+                if evidence
+                    .best_energy
+                    .get(name)
+                    .is_none_or(|best| by_energy > *best)
+                {
+                    evidence.best_energy.insert(name, by_energy);
+                    improved.push((name, "energy"));
+                }
+                let by_missiles = (state.missiles, state.health);
+                if evidence
+                    .best_missiles
+                    .get(name)
+                    .is_none_or(|best| by_missiles > *best)
+                {
+                    evidence.best_missiles.insert(name, by_missiles);
+                    improved.push((name, "missiles"));
+                }
+            }
+        }
+        if first_input_needed
+            || champion.is_some()
+            || !discoveries.is_empty()
+            || !improved.is_empty()
+        {
             let input = input()?;
             self.publish_milestones(&discoveries, &input)?;
+            self.publish_stocked(&improved, &input)?;
             update_first_inputs(
                 &mut evidence.first_reached,
                 &mut evidence.first_inputs,
@@ -1003,6 +1054,78 @@ mod tests {
             );
         }
         assert!(directory.join("ridley_area.json").is_file());
+        assert!(directory.join("ridley_area-energy.json").is_file());
+        assert!(directory.join("ridley_area-missiles.json").is_file());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_better_stocked_arrival_at_a_milestone_republishes_its_tape() {
+        use crate::metroid::{
+            progress::{BossDefeats, TourianEvents},
+            target::decode_state,
+        };
+        let directory =
+            std::env::temp_dir().join(format!("metroid-stocked-test-{}", std::process::id()));
+        let mut wram = [0; 2048];
+        let mut cartridge = [0; 8192];
+        wram[0x1e] = 3;
+        wram[0x107] = 3;
+        wram[0x74] = 0x14;
+        let observe = |wram: &[u8; 2048], cartridge: &[u8; 8192]| MetroidObservations {
+            frame_count: 99,
+            decoded: decode_state(wram, cartridge).unwrap(),
+            boss_health_seen: 0,
+            boss_defeats: BossDefeats::default(),
+            mother_brain_status: 0,
+            tourian_events: TourianEvents::default(),
+            changed_indices: Vec::new(),
+            dead: false,
+            log_line: String::new(),
+        };
+        let action_with = |observation: MetroidObservations, actions: usize| {
+            (
+                MetroidCampaignActionResult {
+                    action: ButtonChord::new(0, 1),
+                    observations: vec![observation],
+                    milestones: MetroidMilestones::default(),
+                    outcome: Outcome::default(),
+                    candidate: None,
+                },
+                MetroidInput {
+                    actions: vec![ButtonChord::new(0, 1); actions],
+                },
+            )
+        };
+        let game = MetroidGame::new(&[], Path::new("unused"), "unused")
+            .with_milestone_input_dir(directory.clone());
+        let mut evidence = MetroidCampaignEvidence::default();
+        let (first, first_input) = action_with(observe(&wram, &cartridge), 1);
+        game.merge_action_evidence(&mut evidence, &first, 1, || Ok(first_input.clone()))
+            .unwrap();
+        let first_health = first.observations[0].decoded.health;
+        let first_missiles = first.observations[0].decoded.missiles;
+        wram[0x107] = 4;
+        let (healthier, healthier_input) = action_with(observe(&wram, &cartridge), 2);
+        assert!(healthier.observations[0].decoded.health > first_health);
+        game.merge_action_evidence(&mut evidence, &healthier, 2, || Ok(healthier_input.clone()))
+            .unwrap();
+        wram[0x107] = 3;
+        cartridge[0x879] = 9;
+        let (stocked, stocked_input) = action_with(observe(&wram, &cartridge), 3);
+        assert!(stocked.observations[0].decoded.missiles > first_missiles);
+        game.merge_action_evidence(&mut evidence, &stocked, 3, || Ok(stocked_input.clone()))
+            .unwrap();
+        game.merge_action_evidence(&mut evidence, &first, 4, || {
+            panic!("a worse-stocked arrival must not reconstruct")
+        })
+        .unwrap();
+        let read = |name: &str| -> MetroidInput {
+            serde_json::from_slice(&std::fs::read(directory.join(name)).unwrap()).unwrap()
+        };
+        assert_eq!(read("ridley_area.json").actions.len(), 1);
+        assert_eq!(read("ridley_area-energy.json").actions.len(), 2);
+        assert_eq!(read("ridley_area-missiles.json").actions.len(), 3);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

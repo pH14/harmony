@@ -109,16 +109,17 @@ impl NamedProgress {
         execution: u64,
         route_action_end_frame: u64,
     ) -> Vec<&'static str> {
-        let state = observation.decoded;
-        if observation.dead || (!state.in_play() && !state.ending) {
-            return Vec::new();
+        let reached = Self::reached(observation);
+        if reached.is_empty() {
+            return reached;
         }
+        let state = observation.decoded;
         let stamp = FirstSeen {
             execution,
             route_action_end_frame,
         };
         let mut discoveries = Vec::new();
-        let mut note = |name| {
+        for name in reached {
             let first = self
                 .first_seen
                 .get_mut(name)
@@ -127,7 +128,20 @@ impl NamedProgress {
                 *first = Some(stamp);
                 discoveries.push(name);
             }
-        };
+        }
+        self.max_missile_capacity = self.max_missile_capacity.max(state.missile_capacity);
+        self.max_energy_tanks = self.max_energy_tanks.max(state.energy_tanks);
+        discoveries
+    }
+
+    #[must_use]
+    pub fn reached(observation: &MetroidObservations) -> Vec<&'static str> {
+        let state = observation.decoded;
+        if observation.dead || (!state.in_play() && !state.ending) {
+            return Vec::new();
+        }
+        let mut reached = Vec::new();
+        let mut note = |name| reached.push(name);
         for (bit, name) in GEAR {
             if state.equipment & bit != 0 {
                 note(name);
@@ -187,9 +201,7 @@ impl NamedProgress {
         if state.energy_tanks > 0 {
             note("energy_tank");
         }
-        self.max_missile_capacity = self.max_missile_capacity.max(state.missile_capacity);
-        self.max_energy_tanks = self.max_energy_tanks.max(state.energy_tanks);
-        discoveries
+        reached
     }
 }
 
