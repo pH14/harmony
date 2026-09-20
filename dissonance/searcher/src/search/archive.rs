@@ -1626,18 +1626,28 @@ where
         if self.route_reuse {
             for child in 0..self.entries.len() {
                 let child_key = self.entries[child].key;
-                let mut ancestor = self.entries[child]
-                    .parent_id
-                    .and_then(|parent| self.id_to_index.get(&parent).copied());
-                while let Some(current) = ancestor {
+                let mut ancestors = Vec::new();
+                let mut node = self.entries[child].input_node;
+                while let Some(parent) = self
+                    .input_index
+                    .nodes
+                    .get(node)
+                    .and_then(Option::as_ref)
+                    .and_then(|node| node.parent)
+                {
+                    if let Some(stable_id) = self.input_index.owner(parent)
+                        && let Some(current) = self.id_to_index.get(&stable_id).copied()
+                    {
+                        ancestors.push(current);
+                    }
+                    node = parent;
+                }
+                for current in ancestors {
                     let previous = self.deepest_leaf[current];
                     if leaf_order(previous, (child_key, child)) != Ordering::Less {
-                        break;
+                        continue;
                     }
                     self.deepest_leaf[current] = (child_key, child);
-                    ancestor = self.entries[current]
-                        .parent_id
-                        .and_then(|parent| self.id_to_index.get(&parent).copied());
                 }
             }
         }
@@ -2590,17 +2600,44 @@ where
         }
         self.opened_depths.push(opened);
         self.deepest_leaf.push((key, id));
-        let mut ancestor = parent_id;
-        while let Some(current) = ancestor {
-            let previous = self.deepest_leaf[current];
-            if leaf_order(previous, (key, id)) != Ordering::Less {
-                break;
+        if self.route_reuse {
+            let mut ancestors = Vec::new();
+            let mut node = input_node;
+            while let Some(parent) = self
+                .input_index
+                .nodes
+                .get(node)
+                .and_then(Option::as_ref)
+                .and_then(|node| node.parent)
+            {
+                if let Some(stable_id) = self.input_index.owner(parent)
+                    && let Some(current) = self.id_to_index.get(&stable_id).copied()
+                {
+                    ancestors.push(current);
+                }
+                node = parent;
             }
-            self.update_index_deepest_leaf(current, previous, (key, id));
-            self.deepest_leaf[current] = (key, id);
-            ancestor = self.entries[current]
-                .parent_id
-                .and_then(|parent| self.id_to_index.get(&parent).copied());
+            for current in ancestors {
+                let previous = self.deepest_leaf[current];
+                if leaf_order(previous, (key, id)) != Ordering::Less {
+                    continue;
+                }
+                self.update_index_deepest_leaf(current, previous, (key, id));
+                self.deepest_leaf[current] = (key, id);
+            }
+        } else {
+            let mut ancestor = parent_id;
+            while let Some(current) = ancestor {
+                let previous = self.deepest_leaf[current];
+                if leaf_order(previous, (key, id)) != Ordering::Less {
+                    break;
+                }
+                self.update_index_deepest_leaf(current, previous, (key, id));
+                self.deepest_leaf[current] = (key, id);
+                ancestor = self.entries[current]
+                    .parent_id
+                    .and_then(|parent| self.id_to_index.get(&parent).copied());
+            }
         }
         self.slots.entry(key.group(0)).or_default().push(id);
         self.history_memory_bytes = self
@@ -5764,6 +5801,83 @@ mod tests {
         assert_eq!(archive.route_donor_memory_bytes(), full_route_memory_sum);
         archive.enable_route_reuse(false);
         assert_eq!(archive.route_donor_memory_bytes(), 0);
+    }
+
+    #[test]
+    fn route_splice_survives_compaction_of_an_inactive_middle() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.enable_route_reuse(true);
+        let insert = |archive: &mut Archive<u8, FlatKey<3>, (), ()>,
+                      parent: Option<usize>,
+                      components: [u16; 4],
+                      actions: Vec<u8>| {
+            let parent_len = parent.map_or(0, |id| archive.entries[id].input_len);
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix: actions[parent_len..].to_vec(),
+                        key: FlatKey(components),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert route entry")
+                .expect("retain route entry")
+        };
+        let donor = insert(&mut archive, None, [1, 2, 3, 4], vec![0]);
+        let parent = insert(&mut archive, None, [9, 2, 3, 4], vec![9]);
+        let middle = insert(&mut archive, Some(donor), [1, 2, 3, 6], vec![0, 1]);
+        let leaf = insert(&mut archive, Some(middle), [1, 2, 3, 7], vec![0, 1, 2]);
+        let parent_id = archive.stable_id(parent).unwrap();
+        let donor_id = archive.stable_id(donor).unwrap();
+        let middle_id = archive.stable_id(middle).unwrap();
+        let leaf_id = archive.stable_id(leaf).unwrap();
+        assert!(archive.deactivate(middle));
+        let dispatched = archive
+            .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+            .expect("route context dispatch before compaction");
+        assert_eq!(dispatched.donor_id, donor);
+        assert_eq!(dispatched.leaf_id, leaf);
+        assert_eq!(dispatched.actions, vec![1, 2]);
+        archive
+            .validate_route_splice(parent_id, donor_id, leaf_id, 64, &dispatched.actions)
+            .expect("route provenance validates before compaction");
+        archive
+            .compact_history_for_final_report()
+            .expect("compact inactive middle");
+        let donor = archive.index_of_id(donor_id).expect("donor survives");
+        let leaf = archive.index_of_id(leaf_id).expect("leaf survives");
+        assert!(archive.index_of_id(middle_id).is_none());
+        assert_eq!(
+            archive
+                .materialize_input(leaf)
+                .expect("leaf input prefix survives")
+                .actions,
+            vec![0, 1, 2]
+        );
+        assert!(!archive.all_extensions_retained(donor, &[1, 2]));
+        archive
+            .validate_route_splice(parent_id, donor_id, leaf_id, 64, &[1, 2])
+            .expect("recorded route provenance survives compaction");
+        let parent = archive.index_of_id(parent_id).expect("parent survives");
+        let dispatched = archive
+            .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+            .expect("fresh route dispatch after compaction");
+        assert_eq!(dispatched.donor_id, donor);
+        assert_eq!(dispatched.leaf_id, leaf);
+        assert_eq!(dispatched.actions, vec![1, 2]);
+        let tail = insert(&mut archive, Some(leaf), [1, 2, 3, 8], vec![0, 1, 2, 3]);
+        let dispatched = archive
+            .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+            .expect("fresh route dispatch after compaction");
+        assert_eq!(
+            archive.deepest_leaf[donor],
+            (archive.entries[tail].key, tail)
+        );
+        assert_eq!(dispatched.leaf_id, tail);
+        assert_eq!(dispatched.actions, vec![3]);
     }
 
     #[test]

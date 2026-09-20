@@ -4256,6 +4256,10 @@ mod tests {
             self.0
         }
 
+        fn route_context(self) -> Option<Self::Group> {
+            Some(self.0 % 8)
+        }
+
         type Lineage = ();
 
         fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
@@ -5368,6 +5372,60 @@ mod tests {
             reports.len(),
             usize::try_from(counts.imported).expect("imported count") + 1
         );
+    }
+
+    #[test]
+    fn whole_tree_import_preserves_routes_across_missing_source_parents() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+        };
+        let action = |input| TestAction::new(input, 1);
+        let entry = |id, parent_id, actions| ArchiveEntryReport {
+            id,
+            parent_id,
+            created_execution: 0,
+            input: Input { actions },
+            key: TestKey(0),
+            milestones: (),
+            selector: None,
+        };
+        let source = TestArchiveReport {
+            entries: vec![
+                entry(0, None, vec![]),
+                entry(1, Some(0), vec![action(1)]),
+                entry(2, Some(0), vec![action(9)]),
+                entry(4, Some(3), vec![action(1), action(2), action(4)]),
+            ],
+        };
+        let encoded = serde_json::to_string(&source).expect("serialize sparse source");
+        let source = serde_json::from_str(&encoded).expect("deserialize sparse source");
+        let mut core = CoordinatorCore::new(&workload, &(), 16, 32_768, None);
+        core.archive.enable_route_reuse(true);
+        let counts = core
+            .import_tree(&workload, &(), &mut TestTarget::default(), &source, None)
+            .expect("import full input with missing intermediate parent");
+        assert_eq!(counts.rerooted, 1);
+        assert_eq!(counts.imported, 3);
+        let donor = 1;
+        let parent = 2;
+        let leaf = 3;
+        assert_eq!(core.archive.entries[leaf].parent_id, Some(0));
+        core.archive
+            .validate_route_splice(
+                core.archive.stable_id(parent).unwrap(),
+                core.archive.stable_id(donor).unwrap(),
+                core.archive.stable_id(leaf).unwrap(),
+                16,
+                &[action(2), action(4)],
+            )
+            .expect("full prefix remains a valid observed route");
+        let route = core
+            .archive
+            .route_splice_tail_for_campaign(parent, 16, 8)
+            .expect("fresh lookup discovers imported prefix route");
+        assert_eq!(route.donor_id, donor);
+        assert_eq!(route.leaf_id, leaf);
+        assert_eq!(route.actions, vec![action(2), action(4)]);
     }
 
     #[test]

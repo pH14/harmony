@@ -324,6 +324,17 @@ tail records donor and leaf IDs and is replay-validated while those metadata
 entries are pinned for the in-flight reservation. Missing or incompatible
 contexts produce an ordinary empty splice result.
 
+When route reuse is enabled, leaf rankings propagate through retained input
+prefix owners. History compaction and sparse
+archive import can remove an inactive intermediate entry while retaining its
+input trie nodes; the prefix walk keeps a surviving donor connected to its
+surviving descendant without changing parent IDs or ordinary selection
+lineage. This updates the shared leaf ranking used by the opt-in route policy;
+the campaign dispatches this policy separately from ordinary splice policies.
+Live route insertions use the same walk. Rebuilding this opt-in index
+costs the total retained input-prefix depth, while the route-disabled path
+keeps the original parent-chain update.
+
 These are experiments, not new defaults. Promote policies based on paired workload
 panels, fresh completion results, and resource costs through
 [`benchmarks/search`](../../benchmarks/search/README.md). The generic resource
