@@ -1828,6 +1828,30 @@ where
         }
     }
 
+    pub(crate) fn longest_resident_input_prefix(&self, actions: &[A]) -> Option<usize> {
+        let mut node = 0;
+        let mut found = None;
+        for depth in 0..=actions.len() {
+            if let Some(id) = self
+                .input_index
+                .owner(node)
+                .and_then(|id| self.index_of_id(id))
+                && self.entries[id].snapshot.is_some()
+                && self.entries[id].input_len == depth
+            {
+                found = Some(id);
+            }
+            let Some(action) = actions.get(depth) else {
+                break;
+            };
+            let Some(next) = self.input_index.walk(node, std::slice::from_ref(action)) else {
+                break;
+            };
+            node = next;
+        }
+        found
+    }
+
     pub(crate) fn job_origin(&self, id: usize) -> Result<(Arc<S>, Vec<A>), &'static str> {
         let entry = self.entries.get(id).ok_or("job origin entry is missing")?;
         if self.snapshot_selectable[id] {

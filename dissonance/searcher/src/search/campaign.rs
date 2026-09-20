@@ -135,7 +135,7 @@ fn progress_checkpoint_due(executions: u64) -> bool {
     executions > 0 && (executions == 1 || executions.is_multiple_of(PROGRESS_CHECKPOINT_INTERVAL))
 }
 
-pub const RESUME_IDENTIFIER: &str = "whole_tree";
+pub const RESUME_IDENTIFIER: &str = "whole_tree_prefix_restore_v2";
 
 pub const SNAPSHOT_ROOT_RESUME_IDENTIFIER: &str = "snapshot_root";
 
@@ -1268,15 +1268,22 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     Some((*snapshot).clone())
                 }
             } else {
+                let replay_parent_id = self
+                    .archive
+                    .longest_resident_input_prefix(&entry.input.actions)
+                    .filter(|id| self.archive.entries[*id].input_len > parent_input_len)
+                    .unwrap_or(parent_id);
+                let replay_parent = &self.archive.entries[replay_parent_id];
+                milestones = merge_max(workload, milestones, replay_parent.milestones);
                 workload.restore(
                     target,
-                    parent_entry
+                    replay_parent
                         .snapshot
                         .as_deref()
                         .ok_or("whole-tree import parent snapshot was released early")?,
                 )?;
                 let mut terminal = false;
-                for action in &entry.input.actions[parent_input_len..] {
+                for action in &entry.input.actions[replay_parent.input_len..] {
                     workload.apply_action(target, action, &mut milestones)?;
                     if workload
                         .rollout_outcome(run, target)?
@@ -5048,7 +5055,7 @@ mod tests {
 "action_limit":64,"archive_entry_limit":128,"controller_vocabulary":"test_inputs",
 "key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
 "chord_policy":"chord_uniform","replacement_policy":"least_cost_per_group",
-"resume_policy":"whole_tree","retention_policy":"unprobed",
+"resume_policy":"whole_tree_prefix_restore_v2","retention_policy":"unprobed",
 "parent_scheduler":"hierarchy_uniform_128","executor_mode":"snapshot_resume_archive",
 "worker_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
@@ -5435,9 +5442,12 @@ mod tests {
         let source = serde_json::from_str(&encoded).expect("deserialize sparse source");
         let mut core = CoordinatorCore::new(&workload, &(), 16, 32_768, None);
         core.archive.enable_route_reuse(true);
+        let mut target = TestTarget::default();
         let counts = core
-            .import_tree(&workload, &(), &mut TestTarget::default(), &source, None)
+            .import_tree(&workload, &(), &mut target, &source, None)
             .expect("import full input with missing intermediate parent");
+        assert_eq!(target.execution_work, 4);
+        assert_eq!(target.value, 7);
         assert_eq!(counts.rerooted, 1);
         assert_eq!(counts.imported, 3);
         let donor = 1;
@@ -5750,7 +5760,7 @@ mod tests {
         );
         assert_eq!(header.mixture_policy, "biased_half");
         assert_eq!(header.suffix_policy, "one_or_two");
-        assert_eq!(header.resume_policy, "whole_tree");
+        assert_eq!(header.resume_policy, "whole_tree_prefix_restore_v2");
         assert_eq!(header.schema_version, super::CAMPAIGN_SCHEMA_VERSION);
         assert_eq!(header.draw_header, None);
         let expected: WorkloadPolicies = [

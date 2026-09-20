@@ -414,3 +414,7 @@ report record that budget only when present. Already reserved jobs drain
 normally; evaluators must score first-objective work against the threshold and
 account for any drained overshoot. Omitting the option leaves the campaign
 without a work-budget cutoff.
+
+## Exact-prefix restore during import
+
+`whole_tree_prefix_restore_v2` preserves imported ancestry and admission order. For an entry without a saved snapshot, it finds the longest complete action prefix already owned by an imported entry with a resident snapshot, restores that snapshot, and executes only the remaining suffix. It matches the full typed action sequence, not archive cells or progress labels. Prefix milestones are merged before replaying the remainder. This avoids repeated emulation when exported parent metadata is sparse while preserving every input and resulting state. The resume identifier changes because bootstrap execution work can change.

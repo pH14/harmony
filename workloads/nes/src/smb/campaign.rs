@@ -1665,7 +1665,7 @@ mod tests {
             "hierarchy_uniform_128",
             "probe_at_admission",
             "fewest_frames_in_level",
-            "whole_tree",
+            "whole_tree_prefix_restore_v2",
             "nes_pressable_36",
             "frozen_area_span",
             "one_to_six",
@@ -1979,7 +1979,7 @@ mod tests {
             ("hierarchy_uniform_128", "concentrated_recency_128"),
             ("probe_at_admission", "probe_at_admission_snapback_16"),
             ("fewest_frames_in_level", "fewest_actions"),
-            ("\"whole_tree\"", "\"frontier_shortest\""),
+            ("\"whole_tree_prefix_restore_v2\"", "\"frontier_shortest\""),
             ("nes_pressable_36", "frozen_nine_mask"),
             ("deterministic_window_1_per_worker_v3", "unknown_order_v9"),
         ] {
@@ -2088,7 +2088,7 @@ mod tests {
             .expect("replay whole-tree campaign");
         assert_eq!(tree_live, tree_replayed);
         assert_eq!(tree_live.origin.kind, "archive");
-        assert_eq!(tree_live.resume_policy, "whole_tree");
+        assert_eq!(tree_live.resume_policy, "whole_tree_prefix_restore_v2");
         let counts = tree_live.tree_import.expect("tree import counts");
         let source_retained = u64::try_from(source.entries.len() - 1).expect("count");
         assert_eq!(
