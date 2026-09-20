@@ -757,10 +757,7 @@ mod tests {
     use super::{
         Args, Mm2Game, OsString, PathBuf, archive_manifest_path, campaign_config, resume_origin,
     };
-    use std::{
-        fs,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::fs;
 
     #[test]
     #[ignore = "requires a ROM, QuickNES core, prior qualified media, and ffmpeg"]
@@ -786,7 +783,7 @@ mod tests {
         std::fs::create_dir_all(&output).expect("test output");
         let rendered = super::render_video(&game, &input, &output, 180).expect("streaming replay");
         assert_eq!(
-            serde_json::to_value(&rendered.video).expect("metadata JSON"),
+            serde_json::to_value(rendered.video).expect("metadata JSON"),
             original["video"]
         );
         assert_eq!(
@@ -915,13 +912,8 @@ mod tests {
 
     #[test]
     fn archive_resume_requires_fixed_sibling_manifest() {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!("mm2-manifest-test-{suffix}"));
-        fs::create_dir_all(&directory).expect("test directory");
-        let archive_path = directory.join("archive.json");
+        let directory = tempfile::tempdir().expect("test directory");
+        let archive_path = directory.path().join("archive.json");
         fs::write(&archive_path, b"{}").expect("archive fixture");
         let archive_argument = archive_path.to_str().expect("archive path");
         let args = Args::parse_from(required_args(&["--resume-archive", archive_argument]))
@@ -934,8 +926,8 @@ mod tests {
         assert!(error.to_string().contains("archive.manifest.json"));
         assert_eq!(
             archive_manifest_path(&archive_path),
-            directory.join("archive.manifest.json")
+            directory.path().join("archive.manifest.json")
         );
-        fs::remove_dir_all(directory).expect("test directory cleanup");
+        directory.close().expect("test directory cleanup");
     }
 }
