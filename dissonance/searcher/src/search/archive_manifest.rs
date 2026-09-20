@@ -224,10 +224,10 @@ mod tests {
 
     fn workload() -> TestWorkload {
         TestWorkload {
-            identity: "rom-core-origin".to_owned(),
+            identity: "program-backend-origin".to_owned(),
             policies: BTreeMap::from([
-                ("emulator_backend".to_owned(), "core-a".to_owned()),
-                ("terminal_policy".to_owned(), "whole-game".to_owned()),
+                ("execution_backend".to_owned(), "core-a".to_owned()),
+                ("terminal_policy".to_owned(), "halted".to_owned()),
             ]),
         }
     }
@@ -245,25 +245,25 @@ mod tests {
     }
 
     #[test]
-    fn manifest_rejects_wrong_rom_or_core_origin_policy() {
+    fn manifest_rejects_wrong_identity_or_backend_policy() {
         let source = workload();
         let manifest = ArchiveManifest::build(&source, &(), b"archive", None);
 
-        let mut wrong_rom = workload();
-        wrong_rom.identity = "different-rom".to_owned();
+        let mut wrong_identity = workload();
+        wrong_identity.identity = "different-program".to_owned();
         assert!(
             manifest
-                .validate(&wrong_rom, &(), b"archive", None)
+                .validate(&wrong_identity, &(), b"archive", None)
                 .is_err()
         );
 
-        let mut wrong_core = workload();
-        wrong_core
+        let mut wrong_backend = workload();
+        wrong_backend
             .policies
-            .insert("emulator_backend".to_owned(), "core-b".to_owned());
+            .insert("execution_backend".to_owned(), "core-b".to_owned());
         assert!(
             manifest
-                .validate(&wrong_core, &(), b"archive", None)
+                .validate(&wrong_backend, &(), b"archive", None)
                 .is_err()
         );
     }
