@@ -621,6 +621,7 @@ pub struct CampaignStreamHeader<T> {
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum CampaignSpliceRecord {
     Unavailable,
+    RepeatedRoute,
     Tail {
         donor_id: u64,
         leaf_id: u64,
@@ -2178,7 +2179,7 @@ fn replay_splice<G: CampaignTypes>(
         return Ok(None);
     }
     match recorded {
-        Some(CampaignSpliceRecord::Unavailable) => Ok(None),
+        Some(CampaignSpliceRecord::Unavailable | CampaignSpliceRecord::RepeatedRoute) => Ok(None),
         Some(CampaignSpliceRecord::Tail { tail_postcard, .. }) => {
             let tail: Vec<G::Action> = postcard::from_bytes(&tail_postcard)?;
             if tail.is_empty() || tail.len() > SPLICE_ACTION_CAP {
@@ -2500,6 +2501,8 @@ where
         .enable_continuations(config.mixture.uses_continuations());
     core.archive
         .enable_route_reuse(config.mixture.uses_route_reuse());
+    core.archive
+        .enable_route_deduplication(config.mixture.deduplicates_routes());
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the bootstrap target: {error}").into()
@@ -2701,7 +2704,8 @@ where
                         .ok_or("selected archive slot is missing")?;
                     let mutation_seed = rand.next_u64();
                     let (mixture_weight, splice_weight) = match config.mixture {
-                        DrawMixture::AlphabetRouteReuse => (0, 64),
+                        DrawMixture::AlphabetRouteReuse
+                        | DrawMixture::AlphabetRouteReuseDeduplicated => (0, 64),
                         DrawMixture::Energy { scale } => {
                             (core.mixture_energy.biased_weight(scale), 0)
                         }
@@ -2737,20 +2741,38 @@ where
                                     actions,
                                 }) => {
                                     let tail_postcard = postcard::to_allocvec(&actions)?;
-                                    (
-                                        Some(actions),
-                                        Some(CampaignSpliceRecord::Tail {
-                                            donor_id: core
-                                                .archive
-                                                .stable_id(donor_id)
-                                                .ok_or("splice donor slot is missing")?,
-                                            leaf_id: core
-                                                .archive
-                                                .stable_id(leaf_id)
-                                                .ok_or("splice leaf slot is missing")?,
-                                            tail_postcard,
-                                        }),
-                                    )
+                                    let donor_id = core
+                                        .archive
+                                        .stable_id(donor_id)
+                                        .ok_or("splice donor slot is missing")?;
+                                    let leaf_id = core
+                                        .archive
+                                        .stable_id(leaf_id)
+                                        .ok_or("splice leaf slot is missing")?;
+                                    let effective_cap =
+                                        SPLICE_ACTION_CAP.min(max_actions.saturating_sub(
+                                            core.archive.entries[parent_index].input_len,
+                                        ));
+                                    if config.mixture.deduplicates_routes()
+                                        && core.archive.repeated_route_attempt(
+                                            parent_id,
+                                            donor_id,
+                                            leaf_id,
+                                            effective_cap,
+                                            &tail_postcard,
+                                        )
+                                    {
+                                        (None, Some(CampaignSpliceRecord::RepeatedRoute))
+                                    } else {
+                                        (
+                                            Some(actions),
+                                            Some(CampaignSpliceRecord::Tail {
+                                                donor_id,
+                                                leaf_id,
+                                                tail_postcard,
+                                            }),
+                                        )
+                                    }
                                 }
                                 None => (None, Some(CampaignSpliceRecord::Unavailable)),
                             }
@@ -3489,10 +3511,20 @@ where
     let mut required_draw_versions = DrawVersionSchedule::default();
     let mut replay_job_parents = Vec::<u64>::new();
     let mut replay_job_metadata = Vec::<Vec<u64>>::new();
-    let route_reuse_stream = header.mixture_policy == "alphabet_route_reuse_v1";
+    let recorded_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
+    let route_reuse_stream = recorded_mixture.uses_route_reuse();
     for (index, line) in record_lines.iter().enumerate() {
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
             serde_json::from_str(line)?;
+        let splice = match &record {
+            CampaignStreamRecord::Job(job) => &job.splice,
+            CampaignStreamRecord::Skip(skip) => &skip.splice,
+        };
+        if matches!(splice, Some(CampaignSpliceRecord::RepeatedRoute))
+            && !recorded_mixture.deduplicates_routes()
+        {
+            return Err("repeated route evidence requires the deduplicating route policy".into());
+        }
         let before = match record {
             CampaignStreamRecord::Job(job) => {
                 replay_job_parents.push(job.parent_id);
@@ -3618,6 +3650,8 @@ where
         .enable_continuations(replay_mixture.uses_continuations());
     core.archive
         .enable_route_reuse(replay_mixture.uses_route_reuse());
+    core.archive
+        .enable_route_deduplication(replay_mixture.deduplicates_routes());
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()

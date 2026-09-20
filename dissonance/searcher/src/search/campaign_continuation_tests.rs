@@ -358,6 +358,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         (1, false, 2),
         (4, false, 2),
         (4, false, 3),
+        (4, false, 4),
     ] {
         let config = CampaignConfig {
             campaign_seed: 947,
@@ -378,6 +379,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
                 1 => DrawMixture::AlphabetContinuation,
                 2 => DrawMixture::EnergySpliceContinuationIsolated { scale: 6 },
                 3 => DrawMixture::AlphabetRouteReuse,
+                4 => DrawMixture::AlphabetRouteReuseDeduplicated,
                 _ => DrawMixture::EnergySpliceContinuation { scale: 6 },
             },
             retention: RetentionPolicy::Unprobed,
@@ -471,7 +473,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             .lines()
             .filter(|line| line.contains("\"tail_postcard\""))
             .count();
-        if mode == 3 {
+        if mode == 3 || mode == 4 {
             assert!(
                 route_count > 0,
                 "fixture must exercise route reuse dispatch"
@@ -540,6 +542,37 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
                 warm_cross_group_route,
                 "warm route reuse must dispatch an observed tail across exact archive groups"
             );
+            let repeated_route_count = text
+                .lines()
+                .filter(|line| line.contains("\"outcome\":\"repeated_route\""))
+                .count();
+            if mode == 4 {
+                assert!(
+                    repeated_route_count > 0,
+                    "deduplicating route policy must suppress at least one repeated route"
+                );
+            }
+            if mode == 3
+                && let Some(index) = text
+                    .lines()
+                    .position(|line| line.contains("\"outcome\":\"unavailable\""))
+            {
+                let mut corrupted = text.lines().map(str::to_owned).collect::<Vec<_>>();
+                corrupted[index] = corrupted[index].replace(
+                    "\"outcome\":\"unavailable\"",
+                    "\"outcome\":\"repeated_route\"",
+                );
+                assert!(
+                    replay_campaign_checkpointed(
+                        &TestWorkload,
+                        corrupted.join("\n").as_bytes(),
+                        None,
+                        None,
+                    )
+                    .is_err(),
+                    "old route policy accepted repeated-route evidence"
+                );
+            }
         } else {
             assert!(
                 continuation_count > 0,
@@ -639,7 +672,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             replay_campaign_checkpointed(&TestWorkload, &bounded_stream, None, None).unwrap(),
             (bounded, bounded_checkpoint)
         );
-        let tampered_identifier = if mode == 3 {
+        let tampered_identifier = if mode == 3 || mode == 4 {
             "not_a_mixture"
         } else {
             "alphabet_only"
@@ -656,7 +689,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         let line = lines
             .iter_mut()
             .find(|line| {
-                if mode == 3 {
+                if mode == 3 || mode == 4 {
                     line.contains("\"event\":\"job\"") && line.contains("\"tail_postcard\"")
                 } else {
                     line.contains("\"path\":\"continuation\"")
@@ -670,7 +703,7 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
                 .is_err()
         );
-        if mode == 3 {
+        if mode == 3 || mode == 4 {
             let mut provenance_lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
             let provenance_line = provenance_lines
                 .iter_mut()

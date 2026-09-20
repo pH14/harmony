@@ -613,6 +613,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     live_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
     route_donors: BTreeMap<K::Group, BTreeSet<DonorRank<K>>>,
     route_donor_memory_bytes: usize,
+    route_attempts: Option<crate::search::route_attempts::RouteAttempts>,
     preserve_inactive_snapshots: bool,
     adaptive_horizon: bool,
     route_reuse: bool,
@@ -1153,6 +1154,7 @@ where
             live_skip_groups: BTreeMap::new(),
             route_donors: BTreeMap::new(),
             route_donor_memory_bytes: 0,
+            route_attempts: None,
             preserve_inactive_snapshots: false,
             adaptive_horizon: false,
             route_reuse: false,
@@ -1191,6 +1193,23 @@ where
 
     pub(crate) fn enable_adaptive_horizon(&mut self, enabled: bool) {
         self.adaptive_horizon = enabled;
+    }
+
+    pub(crate) fn enable_route_deduplication(&mut self, enabled: bool) {
+        self.route_attempts = enabled.then(crate::search::route_attempts::RouteAttempts::new);
+    }
+
+    pub(crate) fn repeated_route_attempt(
+        &mut self,
+        parent: u64,
+        donor: u64,
+        leaf: u64,
+        cap: usize,
+        tail: &[u8],
+    ) -> bool {
+        self.route_attempts
+            .as_mut()
+            .is_some_and(|attempts| attempts.repeated(parent, donor, leaf, cap, tail))
     }
 
     pub(crate) fn enable_route_reuse(&mut self, enabled: bool) {
@@ -1888,6 +1907,11 @@ where
         self.novelty_memory_bytes()
             .saturating_add(self.barren_memory_bytes())
             .saturating_add(self.route_donor_memory_bytes())
+            .saturating_add(if self.route_attempts.is_some() {
+                crate::search::route_attempts::ROUTE_ATTEMPTS_MEMORY_RESERVE_BYTES
+            } else {
+                0
+            })
     }
 
     fn route_donor_entry_memory_charge() -> usize {

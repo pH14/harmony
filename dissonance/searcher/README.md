@@ -335,6 +335,26 @@ Live route insertions use the same walk. Rebuilding this opt-in index
 costs the total retained input-prefix depth, while the route-disabled path
 keeps the original parent-chain update.
 
+`alphabet_route_reuse_deduplicated_v1` keeps the same 25% route-attempt share
+and alphabet fallback, but suppresses recently attempted exact tails. Its
+campaign-local FIFO holds at most 4,096 identities and 1 MiB of serialized
+payload, with a conservative fixed 2 MiB charge in archive history memory.
+An identity includes stable parent, donor and leaf IDs, the effective action
+cap, and exact serialized actions. Oversized payloads bypass the cache.
+Attempts are remembered at reservation, so in-flight duplicates also fall back
+to alphabet draws. Duplicate hits do not refresh FIFO order; eviction permits
+later retries. Rejections remain remembered until eviction: this is an
+experimental allocation choice because archive churn can make a previously
+rejected outcome useful. The cache starts empty on archive import and does
+not pin donor metadata or snapshots.
+
+The stream records suppression as `repeated_route`; verification replay uses
+that recorded alphabet fallback and charges the same reserve. It verifies the
+executed behavior and resulting archive, not the live cache's selection
+decision. Old route, ordinary splice, and continuation policies do not enable
+this cache. Both route policy identifiers retain the metadata required to
+validate actual donated tails during replay.
+
 These are experiments, not new defaults. Promote policies based on paired workload
 panels, fresh completion results, and resource costs through
 [`benchmarks/search`](../../benchmarks/search/README.md). The generic resource

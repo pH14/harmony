@@ -81,6 +81,7 @@ pub enum DrawMixture {
     },
     AlphabetContinuation,
     AlphabetRouteReuse,
+    AlphabetRouteReuseDeduplicated,
     EnergySpliceContinuationIsolated {
         scale: u64,
     },
@@ -103,8 +104,15 @@ impl DrawMixture {
         )
     }
 
+    pub(crate) fn deduplicates_routes(self) -> bool {
+        matches!(self, Self::AlphabetRouteReuseDeduplicated)
+    }
+
     pub(crate) fn uses_route_reuse(self) -> bool {
-        matches!(self, Self::AlphabetRouteReuse)
+        matches!(
+            self,
+            Self::AlphabetRouteReuse | Self::AlphabetRouteReuseDeduplicated
+        )
     }
 }
 
@@ -135,6 +143,9 @@ pub(crate) fn draw_mixture_identifier(mixture: DrawMixture) -> String {
         DrawMixture::AlphabetOnly => MIXTURE_ALPHABET_ONLY_IDENTIFIER.to_owned(),
         DrawMixture::AlphabetContinuation => "alphabet_continuation_v1".to_owned(),
         DrawMixture::AlphabetRouteReuse => "alphabet_route_reuse_v1".to_owned(),
+        DrawMixture::AlphabetRouteReuseDeduplicated => {
+            "alphabet_route_reuse_deduplicated_v1".to_owned()
+        }
         DrawMixture::BiasedHalf => MIXTURE_BIASED_HALF_IDENTIFIER.to_owned(),
         DrawMixture::Energy { scale } => format!("{MIXTURE_ENERGY_PREFIX}{scale}"),
         DrawMixture::EnergySplice { scale } => format!("{MIXTURE_ENERGY_SPLICE_PREFIX}{scale}"),
@@ -174,6 +185,7 @@ pub fn draw_mixture_from_identifier(identifier: &str) -> Result<DrawMixture, Box
         MIXTURE_ALPHABET_ONLY_IDENTIFIER => Ok(DrawMixture::AlphabetOnly),
         "alphabet_continuation_v1" => Ok(DrawMixture::AlphabetContinuation),
         "alphabet_route_reuse_v1" => Ok(DrawMixture::AlphabetRouteReuse),
+        "alphabet_route_reuse_deduplicated_v1" => Ok(DrawMixture::AlphabetRouteReuseDeduplicated),
         MIXTURE_BIASED_HALF_IDENTIFIER => Ok(DrawMixture::BiasedHalf),
         _ => Err(format!("draw mixture {identifier} is not recognized").into()),
     }
@@ -271,6 +283,7 @@ where
         DrawMixture::AlphabetOnly
         | DrawMixture::AlphabetContinuation
         | DrawMixture::AlphabetRouteReuse
+        | DrawMixture::AlphabetRouteReuseDeduplicated
         | DrawMixture::BiasedHalf => None,
     };
     let length = match shape {
@@ -349,6 +362,7 @@ mod tests {
             DrawMixture::EnergySpliceContinuation { scale: 6 },
             DrawMixture::AlphabetContinuation,
             DrawMixture::AlphabetRouteReuse,
+            DrawMixture::AlphabetRouteReuseDeduplicated,
             DrawMixture::EnergySpliceContinuationIsolated { scale: 6 },
         ] {
             assert_eq!(
