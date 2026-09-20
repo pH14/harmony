@@ -21,8 +21,7 @@ use crate::{
         },
         target::{
             ButtonChord, Mm2Input, Mm2MechanicalState, Mm2Observations, Mm2Snapshot, Mm2Stage,
-            Mm2Target,
-            power_on_walk, preference_tuple, walk_to_stage_select,
+            Mm2Target, power_on_walk, preference_tuple, walk_to_stage_select,
         },
     },
     search::{

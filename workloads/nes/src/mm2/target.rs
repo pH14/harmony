@@ -3,9 +3,8 @@
 use std::{error::Error, io::Write, path::Path};
 
 use machine::{
-    nes,
-    quicknes::{QuickNesMachine, VideoFrame, QUICKNES_AUDIO_CHANNELS, QUICKNES_AUDIO_SAMPLE_RATE},
-    Machine, MachineError, SnapId, StopConditions,
+    Machine, MachineError, SnapId, StopConditions, nes,
+    quicknes::{QUICKNES_AUDIO_CHANNELS, QUICKNES_AUDIO_SAMPLE_RATE, QuickNesMachine, VideoFrame},
 };
 use serde::{Deserialize, Serialize};
 
@@ -2329,9 +2328,11 @@ mod tests {
         assert!(fighting.boss_fight_underway());
         wram[0xb1] = 3;
         assert_eq!(decode_state(&wram).expect("decode").boss_damage(), 8);
-        assert!(!decode_state(&[0_u8; WRAM_SIZE])
-            .expect("decode")
-            .boss_fight_underway());
+        assert!(
+            !decode_state(&[0_u8; WRAM_SIZE])
+                .expect("decode")
+                .boss_fight_underway()
+        );
         wram[0xb1] = 0xfe;
         wram[0x6c1] = 0;
         let dead = decode_state(&wram).expect("decode");
