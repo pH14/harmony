@@ -107,6 +107,12 @@ const KRAID_DEFEATED_BIT: u8 = 1;
 const RIDLEY_DEFEATED_BIT: u8 = 2;
 const STATUE_RAISED_BIT: u8 = 0x80;
 const ENDING: usize = 0x883;
+const MOTHER_BRAIN_STATUS: usize = 0x98;
+const MOTHER_BRAIN_HITS: usize = 0x99;
+const MOTHER_BRAIN_IN_ROOM: u8 = 1;
+const MOTHER_BRAIN_HIT: u8 = 2;
+const MOTHER_BRAIN_HITS_TO_KILL: u8 = 0x20;
+const AREA_TOURIAN: u8 = 0x13;
 const ENERGY_TANKS: usize = 0x877;
 
 const JOYPAD_START: u8 = 1 << 3;
@@ -209,13 +215,26 @@ fn mini_boss_health(wram: &[u8]) -> Result<u8, MachineError> {
     Ok(0)
 }
 
+fn boss_health(wram: &[u8], area: u8) -> Result<u8, MachineError> {
+    if area != AREA_TOURIAN {
+        return mini_boss_health(wram);
+    }
+    match read_byte(wram, MOTHER_BRAIN_STATUS)? {
+        MOTHER_BRAIN_IN_ROOM | MOTHER_BRAIN_HIT => {
+            Ok(MOTHER_BRAIN_HITS_TO_KILL.saturating_sub(read_byte(wram, MOTHER_BRAIN_HITS)?))
+        }
+        _ => mini_boss_health(wram),
+    }
+}
+
 pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalState, MachineError> {
     let (map_x, map_y) = samus_screen(wram)?;
+    let area = match read_byte(wram, AREA)? {
+        0 => AREA_BRINSTAR,
+        area => area,
+    };
     Ok(MetroidMechanicalState {
-        area: match read_byte(wram, AREA)? {
-            0 => AREA_BRINSTAR,
-            area => area,
-        },
+        area,
         map_x,
         map_y,
         x: read_byte(wram, SAMUS_X)?,
@@ -228,7 +247,7 @@ pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalSt
         missiles: read_byte(cartridge, MISSILES)?,
         missile_capacity: read_byte(cartridge, MISSILE_CAPACITY)?,
         energy_tanks: read_byte(cartridge, ENERGY_TANKS)?,
-        boss_health: mini_boss_health(wram)?,
+        boss_health: boss_health(wram, area)?,
         bosses: u8::from(boss_defeated(
             read_byte(cartridge, KRAID_STATUS)?,
             KRAID_DEFEATED_BIT,
@@ -1241,6 +1260,30 @@ mod boss_status_tests {
             let bosses = u8::from(boss_defeated(kraid, KRAID_DEFEATED_BIT))
                 + u8::from(boss_defeated(ridley, RIDLEY_DEFEATED_BIT));
             assert_eq!(bosses, counted);
+        }
+    }
+
+    #[test]
+    fn mother_brain_hits_read_as_boss_health_only_while_she_is_in_the_room() {
+        let cartridge = vec![0u8; CARTRIDGE_RAM_SIZE];
+        for (area, status, hits, expected) in [
+            (0x13, 0, 0, 0),
+            (0x13, 1, 0, 0x20),
+            (0x13, 2, 5, 0x1b),
+            (0x13, 2, 0x1f, 1),
+            (0x13, 3, 0x20, 0),
+            (0x13, 8, 0, 0),
+            (0x10, 1, 5, 0),
+        ] {
+            let mut wram = vec![0u8; 0x800];
+            wram[AREA] = area;
+            wram[MOTHER_BRAIN_STATUS] = status;
+            wram[MOTHER_BRAIN_HITS] = hits;
+            let state = decode_state(&wram, &cartridge).unwrap();
+            assert_eq!(
+                state.boss_health, expected,
+                "area {area:#x} status {status} hits {hits}"
+            );
         }
     }
 

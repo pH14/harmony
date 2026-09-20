@@ -67,6 +67,10 @@ declaration order no longer ranks anything: two places with equal items and
 equal boss damage are peers whatever their area byte, map row or column.
 
 Boss damage is how far a lineage has worn down the mini boss sharing its room.
+In Tourian the same coordinate reads Mother Brain: while her status byte at
+`$98` says she is in the room or has just been hit, boss health is 32 minus
+her hit count at `$99`, the count she dies at; outside Tourian and in her
+other states the mini-boss reading applies.
 The game keeps six enemy slots at `$0400`, sixteen bytes apart, with the current
 hit points at offset `$0b` and a mini-boss mark in bit 6 of offset `$0f`; `$ff`
 hit points mean the slot holds nothing that can be hurt. The key carries the
