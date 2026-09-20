@@ -80,6 +80,9 @@ impl Default for NamedProgress {
                     "kraid_room",
                     "ridley_room",
                     "tourian",
+                    "tourian_corridor",
+                    "tourian_far",
+                    "mother_brain_room",
                     "mother_brain_defeated",
                     "escape_started",
                     "kraid_defeated",
@@ -136,8 +139,17 @@ impl NamedProgress {
         if state.boss_health > 0 {
             match state.area {
                 0x12 => note("kraid_room"),
+                0x13 => note("mother_brain_room"),
                 0x14 => note("ridley_room"),
                 _ => {}
+            }
+        }
+        if state.area == 0x13 && state.map_y == 7 {
+            if state.map_x >= 5 {
+                note("tourian_corridor");
+            }
+            if state.map_x >= 8 {
+                note("tourian_far");
             }
         }
         if observation.boss_defeats.kraid {
@@ -252,6 +264,27 @@ mod tests {
             }
             assert_eq!(progress.first_seen[name].unwrap().execution, 12);
         }
+    }
+
+    #[test]
+    fn tourian_rooms_are_named_from_position_and_her_presence() {
+        let mut observation = observation(0, 0x13, 0x82, 0x82);
+        observation.decoded.map_x = 3;
+        observation.decoded.map_y = 7;
+        let mut progress = NamedProgress::default();
+        progress.observe(&observation, 1, 10);
+        assert!(progress.first_seen["tourian_corridor"].is_none());
+        assert!(progress.first_seen["mother_brain_room"].is_none());
+        observation.decoded.map_x = 5;
+        progress.observe(&observation, 2, 20);
+        assert!(progress.first_seen["tourian_corridor"].is_some());
+        assert!(progress.first_seen["tourian_far"].is_none());
+        observation.decoded.map_x = 8;
+        observation.decoded.boss_health = 32;
+        progress.observe(&observation, 3, 30);
+        assert!(progress.first_seen["tourian_far"].is_some());
+        assert!(progress.first_seen["mother_brain_room"].is_some());
+        assert!(progress.first_seen["mother_brain_defeated"].is_none());
     }
 
     #[test]

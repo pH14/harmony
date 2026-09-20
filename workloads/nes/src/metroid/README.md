@@ -156,7 +156,10 @@ say which neighbour of a reached cell was never opened.
 
 `workload_diagnostics.named_progress` reports Morph Ball, Bombs, Long Beam,
 High Jump, Screw Attack, Varia Suit, Wave Beam, and Ice Beam independently;
-Brinstar, Norfair, Kraid's area, Ridley's area, and Tourian independently; and
+Brinstar, Norfair, Kraid's area, Ridley's area, and Tourian independently;
+the Kraid door cell, the Kraid, Ridley and Mother Brain rooms (a boss health
+reading above zero in the boss's area), and Tourian's row-7 corridor at
+columns 5 and 8 as route markers; and
 Kraid defeated, Ridley defeated, Mother Brain defeated, escape started, and
 the ending independently. Mother Brain initialization is not defeat; its $98
 state machine is interpreted only in Tourian gameplay. Brief defeat/escape
