@@ -5,30 +5,30 @@ use std::{
     error::Error,
     ffi::OsString,
     fs,
-    io::{BufWriter, Write},
+    io::{BufWriter, Read, Write},
     path::PathBuf,
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use nes_workload::{
     mm2::{
         archive::{
-            selector_policy_from_identifier, Mm2ArchiveReport, MAX_ARCHIVE_ENTRIES, MAX_MM2_ACTIONS,
+            MAX_ARCHIVE_ENTRIES, MAX_MM2_ACTIONS, Mm2ArchiveReport, selector_policy_from_identifier,
         },
         campaign::{
-            replay_mm2_campaign_checkpointed, run_mm2_campaign_checkpointed, Mm2CampaignCheckpoint,
-            Mm2CampaignConfig, Mm2CampaignOrigin, Mm2CampaignRun, Mm2Game, Mm2SnapshotCheckpoint,
-            SNAPSHOT_CHECKPOINT_FORMAT,
+            Mm2CampaignCheckpoint, Mm2CampaignConfig, Mm2CampaignOrigin, Mm2CampaignRun, Mm2Game,
+            Mm2SnapshotCheckpoint, SNAPSHOT_CHECKPOINT_FORMAT, replay_mm2_campaign_checkpointed,
+            run_mm2_campaign_checkpointed,
         },
-        target::{power_on_walk, Mm2Input, Mm2MechanicalState, Mm2Stage, Mm2VideoMetadata},
+        target::{Mm2Input, Mm2MechanicalState, Mm2Stage, Mm2VideoMetadata, power_on_walk},
     },
     search::{
         archive::{
-            retention_policy_from_identifier, RetentionPolicy, RetireThresholds, SelectorPolicy,
+            RetentionPolicy, RetireThresholds, SelectorPolicy, retention_policy_from_identifier,
         },
         archive_manifest::ArchiveManifest,
         campaign::{Reporting, TargetExecution},
-        draw::{draw_mixture_from_identifier, DrawMixture, SuffixShape},
+        draw::{DrawMixture, SuffixShape, draw_mixture_from_identifier},
     },
     target::{ExitKind, Target},
 };
@@ -595,22 +595,26 @@ fn render_video(
     output: &std::path::Path,
     tail_frames: u32,
 ) -> Result<RenderedMedia, Box<dyn Error>> {
-    let video_path = output.join("best.rgb");
-    let audio_path = output.join("best.s16le");
-    let mut video_output = BufWriter::new(fs::File::create(&video_path)?);
-    let mut audio_output = BufWriter::new(fs::File::create(&audio_path)?);
+    let media_directory = tempfile::Builder::new()
+        .prefix("mm2-media-")
+        .tempdir_in(output)?;
+    let video_path = media_directory.path().join("video.mp4");
+    let audio_path = media_directory.path().join("audio.s16le");
+    let mp4_path = output.join("best.mp4");
     let mut target = game
         .new_target()
         .map_err(|error| -> Box<dyn Error> { error.into() })?;
-    let video = target.render_input(input, tail_frames, &mut video_output, &mut audio_output)?;
-    drop(video_output);
-    drop(audio_output);
-    let audio_pcm_sha256 = sha256(&fs::read(&audio_path)?);
-    let geometry = format!("{}x{}", video.width, video.height);
-    let sample_rate = video.audio_sample_rate.to_string();
-    let channels = video.audio_channels.to_string();
-    let mp4_path = output.join("best.mp4");
-    let status = Command::new("ffmpeg")
+    let geometry = target.render_input(
+        &Mm2Input {
+            actions: Vec::new(),
+        },
+        1,
+        &mut std::io::sink(),
+        &mut std::io::sink(),
+    )?;
+    let dimensions = format!("{}x{}", geometry.width, geometry.height);
+    let mut audio_output = BufWriter::new(fs::File::create(&audio_path)?);
+    let mut encoder = Command::new("ffmpeg")
         .args([
             "-hide_banner",
             "-loglevel",
@@ -621,8 +625,68 @@ fn render_video(
             "rgb24",
             "-video_size",
         ])
-        .arg(geometry)
-        .args(["-framerate", "60", "-i"])
+        .arg(dimensions)
+        .args([
+            "-framerate",
+            "60",
+            "-i",
+            "pipe:0",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-threads",
+            "1",
+            "-filter_threads",
+            "1",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-y",
+        ])
+        .arg(&video_path)
+        .stdin(Stdio::piped())
+        .spawn()?;
+    let Some(encoder_input) = encoder.stdin.take() else {
+        let _ = encoder.kill();
+        let _ = encoder.wait();
+        return Err("missing encoder input".into());
+    };
+    let mut video_output = BufWriter::new(encoder_input);
+    let rendered = target
+        .render_input(input, tail_frames, &mut video_output, &mut audio_output)
+        .and_then(|video| {
+            video_output.flush()?;
+            audio_output.flush()?;
+            Ok(video)
+        });
+    drop(video_output);
+    drop(audio_output);
+    let status = encoder.wait()?;
+    let video = rendered?;
+    if !status.success() {
+        return Err(format!("ffmpeg video encoder failed with {status}").into());
+    }
+    if (
+        video.width,
+        video.height,
+        video.audio_sample_rate,
+        video.audio_channels,
+    ) != (
+        geometry.width,
+        geometry.height,
+        geometry.audio_sample_rate,
+        geometry.audio_channels,
+    ) {
+        return Err("QuickNES media format changed after geometry probe".into());
+    }
+    let audio_pcm_sha256 = file_sha256(&audio_path)?;
+    let sample_rate = video.audio_sample_rate.to_string();
+    let channels = video.audio_channels.to_string();
+    let status = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
         .arg(&video_path)
         .args(["-f", "s16le", "-ar", &sample_rate, "-ac", &channels, "-i"])
         .arg(&audio_path)
@@ -632,15 +696,13 @@ fn render_video(
             "-map",
             "1:a:0",
             "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "18",
-            "-pix_fmt",
-            "yuv420p",
+            "copy",
             "-c:a",
             "aac",
+            "-threads",
+            "1",
+            "-filter_threads",
+            "1",
             "-b:a",
             "192k",
             "-af",
@@ -653,9 +715,9 @@ fn render_video(
         .arg(&mp4_path)
         .status()?;
     if !status.success() {
-        return Err(format!("ffmpeg failed with {status}").into());
+        return Err(format!("ffmpeg audio mux failed with {status}").into());
     }
-    let mp4_sha256 = sha256(&fs::read(&mp4_path)?);
+    let mp4_sha256 = file_sha256(&mp4_path)?;
     fs::write(
         output.join("video.json"),
         serde_json::to_vec_pretty(&json!({
@@ -664,13 +726,26 @@ fn render_video(
             "mp4_sha256": &mp4_sha256,
         }))?,
     )?;
-    fs::remove_file(video_path)?;
-    fs::remove_file(audio_path)?;
+    media_directory.close()?;
     Ok(RenderedMedia {
         video,
         audio_pcm_sha256,
         mp4_sha256,
     })
+}
+
+fn file_sha256(path: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    let mut file = fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 65_536];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -680,12 +755,71 @@ fn sha256(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        archive_manifest_path, campaign_config, resume_origin, Args, Mm2Game, OsString, PathBuf,
+        Args, Mm2Game, OsString, PathBuf, archive_manifest_path, campaign_config, resume_origin,
     };
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    #[ignore = "requires a ROM, QuickNES core, prior qualified media, and ffmpeg"]
+    fn streaming_video_preserves_raw_capture_metadata_and_audio() {
+        let reference = PathBuf::from(
+            std::env::var_os("HARMONY_MM2_REFERENCE_MEDIA_DIR").expect("reference directory"),
+        );
+        let rom = std::fs::read(std::env::var_os("HARMONY_MM2_ROM").expect("ROM path"))
+            .expect("ROM bytes");
+        let core = PathBuf::from(std::env::var_os("HARMONY_QUICKNES_CORE").expect("core path"));
+        let core_hash = super::file_sha256(&core).expect("core hash");
+        let game = Mm2Game::new_whole_game(&rom, &core, &core_hash);
+        let input = serde_json::from_slice(
+            &std::fs::read(reference.join("best-input.json")).expect("reference input"),
+        )
+        .expect("input JSON");
+        let original: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(reference.join("video.json")).expect("reference media"),
+        )
+        .expect("media JSON");
+        let output =
+            std::env::temp_dir().join(format!("mm2-streaming-video-test-{}", std::process::id()));
+        std::fs::create_dir_all(&output).expect("test output");
+        let rendered = super::render_video(&game, &input, &output, 180).expect("streaming replay");
+        assert_eq!(
+            serde_json::to_value(&rendered.video).expect("metadata JSON"),
+            original["video"]
+        );
+        assert_eq!(
+            rendered.audio_pcm_sha256,
+            original["audio_pcm_sha256"].as_str().expect("audio hash")
+        );
+        assert!(!output.join("best.rgb").exists());
+        assert!(!output.join("best-video.mp4").exists());
+        assert!(!output.join("best.s16le").exists());
+        let probe = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-count_frames",
+                "-show_entries",
+                "stream=nb_read_frames",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+            ])
+            .arg(output.join("best.mp4"))
+            .output()
+            .expect("ffprobe");
+        assert!(probe.status.success());
+        let frames: u64 = String::from_utf8(probe.stdout)
+            .expect("frame count UTF-8")
+            .trim()
+            .parse()
+            .expect("frame count");
+        assert_eq!(frames, rendered.video.frames);
+        std::fs::remove_dir_all(output).expect("remove test artifacts");
+    }
 
     fn required_args(extra: &[&str]) -> Vec<OsString> {
         let mut args = ["--core", "core", "--rom", "rom", "--output", "output"]
@@ -729,7 +863,7 @@ mod tests {
             vec!["--coherent-world"],
             vec![
                 "--selector",
-                "hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2,16",
+                "hierarchy_uniform_128_v2_energy_frontier_cheapest:3,6,12,2,16",
             ],
             vec!["--retention", "unprobed"],
             vec!["--mixture", "alphabet_only"],
