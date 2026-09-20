@@ -208,3 +208,72 @@ The persistent-horizon real intro probe now crosses the wait and reaches
 Alien phase 2, dealing 4 damage, where its control remains phase 1. Full
 report/snapshot replay passes. These rooted inputs diagnose the generic
 mechanism only; they remain excluded from the autonomous campaign.
+
+
+## Overnight evidence, 00:15 UTC September 20
+
+The persistent-horizon warm campaign added 500K jobs to the complete seed-2
+v26 archive: 84,689,265 frames, 232,493 active entries, first defeat marker at
+job 413797. It still has no acquired boss weapon. Independent film verification confirms a healthy Flash Man kill at raw
+frame 13,576 (HP2, lives2). The witness tape SHA-256 is
+`e38f75e6168071c48e2293121177cb1546187446479035f085d755dfb026bf41`.
+A diagnostic neutral tail reaches the Time Stopper award about 720 frames later;
+that tail is excluded from the qualifying archive.
+
+V27 corrects a separate observation defect: partial encounter damage was
+surviving player death and appearing in stage-selection contexts. Live combat
+now requires nonzero health and a non-death player state; intro health filling
+is still excluded from damage. Defeated phases remain separately authoritative.
+The adapter format/key identities were advanced, so old v26 archives cannot
+silently seed a v27 campaign. The preserved ending oracle still passes.
+
+The v27 control, with the persistent horizon and unchanged selector, passed a
+fresh 2K-job, two-worker full report/snapshot replay. Stream SHA-256:
+`0d9eed3ce0895dfe63653e41953d535236b84ef5548a344735b5997ca3965009`.
+A fresh seed-1 100K-job run follows with five workers and 12 GiB. A separately
+versioned pooled-recency core experiment is being qualified against this same
+adapter, rather than comparing across representation changes.
+
+Long tapes previously materialized every RGB frame on disk. The CLI now streams
+frames to a single-thread encoder, then muxes recorded PCM from a temporary
+directory. An external-media regression exactly matches the old renderer's
+frame metadata and PCM hash, checks the encoded frame count, and checks cleanup.
+It passed twice; targeted Clippy and real qualification passed. This is artifact
+handling, not action generation or hidden gameplay execution.
+
+A retention diagnostic replayed 128 identical random six-action suffixes from
+each member of three same-cell historical pairs (health 4/8, 4/8, and 8/12).
+The lower-health state produced greater maximum live damage in 2, 9, and 2
+suffixes; the higher-health state did so in 9, 9, and 26. Both members reached
+the same best damage per pair. These observations show aliased futures, but do
+not yet justify a general extra-holder policy or establish improved campaign
+reachability. Inputs, root hashes, and outcomes are preserved in the local
+`retention-pairs` bundle. None seed a qualifying campaign.
+
+
+The following complete-archive warm start uses the same v26 persistent-horizon
+binary, seed 2, two workers, and a further 500K-job budget. It independently
+records the Flash weapon bit (`0x20`) by progress sample 4500, after 940,729
+additional emulated frames. Its copied champion passed independent uninterrupted replay from power-on: 303
+actions, 14,373 frames, weapon bit `0x20`, HP2, lives2. Complete tape SHA-256:
+`6a38060323d6b5300be378ece5c6714bb29d9948c0f27d151aa48e61198f65aa`.
+No hand-authored waiting input or diagnostic root was imported.
+
+The long lab continuation comparison completed 900K additional jobs from each
+arm's own 100K archive. Control: 156,022,615 frames, first encounter at 373120,
+first defeat marker at 564502. Continuation arm: 154,407,487 frames, first
+encounter at 877469, no defeat. Together with the short probes, this does not
+support enabling the continuation mixture by default. The existing control
+binary continues on the lab from its entire autonomous archive; no newer source
+or binaries are uploaded.
+
+
+The isolated recency arm (`6255df86` plus the streaming-media CLI) passed fresh
+2K-job/two-worker and own-bundle warm-resume qualification. Stream SHA-256:
+`82ec38cf557e82536f486667d5a23a3182476f755a0b415ed3dfd2132cf4fa48`.
+Binary SHA-256:
+`cf925a20e1a03d7259b911161037d6a0d8864445e5f9ee33bad3a3a6e4ca90fb`.
+Its seed-1 100K-job, five-worker, 12-GiB comparison began at 00:26 UTC. The
+final-cell novelty policy is unchanged; the bounded new multiplier applies to
+equal-progress ties at the pooled depths. Persistent discovery age also survives
+compaction and archive import. This remains an experiment until outcome data.
