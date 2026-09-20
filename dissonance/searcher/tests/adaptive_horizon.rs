@@ -9,9 +9,10 @@ use searcher::search::{
     },
     campaign::{
         ArchiveReportState, CampaignActionResult, CampaignCheckpoint, CampaignConfig,
-        CampaignJobResult, CampaignOrigin, CampaignStreamRecord, CampaignTypes, Evaluation,
-        InputPolicy, Reporting, TargetExecution, WorkloadPolicies, replay_campaign_checkpointed,
-        run_campaign_checkpointed,
+        CampaignExecutionOptions, CampaignJobResult, CampaignOrigin, CampaignStreamRecord,
+        CampaignTypes, Evaluation, InputPolicy, Reporting, TargetExecution, WorkloadPolicies,
+        replay_campaign_checkpointed, run_campaign_checkpointed,
+        run_campaign_checkpointed_with_options,
     },
     draw::{DrawMixture, SuffixShape},
     empirical_steps::EmpiricalStepCheckpoint,
@@ -69,11 +70,13 @@ struct HorizonArchiveReport {
 #[derive(Default)]
 struct HorizonTarget {
     ticks: u8,
+    branch: u8,
     execution_work: u64,
 }
 
 struct HorizonWorkload {
     goal_after: u8,
+    distractors: bool,
 }
 
 impl CampaignTypes for HorizonWorkload {
@@ -82,7 +85,7 @@ impl CampaignTypes for HorizonWorkload {
     type Key = TickKey;
     type Milestones = ();
     type Progress = ();
-    type Snapshot = u8;
+    type Snapshot = (u8, u8);
     type Observations = ();
     type Evidence = ();
     type ArchiveReport = HorizonArchiveReport;
@@ -158,6 +161,7 @@ impl TargetExecution for HorizonWorkload {
 
     fn reset(&self, target: &mut Self::Target) {
         target.ticks = 0;
+        target.branch = 0;
     }
 
     fn restore(
@@ -165,7 +169,8 @@ impl TargetExecution for HorizonWorkload {
         target: &mut Self::Target,
         snapshot: &Self::Snapshot,
     ) -> Result<(), Box<dyn Error>> {
-        target.ticks = *snapshot;
+        target.ticks = snapshot.0;
+        target.branch = snapshot.1;
         Ok(())
     }
 
@@ -184,16 +189,23 @@ impl TargetExecution for HorizonWorkload {
     fn apply_action(
         &self,
         target: &mut Self::Target,
-        _: &Self::Action,
+        action: &Self::Action,
         _: &mut Self::Milestones,
     ) -> Result<(), Box<dyn Error>> {
+        if self.distractors && target.ticks == 0 {
+            target.branch = if action.0.is_multiple_of(2) {
+                0
+            } else {
+                action.0.saturating_add(1)
+            };
+        }
         target.ticks = target.ticks.saturating_add(1);
         target.execution_work = target.execution_work.saturating_add(1);
         Ok(())
     }
 
     fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
-        Ok(target.ticks)
+        Ok((target.ticks, target.branch))
     }
 }
 
@@ -207,10 +219,15 @@ impl Evaluation for HorizonWorkload {
         _: &Self::Run,
         target: &Self::Target,
     ) -> Result<bool, Box<dyn Error>> {
-        Ok(self.goal_after != 0 && target.ticks >= self.goal_after)
+        Ok(self.goal_after != 0
+            && target.ticks >= self.goal_after
+            && (!self.distractors || target.branch == 0))
     }
 
     fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
+        if self.distractors && target.branch != 0 {
+            return Ok(TickKey(target.branch));
+        }
         Ok(TickKey(u8::from(
             self.goal_after != 0 && target.ticks >= self.goal_after,
         )))
@@ -313,7 +330,10 @@ fn config(
 
 #[test]
 fn adaptive_horizon_crosses_wait_and_replays_exactly() {
-    let workload = HorizonWorkload { goal_after: 20 };
+    let workload = HorizonWorkload {
+        goal_after: 20,
+        distractors: false,
+    };
     let mut stream = Vec::new();
     let live = run_campaign_checkpointed(
         &workload,
@@ -353,7 +373,10 @@ fn adaptive_horizon_crosses_wait_and_replays_exactly() {
 
 #[test]
 fn adaptive_horizon_counters_survive_archive_import() {
-    let source_workload = HorizonWorkload { goal_after: 7 };
+    let source_workload = HorizonWorkload {
+        goal_after: 7,
+        distractors: false,
+    };
     let mut source_stream = Vec::new();
     let source = run_campaign_checkpointed(
         &source_workload,
@@ -378,17 +401,32 @@ fn adaptive_horizon_counters_survive_archive_import() {
         "source archive did not retain horizon feedback: {:?}",
         source.0.archive.entries
     );
+    let mut imported_report = source.0.archive.clone();
+    let imported_root = imported_report
+        .entries
+        .iter_mut()
+        .find(|entry| entry.key == TickKey(0))
+        .expect("imported root");
+    let imported_counters = imported_root
+        .selector
+        .as_mut()
+        .expect("imported selector counters");
+    imported_counters.horizon_unproductive = 20;
+    imported_counters.horizon_failed_extension = 0;
     let origin = CampaignOrigin::Archive {
         path: "adaptive-horizon-source.json".to_owned(),
         file_sha256: "source".to_owned(),
-        report: Box::new(source.0.archive.clone()),
+        report: Box::new(imported_report),
         checkpoint: Some(CampaignCheckpoint {
             path: "adaptive-horizon-source.snapshots".to_owned(),
             file_sha256: "snapshots".to_owned(),
             snapshots: source.1,
         }),
     };
-    let workload = HorizonWorkload { goal_after: 7 };
+    let workload = HorizonWorkload {
+        goal_after: 7,
+        distractors: false,
+    };
     let mut stream = Vec::new();
     run_campaign_checkpointed(
         &workload,
@@ -398,33 +436,109 @@ fn adaptive_horizon_counters_survive_archive_import() {
         None,
     )
     .expect("archive import campaign");
-    assert!(String::from_utf8_lossy(&stream).contains("adaptive_horizon_extension"));
+    let imported_extensions = stream
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .skip(1)
+        .map(|line| {
+            serde_json::from_slice::<CampaignStreamRecord<EmpiricalStepCheckpoint, TickKey>>(line)
+                .expect("import stream record")
+        })
+        .map(|record| match record {
+            CampaignStreamRecord::Job(job) => job.adaptive_horizon_extension,
+            CampaignStreamRecord::Skip(skip) => skip.adaptive_horizon_extension,
+        })
+        .collect::<Vec<_>>();
+    assert!(imported_extensions.iter().any(|extension| *extension > 0));
 }
 
 #[test]
 fn adaptive_horizon_cycles_without_growing_past_action_limit() {
-    let workload = HorizonWorkload { goal_after: 0 };
+    let workload = HorizonWorkload {
+        goal_after: 0,
+        distractors: false,
+    };
     let mut stream = Vec::new();
-    let live = run_campaign_checkpointed(
+    let live = run_campaign_checkpointed_with_options(
         &workload,
-        &config(4, SuffixShape::OneToSix, 1, 8),
+        &config(16, SuffixShape::OneToSix, 1, 8),
         &CampaignOrigin::Genesis,
         &mut stream,
         None,
+        CampaignExecutionOptions {
+            work_budget: Some(128),
+            ..CampaignExecutionOptions::default()
+        },
     )
     .expect("cycle campaign");
     assert_eq!(live.0.archive.entries.len(), 1);
-    assert!(live.0.execution_work <= 32);
+    assert!(live.0.execution_work <= 128);
     assert!(String::from_utf8_lossy(&stream).contains("adaptive_horizon_extension"));
     assert_eq!(live.0.archive.entries[0].input.actions.len(), 0);
+    let extensions = stream
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .skip(1)
+        .map(|line| {
+            serde_json::from_slice::<CampaignStreamRecord<EmpiricalStepCheckpoint, TickKey>>(line)
+                .expect("cycle stream record")
+        })
+        .map(|record| match record {
+            CampaignStreamRecord::Job(job) => job.adaptive_horizon_extension,
+            CampaignStreamRecord::Skip(skip) => skip.adaptive_horizon_extension,
+        })
+        .collect::<Vec<_>>();
+    let full_trial = extensions
+        .iter()
+        .position(|extension| *extension > 0 && !extension.is_power_of_two())
+        .expect("full-capacity horizon trial");
+    assert!(
+        extensions[full_trial.saturating_add(1)..]
+            .iter()
+            .all(|extension| *extension == 0)
+    );
     let replayed =
         replay_campaign_checkpointed(&workload, &stream, None, None).expect("cycle replay");
     assert_eq!(replayed, live);
 }
 
 #[test]
+fn adaptive_horizon_reactivates_through_a_large_distractor_archive() {
+    let workload = HorizonWorkload {
+        goal_after: 20,
+        distractors: true,
+    };
+    let mut stream = Vec::new();
+    let live = run_campaign_checkpointed(
+        &workload,
+        &CampaignConfig {
+            archive_entry_limit: 256,
+            ..config(2048, SuffixShape::OneToSix, 2, 64)
+        },
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+    )
+    .expect("distractor campaign");
+    assert!(live.0.archive.entries.len() >= 32);
+    assert!(
+        live.0
+            .archive
+            .entries
+            .iter()
+            .any(|entry| entry.key == TickKey(1) && entry.input.actions.len() >= 20)
+    );
+    let replayed =
+        replay_campaign_checkpointed(&workload, &stream, None, None).expect("distractor replay");
+    assert_eq!(replayed, live);
+}
+
+#[test]
 fn bounded_suffix_keeps_its_existing_work_bound() {
-    let workload = HorizonWorkload { goal_after: 20 };
+    let workload = HorizonWorkload {
+        goal_after: 20,
+        distractors: false,
+    };
     let mut stream = Vec::new();
     let live = run_campaign_checkpointed(
         &workload,
@@ -444,7 +558,10 @@ fn bounded_suffix_keeps_its_existing_work_bound() {
 
 #[test]
 fn adaptive_horizon_replays_with_reservation_lag_and_variable_extensions() {
-    let workload = HorizonWorkload { goal_after: 20 };
+    let workload = HorizonWorkload {
+        goal_after: 20,
+        distractors: false,
+    };
     let mut stream = Vec::new();
     let live = run_campaign_checkpointed(
         &workload,

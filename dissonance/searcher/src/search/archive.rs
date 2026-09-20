@@ -407,6 +407,8 @@ pub struct EntrySelectorCounters {
     pub productive: u64,
     #[serde(default)]
     pub horizon_unproductive: u64,
+    #[serde(default)]
+    pub horizon_failed_extension: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -591,6 +593,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     productive: Vec<u64>,
     since_retained: Vec<u64>,
     horizon_unproductive: Vec<u64>,
+    horizon_failed_extension: Vec<usize>,
     in_window_ever: Vec<bool>,
     opened_slot: Vec<bool>,
     opened_depths: Vec<u32>,
@@ -614,6 +617,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     active_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
     live_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
     preserve_inactive_snapshots: bool,
+    adaptive_horizon: bool,
     metadata_pins: BTreeMap<u64, u32>,
     inflight_snapshot_pins: BTreeMap<u64, u32>,
     inflight_snapshot_charges: BTreeMap<u64, usize>,
@@ -1122,6 +1126,7 @@ where
             productive: Vec::new(),
             since_retained: Vec::new(),
             horizon_unproductive: Vec::new(),
+            horizon_failed_extension: Vec::new(),
             in_window_ever: Vec::new(),
             opened_slot: Vec::new(),
             opened_depths: Vec::new(),
@@ -1151,6 +1156,7 @@ where
             active_skip_groups: BTreeMap::new(),
             live_skip_groups: BTreeMap::new(),
             preserve_inactive_snapshots: false,
+            adaptive_horizon: false,
             metadata_pins: BTreeMap::new(),
             inflight_snapshot_pins: BTreeMap::new(),
             inflight_snapshot_charges: BTreeMap::new(),
@@ -1182,6 +1188,10 @@ where
     pub(crate) fn set_memory_budget(&mut self, bytes: usize, charge: fn(&S) -> usize) {
         self.memory_limit = Some(bytes);
         self.snapshot_memory_charge = Some(charge);
+    }
+
+    pub(crate) fn enable_adaptive_horizon(&mut self, enabled: bool) {
+        self.adaptive_horizon = enabled;
     }
 
     pub(crate) fn establish_liveness_anchor(&mut self, max_actions: usize) {
@@ -1532,6 +1542,8 @@ where
         self.since_retained = retain_marked(std::mem::take(&mut self.since_retained), &keep);
         self.horizon_unproductive =
             retain_marked(std::mem::take(&mut self.horizon_unproductive), &keep);
+        self.horizon_failed_extension =
+            retain_marked(std::mem::take(&mut self.horizon_failed_extension), &keep);
         self.in_window_ever = retain_marked(std::mem::take(&mut self.in_window_ever), &keep);
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.opened_depths = retain_marked(std::mem::take(&mut self.opened_depths), &keep);
@@ -1822,7 +1834,7 @@ where
             .saturating_add(size_of::<K::Lineage>())
             .saturating_add(size_of::<(K, usize)>())
             .saturating_add(5_usize.saturating_mul(size_of::<u64>()))
-            .saturating_add(4_usize.saturating_mul(size_of::<usize>()))
+            .saturating_add(5_usize.saturating_mul(size_of::<usize>()))
             .saturating_add(128)
             .saturating_add(new_nodes.saturating_mul(Self::prefix_node_memory_charge()))
     }
@@ -2196,11 +2208,41 @@ where
 
     #[must_use]
     pub(crate) fn adaptive_horizon_extension(&self, id: usize, remaining_actions: usize) -> usize {
-        self.horizon_unproductive
-            .get(id)
-            .copied()
-            .and_then(|streak| usize::try_from(streak).ok())
-            .map_or(0, |streak| streak.min(remaining_actions))
+        if !self.adaptive_horizon || !self.adaptive_horizon_retry_available(id) {
+            return 0;
+        }
+        let Some(streak) = self.horizon_unproductive.get(id).copied() else {
+            return 0;
+        };
+        if streak == 0 {
+            return 0;
+        }
+        let shift = u32::try_from(streak.saturating_sub(1)).unwrap_or(u32::MAX);
+        let growth = 1_usize.checked_shl(shift);
+        growth.unwrap_or(usize::MAX).min(remaining_actions)
+    }
+
+    fn adaptive_horizon_retry_available(&self, id: usize) -> bool {
+        if !self.adaptive_horizon {
+            return false;
+        }
+        let Some(streak) = self.horizon_unproductive.get(id).copied() else {
+            return false;
+        };
+        if streak == 0 {
+            return false;
+        }
+        let Some(max_actions) = self.frontier_cap else {
+            return false;
+        };
+        let remaining = max_actions.saturating_sub(self.entries[id].input_len);
+        if remaining == 0 {
+            return false;
+        }
+        if self.horizon_failed_extension[id] >= remaining {
+            return false;
+        }
+        true
     }
 
     pub(crate) fn restore_selector_counters(
@@ -2217,6 +2259,7 @@ where
         self.selected[id] = counters.selected;
         self.productive[id] = counters.productive;
         self.horizon_unproductive[id] = counters.horizon_unproductive;
+        self.horizon_failed_extension[id] = counters.horizon_failed_extension;
         Ok(())
     }
 
@@ -2485,6 +2528,7 @@ where
         self.productive.push(0);
         self.since_retained.push(0);
         self.horizon_unproductive.push(0);
+        self.horizon_failed_extension.push(0);
         self.in_window_ever.push(false);
         self.opened_slot.push(new_slot);
         let opened = u32::from(new_slot) | self.record_discovery_ordinals(key);
@@ -3145,10 +3189,11 @@ where
     }
 
     fn entry_unexhausted(&self, id: usize) -> bool {
-        if self.since_retained[id] >= SELECTION_EXHAUSTION_THRESHOLD {
+        let horizon_retry = self.adaptive_horizon_retry_available(id);
+        if self.since_retained[id] >= SELECTION_EXHAUSTION_THRESHOLD && !horizon_retry {
             return false;
         }
-        match &self.selector_policy {
+        let ordinary = match &self.selector_policy {
             SelectorPolicy::GroupUniform => true,
             SelectorPolicy::Retire(thresholds)
             | SelectorPolicy::EnergyFrontierCheapest(thresholds)
@@ -3156,7 +3201,8 @@ where
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
-        }
+        };
+        ordinary || horizon_retry
     }
 
     fn groups_unexhausted(&self, key: K) -> bool {
@@ -3530,14 +3576,37 @@ where
     }
 
     pub fn record_selection_outcome(&mut self, id: usize, retained_descendant: bool, opened: u32) {
+        self.record_selection_outcome_with_horizon(id, retained_descendant, opened, 0, false, 0);
+    }
+
+    pub fn record_selection_outcome_with_horizon(
+        &mut self,
+        id: usize,
+        retained_descendant: bool,
+        opened: u32,
+        adaptive_extension: usize,
+        adaptive_full_capacity: bool,
+        max_actions: usize,
+    ) {
         if !retained_descendant {
             self.horizon_unproductive[id] = self.horizon_unproductive[id].saturating_add(1);
+            let failed_extension = if adaptive_full_capacity {
+                self.frontier_cap
+                    .unwrap_or(max_actions)
+                    .saturating_sub(self.entries[id].input_len)
+            } else {
+                adaptive_extension
+            };
+            self.horizon_failed_extension[id] =
+                self.horizon_failed_extension[id].max(failed_extension);
+            self.set_entry_sampleable(id, self.entry_unexhausted(id));
             return;
         }
         let was_sampleable = self.entry_unexhausted(id);
         self.productive[id] = self.productive[id].saturating_add(1);
         self.since_retained[id] = 0;
         self.horizon_unproductive[id] = 0;
+        self.horizon_failed_extension[id] = 0;
         if !was_sampleable && self.entry_unexhausted(id) {
             self.set_entry_sampleable(id, true);
         }
@@ -3647,6 +3716,7 @@ where
                     selected: self.selected[id],
                     productive: self.productive[id],
                     horizon_unproductive: self.horizon_unproductive[id],
+                    horizon_failed_extension: self.horizon_failed_extension[id],
                 }),
                 discovery_ordinals: self.discovery_ordinals_for_key(entry.key),
             };

@@ -204,8 +204,12 @@ work changes that replay rejects. It does not measure a workload speedup.
 
 Ordinary `OneToSix` suffixes extend after barren selection feedback. The
 searcher keeps a persistent per-entry streak of admissions that retain no
-descendant and appends that many deterministic alphabet actions to the
-ordinary suffix, capped by the remaining action-limit capacity. Selector
+descendant and appends a geometric deterministic alphabet horizon to the
+ordinary suffix: streaks one, two, three, and four request one, two, four, and
+eight actions. The extension is capped by the remaining action-limit capacity.
+An entry that reaches ordinary retirement remains eligible only through this
+bounded horizon retry window; after a failed full-capacity trial it returns to
+the short uniform floor and future retries carry no extension. Selector
 counter-window resets do not clear this streak; a retained descendant resets
 it. The archive representative stays unchanged; the appended actions execute
 and count as ordinary logical work, and replay reconstructs them from the
@@ -225,8 +229,9 @@ This is a fixed engine policy rather than a workload or runtime knob. It can
 cross waits that produce no new key at the cost of longer rollouts from barren
 parents, while the action limit bounds each rollout and the work counter charges
 every appended action. The engine schema version identifies the semantics, and
-the generic regression fixture covers a seven-step wait, a same-key cycle, the
-bounded shape, and exact live/replay equality.
+the campaign schema is version 7. The generic regression fixture covers a
+seven-step wait, a large distractor archive, a same-key cycle with charged work,
+the bounded shape, archive import, and exact live/replay equality.
 
 ## Search evaluation policies
 

@@ -48,7 +48,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 6;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 7;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
@@ -652,6 +652,8 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub splice_weight: u8,
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub adaptive_horizon_extension: usize,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub adaptive_horizon_full_capacity: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub splice: Option<CampaignSpliceRecord>,
 
@@ -827,6 +829,10 @@ fn is_zero_u64(value: &u64) -> bool {
 
 fn is_zero_usize(value: &usize) -> bool {
     *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn archive_entry_limit_is_valid(limit: usize) -> bool {
@@ -2129,6 +2135,7 @@ struct PendingJob<G: Workload + ?Sized> {
     mixture_weight: u8,
     splice_weight: u8,
     adaptive_horizon_extension: usize,
+    adaptive_horizon_full_capacity: bool,
     splice: Option<CampaignSpliceRecord>,
     selector: SelectorDraw,
     draw_checkpoint_before: Option<EmpiricalStepCheckpoint>,
@@ -2478,6 +2485,8 @@ where
     );
     core.archive.selector_policy = config.selector.clone();
     core.archive
+        .enable_adaptive_horizon(config.suffix.adaptive_horizon());
+    core.archive
         .enable_continuations(config.mixture.uses_continuations());
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = workload.new_target().map_err(|error| -> Box<dyn Error> {
@@ -2659,6 +2668,7 @@ where
                                 mixture_weight,
                                 splice_weight,
                                 adaptive_horizon_extension: 0,
+                                adaptive_horizon_full_capacity: false,
                                 splice,
                                 selector,
                                 draw_checkpoint_before,
@@ -2798,6 +2808,11 @@ where
                             .saturating_sub(core.archive.entries[parent_index].input_len)
                             .saturating_sub(suffix.len()),
                     );
+                    let remaining_after_suffix = max_actions
+                        .saturating_sub(core.archive.entries[parent_index].input_len)
+                        .saturating_sub(suffix.len());
+                    let adaptive_horizon_full_capacity =
+                        extension != 0 && extension == remaining_after_suffix;
                     extend_suffix_with_horizon(
                         workload,
                         &config.run,
@@ -2863,6 +2878,7 @@ where
                             mixture_weight,
                             splice_weight,
                             adaptive_horizon_extension: extension,
+                            adaptive_horizon_full_capacity,
                             splice,
                             selector,
                             draw_checkpoint_before,
@@ -3042,10 +3058,13 @@ where
                         .iter()
                         .fold(0, |mask, id| mask | core.archive.opened_depths(*id));
                     if !isolated_continuation {
-                        core.archive.record_selection_outcome(
+                        core.archive.record_selection_outcome_with_horizon(
                             parent_index,
                             !retained_ids.is_empty(),
                             opened_depths,
+                            pending_job.adaptive_horizon_extension,
+                            pending_job.adaptive_horizon_full_capacity,
+                            max_actions,
                         );
                     }
                     record_mixture_outcome(
@@ -3108,6 +3127,7 @@ where
                         mixture_weight: pending_job.mixture_weight,
                         splice_weight: pending_job.splice_weight,
                         adaptive_horizon_extension: pending_job.adaptive_horizon_extension,
+                        adaptive_horizon_full_capacity: pending_job.adaptive_horizon_full_capacity,
                         splice: pending_job.splice,
                         selector: pending_job.selector,
                         draw_checkpoint_before: pending_job.draw_checkpoint_before,
@@ -3551,6 +3571,8 @@ where
     core.bounded_progress_curve = true;
     core.archive.selector_policy = replay_selector.clone();
     core.archive
+        .enable_adaptive_horizon(replay_suffix.adaptive_horizon());
+    core.archive
         .enable_continuations(replay_mixture.uses_continuations());
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = workload.new_target().map_err(|error| -> Box<dyn Error> {
@@ -3884,6 +3906,11 @@ where
                     .action_limit
                     .saturating_sub(core.archive.entries[parent_index].input_len)
                     .saturating_sub(suffix.len());
+                let adaptive_horizon_full_capacity = job.adaptive_horizon_extension != 0
+                    && job.adaptive_horizon_extension == remaining_actions;
+                if adaptive_horizon_full_capacity != job.adaptive_horizon_full_capacity {
+                    return Err("recorded adaptive horizon capacity marker diverged".into());
+                }
                 extend_recorded_suffix_with_horizon(
                     workload,
                     &replay_run,
@@ -4009,12 +4036,15 @@ where
                 } else {
                     core.archive.record_selection(parent_index, &job.selector);
                     let retained_ids = retained_archive_indexes(&core, &decisions);
-                    core.archive.record_selection_outcome(
+                    core.archive.record_selection_outcome_with_horizon(
                         parent_index,
                         !retained_ids.is_empty(),
                         retained_ids
                             .iter()
                             .fold(0, |mask, id| mask | core.archive.opened_depths(*id)),
+                        job.adaptive_horizon_extension,
+                        job.adaptive_horizon_full_capacity,
+                        header.action_limit,
                     );
                 }
                 core.archive.unpin_job_origin(snapshot_id);
@@ -4909,7 +4939,7 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":6,"format":"campaign-v1","campaign_seed":7,"workers":2,
+    const RECORDED_HEADER: &str = r#"{"schema_version":7,"format":"campaign-v1","campaign_seed":7,"workers":2,
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
