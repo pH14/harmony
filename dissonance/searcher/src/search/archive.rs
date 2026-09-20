@@ -2136,7 +2136,7 @@ where
     }
 
     fn insert_route_donor(&mut self, id: usize, leaf: (K, usize)) {
-        if !self.route_reuse {
+        if !self.route_reuse || !self.active.get(id).copied().unwrap_or(false) {
             return;
         }
         let Some(context) = self.entries[id].key.route_context() else {
@@ -5762,6 +5762,46 @@ mod tests {
             })
             .sum::<usize>();
         assert_eq!(archive.route_donor_memory_bytes(), full_route_memory_sum);
+        archive.enable_route_reuse(false);
+        assert_eq!(archive.route_donor_memory_bytes(), 0);
+    }
+
+    #[test]
+    fn route_donor_index_does_not_readd_inactive_ancestors() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.enable_route_reuse(true);
+        let insert = |archive: &mut Archive<u8, FlatKey<3>, (), ()>,
+                      parent: Option<usize>,
+                      components: [u16; 4],
+                      actions: Vec<u8>| {
+            let parent_len = parent.map_or(0, |id| archive.entries[id].input_len);
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix: actions[parent_len..].to_vec(),
+                        key: FlatKey(components),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert route entry")
+                .expect("retain route entry")
+        };
+        let donor = insert(&mut archive, None, [1, 2, 3, 4], vec![0]);
+        let middle = insert(&mut archive, Some(donor), [1, 2, 3, 6], vec![0, 1]);
+        let parent = insert(&mut archive, None, [9, 2, 3, 4], vec![9]);
+        archive.rebuild_selector_index(MAX_COMPLETION_ACTIONS);
+        assert!(archive.deactivate(donor));
+        assert!(archive.deactivate(middle));
+        insert(&mut archive, Some(middle), [1, 9, 3, 8], vec![0, 1, 2]);
+        assert!(
+            archive
+                .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+                .is_none(),
+            "inactive ancestors must not become route donors when a descendant advances"
+        );
     }
 
     #[test]
