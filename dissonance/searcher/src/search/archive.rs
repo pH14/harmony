@@ -167,7 +167,7 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "hierarchy_uniform_128";
+pub const SELECTOR_IDENTIFIER: &str = "hierarchy_uniform_128_v2";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetireThresholds {
@@ -284,8 +284,6 @@ const CONCENTRATION_WINDOW: usize = 128;
 const CHEAPEST_RANK_SCALE: usize = 4;
 
 const CELL_NOVELTY_DRAWS: u64 = 4;
-
-const CELL_NOVELTY_RANK_SCALE: usize = 8;
 
 const CLASS_RANK_CAP: u8 = 8;
 const CLASS_RANK_SHIFT: u32 = 3;
@@ -423,6 +421,8 @@ pub struct ArchiveEntryReport<A: Ord, K, M> {
     pub milestones: M,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<EntrySelectorCounters>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discovery_ordinals: Vec<u64>,
 }
 
 pub mod entries_by_suffix {
@@ -448,6 +448,8 @@ pub mod entries_by_suffix {
         milestones: M,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         selector: Option<EntrySelectorCounters>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        discovery_ordinals: Vec<u64>,
     }
 
     pub fn serialize<S, A, K, M>(
@@ -486,6 +488,7 @@ pub mod entries_by_suffix {
                     key: entry.key,
                     milestones: entry.milestones.clone(),
                     selector: entry.selector,
+                    discovery_ordinals: entry.discovery_ordinals.clone(),
                 }
             })
             .collect();
@@ -536,6 +539,7 @@ pub mod entries_by_suffix {
                 key: wire.key,
                 milestones: wire.milestones,
                 selector: wire.selector,
+                discovery_ordinals: wire.discovery_ordinals,
             });
         }
         Ok(entries)
@@ -589,6 +593,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     opened_slot: Vec<bool>,
     opened_depths: Vec<u32>,
     groups_seen: Vec<BTreeSet<K::Group>>,
+    discovery_ordinals: Vec<BTreeMap<K::Group, u64>>,
+    next_discovery_ordinal: u64,
     selector_accounting: SelectorAccounting,
     cost_in_group: Vec<u64>,
     replacement_cost_displaced: u64,
@@ -642,7 +648,7 @@ struct CellMembers<K: ArchiveKey> {
     ids: BTreeSet<usize>,
     sampleable: BTreeSet<usize>,
     donors: BTreeSet<DonorRank<K>>,
-    opened: usize,
+    opened: u64,
     drawn: u64,
 }
 
@@ -697,7 +703,7 @@ impl<K: ArchiveKey> Default for CellMembers<K> {
 }
 
 impl<K: ArchiveKey> CellMembers<K> {
-    fn novelty(&self) -> Option<usize> {
+    fn novelty(&self) -> Option<u64> {
         (self.drawn < CELL_NOVELTY_DRAWS).then_some(self.opened)
     }
 }
@@ -1118,6 +1124,8 @@ where
             opened_slot: Vec::new(),
             opened_depths: Vec::new(),
             groups_seen: vec![BTreeSet::new(); K::groups().saturating_sub(1)],
+            discovery_ordinals: vec![BTreeMap::new(); K::groups().saturating_sub(1)],
+            next_discovery_ordinal: 1,
             selector_accounting: SelectorAccounting {
                 concentration: ConcentrationAccounting {
                     window_cap: u64::try_from(CONCENTRATION_WINDOW).unwrap_or(u64::MAX),
@@ -1537,12 +1545,21 @@ where
         self.drop_hand = 0;
 
         for (offset, seen) in self.groups_seen.iter_mut().enumerate() {
-            *seen = self
+            let live_groups = self
                 .entries
                 .iter()
                 .zip(&self.active)
                 .filter_map(|(entry, active)| active.then_some(entry.key.group(offset + 1)))
                 .collect();
+            *seen = live_groups;
+            self.discovery_ordinals[offset].retain(|group, _| seen.contains(group));
+            for group in seen.iter().copied() {
+                if !self.discovery_ordinals[offset].contains_key(&group) {
+                    let ordinal = self.next_discovery_ordinal;
+                    self.next_discovery_ordinal = self.next_discovery_ordinal.saturating_add(1);
+                    self.discovery_ordinals[offset].insert(group, ordinal);
+                }
+            }
         }
         for (offset, barren) in self.group_barren.iter_mut().enumerate() {
             let live_groups = self
@@ -1994,6 +2011,12 @@ where
         let key = self.entries[id].key;
         let class = ProgressOrdered::<K>(key.group(Self::class_depth()));
         let cell = key.group(Self::cell_depth());
+        let opened_ordinal = Self::cell_depth()
+            .checked_sub(1)
+            .and_then(|offset| self.discovery_ordinals.get(offset))
+            .and_then(|ordinals| ordinals.get(&cell))
+            .copied()
+            .unwrap_or(0);
         let sampleable = self.entry_unexhausted(id);
         let deepest = self.deepest_leaf[id];
         let members = self
@@ -2005,7 +2028,7 @@ where
         let new_cell = members.ids.is_empty();
         let was_live = !members.sampleable.is_empty();
         if new_cell {
-            members.opened = id;
+            members.opened = opened_ordinal;
         }
         members.ids.insert(id);
         members.drawn = members.drawn.saturating_add(self.selected[id]);
@@ -2193,6 +2216,52 @@ where
         self.productive[id] = counters.productive;
         self.horizon_unproductive[id] = counters.horizon_unproductive;
         Ok(())
+    }
+
+    pub(crate) fn restore_discovery_ordinals(&mut self, key: K, ordinals: &[u64]) {
+        for offset in 0..self.discovery_ordinals.len() {
+            let Some(ordinal) = ordinals
+                .get(offset)
+                .copied()
+                .filter(|ordinal| *ordinal != 0)
+            else {
+                continue;
+            };
+            let group = key.group(offset + 1);
+            self.groups_seen[offset].insert(group);
+            self.discovery_ordinals[offset]
+                .entry(group)
+                .and_modify(|current| *current = (*current).min(ordinal))
+                .or_insert(ordinal);
+            self.next_discovery_ordinal =
+                self.next_discovery_ordinal.max(ordinal.saturating_add(1));
+        }
+    }
+
+    fn record_discovery_ordinals(&mut self, key: K) -> u32 {
+        let mut opened = 0;
+        for offset in 0..self.groups_seen.len() {
+            let group = key.group(offset + 1);
+            if self.groups_seen[offset].insert(group) {
+                let ordinal = self.next_discovery_ordinal;
+                self.next_discovery_ordinal = self.next_discovery_ordinal.saturating_add(1);
+                self.discovery_ordinals[offset].insert(group, ordinal);
+                opened |= 1 << (offset + 1);
+            } else if !self.discovery_ordinals[offset].contains_key(&group) {
+                let ordinal = self.next_discovery_ordinal;
+                self.next_discovery_ordinal = self.next_discovery_ordinal.saturating_add(1);
+                self.discovery_ordinals[offset].insert(group, ordinal);
+            }
+        }
+        opened
+    }
+
+    pub(crate) fn discovery_ordinals_for_key(&self, key: K) -> Vec<u64> {
+        self.discovery_ordinals
+            .iter()
+            .enumerate()
+            .map(|(offset, ordinals)| ordinals.get(&key.group(offset + 1)).copied().unwrap_or(0))
+            .collect()
     }
 
     #[must_use]
@@ -2416,12 +2485,7 @@ where
         self.horizon_unproductive.push(0);
         self.in_window_ever.push(false);
         self.opened_slot.push(new_slot);
-        let mut opened = u32::from(new_slot);
-        for (offset, seen) in self.groups_seen.iter_mut().enumerate() {
-            if seen.insert(key.group(offset + 1)) {
-                opened |= 1 << (offset + 1);
-            }
-        }
+        let opened = u32::from(new_slot) | self.record_discovery_ordinals(key);
         self.opened_depths.push(opened);
         self.deepest_leaf.push((key, id));
         let mut ancestor = parent_id;
@@ -2740,7 +2804,20 @@ where
                 }
                 let mut groups = deepest.keys().copied().collect::<Vec<_>>();
                 let frontier = deepest.values().copied().collect::<Vec<_>>();
-                let index = self.draw_group_index(rand, depth, &groups, Some(&frontier), None)?;
+                let ranked = groups
+                    .iter()
+                    .map(|group| {
+                        (
+                            self.discovery_ordinals
+                                .get(depth.saturating_sub(1))
+                                .and_then(|ordinals| ordinals.get(group))
+                                .copied(),
+                            None,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let index =
+                    self.draw_group_index(rand, depth, &groups, Some(&frontier), Some(&ranked))?;
                 let chosen = groups.swap_remove(index);
                 cells.retain(|(key, _)| key.group(depth) == chosen);
             }
@@ -2815,7 +2892,20 @@ where
                 .iter()
                 .map(|group| self.deepest_live_band(class, depth, *group))
                 .collect::<Result<Vec<_>, _>>()?;
-            let index = self.draw_group_index(rand, depth, &groups, Some(&frontier), None)?;
+            let ranked = groups
+                .iter()
+                .map(|group| {
+                    (
+                        self.discovery_ordinals
+                            .get(depth.saturating_sub(1))
+                            .and_then(|ordinals| ordinals.get(group))
+                            .copied(),
+                        None,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let index =
+                self.draw_group_index(rand, depth, &groups, Some(&frontier), Some(&ranked))?;
             parent = groups[index];
         }
 
@@ -2898,7 +2988,7 @@ where
         depth: usize,
         groups: &[K::Group],
         frontier: Option<&[K::Group]>,
-        cells: Option<&[(Option<usize>, Option<u64>)]>,
+        cells: Option<&[(Option<u64>, Option<u64>)]>,
     ) -> Result<usize, Box<dyn Error>> {
         let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
         let scales = match &self.selector_policy {
@@ -2936,15 +3026,64 @@ where
             }
             None => Vec::new(),
         };
-        let (newest, cheapest) = match cells {
+        let (cell_recency, cheapest) = match cells {
             Some(cells) if frontier.is_none() => {
-                let mut newest = cells.iter().filter_map(|cell| cell.0).collect::<Vec<_>>();
-                newest.sort_unstable();
+                let mut order = cells
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, cell)| cell.0.map(|ordinal| (ordinal, index)))
+                    .collect::<Vec<_>>();
+                order.sort_unstable_by_key(|(ordinal, _)| *ordinal);
+                let count = u64::try_from(order.len()).unwrap_or(u64::MAX).max(1);
+                let mut recency = vec![(1_u64, 1_u64); cells.len()];
+                for (position, (_, index)) in order.into_iter().enumerate() {
+                    recency[index] = (
+                        count.saturating_add(u64::try_from(position).unwrap_or(u64::MAX)),
+                        count,
+                    );
+                }
                 let mut cheapest = cells.iter().filter_map(|cell| cell.1).collect::<Vec<_>>();
                 cheapest.sort_unstable();
-                (newest, cheapest)
+                (recency, cheapest)
             }
             _ => (Vec::new(), Vec::new()),
+        };
+        let frontier_recency = match (frontier, cells) {
+            (Some(frontier), Some(cells)) => {
+                let mut order = (0..frontier.len()).collect::<Vec<_>>();
+                order.sort_unstable_by(|left, right| {
+                    K::progress_cmp(frontier[*left], frontier[*right])
+                        .then_with(|| frontier[*left].cmp(&frontier[*right]))
+                });
+                let mut recency = vec![(1_u64, 1_u64); frontier.len()];
+                let mut start = 0;
+                while start < order.len() {
+                    let mut end = start.saturating_add(1);
+                    while end < order.len()
+                        && K::progress_cmp(frontier[order[start]], frontier[order[end]])
+                            == Ordering::Equal
+                    {
+                        end = end.saturating_add(1);
+                    }
+                    let mut same_progress = order[start..end]
+                        .iter()
+                        .filter_map(|index| cells[*index].0.map(|ordinal| (ordinal, *index)))
+                        .collect::<Vec<_>>();
+                    same_progress.sort_unstable_by_key(|(ordinal, _)| *ordinal);
+                    let same_count = u64::try_from(same_progress.len())
+                        .unwrap_or(u64::MAX)
+                        .max(1);
+                    for (position, (_, index)) in same_progress.into_iter().enumerate() {
+                        recency[index] = (
+                            same_count.saturating_add(u64::try_from(position).unwrap_or(u64::MAX)),
+                            same_count,
+                        );
+                    }
+                    start = end;
+                }
+                recency
+            }
+            _ => Vec::new(),
         };
         let mut weights = Vec::with_capacity(groups.len());
         for (index, group) in groups.iter().enumerate() {
@@ -2956,34 +3095,42 @@ where
                 .unwrap_or(0);
             let halvings = usize::try_from((barren / scale).min(8)).unwrap_or(8);
             let energy = 256_usize >> halvings;
-            let (rank, span) = match (frontier, cells) {
+            let (rank, span, recency_numerator, recency_denominator) = match (frontier, cells) {
                 (Some(frontier), _) => {
                     let level = frontier[index];
                     let behind = ranked.partition_point(|band| {
                         K::progress_cmp(band.0, level) != Ordering::Greater
                     });
-                    (ranked.len().saturating_sub(behind), 16)
+                    let (numerator, denominator) =
+                        frontier_recency.get(index).copied().unwrap_or((1, 1));
+                    (
+                        u64::try_from(ranked.len().saturating_sub(behind)).unwrap_or(u64::MAX),
+                        16,
+                        numerator,
+                        denominator,
+                    )
                 }
                 (None, Some(cells)) => {
-                    let (opened, cost) = cells[index];
-                    let novelty = match opened {
-                        Some(opened) => {
-                            let position = newest
-                                .binary_search(&opened)
-                                .map_err(|_| "energy cell is missing from its own novelty table")?;
-                            newest.len().saturating_sub(position.saturating_add(1))
-                                / CELL_NOVELTY_RANK_SCALE
-                        }
-                        None => 8,
-                    };
+                    let (_, cost) = cells[index];
+                    let (numerator, denominator) =
+                        cell_recency.get(index).copied().unwrap_or((1, 1));
                     let costlier = cost.map_or(0, |cost| {
-                        cheapest.partition_point(|cheaper| *cheaper < cost) / CHEAPEST_RANK_SCALE
+                        u64::try_from(
+                            cheapest.partition_point(|cheaper| *cheaper < cost)
+                                / CHEAPEST_RANK_SCALE,
+                        )
+                        .unwrap_or(u64::MAX)
                     });
-                    (novelty.saturating_add(costlier), 16)
+                    (costlier, 16, numerator, denominator)
                 }
-                (None, None) => (0, 8),
+                (None, None) => (0, 8, 1, 1),
             };
-            weights.push((energy << span) >> rank.min(span));
+            let base = (energy << span) >> rank.min(span);
+            let numerator = usize::try_from(recency_numerator).unwrap_or(usize::MAX);
+            let denominator = usize::try_from(recency_denominator)
+                .unwrap_or(usize::MAX)
+                .max(1);
+            weights.push(base.saturating_mul(numerator) / denominator);
         }
         let total = NonZeroUsize::new(weights.iter().sum()).ok_or("energy weights sum to zero")?;
         let mut draw = rand.below(total);
@@ -3240,6 +3387,13 @@ where
             .map(BTreeSet::len)
             .sum::<usize>()
             .saturating_mul(Self::historical_group_memory_charge(0))
+            .saturating_add(
+                self.discovery_ordinals
+                    .iter()
+                    .map(BTreeMap::len)
+                    .sum::<usize>()
+                    .saturating_mul(Self::historical_group_memory_charge(size_of::<u64>())),
+            )
     }
 
     #[must_use]
@@ -3493,6 +3647,7 @@ where
                     productive: self.productive[id],
                     horizon_unproductive: self.horizon_unproductive[id],
                 }),
+                discovery_ordinals: self.discovery_ordinals_for_key(entry.key),
             };
             reports.push(report);
             if let Some(snapshot) = entry.snapshot {
@@ -3518,7 +3673,7 @@ mod tests {
     };
     use crate::search::rand::RomuDuoJrRand;
     use serde::{Deserialize, Serialize};
-    use std::{cell::Cell, collections::BTreeMap, sync::Arc};
+    use std::{cell::Cell, collections::BTreeMap, mem::size_of, sync::Arc};
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
     struct TestAction {
@@ -3986,7 +4141,12 @@ mod tests {
             3 * Archive::<u8, FlatKey<3>, (), ()>::history_entry_memory_charge(1, 1);
         let novelty_charge =
             4 * Archive::<u8, FlatKey<3>, (), ()>::historical_group_memory_charge(0);
-        archive.set_memory_budget(root_charge + history_charge + novelty_charge + 2, |_| 1);
+        let ordinal_charge =
+            4 * Archive::<u8, FlatKey<3>, (), ()>::historical_group_memory_charge(size_of::<u64>());
+        archive.set_memory_budget(
+            root_charge + history_charge + novelty_charge + ordinal_charge + 2,
+            |_| 1,
+        );
         for index in 0_u8..3 {
             archive
                 .insert(
@@ -5407,8 +5567,9 @@ mod tests {
     fn the_retiring_selector_parses_under_a_shallow_key() {
         for depths in [1_usize, 2] {
             let pooled = depths.saturating_sub(2);
-            let policy = selector_policy_from_identifier("hierarchy_uniform_128_retire:3", pooled)
-                .expect("shallow retiring selector");
+            let policy =
+                selector_policy_from_identifier("hierarchy_uniform_128_v2_retire:3", pooled)
+                    .expect("shallow retiring selector");
             assert_eq!(
                 policy,
                 SelectorPolicy::Retire(RetireThresholds {
@@ -5417,7 +5578,7 @@ mod tests {
                 })
             );
             assert!(
-                selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6", pooled)
+                selector_policy_from_identifier("hierarchy_uniform_128_v2_retire:3,6", pooled)
                     .is_err()
             );
         }
@@ -5638,13 +5799,299 @@ mod tests {
         let mut archive = depth_archive();
         let parent = insert_depth_child(&mut archive, None, 0, [0, 0, 0, 0]);
         let charge = Archive::<u8, FlatKey<4>, (), ()>::historical_group_memory_charge(0);
+        let ordinal_charge =
+            Archive::<u8, FlatKey<4>, (), ()>::historical_group_memory_charge(size_of::<u64>());
         let after_root = archive.novelty_memory_bytes();
         insert_depth_child(&mut archive, Some(parent), 1, [0, 1, 0, 0]);
         let after_shallow = archive.novelty_memory_bytes();
         insert_depth_child(&mut archive, Some(parent), 2, [0, 0, 1, 0]);
         let after_deep = archive.novelty_memory_bytes();
-        assert_eq!(after_shallow - after_root, charge);
-        assert_eq!(after_deep - after_shallow, 2 * charge);
+        assert_eq!(after_shallow - after_root, charge + ordinal_charge);
+        assert_eq!(after_deep - after_shallow, 2 * (charge + ordinal_charge));
+    }
+
+    fn pooled_recency_draws(reverse: bool) -> BTreeMap<u8, u64> {
+        let mut archive = TestArchive::new(|_| 1);
+        let mut cells = (0_u8..9).collect::<Vec<_>>();
+        if reverse {
+            cells.reverse();
+        }
+        for (index, player_y_bucket) in cells.into_iter().enumerate() {
+            archive
+                .insert(
+                    None,
+                    u64::try_from(index).expect("fixture index"),
+                    ArchiveCandidate {
+                        suffix: vec![u8::try_from(index).expect("fixture input")],
+                        key: TestKey {
+                            world: 1,
+                            level: 1,
+                            progress: 100,
+                            player_y_bucket,
+                            state_fingerprint: 0,
+                            room_x_bucket: 0,
+                            time_bucket: 0,
+                            room: [0; 3],
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("recency insert")
+                .expect("recency retention");
+        }
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
+            entry: 1_024,
+            groups: vec![1_024; 3],
+        });
+        archive.rebuild_selector_index(MAX_COMPLETION_ACTIONS);
+        let class = ProgressOrdered::<TestKey>(archive.entries[0].key.group(4));
+        let class_cells = archive.classes.get(&class).expect("recency class");
+        let groups = class_cells.keys().copied().collect::<Vec<_>>();
+        let ranked = class_cells
+            .values()
+            .map(|members| {
+                (
+                    members.novelty(),
+                    archive.cheapest_offered(members.ids.iter()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e40);
+        let mut draws = BTreeMap::new();
+        for _ in 0..8_192 {
+            let index = archive
+                .draw_group_index(&mut rand, 1, &groups, None, Some(&ranked))
+                .expect("recency cell draw");
+            *draws.entry(groups[index].player_y_bucket).or_default() += 1;
+        }
+        draws
+    }
+
+    #[test]
+    fn equal_progress_cell_order_changes_only_the_bounded_recency_bias() {
+        let forward = pooled_recency_draws(false);
+        let reverse = pooled_recency_draws(true);
+        assert!(
+            forward[&8] > forward[&0].saturating_mul(3) / 2,
+            "newest forward cell should receive the larger share: {forward:?}"
+        );
+        assert!(
+            reverse[&0] > reverse[&8].saturating_mul(3) / 2,
+            "newest reversed cell should receive the larger share: {reverse:?}"
+        );
+    }
+
+    fn pooled_frontier_recency_draws(reverse: bool) -> BTreeMap<u8, u64> {
+        let mut archive = TestArchive::new(|_| 1);
+        let mut rooms = (0_u8..9).collect::<Vec<_>>();
+        if reverse {
+            rooms.reverse();
+        }
+        for (index, room) in rooms.into_iter().enumerate() {
+            archive
+                .insert(
+                    None,
+                    u64::try_from(index).expect("fixture index"),
+                    ArchiveCandidate {
+                        suffix: vec![u8::try_from(index).expect("fixture input")],
+                        key: TestKey {
+                            world: 1,
+                            level: 1,
+                            progress: 100,
+                            room: [room, 0, 0],
+                            ..TestKey::default()
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("pooled recency insert")
+                .expect("pooled recency retention");
+        }
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
+            entry: 1_024,
+            groups: vec![1_024; 3],
+        });
+        let groups = archive
+            .entries
+            .iter()
+            .map(|entry| entry.key.group(2))
+            .collect::<Vec<_>>();
+        let ranked = groups
+            .iter()
+            .map(|group| (archive.discovery_ordinals[1].get(group).copied(), None))
+            .collect::<Vec<_>>();
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e41);
+        let mut draws = BTreeMap::new();
+        for _ in 0..8_192 {
+            let index = archive
+                .draw_group_index(&mut rand, 2, &groups, Some(&groups), Some(&ranked))
+                .expect("pooled frontier draw");
+            *draws.entry(groups[index].room[0]).or_default() += 1;
+        }
+        draws
+    }
+
+    #[test]
+    fn pooled_depth_recency_changes_only_equal_progress_frontier_ties() {
+        let forward = pooled_frontier_recency_draws(false);
+        let reverse = pooled_frontier_recency_draws(true);
+        assert!(
+            forward[&8] > forward[&0].saturating_mul(3) / 2,
+            "newest pooled group should receive the larger share: {forward:?}"
+        );
+        assert!(
+            reverse[&0] > reverse[&8].saturating_mul(3) / 2,
+            "newest reversed pooled group should receive the larger share: {reverse:?}"
+        );
+    }
+
+    #[test]
+    fn higher_progress_stays_ahead_of_a_newer_lower_progress_group() {
+        let mut archive = TestArchive::new(|_| 1);
+        for (index, progress) in [200_u16, 100].into_iter().enumerate() {
+            archive
+                .insert(
+                    None,
+                    u64::try_from(index).expect("fixture index"),
+                    ArchiveCandidate {
+                        suffix: vec![u8::try_from(index).expect("fixture input")],
+                        key: TestKey {
+                            world: 1,
+                            level: 1,
+                            progress,
+                            room: [u8::try_from(index).expect("fixture room"), 0, 0],
+                            ..TestKey::default()
+                        },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("progress insert")
+                .expect("progress retention");
+        }
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
+            entry: 1_024,
+            groups: vec![1_024; 3],
+        });
+        let groups = archive
+            .entries
+            .iter()
+            .map(|entry| entry.key.group(2))
+            .collect::<Vec<_>>();
+        let ranked = groups
+            .iter()
+            .map(|group| (archive.discovery_ordinals[1].get(group).copied(), None))
+            .collect::<Vec<_>>();
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e42);
+        let mut counts = [0_u64; 2];
+        for _ in 0..4_096 {
+            let index = archive
+                .draw_group_index(&mut rand, 2, &groups, Some(&groups), Some(&ranked))
+                .expect("progress draw");
+            counts[index] += 1;
+        }
+        assert!(
+            counts[0] > counts[1],
+            "higher progress must outrank recency: {counts:?}"
+        );
+    }
+
+    #[test]
+    fn discovery_ordinals_survive_compaction_report_round_trip_and_advance_new_routes() {
+        let keys = [
+            TestKey {
+                world: 1,
+                level: 1,
+                progress: 100,
+                player_y_bucket: 0,
+                ..TestKey::default()
+            },
+            TestKey {
+                world: 1,
+                level: 1,
+                progress: 100,
+                player_y_bucket: 1,
+                ..TestKey::default()
+            },
+        ];
+        let mut archive = TestArchive::new(|_| 1);
+        for (index, key) in keys.into_iter().enumerate() {
+            archive
+                .insert(
+                    None,
+                    u64::try_from(index).expect("fixture index"),
+                    ArchiveCandidate {
+                        suffix: vec![u8::try_from(index).expect("fixture input")],
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("ordinal insert")
+                .expect("ordinal retention");
+        }
+        let before = archive.discovery_ordinals.clone();
+        archive
+            .compact_history(true)
+            .expect("compact ordinal archive");
+        assert_eq!(archive.discovery_ordinals, before);
+
+        let (reports, _) = archive.take_entry_reports_and_snapshots();
+        #[derive(Deserialize, Serialize)]
+        struct SuffixReports {
+            #[serde(with = "super::entries_by_suffix")]
+            entries: Vec<super::ArchiveEntryReport<u8, TestKey, ()>>,
+        }
+        let encoded = serde_json::to_string(&SuffixReports { entries: reports })
+            .expect("serialize ordinal reports");
+        let reports = serde_json::from_str::<SuffixReports>(&encoded)
+            .expect("deserialize ordinal reports")
+            .entries;
+        assert_eq!(reports[1].discovery_ordinals, vec![5, 2, 3, 4]);
+        let mut reports = reports;
+        reports[0].discovery_ordinals[0] = 300_000;
+
+        let mut restored = TestArchive::new(|_| 1);
+        for report in &reports {
+            restored.restore_discovery_ordinals(report.key, &report.discovery_ordinals);
+            restored
+                .insert(
+                    None,
+                    report.created_execution,
+                    ArchiveCandidate {
+                        suffix: report.input.actions.clone(),
+                        key: report.key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("restore ordinal entry")
+                .expect("restore ordinal retention");
+        }
+        let next = TestKey {
+            world: 1,
+            level: 1,
+            progress: 100,
+            player_y_bucket: 2,
+            ..TestKey::default()
+        };
+        restored.restore_discovery_ordinals(next, &[]);
+        restored
+            .insert(
+                None,
+                3,
+                ArchiveCandidate {
+                    suffix: vec![3],
+                    key: next,
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("new route after import")
+            .expect("new route retained");
+        assert_eq!(restored.discovery_ordinals_for_key(next)[0], 300_001);
     }
 
     #[test]
@@ -6361,15 +6808,15 @@ mod tests {
     }
 
     #[test]
-    fn a_key_without_a_progress_notion_has_only_peers() {
+    fn a_key_without_a_progress_notion_keeps_a_bounded_discovery_bias() {
         for bands in [[1_u16, 2], [200, 100]] {
             let counts = ordering_walk_counts(&[
                 ordering_key::<false>(0, 0, bands[0], 0, 0),
                 ordering_key::<false>(0, 0, bands[1], 0, 1),
             ]);
             assert!(
-                counts[0].abs_diff(counts[1]) < ORDERING_TOLERANCE,
-                "bands without a progress notion are peers: {counts:?} under {bands:?}"
+                counts[1] > counts[0] && counts[1] < counts[0].saturating_mul(2),
+                "equal-progress bands keep a bounded discovery bias: {counts:?} under {bands:?}"
             );
         }
     }
