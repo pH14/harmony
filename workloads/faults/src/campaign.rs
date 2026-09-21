@@ -430,7 +430,6 @@ impl InputPolicy for FaultWorkload {
                 alive: parent.alive,
                 event_ready: parent.event_ready,
                 hooks_running: u64::from(parent.hooks_running > 0),
-                parked: u64::from(parent.parked > 0),
                 event_kill_fires: u64::from(parent.event_kill_fires > 0),
                 event_park_fires: u64::from(parent.event_park_fires > 0),
                 workload_running: parent.workload_running,

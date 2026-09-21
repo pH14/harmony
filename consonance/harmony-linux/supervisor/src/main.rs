@@ -118,7 +118,7 @@ mod runtime {
         REG_COMPLETED_CHECK_END_GENERATION, REG_COMPLETED_CHECK_POINTS, REG_COMPLETED_CHECK_RUN,
         REG_COMPLETED_CHECK_START_GENERATION, REG_DISTURBANCE_GENERATION, REG_EVENT_KILL_FIRES,
         REG_EVENT_KILL_SITE, REG_EVENT_PARK_FIRES, REG_EVENT_READY, REG_HOOKS_FINISHED,
-        REG_HOOKS_STARTED, REG_INFRASTRUCTURE_ERROR, REG_PARKED, REG_PENDING_FAULTS, REG_RESTARTS,
+        REG_HOOKS_STARTED, REG_INFRASTRUCTURE_ERROR, REG_PENDING_FAULTS, REG_RESTARTS,
         REG_SOMETIMES, REG_TICKS, REG_UNEXPECTED_DEATHS, REG_WORKLOAD_FINISHED,
         REG_WORKLOAD_STARTED, Registers,
     };
@@ -154,7 +154,6 @@ mod runtime {
         Point::state(REG_SOMETIMES, "supervisor.sometimes"),
         Point::state(REG_UNEXPECTED_DEATHS, "supervisor.unexpected_deaths"),
         Point::state(REG_RESTARTS, "supervisor.restarts"),
-        Point::state(REG_PARKED, "supervisor.parked"),
         Point::state(REG_EVENT_KILL_FIRES, "supervisor.event_kill_fires"),
         Point::state(REG_EVENT_KILL_SITE, "supervisor.event_kill_site"),
         Point::state(REG_EVENT_PARK_FIRES, "supervisor.event_park_fires"),
@@ -190,7 +189,6 @@ mod runtime {
     struct Node {
         spec: NodeSpec,
         child: Option<Child>,
-        park: Option<park::Handle>,
         events: Option<EventChannel>,
     }
 
@@ -663,7 +661,6 @@ mod runtime {
             .map(|node| Node {
                 spec: node.clone(),
                 child: None,
-                park: None,
                 events: None,
             })
             .collect();
@@ -947,7 +944,6 @@ mod runtime {
             }
             poll_workload(&mut runtime, supervisor, tick);
             poll_check(spec, bundle, &mut runtime, supervisor, sdk, tick)?;
-            watch_parks(nodes, supervisor, tick)?;
             drain_hooks(&mut runtime.hooks, supervisor, sdk, tick)?;
             update_pending_faults(nodes, supervisor);
             let tracked: Vec<_> = nodes
@@ -1076,7 +1072,6 @@ mod runtime {
         match action {
             Action::Kill(node) => {
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
-                    entry.park = None;
                     if let Some(events) = entry.events.as_mut() {
                         events.retire(node, supervisor, tick);
                     }
@@ -1100,7 +1095,6 @@ mod runtime {
                 let Some(entry) = nodes.get_mut(usize::from(node)) else {
                     return Ok(());
                 };
-                entry.park = None;
                 if let Some(events) = entry.events.as_mut() {
                     events.retire(node, supervisor, tick);
                 }
@@ -1121,30 +1115,6 @@ mod runtime {
                         .recovery
                         .restarted()
                         .map_err(|error| format!("recovery: {error}"))?;
-                }
-            }
-            Action::Park(node, park) => {
-                let Some(entry) = nodes.get_mut(usize::from(node)) else {
-                    return Ok(());
-                };
-                let Some(pid) = entry
-                    .child
-                    .as_ref()
-                    .and_then(|child| libc::pid_t::try_from(child.id()).ok())
-                else {
-                    log(tick, &format!("park node {node}: node is not running"));
-                    return Ok(());
-                };
-                match park::arm(pid, &park) {
-                    Ok(handle) => {
-                        log(
-                            tick,
-                            &format!("park node {node} armed on {} thread(s)", handle.tasks()),
-                        );
-                        entry.park = Some(handle);
-                        supervisor.note_process_transition();
-                    }
-                    Err(error) => return Err(format!("park node {node}: {error}")),
                 }
             }
             Action::ArmEventKill(node, rarity) => {
@@ -1181,25 +1151,6 @@ mod runtime {
                     && let Some(events) = entry.events.as_mut()
                 {
                     events.queue(EventCommand::DisarmPark);
-                }
-            }
-            Action::Unpark(node) => {
-                if let Some(handle) = nodes
-                    .get_mut(usize::from(node))
-                    .and_then(|entry| entry.park.take())
-                {
-                    supervisor.note_process_transition();
-                    match handle.status() {
-                        Ok(status) if status.state == park::ARMED => log(
-                            tick,
-                            &format!(
-                                "park node {node} never reached its hit; {} hit(s) counted",
-                                status.hits
-                            ),
-                        ),
-                        Ok(_) => {}
-                        Err(error) => return Err(format!("park node {node} status: {error}")),
-                    }
                 }
             }
             Action::RunHook(id) => {
@@ -1370,43 +1321,6 @@ mod runtime {
         })
     }
 
-    fn watch_parks(
-        nodes: &mut [Node],
-        supervisor: &mut Supervisor,
-        tick: u64,
-    ) -> Result<(), String> {
-        for (id, node) in nodes.iter_mut().enumerate() {
-            let Some(handle) = node.park.as_mut() else {
-                continue;
-            };
-            let status = handle
-                .status()
-                .map_err(|error| format!("park node {id} status: {error}"))?;
-            if status.state >= park::PARKED && !handle.hit_logged {
-                handle.hit_logged = true;
-                supervisor.note_parked();
-                log(
-                    tick,
-                    &format!(
-                        "park node {id} hit {} at pc={:#x} pid={}",
-                        status.hits, status.pc, status.pid
-                    ),
-                );
-            }
-            if status.state == park::RELEASED && !handle.release_logged {
-                handle.release_logged = true;
-                log(
-                    tick,
-                    &format!(
-                        "park node {id} released after {} ns",
-                        status.released_ns.saturating_sub(status.parked_ns)
-                    ),
-                );
-            }
-        }
-        Ok(())
-    }
-
     fn signal_node(nodes: &mut [Node], node: u16, signal: libc::c_int) -> Result<bool, String> {
         let Some(child) = nodes
             .get(usize::from(node))
@@ -1550,95 +1464,6 @@ mod runtime {
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "HS: {tick} {what}");
         let _ = out.flush();
-    }
-
-    mod park {
-        use harmony_supervisor::reconcile::Park;
-        use std::fs::File;
-        use std::os::fd::AsRawFd;
-
-        const DEVICE: &str = "/dev/harmony-park";
-        const IOC_ARM: libc::Ioctl = 0x4020_5001_u32 as libc::Ioctl;
-        const IOC_STATUS: libc::Ioctl = 0x8030_5002_u32 as libc::Ioctl;
-
-        pub const ARMED: u32 = 1;
-        pub const PARKED: u32 = 2;
-        pub const RELEASED: u32 = 3;
-
-        #[repr(C)]
-        struct Arm {
-            pgid: u32,
-            reserved: u32,
-            addr: u64,
-            hits: u64,
-            hold_ns: u64,
-        }
-
-        #[repr(C)]
-        #[derive(Clone, Copy, Debug, Default)]
-        pub struct Status {
-            pub state: u32,
-            pub tasks: u32,
-            pub hits: u64,
-            pub pc: u64,
-            pub pid: u32,
-            reserved: u32,
-            pub parked_ns: u64,
-            pub released_ns: u64,
-        }
-
-        pub struct Handle {
-            file: File,
-            tasks: u32,
-            pub hit_logged: bool,
-            pub release_logged: bool,
-        }
-
-        impl Handle {
-            pub fn tasks(&self) -> u32 {
-                self.tasks
-            }
-
-            pub fn status(&self) -> Result<Status, String> {
-                let mut status = Status::default();
-                // SAFETY: `status` is a fixed-width structure matching the
-                // kernel's, owned by this frame for the synchronous ioctl.
-                let result = unsafe { libc::ioctl(self.file.as_raw_fd(), IOC_STATUS, &mut status) };
-                if result != 0 {
-                    return Err(format!("{DEVICE}: {}", std::io::Error::last_os_error()));
-                }
-                Ok(status)
-            }
-        }
-
-        pub fn arm(pgid: libc::pid_t, park: &Park) -> Result<Handle, String> {
-            let file = File::options()
-                .read(true)
-                .write(true)
-                .open(DEVICE)
-                .map_err(|error| format!("{DEVICE}: {error}"))?;
-            let arm = Arm {
-                pgid: u32::try_from(pgid).map_err(|_| "negative process group".to_string())?,
-                reserved: 0,
-                addr: park.addr,
-                hits: u64::from(park.hits),
-                hold_ns: park.hold_nanos,
-            };
-            // SAFETY: `arm` is a fixed-width structure matching the kernel's,
-            // owned by this frame for the synchronous ioctl.
-            let result = unsafe { libc::ioctl(file.as_raw_fd(), IOC_ARM, &arm) };
-            if result != 0 {
-                return Err(format!("{DEVICE}: {}", std::io::Error::last_os_error()));
-            }
-            let handle = Handle {
-                file,
-                tasks: 0,
-                hit_logged: false,
-                release_logged: false,
-            };
-            let tasks = handle.status()?.tasks;
-            Ok(Handle { tasks, ..handle })
-        }
     }
 
     #[cfg(test)]

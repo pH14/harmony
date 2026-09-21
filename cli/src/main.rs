@@ -95,8 +95,6 @@ mod search_cli_tests {
                 "1024",
                 "--knobs",
                 "faultlab.puts=20",
-                "--places",
-                "places.txt",
                 "--wall-minutes",
                 "30",
                 "--out",

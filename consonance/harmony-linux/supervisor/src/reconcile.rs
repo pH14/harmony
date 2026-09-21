@@ -3,13 +3,6 @@
 use process_proto::{ProcessAction, ProcessWindow, WireError, decode_process_windows};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Park {
-    pub addr: u64,
-    pub hits: u32,
-    pub hold_nanos: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EventPark {
     pub rarity: u8,
     pub hold_nanos: u64,
@@ -28,7 +21,6 @@ pub struct NodeActions {
     pub kill: bool,
     pub pause: bool,
     pub restart: bool,
-    pub park: Option<Park>,
     pub event_park: Option<EventPark>,
 }
 
@@ -81,7 +73,6 @@ impl ActiveWindows {
             ProcessAction::Kill
             | ProcessAction::Pause(_)
             | ProcessAction::Restart
-            | ProcessAction::Park { .. }
             | ProcessAction::EventPark { .. } => {}
         }
         let index = match self.nodes.binary_search_by_key(&node, |entry| entry.0) {
@@ -96,17 +87,6 @@ impl ActiveWindows {
             ProcessAction::Kill => flags.kill = true,
             ProcessAction::Pause(_) => flags.pause = true,
             ProcessAction::Restart => flags.restart = true,
-            ProcessAction::Park {
-                addr,
-                hits,
-                hold_nanos,
-            } => {
-                flags.park = Some(Park {
-                    addr: *addr,
-                    hits: *hits,
-                    hold_nanos: *hold_nanos,
-                });
-            }
             ProcessAction::EventPark { rarity, hold_nanos } => {
                 flags.event_park = Some(EventPark {
                     rarity: *rarity,
@@ -164,7 +144,6 @@ impl ActiveWindows {
             pending = pending.saturating_add(u64::from(actions.kill));
             pending = pending.saturating_add(u64::from(actions.pause));
             pending = pending.saturating_add(u64::from(actions.restart));
-            pending = pending.saturating_add(u64::from(actions.park.is_some()));
             pending = pending.saturating_add(u64::from(actions.event_park.is_some()));
         }
         let mut last_pending_node = None;
@@ -231,7 +210,6 @@ mod tests {
                 pause: true,
                 restart: true,
                 kill: false,
-                park: None,
                 event_park: None,
             }
         );
@@ -284,30 +262,6 @@ mod tests {
         assert!(active.node(3).kill);
         assert!(!active.node(0).any());
         assert!(active.hooks().is_empty());
-    }
-
-    #[test]
-    fn a_park_decodes_into_its_parameters() {
-        let windows = [ProcessWindow {
-            node: 1,
-            action: ProcessAction::Park {
-                addr: 0x4b_0e86,
-                hits: 28,
-                hold_nanos: 2_000_000,
-            },
-            start: 0,
-            end: 1,
-        }];
-        let active = ActiveWindows::from_windows(windows.iter());
-        assert_eq!(
-            active.node(1).park,
-            Some(Park {
-                addr: 0x4b_0e86,
-                hits: 28,
-                hold_nanos: 2_000_000,
-            })
-        );
-        assert!(!active.node(1).any());
     }
 
     #[test]

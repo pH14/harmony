@@ -27,7 +27,6 @@ pub struct FaultArchiveGroup {
     hooks_finished: u64,
     hooks_running: u64,
     alive: u64,
-    parked: u64,
     event_ready: u64,
     event_kill_fires: u64,
     event_park_fires: u64,
@@ -42,7 +41,6 @@ pub struct FaultArchiveKey {
     pub hooks_finished: u64,
     pub hooks_running: u64,
     pub alive: u64,
-    pub parked: u64,
     pub event_ready: u64,
     pub event_kill_fires: u64,
     pub event_park_fires: u64,
@@ -64,7 +62,6 @@ impl ArchiveKey for FaultArchiveKey {
             hooks_finished: self.hooks_finished,
             hooks_running: self.hooks_running,
             alive: self.alive,
-            parked: self.parked,
             event_ready: self.event_ready,
             event_kill_fires: self.event_kill_fires,
             event_park_fires: self.event_park_fires,
@@ -105,7 +102,6 @@ pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
             .saturating_sub(observations.hooks_finished)
             .min(HOOKS_FINISHED_KEY_CAP),
         alive: observations.alive,
-        parked: observations.parked.min(HOOKS_FINISHED_KEY_CAP),
         event_ready: observations.event_ready,
         event_kill_fires: observations.event_kill_fires.min(HOOKS_FINISHED_KEY_CAP),
         event_park_fires: observations.event_park_fires.min(HOOKS_FINISHED_KEY_CAP),
@@ -169,7 +165,6 @@ pub fn action_cost(action: &FaultAction) -> u64 {
 
 pub const PAUSE_TICKS: [u32; 4] = [1, 5, 25, 100];
 pub const VECTORS: [u32; 2] = [0x20, 0x30];
-pub const PARK_HITS: [u32; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
 pub const PARK_HOLD_US: [u32; 3] = [500, 2_000, 10_000];
 
 pub fn sample_action(
@@ -188,13 +183,10 @@ pub fn sample_action(
     if vocabulary.interrupt_injection() {
         alternatives.push(5);
     }
-    if !vocabulary.places().is_empty() {
-        alternatives.push(6);
-    }
     let node_mask = u64::MAX >> (64 - vocabulary.nodes());
     let event_ready = event_ready & node_mask;
     if vocabulary.instrumented_events() && event_ready != 0 {
-        alternatives.extend([7, 8]);
+        alternatives.extend([6, 7]);
     }
     let event_node = |rand: &mut RomuDuoJrRand| -> Result<u16, Box<dyn Error>> {
         let index = pick(rand, event_ready.count_ones() as usize)?;
@@ -216,13 +208,7 @@ pub fn sample_action(
             vocabulary.hooks()[pick(rand, vocabulary.hooks().len())?],
         )),
         5 => Ok(FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?])),
-        6 => Ok(FaultAction::Park {
-            node,
-            addr: vocabulary.places()[pick(rand, vocabulary.places().len())?],
-            hits: PARK_HITS[pick(rand, PARK_HITS.len())?],
-            hold_us: PARK_HOLD_US[pick(rand, PARK_HOLD_US.len())?],
-        }),
-        7 => Ok(FaultAction::EventKill {
+        6 => Ok(FaultAction::EventKill {
             node: event_node(rand)?,
             rarity: u8::try_from(pick(rand, 64)?)?,
         }),
@@ -304,7 +290,6 @@ mod tests {
                 hooks_finished: 3,
                 hooks_running: 0,
                 alive: 0b11,
-                parked: 0,
                 ..FaultArchiveKey::default()
             }
         );
@@ -433,10 +418,7 @@ mod tests {
     }
 
     fn vocabulary() -> FaultVocabulary {
-        FaultVocabulary::new(1, vec![1, 2])
-            .expect("vocabulary")
-            .with_places(vec![0x4b0e86, 0x47eca0])
-            .expect("places")
+        FaultVocabulary::new(1, vec![1, 2]).expect("vocabulary")
     }
 
     #[test]
@@ -451,9 +433,8 @@ mod tests {
             FaultAction::Restart(_) => 3,
             FaultAction::Hook(_) => 4,
             FaultAction::Interrupt(_) => 5,
-            FaultAction::Park { .. } => 6,
-            FaultAction::EventKill { .. } => 7,
-            FaultAction::EventPark { .. } => 8,
+            FaultAction::EventKill { .. } => 6,
+            FaultAction::EventPark { .. } => 7,
         };
         for _ in 0..2_000 {
             let action = sample_action(&mut rand, &vocabulary, 0).expect("draw an action");
@@ -475,22 +456,11 @@ mod tests {
                 }
                 FaultAction::Hook(id) => assert!(vocabulary.hooks().contains(&id)),
                 FaultAction::Interrupt(vector) => assert!(VECTORS.contains(&vector)),
-                FaultAction::Park {
-                    node,
-                    addr,
-                    hits,
-                    hold_us,
-                } => {
-                    assert!(node < vocabulary.nodes());
-                    assert!(vocabulary.places().contains(&addr));
-                    assert!(PARK_HITS.contains(&hits));
-                    assert!(PARK_HOLD_US.contains(&hold_us));
-                }
             }
         }
         assert_eq!(
             kinds.len(),
-            6 + usize::from(vocabulary.interrupt_injection()),
+            5 + usize::from(vocabulary.interrupt_injection()),
             "every available action kind is reachable"
         );
     }
@@ -516,16 +486,6 @@ mod tests {
             ));
         }
         assert!(events > 0);
-    }
-
-    #[test]
-    fn a_vocabulary_with_no_place_never_draws_a_park() {
-        let placeless = FaultVocabulary::new(1, vec![1]).expect("vocabulary");
-        let mut rand = RomuDuoJrRand::with_seed(5);
-        for _ in 0..2_000 {
-            let action = sample_action(&mut rand, &placeless, 0).expect("draw");
-            assert!(!matches!(action, FaultAction::Park { .. }));
-        }
     }
 
     #[test]

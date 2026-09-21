@@ -91,9 +91,7 @@ mount_required cgroup2 none /sys/fs/cgroup
 
 "$BUSYBOX" mount --make-rprivate / 2>/dev/null || startup_failure 125 "private root mount failed"
 [ -e /dev/harmony ] || startup_failure 125 "missing SDK device"
-[ -e /dev/harmony-park ] || startup_failure 125 "missing park device"
 resolve_device_policy /dev/harmony HARMONY_SDK
-resolve_device_policy /dev/harmony-park HARMONY_PARK
 
 runc_pid=
 # shellcheck disable=SC2329

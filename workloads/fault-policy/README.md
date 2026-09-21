@@ -6,8 +6,8 @@ points plus host-side perturbation descriptions. These are workload semantics;
 the package using a policy supplies the applicable enforcement mechanism.
 
 Process-class faults cover a node's whole lifecycle: pause, kill, restart, a
-workload-defined hook run (`RunHook`), a hold at an execution place
-(`ProcPark`), and execution callbacks (`ProcEventKill` and `ProcEventPark`).
+workload-defined hook run (`RunHook`), and execution callbacks
+(`ProcEventKill` and `ProcEventPark`).
 Event rarities use the shared 0 through 63 width; event parks require a
 positive hold. `process_target` and `decode_process_target` give those faults
 the one target encoding a host package and the platform supervisor both read.

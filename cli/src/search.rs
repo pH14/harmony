@@ -43,8 +43,6 @@ pub struct Args {
     #[arg(long)]
     knobs: Option<String>,
     #[arg(long)]
-    places: Option<PathBuf>,
-    #[arg(long)]
     wall_minutes: Option<u64>,
     #[arg(long)]
     replay: Option<PathBuf>,
@@ -133,10 +131,6 @@ fn read_replay(
 }
 
 fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error>> {
-    let places = match args.places.as_deref() {
-        Some(path) => faults_workload::bundle::parse_places(&std::fs::read_to_string(path)?)?,
-        None => Vec::new(),
-    };
     Ok(faults_workload::Options {
         seed: args.seed,
         workers: args.workers,
@@ -150,7 +144,6 @@ fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error
             .split_whitespace()
             .map(str::to_owned)
             .collect(),
-        places,
         wall_minutes: args.wall_minutes,
         output: args.out.clone(),
     })
@@ -242,13 +235,7 @@ fn run_faults_consonance(
             Some(actions) => {
                 faults_workload::package::replay(&artifacts, actions, repeat, options)?
             }
-            None => {
-                let vocabulary = prepared
-                    .vocabulary
-                    .clone()
-                    .with_places(options.places.clone())?;
-                faults_workload::package::search(&artifacts, &vocabulary, options)?
-            }
+            None => faults_workload::package::search(&artifacts, &prepared.vocabulary, options)?,
         };
         println!(
             "bug_found   {}  executions {}  guest_ticks {}",
@@ -296,7 +283,6 @@ mod tests {
             image: None,
             ram_mib: 1024,
             knobs: None,
-            places: None,
             wall_minutes: None,
             replay: None,
             repeat: 1,
@@ -364,22 +350,7 @@ mod tests {
         assert_eq!(options.ram_mib, 2048);
         assert_eq!(options.knobs, ["faultlab.puts=20", "faultlab.keys=4"]);
         assert_eq!(options.wall_minutes, Some(30));
-        assert!(options.places.is_empty());
         assert_eq!(options.output, PathBuf::from("missing-output"));
-    }
-
-    #[test]
-    fn a_places_file_reaches_the_park_action_vocabulary() {
-        let file = tempfile::NamedTempFile::new().expect("temp file");
-        std::fs::write(file.path(), "0x1000\nffff8000\n# a comment\n").expect("write");
-        let mut args = args(Package::Faults, Backend::Consonance);
-        args.places = Some(file.path().to_path_buf());
-        assert_eq!(
-            faults_options(&args).expect("options").places,
-            [0x1000, 0xffff_8000]
-        );
-        args.places = Some(PathBuf::from("missing-places"));
-        assert!(faults_options(&args).is_err());
     }
 
     #[test]

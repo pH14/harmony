@@ -18,9 +18,3 @@ CONFIG_HARMONY_USER_COUNTER_TRAPS=y
 # exits again. The database cases run under a host wall-clock bound that
 # reports a spinning guest as a hung run, so SMP stays until the
 # single-processor boot is understood.
-#
-# The task park (patches/x86/0006): a workload thread held at a user
-# instruction by a hardware execution breakpoint the kernel owns, for the
-# races no signal-delivered pause can reach. Needs the perf breakpoint
-# framework the Kata base provides.
-CONFIG_HARMONY_PARK=y

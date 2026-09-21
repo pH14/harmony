@@ -26,11 +26,6 @@ fn to_process_action(fault: &Fault) -> ProcessAction {
             rarity: *rarity,
             hold_nanos: hold.0,
         },
-        Fault::ProcPark { addr, hits, hold } => ProcessAction::Park {
-            addr: *addr,
-            hits: *hits,
-            hold_nanos: hold.0,
-        },
         _ => unreachable!("process_target received a non-process fault"),
     }
 }
@@ -44,15 +39,6 @@ fn from_process_action(action: ProcessAction) -> Option<Fault> {
         ProcessAction::EventKill { rarity } => Fault::ProcEventKill { rarity },
         ProcessAction::EventPark { rarity, hold_nanos } => Fault::ProcEventPark {
             rarity,
-            hold: Span(hold_nanos),
-        },
-        ProcessAction::Park {
-            addr,
-            hits,
-            hold_nanos,
-        } => Fault::ProcPark {
-            addr,
-            hits,
             hold: Span(hold_nanos),
         },
     })
@@ -73,11 +59,6 @@ mod tests {
             Fault::ProcEventKill { rarity: 0 },
             Fault::ProcEventPark {
                 rarity: 3,
-                hold: Span(2_000_000),
-            },
-            Fault::ProcPark {
-                addr: 0x4b_0e86,
-                hits: 28,
                 hold: Span(2_000_000),
             },
         ] {

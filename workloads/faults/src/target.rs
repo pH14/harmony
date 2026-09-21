@@ -29,25 +29,12 @@ pub const SOMETIMES_KEY_BITS: u32 = 64;
 pub enum FaultAction {
     Wait(std::num::NonZeroU16),
     Kill(u16),
-    EventKill {
-        node: u16,
-        rarity: u8,
-    },
-    EventPark {
-        node: u16,
-        rarity: u8,
-        hold_us: u32,
-    },
+    EventKill { node: u16, rarity: u8 },
+    EventPark { node: u16, rarity: u8, hold_us: u32 },
     Pause(u16, u32),
     Restart(u16),
     Hook(u32),
     Interrupt(u32),
-    Park {
-        node: u16,
-        addr: u64,
-        hits: u32,
-        hold_us: u32,
-    },
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -180,25 +167,6 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
         FaultAction::Hook(id) => ActionDelta {
             standing: Some(standing(
                 process_target(0, &Fault::RunHook(id)),
-                (start, end),
-            )),
-            perturb: None,
-        },
-        FaultAction::Park {
-            node,
-            addr,
-            hits,
-            hold_us,
-        } => ActionDelta {
-            standing: Some(standing(
-                process_target(
-                    node,
-                    &Fault::ProcPark {
-                        addr,
-                        hits,
-                        hold: Span(u64::from(hold_us).saturating_mul(1_000)),
-                    },
-                ),
                 (start, end),
             )),
             perturb: None,
@@ -356,7 +324,6 @@ pub struct FaultObservations {
     pub hooks_finished: u64,
     pub unexpected_deaths: u64,
     pub restarts: u64,
-    pub parked: u64,
     pub event_kill_fires: u64,
     pub event_kill_site: u64,
     pub event_ready: u64,
@@ -386,7 +353,6 @@ impl FaultObservations {
             hooks_finished: value(reg::HOOKS_FINISHED),
             unexpected_deaths: value(reg::UNEXPECTED_DEATHS),
             restarts: value(reg::RESTARTS),
-            parked: value(reg::PARKED),
             event_kill_fires: value(reg::EVENT_KILL_FIRES),
             event_kill_site: value(reg::EVENT_KILL_SITE),
             event_ready: value(reg::EVENT_READY),
@@ -644,32 +610,6 @@ mod tests {
         assert_eq!(
             decode_process_target(&fault.target),
             Some((0, Fault::RunHook(9)))
-        );
-    }
-
-    #[test]
-    fn park_carries_its_place_hit_and_hold() {
-        let fault = action_delta(
-            FaultAction::Park {
-                node: 1,
-                addr: 0x4b_0e86,
-                hits: 28,
-                hold_us: 2_000,
-            },
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 0).unwrap(),
-        )
-        .standing
-        .expect("park installs a standing fault");
-        assert_eq!(
-            decode_process_target(&fault.target),
-            Some((
-                1,
-                Fault::ProcPark {
-                    addr: 0x4b_0e86,
-                    hits: 28,
-                    hold: Span(2_000_000),
-                }
-            ))
         );
     }
 

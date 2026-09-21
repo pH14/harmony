@@ -218,14 +218,6 @@ fn golden_process_fault_wire_format() {
             },
             "02150380841e0000000000",
         ),
-        (
-            Fault::ProcPark {
-                addr: 0x4b_0e86,
-                hits: 28,
-                hold: Span(2_000_000),
-            },
-            "0213860e4b00000000001c00000080841e0000000000",
-        ),
     ] {
         let got = to_hex(&Answer::Fault(fault).encode());
         if capture {
@@ -242,8 +234,10 @@ fn golden_process_fault_wire_format() {
 
 #[test]
 fn the_unassigned_process_fault_tag_is_refused() {
-    assert!(Answer::decode(&[0x02, 18]).is_err());
-    assert!(Answer::decode(&[0x02, 18, 0, 0, 0, 0]).is_err());
+    for tag in [18, 19] {
+        assert!(Answer::decode(&[0x02, tag]).is_err());
+        assert!(Answer::decode(&[0x02, tag, 0, 0, 0, 0]).is_err());
+    }
 }
 
 #[test]
