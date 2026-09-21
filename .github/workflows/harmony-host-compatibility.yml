@@ -59,6 +59,8 @@ jobs:
           otool -L target/debug/hvf_probe | grep -q 'Hypervisor.framework'
           otool -L target/debug/hvf_state_oracle | grep -q 'Hypervisor.framework'
           otool -L target/debug/hvf_tlb_probe | grep -q 'Hypervisor.framework'
+          otool -L target/debug/hvf_counter_probe | grep -q 'Hypervisor.framework'
+          otool -L target/debug/hvf_roundtrip_probe | grep -q 'Hypervisor.framework'
       - name: Run the portable Consonance, Harmony and Dissonance tests
         run: |
           set -euo pipefail

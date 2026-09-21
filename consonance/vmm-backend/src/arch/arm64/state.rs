@@ -124,7 +124,7 @@ pub struct Arm64VtimerState {
     pub cntv_ctl_el0: u64,
     pub cntv_cval_el0: u64,
     pub masked: bool,
-    pub offset: u64,
+    pub counter: u64,
 }
 
 impl Default for Arm64VtimerState {
@@ -133,7 +133,7 @@ impl Default for Arm64VtimerState {
             cntv_ctl_el0: 0,
             cntv_cval_el0: 0,
             masked: true,
-            offset: 0,
+            counter: 0,
         }
     }
 }

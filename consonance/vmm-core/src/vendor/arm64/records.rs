@@ -104,7 +104,7 @@ pub(crate) fn vcpu_state_from(s: &Arm64VmState) -> Arm64VcpuState {
             cntv_ctl_el0: s.vtimer.cntv_ctl_el0,
             cntv_cval_el0: s.vtimer.cntv_cval_el0,
             masked: s.vtimer.masked,
-            offset: s.vtimer.offset,
+            counter: s.vtimer.counter,
         },
         interrupts: Arm64InterruptState {
             irq: s.interrupts.irq,
@@ -178,7 +178,7 @@ pub(crate) fn fill_vcpu_state(out: &mut Arm64VmState, s: &Arm64VcpuState) {
         cntv_ctl_el0: s.vtimer.cntv_ctl_el0,
         cntv_cval_el0: s.vtimer.cntv_cval_el0,
         masked: s.vtimer.masked,
-        offset: s.vtimer.offset,
+        counter: s.vtimer.counter,
     };
     out.interrupts = Arm64Interrupts {
         irq: s.interrupts.irq,

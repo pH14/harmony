@@ -301,11 +301,20 @@ fn accepted_irq_for_sysreg(
         .flatten()
 }
 
+fn host_counter() -> u64 {
+    let value: u64;
+    // SAFETY: CNTPCT_EL0 is a read-only counter register that macOS leaves
+    // readable from EL0, and the read has no side effects.
+    unsafe {
+        core::arch::asm!("isb", "mrs {0}, cntpct_el0", out(reg) value, options(nomem, nostack));
+    }
+    value
+}
+
 fn validate_restore_vcpu_state(state: &Arm64VcpuState) -> Result<()> {
     if has_noncanonical_core_regs(&state.core)
         || state.mp_state != MpState::Runnable
         || !state.vtimer.masked
-        || state.vtimer.offset != 0
         || state.vtimer.cntv_ctl_el0 & !0b11 != 0
     {
         return Err(BackendError::InvalidState);
@@ -965,11 +974,13 @@ impl Backend for HvfBackend {
         hv("hv_vcpu_get_vtimer_mask", unsafe {
             hv_vcpu_get_vtimer_mask(self.vcpu, &mut state.vtimer.masked)
         })?;
+        let mut vtimer_offset = 0u64;
         // SAFETY: outputs are live and this is the owning thread.
         hv("hv_vcpu_get_vtimer_offset", unsafe {
-            hv_vcpu_get_vtimer_offset(self.vcpu, &mut state.vtimer.offset)
+            hv_vcpu_get_vtimer_offset(self.vcpu, &mut vtimer_offset)
         })?;
-        if !state.vtimer.masked || state.vtimer.offset != 0 {
+        state.vtimer.counter = host_counter().wrapping_sub(vtimer_offset);
+        if !state.vtimer.masked {
             return Err(BackendError::InvalidState);
         }
         // SAFETY: outputs are live and this is the owning thread.
@@ -1067,7 +1078,7 @@ impl Backend for HvfBackend {
         })?;
         // SAFETY: the vCPU is live and this is the owning thread.
         hv("hv_vcpu_set_vtimer_offset", unsafe {
-            hv_vcpu_set_vtimer_offset(self.vcpu, 0)
+            hv_vcpu_set_vtimer_offset(self.vcpu, host_counter().wrapping_sub(state.vtimer.counter))
         })?;
         // SAFETY: the vCPU is live and this is the owning thread.
         hv("hv_vcpu_set_pending_interrupt(IRQ)", unsafe {

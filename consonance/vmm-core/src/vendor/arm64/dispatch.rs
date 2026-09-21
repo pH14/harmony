@@ -1056,7 +1056,6 @@ pub(crate) fn encode_vcpu_state(s: &Arm64VcpuState) -> Vec<u8> {
     v.extend_from_slice(&s.vtimer.cntv_ctl_el0.to_le_bytes());
     v.extend_from_slice(&s.vtimer.cntv_cval_el0.to_le_bytes());
     v.push(u8::from(s.vtimer.masked));
-    v.extend_from_slice(&s.vtimer.offset.to_le_bytes());
     v.push(u8::from(s.interrupts.irq));
     v.push(u8::from(s.interrupts.fiq));
     v.push(match s.mp_state {
@@ -1156,7 +1155,6 @@ pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [
     vtimer.extend_from_slice(&s.vtimer.cntv_ctl_el0.to_le_bytes());
     vtimer.extend_from_slice(&s.vtimer.cntv_cval_el0.to_le_bytes());
     vtimer.push(u8::from(s.vtimer.masked));
-    vtimer.extend_from_slice(&s.vtimer.offset.to_le_bytes());
     out.push(("vtimer", dig(&vtimer)));
 
     out.push((

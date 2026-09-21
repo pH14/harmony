@@ -99,7 +99,7 @@ pub struct Arm64Vtimer {
     pub cntv_ctl_el0: u64,
     pub cntv_cval_el0: u64,
     pub masked: bool,
-    pub offset: u64,
+    pub counter: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -287,7 +287,7 @@ fn decode_debug(w: &Arm64DebugWire) -> Result<Arm64Debug, VmStateError> {
 struct Arm64VtimerWire {
     cntv_ctl_el0: U64,
     cntv_cval_el0: U64,
-    offset: U64,
+    counter: U64,
     masked: u8,
     reserved: [u8; 7],
 }
@@ -297,7 +297,7 @@ impl From<&Arm64Vtimer> for Arm64VtimerWire {
         Self {
             cntv_ctl_el0: s.cntv_ctl_el0.into(),
             cntv_cval_el0: s.cntv_cval_el0.into(),
-            offset: s.offset.into(),
+            counter: s.counter.into(),
             masked: u8::from(s.masked),
             reserved: [0; 7],
         }
@@ -312,7 +312,7 @@ fn decode_vtimer(w: &Arm64VtimerWire) -> Result<Arm64Vtimer, VmStateError> {
         cntv_ctl_el0: w.cntv_ctl_el0.get(),
         cntv_cval_el0: w.cntv_cval_el0.get(),
         masked: decode_bool(w.masked)?,
-        offset: w.offset.get(),
+        counter: w.counter.get(),
     })
 }
 
@@ -569,7 +569,7 @@ mod tests {
         s.vtimer.cntv_ctl_el0 = 1;
         s.vtimer.cntv_cval_el0 = 0x1234_5678;
         s.vtimer.masked = true;
-        s.vtimer.offset = 0x8765_4321;
+        s.vtimer.counter = 0x8765_4321;
         s.interrupts.irq = true;
         s.mp_state = MpState::Runnable;
         s.vtime.snapshot_vns = 7;

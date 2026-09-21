@@ -80,8 +80,7 @@ a restore rewinds guest RAM and registers while the hardware keeps translations
 the abandoned execution installed, and the guest reads the wrong physical page
 through an address the restored page tables map elsewhere. That reads as
 narrow, register-shaped corruption in an arbitrary guest process rather than as
-a fault, and it is what made the arm64 guest runtime crash under HVF
-(issue #359). `hvf_tlb_probe` reads a page through a translation it warmed,
+a fault. `hvf_tlb_probe` reads a page through a translation it warmed,
 replaces the page-table entry, restores, and reads again; it fails when the
 guest sees the old page. Its second stage repeats the sequence with a
 guest-issued `tlbi` so a stage that cannot observe the replacement at all is
@@ -94,11 +93,27 @@ A watchdog cancellation requested before the stub's guest entry is consumed by
 that entry and retires no instruction, so the stub entry is retried once. The
 cancellation latch outlives the exit and `run` still refuses the guest.
 
-The HVF state oracle uses the default policy with virtual timer masking enabled
-and a zero timer offset. It round trips valid general, SIMD/floating-point,
-system-register, debug, timer, and pending-interrupt records, and rejects
-unmasked, nonzero-offset, or reserved timer-control states before mutating the
-vCPU. ARM KVM and HVF expose pure restore-shape checks through the `Backend`
+The guest's virtual counter runs off the host counter and neither backend can
+trap a guest read of it, so a restore that left the counter alone handed the
+guest every tick of host time spent between the snapshot and the restore. Both
+arm64 backends record the counter the guest was reading at the snapshot and put
+it back on restore: HVF derives a CNTVOFF_EL2 from the host counter and ARM KVM
+writes KVM_REG_ARM_TIMER_CNT. The counter keeps advancing with host time while
+the guest runs, so a save taken after a restore reports a later value than the
+one restored, and it stays out of the state hash and the divergence components
+for that reason.
+
+`hvf_counter_probe` restores one snapshot, reads the counter, burns a scaling
+number of further restores of the same snapshot, and reads again; before the
+rewind the second read ran ahead in proportion to the restores burned.
+`hvf_roundtrip_probe` runs a loop of integer, memory and SIMD work either
+straight through, with a save and restore between every step, or rebranched
+from a mid-loop snapshot, and compares the accumulator the guest computed.
+
+The HVF state oracle uses the default policy with virtual timer masking enabled.
+It round trips valid general, SIMD/floating-point, system-register, debug,
+timer, and pending-interrupt records up to the counter's advance, and rejects
+unmasked or reserved timer-control states before mutating the vCPU. ARM KVM and HVF expose pure restore-shape checks through the `Backend`
 trait, so portable snapshot import rejects their known invalid vCPU records
 before guest RAM or backend state is changed.
 
