@@ -145,7 +145,7 @@ mod runtime {
     const HOOK_FAILURE_STATUS: i32 = 42;
     const HOOK_DIR: &str = "/run/harmony/hooks";
 
-    const CATALOG: [Point; 25] = [
+    const CATALOG: [Point; 24] = [
         Point::always(HOOK_FAILURE_POINT, "supervisor.hook_assertion"),
         Point::state(REG_TICKS, "supervisor.ticks"),
         Point::state(REG_ALIVE, "supervisor.alive"),

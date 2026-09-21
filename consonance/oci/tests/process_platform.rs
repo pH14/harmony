@@ -107,7 +107,7 @@ mod platform {
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct Evidence {
         hash: [u8; 32],
-        registers: [u64; 8],
+        registers: [u64; 7],
         console: Vec<u8>,
     }
 
@@ -131,7 +131,7 @@ mod platform {
         for (_, id, bytes) in &events {
             catalog.observe(*id, bytes)?;
         }
-        let registers: [u64; 8] = REGISTER_NAMES
+        let registers: [u64; 7] = REGISTER_NAMES
             .map(|name| catalog.get(name))
             .into_iter()
             .collect::<std::result::Result<Vec<_>, _>>()?
