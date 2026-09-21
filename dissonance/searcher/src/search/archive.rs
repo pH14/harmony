@@ -185,6 +185,7 @@ pub enum SelectorPolicy {
     EnergyFrontierCheapest(RetireThresholds),
     EnergyFrontierCheapestCount(RetireThresholds),
     EnergyFrontierCheapestKeyCount(RetireThresholds),
+    EnergyFrontierCheapestProgressFocus(RetireThresholds),
 }
 
 #[must_use]
@@ -197,6 +198,10 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
                 threshold_values(thresholds)
             )
         }
+        SelectorPolicy::EnergyFrontierCheapestProgressFocus(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_progress_focus_v1:{}",
+            threshold_values(scales)
+        ),
         SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => format!(
             "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:{}",
             threshold_values(scales)
@@ -229,6 +234,8 @@ pub fn selector_policy_from_identifier(
     if identifier == SELECTOR_IDENTIFIER {
         return Ok(SelectorPolicy::GroupUniform);
     }
+    let progress_focus_prefix =
+        format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_progress_focus_v1:");
     let retire_prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
     let key_count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:");
     let count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:");
@@ -238,8 +245,11 @@ pub fn selector_policy_from_identifier(
         EnergyFrontierCheapest,
         EnergyFrontierCheapestCount,
         EnergyFrontierCheapestKeyCount,
+        EnergyFrontierCheapestProgressFocus,
     }
-    let (values, selector) = if let Some(values) = identifier.strip_prefix(&retire_prefix) {
+    let (values, selector) = if let Some(values) = identifier.strip_prefix(&progress_focus_prefix) {
+        (values, Parsed::EnergyFrontierCheapestProgressFocus)
+    } else if let Some(values) = identifier.strip_prefix(&retire_prefix) {
         (values, Parsed::Retire)
     } else if let Some(values) = identifier.strip_prefix(&key_count_prefix) {
         (values, Parsed::EnergyFrontierCheapestKeyCount)
@@ -269,6 +279,9 @@ pub fn selector_policy_from_identifier(
         groups: parsed[1..].to_vec(),
     };
     Ok(match selector {
+        Parsed::EnergyFrontierCheapestProgressFocus => {
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(thresholds)
+        }
         Parsed::EnergyFrontierCheapestKeyCount => {
             SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
         }
@@ -296,6 +309,7 @@ const CLASS_RANK_SHIFT: u32 = 3;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectorPath {
+    ProgressFocus,
     Continuation,
     Uniform,
     #[serde(rename = "hierarchy_uniform")]
@@ -325,6 +339,8 @@ pub struct SelectorAccounting {
     pub key_counts: Option<KeyCountAccounting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_selections: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_focus_selections: Option<u64>,
     pub uniform_selections: u64,
     pub cell_selections: u64,
     pub productive_selections: u64,
@@ -577,6 +593,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     pub(crate) entries: Vec<ArchiveEntry<A, K, M, S>>,
     id_to_index: BTreeMap<u64, usize>,
     next_entry_id: u64,
+    progress_focus: VecDeque<(u64, u16)>,
     pub active: Vec<bool>,
     active_count: usize,
     pub slots: BTreeMap<K::Group, Vec<usize>>,
@@ -1112,6 +1129,7 @@ where
             entries: Vec::new(),
             id_to_index: BTreeMap::new(),
             next_entry_id: 0,
+            progress_focus: VecDeque::new(),
             active: Vec::new(),
             active_count: 0,
             slots: BTreeMap::new(),
@@ -1936,6 +1954,11 @@ where
             } else {
                 0
             })
+            .saturating_add(
+                self.progress_focus
+                    .capacity()
+                    .saturating_mul(size_of::<(u64, u16)>()),
+            )
     }
 
     fn route_donor_entry_memory_charge() -> usize {
@@ -2646,6 +2669,17 @@ where
                 opened |= 1 << (offset + 1);
             }
         }
+        if matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+        ) && parent_id.is_some_and(|parent| {
+            K::progress_cmp(key.group(0), self.entries[parent].key.group(0)) == Ordering::Greater
+        }) {
+            if self.progress_focus.len() == 128 {
+                self.progress_focus.pop_front();
+            }
+            self.progress_focus.push_back((stable_id, 128));
+        }
         self.opened_depths.push(opened);
         self.deepest_leaf.push((key, id));
         if self.route_reuse {
@@ -2907,6 +2941,26 @@ where
             .collect()
     }
 
+    fn draw_progress_focus(&mut self, max_actions: usize) -> Option<usize> {
+        while let Some((stable_id, remaining)) = self.progress_focus.back().copied() {
+            let eligible = self.index_of_id(stable_id).filter(|id| {
+                self.active[*id]
+                    && self.origin_resident(*id)
+                    && self.entries[*id].input_len < max_actions
+            });
+            if remaining == 0 || eligible.is_none() {
+                self.progress_focus.pop_back();
+                continue;
+            }
+            self.progress_focus
+                .back_mut()
+                .expect("focus entry exists")
+                .1 -= 1;
+            return eligible;
+        }
+        None
+    }
+
     pub fn select_parent(
         &mut self,
         rand: &mut RomuDuoJrRand,
@@ -2917,6 +2971,23 @@ where
         }
         if self.active_ids.is_empty() && !self.reactivate_liveness_anchor(max_actions) {
             return Err("archive has no expandable entry".into());
+        }
+        if matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+        ) && rand.below(NonZeroUsize::new(2).ok_or("invalid progress focus odds")?) == 0
+            && let Some(id) = self.draw_progress_focus(max_actions)
+        {
+            return Ok((
+                id,
+                SelectorDraw {
+                    path: SelectorPath::ProgressFocus,
+                    classes_skipped: 0,
+                    counter_reset: false,
+                    concentration: None,
+                    class_rank: None,
+                },
+            ));
         }
         let use_walk = rand.below(NonZeroUsize::new(4).ok_or("invalid frontier odds")?) != 0;
         if !use_walk {
@@ -2992,7 +3063,8 @@ where
             &self.live_skip_groups
         };
         let class_scale = match &self.selector_policy {
-            SelectorPolicy::EnergyFrontierCheapest(scales)
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(scales)
+            | SelectorPolicy::EnergyFrontierCheapest(scales)
             | SelectorPolicy::EnergyFrontierCheapestCount(scales)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => scales
                 .groups
@@ -3270,7 +3342,8 @@ where
     ) -> Result<usize, Box<dyn Error>> {
         let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
         let scales = match &self.selector_policy {
-            SelectorPolicy::EnergyFrontierCheapest(scales)
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(scales)
+            | SelectorPolicy::EnergyFrontierCheapest(scales)
             | SelectorPolicy::EnergyFrontierCheapestCount(scales)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => scales,
             _ => return Ok(rand.below(count)),
@@ -3372,6 +3445,7 @@ where
         let ordinary = match &self.selector_policy {
             SelectorPolicy::GroupUniform => true,
             SelectorPolicy::Retire(thresholds)
+            | SelectorPolicy::EnergyFrontierCheapestProgressFocus(thresholds)
             | SelectorPolicy::EnergyFrontierCheapest(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds) => {
@@ -3384,6 +3458,7 @@ where
     fn groups_unexhausted(&self, key: K) -> bool {
         match &self.selector_policy {
             SelectorPolicy::GroupUniform
+            | SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
             | SelectorPolicy::EnergyFrontierCheapest(_)
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_) => true,
@@ -3430,7 +3505,8 @@ where
         }
         let id = if matches!(
             self.selector_policy,
-            SelectorPolicy::EnergyFrontierCheapest(_)
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+                | SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
         ) {
@@ -3683,6 +3759,7 @@ where
         if matches!(
             self.selector_policy,
             SelectorPolicy::Retire(_)
+                | SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
                 | SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
@@ -3693,6 +3770,13 @@ where
             }
         }
         match draw.path {
+            SelectorPath::ProgressFocus => {
+                let count = self
+                    .selector_accounting
+                    .progress_focus_selections
+                    .get_or_insert(0);
+                *count = count.saturating_add(1);
+            }
             SelectorPath::Continuation => {
                 let count = self
                     .selector_accounting
@@ -3781,7 +3865,8 @@ where
         }
         let cleared = match self.selector_policy {
             SelectorPolicy::Retire(_) => u32::MAX,
-            SelectorPolicy::EnergyFrontierCheapest(_)
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+            | SelectorPolicy::EnergyFrontierCheapest(_)
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_) => opened,
             SelectorPolicy::GroupUniform => 0,
@@ -3823,6 +3908,7 @@ where
             });
         }
         if let SelectorPolicy::Retire(thresholds)
+        | SelectorPolicy::EnergyFrontierCheapestProgressFocus(thresholds)
         | SelectorPolicy::EnergyFrontierCheapest(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds) = &self.selector_policy
@@ -6530,6 +6616,7 @@ mod tests {
                     assert_eq!(concentration.window_size, 128);
                 }
                 SelectorPath::Continuation => panic!("continuations require explicit dispatch"),
+                SelectorPath::ProgressFocus => panic!("focus requires its own policy"),
                 SelectorPath::Uniform => {
                     assert!(draw.concentration.is_none());
                 }
@@ -7102,6 +7189,66 @@ mod tests {
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn progress_focus_is_bounded_and_ignores_nonprogress_and_inactive_entries() {
+        let mut archive = Archive::<u8, SpliceKey, (), ()>::new(|_| 1);
+        archive.selector_policy =
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(RetireThresholds {
+                entry: 3,
+                groups: vec![6, 12],
+            });
+        let insert = |a: &mut Archive<u8, SpliceKey, (), ()>, parent, action, progress, slot| {
+            a.insert(
+                parent,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![action],
+                    key: SpliceKey {
+                        class_label: 10,
+                        class_progress: 1,
+                        cell_progress: progress,
+                        slot,
+                    },
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let root = insert(&mut archive, None, 0, 0, 0);
+        insert(&mut archive, Some(root), 1, 0, 1);
+        assert!(archive.progress_focus.is_empty());
+        let improved = insert(&mut archive, Some(root), 2, 1, 0);
+        assert_eq!(archive.progress_focus.len(), 1);
+        for _ in 0..128 {
+            assert_eq!(archive.draw_progress_focus(16), Some(improved));
+        }
+        assert_eq!(archive.draw_progress_focus(16), None);
+        for progress in 2..=131 {
+            insert(&mut archive, Some(root), progress, u16::from(progress), 0);
+        }
+        assert_eq!(archive.progress_focus.len(), 128);
+        let last_stable = archive.progress_focus.back().unwrap().0;
+        let before_compaction = archive.index_of_id(last_stable).unwrap();
+        archive.deactivate(1);
+        archive.compact_history_for_final_report().unwrap();
+        let last = archive.index_of_id(last_stable).unwrap();
+        assert_ne!(last, before_compaction);
+        assert_eq!(archive.draw_progress_focus(16), Some(last));
+        archive.deactivate(last);
+        archive.compact_history_for_final_report().unwrap();
+        assert!(archive.index_of_id(last_stable).is_none());
+        let surviving = archive.draw_progress_focus(16).unwrap();
+        assert_ne!(archive.stable_id(surviving), Some(last_stable));
+        assert_eq!(archive.draw_progress_focus(1), None);
+        let identity = super::selector_policy_identifier(&archive.selector_policy);
+        assert_eq!(
+            selector_policy_from_identifier(&identity, 2).unwrap(),
+            archive.selector_policy
+        );
     }
 
     #[test]

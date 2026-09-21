@@ -418,3 +418,11 @@ without a work-budget cutoff.
 ## Exact-prefix restore during import
 
 `whole_tree_prefix_restore_v2` preserves imported ancestry and admission order. For an entry without a saved snapshot, it finds the longest complete action prefix already owned by an imported entry with a resident snapshot, restores that snapshot, and executes only the remaining suffix. It matches the full typed action sequence, not archive cells or progress labels. Prefix milestones are merged before replaying the remainder. This avoids repeated emulation when exported parent metadata is sparse while preserving every input and resulting state. The resume identifier changes because bootstrap execution work can change.
+
+## Bounded progress follow-up experiment
+
+The opt-in `energy_frontier_cheapest_progress_focus_v1` selector mixes the existing energy/frontier walk with follow-up attempts on retained entries whose key progress exceeds their parent. Half of draws try a newest-first queue of at most 128 stable entry IDs, with at most 128 follow-up attempts per admission. The queue falls back to ordinary selection when empty. Each draw revalidates that the entry remains active, restorable, and below the action limit; compaction may change indices without changing the queued identity. Queue capacity is charged to archive memory accounting. `progress_focus_selections` records the draws made through this path.
+
+Follow-up attempts bypass ordinary retirement only within this bounded allowance. Workload keys supply the existing progress comparison; the scheduler contains no game, room, weapon, or encounter rules. Retention and action generation do not change.
+
+Warm import reconstructs the queue from admitted parent-child progress comparisons. Consumed follow-up tickets are not persisted, so warm import starts a new allocation phase and may revisit older improvements, including rerooted imported entries. The mechanism is experimental. Selected-root combat gains do not establish full-campaign improvement or game completion; validate both before changing a workload default.
