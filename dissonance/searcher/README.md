@@ -448,7 +448,7 @@ recognizes sparse achievements. Imported histories reconstruct tickets from
 admission order; spent tickets are not persisted. New groups need not be
 useful, so end-to-end improvement requires a matched campaign comparison.
 
-Version 1 watched only the two coarsest pooled depths. In a populated MM2
+Version 1 watched only the two coarsest pooled depths. In a populated five-depth
 archive those groups were already saturated: the matched control opened no
 new groups at those depths, and the candidate's first 9,300 jobs matched the
 control's work and outcomes. Version 2 includes the next pooled depth, where
