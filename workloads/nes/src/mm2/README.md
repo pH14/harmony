@@ -248,3 +248,8 @@ per-action observations, actual work and terminal status, and stops a branch
 at death or stage completion. Include a tail in each suffix when testing
 landing or survival. This is a controlled local probe, not a campaign or an
 independent power-on verification; replay a successful composed tape separately.
+
+Soak exports release the imported source report and source checkpoints after
+the campaign returns, before serializing the final archive and checkpoints.
+The search and final archive contents are unchanged; qualified stream replay
+still keeps its source alive for the second execution.

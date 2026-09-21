@@ -321,7 +321,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let origin = resume_origin(&args, &game)?;
     let config = campaign_config(&args);
     if args.marketing_soak {
-        run_marketing_soak(&game, &config, &args.output, &origin, args.save_checkpoint)
+        run_marketing_soak(&game, &config, &args.output, origin, args.save_checkpoint)
     } else {
         run_qualified_campaign(&game, &config, &args.output, &origin)
     }
@@ -351,13 +351,14 @@ fn run_marketing_soak(
     game: &Mm2Game,
     config: &Mm2CampaignConfig,
     output: &std::path::Path,
-    origin: &Mm2CampaignOrigin,
+    origin: Mm2CampaignOrigin,
     save_checkpoint: bool,
 ) -> Result<(), Box<dyn Error>> {
     let mut stream = BufWriter::new(fs::File::create(output.join("stream.jsonl"))?);
     let mut progress = BufWriter::new(fs::File::create(output.join("progress.jsonl"))?);
     let (live, checkpoint) =
-        run_mm2_campaign_checkpointed(game, config, origin, &mut stream, Some(&mut progress))?;
+        run_mm2_campaign_checkpointed(game, config, &origin, &mut stream, Some(&mut progress))?;
+    drop(origin);
     stream.flush()?;
     drop(stream);
     progress.flush()?;
