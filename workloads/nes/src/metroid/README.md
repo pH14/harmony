@@ -76,8 +76,9 @@ Zebetite slots at `$0758`, eight bytes apart, with the slot's status at offset
 column dies at eight hits while healing one hit every 64 frames it is not hit,
 and a slot the game has not loaded yet counts as a whole column. Her status
 byte clears whenever Samus is in the other half of her room and her hit count
-persists, so the sum only falls as missiles land: it never resets when a room
-loads its columns or when she scrolls out of view. Both parts count four per
+persists, so the sum falls as missiles land and rises only when the game
+heals a column or respawns the columns of a room Samus re-enters; it does not
+move when she scrolls out of view. Both parts count four per
 hit, the damage one missile does to Kraid or Ridley, so one missile is one
 boss-damage bucket in every boss room; the field is sixteen bits because the
 sum starts at 288. The state also counts the
