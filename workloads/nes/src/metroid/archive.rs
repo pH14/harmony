@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_tourian_her_hits_plus_slots_v17";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_tourian_her_hits_plus_slots_lineage_carries_while_present_v18";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -147,11 +147,7 @@ impl ArchiveKey for MetroidArchiveKey {
                 ..self
             };
         }
-        let inherited = if same_cell {
-            parent.map_or(0, |(_, lineage)| lineage.boss_health_highest)
-        } else {
-            0
-        };
+        let inherited = parent.map_or(0, |(_, lineage)| lineage.boss_health_highest);
         let highest = inherited.max(self.boss_health_seen).max(self.boss_health);
         Self {
             boss_damage: u8::try_from(
@@ -163,10 +159,10 @@ impl ArchiveKey for MetroidArchiveKey {
     }
 
     fn record(lineage: &mut Self::Lineage, key: Self) {
-        if lineage.cell != key.cell() {
+        if key.boss_health == 0 && lineage.cell != key.cell() {
             lineage.boss_health_highest = 0;
-            lineage.cell = key.cell();
         }
+        lineage.cell = key.cell();
         lineage.boss_health_highest = lineage
             .boss_health_highest
             .max(key.boss_health_seen)
@@ -579,6 +575,39 @@ mod tests {
         }
         .complete(Some((flash, &lineage)));
         assert_eq!(back.boss_damage, 0);
+    }
+
+    #[test]
+    fn the_highest_carries_into_the_next_cell_while_a_reading_is_present() {
+        let mut lineage = MetroidLineage::default();
+        let shaft = archive_key(MetroidMechanicalState {
+            map_x: 5,
+            map_y: 11,
+            boss_health: 288,
+            zebetites_destroyed: 0,
+            ..MetroidMechanicalState::default()
+        });
+        MetroidArchiveKey::record(&mut lineage, shaft);
+        let her_screen = archive_key(MetroidMechanicalState {
+            map_x: 3,
+            map_y: 11,
+            boss_health: 256,
+            zebetites_destroyed: 0,
+            ..MetroidMechanicalState::default()
+        })
+        .complete(Some((shaft, &lineage)));
+        assert_eq!(her_screen.boss_damage, 8);
+        MetroidArchiveKey::record(&mut lineage, her_screen);
+        assert_eq!(lineage.boss_health_highest, 288);
+        let outside = archive_key(MetroidMechanicalState {
+            map_x: 9,
+            map_y: 29,
+            boss_health: 0,
+            zebetites_destroyed: 0,
+            ..MetroidMechanicalState::default()
+        });
+        MetroidArchiveKey::record(&mut lineage, outside);
+        assert_eq!(lineage.boss_health_highest, 0);
     }
 
     #[test]

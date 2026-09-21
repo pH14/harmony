@@ -90,9 +90,11 @@ remaining hit points and the highest present reading over the execution's
 frames, and the lineage carries the highest reading it has seen, so the damage
 is the difference between that highest and the remaining hit points in buckets
 of four. A reading of nothing keeps the parent's damage, because a hit flashes
-the slot empty for a few frames. A child that lands in a different map cell
-from its parent starts from zero, because the boss regains full health when the
-room is re-entered. Without the coordinate a state that has landed ten hits on
+the slot empty for a few frames. A lineage that leaves the boss's room, reading
+nothing in a different map cell, starts from zero, because the boss regains
+full health when the room is re-entered; while the reading stays present the
+highest carries across map cells, so Tourian's one count, present from the
+elevator to her tank, ranks every screen of her room on the same ladder. Without the coordinate a state that has landed ten hits on
 Kraid shares a cell with one standing in the doorway, and no ordering can
 prefer the first.
 
@@ -219,8 +221,8 @@ stores 1 at $687B for Kraid and 2 at $687C for Ridley. The previous decoder
 incorrectly tested bit 0 for both bosses. Correcting the count is versioned as
 key policy v8; named boss observation bytes require stream/checkpoint/result
 digest v4 (v2 introduced named Kraid/Ridley flags; v3 added Mother Brain state;
-v4 latches transient Tourian events). Key policy v17 reads Mother Brain's remaining hits plus every Zebetite
-slot into Tourian's boss health at four per hit and named-progress v3 adds the destroyed
+v4 latches transient Tourian events). Key policy v18 reads Mother Brain's remaining hits plus every Zebetite
+slot into Tourian's boss health at four per hit, carries a lineage's highest reading across map cells while a reading is present, and named-progress v3 adds the destroyed
 column and binds Mother Brain's room to her status byte. Named-progress v2 and replay-probe v2 also
 correct origin/retrospective route timestamps to exclude genesis setup; the probe
 reports action execution work and setup separately; probes and backend snapshot
