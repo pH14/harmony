@@ -195,6 +195,7 @@ pub trait vm_state::SnapshotRecords: core::marker::Sized
 pub const vm_state::SnapshotRecords::ARCH_TAG: u16
 pub fn vm_state::SnapshotRecords::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>
 pub fn vm_state::SnapshotRecords::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
+pub fn vm_state::SnapshotRecords::encode_for_hash(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
 pub fn vm_state::SnapshotRecords::engine_state(&self) -> &[u8]
 pub fn vm_state::SnapshotRecords::entropy_bytes(&self) -> &[u8]
 pub fn vm_state::SnapshotRecords::set_engine_state(&mut self, alloc::vec::Vec<u8>)

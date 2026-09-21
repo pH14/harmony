@@ -26,6 +26,12 @@ sequence must precede `next_seq`. `VmState::decode` is strict and total:
 malformed headers, section order, lengths, fields, missing sections,
 duplicates, and trailing bytes return typed errors.
 
+`SnapshotRecords::encode_for_hash` is the encoding a caller hashes rather than
+stores. It defaults to `encode`; the ARM implementation zeroes the virtual
+counter, which runs off the host counter and therefore differs between two runs
+of the same guest. The stored encoding keeps the counter, because a restore
+needs the value the guest was reading.
+
 `peek_version` validates the magic and reads the version without decoding the
 rest of the blob. `VM_STATE_VERSION` identifies the only writer and reader
 format. The golden test pins the bytes of a fully populated current state. The

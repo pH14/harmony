@@ -523,6 +523,12 @@ impl SnapshotRecords for Arm64VmState {
         Arm64VmState::encode(self)
     }
 
+    fn encode_for_hash(&self) -> Result<Vec<u8>, VmStateError> {
+        let mut hashed = self.clone();
+        hashed.vtimer.counter = 0;
+        Arm64VmState::encode(&hashed)
+    }
+
     fn decode(bytes: &[u8]) -> Result<Self, VmStateError> {
         Arm64VmState::decode(bytes)
     }
@@ -581,6 +587,29 @@ mod tests {
         s.devices = DeviceBlob(vec![1, 2, 3, 4]);
         s.contract_hash = [0xAB; 32];
         s
+    }
+
+    #[test]
+    fn the_hashed_encoding_ignores_the_virtual_counter() {
+        let early = sample();
+        let mut late = early.clone();
+        late.vtimer.counter = early.vtimer.counter + 1_000_000;
+
+        assert_ne!(
+            SnapshotRecords::encode(&early).unwrap(),
+            SnapshotRecords::encode(&late).unwrap()
+        );
+        assert_eq!(
+            SnapshotRecords::encode_for_hash(&early).unwrap(),
+            SnapshotRecords::encode_for_hash(&late).unwrap()
+        );
+        assert_eq!(
+            Arm64VmState::decode(&SnapshotRecords::encode(&late).unwrap())
+                .unwrap()
+                .vtimer
+                .counter,
+            late.vtimer.counter
+        );
     }
 
     fn section(blob: &[u8], wanted: u16) -> (usize, usize) {

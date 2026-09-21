@@ -1235,7 +1235,7 @@ where
         }
         if self.snapshot_hashing {
             let snapshot = self.build_snapshot_state(&vcpu)?;
-            let bytes = <<B::A as Vendor>::Snapshot as SnapshotRecords>::encode(&snapshot)
+            let bytes = <<B::A as Vendor>::Snapshot as SnapshotRecords>::encode_for_hash(&snapshot)
                 .map_err(SnapshotError::from)?;
             put_chunk(&mut out, b"VMST", &bytes);
         }
