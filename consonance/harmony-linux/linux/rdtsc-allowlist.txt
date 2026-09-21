@@ -1,9 +1,3 @@
-# CHECK-UNARMED
-# Removing the process-park syscall-entry poll shifts do_syscall_64's reviewed
-# kstack-offset read, and this toolchain's post-removal offset has not been
-# captured. Build in capture mode, review the printed baseline, commit it, and
-# delete this marker.
-#
 # Reviewed raw-counter-read sites in the built guest kernel (the
 # paravirtual clock interface reachability check, x86 half — see
 # scan-counter-opcodes.sh). One `artifact:symbol+0xOFFSET` entry per line — the
