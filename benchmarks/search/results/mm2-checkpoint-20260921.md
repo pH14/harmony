@@ -33,6 +33,22 @@ recipient state; no endpoint concatenation, RAM edits, hidden award-settling
 frames, curated controller banks, or assisted ending tape qualifies as success.
 Film was reviewed by a separate agent.
 
+## Research groundwork
+
+The state-exploration review separates cell identity, representative retention,
+state selection, action generation and route transfer. Present resources cannot
+be replaced by historical maxima, and equal inventory counts need not mean equal
+capabilities. Rooted combat results and full power-on completion are different
+claims; literature gains also depend on their supplied abstractions and budgets.
+
+The earlier Metroid branch audit identified a source-versus-destination
+preference filter that can reject routes collecting upgrades. That finding is
+branch-specific: the current observed-route validator compares its leaf with
+its donor, so the old defect must not be asserted against this implementation.
+The Metroid tank-ranking and within-class recency proposals likewise concern
+different selection depths; neither is established here as the solution to
+the current Mega Man 2 stall.
+
 ## Improvements made
 
 ### Generic searcher
@@ -112,9 +128,10 @@ a 16,000 MiB search budget, and a nominal 35M-frame limit. Each spends
 All four archive exports have completed manifest and compression verification.
 The spatial archive and checkpoint finished verification at 13:13 UTC, after
 search had stopped. Spatial discovery first differs from control at job 113.
-Its final runner summary is still pending at this checkpoint; its detailed
-census/allocation audit was canceled on pause.
-More jobs or different selections alone are not evidence of better exploration.
+Its producer subsequently exited successfully, both capture readers exited
+successfully, and champion endpoints agree on replay. Its detailed
+census/allocation audit was canceled on pause. More jobs or different selections
+alone are not evidence of better exploration.
 
 Earlier exact-tail suppression removed 205 repeat attempts without increasing
 the ten strict useful arrivals in its paired probe. Traversal and health results
@@ -168,9 +185,10 @@ had zero route tails**, so they validate fallback and equivalence, not real-game
 alternative-route execution. The frozen binary SHA-256 is
 `86f55aab403decbe426f5d58ff3d2333c27e3c8466c4bcc2062102818c160d45`.
 
-The previously pushed head `3219d7e7b` passed all applicable CI, with exact guest
-platform qualification skipped. Final checkpoint push/check results are recorded
-in the task handoff rather than assumed here.
+The code checkpoint also passed all 1,412 repository pre-push tests (25 skipped),
+formatting and workspace Clippy before being pushed with the report. The earlier
+head `3219d7e7b` passed all applicable CI, with exact guest platform qualification
+skipped; CI on the new checkpoint is tracked separately in the task handoff.
 
 No new search should start until the user resumes. The prepared next route arm
 has not launched. If resumed, first verify the completed spatial export and
