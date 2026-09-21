@@ -14,6 +14,13 @@ Git commits by exact source-hash equality against freshly extracted Git trees.
 Build 005 is `02463cae`. Its executable and original source-copy metadata remain
 immutable; later commits are not retroactively attributed to that measured build.
 
+## Mega Man 2 paused checkpoint
+
+[`mm2-checkpoint-20260921.md`](mm2-checkpoint-20260921.md) records the verified
+two-weapon power-on lineage, generic and adapter changes, matched null results,
+current stall diagnoses, and the untested route-alternative experiment. The game
+is unfinished; private runtime evidence remains outside the repository.
+
 ## Complete-session design audit
 
 [`transcript-remine-012.json`](transcript-remine-012.json) identifies the complete
