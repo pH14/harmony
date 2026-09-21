@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod archive;
+pub mod archive_manifest;
 pub mod campaign;
 mod continuation;
 pub mod draw;
@@ -11,3 +12,4 @@ mod key_counts;
 pub mod parallel;
 pub mod rand;
 pub mod rollout;
+mod route_attempts;

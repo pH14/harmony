@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::search::{
-    continuation::{Continuation, ContinuationBank},
+    continuation::{ACTION_CAP, Continuation, ContinuationBank},
     key_counts::{KEY_COUNT_CAPACITY, KeyCounts},
     rand::RomuDuoJrRand,
 };
@@ -38,6 +38,9 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     }
     fn preference_cmp(self, _other: Self) -> Ordering {
         Ordering::Equal
+    }
+    fn route_context(self) -> Option<Self::Group> {
+        None
     }
     type Lineage: Clone + Default;
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self;
@@ -182,6 +185,8 @@ pub enum SelectorPolicy {
     EnergyFrontierCheapest(RetireThresholds),
     EnergyFrontierCheapestCount(RetireThresholds),
     EnergyFrontierCheapestKeyCount(RetireThresholds),
+    EnergyFrontierCheapestProgressFocus(RetireThresholds),
+    EnergyFrontierCheapestDiscoveryFocus(RetireThresholds),
 }
 
 #[must_use]
@@ -194,6 +199,14 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
                 threshold_values(thresholds)
             )
         }
+        SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_discovery_focus_v2:{}",
+            threshold_values(scales)
+        ),
+        SelectorPolicy::EnergyFrontierCheapestProgressFocus(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_progress_focus_v1:{}",
+            threshold_values(scales)
+        ),
         SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => format!(
             "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:{}",
             threshold_values(scales)
@@ -226,6 +239,10 @@ pub fn selector_policy_from_identifier(
     if identifier == SELECTOR_IDENTIFIER {
         return Ok(SelectorPolicy::GroupUniform);
     }
+    let discovery_focus_prefix =
+        format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_discovery_focus_v2:");
+    let progress_focus_prefix =
+        format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_progress_focus_v1:");
     let retire_prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
     let key_count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:");
     let count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:");
@@ -235,8 +252,15 @@ pub fn selector_policy_from_identifier(
         EnergyFrontierCheapest,
         EnergyFrontierCheapestCount,
         EnergyFrontierCheapestKeyCount,
+        EnergyFrontierCheapestProgressFocus,
+        EnergyFrontierCheapestDiscoveryFocus,
     }
-    let (values, selector) = if let Some(values) = identifier.strip_prefix(&retire_prefix) {
+    let (values, selector) = if let Some(values) = identifier.strip_prefix(&discovery_focus_prefix)
+    {
+        (values, Parsed::EnergyFrontierCheapestDiscoveryFocus)
+    } else if let Some(values) = identifier.strip_prefix(&progress_focus_prefix) {
+        (values, Parsed::EnergyFrontierCheapestProgressFocus)
+    } else if let Some(values) = identifier.strip_prefix(&retire_prefix) {
         (values, Parsed::Retire)
     } else if let Some(values) = identifier.strip_prefix(&key_count_prefix) {
         (values, Parsed::EnergyFrontierCheapestKeyCount)
@@ -266,6 +290,12 @@ pub fn selector_policy_from_identifier(
         groups: parsed[1..].to_vec(),
     };
     Ok(match selector {
+        Parsed::EnergyFrontierCheapestDiscoveryFocus => {
+            SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(thresholds)
+        }
+        Parsed::EnergyFrontierCheapestProgressFocus => {
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(thresholds)
+        }
         Parsed::EnergyFrontierCheapestKeyCount => {
             SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
         }
@@ -293,6 +323,8 @@ const CLASS_RANK_SHIFT: u32 = 3;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectorPath {
+    ProgressFocus,
+    DiscoveryFocus,
     Continuation,
     Uniform,
     #[serde(rename = "hierarchy_uniform")]
@@ -322,6 +354,10 @@ pub struct SelectorAccounting {
     pub key_counts: Option<KeyCountAccounting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_selections: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_focus_selections: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_focus_selections: Option<u64>,
     pub uniform_selections: u64,
     pub cell_selections: u64,
     pub productive_selections: u64,
@@ -405,6 +441,10 @@ pub struct ProgressPoint<M, P = ()> {
 pub struct EntrySelectorCounters {
     pub selected: u64,
     pub productive: u64,
+    #[serde(default)]
+    pub horizon_unproductive: u64,
+    #[serde(default)]
+    pub horizon_failed_extension: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -570,6 +610,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     pub(crate) entries: Vec<ArchiveEntry<A, K, M, S>>,
     id_to_index: BTreeMap<u64, usize>,
     next_entry_id: u64,
+    progress_focus: VecDeque<(u64, u16)>,
     pub active: Vec<bool>,
     active_count: usize,
     pub slots: BTreeMap<K::Group, Vec<usize>>,
@@ -582,6 +623,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     selected: Vec<u64>,
     productive: Vec<u64>,
     since_retained: Vec<u64>,
+    horizon_unproductive: Vec<u64>,
+    horizon_failed_extension: Vec<usize>,
     in_window_ever: Vec<bool>,
     opened_slot: Vec<bool>,
     opened_depths: Vec<u32>,
@@ -602,7 +645,12 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     live_group_cells: LiveGroupCells<K>,
     active_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
     live_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
+    route_donors: BTreeMap<K::Group, BTreeSet<DonorRank<K>>>,
+    route_donor_memory_bytes: usize,
+    route_attempts: Option<crate::search::route_attempts::RouteAttempts>,
     preserve_inactive_snapshots: bool,
+    adaptive_horizon: bool,
+    route_reuse: bool,
     metadata_pins: BTreeMap<u64, u32>,
     inflight_snapshot_pins: BTreeMap<u64, u32>,
     inflight_snapshot_charges: BTreeMap<u64, usize>,
@@ -1098,6 +1146,7 @@ where
             entries: Vec::new(),
             id_to_index: BTreeMap::new(),
             next_entry_id: 0,
+            progress_focus: VecDeque::new(),
             active: Vec::new(),
             active_count: 0,
             slots: BTreeMap::new(),
@@ -1110,6 +1159,8 @@ where
             selected: Vec::new(),
             productive: Vec::new(),
             since_retained: Vec::new(),
+            horizon_unproductive: Vec::new(),
+            horizon_failed_extension: Vec::new(),
             in_window_ever: Vec::new(),
             opened_slot: Vec::new(),
             opened_depths: Vec::new(),
@@ -1136,7 +1187,12 @@ where
             live_group_cells: vec![BTreeMap::new(); K::groups()],
             active_skip_groups: BTreeMap::new(),
             live_skip_groups: BTreeMap::new(),
+            route_donors: BTreeMap::new(),
+            route_donor_memory_bytes: 0,
+            route_attempts: None,
             preserve_inactive_snapshots: false,
+            adaptive_horizon: false,
+            route_reuse: false,
             metadata_pins: BTreeMap::new(),
             inflight_snapshot_pins: BTreeMap::new(),
             inflight_snapshot_charges: BTreeMap::new(),
@@ -1168,6 +1224,36 @@ where
     pub(crate) fn set_memory_budget(&mut self, bytes: usize, charge: fn(&S) -> usize) {
         self.memory_limit = Some(bytes);
         self.snapshot_memory_charge = Some(charge);
+    }
+
+    pub(crate) fn enable_adaptive_horizon(&mut self, enabled: bool) {
+        self.adaptive_horizon = enabled;
+    }
+
+    pub(crate) fn enable_route_deduplication(&mut self, enabled: bool) {
+        self.route_attempts = enabled.then(crate::search::route_attempts::RouteAttempts::new);
+    }
+
+    pub(crate) fn repeated_route_attempt(
+        &mut self,
+        parent: u64,
+        donor: u64,
+        leaf: u64,
+        cap: usize,
+        tail: &[u8],
+    ) -> bool {
+        self.route_attempts
+            .as_mut()
+            .is_some_and(|attempts| attempts.repeated(parent, donor, leaf, cap, tail))
+    }
+
+    pub(crate) fn enable_route_reuse(&mut self, enabled: bool) {
+        self.route_reuse = enabled;
+        if !enabled {
+            self.clear_route_donors();
+        } else if let Some(cap) = self.frontier_cap {
+            self.rebuild_selector_index(cap);
+        }
     }
 
     pub(crate) fn establish_liveness_anchor(&mut self, max_actions: usize) {
@@ -1516,6 +1602,10 @@ where
         self.selected = retain_marked(std::mem::take(&mut self.selected), &keep);
         self.productive = retain_marked(std::mem::take(&mut self.productive), &keep);
         self.since_retained = retain_marked(std::mem::take(&mut self.since_retained), &keep);
+        self.horizon_unproductive =
+            retain_marked(std::mem::take(&mut self.horizon_unproductive), &keep);
+        self.horizon_failed_extension =
+            retain_marked(std::mem::take(&mut self.horizon_failed_extension), &keep);
         self.in_window_ever = retain_marked(std::mem::take(&mut self.in_window_ever), &keep);
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.opened_depths = retain_marked(std::mem::take(&mut self.opened_depths), &keep);
@@ -1587,6 +1677,46 @@ where
             .enumerate()
             .map(|(index, entry)| (entry.key, index))
             .collect();
+        if self.route_reuse {
+            for child in 0..self.entries.len() {
+                let child_key = self.entries[child].key;
+                let mut ancestors = Vec::new();
+                let mut node = self.entries[child].input_node;
+                while let Some(parent) = self
+                    .input_index
+                    .nodes
+                    .get(node)
+                    .and_then(Option::as_ref)
+                    .and_then(|node| node.parent)
+                {
+                    if let Some(stable_id) = self.input_index.owner(parent)
+                        && let Some(current) = self.id_to_index.get(&stable_id).copied()
+                    {
+                        ancestors.push(current);
+                    }
+                    node = parent;
+                }
+                for current in ancestors {
+                    let previous = self.deepest_leaf[current];
+                    if leaf_order(previous, (child_key, child)) != Ordering::Less {
+                        continue;
+                    }
+                    self.deepest_leaf[current] = (child_key, child);
+                }
+            }
+        }
+        self.clear_route_donors();
+        let active_ids = self
+            .active
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(index, active)| active.then_some(index))
+            .collect::<Vec<_>>();
+        for index in active_ids {
+            let leaf = self.deepest_leaf[index];
+            self.insert_route_donor(index, leaf);
+        }
         self.history_memory_bytes = Self::prefix_node_memory_charge()
             .saturating_add(
                 self.entries
@@ -1733,6 +1863,30 @@ where
         }
     }
 
+    pub(crate) fn longest_resident_input_prefix(&self, actions: &[A]) -> Option<usize> {
+        let mut node = 0;
+        let mut found = None;
+        for depth in 0..=actions.len() {
+            if let Some(id) = self
+                .input_index
+                .owner(node)
+                .and_then(|id| self.index_of_id(id))
+                && self.entries[id].snapshot.is_some()
+                && self.entries[id].input_len == depth
+            {
+                found = Some(id);
+            }
+            let Some(action) = actions.get(depth) else {
+                break;
+            };
+            let Some(next) = self.input_index.walk(node, std::slice::from_ref(action)) else {
+                break;
+            };
+            node = next;
+        }
+        found
+    }
+
     pub(crate) fn job_origin(&self, id: usize) -> Result<(Arc<S>, Vec<A>), &'static str> {
         let entry = self.entries.get(id).ok_or("job origin entry is missing")?;
         if self.snapshot_selectable[id] {
@@ -1796,8 +1950,8 @@ where
             .saturating_add(suffix_len.saturating_mul(size_of::<A>()))
             .saturating_add(size_of::<K::Lineage>())
             .saturating_add(size_of::<(K, usize)>())
-            .saturating_add(4_usize.saturating_mul(size_of::<u64>()))
-            .saturating_add(4_usize.saturating_mul(size_of::<usize>()))
+            .saturating_add(5_usize.saturating_mul(size_of::<u64>()))
+            .saturating_add(5_usize.saturating_mul(size_of::<usize>()))
             .saturating_add(128)
             .saturating_add(new_nodes.saturating_mul(Self::prefix_node_memory_charge()))
     }
@@ -1811,6 +1965,32 @@ where
     fn auxiliary_history_memory_bytes(&self) -> usize {
         self.novelty_memory_bytes()
             .saturating_add(self.barren_memory_bytes())
+            .saturating_add(self.route_donor_memory_bytes())
+            .saturating_add(if self.route_attempts.is_some() {
+                crate::search::route_attempts::ROUTE_ATTEMPTS_MEMORY_RESERVE_BYTES
+            } else {
+                0
+            })
+            .saturating_add(
+                self.progress_focus
+                    .capacity()
+                    .saturating_mul(size_of::<(u64, u16)>()),
+            )
+    }
+
+    fn route_donor_entry_memory_charge() -> usize {
+        size_of::<K::Group>()
+            .saturating_add(size_of::<DonorRank<K>>())
+            .saturating_add(64)
+    }
+
+    fn route_donor_memory_bytes(&self) -> usize {
+        self.route_donor_memory_bytes
+    }
+
+    fn clear_route_donors(&mut self) {
+        self.route_donors.clear();
+        self.route_donor_memory_bytes = 0;
     }
 
     pub(crate) fn all_extensions_retained(&self, parent_id: usize, actions: &[A]) -> bool {
@@ -1848,6 +2028,7 @@ where
         self.frontier_cap = Some(max_actions);
         self.active_ids = ActiveIds::from_ids(self.active_ids(max_actions));
         self.classes = BTreeMap::new();
+        self.clear_route_donors();
         self.live_children.iter_mut().for_each(BTreeMap::clear);
         self.live_group_cells.iter_mut().for_each(BTreeMap::clear);
         self.active_skip_groups.clear();
@@ -1940,6 +2121,7 @@ where
     }
 
     fn index_remove(&mut self, id: usize) {
+        self.remove_route_donor(id);
         if self.frontier_cap.is_none() {
             return;
         }
@@ -1990,6 +2172,7 @@ where
         let cell = key.group(Self::cell_depth());
         let sampleable = self.entry_unexhausted(id);
         let deepest = self.deepest_leaf[id];
+        self.insert_route_donor(id, deepest);
         let members = self
             .classes
             .entry(class)
@@ -2020,6 +2203,8 @@ where
     }
 
     fn update_index_deepest_leaf(&mut self, id: usize, previous: (K, usize), current: (K, usize)) {
+        self.remove_route_donor_rank(id, previous);
+        self.insert_route_donor(id, current);
         if self.frontier_cap.is_none() {
             return;
         }
@@ -2046,6 +2231,59 @@ where
             leaf_id: current.1,
             donor_id: id,
         });
+    }
+
+    fn insert_route_donor(&mut self, id: usize, leaf: (K, usize)) {
+        if !self.route_reuse || !self.active.get(id).copied().unwrap_or(false) {
+            return;
+        }
+        let Some(context) = self.entries[id].key.route_context() else {
+            return;
+        };
+        let inserted = self
+            .route_donors
+            .entry(context)
+            .or_default()
+            .insert(DonorRank {
+                leaf_key: leaf.0,
+                leaf_id: leaf.1,
+                donor_id: id,
+            });
+        if inserted {
+            self.route_donor_memory_bytes = self
+                .route_donor_memory_bytes
+                .saturating_add(Self::route_donor_entry_memory_charge());
+        }
+    }
+
+    fn remove_route_donor_rank(&mut self, id: usize, leaf: (K, usize)) {
+        let Some(context) = self.entries[id].key.route_context() else {
+            return;
+        };
+        let rank = DonorRank {
+            leaf_key: leaf.0,
+            leaf_id: leaf.1,
+            donor_id: id,
+        };
+        let (removed, empty) = {
+            let Some(donors) = self.route_donors.get_mut(&context) else {
+                return;
+            };
+            (donors.remove(&rank), donors.is_empty())
+        };
+        if removed {
+            self.route_donor_memory_bytes = self
+                .route_donor_memory_bytes
+                .saturating_sub(Self::route_donor_entry_memory_charge());
+        }
+        if empty {
+            self.route_donors.remove(&context);
+        }
+    }
+
+    fn remove_route_donor(&mut self, id: usize) {
+        let leaf = self.deepest_leaf[id];
+        self.remove_route_donor_rank(id, leaf);
     }
 
     fn insert_active_cell(&mut self, key: K) {
@@ -2161,6 +2399,63 @@ where
     #[must_use]
     pub fn entry_key(&self, id: usize) -> Option<K> {
         self.entries.get(id).map(|entry| entry.key)
+    }
+
+    #[must_use]
+    pub(crate) fn adaptive_horizon_extension(&self, id: usize, remaining_actions: usize) -> usize {
+        if !self.adaptive_horizon || !self.adaptive_horizon_retry_available(id) {
+            return 0;
+        }
+        let Some(streak) = self.horizon_unproductive.get(id).copied() else {
+            return 0;
+        };
+        if streak == 0 {
+            return 0;
+        }
+        let shift = u32::try_from(streak.saturating_sub(1)).unwrap_or(u32::MAX);
+        let growth = 1_usize.checked_shl(shift);
+        growth.unwrap_or(usize::MAX).min(remaining_actions)
+    }
+
+    fn adaptive_horizon_retry_available(&self, id: usize) -> bool {
+        if !self.adaptive_horizon {
+            return false;
+        }
+        let Some(streak) = self.horizon_unproductive.get(id).copied() else {
+            return false;
+        };
+        if streak == 0 {
+            return false;
+        }
+        let Some(max_actions) = self.frontier_cap else {
+            return false;
+        };
+        let remaining = max_actions.saturating_sub(self.entries[id].input_len);
+        if remaining == 0 {
+            return false;
+        }
+        if self.horizon_failed_extension[id] >= remaining {
+            return false;
+        }
+        true
+    }
+
+    pub(crate) fn restore_selector_counters(
+        &mut self,
+        id: usize,
+        counters: Option<EntrySelectorCounters>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(counters) = counters else {
+            return Ok(());
+        };
+        if id >= self.entries.len() {
+            return Err("archive selector counters name an unknown entry".into());
+        }
+        self.selected[id] = counters.selected;
+        self.productive[id] = counters.productive;
+        self.horizon_unproductive[id] = counters.horizon_unproductive;
+        self.horizon_failed_extension[id] = counters.horizon_failed_extension;
+        Ok(())
     }
 
     #[must_use]
@@ -2381,6 +2676,8 @@ where
         self.selected.push(0);
         self.productive.push(0);
         self.since_retained.push(0);
+        self.horizon_unproductive.push(0);
+        self.horizon_failed_extension.push(0);
         self.in_window_ever.push(false);
         self.opened_slot.push(new_slot);
         let mut opened = u32::from(new_slot);
@@ -2389,19 +2686,68 @@ where
                 opened |= 1 << (offset + 1);
             }
         }
+        let progress = || {
+            parent_id.is_some_and(|parent| {
+                K::progress_cmp(key.group(0), self.entries[parent].key.group(0))
+                    == Ordering::Greater
+            })
+        };
+        let discovery = parent_id.is_some()
+            && opened
+                .checked_shr(Self::coarsest_depth().saturating_sub(2).max(1) as u32)
+                .unwrap_or(0)
+                != 0;
+        let follow_up = match self.selector_policy {
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(_) => progress(),
+            SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_) => progress() || discovery,
+            _ => false,
+        };
+        if follow_up {
+            if self.progress_focus.len() == 128 {
+                self.progress_focus.pop_front();
+            }
+            self.progress_focus.push_back((stable_id, 128));
+        }
         self.opened_depths.push(opened);
         self.deepest_leaf.push((key, id));
-        let mut ancestor = parent_id;
-        while let Some(current) = ancestor {
-            let previous = self.deepest_leaf[current];
-            if leaf_order(previous, (key, id)) != Ordering::Less {
-                break;
+        if self.route_reuse {
+            let mut ancestors = Vec::new();
+            let mut node = input_node;
+            while let Some(parent) = self
+                .input_index
+                .nodes
+                .get(node)
+                .and_then(Option::as_ref)
+                .and_then(|node| node.parent)
+            {
+                if let Some(stable_id) = self.input_index.owner(parent)
+                    && let Some(current) = self.id_to_index.get(&stable_id).copied()
+                {
+                    ancestors.push(current);
+                }
+                node = parent;
             }
-            self.update_index_deepest_leaf(current, previous, (key, id));
-            self.deepest_leaf[current] = (key, id);
-            ancestor = self.entries[current]
-                .parent_id
-                .and_then(|parent| self.id_to_index.get(&parent).copied());
+            for current in ancestors {
+                let previous = self.deepest_leaf[current];
+                if leaf_order(previous, (key, id)) != Ordering::Less {
+                    continue;
+                }
+                self.update_index_deepest_leaf(current, previous, (key, id));
+                self.deepest_leaf[current] = (key, id);
+            }
+        } else {
+            let mut ancestor = parent_id;
+            while let Some(current) = ancestor {
+                let previous = self.deepest_leaf[current];
+                if leaf_order(previous, (key, id)) != Ordering::Less {
+                    break;
+                }
+                self.update_index_deepest_leaf(current, previous, (key, id));
+                self.deepest_leaf[current] = (key, id);
+                ancestor = self.entries[current]
+                    .parent_id
+                    .and_then(|parent| self.id_to_index.get(&parent).copied());
+            }
         }
         self.slots.entry(key.group(0)).or_default().push(id);
         self.history_memory_bytes = self
@@ -2443,6 +2789,76 @@ where
             leaf_id,
             actions,
         })
+    }
+
+    pub(crate) fn route_splice_tail_for_campaign(
+        &mut self,
+        parent: usize,
+        max_actions: usize,
+        cap: usize,
+    ) -> Result<Option<CampaignSpliceTail<A>>, Box<dyn Error>>
+    where
+        A: Serialize,
+    {
+        if self.frontier_cap != Some(max_actions) {
+            self.rebuild_selector_index(max_actions);
+        }
+        let parent_key = self.entries[parent].key;
+        let Some(context) = parent_key.route_context() else {
+            return Ok(None);
+        };
+        let cap = cap.min(max_actions.saturating_sub(self.entries[parent].input_len));
+        if cap == 0 {
+            return Ok(None);
+        }
+        let Some(donors) = self.route_donors.get(&context) else {
+            return Ok(None);
+        };
+        let ranks = donors
+            .iter()
+            .rev()
+            .copied()
+            .filter(|rank| {
+                rank.donor_id != parent
+                    && leaf_advances(
+                        (rank.leaf_key, rank.leaf_id),
+                        (self.entries[rank.donor_id].key, rank.donor_id),
+                    )
+            })
+            .collect::<Vec<_>>();
+        for rank in ranks {
+            let donor_id = rank.donor_id;
+            if donor_id == parent {
+                continue;
+            }
+            let (leaf_key, leaf_id) = self.deepest_leaf[donor_id];
+            if !leaf_advances((leaf_key, leaf_id), (self.entries[donor_id].key, donor_id)) {
+                continue;
+            }
+            if let Ok(actions) = self.recorded_route_splice_tail(parent, donor_id, leaf_id, cap) {
+                if let Some(attempts) = &self.route_attempts {
+                    let encoded = postcard::to_allocvec(&actions)?;
+                    if attempts.contains(
+                        self.stable_id(parent)
+                            .ok_or("route parent has no stable ID")?,
+                        self.stable_id(donor_id)
+                            .ok_or("route donor has no stable ID")?,
+                        self.stable_id(leaf_id)
+                            .ok_or("route leaf has no stable ID")?,
+                        cap,
+                        &encoded,
+                    ) {
+                        continue;
+                    }
+                }
+                return Ok(Some(CampaignSpliceTail {
+                    donor_id,
+                    leaf_id,
+                    actions,
+                }));
+            }
+        }
+        Ok(None)
     }
 
     pub(crate) fn recorded_splice_tail(
@@ -2495,6 +2911,81 @@ where
         Ok(suffix.iter().take(cap).cloned().collect())
     }
 
+    pub(crate) fn recorded_route_splice_tail(
+        &self,
+        parent: usize,
+        donor: usize,
+        leaf: usize,
+        cap: usize,
+    ) -> Result<Vec<A>, &'static str> {
+        let parent_entry = self
+            .entries
+            .get(parent)
+            .ok_or("route splice parent id is outside the archive")?;
+        let donor_entry = self
+            .entries
+            .get(donor)
+            .ok_or("route splice donor id is outside the archive")?;
+        let leaf_entry = self
+            .entries
+            .get(leaf)
+            .ok_or("route splice leaf id is outside the archive")?;
+        if donor == parent {
+            return Err("route splice donor is the selected parent");
+        }
+        let (Some(parent_context), Some(donor_context)) = (
+            parent_entry.key.route_context(),
+            donor_entry.key.route_context(),
+        ) else {
+            return Err("route splice requires an explicit route context");
+        };
+        if parent_context != donor_context {
+            return Err("route splice donor is outside the parent's route context");
+        }
+        let donor_input = self
+            .input_index
+            .materialize(donor_entry.input_node, donor_entry.input_len)
+            .ok_or("route splice donor prefix is unavailable")?;
+        let leaf_input = self
+            .input_index
+            .materialize(leaf_entry.input_node, leaf_entry.input_len)
+            .ok_or("route splice leaf prefix is unavailable")?;
+        if !leaf_input.starts_with(&donor_input) {
+            return Err("route splice leaf is not a descendant of its donor");
+        }
+        if !leaf_advances((leaf_entry.key, leaf), (donor_entry.key, donor)) {
+            return Err("route splice leaf does not advance past its donor");
+        }
+        let suffix = &leaf_input[donor_input.len()..];
+        if suffix.is_empty() {
+            return Err("route splice leaf has no actions past its donor");
+        }
+        Ok(suffix.iter().take(cap).cloned().collect())
+    }
+
+    pub(crate) fn validate_route_splice(
+        &self,
+        parent_id: u64,
+        donor_id: u64,
+        leaf_id: u64,
+        cap: usize,
+        actions: &[A],
+    ) -> Result<(), &'static str> {
+        let parent = self
+            .index_of_id(parent_id)
+            .ok_or("route splice provenance names a missing parent")?;
+        let donor = self
+            .index_of_id(donor_id)
+            .ok_or("route splice provenance names a missing donor")?;
+        let leaf = self
+            .index_of_id(leaf_id)
+            .ok_or("route splice provenance names a missing leaf")?;
+        let expected = self.recorded_route_splice_tail(parent, donor, leaf, cap.min(ACTION_CAP))?;
+        (expected == actions)
+            .then_some(())
+            .ok_or("route splice provenance disagrees with its tail")
+    }
+
     fn active_ids(&self, max_actions: usize) -> Vec<usize> {
         self.active
             .iter()
@@ -2504,6 +2995,26 @@ where
                     .then_some(id)
             })
             .collect()
+    }
+
+    fn draw_progress_focus(&mut self, max_actions: usize) -> Option<usize> {
+        while let Some((stable_id, remaining)) = self.progress_focus.back().copied() {
+            let eligible = self.index_of_id(stable_id).filter(|id| {
+                self.active[*id]
+                    && self.origin_resident(*id)
+                    && self.entries[*id].input_len < max_actions
+            });
+            if remaining == 0 || eligible.is_none() {
+                self.progress_focus.pop_back();
+                continue;
+            }
+            self.progress_focus
+                .back_mut()
+                .expect("focus entry exists")
+                .1 -= 1;
+            return eligible;
+        }
+        None
     }
 
     pub fn select_parent(
@@ -2516,6 +3027,31 @@ where
         }
         if self.active_ids.is_empty() && !self.reactivate_liveness_anchor(max_actions) {
             return Err("archive has no expandable entry".into());
+        }
+        if matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+                | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_)
+        ) && rand.below(NonZeroUsize::new(2).ok_or("invalid progress focus odds")?) == 0
+            && let Some(id) = self.draw_progress_focus(max_actions)
+        {
+            return Ok((
+                id,
+                SelectorDraw {
+                    path: if matches!(
+                        self.selector_policy,
+                        SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_)
+                    ) {
+                        SelectorPath::DiscoveryFocus
+                    } else {
+                        SelectorPath::ProgressFocus
+                    },
+                    classes_skipped: 0,
+                    counter_reset: false,
+                    concentration: None,
+                    class_rank: None,
+                },
+            ));
         }
         let use_walk = rand.below(NonZeroUsize::new(4).ok_or("invalid frontier odds")?) != 0;
         if !use_walk {
@@ -2591,7 +3127,9 @@ where
             &self.live_skip_groups
         };
         let class_scale = match &self.selector_policy {
-            SelectorPolicy::EnergyFrontierCheapest(scales)
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(scales)
+            | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(scales)
+            | SelectorPolicy::EnergyFrontierCheapest(scales)
             | SelectorPolicy::EnergyFrontierCheapestCount(scales)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => scales
                 .groups
@@ -2869,7 +3407,9 @@ where
     ) -> Result<usize, Box<dyn Error>> {
         let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
         let scales = match &self.selector_policy {
-            SelectorPolicy::EnergyFrontierCheapest(scales)
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(scales)
+            | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(scales)
+            | SelectorPolicy::EnergyFrontierCheapest(scales)
             | SelectorPolicy::EnergyFrontierCheapestCount(scales)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => scales,
             _ => return Ok(rand.below(count)),
@@ -2964,23 +3504,29 @@ where
     }
 
     fn entry_unexhausted(&self, id: usize) -> bool {
-        if self.since_retained[id] >= SELECTION_EXHAUSTION_THRESHOLD {
+        let horizon_retry = self.adaptive_horizon_retry_available(id);
+        if self.since_retained[id] >= SELECTION_EXHAUSTION_THRESHOLD && !horizon_retry {
             return false;
         }
-        match &self.selector_policy {
+        let ordinary = match &self.selector_policy {
             SelectorPolicy::GroupUniform => true,
             SelectorPolicy::Retire(thresholds)
+            | SelectorPolicy::EnergyFrontierCheapestProgressFocus(thresholds)
+            | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(thresholds)
             | SelectorPolicy::EnergyFrontierCheapest(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
-        }
+        };
+        ordinary || horizon_retry
     }
 
     fn groups_unexhausted(&self, key: K) -> bool {
         match &self.selector_policy {
             SelectorPolicy::GroupUniform
+            | SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+            | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_)
             | SelectorPolicy::EnergyFrontierCheapest(_)
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_) => true,
@@ -3027,7 +3573,9 @@ where
         }
         let id = if matches!(
             self.selector_policy,
-            SelectorPolicy::EnergyFrontierCheapest(_)
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+                | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_)
+                | SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
         ) {
@@ -3280,6 +3828,8 @@ where
         if matches!(
             self.selector_policy,
             SelectorPolicy::Retire(_)
+                | SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+                | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_)
                 | SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
@@ -3290,6 +3840,20 @@ where
             }
         }
         match draw.path {
+            SelectorPath::DiscoveryFocus => {
+                let count = self
+                    .selector_accounting
+                    .discovery_focus_selections
+                    .get_or_insert(0);
+                *count = count.saturating_add(1);
+            }
+            SelectorPath::ProgressFocus => {
+                let count = self
+                    .selector_accounting
+                    .progress_focus_selections
+                    .get_or_insert(0);
+                *count = count.saturating_add(1);
+            }
             SelectorPath::Continuation => {
                 let count = self
                     .selector_accounting
@@ -3342,18 +3906,45 @@ where
     }
 
     pub fn record_selection_outcome(&mut self, id: usize, retained_descendant: bool, opened: u32) {
+        self.record_selection_outcome_with_horizon(id, retained_descendant, opened, 0, false, 0);
+    }
+
+    pub fn record_selection_outcome_with_horizon(
+        &mut self,
+        id: usize,
+        retained_descendant: bool,
+        opened: u32,
+        adaptive_extension: usize,
+        adaptive_full_capacity: bool,
+        max_actions: usize,
+    ) {
         if !retained_descendant {
+            self.horizon_unproductive[id] = self.horizon_unproductive[id].saturating_add(1);
+            let failed_extension = if adaptive_full_capacity {
+                self.frontier_cap
+                    .unwrap_or(max_actions)
+                    .saturating_sub(self.entries[id].input_len)
+            } else {
+                adaptive_extension
+            };
+            self.horizon_failed_extension[id] =
+                self.horizon_failed_extension[id].max(failed_extension);
+            self.set_entry_sampleable(id, self.entry_unexhausted(id));
             return;
         }
         let was_sampleable = self.entry_unexhausted(id);
         self.productive[id] = self.productive[id].saturating_add(1);
         self.since_retained[id] = 0;
+        self.horizon_unproductive[id] = 0;
+        self.horizon_failed_extension[id] = 0;
         if !was_sampleable && self.entry_unexhausted(id) {
             self.set_entry_sampleable(id, true);
         }
         let cleared = match self.selector_policy {
             SelectorPolicy::Retire(_) => u32::MAX,
-            SelectorPolicy::EnergyFrontierCheapest(_)
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+            | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_)
+            | SelectorPolicy::EnergyFrontierCheapest(_)
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_) => opened,
             SelectorPolicy::GroupUniform => 0,
@@ -3395,6 +3986,8 @@ where
             });
         }
         if let SelectorPolicy::Retire(thresholds)
+        | SelectorPolicy::EnergyFrontierCheapestProgressFocus(thresholds)
+        | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(thresholds)
         | SelectorPolicy::EnergyFrontierCheapest(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds) = &self.selector_policy
@@ -3456,6 +4049,8 @@ where
                 selector: Some(EntrySelectorCounters {
                     selected: self.selected[id],
                     productive: self.productive[id],
+                    horizon_unproductive: self.horizon_unproductive[id],
+                    horizon_failed_extension: self.horizon_failed_extension[id],
                 }),
             };
             reports.push(report);
@@ -3482,7 +4077,7 @@ mod tests {
     };
     use crate::search::rand::RomuDuoJrRand;
     use serde::{Deserialize, Serialize};
-    use std::{cell::Cell, collections::BTreeMap, sync::Arc};
+    use std::{cell::Cell, collections::BTreeMap, mem::size_of, sync::Arc};
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
     struct TestAction {
@@ -3848,6 +4443,10 @@ mod tests {
                 *component = 0;
             }
             group
+        }
+
+        fn route_context(self) -> Option<Self::Group> {
+            Some([0, self.0[1], 0, 0])
         }
 
         type Lineage = ();
@@ -5349,6 +5948,339 @@ mod tests {
     }
 
     #[test]
+    fn deduplicated_routes_try_other_donors_before_alphabet_fallback() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.enable_route_reuse(true);
+        archive.enable_route_deduplication(true);
+        let insert = |archive: &mut Archive<u8, FlatKey<3>, (), ()>,
+                      parent: Option<usize>,
+                      components: [u16; 4],
+                      suffix: Vec<u8>| {
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix,
+                        key: FlatKey(components),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert")
+                .expect("retained")
+        };
+        let first = insert(&mut archive, None, [1, 2, 3, 4], vec![1]);
+        let second = insert(&mut archive, None, [2, 2, 3, 4], vec![2]);
+        let parent = insert(&mut archive, None, [9, 2, 3, 4], vec![9]);
+        let first_leaf = insert(&mut archive, Some(first), [1, 2, 3, 6], vec![3]);
+        let second_leaf = insert(&mut archive, Some(second), [2, 2, 3, 7], vec![4]);
+        for (donor, leaf, action) in [(second, second_leaf, 4), (first, first_leaf, 3)] {
+            let route = archive
+                .route_splice_tail_for_campaign(parent, 16, 8)
+                .expect("lookup")
+                .expect("untried route");
+            assert_eq!(
+                (route.donor_id, route.leaf_id, route.actions),
+                (donor, leaf, vec![action])
+            );
+            let repeated_lookup = archive
+                .route_splice_tail_for_campaign(parent, 16, 8)
+                .expect("lookup")
+                .expect("lookup does not reserve");
+            assert_eq!(repeated_lookup.donor_id, donor);
+            assert!(!archive.repeated_route_attempt(
+                archive.stable_id(parent).unwrap(),
+                archive.stable_id(donor).unwrap(),
+                archive.stable_id(leaf).unwrap(),
+                8,
+                &postcard::to_allocvec(&vec![action]).expect("encode"),
+            ));
+        }
+        assert!(
+            archive
+                .route_splice_tail_for_campaign(parent, 16, 8)
+                .expect("lookup")
+                .is_none()
+        );
+        assert_eq!(
+            archive
+                .route_splice_tail_for_campaign(parent, 16, 4)
+                .expect("lookup")
+                .expect("different effective cap")
+                .donor_id,
+            second
+        );
+        archive.enable_route_deduplication(false);
+        assert_eq!(
+            archive
+                .route_splice_tail_for_campaign(parent, 16, 8)
+                .expect("lookup")
+                .expect("ordinary route policy unchanged")
+                .donor_id,
+            second
+        );
+    }
+
+    #[test]
+    fn deduplicated_route_lookup_reaches_past_a_repeated_shortlist() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.enable_route_reuse(true);
+        archive.enable_route_deduplication(true);
+        for index in 0..33_u8 {
+            let donor = archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([u16::from(index), 2, 3, 4]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+            archive
+                .insert(
+                    Some(donor),
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![100],
+                        key: FlatKey([u16::from(index), 2, 3, 5]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        let parent = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![99],
+                    key: FlatKey([99, 2, 3, 4]),
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        for _ in 0..33 {
+            let route = archive
+                .route_splice_tail_for_campaign(parent, 16, 8)
+                .unwrap()
+                .expect("untried route after repeated higher ranks");
+            assert!(!archive.repeated_route_attempt(
+                archive.stable_id(parent).unwrap(),
+                archive.stable_id(route.donor_id).unwrap(),
+                archive.stable_id(route.leaf_id).unwrap(),
+                8,
+                &postcard::to_allocvec(&route.actions).unwrap(),
+            ));
+        }
+        assert!(
+            archive
+                .route_splice_tail_for_campaign(parent, 16, 8)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn route_splice_reuses_a_context_exit_across_exact_keys() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.enable_route_reuse(true);
+        let insert = |archive: &mut Archive<u8, FlatKey<3>, (), ()>,
+                      parent: Option<usize>,
+                      components: [u16; 4],
+                      actions: Vec<u8>| {
+            let parent_len = parent.map_or(0, |id| archive.entries[id].input_len);
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix: actions[parent_len..].to_vec(),
+                        key: FlatKey(components),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert route entry")
+                .expect("retain route entry")
+        };
+        let donor = insert(&mut archive, None, [1, 2, 3, 4], vec![0]);
+        let parent = insert(&mut archive, None, [9, 2, 3, 4], vec![9]);
+        let middle = insert(&mut archive, Some(donor), [1, 2, 3, 6], vec![0, 1]);
+        let leaf = insert(&mut archive, Some(middle), [1, 2, 3, 7], vec![0, 1, 2]);
+        let dispatched = archive
+            .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+            .expect("route lookup succeeds")
+            .expect("route context dispatch");
+        assert_eq!(dispatched.leaf_id, leaf);
+        assert_eq!(dispatched.actions, vec![2]);
+        let parent_id = archive.stable_id(parent).unwrap();
+        let donor_id = archive.stable_id(dispatched.donor_id).unwrap();
+        let leaf_id = archive.stable_id(leaf).unwrap();
+        archive
+            .validate_route_splice(parent_id, donor_id, leaf_id, 64, &dispatched.actions)
+            .expect("route provenance validates");
+        archive.rebuild_selector_index(MAX_COMPLETION_ACTIONS);
+        assert!(
+            archive
+                .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+                .expect("route lookup succeeds")
+                .is_some()
+        );
+        assert!(archive.deactivate(parent));
+        archive
+            .compact_history_for_final_report()
+            .expect("compact route donor index");
+        let parent = insert(&mut archive, None, [10, 2, 3, 4], vec![8]);
+        assert!(
+            archive
+                .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+                .expect("route lookup succeeds")
+                .is_some()
+        );
+        let full_route_memory_sum = archive
+            .route_donors
+            .values()
+            .map(|donors| {
+                donors.len()
+                    * (size_of::<<FlatKey<3> as ArchiveKey>::Group>()
+                        + size_of::<DonorRank<FlatKey<3>>>()
+                        + 64)
+            })
+            .sum::<usize>();
+        assert_eq!(archive.route_donor_memory_bytes(), full_route_memory_sum);
+        archive.enable_route_reuse(false);
+        assert_eq!(archive.route_donor_memory_bytes(), 0);
+    }
+
+    #[test]
+    fn route_splice_survives_compaction_of_an_inactive_middle() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.enable_route_reuse(true);
+        let insert = |archive: &mut Archive<u8, FlatKey<3>, (), ()>,
+                      parent: Option<usize>,
+                      components: [u16; 4],
+                      actions: Vec<u8>| {
+            let parent_len = parent.map_or(0, |id| archive.entries[id].input_len);
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix: actions[parent_len..].to_vec(),
+                        key: FlatKey(components),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert route entry")
+                .expect("retain route entry")
+        };
+        let donor = insert(&mut archive, None, [1, 2, 3, 4], vec![0]);
+        let parent = insert(&mut archive, None, [9, 2, 3, 4], vec![9]);
+        let middle = insert(&mut archive, Some(donor), [1, 2, 3, 6], vec![0, 1]);
+        let leaf = insert(&mut archive, Some(middle), [1, 2, 3, 7], vec![0, 1, 2]);
+        let parent_id = archive.stable_id(parent).unwrap();
+        let donor_id = archive.stable_id(donor).unwrap();
+        let middle_id = archive.stable_id(middle).unwrap();
+        let leaf_id = archive.stable_id(leaf).unwrap();
+        assert!(archive.deactivate(middle));
+        let dispatched = archive
+            .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+            .expect("route lookup succeeds")
+            .expect("route context dispatch before compaction");
+        assert_eq!(dispatched.donor_id, donor);
+        assert_eq!(dispatched.leaf_id, leaf);
+        assert_eq!(dispatched.actions, vec![1, 2]);
+        archive
+            .validate_route_splice(parent_id, donor_id, leaf_id, 64, &dispatched.actions)
+            .expect("route provenance validates before compaction");
+        archive
+            .compact_history_for_final_report()
+            .expect("compact inactive middle");
+        let donor = archive.index_of_id(donor_id).expect("donor survives");
+        let leaf = archive.index_of_id(leaf_id).expect("leaf survives");
+        assert!(archive.index_of_id(middle_id).is_none());
+        assert_eq!(
+            archive
+                .materialize_input(leaf)
+                .expect("leaf input prefix survives")
+                .actions,
+            vec![0, 1, 2]
+        );
+        assert!(!archive.all_extensions_retained(donor, &[1, 2]));
+        archive
+            .validate_route_splice(parent_id, donor_id, leaf_id, 64, &[1, 2])
+            .expect("recorded route provenance survives compaction");
+        let parent = archive.index_of_id(parent_id).expect("parent survives");
+        let dispatched = archive
+            .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+            .expect("route lookup succeeds")
+            .expect("fresh route dispatch after compaction");
+        assert_eq!(dispatched.donor_id, donor);
+        assert_eq!(dispatched.leaf_id, leaf);
+        assert_eq!(dispatched.actions, vec![1, 2]);
+        let tail = insert(&mut archive, Some(leaf), [1, 2, 3, 8], vec![0, 1, 2, 3]);
+        let dispatched = archive
+            .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+            .expect("route lookup succeeds")
+            .expect("fresh route dispatch after compaction");
+        assert_eq!(
+            archive.deepest_leaf[donor],
+            (archive.entries[tail].key, tail)
+        );
+        assert_eq!(dispatched.leaf_id, tail);
+        assert_eq!(dispatched.actions, vec![3]);
+    }
+
+    #[test]
+    fn route_donor_index_does_not_readd_inactive_ancestors() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.enable_route_reuse(true);
+        let insert = |archive: &mut Archive<u8, FlatKey<3>, (), ()>,
+                      parent: Option<usize>,
+                      components: [u16; 4],
+                      actions: Vec<u8>| {
+            let parent_len = parent.map_or(0, |id| archive.entries[id].input_len);
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix: actions[parent_len..].to_vec(),
+                        key: FlatKey(components),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert route entry")
+                .expect("retain route entry")
+        };
+        let donor = insert(&mut archive, None, [1, 2, 3, 4], vec![0]);
+        let middle = insert(&mut archive, Some(donor), [1, 2, 3, 6], vec![0, 1]);
+        let parent = insert(&mut archive, None, [9, 2, 3, 4], vec![9]);
+        archive.rebuild_selector_index(MAX_COMPLETION_ACTIONS);
+        assert!(archive.deactivate(donor));
+        assert!(archive.deactivate(middle));
+        insert(&mut archive, Some(middle), [1, 9, 3, 8], vec![0, 1, 2]);
+        assert!(
+            archive
+                .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+                .expect("route lookup succeeds")
+                .is_none(),
+            "inactive ancestors must not become route donors when a descendant advances"
+        );
+    }
+
+    #[test]
     fn selection_runs_on_keys_with_fewer_than_three_group_depths() {
         fn draws<const DEPTHS: usize>(seed: u64) {
             let keys = [[1, 2, 3, 4], [1, 2, 3, 5], [9, 8, 7, 4]];
@@ -5912,6 +6844,9 @@ mod tests {
                     assert_eq!(concentration.window_size, 128);
                 }
                 SelectorPath::Continuation => panic!("continuations require explicit dispatch"),
+                SelectorPath::ProgressFocus | SelectorPath::DiscoveryFocus => {
+                    panic!("focus requires its own policy")
+                }
                 SelectorPath::Uniform => {
                     assert!(draw.concentration.is_none());
                 }
@@ -6484,6 +7419,162 @@ mod tests {
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn discovery_focus_reaches_spatial_novelty_below_saturated_coarse_groups() {
+        let mut archive = Archive::<u8, FlatKey<5>, (), ()>::new(|_| 1);
+        archive.selector_policy =
+            SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(RetireThresholds {
+                entry: 3,
+                groups: vec![6, 12, 2, 16],
+            });
+        let insert = |a: &mut Archive<u8, FlatKey<5>, (), ()>, parent, action, key| {
+            a.insert(
+                parent,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![action],
+                    key: FlatKey(key),
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let root = insert(&mut archive, None, 0, [0, 0, 0, 0]);
+        let fine = insert(&mut archive, Some(root), 1, [0, 1, 0, 0]);
+        assert_eq!(archive.opened_depths(fine), 0b11);
+        assert!(archive.progress_focus.is_empty());
+        let spatial = insert(&mut archive, Some(root), 2, [0, 0, 1, 0]);
+        assert_eq!(archive.opened_depths(spatial), 0b111);
+        assert_eq!(
+            archive.entries[root].key.group(3),
+            archive.entries[spatial].key.group(3)
+        );
+        assert_eq!(archive.progress_focus.len(), 1);
+        insert(&mut archive, Some(spatial), 3, [0, 1, 1, 0]);
+        assert_eq!(archive.progress_focus.len(), 1);
+        assert_eq!(archive.draw_progress_focus(16), Some(spatial));
+    }
+
+    #[test]
+    fn discovery_focus_follows_new_groups_without_rewarding_fine_slot_churn() {
+        let policy = SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(RetireThresholds {
+            entry: 3,
+            groups: vec![6, 12],
+        });
+        let identifier = super::selector_policy_identifier(&policy);
+        assert_eq!(
+            super::selector_policy_from_identifier(&identifier, 2).unwrap(),
+            policy
+        );
+        let mut archive = Archive::<u8, SpliceKey, (), ()>::new(|_| 1);
+        archive.selector_policy = policy;
+        let insert = |a: &mut Archive<u8, SpliceKey, (), ()>, parent, action, class_label, slot| {
+            a.insert(
+                parent,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![action],
+                    key: SpliceKey {
+                        class_label,
+                        class_progress: 1,
+                        cell_progress: 0,
+                        slot,
+                    },
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let root = insert(&mut archive, None, 0, 10, 0);
+        insert(&mut archive, Some(root), 1, 10, 1);
+        assert!(archive.progress_focus.is_empty());
+        let discovered = insert(&mut archive, Some(root), 2, 11, 0);
+        assert_eq!(
+            SpliceKey::progress_cmp(
+                archive.entries[root].key.group(0),
+                archive.entries[discovered].key.group(0)
+            ),
+            Ordering::Equal
+        );
+        assert_eq!(archive.progress_focus.len(), 1);
+        insert(&mut archive, Some(discovered), 3, 11, 1);
+        assert_eq!(archive.progress_focus.len(), 1);
+        for _ in 0..128 {
+            assert_eq!(archive.draw_progress_focus(16), Some(discovered));
+        }
+        assert_eq!(archive.draw_progress_focus(16), None);
+    }
+
+    #[test]
+    fn progress_focus_is_bounded_and_ignores_nonprogress_and_inactive_entries() {
+        let thresholds = RetireThresholds {
+            entry: 3,
+            groups: vec![6, 12],
+        };
+        for policy in [
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(thresholds.clone()),
+            SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(thresholds),
+        ] {
+            let mut archive = Archive::<u8, SpliceKey, (), ()>::new(|_| 1);
+            archive.selector_policy = policy;
+            let insert =
+                |a: &mut Archive<u8, SpliceKey, (), ()>, parent, action, progress, slot| {
+                    a.insert(
+                        parent,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![action],
+                            key: SpliceKey {
+                                class_label: 10,
+                                class_progress: 1,
+                                cell_progress: progress,
+                                slot,
+                            },
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap()
+                    .unwrap()
+                };
+            let root = insert(&mut archive, None, 0, 0, 0);
+            insert(&mut archive, Some(root), 1, 0, 1);
+            assert!(archive.progress_focus.is_empty());
+            let improved = insert(&mut archive, Some(root), 2, 1, 0);
+            assert_eq!(archive.progress_focus.len(), 1);
+            for _ in 0..128 {
+                assert_eq!(archive.draw_progress_focus(16), Some(improved));
+            }
+            assert_eq!(archive.draw_progress_focus(16), None);
+            for progress in 2..=131 {
+                insert(&mut archive, Some(root), progress, u16::from(progress), 0);
+            }
+            assert_eq!(archive.progress_focus.len(), 128);
+            let last_stable = archive.progress_focus.back().unwrap().0;
+            let before_compaction = archive.index_of_id(last_stable).unwrap();
+            archive.deactivate(1);
+            archive.compact_history_for_final_report().unwrap();
+            let last = archive.index_of_id(last_stable).unwrap();
+            assert_ne!(last, before_compaction);
+            assert_eq!(archive.draw_progress_focus(16), Some(last));
+            archive.deactivate(last);
+            archive.compact_history_for_final_report().unwrap();
+            assert!(archive.index_of_id(last_stable).is_none());
+            let surviving = archive.draw_progress_focus(16).unwrap();
+            assert_ne!(archive.stable_id(surviving), Some(last_stable));
+            assert_eq!(archive.draw_progress_focus(1), None);
+            let identity = super::selector_policy_identifier(&archive.selector_policy);
+            assert_eq!(
+                selector_policy_from_identifier(&identity, 2).unwrap(),
+                archive.selector_policy
+            );
+        }
     }
 
     #[test]

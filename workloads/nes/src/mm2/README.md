@@ -12,13 +12,20 @@ the searched suffix when using `mm2-film` with the original stage prefix.
 Rooted progress is a diagnostic and must be replayed from power-on before it
 counts as continuous game progress.
 
-`--selector` accepts the existing recorded selector-policy identifier. The
-default remains `hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2,16`.
-For a retry-limit ablation, change only its first threshold, for example to
-64; the engine's hard exhaustion ceiling still applies.
-`--retention` selects `unprobed` (the default) or the existing
-`probe_at_admission` survival check. Compare its extra emulated work as well
-as retained progress.
+`mm2-campaign --whole-game` starts at the recorded power-on stage-selection
+prelude. The search supplies all stage choices, menu inputs, deaths/retries,
+Continue decisions, and award/ending waits. Only the final ending is the
+objective. No transition frames are supplied by the adapter after genesis.
+The default whole-game tape budget is 32,768 actions. This mode rejects explicit stages, prefixes, manual roots, coordinate-consistency
+pruning, and selector/retention/mixture overrides. Archive warm starts retain
+normal identity checks and must originate from this same whole-game policy.
+The CLI releases validated raw archive bytes after decoding and hashing the
+report, before constructing checkpoint snapshots, to reduce import peak memory.
+
+`--selector`, `--retention`, and `--mixture` are diagnostic controls for isolated
+stage experiments, not whole-game policy knobs. The ordinary fixed selector is
+`hierarchy_uniform_128_energy_frontier_cheapest:3,6,12,2,16`; retention is
+`unprobed`. Their generic implementations remain in the searcher.
 
 This package carries the native Mega Man 2 adapter onto the refactored campaign
 contracts. The generic engine receives opaque keys, typed actions, observations,
@@ -27,7 +34,10 @@ and snapshots. This module owns every RAM address and game interpretation.
 Death-animation hysteresis is part of each observation and snapshot. Its
 consecutive-frame count persists across action boundaries; splitting a hold
 into shorter inputs must not reset the death timer. Stream and snapshot
-formats are version 2 for this serialized state and terminal-policy change.
+stream format is version 9 and the snapshot format remains version 8. The stream
+version includes the whole-game lifecycle, raw resource observations, and the
+source-backed guard that excludes stale dead-player boss phases from actionable
+partial-damage progress.
 
 Registered cases start from power-on menus selecting one of the eight ordinary
 Robot Master stages. A stage clear is reported as an independent stage result;
@@ -35,7 +45,7 @@ these runs do not constitute a continuous whole-game solution. The adapter also
 preserves the earlier probe/campaign tools for examining recorded discoveries.
 No gameplay route, weapon choice, obstacle target, or boss weakness is injected.
 
-The decoder documents RAM addresses alongside their definitions in `target.rs`.
+The decoder defines its RAM addresses in `target.rs`; interpretation is documented here.
 It observes stage/screen/room, position and posture, health, weapon/menu state,
 weapon energy, boss/enemy damage, active platforms, and terminal events. It
 corrects wrapped coordinates and transition states that caused false deaths in
@@ -52,44 +62,67 @@ camera room byte differ by more than one while the raw scroll-direction byte
 (`$37`) is idle. The option is experimental, defaults off, and is included in
 the `Mm2Game` identity so streams and snapshots cannot mix the two policies.
 
-Menu decoding uses the current bank byte at `$29` (`$0d` for the menu),
+The legacy weapon-menu observation uses the current bank byte at `$29` (`$0d`),
 followed by the existing cursor/page bytes. `$04` is sprite/menu scratch,
 not a game mode: a recorded open/close probe shows it becoming three in
 game-world frames after the menu closes. The bank-based decoder is tied to
 the pinned ROM and frame-boundary observation protocol; new cores or ROMs
-must recheck opening, closing, and gameplay traces.
+must recheck opening, closing, and gameplay traces. The same bank and scratch
+bytes also occur in Game Over and password code; they are not a universal scene
+classifier. Raw bank/cursor/page observations remain available for diagnosis.
+The key keeps only candidate menu selections within the source-defined page
+and row bounds; all other bank-`$0d` scratch values share one unknown/transition
+value. This avoids treating thousands of reused scratch combinations as new
+controllable states. A valid tuple still does not prove a particular scene.
+`$f7` is the PPU-control shadow, not a game-mode byte. Whole-game execution
+uses no `$f7` scene predicate or health-based terminal exclusion.
 
 Boss-entry milestones require an active encounter or a confirmed defeat.
 The boss HP byte can remain 28 after Game Over/Continue even though the boss
-phase has reset to zero at the stage start. Stream format v6 records the
+phase has reset to zero at the stage start. The current stream records the
 corrected milestone semantics; nonzero boss HP alone is not entry evidence.
+Raw boss phase and HP bytes remain in every decoded state. Derived partial boss
+damage and active-fight status require a live player status and nonzero player
+health, so stale phase/HP left by death and menu code cannot become actionable
+progress. A defeated phase remains a source-backed clear marker, including a
+same-frame player death.
 
-The v24 key uses 16-pixel retention slots pooled into 32-pixel cells,
-128-pixel regions, screens, and stages. Weapon/menu rows distinguish local
-endpoints but are pooled at coarser levels. Health and energy prefer
-representatives without multiplying spatial slots. It removes the prototype's
-rooms-visited lineage reward: returning to the same endpoint has the same key,
-regardless of the number of rooms visited. Stage, room and screen bytes identify
-locations; the progress relation uses boss clears and current boss damage.
-Boss damage is zero until the boss loads its health, so a Wily boss that spawns
-for its approach with an empty meter reads as no damage rather than a full bar,
-and it is full once the phase byte reports the boss dead. A Wily boss grants no
-weapon, so a cleared boss is a granted weapon or that same defeated phase byte.
-The generic progress-aware selector consumes that relation. Historical frontier
-selectors retain their original identity ordering for controlled baselines.
-Summed energy remains a documented resource-preference tradeoff, not dominance.
-The Wily4 retention ablation adds two local resource identities without changing
-progress ordering. During an active stage-11 boss encounter, active object
-slots 20 through 29 whose IDs are 109 (Boobeam traps) or 87 (barriers) form a
-ten-bit `boobeam_targets` mask, with bit `slot - 20`; all other stages, boss
-phases, IDs, and inactive slots decode to zero. `crash_shots` is the Crash
-Bomber energy byte capped at 28 and divided by four. Both identities are gated
-to the same stage-11 phase-2-through-0xfd encounter window and decode to zero
-outside it. Both values participate in retention groups through depth 2, while
-the progress relation still compares only boss count and boss damage. This is
-an ablation hypothesis: preserving the
-remaining barrier/trap layout and usable Crash supply may separate endpoints
-with equal accumulated damage.
+The v27 key uses 16-pixel retention slots pooled into 32-pixel cells,
+128-pixel regions, screens, and stages. Exact acquired-weapon masks distinguish
+capability identities at every depth; their popcounts determine progress.
+Different sets with equal counts have equal progress and remain separate.
+All twelve resource bytes are retained uniformly at the finest depth, including
+the energy-tank count in the last byte, and pooled above it. This removes the
+old Crash-only, encounter-gated ammunition identity. It is a resource-diversity
+hypothesis, not a dominance claim; summed energy remains the representative
+preference tradeoff. No weapon is preferred for any obstacle.
+
+The experimental route context preserves the finest retention group's physical
+fields, selected weapon, menu, encounter state, and all twelve weapon/item
+resource bytes, while omitting acquired-weapon identity and its count. It identifies candidate
+matches for the generic searcher's route-reuse experiment; it does not promise
+that a recorded route will work from a different state. Full capability
+identity remains in every retention group. The searcher chooses and executes
+observed tails and evaluates their actual arrivals. The default campaign
+policy does not enable this experiment.
+
+Weapon/menu observations distinguish local endpoints but are pooled at coarser
+levels. Stage, room and screen bytes identify locations; progress uses boss
+clears and current boss damage, not coordinate ordering. Boss damage is zero
+until the boss loads its health, and full once the phase reports defeat.
+A Wily boss grants no weapon, so encounter completion also observes the defeated
+phase. The documented Wily4 object mask still distinguishes live trap/barrier
+objects without a target priority or resource prescription. The searcher owns
+selection, retention, rollout length, mutation, and continuation reuse.
+
+Whole-game `castle_clears` records confirmed castle boss-clear transitions:
+source stage 8 through 13 advances by one after boss phase `$ff`. A completion
+bitmask prevents repeated clears from increasing the count, survives Continue,
+and resets with new-game progress. It is snapshot state, not a coordinate rank
+or route reward. Progress compares this count before the current refight and
+boss-damage fields, so entering the next castle stage remains an improvement
+after encounter-local fields reset.
+
 The Wily5 extension records the refight completion mask from `$BC` at stage 12
 and keeps it at every retention depth; it is zero outside Wily5. The eight mask
 bits correspond in order to Heat, Air, Wood, Bubble, Quick, Flash, Metal, and
@@ -135,14 +168,24 @@ same band, and a screen count cannot say which end of a shaft the archive sits
 at or which end the selector draws. Both read only cached active endpoints, so
 they are lower bounds where snapshots are missing.
 
+The published champion witness uses a report-only ordering of factual progress:
+defeated-boss count, castle clears, refight count, Wily Machine shell state,
+live boss and enemy damage, and active encounter status precede raw stage and
+location labels. A stale boss RAM value in a death or menu state therefore
+cannot outrank a real active encounter. This ordering does not alter archive
+keys or selector behavior; `first_boss` remains the independent first-encounter
+witness.
+
 `mm2-film` replays a stage prefix and a searched tape to video, starting the
 capture at stage genesis: the capture buffers are bounded, and a chain prefix
 long enough to reach a castle stage would overflow them during construction.
+Campaign film output streams RGB frames through a single-thread FFmpeg encoder
+and then muxes the recorded PCM audio; temporary storage holds compressed video
+and PCM rather than the complete raw RGB frame sequence.
 `mm2-energy-probe` prints the twelve weapon-energy bytes at each action
 endpoint, the last of which is the energy-tank count rather than a meter. The
-decoded state keeps only their sum, which cannot say whether the one weapon a
-wall needs still has ammunition. Both stop once a boss is down, because the
-target refuses actions from there.
+decoded state now also retains the individual bytes. The isolated-stage tools
+stop once a boss is down; whole-game execution remains runnable through clears.
 
 mm2-replay is the raw power-on replay path. It loads the external ROM and
 QuickNES core directly, replays every action in an input archive, and never
@@ -175,6 +218,13 @@ under the current ROM, core, root, selector, retention, and workload identity
 settings. It is an archive warm start, not an exact continuation of the prior
 campaign's random schedule or worker state.
 
+Every archive output has a sibling `archive.manifest.json`. The manifest binds
+the exact archive bytes, the optional snapshot bytes, the ROM/core workload
+identity, and the resolved policy map. Archive warm starts require this sibling
+and reject missing, changed, or cross-workload artifacts before importing them;
+qualified runs always include a snapshot hash, while marketing runs include one
+when `--save-checkpoint` is used.
+
 Marketing soaks may write their returned retained snapshots with
 `--save-checkpoint`, which creates `snapshots.bin` beside `archive.json`.
 This flag requires `--marketing-soak`; qualified campaigns always write their
@@ -198,3 +248,45 @@ per-action observations, actual work and terminal status, and stops a branch
 at death or stage completion. Include a tail in each suffix when testing
 landing or survival. This is a controlled local probe, not a campaign or an
 independent power-on verification; replay a successful composed tape separately.
+
+## Explicit stage-order experiment
+
+`mm2-campaign --whole-game --experimental-stage-order
+flash,crash,metal,wood,air,bubble,heat,quick` supplies optional campaign guidance.
+The list must contain each robot stage once. At an observed stage-selection
+menu, the campaign replaces the next proposed chord with a short direction,
+release, or Start chord toward the first unowned stage. All acquired weapons
+lead to the central Wily choice. Actual chords are stored in the archive and
+reproduced during campaign and power-on replay. Gameplay actions, archive
+selection and retention remain unchanged. This is supplied game-specific
+guidance, not a generic searcher improvement. The default remains unrestricted.
+
+Menu observation requires bank, PPU, screen and animation registers plus the
+first remaining portrait sprite's source-defined OAM signature. A PPU byte
+alone also matches gameplay and is insufficient. The observation reads restored
+RAM directly; it adds no state edits or automatic emulation. The source is
+`engine/stage_select.asm`, `engine/stage_select_set.asm` and
+`data/stage_select/boss_oam.asm` in the MM2 disassembly.
+
+A warm start validates the source manifest against its recorded stage-order
+configuration, independently of the requested future order. All other workload
+identity/policy checks and artifact hashes remain mandatory. The source archive
+is imported intact, including earlier off-order and partial-inventory histories.
+The new stream records its future guidance under `experimental_stage_order_v1`.
+Consequently a warm comparison measures future menu guidance on a mixed-history
+archive; it does not establish that the entire power-on trajectory followed the
+prescribed order. Guidance is evaluated at action boundaries. Verify actual
+menu entries and replay any claimed continuous achievement.
+
+`--frame-budget` delegates to the generic campaign's emulated-work limit. It
+includes bootstrap restoration and may overshoot by the bounded in-flight
+window. Compare post-import job frames separately and censor both arms at a
+common frame cutoff. `--executions` remains a secondary job ceiling. Soak
+exports release the source report and source checkpoints once import/search
+returns, before serializing the final archive and checkpoints.
+
+`--experimental-search-policy` explicitly permits the existing `--selector`,
+`--mixture` and `--retention` configurations in whole-game experiments. It
+does not permit stage roots, prefix inputs or coherent-world overrides. These
+generic policy settings are recorded in the stream as usual, and defaults stay
+unchanged. Use identical settings in guided and unrestricted comparison arms.

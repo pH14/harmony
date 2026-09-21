@@ -21,8 +21,9 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
-pub const MAX_MM2_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_location_boss_bar_loaded_confirmed_enemy_spatial_16_posture_weapon_bank_menu_energy_platforms_boobeam_targets_crash_shots_wily5_refighting_mask_refight_boss_machine_shell_preference_v24";
+pub const MAX_MM2_ACTIONS: usize = 32_768;
+pub const KEY_POLICY_IDENTIFIER: &str =
+    "mm2_mechanics_inventory_identity_uniform_resources_castle_clears_actionable_boss_v27";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -38,13 +39,15 @@ pub type Mm2Archive = Archive<ButtonChord, Mm2ArchiveKey, Mm2Milestones, Mm2Snap
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ArchiveGroup {
     bosses: u8,
+    castle_clears: u8,
     stage: u8,
     screen: u8,
     room: u8,
     boss_damage: u8,
     enemy_damage: u8,
     boobeam_targets: u16,
-    crash_shots: u8,
+    capabilities: u8,
+    weapon_energies: [u8; 12],
     refighting_mask: u8,
     refight_boss: u8,
     wily_machine_shell_broken: bool,
@@ -59,13 +62,15 @@ pub struct Mm2ArchiveGroup {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ArchiveKey {
     pub bosses: u8,
+    pub castle_clears: u8,
     pub stage: u8,
     pub screen: u8,
     pub room: u8,
     pub boss_damage: u8,
     pub enemy_damage: u8,
     pub boobeam_targets: u16,
-    pub crash_shots: u8,
+    pub capabilities: u8,
+    pub weapon_energies: [u8; 12],
     pub refighting_mask: u8,
     pub refight_boss: u8,
     pub wily_machine_shell_broken: bool,
@@ -88,13 +93,16 @@ impl ArchiveKey for Mm2ArchiveKey {
 
     fn group(self, depth: usize) -> Self::Group {
         let location = Mm2ArchiveGroup {
+            bosses: self.bosses,
+            castle_clears: self.castle_clears,
+            capabilities: self.capabilities,
+            weapon_energies: self.weapon_energies,
             stage: self.stage,
             screen: self.screen,
             room: self.room,
             boss_damage: self.boss_damage,
             enemy_damage: self.enemy_damage,
             boobeam_targets: self.boobeam_targets,
-            crash_shots: self.crash_shots,
             refighting_mask: self.refighting_mask,
             refight_boss: self.refight_boss,
             wily_machine_shell_broken: self.wily_machine_shell_broken,
@@ -104,11 +112,11 @@ impl ArchiveKey for Mm2ArchiveKey {
             weapon: self.weapon,
             platforms: self.platforms,
             menu: self.menu,
-            ..Mm2ArchiveGroup::default()
         };
         match depth {
             0 => location,
             1 => Mm2ArchiveGroup {
+                weapon_energies: [0; 12],
                 x: self.x / 2,
                 y: self.y / 2,
                 weapon: 0,
@@ -116,7 +124,9 @@ impl ArchiveKey for Mm2ArchiveKey {
                 ..location
             },
             2 => Mm2ArchiveGroup {
+                weapon_energies: [0; 12],
                 bosses: self.bosses,
+                castle_clears: self.castle_clears,
                 x: self.x / 8,
                 y: self.y / 8,
                 posture: 0,
@@ -127,7 +137,9 @@ impl ArchiveKey for Mm2ArchiveKey {
             },
             3 => Mm2ArchiveGroup {
                 bosses: self.bosses,
+                castle_clears: self.castle_clears,
                 stage: self.stage,
+                capabilities: self.capabilities,
                 screen: self.screen,
                 refighting_mask: self.refighting_mask,
                 wily_machine_shell_broken: self.wily_machine_shell_broken,
@@ -135,7 +147,9 @@ impl ArchiveKey for Mm2ArchiveKey {
             },
             _ => Mm2ArchiveGroup {
                 bosses: self.bosses,
+                castle_clears: self.castle_clears,
                 stage: self.stage,
+                capabilities: self.capabilities,
                 refighting_mask: self.refighting_mask,
                 wily_machine_shell_broken: self.wily_machine_shell_broken,
                 ..Mm2ArchiveGroup::default()
@@ -150,12 +164,14 @@ impl ArchiveKey for Mm2ArchiveKey {
     fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
         (
             left.bosses,
+            left.castle_clears,
             left.refighting_mask.count_ones(),
             left.wily_machine_shell_broken,
             left.boss_damage,
         )
             .cmp(&(
                 right.bosses,
+                right.castle_clears,
                 right.refighting_mask.count_ones(),
                 right.wily_machine_shell_broken,
                 right.boss_damage,
@@ -164,6 +180,14 @@ impl ArchiveKey for Mm2ArchiveKey {
 
     fn preference_cmp(self, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
+    }
+
+    fn route_context(self) -> Option<Self::Group> {
+        Some(Mm2ArchiveGroup {
+            bosses: 0,
+            capabilities: 0,
+            ..self.group(0)
+        })
     }
 
     type Lineage = ();
@@ -184,6 +208,7 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
     let (bosses, health, energy) = preference_tuple(state);
     Mm2ArchiveKey {
         bosses,
+        castle_clears: state.castle_clears,
         health,
         energy,
         stage: state.stage,
@@ -192,7 +217,8 @@ pub fn archive_key(state: Mm2MechanicalState) -> Mm2ArchiveKey {
         boss_damage: state.boss_damage() / BOSS_DAMAGE_BUCKET,
         enemy_damage: state.enemy_damage / ENEMY_DAMAGE_BUCKET,
         boobeam_targets: state.boobeam_targets,
-        crash_shots: state.crash_shots,
+        capabilities: state.weapons_obtained,
+        weapon_energies: state.weapon_energies,
         refighting_mask: state.refighting_mask,
         refight_boss: state.refight_boss,
         wily_machine_shell_broken: state.wily_machine_shell_broken,
@@ -229,6 +255,7 @@ pub struct Mm2MilestoneInputs {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ProgressWatermark {
     pub bosses: u8,
+    pub castle_clears: u8,
     pub stage: u8,
     pub screen: u8,
     pub room: u8,
@@ -288,6 +315,7 @@ pub fn milestone_key(value: Mm2Milestones) -> (bool, bool, u8) {
 pub fn progress_watermark(state: Mm2MechanicalState) -> Mm2ProgressWatermark {
     Mm2ProgressWatermark {
         bosses: state.bosses_beaten(),
+        castle_clears: state.castle_clears,
         stage: state.stage,
         screen: state.screen,
         room: state.room,
@@ -348,6 +376,7 @@ mod tests {
             health,
             lives: 2,
             weapons_obtained: weapons,
+            player_state: 0x03,
             ..Mm2MechanicalState::default()
         }
     }
@@ -368,6 +397,23 @@ mod tests {
     }
 
     #[test]
+    fn dead_boss_phase_does_not_retain_partial_damage_in_the_archive_key() {
+        let mut dead = state(128, 0, 255);
+        dead.stage = 11;
+        dead.boss_phase = 2;
+        dead.boss_health = 4;
+        dead.player_state = 0;
+        let key = archive_key(dead);
+        assert_eq!(key.boss_damage, 0);
+        assert!(!milestones(dead, 255).reached_boss);
+
+        dead.player_state = 0x03;
+        dead.health = 8;
+        assert_eq!(archive_key(dead).boss_damage, 24 / BOSS_DAMAGE_BUCKET);
+        assert!(milestones(dead, 255).reached_boss);
+    }
+
+    #[test]
     fn a_wily_boss_that_grants_no_weapon_still_reports_as_defeated() {
         let genesis = 0x40;
         let mut cleared = state(100, 28, genesis);
@@ -382,12 +428,12 @@ mod tests {
     }
 
     #[test]
-    fn one_location_uses_resources_only_for_preference() {
-        let weak = archive_key(state(100, 4, 0));
+    fn health_prefers_a_representative_without_splitting_capability_identity() {
+        let weak = archive_key(state(100, 4, 0x40));
         let strong = archive_key(state(100, 20, 0x40));
         assert_eq!(weak.group(0), strong.group(0));
         assert_eq!(weak.group(1), strong.group(1));
-        assert_ne!(weak.group(2), strong.group(2));
+        assert_eq!(weak.group(2), strong.group(2));
         assert_eq!(strong.preference_cmp(weak), Ordering::Greater);
         assert_eq!(Mm2ArchiveKey::slot_capacity(), 1);
     }
@@ -435,6 +481,85 @@ mod tests {
     }
 
     #[test]
+    fn resource_identity_is_uniform_and_pooled_above_the_local_slot() {
+        let first = archive_key(state(100, 28, 0xff));
+        for weapon in 0..12 {
+            let mut second = first;
+            second.weapon_energies[weapon] = 1;
+            assert_ne!(first.group(0), second.group(0));
+            for depth in 1..Mm2ArchiveKey::groups() {
+                assert_eq!(first.group(depth), second.group(depth));
+            }
+            assert_eq!(
+                Mm2ArchiveKey::progress_cmp(first.group(0), second.group(0)),
+                Ordering::Equal
+            );
+        }
+    }
+
+    #[test]
+    fn confirmed_castle_completion_outranks_reset_encounter_state() {
+        let mut old = state(100, 28, 0xff);
+        old.castle_clears = 4;
+        old.stage = 12;
+        old.refighting_mask = 0xff;
+        old.wily_machine_shell_broken = true;
+        let mut next = old;
+        next.castle_clears = 5;
+        next.stage = 13;
+        next.refighting_mask = 0;
+        next.wily_machine_shell_broken = false;
+        for depth in 0..Mm2ArchiveKey::groups() {
+            assert_eq!(
+                Mm2ArchiveKey::progress_cmp(
+                    archive_key(next).group(depth),
+                    archive_key(old).group(depth)
+                ),
+                Ordering::Greater
+            );
+        }
+    }
+
+    #[test]
+    fn equal_count_capability_sets_remain_distinct_without_progress_ordering() {
+        let first = archive_key(state(100, 28, 1));
+        let second = archive_key(state(100, 28, 2));
+        for depth in 0..Mm2ArchiveKey::groups() {
+            assert_ne!(first.group(depth), second.group(depth));
+            assert_eq!(
+                Mm2ArchiveKey::progress_cmp(first.group(depth), second.group(depth)),
+                Ordering::Equal
+            );
+        }
+    }
+
+    #[test]
+    fn route_context_preserves_mechanics_without_merging_inventory_slots() {
+        let original = archive_key(state(100, 28, 0));
+        let upgraded = archive_key(state(100, 12, 0x40));
+        assert_ne!(original.group(0), upgraded.group(0));
+        assert_eq!(original.route_context(), upgraded.route_context());
+
+        let mut changed = upgraded;
+        changed.weapon = changed.weapon.wrapping_add(1);
+        assert_ne!(upgraded.route_context(), changed.route_context());
+        changed = upgraded;
+        changed.menu = changed.menu.wrapping_add(1);
+        assert_ne!(upgraded.route_context(), changed.route_context());
+        changed = upgraded;
+        changed.boss_damage = changed.boss_damage.wrapping_add(1);
+        assert_ne!(upgraded.route_context(), changed.route_context());
+        changed = upgraded;
+        changed.stage = changed.stage.wrapping_add(1);
+        assert_ne!(upgraded.route_context(), changed.route_context());
+        for resource in 0..12 {
+            changed = upgraded;
+            changed.weapon_energies[resource] = changed.weapon_energies[resource].wrapping_add(1);
+            assert_ne!(upgraded.route_context(), changed.route_context());
+        }
+    }
+
+    #[test]
     fn milestones_are_relative_to_genesis_weapons() {
         let value = milestones(state(0, 28, 0x40), 0x40);
         assert!(!value.defeated_boss);
@@ -451,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn wily4_target_and_crash_identities_are_retained_without_progress_ordering() {
+    fn wily4_target_identity_is_local_and_crash_advice_is_not_a_key() {
         let mut first_state = state(100, 28, 0);
         first_state.stage = 11;
         first_state.boss_phase = 2;
@@ -467,7 +592,7 @@ mod tests {
 
         for depth in 0..=2 {
             assert_ne!(first.group(depth), mask.group(depth));
-            assert_ne!(first.group(depth), shots.group(depth));
+            assert_eq!(first.group(depth), shots.group(depth));
         }
         assert_eq!(first.group(3), mask.group(3));
         assert_eq!(first.group(3), shots.group(3));

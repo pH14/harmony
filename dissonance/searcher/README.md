@@ -68,7 +68,7 @@ campaign and target contracts:
 | `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
 
-An `ArchiveKey` answers three separate questions, and nothing else reads a
+An `ArchiveKey` answers four separate questions, and nothing else reads a
 group as a magnitude:
 
 | Question | Answered by |
@@ -76,6 +76,7 @@ group as a magnitude:
 | Is this a new place? | `Eq` on the group. `Ord` only lets maps store it. |
 | Is this band, class or leaf further along? | `ArchiveKey::progress_cmp`, default `Ordering::Equal`. |
 | Which of two states at one slot survives? | `ArchiveKey::preference_cmp`, default `Ordering::Equal`. |
+| Which observed route context can donate an exit? | `ArchiveKey::route_context`, default `None`. |
 
 `progress_cmp` must be a total preorder: any two groups compare, comparing them
 in either order gives reversed results, and the relation is transitive over
@@ -200,6 +201,41 @@ generic policy through a two-worker campaign with short and long contexts,
 ordered feedback, exact replay, and planted draw, checkpoint, and remaining
 work changes that replay rejects. It does not measure a workload speedup.
 
+## Adaptive barren horizons
+
+Ordinary `OneToSix` suffixes extend after barren selection feedback. The
+searcher keeps a persistent per-entry streak of admissions that retain no
+descendant and appends a geometric deterministic alphabet horizon to the
+ordinary suffix: streaks one, two, three, and four request one, two, four, and
+eight actions. The extension is capped by the remaining action-limit capacity.
+An entry that reaches ordinary retirement remains eligible only through this
+bounded horizon retry window; after a failed full-capacity trial it returns to
+the short uniform floor and future retries carry no extension. A retry counts
+as full capacity when the ordinary suffix itself leaves no room for an
+appended action. Selector
+counter-window resets do not clear this streak; a retained descendant resets
+it. The archive representative stays unchanged; the appended actions execute
+and count as ordinary logical work, and replay reconstructs them from the
+extension count recorded at reservation time. The streak is included in
+archive selector counters so archive warm starts preserve the feedback.
+`OneToSixBounded` deliberately
+keeps its existing three-times-maximum-action-cost bound and receives no
+extension.
+
+The live archive counter does not change the campaign stream schema: each
+reservation records its chosen extension, so existing streams remain exact
+replay inputs. Older archive reports may omit the counter and import with a
+zero warm-start streak; that is an archive warm start rather than a replay of
+the prior selector history.
+
+This is a fixed engine policy rather than a workload or runtime knob. It can
+cross waits that produce no new key at the cost of longer rollouts from barren
+parents, while the action limit bounds each rollout and the work counter charges
+every appended action. The engine schema version identifies the semantics, and
+the campaign schema is version 7. The generic regression fixture covers a
+seven-step wait, a large distractor archive, a same-key cycle with charged work,
+the bounded shape, archive import, and exact live/replay equality.
+
 ## Search evaluation policies
 
 Five selector policies exist. `hierarchy_uniform_128` draws uniformly over live
@@ -275,6 +311,54 @@ cannot change serial replay. Only same-slot `preference_cmp` is consulted;
 preferences are never compared between unrelated locations. A workload that
 reports no preference improvements gets no continuation attempts.
 
+`alphabet_route_reuse_v1` is an opt-in route-reuse experiment. It gives 25% of
+ordinary reservations a chance to copy a bounded tail from an observed
+descendant whose donor has the same nonempty `route_context`; the other
+reservations use alphabet-only mutation. The context is only a candidate
+matching projection. The exact archive key remains the retention identity, and
+the copied tail executes from the selected parent's snapshot and is judged by
+ordinary retention, terminal, and resource rules. The donor index contains
+active entries only, is rebuilt after history compaction and archive import,
+and charges its ordered membership against the logical memory budget. A route
+tail records donor and leaf IDs and is replay-validated while those metadata
+entries are pinned for the in-flight reservation. Missing or incompatible
+contexts produce an ordinary empty splice result.
+
+When route reuse is enabled, leaf rankings propagate through retained input
+prefix owners. History compaction and sparse
+archive import can remove an inactive intermediate entry while retaining its
+input trie nodes; the prefix walk keeps a surviving donor connected to its
+surviving descendant without changing parent IDs or ordinary selection
+lineage. This updates the shared leaf ranking used by the opt-in route policy;
+the campaign dispatches this policy separately from ordinary splice policies.
+Live route insertions use the same walk. Rebuilding this opt-in index
+costs the total retained input-prefix depth, while the route-disabled path
+keeps the original parent-chain update.
+
+`alphabet_route_reuse_deduplicated_v2` keeps the same 25% route-attempt share
+and alphabet fallback, but skips recently attempted exact tails while checking
+compatible donors in rank order. It returns the first untried valid observed
+tail; an exhausted lookup falls back to alphabet input. The additional repeated
+tail checks are bounded by the attempt cache rather than a fixed donor shortlist,
+so repeated higher-ranked routes cannot hide an untried lower-ranked route. Its
+campaign-local FIFO holds at most 4,096 identities and 1 MiB of serialized
+payload, with a conservative fixed 2 MiB charge in archive history memory.
+An identity includes stable parent, donor and leaf IDs, the effective action
+cap, and exact serialized actions. Oversized payloads bypass the cache.
+Attempts are remembered at reservation, so in-flight duplicates also cause
+lookup to consider another donor. Duplicate hits do not refresh FIFO order; eviction permits
+later retries. Rejections remain remembered until eviction: this is an
+experimental allocation choice because archive churn can make a previously
+rejected outcome useful. The cache starts empty on archive import and does
+not pin donor metadata or snapshots.
+
+The stream records the selected tail or alphabet fallback; verification replay
+uses that recorded behavior and charges the same reserve. It verifies the
+executed behavior and resulting archive, not the live cache's selection
+decision. Old route, ordinary splice, and continuation policies do not enable
+this cache. Both route policy identifiers retain the metadata required to
+validate actual donated tails during replay.
+
 These are experiments, not new defaults. Promote policies based on paired workload
 panels, fresh completion results, and resource costs through
 [`benchmarks/search`](../../benchmarks/search/README.md). The generic resource
@@ -335,3 +419,42 @@ normally; evaluators must score first-objective work against the threshold and
 account for any drained overshoot. Omitting the option leaves the campaign
 without a work-budget cutoff.
 
+## Exact-prefix restore during import
+
+`whole_tree_prefix_restore_v2` preserves imported ancestry and admission order. For an entry without a saved snapshot, it finds the longest complete action prefix already owned by an imported entry with a resident snapshot, restores that snapshot, and executes only the remaining suffix. It matches the full typed action sequence, not archive cells or progress labels. Prefix milestones are merged before replaying the remainder. This avoids repeated emulation when exported parent metadata is sparse while preserving every input and resulting state. The resume identifier changes because bootstrap execution work can change.
+
+## Bounded progress follow-up experiment
+
+The opt-in `energy_frontier_cheapest_progress_focus_v1` selector mixes the existing energy/frontier walk with follow-up attempts on retained entries whose key progress exceeds their parent. Half of draws try a newest-first queue of at most 128 stable entry IDs, with at most 128 follow-up attempts per admission. The queue falls back to ordinary selection when empty. Each draw revalidates that the entry remains active, restorable, and below the action limit; compaction may change indices without changing the queued identity. Queue capacity is charged to archive memory accounting. `progress_focus_selections` records the draws made through this path.
+
+Follow-up attempts bypass ordinary retirement only within this bounded allowance. Workload keys supply the existing progress comparison; the scheduler contains no game, room, weapon, or encounter rules. Retention and action generation do not change.
+
+Warm import reconstructs the queue from admitted parent-child progress comparisons. Consumed follow-up tickets are not persisted, so warm import starts a new allocation phase and may revisit older improvements, including rerooted imported entries. The mechanism is experimental. Selected-root combat gains do not establish full-campaign improvement or game completion; validate both before changing a workload default.
+
+### Experimental discovery follow-up
+
+`hierarchy_uniform_128_energy_frontier_cheapest_discovery_focus_v2` uses the
+same retirement thresholds and bounded follow-up queue as progress focus, but
+also admits the first child opening a previously unseen group at any of
+the three coarsest pooled depths. Shallower hierarchies use their available
+pooled depths; fine slot discoveries alone do
+not qualify. Progress increases still qualify. The root does not receive a
+ticket. The queue holds at most 128 stable entry IDs, grants 128 attempts per
+admission, and receives half of draws while eligible tickets remain. It uses
+existing active/restorable and action-limit checks and preserves ordinary
+selection for the other draws. Discovery draws have their own stream path
+and accounting counter.
+
+This is an opt-in allocation experiment, with no workload-specific area order
+or action guidance. It tests whether coarse discoveries receive enough
+follow-up to extend traversal when a workload's progress comparator only
+recognizes sparse achievements. Imported histories reconstruct tickets from
+admission order; spent tickets are not persisted. New groups need not be
+useful, so end-to-end improvement requires a matched campaign comparison.
+
+Version 1 watched only the two coarsest pooled depths. In a populated five-depth
+archive those groups were already saturated: the matched control opened no
+new groups at those depths, and the candidate's first 9,300 jobs matched the
+control's work and outcomes. Version 2 includes the next pooled depth, where
+the control still observed discoveries. It tests finer follow-up without
+changing retention, action generation, or the bounded allocation budget.

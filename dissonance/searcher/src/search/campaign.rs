@@ -48,7 +48,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 4;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 7;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
@@ -135,7 +135,7 @@ fn progress_checkpoint_due(executions: u64) -> bool {
     executions > 0 && (executions == 1 || executions.is_multiple_of(PROGRESS_CHECKPOINT_INTERVAL))
 }
 
-pub const RESUME_IDENTIFIER: &str = "whole_tree";
+pub const RESUME_IDENTIFIER: &str = "whole_tree_prefix_restore_v2";
 
 pub const SNAPSHOT_ROOT_RESUME_IDENTIFIER: &str = "snapshot_root";
 
@@ -310,6 +310,7 @@ pub trait InputPolicy: CampaignTypes {
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         self.expand_recorded_or_live(run, state, shape, mixture, before, mutation_seed, true)
     }
+
     #[allow(clippy::too_many_arguments)]
     fn expand_recorded_or_live(
         &self,
@@ -620,6 +621,7 @@ pub struct CampaignStreamHeader<T> {
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum CampaignSpliceRecord {
     Unavailable,
+    RepeatedRoute,
     Tail {
         donor_id: u64,
         leaf_id: u64,
@@ -649,6 +651,10 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub decisions: Vec<CampaignAdmissionDecision>,
     pub mixture_weight: u8,
     pub splice_weight: u8,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub adaptive_horizon_extension: usize,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub adaptive_horizon_full_capacity: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub splice: Option<CampaignSpliceRecord>,
 
@@ -679,6 +685,8 @@ pub struct CampaignSkipRecord<C, K = ()> {
     pub mutation_seed: u64,
     pub mixture_weight: u8,
     pub splice_weight: u8,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub adaptive_horizon_extension: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub splice: Option<CampaignSpliceRecord>,
 
@@ -822,6 +830,10 @@ fn is_zero_u64(value: &u64) -> bool {
 
 fn is_zero_usize(value: &usize) -> bool {
     *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn archive_entry_limit_is_valid(limit: usize) -> bool {
@@ -1007,9 +1019,13 @@ fn verify_selector_annotation(draw: &SelectorDraw) -> Result<(), Box<dyn Error>>
         (SelectorPath::HierarchyWalk, None) => {
             Err("cell draw is missing its concentration record".into())
         }
-        (SelectorPath::Uniform | SelectorPath::Continuation, Some(_)) => {
-            Err("non-cell draw carries a concentration record".into())
-        }
+        (
+            SelectorPath::Uniform
+            | SelectorPath::Continuation
+            | SelectorPath::ProgressFocus
+            | SelectorPath::DiscoveryFocus,
+            Some(_),
+        ) => Err("non-cell draw carries a concentration record".into()),
         _ => Ok(()),
     }
 }
@@ -1199,6 +1215,8 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         for (index, entry) in source_entries.iter().enumerate() {
             index_of.insert(entry.id, index);
             if entry.input.actions.is_empty() {
+                self.archive
+                    .restore_selector_counters(genesis_id, entry.selector)?;
                 imported.push(Some(genesis_id));
                 continue;
             }
@@ -1254,15 +1272,22 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     Some((*snapshot).clone())
                 }
             } else {
+                let replay_parent_id = self
+                    .archive
+                    .longest_resident_input_prefix(&entry.input.actions)
+                    .filter(|id| self.archive.entries[*id].input_len > parent_input_len)
+                    .unwrap_or(parent_id);
+                let replay_parent = &self.archive.entries[replay_parent_id];
+                milestones = merge_max(workload, milestones, replay_parent.milestones);
                 workload.restore(
                     target,
-                    parent_entry
+                    replay_parent
                         .snapshot
                         .as_deref()
                         .ok_or("whole-tree import parent snapshot was released early")?,
                 )?;
                 let mut terminal = false;
-                for action in &entry.input.actions[parent_input_len..] {
+                for action in &entry.input.actions[replay_parent.input_len..] {
                     workload.apply_action(target, action, &mut milestones)?;
                     if workload
                         .rollout_outcome(run, target)?
@@ -1303,6 +1328,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 snapshot,
             )? {
                 Some(id) if id == inserted_before => {
+                    self.archive.restore_selector_counters(id, entry.selector)?;
                     counts.imported = counts.imported.saturating_add(1);
                     imported.push(Some(id));
                 }
@@ -1785,6 +1811,43 @@ fn verify_duration_draw(
     Ok(())
 }
 
+const ADAPTIVE_HORIZON_SEED_DOMAIN: u64 = 0x8f52_4d31_7ac9_e608;
+
+fn extend_suffix_with_horizon<G: InputPolicy + ?Sized>(
+    workload: &G,
+    run: &G::Run,
+    suffix: &mut Vec<G::Action>,
+    mutation_seed: u64,
+    additional_actions: usize,
+) -> Result<(), Box<dyn Error>> {
+    let mut rand = RomuDuoJrRand::with_seed(mutation_seed ^ ADAPTIVE_HORIZON_SEED_DOMAIN);
+    for _ in 0..additional_actions {
+        suffix.push(workload.sample_alphabet(run, &mut rand)?);
+    }
+    Ok(())
+}
+
+fn extend_recorded_suffix_with_horizon<G: InputPolicy + ?Sized>(
+    workload: &G,
+    run: &G::Run,
+    suffix: &mut Vec<G::Action>,
+    remaining_actions: usize,
+    eligible: bool,
+    mutation_seed: u64,
+    additional_actions: usize,
+) -> Result<(), Box<dyn Error>> {
+    if additional_actions == 0 {
+        return Ok(());
+    }
+    if !eligible {
+        return Err("recorded adaptive horizon extension is ineligible".into());
+    }
+    if additional_actions > remaining_actions {
+        return Err("recorded adaptive horizon extension exceeds action limit".into());
+    }
+    extend_suffix_with_horizon(workload, run, suffix, mutation_seed, additional_actions)
+}
+
 fn validate_duration_draw<G: Workload + ?Sized>(
     workload: &G,
     run: &G::Run,
@@ -2079,13 +2142,29 @@ struct PendingJob<G: Workload + ?Sized> {
     mutation_seed: u64,
     mixture_weight: u8,
     splice_weight: u8,
+    adaptive_horizon_extension: usize,
+    adaptive_horizon_full_capacity: bool,
     splice: Option<CampaignSpliceRecord>,
+    splice_metadata: Vec<u64>,
     selector: SelectorDraw,
     draw_checkpoint_before: Option<EmpiricalStepCheckpoint>,
     duration_draw: Option<DurationDraw<G::Key>>,
     duration_admission_sequence_at_draw: Option<u64>,
     duration_remaining_work: Option<NonZeroU64>,
     duration_checkpoint_at_draw: Option<DurationCheckpoint>,
+}
+
+fn splice_metadata_ids(splice: &Option<CampaignSpliceRecord>) -> Vec<u64> {
+    let Some(CampaignSpliceRecord::Tail {
+        donor_id, leaf_id, ..
+    }) = splice.as_ref()
+    else {
+        return Vec::new();
+    };
+    let mut ids = vec![*donor_id, *leaf_id];
+    ids.sort_unstable();
+    ids.dedup();
+    ids
 }
 
 struct CompletedJob<G: Workload + ?Sized> {
@@ -2111,7 +2190,7 @@ fn replay_splice<G: CampaignTypes>(
         return Ok(None);
     }
     match recorded {
-        Some(CampaignSpliceRecord::Unavailable) => Ok(None),
+        Some(CampaignSpliceRecord::Unavailable | CampaignSpliceRecord::RepeatedRoute) => Ok(None),
         Some(CampaignSpliceRecord::Tail { tail_postcard, .. }) => {
             let tail: Vec<G::Action> = postcard::from_bytes(&tail_postcard)?;
             if tail.is_empty() || tail.len() > SPLICE_ACTION_CAP {
@@ -2428,7 +2507,13 @@ where
     );
     core.archive.selector_policy = config.selector.clone();
     core.archive
+        .enable_adaptive_horizon(config.suffix.adaptive_horizon());
+    core.archive
         .enable_continuations(config.mixture.uses_continuations());
+    core.archive
+        .enable_route_reuse(config.mixture.uses_route_reuse());
+    core.archive
+        .enable_route_deduplication(config.mixture.deduplicates_routes());
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the bootstrap target: {error}").into()
@@ -2608,7 +2693,10 @@ where
                                 mutation_seed,
                                 mixture_weight,
                                 splice_weight,
+                                adaptive_horizon_extension: 0,
+                                adaptive_horizon_full_capacity: false,
                                 splice,
+                                splice_metadata: Vec::new(),
                                 selector,
                                 draw_checkpoint_before,
                                 duration_draw: None,
@@ -2627,6 +2715,8 @@ where
                         .ok_or("selected archive slot is missing")?;
                     let mutation_seed = rand.next_u64();
                     let (mixture_weight, splice_weight) = match config.mixture {
+                        DrawMixture::AlphabetRouteReuse
+                        | DrawMixture::AlphabetRouteReuseDeduplicated => (0, 64),
                         DrawMixture::Energy { scale } => {
                             (core.mixture_energy.biased_weight(scale), 0)
                         }
@@ -2642,31 +2732,58 @@ where
                         if energy_strategy(mutation_seed, mixture_weight, splice_weight)?
                             == EnergyStrategy::Splice
                         {
-                            match core.archive.splice_tail_for_campaign(
-                                parent_index,
-                                max_actions,
-                                SPLICE_ACTION_CAP,
-                            ) {
+                            let tail = if config.mixture.uses_route_reuse() {
+                                core.archive.route_splice_tail_for_campaign(
+                                    parent_index,
+                                    max_actions,
+                                    SPLICE_ACTION_CAP,
+                                )?
+                            } else {
+                                core.archive.splice_tail_for_campaign(
+                                    parent_index,
+                                    max_actions,
+                                    SPLICE_ACTION_CAP,
+                                )
+                            };
+                            match tail {
                                 Some(CampaignSpliceTail {
                                     donor_id,
                                     leaf_id,
                                     actions,
                                 }) => {
                                     let tail_postcard = postcard::to_allocvec(&actions)?;
-                                    (
-                                        Some(actions),
-                                        Some(CampaignSpliceRecord::Tail {
-                                            donor_id: core
-                                                .archive
-                                                .stable_id(donor_id)
-                                                .ok_or("splice donor slot is missing")?,
-                                            leaf_id: core
-                                                .archive
-                                                .stable_id(leaf_id)
-                                                .ok_or("splice leaf slot is missing")?,
-                                            tail_postcard,
-                                        }),
-                                    )
+                                    let donor_id = core
+                                        .archive
+                                        .stable_id(donor_id)
+                                        .ok_or("splice donor slot is missing")?;
+                                    let leaf_id = core
+                                        .archive
+                                        .stable_id(leaf_id)
+                                        .ok_or("splice leaf slot is missing")?;
+                                    let effective_cap =
+                                        SPLICE_ACTION_CAP.min(max_actions.saturating_sub(
+                                            core.archive.entries[parent_index].input_len,
+                                        ));
+                                    if config.mixture.deduplicates_routes()
+                                        && core.archive.repeated_route_attempt(
+                                            parent_id,
+                                            donor_id,
+                                            leaf_id,
+                                            effective_cap,
+                                            &tail_postcard,
+                                        )
+                                    {
+                                        (None, Some(CampaignSpliceRecord::RepeatedRoute))
+                                    } else {
+                                        (
+                                            Some(actions),
+                                            Some(CampaignSpliceRecord::Tail {
+                                                donor_id,
+                                                leaf_id,
+                                                tail_postcard,
+                                            }),
+                                        )
+                                    }
                                 }
                                 None => (None, Some(CampaignSpliceRecord::Unavailable)),
                             }
@@ -2703,6 +2820,17 @@ where
                     } else {
                         None
                     };
+                    let adaptive_extension = if spliced.is_none()
+                        && duration_draw.is_none()
+                        && config.suffix.adaptive_horizon()
+                    {
+                        let remaining_actions = max_actions
+                            .saturating_sub(core.archive.entries[parent_index].input_len);
+                        core.archive
+                            .adaptive_horizon_extension(parent_index, remaining_actions)
+                    } else {
+                        0
+                    };
                     let duration_remaining_work = duration_draw.and(remaining_work);
                     let duration_admission_sequence_at_draw = duration_draw.map(|_| core.sequence);
                     let mut suffix = match (spliced, duration_draw) {
@@ -2731,6 +2859,23 @@ where
                             mutation_seed,
                         )?,
                     };
+                    let extension = adaptive_extension.min(
+                        max_actions
+                            .saturating_sub(core.archive.entries[parent_index].input_len)
+                            .saturating_sub(suffix.len()),
+                    );
+                    let remaining_after_suffix = max_actions
+                        .saturating_sub(core.archive.entries[parent_index].input_len)
+                        .saturating_sub(suffix.len());
+                    let adaptive_horizon_full_capacity =
+                        adaptive_extension != 0 && extension == remaining_after_suffix;
+                    extend_suffix_with_horizon(
+                        workload,
+                        &config.run,
+                        &mut suffix,
+                        mutation_seed,
+                        extension,
+                    )?;
                     config
                         .suffix
                         .bound_cost(&mut suffix, action_cost, max_action_cost);
@@ -2747,6 +2892,7 @@ where
                             mutation_seed,
                             mixture_weight,
                             splice_weight,
+                            adaptive_horizon_extension: extension,
                             splice,
                             selector,
                             draw_checkpoint_before,
@@ -2765,6 +2911,14 @@ where
                             counters.skips_per_worker[worker as usize].saturating_add(1);
                         consecutive_skips = consecutive_skips.saturating_add(1);
                         continue;
+                    }
+                    let splice_metadata = if config.mixture.uses_route_reuse() {
+                        splice_metadata_ids(&splice)
+                    } else {
+                        Vec::new()
+                    };
+                    for id in &splice_metadata {
+                        core.archive.pin_metadata(*id)?;
                     }
                     *reserved = reserved.saturating_add(1);
                     core.archive.pin_metadata(parent_id)?;
@@ -2787,7 +2941,10 @@ where
                             mutation_seed,
                             mixture_weight,
                             splice_weight,
+                            adaptive_horizon_extension: extension,
+                            adaptive_horizon_full_capacity,
                             splice,
+                            splice_metadata,
                             selector,
                             draw_checkpoint_before,
                             duration_draw,
@@ -2966,10 +3123,13 @@ where
                         .iter()
                         .fold(0, |mask, id| mask | core.archive.opened_depths(*id));
                     if !isolated_continuation {
-                        core.archive.record_selection_outcome(
+                        core.archive.record_selection_outcome_with_horizon(
                             parent_index,
                             !retained_ids.is_empty(),
                             opened_depths,
+                            pending_job.adaptive_horizon_extension,
+                            pending_job.adaptive_horizon_full_capacity,
+                            max_actions,
                         );
                     }
                     record_mixture_outcome(
@@ -3008,6 +3168,9 @@ where
                     }
                     core.archive.unpin_job_origin(pending_job.snapshot_id);
                     core.archive.unpin_metadata(pending_job.parent_id);
+                    for metadata_id in &pending_job.splice_metadata {
+                        core.archive.unpin_metadata(*metadata_id);
+                    }
                     let compaction_started = profile_now(coordinator_profile.enabled);
                     let compactions_before = core.archive.history_compactions();
                     core.archive.maintain_memory_budget()?;
@@ -3031,6 +3194,8 @@ where
                         decisions,
                         mixture_weight: pending_job.mixture_weight,
                         splice_weight: pending_job.splice_weight,
+                        adaptive_horizon_extension: pending_job.adaptive_horizon_extension,
+                        adaptive_horizon_full_capacity: pending_job.adaptive_horizon_full_capacity,
                         splice: pending_job.splice,
                         selector: pending_job.selector,
                         draw_checkpoint_before: pending_job.draw_checkpoint_before,
@@ -3357,13 +3522,30 @@ where
     let mut required_draw_versions = DrawVersionSchedule::default();
     let mut replay_job_parents = Vec::<u64>::new();
     let mut replay_job_metadata = Vec::<Vec<u64>>::new();
+    let recorded_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
+    let route_reuse_stream = recorded_mixture.uses_route_reuse();
     for (index, line) in record_lines.iter().enumerate() {
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
             serde_json::from_str(line)?;
+        let splice = match &record {
+            CampaignStreamRecord::Job(job) => &job.splice,
+            CampaignStreamRecord::Skip(skip) => &skip.splice,
+        };
+        if matches!(splice, Some(CampaignSpliceRecord::RepeatedRoute))
+            && !recorded_mixture.deduplicates_routes()
+        {
+            return Err("repeated route evidence requires the deduplicating route policy".into());
+        }
         let before = match record {
             CampaignStreamRecord::Job(job) => {
                 replay_job_parents.push(job.parent_id);
-                replay_job_metadata.push(vec![job.parent_id]);
+                let mut metadata = vec![job.parent_id];
+                if route_reuse_stream {
+                    metadata.extend(splice_metadata_ids(&job.splice));
+                }
+                metadata.sort_unstable();
+                metadata.dedup();
+                replay_job_metadata.push(metadata);
                 job.draw_checkpoint_before
             }
             CampaignStreamRecord::Skip(skip) => skip.draw_checkpoint_before,
@@ -3474,7 +3656,13 @@ where
     core.bounded_progress_curve = true;
     core.archive.selector_policy = replay_selector.clone();
     core.archive
+        .enable_adaptive_horizon(replay_suffix.adaptive_horizon());
+    core.archive
         .enable_continuations(replay_mixture.uses_continuations());
+    core.archive
+        .enable_route_reuse(replay_mixture.uses_route_reuse());
+    core.archive
+        .enable_route_deduplication(replay_mixture.deduplicates_routes());
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
@@ -3568,7 +3756,7 @@ where
                     .ok_or("recorded skip names a parent the archive does not hold")?;
                 let strategy =
                     energy_strategy(skip.mutation_seed, skip.mixture_weight, skip.splice_weight)?;
-                let spliced = replay_splice::<G>(strategy, skip.splice)?;
+                let spliced = replay_splice::<G>(strategy, skip.splice.clone())?;
                 let draw_checkpoint_before = skip.draw_checkpoint_before;
                 if spliced.is_some()
                     && (skip.duration_draw.is_some()
@@ -3631,6 +3819,9 @@ where
                 if duration_checkpoint_before != skip.duration_checkpoint_before {
                     return Err("replayed skip duration state diverged before expansion".into());
                 }
+                let horizon_eligible = spliced.is_none()
+                    && duration_draw.is_none()
+                    && replay_suffix.adaptive_horizon();
                 let mut suffix = match (spliced, duration_draw) {
                     (Some(tail), _) => tail,
                     (None, draw) => workload.expand_suffix_recorded_duration(
@@ -3647,6 +3838,19 @@ where
                         draw,
                     )?,
                 };
+                let remaining_actions = header
+                    .action_limit
+                    .saturating_sub(core.archive.entries[parent_index].input_len)
+                    .saturating_sub(suffix.len());
+                extend_recorded_suffix_with_horizon(
+                    workload,
+                    &replay_run,
+                    &mut suffix,
+                    remaining_actions,
+                    horizon_eligible,
+                    skip.mutation_seed,
+                    skip.adaptive_horizon_extension,
+                )?;
                 replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
@@ -3711,6 +3915,23 @@ where
                 let strategy =
                     energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?;
                 let spliced = replay_splice::<G>(strategy, job.splice.clone())?;
+                if replay_mixture.uses_route_reuse()
+                    && let Some(CampaignSpliceRecord::Tail {
+                        donor_id, leaf_id, ..
+                    }) = job.splice.as_ref()
+                {
+                    core.archive.validate_route_splice(
+                        job.parent_id,
+                        *donor_id,
+                        *leaf_id,
+                        header
+                            .action_limit
+                            .saturating_sub(core.archive.entries[parent_index].input_len),
+                        spliced
+                            .as_deref()
+                            .ok_or("route splice provenance lacks its tail")?,
+                    )?;
+                }
                 let draw_checkpoint_before = job.draw_checkpoint_before;
                 if spliced.is_some()
                     && (job.duration_draw.is_some()
@@ -3768,6 +3989,9 @@ where
                 if duration_checkpoint_before != job.duration_checkpoint_before {
                     return Err("replayed job duration state diverged before expansion".into());
                 }
+                let horizon_eligible = spliced.is_none()
+                    && duration_draw.is_none()
+                    && replay_suffix.adaptive_horizon();
                 let mut suffix = match (spliced, duration_draw) {
                     (Some(tail), _) => tail,
                     (None, draw) => workload.expand_suffix_recorded_duration(
@@ -3784,6 +4008,27 @@ where
                         draw,
                     )?,
                 };
+                let remaining_actions = header
+                    .action_limit
+                    .saturating_sub(core.archive.entries[parent_index].input_len)
+                    .saturating_sub(suffix.len());
+                let adaptive_horizon_full_capacity = if job.adaptive_horizon_extension == 0 {
+                    job.adaptive_horizon_full_capacity && remaining_actions == 0
+                } else {
+                    job.adaptive_horizon_extension == remaining_actions
+                };
+                if adaptive_horizon_full_capacity != job.adaptive_horizon_full_capacity {
+                    return Err("recorded adaptive horizon capacity marker diverged".into());
+                }
+                extend_recorded_suffix_with_horizon(
+                    workload,
+                    &replay_run,
+                    &mut suffix,
+                    remaining_actions,
+                    horizon_eligible,
+                    job.mutation_seed,
+                    job.adaptive_horizon_extension,
+                )?;
                 replay_suffix.bound_cost(&mut suffix, action_cost, max_action_cost);
                 let job_execution_work_before = workload.execution_work(&target);
                 let result = workload.execute_job(
@@ -3900,12 +4145,15 @@ where
                 } else {
                     core.archive.record_selection(parent_index, &job.selector);
                     let retained_ids = retained_archive_indexes(&core, &decisions);
-                    core.archive.record_selection_outcome(
+                    core.archive.record_selection_outcome_with_horizon(
                         parent_index,
                         !retained_ids.is_empty(),
                         retained_ids
                             .iter()
                             .fold(0, |mask, id| mask | core.archive.opened_depths(*id)),
+                        job.adaptive_horizon_extension,
+                        job.adaptive_horizon_full_capacity,
+                        header.action_limit,
                     );
                 }
                 core.archive.unpin_job_origin(snapshot_id);
@@ -4051,6 +4299,10 @@ mod tests {
         fn group(self, depth: usize) -> Self::Group {
             assert_eq!(depth, 0);
             self.0
+        }
+
+        fn route_context(self) -> Option<Self::Group> {
+            Some(self.0 % 8)
         }
 
         type Lineage = ();
@@ -4800,14 +5052,14 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":4,"format":"campaign-v1","campaign_seed":7,"workers":2,
+    const RECORDED_HEADER: &str = r#"{"schema_version":7,"format":"campaign-v1","campaign_seed":7,"workers":2,
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
 "action_limit":64,"archive_entry_limit":128,"controller_vocabulary":"test_inputs",
 "key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
 "chord_policy":"chord_uniform","replacement_policy":"least_cost_per_group",
-"resume_policy":"whole_tree","retention_policy":"unprobed",
+"resume_policy":"whole_tree_prefix_restore_v2","retention_policy":"unprobed",
 "parent_scheduler":"hierarchy_uniform_128","executor_mode":"snapshot_resume_archive",
 "worker_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
@@ -5168,6 +5420,64 @@ mod tests {
     }
 
     #[test]
+    fn whole_tree_import_preserves_routes_across_missing_source_parents() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+        };
+        let action = |input| TestAction::new(input, 1);
+        let entry = |id, parent_id, actions| ArchiveEntryReport {
+            id,
+            parent_id,
+            created_execution: 0,
+            input: Input { actions },
+            key: TestKey(0),
+            milestones: (),
+            selector: None,
+        };
+        let source = TestArchiveReport {
+            entries: vec![
+                entry(0, None, vec![]),
+                entry(1, Some(0), vec![action(1)]),
+                entry(2, Some(0), vec![action(9)]),
+                entry(4, Some(3), vec![action(1), action(2), action(4)]),
+            ],
+        };
+        let encoded = serde_json::to_string(&source).expect("serialize sparse source");
+        let source = serde_json::from_str(&encoded).expect("deserialize sparse source");
+        let mut core = CoordinatorCore::new(&workload, &(), 16, 32_768, None);
+        core.archive.enable_route_reuse(true);
+        let mut target = TestTarget::default();
+        let counts = core
+            .import_tree(&workload, &(), &mut target, &source, None)
+            .expect("import full input with missing intermediate parent");
+        assert_eq!(target.execution_work, 4);
+        assert_eq!(target.value, 7);
+        assert_eq!(counts.rerooted, 1);
+        assert_eq!(counts.imported, 3);
+        let donor = 1;
+        let parent = 2;
+        let leaf = 3;
+        assert_eq!(core.archive.entries[leaf].parent_id, Some(0));
+        core.archive
+            .validate_route_splice(
+                core.archive.stable_id(parent).unwrap(),
+                core.archive.stable_id(donor).unwrap(),
+                core.archive.stable_id(leaf).unwrap(),
+                16,
+                &[action(2), action(4)],
+            )
+            .expect("full prefix remains a valid observed route");
+        let route = core
+            .archive
+            .route_splice_tail_for_campaign(parent, 16, 8)
+            .expect("route lookup succeeds")
+            .expect("fresh lookup discovers imported prefix route");
+        assert_eq!(route.donor_id, donor);
+        assert_eq!(route.leaf_id, leaf);
+        assert_eq!(route.actions, vec![action(2), action(4)]);
+    }
+
+    #[test]
     fn recorded_splice_tail_validates_strategy_and_bounds() {
         let (_game, _run, _core, _target) = test_core();
         let action = TestAction::new(0x01, 4);
@@ -5455,7 +5765,7 @@ mod tests {
         );
         assert_eq!(header.mixture_policy, "biased_half");
         assert_eq!(header.suffix_policy, "one_or_two");
-        assert_eq!(header.resume_policy, "whole_tree");
+        assert_eq!(header.resume_policy, "whole_tree_prefix_restore_v2");
         assert_eq!(header.schema_version, super::CAMPAIGN_SCHEMA_VERSION);
         assert_eq!(header.draw_header, None);
         let expected: WorkloadPolicies = [
