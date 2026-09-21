@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, time::Duration};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use reqwest::blocking::Client;
 use serde_json::Value;
@@ -50,6 +55,7 @@ pub struct Store {
     url: String,
     user: String,
     password: String,
+    status_cache: Arc<Mutex<BTreeMap<String, (Instant, Value)>>>,
 }
 
 impl Store {
@@ -66,6 +72,7 @@ impl Store {
             url,
             user,
             password,
+            status_cache: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -132,10 +139,31 @@ impl Store {
             return Err("query exceeds SQL length cap".into());
         }
         let bounded = format!(
-            "{sql} SETTINGS max_execution_time=2, max_memory_usage=268435456, max_result_rows=10000, max_bytes_to_read=536870912, max_threads=2 FORMAT JSON"
+            "{sql} SETTINGS max_execution_time=2, max_memory_usage=268435456, max_result_rows=10000, max_result_bytes=8388608, max_bytes_to_read=1073741824, max_threads=2 FORMAT JSON"
         );
         let text = self.request(&bounded, Vec::new(), None)?;
         Ok(serde_json::from_str(&text)?)
+    }
+
+    pub fn cached_status(&self, run_id: &str) -> Option<Value> {
+        let cache = self.status_cache.lock().ok()?;
+        let (stored, value) = cache.get(run_id)?;
+        let ttl = if value["completeness"]["complete"].as_bool() == Some(true) {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_millis(1500)
+        };
+        (stored.elapsed() < ttl).then(|| value.clone())
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    pub fn cache_status(&self, run_id: &str, value: &Value) {
+        if let Ok(mut cache) = self.status_cache.lock() {
+            if cache.len() >= 100 {
+                cache.clear();
+            }
+            cache.insert(run_id.to_owned(), (Instant::now(), value.clone()));
+        }
     }
 
     pub fn ready(&self) -> Result<String> {

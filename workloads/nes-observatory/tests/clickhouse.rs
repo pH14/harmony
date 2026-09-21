@@ -2,11 +2,15 @@
 
 use nes_observatory::{
     contract::Event,
-    producer::random_id,
+    producer::{export_spool, random_id},
     query::{self, MapFilter, Metric, ObservationFilter},
     store::Store,
 };
 use serde_json::Value;
+use std::{
+    fs,
+    time::{Duration, SystemTime},
+};
 
 fn value(result: &Value, path: &[&str]) -> u64 {
     path.iter()
@@ -238,4 +242,59 @@ fn clickhouse_history_filters_and_retry_are_consistent() {
     let end_status = query::status(&store, &missing_start).expect("missing-start status");
     assert_eq!(end_status["completeness"]["complete"], false);
     assert!(query::status(&store, &random_id().expect("absent ID")).is_err());
+}
+
+#[test]
+#[ignore = "requires pinned ClickHouse 26.3 and HARMONY_CLICKHOUSE_* credentials"]
+#[allow(clippy::disallowed_methods)]
+fn expired_spool_export_marks_run_incomplete() {
+    let store = Store::new(
+        std::env::var("HARMONY_CLICKHOUSE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8123".to_owned()),
+        std::env::var("HARMONY_CLICKHOUSE_USER").expect("test ClickHouse user"),
+        std::env::var("HARMONY_CLICKHOUSE_PASSWORD").expect("test ClickHouse password"),
+    )
+    .expect("ClickHouse client");
+    store.bootstrap().expect("schema");
+    let run = random_id().expect("run ID");
+    let session = random_id().expect("session ID");
+    let directory = std::env::temp_dir().join(format!("harmony-observatory-expiry-{run}"));
+    fs::create_dir_all(&directory).expect("synthetic spool");
+
+    let start = event("run_start", &run, &session, 1, 0);
+    let first = directory.join(format!("b-{session}-0000000000000001.jsonl"));
+    let mut start_bytes = serde_json::to_vec(&start).expect("start JSON");
+    start_bytes.push(b'\n');
+    fs::write(&first, start_bytes).expect("start batch");
+
+    let work = event("work", &run, &session, 2, 100);
+    let mut end = event("run_end", &run, &session, 3, 101);
+    end.payload = "search_complete".to_owned();
+    let second = directory.join(format!("b-{session}-0000000000000002.jsonl"));
+    let mut old_bytes = serde_json::to_vec(&work).expect("work JSON");
+    old_bytes.push(b'\n');
+    old_bytes.extend(serde_json::to_vec(&end).expect("end JSON"));
+    old_bytes.push(b'\n');
+    fs::write(&second, old_bytes).expect("old batch");
+    fs::File::options()
+        .write(true)
+        .open(&second)
+        .expect("old batch handle")
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(SystemTime::now() - Duration::from_secs(7 * 24 * 60 * 60 + 1)),
+        )
+        .expect("age old batch");
+
+    assert_eq!(export_spool(&directory, &store).expect("export"), 2);
+    let status = query::status(&store, &run).expect("status");
+    assert_eq!(status["completeness"]["complete"], false);
+    assert_eq!(value(&status, &["completeness", "lost_events"]), 2);
+    assert_eq!(value(&status, &["telemetry", "started"]), 1);
+    assert_eq!(value(&status, &["telemetry", "ended"]), 0);
+    assert_eq!(
+        fs::read_to_string(directory.join("loss-count")).expect("local loss count"),
+        "2"
+    );
+    fs::remove_dir_all(directory).expect("clean synthetic spool");
 }

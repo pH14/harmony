@@ -69,25 +69,137 @@ fn disposition(value: ExecutionDisposition) -> &'static str {
     }
 }
 
-fn spool_bytes(directory: &Path) -> u64 {
-    fs::read_dir(directory)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| entry.metadata().ok())
-        .filter(|metadata| metadata.is_file())
-        .map(|metadata| metadata.len())
-        .sum()
+fn spool_bytes(root: &Path) -> u64 {
+    let mut bytes = 0_u64;
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                directories.push(entry.path());
+            } else if kind.is_file()
+                && let Ok(metadata) = entry.metadata()
+            {
+                bytes = bytes.saturating_add(metadata.len());
+            }
+        }
+    }
+    bytes
+}
+
+const SPOOL_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+fn expire_batch(path: &Path, now: SystemTime) -> std::io::Result<u64> {
+    let modified = fs::metadata(path)?.modified()?;
+    if now.duration_since(modified).unwrap_or_default() < SPOOL_MAX_AGE {
+        return Ok(0);
+    }
+    let bytes = fs::read(path)?;
+    let mut last = None;
+    let mut count = 0_u64;
+    for row in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|row| !row.is_empty())
+    {
+        let event = serde_json::from_slice::<Event>(row)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        if event.kind == "loss" && event.payload == "spool_age_expired" {
+            return Ok(0);
+        }
+        last = Some(event);
+        count = count.saturating_add(1);
+    }
+    let Some(last) = last else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "empty telemetry batch",
+        ));
+    };
+    let mut marker = Event::new("loss");
+    marker.run_id = last.run_id;
+    marker.session_id = last.session_id;
+    marker.event_id = last.event_id;
+    marker.started_unix_ms = last.started_unix_ms;
+    marker.event_ms = last.event_ms;
+    marker.amount = u32::try_from(count).unwrap_or(u32::MAX);
+    marker.payload = "spool_age_expired".to_owned();
+    let mut replacement = serde_json::to_vec(&marker)?;
+    replacement.push(b'\n');
+    let temporary = path.with_extension("expiry-tmp");
+    if temporary.exists() {
+        fs::remove_file(&temporary)?;
+    }
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)?;
+    if let Err(error) = file.write_all(&replacement).and_then(|_| file.sync_all()) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    if let Some(directory) = path.parent() {
+        File::open(directory)?.sync_all()?;
+        write_loss(directory, count);
+    }
+    Ok(count)
+}
+
+fn expire_directory(directory: &Path, now: SystemTime) -> std::io::Result<u64> {
+    let mut discarded = 0_u64;
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_file()
+            && path
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+            && path
+                .file_stem()
+                .is_some_and(|stem| stem.to_string_lossy().starts_with("b-"))
+        {
+            discarded = discarded.saturating_add(expire_batch(&path, now)?);
+        }
+    }
+    Ok(discarded)
+}
+
+#[allow(clippy::disallowed_methods)]
+fn expire_spool_root(root: &Path) -> std::io::Result<u64> {
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut discarded = 0_u64;
+    let mut directories = vec![root.to_path_buf()];
+    let now = SystemTime::now();
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(&directory)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                directories.push(entry.path());
+            }
+        }
+        discarded = discarded.saturating_add(expire_directory(&directory, now)?);
+    }
+    Ok(discarded)
 }
 
 fn write_batch(
     directory: &Path,
+    budget_root: &Path,
     session: &str,
     sequence: u64,
     bytes: &[u8],
 ) -> std::io::Result<bool> {
-    if spool_bytes(directory).saturating_add(bytes.len() as u64) > SPOOL_BYTES {
+    if spool_bytes(budget_root).saturating_add(bytes.len() as u64) > SPOOL_BYTES {
         return Ok(false);
     }
     let name = format!("b-{session}-{sequence:016}");
@@ -116,6 +228,7 @@ fn write_loss(directory: &Path, amount: u64) {
 fn writer_loop(
     receiver: Receiver<Event>,
     directory: PathBuf,
+    budget_root: PathBuf,
     session: String,
     lost_queue: Arc<AtomicU64>,
     lost_spool: Arc<AtomicU64>,
@@ -130,28 +243,31 @@ fn writer_loop(
         let received = receiver.recv_timeout(Duration::from_millis(500));
         let disconnected = matches!(&received, Err(RecvTimeoutError::Disconnected));
         let timed_out = matches!(&received, Err(RecvTimeoutError::Timeout));
-        if let Ok(event) = received
-            && let Ok(mut row) = serde_json::to_vec(&event)
-        {
-            row.push(b'\n');
-            if bytes.len().saturating_add(row.len()) > BATCH_BYTES && !bytes.is_empty() {
-                sequence = sequence.saturating_add(1);
-                match write_batch(&directory, &session, sequence, &bytes) {
-                    Ok(true) => {}
-                    _ => {
-                        lost_spool.fetch_add(rows as u64, Ordering::Relaxed);
-                        write_loss(&directory, rows as u64);
+        if let Ok(mut event) = received {
+            event.run_id = identity.run_id.clone();
+            event.session_id = identity.session_id.clone();
+            event.started_unix_ms = started_unix_ms;
+            if let Ok(mut row) = serde_json::to_vec(&event) {
+                row.push(b'\n');
+                if bytes.len().saturating_add(row.len()) > BATCH_BYTES && !bytes.is_empty() {
+                    sequence = sequence.saturating_add(1);
+                    match write_batch(&directory, &budget_root, &session, sequence, &bytes) {
+                        Ok(true) => {}
+                        _ => {
+                            lost_spool.fetch_add(rows as u64, Ordering::Relaxed);
+                            write_loss(&directory, rows as u64);
+                        }
                     }
+                    bytes.clear();
+                    rows = 0;
                 }
-                bytes.clear();
-                rows = 0;
-            }
-            if row.len() <= BATCH_BYTES {
-                bytes.extend_from_slice(&row);
-                rows += 1;
-            } else {
-                lost_spool.fetch_add(1, Ordering::Relaxed);
-                write_loss(&directory, 1);
+                if row.len() <= BATCH_BYTES {
+                    bytes.extend_from_slice(&row);
+                    rows += 1;
+                } else {
+                    lost_spool.fetch_add(1, Ordering::Relaxed);
+                    write_loss(&directory, 1);
+                }
             }
         }
         if rows > 0 && (rows >= BATCH_EVENTS || timed_out || disconnected) {
@@ -175,7 +291,7 @@ fn writer_loop(
                 }
             }
             sequence = sequence.saturating_add(1);
-            match write_batch(&directory, &session, sequence, &bytes) {
+            match write_batch(&directory, &budget_root, &session, sequence, &bytes) {
                 Ok(true) => {}
                 _ => {
                     lost_spool.fetch_add(rows as u64, Ordering::Relaxed);
@@ -192,9 +308,16 @@ fn writer_loop(
 }
 
 #[allow(clippy::disallowed_methods)]
-fn upload_loop(directory: PathBuf, store: Store, stop: Arc<AtomicBool>) {
+fn upload_loop(directory: PathBuf, spool_root: PathBuf, store: Store, stop: Arc<AtomicBool>) {
     let mut stopping = None::<Instant>;
+    let mut last_sweep = Instant::now();
     loop {
+        if last_sweep.elapsed() >= Duration::from_secs(60) {
+            if let Err(error) = expire_spool_root(&spool_root) {
+                eprintln!("observatory spool expiry failed: {error}");
+            }
+            last_sweep = Instant::now();
+        }
         let mut files = fs::read_dir(&directory)
             .ok()
             .into_iter()
@@ -248,7 +371,9 @@ fn directory_empty(directory: &Path) -> bool {
         })
 }
 
+#[allow(clippy::disallowed_methods)]
 pub fn export_spool(directory: &Path, store: &Store) -> crate::store::Result<usize> {
+    expire_directory(directory, SystemTime::now())?;
     let mut files = fs::read_dir(directory)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
@@ -273,7 +398,6 @@ pub fn export_spool(directory: &Path, store: &Store) -> crate::store::Result<usi
 
 pub struct Producer {
     identity: RunIdentity,
-    started_unix_ms: u64,
     next_id: Arc<AtomicU64>,
     sender: Option<SyncSender<Event>>,
     lost_queue: Arc<AtomicU64>,
@@ -295,6 +419,7 @@ impl Producer {
         spool_root: &Path,
         store: Store,
     ) -> crate::store::Result<Self> {
+        expire_spool_root(spool_root)?;
         let directory = spool_root.join(&identity.run_id).join(&identity.session_id);
         fs::create_dir_all(&directory)?;
         fs::write(
@@ -309,6 +434,7 @@ impl Producer {
         let started_unix_ms = unix_millis();
         let writer = {
             let directory = directory.clone();
+            let budget_root = spool_root.to_path_buf();
             let session = identity.session_id.clone();
             let next_id = Arc::clone(&next_id);
             let lost_queue = Arc::clone(&lost_queue);
@@ -318,6 +444,7 @@ impl Producer {
                 writer_loop(
                     receiver,
                     directory,
+                    budget_root,
                     session,
                     lost_queue,
                     lost_spool,
@@ -329,11 +456,11 @@ impl Producer {
         };
         let uploader = {
             let stop = Arc::clone(&stop);
-            thread::spawn(move || upload_loop(directory, store, stop))
+            let spool_root = spool_root.to_path_buf();
+            thread::spawn(move || upload_loop(directory, spool_root, store, stop))
         };
         let mut producer = Self {
             identity,
-            started_unix_ms,
             next_id,
             sender: Some(sender),
             lost_queue,
@@ -354,9 +481,6 @@ impl Producer {
     }
 
     fn emit(&mut self, mut event: Event) {
-        event.run_id = self.identity.run_id.clone();
-        event.session_id = self.identity.session_id.clone();
-        event.started_unix_ms = self.started_unix_ms;
         event.event_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Some(sender) = &self.sender {
             match sender.try_send(event) {
@@ -583,5 +707,121 @@ impl CampaignObserver<MetroidGame> for Producer {
                 self.emit(detail);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn expired_batch_becomes_durable_loss_marker() {
+        let root = std::env::temp_dir().join(format!(
+            "harmony-observatory-expiry-test-{}",
+            random_id().expect("random test ID")
+        ));
+        let directory = root.join("run/session");
+        fs::create_dir_all(&directory).expect("spool directory");
+        let path = directory.join("b-session-0000000000000001.jsonl");
+        let mut first = Event::new("run_start");
+        first.run_id = "run".to_owned();
+        first.session_id = "session".to_owned();
+        first.event_id = 1;
+        first.started_unix_ms = 100;
+        let mut second = Event::new("work");
+        second.run_id = first.run_id.clone();
+        second.session_id = first.session_id.clone();
+        second.event_id = 2;
+        second.started_unix_ms = 100;
+        second.event_ms = 50;
+        let bytes = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&first).expect("first row"),
+            serde_json::to_string(&second).expect("second row")
+        );
+        fs::write(&path, bytes).expect("batch");
+        let now = SystemTime::now();
+        File::options()
+            .write(true)
+            .open(&path)
+            .expect("batch handle")
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(now - SPOOL_MAX_AGE - Duration::from_secs(1)),
+            )
+            .expect("age batch");
+        assert_eq!(expire_spool_root(&root).expect("expire spool"), 2);
+        let marker: Event =
+            serde_json::from_slice(&fs::read(&path).expect("replacement")).expect("loss event");
+        assert_eq!(marker.kind, "loss");
+        assert_eq!(marker.payload, "spool_age_expired");
+        assert_eq!(marker.amount, 2);
+        assert_eq!(marker.event_id, 2);
+        assert_eq!(marker.run_id, "run");
+        assert_eq!(
+            fs::read_to_string(directory.join("loss-count")).expect("loss count"),
+            "2"
+        );
+        assert_eq!(expire_spool_root(&root).expect("repeat sweep"), 0);
+        assert_eq!(
+            fs::read_to_string(directory.join("loss-count")).expect("loss count"),
+            "2"
+        );
+        fs::remove_dir_all(root).expect("clean test spool");
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn malformed_expired_batch_is_preserved() {
+        let root = std::env::temp_dir().join(format!(
+            "harmony-observatory-malformed-test-{}",
+            random_id().expect("random test ID")
+        ));
+        fs::create_dir_all(&root).expect("spool directory");
+        let path = root.join("b-session-0000000000000001.jsonl");
+        fs::write(&path, b"malformed\n").expect("batch");
+        let now = SystemTime::now();
+        File::options()
+            .write(true)
+            .open(&path)
+            .expect("batch handle")
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(now - SPOOL_MAX_AGE - Duration::from_secs(1)),
+            )
+            .expect("age batch");
+        assert!(expire_spool_root(&root).is_err());
+        assert_eq!(fs::read(&path).expect("preserved batch"), b"malformed\n");
+        fs::remove_dir_all(root).expect("clean test spool");
+    }
+
+    #[test]
+    fn spool_budget_counts_prior_run_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "harmony-observatory-spool-test-{}",
+            random_id().expect("random test ID")
+        ));
+        fs::create_dir_all(root.join("first/session")).expect("first session");
+        fs::create_dir_all(root.join("second/session")).expect("second session");
+        fs::write(root.join("first/session/a.jsonl"), b"abc").expect("first batch");
+        fs::write(root.join("second/session/b.jsonl"), b"defg").expect("second batch");
+        assert_eq!(spool_bytes(&root), 7);
+        let budget_marker = root.join("first/session/budget");
+        File::create(&budget_marker)
+            .expect("budget marker")
+            .set_len(SPOOL_BYTES)
+            .expect("sparse budget marker");
+        assert!(
+            !write_batch(
+                &root.join("second/session"),
+                &root,
+                "second",
+                1,
+                b"next event"
+            )
+            .expect("bounded batch")
+        );
+        fs::remove_dir_all(root).expect("clean test spool");
     }
 }

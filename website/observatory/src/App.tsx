@@ -8,7 +8,7 @@ type Status = {
   status: string; telemetry: { latest_ms: number; selections: number; skipped: number; admissions: number; execution_work: number };
   finalized_through_ms: number; completeness: Completeness;
 };
-type MapData = { cells: Cell[]; unit: string; completeness: Completeness };
+type MapData = { cells: Cell[]; unit: string; provisional: boolean; completeness: Completeness };
 type Timeline = { points: Array<{ bucket_ms: number; selections: number; new_places: number }>; resolution_ms: number };
 type Observation = { event_ms: number; event_id: number; admission_sequence: number; area: number; map_x: number; map_y: number; health: number; missiles: number; equipment: number; outcome: string };
 type ObservationResult = { matching_sampled_observations: number; examples: Observation[]; next: string | null; interpretation: string; completeness: Completeness };
@@ -61,9 +61,8 @@ export default function App() {
   const [windowMs, setWindowMs] = useState(30000);
   const [cursorMs, setCursorMs] = useState(1);
   const [follow, setFollow] = useState(true);
-  const [map, setMap] = useState<MapData | null>(null);
-  const [territory, setTerritory] = useState<MapData | null>(null);
-  const [timeline, setTimeline] = useState<Timeline | null>(null);
+  const [mapResult, setMapResult] = useState<{ scope: string; values: MapData; footprint: MapData } | null>(null);
+  const [timelineResult, setTimelineResult] = useState<{ runId: string; data: Timeline } | null>(null);
   const [selected, setSelected] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
@@ -83,6 +82,10 @@ export default function App() {
   const finalized = at <= n(status?.finalized_through_ms);
   const currentScope = JSON.stringify([runId, from, at, filters]);
   const currentObservations = queriedScope === currentScope ? observations : null;
+  const viewScope = JSON.stringify([runId, metric, area, from, at]);
+  const map = mapResult?.scope === viewScope ? mapResult.values : null;
+  const territory = mapResult?.scope === viewScope ? mapResult.footprint : null;
+  const timeline = timelineResult?.runId === runId ? timelineResult.data : null;
 
   useEffect(() => {
     let alive = true;
@@ -100,16 +103,15 @@ export default function App() {
   useEffect(() => {
     if (!runId) return;
     let alive = true;
-    setStatus(null); setMap(null); setTerritory(null); setSelected(null); setObservations(null); setQueriedScope(""); queryAbort.current?.abort(); cache.current.clear();
+    setStatus(null); setMapResult(null); setTimelineResult(null); setMapBusy(false); setSelected(null); setObservations(null); setQueriedScope(""); queryAbort.current?.abort(); cache.current.clear();
     const load = () => read<Status>("/api/v1/runs/" + runId + "/status").then(value => {
       if (!alive) return;
       setStatus(value); setError("");
-      if (follow) setCursorMs(n(value.telemetry.latest_ms) + 1);
     }).catch(value => { if (alive) setError(String(value)); });
     void load();
     const timer = window.setInterval(load, 2000);
     return () => { alive = false; window.clearInterval(timer); };
-  }, [runId, follow]);
+  }, [runId]);
 
   useEffect(() => {
     if (!runId || !status) return;
@@ -119,13 +121,15 @@ export default function App() {
     const bucket = Math.max(1000, Math.ceil((to - start) / 180 / 1000) * 1000);
     const params = new URLSearchParams({ from_ms: String(start), to_ms: String(to), bucket_ms: String(bucket) });
     read<Timeline>("/api/v1/runs/" + runId + "/timeline?" + params, abort.signal)
-      .then(setTimeline).catch(value => { if (value.name !== "AbortError") setError(String(value)); });
+      .then(value => { if (!abort.signal.aborted) setTimelineResult({ runId, data: value }); })
+      .catch(value => { if (value.name !== "AbortError") setError(String(value)); });
     return () => abort.abort();
   }, [runId, latest]);
 
   useEffect(() => {
     if (!runId || !status) return;
     const abort = new AbortController();
+    const scope = JSON.stringify([runId, metric, area, from, at]);
     const timer = window.setTimeout(async () => {
       setMapBusy(true);
       const load = async (wanted: Metric) => {
@@ -134,13 +138,15 @@ export default function App() {
         if (cached) return cached;
         const params = new URLSearchParams({ metric: wanted, area: String(area), from_ms: String(from), to_ms: String(at) });
         const result = await read<MapData>("/api/v1/runs/" + runId + "/map?" + params, abort.signal);
-        cache.current.set(id, result);
-        while (cache.current.size > 24) cache.current.delete(cache.current.keys().next().value!);
+        if (!result.provisional) {
+          cache.current.set(id, result);
+          while (cache.current.size > 24) cache.current.delete(cache.current.keys().next().value!);
+        }
         return result;
       };
       try {
         const [values, footprint] = await Promise.all([load(metric), load("territory")]);
-        if (!abort.signal.aborted) { setMap(values); setTerritory(footprint); setError(""); }
+        if (!abort.signal.aborted) { setMapResult({ scope, values, footprint }); setError(""); }
       } catch (value) {
         if (!abort.signal.aborted) setError(String(value));
       } finally {

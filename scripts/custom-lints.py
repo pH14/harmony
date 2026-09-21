@@ -1399,6 +1399,7 @@ DOCS_ALLOWLIST = {
     "docs/EXPLORATION.md",
     "docs/HARDWARE-TESTING.md",
     "docs/PROTOCOL.md",
+    "docs/SEARCH-OBSERVATORY-PLAN.md",
     "docs/TESTING.md",
     "docs/WORKFLOWS.md",
 }
@@ -1446,6 +1447,7 @@ TOPLEVEL_DIR_ALLOWLIST = {
     "docs",
     "scripts",
     "workloads",
+    "website",
 }
 
 

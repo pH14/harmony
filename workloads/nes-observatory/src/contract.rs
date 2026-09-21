@@ -7,7 +7,7 @@ pub const QUEUE_EVENTS: usize = 8192;
 pub const BATCH_EVENTS: usize = 1024;
 pub const BATCH_BYTES: usize = 1_048_576;
 pub const SPOOL_BYTES: u64 = 536_870_912;
-pub const MAX_DETAIL_PER_ADMISSION: usize = 32;
+pub const MAX_DETAIL_PER_ADMISSION: usize = 4;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Event {

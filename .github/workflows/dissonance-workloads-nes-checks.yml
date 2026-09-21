@@ -80,7 +80,7 @@ jobs:
           HARMONY_CLICKHOUSE_URL: http://127.0.0.1:8123
           HARMONY_CLICKHOUSE_USER: observatory
           HARMONY_CLICKHOUSE_PASSWORD: ci-observatory
-        run: cargo test --locked --manifest-path workloads/nes-observatory/Cargo.toml --test clickhouse -- --ignored
+        run: cargo test --locked --manifest-path workloads/nes-observatory/Cargo.toml --test clickhouse -- --ignored --test-threads=1
       - uses: actions/setup-node@v4
         if: steps.scope.outputs.enabled == true
         with:

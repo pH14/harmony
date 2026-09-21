@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    contract::SCHEMA_VERSION,
+    contract::{MAX_DETAIL_PER_ADMISSION, SCHEMA_VERSION},
     store::{Result, Store},
 };
 
@@ -129,6 +129,9 @@ pub fn runs(store: &Store) -> Result<Value> {
 
 pub fn status(store: &Store, run_id: &str) -> Result<Value> {
     let run_id = run(run_id)?;
+    if let Some(cached) = store.cached_status(run_id) {
+        return Ok(cached);
+    }
     let result = store.query(&format!(
         "SELECT min(started_unix_ms) AS started_unix_ms, max(event_ms) AS latest_ms, \
          count() AS retained_events, countIf(kind='run_start') AS started, countIf(kind='run_end') AS ended, \
@@ -190,7 +193,7 @@ pub fn status(store: &Store, run_id: &str) -> Result<Value> {
     if let Some(fields) = telemetry.as_object_mut() {
         fields.remove("identity");
     }
-    Ok(json!({
+    let output = json!({
         "schema_version":SCHEMA_VERSION,
         "run_id":run_id,
         "identity":identity,
@@ -205,7 +208,9 @@ pub fn status(store: &Store, run_id: &str) -> Result<Value> {
             "qualification":"All spatial totals are exact for received events. Missing events or an unended run make them incomplete."
         },
         "cost":statistics(&result)
-    }))
+    });
+    store.cache_status(run_id, &output);
+    Ok(output)
 }
 
 fn territory(
@@ -214,11 +219,26 @@ fn territory(
     to_ms: u64,
     area: Option<u8>,
 ) -> Result<(Value, Value, Option<u64>)> {
-    let checkpoint = store.query(&format!(
+    let recent_from = to_ms.saturating_sub(60_000);
+    let recent = store.query(&format!(
         "SELECT event_ms,payload FROM observatory.events FINAL \
-         WHERE run_id='{run_id}' AND kind='territory_checkpoint' AND event_ms < {to_ms} \
+         WHERE run_id='{run_id}' AND kind='territory_checkpoint' \
+         AND event_ms >= {recent_from} AND event_ms < {to_ms} \
          ORDER BY event_ms DESC,event_id DESC LIMIT 1"
     ))?;
+    let checkpoint = if recent
+        .get("data")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| !rows.is_empty())
+    {
+        recent
+    } else {
+        store.query(&format!(
+            "SELECT event_ms,payload FROM observatory.events FINAL \
+             WHERE run_id='{run_id}' AND kind='territory_checkpoint' AND event_ms < {to_ms} \
+             ORDER BY event_ms DESC,event_id DESC LIMIT 1"
+        ))?
+    };
     let row = checkpoint
         .get("data")
         .and_then(Value::as_array)
@@ -478,7 +498,7 @@ pub fn observations(store: &Store, run_id: &str, filter: &ObservationFilter) -> 
         "schema_version":SCHEMA_VERSION,
         "run_id":run_id,
         "window":{"from_ms":filter.from_ms,"to_ms":filter.to_ms,"boundary":"[from,to)"},
-        "sample_limit_per_admission":32,
+        "sample_limit_per_admission":MAX_DETAIL_PER_ADMISSION,
         "interpretation":"Matches are sampled action observations from one state each. No match does not prove no such state occurred.",
         "matching_sampled_observations":count,
         "examples":rows,
