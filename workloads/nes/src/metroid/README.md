@@ -67,13 +67,17 @@ declaration order no longer ranks anything: two places with equal items and
 equal boss damage are peers whatever their area byte, map row or column.
 
 Boss damage is how far a lineage has worn down the mini boss sharing its room.
-In Tourian the coordinate reads Mother Brain's remaining hits: 32 minus her
-hit count at `$99`, the count she dies at, or zero once her status byte at
-`$98` has passed into her death sequence. Her status byte clears whenever Samus
-is in the other half of her room and her hit count persists, so the count
-falls as missiles land on her and never rises. It counts four per hit, the
-damage one missile does to Kraid or Ridley, so one missile is one boss-damage
-bucket in every boss room. The Zebetite columns are part of the cell instead:
+In Tourian the coordinate reads Mother Brain's remaining hits while her
+status byte at `$98` says she is in view (1 idle, 2 hit): 32 minus her hit
+count at `$99`, the count she dies at. The status byte clears whenever Samus
+is in the other half of her room and once her death sequence starts, and the
+reading is absent then; her hit count persists, so the reading falls as
+missiles land on her and never rises. It counts four per hit, the damage one
+missile does to Kraid or Ridley, so one missile is one boss-damage bucket in
+every boss room. Her full health is the reading's ceiling: an execution's
+highest present reading is at least her full health whenever she is in view,
+so a lineage that leaves her room and returns ranks by her hit count again.
+The Zebetite columns are part of the cell instead:
 the key carries the hits still needed on every live column slot, so a state
 that has hit a column is a different place from one that has not, and a
 column healing or respawning moves the state to another place without ranking
@@ -93,8 +97,8 @@ of four. A reading of nothing keeps the parent's damage, because a hit flashes
 the slot empty for a few frames. A lineage that leaves the boss's room, reading
 nothing in a different map cell, starts from zero, because the boss regains
 full health when the room is re-entered; while the reading stays present the
-highest carries across map cells, so Tourian's one count, present from the
-elevator to her tank, ranks every screen of her room on the same ladder. Without the coordinate a state that has landed ten hits on
+highest carries across map cells, so Mother Brain's reading ranks both
+screens of her room on the same ladder. Without the coordinate a state that has landed ten hits on
 Kraid shares a cell with one standing in the doorway, and no ordering can
 prefer the first.
 
@@ -224,8 +228,8 @@ stores 1 at $687B for Kraid and 2 at $687C for Ridley. The previous decoder
 incorrectly tested bit 0 for both bosses. Correcting the count is versioned as
 key policy v8; named boss observation bytes require stream/checkpoint/result
 digest v4 (v2 introduced named Kraid/Ridley flags; v3 added Mother Brain state;
-v4 latches transient Tourian events). Key policy v19 reads Mother Brain's remaining hits alone into Tourian's
-boss health at four per hit, keeps the live Zebetite columns' remaining hits in the cell, carries a lineage's highest reading across map cells while a reading is present, and named-progress v3 adds the destroyed
+v4 latches transient Tourian events). Key policy v20 reads Mother Brain's remaining hits into Tourian's
+boss health at four per hit while her status byte says she is in view, with her full health as the ceiling of the highest present reading, keeps the live Zebetite columns' remaining hits in the cell, carries a lineage's highest reading across map cells while a reading is present, and named-progress v3 adds the destroyed
 column and binds Mother Brain's room to her status byte. Named-progress v2 and replay-probe v2 also
 correct origin/retrospective route timestamps to exclude genesis setup; the probe
 reports action execution work and setup separately; probes and backend snapshot

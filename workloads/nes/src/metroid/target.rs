@@ -118,7 +118,8 @@ const ZEBETITE_HITS_TO_KILL: u8 = 8;
 const ZEBETITE_ALIVE: u8 = 1;
 const ZEBETITE_DESTROYED: u8 = 2;
 const TOURIAN_HEALTH_PER_HIT: u16 = 4;
-const MOTHER_BRAIN_DEFEATED_STATUSES: [u8; 7] = [3, 4, 5, 6, 7, 9, 10];
+const MOTHER_BRAIN_IN_VIEW_STATUSES: [u8; 2] = [1, 2];
+const MOTHER_BRAIN_FULL_HEALTH: u16 = MOTHER_BRAIN_HITS_TO_KILL as u16 * TOURIAN_HEALTH_PER_HIT;
 const AREA_TOURIAN: u8 = 0x13;
 const ENERGY_TANKS: usize = 0x877;
 
@@ -150,6 +151,15 @@ pub struct MetroidMechanicalState {
 }
 
 impl MetroidMechanicalState {
+    #[must_use]
+    pub fn boss_health_ceiling(self) -> u16 {
+        if self.area == AREA_TOURIAN && self.boss_health > 0 {
+            MOTHER_BRAIN_FULL_HEALTH
+        } else {
+            self.boss_health
+        }
+    }
+
     #[must_use]
     pub fn items(self) -> u8 {
         u8::try_from(self.equipment.count_ones())
@@ -246,7 +256,7 @@ fn boss_health(wram: &[u8], area: u8) -> Result<u16, MachineError> {
         return mini_boss_health(wram).map(u16::from);
     }
     let status = read_byte(wram, MOTHER_BRAIN_STATUS)?;
-    if MOTHER_BRAIN_DEFEATED_STATUSES.contains(&status) {
+    if !MOTHER_BRAIN_IN_VIEW_STATUSES.contains(&status) {
         return Ok(0);
     }
     let remaining = MOTHER_BRAIN_HITS_TO_KILL.saturating_sub(read_byte(wram, MOTHER_BRAIN_HITS)?);
@@ -354,7 +364,7 @@ impl MetroidSnapshot {
             observation: MetroidObservations {
                 frame_count: 0,
                 decoded,
-                boss_health_seen: decoded.boss_health,
+                boss_health_seen: decoded.boss_health_ceiling(),
                 boss_defeats: BossDefeats::default(),
                 mother_brain_status: 0,
                 tourian_events: TourianEvents::default(),
@@ -526,7 +536,7 @@ impl MetroidTarget {
         let observation = MetroidObservations {
             frame_count: 0,
             decoded: state,
-            boss_health_seen: state.boss_health,
+            boss_health_seen: state.boss_health_ceiling(),
             boss_defeats: decode_boss_defeats(&cartridge)?,
             mother_brain_status: read_byte(&wram, 0x98)?,
             tourian_events: TourianEvents::default(),
@@ -852,7 +862,7 @@ impl Target for MetroidTarget {
             .read_wram()
             .map_err(|error| error.to_string())?;
         self.observation = snapshot.observation.clone();
-        self.observation.boss_health_seen = self.observation.decoded.boss_health;
+        self.observation.boss_health_seen = self.observation.decoded.boss_health_ceiling();
         self.observation.dead = self.terminal_policy.is_dead(self.observation.decoded);
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
@@ -876,7 +886,7 @@ fn decode_action_observations(
         let state = decode_state(wram, cartridge)?;
         let frame_count = initial.frame_count + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
         tourian_events.observe(state, wram[0x98]);
-        boss_health_seen = boss_health_seen.max(state.boss_health);
+        boss_health_seen = boss_health_seen.max(state.boss_health_ceiling());
         let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
             || policy.is_dead(state) != policy.is_dead(prior_state);
         if boundary || offset + 1 == frames.len() {
@@ -1297,16 +1307,16 @@ mod boss_status_tests {
     }
 
     #[test]
-    fn mother_brain_hits_count_until_her_status_says_she_died() {
+    fn mother_brain_hits_count_while_her_status_says_she_is_in_view() {
         let cartridge = vec![0u8; CARTRIDGE_RAM_SIZE];
         for (area, status, hits, expected) in [
-            (0x13, 0, 0, 0x80),
-            (0x13, 0, 5, 0x6c),
+            (0x13, 0, 0, 0),
+            (0x13, 0, 5, 0),
             (0x13, 1, 0, 0x80),
             (0x13, 2, 5, 0x6c),
             (0x13, 2, 0x1f, 4),
             (0x13, 3, 0x20, 0),
-            (0x13, 8, 0, 0x80),
+            (0x13, 8, 0, 0),
             (0x13, 9, 0, 0),
             (0x10, 1, 5, 0),
         ] {
@@ -1326,7 +1336,7 @@ mod boss_status_tests {
     }
 
     #[test]
-    fn tourian_boss_health_is_her_hits_and_the_live_columns_are_kept_apart() {
+    fn tourian_boss_health_is_her_hits_in_view_and_the_live_columns_are_kept_apart() {
         let cartridge = vec![0u8; CARTRIDGE_RAM_SIZE];
         let mut wram = vec![0u8; 0x800];
         wram[AREA] = 0x13;
@@ -1337,22 +1347,16 @@ mod boss_status_tests {
                 state.zebetites_destroyed,
             )
         };
-        assert_eq!(
-            columns(decode_state(&wram, &cartridge).unwrap()),
-            (128, 0, 0)
-        );
+        assert_eq!(columns(decode_state(&wram, &cartridge).unwrap()), (0, 0, 0));
         wram[ZEBETITE_SLOT_BASE] = 0x81;
         wram[ZEBETITE_SLOT_BASE + ZEBETITE_HITS] = 3;
         wram[ZEBETITE_SLOT_BASE + ZEBETITE_SLOT_STRIDE] = 1;
         assert_eq!(
             columns(decode_state(&wram, &cartridge).unwrap()),
-            (128, 13, 0)
+            (0, 13, 0)
         );
         wram[ZEBETITE_SLOT_BASE] = 2;
-        assert_eq!(
-            columns(decode_state(&wram, &cartridge).unwrap()),
-            (128, 8, 1)
-        );
+        assert_eq!(columns(decode_state(&wram, &cartridge).unwrap()), (0, 8, 1));
         wram[MOTHER_BRAIN_STATUS] = 1;
         wram[MOTHER_BRAIN_HITS] = 5;
         assert_eq!(
@@ -1360,12 +1364,13 @@ mod boss_status_tests {
             (108, 8, 1)
         );
         wram[MOTHER_BRAIN_STATUS] = 0;
-        assert_eq!(
-            columns(decode_state(&wram, &cartridge).unwrap()),
-            (108, 8, 1)
-        );
-        wram[MOTHER_BRAIN_STATUS] = 4;
         assert_eq!(columns(decode_state(&wram, &cartridge).unwrap()), (0, 8, 1));
+        wram[MOTHER_BRAIN_STATUS] = 2;
+        let state = decode_state(&wram, &cartridge).unwrap();
+        assert_eq!((state.boss_health, state.boss_health_ceiling()), (108, 128));
+        wram[MOTHER_BRAIN_STATUS] = 4;
+        let state = decode_state(&wram, &cartridge).unwrap();
+        assert_eq!((state.boss_health, state.boss_health_ceiling()), (0, 0));
         wram[AREA] = 0x10;
         assert_eq!(columns(decode_state(&wram, &cartridge).unwrap()), (0, 0, 0));
     }
