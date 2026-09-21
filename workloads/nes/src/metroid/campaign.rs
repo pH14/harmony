@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::cmp::Reverse;
 use std::{
     collections::BTreeMap,
     error::Error,
@@ -216,6 +217,7 @@ pub struct MetroidCampaignEvidence {
     genesis_area: Option<u8>,
     best_energy: BTreeMap<&'static str, (u16, u8)>,
     best_missiles: BTreeMap<&'static str, (u8, u16)>,
+    best_boss: BTreeMap<&'static str, (Reverse<u16>, u8, u16)>,
 }
 
 #[derive(Clone)]
@@ -922,6 +924,17 @@ impl Evaluation for MetroidGame {
                     evidence.best_missiles.insert(name, by_missiles);
                     improved.push((name, "missiles"));
                 }
+                if state.boss_health > 0 {
+                    let by_boss = (Reverse(state.boss_health), state.missiles, state.health);
+                    if evidence
+                        .best_boss
+                        .get(name)
+                        .is_none_or(|best| by_boss > *best)
+                    {
+                        evidence.best_boss.insert(name, by_boss);
+                        improved.push((name, "boss"));
+                    }
+                }
             }
         }
         if first_input_needed
@@ -1126,6 +1139,22 @@ mod tests {
         assert_eq!(read("ridley_area.json").actions.len(), 1);
         assert_eq!(read("ridley_area-energy.json").actions.len(), 2);
         assert_eq!(read("ridley_area-missiles.json").actions.len(), 3);
+        assert!(!directory.join("ridley_area-boss.json").is_file());
+        wram[0x40b] = 40;
+        wram[0x40f] = 0x40;
+        let (fighting, fighting_input) = action_with(observe(&wram, &cartridge), 4);
+        assert_eq!(fighting.observations[0].decoded.boss_health, 40);
+        game.merge_action_evidence(&mut evidence, &fighting, 5, || Ok(fighting_input.clone()))
+            .unwrap();
+        wram[0x40b] = 20;
+        let (hurting, hurting_input) = action_with(observe(&wram, &cartridge), 5);
+        game.merge_action_evidence(&mut evidence, &hurting, 6, || Ok(hurting_input.clone()))
+            .unwrap();
+        game.merge_action_evidence(&mut evidence, &fighting, 7, || {
+            panic!("a boss with more health left must not reconstruct")
+        })
+        .unwrap();
+        assert_eq!(read("ridley_area-boss.json").actions.len(), 5);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

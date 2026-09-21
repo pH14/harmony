@@ -197,10 +197,13 @@ champion ordering, or continuation scheduling.
 The common runner saves each first-discovery input under `milestone-inputs/`
 and replays it on two independent targets, checking both the named milestone
 and the deterministic endpoint. Beside each first discovery the campaign keeps
-two more tapes per milestone, `NAME-energy.json` and `NAME-missiles.json`: the
-living action endpoint that satisfied the milestone with the most health
-(missiles breaking ties) and the one with the most missiles (health breaking
-ties), rewritten whenever a later endpoint strictly beats the held one. A first
+three more tapes per milestone, `NAME-energy.json`, `NAME-missiles.json` and
+`NAME-boss.json`: the living action endpoint that satisfied the milestone with
+the most health (missiles breaking ties), the one with the most missiles
+(health breaking ties), and the one that left the boss in view the least
+health (missiles then health breaking ties; written only while a boss reading
+is present), each rewritten whenever a later endpoint strictly beats the held
+one. A first
 arrival is usually drained, so a search rooted at it starts short of what the
 archive already holds at that place; these tapes make the best-stocked arrival
 available as a root. They are not verified by the runner. Its main champion/victory witness separately

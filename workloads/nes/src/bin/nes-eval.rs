@@ -311,7 +311,10 @@ where
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .ok_or("invalid milestone name")?;
-            if replay["diagnostics"]["named_progress"]["first_seen"][name].is_null() {
+            let milestone = name
+                .split_once('-')
+                .map_or(name, |(milestone, _)| milestone);
+            if replay["diagnostics"]["named_progress"]["first_seen"][milestone].is_null() {
                 return Err(format!("milestone witness did not reproduce {name}").into());
             }
             milestone_witnesses.insert(
