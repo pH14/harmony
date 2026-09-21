@@ -69,8 +69,16 @@ equal boss damage are peers whatever their area byte, map row or column.
 Boss damage is how far a lineage has worn down the mini boss sharing its room.
 In Tourian the same coordinate reads Mother Brain: while her status byte at
 `$98` says she is in the room or has just been hit, boss health is 32 minus
-her hit count at `$99`, the count she dies at; outside Tourian and in her
-other states the mini-boss reading applies.
+her hit count at `$99`, the count she dies at. Before she appears it reads
+the Zebetite columns that stand between the last door and her tank: the game
+keeps five Zebetite slots at `$0758`, eight bytes apart, with the slot's
+status at offset 0 (low nibble 1 alive, 2 destroyed) and its missile hit
+count at offset 3, and a column dies at eight hits while healing one hit
+every 64 frames it is not hit. Boss health is the hits still needed over the
+live columns, so a lineage that fires into a column keeps its progress in the
+key instead of losing the slot to an arrival that saved its missiles. When no
+column is loaded the mini-boss reading applies. The state also counts the
+destroyed columns for the `zebetite_destroyed` milestone.
 The game keeps six enemy slots at `$0400`, sixteen bytes apart, with the current
 hit points at offset `$0b` and a mini-boss mark in bit 6 of offset `$0f`; `$ff`
 hit points mean the slot holds nothing that can be hurt. The key carries the
@@ -157,9 +165,10 @@ say which neighbour of a reached cell was never opened.
 `workload_diagnostics.named_progress` reports Morph Ball, Bombs, Long Beam,
 High Jump, Screw Attack, Varia Suit, Wave Beam, and Ice Beam independently;
 Brinstar, Norfair, Kraid's area, Ridley's area, and Tourian independently;
-the Kraid door cell, the Kraid, Ridley and Mother Brain rooms (a boss health
-reading above zero in the boss's area), and Tourian's row-7 corridor at
-columns 5 and 8, its bottom row (row 11 or below) and that row at columns
+the Kraid door cell, the Kraid and Ridley rooms (a boss health reading above
+zero in the boss's area), Mother Brain's room (her status byte reading in
+the room or hit), a destroyed Zebetite column, and Tourian's row-7 corridor
+at columns 5 and 8, its bottom row (row 11 or below) and that row at columns
 8 and 4 or before as route markers; and
 Kraid defeated, Ridley defeated, Mother Brain defeated, escape started, and
 the ending independently. Mother Brain initialization is not defeat; its $98
@@ -206,7 +215,9 @@ stores 1 at $687B for Kraid and 2 at $687C for Ridley. The previous decoder
 incorrectly tested bit 0 for both bosses. Correcting the count is versioned as
 key policy v8; named boss observation bytes require stream/checkpoint/result
 digest v4 (v2 introduced named Kraid/Ridley flags; v3 added Mother Brain state;
-v4 latches transient Tourian events). Named-progress v2 and replay-probe v2 also
+v4 latches transient Tourian events). Key policy v15 reads the Zebetite
+columns into Tourian's boss health and named-progress v3 adds the destroyed
+column and binds Mother Brain's room to her status byte. Named-progress v2 and replay-probe v2 also
 correct origin/retrospective route timestamps to exclude genesis setup; the probe
 reports action execution work and setup separately; probes and backend snapshot
 replay are outside the execution-work counter. Earlier v1 timestamps in the 007

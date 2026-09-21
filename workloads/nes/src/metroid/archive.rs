@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_v14";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_zebetite_hits_v15";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -524,12 +524,14 @@ mod tests {
         let arriving = archive_key(MetroidMechanicalState {
             equipment: 0b1,
             boss_health: 64,
+            zebetites_destroyed: 0,
             ..MetroidMechanicalState::default()
         })
         .complete(Some((MetroidArchiveKey::default(), &lineage)));
         let hurt = archive_key(MetroidMechanicalState {
             equipment: 0b1,
             boss_health: 24,
+            zebetites_destroyed: 0,
             ..MetroidMechanicalState::default()
         })
         .complete(Some((MetroidArchiveKey::default(), &lineage)));
@@ -581,12 +583,14 @@ mod tests {
         let mut lineage = MetroidLineage::default();
         let arriving = archive_key(MetroidMechanicalState {
             boss_health: 64,
+            zebetites_destroyed: 0,
             ..MetroidMechanicalState::default()
         });
         MetroidArchiveKey::record(&mut lineage, arriving);
         assert_eq!(lineage.boss_health_highest, 64);
         let hurt = archive_key(MetroidMechanicalState {
             boss_health: 10,
+            zebetites_destroyed: 0,
             ..MetroidMechanicalState::default()
         });
         MetroidArchiveKey::record(&mut lineage, hurt);
@@ -602,6 +606,7 @@ mod tests {
         let mut lineage = MetroidLineage::default();
         let first_retained = archive_key(MetroidMechanicalState {
             boss_health: 48,
+            zebetites_destroyed: 0,
             ..MetroidMechanicalState::default()
         })
         .with_boss_health_seen(96)
@@ -611,6 +616,7 @@ mod tests {
         assert_eq!(lineage.boss_health_highest, 96);
         let later = archive_key(MetroidMechanicalState {
             boss_health: 40,
+            zebetites_destroyed: 0,
             ..MetroidMechanicalState::default()
         })
         .with_boss_health_seen(48)
@@ -619,6 +625,7 @@ mod tests {
         assert_eq!(
             archive_key(MetroidMechanicalState {
                 boss_health: 64,
+                zebetites_destroyed: 0,
                 ..MetroidMechanicalState::default()
             })
             .with_boss_health_seen(10)
@@ -635,12 +642,14 @@ mod tests {
             map_x: 8,
             map_y: 29,
             boss_health: 96,
+            zebetites_destroyed: 0,
             ..MetroidMechanicalState::default()
         };
         let arriving = archive_key(room).complete(None);
         MetroidArchiveKey::record(&mut lineage, arriving);
         let hurt = archive_key(MetroidMechanicalState {
             boss_health: 48,
+            zebetites_destroyed: 0,
             ..room
         })
         .complete(Some((arriving, &lineage)));
@@ -649,6 +658,7 @@ mod tests {
         let outside = archive_key(MetroidMechanicalState {
             map_x: 9,
             boss_health: 0,
+            zebetites_destroyed: 0,
             ..room
         })
         .complete(Some((hurt, &lineage)));
@@ -657,6 +667,7 @@ mod tests {
         assert_eq!(lineage.boss_health_highest, 0);
         let back = archive_key(MetroidMechanicalState {
             boss_health: 96,
+            zebetites_destroyed: 0,
             ..room
         })
         .complete(Some((outside, &lineage)));
@@ -664,12 +675,14 @@ mod tests {
         MetroidArchiveKey::record(&mut lineage, back);
         let hurt_again = archive_key(MetroidMechanicalState {
             boss_health: 80,
+            zebetites_destroyed: 0,
             ..room
         })
         .complete(Some((back, &lineage)));
         assert_eq!(hurt_again.boss_damage, 4);
         let stayed = archive_key(MetroidMechanicalState {
             boss_health: 0,
+            zebetites_destroyed: 0,
             ..room
         })
         .complete(Some((hurt, &lineage)));

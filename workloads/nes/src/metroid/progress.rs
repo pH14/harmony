@@ -67,7 +67,7 @@ pub struct NamedProgress {
 impl Default for NamedProgress {
     fn default() -> Self {
         Self {
-            format: "metroid-named-progress-v2",
+            format: "metroid-named-progress-v3",
             first_seen: GEAR
                 .iter()
                 .map(|(_, name)| *name)
@@ -85,6 +85,7 @@ impl Default for NamedProgress {
                     "tourian_bottom",
                     "tourian_approach",
                     "tourian_end",
+                    "zebetite_destroyed",
                     "mother_brain_room",
                     "mother_brain_defeated",
                     "escape_started",
@@ -156,9 +157,16 @@ impl NamedProgress {
         if state.boss_health > 0 {
             match state.area {
                 0x12 => note("kraid_room"),
-                0x13 => note("mother_brain_room"),
                 0x14 => note("ridley_room"),
                 _ => {}
+            }
+        }
+        if state.area == 0x13 {
+            if state.zebetites_destroyed > 0 {
+                note("zebetite_destroyed");
+            }
+            if matches!(observation.mother_brain_status, 1 | 2) {
+                note("mother_brain_room");
             }
         }
         if state.area == 0x13 && state.map_y == 7 {
@@ -307,7 +315,15 @@ mod tests {
         observation.decoded.boss_health = 32;
         progress.observe(&observation, 3, 30);
         assert!(progress.first_seen["tourian_far"].is_some());
+        assert!(progress.first_seen["mother_brain_room"].is_none());
+        assert!(progress.first_seen["zebetite_destroyed"].is_none());
+        observation.decoded.zebetites_destroyed = 1;
+        observation.mother_brain_status = 1;
+        progress.observe(&observation, 3, 31);
+        assert!(progress.first_seen["zebetite_destroyed"].is_some());
         assert!(progress.first_seen["mother_brain_room"].is_some());
+        observation.decoded.zebetites_destroyed = 0;
+        observation.mother_brain_status = 0;
         assert!(progress.first_seen["mother_brain_defeated"].is_none());
         assert!(progress.first_seen["tourian_bottom"].is_none());
         observation.decoded.map_x = 10;
