@@ -1020,7 +1020,10 @@ fn verify_selector_annotation(draw: &SelectorDraw) -> Result<(), Box<dyn Error>>
             Err("cell draw is missing its concentration record".into())
         }
         (
-            SelectorPath::Uniform | SelectorPath::Continuation | SelectorPath::ProgressFocus,
+            SelectorPath::Uniform
+            | SelectorPath::Continuation
+            | SelectorPath::ProgressFocus
+            | SelectorPath::DiscoveryFocus,
             Some(_),
         ) => Err("non-cell draw carries a concentration record".into()),
         _ => Ok(()),

@@ -426,3 +426,24 @@ The opt-in `energy_frontier_cheapest_progress_focus_v1` selector mixes the exist
 Follow-up attempts bypass ordinary retirement only within this bounded allowance. Workload keys supply the existing progress comparison; the scheduler contains no game, room, weapon, or encounter rules. Retention and action generation do not change.
 
 Warm import reconstructs the queue from admitted parent-child progress comparisons. Consumed follow-up tickets are not persisted, so warm import starts a new allocation phase and may revisit older improvements, including rerooted imported entries. The mechanism is experimental. Selected-root combat gains do not establish full-campaign improvement or game completion; validate both before changing a workload default.
+
+### Experimental discovery follow-up
+
+`hierarchy_uniform_128_energy_frontier_cheapest_discovery_focus_v1` uses the
+same retirement thresholds and bounded follow-up queue as progress focus, but
+also admits the first child opening a previously unseen group at either of
+the two coarsest pooled depths. For a hierarchy with fewer than two pooled
+depths it uses the available pooled depth; fine slot discoveries alone do
+not qualify. Progress increases still qualify. The root does not receive a
+ticket. The queue holds at most 128 stable entry IDs, grants 128 attempts per
+admission, and receives half of draws while eligible tickets remain. It uses
+existing active/restorable and action-limit checks and preserves ordinary
+selection for the other draws. Discovery draws have their own stream path
+and accounting counter.
+
+This is an opt-in allocation experiment, with no workload-specific area order
+or action guidance. It tests whether coarse discoveries receive enough
+follow-up to extend traversal when a workload's progress comparator only
+recognizes sparse achievements. Imported histories reconstruct tickets from
+admission order; spent tickets are not persisted. New groups need not be
+useful, so end-to-end improvement requires a matched campaign comparison.

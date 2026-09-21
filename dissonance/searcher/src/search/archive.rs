@@ -186,6 +186,7 @@ pub enum SelectorPolicy {
     EnergyFrontierCheapestCount(RetireThresholds),
     EnergyFrontierCheapestKeyCount(RetireThresholds),
     EnergyFrontierCheapestProgressFocus(RetireThresholds),
+    EnergyFrontierCheapestDiscoveryFocus(RetireThresholds),
 }
 
 #[must_use]
@@ -198,6 +199,10 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
                 threshold_values(thresholds)
             )
         }
+        SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_discovery_focus_v1:{}",
+            threshold_values(scales)
+        ),
         SelectorPolicy::EnergyFrontierCheapestProgressFocus(scales) => format!(
             "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_progress_focus_v1:{}",
             threshold_values(scales)
@@ -234,6 +239,8 @@ pub fn selector_policy_from_identifier(
     if identifier == SELECTOR_IDENTIFIER {
         return Ok(SelectorPolicy::GroupUniform);
     }
+    let discovery_focus_prefix =
+        format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_discovery_focus_v1:");
     let progress_focus_prefix =
         format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_progress_focus_v1:");
     let retire_prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
@@ -246,8 +253,12 @@ pub fn selector_policy_from_identifier(
         EnergyFrontierCheapestCount,
         EnergyFrontierCheapestKeyCount,
         EnergyFrontierCheapestProgressFocus,
+        EnergyFrontierCheapestDiscoveryFocus,
     }
-    let (values, selector) = if let Some(values) = identifier.strip_prefix(&progress_focus_prefix) {
+    let (values, selector) = if let Some(values) = identifier.strip_prefix(&discovery_focus_prefix)
+    {
+        (values, Parsed::EnergyFrontierCheapestDiscoveryFocus)
+    } else if let Some(values) = identifier.strip_prefix(&progress_focus_prefix) {
         (values, Parsed::EnergyFrontierCheapestProgressFocus)
     } else if let Some(values) = identifier.strip_prefix(&retire_prefix) {
         (values, Parsed::Retire)
@@ -279,6 +290,9 @@ pub fn selector_policy_from_identifier(
         groups: parsed[1..].to_vec(),
     };
     Ok(match selector {
+        Parsed::EnergyFrontierCheapestDiscoveryFocus => {
+            SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(thresholds)
+        }
         Parsed::EnergyFrontierCheapestProgressFocus => {
             SelectorPolicy::EnergyFrontierCheapestProgressFocus(thresholds)
         }
@@ -310,6 +324,7 @@ const CLASS_RANK_SHIFT: u32 = 3;
 #[serde(rename_all = "snake_case")]
 pub enum SelectorPath {
     ProgressFocus,
+    DiscoveryFocus,
     Continuation,
     Uniform,
     #[serde(rename = "hierarchy_uniform")]
@@ -341,6 +356,8 @@ pub struct SelectorAccounting {
     pub continuation_selections: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress_focus_selections: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_focus_selections: Option<u64>,
     pub uniform_selections: u64,
     pub cell_selections: u64,
     pub productive_selections: u64,
@@ -2669,12 +2686,23 @@ where
                 opened |= 1 << (offset + 1);
             }
         }
-        if matches!(
-            self.selector_policy,
-            SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
-        ) && parent_id.is_some_and(|parent| {
-            K::progress_cmp(key.group(0), self.entries[parent].key.group(0)) == Ordering::Greater
-        }) {
+        let progress = || {
+            parent_id.is_some_and(|parent| {
+                K::progress_cmp(key.group(0), self.entries[parent].key.group(0))
+                    == Ordering::Greater
+            })
+        };
+        let discovery = parent_id.is_some()
+            && opened
+                .checked_shr(Self::coarsest_depth().saturating_sub(1).max(1) as u32)
+                .unwrap_or(0)
+                != 0;
+        let follow_up = match self.selector_policy {
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(_) => progress(),
+            SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_) => progress() || discovery,
+            _ => false,
+        };
+        if follow_up {
             if self.progress_focus.len() == 128 {
                 self.progress_focus.pop_front();
             }
@@ -2975,13 +3003,21 @@ where
         if matches!(
             self.selector_policy,
             SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+                | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_)
         ) && rand.below(NonZeroUsize::new(2).ok_or("invalid progress focus odds")?) == 0
             && let Some(id) = self.draw_progress_focus(max_actions)
         {
             return Ok((
                 id,
                 SelectorDraw {
-                    path: SelectorPath::ProgressFocus,
+                    path: if matches!(
+                        self.selector_policy,
+                        SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_)
+                    ) {
+                        SelectorPath::DiscoveryFocus
+                    } else {
+                        SelectorPath::ProgressFocus
+                    },
                     classes_skipped: 0,
                     counter_reset: false,
                     concentration: None,
@@ -3064,6 +3100,7 @@ where
         };
         let class_scale = match &self.selector_policy {
             SelectorPolicy::EnergyFrontierCheapestProgressFocus(scales)
+            | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(scales)
             | SelectorPolicy::EnergyFrontierCheapest(scales)
             | SelectorPolicy::EnergyFrontierCheapestCount(scales)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => scales
@@ -3343,6 +3380,7 @@ where
         let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
         let scales = match &self.selector_policy {
             SelectorPolicy::EnergyFrontierCheapestProgressFocus(scales)
+            | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(scales)
             | SelectorPolicy::EnergyFrontierCheapest(scales)
             | SelectorPolicy::EnergyFrontierCheapestCount(scales)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => scales,
@@ -3446,6 +3484,7 @@ where
             SelectorPolicy::GroupUniform => true,
             SelectorPolicy::Retire(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestProgressFocus(thresholds)
+            | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(thresholds)
             | SelectorPolicy::EnergyFrontierCheapest(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds) => {
@@ -3459,6 +3498,7 @@ where
         match &self.selector_policy {
             SelectorPolicy::GroupUniform
             | SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+            | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_)
             | SelectorPolicy::EnergyFrontierCheapest(_)
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_) => true,
@@ -3506,6 +3546,7 @@ where
         let id = if matches!(
             self.selector_policy,
             SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+                | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_)
                 | SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
@@ -3760,6 +3801,7 @@ where
             self.selector_policy,
             SelectorPolicy::Retire(_)
                 | SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+                | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_)
                 | SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
                 | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
@@ -3770,6 +3812,13 @@ where
             }
         }
         match draw.path {
+            SelectorPath::DiscoveryFocus => {
+                let count = self
+                    .selector_accounting
+                    .discovery_focus_selections
+                    .get_or_insert(0);
+                *count = count.saturating_add(1);
+            }
             SelectorPath::ProgressFocus => {
                 let count = self
                     .selector_accounting
@@ -3866,6 +3915,7 @@ where
         let cleared = match self.selector_policy {
             SelectorPolicy::Retire(_) => u32::MAX,
             SelectorPolicy::EnergyFrontierCheapestProgressFocus(_)
+            | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(_)
             | SelectorPolicy::EnergyFrontierCheapest(_)
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
             | SelectorPolicy::EnergyFrontierCheapestKeyCount(_) => opened,
@@ -3909,6 +3959,7 @@ where
         }
         if let SelectorPolicy::Retire(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestProgressFocus(thresholds)
+        | SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(thresholds)
         | SelectorPolicy::EnergyFrontierCheapest(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds) = &self.selector_policy
@@ -6616,7 +6667,9 @@ mod tests {
                     assert_eq!(concentration.window_size, 128);
                 }
                 SelectorPath::Continuation => panic!("continuations require explicit dispatch"),
-                SelectorPath::ProgressFocus => panic!("focus requires its own policy"),
+                SelectorPath::ProgressFocus | SelectorPath::DiscoveryFocus => {
+                    panic!("focus requires its own policy")
+                }
                 SelectorPath::Uniform => {
                     assert!(draw.concentration.is_none());
                 }
@@ -7192,23 +7245,28 @@ mod tests {
     }
 
     #[test]
-    fn progress_focus_is_bounded_and_ignores_nonprogress_and_inactive_entries() {
+    fn discovery_focus_follows_new_groups_without_rewarding_fine_slot_churn() {
+        let policy = SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(RetireThresholds {
+            entry: 3,
+            groups: vec![6, 12],
+        });
+        let identifier = super::selector_policy_identifier(&policy);
+        assert_eq!(
+            super::selector_policy_from_identifier(&identifier, 2).unwrap(),
+            policy
+        );
         let mut archive = Archive::<u8, SpliceKey, (), ()>::new(|_| 1);
-        archive.selector_policy =
-            SelectorPolicy::EnergyFrontierCheapestProgressFocus(RetireThresholds {
-                entry: 3,
-                groups: vec![6, 12],
-            });
-        let insert = |a: &mut Archive<u8, SpliceKey, (), ()>, parent, action, progress, slot| {
+        archive.selector_policy = policy;
+        let insert = |a: &mut Archive<u8, SpliceKey, (), ()>, parent, action, class_label, slot| {
             a.insert(
                 parent,
                 0,
                 ArchiveCandidate {
                     suffix: vec![action],
                     key: SpliceKey {
-                        class_label: 10,
+                        class_label,
                         class_progress: 1,
-                        cell_progress: progress,
+                        cell_progress: 0,
                         slot,
                     },
                     milestones: (),
@@ -7218,37 +7276,90 @@ mod tests {
             .unwrap()
             .unwrap()
         };
-        let root = insert(&mut archive, None, 0, 0, 0);
-        insert(&mut archive, Some(root), 1, 0, 1);
+        let root = insert(&mut archive, None, 0, 10, 0);
+        insert(&mut archive, Some(root), 1, 10, 1);
         assert!(archive.progress_focus.is_empty());
-        let improved = insert(&mut archive, Some(root), 2, 1, 0);
+        let discovered = insert(&mut archive, Some(root), 2, 11, 0);
+        assert_eq!(
+            SpliceKey::progress_cmp(
+                archive.entries[root].key.group(0),
+                archive.entries[discovered].key.group(0)
+            ),
+            Ordering::Equal
+        );
+        assert_eq!(archive.progress_focus.len(), 1);
+        insert(&mut archive, Some(discovered), 3, 11, 1);
         assert_eq!(archive.progress_focus.len(), 1);
         for _ in 0..128 {
-            assert_eq!(archive.draw_progress_focus(16), Some(improved));
+            assert_eq!(archive.draw_progress_focus(16), Some(discovered));
         }
         assert_eq!(archive.draw_progress_focus(16), None);
-        for progress in 2..=131 {
-            insert(&mut archive, Some(root), progress, u16::from(progress), 0);
+    }
+
+    #[test]
+    fn progress_focus_is_bounded_and_ignores_nonprogress_and_inactive_entries() {
+        let thresholds = RetireThresholds {
+            entry: 3,
+            groups: vec![6, 12],
+        };
+        for policy in [
+            SelectorPolicy::EnergyFrontierCheapestProgressFocus(thresholds.clone()),
+            SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(thresholds),
+        ] {
+            let mut archive = Archive::<u8, SpliceKey, (), ()>::new(|_| 1);
+            archive.selector_policy = policy;
+            let insert =
+                |a: &mut Archive<u8, SpliceKey, (), ()>, parent, action, progress, slot| {
+                    a.insert(
+                        parent,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![action],
+                            key: SpliceKey {
+                                class_label: 10,
+                                class_progress: 1,
+                                cell_progress: progress,
+                                slot,
+                            },
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .unwrap()
+                    .unwrap()
+                };
+            let root = insert(&mut archive, None, 0, 0, 0);
+            insert(&mut archive, Some(root), 1, 0, 1);
+            assert!(archive.progress_focus.is_empty());
+            let improved = insert(&mut archive, Some(root), 2, 1, 0);
+            assert_eq!(archive.progress_focus.len(), 1);
+            for _ in 0..128 {
+                assert_eq!(archive.draw_progress_focus(16), Some(improved));
+            }
+            assert_eq!(archive.draw_progress_focus(16), None);
+            for progress in 2..=131 {
+                insert(&mut archive, Some(root), progress, u16::from(progress), 0);
+            }
+            assert_eq!(archive.progress_focus.len(), 128);
+            let last_stable = archive.progress_focus.back().unwrap().0;
+            let before_compaction = archive.index_of_id(last_stable).unwrap();
+            archive.deactivate(1);
+            archive.compact_history_for_final_report().unwrap();
+            let last = archive.index_of_id(last_stable).unwrap();
+            assert_ne!(last, before_compaction);
+            assert_eq!(archive.draw_progress_focus(16), Some(last));
+            archive.deactivate(last);
+            archive.compact_history_for_final_report().unwrap();
+            assert!(archive.index_of_id(last_stable).is_none());
+            let surviving = archive.draw_progress_focus(16).unwrap();
+            assert_ne!(archive.stable_id(surviving), Some(last_stable));
+            assert_eq!(archive.draw_progress_focus(1), None);
+            let identity = super::selector_policy_identifier(&archive.selector_policy);
+            assert_eq!(
+                selector_policy_from_identifier(&identity, 2).unwrap(),
+                archive.selector_policy
+            );
         }
-        assert_eq!(archive.progress_focus.len(), 128);
-        let last_stable = archive.progress_focus.back().unwrap().0;
-        let before_compaction = archive.index_of_id(last_stable).unwrap();
-        archive.deactivate(1);
-        archive.compact_history_for_final_report().unwrap();
-        let last = archive.index_of_id(last_stable).unwrap();
-        assert_ne!(last, before_compaction);
-        assert_eq!(archive.draw_progress_focus(16), Some(last));
-        archive.deactivate(last);
-        archive.compact_history_for_final_report().unwrap();
-        assert!(archive.index_of_id(last_stable).is_none());
-        let surviving = archive.draw_progress_focus(16).unwrap();
-        assert_ne!(archive.stable_id(surviving), Some(last_stable));
-        assert_eq!(archive.draw_progress_focus(1), None);
-        let identity = super::selector_policy_identifier(&archive.selector_policy);
-        assert_eq!(
-            selector_policy_from_identifier(&identity, 2).unwrap(),
-            archive.selector_policy
-        );
     }
 
     #[test]
