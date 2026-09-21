@@ -429,11 +429,11 @@ Warm import reconstructs the queue from admitted parent-child progress compariso
 
 ### Experimental discovery follow-up
 
-`hierarchy_uniform_128_energy_frontier_cheapest_discovery_focus_v1` uses the
+`hierarchy_uniform_128_energy_frontier_cheapest_discovery_focus_v2` uses the
 same retirement thresholds and bounded follow-up queue as progress focus, but
-also admits the first child opening a previously unseen group at either of
-the two coarsest pooled depths. For a hierarchy with fewer than two pooled
-depths it uses the available pooled depth; fine slot discoveries alone do
+also admits the first child opening a previously unseen group at any of
+the three coarsest pooled depths. Shallower hierarchies use their available
+pooled depths; fine slot discoveries alone do
 not qualify. Progress increases still qualify. The root does not receive a
 ticket. The queue holds at most 128 stable entry IDs, grants 128 attempts per
 admission, and receives half of draws while eligible tickets remain. It uses
@@ -447,3 +447,10 @@ follow-up to extend traversal when a workload's progress comparator only
 recognizes sparse achievements. Imported histories reconstruct tickets from
 admission order; spent tickets are not persisted. New groups need not be
 useful, so end-to-end improvement requires a matched campaign comparison.
+
+Version 1 watched only the two coarsest pooled depths. In a populated MM2
+archive those groups were already saturated: the matched control opened no
+new groups at those depths, and the candidate's first 9,300 jobs matched the
+control's work and outcomes. Version 2 includes the next pooled depth, where
+the control still observed discoveries. It tests finer follow-up without
+changing retention, action generation, or the bounded allocation budget.

@@ -200,7 +200,7 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
             )
         }
         SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(scales) => format!(
-            "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_discovery_focus_v1:{}",
+            "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_discovery_focus_v2:{}",
             threshold_values(scales)
         ),
         SelectorPolicy::EnergyFrontierCheapestProgressFocus(scales) => format!(
@@ -240,7 +240,7 @@ pub fn selector_policy_from_identifier(
         return Ok(SelectorPolicy::GroupUniform);
     }
     let discovery_focus_prefix =
-        format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_discovery_focus_v1:");
+        format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_discovery_focus_v2:");
     let progress_focus_prefix =
         format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_progress_focus_v1:");
     let retire_prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
@@ -2694,7 +2694,7 @@ where
         };
         let discovery = parent_id.is_some()
             && opened
-                .checked_shr(Self::coarsest_depth().saturating_sub(1).max(1) as u32)
+                .checked_shr(Self::coarsest_depth().saturating_sub(2).max(1) as u32)
                 .unwrap_or(0)
                 != 0;
         let follow_up = match self.selector_policy {
@@ -7242,6 +7242,44 @@ mod tests {
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn discovery_focus_reaches_spatial_novelty_below_saturated_coarse_groups() {
+        let mut archive = Archive::<u8, FlatKey<5>, (), ()>::new(|_| 1);
+        archive.selector_policy =
+            SelectorPolicy::EnergyFrontierCheapestDiscoveryFocus(RetireThresholds {
+                entry: 3,
+                groups: vec![6, 12, 2, 16],
+            });
+        let insert = |a: &mut Archive<u8, FlatKey<5>, (), ()>, parent, action, key| {
+            a.insert(
+                parent,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![action],
+                    key: FlatKey(key),
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let root = insert(&mut archive, None, 0, [0, 0, 0, 0]);
+        let fine = insert(&mut archive, Some(root), 1, [0, 1, 0, 0]);
+        assert_eq!(archive.opened_depths(fine), 0b11);
+        assert!(archive.progress_focus.is_empty());
+        let spatial = insert(&mut archive, Some(root), 2, [0, 0, 1, 0]);
+        assert_eq!(archive.opened_depths(spatial), 0b111);
+        assert_eq!(
+            archive.entries[root].key.group(3),
+            archive.entries[spatial].key.group(3)
+        );
+        assert_eq!(archive.progress_focus.len(), 1);
+        insert(&mut archive, Some(spatial), 3, [0, 1, 1, 0]);
+        assert_eq!(archive.progress_focus.len(), 1);
+        assert_eq!(archive.draw_progress_focus(16), Some(spatial));
     }
 
     #[test]
