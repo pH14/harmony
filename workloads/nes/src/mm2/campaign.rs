@@ -28,10 +28,11 @@ use crate::{
         archive::RetentionPolicy,
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
-            CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
-            Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
-            postcard_value_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
+            CampaignConfig, CampaignExecutionOptions, CampaignJobResult, CampaignModeReport,
+            CampaignOrigin, CampaignProgressRecord, CampaignStreamHeader, CampaignTypes,
+            Evaluation, InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution,
+            WorkloadPolicies, postcard_value_sha256, replay_campaign_checkpointed,
+            run_campaign_checkpointed_with_options,
         },
         draw::{DrawMixture, SuffixShape},
         draw_tables::DrawTableHeader,
@@ -60,7 +61,9 @@ type Mm2Preference = (u8, u8, u16);
 type Mm2ChampionProgress = (u8, u8, u8, bool, u8, u8, bool, u8, u8, u8, u8, u8);
 type Mm2ChampionKey = (Mm2ChampionProgress, Mm2Preference);
 
+#[derive(Clone)]
 pub struct Mm2Game {
+    stage_order: Option<super::stage_order::StageOrder>,
     rom: Vec<u8>,
     core_path: PathBuf,
     core_sha256: String,
@@ -138,6 +141,7 @@ impl Mm2Game {
             if coherent_world { "on" } else { "off" },
         );
         Self {
+            stage_order: None,
             rom: rom.to_vec(),
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
@@ -149,6 +153,17 @@ impl Mm2Game {
             coherent_world,
             whole_game: false,
         }
+    }
+
+    pub fn with_stage_order(
+        mut self,
+        order: Option<super::stage_order::StageOrder>,
+    ) -> Result<Self, Box<dyn Error>> {
+        if order.is_some() && !self.whole_game {
+            return Err("stage-order guidance requires a whole-game campaign".into());
+        }
+        self.stage_order = order;
+        Ok(self)
     }
 
     #[must_use]
@@ -278,6 +293,7 @@ pub struct Mm2CampaignConfig {
     pub campaign_seed: u64,
     pub workers: u32,
     pub execution_budget: u64,
+    pub frame_budget: Option<u64>,
     pub action_limit: usize,
     pub host: String,
     pub wall_budget: Option<std::time::Duration>,
@@ -378,6 +394,7 @@ fn execute_suffix(
     max_actions: usize,
     retention: RetentionPolicy,
     stop_rollout_on_objective: bool,
+    stage_order: Option<&super::stage_order::StageOrder>,
 ) -> Result<Mm2CampaignJobResult, Box<dyn Error>> {
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
@@ -395,7 +412,14 @@ fn execute_suffix(
             break;
         }
         length = length.saturating_add(1);
-        target.apply(action);
+        let action = stage_order
+            .and_then(|order| {
+                target.stage_selection_cursor().map(|(cursor, held)| {
+                    order.menu_action(target.mechanical_state().weapons_obtained, cursor, held)
+                })
+            })
+            .unwrap_or(*action);
+        target.apply(&action);
         merge_action_milestones(&mut aggregate, target, genesis_weapons);
         let observations = if target.exit_kind() != ExitKind::Ok {
             Vec::new()
@@ -425,7 +449,7 @@ fn execute_suffix(
             None
         };
         actions.push(CampaignActionResult {
-            action: *action,
+            action,
             observations,
             milestones: aggregate,
             outcome,
@@ -668,6 +692,12 @@ impl InputPolicy for Mm2Game {
             EMULATOR_BACKEND_FIELD.to_owned(),
             self.identity.clone(),
         )))
+        .chain(self.stage_order.as_ref().map(|order| {
+            (
+                super::stage_order::STAGE_ORDER_FIELD.to_owned(),
+                order.identifier(),
+            )
+        }))
         .collect()
     }
 
@@ -799,6 +829,7 @@ impl TargetExecution for Mm2Game {
             max_actions,
             retention,
             stop_rollout_on_objective,
+            self.stage_order.as_ref(),
         )
     }
 }
@@ -946,7 +977,17 @@ pub fn run_mm2_campaign_checkpointed(
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
 ) -> Result<(Mm2CampaignModeReport, Mm2SnapshotCheckpoint), Box<dyn Error>> {
-    run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
+    run_campaign_checkpointed_with_options(
+        game,
+        &config.generic(),
+        origin,
+        stream,
+        progress,
+        CampaignExecutionOptions {
+            work_budget: config.frame_budget,
+            ..CampaignExecutionOptions::default()
+        },
+    )
 }
 
 pub fn replay_mm2_campaign_checkpointed(

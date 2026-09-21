@@ -41,6 +41,7 @@ struct Args {
     output: PathBuf,
     seed: u64,
     executions: u64,
+    frame_budget: Option<u64>,
     workers: u32,
     action_limit: usize,
     stage: Mm2Stage,
@@ -48,6 +49,7 @@ struct Args {
     fixed_execution_soak: bool,
     coherent_world: bool,
     whole_game: bool,
+    stage_order: Option<nes_workload::mm2::stage_order::StageOrder>,
     host: String,
     memory_budget_mib: Option<usize>,
     prefix_input: Option<PathBuf>,
@@ -80,6 +82,7 @@ impl Args {
         let mut output = None;
         let mut seed = 1_u64;
         let mut executions = 4_000_u64;
+        let mut frame_budget = None;
         let mut workers = 2_u32;
         let mut action_limit = 4096_usize;
         let mut supplied_action_limit = false;
@@ -88,7 +91,9 @@ impl Args {
         let mut fixed_execution_soak = false;
         let mut coherent_world = false;
         let mut whole_game = false;
+        let mut stage_order = None;
         let mut diagnostic_policy = false;
+        let mut experimental_search_policy = false;
         let mut supplied_stage = false;
         let mut host = "github-actions".to_owned();
         let mut memory_budget_mib = None;
@@ -105,6 +110,10 @@ impl Args {
         let mut retention = RetentionPolicy::Unprobed;
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
+            if flag == "--experimental-search-policy" {
+                experimental_search_policy = true;
+                continue;
+            }
             if flag == "--whole-game" {
                 whole_game = true;
                 continue;
@@ -140,10 +149,18 @@ impl Args {
                 "--output" => output = Some(PathBuf::from(value)),
                 "--seed" => seed = parse_number("seed", value)?,
                 "--executions" => executions = parse_number("executions", value)?,
+                "--frame-budget" => frame_budget = Some(parse_number("frame-budget", value)?),
                 "--workers" => workers = parse_number("workers", value)?,
                 "--action-limit" => {
                     action_limit = parse_number("action-limit", value)?;
                     supplied_action_limit = true;
+                }
+                "--experimental-stage-order" => {
+                    stage_order = Some(nes_workload::mm2::stage_order::StageOrder::parse(
+                        &value
+                            .into_string()
+                            .map_err(|_| "stage order is not UTF-8")?,
+                    )?);
                 }
                 "--stage" => {
                     supplied_stage = true;
@@ -188,9 +205,15 @@ impl Args {
                 || coherent_world
                 || prefix_input.is_some()
                 || root_input.is_some()
-                || diagnostic_policy)
+                || (diagnostic_policy && !experimental_search_policy))
         {
             return Err("--whole-game uses power-on stage selection and the fixed search policy; stage, prefix, root, coherent-world, and policy overrides are diagnostic-only".into());
+        }
+        if experimental_search_policy && !whole_game {
+            return Err("--experimental-search-policy requires --whole-game".into());
+        }
+        if stage_order.is_some() && !whole_game {
+            return Err("--experimental-stage-order requires --whole-game".into());
         }
         if resume_snapshots.is_some() && resume_archive.is_none() {
             return Err("--resume-snapshots requires --resume-archive".into());
@@ -204,6 +227,7 @@ impl Args {
             output: output.ok_or("missing --output")?,
             seed,
             executions,
+            frame_budget,
             workers,
             action_limit,
             stage,
@@ -211,6 +235,7 @@ impl Args {
             fixed_execution_soak,
             coherent_world,
             whole_game,
+            stage_order,
             host,
             memory_budget_mib,
             prefix_input,
@@ -255,8 +280,14 @@ fn resume_origin(args: &Args, game: &Mm2Game) -> Result<Mm2CampaignOrigin, Box<d
     })?;
     let manifest: ArchiveManifest = serde_json::from_slice(&manifest_bytes)?;
     let snapshot_bytes = args.resume_snapshots.as_ref().map(fs::read).transpose()?;
+    let source_order = manifest
+        .workload_policies
+        .get(nes_workload::mm2::stage_order::STAGE_ORDER_FIELD)
+        .map(|value| nes_workload::mm2::stage_order::StageOrder::parse(value))
+        .transpose()?;
+    let source_game = game.clone().with_stage_order(source_order)?;
     manifest.validate(
-        game,
+        &source_game,
         &Mm2CampaignRun,
         &archive_bytes,
         snapshot_bytes.as_deref(),
@@ -309,7 +340,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             args.coherent_world,
         )
     }
-    .with_champion_input_path(args.output.join("champion-input.json"));
+    .with_champion_input_path(args.output.join("champion-input.json"))
+    .with_stage_order(args.stage_order.clone())?;
     if let Some(path) = &args.root_input {
         let root: Mm2Input = serde_json::from_slice(&fs::read(path)?)?;
         fs::write(
@@ -332,6 +364,7 @@ fn campaign_config(args: &Args) -> Mm2CampaignConfig {
         campaign_seed: args.seed,
         workers: args.workers,
         execution_budget: args.executions,
+        frame_budget: args.frame_budget,
         action_limit: args.action_limit,
         host: args.host.clone(),
         wall_budget: None,
@@ -850,6 +883,48 @@ mod tests {
             .expect("coherent-world arguments parse");
         assert!(diagnostic.coherent_world);
         assert_eq!(diagnostic.seed, 42);
+    }
+
+    #[test]
+    fn stage_guidance_is_explicit_whole_game_configuration() {
+        let order = "flash,crash,metal,wood,air,bubble,heat,quick";
+        let args = Args::parse_from(required_args(&[
+            "--whole-game",
+            "--experimental-stage-order",
+            order,
+            "--frame-budget",
+            "1000000",
+        ]))
+        .unwrap();
+        assert_eq!(args.stage_order.unwrap().identifier(), "5,7,6,2,1,3,0,4");
+        assert_eq!(args.frame_budget, Some(1_000_000));
+        assert!(
+            Args::parse_from(required_args(&[
+                "--whole-game",
+                "--experimental-search-policy",
+                "--mixture",
+                "alphabet_route_reuse_v1"
+            ]))
+            .is_ok()
+        );
+        assert!(
+            Args::parse_from(required_args(&[
+                "--whole-game",
+                "--experimental-search-policy",
+                "--root-input",
+                "root.json"
+            ]))
+            .is_err()
+        );
+        assert!(Args::parse_from(required_args(&["--experimental-stage-order", order])).is_err());
+        assert!(
+            Args::parse_from(required_args(&[
+                "--whole-game",
+                "--experimental-stage-order",
+                "5,5,6,2,1,3,0,4"
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

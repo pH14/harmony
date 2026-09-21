@@ -2,4 +2,5 @@
 
 pub mod archive;
 pub mod campaign;
+pub mod stage_order;
 pub mod target;

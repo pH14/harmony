@@ -249,7 +249,44 @@ at death or stage completion. Include a tail in each suffix when testing
 landing or survival. This is a controlled local probe, not a campaign or an
 independent power-on verification; replay a successful composed tape separately.
 
-Soak exports release the imported source report and source checkpoints after
-the campaign returns, before serializing the final archive and checkpoints.
-The search and final archive contents are unchanged; qualified stream replay
-still keeps its source alive for the second execution.
+## Explicit stage-order experiment
+
+`mm2-campaign --whole-game --experimental-stage-order
+flash,crash,metal,wood,air,bubble,heat,quick` supplies optional campaign guidance.
+The list must contain each robot stage once. At an observed stage-selection
+menu, the campaign replaces the next proposed chord with a short direction,
+release, or Start chord toward the first unowned stage. All acquired weapons
+lead to the central Wily choice. Actual chords are stored in the archive and
+reproduced during campaign and power-on replay. Gameplay actions, archive
+selection and retention remain unchanged. This is supplied game-specific
+guidance, not a generic searcher improvement. The default remains unrestricted.
+
+Menu observation requires bank, PPU, screen and animation registers plus the
+first remaining portrait sprite's source-defined OAM signature. A PPU byte
+alone also matches gameplay and is insufficient. The observation reads restored
+RAM directly; it adds no state edits or automatic emulation. The source is
+`engine/stage_select.asm`, `engine/stage_select_set.asm` and
+`data/stage_select/boss_oam.asm` in the MM2 disassembly.
+
+A warm start validates the source manifest against its recorded stage-order
+configuration, independently of the requested future order. All other workload
+identity/policy checks and artifact hashes remain mandatory. The source archive
+is imported intact, including earlier off-order and partial-inventory histories.
+The new stream records its future guidance under `experimental_stage_order_v1`.
+Consequently a warm comparison measures future menu guidance on a mixed-history
+archive; it does not establish that the entire power-on trajectory followed the
+prescribed order. Guidance is evaluated at action boundaries. Verify actual
+menu entries and replay any claimed continuous achievement.
+
+`--frame-budget` delegates to the generic campaign's emulated-work limit. It
+includes bootstrap restoration and may overshoot by the bounded in-flight
+window. Compare post-import job frames separately and censor both arms at a
+common frame cutoff. `--executions` remains a secondary job ceiling. Soak
+exports release the source report and source checkpoints once import/search
+returns, before serializing the final archive and checkpoints.
+
+`--experimental-search-policy` explicitly permits the existing `--selector`,
+`--mixture` and `--retention` configurations in whole-game experiments. It
+does not permit stage roots, prefix inputs or coherent-world overrides. These
+generic policy settings are recorded in the stream as usual, and defaults stay
+unchanged. Use identical settings in guided and unrestricted comparison arms.

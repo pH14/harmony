@@ -761,6 +761,31 @@ fn at_stage_select(wram: &[u8]) -> bool {
     wram.get(MENU_MODE).copied() == Some(MENU_MODE_STAGE_SELECT)
 }
 
+fn decode_stage_selection(wram: &[u8; WRAM_SIZE]) -> Option<(u8, u8)> {
+    if wram[CURRENT_BANK] != MENU_BANK
+        || wram[MENU_MODE] != MENU_MODE_STAGE_SELECT
+        || wram[LEVEL_ROOM] != 0
+        || wram[MENU_CURSOR] != 0
+        || wram[STAGE] > 8
+    {
+        return None;
+    }
+    let first_portraits = [
+        [0x6c, 0x06, 0, 0x3b],
+        [0x26, 0x27, 2, 0x78],
+        [0x5f, 0x0d, 0, 0xb0],
+        [0x29, 0x0a, 1, 0x31],
+        [0x17, 0x2e, 1, 0xc8],
+        [0xa7, 0x17, 1, 0x71],
+        [0x9f, 0x1f, 0, 0x38],
+        [0x9d, 0x04, 0, 0xc0],
+    ];
+    let signature = (0..8)
+        .find(|stage| wram[WEAPONS_OBTAINED] & (1 << stage) == 0)
+        .map_or([0xf8; 4], |stage| first_portraits[stage]);
+    (wram[0x200..0x204] == signature).then_some((wram[STAGE], wram[0x23]))
+}
+
 fn ending_scene_marker(state: Mm2MechanicalState) -> bool {
     state.stage == ENDING_SCENE_STAGE
         && state.boss_phase == ENDING_BOSS_PHASE
@@ -1129,6 +1154,11 @@ impl Mm2Target {
     #[must_use]
     pub fn coherent_world(&self) -> bool {
         self.coherent_world
+    }
+
+    #[must_use]
+    pub fn stage_selection_cursor(&self) -> Option<(u8, u8)> {
+        decode_stage_selection(&self.current_wram)
     }
 
     #[must_use]
@@ -2087,6 +2117,25 @@ mod tests {
             Mm2MechanicalState::default(),
             Mm2MechanicalState::default()
         ));
+    }
+
+    #[test]
+    fn stage_selection_requires_portrait_layout_not_reused_menu_registers() {
+        let mut wram = [0_u8; WRAM_SIZE];
+        wram[CURRENT_BANK] = MENU_BANK;
+        wram[MENU_MODE] = MENU_MODE_STAGE_SELECT;
+        assert_eq!(decode_stage_selection(&wram), None);
+        wram[0x200..0x204].copy_from_slice(&[0x6c, 0x06, 0, 0x3b]);
+        assert_eq!(decode_stage_selection(&wram), Some((0, 0)));
+        wram[WEAPONS_OBTAINED] = 1;
+        assert_eq!(decode_stage_selection(&wram), None);
+        wram[0x200..0x204].copy_from_slice(&[0x26, 0x27, 2, 0x78]);
+        assert_eq!(decode_stage_selection(&wram), Some((0, 0)));
+        wram[LEVEL_ROOM] = 1;
+        assert_eq!(decode_stage_selection(&wram), None);
+        wram[LEVEL_ROOM] = 0;
+        wram[MENU_CURSOR] = 48;
+        assert_eq!(decode_stage_selection(&wram), None);
     }
 
     #[test]
