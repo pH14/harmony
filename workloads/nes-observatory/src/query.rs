@@ -135,6 +135,7 @@ pub fn status(store: &Store, run_id: &str) -> Result<Value> {
          countIf(kind='run_end' AND payload='search_complete') AS completed, \
          argMaxIf(payload,event_id,kind='run_start') AS identity, \
          maxIf(selection_ms,kind='watermark') AS finalized_watermark_ms, \
+         countIf(kind='watermark') AS watermark_count, \
          countIf(kind='selection' OR kind='skip') AS selections, \
          countIf(kind='skip') AS skipped, countIf(kind='work') AS admissions, \
          sumIf(execution_work,kind='work') AS execution_work, \
@@ -173,6 +174,18 @@ pub fn status(store: &Store, run_id: &str) -> Result<Value> {
         .get("identity")
         .and_then(Value::as_str)
         .and_then(|text| serde_json::from_str::<Value>(text).ok());
+    let finalized_through_ms = if ended {
+        latest.saturating_add(1)
+    } else if row
+        .get("watermark_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        > 0
+    {
+        watermark.saturating_add(1)
+    } else {
+        0
+    };
     let mut telemetry = row;
     if let Some(fields) = telemetry.as_object_mut() {
         fields.remove("identity");
@@ -184,7 +197,7 @@ pub fn status(store: &Store, run_id: &str) -> Result<Value> {
         "status":if completed {"completed"} else if ended {"failed"} else {"running_or_interrupted"},
         "telemetry":telemetry,
         "freshness_watermark_ms":latest,
-        "finalized_through_ms":if ended {latest} else {watermark},
+        "finalized_through_ms":finalized_through_ms,
         "completeness":{
             "complete":started && losses==0 && gaps==0 && completed,
             "lost_events":losses,

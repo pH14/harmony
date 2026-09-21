@@ -202,6 +202,8 @@ fn clickhouse_history_filters_and_retry_are_consistent() {
     .expect("later territory");
     assert_eq!(later["cells"].as_array().expect("cells").len(), 2);
     assert_eq!(value(&later, &["checkpoint_ms"]), 1000);
+    assert_eq!(later["provisional"], false);
+    assert_eq!(value(&later, &["finalized_through_ms"]), 3001);
     let no_joint = query::observations(&store, &run, &filter(0, 1000)).expect("separate states");
     assert_eq!(value(&no_joint, &["matching_sampled_observations"]), 0);
     let joint = query::observations(&store, &run, &filter(0, 2000)).expect("joint state");

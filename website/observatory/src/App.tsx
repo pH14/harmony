@@ -68,6 +68,8 @@ export default function App() {
   const [zoom, setZoom] = useState(1);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [observations, setObservations] = useState<ObservationResult | null>(null);
+  const [queriedScope, setQueriedScope] = useState("");
+  const queryAbort = useRef<AbortController | null>(null);
   const [queryBusy, setQueryBusy] = useState(false);
   const [queryError, setQueryError] = useState("");
   const [error, setError] = useState("");
@@ -78,7 +80,9 @@ export default function App() {
   const at = follow ? latest + 1 : Math.max(1, cursorMs);
   const from = Math.max(0, at - windowMs);
   const areaName = areas.find(item => item.id === area)?.name || "Unknown";
-  const finalized = at <= n(status?.finalized_through_ms) + 1;
+  const finalized = at <= n(status?.finalized_through_ms);
+  const currentScope = JSON.stringify([runId, from, at, filters]);
+  const currentObservations = queriedScope === currentScope ? observations : null;
 
   useEffect(() => {
     let alive = true;
@@ -96,7 +100,7 @@ export default function App() {
   useEffect(() => {
     if (!runId) return;
     let alive = true;
-    setStatus(null); setMap(null); setTerritory(null); setSelected(null); cache.current.clear();
+    setStatus(null); setMap(null); setTerritory(null); setSelected(null); setObservations(null); setQueriedScope(""); queryAbort.current?.abort(); cache.current.clear();
     const load = () => read<Status>("/api/v1/runs/" + runId + "/status").then(value => {
       if (!alive) return;
       setStatus(value); setError("");
@@ -159,15 +163,21 @@ export default function App() {
 
   async function search(next: Filters, after?: string) {
     if (!runId) return;
+    queryAbort.current?.abort();
+    const controller = new AbortController();
+    queryAbort.current = controller;
     setQueryBusy(true); setQueryError("");
+    const scope = JSON.stringify([runId, from, at, next]);
     const params = new URLSearchParams({ from_ms: String(from), to_ms: String(at), limit: "50" });
     Object.entries(next).forEach(([name, value]) => { if (value) params.set(name, value); });
     if (after) params.set("after", after);
     try {
-      const result = await read<ObservationResult>("/api/v1/runs/" + runId + "/observations?" + params);
-      setObservations(previous => after && previous ? { ...result, examples: [...previous.examples, ...result.examples].slice(0, 200) } : result);
-    } catch (value) { setQueryError(String(value)); }
-    finally { setQueryBusy(false); }
+      const result = await read<ObservationResult>("/api/v1/runs/" + runId + "/observations?" + params, controller.signal);
+      if (controller.signal.aborted) return;
+      setObservations(previous => after && previous && queriedScope === scope ? { ...result, examples: [...previous.examples, ...result.examples].slice(0, 200) } : result);
+      setQueriedScope(scope);
+    } catch (value) { if (!controller.signal.aborted) setQueryError(String(value)); }
+    finally { if (!controller.signal.aborted) setQueryBusy(false); }
   }
   function example(kind: "door" | "health" | "missiles") {
     const next = kind === "door"
@@ -196,7 +206,7 @@ export default function App() {
           <div className="summary-card"><span className="summary-label">SEARCH WORK</span><strong>{display(status?.telemetry.execution_work)}</strong><small>emulated frames</small></div>
           <div className="summary-card"><span className="summary-label">PARENT SELECTIONS</span><strong>{display(status?.telemetry.selections)}</strong><small>{display(status?.telemetry.skipped)} skipped · {display(status?.telemetry.admissions)} admitted</small></div>
           <div className="summary-card"><span className="summary-label">OBSERVED TERRITORY</span><strong>{display(territory?.cells.reduce((sum, cell) => sum + n(cell.value), 0))}</strong><small>distinct map cells as of cursor</small></div>
-          <div className="summary-card status-card"><span className="summary-label">TELEMETRY STATE</span><strong className="status-value"><span className={status?.status === "completed" ? "status-dot complete" : "status-dot"} />{status?.status === "completed" ? "Complete" : "Following"}</strong><small>{status?.completeness.lost_events || status?.completeness.sequence_gaps ? display(status.completeness.lost_events) + " lost · " + display(status.completeness.sequence_gaps) + " gaps" : "No recorded gaps"} · {status ? elapsed(latest) : "Loading"}</small></div>
+          <div className="summary-card status-card"><span className="summary-label">TELEMETRY STATE</span><strong className="status-value"><span className={status?.status === "completed" ? "status-dot complete" : "status-dot"} />{status?.status === "completed" ? status.completeness.complete ? "Complete" : "Partial" : status?.status === "failed" ? "Failed" : status ? "Following" : "Loading"}</strong><small>{status?.completeness.lost_events || status?.completeness.sequence_gaps ? display(status.completeness.lost_events) + " lost · " + display(status.completeness.sequence_gaps) + " gaps" : "No recorded gaps"} · {status ? elapsed(latest) : "Loading"}</small></div>
         </section>
         <section className="workspace-grid">
           <div className="main-column">
@@ -255,10 +265,11 @@ export default function App() {
                 <button className="submit-button" disabled={queryBusy} type="submit">{queryBusy ? "Searching…" : "Search this time window →"}</button>
               </form>
               {queryError && <div className="inline-error" role="alert">{queryError}</div>}
-              {observations && <div className="query-results"><div className="results-heading"><strong>{display(observations.matching_sampled_observations)} matching sampled observations</strong><span>{observations.next ? "More available" : "End of page"}</span></div>
-                {observations.examples.length ? <div className="result-list">{observations.examples.map(item => <div className="result" key={item.event_ms + "-" + item.event_id}><div><strong>{(areas.find(known => known.id === item.area)?.name || item.area) + " / " + item.map_x + ", " + item.map_y}</strong><span>#{item.admission_sequence} · {elapsed(item.event_ms)}</span></div><div><b>{item.health}</b> HP <b>{item.missiles}</b> missiles</div><small>gear 0x{Number(item.equipment).toString(16).padStart(2, "0")} · {item.outcome}</small></div>)}</div> : <p className="no-results">No matching sampled observation in this interval.</p>}
-                {observations.next && <button className="more-button" disabled={queryBusy} onClick={() => void search(filters, observations.next!)}>Load more examples</button>}
-                <p className="sample-note">{observations.interpretation}</p>
+              {observations && !currentObservations && <p className="stale-results">Time or filters changed. Search this interval to refresh the results.</p>}
+              {currentObservations && <div className="query-results"><div className="results-heading"><strong>{display(currentObservations.matching_sampled_observations)} matching sampled observations</strong><span>{currentObservations.next ? "More available" : "End of page"}</span></div>
+                {currentObservations.examples.length ? <div className="result-list">{currentObservations.examples.map(item => <div className="result" key={item.event_ms + "-" + item.event_id}><div><strong>{(areas.find(known => known.id === item.area)?.name || item.area) + " / " + item.map_x + ", " + item.map_y}</strong><span>#{item.admission_sequence} · {elapsed(item.event_ms)}</span></div><div><b>{item.health}</b> HP <b>{item.missiles}</b> missiles</div><small>gear 0x{Number(item.equipment).toString(16).padStart(2, "0")} · {item.outcome}</small></div>)}</div> : <p className="no-results">No matching sampled observation in this interval.</p>}
+                {currentObservations.next && <button className="more-button" disabled={queryBusy} onClick={() => void search(filters, currentObservations.next!)}>Load more examples</button>}
+                <p className="sample-note">{currentObservations.interpretation}</p>
               </div>}
             </article>
             <article className="panel table-panel"><div className="eyebrow">INPUT POLICY</div><h2>Draw table</h2><div className="table-empty"><span>∅</span><strong>No empirical table in this run</strong><p>Metroid currently draws controller chords from its fresh alphabet. There is no published empirical distribution or historical table version to inspect. Selection, work, and observed state history remain available.</p></div></article>
