@@ -144,7 +144,7 @@ pub(crate) fn draw_mixture_identifier(mixture: DrawMixture) -> String {
         DrawMixture::AlphabetContinuation => "alphabet_continuation_v1".to_owned(),
         DrawMixture::AlphabetRouteReuse => "alphabet_route_reuse_v1".to_owned(),
         DrawMixture::AlphabetRouteReuseDeduplicated => {
-            "alphabet_route_reuse_deduplicated_v1".to_owned()
+            "alphabet_route_reuse_deduplicated_v2".to_owned()
         }
         DrawMixture::BiasedHalf => MIXTURE_BIASED_HALF_IDENTIFIER.to_owned(),
         DrawMixture::Energy { scale } => format!("{MIXTURE_ENERGY_PREFIX}{scale}"),
@@ -185,7 +185,7 @@ pub fn draw_mixture_from_identifier(identifier: &str) -> Result<DrawMixture, Box
         MIXTURE_ALPHABET_ONLY_IDENTIFIER => Ok(DrawMixture::AlphabetOnly),
         "alphabet_continuation_v1" => Ok(DrawMixture::AlphabetContinuation),
         "alphabet_route_reuse_v1" => Ok(DrawMixture::AlphabetRouteReuse),
-        "alphabet_route_reuse_deduplicated_v1" => Ok(DrawMixture::AlphabetRouteReuseDeduplicated),
+        "alphabet_route_reuse_deduplicated_v2" => Ok(DrawMixture::AlphabetRouteReuseDeduplicated),
         MIXTURE_BIASED_HALF_IDENTIFIER => Ok(DrawMixture::BiasedHalf),
         _ => Err(format!("draw mixture {identifier} is not recognized").into()),
     }

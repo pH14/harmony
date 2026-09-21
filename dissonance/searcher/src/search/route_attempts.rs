@@ -29,6 +29,23 @@ impl RouteAttempts {
         }
     }
 
+    pub(crate) fn contains(
+        &self,
+        parent_id: u64,
+        donor_id: u64,
+        leaf_id: u64,
+        effective_cap: usize,
+        tail: &[u8],
+    ) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.parent_id == parent_id
+                && entry.donor_id == donor_id
+                && entry.leaf_id == leaf_id
+                && entry.effective_cap == effective_cap
+                && entry.tail.as_ref() == tail
+        })
+    }
+
     pub(crate) fn repeated(
         &mut self,
         parent_id: u64,
@@ -40,13 +57,7 @@ impl RouteAttempts {
         if tail.len() > ROUTE_ATTEMPTS_PAYLOAD_BYTES {
             return false;
         }
-        if self.entries.iter().any(|entry| {
-            entry.parent_id == parent_id
-                && entry.donor_id == donor_id
-                && entry.leaf_id == leaf_id
-                && entry.effective_cap == effective_cap
-                && entry.tail.as_ref() == tail
-        }) {
+        if self.contains(parent_id, donor_id, leaf_id, effective_cap, tail) {
             return true;
         }
         while self.entries.len() >= ROUTE_ATTEMPTS_CAPACITY

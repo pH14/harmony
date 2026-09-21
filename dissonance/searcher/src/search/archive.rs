@@ -2796,22 +2796,35 @@ where
         parent: usize,
         max_actions: usize,
         cap: usize,
-    ) -> Option<CampaignSpliceTail<A>> {
+    ) -> Result<Option<CampaignSpliceTail<A>>, Box<dyn Error>>
+    where
+        A: Serialize,
+    {
         if self.frontier_cap != Some(max_actions) {
             self.rebuild_selector_index(max_actions);
         }
         let parent_key = self.entries[parent].key;
-        let context = parent_key.route_context()?;
+        let Some(context) = parent_key.route_context() else {
+            return Ok(None);
+        };
         let cap = cap.min(max_actions.saturating_sub(self.entries[parent].input_len));
         if cap == 0 {
-            return None;
+            return Ok(None);
         }
-        let ranks = self
-            .route_donors
-            .get(&context)?
+        let Some(donors) = self.route_donors.get(&context) else {
+            return Ok(None);
+        };
+        let ranks = donors
             .iter()
             .rev()
             .copied()
+            .filter(|rank| {
+                rank.donor_id != parent
+                    && leaf_advances(
+                        (rank.leaf_key, rank.leaf_id),
+                        (self.entries[rank.donor_id].key, rank.donor_id),
+                    )
+            })
             .collect::<Vec<_>>();
         for rank in ranks {
             let donor_id = rank.donor_id;
@@ -2823,14 +2836,29 @@ where
                 continue;
             }
             if let Ok(actions) = self.recorded_route_splice_tail(parent, donor_id, leaf_id, cap) {
-                return Some(CampaignSpliceTail {
+                if let Some(attempts) = &self.route_attempts {
+                    let encoded = postcard::to_allocvec(&actions)?;
+                    if attempts.contains(
+                        self.stable_id(parent)
+                            .ok_or("route parent has no stable ID")?,
+                        self.stable_id(donor_id)
+                            .ok_or("route donor has no stable ID")?,
+                        self.stable_id(leaf_id)
+                            .ok_or("route leaf has no stable ID")?,
+                        cap,
+                        &encoded,
+                    ) {
+                        continue;
+                    }
+                }
+                return Ok(Some(CampaignSpliceTail {
                     donor_id,
                     leaf_id,
                     actions,
-                });
+                }));
             }
         }
-        None
+        Ok(None)
     }
 
     pub(crate) fn recorded_splice_tail(
@@ -5920,6 +5948,148 @@ mod tests {
     }
 
     #[test]
+    fn deduplicated_routes_try_other_donors_before_alphabet_fallback() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.enable_route_reuse(true);
+        archive.enable_route_deduplication(true);
+        let insert = |archive: &mut Archive<u8, FlatKey<3>, (), ()>,
+                      parent: Option<usize>,
+                      components: [u16; 4],
+                      suffix: Vec<u8>| {
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix,
+                        key: FlatKey(components),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert")
+                .expect("retained")
+        };
+        let first = insert(&mut archive, None, [1, 2, 3, 4], vec![1]);
+        let second = insert(&mut archive, None, [2, 2, 3, 4], vec![2]);
+        let parent = insert(&mut archive, None, [9, 2, 3, 4], vec![9]);
+        let first_leaf = insert(&mut archive, Some(first), [1, 2, 3, 6], vec![3]);
+        let second_leaf = insert(&mut archive, Some(second), [2, 2, 3, 7], vec![4]);
+        for (donor, leaf, action) in [(second, second_leaf, 4), (first, first_leaf, 3)] {
+            let route = archive
+                .route_splice_tail_for_campaign(parent, 16, 8)
+                .expect("lookup")
+                .expect("untried route");
+            assert_eq!(
+                (route.donor_id, route.leaf_id, route.actions),
+                (donor, leaf, vec![action])
+            );
+            let repeated_lookup = archive
+                .route_splice_tail_for_campaign(parent, 16, 8)
+                .expect("lookup")
+                .expect("lookup does not reserve");
+            assert_eq!(repeated_lookup.donor_id, donor);
+            assert!(!archive.repeated_route_attempt(
+                archive.stable_id(parent).unwrap(),
+                archive.stable_id(donor).unwrap(),
+                archive.stable_id(leaf).unwrap(),
+                8,
+                &postcard::to_allocvec(&vec![action]).expect("encode"),
+            ));
+        }
+        assert!(
+            archive
+                .route_splice_tail_for_campaign(parent, 16, 8)
+                .expect("lookup")
+                .is_none()
+        );
+        assert_eq!(
+            archive
+                .route_splice_tail_for_campaign(parent, 16, 4)
+                .expect("lookup")
+                .expect("different effective cap")
+                .donor_id,
+            second
+        );
+        archive.enable_route_deduplication(false);
+        assert_eq!(
+            archive
+                .route_splice_tail_for_campaign(parent, 16, 8)
+                .expect("lookup")
+                .expect("ordinary route policy unchanged")
+                .donor_id,
+            second
+        );
+    }
+
+    #[test]
+    fn deduplicated_route_lookup_reaches_past_a_repeated_shortlist() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.enable_route_reuse(true);
+        archive.enable_route_deduplication(true);
+        for index in 0..33_u8 {
+            let donor = archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([u16::from(index), 2, 3, 4]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+            archive
+                .insert(
+                    Some(donor),
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![100],
+                        key: FlatKey([u16::from(index), 2, 3, 5]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        let parent = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![99],
+                    key: FlatKey([99, 2, 3, 4]),
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        for _ in 0..33 {
+            let route = archive
+                .route_splice_tail_for_campaign(parent, 16, 8)
+                .unwrap()
+                .expect("untried route after repeated higher ranks");
+            assert!(!archive.repeated_route_attempt(
+                archive.stable_id(parent).unwrap(),
+                archive.stable_id(route.donor_id).unwrap(),
+                archive.stable_id(route.leaf_id).unwrap(),
+                8,
+                &postcard::to_allocvec(&route.actions).unwrap(),
+            ));
+        }
+        assert!(
+            archive
+                .route_splice_tail_for_campaign(parent, 16, 8)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn route_splice_reuses_a_context_exit_across_exact_keys() {
         let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
         archive.enable_route_reuse(true);
@@ -5948,6 +6118,7 @@ mod tests {
         let leaf = insert(&mut archive, Some(middle), [1, 2, 3, 7], vec![0, 1, 2]);
         let dispatched = archive
             .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+            .expect("route lookup succeeds")
             .expect("route context dispatch");
         assert_eq!(dispatched.leaf_id, leaf);
         assert_eq!(dispatched.actions, vec![2]);
@@ -5961,6 +6132,7 @@ mod tests {
         assert!(
             archive
                 .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+                .expect("route lookup succeeds")
                 .is_some()
         );
         assert!(archive.deactivate(parent));
@@ -5971,6 +6143,7 @@ mod tests {
         assert!(
             archive
                 .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+                .expect("route lookup succeeds")
                 .is_some()
         );
         let full_route_memory_sum = archive
@@ -6022,6 +6195,7 @@ mod tests {
         assert!(archive.deactivate(middle));
         let dispatched = archive
             .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+            .expect("route lookup succeeds")
             .expect("route context dispatch before compaction");
         assert_eq!(dispatched.donor_id, donor);
         assert_eq!(dispatched.leaf_id, leaf);
@@ -6049,6 +6223,7 @@ mod tests {
         let parent = archive.index_of_id(parent_id).expect("parent survives");
         let dispatched = archive
             .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+            .expect("route lookup succeeds")
             .expect("fresh route dispatch after compaction");
         assert_eq!(dispatched.donor_id, donor);
         assert_eq!(dispatched.leaf_id, leaf);
@@ -6056,6 +6231,7 @@ mod tests {
         let tail = insert(&mut archive, Some(leaf), [1, 2, 3, 8], vec![0, 1, 2, 3]);
         let dispatched = archive
             .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+            .expect("route lookup succeeds")
             .expect("fresh route dispatch after compaction");
         assert_eq!(
             archive.deepest_leaf[donor],
@@ -6098,6 +6274,7 @@ mod tests {
         assert!(
             archive
                 .route_splice_tail_for_campaign(parent, MAX_COMPLETION_ACTIONS, 8)
+                .expect("route lookup succeeds")
                 .is_none(),
             "inactive ancestors must not become route donors when a descendant advances"
         );

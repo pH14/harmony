@@ -542,15 +542,23 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
                 warm_cross_group_route,
                 "warm route reuse must dispatch an observed tail across exact archive groups"
             );
-            let repeated_route_count = text
-                .lines()
-                .filter(|line| line.contains("\"outcome\":\"repeated_route\""))
-                .count();
             if mode == 4 {
-                assert!(
-                    repeated_route_count > 0,
-                    "deduplicating route policy must suppress at least one repeated route"
-                );
+                for recorded in [text, warm_text] {
+                    let mut seen = std::collections::BTreeSet::new();
+                    for line in recorded.lines() {
+                        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                        if value["splice"]["outcome"] == "tail" {
+                            let identity =
+                                serde_json::to_string(&(&value["parent_id"], &value["splice"]))
+                                    .unwrap();
+                            assert!(
+                                seen.insert(identity),
+                                "route attempt repeated before cache eviction"
+                            );
+                        }
+                    }
+                    assert!(!seen.is_empty(), "fixture must dispatch recorded routes");
+                }
             }
             if mode == 3
                 && let Some(index) = text

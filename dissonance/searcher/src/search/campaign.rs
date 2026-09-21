@@ -2737,7 +2737,7 @@ where
                                     parent_index,
                                     max_actions,
                                     SPLICE_ACTION_CAP,
-                                )
+                                )?
                             } else {
                                 core.archive.splice_tail_for_campaign(
                                     parent_index,
@@ -5470,6 +5470,7 @@ mod tests {
         let route = core
             .archive
             .route_splice_tail_for_campaign(parent, 16, 8)
+            .expect("route lookup succeeds")
             .expect("fresh lookup discovers imported prefix route");
         assert_eq!(route.donor_id, donor);
         assert_eq!(route.leaf_id, leaf);
