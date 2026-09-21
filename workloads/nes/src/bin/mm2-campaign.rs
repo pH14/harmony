@@ -262,6 +262,8 @@ fn resume_origin(args: &Args, game: &Mm2Game) -> Result<Mm2CampaignOrigin, Box<d
         snapshot_bytes.as_deref(),
     )?;
     let archive: Mm2ArchiveReport = serde_json::from_slice(&archive_bytes)?;
+    let archive_sha256 = sha256(&archive_bytes);
+    drop(archive_bytes);
     let checkpoint = args
         .resume_snapshots
         .as_ref()
@@ -280,7 +282,7 @@ fn resume_origin(args: &Args, game: &Mm2Game) -> Result<Mm2CampaignOrigin, Box<d
         .transpose()?;
     Ok(Mm2CampaignOrigin::Archive {
         path: archive_path.to_string_lossy().into_owned(),
-        file_sha256: sha256(&archive_bytes),
+        file_sha256: archive_sha256,
         report: Box::new(archive),
         checkpoint,
     })

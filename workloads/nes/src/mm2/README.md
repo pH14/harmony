@@ -19,6 +19,8 @@ objective. No transition frames are supplied by the adapter after genesis.
 The default whole-game tape budget is 32,768 actions. This mode rejects explicit stages, prefixes, manual roots, coordinate-consistency
 pruning, and selector/retention/mixture overrides. Archive warm starts retain
 normal identity checks and must originate from this same whole-game policy.
+The CLI releases validated raw archive bytes after decoding and hashing the
+report, before constructing checkpoint snapshots, to reduce import peak memory.
 
 `--selector`, `--retention`, and `--mixture` are diagnostic controls for isolated
 stage experiments, not whole-game policy knobs. The ordinary fixed selector is
