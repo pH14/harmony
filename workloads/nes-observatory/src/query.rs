@@ -365,10 +365,7 @@ pub fn timeline(store: &Store, run_id: &str, filter: &TimelineFilter) -> Result<
     window(filter.from_ms, filter.to_ms, 86_400_000)?;
     if filter.bucket_ms < 1000
         || filter.bucket_ms > 3_600_000
-        || filter
-            .to_ms
-            .saturating_sub(filter.from_ms)
-            .div_ceil(filter.bucket_ms)
+        || filter.to_ms.saturating_sub(1) / filter.bucket_ms - filter.from_ms / filter.bucket_ms + 1
             > 360
     {
         return Err(

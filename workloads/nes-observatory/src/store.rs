@@ -77,12 +77,25 @@ impl Store {
     }
 
     fn request(&self, sql: &str, body: Vec<u8>, token: Option<&str>) -> Result<String> {
+        self.request_with_timeout(sql, body, token, None)
+    }
+
+    fn request_with_timeout(
+        &self,
+        sql: &str,
+        body: Vec<u8>,
+        token: Option<&str>,
+        timeout: Option<Duration>,
+    ) -> Result<String> {
         let mut request = self
             .client
             .post(&self.url)
             .basic_auth(&self.user, Some(&self.password))
             .query(&[("query", sql)])
             .body(body);
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
         if let Some(token) = token {
             request = request.query(&[
                 ("insert_deduplication_token", token),
@@ -115,6 +128,15 @@ impl Store {
     }
 
     pub fn insert(&self, batch: &[u8], token: &str) -> Result<()> {
+        self.insert_with_timeout(batch, token, Duration::from_secs(5))
+    }
+
+    pub(crate) fn insert_with_timeout(
+        &self,
+        batch: &[u8],
+        token: &str,
+        timeout: Duration,
+    ) -> Result<()> {
         if batch.len() > 1_048_576 {
             return Err("telemetry batch exceeds one MiB".into());
         }
@@ -126,10 +148,11 @@ impl Store {
         {
             return Err("telemetry batch token is malformed".into());
         }
-        self.request(
+        self.request_with_timeout(
             "INSERT INTO observatory.events FORMAT JSONEachRow",
             batch.to_vec(),
             Some(token),
+            Some(timeout),
         )?;
         Ok(())
     }

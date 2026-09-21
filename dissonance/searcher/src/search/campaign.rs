@@ -165,6 +165,7 @@ pub trait CampaignObserver<G: Workload> {
     ) {
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn admission(
         &mut self,
         _reservation: u64,

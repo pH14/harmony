@@ -103,7 +103,7 @@ export default function App() {
   useEffect(() => {
     if (!runId) return;
     let alive = true;
-    setStatus(null); setMapResult(null); setTimelineResult(null); setMapBusy(false); setSelected(null); setObservations(null); setQueriedScope(""); queryAbort.current?.abort(); cache.current.clear();
+    setStatus(null); setMapResult(null); setTimelineResult(null); setMapBusy(false); setSelected(null); setObservations(null); setQueriedScope(""); queryAbort.current?.abort(); queryAbort.current = null; setQueryBusy(false); setQueryError(""); cache.current.clear();
     const load = () => read<Status>("/api/v1/runs/" + runId + "/status").then(value => {
       if (!alive) return;
       setStatus(value); setError("");

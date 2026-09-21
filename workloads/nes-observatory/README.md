@@ -4,7 +4,7 @@
 
 `nes-observatory` is the native Metroid campaign plus a bounded, best-effort telemetry sidecar. The actual campaign stream and report remain the deterministic source of search results. The sidecar records actual parent selections (including duplicate skips), admitted measured emulated frames, valid gameplay action observations, and first observed coarse map cells. It uses the existing `AlphabetOnly` input policy and does not modify selection or RNG state. The Rust CLI and HTTP service share one typed query layer. The React viewer is in `../../website/observatory`.
 
-[BENCHMARKS.md](BENCHMARKS.md) reports the measured host envelope, benchmark inputs, and limits.
+[BENCHMARKS.md](BENCHMARKS.md) defines the qualification procedure and supported limits; measured evidence is linked there.
 
 This is a composition package so HTTP and ClickHouse dependencies stay outside `searcher` and `nes-workload`. The generic campaign observer receives reservation and ordered admission callbacks. The no-op observer retains the ordinary campaign call path.
 
@@ -37,7 +37,7 @@ Build the viewer with `cd website/observatory && npm ci && npm run build`, then 
 
 ## Query contract
 
-The CLI returns JSON and the service exposes equivalent `/api/v1/runs`, `/runs/{id}/status`, `/runs/{id}/map`, `/runs/{id}/timeline`, `/runs/{id}/observations`, and `/runs/{id}/draw-table` routes under `/api/v1`. Intervals are half open `[from_ms,to_ms)`, measured from search start. Map queries allow up to one hour; timeline queries allow up to one day and 360 buckets. A map has 1 ms timestamp resolution and 32 by 32 cells per area. Common questions:
+The CLI returns JSON and the service exposes equivalent `/api/v1/runs`, `/runs/{id}/status`, `/runs/{id}/map`, `/runs/{id}/timeline`, `/runs/{id}/observations`, and `/runs/{id}/draw-table` routes under `/api/v1`. Intervals are half open `[from_ms,to_ms)`, measured from search start. Map queries allow up to one hour; timeline queries allow up to one day and 360 run-start-aligned buckets. An unaligned window that touches 361 buckets is rejected instead of truncating its final bucket. A map has 1 ms timestamp resolution and 32 by 32 cells per area. Common questions:
 
 ```sh
 nes-observatory runs --json

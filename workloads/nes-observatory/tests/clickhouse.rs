@@ -3,7 +3,7 @@
 use nes_observatory::{
     contract::Event,
     producer::{export_spool, random_id},
-    query::{self, MapFilter, Metric, ObservationFilter},
+    query::{self, MapFilter, Metric, ObservationFilter, TimelineFilter},
     store::Store,
 };
 use serde_json::Value;
@@ -297,4 +297,70 @@ fn expired_spool_export_marks_run_incomplete() {
         "2"
     );
     fs::remove_dir_all(directory).expect("clean synthetic spool");
+}
+
+#[test]
+#[ignore = "requires pinned ClickHouse 26.3 and HARMONY_CLICKHOUSE_* credentials"]
+fn timeline_rejects_unaligned_window_that_would_truncate_tail() {
+    let store = Store::new(
+        std::env::var("HARMONY_CLICKHOUSE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8123".to_owned()),
+        std::env::var("HARMONY_CLICKHOUSE_USER").expect("test ClickHouse user"),
+        std::env::var("HARMONY_CLICKHOUSE_PASSWORD").expect("test ClickHouse password"),
+    )
+    .expect("ClickHouse client");
+    store.bootstrap().expect("schema");
+    let run = random_id().expect("run ID");
+    let session = random_id().expect("session ID");
+    let mut batch = Vec::new();
+    for item in 0..=361_u64 {
+        let row = if item == 0 {
+            event("run_start", &run, &session, 1, 0)
+        } else {
+            event(
+                "selection",
+                &run,
+                &session,
+                item + 1,
+                500 + (item - 1) * 1000,
+            )
+        };
+        serde_json::to_writer(&mut batch, &row).expect("event JSON");
+        batch.push(b'\n');
+    }
+    store
+        .insert(&batch, &format!("b-{session}-timeline"))
+        .expect("synthetic timeline");
+    assert!(
+        query::timeline(
+            &store,
+            &run,
+            &TimelineFilter {
+                from_ms: 500,
+                to_ms: 360500,
+                bucket_ms: 1000,
+            },
+        )
+        .is_err()
+    );
+    let aligned = query::timeline(
+        &store,
+        &run,
+        &TimelineFilter {
+            from_ms: 1000,
+            to_ms: 361000,
+            bucket_ms: 1000,
+        },
+    )
+    .expect("aligned timeline");
+    let points = aligned["points"].as_array().expect("points");
+    assert_eq!(points.len(), 360);
+    assert_eq!(
+        value(points.last().expect("last point"), &["bucket_ms"]),
+        360000
+    );
+    assert_eq!(
+        value(points.last().expect("last point"), &["selections"]),
+        1
+    );
 }

@@ -6,8 +6,8 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
@@ -308,10 +308,20 @@ fn writer_loop(
 }
 
 #[allow(clippy::disallowed_methods)]
-fn upload_loop(directory: PathBuf, spool_root: PathBuf, store: Store, stop: Arc<AtomicBool>) {
-    let mut stopping = None::<Instant>;
+fn upload_loop(
+    directory: PathBuf,
+    spool_root: PathBuf,
+    store: Store,
+    stop: Arc<OnceLock<Instant>>,
+) {
     let mut last_sweep = Instant::now();
     loop {
+        if stop
+            .get()
+            .is_some_and(|since| since.elapsed() >= Duration::from_secs(5))
+        {
+            break;
+        }
         if last_sweep.elapsed() >= Duration::from_secs(60) {
             if let Err(error) = expire_spool_root(&spool_root) {
                 eprintln!("observatory spool expiry failed: {error}");
@@ -332,24 +342,34 @@ fn upload_loop(directory: PathBuf, spool_root: PathBuf, store: Store, stop: Arc<
         files.sort();
         let mut uploaded = false;
         for path in files {
+            let remaining = stop
+                .get()
+                .map(|since| Duration::from_secs(5).saturating_sub(since.elapsed()));
+            if remaining == Some(Duration::ZERO) {
+                break;
+            }
             let Some(token) = path.file_stem().and_then(|name| name.to_str()) else {
                 continue;
             };
             let Ok(bytes) = fs::read(&path) else {
                 continue;
             };
-            if store.insert(&bytes, token).is_ok() {
+            let inserted = if let Some(remaining) = remaining {
+                store.insert_with_timeout(&bytes, token, remaining)
+            } else {
+                store.insert(&bytes, token)
+            };
+            if inserted.is_ok() {
                 let _ = fs::remove_file(&path);
                 uploaded = true;
             } else {
                 break;
             }
         }
-        if stop.load(Ordering::Relaxed) {
-            let since = stopping.get_or_insert_with(Instant::now);
-            if directory_empty(&directory) || since.elapsed() >= Duration::from_secs(5) {
-                break;
-            }
+        if let Some(since) = stop.get()
+            && (directory_empty(&directory) || since.elapsed() >= Duration::from_secs(5))
+        {
+            break;
         }
         if !uploaded {
             thread::sleep(Duration::from_millis(500));
@@ -409,7 +429,7 @@ pub struct Producer {
     started_instant: Instant,
     writer: Option<JoinHandle<()>>,
     uploader: Option<JoinHandle<()>>,
-    stop: Arc<AtomicBool>,
+    stop: Arc<OnceLock<Instant>>,
 }
 
 impl Producer {
@@ -430,7 +450,7 @@ impl Producer {
         let next_id = Arc::new(AtomicU64::new(1));
         let lost_queue = Arc::new(AtomicU64::new(0));
         let lost_spool = Arc::new(AtomicU64::new(0));
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(OnceLock::new());
         let started_unix_ms = unix_millis();
         let writer = {
             let directory = directory.clone();
@@ -518,7 +538,7 @@ impl Producer {
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
         }
-        self.stop.store(true, Ordering::Relaxed);
+        let _ = self.stop.set(Instant::now());
         if let Some(uploader) = self.uploader.take() {
             let _ = uploader.join();
         }
@@ -793,6 +813,77 @@ mod tests {
             .expect("age batch");
         assert!(expire_spool_root(&root).is_err());
         assert_eq!(fs::read(&path).expect("preserved batch"), b"malformed\n");
+        fs::remove_dir_all(root).expect("clean test spool");
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn uploader_respects_shutdown_deadline_with_backlog() {
+        use std::{net::TcpListener, sync::atomic::AtomicBool};
+
+        let root = std::env::temp_dir().join(format!(
+            "harmony-observatory-shutdown-test-{}",
+            random_id().expect("random test ID")
+        ));
+        let directory = root.join("run/session");
+        fs::create_dir_all(&directory).expect("spool directory");
+        for sequence in 1..=20 {
+            fs::write(
+                directory.join(format!("b-session-{sequence:016}.jsonl")),
+                b"{}\n",
+            )
+            .expect("queued batch");
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").expect("local test server");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let address = listener.local_addr().expect("local address");
+        let server_stop = Arc::new(AtomicBool::new(false));
+        let server_signal = Arc::clone(&server_stop);
+        let server = thread::spawn(move || {
+            while !server_signal.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = [0_u8; 4096];
+                        let _ = stream.read(&mut request);
+                        thread::sleep(Duration::from_millis(600));
+                        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("test server: {error}"),
+                }
+            }
+        });
+        let store = Store::new(format!("http://{address}"), String::new(), String::new())
+            .expect("local test client");
+        let stop = Arc::new(OnceLock::new());
+        stop.set(Instant::now()).expect("stop deadline");
+        let started = Instant::now();
+        upload_loop(directory.clone(), root.clone(), store, stop);
+        let elapsed = started.elapsed();
+        server_stop.store(true, Ordering::Relaxed);
+        server.join().expect("server thread");
+        let remaining = fs::read_dir(&directory)
+            .expect("remaining spool")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|value| value == "jsonl")
+            })
+            .count();
+        assert!(
+            remaining > 0 && remaining < 20,
+            "remaining batches: {remaining}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(8),
+            "shutdown took {elapsed:?}"
+        );
         fs::remove_dir_all(root).expect("clean test spool");
     }
 
