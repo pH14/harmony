@@ -67,21 +67,21 @@ declaration order no longer ranks anything: two places with equal items and
 equal boss damage are peers whatever their area byte, map row or column.
 
 Boss damage is how far a lineage has worn down the mini boss sharing its room.
-In Tourian the same coordinate reads the whole approach to Mother Brain as one
-count: her remaining hits (32 minus her hit count at `$99`, the count she dies
-at, or zero once her status byte at `$98` has passed into her death sequence)
-plus the hits still needed on every Zebetite column slot. The game keeps five
-Zebetite slots at `$0758`, eight bytes apart, with the slot's status at offset
-0 (low nibble 1 alive, 2 destroyed) and its missile hit count at offset 3; a
-column dies at eight hits while healing one hit every 64 frames it is not hit,
-and a slot the game has not loaded yet counts as a whole column. Her status
-byte clears whenever Samus is in the other half of her room and her hit count
-persists, so the sum falls as missiles land and rises only when the game
-heals a column or respawns the columns of a room Samus re-enters; it does not
-move when she scrolls out of view. Both parts count four per
-hit, the damage one missile does to Kraid or Ridley, so one missile is one
-boss-damage bucket in every boss room; the field is sixteen bits because the
-sum starts at 288. The state also counts the
+In Tourian the coordinate reads Mother Brain's remaining hits: 32 minus her
+hit count at `$99`, the count she dies at, or zero once her status byte at
+`$98` has passed into her death sequence. Her status byte clears whenever Samus
+is in the other half of her room and her hit count persists, so the count
+falls as missiles land on her and never rises. It counts four per hit, the
+damage one missile does to Kraid or Ridley, so one missile is one boss-damage
+bucket in every boss room. The Zebetite columns are part of the cell instead:
+the key carries the hits still needed on every live column slot, so a state
+that has hit a column is a different place from one that has not, and a
+column healing or respawning moves the state to another place without ranking
+it above or below the rest of Tourian. The game keeps five Zebetite slots at
+`$0758`, eight bytes apart, with the slot's status at offset 0 (low nibble 1
+alive, 2 destroyed) and its missile hit count at offset 3; a column dies at
+eight hits while healing one hit every 64 frames it is not hit, and the game
+loads the columns of each screen as Samus enters it. The state also counts the
 destroyed columns for the `zebetite_destroyed` milestone.
 The game keeps six enemy slots at `$0400`, sixteen bytes apart, with the current
 hit points at offset `$0b` and a mini-boss mark in bit 6 of offset `$0f`; `$ff`
@@ -221,8 +221,8 @@ stores 1 at $687B for Kraid and 2 at $687C for Ridley. The previous decoder
 incorrectly tested bit 0 for both bosses. Correcting the count is versioned as
 key policy v8; named boss observation bytes require stream/checkpoint/result
 digest v4 (v2 introduced named Kraid/Ridley flags; v3 added Mother Brain state;
-v4 latches transient Tourian events). Key policy v18 reads Mother Brain's remaining hits plus every Zebetite
-slot into Tourian's boss health at four per hit, carries a lineage's highest reading across map cells while a reading is present, and named-progress v3 adds the destroyed
+v4 latches transient Tourian events). Key policy v19 reads Mother Brain's remaining hits alone into Tourian's
+boss health at four per hit, keeps the live Zebetite columns' remaining hits in the cell, carries a lineage's highest reading across map cells while a reading is present, and named-progress v3 adds the destroyed
 column and binds Mother Brain's room to her status byte. Named-progress v2 and replay-probe v2 also
 correct origin/retrospective route timestamps to exclude genesis setup; the probe
 reports action execution work and setup separately; probes and backend snapshot

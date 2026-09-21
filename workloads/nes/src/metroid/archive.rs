@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_tourian_her_hits_plus_slots_lineage_carries_while_present_v18";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_tourian_her_hits_columns_in_the_cell_v19";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -42,6 +42,7 @@ pub struct MetroidArchiveGroup {
     posture: u8,
     door: u8,
     area: u8,
+    columns: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -58,6 +59,7 @@ pub struct MetroidArchiveKey {
     pub y: u8,
     pub posture: u8,
     pub door: u8,
+    pub columns: u8,
     pub health: u16,
     pub missiles: u8,
 }
@@ -85,6 +87,7 @@ impl ArchiveKey for MetroidArchiveKey {
             y: self.y,
             posture: self.posture,
             door: self.door,
+            columns: self.columns,
         };
         match depth {
             0 => location,
@@ -107,6 +110,7 @@ impl ArchiveKey for MetroidArchiveKey {
                 area: self.area,
                 map_x: self.map_x,
                 map_y: self.map_y,
+                columns: self.columns,
                 ..MetroidArchiveGroup::default()
             },
             _ => MetroidArchiveGroup {
@@ -216,6 +220,7 @@ pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
         y: state.y / POSITION_BUCKET,
         posture: state.posture(),
         door: state.door,
+        columns: state.zebetite_hits_left,
         health,
         missiles,
     }
@@ -524,6 +529,7 @@ mod tests {
             equipment: 0b1,
             boss_health: 64,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..MetroidMechanicalState::default()
         })
         .complete(Some((MetroidArchiveKey::default(), &lineage)));
@@ -531,6 +537,7 @@ mod tests {
             equipment: 0b1,
             boss_health: 24,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..MetroidMechanicalState::default()
         })
         .complete(Some((MetroidArchiveKey::default(), &lineage)));
@@ -585,6 +592,7 @@ mod tests {
             map_y: 11,
             boss_health: 288,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..MetroidMechanicalState::default()
         });
         MetroidArchiveKey::record(&mut lineage, shaft);
@@ -593,6 +601,7 @@ mod tests {
             map_y: 11,
             boss_health: 256,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..MetroidMechanicalState::default()
         })
         .complete(Some((shaft, &lineage)));
@@ -604,6 +613,7 @@ mod tests {
             map_y: 29,
             boss_health: 0,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..MetroidMechanicalState::default()
         });
         MetroidArchiveKey::record(&mut lineage, outside);
@@ -616,6 +626,7 @@ mod tests {
         let arriving = archive_key(MetroidMechanicalState {
             boss_health: 64,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..MetroidMechanicalState::default()
         });
         MetroidArchiveKey::record(&mut lineage, arriving);
@@ -623,6 +634,7 @@ mod tests {
         let hurt = archive_key(MetroidMechanicalState {
             boss_health: 10,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..MetroidMechanicalState::default()
         });
         MetroidArchiveKey::record(&mut lineage, hurt);
@@ -639,6 +651,7 @@ mod tests {
         let first_retained = archive_key(MetroidMechanicalState {
             boss_health: 48,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..MetroidMechanicalState::default()
         })
         .with_boss_health_seen(96)
@@ -649,6 +662,7 @@ mod tests {
         let later = archive_key(MetroidMechanicalState {
             boss_health: 40,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..MetroidMechanicalState::default()
         })
         .with_boss_health_seen(48)
@@ -658,6 +672,7 @@ mod tests {
             archive_key(MetroidMechanicalState {
                 boss_health: 64,
                 zebetites_destroyed: 0,
+                zebetite_hits_left: 0,
                 ..MetroidMechanicalState::default()
             })
             .with_boss_health_seen(10)
@@ -675,6 +690,7 @@ mod tests {
             map_y: 29,
             boss_health: 96,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..MetroidMechanicalState::default()
         };
         let arriving = archive_key(room).complete(None);
@@ -682,6 +698,7 @@ mod tests {
         let hurt = archive_key(MetroidMechanicalState {
             boss_health: 48,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..room
         })
         .complete(Some((arriving, &lineage)));
@@ -691,6 +708,7 @@ mod tests {
             map_x: 9,
             boss_health: 0,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..room
         })
         .complete(Some((hurt, &lineage)));
@@ -700,6 +718,7 @@ mod tests {
         let back = archive_key(MetroidMechanicalState {
             boss_health: 96,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..room
         })
         .complete(Some((outside, &lineage)));
@@ -708,6 +727,7 @@ mod tests {
         let hurt_again = archive_key(MetroidMechanicalState {
             boss_health: 80,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..room
         })
         .complete(Some((back, &lineage)));
@@ -715,6 +735,7 @@ mod tests {
         let stayed = archive_key(MetroidMechanicalState {
             boss_health: 0,
             zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
             ..room
         })
         .complete(Some((hurt, &lineage)));
