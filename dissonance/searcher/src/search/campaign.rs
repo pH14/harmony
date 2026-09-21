@@ -152,6 +152,35 @@ pub trait CampaignTypes: Sync {
     type DrawHeader: Clone + Debug + Eq + Serialize + DeserializeOwned;
 }
 
+pub trait CampaignObserver<G: Workload> {
+    fn bootstrap(&mut self, _key: G::Key) {}
+
+    fn selection(
+        &mut self,
+        _selection_id: u64,
+        _reservation: Option<u64>,
+        _parent_id: u64,
+        _parent_key: G::Key,
+        _elapsed_millis: u64,
+    ) {
+    }
+
+    fn admission(
+        &mut self,
+        _reservation: u64,
+        _sequence: u64,
+        _parent_id: u64,
+        _parent_key: G::Key,
+        _selection_elapsed_millis: u64,
+        _admission_elapsed_millis: u64,
+        _execution_work: u64,
+        _result: &CampaignJobResult<G>,
+    ) {
+    }
+}
+
+impl<G: Workload> CampaignObserver<G> for () {}
+
 pub trait Reporting: CampaignTypes {
     fn diagnostics(_evidence: &Self::Evidence) -> Option<serde_json::Value> {
         None
@@ -2029,6 +2058,7 @@ struct PendingJob<G: Workload + ?Sized> {
     duration_admission_sequence_at_draw: Option<u64>,
     duration_remaining_work: Option<NonZeroU64>,
     duration_checkpoint_at_draw: Option<DurationCheckpoint>,
+    telemetry_selected_millis: u64,
 }
 
 struct CompletedJob<G: Workload + ?Sized> {
@@ -2295,8 +2325,32 @@ pub fn run_campaign_checkpointed_with_options<G: Workload>(
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    run_campaign_checkpointed_with_observer(
+        workload,
+        config,
+        origin,
+        stream,
+        progress,
+        options,
+        &mut (),
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn run_campaign_checkpointed_with_observer<G: Workload>(
+    workload: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
     mut progress: Option<&mut dyn Write>,
     options: CampaignExecutionOptions,
+    observer: &mut dyn CampaignObserver<G>,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
@@ -2382,6 +2436,11 @@ where
         workload.execution_work(&bootstrap_target),
         "bootstrap",
     )?;
+    if matches!(origin, CampaignOrigin::Genesis)
+        && let Some(entry) = core.archive.entries.first()
+    {
+        observer.bootstrap(entry.key);
+    }
     if core.objectives_reached > 0 {
         counters.note_first_objective(0);
     }
@@ -2459,7 +2518,8 @@ where
                           writer: &mut StreamWriter<'_>,
                           counters: &mut CampaignCounters,
                           reserved: &mut u64,
-                          worker: u32|
+                          worker: u32,
+                          observer: &mut dyn CampaignObserver<G>|
              -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
                 if *reserved >= config.execution_budget
                     || work_budget.is_some_and(|budget| {
@@ -2550,6 +2610,7 @@ where
                                 duration_admission_sequence_at_draw: None,
                                 duration_remaining_work: None,
                                 duration_checkpoint_at_draw: None,
+                                telemetry_selected_millis: 0,
                             },
                         )));
                     }
@@ -2676,6 +2737,16 @@ where
                             .and_then(|draw| duration_policies.context_checkpoint(draw.context));
                         let draw_checkpoint_after =
                             workload.finish_stream_record(&config.run, draw_state, &[])?;
+                        observer.selection(
+                            reserved
+                                .saturating_add(counters.duplicates_skipped)
+                                .saturating_add(1),
+                            None,
+                            parent_id,
+                            core.archive.entries[parent_index].key,
+                            u64::try_from(telemetry_started.elapsed().as_millis())
+                                .unwrap_or(u64::MAX),
+                        );
                         writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
                             worker,
                             parent_id,
@@ -2729,6 +2800,7 @@ where
                             duration_admission_sequence_at_draw,
                             duration_remaining_work,
                             duration_checkpoint_at_draw,
+                            telemetry_selected_millis: 0,
                         },
                     )));
                 }
@@ -2753,14 +2825,28 @@ where
                     &mut counters,
                     &mut reserved,
                     worker,
+                    observer,
                 )?;
                 coordinator_profile.selection_ns = coordinator_profile
                     .selection_ns
                     .saturating_add(profile_elapsed(selection_started));
                 coordinator_profile.selections = coordinator_profile.selections.saturating_add(1);
-                let Some((mut spec, pending_job)) = selected else {
+                let Some((mut spec, mut pending_job)) = selected else {
                     break;
                 };
+                pending_job.telemetry_selected_millis =
+                    u64::try_from(telemetry_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let parent_index = core
+                    .archive
+                    .index_of_id(pending_job.parent_id)
+                    .ok_or("selected parent is no longer resident")?;
+                observer.selection(
+                    reserved.saturating_add(counters.duplicates_skipped),
+                    Some(reserved.saturating_sub(1)),
+                    pending_job.parent_id,
+                    core.archive.entries[parent_index].key,
+                    pending_job.telemetry_selected_millis,
+                );
                 coordinator_profile.note_dispatch(&spec, action_cost);
                 let reservation = usize::try_from(reserved.saturating_sub(1))?;
                 spec.reservation = reservation;
@@ -2850,6 +2936,20 @@ where
                         .and_then(|draw| duration_policies.context_checkpoint(draw.context));
                     let objectives_before = core.objectives_reached;
                     let admission_started = profile_now(coordinator_profile.enabled);
+                    observer.admission(
+                        u64::try_from(next_admission).unwrap_or(u64::MAX),
+                        core.sequence.saturating_add(1),
+                        pending_job.parent_id,
+                        core.archive.entries[core
+                            .archive
+                            .index_of_id(pending_job.parent_id)
+                            .ok_or("admission parent is no longer resident")?]
+                        .key,
+                        pending_job.telemetry_selected_millis,
+                        u64::try_from(telemetry_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        execution_work,
+                        &result,
+                    );
                     let (sequence, decisions, duration_admission) = core.admit_job_tracking(
                         workload,
                         pending_job.parent_id,
@@ -3060,13 +3160,28 @@ where
                         &mut counters,
                         &mut reserved,
                         worker,
+                        observer,
                     )?;
                     coordinator_profile.selection_ns = coordinator_profile
                         .selection_ns
                         .saturating_add(profile_elapsed(selection_started));
                     coordinator_profile.selections =
                         coordinator_profile.selections.saturating_add(1);
-                    if let Some((mut spec, pending_job)) = selected {
+                    if let Some((mut spec, mut pending_job)) = selected {
+                        pending_job.telemetry_selected_millis =
+                            u64::try_from(telemetry_started.elapsed().as_millis())
+                                .unwrap_or(u64::MAX);
+                        let parent_index = core
+                            .archive
+                            .index_of_id(pending_job.parent_id)
+                            .ok_or("selected parent is no longer resident")?;
+                        observer.selection(
+                            reserved.saturating_add(counters.duplicates_skipped),
+                            Some(reserved.saturating_sub(1)),
+                            pending_job.parent_id,
+                            core.archive.entries[parent_index].key,
+                            pending_job.telemetry_selected_millis,
+                        );
                         coordinator_profile.note_dispatch(&spec, action_cost);
                         let reservation = usize::try_from(reserved.saturating_sub(1))?;
                         spec.reservation = reservation;

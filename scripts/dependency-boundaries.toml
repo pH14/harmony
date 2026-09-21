@@ -52,6 +52,7 @@ workload_packages = [
 ]
 composition_apps_tests = [
     "workloads/tools",
+    "workloads/nes-observatory",
     "cli",
     "consonance/control-proto/fuzz",
     "consonance/telemetry",

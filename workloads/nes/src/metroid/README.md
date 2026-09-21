@@ -117,6 +117,8 @@ by a predicate it was never recorded under. A campaign report names the areas a 
 map cells it observed; neither says which cells a route crossed, so neither can
 say which neighbour of a reached cell was never opened.
 
+The [Metroid search observatory](../../nes-observatory/README.md) collects valid in-play action observations at ordered admission and maps their area and coarse coordinates. It excludes menu, death, ending, BCD-underflow health, and door-transition states. Its joint resource details are sampled, while first-seen cells and per-cell observation counts use all valid action observations. The observatory uses the existing alphabet-only input policy; this workload has no published empirical draw table.
+
 ## Named milestone evaluation
 
 `workload_diagnostics.named_progress` reports Morph Ball, Bombs, Long Beam,

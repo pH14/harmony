@@ -32,3 +32,8 @@ __pycache__/
 # Local semantic-lints cache and calibration dump; both are per-machine scratch.
 /.semantic-lints-cache.json
 /semantic-lints-calibration.tsv
+
+# Observatory build products and local telemetry data.
+/.observatory-dev/
+/website/observatory/node_modules/
+/website/observatory/dist/
