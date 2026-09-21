@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_tourian_her_hits_in_view_columns_in_the_cell_v20";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_tourian_her_hits_in_view_columns_below_the_map_cell_v21";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -110,7 +110,6 @@ impl ArchiveKey for MetroidArchiveKey {
                 area: self.area,
                 map_x: self.map_x,
                 map_y: self.map_y,
-                columns: self.columns,
                 ..MetroidArchiveGroup::default()
             },
             _ => MetroidArchiveGroup {
@@ -440,6 +439,17 @@ mod tests {
         let stocked = archive_key(state(100, 300, 0));
         let equipped = archive_key(state(100, 10, 0b1));
         assert_eq!(equipped.preference_cmp(0, stocked), Ordering::Greater);
+    }
+
+    #[test]
+    fn column_states_share_a_map_cell_group() {
+        let clear = archive_key(state(100, 300, 0));
+        let mut live = state(100, 300, 0);
+        live.zebetite_hits_left = 13;
+        let live = archive_key(live);
+        assert_ne!(clear.group(0), live.group(0));
+        assert_ne!(clear.group(2), live.group(2));
+        assert_eq!(clear.group(3), live.group(3));
     }
 
     #[test]

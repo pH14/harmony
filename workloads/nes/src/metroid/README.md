@@ -81,7 +81,10 @@ The Zebetite columns are part of the cell instead:
 the key carries the hits still needed on every live column slot, so a state
 that has hit a column is a different place from one that has not, and a
 column healing or respawning moves the state to another place without ranking
-it above or below the rest of Tourian. The game keeps five Zebetite slots at
+it above or below the rest of Tourian. The column state sits below the map
+cell in the group order, so the walk's per-cell draw share is not split among
+column states: a screen whose columns heal between draws keeps one share, and
+the entries with the columns down compete inside it. The game keeps five Zebetite slots at
 `$0758`, eight bytes apart, with the slot's status at offset 0 (low nibble 1
 alive, 2 destroyed) and its missile hit count at offset 3; a column dies at
 eight hits while healing one hit every 64 frames it is not hit, and the game
@@ -228,8 +231,8 @@ stores 1 at $687B for Kraid and 2 at $687C for Ridley. The previous decoder
 incorrectly tested bit 0 for both bosses. Correcting the count is versioned as
 key policy v8; named boss observation bytes require stream/checkpoint/result
 digest v4 (v2 introduced named Kraid/Ridley flags; v3 added Mother Brain state;
-v4 latches transient Tourian events). Key policy v20 reads Mother Brain's remaining hits into Tourian's
-boss health at four per hit while her status byte says she is in view, with her full health as the ceiling of the highest present reading, keeps the live Zebetite columns' remaining hits in the cell, carries a lineage's highest reading across map cells while a reading is present, and named-progress v3 adds the destroyed
+v4 latches transient Tourian events). Key policy v21 reads Mother Brain's remaining hits into Tourian's
+boss health at four per hit while her status byte says she is in view, with her full health as the ceiling of the highest present reading, keeps the live Zebetite columns' remaining hits in the cell below the map cell, carries a lineage's highest reading across map cells while a reading is present, and named-progress v3 adds the destroyed
 column and binds Mother Brain's room to her status byte. Named-progress v2 and replay-probe v2 also
 correct origin/retrospective route timestamps to exclude genesis setup; the probe
 reports action execution work and setup separately; probes and backend snapshot
