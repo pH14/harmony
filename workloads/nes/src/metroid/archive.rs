@@ -21,11 +21,11 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_tourian_four_per_hit_v16";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_tourian_her_hits_plus_slots_v17";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
-const BOSS_DAMAGE_BUCKET: u8 = 4;
+const BOSS_DAMAGE_BUCKET: u16 = 4;
 
 pub type MetroidArchive =
     Archive<ButtonChord, MetroidArchiveKey, MetroidMilestones, MetroidSnapshot>;
@@ -49,8 +49,8 @@ pub struct MetroidArchiveKey {
     pub items: u8,
     pub tanks: u8,
     pub boss_damage: u8,
-    pub boss_health: u8,
-    pub boss_health_seen: u8,
+    pub boss_health: u16,
+    pub boss_health_seen: u16,
     pub area: u8,
     pub map_x: u8,
     pub map_y: u8,
@@ -154,7 +154,10 @@ impl ArchiveKey for MetroidArchiveKey {
         };
         let highest = inherited.max(self.boss_health_seen).max(self.boss_health);
         Self {
-            boss_damage: highest.saturating_sub(self.boss_health) / BOSS_DAMAGE_BUCKET,
+            boss_damage: u8::try_from(
+                highest.saturating_sub(self.boss_health) / BOSS_DAMAGE_BUCKET,
+            )
+            .unwrap_or(u8::MAX),
             ..self
         }
     }
@@ -173,7 +176,7 @@ impl ArchiveKey for MetroidArchiveKey {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MetroidLineage {
-    boss_health_highest: u8,
+    boss_health_highest: u16,
     cell: (u8, u8, u8),
 }
 
@@ -183,7 +186,7 @@ impl MetroidArchiveKey {
     }
 
     #[must_use]
-    pub fn with_boss_health_seen(self, boss_health_seen: u8) -> Self {
+    pub fn with_boss_health_seen(self, boss_health_seen: u16) -> Self {
         Self {
             boss_health_seen: boss_health_seen.max(self.boss_health),
             ..self
@@ -596,7 +599,7 @@ mod tests {
         MetroidArchiveKey::record(&mut lineage, hurt);
         assert_eq!(lineage.boss_health_highest, 64);
         assert_eq!(
-            hurt.complete(Some((arriving, &lineage))).boss_damage,
+            u16::from(hurt.complete(Some((arriving, &lineage))).boss_damage),
             (64 - 10) / BOSS_DAMAGE_BUCKET
         );
     }

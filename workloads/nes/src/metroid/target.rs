@@ -109,8 +109,6 @@ const STATUE_RAISED_BIT: u8 = 0x80;
 const ENDING: usize = 0x883;
 const MOTHER_BRAIN_STATUS: usize = 0x98;
 const MOTHER_BRAIN_HITS: usize = 0x99;
-const MOTHER_BRAIN_IN_ROOM: u8 = 1;
-const MOTHER_BRAIN_HIT: u8 = 2;
 const MOTHER_BRAIN_HITS_TO_KILL: u8 = 0x20;
 const ZEBETITE_SLOT_BASE: usize = 0x758;
 const ZEBETITE_SLOT_STRIDE: usize = 8;
@@ -119,7 +117,8 @@ const ZEBETITE_HITS: usize = 3;
 const ZEBETITE_HITS_TO_KILL: u8 = 8;
 const ZEBETITE_ALIVE: u8 = 1;
 const ZEBETITE_DESTROYED: u8 = 2;
-const TOURIAN_HEALTH_PER_HIT: u8 = 4;
+const TOURIAN_HEALTH_PER_HIT: u16 = 4;
+const MOTHER_BRAIN_DEFEATED_STATUSES: [u8; 7] = [3, 4, 5, 6, 7, 9, 10];
 const AREA_TOURIAN: u8 = 0x13;
 const ENERGY_TANKS: usize = 0x877;
 
@@ -142,7 +141,7 @@ pub struct MetroidMechanicalState {
     pub missiles: u8,
     pub missile_capacity: u8,
     pub energy_tanks: u8,
-    pub boss_health: u8,
+    pub boss_health: u16,
     pub zebetites_destroyed: u8,
     pub bosses: u8,
     pub statues: u8,
@@ -224,37 +223,35 @@ fn mini_boss_health(wram: &[u8]) -> Result<u8, MachineError> {
     Ok(0)
 }
 
-fn zebetite_slots(wram: &[u8]) -> Result<(u8, u8), MachineError> {
-    let mut remaining = 0u8;
+fn zebetite_slots(wram: &[u8]) -> Result<(u16, u8), MachineError> {
+    let mut remaining = 0u16;
     let mut destroyed = 0u8;
     for slot in 0..ZEBETITE_SLOTS {
         let base = ZEBETITE_SLOT_BASE + slot * ZEBETITE_SLOT_STRIDE;
         match read_byte(wram, base)? & 0x0f {
             ZEBETITE_ALIVE => {
-                remaining = remaining.saturating_add(
+                remaining += u16::from(
                     ZEBETITE_HITS_TO_KILL.saturating_sub(read_byte(wram, base + ZEBETITE_HITS)?),
                 );
             }
             ZEBETITE_DESTROYED => destroyed += 1,
-            _ => {}
+            _ => remaining += u16::from(ZEBETITE_HITS_TO_KILL),
         }
     }
     Ok((remaining, destroyed))
 }
 
-fn boss_health(wram: &[u8], area: u8) -> Result<u8, MachineError> {
+fn boss_health(wram: &[u8], area: u8) -> Result<u16, MachineError> {
     if area != AREA_TOURIAN {
-        return mini_boss_health(wram);
+        return mini_boss_health(wram).map(u16::from);
     }
-    match read_byte(wram, MOTHER_BRAIN_STATUS)? {
-        MOTHER_BRAIN_IN_ROOM | MOTHER_BRAIN_HIT => Ok(MOTHER_BRAIN_HITS_TO_KILL
-            .saturating_sub(read_byte(wram, MOTHER_BRAIN_HITS)?)
-            .saturating_mul(TOURIAN_HEALTH_PER_HIT)),
-        _ => match zebetite_slots(wram)?.0 {
-            0 => mini_boss_health(wram),
-            remaining => Ok(remaining.saturating_mul(TOURIAN_HEALTH_PER_HIT)),
-        },
-    }
+    let status = read_byte(wram, MOTHER_BRAIN_STATUS)?;
+    let mother_brain = if MOTHER_BRAIN_DEFEATED_STATUSES.contains(&status) {
+        0
+    } else {
+        u16::from(MOTHER_BRAIN_HITS_TO_KILL.saturating_sub(read_byte(wram, MOTHER_BRAIN_HITS)?))
+    };
+    Ok((mother_brain + zebetite_slots(wram)?.0) * TOURIAN_HEALTH_PER_HIT)
 }
 
 pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalState, MachineError> {
@@ -332,7 +329,7 @@ pub fn preference_tuple(state: MetroidMechanicalState) -> (u8, u8, u16, u8) {
 pub struct MetroidObservations {
     pub frame_count: u64,
     pub decoded: MetroidMechanicalState,
-    pub boss_health_seen: u8,
+    pub boss_health_seen: u16,
     pub boss_defeats: BossDefeats,
     pub mother_brain_status: u8,
     pub tourian_events: TourianEvents,
@@ -571,7 +568,7 @@ impl MetroidTarget {
     }
 
     #[must_use]
-    pub fn boss_health_seen(&self) -> u8 {
+    pub fn boss_health_seen(&self) -> u16 {
         self.observation.boss_health_seen
     }
 
@@ -714,7 +711,7 @@ impl MetroidTarget {
     fn make_observation(
         frame_count: u64,
         state: MetroidMechanicalState,
-        boss_health_seen: u8,
+        boss_health_seen: u16,
         wram: &[u8; WRAM_SIZE],
         prior_wram: &[u8; WRAM_SIZE],
         boss_defeats: BossDefeats,
@@ -1299,21 +1296,26 @@ mod boss_status_tests {
     }
 
     #[test]
-    fn mother_brain_hits_read_as_boss_health_only_while_she_is_in_the_room() {
+    fn mother_brain_hits_count_until_her_status_says_she_died() {
         let cartridge = vec![0u8; CARTRIDGE_RAM_SIZE];
         for (area, status, hits, expected) in [
-            (0x13, 0, 0, 0),
+            (0x13, 0, 0, 0x80),
+            (0x13, 0, 5, 0x6c),
             (0x13, 1, 0, 0x80),
             (0x13, 2, 5, 0x6c),
             (0x13, 2, 0x1f, 4),
             (0x13, 3, 0x20, 0),
-            (0x13, 8, 0, 0),
+            (0x13, 8, 0, 0x80),
+            (0x13, 9, 0, 0),
             (0x10, 1, 5, 0),
         ] {
             let mut wram = vec![0u8; 0x800];
             wram[AREA] = area;
             wram[MOTHER_BRAIN_STATUS] = status;
             wram[MOTHER_BRAIN_HITS] = hits;
+            for slot in 0..ZEBETITE_SLOTS {
+                wram[ZEBETITE_SLOT_BASE + slot * ZEBETITE_SLOT_STRIDE] = ZEBETITE_DESTROYED;
+            }
             let state = decode_state(&wram, &cartridge).unwrap();
             assert_eq!(
                 state.boss_health, expected,
@@ -1323,22 +1325,30 @@ mod boss_status_tests {
     }
 
     #[test]
-    fn zebetite_hits_read_as_boss_health_until_mother_brain_appears() {
+    fn tourian_boss_health_sums_her_hits_and_every_column_slot() {
         let cartridge = vec![0u8; CARTRIDGE_RAM_SIZE];
         let mut wram = vec![0u8; 0x800];
         wram[AREA] = 0x13;
+        let state = decode_state(&wram, &cartridge).unwrap();
+        assert_eq!((state.boss_health, state.zebetites_destroyed), (288, 0));
         wram[ZEBETITE_SLOT_BASE] = 0x81;
         wram[ZEBETITE_SLOT_BASE + ZEBETITE_HITS] = 3;
         wram[ZEBETITE_SLOT_BASE + ZEBETITE_SLOT_STRIDE] = 1;
         let state = decode_state(&wram, &cartridge).unwrap();
-        assert_eq!((state.boss_health, state.zebetites_destroyed), (52, 0));
+        assert_eq!((state.boss_health, state.zebetites_destroyed), (276, 0));
         wram[ZEBETITE_SLOT_BASE] = 2;
         let state = decode_state(&wram, &cartridge).unwrap();
-        assert_eq!((state.boss_health, state.zebetites_destroyed), (32, 1));
-        wram[MOTHER_BRAIN_STATUS] = MOTHER_BRAIN_IN_ROOM;
+        assert_eq!((state.boss_health, state.zebetites_destroyed), (256, 1));
+        wram[MOTHER_BRAIN_STATUS] = 1;
         wram[MOTHER_BRAIN_HITS] = 5;
         let state = decode_state(&wram, &cartridge).unwrap();
-        assert_eq!((state.boss_health, state.zebetites_destroyed), (0x6c, 1));
+        assert_eq!((state.boss_health, state.zebetites_destroyed), (236, 1));
+        wram[MOTHER_BRAIN_STATUS] = 0;
+        let state = decode_state(&wram, &cartridge).unwrap();
+        assert_eq!((state.boss_health, state.zebetites_destroyed), (236, 1));
+        wram[MOTHER_BRAIN_STATUS] = 4;
+        let state = decode_state(&wram, &cartridge).unwrap();
+        assert_eq!((state.boss_health, state.zebetites_destroyed), (128, 1));
         wram[AREA] = 0x10;
         let state = decode_state(&wram, &cartridge).unwrap();
         assert_eq!((state.boss_health, state.zebetites_destroyed), (0, 0));
