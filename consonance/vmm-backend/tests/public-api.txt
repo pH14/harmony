@@ -79,6 +79,7 @@ pub vmm_backend::arch::arm64::Arm64SysregFile::sctlr_el1: u64
 pub vmm_backend::arch::arm64::Arm64SysregFile::tcr_el1: u64
 pub vmm_backend::arch::arm64::Arm64SysregFile::tpidr_el0: u64
 pub vmm_backend::arch::arm64::Arm64SysregFile::tpidr_el1: u64
+pub vmm_backend::arch::arm64::Arm64SysregFile::tpidrro_el0: u64
 pub vmm_backend::arch::arm64::Arm64SysregFile::ttbr0_el1: u64
 pub vmm_backend::arch::arm64::Arm64SysregFile::ttbr1_el1: u64
 pub vmm_backend::arch::arm64::Arm64SysregFile::vbar_el1: u64
@@ -538,6 +539,7 @@ pub vmm_backend::Arm64SysregFile::sctlr_el1: u64
 pub vmm_backend::Arm64SysregFile::tcr_el1: u64
 pub vmm_backend::Arm64SysregFile::tpidr_el0: u64
 pub vmm_backend::Arm64SysregFile::tpidr_el1: u64
+pub vmm_backend::Arm64SysregFile::tpidrro_el0: u64
 pub vmm_backend::Arm64SysregFile::ttbr0_el1: u64
 pub vmm_backend::Arm64SysregFile::ttbr1_el1: u64
 pub vmm_backend::Arm64SysregFile::vbar_el1: u64

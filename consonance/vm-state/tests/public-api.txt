@@ -46,6 +46,7 @@ pub vm_state::Arm64Sysregs::sctlr_el1: u64
 pub vm_state::Arm64Sysregs::tcr_el1: u64
 pub vm_state::Arm64Sysregs::tpidr_el0: u64
 pub vm_state::Arm64Sysregs::tpidr_el1: u64
+pub vm_state::Arm64Sysregs::tpidrro_el0: u64
 pub vm_state::Arm64Sysregs::ttbr0_el1: u64
 pub vm_state::Arm64Sysregs::ttbr1_el1: u64
 pub vm_state::Arm64Sysregs::vbar_el1: u64

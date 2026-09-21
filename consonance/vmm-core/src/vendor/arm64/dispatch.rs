@@ -1031,6 +1031,7 @@ pub(crate) fn encode_vcpu_state(s: &Arm64VcpuState) -> Vec<u8> {
         s.sysregs.far_el1,
         s.sysregs.tpidr_el0,
         s.sysregs.tpidr_el1,
+        s.sysregs.tpidrro_el0,
         s.sysregs.cntkctl_el1,
     ] {
         v.extend_from_slice(&x.to_le_bytes());
@@ -1121,6 +1122,7 @@ pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [
         s.sysregs.far_el1,
         s.sysregs.tpidr_el0,
         s.sysregs.tpidr_el1,
+        s.sysregs.tpidrro_el0,
         s.sysregs.cntkctl_el1,
     ] {
         sys.extend_from_slice(&x.to_le_bytes());

@@ -47,6 +47,7 @@ pub(crate) fn to_vm_sysregs(s: &Arm64SysregFile) -> Arm64Sysregs {
         far_el1: s.far_el1,
         tpidr_el0: s.tpidr_el0,
         tpidr_el1: s.tpidr_el1,
+        tpidrro_el0: s.tpidrro_el0,
         cntkctl_el1: s.cntkctl_el1,
     }
 }
@@ -64,6 +65,7 @@ pub(crate) fn from_vm_sysregs(s: &Arm64Sysregs) -> Arm64SysregFile {
         far_el1: s.far_el1,
         tpidr_el0: s.tpidr_el0,
         tpidr_el1: s.tpidr_el1,
+        tpidrro_el0: s.tpidrro_el0,
         cntkctl_el1: s.cntkctl_el1,
     }
 }

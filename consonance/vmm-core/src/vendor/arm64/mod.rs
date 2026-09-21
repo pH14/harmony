@@ -104,6 +104,11 @@ impl Arm64ArchitecturalState {
         write_u64(&mut out, "sysregs.tpidr_el1", self.vcpu.sysregs.tpidr_el1)?;
         write_u64(
             &mut out,
+            "sysregs.tpidrro_el0",
+            self.vcpu.sysregs.tpidrro_el0,
+        )?;
+        write_u64(
+            &mut out,
             "sysregs.cntkctl_el1",
             self.vcpu.sysregs.cntkctl_el1,
         )?;
@@ -304,6 +309,11 @@ pub fn compare_arm64_architecture(
         "sysregs.tpidr_el1",
         a.sysregs.tpidr_el1,
         b.sysregs.tpidr_el1
+    );
+    scalar!(
+        "sysregs.tpidrro_el0",
+        a.sysregs.tpidrro_el0,
+        b.sysregs.tpidrro_el0
     );
     scalar!(
         "sysregs.cntkctl_el1",

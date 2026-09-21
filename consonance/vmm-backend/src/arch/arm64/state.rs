@@ -98,6 +98,7 @@ pub struct Arm64SysregFile {
     pub far_el1: u64,
     pub tpidr_el0: u64,
     pub tpidr_el1: u64,
+    pub tpidrro_el0: u64,
     pub cntkctl_el1: u64,
 }
 

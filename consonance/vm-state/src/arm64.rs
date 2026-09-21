@@ -73,6 +73,7 @@ pub struct Arm64Sysregs {
     pub far_el1: u64,
     pub tpidr_el0: u64,
     pub tpidr_el1: u64,
+    pub tpidrro_el0: u64,
     pub cntkctl_el1: u64,
 }
 
@@ -162,6 +163,7 @@ struct Arm64SysregsWire {
     far_el1: U64,
     tpidr_el0: U64,
     tpidr_el1: U64,
+    tpidrro_el0: U64,
     cntkctl_el1: U64,
 }
 
@@ -179,6 +181,7 @@ impl From<&Arm64Sysregs> for Arm64SysregsWire {
             far_el1: s.far_el1.into(),
             tpidr_el0: s.tpidr_el0.into(),
             tpidr_el1: s.tpidr_el1.into(),
+            tpidrro_el0: s.tpidrro_el0.into(),
             cntkctl_el1: s.cntkctl_el1.into(),
         }
     }
@@ -198,6 +201,7 @@ impl From<&Arm64SysregsWire> for Arm64Sysregs {
             far_el1: w.far_el1.get(),
             tpidr_el0: w.tpidr_el0.get(),
             tpidr_el1: w.tpidr_el1.get(),
+            tpidrro_el0: w.tpidrro_el0.get(),
             cntkctl_el1: w.cntkctl_el1.get(),
         }
     }

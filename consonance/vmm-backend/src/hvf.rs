@@ -49,6 +49,7 @@ const HV_SYS_REG_VBAR_EL1: u16 = 0xc600;
 const HV_SYS_REG_TPIDR_EL1: u16 = 0xc684;
 const HV_SYS_REG_CNTKCTL_EL1: u16 = 0xc708;
 const HV_SYS_REG_TPIDR_EL0: u16 = 0xde82;
+const HV_SYS_REG_TPIDRRO_EL0: u16 = 0xde83;
 const HV_SYS_REG_CNTV_CTL_EL0: u16 = 0xdf19;
 const HV_SYS_REG_CNTV_CVAL_EL0: u16 = 0xdf1a;
 const HV_SYS_REG_SP_EL1: u16 = 0xe208;
@@ -948,6 +949,7 @@ impl Backend for HvfBackend {
         state.sysregs.far_el1 = self.sysreg(HV_SYS_REG_FAR_EL1)?;
         state.sysregs.tpidr_el0 = self.sysreg(HV_SYS_REG_TPIDR_EL0)?;
         state.sysregs.tpidr_el1 = self.sysreg(HV_SYS_REG_TPIDR_EL1)?;
+        state.sysregs.tpidrro_el0 = self.sysreg(HV_SYS_REG_TPIDRRO_EL0)?;
         state.sysregs.cntkctl_el1 = self.sysreg(HV_SYS_REG_CNTKCTL_EL1)?;
         for index in 0..16u16 {
             state.debug.breakpoint_value[index as usize] =
@@ -1042,6 +1044,7 @@ impl Backend for HvfBackend {
         self.set_sysreg(HV_SYS_REG_FAR_EL1, state.sysregs.far_el1)?;
         self.set_sysreg(HV_SYS_REG_TPIDR_EL0, state.sysregs.tpidr_el0)?;
         self.set_sysreg(HV_SYS_REG_TPIDR_EL1, state.sysregs.tpidr_el1)?;
+        self.set_sysreg(HV_SYS_REG_TPIDRRO_EL0, state.sysregs.tpidrro_el0)?;
         self.set_sysreg(HV_SYS_REG_CNTKCTL_EL1, state.sysregs.cntkctl_el1)?;
         for index in 0..16u16 {
             self.set_sysreg(
