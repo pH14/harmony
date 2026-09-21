@@ -76,8 +76,10 @@ status at offset 0 (low nibble 1 alive, 2 destroyed) and its missile hit
 count at offset 3, and a column dies at eight hits while healing one hit
 every 64 frames it is not hit. Boss health is the hits still needed over the
 live columns, so a lineage that fires into a column keeps its progress in the
-key instead of losing the slot to an arrival that saved its missiles. When no
-column is loaded the mini-boss reading applies. The state also counts the
+key instead of losing the slot to an arrival that saved its missiles. Both
+Tourian readings count four per hit, the damage one missile does to Kraid
+or Ridley, so one missile is one boss-damage bucket in every boss room. When
+no column is loaded the mini-boss reading applies. The state also counts the
 destroyed columns for the `zebetite_destroyed` milestone.
 The game keeps six enemy slots at `$0400`, sixteen bytes apart, with the current
 hit points at offset `$0b` and a mini-boss mark in bit 6 of offset `$0f`; `$ff`
@@ -215,8 +217,8 @@ stores 1 at $687B for Kraid and 2 at $687C for Ridley. The previous decoder
 incorrectly tested bit 0 for both bosses. Correcting the count is versioned as
 key policy v8; named boss observation bytes require stream/checkpoint/result
 digest v4 (v2 introduced named Kraid/Ridley flags; v3 added Mother Brain state;
-v4 latches transient Tourian events). Key policy v15 reads the Zebetite
-columns into Tourian's boss health and named-progress v3 adds the destroyed
+v4 latches transient Tourian events). Key policy v16 reads the Zebetite
+columns into Tourian's boss health at four per hit and named-progress v3 adds the destroyed
 column and binds Mother Brain's room to her status byte. Named-progress v2 and replay-probe v2 also
 correct origin/retrospective route timestamps to exclude genesis setup; the probe
 reports action execution work and setup separately; probes and backend snapshot

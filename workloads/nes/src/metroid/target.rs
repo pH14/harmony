@@ -119,6 +119,7 @@ const ZEBETITE_HITS: usize = 3;
 const ZEBETITE_HITS_TO_KILL: u8 = 8;
 const ZEBETITE_ALIVE: u8 = 1;
 const ZEBETITE_DESTROYED: u8 = 2;
+const TOURIAN_HEALTH_PER_HIT: u8 = 4;
 const AREA_TOURIAN: u8 = 0x13;
 const ENERGY_TANKS: usize = 0x877;
 
@@ -246,12 +247,12 @@ fn boss_health(wram: &[u8], area: u8) -> Result<u8, MachineError> {
         return mini_boss_health(wram);
     }
     match read_byte(wram, MOTHER_BRAIN_STATUS)? {
-        MOTHER_BRAIN_IN_ROOM | MOTHER_BRAIN_HIT => {
-            Ok(MOTHER_BRAIN_HITS_TO_KILL.saturating_sub(read_byte(wram, MOTHER_BRAIN_HITS)?))
-        }
+        MOTHER_BRAIN_IN_ROOM | MOTHER_BRAIN_HIT => Ok(MOTHER_BRAIN_HITS_TO_KILL
+            .saturating_sub(read_byte(wram, MOTHER_BRAIN_HITS)?)
+            .saturating_mul(TOURIAN_HEALTH_PER_HIT)),
         _ => match zebetite_slots(wram)?.0 {
             0 => mini_boss_health(wram),
-            remaining => Ok(remaining),
+            remaining => Ok(remaining.saturating_mul(TOURIAN_HEALTH_PER_HIT)),
         },
     }
 }
@@ -1302,9 +1303,9 @@ mod boss_status_tests {
         let cartridge = vec![0u8; CARTRIDGE_RAM_SIZE];
         for (area, status, hits, expected) in [
             (0x13, 0, 0, 0),
-            (0x13, 1, 0, 0x20),
-            (0x13, 2, 5, 0x1b),
-            (0x13, 2, 0x1f, 1),
+            (0x13, 1, 0, 0x80),
+            (0x13, 2, 5, 0x6c),
+            (0x13, 2, 0x1f, 4),
             (0x13, 3, 0x20, 0),
             (0x13, 8, 0, 0),
             (0x10, 1, 5, 0),
@@ -1330,14 +1331,14 @@ mod boss_status_tests {
         wram[ZEBETITE_SLOT_BASE + ZEBETITE_HITS] = 3;
         wram[ZEBETITE_SLOT_BASE + ZEBETITE_SLOT_STRIDE] = 1;
         let state = decode_state(&wram, &cartridge).unwrap();
-        assert_eq!((state.boss_health, state.zebetites_destroyed), (13, 0));
+        assert_eq!((state.boss_health, state.zebetites_destroyed), (52, 0));
         wram[ZEBETITE_SLOT_BASE] = 2;
         let state = decode_state(&wram, &cartridge).unwrap();
-        assert_eq!((state.boss_health, state.zebetites_destroyed), (8, 1));
+        assert_eq!((state.boss_health, state.zebetites_destroyed), (32, 1));
         wram[MOTHER_BRAIN_STATUS] = MOTHER_BRAIN_IN_ROOM;
         wram[MOTHER_BRAIN_HITS] = 5;
         let state = decode_state(&wram, &cartridge).unwrap();
-        assert_eq!((state.boss_health, state.zebetites_destroyed), (0x1b, 1));
+        assert_eq!((state.boss_health, state.zebetites_destroyed), (0x6c, 1));
         wram[AREA] = 0x10;
         let state = decode_state(&wram, &cartridge).unwrap();
         assert_eq!((state.boss_health, state.zebetites_destroyed), (0, 0));
