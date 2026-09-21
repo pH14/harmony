@@ -108,7 +108,13 @@ fn clickhouse_history_filters_and_retry_are_consistent() {
     joint.equipment = 4;
     joint.admission_sequence = 2;
     events.push(joint);
-    let mut end = event("run_end", &run, &session, 10, 3000);
+    let mut checkpoint = event("territory_checkpoint", &run, &session, 10, 1000);
+    let mut bits = [0_u8; 640];
+    bits[(14 * 32 + 3) / 8] |= 1 << ((14 * 32 + 3) % 8);
+    checkpoint.payload = bits.iter().map(|byte| format!("{byte:02x}")).collect();
+    checkpoint.amount = 0;
+    events.push(checkpoint);
+    let mut end = event("run_end", &run, &session, 11, 3000);
     end.payload = "search_complete".to_owned();
     events.push(end);
     let mut batch = Vec::new();
@@ -124,7 +130,7 @@ fn clickhouse_history_filters_and_retry_are_consistent() {
             "SELECT count() AS n FROM observatory.events WHERE run_id='{run}'"
         ))
         .expect("physical rows");
-    assert_eq!(value(&physical["data"][0], &["n"]), 10);
+    assert_eq!(value(&physical["data"][0], &["n"]), 11);
     let status = query::status(&store, &run).expect("status");
     assert_eq!(value(&status, &["telemetry", "selections"]), 2);
     assert_eq!(value(&status, &["telemetry", "execution_work"]), 100);
@@ -195,9 +201,39 @@ fn clickhouse_history_filters_and_retry_are_consistent() {
     )
     .expect("later territory");
     assert_eq!(later["cells"].as_array().expect("cells").len(), 2);
+    assert_eq!(value(&later, &["checkpoint_ms"]), 1000);
     let no_joint = query::observations(&store, &run, &filter(0, 1000)).expect("separate states");
     assert_eq!(value(&no_joint, &["matching_sampled_observations"]), 0);
     let joint = query::observations(&store, &run, &filter(0, 2000)).expect("joint state");
     assert_eq!(value(&joint, &["matching_sampled_observations"]), 1);
     assert_eq!(value(&joint["examples"][0], &["admission_sequence"]), 2);
+    let gap_run = random_id().expect("gap run ID");
+    let mut gap_events = vec![
+        event("run_start", &gap_run, &session, 1, 0),
+        event("run_end", &gap_run, &session, 3, 100),
+    ];
+    gap_events[1].payload = "search_complete".to_owned();
+    let mut gap_batch = Vec::new();
+    for event in gap_events {
+        serde_json::to_writer(&mut gap_batch, &event).expect("gap JSON");
+        gap_batch.push(b'\n');
+    }
+    store
+        .insert(&gap_batch, &format!("b-{session}-gap"))
+        .expect("gap insert");
+    let gap_status = query::status(&store, &gap_run).expect("gap status");
+    assert_eq!(gap_status["completeness"]["complete"], false);
+    assert_eq!(value(&gap_status, &["completeness", "sequence_gaps"]), 1);
+
+    let missing_start = random_id().expect("missing-start run ID");
+    let mut end_only = event("run_end", &missing_start, &session, 1, 100);
+    end_only.payload = "search_complete".to_owned();
+    let mut end_batch = serde_json::to_vec(&end_only).expect("end JSON");
+    end_batch.push(b'\n');
+    store
+        .insert(&end_batch, &format!("b-{session}-end"))
+        .expect("end insert");
+    let end_status = query::status(&store, &missing_start).expect("missing-start status");
+    assert_eq!(end_status["completeness"]["complete"], false);
+    assert!(query::status(&store, &random_id().expect("absent ID")).is_err());
 }

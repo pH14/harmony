@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -129,8 +131,9 @@ pub fn status(store: &Store, run_id: &str) -> Result<Value> {
     let run_id = run(run_id)?;
     let result = store.query(&format!(
         "SELECT min(started_unix_ms) AS started_unix_ms, max(event_ms) AS latest_ms, \
-         countIf(kind='run_start') AS started, countIf(kind='run_end') AS ended, \
+         count() AS retained_events, countIf(kind='run_start') AS started, countIf(kind='run_end') AS ended, \
          countIf(kind='run_end' AND payload='search_complete') AS completed, \
+         argMaxIf(payload,event_id,kind='run_start') AS identity, \
          maxIf(selection_ms,kind='watermark') AS finalized_watermark_ms, \
          countIf(kind='selection' OR kind='skip') AS selections, \
          countIf(kind='skip') AS skipped, countIf(kind='work') AS admissions, \
@@ -148,7 +151,12 @@ pub fn status(store: &Store, run_id: &str) -> Result<Value> {
     let started = row.get("started").and_then(Value::as_u64).unwrap_or(0) > 0;
     let ended = row.get("ended").and_then(Value::as_u64).unwrap_or(0) > 0;
     let completed = row.get("completed").and_then(Value::as_u64).unwrap_or(0) > 0;
-    if !started && !ended && row.get("selections").and_then(Value::as_u64).unwrap_or(0) == 0 {
+    if row
+        .get("retained_events")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        == 0
+    {
         return Err("run has no retained telemetry".into());
     }
     let losses = row.get("lost_events").and_then(Value::as_u64).unwrap_or(0);
@@ -161,11 +169,20 @@ pub fn status(store: &Store, run_id: &str) -> Result<Value> {
         .get("finalized_watermark_ms")
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    let identity = row
+        .get("identity")
+        .and_then(Value::as_str)
+        .and_then(|text| serde_json::from_str::<Value>(text).ok());
+    let mut telemetry = row;
+    if let Some(fields) = telemetry.as_object_mut() {
+        fields.remove("identity");
+    }
     Ok(json!({
         "schema_version":SCHEMA_VERSION,
         "run_id":run_id,
+        "identity":identity,
         "status":if completed {"completed"} else if ended {"failed"} else {"running_or_interrupted"},
-        "telemetry":row,
+        "telemetry":telemetry,
         "freshness_watermark_ms":latest,
         "finalized_through_ms":if ended {latest} else {watermark},
         "completeness":{
@@ -176,6 +193,76 @@ pub fn status(store: &Store, run_id: &str) -> Result<Value> {
         },
         "cost":statistics(&result)
     }))
+}
+
+fn territory(
+    store: &Store,
+    run_id: &str,
+    to_ms: u64,
+    area: Option<u8>,
+) -> Result<(Value, Value, Option<u64>)> {
+    let checkpoint = store.query(&format!(
+        "SELECT event_ms,payload FROM observatory.events FINAL \
+         WHERE run_id='{run_id}' AND kind='territory_checkpoint' AND event_ms < {to_ms} \
+         ORDER BY event_ms DESC,event_id DESC LIMIT 1"
+    ))?;
+    let row = checkpoint
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first());
+    let checkpoint_ms = row
+        .and_then(|row| row.get("event_ms"))
+        .and_then(Value::as_u64);
+    let mut cells = BTreeSet::<(u8, u8, u8)>::new();
+    if let Some(payload) = row
+        .and_then(|row| row.get("payload"))
+        .and_then(Value::as_str)
+    {
+        if payload.len() != 1280 {
+            return Err("territory checkpoint has an invalid length".into());
+        }
+        for region in 0..5_usize {
+            let area_byte = 16 + region as u8;
+            if area.is_some_and(|wanted| wanted != area_byte) {
+                continue;
+            }
+            for byte_index in 0..128_usize {
+                let offset = region * 256 + byte_index * 2;
+                let byte = u8::from_str_radix(&payload[offset..offset + 2], 16)?;
+                for bit in 0..8_usize {
+                    if byte & (1 << bit) != 0 {
+                        let index = byte_index * 8 + bit;
+                        cells.insert((area_byte, (index % 32) as u8, (index / 32) as u8));
+                    }
+                }
+            }
+        }
+    }
+    let since = checkpoint_ms.unwrap_or(0);
+    let area_clause = area.map_or(String::new(), |value| format!(" AND area={value}"));
+    let delta = store.query(&format!(
+        "SELECT area,map_x,map_y FROM observatory.events FINAL \
+         WHERE run_id='{run_id}' AND kind='discovery' \
+         AND event_ms >= {since} AND event_ms < {to_ms}{area_clause} \
+         GROUP BY area,map_x,map_y LIMIT 5120"
+    ))?;
+    if let Some(rows) = delta.get("data").and_then(Value::as_array) {
+        for row in rows {
+            let region = row["area"].as_u64().ok_or("discovery area missing")? as u8;
+            let x = row["map_x"].as_u64().ok_or("discovery x missing")? as u8;
+            let y = row["map_y"].as_u64().ok_or("discovery y missing")? as u8;
+            cells.insert((region, x, y));
+        }
+    }
+    let values = cells
+        .into_iter()
+        .map(|(region, x, y)| json!({"area":region,"map_x":x,"map_y":y,"value":1}))
+        .collect::<Vec<_>>();
+    Ok((
+        json!(values),
+        json!({"checkpoint":statistics(&checkpoint),"delta":statistics(&delta)}),
+        checkpoint_ms,
+    ))
 }
 
 pub fn map(store: &Store, run_id: &str, filter: &MapFilter) -> Result<Value> {
@@ -209,13 +296,18 @@ pub fn map(store: &Store, run_id: &str, filter: &MapFilter) -> Result<Value> {
             filter.from_ms, filter.to_ms
         )
     };
-    let result = store.query(&format!(
-        "SELECT area,map_x,map_y,{} AS value FROM observatory.events FINAL \
-         WHERE run_id='{run_id}' AND {} AND {time}{area} \
-         GROUP BY area,map_x,map_y ORDER BY area,map_y,map_x LIMIT 5120",
-        filter.metric.sum(),
-        filter.metric.kind()
-    ))?;
+    let (cells, cost, checkpoint_ms) = if matches!(filter.metric, Metric::Territory) {
+        territory(store, run_id, filter.to_ms, filter.area)?
+    } else {
+        let result = store.query(&format!(
+            "SELECT area,map_x,map_y,{} AS value FROM observatory.events FINAL \
+             WHERE run_id='{run_id}' AND {} AND {time}{area} \
+             GROUP BY area,map_x,map_y ORDER BY area,map_y,map_x LIMIT 5120",
+            filter.metric.sum(),
+            filter.metric.kind()
+        ))?;
+        (data(&result), statistics(&result), None)
+    };
     let state = status(store, run_id)?;
     Ok(json!({
         "schema_version":SCHEMA_VERSION,
@@ -226,11 +318,12 @@ pub fn map(store: &Store, run_id: &str, filter: &MapFilter) -> Result<Value> {
         "resolution_ms":1,
         "as_of_ms":as_of_ms,
         "provisional":filter.to_ms > state["finalized_through_ms"].as_u64().unwrap_or(0),
-        "cells":data(&result),
+        "cells":cells,
+        "checkpoint_ms":checkpoint_ms,
         "freshness_watermark_ms":state["freshness_watermark_ms"],
         "finalized_through_ms":state["finalized_through_ms"],
         "completeness":state["completeness"],
-        "cost":statistics(&result)
+        "cost":cost
     }))
 }
 

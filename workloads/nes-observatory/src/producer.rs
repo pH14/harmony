@@ -281,12 +281,15 @@ pub struct Producer {
     seen: Box<[u8; 32768]>,
     pending: BTreeMap<u64, u64>,
     last_watermark: u64,
+    last_checkpoint_ms: u64,
+    started_instant: Instant,
     writer: Option<JoinHandle<()>>,
     uploader: Option<JoinHandle<()>>,
     stop: Arc<AtomicBool>,
 }
 
 impl Producer {
+    #[allow(clippy::disallowed_methods)]
     pub fn start(
         identity: RunIdentity,
         spool_root: &Path,
@@ -338,6 +341,8 @@ impl Producer {
             seen: Box::new([0_u8; 32768]),
             pending: BTreeMap::new(),
             last_watermark: 0,
+            last_checkpoint_ms: 0,
+            started_instant: Instant::now(),
             writer: Some(writer),
             uploader: Some(uploader),
             stop,
@@ -363,8 +368,26 @@ impl Producer {
         }
     }
 
+    fn checkpoint(&mut self, at_ms: u64) {
+        let mut checkpoint = Event::new("territory_checkpoint");
+        checkpoint.event_ms = at_ms;
+        checkpoint.amount = 0;
+        let mut payload = String::with_capacity(1280);
+        for area in 16_usize..=20 {
+            for byte in &self.seen[area * 128..(area + 1) * 128] {
+                payload.push_str(&format!("{byte:02x}"));
+            }
+        }
+        checkpoint.payload = payload;
+        self.emit(checkpoint);
+        self.last_checkpoint_ms = at_ms;
+    }
+
+    #[allow(clippy::disallowed_methods)]
     pub fn finish(mut self, status: &str) -> (u64, u64) {
         let mut end = Event::new("run_end");
+        end.event_ms =
+            u64::try_from(self.started_instant.elapsed().as_millis()).unwrap_or(u64::MAX);
         end.payload = status.to_owned();
         self.emit(end);
         self.sender.take();
@@ -398,6 +421,7 @@ impl CampaignObserver<MetroidGame> for Producer {
             event.y = key.y;
             self.emit(event);
         }
+        self.checkpoint(0);
     }
 
     fn selection(
@@ -507,6 +531,9 @@ impl CampaignObserver<MetroidGame> for Producer {
                     self.emit(discovery);
                 }
             }
+        }
+        if admission_millis.saturating_sub(self.last_checkpoint_ms) >= 60_000 {
+            self.checkpoint(admission_millis);
         }
         for ((area, map_x, map_y), amount) in cells {
             let mut presence = Event::new("presence");

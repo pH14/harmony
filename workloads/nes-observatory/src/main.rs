@@ -7,6 +7,7 @@ use std::{
     fs,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use nes_observatory::{
@@ -120,6 +121,7 @@ fn source_revision() -> String {
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
+#[allow(clippy::disallowed_methods)]
 fn run_metroid(mut flags: BTreeMap<String, String>) -> Result<Value> {
     let rom_path = PathBuf::from(take(&mut flags, "--rom")?);
     let core_path = PathBuf::from(take(&mut flags, "--core")?);
@@ -205,6 +207,7 @@ fn run_metroid(mut flags: BTreeMap<String, String>) -> Result<Value> {
     } else {
         Some(Producer::start(identity, &spool, store()?)?)
     };
+    let search_started = Instant::now();
     let outcome = if let Some(producer) = producer.as_mut() {
         run_campaign_checkpointed_with_observer(
             &game,
@@ -226,12 +229,15 @@ fn run_metroid(mut flags: BTreeMap<String, String>) -> Result<Value> {
             &mut (),
         )
     };
+    let search_wall_ms = search_started.elapsed().as_millis();
     let status = if outcome.is_ok() {
         "search_complete"
     } else {
         "search_failed"
     };
+    let drain_started = Instant::now();
     let losses = producer.take().map(|producer| producer.finish(status));
+    let drain_wall_ms = drain_started.elapsed().as_millis();
     stream.flush()?;
     progress.flush()?;
     let (report, _) = outcome.map_err(|error| error.to_string())?;
@@ -248,7 +254,9 @@ fn run_metroid(mut flags: BTreeMap<String, String>) -> Result<Value> {
         "producer_queue_loss":losses.map(|loss| loss.0),
         "spool_loss":losses.map(|loss| loss.1),
         "executions":report.archive.executions,
-        "execution_work":report.execution_work
+        "execution_work":report.execution_work,
+        "search_wall_ms":search_wall_ms,
+        "drain_wall_ms":drain_wall_ms
     }))
 }
 
