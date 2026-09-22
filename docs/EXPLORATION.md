@@ -64,17 +64,20 @@ campaign faster, but are validated against the target and campaign origin.
 ## Search archive
 
 dissonance uses a bounded quality-diversity archive. A workload maps an observed
-state to an ordered archive key. The key supplies several grouping depths:
+state to an archive key. The key names three things:
 
-- the finest group is a retention slot in which nearby candidates compete;
-- coarser groups pool related states for parent selection;
-- workload-owned preference compares states within the same location;
-- route cost and insertion identity provide deterministic tie-breaking.
+- a place, which with the progress value forms the cell that parent selection
+  draws from;
+- a progress value, which ranks cells into tiers;
+- an identity, which with the cell forms the retention slot in which nearby
+  candidates compete;
+- workload-owned preferences compare states within the same place, and route
+  cost and insertion identity provide deterministic tie-breaking.
 
 The structure retains several kinds of progress instead of a single global
-best path. Parent selection walks the recorded groups and samples selectable
-entries. An optional retirement policy can reduce selection of barren entries
-or groups without removing the history required for replay.
+best path. Parent selection draws a tier by rank, a cell by how rarely it has
+been drawn, and a holder by how rarely it has been selected, without removing
+the history required for replay.
 
 Archive size and logical memory can be bounded. Under pressure, selectable
 snapshots and other acceleration data are evicted according to deterministic

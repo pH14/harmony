@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
-use crate::search::archive::{RetireThresholds, SelectorAccounting, entries_by_suffix};
+use crate::search::archive::{SelectorAccounting, entries_by_suffix};
 use crate::search::rollout::ExecutionDisposition;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -26,18 +26,19 @@ fn test_action_cost(action: &TestAction) -> u64 {
 struct TestKey(u8);
 
 impl ArchiveKey for TestKey {
-    type Group = u8;
+    type Place = u8;
+    type Progress = ();
+    type Identity = ();
 
-    fn groups() -> usize {
-        1
-    }
-
-    fn group(self, depth: usize) -> Self::Group {
-        assert_eq!(depth, 0);
+    fn place(self) -> Self::Place {
         self.0 % 16
     }
 
-    fn slot_capacity() -> usize {
+    fn progress(self) -> Self::Progress {}
+
+    fn identity(self) -> Self::Identity {}
+
+    fn capacity() -> usize {
         1
     }
     fn preferences() -> usize {
@@ -314,10 +315,6 @@ fn continuation_config(
         suffix: SuffixShape::OneOrTwo,
         mixture,
         retention: RetentionPolicy::Unprobed,
-        selector: SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
-            entry: 3,
-            groups: vec![],
-        }),
         objective_witness_path: None,
     }
 }
@@ -432,6 +429,6 @@ fn a_progress_line_reports_the_continuation_accounting() {
     assert!(accounting.reservations_taken <= accounting.reservations_drawn);
     assert!(accounting.landed <= accounting.jobs);
     assert!(accounting.replaced <= accounting.landed);
-    assert!(accounting.opened_new_slot <= accounting.jobs);
+    assert!(accounting.opened_new_cell <= accounting.jobs);
     assert!(accounting.energy <= 256);
 }

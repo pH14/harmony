@@ -10,13 +10,14 @@ const EDGE_NODE_OVERHEAD: usize = 192;
 const PENDING_NODE_OVERHEAD: usize = 128;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Continuation<K, A> {
+pub(crate) struct Continuation<D, A> {
     pub parent: u64,
     pub donor: u64,
     pub leaf: u64,
-    pub destination: K,
+    pub destination: D,
     pub wave: u32,
     pub tier: u8,
+    pub gains: u8,
     pub actions: Vec<A>,
 }
 
@@ -25,31 +26,32 @@ struct Edge<A> {
     donor: u64,
     leaf: u64,
     cost: u64,
+    gains: u8,
     actions: Vec<A>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Pending<K> {
+struct Pending<D> {
     sequence: u64,
     tier: u8,
     parent: u64,
     wave: u32,
-    cursor: Option<K>,
+    cursor: Option<D>,
 }
 
-pub(crate) struct ContinuationBank<K: Ord, A> {
+pub(crate) struct ContinuationBank<S: Ord, D: Ord, A> {
     action_cap: usize,
-    edges: BTreeMap<(K, K), Edge<A>>,
-    exits: BTreeMap<K, BTreeSet<K>>,
-    entrances: BTreeMap<K, BTreeSet<K>>,
-    pending: BTreeMap<(u8, u64), K>,
-    pending_slot: BTreeMap<K, Pending<K>>,
+    edges: BTreeMap<(S, D), Edge<A>>,
+    exits: BTreeMap<S, BTreeSet<D>>,
+    entrances: BTreeMap<D, BTreeSet<S>>,
+    pending: BTreeMap<(u8, u64), S>,
+    pending_source: BTreeMap<S, Pending<D>>,
     next_sequence: u64,
     memory_bytes: usize,
     improved_work: u64,
 }
 
-impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
+impl<S: Copy + Ord, D: Copy + Ord, A: Clone> ContinuationBank<S, D, A> {
     pub fn new(action_cap: usize) -> Self {
         Self {
             action_cap,
@@ -57,7 +59,7 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
             exits: BTreeMap::new(),
             entrances: BTreeMap::new(),
             pending: BTreeMap::new(),
-            pending_slot: BTreeMap::new(),
+            pending_source: BTreeMap::new(),
             next_sequence: 0,
             memory_bytes: 0,
             improved_work: 0,
@@ -65,17 +67,18 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
     }
 
     fn edge_bytes(actions: usize) -> usize {
-        size_of::<(K, K)>()
+        size_of::<(S, D)>()
             .saturating_add(size_of::<Edge<A>>())
             .saturating_add(actions.saturating_mul(size_of::<A>()))
-            .saturating_add(2 * size_of::<K>())
+            .saturating_add(size_of::<S>())
+            .saturating_add(size_of::<D>())
             .saturating_add(EDGE_NODE_OVERHEAD)
     }
 
     fn pending_bytes() -> usize {
         size_of::<u64>()
-            .saturating_add(2 * size_of::<K>())
-            .saturating_add(size_of::<Pending<K>>())
+            .saturating_add(2 * size_of::<S>())
+            .saturating_add(size_of::<Pending<D>>())
             .saturating_add(PENDING_NODE_OVERHEAD)
     }
 
@@ -88,7 +91,7 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
     }
 
     pub fn pending_count(&self) -> usize {
-        self.pending_slot.len()
+        self.pending_source.len()
     }
 
     #[cfg(test)]
@@ -101,14 +104,26 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
         self.improved_work
     }
 
-    pub fn record(&mut self, from: K, to: K, donor: u64, leaf: u64, actions: &[A], cost: u64) {
-        if from == to || actions.is_empty() || actions.len() > self.action_cap {
+    #[allow(clippy::too_many_arguments)]
+    pub fn record(
+        &mut self,
+        from: S,
+        from_place: D,
+        to: D,
+        donor: u64,
+        leaf: u64,
+        actions: &[A],
+        cost: u64,
+        gains: u8,
+    ) {
+        if from_place == to || actions.is_empty() || actions.len() > self.action_cap {
             return;
         }
         let edge = Edge {
             donor,
             leaf,
             cost,
+            gains,
             actions: actions.to_vec(),
         };
         match self.edges.get_mut(&(from, to)) {
@@ -133,12 +148,12 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
         }
     }
 
-    pub fn improved(&mut self, slot: K, parent: u64, wave: u32, tier: u8) {
+    pub fn improved(&mut self, source: S, parent: u64, wave: u32, tier: u8) {
         self.improved_work = self.improved_work.saturating_add(1);
-        if !self.exits.contains_key(&slot) {
+        if !self.exits.contains_key(&source) {
             return;
         }
-        match self.pending_slot.get_mut(&slot) {
+        match self.pending_source.get_mut(&source) {
             Some(held) => {
                 let previous = (held.tier, held.sequence);
                 held.parent = parent;
@@ -148,15 +163,15 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
                     held.tier = tier;
                     let sequence = held.sequence;
                     self.pending.remove(&previous);
-                    self.pending.insert((tier, sequence), slot);
+                    self.pending.insert((tier, sequence), source);
                 }
             }
             None => {
                 let sequence = self.next_sequence;
                 self.next_sequence = self.next_sequence.saturating_add(1);
-                self.pending.insert((tier, sequence), slot);
-                self.pending_slot.insert(
-                    slot,
+                self.pending.insert((tier, sequence), source);
+                self.pending_source.insert(
+                    source,
                     Pending {
                         sequence,
                         tier,
@@ -170,14 +185,14 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
         }
     }
 
-    pub fn pop(&mut self, from_highest_tier: bool) -> Option<Continuation<K, A>> {
+    pub fn pop(&mut self, from_highest_tier: bool) -> Option<Continuation<D, A>> {
         loop {
-            let (key, slot) = self.next_pending(from_highest_tier)?;
-            let Some(held) = self.pending_slot.get(&slot).copied() else {
+            let (key, source) = self.next_pending(from_highest_tier)?;
+            let Some(held) = self.pending_source.get(&source).copied() else {
                 self.pending.remove(&key);
                 continue;
             };
-            let next = self.exits.get(&slot).and_then(|exits| match held.cursor {
+            let next = self.exits.get(&source).and_then(|exits| match held.cursor {
                 Some(cursor) => exits
                     .range((
                         std::ops::Bound::Excluded(cursor),
@@ -188,11 +203,11 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
                 None => exits.iter().next().copied(),
             });
             let Some(to) = next else {
-                self.drop_pending(slot);
+                self.drop_pending(source);
                 continue;
             };
-            let Some(edge) = self.edges.get(&(slot, to)) else {
-                self.drop_pending(slot);
+            let Some(edge) = self.edges.get(&(source, to)) else {
+                self.drop_pending(source);
                 continue;
             };
             let continuation = Continuation {
@@ -202,13 +217,14 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
                 destination: to,
                 wave: held.wave,
                 tier: held.tier,
+                gains: edge.gains,
                 actions: edge.actions.clone(),
             };
             self.pending.remove(&key);
             let refreshed = self.next_sequence;
             self.next_sequence = self.next_sequence.saturating_add(1);
-            self.pending.insert((held.tier, refreshed), slot);
-            if let Some(entry) = self.pending_slot.get_mut(&slot) {
+            self.pending.insert((held.tier, refreshed), source);
+            if let Some(entry) = self.pending_source.get_mut(&source) {
                 entry.sequence = refreshed;
                 entry.cursor = Some(to);
             }
@@ -216,54 +232,68 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
         }
     }
 
-    fn next_pending(&self, from_highest_tier: bool) -> Option<((u8, u64), K)> {
+    fn next_pending(&self, from_highest_tier: bool) -> Option<((u8, u64), S)> {
         if from_highest_tier {
             let (highest, _) = self.pending.keys().next_back().copied()?;
             return self
                 .pending
                 .range((highest, 0)..=(highest, u64::MAX))
                 .next()
-                .map(|(key, slot)| (*key, *slot));
+                .map(|(key, source)| (*key, *source));
         }
-        self.pending.iter().next().map(|(key, slot)| (*key, *slot))
+        self.pending
+            .iter()
+            .next()
+            .map(|(key, source)| (*key, *source))
     }
 
-    fn drop_pending(&mut self, slot: K) {
-        if let Some(held) = self.pending_slot.remove(&slot) {
+    fn drop_pending(&mut self, source: S) {
+        if let Some(held) = self.pending_source.remove(&source) {
             self.pending.remove(&(held.tier, held.sequence));
             self.memory_bytes = self.memory_bytes.saturating_sub(Self::pending_bytes());
         }
     }
 
-    pub fn retain_slots(&mut self, live: &BTreeSet<K>) {
-        let stale = self
+    pub fn retain(&mut self, live_sources: &BTreeSet<S>, live_places: &BTreeSet<D>) {
+        let stale_sources = self
             .exits
             .keys()
-            .chain(self.entrances.keys())
-            .chain(self.pending_slot.keys())
+            .chain(self.pending_source.keys())
             .copied()
-            .filter(|slot| !live.contains(slot))
+            .filter(|source| !live_sources.contains(source))
             .collect::<BTreeSet<_>>();
-        for slot in stale {
-            self.remove_slot(slot);
+        for source in stale_sources {
+            self.remove_source(source);
+        }
+        let stale_places = self
+            .entrances
+            .keys()
+            .copied()
+            .filter(|place| !live_places.contains(place))
+            .collect::<BTreeSet<_>>();
+        for place in stale_places {
+            self.remove_place(place);
         }
     }
 
-    pub fn remove_slot(&mut self, slot: K) {
-        self.drop_pending(slot);
-        for to in self.exits.remove(&slot).unwrap_or_default() {
-            self.drop_edge(slot, to);
+    pub fn remove_source(&mut self, source: S) {
+        self.drop_pending(source);
+        for to in self.exits.remove(&source).unwrap_or_default() {
+            self.drop_edge(source, to);
             if let Some(sources) = self.entrances.get_mut(&to) {
-                sources.remove(&slot);
+                sources.remove(&source);
                 if sources.is_empty() {
                     self.entrances.remove(&to);
                 }
             }
         }
-        for from in self.entrances.remove(&slot).unwrap_or_default() {
-            self.drop_edge(from, slot);
+    }
+
+    pub fn remove_place(&mut self, place: D) {
+        for from in self.entrances.remove(&place).unwrap_or_default() {
+            self.drop_edge(from, place);
             if let Some(targets) = self.exits.get_mut(&from) {
-                targets.remove(&slot);
+                targets.remove(&place);
                 if targets.is_empty() {
                     self.exits.remove(&from);
                     self.drop_pending(from);
@@ -272,7 +302,7 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
         }
     }
 
-    fn drop_edge(&mut self, from: K, to: K) {
+    fn drop_edge(&mut self, from: S, to: D) {
         if let Some(edge) = self.edges.remove(&(from, to)) {
             self.memory_bytes = self
                 .memory_bytes
@@ -285,21 +315,33 @@ impl<K: Copy + Ord, A: Clone> ContinuationBank<K, A> {
 mod tests {
     use super::*;
 
-    fn bank() -> ContinuationBank<u8, u8> {
+    fn bank() -> ContinuationBank<u8, u8, u8> {
         ContinuationBank::new(4)
+    }
+
+    fn record(
+        bank: &mut ContinuationBank<u8, u8, u8>,
+        from: u8,
+        to: u8,
+        donor: u64,
+        leaf: u64,
+        actions: &[u8],
+        cost: u64,
+    ) {
+        bank.record(from, from, to, donor, leaf, actions, cost, 0);
     }
 
     #[test]
     fn a_cheaper_tail_replaces_an_edge_and_a_costlier_one_does_not() {
         let mut bank = bank();
-        bank.record(1, 2, 10, 11, &[7], 100);
-        bank.record(1, 2, 20, 21, &[8], 200);
+        record(&mut bank, 1, 2, 10, 11, &[7], 100);
+        record(&mut bank, 1, 2, 20, 21, &[8], 200);
         let charged = bank.memory_bytes();
         assert_eq!(bank.edge_count(), 1);
         bank.improved(1, 5, 0, 0);
         let taken = bank.pop(false).expect("edge");
         assert_eq!((taken.donor, taken.leaf, taken.actions), (10, 11, vec![7]));
-        bank.record(1, 2, 30, 31, &[9, 9], 50);
+        record(&mut bank, 1, 2, 30, 31, &[9, 9], 50);
         assert_eq!(bank.edge_count(), 1);
         assert_ne!(bank.memory_bytes(), charged);
         bank.improved(1, 5, 0, 0);
@@ -311,10 +353,18 @@ mod tests {
     }
 
     #[test]
-    fn a_lower_tier_slot_is_served_before_an_older_higher_tier_one() {
+    fn an_edge_carries_the_resource_change_it_was_recorded_with() {
         let mut bank = bank();
-        bank.record(1, 2, 10, 11, &[7], 1);
-        bank.record(4, 5, 14, 15, &[9], 1);
+        bank.record(1, 1, 2, 10, 11, &[7], 100, 0b10);
+        bank.improved(1, 5, 0, 0);
+        assert_eq!(bank.pop(false).expect("edge").gains, 0b10);
+    }
+
+    #[test]
+    fn a_lower_tier_source_is_served_before_an_older_higher_tier_one() {
+        let mut bank = bank();
+        record(&mut bank, 1, 2, 10, 11, &[7], 1);
+        record(&mut bank, 4, 5, 14, 15, &[9], 1);
         bank.improved(4, 200, 0, 1);
         bank.improved(1, 100, 0, 0);
         assert_eq!(bank.pop(false).expect("lowest tier first").parent, 100);
@@ -324,8 +374,8 @@ mod tests {
     #[test]
     fn the_highest_tier_pop_skips_the_queue_ahead_of_it() {
         let mut bank = bank();
-        bank.record(1, 2, 10, 11, &[7], 1);
-        bank.record(4, 5, 14, 15, &[9], 1);
+        record(&mut bank, 1, 2, 10, 11, &[7], 1);
+        record(&mut bank, 4, 5, 14, 15, &[9], 1);
         bank.improved(1, 100, 0, 0);
         bank.improved(4, 200, 0, 1);
         let taken = bank.pop(true).expect("highest tier");
@@ -333,35 +383,45 @@ mod tests {
     }
 
     #[test]
-    fn a_better_tier_moves_a_queued_slot_forward_and_a_worse_one_leaves_it() {
+    fn a_better_tier_moves_a_queued_source_forward_and_a_worse_one_leaves_it() {
         let mut bank = bank();
-        bank.record(1, 2, 10, 11, &[7], 1);
-        bank.record(4, 5, 14, 15, &[9], 1);
+        record(&mut bank, 1, 2, 10, 11, &[7], 1);
+        record(&mut bank, 4, 5, 14, 15, &[9], 1);
         bank.improved(1, 100, 0, 1);
         bank.improved(4, 200, 0, 1);
         bank.improved(4, 300, 0, 0);
         assert_eq!(bank.queue_len(), 2);
-        assert_eq!(bank.pop(false).expect("promoted slot").parent, 300);
+        assert_eq!(bank.pop(false).expect("promoted source").parent, 300);
         bank.improved(1, 400, 0, 2);
         assert_eq!(bank.pop(false).expect("still its own tier").tier, 1);
     }
 
     #[test]
-    fn an_edge_longer_than_the_cap_or_onto_itself_is_not_recorded() {
+    fn an_edge_longer_than_the_cap_or_onto_its_own_place_is_not_recorded() {
         let mut bank = bank();
-        bank.record(1, 1, 10, 11, &[7], 1);
-        bank.record(1, 2, 10, 11, &[], 1);
-        bank.record(1, 2, 10, 11, &[1, 2, 3, 4, 5], 1);
+        record(&mut bank, 1, 1, 10, 11, &[7], 1);
+        record(&mut bank, 1, 2, 10, 11, &[], 1);
+        record(&mut bank, 1, 2, 10, 11, &[1, 2, 3, 4, 5], 1);
         assert_eq!(bank.edge_count(), 0);
         assert_eq!(bank.memory_bytes(), 0);
     }
 
     #[test]
-    fn queuing_a_slot_twice_updates_it_in_place() {
+    fn two_sources_at_one_place_keep_separate_edges() {
         let mut bank = bank();
-        bank.record(1, 2, 10, 11, &[7], 1);
-        bank.record(1, 3, 12, 13, &[8], 1);
-        bank.record(4, 5, 14, 15, &[9], 1);
+        bank.record(1, 9, 2, 10, 11, &[7], 1, 0);
+        bank.record(3, 9, 2, 12, 13, &[8], 1, 0);
+        assert_eq!(bank.edge_count(), 2);
+        bank.improved(3, 300, 0, 0);
+        assert_eq!(bank.pop(false).expect("the improved source").donor, 12);
+    }
+
+    #[test]
+    fn queuing_a_source_twice_updates_it_in_place() {
+        let mut bank = bank();
+        record(&mut bank, 1, 2, 10, 11, &[7], 1);
+        record(&mut bank, 1, 3, 12, 13, &[8], 1);
+        record(&mut bank, 4, 5, 14, 15, &[9], 1);
         bank.improved(1, 100, 0, 0);
         bank.improved(4, 200, 0, 0);
         let charged = bank.memory_bytes();
@@ -370,17 +430,17 @@ mod tests {
         assert_eq!(bank.pending_count(), 2);
         assert_eq!(bank.queue_len(), 2);
         assert_eq!(bank.memory_bytes(), charged);
-        let next = bank.pop(false).expect("rotated to the other slot");
+        let next = bank.pop(false).expect("rotated to the other source");
         assert_eq!((next.destination, next.parent), (5, 200));
-        let back = bank.pop(false).expect("back to the reset slot");
+        let back = bank.pop(false).expect("back to the reset source");
         assert_eq!((back.destination, back.parent, back.wave), (2, 300, 2));
     }
 
     #[test]
-    fn popping_walks_a_slots_exits_and_drops_it_when_they_run_out() {
+    fn popping_walks_a_sources_exits_and_drops_it_when_they_run_out() {
         let mut bank = bank();
-        bank.record(1, 2, 10, 11, &[7], 1);
-        bank.record(1, 3, 12, 13, &[8], 1);
+        record(&mut bank, 1, 2, 10, 11, &[7], 1);
+        record(&mut bank, 1, 3, 12, 13, &[8], 1);
         bank.improved(1, 100, 0, 0);
         assert_eq!(bank.pop(false).expect("first").destination, 2);
         assert_eq!(bank.pop(false).expect("second").destination, 3);
@@ -390,12 +450,12 @@ mod tests {
     }
 
     #[test]
-    fn a_slot_improved_between_every_pop_does_not_hold_the_front() {
+    fn a_source_improved_between_every_pop_does_not_hold_the_front() {
         let mut bank = bank();
         for to in 10..60_u8 {
-            bank.record(1, to, 10, 11, &[7], 1);
+            record(&mut bank, 1, to, 10, 11, &[7], 1);
         }
-        bank.record(2, 90, 20, 21, &[8], 1);
+        record(&mut bank, 2, 90, 20, 21, &[8], 1);
         bank.improved(1, 100, 0, 0);
         bank.improved(2, 200, 0, 0);
         let mut reached_b = false;
@@ -408,10 +468,10 @@ mod tests {
     }
 
     #[test]
-    fn improving_a_slot_costs_nothing_proportional_to_its_exits() {
+    fn improving_a_source_costs_nothing_proportional_to_its_exits() {
         let mut bank = bank();
         for to in 0..=250_u8 {
-            bank.record(251, to, 10, 11, &[7], 1);
+            record(&mut bank, 251, to, 10, 11, &[7], 1);
         }
         for _ in 0..100 {
             bank.improved(251, 1, 0, 0);
@@ -420,14 +480,14 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_slot_releases_its_edges_and_every_pending_entry() {
+    fn removing_a_place_releases_its_edges_and_every_pending_entry() {
         let mut bank = bank();
-        bank.record(1, 2, 10, 11, &[7], 1);
-        bank.record(3, 2, 12, 13, &[8], 1);
+        record(&mut bank, 1, 2, 10, 11, &[7], 1);
+        record(&mut bank, 3, 2, 12, 13, &[8], 1);
         bank.improved(1, 100, 0, 0);
         bank.improved(3, 300, 0, 0);
         assert_eq!(bank.pending_count(), 2);
-        bank.remove_slot(2);
+        bank.remove_place(2);
         assert_eq!(bank.edge_count(), 0);
         assert_eq!(bank.pending_count(), 0);
         assert_eq!(bank.queue_len(), 0);
@@ -436,30 +496,30 @@ mod tests {
     }
 
     #[test]
-    fn deleting_and_recreating_a_slot_leaves_the_queue_the_size_it_reports() {
+    fn deleting_and_recreating_a_source_leaves_the_queue_the_size_it_reports() {
         let mut bank = bank();
-        bank.record(1, 2, 10, 11, &[7], 1);
+        record(&mut bank, 1, 2, 10, 11, &[7], 1);
         bank.improved(1, 100, 0, 0);
         for _ in 0..50 {
-            bank.record(3, 4, 12, 13, &[8], 1);
+            record(&mut bank, 3, 4, 12, 13, &[8], 1);
             bank.improved(3, 300, 0, 0);
-            bank.remove_slot(3);
+            bank.remove_source(3);
         }
         assert_eq!(bank.queue_len(), bank.pending_count());
         assert_eq!(bank.pending_count(), 1);
-        assert_eq!(bank.pop(false).expect("the untouched slot").parent, 100);
+        assert_eq!(bank.pop(false).expect("the untouched source").parent, 100);
     }
 
     #[test]
-    fn retain_slots_drops_everything_outside_the_live_set() {
+    fn retain_drops_everything_outside_the_live_sets() {
         let mut bank = bank();
-        bank.record(1, 2, 10, 11, &[7], 1);
-        bank.record(3, 4, 12, 13, &[8], 1);
+        record(&mut bank, 1, 2, 10, 11, &[7], 1);
+        record(&mut bank, 3, 4, 12, 13, &[8], 1);
         bank.improved(1, 100, 0, 0);
         bank.improved(3, 300, 0, 0);
-        bank.retain_slots(&BTreeSet::from([1, 2]));
+        bank.retain(&BTreeSet::from([1]), &BTreeSet::from([2]));
         assert_eq!(bank.edge_count(), 1);
         assert_eq!(bank.pending_count(), 1);
-        assert_eq!(bank.pop(false).expect("the live slot").destination, 2);
+        assert_eq!(bank.pop(false).expect("the live source").destination, 2);
     }
 }

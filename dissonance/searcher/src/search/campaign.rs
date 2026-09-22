@@ -16,9 +16,9 @@ use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
     Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, CampaignSpliceTail,
-    ContinuationAccounting, Input, ProgressPoint, RetentionPolicy, SelectorAccounting,
-    SelectorDraw, SelectorPath, SelectorPolicy, retention_policy_from_identifier,
-    retention_policy_identifier, selector_policy_identifier,
+    ContinuationAccounting, Input, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER,
+    SelectorAccounting, SelectorDraw, SelectorPath, retention_policy_from_identifier,
+    retention_policy_identifier,
 };
 use crate::search::draw::{
     DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
@@ -49,7 +49,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 6;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 7;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
@@ -568,7 +568,6 @@ pub struct CampaignConfig<G: Workload + ?Sized> {
     pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub retention: RetentionPolicy,
-    pub selector: SelectorPolicy,
     pub objective_witness_path: Option<PathBuf>,
 }
 
@@ -800,8 +799,6 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub input_index_nodes: usize,
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub historical_cells: usize,
-    #[serde(default, skip_serializing_if = "is_zero_usize")]
-    pub barren_groups: usize,
     pub jobs_per_worker: Vec<u64>,
     pub skips_per_worker: Vec<u64>,
     pub stream_sha256: String,
@@ -845,7 +842,7 @@ struct ContinuationReservation<G: Workload + ?Sized> {
     parent_id: u64,
     donor: u64,
     leaf: u64,
-    destination: <G::Key as ArchiveKey>::Group,
+    destination: <G::Key as ArchiveKey>::Place,
     wave: u32,
     suffix: Vec<G::Action>,
 }
@@ -859,6 +856,7 @@ fn take_continuation<G: Workload + ?Sized>(
 ) -> Option<ContinuationReservation<G>> {
     let max_actions = core.max_actions;
     let mut examined = 0_usize;
+    let mut gaining_fallback = None;
     while examined < CONTINUATION_EXITS_PER_RESERVATION
         && let Some(continuation) = core.archive.pop_continuation(from_highest_tier)
     {
@@ -871,11 +869,13 @@ fn take_continuation<G: Workload + ?Sized>(
         {
             continue;
         }
-        if !core.archive.outranks_slot_holders(
+        let outranks = core.archive.outranks_place_holders(
             parent_index,
             continuation.destination,
             continuation.tier,
-        ) {
+        );
+        let gaining = continuation.gains != 0;
+        if !outranks && (!gaining || gaining_fallback.is_some()) {
             continue;
         }
         let mut actions = continuation.actions;
@@ -883,7 +883,7 @@ fn take_continuation<G: Workload + ?Sized>(
         if core.all_prefixes_archived(parent_index, &actions) {
             continue;
         }
-        return Some(ContinuationReservation {
+        let reservation = ContinuationReservation {
             parent_index,
             parent_id: continuation.parent,
             donor: continuation.donor,
@@ -891,9 +891,17 @@ fn take_continuation<G: Workload + ?Sized>(
             destination: continuation.destination,
             wave: continuation.wave,
             suffix: actions,
-        });
+        };
+        if outranks {
+            core.archive.record_continuation_dispatch(false);
+            return Some(reservation);
+        }
+        gaining_fallback = Some(reservation);
     }
-    None
+    if gaining_fallback.is_some() {
+        core.archive.record_continuation_dispatch(true);
+    }
+    gaining_fallback
 }
 
 fn continuation_attempt<G: Workload + ?Sized>(
@@ -974,15 +982,15 @@ fn continuation_reservation_matches<G: Workload + ?Sized>(
 
 fn continuation_arrival<G: Workload>(
     archive: &Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
-    destination: Option<<G::Key as ArchiveKey>::Group>,
+    destination: Option<<G::Key as ArchiveKey>::Place>,
     decisions: &[CampaignAdmissionDecision],
-) -> (bool, bool) {
+) -> (Option<usize>, bool) {
     let Some(destination) = destination else {
-        return (false, false);
+        return (None, false);
     };
     decisions
         .iter()
-        .fold((false, false), |(landed, replaced), decision| {
+        .fold((None, false), |(landed, replaced), decision| {
             let (id, retained) = match decision {
                 CampaignAdmissionDecision::Retained { id } => (*id, true),
                 CampaignAdmissionDecision::Duplicate { id } => (*id, false),
@@ -990,9 +998,11 @@ fn continuation_arrival<G: Workload>(
             };
             let arrived = archive
                 .index_of_id(id)
-                .and_then(|index| archive.slot_of(index))
-                .is_some_and(|slot| slot == destination);
-            (landed || arrived, replaced || (arrived && retained))
+                .filter(|index| archive.place_of(*index) == Some(destination));
+            (
+                landed.or(arrived),
+                replaced || (arrived.is_some() && retained),
+            )
         })
 }
 
@@ -1190,12 +1200,10 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignJobResult<G> {
 }
 
 fn verify_selector_annotation(draw: &SelectorDraw) -> Result<(), Box<dyn Error>> {
-    match (draw.path, draw.concentration) {
-        (SelectorPath::HierarchyWalk, None) => {
-            Err("cell draw is missing its concentration record".into())
-        }
-        (SelectorPath::Uniform | SelectorPath::Continuation, Some(_)) => {
-            Err("non-cell draw carries a concentration record".into())
+    match (draw.path, draw.tier_rank) {
+        (SelectorPath::Tiers, None) => Err("tier draw is missing its rank".into()),
+        (SelectorPath::Continuation, Some(_)) => {
+            Err("continuation draw carries a tier rank".into())
         }
         _ => Ok(()),
     }
@@ -1654,7 +1662,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 .record_progress
                 .then(|| G::aggregate_progress(&self.evidence)),
             active_entries: self.archive.active_count(),
-            occupied_cells: self.archive.slots.len(),
+            occupied_cells: self.archive.occupied_cell_count(),
             terminal_endpoints: self.terminal_endpoints,
             execution_failures: self.execution_failures,
         });
@@ -1782,7 +1790,7 @@ pub fn preference_portfolio_identifier<K: ArchiveKey>() -> String {
     format!(
         "{PREFERENCE_PORTFOLIO_PREFIX}{},{}",
         K::preferences(),
-        K::slot_capacity().max(1)
+        K::capacity().max(1)
     )
 }
 
@@ -1825,7 +1833,7 @@ fn stream_header<G: Workload>(
         workload_policies: recorded_policies(workload, &config.run),
         draw_header,
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
-        parent_scheduler: selector_policy_identifier(&config.selector),
+        parent_scheduler: SELECTOR_IDENTIFIER.to_owned(),
         preference_portfolio: preference_portfolio_identifier::<G::Key>(),
         executor_mode: "snapshot_resume_archive".to_owned(),
         worker_seed_derivation: "sha256(campaign_seed_le || worker_index_le)[0..8] as u64 le"
@@ -2150,7 +2158,6 @@ fn build_report<G: Workload>(
     let input_reconstructions = core.archive.input_reconstructions();
     let input_index_nodes = core.archive.input_index_nodes();
     let historical_cells = core.archive.historical_cell_count();
-    let barren_groups = core.archive.barren_group_count();
     let (archive, snapshots) = core.into_archive_report_and_snapshots(
         workload,
         header.campaign_seed,
@@ -2218,7 +2225,6 @@ fn build_report<G: Workload>(
         input_reconstructions,
         input_index_nodes,
         historical_cells,
-        barren_groups,
         jobs_per_worker: counters.jobs_per_worker.clone(),
         skips_per_worker: counters.skips_per_worker.clone(),
         stream_sha256,
@@ -2278,7 +2284,7 @@ struct PendingJob<G: Workload + ?Sized> {
     parent_id: u64,
     continuation_energy: Option<u16>,
     continuation_wave: u32,
-    continuation_destination: Option<<G::Key as ArchiveKey>::Group>,
+    continuation_destination: Option<<G::Key as ArchiveKey>::Place>,
     mutation_seed: u64,
     mixture_weight: u8,
     splice_weight: u8,
@@ -2372,9 +2378,7 @@ pub struct CampaignProgressRecord<K> {
     #[serde(default)]
     pub input_index_memory_bytes: usize,
     #[serde(default)]
-    pub novelty_memory_bytes: usize,
-    #[serde(default)]
-    pub barren_memory_bytes: usize,
+    pub cell_memory_bytes: usize,
     #[serde(default)]
     pub resident_memory_bytes: usize,
     #[serde(default)]
@@ -2393,8 +2397,6 @@ pub struct CampaignProgressRecord<K> {
     pub input_index_nodes: usize,
     #[serde(default)]
     pub historical_cells: usize,
-    #[serde(default)]
-    pub barren_groups: usize,
     #[serde(default)]
     pub selector: SelectorAccounting,
     #[serde(default)]
@@ -2452,8 +2454,7 @@ fn write_live_progress<G: Workload>(
         draw_state_memory_bytes,
         entry_metadata_memory_bytes: core.archive.entry_metadata_memory_bytes(),
         input_index_memory_bytes: core.archive.input_index_memory_bytes(),
-        novelty_memory_bytes: core.archive.novelty_memory_bytes(),
-        barren_memory_bytes: core.archive.barren_memory_bytes(),
+        cell_memory_bytes: core.archive.cell_memory_bytes(),
         resident_memory_bytes: core
             .archive
             .resident_memory_bytes()
@@ -2466,7 +2467,6 @@ fn write_live_progress<G: Workload>(
         input_reconstructions: core.archive.input_reconstructions(),
         input_index_nodes: core.archive.input_index_nodes(),
         historical_cells: core.archive.historical_cell_count(),
-        barren_groups: core.archive.barren_group_count(),
         selector: core.archive.selector_report(),
         continuations: core.archive.continuation_report(),
     })?;
@@ -2617,10 +2617,6 @@ where
         return Err("initial draw state exceeds its deterministic memory reserve".into());
     }
     let mut header = stream_header(workload, config, &origin_record, draw_header);
-    crate::search::archive::selector_policy_from_identifier(
-        &header.parent_scheduler,
-        G::Key::groups().saturating_sub(1),
-    )?;
     header.work_budget = work_budget;
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
@@ -2632,7 +2628,6 @@ where
         config.archive_entry_limit,
         config.memory_budget_mib,
     );
-    core.archive.selector_policy = config.selector.clone();
     core.archive
         .enable_continuations(config.suffix.max_actions());
     let mut counters = CampaignCounters::new(config.workers);
@@ -2775,11 +2770,7 @@ where
                     let parent_id = continuation.parent_id;
                     let selector = SelectorDraw {
                         path: SelectorPath::Continuation,
-                        classes_skipped: 0,
-                        counter_reset: false,
-                        concentration: None,
-                        class_rank: None,
-                        preference: None,
+                        tier_rank: None,
                     };
                     let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
                     let splice = Some(CampaignSpliceRecord::Tail {
@@ -3167,16 +3158,10 @@ where
                     let retained_ids = retained_archive_indexes(&core, &decisions);
                     let new_slot_descendant = retained_ids
                         .iter()
-                        .any(|id| core.archive.opened_new_slot(*id));
-                    let opened_depths = retained_ids
-                        .iter()
-                        .fold(0, |mask, id| mask | core.archive.opened_depths(*id));
+                        .any(|id| core.archive.opened_new_cell(*id));
                     if !isolated_continuation {
-                        core.archive.record_selection_outcome(
-                            parent_index,
-                            !retained_ids.is_empty(),
-                            opened_depths,
-                        );
+                        core.archive
+                            .record_selection_outcome(parent_index, !retained_ids.is_empty());
                     }
                     if isolated_continuation {
                         let (landed, replaced) = continuation_arrival::<G>(
@@ -3290,7 +3275,7 @@ where
                         )?;
                         if coordinator_profile.enabled {
                             eprintln!(
-                                "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} available_result_slots={} queued_specs={} completed_buffered={} job_execution_work={} replay_jobs={} replay_actions={} replay_cost={} suffix_actions={} suffix_cost={}",
+                                "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} cell_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} available_result_slots={} queued_specs={} completed_buffered={} job_execution_work={} replay_jobs={} replay_actions={} replay_cost={} suffix_actions={} suffix_cost={}",
                                 coordinator_profile.receive_wait_ns,
                                 coordinator_profile.admission_ns,
                                 coordinator_profile.bookkeeping_ns,
@@ -3309,8 +3294,7 @@ where
                                 core.archive.resident_snapshot_bytes(),
                                 core.archive.entry_metadata_memory_bytes(),
                                 core.archive.input_index_memory_bytes(),
-                                core.archive.novelty_memory_bytes(),
-                                core.archive.barren_memory_bytes(),
+                                core.archive.cell_memory_bytes(),
                                 core.archive.history_memory_bytes(),
                                 draw_state_memory_bytes,
                                 core.archive
@@ -3631,10 +3615,9 @@ where
     }
 
     let replay_retention = retention_policy_from_identifier(&header.retention_policy)?;
-    let replay_selector = crate::search::archive::selector_policy_from_identifier(
-        &header.parent_scheduler,
-        G::Key::groups().saturating_sub(1),
-    )?;
+    if header.parent_scheduler != SELECTOR_IDENTIFIER {
+        return Err("campaign stream parent scheduler is not recognized".into());
+    }
     let expected_resume = if header.origin_kind == ORIGIN_SNAPSHOT_ROOT {
         SNAPSHOT_ROOT_RESUME_IDENTIFIER
     } else {
@@ -3697,7 +3680,6 @@ where
     );
     core.record_progress = true;
     core.bounded_progress_curve = true;
-    core.archive.selector_policy = replay_selector.clone();
     core.archive
         .enable_continuations(replay_suffix.max_actions());
     let mut counters = CampaignCounters::new(header.workers);
@@ -4150,7 +4132,7 @@ where
                     core.archive.record_isolated_continuation(parent_index);
                     let new_slot_descendant = retained_archive_indexes(&core, &decisions)
                         .iter()
-                        .any(|id| core.archive.opened_new_slot(*id));
+                        .any(|id| core.archive.opened_new_cell(*id));
                     let (landed, replaced) = continuation_arrival::<G>(
                         &core.archive,
                         taken_continuation.as_ref().map(|taken| taken.destination),
@@ -4166,13 +4148,8 @@ where
                 } else {
                     core.archive.record_selection(parent_index, &job.selector);
                     let retained_ids = retained_archive_indexes(&core, &decisions);
-                    core.archive.record_selection_outcome(
-                        parent_index,
-                        !retained_ids.is_empty(),
-                        retained_ids
-                            .iter()
-                            .fold(0, |mask, id| mask | core.archive.opened_depths(*id)),
-                    );
+                    core.archive
+                        .record_selection_outcome(parent_index, !retained_ids.is_empty());
                 }
                 core.archive.unpin_job_origin(snapshot_id);
                 core.archive.unpin_metadata(job.parent_id);
@@ -4293,7 +4270,7 @@ mod tests {
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
-        SelectorPath, SelectorPolicy, entries_by_suffix,
+        SelectorPath, entries_by_suffix,
     };
     use crate::search::draw::{DrawMixture, MixtureDraw, MixtureEnergy, SuffixShape};
     use crate::search::rollout::{ExecutionDisposition, Outcome, Rollout, execute_suffix};
@@ -4327,16 +4304,17 @@ mod tests {
     struct TestKey(u8);
 
     impl ArchiveKey for TestKey {
-        type Group = u8;
+        type Place = u8;
+        type Progress = ();
+        type Identity = ();
 
-        fn groups() -> usize {
-            1
-        }
-
-        fn group(self, depth: usize) -> Self::Group {
-            assert_eq!(depth, 0);
+        fn place(self) -> Self::Place {
             self.0
         }
+
+        fn progress(self) -> Self::Progress {}
+
+        fn identity(self) -> Self::Identity {}
 
         type Lineage = ();
 
@@ -5046,7 +5024,6 @@ mod tests {
                 suffix: SuffixShape::OneOrTwo,
                 mixture: DrawMixture::AlphabetOnly,
                 retention: RetentionPolicy::Unprobed,
-                selector: SelectorPolicy::GroupUniform,
                 objective_witness_path: Some(witness_path.clone()),
             };
             let workload = TestWorkload {
@@ -5085,7 +5062,7 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":6,"format":"campaign-v1","campaign_seed":7,"workers":2,
+    const RECORDED_HEADER: &str = r#"{"schema_version":7,"format":"campaign-v1","campaign_seed":7,"workers":2,
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
@@ -5093,7 +5070,7 @@ mod tests {
 "key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
 "chord_policy":"chord_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
-"parent_scheduler":"hierarchy_uniform_128","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
+"parent_scheduler":"tier_cell_count_decay_v1","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
 "worker_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 
@@ -5811,7 +5788,7 @@ mod tests {
     fn a_recorded_job_keeps_its_draw_checkpoint_field_names() {
         let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":0,"mutation_seed":9,
 "execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":128,"splice_weight":128,
-"selector":{"path":"hierarchy_uniform","classes_skipped":0,"counter_reset":false},
+"selector":{"path":"tiers","tier_rank":0},
 "draw_checkpoint_before":{"records":3,"retained_successes":1,"table_sha256":"aa"},
 "draw_checkpoint_after":{"records":4,"retained_successes":2,"table_sha256":"bb"}}"#
             .replace('\n', "");
@@ -5824,7 +5801,7 @@ mod tests {
             job.splice, None,
             "jobs without a splice carry no splice evidence"
         );
-        assert_eq!(job.selector.path, SelectorPath::HierarchyWalk);
+        assert_eq!(job.selector.path, SelectorPath::Tiers);
         assert_eq!(
             job.draw_checkpoint_before,
             Some(EmpiricalStepCheckpoint {
@@ -5842,12 +5819,8 @@ mod tests {
             serde_json::from_value(written).expect("job round-trips");
         assert_eq!(round_trip, job);
         let _ = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
-            class_rank: None,
-            preference: None,
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
         };
     }
 
@@ -5856,7 +5829,7 @@ mod tests {
         let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":3,"mutation_seed":9,
 "execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":85,"splice_weight":85,
 "splice":{"outcome":"tail","donor_id":4,"leaf_id":9,"tail_postcard":[1,2]},
-"selector":{"path":"uniform","classes_skipped":0,"counter_reset":false}}"#
+"selector":{"path":"tiers","tier_rank":1}}"#
             .replace('\n', "");
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint> =
             serde_json::from_str(&line).expect("record parses");
@@ -5895,7 +5868,6 @@ mod tests {
             suffix: SuffixShape::OneOrTwo,
             mixture: DrawMixture::EnergySplice { scale: 6 },
             retention: RetentionPolicy::Unprobed,
-            selector: SelectorPolicy::GroupUniform,
             objective_witness_path: None,
         };
         let workload = TestWorkload {
@@ -5987,7 +5959,7 @@ mod tests {
             record_mixture_outcome(
                 &mut energy,
                 mixture,
-                SelectorPath::Uniform,
+                SelectorPath::Tiers,
                 1,
                 128,
                 128,

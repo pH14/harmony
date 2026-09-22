@@ -8,9 +8,10 @@ campaign coordination, worker execution, seeded draws, checkpoints, stream
 recording, and replay. Workloads supply associated types through `CampaignTypes`
 and implement four contracts. `Workload` composes those contracts for a full campaign.
 
-The archive groups entries at several ordered depths. A workload provides the
-key and an ordered list of same-location state preferences; the generic archive
-uses only the resulting ordering and retains bounded representatives. Campaigns reserve jobs
+The archive keeps entries in cells, a cell being one place at one progress
+level, and ranks the cells in progress tiers. A workload provides the key, a
+progress order and an ordered list of same-place state preferences; the generic
+archive uses only those and retains bounded representatives. Campaigns reserve jobs
 in a deterministic admission window, allow physical workers to execute them,
 and process results in recorded admission order. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
@@ -76,34 +77,25 @@ campaign and target contracts:
 | `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
 
-An `ArchiveKey` answers three separate questions, and nothing else reads a
-group as a magnitude:
+An `ArchiveKey` names three things about a state, and nothing else reads a
+key as a magnitude:
 
 | Question | Answered by |
 | --- | --- |
-| Is this a new place? | `Eq` on the group. `Ord` only lets maps store it. |
-| Is this band, class or leaf further along? | `ArchiveKey::progress_cmp`, default `Ordering::Equal`. |
-| Which states at one slot survive? | `ArchiveKey::preference_cmp` at each of `ArchiveKey::preferences()` indices, default one index comparing `Ordering::Equal`. |
+| Where is this state? | `ArchiveKey::place`. A place is compared with `Eq`; `Ord` only lets maps store it. |
+| How far along is it? | `ArchiveKey::progress`, an `Ord` value. `()` for a workload with no progress notion. |
+| Which same-place states are distinct? | `ArchiveKey::identity`. Two entries at one place and progress with different identities hold separate slots. |
+| Which states at one slot survive? | `ArchiveKey::preference_cmp` at each of `ArchiveKey::preferences()` indices; the default declares none and compares `Ordering::Equal`. |
 
-`progress_cmp` must be a total preorder: any two groups compare, comparing them
-in either order gives reversed results, and the relation is transitive over
-every triple. The searcher relies on that to take a maximum in one indexed pass
-instead of a dominance scan. `check_total_preorder` checks those properties over
-a slice of groups; every workload that declares a `progress_cmp` calls it from a
-test. A workload with no progress notion leaves the default, and its places are
-then all peers.
-
-A slot keeps the top `slot_capacity()` entries under each preference, and its
-contents are the union of those sets. A candidate enters when it reaches that
-set under any one preference; an entry leaves when it holds a place under none.
-One entry can hold a place under several preferences and is stored once. The
-final holder draw picks a preference with equal probability and then draws among
-that preference's holders under the existing weighting; a key with one
-preference consumes no draw for the choice and selects exactly as it did before.
-The stream header carries `preference_portfolio`, and a recording whose
+A cell is a progress value paired with a place. A slot is a cell paired with
+an identity. A slot keeps the top `capacity()` entries under each preference,
+and its contents are the union of those sets. A candidate enters when it
+reaches that set under any one preference; an entry leaves when it holds a
+place under none. One entry can hold a place under several preferences and is
+stored once. The stream header carries `preference_portfolio`, and a recording whose
 portfolio differs from the compiled key is rejected. `selector.portfolio`
 reports the preference count, holders held under one preference and under
-several, draws and replacements per preference, and admissions that improved
+several, replacements per preference, and admissions that improved
 more than one preference at once.
 
 Each contract depends on `CampaignTypes` and can be implemented independently.
@@ -226,124 +218,81 @@ work changes that replay rejects. It does not measure a workload speedup.
 
 ## Search evaluation policies
 
-Five selector policies exist. `hierarchy_uniform_128` draws uniformly over live
-groups. `hierarchy_uniform_128_retire:<thresholds>` drops a group once its
-barren counter passes a threshold. The three `energy_frontier_cheapest`
-identifiers weight the draw by barren energy, by progress rank, and by cost.
+One selector exists, `tier_cell_count_decay_v1`, and the stream header names
+it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
+progress values held by selectable entries, ranked from the deepest; a tier at
+rank `r` weighs `1 << ((8 - min(r, 8)) * 3)`, so the leading tier takes most of
+the draws, and no tier holding an entry takes zero. Within the tier each cell
+weighs `1 / (1 + draws)` over the draws it has received since it was last
+reset, so an untried cell outweighs a heavily sampled one and every cell keeps
+a share. Within the cell each holder weighs `1 / (1 + selections)` over its
+own selection count. There is no uniform path, no sampling window and no
+retirement: a cell that stops producing keeps drawing at a share that only
+shrinks with its count.
 
-The coarsest group is a class. Every class holding a live cell receives draws.
-The walk ranks classes by how many distinct progress levels are ahead of them,
-capped at eight, and weights a class `1 << ((8 - rank) * 3)` times its barren
-energy, so the leading class takes most of the draws, a class that stops
-producing falls away, and no live class takes zero. The factor of eight per
-rank is what keeps a deep run moving; a factor of two spreads the draws far
-enough behind the frontier that a workload with many finished classes stops
-finishing. Without the energy term a workload whose
-classes form a chain of finished and unfinished stages spends half its draws
-behind the frontier forever. The class depth is an ordinary pooled depth: the
-`energy_frontier_cheapest` identifiers carry one scale per depth from the
-finest pooled depth up to the class, and `group_barren` holds a counter at each
-of them. `SelectorAccounting`'s `class_draws_by_rank` reports the share each
-rank received. Bands inside a class are ranked the same way, over the distinct
-progress levels of their frontier groups. Among bands at one progress level,
-`group_newest` holds the id of the newest cell opened under each pooled group,
-and a band ranks one level behind every peer that opened a newer cell, capped
-at eight, so the draw follows the most recent opening inside a class whose
-bands are otherwise peers.
+A cell's draw count resets to zero when an arrival displaces a holder it
+strictly outranks under a preference, so a place reached again with more of
+what the preference counts draws like a place reached for the first time.
+`SelectorAccounting` reports `cell_selections`, `productive_selections`,
+`cell_resets`, `tier_draws_by_rank` and the draws each cell received, and
+every live progress line carries it under `selector`.
 
-A productive selection clears the parent's barren counter at a pooled depth
-only when a retained child's group at that depth had not been seen before, or
-when the child displaces a slot holder it strictly outranks under a
-preference. Such an arrival also becomes its cell's newest opening, so a place
-reached again with more of what the preference counts draws like a place
-reached for the first time. A child that opens a new coarse group necessarily
-opens the finer groups containing it, so it still clears every depth below. A child that is new only
-at the finest pooled depth clears that depth alone, so a place that keeps
-producing fine novelty inside ground the search already covers no longer holds
-its coarser counters at zero. `Retire` clears every depth on any productive
-selection; `hierarchy_uniform_128` clears none. `SelectorAccounting` reports
-`energy_resets`, the counters cleared at each depth, and `productive_by_mask`, a
-histogram over productive selections of which depths the selection opened.
+Continuation replay carries a better state at one place to the places reached
+from it. An exit source is a place paired with an identity, so two holders that
+differ only in what they carry share one set of exits. The archive keeps one
+edge per exit source and destination place holding the cheapest action tail
+observed between them, the donor and leaf it came from, and the preferences the
+tail gained from its source to its arrival. When a replacement wins its slot
+under `preference_cmp` with `Ordering::Greater`, its exit source is queued at
+the index of the lowest preference it took. A reservation that takes the queue
+examines at most 8 exits, skipping stale parents, prefixes already archived and
+parents at the action limit. Among the rest it dispatches the first whose
+holder beats every current holder of the destination place under the
+preference it won, and otherwise the first edge that gains a preference; an
+edge that does neither is skipped. Landing is arrival anywhere in the
+destination place; acceptance there is the ordinary slot rule after replay. A
+result that lands and wins there queues its own source in turn; that chain is a
+wave, and `longest_wave` reports the deepest one.
 
-Every live progress line carries the whole of `SelectorAccounting` under
-`selector`, so a run's class draw shares and energy resets can be read over
-time rather than only from the final census.
-
-Continuation replay carries a better state at one slot to the slots reached
-from it. The archive keeps one edge per ordered pair of depth-0 slots holding
-the cheapest action tail observed between them, together with the donor and
-leaf it came from. When a replacement wins its slot under `preference_cmp`
-with `Ordering::Greater`, that slot is queued at the index of the lowest
-preference it took. A reservation that takes the queue replays one of the
-slot's exits from its new holder, and only when that holder beats every current
-holder of the destination slot under the preference it won. A result that lands
-at the recorded destination and wins there queues that slot in turn; that chain
-is a wave, and `longest_wave` reports the deepest one.
-
-The queue holds one entry per slot, not per edge, ordered by preference index
-and then by arrival. Queuing a slot is two map operations whatever its degree,
-and a slot queued again under a lower preference index moves to that tier
-keeping its place within it. A pop takes the next exit after the front slot's
-cursor, advances the cursor and moves the slot to the back of its own tier, so
-slots rotate and a slot improved on every reservation cannot hold the front.
-One pop in four takes the highest tier present instead of the lowest, so a
-preference that improves rarely still propagates. A slot
-whose exits run out leaves the queue, and removing a slot releases its edges,
-its own pending entry, and the pending entry of any source slot it leaves
-without exits.
+The queue holds one entry per exit source, not per edge, ordered by preference
+index and then by arrival. Queuing a source is two map operations whatever its
+degree, and a source queued again under a lower preference index moves to that
+tier keeping its place within it. A pop takes the next exit after the front
+source's cursor, advances the cursor and moves the source to the back of its
+own tier, so sources rotate and a source improved on every reservation cannot
+hold the front. One pop in four takes the highest tier present instead of the
+lowest, so a preference that improves rarely still propagates. A source whose
+exits run out leaves the queue, and removing a source or a place releases its
+edges and the pending entries that depended on them.
 
 One reservation in four attempts a continuation while the queue is not empty.
 The share is fixed rather than fed back from how the replays are doing: one in
 eight starves the chain and one in two crowds out ordinary exploration. The
 draw is `RomuDuoJrRand::with_seed(campaign_seed ^ reservation)`, so replay
 recomputes it at each reconstructed reservation and rejects a record whose
-`continuation_energy` disagrees; the tier draw salts the same seed. A
-reservation that takes the queue examines at most 8 exits, skipping stale
-parents, prefixes already archived, parents at the action limit, and exits the
-holder does not beat.
+`continuation_energy` disagrees; the tier draw salts the same seed.
 
 The bank exists only for a workload whose key declares a preference. Without
 one nothing is recorded, nothing is charged, and the stream is unchanged.
 Edges and pending entries are charged as they are held rather than reserved up
-front, and compaction drops the edges of slots the archive no longer holds.
-Dispatch records the complete action tail, so later donor reclamation cannot
-change serial replay. Only same-slot `preference_cmp` is consulted; preferences
-are never compared between unrelated locations.
+front, and compaction drops the edges of sources and places the archive no
+longer holds. Dispatch records the complete action tail, so later donor
+reclamation cannot change serial replay. Only same-place `preference_cmp` is
+consulted; preferences are never compared between unrelated places.
 
 `ContinuationAccounting` rides every live progress line under `continuations`:
 `edges` and `pending` for the bank's size, `jobs`, `execution_work`, `landed`,
-`replaced` and `opened_new_slot` for what the replays did, `longest_wave`,
+`replaced`, `opened_new_cell` and `useful` for what the replays did, where a
+useful landing is one whose entry later bred a retained child,
+`gaining_dispatched` for edges dispatched on their gain alone, `longest_wave`,
 and `energy`, `reservations_drawn` and `reservations_taken` for the share.
 
-Search experiments use independent versioned identifiers:
-
-- `hierarchy_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
-  each within-cell cost weight by one plus that entry's admitted selections.
-  Cheap members get early attempts, while repeatedly sampled members yield some
-  probability to alternatives. No workload field is added.
-
-These are experiments, not new defaults. Promote policies based on paired workload
-panels, fresh completion results, and resource costs through
+Search experiments are promoted through paired workload panels, fresh
+completion results, and resource costs in
 [`benchmarks/search`](../../benchmarks/search/README.md). The generic resource
 fixture exercises actual continuation dispatch, snapshot eviction, concurrent
 reservations, exact report/checkpoint replay, and planted recording corruption
 without a workload runtime or external artifact.
-
-`hierarchy_uniform_128_energy_frontier_cheapest_key_count_v1:<thresholds>` is a
-separate count-history experiment. It uses the larger of an entry's selection
-count and the remembered count of its depth-0 retention key. A cache of 16,384
-recently selected keys survives entry replacement and metadata compaction within
-the campaign. Least-recently-selected keys are evicted when it fills; an entry's
-own count remains a floor. Counts saturate and a fixed conservative reserve for
-both ordered indexes is charged before bootstrap. Recorded skips also count as
-selections. Reports include capacity,
-occupancy, cache hits, evictions and that reserve. The cache starts empty for a
-new campaign, including an archive-origin run, and never pins old entries.
-
-This tests whether archive churn repeatedly gives an already-sampled state a
-fresh sampling count. It also carries history across same-slot resource
-improvements, which may reduce their ordinary draw share; the companion workload
-panels must check that tradeoff. No default change is implied by the mechanism.
 
 Progress sidecars carry objective workload evidence, actual admitted execution
 work, terminal endpoint and execution-failure totals, final totals, logical

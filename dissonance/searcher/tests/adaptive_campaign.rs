@@ -3,9 +3,7 @@
 use std::{collections::BTreeSet, error::Error, num::NonZeroU64};
 
 use searcher::search::{
-    archive::{
-        ArchiveEntryReport, ArchiveKey, Input, RetentionPolicy, SelectorPolicy, entries_by_suffix,
-    },
+    archive::{ArchiveEntryReport, ArchiveKey, Input, RetentionPolicy, entries_by_suffix},
     campaign::{
         ArchiveReportState, CampaignActionResult, CampaignConfig, CampaignExecutionOptions,
         CampaignJobResult, CampaignOrigin, CampaignTypes, Evaluation, InputPolicy, Reporting,
@@ -33,16 +31,17 @@ struct TimedAction {
 struct TimingKey(u8);
 
 impl ArchiveKey for TimingKey {
-    type Group = u8;
+    type Place = u8;
+    type Progress = ();
+    type Identity = ();
 
-    fn groups() -> usize {
-        1
-    }
-
-    fn group(self, depth: usize) -> Self::Group {
-        assert_eq!(depth, 0);
+    fn place(self) -> Self::Place {
         self.0
     }
+
+    fn progress(self) -> Self::Progress {}
+
+    fn identity(self) -> Self::Identity {}
 
     type Lineage = ();
 
@@ -418,7 +417,6 @@ fn fixture_config() -> CampaignConfig<TimingWorkload> {
         suffix: SuffixShape::OneOrTwo,
         mixture: DrawMixture::AlphabetOnly,
         retention: RetentionPolicy::Unprobed,
-        selector: SelectorPolicy::GroupUniform,
         objective_witness_path: None,
     }
 }

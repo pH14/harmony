@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    cell::Cell,
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
@@ -13,7 +12,6 @@ use std::{
 
 use crate::search::{
     continuation::{Continuation, ContinuationBank},
-    key_counts::{KEY_COUNT_CAPACITY, KeyCounts},
     rand::RomuDuoJrRand,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -27,14 +25,14 @@ fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
 }
 
 pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
-    type Group: Copy + Ord + Debug;
-    fn groups() -> usize;
-    fn group(self, depth: usize) -> Self::Group;
-    fn slot_capacity() -> usize {
+    type Place: Copy + Ord + Debug;
+    type Progress: Copy + Ord + Debug;
+    type Identity: Copy + Ord + Debug;
+    fn place(self) -> Self::Place;
+    fn progress(self) -> Self::Progress;
+    fn identity(self) -> Self::Identity;
+    fn capacity() -> usize {
         MAX_ENTRIES_PER_KEY
-    }
-    fn progress_cmp(_left: Self::Group, _right: Self::Group) -> Ordering {
-        Ordering::Equal
     }
     fn preferences() -> usize {
         0
@@ -47,77 +45,36 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn record(lineage: &mut Self::Lineage, key: Self);
 }
 
-pub(crate) struct ProgressOrdered<K: ArchiveKey>(pub(crate) K::Group);
+pub type Cell<K> = (<K as ArchiveKey>::Progress, <K as ArchiveKey>::Place);
 
-impl<K: ArchiveKey> Clone for ProgressOrdered<K> {
-    fn clone(&self) -> Self {
-        *self
-    }
+pub type Slot<K> = (Cell<K>, <K as ArchiveKey>::Identity);
+
+pub type ExitSource<K> = (<K as ArchiveKey>::Place, <K as ArchiveKey>::Identity);
+
+#[must_use]
+pub fn cell_of<K: ArchiveKey>(key: K) -> Cell<K> {
+    (key.progress(), key.place())
 }
 
-impl<K: ArchiveKey> Copy for ProgressOrdered<K> {}
-
-impl<K: ArchiveKey> PartialEq for ProgressOrdered<K> {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
+#[must_use]
+pub fn slot_of_key<K: ArchiveKey>(key: K) -> Slot<K> {
+    (cell_of(key), key.identity())
 }
 
-impl<K: ArchiveKey> Eq for ProgressOrdered<K> {}
-
-impl<K: ArchiveKey> PartialOrd for ProgressOrdered<K> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<K: ArchiveKey> Ord for ProgressOrdered<K> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        K::progress_cmp(self.0, other.0).then_with(|| self.0.cmp(&other.0))
-    }
-}
-
-fn leaf_cell_depth<K: ArchiveKey>() -> usize {
-    1.min(K::groups().saturating_sub(1))
+#[must_use]
+pub fn exit_source_of<K: ArchiveKey>(key: K) -> ExitSource<K> {
+    (key.place(), key.identity())
 }
 
 fn leaf_order<K: ArchiveKey>(left: (K, usize), right: (K, usize)) -> Ordering {
-    let depth = leaf_cell_depth::<K>();
-    K::progress_cmp(left.0.group(depth), right.0.group(depth)).then_with(|| left.1.cmp(&right.1))
+    left.0
+        .progress()
+        .cmp(&right.0.progress())
+        .then_with(|| left.1.cmp(&right.1))
 }
 
 fn leaf_advances<K: ArchiveKey>(leaf: (K, usize), parent: (K, usize)) -> bool {
     leaf_order(leaf, parent) == Ordering::Greater
-}
-
-pub fn check_total_preorder<K: ArchiveKey>(groups: &[K::Group]) -> Result<(), String> {
-    for (left, first) in groups.iter().enumerate() {
-        for (right, second) in groups.iter().enumerate() {
-            if K::progress_cmp(*first, *second) != K::progress_cmp(*second, *first).reverse() {
-                return Err(format!(
-                    "progress_cmp on groups {left} and {right} disagrees when the arguments swap"
-                ));
-            }
-        }
-    }
-    for (left, first) in groups.iter().enumerate() {
-        for (middle, second) in groups.iter().enumerate() {
-            if K::progress_cmp(*first, *second) == Ordering::Greater {
-                continue;
-            }
-            for (right, third) in groups.iter().enumerate() {
-                if K::progress_cmp(*second, *third) == Ordering::Greater {
-                    continue;
-                }
-                if K::progress_cmp(*first, *third) == Ordering::Greater {
-                    return Err(format!(
-                        "progress_cmp is not transitive over groups {left}, {middle} and {right}"
-                    ));
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 pub const MAX_ARCHIVE_ENTRIES: usize = 4_194_304;
@@ -170,155 +127,57 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "hierarchy_uniform_128";
+pub const SELECTOR_IDENTIFIER: &str = "tier_cell_count_decay_v1";
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RetireThresholds {
-    pub entry: u64,
-    pub groups: Vec<u64>,
-}
+const TIER_RANK_CAP: u8 = 8;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SelectorPolicy {
-    GroupUniform,
-    Retire(RetireThresholds),
-    EnergyFrontierCheapest(RetireThresholds),
-    EnergyFrontierCheapestCount(RetireThresholds),
-    EnergyFrontierCheapestKeyCount(RetireThresholds),
+const TIER_RANK_SHIFT: u32 = 3;
+
+const COUNT_DECAY_EXPONENT: u32 = 1;
+
+const COUNT_DECAY_SCALE: u64 = 1 << 32;
+
+#[must_use]
+fn count_decay(draws: u64) -> u64 {
+    let divisor = draws
+        .saturating_add(1)
+        .saturating_pow(COUNT_DECAY_EXPONENT)
+        .max(1);
+    (COUNT_DECAY_SCALE / divisor).max(1)
 }
 
 #[must_use]
-pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
-    match policy {
-        SelectorPolicy::GroupUniform => SELECTOR_IDENTIFIER.to_owned(),
-        SelectorPolicy::Retire(thresholds) => {
-            format!(
-                "{SELECTOR_IDENTIFIER}_retire:{}",
-                threshold_values(thresholds)
-            )
-        }
-        SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => format!(
-            "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:{}",
-            threshold_values(scales)
-        ),
-        SelectorPolicy::EnergyFrontierCheapestCount(scales) => format!(
-            "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:{}",
-            threshold_values(scales)
-        ),
-        SelectorPolicy::EnergyFrontierCheapest(scales) => {
-            format!(
-                "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:{}",
-                threshold_values(scales)
-            )
-        }
-    }
+fn tier_weight(rank: u8) -> u64 {
+    1_u64 << (u32::from(TIER_RANK_CAP.saturating_sub(rank.min(TIER_RANK_CAP))) * TIER_RANK_SHIFT)
 }
 
-fn threshold_values(thresholds: &RetireThresholds) -> String {
-    std::iter::once(thresholds.entry)
-        .chain(thresholds.groups.iter().copied())
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-pub fn selector_policy_from_identifier(
-    identifier: &str,
-    pooled_depths: usize,
-) -> Result<SelectorPolicy, Box<dyn Error>> {
-    if identifier == SELECTOR_IDENTIFIER {
-        return Ok(SelectorPolicy::GroupUniform);
-    }
-    let retire_prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
-    let key_count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:");
-    let count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:");
-    let cheapest_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:");
-    enum Parsed {
-        Retire,
-        EnergyFrontierCheapest,
-        EnergyFrontierCheapestCount,
-        EnergyFrontierCheapestKeyCount,
-    }
-    let (values, selector) = if let Some(values) = identifier.strip_prefix(&retire_prefix) {
-        (values, Parsed::Retire)
-    } else if let Some(values) = identifier.strip_prefix(&key_count_prefix) {
-        (values, Parsed::EnergyFrontierCheapestKeyCount)
-    } else if let Some(values) = identifier.strip_prefix(&count_prefix) {
-        (values, Parsed::EnergyFrontierCheapestCount)
-    } else if let Some(values) = identifier.strip_prefix(&cheapest_prefix) {
-        (values, Parsed::EnergyFrontierCheapest)
-    } else {
-        return Err(format!("parent selector {identifier} is not recognized").into());
-    };
-    let parsed = values
-        .split(',')
-        .map(|value| value.parse::<u64>())
-        .collect::<Result<Vec<_>, _>>()?;
-    if parsed.len() != pooled_depths + 1 {
-        return Err(format!(
-            "retiring selector needs exactly {} thresholds",
-            pooled_depths + 1
-        )
-        .into());
-    }
-    if parsed.contains(&0) {
-        return Err("retiring selector thresholds must be nonzero".into());
-    }
-    let thresholds = RetireThresholds {
-        entry: parsed[0],
-        groups: parsed[1..].to_vec(),
-    };
-    Ok(match selector {
-        Parsed::EnergyFrontierCheapestKeyCount => {
-            SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
+fn draw_weighted(rand: &mut RomuDuoJrRand, weights: &[u64]) -> Result<usize, Box<dyn Error>> {
+    let total = weights
+        .iter()
+        .fold(0_u64, |sum, weight| sum.saturating_add(*weight));
+    let total = NonZeroUsize::new(usize::try_from(total)?).ok_or("weighted draw over nothing")?;
+    let mut draw = u64::try_from(rand.below(total))?;
+    for (index, weight) in weights.iter().enumerate() {
+        if draw < *weight {
+            return Ok(index);
         }
-        Parsed::Retire => SelectorPolicy::Retire(thresholds),
-        Parsed::EnergyFrontierCheapestCount => {
-            SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
-        }
-        Parsed::EnergyFrontierCheapest => SelectorPolicy::EnergyFrontierCheapest(thresholds),
-    })
+        draw -= weight;
+    }
+    Err("weighted draw exceeded its total".into())
 }
-
-pub(crate) const SELECTION_EXHAUSTION_THRESHOLD: u64 = 64;
-
-const CONCENTRATION_WINDOW: usize = 128;
-
-const CHEAPEST_RANK_SCALE: usize = 4;
-
-const CELL_NOVELTY_DRAWS: u64 = 4;
-
-const CELL_NOVELTY_RANK_SCALE: usize = 8;
-
-const CLASS_RANK_CAP: u8 = 8;
-const CLASS_RANK_SHIFT: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectorPath {
     Continuation,
-    Uniform,
-    #[serde(rename = "hierarchy_uniform")]
-    HierarchyWalk,
+    Tiers,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SelectorDraw {
     pub path: SelectorPath,
-    pub classes_skipped: u64,
-    pub counter_reset: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub concentration: Option<ConcentrationDraw>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub class_rank: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preference: Option<u8>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ConcentrationDraw {
-    pub window_size: u64,
-    pub entered_window: u64,
+    pub tier_rank: Option<u8>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -329,7 +188,9 @@ pub struct ContinuationAccounting {
     pub execution_work: u64,
     pub landed: u64,
     pub replaced: u64,
-    pub opened_new_slot: u64,
+    pub opened_new_cell: u64,
+    pub useful: u64,
+    pub gaining_dispatched: u64,
     pub longest_wave: u32,
     pub energy: u16,
     pub reservations_drawn: u64,
@@ -339,25 +200,14 @@ pub struct ContinuationAccounting {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SelectorAccounting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key_counts: Option<KeyCountAccounting>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_selections: Option<u64>,
-    pub uniform_selections: u64,
     pub cell_selections: u64,
     pub productive_selections: u64,
-    pub classes_skipped: u64,
-    pub counter_resets: u64,
+    pub cell_resets: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub class_draws_by_rank: Vec<u64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub energy_resets: Vec<u64>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub productive_by_mask: BTreeMap<u32, u64>,
+    pub tier_draws_by_rank: Vec<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub draws_by_cell: BTreeMap<String, u64>,
-    pub concentration: ConcentrationAccounting,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retirement: Option<RetirementAccounting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub portfolio: Option<PortfolioAccounting>,
 }
@@ -367,59 +217,8 @@ pub struct PortfolioAccounting {
     pub preferences: usize,
     pub exclusive_holders: u64,
     pub shared_holders: u64,
-    pub selections_by_preference: Vec<u64>,
     pub replacements_by_preference: Vec<u64>,
     pub cross_preference_improvements: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct KeyCountAccounting {
-    pub capacity: usize,
-    pub keys: usize,
-    pub hits: u64,
-    pub evictions: u64,
-    pub reserve_bytes: usize,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RetirementAccounting {
-    pub entries_over_threshold: u64,
-    pub groups_over_threshold: Vec<u64>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct RetirementWireGeneric {
-    entries_over_threshold: u64,
-    groups_over_threshold: Vec<u64>,
-}
-
-impl Serialize for RetirementAccounting {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        RetirementWireGeneric {
-            entries_over_threshold: self.entries_over_threshold,
-            groups_over_threshold: self.groups_over_threshold.clone(),
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for RetirementAccounting {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = RetirementWireGeneric::deserialize(deserializer)?;
-        Ok(Self {
-            entries_over_threshold: wire.entries_over_threshold,
-            groups_over_threshold: wire.groups_over_threshold,
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ConcentrationAccounting {
-    pub window_cap: u64,
-    pub final_window_size: u64,
-    pub window_draws: u64,
-    pub distinct_window_parents: u64,
-    pub draws_per_parent_milli: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -606,7 +405,9 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     next_entry_id: u64,
     pub active: Vec<bool>,
     active_count: usize,
-    pub slots: BTreeMap<K::Group, Vec<usize>>,
+    pub slots: BTreeMap<Slot<K>, Vec<usize>>,
+    cells: BTreeMap<Cell<K>, CellState>,
+    by_place: BTreeMap<K::Place, BTreeSet<usize>>,
     input_index: InputIndex<A>,
     historical_input_actions: usize,
     stored_input_actions: usize,
@@ -615,33 +416,20 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     pub rejected: u64,
     selected: Vec<u64>,
     productive: Vec<u64>,
-    since_retained: Vec<u64>,
-    in_window_ever: Vec<bool>,
-    opened_slot: Vec<bool>,
-    opened_depths: Vec<u32>,
-    groups_seen: Vec<BTreeSet<K::Group>>,
+    opened_cell: Vec<bool>,
     selector_accounting: SelectorAccounting,
     cost_in_group: Vec<u64>,
     replacement_cost_displaced: u64,
-    portfolio_selections: Vec<u64>,
     portfolio_replacements: Vec<u64>,
     portfolio_cross_improvements: u64,
     replacement_preferences: Vec<u8>,
     lineages: Vec<K::Lineage>,
     deepest_leaf: Vec<(K, usize)>,
-    pub selector_policy: SelectorPolicy,
-    group_barren: Vec<BTreeMap<K::Group, u64>>,
-    group_newest: Vec<BTreeMap<K::Group, usize>>,
-    draws_by_cell: BTreeMap<K::Group, u64>,
     action_cost: fn(&A) -> u64,
     live_progress: Option<(K, u64)>,
     frontier_cap: Option<usize>,
     active_ids: ActiveIds,
-    classes: BTreeMap<ProgressOrdered<K>, ClassCells<K>>,
-    live_children: LiveChildren<K>,
-    live_group_cells: LiveGroupCells<K>,
-    active_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
-    live_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
+    tiers: BTreeMap<K::Progress, BTreeMap<K::Place, CellMembers<K>>>,
     preserve_inactive_snapshots: bool,
     metadata_pins: BTreeMap<u64, u32>,
     inflight_snapshot_pins: BTreeMap<u64, u32>,
@@ -665,24 +453,23 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     snapshot_evictions: u64,
     history_compactions: u64,
     historical_entries_dropped: u64,
-    input_reconstructions: Cell<u64>,
-    continuations: Option<ContinuationBank<K::Group, A>>,
+    input_reconstructions: std::cell::Cell<u64>,
+    continuations: Option<ContinuationBank<ExitSource<K>, K::Place, A>>,
     continuation_wave: u32,
     continuation_accounting: ContinuationAccounting,
-    key_counts: KeyCounts<K::Group>,
+    landed: BTreeSet<u64>,
 }
 
-type ClassCells<K> = BTreeMap<<K as ArchiveKey>::Group, CellMembers<K>>;
-type GroupPair<K> = (<K as ArchiveKey>::Group, <K as ArchiveKey>::Group);
-type LiveChildren<K> = Vec<BTreeMap<GroupPair<K>, BTreeSet<ProgressOrdered<K>>>>;
-type LiveGroupCells<K> = Vec<BTreeMap<GroupPair<K>, usize>>;
+#[derive(Clone, Copy, Debug, Default)]
+struct CellState {
+    active: usize,
+    draws: u64,
+    draws_total: u64,
+}
 
 struct CellMembers<K: ArchiveKey> {
     ids: BTreeSet<usize>,
-    sampleable: BTreeSet<usize>,
     donors: BTreeSet<DonorRank<K>>,
-    opened: usize,
-    drawn: u64,
 }
 
 struct DonorRank<K: ArchiveKey> {
@@ -727,17 +514,8 @@ impl<K: ArchiveKey> Default for CellMembers<K> {
     fn default() -> Self {
         Self {
             ids: BTreeSet::new(),
-            sampleable: BTreeSet::new(),
             donors: BTreeSet::new(),
-            opened: 0,
-            drawn: 0,
         }
-    }
-}
-
-impl<K: ArchiveKey> CellMembers<K> {
-    fn novelty(&self) -> Option<usize> {
-        (self.drawn < CELL_NOVELTY_DRAWS).then_some(self.opened)
     }
 }
 
@@ -928,201 +706,30 @@ impl<A: Clone + Ord> InputIndex<A> {
 
 #[derive(Default)]
 struct ActiveIds {
-    words: Vec<u64>,
-    fenwick: Vec<usize>,
-    len: usize,
+    ids: BTreeSet<usize>,
 }
 
 impl ActiveIds {
     fn from_ids(ids: impl IntoIterator<Item = usize>) -> Self {
-        let mut active = Self::default();
-        active.fenwick.push(0);
-        for id in ids {
-            active.insert(id);
+        Self {
+            ids: ids.into_iter().collect(),
         }
-        active
     }
 
     fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    fn len(&self) -> usize {
-        self.len
+        self.ids.is_empty()
     }
 
     fn insert(&mut self, id: usize) {
-        if self.fenwick.is_empty() {
-            self.fenwick.push(0);
-        }
-        let word_index = id / u64::BITS as usize;
-        let missing_words = word_index
-            .saturating_add(1)
-            .saturating_sub(self.words.len());
-        for _ in 0..missing_words {
-            self.push_empty_word();
-        }
-        let bit = 1_u64 << (id % u64::BITS as usize);
-        let Some(word) = self.words.get_mut(word_index) else {
-            return;
-        };
-        if *word & bit != 0 {
-            return;
-        }
-        *word |= bit;
-        self.len = self.len.saturating_add(1);
-        self.update_word(word_index, true);
+        self.ids.insert(id);
     }
 
     fn remove(&mut self, id: usize) -> bool {
-        let word_index = id / u64::BITS as usize;
-        let bit = 1_u64 << (id % u64::BITS as usize);
-        let Some(word) = self.words.get_mut(word_index) else {
-            return false;
-        };
-        if *word & bit == 0 {
-            return false;
-        }
-        *word &= !bit;
-        self.len = self.len.saturating_sub(1);
-        self.update_word(word_index, false);
-        true
-    }
-
-    fn select(&self, rank: usize) -> Option<usize> {
-        if rank >= self.len {
-            return None;
-        }
-        let target = rank.saturating_add(1);
-        let mut tree_index = 0_usize;
-        let mut prefix = 0_usize;
-        for shift in (0..=self.words.len().ilog2()).rev() {
-            let step = 1_usize << shift;
-            let next = tree_index.saturating_add(step);
-            if next <= self.words.len() && prefix.saturating_add(self.fenwick[next]) < target {
-                tree_index = next;
-                prefix = prefix.saturating_add(self.fenwick[next]);
-            }
-        }
-        let word_index = tree_index;
-        let mut word = *self.words.get(word_index)?;
-        let within = target.saturating_sub(prefix);
-        for _ in 1..within {
-            word &= word.saturating_sub(1);
-        }
-        let bit = usize::try_from(word.trailing_zeros()).ok()?;
-        word_index.checked_mul(u64::BITS as usize)?.checked_add(bit)
+        self.ids.remove(&id)
     }
 
     fn ids(&self) -> impl Iterator<Item = usize> + '_ {
-        self.words
-            .iter()
-            .enumerate()
-            .flat_map(|(word_index, word)| {
-                (0..u64::BITS as usize).filter_map(move |bit| {
-                    (*word & (1_u64 << bit) != 0)
-                        .then(|| {
-                            word_index
-                                .checked_mul(u64::BITS as usize)
-                                .and_then(|base| base.checked_add(bit))
-                        })
-                        .flatten()
-                })
-            })
-    }
-
-    fn push_empty_word(&mut self) {
-        let tree_index = self.words.len().saturating_add(1);
-        let low_bit = tree_index & tree_index.wrapping_neg();
-        let lower = tree_index.saturating_sub(low_bit);
-        let inherited = self
-            .prefix_sum(tree_index.saturating_sub(1))
-            .saturating_sub(self.prefix_sum(lower));
-        self.words.push(0);
-        self.fenwick.push(inherited);
-    }
-
-    fn prefix_sum(&self, mut words: usize) -> usize {
-        let mut sum = 0_usize;
-        for _ in 0..usize::BITS {
-            if words == 0 {
-                break;
-            }
-            sum = sum.saturating_add(self.fenwick[words]);
-            words &= words - 1;
-        }
-        debug_assert_eq!(words, 0);
-        sum
-    }
-
-    fn update_word(&mut self, word_index: usize, add: bool) {
-        let mut tree_index = word_index.saturating_add(1);
-        while tree_index < self.fenwick.len() {
-            if add {
-                self.fenwick[tree_index] = self.fenwick[tree_index].saturating_add(1);
-            } else {
-                self.fenwick[tree_index] = self.fenwick[tree_index].saturating_sub(1);
-            }
-            let low_bit = tree_index & tree_index.wrapping_neg();
-            tree_index = tree_index.saturating_add(low_bit);
-        }
-    }
-}
-
-fn update_count<T: Copy + Ord>(map: &mut BTreeMap<T, usize>, key: T, add: bool) -> bool {
-    if add {
-        let count = map.entry(key).or_default();
-        let transitioned = *count == 0;
-        *count = count.saturating_add(1);
-        transitioned
-    } else {
-        let Some(count) = map.get_mut(&key) else {
-            return false;
-        };
-        *count = count.saturating_sub(1);
-        if *count == 0 {
-            map.remove(&key);
-            true
-        } else {
-            false
-        }
-    }
-}
-
-fn decrement_nested_count<T: Copy + Ord>(
-    map: &mut BTreeMap<T, BTreeMap<T, usize>>,
-    outer: T,
-    inner: T,
-) {
-    let Some(counts) = map.get_mut(&outer) else {
-        return;
-    };
-    if let Some(count) = counts.get_mut(&inner) {
-        *count = count.saturating_sub(1);
-        if *count == 0 {
-            counts.remove(&inner);
-        }
-    }
-    if counts.is_empty() {
-        map.remove(&outer);
-    }
-}
-
-fn update_child<T: Copy + Ord, C: Copy + Ord>(
-    children: &mut BTreeMap<(T, T), BTreeSet<C>>,
-    class: T,
-    parent: T,
-    child: C,
-    add: bool,
-) {
-    let key = (class, parent);
-    if add {
-        children.entry(key).or_default().insert(child);
-    } else if let Some(values) = children.get_mut(&key) {
-        values.remove(&child);
-        if values.is_empty() {
-            children.remove(&key);
-        }
+        self.ids.iter().copied()
     }
 }
 
@@ -1143,6 +750,8 @@ where
             active: Vec::new(),
             active_count: 0,
             slots: BTreeMap::new(),
+            cells: BTreeMap::new(),
+            by_place: BTreeMap::new(),
             input_index: InputIndex::default(),
             historical_input_actions: 0,
             stored_input_actions: 0,
@@ -1151,39 +760,20 @@ where
             rejected: 0,
             selected: Vec::new(),
             productive: Vec::new(),
-            since_retained: Vec::new(),
-            in_window_ever: Vec::new(),
-            opened_slot: Vec::new(),
-            opened_depths: Vec::new(),
-            groups_seen: vec![BTreeSet::new(); K::groups().saturating_sub(1)],
-            selector_accounting: SelectorAccounting {
-                concentration: ConcentrationAccounting {
-                    window_cap: u64::try_from(CONCENTRATION_WINDOW).unwrap_or(u64::MAX),
-                    ..ConcentrationAccounting::default()
-                },
-                ..SelectorAccounting::default()
-            },
+            opened_cell: Vec::new(),
+            selector_accounting: SelectorAccounting::default(),
             cost_in_group: Vec::new(),
             replacement_cost_displaced: 0,
-            portfolio_selections: vec![0; K::preferences().max(1)],
             portfolio_replacements: vec![0; K::preferences().max(1)],
             portfolio_cross_improvements: 0,
             replacement_preferences: Vec::new(),
             lineages: Vec::new(),
             deepest_leaf: Vec::new(),
-            selector_policy: SelectorPolicy::GroupUniform,
-            group_barren: vec![BTreeMap::new(); K::groups().saturating_sub(1)],
-            group_newest: vec![BTreeMap::new(); K::groups().saturating_sub(1)],
-            draws_by_cell: BTreeMap::new(),
             action_cost,
             live_progress: None,
             frontier_cap: None,
             active_ids: ActiveIds::default(),
-            classes: BTreeMap::new(),
-            live_children: vec![BTreeMap::new(); K::groups()],
-            live_group_cells: vec![BTreeMap::new(); K::groups()],
-            active_skip_groups: BTreeMap::new(),
-            live_skip_groups: BTreeMap::new(),
+            tiers: BTreeMap::new(),
             preserve_inactive_snapshots: false,
             metadata_pins: BTreeMap::new(),
             inflight_snapshot_pins: BTreeMap::new(),
@@ -1207,11 +797,11 @@ where
             snapshot_evictions: 0,
             history_compactions: 0,
             historical_entries_dropped: 0,
-            input_reconstructions: Cell::new(0),
+            input_reconstructions: std::cell::Cell::new(0),
             continuations: None,
             continuation_wave: 0,
             continuation_accounting: ContinuationAccounting::default(),
-            key_counts: KeyCounts::default(),
+            landed: BTreeSet::new(),
         }
     }
 
@@ -1316,7 +906,8 @@ where
         }
         self.active[id] = false;
         self.active_count = self.active_count.saturating_sub(1);
-        let slot_key = self.entries[id].key.group(0);
+        let key = self.entries[id].key;
+        let slot_key = slot_of_key(key);
         let remove_slot = if let Some(slot) = self.slots.get_mut(&slot_key) {
             slot.retain(|entry| *entry != id);
             slot.is_empty()
@@ -1325,6 +916,15 @@ where
         };
         if remove_slot {
             self.slots.remove(&slot_key);
+        }
+        if let Some(state) = self.cells.get_mut(&cell_of(key)) {
+            state.active = state.active.saturating_sub(1);
+        }
+        if let Some(holders) = self.by_place.get_mut(&key.place()) {
+            holders.remove(&id);
+            if holders.is_empty() {
+                self.by_place.remove(&key.place());
+            }
         }
         self.index_remove(id);
         if !self.is_liveness_anchor(id) {
@@ -1565,10 +1165,7 @@ where
         self.active = retain_marked(std::mem::take(&mut self.active), &keep);
         self.selected = retain_marked(std::mem::take(&mut self.selected), &keep);
         self.productive = retain_marked(std::mem::take(&mut self.productive), &keep);
-        self.since_retained = retain_marked(std::mem::take(&mut self.since_retained), &keep);
-        self.in_window_ever = retain_marked(std::mem::take(&mut self.in_window_ever), &keep);
-        self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
-        self.opened_depths = retain_marked(std::mem::take(&mut self.opened_depths), &keep);
+        self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
         self.cost_in_group = retain_marked(std::mem::take(&mut self.cost_in_group), &keep);
         self.replacement_preferences =
             retain_marked(std::mem::take(&mut self.replacement_preferences), &keep);
@@ -1582,40 +1179,17 @@ where
         self.referenced = retain_marked(std::mem::take(&mut self.referenced), &keep);
         self.drop_hand = 0;
 
-        for (offset, seen) in self.groups_seen.iter_mut().enumerate() {
-            *seen = self
-                .entries
-                .iter()
-                .zip(&self.active)
-                .filter_map(|(entry, active)| active.then_some(entry.key.group(offset + 1)))
-                .collect();
-        }
-        for (offset, barren) in self.group_barren.iter_mut().enumerate() {
-            let live_groups = self
-                .entries
-                .iter()
-                .zip(&self.active)
-                .filter_map(|(entry, active)| active.then_some(entry.key.group(offset + 1)))
-                .collect::<BTreeSet<_>>();
-            barren.retain(|group, _| live_groups.contains(group));
-        }
-        for (offset, newest) in self.group_newest.iter_mut().enumerate() {
-            let live_groups = self
-                .entries
-                .iter()
-                .zip(&self.active)
-                .filter_map(|(entry, active)| active.then_some(entry.key.group(offset + 1)))
-                .collect::<BTreeSet<_>>();
-            newest.retain(|group, _| live_groups.contains(group));
-        }
-
         self.id_to_index.clear();
         self.slots.clear();
+        self.by_place.clear();
         self.resident_snapshot_order.clear();
         self.active_count = 0;
         self.resident_snapshots = 0;
         self.resident_snapshot_bytes = 0;
         self.stored_input_actions = 0;
+        for state in self.cells.values_mut() {
+            state.active = 0;
+        }
         for (index, entry) in self.entries.iter().enumerate() {
             self.id_to_index.insert(entry.id, index);
             self.stored_input_actions = self
@@ -1624,9 +1198,14 @@ where
             if self.active[index] {
                 self.active_count = self.active_count.saturating_add(1);
                 self.slots
-                    .entry(entry.key.group(0))
+                    .entry(slot_of_key(entry.key))
                     .or_default()
                     .push(index);
+                self.cells.entry(cell_of(entry.key)).or_default().active += 1;
+                self.by_place
+                    .entry(entry.key.place())
+                    .or_default()
+                    .insert(index);
             }
             if self.snapshot_selectable[index] {
                 self.resident_snapshots = self.resident_snapshots.saturating_add(1);
@@ -1641,16 +1220,26 @@ where
                 }
             }
         }
+        self.cells.retain(|_, state| state.active > 0);
+        let live_ids = self
+            .entries
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<BTreeSet<_>>();
+        self.landed.retain(|id| live_ids.contains(id));
 
-        if self.continuations.is_some() {
-            let live_slots = self
+        if let Some(bank) = &mut self.continuations {
+            let live_sources = self
                 .entries
                 .iter()
-                .map(|entry| entry.key.group(0))
+                .map(|entry| exit_source_of(entry.key))
                 .collect::<BTreeSet<_>>();
-            if let Some(bank) = &mut self.continuations {
-                bank.retain_slots(&live_slots);
-            }
+            let live_places = self
+                .entries
+                .iter()
+                .map(|entry| entry.key.place())
+                .collect::<BTreeSet<_>>();
+            bank.retain(&live_sources, &live_places);
         }
 
         self.deepest_leaf = self
@@ -1679,11 +1268,7 @@ where
 
         let frontier_cap = self.frontier_cap.take();
         self.active_ids = ActiveIds::default();
-        self.classes.clear();
-        self.live_children.iter_mut().for_each(BTreeMap::clear);
-        self.live_group_cells.iter_mut().for_each(BTreeMap::clear);
-        self.active_skip_groups.clear();
-        self.live_skip_groups.clear();
+        self.tiers.clear();
         if let Some(cap) = frontier_cap {
             self.rebuild_selector_index(cap);
         }
@@ -1874,15 +1459,16 @@ where
             .saturating_add(new_nodes.saturating_mul(Self::prefix_node_memory_charge()))
     }
 
-    fn historical_group_memory_charge(value_bytes: usize) -> usize {
-        size_of::<K::Group>()
-            .saturating_add(value_bytes)
-            .saturating_add(64)
+    fn cell_memory_charge() -> usize {
+        size_of::<Cell<K>>()
+            .saturating_add(size_of::<CellState>())
+            .saturating_add(size_of::<K::Place>())
+            .saturating_add(size_of::<BTreeSet<usize>>())
+            .saturating_add(128)
     }
 
     fn auxiliary_history_memory_bytes(&self) -> usize {
-        self.novelty_memory_bytes()
-            .saturating_add(self.barren_memory_bytes())
+        self.cell_memory_bytes()
     }
 
     pub(crate) fn all_extensions_retained(&self, parent_id: usize, actions: &[A]) -> bool {
@@ -1908,22 +1494,10 @@ where
         true
     }
 
-    fn class_depth() -> usize {
-        Self::coarsest_depth()
-    }
-
-    fn cell_depth() -> usize {
-        1.min(Self::coarsest_depth())
-    }
-
     fn rebuild_selector_index(&mut self, max_actions: usize) {
         self.frontier_cap = Some(max_actions);
         self.active_ids = ActiveIds::from_ids(self.active_ids(max_actions));
-        self.classes = BTreeMap::new();
-        self.live_children.iter_mut().for_each(BTreeMap::clear);
-        self.live_group_cells.iter_mut().for_each(BTreeMap::clear);
-        self.active_skip_groups.clear();
-        self.live_skip_groups.clear();
+        self.tiers.clear();
         let active = self.active_ids.ids().collect::<Vec<_>>();
         for id in active {
             self.insert_active_cell_member(id);
@@ -1936,6 +1510,13 @@ where
         }
         self.establish_liveness_anchor(max_actions);
         self.reactivate_liveness_anchor(max_actions);
+    }
+
+    fn activate_membership(&mut self, index: usize) {
+        let key = self.entries[index].key;
+        self.slots.entry(slot_of_key(key)).or_default().push(index);
+        self.cells.entry(cell_of(key)).or_default().active += 1;
+        self.by_place.entry(key.place()).or_default().insert(index);
     }
 
     fn reactivate_liveness_anchor(&mut self, max_actions: usize) -> bool {
@@ -1963,11 +1544,11 @@ where
             if self.active_count >= self.max_entries && !self.drop_one_entry() {
                 return false;
             }
-            let slot_key = self.entries[index].key.group(0);
+            let slot_key = slot_of_key(self.entries[index].key);
             let slot_full = self
                 .slots
                 .get(&slot_key)
-                .is_some_and(|slot| slot.len() >= MAX_ENTRIES_PER_KEY);
+                .is_some_and(|slot| slot.len() >= K::capacity().max(1));
             if slot_full {
                 let replaced = self
                     .slots
@@ -1989,10 +1570,7 @@ where
                 self.keyframe_dependents[keyframe] =
                     self.keyframe_dependents[keyframe].saturating_add(1);
             }
-            self.slots
-                .entry(self.entries[index].key.group(0))
-                .or_default()
-                .push(index);
+            self.activate_membership(index);
             #[cfg(test)]
             {
                 self.liveness_anchor_reactivations =
@@ -2025,90 +1603,43 @@ where
         }
         self.active_ids.remove(id);
         let key = self.entries[id].key;
-        let class = ProgressOrdered::<K>(key.group(Self::class_depth()));
-        let cell = key.group(Self::cell_depth());
-        let was_sampleable = self.entry_unexhausted(id);
         let deepest = self.deepest_leaf[id];
-        let mut became_dead = false;
+        let Some(places) = self.tiers.get_mut(&key.progress()) else {
+            return;
+        };
         let mut removed_cell = false;
-        let mut removed_class = false;
-        if let Some(cells) = self.classes.get_mut(&class) {
-            if let Some(members) = cells.get_mut(&cell) {
-                if members.ids.remove(&id) {
-                    members.drawn = members.drawn.saturating_sub(self.selected[id]);
-                    members.donors.remove(&DonorRank {
-                        leaf_key: deepest.0,
-                        leaf_id: deepest.1,
-                        donor_id: id,
-                    });
-                    if was_sampleable {
-                        members.sampleable.remove(&id);
-                    }
-                    became_dead = members.sampleable.is_empty() && was_sampleable;
-                }
-                if members.ids.is_empty() {
-                    cells.remove(&cell);
-                    removed_cell = true;
-                }
-            }
-            removed_class = cells.is_empty();
-        }
-        if removed_class {
-            self.classes.remove(&class);
-        }
-        if became_dead {
-            self.set_cell_live(key, false);
+        if let Some(members) = places.get_mut(&key.place()) {
+            members.ids.remove(&id);
+            members.donors.remove(&DonorRank {
+                leaf_key: deepest.0,
+                leaf_id: deepest.1,
+                donor_id: id,
+            });
+            removed_cell = members.ids.is_empty();
         }
         if removed_cell {
-            self.remove_active_cell(key);
+            places.remove(&key.place());
+        }
+        if places.is_empty() {
+            self.tiers.remove(&key.progress());
         }
     }
 
     fn insert_active_cell_member(&mut self, id: usize) {
         let key = self.entries[id].key;
-        let class = ProgressOrdered::<K>(key.group(Self::class_depth()));
-        let cell = key.group(Self::cell_depth());
-        let sampleable = self.entry_unexhausted(id);
         let deepest = self.deepest_leaf[id];
-        let improved = self
-            .replacement_preferences
-            .get(id)
-            .is_some_and(|won| *won != 0);
         let members = self
-            .classes
-            .entry(class)
+            .tiers
+            .entry(key.progress())
             .or_default()
-            .entry(cell)
+            .entry(key.place())
             .or_default();
-        let new_cell = members.ids.is_empty();
-        let was_live = !members.sampleable.is_empty();
-        if new_cell || improved {
-            members.opened = id;
-        }
         members.ids.insert(id);
-        members.drawn = members.drawn.saturating_add(self.selected[id]);
         members.donors.insert(DonorRank {
             leaf_key: deepest.0,
             leaf_id: deepest.1,
             donor_id: id,
         });
-        if sampleable {
-            members.sampleable.insert(id);
-        }
-        if new_cell {
-            self.insert_active_cell(key);
-        }
-        if !was_live && sampleable {
-            self.set_cell_live(key, true);
-        }
-        if improved && !new_cell {
-            for depth in (Self::cell_depth() + 1)..=Self::class_depth() {
-                if let Some(newest) = self.group_newest.get_mut(depth - 1) {
-                    let held = newest.entry(key.group(depth)).or_insert(id);
-                    *held = (*held).max(id);
-                }
-            }
-        }
     }
 
     fn update_index_deepest_leaf(&mut self, id: usize, previous: (K, usize), current: (K, usize)) {
@@ -2116,12 +1647,10 @@ where
             return;
         }
         let key = self.entries[id].key;
-        let class = ProgressOrdered::<K>(key.group(Self::class_depth()));
-        let cell = key.group(Self::cell_depth());
         let Some(members) = self
-            .classes
-            .get_mut(&class)
-            .and_then(|cells| cells.get_mut(&cell))
+            .tiers
+            .get_mut(&key.progress())
+            .and_then(|places| places.get_mut(&key.place()))
         else {
             return;
         };
@@ -2138,126 +1667,6 @@ where
             leaf_id: current.1,
             donor_id: id,
         });
-    }
-
-    fn insert_active_cell(&mut self, key: K) {
-        let class = key.group(Self::class_depth());
-        let skip = key.group(2.min(Self::class_depth()));
-        *self
-            .active_skip_groups
-            .entry(class)
-            .or_default()
-            .entry(skip)
-            .or_default() += 1;
-    }
-
-    fn remove_active_cell(&mut self, key: K) {
-        let class = key.group(Self::class_depth());
-        let skip = key.group(2.min(Self::class_depth()));
-        decrement_nested_count(&mut self.active_skip_groups, class, skip);
-    }
-
-    fn set_cell_live(&mut self, key: K, live: bool) {
-        let class = key.group(Self::class_depth());
-        let skip = key.group(2.min(Self::class_depth()));
-        if live {
-            *self
-                .live_skip_groups
-                .entry(class)
-                .or_default()
-                .entry(skip)
-                .or_default() += 1;
-        } else {
-            decrement_nested_count(&mut self.live_skip_groups, class, skip);
-        }
-
-        let cell_depth = Self::cell_depth();
-        let class_depth = Self::class_depth();
-        if live {
-            let opened = self
-                .classes
-                .get(&ProgressOrdered::<K>(class))
-                .and_then(|cells| cells.get(&key.group(cell_depth)))
-                .map(|members| members.opened);
-            if let Some(opened) = opened {
-                for depth in (cell_depth + 1)..=class_depth {
-                    if let Some(newest) = self.group_newest.get_mut(depth - 1) {
-                        let held = newest.entry(key.group(depth)).or_insert(opened);
-                        *held = (*held).max(opened);
-                    }
-                }
-            }
-        }
-        if cell_depth < class_depth {
-            update_child(
-                &mut self.live_children[cell_depth],
-                class,
-                key.group(cell_depth + 1),
-                ProgressOrdered::<K>(key.group(cell_depth)),
-                live,
-            );
-        }
-        for depth in (cell_depth + 1)..=class_depth {
-            let group = key.group(depth);
-            let map_key = (class, group);
-            let transitioned = update_count(&mut self.live_group_cells[depth], map_key, live);
-            if transitioned && depth < class_depth {
-                update_child(
-                    &mut self.live_children[depth],
-                    class,
-                    key.group(depth + 1),
-                    ProgressOrdered::<K>(group),
-                    live,
-                );
-            }
-        }
-    }
-
-    fn set_entry_sampleable(&mut self, id: usize, sampleable: bool) {
-        let key = self.entries[id].key;
-        let class = ProgressOrdered::<K>(key.group(Self::class_depth()));
-        let cell = key.group(Self::cell_depth());
-        let Some(members) = self
-            .classes
-            .get_mut(&class)
-            .and_then(|cells| cells.get_mut(&cell))
-        else {
-            return;
-        };
-        if !members.ids.contains(&id) {
-            return;
-        }
-        let was_live = !members.sampleable.is_empty();
-        if sampleable {
-            members.sampleable.insert(id);
-        } else {
-            members.sampleable.remove(&id);
-        }
-        let live = !members.sampleable.is_empty();
-        if live != was_live {
-            self.set_cell_live(key, live);
-        }
-    }
-
-    fn rebuild_live_selector_index(&mut self) {
-        self.live_children.iter_mut().for_each(BTreeMap::clear);
-        self.live_group_cells.iter_mut().for_each(BTreeMap::clear);
-        self.live_skip_groups.clear();
-        for cells in self.classes.values_mut() {
-            for members in cells.values_mut() {
-                members.sampleable.clear();
-            }
-        }
-        let active = self.active_ids.ids().collect::<Vec<_>>();
-        for id in active {
-            if self.entry_unexhausted(id) {
-                self.set_entry_sampleable(id, true);
-            }
-        }
-    }
-
-    fn coarsest_depth() -> usize {
-        K::groups().saturating_sub(1)
     }
 
     #[must_use]
@@ -2292,7 +1701,7 @@ where
         key: K,
         cost_in_group: u64,
     ) -> (Vec<bool>, Vec<usize>) {
-        let capacity = K::slot_capacity().max(1);
+        let capacity = K::capacity().max(1);
         let preferences = K::preferences().max(1);
         let members: Vec<(K, u64, u64)> = slot
             .iter()
@@ -2340,8 +1749,7 @@ where
             return cost_of(suffix);
         };
         let added = cost_of(suffix);
-        let depth = Self::coarsest_depth();
-        if parent.key.group(depth) == key.group(depth) {
+        if parent.key.progress() == key.progress() {
             self.cost_in_group
                 .get(parent_id.unwrap_or_default())
                 .copied()
@@ -2389,8 +1797,15 @@ where
             parent_id.map_or_else(K::Lineage::default, |id| self.lineages[id].clone());
         K::record(&mut lineage, key);
         let candidate_cost_in_group = self.cost_in_group_of(parent_id, &suffix, key);
-        let slot = self.slots.entry(key.group(0)).or_default().clone();
-        let new_slot = slot.is_empty();
+        let slot = self
+            .slots
+            .get(&slot_of_key(key))
+            .cloned()
+            .unwrap_or_default();
+        let new_cell = self
+            .cells
+            .get(&cell_of(key))
+            .is_none_or(|state| state.active == 0);
         let (ranked, won_preferences) =
             self.rank_slot_preferences(&slot, key, candidate_cost_in_group);
         let admitted = ranked.last().copied().unwrap_or(true);
@@ -2452,7 +1867,7 @@ where
         if let Some(bank) = &mut self.continuations {
             if let Some(tier) = queue_tier {
                 bank.improved(
-                    key.group(0),
+                    exit_source_of(key),
                     self.next_entry_id,
                     self.continuation_wave,
                     tier,
@@ -2461,13 +1876,20 @@ where
             if let Some(parent) = parent_id {
                 let tail_cost: u64 = suffix.iter().map(|action| (self.action_cost)(action)).sum();
                 let entry = &self.entries[parent];
+                let gains = (0..K::preferences().min(8))
+                    .filter(|preference| {
+                        key.preference_cmp(*preference, entry.key) == Ordering::Greater
+                    })
+                    .fold(0_u8, |mask, preference| mask | (1 << preference));
                 bank.record(
-                    entry.key.group(0),
-                    key.group(0),
+                    exit_source_of(entry.key),
+                    entry.key.place(),
+                    key.place(),
                     entry.id,
                     self.next_entry_id,
                     &suffix,
                     tail_cost,
+                    gains,
                 );
             }
         }
@@ -2530,39 +1952,22 @@ where
         self.lineages.push(lineage);
         self.cost_in_group.push(candidate_cost_in_group);
         self.replacement_preferences.push(replacement_preferences);
-        let cell_depth = Self::cell_depth();
         match &mut self.live_progress {
-            Some((deepest, cheapest)) => {
-                match K::progress_cmp(key.group(cell_depth), deepest.group(cell_depth)) {
-                    Ordering::Greater => {
-                        *deepest = key;
-                        *cheapest = candidate_cost_in_group;
-                    }
-                    Ordering::Equal => {
-                        *cheapest = (*cheapest).min(candidate_cost_in_group);
-                    }
-                    Ordering::Less => {}
+            Some((deepest, cheapest)) => match key.progress().cmp(&deepest.progress()) {
+                Ordering::Greater => {
+                    *deepest = key;
+                    *cheapest = candidate_cost_in_group;
                 }
-            }
+                Ordering::Equal => {
+                    *cheapest = (*cheapest).min(candidate_cost_in_group);
+                }
+                Ordering::Less => {}
+            },
             None => self.live_progress = Some((key, candidate_cost_in_group)),
         }
         self.selected.push(0);
         self.productive.push(0);
-        self.since_retained.push(0);
-        self.in_window_ever.push(false);
-        self.opened_slot.push(new_slot);
-        let mut opened = u32::from(new_slot);
-        for (offset, seen) in self.groups_seen.iter_mut().enumerate() {
-            if seen.insert(key.group(offset + 1)) {
-                opened |= 1 << (offset + 1);
-            }
-        }
-        if replacement_preferences != 0 {
-            for depth in 1..K::groups() {
-                opened |= 1 << depth;
-            }
-        }
-        self.opened_depths.push(opened);
+        self.opened_cell.push(new_cell);
         self.deepest_leaf.push((key, id));
         let mut ancestor = parent_id;
         while let Some(current) = ancestor {
@@ -2576,7 +1981,15 @@ where
                 .parent_id
                 .and_then(|parent| self.id_to_index.get(&parent).copied());
         }
-        self.slots.entry(key.group(0)).or_default().push(id);
+        self.activate_membership(id);
+        if replacement_preferences != 0
+            && let Some(state) = self.cells.get_mut(&cell_of(key))
+            && state.draws != 0
+        {
+            state.draws = 0;
+            self.selector_accounting.cell_resets =
+                self.selector_accounting.cell_resets.saturating_add(1);
+        }
         self.history_memory_bytes = self
             .history_memory_bytes
             .saturating_add(Self::history_entry_memory_charge(suffix.len(), new_nodes));
@@ -2596,9 +2009,10 @@ where
             self.rebuild_selector_index(max_actions);
         }
         let parent_key = self.entries[parent].key;
-        let class = ProgressOrdered::<K>(parent_key.group(Self::class_depth()));
-        let cell = parent_key.group(Self::cell_depth());
-        let members = self.classes.get(&class)?.get(&cell)?;
+        let members = self
+            .tiers
+            .get(&parent_key.progress())?
+            .get(&parent_key.place())?;
         let donor_id = members
             .donors
             .iter()
@@ -2641,10 +2055,7 @@ where
             return Err("splice donor is the selected parent");
         }
         let parent_key = parent_entry.key;
-        let donor_key = donor_entry.key;
-        if parent_key.group(Self::class_depth()) != donor_key.group(Self::class_depth())
-            || parent_key.group(Self::cell_depth()) != donor_key.group(Self::cell_depth())
-        {
+        if cell_of(parent_key) != cell_of(donor_entry.key) {
             return Err("splice donor is outside the parent's selection cell");
         }
         let donor_input = self
@@ -2690,547 +2101,73 @@ where
         if self.active_ids.is_empty() {
             return Err("archive has no expandable entry".into());
         }
-        let use_walk = rand.below(NonZeroUsize::new(4).ok_or("invalid frontier odds")?) != 0;
-        if !use_walk {
-            let count = NonZeroUsize::new(self.active_ids.len()).ok_or("empty archive")?;
-            let id = self
-                .active_ids
-                .select(rand.below(count))
-                .ok_or("active-id rank is outside the archive")?;
-            return Ok((
-                id,
-                SelectorDraw {
-                    path: SelectorPath::Uniform,
-                    classes_skipped: 0,
-                    counter_reset: false,
-                    concentration: None,
-                    class_rank: None,
-                    preference: None,
-                },
-            ));
-        }
-        let mut counter_reset = false;
-        let mut classes_skipped = 0_u64;
-        loop {
-            let mut class_rank = None;
-            if let Some(cell) =
-                self.walk_to_cell(rand, &mut classes_skipped, &mut class_rank, counter_reset)?
-            {
-                let (id, concentration, preference) = self.draw_from_cell(rand, cell)?;
-                return Ok((
-                    id,
-                    SelectorDraw {
-                        path: SelectorPath::HierarchyWalk,
-                        classes_skipped,
-                        counter_reset,
-                        concentration: Some(concentration),
-                        class_rank,
-                        preference,
-                    },
-                ));
-            }
-            if counter_reset {
-                return Err("selection counter reset freed no entry".into());
-            }
-            counter_reset = true;
-        }
+        let (progress, rank) = self.draw_tier(rand)?;
+        let place = self.draw_cell(rand, progress)?;
+        let id = self.draw_holder(rand, progress, place)?;
+        Ok((
+            id,
+            SelectorDraw {
+                path: SelectorPath::Tiers,
+                tier_rank: Some(rank),
+            },
+        ))
     }
 
-    fn walk_to_cell(
-        &self,
-        rand: &mut RomuDuoJrRand,
-        classes_skipped: &mut u64,
-        class_rank: &mut Option<u8>,
-        ignore_streaks: bool,
-    ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
-        if !ignore_streaks && !matches!(self.selector_policy, SelectorPolicy::Retire(_)) {
-            return self.walk_live_index(rand, classes_skipped, class_rank);
-        }
-        self.walk_to_cell_scan(rand, classes_skipped, class_rank, ignore_streaks)
-    }
-
-    fn persistent_key_counts(&self) -> bool {
-        matches!(
-            self.selector_policy,
-            SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
-        )
-    }
-
-    fn live_class_weights(
-        &self,
-        ignore_streaks: bool,
-    ) -> (Vec<(ProgressOrdered<K>, usize, u8)>, u64) {
-        let skips = if ignore_streaks {
-            &self.active_skip_groups
-        } else {
-            &self.live_skip_groups
-        };
-        let class_scale = match &self.selector_policy {
-            SelectorPolicy::EnergyFrontierCheapest(scales)
-            | SelectorPolicy::EnergyFrontierCheapestCount(scales)
-            | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => scales
-                .groups
-                .get(Self::class_depth().saturating_sub(1))
-                .copied()
-                .filter(|scale| *scale > 0),
-            SelectorPolicy::Retire(_) | SelectorPolicy::GroupUniform => None,
-        };
-        let mut weighted = Vec::new();
-        let mut skipped = 0_u64;
-        let mut rank = 0_u8;
-        let mut previous: Option<K::Group> = None;
-        for class in self.classes.keys().rev() {
-            if !ignore_streaks {
-                let active = self
-                    .active_skip_groups
-                    .get(&class.0)
-                    .map_or(0, BTreeMap::len);
-                let live = self.live_skip_groups.get(&class.0).map_or(0, BTreeMap::len);
-                skipped = skipped
-                    .saturating_add(u64::try_from(active.saturating_sub(live)).unwrap_or(u64::MAX));
-            }
-            if !skips.get(&class.0).is_some_and(|groups| !groups.is_empty()) {
-                continue;
-            }
-            if let Some(previous) = previous
-                && K::progress_cmp(previous, class.0) == Ordering::Greater
-            {
-                rank = rank.saturating_add(1).min(CLASS_RANK_CAP);
-            }
-            previous = Some(class.0);
-            let energy = match class_scale {
-                Some(scale) => {
-                    let barren = self
-                        .group_barren
-                        .get(Self::class_depth().saturating_sub(1))
-                        .and_then(|map| map.get(&class.0))
-                        .copied()
-                        .unwrap_or(0);
-                    256_usize >> usize::try_from((barren / scale).min(8)).unwrap_or(8)
-                }
-                None => 256,
-            };
-            let falloff = u32::from(CLASS_RANK_CAP.saturating_sub(rank)) * CLASS_RANK_SHIFT;
-            weighted.push((*class, (1_usize << falloff).saturating_mul(energy), rank));
-        }
-        (weighted, skipped)
-    }
-
-    fn draw_class_index(
-        rand: &mut RomuDuoJrRand,
-        weighted: &[(ProgressOrdered<K>, usize, u8)],
-    ) -> Result<Option<usize>, Box<dyn Error>> {
-        let Some(total) = NonZeroUsize::new(weighted.iter().map(|(_, weight, _)| *weight).sum())
-        else {
-            return Ok(None);
-        };
-        let mut draw = rand.below(total);
-        for (index, (_, weight, _)) in weighted.iter().enumerate() {
-            if draw < *weight {
-                return Ok(Some(index));
-            }
-            draw -= weight;
-        }
-        Err("class draw exceeded its weight total".into())
-    }
-
-    fn walk_to_cell_scan(
-        &self,
-        rand: &mut RomuDuoJrRand,
-        classes_skipped: &mut u64,
-        class_rank: &mut Option<u8>,
-        ignore_streaks: bool,
-    ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
-        let (mut weighted, skipped) = self.live_class_weights(ignore_streaks);
-        *classes_skipped = classes_skipped.saturating_add(skipped);
-        while let Some(drawn) = Self::draw_class_index(rand, &weighted)? {
-            let (class, _, rank) = weighted[drawn];
-            let cell_map = &self.classes[&class];
-            let mut cells = Vec::new();
-            for members in cell_map.values() {
-                let Some(member) = members.ids.iter().next().copied() else {
-                    continue;
-                };
-                let key = self.entries[member].key;
-                let group_live = ignore_streaks || self.groups_unexhausted(key);
-                let live = group_live
-                    && members.ids.iter().any(|id| {
-                        self.active.get(*id).copied().unwrap_or(false)
-                            && (ignore_streaks || self.entry_unexhausted(*id))
-                    });
-                if live {
-                    cells.push((key, members));
-                }
-            }
-            if cells.is_empty() {
-                weighted.swap_remove(drawn);
-                continue;
-            }
-            *class_rank = Some(rank);
-            for depth in (2..Self::coarsest_depth()).rev() {
-                let mut deepest = BTreeMap::<K::Group, K::Group>::new();
-                for (key, _) in &cells {
-                    let band = key.group(Self::frontier_depth());
-                    deepest
-                        .entry(key.group(depth))
-                        .and_modify(|frontier| {
-                            if K::progress_cmp(band, *frontier) == Ordering::Greater {
-                                *frontier = band;
-                            }
-                        })
-                        .or_insert(band);
-                }
-                let mut groups = deepest.keys().copied().collect::<Vec<_>>();
-                let frontier = deepest.values().copied().collect::<Vec<_>>();
-                let index = self.draw_group_index(rand, depth, &groups, Some(&frontier), None)?;
-                let chosen = groups.swap_remove(index);
-                cells.retain(|(key, _)| key.group(depth) == chosen);
-            }
-            if cells.is_empty() {
-                return Err("cell draw over an exhausted class".into());
-            }
-            let index = if Self::coarsest_depth() >= 1 {
-                let cell_groups = cells
-                    .iter()
-                    .map(|(key, _)| key.group(1))
-                    .collect::<Vec<_>>();
-                let ranked = cells
-                    .iter()
-                    .map(|(_, members)| {
-                        let offered = members.ids.iter().filter(|id| {
-                            self.active.get(**id).copied().unwrap_or(false)
-                                && (ignore_streaks || self.entry_unexhausted(**id))
-                        });
-                        (members.novelty(), self.cheapest_offered(offered))
-                    })
-                    .collect::<Vec<_>>();
-                self.draw_group_index(rand, 1, &cell_groups, None, Some(&ranked))?
-            } else {
-                let count = NonZeroUsize::new(cells.len()).ok_or("cell draw over no cells")?;
-                rand.below(count)
-            };
-            let members = cells.swap_remove(index).1;
-            return Ok(Some(
-                members
-                    .ids
-                    .iter()
-                    .copied()
-                    .filter(|id| {
-                        self.active.get(*id).copied().unwrap_or(false)
-                            && (ignore_streaks || self.entry_unexhausted(*id))
-                    })
-                    .collect(),
-            ));
-        }
-        Ok(None)
-    }
-
-    fn walk_live_index(
-        &self,
-        rand: &mut RomuDuoJrRand,
-        classes_skipped: &mut u64,
-        class_rank: &mut Option<u8>,
-    ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
-        let class_depth = Self::class_depth();
-        let cell_depth = Self::cell_depth();
-        let (weighted, skipped) = self.live_class_weights(false);
-        *classes_skipped = classes_skipped.saturating_add(skipped);
-        let Some(drawn) = Self::draw_class_index(rand, &weighted)? else {
-            return Ok(None);
-        };
-        let (ordered_class, _, rank) = weighted[drawn];
-        let cells = &self.classes[&ordered_class];
-        let class = ordered_class.0;
-        *class_rank = Some(rank);
-
-        let mut parent = class;
-        for depth in ((cell_depth + 1)..class_depth).rev() {
-            let groups = self
-                .live_children
-                .get(depth)
-                .and_then(|children| children.get(&(class, parent)))
-                .ok_or("live selector hierarchy is missing a pooled group")?
-                .iter()
-                .map(|group| group.0)
-                .collect::<Vec<_>>();
-            let frontier = groups
-                .iter()
-                .map(|group| self.deepest_live_band(class, depth, *group))
-                .collect::<Result<Vec<_>, _>>()?;
-            let index = self.draw_group_index(rand, depth, &groups, Some(&frontier), None)?;
-            parent = groups[index];
-        }
-
-        let cell = if cell_depth < class_depth {
-            let groups = self
-                .live_children
-                .get(cell_depth)
-                .and_then(|children| children.get(&(class, parent)))
-                .ok_or("live selector hierarchy is missing a selection cell")?
-                .iter()
-                .map(|group| group.0)
-                .collect::<Vec<_>>();
-            if class_depth >= 1 {
-                let ranked = groups
-                    .iter()
-                    .map(|cell| {
-                        let members = cells.get(cell);
-                        (
-                            members.and_then(CellMembers::novelty),
-                            members.and_then(|members| {
-                                self.cheapest_offered(members.sampleable.iter())
-                            }),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                groups[self.draw_group_index(rand, cell_depth, &groups, None, Some(&ranked))?]
-            } else {
-                groups
-                    [rand.below(NonZeroUsize::new(groups.len()).ok_or("cell draw over no cells")?)]
-            }
-        } else {
-            let only = [class];
-            if class_depth >= 1 {
-                let _ = self.draw_group_index(rand, cell_depth, &only, None, None)?;
-            } else {
-                let _ = rand.below(NonZeroUsize::new(1).ok_or("cell draw over no cells")?);
-            }
-            class
-        };
-        let members = cells
-            .get(&cell)
-            .ok_or("live selector hierarchy chose an absent cell")?;
-        let mut sampleable = members
-            .sampleable
-            .iter()
-            .rev()
-            .take(CONCENTRATION_WINDOW)
-            .copied()
+    fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
+        let tiers = self.tiers.keys().rev().copied().collect::<Vec<_>>();
+        let weights = (0..tiers.len())
+            .map(|rank| tier_weight(u8::try_from(rank).unwrap_or(u8::MAX)))
             .collect::<Vec<_>>();
-        sampleable.reverse();
-        Ok(Some(sampleable))
+        let index = draw_weighted(rand, &weights)?;
+        Ok((tiers[index], u8::try_from(index).unwrap_or(u8::MAX)))
     }
 
-    fn frontier_depth() -> usize {
-        2.min(Self::class_depth())
-    }
-
-    fn deepest_live_band(
-        &self,
-        class: K::Group,
-        depth: usize,
-        group: K::Group,
-    ) -> Result<K::Group, Box<dyn Error>> {
-        let mut current = group;
-        for level in (Self::frontier_depth()..depth).rev() {
-            current = self
-                .live_children
-                .get(level)
-                .and_then(|children| children.get(&(class, current)))
-                .and_then(BTreeSet::last)
-                .ok_or("live selector hierarchy is missing a pooled group's frontier")?
-                .0;
-        }
-        Ok(current)
-    }
-
-    fn draw_group_index(
+    fn draw_cell(
         &self,
         rand: &mut RomuDuoJrRand,
-        depth: usize,
-        groups: &[K::Group],
-        frontier: Option<&[K::Group]>,
-        cells: Option<&[(Option<usize>, Option<u64>)]>,
-    ) -> Result<usize, Box<dyn Error>> {
-        let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
-        let scales = match &self.selector_policy {
-            SelectorPolicy::EnergyFrontierCheapest(scales)
-            | SelectorPolicy::EnergyFrontierCheapestCount(scales)
-            | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => scales,
-            _ => return Ok(rand.below(count)),
-        };
-        let Some(scale) = scales.groups.get(depth - 1).copied() else {
-            return Ok(rand.below(count));
-        };
-        let ranked = match frontier {
-            Some(frontier) => {
-                let frontier_depth = Self::frontier_depth();
-                let frontier_scale = scales.groups.get(frontier_depth - 1).copied();
-                let mut ranked = frontier
-                    .iter()
-                    .map(|band| ProgressOrdered::<K>(*band))
-                    .collect::<Vec<_>>();
-                if !ranked.is_sorted() {
-                    ranked.sort_unstable();
-                }
-                ranked.dedup();
-                ranked.retain(|band| {
-                    let barren = self
-                        .group_barren
-                        .get(frontier_depth - 1)
-                        .and_then(|map| map.get(&band.0))
-                        .copied()
-                        .unwrap_or(0);
-                    frontier_scale.is_none_or(|scale| barren / scale < 8)
-                });
-                ranked.dedup_by(|left, right| K::progress_cmp(left.0, right.0) == Ordering::Equal);
-                ranked
-            }
-            None => Vec::new(),
-        };
-        let (newest, cheapest) = match cells {
-            Some(cells) if frontier.is_none() => {
-                let mut newest = cells.iter().filter_map(|cell| cell.0).collect::<Vec<_>>();
-                newest.sort_unstable();
-                let mut cheapest = cells.iter().filter_map(|cell| cell.1).collect::<Vec<_>>();
-                cheapest.sort_unstable();
-                (newest, cheapest)
-            }
-            _ => (Vec::new(), Vec::new()),
-        };
-        let opened_under = groups
+        progress: K::Progress,
+    ) -> Result<K::Place, Box<dyn Error>> {
+        let places = self
+            .tiers
+            .get(&progress)
+            .ok_or("tier draw chose an absent tier")?;
+        let candidates = places.keys().copied().collect::<Vec<_>>();
+        let weights = candidates
             .iter()
-            .map(|group| {
-                self.group_newest
-                    .get(depth - 1)
-                    .and_then(|map| map.get(group))
-                    .copied()
+            .map(|place| {
+                count_decay(
+                    self.cells
+                        .get(&(progress, *place))
+                        .map_or(0, |state| state.draws),
+                )
             })
             .collect::<Vec<_>>();
-        let level_of = |level: K::Group| {
-            ranked
-                .partition_point(|band| K::progress_cmp(band.0, level) != Ordering::Greater)
-                .saturating_sub(1)
-        };
-        let mut opened_by_level: Vec<Vec<usize>> = vec![Vec::new(); ranked.len()];
-        if let Some(frontier) = frontier {
-            for (opened, level) in opened_under.iter().zip(frontier) {
-                if let (Some(opened), Some(bucket)) =
-                    (opened, opened_by_level.get_mut(level_of(*level)))
-                {
-                    bucket.push(*opened);
-                }
-            }
-            for bucket in &mut opened_by_level {
-                bucket.sort_unstable();
-            }
-        }
-        let mut weights = Vec::with_capacity(groups.len());
-        for (index, group) in groups.iter().enumerate() {
-            let barren = self
-                .group_barren
-                .get(depth - 1)
-                .and_then(|map| map.get(group))
-                .copied()
-                .unwrap_or(0);
-            let halvings = usize::try_from((barren / scale).min(8)).unwrap_or(8);
-            let energy = 256_usize >> halvings;
-            let (rank, span) = match (frontier, cells) {
-                (Some(frontier), _) => {
-                    let level = frontier[index];
-                    let behind = ranked.partition_point(|band| {
-                        K::progress_cmp(band.0, level) != Ordering::Greater
-                    });
-                    let peers = opened_by_level
-                        .get(behind.saturating_sub(1))
-                        .map_or(&[][..], Vec::as_slice);
-                    let newer = match opened_under[index] {
-                        Some(mine) => peers
-                            .len()
-                            .saturating_sub(peers.partition_point(|other| *other <= mine)),
-                        None => peers.len(),
-                    };
-                    (
-                        ranked
-                            .len()
-                            .saturating_sub(behind)
-                            .saturating_add(newer.min(8)),
-                        16,
-                    )
-                }
-                (None, Some(cells)) => {
-                    let (opened, cost) = cells[index];
-                    let novelty = match opened {
-                        Some(opened) => {
-                            let position = newest
-                                .binary_search(&opened)
-                                .map_err(|_| "energy cell is missing from its own novelty table")?;
-                            newest.len().saturating_sub(position.saturating_add(1))
-                                / CELL_NOVELTY_RANK_SCALE
-                        }
-                        None => 8,
-                    };
-                    let costlier = cost.map_or(0, |cost| {
-                        cheapest.partition_point(|cheaper| *cheaper < cost) / CHEAPEST_RANK_SCALE
-                    });
-                    (novelty.saturating_add(costlier), 16)
-                }
-                (None, None) => (0, 8),
-            };
-            weights.push((energy << span) >> rank.min(span));
-        }
-        let total = NonZeroUsize::new(weights.iter().sum()).ok_or("energy weights sum to zero")?;
-        let mut draw = rand.below(total);
-        for (index, weight) in weights.iter().enumerate() {
-            if draw < *weight {
-                return Ok(index);
-            }
-            draw -= weight;
-        }
-        Err("energy draw exceeded its weight total".into())
+        let index = draw_weighted(rand, &weights)?;
+        Ok(candidates[index])
     }
 
-    fn entry_unexhausted(&self, id: usize) -> bool {
-        if self.since_retained[id] >= SELECTION_EXHAUSTION_THRESHOLD {
-            return false;
-        }
-        match &self.selector_policy {
-            SelectorPolicy::GroupUniform => true,
-            SelectorPolicy::Retire(thresholds)
-            | SelectorPolicy::EnergyFrontierCheapest(thresholds)
-            | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
-            | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds) => {
-                self.since_retained[id] < thresholds.entry
-            }
-        }
-    }
-
-    fn groups_unexhausted(&self, key: K) -> bool {
-        match &self.selector_policy {
-            SelectorPolicy::GroupUniform
-            | SelectorPolicy::EnergyFrontierCheapest(_)
-            | SelectorPolicy::EnergyFrontierCheapestCount(_)
-            | SelectorPolicy::EnergyFrontierCheapestKeyCount(_) => true,
-            SelectorPolicy::Retire(thresholds) => {
-                thresholds
-                    .groups
-                    .iter()
-                    .enumerate()
-                    .all(|(offset, threshold)| {
-                        self.group_barren
-                            .get(offset)
-                            .and_then(|map| map.get(&key.group(offset + 1)))
-                            .copied()
-                            .unwrap_or(0)
-                            < *threshold
-                    })
-            }
-        }
-    }
-
-    fn cheapest_offered<'a>(
+    fn draw_holder(
         &self,
-        sampleable: impl DoubleEndedIterator<Item = &'a usize>,
-    ) -> Option<u64> {
-        sampleable
-            .rev()
-            .take(CONCENTRATION_WINDOW)
-            .map(|id| self.cost_in_group[*id])
-            .min()
+        rand: &mut RomuDuoJrRand,
+        progress: K::Progress,
+        place: K::Place,
+    ) -> Result<usize, Box<dyn Error>> {
+        let members = self
+            .tiers
+            .get(&progress)
+            .and_then(|places| places.get(&place))
+            .ok_or("cell draw chose an absent cell")?;
+        let ids = members.ids.iter().copied().collect::<Vec<_>>();
+        let weights = ids
+            .iter()
+            .map(|id| count_decay(self.selected[*id]))
+            .collect::<Vec<_>>();
+        let index = draw_weighted(rand, &weights)?;
+        Ok(ids[index])
     }
 
     fn champions_slot(&self, slot: &[usize], id: usize, preference: usize) -> bool {
-        let capacity = K::slot_capacity().max(1);
+        let capacity = K::capacity().max(1);
         let better = slot
             .iter()
             .filter(|other| **other != id)
@@ -3255,126 +2192,25 @@ where
 
     #[cfg(test)]
     fn is_preference_champion(&self, id: usize, preference: usize) -> bool {
-        let Some(slot) = self.slots.get(&self.entries[id].key.group(0)) else {
+        let Some(slot) = self.slots.get(&slot_of_key(self.entries[id].key)) else {
             return true;
         };
         self.champions_slot(slot, id, preference)
     }
 
-    fn draw_from_cell(
-        &mut self,
-        rand: &mut RomuDuoJrRand,
-        cell: Vec<usize>,
-    ) -> Result<(usize, ConcentrationDraw, Option<u8>), Box<dyn Error>> {
-        let window = &cell[cell.len().saturating_sub(CONCENTRATION_WINDOW)..];
-        let preferences = K::preferences().max(1);
-        let drawn_preference = if preferences > 1 {
-            Some(rand.below(NonZeroUsize::new(preferences).ok_or("empty preference list")?))
-        } else {
-            None
-        };
-        let preferred = match drawn_preference {
-            Some(preference) => {
-                let mut cached: Option<(K::Group, Option<&Vec<usize>>)> = None;
-                window
-                    .iter()
-                    .copied()
-                    .filter(|id| {
-                        let group = self.entries[*id].key.group(0);
-                        let slot = match cached {
-                            Some((seen, slot)) if seen == group => slot,
-                            _ => {
-                                let slot = self.slots.get(&group);
-                                cached = Some((group, slot));
-                                slot
-                            }
-                        };
-                        slot.is_none_or(|slot| self.champions_slot(slot, *id, preference))
-                    })
-                    .collect()
-            }
-            None => Vec::new(),
-        };
-        let window: &[usize] = if preferred.is_empty() {
-            window
-        } else {
-            &preferred
-        };
-        let mut entered_window = 0_u64;
-        for id in window {
-            if !self.in_window_ever[*id] {
-                self.in_window_ever[*id] = true;
-                entered_window = entered_window.saturating_add(1);
-            }
-        }
-        let id = if matches!(
-            self.selector_policy,
-            SelectorPolicy::EnergyFrontierCheapest(_)
-                | SelectorPolicy::EnergyFrontierCheapestCount(_)
-                | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
-        ) {
-            let mut ranked = window
-                .iter()
-                .map(|id| (self.cost_in_group[*id], *id))
-                .collect::<Vec<_>>();
-            ranked.sort_unstable();
-            let count_weighted = matches!(
-                self.selector_policy,
-                SelectorPolicy::EnergyFrontierCheapestCount(_)
-                    | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
-            );
-            let weights = ranked
-                .iter()
-                .enumerate()
-                .map(|(rank, (_, id))| {
-                    let halvings = (rank / CHEAPEST_RANK_SCALE).min(8);
-                    if count_weighted {
-                        let count = if self.persistent_key_counts() {
-                            self.selected[*id]
-                                .max(self.key_counts.get(self.entries[*id].key.group(0)))
-                        } else {
-                            self.selected[*id]
-                        };
-                        let draws = usize::try_from(count).unwrap_or(usize::MAX);
-                        ((65_536_usize >> halvings) / draws.saturating_add(1)).max(1)
-                    } else {
-                        256_usize >> halvings
-                    }
-                })
-                .collect::<Vec<_>>();
-            let total =
-                NonZeroUsize::new(weights.iter().sum()).ok_or("cheapest weights sum to zero")?;
-            let mut draw = rand.below(total);
-            let mut chosen = ranked[0].1;
-            for (weight, (_, id)) in weights.iter().zip(&ranked) {
-                if draw < *weight {
-                    chosen = *id;
-                    break;
-                }
-                draw -= weight;
-            }
-            chosen
-        } else {
-            window[rand.below(NonZeroUsize::new(window.len()).ok_or("empty tie window")?)]
-        };
-        Ok((
-            id,
-            ConcentrationDraw {
-                window_size: u64::try_from(window.len())?,
-                entered_window,
-            },
-            drawn_preference.map(|preference| u8::try_from(preference).unwrap_or(u8::MAX)),
-        ))
+    #[must_use]
+    pub fn opened_new_cell(&self, id: usize) -> bool {
+        self.opened_cell.get(id).copied().unwrap_or(false)
     }
 
     #[must_use]
-    pub fn opened_new_slot(&self, id: usize) -> bool {
-        self.opened_slot.get(id).copied().unwrap_or(false)
+    pub fn occupied_cell_count(&self) -> usize {
+        self.cells.values().filter(|state| state.active > 0).count()
     }
 
     #[must_use]
-    pub fn opened_depths(&self, id: usize) -> u32 {
-        self.opened_depths.get(id).copied().unwrap_or(0)
+    pub fn cell_draws(&self, key: K) -> u64 {
+        self.cells.get(&cell_of(key)).map_or(0, |state| state.draws)
     }
 
     #[must_use]
@@ -3453,15 +2289,15 @@ where
     pub(crate) fn pop_continuation(
         &mut self,
         from_highest_tier: bool,
-    ) -> Option<Continuation<K::Group, A>> {
+    ) -> Option<Continuation<K::Place, A>> {
         self.continuations.as_mut()?.pop(from_highest_tier)
     }
 
     #[must_use]
-    pub(crate) fn outranks_slot_holders(
+    pub(crate) fn outranks_place_holders(
         &self,
         parent_index: usize,
-        destination: K::Group,
+        destination: K::Place,
         tier: u8,
     ) -> bool {
         let Some(entry) = self.entries.get(parent_index) else {
@@ -3469,7 +2305,7 @@ where
         };
         let key = entry.key;
         let preference = usize::from(tier);
-        self.slots.get(&destination).is_none_or(|holders| {
+        self.by_place.get(&destination).is_none_or(|holders| {
             holders.iter().all(|held| {
                 self.entries.get(*held).is_none_or(|holder| {
                     key.preference_cmp(preference, holder.key) == Ordering::Greater
@@ -3499,23 +2335,37 @@ where
 
     pub(crate) fn record_continuation_outcome(
         &mut self,
-        landed: bool,
+        landed: Option<usize>,
         replaced: bool,
-        opened_new_slot: bool,
+        opened_new_cell: bool,
         wave: u32,
     ) {
+        if let Some(id) = landed
+            && let Some(entry) = self.entries.get(id)
+        {
+            self.landed.insert(entry.id);
+        }
         let accounting = &mut self.continuation_accounting;
         accounting.jobs = accounting.jobs.saturating_add(1);
-        if landed {
+        if landed.is_some() {
             accounting.landed = accounting.landed.saturating_add(1);
         }
         if replaced {
             accounting.replaced = accounting.replaced.saturating_add(1);
         }
-        if opened_new_slot {
-            accounting.opened_new_slot = accounting.opened_new_slot.saturating_add(1);
+        if opened_new_cell {
+            accounting.opened_new_cell = accounting.opened_new_cell.saturating_add(1);
         }
         accounting.longest_wave = accounting.longest_wave.max(wave);
+    }
+
+    pub(crate) fn record_continuation_dispatch(&mut self, gaining: bool) {
+        if gaining {
+            self.continuation_accounting.gaining_dispatched = self
+                .continuation_accounting
+                .gaining_dispatched
+                .saturating_add(1);
+        }
     }
 
     pub(crate) fn record_continuation_reservation(&mut self, energy: u16, taken: bool) {
@@ -3535,21 +2385,14 @@ where
     }
 
     #[must_use]
-    pub(crate) fn slot_of(&self, id: usize) -> Option<K::Group> {
-        self.entries.get(id).map(|entry| entry.key.group(0))
+    pub(crate) fn place_of(&self, id: usize) -> Option<K::Place> {
+        self.entries.get(id).map(|entry| entry.key.place())
     }
 
     #[must_use]
     pub fn history_memory_bytes(&self) -> usize {
         self.history_memory_bytes
             .saturating_add(self.auxiliary_history_memory_bytes())
-            .saturating_add(
-                if self.persistent_key_counts() || self.key_counts.len() > 0 {
-                    KeyCounts::<K::Group>::reserve_bytes()
-                } else {
-                    0
-                },
-            )
             .saturating_add(
                 self.continuations
                     .as_ref()
@@ -3573,28 +2416,8 @@ where
     }
 
     #[must_use]
-    pub(crate) fn novelty_memory_bytes(&self) -> usize {
-        self.groups_seen
-            .iter()
-            .map(BTreeSet::len)
-            .sum::<usize>()
-            .saturating_mul(Self::historical_group_memory_charge(0))
-    }
-
-    #[must_use]
-    pub(crate) fn barren_memory_bytes(&self) -> usize {
-        self.group_barren
-            .iter()
-            .map(BTreeMap::len)
-            .sum::<usize>()
-            .saturating_mul(Self::historical_group_memory_charge(size_of::<u64>()))
-            .saturating_add(
-                self.group_newest
-                    .iter()
-                    .map(BTreeMap::len)
-                    .sum::<usize>()
-                    .saturating_mul(Self::historical_group_memory_charge(size_of::<usize>())),
-            )
+    pub(crate) fn cell_memory_bytes(&self) -> usize {
+        self.cells.len().saturating_mul(Self::cell_memory_charge())
     }
 
     #[must_use]
@@ -3610,14 +2433,7 @@ where
 
     #[must_use]
     pub(crate) fn historical_cell_count(&self) -> usize {
-        self.groups_seen
-            .first()
-            .map_or_else(|| self.slots.len(), BTreeSet::len)
-    }
-
-    #[must_use]
-    pub(crate) fn barren_group_count(&self) -> usize {
-        self.group_barren.iter().map(BTreeMap::len).sum()
+        self.cells.len()
     }
 
     pub(crate) fn record_isolated_continuation(&mut self, id: usize) {
@@ -3630,51 +2446,12 @@ where
     }
 
     pub fn record_selection(&mut self, id: usize, draw: &SelectorDraw) {
-        if draw.counter_reset {
-            self.since_retained.fill(0);
-            for map in &mut self.group_barren {
-                map.clear();
-            }
-            self.rebuild_live_selector_index();
-        }
-        if let Some(preference) = draw.preference
-            && let Some(count) = self.portfolio_selections.get_mut(usize::from(preference))
-        {
-            *count = count.saturating_add(1);
-        }
-        let was_sampleable = self.entry_unexhausted(id);
         self.selected[id] = self.selected[id].saturating_add(1);
-        self.since_retained[id] = self.since_retained[id].saturating_add(1);
         self.referenced[id] = true;
         let key = self.entries[id].key;
-        if self.persistent_key_counts() {
-            self.key_counts.record(key.group(0), self.selected[id]);
-        }
-        let cell = key.group(Self::class_depth().saturating_sub(1));
-        *self.draws_by_cell.entry(cell).or_insert(0) += 1;
-        if let Some(members) = self
-            .classes
-            .get_mut(&ProgressOrdered::<K>(key.group(Self::class_depth())))
-            .and_then(|cells| cells.get_mut(&key.group(Self::cell_depth())))
-            && members.ids.contains(&id)
-        {
-            members.drawn = members.drawn.saturating_add(1);
-        }
-        if was_sampleable && !self.entry_unexhausted(id) {
-            self.set_entry_sampleable(id, false);
-        }
-        if matches!(
-            self.selector_policy,
-            SelectorPolicy::Retire(_)
-                | SelectorPolicy::EnergyFrontierCheapest(_)
-                | SelectorPolicy::EnergyFrontierCheapestCount(_)
-                | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
-        ) {
-            for (offset, map) in self.group_barren.iter_mut().enumerate() {
-                let counter = map.entry(key.group(offset + 1)).or_insert(0);
-                *counter = counter.saturating_add(1);
-            }
-        }
+        let state = self.cells.entry(cell_of(key)).or_default();
+        state.draws = state.draws.saturating_add(1);
+        state.draws_total = state.draws_total.saturating_add(1);
         match draw.path {
             SelectorPath::Continuation => {
                 let count = self
@@ -3683,89 +2460,40 @@ where
                     .get_or_insert(0);
                 *count = count.saturating_add(1);
             }
-            SelectorPath::Uniform => {
-                self.selector_accounting.uniform_selections = self
-                    .selector_accounting
-                    .uniform_selections
-                    .saturating_add(1);
-            }
-            SelectorPath::HierarchyWalk => {
+            SelectorPath::Tiers => {
                 self.selector_accounting.cell_selections =
                     self.selector_accounting.cell_selections.saturating_add(1);
             }
         }
-        self.selector_accounting.classes_skipped = self
-            .selector_accounting
-            .classes_skipped
-            .saturating_add(draw.classes_skipped);
-        if let Some(rank) = draw.class_rank {
+        if let Some(rank) = draw.tier_rank {
             let rank = usize::from(rank);
-            if self.selector_accounting.class_draws_by_rank.len() <= rank {
+            if self.selector_accounting.tier_draws_by_rank.len() <= rank {
                 self.selector_accounting
-                    .class_draws_by_rank
+                    .tier_draws_by_rank
                     .resize(rank.saturating_add(1), 0);
             }
-            self.selector_accounting.class_draws_by_rank[rank] =
-                self.selector_accounting.class_draws_by_rank[rank].saturating_add(1);
-        }
-        self.selector_accounting.counter_resets = self
-            .selector_accounting
-            .counter_resets
-            .saturating_add(u64::from(draw.counter_reset));
-        if let Some(concentration) = draw.concentration.as_ref() {
-            let accounting = &mut self.selector_accounting.concentration;
-            accounting.window_draws = accounting.window_draws.saturating_add(1);
-            accounting.final_window_size = concentration.window_size;
-            accounting.distinct_window_parents = accounting
-                .distinct_window_parents
-                .saturating_add(concentration.entered_window);
-            accounting.draws_per_parent_milli = accounting
-                .window_draws
-                .saturating_mul(1000)
-                .checked_div(accounting.distinct_window_parents)
-                .unwrap_or(0);
+            self.selector_accounting.tier_draws_by_rank[rank] =
+                self.selector_accounting.tier_draws_by_rank[rank].saturating_add(1);
         }
     }
 
-    pub fn record_selection_outcome(&mut self, id: usize, retained_descendant: bool, opened: u32) {
+    pub fn record_selection_outcome(&mut self, id: usize, retained_descendant: bool) {
         if !retained_descendant {
             return;
         }
-        let was_sampleable = self.entry_unexhausted(id);
         self.productive[id] = self.productive[id].saturating_add(1);
-        self.since_retained[id] = 0;
-        if !was_sampleable && self.entry_unexhausted(id) {
-            self.set_entry_sampleable(id, true);
-        }
-        let cleared = match self.selector_policy {
-            SelectorPolicy::Retire(_) => u32::MAX,
-            SelectorPolicy::EnergyFrontierCheapest(_)
-            | SelectorPolicy::EnergyFrontierCheapestCount(_)
-            | SelectorPolicy::EnergyFrontierCheapestKeyCount(_) => opened,
-            SelectorPolicy::GroupUniform => 0,
-        };
-        if cleared != 0 {
-            let key = self.entries[id].key;
-            let resets = &mut self.selector_accounting.energy_resets;
-            resets.resize(self.group_barren.len(), 0);
-            for (offset, map) in self.group_barren.iter_mut().enumerate() {
-                if cleared & (1 << (offset + 1)) == 0 {
-                    continue;
-                }
-                map.insert(key.group(offset + 1), 0);
-                resets[offset] = resets[offset].saturating_add(1);
-            }
-        }
-        let count = self
-            .selector_accounting
-            .productive_by_mask
-            .entry(opened)
-            .or_insert(0);
-        *count = count.saturating_add(1);
         self.selector_accounting.productive_selections = self
             .selector_accounting
             .productive_selections
             .saturating_add(1);
+        if self
+            .entries
+            .get(id)
+            .is_some_and(|entry| self.landed.contains(&entry.id))
+        {
+            self.continuation_accounting.useful =
+                self.continuation_accounting.useful.saturating_add(1);
+        }
     }
 
     #[must_use]
@@ -3800,9 +2528,10 @@ where
     pub fn selector_report(&self) -> SelectorAccounting {
         let mut accounting = self.selector_accounting.clone();
         accounting.draws_by_cell = self
-            .draws_by_cell
+            .cells
             .iter()
-            .map(|(cell, draws)| (format!("{cell:?}"), *draws))
+            .filter(|(_, state)| state.draws_total > 0)
+            .map(|(cell, state)| (format!("{cell:?}"), state.draws_total))
             .collect();
         let preferences = K::preferences().max(1);
         if preferences > 1 {
@@ -3811,52 +2540,8 @@ where
                 preferences,
                 exclusive_holders: exclusive,
                 shared_holders: shared,
-                selections_by_preference: self.portfolio_selections.clone(),
                 replacements_by_preference: self.portfolio_replacements.clone(),
                 cross_preference_improvements: self.portfolio_cross_improvements,
-            });
-        }
-        if self.persistent_key_counts() {
-            accounting.key_counts = Some(KeyCountAccounting {
-                capacity: KEY_COUNT_CAPACITY,
-                keys: self.key_counts.len(),
-                hits: self.key_counts.hits,
-                evictions: self.key_counts.evictions,
-                reserve_bytes: KeyCounts::<K::Group>::reserve_bytes(),
-            });
-        }
-        if let SelectorPolicy::Retire(thresholds)
-        | SelectorPolicy::EnergyFrontierCheapest(thresholds)
-        | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
-        | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds) = &self.selector_policy
-        {
-            let entries_over_threshold = u64::try_from(
-                self.since_retained
-                    .iter()
-                    .zip(&self.active)
-                    .filter(|(streak, active)| **active && **streak >= thresholds.entry)
-                    .count(),
-            )
-            .unwrap_or(u64::MAX);
-            let groups_over_threshold = thresholds
-                .groups
-                .iter()
-                .enumerate()
-                .map(|(offset, threshold)| {
-                    self.group_barren
-                        .get(offset)
-                        .map(|map| {
-                            u64::try_from(
-                                map.values().filter(|streak| **streak >= *threshold).count(),
-                            )
-                            .unwrap_or(u64::MAX)
-                        })
-                        .unwrap_or(0)
-                })
-                .collect();
-            accounting.retirement = Some(RetirementAccounting {
-                entries_over_threshold,
-                groups_over_threshold,
             });
         }
         accounting
@@ -3907,13 +2592,12 @@ mod tests {
 
     use super::{
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, DonorRank, HISTORY_COMPACTION_MIN_DROPS,
-        Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, ProgressOrdered,
-        RetireThresholds, SELECTION_EXHAUSTION_THRESHOLD, SelectorAccounting, SelectorDraw,
-        SelectorPath, SelectorPolicy, selector_policy_from_identifier,
+        Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting,
+        SelectorDraw, SelectorPath,
     };
     use crate::search::rand::RomuDuoJrRand;
     use serde::{Deserialize, Serialize};
-    use std::{cell::Cell, collections::BTreeMap, sync::Arc};
+    use std::{collections::BTreeMap, sync::Arc};
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
     struct TestAction {
@@ -3949,38 +2633,26 @@ mod tests {
     }
 
     impl ArchiveKey for TestKey {
-        type Group = Self;
+        type Place = ([u8; 3], u16, u8, u8, u8);
+        type Progress = (u8, u8);
+        type Identity = u8;
 
-        fn groups() -> usize {
-            5
+        fn place(self) -> Self::Place {
+            (
+                self.room,
+                self.progress,
+                self.room_x_bucket,
+                self.player_y_bucket,
+                self.time_bucket,
+            )
         }
 
-        fn group(self, depth: usize) -> Self::Group {
-            assert!(depth < Self::groups(), "group depth is out of range");
-            let mut group = self;
-            if depth >= 1 {
-                group.state_fingerprint = 0;
-                group.progress = group
-                    .progress
-                    .saturating_add(u16::from(group.room_x_bucket));
-                group.room_x_bucket = 0;
-            }
-            if depth >= 2 {
-                group.player_y_bucket = 0;
-                group.time_bucket = 0;
-                group.progress /= 4;
-            }
-            if depth >= 3 {
-                group.progress = 0;
-            }
-            if depth >= 4 {
-                group.room = [0; 3];
-            }
-            group
+        fn progress(self) -> Self::Progress {
+            (self.world, self.level)
         }
 
-        fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
-            (left.world, left.level, left.progress).cmp(&(right.world, right.level, right.progress))
+        fn identity(self) -> Self::Identity {
+            self.state_fingerprint
         }
 
         type Lineage = Vec<[u8; 3]>;
@@ -3996,53 +2668,7 @@ mod tests {
 
     type TestArchive = Archive<u8, TestKey, (), ()>;
 
-    #[test]
-    fn active_ids_preserve_ascending_rank_across_word_boundaries() {
-        let ids = [0, 1, 63, 64, 65, 127, 128, 191, 255];
-        let active = ActiveIds::from_ids(ids);
-        assert_eq!(active.len(), ids.len());
-        assert_eq!(active.ids().collect::<Vec<_>>(), ids);
-        for (rank, id) in ids.into_iter().enumerate() {
-            assert_eq!(active.select(rank), Some(id));
-        }
-        assert_eq!(active.select(ids.len()), None);
-    }
-
-    #[test]
-    fn active_ids_remove_without_changing_survivor_ranks() {
-        let mut active = ActiveIds::from_ids(0..260);
-        for id in [0, 2, 63, 64, 129, 200, 259] {
-            assert!(active.remove(id));
-            assert!(!active.remove(id));
-        }
-        active.insert(64);
-        active.insert(259);
-        active.insert(259);
-        let expected = (0..260)
-            .filter(|id| ![0, 2, 63, 129, 200].contains(id))
-            .collect::<Vec<_>>();
-        assert_eq!(active.len(), expected.len());
-        assert_eq!(active.ids().collect::<Vec<_>>(), expected);
-        assert_eq!(
-            (0..active.len())
-                .map(|rank| active.select(rank).expect("rank is in bounds"))
-                .collect::<Vec<_>>(),
-            expected
-        );
-    }
-
-    #[test]
-    fn active_ids_empty_after_removing_every_member() {
-        let mut active = ActiveIds::from_ids([0, 64, 129]);
-        assert!(!active.is_empty());
-        for id in [0, 64, 129] {
-            assert!(active.remove(id));
-        }
-        assert!(active.is_empty());
-        assert_eq!(active.len(), 0);
-        assert_eq!(active.select(0), None);
-        assert_eq!(active.ids().next(), None);
-    }
+    type ChordArchive = Archive<TestAction, TestKey, (), ()>;
 
     #[test]
     fn input_index_walk_owner_and_pruning_are_exact() {
@@ -4067,7 +2693,7 @@ mod tests {
 
     #[test]
     fn snapshot_charge_uses_the_configured_machine_accounting() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         assert_eq!(archive.snapshot_charge(&()), 0);
         archive.set_memory_budget(1024, |_| 17);
         assert_eq!(archive.snapshot_charge(&()), 17);
@@ -4075,7 +2701,7 @@ mod tests {
 
     #[test]
     fn snapshot_release_preserves_an_inflight_worker_reference() {
-        let mut archive = flat_archive::<3>(&[[1, 2, 3, 4]]);
+        let mut archive = flat_archive(&[[1, 2, 3, 4]]);
         let in_flight = Arc::clone(
             archive.entries[0]
                 .snapshot
@@ -4090,7 +2716,7 @@ mod tests {
 
     #[test]
     fn retired_origins_stay_charged_until_the_last_ordered_admission() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 11);
         for index in 0_u8..3 {
             archive
@@ -4141,7 +2767,7 @@ mod tests {
 
     #[test]
     fn metadata_unpin_reclaims_budget_evicted_worker_snapshot() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
         for index in 0_u8..2 {
             archive
@@ -4199,7 +2825,7 @@ mod tests {
 
     #[test]
     fn metadata_unpin_keeps_explicitly_preserved_inactive_snapshot() {
-        let mut archive = flat_archive::<3>(&[[1, 2, 3, 4]]);
+        let mut archive = flat_archive(&[[1, 2, 3, 4]]);
         let stable_id = archive.stable_id(0).expect("stable id");
         archive
             .preserve_inactive_snapshots(true)
@@ -4235,50 +2861,39 @@ mod tests {
             logical_counters
         );
     }
-
     #[test]
     fn selector_accounting_requires_the_current_cell_counter_name() {
         let current: SelectorAccounting = serde_json::from_str(
-            r#"{"uniform_selections":1,"cell_selections":2,
-                "productive_selections":3,"classes_skipped":4,"counter_resets":5,
-                "concentration":{"window_cap":128,"final_window_size":6,
-                "window_draws":7,"distinct_window_parents":8,
-                "draws_per_parent_milli":9}}"#,
+            r#"{"cell_selections":2,"productive_selections":3,"cell_resets":4,
+                "tier_draws_by_rank":[5,6]}"#,
         )
         .expect("current selector accounting parses");
         assert_eq!(current.cell_selections, 2);
+        assert_eq!(current.tier_draws_by_rank, vec![5, 6]);
         assert!(
             serde_json::from_str::<SelectorAccounting>(
-                r#"{"uniform_selections":1,"tie_class_selections":2,
-                "productive_selections":3,"classes_skipped":4,"counter_resets":5,
-                "concentration":{"window_cap":128,"final_window_size":6,
-                "window_draws":7,"distinct_window_parents":8,
-                "draws_per_parent_milli":9}}"#,
+                r#"{"tie_class_selections":2,"productive_selections":3,"cell_resets":4}"#,
             )
             .is_err()
         );
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-    struct FlatKey<const DEPTHS: usize>([u16; 4]);
+    struct FlatKey([u16; 4]);
 
-    impl<const DEPTHS: usize> ArchiveKey for FlatKey<DEPTHS> {
-        type Group = [u16; 4];
+    impl ArchiveKey for FlatKey {
+        type Place = [u16; 3];
+        type Progress = ();
+        type Identity = u16;
 
-        fn groups() -> usize {
-            DEPTHS
+        fn place(self) -> Self::Place {
+            [self.0[1], self.0[2], self.0[3]]
         }
 
-        fn group(self, depth: usize) -> Self::Group {
-            assert!(
-                depth < DEPTHS,
-                "group depth {depth} is past {DEPTHS} depths"
-            );
-            let mut group = self.0;
-            for component in group.iter_mut().take(depth) {
-                *component = 0;
-            }
-            group
+        fn progress(self) -> Self::Progress {}
+
+        fn identity(self) -> Self::Identity {
+            self.0[0]
         }
 
         type Lineage = ();
@@ -4297,18 +2912,19 @@ mod tests {
     }
 
     impl ArchiveKey for PreferredKey {
-        type Group = u8;
+        type Place = u8;
+        type Progress = ();
+        type Identity = ();
 
-        fn groups() -> usize {
-            1
-        }
-
-        fn group(self, depth: usize) -> Self::Group {
-            assert_eq!(depth, 0);
+        fn place(self) -> Self::Place {
             self.slot
         }
 
-        fn slot_capacity() -> usize {
+        fn progress(self) -> Self::Progress {}
+
+        fn identity(self) -> Self::Identity {}
+
+        fn capacity() -> usize {
             1
         }
 
@@ -4324,7 +2940,6 @@ mod tests {
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
     }
-
     #[test]
     fn opaque_preference_displaces_only_a_weaker_same_slot_representative() {
         let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
@@ -4346,7 +2961,7 @@ mod tests {
         assert_eq!(insert(&mut archive, 1, 2), Some(0));
         assert_eq!(insert(&mut archive, 2, 5), Some(1));
         assert_eq!(archive.active, vec![false, true]);
-        assert_eq!(archive.slots.get(&7), Some(&vec![1]));
+        assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![1]));
         assert_eq!(insert(&mut archive, 3, 1), None);
         assert_eq!(archive.active, vec![false, true]);
     }
@@ -4359,18 +2974,19 @@ mod tests {
     }
 
     impl ArchiveKey for PortfolioKey {
-        type Group = u8;
+        type Place = u8;
+        type Progress = ();
+        type Identity = ();
 
-        fn groups() -> usize {
-            1
-        }
-
-        fn group(self, depth: usize) -> Self::Group {
-            assert_eq!(depth, 0);
+        fn place(self) -> Self::Place {
             self.slot
         }
 
-        fn slot_capacity() -> usize {
+        fn progress(self) -> Self::Progress {}
+
+        fn identity(self) -> Self::Identity {}
+
+        fn capacity() -> usize {
             1
         }
 
@@ -4478,21 +3094,23 @@ mod tests {
     }
 
     impl ArchiveKey for StockedKey {
-        type Group = [u16; 3];
+        type Place = [u16; 3];
+        type Progress = ();
+        type Identity = ();
 
-        fn groups() -> usize {
-            3
+        fn place(self) -> Self::Place {
+            self.place
         }
 
-        fn group(self, depth: usize) -> Self::Group {
-            let mut group = self.place;
-            for component in group.iter_mut().take(depth) {
-                *component = 0;
-            }
-            group
+        fn progress(self) -> Self::Progress {}
+
+        fn identity(self) -> Self::Identity {}
+
+        fn capacity() -> usize {
+            1
         }
 
-        fn slot_capacity() -> usize {
+        fn preferences() -> usize {
             1
         }
 
@@ -4529,35 +3147,30 @@ mod tests {
             )
             .expect("insert stocked entry")
     }
-
     #[test]
-    fn a_better_stocked_arrival_reopens_its_place() {
+    fn a_better_stocked_arrival_resets_its_cells_draw_count() {
         let mut archive = Archive::<u8, StockedKey, (), ()>::new(|_| 1);
         archive.rebuild_selector_index(64);
         let first = insert_stocked(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
-        assert_eq!(archive.opened_depths(first), 0b111);
+        assert!(archive.opened_new_cell(first));
         let beside = insert_stocked(&mut archive, Some(first), 2, [2, 1, 1], 5).expect("beside");
-        assert_eq!(archive.opened_depths(beside), 0b001);
+        assert!(archive.opened_new_cell(beside));
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+        };
+        for _ in 0..5 {
+            archive.record_selection(first, &draw);
+        }
+        assert_eq!(archive.cell_draws(archive.entries[first].key), 5);
         assert!(insert_stocked(&mut archive, Some(first), 3, [1, 1, 1], 5).is_none());
+        assert_eq!(archive.cell_draws(archive.entries[first].key), 5);
         let better = insert_stocked(&mut archive, Some(first), 4, [1, 1, 1], 6).expect("better");
-        assert!(!archive.opened_new_slot(better));
-        assert_eq!(archive.opened_depths(better), 0b110);
-        let key = archive.entries[better].key;
-        let cell = archive
-            .classes
-            .get(&ProgressOrdered::<StockedKey>(key.group(Archive::<
-                u8,
-                StockedKey,
-                (),
-                (),
-            >::class_depth(
-            ))))
-            .and_then(|cells| cells.get(&key.group(1)))
-            .map(|members| members.opened);
-        assert_eq!(cell, Some(better));
-        assert_eq!(archive.group_newest[1].get(&key.group(2)), Some(&better));
+        assert!(!archive.opened_new_cell(better));
+        assert_eq!(archive.cell_draws(archive.entries[better].key), 0);
+        assert_eq!(archive.selector_report().cell_resets, 1);
+        assert_eq!(archive.occupied_cell_count(), 2);
     }
-
     #[test]
     fn a_slot_with_no_exits_is_never_queued() {
         let mut archive = portfolio_bank();
@@ -4568,7 +3181,7 @@ mod tests {
 
     #[test]
     fn a_key_declaring_no_preference_holds_no_bank() {
-        let mut archive = Archive::<u8, FlatKey<1>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         archive.enable_continuations(4);
         assert_eq!(archive.continuation_pending(), 0);
         assert_eq!(archive.continuation_report().edges, 0);
@@ -4581,7 +3194,7 @@ mod tests {
         assert_eq!(insert_portfolio(&mut archive, 1, 10, 20), Some(0));
         assert_eq!(insert_portfolio(&mut archive, 2, 5, 200), Some(1));
         assert_eq!(archive.active, vec![true, true]);
-        assert_eq!(archive.slots.get(&7), Some(&vec![0, 1]));
+        assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![0, 1]));
     }
 
     #[test]
@@ -4590,7 +3203,7 @@ mod tests {
         insert_portfolio(&mut archive, 1, 10, 20);
         insert_portfolio(&mut archive, 2, 5, 200);
         assert_eq!(insert_portfolio(&mut archive, 3, 4, 19), None);
-        assert_eq!(archive.slots.get(&7), Some(&vec![0, 1]));
+        assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![0, 1]));
     }
 
     #[test]
@@ -4599,7 +3212,7 @@ mod tests {
         insert_portfolio(&mut archive, 1, 10, 20);
         insert_portfolio(&mut archive, 2, 5, 200);
         assert_eq!(insert_portfolio(&mut archive, 3, 60, 240), Some(2));
-        assert_eq!(archive.slots.get(&7), Some(&vec![2]));
+        assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![2]));
         assert_eq!(archive.active, vec![false, false, true]);
     }
 
@@ -4609,7 +3222,7 @@ mod tests {
         insert_portfolio(&mut archive, 1, 10, 20);
         insert_portfolio(&mut archive, 2, 5, 200);
         assert_eq!(insert_portfolio(&mut archive, 3, 11, 21), Some(2));
-        assert_eq!(archive.slots.get(&7), Some(&vec![1, 2]));
+        assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![1, 2]));
         assert_eq!(archive.active, vec![false, true, true]);
     }
 
@@ -4618,7 +3231,7 @@ mod tests {
         let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
         insert_portfolio(&mut archive, 1, 10, 20);
         insert_portfolio(&mut archive, 2, 5, 200);
-        assert_eq!(archive.slots.get(&7), Some(&vec![0, 1]));
+        assert_eq!(archive.slots.get(&(((), 7), ())), Some(&vec![0, 1]));
         let mut rand = RomuDuoJrRand::with_seed(0x51de_5eed);
         let mut drawn = [0_u32; 2];
         for _ in 0..512 {
@@ -4649,9 +3262,8 @@ mod tests {
         assert!(archive.is_preference_champion(0, 0));
         assert!(archive.is_preference_champion(0, 1));
     }
-
     #[test]
-    fn the_portfolio_report_counts_holders_and_draws() {
+    fn the_portfolio_report_counts_holders() {
         let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
         insert_portfolio(&mut archive, 1, 10, 20);
         insert_portfolio(&mut archive, 2, 5, 200);
@@ -4667,15 +3279,8 @@ mod tests {
         assert_eq!(portfolio.preferences, 2);
         assert_eq!(portfolio.exclusive_holders, 2);
         assert_eq!(portfolio.shared_holders, 0);
-        assert_eq!(portfolio.selections_by_preference.len(), 2);
-        assert!(
-            portfolio
-                .selections_by_preference
-                .iter()
-                .all(|count| *count > 0)
-        );
+        assert_eq!(report.cell_selections, 64);
     }
-
     #[test]
     fn taking_one_preference_from_a_surviving_holder_queues_its_exits() {
         let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
@@ -4690,7 +3295,7 @@ mod tests {
         );
         insert_portfolio_at(&mut archive, None, vec![3], 7, 5, 200)
             .expect("the health candidate is admitted beside the missile holder");
-        assert_eq!(archive.slots.get(&7).map(Vec::len), Some(2));
+        assert_eq!(archive.slots.get(&(((), 7), ())).map(Vec::len), Some(2));
         assert!(
             archive.pop_continuation(false).is_some(),
             "improving one preference queues the slot's exits"
@@ -4698,7 +3303,7 @@ mod tests {
     }
 
     #[test]
-    fn a_queued_slot_reaches_a_neighbour_only_by_beating_every_holder_there() {
+    fn a_queued_source_reaches_a_neighbour_only_by_beating_every_holder_there() {
         let mut archive = portfolio_bank();
         let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
         insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 20, 20)
@@ -4708,10 +3313,10 @@ mod tests {
         assert_eq!(archive.continuation_pending(), 1);
         let taken = archive.pop_continuation(false).expect("the slot is queued");
         assert_eq!((taken.destination, taken.tier), (2, 0));
-        assert!(!archive.outranks_slot_holders(weaker, taken.destination, taken.tier));
+        assert!(!archive.outranks_place_holders(weaker, taken.destination, taken.tier));
         let stronger = insert_portfolio_at(&mut archive, None, vec![4], 1, 30, 40)
             .expect("a candidate that also beats the neighbour");
-        assert!(archive.outranks_slot_holders(stronger, taken.destination, taken.tier));
+        assert!(archive.outranks_place_holders(stronger, taken.destination, taken.tier));
     }
 
     #[test]
@@ -4732,27 +3337,6 @@ mod tests {
                 .exclusive_holders,
             0
         );
-    }
-
-    #[test]
-    fn a_recorded_draw_counts_its_preference_selection() {
-        let mut archive = Archive::<u8, PortfolioKey, (), ()>::new(|_| 1);
-        insert_portfolio(&mut archive, 1, 10, 20);
-        insert_portfolio(&mut archive, 2, 5, 200);
-        let draw = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
-            class_rank: None,
-            preference: Some(1),
-        };
-        archive.record_selection(0, &draw);
-        let portfolio = archive
-            .selector_report()
-            .portfolio
-            .expect("portfolio accounting is reported");
-        assert_eq!(portfolio.selections_by_preference, vec![0, 1]);
     }
 
     #[test]
@@ -4813,10 +3397,8 @@ mod tests {
         assert_eq!(archive.replacement_preferences(took_both), 0b11);
     }
 
-    fn flat_archive<const DEPTHS: usize>(
-        keys: &[[u16; 4]],
-    ) -> Archive<u8, FlatKey<DEPTHS>, (), ()> {
-        let mut archive = Archive::<u8, FlatKey<DEPTHS>, (), ()>::new(|_| 1);
+    fn flat_archive(keys: &[[u16; 4]]) -> Archive<u8, FlatKey, (), ()> {
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         for (index, components) in keys.iter().enumerate() {
             archive
                 .insert(
@@ -4837,13 +3419,11 @@ mod tests {
 
     #[test]
     fn memory_budget_drops_an_entry_without_freezing_admission() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
-        let root_charge = Archive::<u8, FlatKey<3>, (), ()>::prefix_node_memory_charge();
-        let history_charge =
-            3 * Archive::<u8, FlatKey<3>, (), ()>::history_entry_memory_charge(1, 1);
-        let novelty_charge =
-            4 * Archive::<u8, FlatKey<3>, (), ()>::historical_group_memory_charge(0);
-        archive.set_memory_budget(root_charge + history_charge + novelty_charge + 2, |_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let root_charge = Archive::<u8, FlatKey, (), ()>::prefix_node_memory_charge();
+        let history_charge = 3 * Archive::<u8, FlatKey, (), ()>::history_entry_memory_charge(1, 1);
+        let cell_charge = 3 * Archive::<u8, FlatKey, (), ()>::cell_memory_charge();
+        archive.set_memory_budget(root_charge + history_charge + cell_charge + 2, |_| 1);
         for index in 0_u8..3 {
             archive
                 .insert(
@@ -4870,8 +3450,7 @@ mod tests {
             archive
                 .entry_metadata_memory_bytes()
                 .saturating_add(archive.input_index_memory_bytes())
-                .saturating_add(archive.novelty_memory_bytes())
-                .saturating_add(archive.barren_memory_bytes())
+                .saturating_add(archive.cell_memory_bytes())
         );
         assert!(!archive.active[0]);
         assert!(archive.entries[0].snapshot.is_none());
@@ -4893,7 +3472,7 @@ mod tests {
 
     #[test]
     fn budget_enforcement_reaches_the_limit_but_keeps_one_snapshot() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
         for index in 0_u8..4 {
             archive
@@ -4937,127 +3516,8 @@ mod tests {
     }
 
     #[test]
-    fn selection_accounting_charge_is_brought_back_under_the_budget() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
-        archive.set_memory_budget(usize::MAX, |_| 1);
-        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 1,
-            groups: vec![3, 4],
-        });
-        for index in 0_u8..64 {
-            archive
-                .insert(
-                    None,
-                    u64::from(index),
-                    ArchiveCandidate {
-                        suffix: vec![index],
-                        key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
-                        milestones: (),
-                    },
-                    (),
-                )
-                .expect("insert entry")
-                .expect("retain entry");
-        }
-        let limit = archive.resident_memory_bytes();
-        archive.memory_limit = Some(limit);
-        assert_eq!(archive.barren_group_count(), 0);
-
-        let draw = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
-            class_rank: None,
-            preference: None,
-        };
-        for id in 0..archive.entries.len() {
-            archive.record_selection(id, &draw);
-        }
-        assert!(archive.barren_group_count() > 0);
-        assert!(
-            archive.resident_memory_bytes() > limit,
-            "selection accounting should have pushed the charge over the budget"
-        );
-
-        let mut quanta = 0_usize;
-        while archive.resident_memory_bytes() > limit && quanta < 64 {
-            archive
-                .maintain_memory_budget()
-                .expect("budget remains satisfiable");
-            quanta = quanta.saturating_add(1);
-        }
-        assert!(
-            archive.resident_memory_bytes() <= limit,
-            "maintenance left {} bytes charged against a {limit} byte budget after {quanta} quanta",
-            archive.resident_memory_bytes()
-        );
-    }
-
-    #[test]
-    fn a_run_of_skips_maintains_the_budget_without_a_false_anchor_error() {
-        let entries = u8::try_from(HISTORY_COMPACTION_MIN_DROPS / 2).expect("half fits u8");
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
-        archive.set_memory_budget(usize::MAX, |_| 1);
-        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 1,
-            groups: vec![3, 4],
-        });
-        for index in 0_u8..entries {
-            archive
-                .insert(
-                    None,
-                    u64::from(index),
-                    ArchiveCandidate {
-                        suffix: vec![index],
-                        key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
-                        milestones: (),
-                    },
-                    (),
-                )
-                .expect("insert entry")
-                .expect("retain entry");
-        }
-        let limit = archive.resident_memory_bytes() / 2;
-        archive.memory_limit = Some(limit);
-        archive.establish_liveness_anchor(64);
-        let anchor = archive
-            .liveness_anchor
-            .expect("a budgeted run has an anchor");
-
-        let draw = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
-            class_rank: None,
-            preference: None,
-        };
-        for step in 0..256 {
-            let parent = archive
-                .index_of_id(anchor)
-                .expect("the anchor stays resolvable across compaction");
-            archive.record_selection(parent, &draw);
-            archive
-                .maintain_memory_budget()
-                .unwrap_or_else(|error| panic!("skip {step} reported {error}"));
-        }
-        assert_eq!(
-            archive.history_compactions(),
-            0,
-            "the archive is below the compaction batch, so none should have run"
-        );
-        assert_eq!(archive.active_count, 1, "the sweep keeps only the anchor");
-        assert_eq!(
-            archive.liveness_anchor,
-            Some(anchor),
-            "the anchor stays resident across the whole run of skips"
-        );
-    }
-
-    #[test]
     fn a_budget_below_the_anchor_itself_is_an_error() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
         for index in 0_u8..4 {
             archive
@@ -5088,7 +3548,7 @@ mod tests {
     #[test]
     fn the_final_compaction_refuses_a_budget_the_compacted_archive_exceeds() {
         let anchored = || {
-            let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+            let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
             archive.set_memory_budget(usize::MAX, |_| 1);
             for index in 0_u8..4 {
                 archive
@@ -5109,7 +3569,7 @@ mod tests {
             archive
         };
 
-        let sweep = |archive: &mut Archive<u8, FlatKey<3>, (), ()>| {
+        let sweep = |archive: &mut Archive<u8, FlatKey, (), ()>| {
             for _ in 0..64 {
                 archive
                     .maintain_memory_budget()
@@ -5148,7 +3608,7 @@ mod tests {
 
     #[test]
     fn the_final_compaction_keeps_passing_while_a_quantum_reclaims_no_bytes() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 0);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 0);
         archive.set_memory_budget(usize::MAX, |_| 0);
         let entries = MAINTENANCE_QUANTUM * 4;
         for index in 0..entries {
@@ -5194,7 +3654,7 @@ mod tests {
 
     #[test]
     fn the_maintenance_quantum_counts_entries_the_clock_examines() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
         let entries = MAINTENANCE_QUANTUM * 4;
         for index in 0..entries {
@@ -5240,7 +3700,7 @@ mod tests {
 
     #[test]
     fn budget_enforcement_evicts_cached_snapshots_before_dropping_entries() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
         archive
             .insert(
@@ -5328,10 +3788,10 @@ mod tests {
 
     #[test]
     fn entry_drop_sweep_clears_reference_bits_first_and_reports_exhaustion() {
-        let mut empty = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut empty = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         assert!(!empty.drop_one_entry());
 
-        let mut archive = flat_archive::<3>(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
+        let mut archive = flat_archive(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
         assert!(archive.deactivate(0));
         assert!(archive.drop_one_entry());
         assert_eq!(archive.active_count(), 0);
@@ -5342,7 +3802,7 @@ mod tests {
 
     #[test]
     fn selection_preparation_reactivates_a_budgeted_executable_anchor() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
         archive
             .insert(
@@ -5399,7 +3859,7 @@ mod tests {
 
     #[test]
     fn budgeted_anchor_yields_to_single_entry_admission_and_reactivates() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
         archive.max_entries = 1;
         archive
@@ -5450,8 +3910,8 @@ mod tests {
         assert!(archive.entries[selected].input_len < 1);
     }
 
-    fn archive_with_prunable_history() -> Archive<u8, FlatKey<3>, (), ()> {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+    fn archive_with_prunable_history() -> Archive<u8, FlatKey, (), ()> {
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         for index in 0_u16
             ..=u16::try_from(HISTORY_COMPACTION_MIN_DROPS)
                 .expect("compaction threshold fits in u16")
@@ -5478,7 +3938,7 @@ mod tests {
 
     #[test]
     fn the_final_census_offers_active_endpoints_with_their_selection_counts() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         for index in 0_u16..3 {
             archive
                 .insert(
@@ -5495,12 +3955,8 @@ mod tests {
                 .expect("retain entry");
         }
         let draw = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
-            class_rank: None,
-            preference: None,
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
         };
         for _ in 0..4 {
             archive.record_selection(1, &draw);
@@ -5533,61 +3989,43 @@ mod tests {
             u64::try_from(HISTORY_COMPACTION_MIN_DROPS).expect("threshold fits in u64")
         );
     }
-
     #[test]
-    fn continuation_attempts_do_not_exhaust_an_ordinary_draw_or_its_key_count() {
+    fn continuation_attempts_do_not_count_as_cell_draws() {
         let mut archive = archive_with_prunable_history();
-        archive.selector_policy =
-            SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
-                entry: 1,
-                groups: vec![1],
-            });
         let id = archive.active.iter().position(|active| *active).unwrap();
-        let key = archive.entries[id].key.group(0);
+        let key = archive.entries[id].key;
         for _ in 0..20 {
             archive.record_isolated_continuation(id);
         }
-        assert!(archive.entry_unexhausted(id));
-        assert_eq!(archive.key_counts.get(key), 0);
-        assert!(archive.group_barren.iter().all(BTreeMap::is_empty));
+        assert_eq!(archive.selected[id], 0);
+        assert_eq!(archive.cell_draws(key), 0);
         assert_eq!(archive.selector_report().continuation_selections, Some(20));
         archive.record_selection(
             id,
             &SelectorDraw {
-                path: SelectorPath::HierarchyWalk,
-                classes_skipped: 0,
-                counter_reset: false,
-                concentration: None,
-                class_rank: None,
-                preference: None,
+                path: SelectorPath::Tiers,
+                tier_rank: Some(0),
             },
         );
-        assert!(!archive.entry_unexhausted(id));
-        assert_eq!(archive.key_counts.get(key), 1);
+        assert_eq!(archive.selected[id], 1);
+        assert_eq!(archive.cell_draws(key), 1);
     }
 
     #[test]
-    fn key_selection_history_survives_metadata_compaction_and_rebirth() {
+    fn a_cells_draw_count_survives_metadata_compaction_and_rebirth() {
         let mut archive = archive_with_prunable_history();
-        archive.selector_policy =
-            SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
-                entry: 1000,
-                groups: vec![1000],
-            });
         let old = archive.entries[0].key;
         let draw = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
-            class_rank: None,
-            preference: None,
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
         };
         for _ in 0..19 {
             archive.record_selection(0, &draw);
         }
+        assert_eq!(archive.cell_draws(old), 19);
         archive.compact_history_for_final_report().unwrap();
         assert!(archive.entries.iter().all(|entry| entry.key != old));
+        assert_eq!(archive.cell_draws(old), 0);
         let new = archive
             .insert(
                 None,
@@ -5602,15 +4040,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(archive.selected[new], 0);
-        assert_eq!(archive.key_counts.get(old.group(0)), 19);
+        assert!(archive.opened_new_cell(new));
         archive.record_selection(new, &draw);
-        assert_eq!(archive.key_counts.get(old.group(0)), 20);
-        let accounting = archive.selector_report().key_counts.unwrap();
-        assert_eq!(accounting.keys, 1);
-        assert_eq!(accounting.hits, 19);
-        assert!(archive.history_memory_bytes() >= accounting.reserve_bytes);
+        assert_eq!(archive.cell_draws(old), 1);
     }
-
     #[test]
     fn entry_pressure_triggers_history_compaction() {
         let mut archive = archive_with_prunable_history();
@@ -5628,7 +4061,7 @@ mod tests {
 
     #[test]
     fn history_compaction_waits_for_the_minimum_drop_batch() {
-        let mut archive = flat_archive::<3>(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
+        let mut archive = flat_archive(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
         assert!(archive.deactivate(0));
         archive.memory_limit = Some(1);
         archive
@@ -5640,7 +4073,7 @@ mod tests {
 
     #[test]
     fn final_compaction_keeps_only_valid_inactive_snapshot_owners() {
-        let mut held = flat_archive::<3>(&[[0, 0, 0, 0]]);
+        let mut held = flat_archive(&[[0, 0, 0, 0]]);
         let held_id = held.stable_id(0).expect("stable id");
         let worker = Arc::clone(
             held.entries[0]
@@ -5654,7 +4087,7 @@ mod tests {
         assert!(held.index_of_id(held_id).is_some());
         assert_eq!(Arc::strong_count(&worker), 2);
 
-        let mut preserved = flat_archive::<3>(&[[0, 0, 0, 0]]);
+        let mut preserved = flat_archive(&[[0, 0, 0, 0]]);
         let preserved_id = preserved.stable_id(0).expect("stable id");
         preserved
             .preserve_inactive_snapshots(true)
@@ -5665,7 +4098,7 @@ mod tests {
             .expect("explicitly preserved snapshot survives final compaction");
         assert!(preserved.index_of_id(preserved_id).is_some());
 
-        let mut empty = flat_archive::<3>(&[[0, 0, 0, 0]]);
+        let mut empty = flat_archive(&[[0, 0, 0, 0]]);
         assert!(empty.deactivate(0));
         empty.preserve_inactive_snapshots = true;
         empty
@@ -5676,7 +4109,7 @@ mod tests {
 
     #[test]
     fn inactive_snapshot_and_metadata_preservation_are_reversible() {
-        let mut archive = flat_archive::<3>(&[[0, 0, 0, 0]]);
+        let mut archive = flat_archive(&[[0, 0, 0, 0]]);
         let stable_id = archive.stable_id(0).expect("stable id");
         assert!(!archive.preserves_inactive_snapshots());
         archive
@@ -5701,7 +4134,7 @@ mod tests {
 
     #[test]
     fn compact_prefix_accounting_and_duplicate_lookup_are_exact() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         let root = archive
             .insert(
                 None,
@@ -5758,10 +4191,9 @@ mod tests {
             [1, 2, 3]
         );
         assert_eq!(archive.input_reconstructions(), 1);
-        assert!(Archive::<u8, FlatKey<3>, (), ()>::prefix_node_memory_charge() > 1);
-        assert!(Archive::<u8, FlatKey<3>, (), ()>::historical_group_memory_charge(8) > 1);
-        archive.group_barren[0].insert(archive.entries[root].key.group(1), 1);
-        assert!(archive.barren_memory_bytes() > 1);
+        assert!(Archive::<u8, FlatKey, (), ()>::prefix_node_memory_charge() > 1);
+        assert!(Archive::<u8, FlatKey, (), ()>::cell_memory_charge() > 1);
+        assert!(archive.cell_memory_bytes() > 1);
 
         let retained = archive.retained;
         assert_eq!(
@@ -5784,7 +4216,7 @@ mod tests {
 
     #[test]
     fn progress_and_expandable_ids_follow_exact_archive_state() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|action| u64::from(*action));
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|action| u64::from(*action));
         for (index, (suffix, key)) in [
             (5, FlatKey([1, 0, 0, 0])),
             (2, FlatKey([0, 0, 0, 0])),
@@ -5823,10 +4255,9 @@ mod tests {
         archive.snapshot_selectable[2] = false;
         assert_eq!(archive.active_ids(2), vec![0, 3]);
     }
-
     #[test]
     fn live_donor_index_tracks_a_new_deepest_descendant() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         let root_key = FlatKey([1, 7, 9, 0]);
         let child_key = FlatKey([2, 7, 9, 0]);
         let root = archive
@@ -5858,17 +4289,9 @@ mod tests {
             .expect("retain child");
 
         let members = archive
-            .classes
-            .get(&ProgressOrdered::<FlatKey<3>>(root_key.group(Archive::<
-                u8,
-                FlatKey<3>,
-                (),
-                (),
-            >::class_depth(
-            ))))
-            .and_then(|cells| {
-                cells.get(&root_key.group(Archive::<u8, FlatKey<3>, (), ()>::cell_depth()))
-            })
+            .tiers
+            .get(&root_key.progress())
+            .and_then(|places| places.get(&root_key.place()))
             .expect("root selection cell");
         assert!(members.donors.contains(&DonorRank {
             leaf_key: child_key,
@@ -5889,19 +4312,19 @@ mod tests {
     }
 
     impl ArchiveKey for LineageKey {
-        type Group = (u8, u8);
+        type Place = u8;
+        type Progress = u8;
+        type Identity = ();
 
-        fn groups() -> usize {
-            2
+        fn place(self) -> Self::Place {
+            self.value
         }
 
-        fn group(self, depth: usize) -> Self::Group {
-            match depth {
-                0 => (self.value, self.class),
-                1 => (0, self.class),
-                _ => panic!("unexpected lineage-key depth"),
-            }
+        fn progress(self) -> Self::Progress {
+            self.class
         }
+
+        fn identity(self) -> Self::Identity {}
 
         type Lineage = Vec<u8>;
 
@@ -5913,7 +4336,6 @@ mod tests {
             lineage.push(key.value);
         }
     }
-
     #[test]
     fn lineage_is_inherited_across_classes() {
         let mut archive = Archive::<u8, LineageKey, (), ()>::new(|_| 1);
@@ -5964,7 +4386,7 @@ mod tests {
 
     #[test]
     fn compaction_preserves_an_evicted_inflight_parents_input_prefix() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         let parent = archive
             .insert(
                 None,
@@ -6024,12 +4446,15 @@ mod tests {
             )
             .expect("insert independent survivor")
             .expect("retain independent survivor");
-        let dead_group = archive.entries[parent].key.group(1);
-        let survivor_group = archive.entries[survivor].key.group(1);
-        archive.group_barren[0].insert(dead_group, 9);
-        archive.group_barren[0].insert(survivor_group, 3);
+        let survivor_key = archive.entries[survivor].key;
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+        };
+        for _ in 0..3 {
+            archive.record_selection(survivor, &draw);
+        }
         assert!(archive.historical_cell_count() > 1);
-        assert_eq!(archive.barren_group_count(), 2);
 
         for index in 0..survivor {
             assert!(archive.deactivate(index));
@@ -6043,11 +4468,10 @@ mod tests {
             .index_of_id(parent_id)
             .expect("pinned parent remains");
         assert_eq!(archive.historical_cell_count(), 1);
-        assert_eq!(archive.barren_group_count(), 1);
         assert_eq!(
-            archive.group_barren[0].get(&survivor_group),
-            Some(&3),
-            "compaction preserves live breeding-population counters"
+            archive.cell_draws(survivor_key),
+            3,
+            "compaction preserves live cell draw counts"
         );
         assert_eq!(
             archive
@@ -6072,127 +4496,9 @@ mod tests {
     }
 
     #[test]
-    fn live_hierarchy_matches_the_original_cell_scan_across_exhaustion() {
-        let keys = [
-            [0, 0, 0, 0],
-            [1, 0, 0, 0],
-            [0, 1, 0, 0],
-            [1, 1, 0, 0],
-            [0, 0, 1, 0],
-            [1, 0, 1, 0],
-            [0, 1, 1, 0],
-            [1, 1, 1, 0],
-            [0, 0, 0, 1],
-            [1, 0, 0, 1],
-            [0, 1, 0, 1],
-            [1, 1, 0, 1],
-        ];
-        let mut archive = flat_archive::<5>(&keys);
-        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 2,
-            groups: vec![3, 4, 5],
-        });
-        archive.rebuild_selector_index(10);
-        let mut rand = RomuDuoJrRand::with_seed(0x5eed_cace);
-        for step in 0..100 {
-            let mut cached_rand = rand;
-            let mut scanned_rand = rand;
-            let mut cached_skipped = 0;
-            let mut scanned_skipped = 0;
-            let cached = archive
-                .walk_live_index(&mut cached_rand, &mut cached_skipped, &mut None)
-                .expect("cached walk");
-            let scanned = archive
-                .walk_to_cell_scan(&mut scanned_rand, &mut scanned_skipped, &mut None, false)
-                .expect("scanned walk");
-            assert_eq!(cached, scanned);
-            assert_eq!(cached_skipped, scanned_skipped);
-            assert_eq!(cached_rand.next_u64(), scanned_rand.next_u64());
-            rand = cached_rand;
-
-            let Some(cached) = cached else {
-                let draw = SelectorDraw {
-                    path: SelectorPath::HierarchyWalk,
-                    classes_skipped: cached_skipped,
-                    counter_reset: true,
-                    concentration: None,
-                    class_rank: None,
-                    preference: None,
-                };
-                archive.record_selection(0, &draw);
-                continue;
-            };
-            let id = cached[step % cached.len()];
-            let draw = SelectorDraw {
-                path: SelectorPath::HierarchyWalk,
-                classes_skipped: cached_skipped,
-                counter_reset: false,
-                concentration: None,
-                class_rank: None,
-                preference: None,
-            };
-            archive.record_selection(id, &draw);
-            archive.record_selection_outcome(id, step % 3 == 0, 0);
-        }
-    }
-
-    #[test]
-    fn displaced_inflight_parent_does_not_change_its_surviving_cell_count() {
-        let mut archive = flat_archive::<5>(&[[0, 0, 0, 0], [1, 0, 0, 0]]);
-        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 1,
-            groups: vec![3, 4, 5],
-        });
-        archive.rebuild_selector_index(10);
-
-        archive.active[0] = false;
-        archive.index_remove(0);
-        let draw = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
-            class_rank: None,
-            preference: None,
-        };
-        archive.record_selection(0, &draw);
-
-        let mut cached_rand = RomuDuoJrRand::with_seed(0xd15f_1ace);
-        let mut scanned_rand = cached_rand;
-        let mut cached_skipped = 0;
-        let mut scanned_skipped = 0;
-        assert_eq!(
-            archive
-                .walk_live_index(&mut cached_rand, &mut cached_skipped, &mut None)
-                .expect("cached walk"),
-            archive
-                .walk_to_cell_scan(&mut scanned_rand, &mut scanned_skipped, &mut None, false)
-                .expect("scanned walk")
-        );
-        assert_eq!(cached_skipped, scanned_skipped);
-        assert_eq!(cached_rand.next_u64(), scanned_rand.next_u64());
-
-        archive.record_selection_outcome(0, true, u32::MAX);
-        let mut cached_rand = RomuDuoJrRand::with_seed(0x0af7_c0de);
-        let mut scanned_rand = cached_rand;
-        let mut cached_skipped = 0;
-        let mut scanned_skipped = 0;
-        assert_eq!(
-            archive
-                .walk_live_index(&mut cached_rand, &mut cached_skipped, &mut None)
-                .expect("cached walk after stale outcome"),
-            archive
-                .walk_to_cell_scan(&mut scanned_rand, &mut scanned_skipped, &mut None, false)
-                .expect("scanned walk after stale outcome")
-        );
-        assert_eq!(cached_skipped, scanned_skipped);
-        assert_eq!(cached_rand.next_u64(), scanned_rand.next_u64());
-    }
-
-    #[test]
     fn a_splice_tail_extends_past_the_parent_from_a_cell_mate() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
-        let insert = |archive: &mut Archive<u8, FlatKey<3>, (), ()>,
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        let insert = |archive: &mut Archive<u8, FlatKey, (), ()>,
                       parent: Option<usize>,
                       components: [u16; 4],
                       actions: Vec<u8>| {
@@ -6253,623 +4559,23 @@ mod tests {
             "the deepest entry has no deeper cell-mate"
         );
     }
-
     #[test]
-    fn selection_runs_on_keys_with_fewer_than_three_group_depths() {
-        fn draws<const DEPTHS: usize>(seed: u64) {
-            let keys = [[1, 2, 3, 4], [1, 2, 3, 5], [9, 8, 7, 4]];
-            let mut archive = flat_archive::<DEPTHS>(&keys);
-            let mut rand = RomuDuoJrRand::with_seed(seed);
-            for _ in 0..128 {
-                let (id, draw) = archive
-                    .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
-                    .expect("selection under a shallow key");
-                assert!(id < keys.len());
-                archive.record_selection(id, &draw);
-            }
-        }
-        draws::<1>(0x5eed_0001);
-        draws::<2>(0x5eed_0002);
-        draws::<3>(0x5eed_0003);
-    }
-
-    #[test]
-    fn the_retiring_selector_parses_under_a_shallow_key() {
-        for depths in [1_usize, 2] {
-            let pooled = depths.saturating_sub(2);
-            let policy = selector_policy_from_identifier("hierarchy_uniform_128_retire:3", pooled)
-                .expect("shallow retiring selector");
-            assert_eq!(
-                policy,
-                SelectorPolicy::Retire(RetireThresholds {
-                    entry: 3,
-                    groups: Vec::new(),
-                })
-            );
-            assert!(
-                selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6", pooled)
-                    .is_err()
-            );
-        }
-    }
-
-    fn selector_archive(keys: &[(u8, u8, u16)]) -> TestArchive {
-        let mut archive = TestArchive::new(|_| 1);
-        for (index, (world, level, progress)) in keys.iter().enumerate() {
-            let input = Input {
-                actions: vec![
-                    u8::try_from(index / 256).expect("input byte"),
-                    u8::try_from(index % 256).expect("input byte"),
-                ],
-            };
-            let key = TestKey {
-                world: *world,
-                level: *level,
-                progress: *progress,
-                player_y_bucket: u8::try_from(index / 64).expect("vertical bucket"),
-                state_fingerprint: u8::try_from(index % 64).expect("fingerprint"),
-                room_x_bucket: 0,
-                time_bucket: 0,
-                room: [0; 3],
-            };
-            archive
-                .insert(
-                    None,
-                    0,
-                    ArchiveCandidate {
-                        suffix: input.actions,
-                        key,
-                        milestones: (),
-                    },
-                    (),
-                )
-                .expect("insert selector entry")
-                .expect("retain selector entry");
-        }
-        archive
-    }
-
-    #[test]
-    fn the_walk_splits_a_class_over_its_unexhausted_cells() {
-        let mut keys: Vec<(u8, u8, u16)> = Vec::new();
-        keys.extend(std::iter::repeat_n((7, 3, 304), 60));
-        keys.extend(std::iter::repeat_n((7, 3, 303), 3));
-        keys.push((7, 3, 300));
-        let mut archive = selector_archive(&keys);
-        for (index, entry) in archive.entries.iter_mut().enumerate() {
-            entry.key.room = [3, 5, 16];
-            entry.key.player_y_bucket = match index {
-                0..=59 => 11,
-                60..=62 => 7,
-                _ => 4,
-            };
-        }
-        let mut rand = RomuDuoJrRand::with_seed(0xce11_0000);
-        let mut per_cell = std::collections::BTreeMap::<(u16, u8), u64>::new();
-        let mut cell_draws = 0_u64;
-        for _ in 0..900 {
+    fn selection_runs_on_keys_without_progress() {
+        let keys = [[1, 2, 3, 4], [1, 2, 3, 5], [9, 8, 7, 4]];
+        let mut archive = flat_archive(&keys);
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_0001);
+        for _ in 0..128 {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
-                .expect("walk selection");
-            if draw.path != SelectorPath::HierarchyWalk {
-                continue;
-            }
-            cell_draws += 1;
-            let key = archive.entries[id].key;
-            *per_cell
-                .entry((key.progress, key.player_y_bucket))
-                .or_default() += 1;
+                .expect("selection under a flat key");
+            assert!(id < keys.len());
+            assert_eq!(draw.tier_rank, Some(0));
             archive.record_selection(id, &draw);
-            archive.record_selection_outcome(id, true, u32::MAX);
         }
-        assert!(cell_draws > 600);
-        assert_eq!(per_cell.len(), 3, "cells drawn: {per_cell:?}");
-        let crowded = per_cell[&(304, 11)];
-        assert!(
-            crowded * 5 > cell_draws * 2 && crowded * 5 < cell_draws * 3,
-            "crowded cell off its half share: {per_cell:?}"
-        );
-        for cell in [(303, 7), (300, 4)] {
-            let share = per_cell[&cell];
-            assert!(
-                share * 5 > cell_draws && share * 5 < cell_draws * 2,
-                "band-37 cell off its quarter share: {per_cell:?}"
-            );
-        }
+        let report = archive.selector_report();
+        assert_eq!(report.tier_draws_by_rank, vec![128]);
+        assert_eq!(report.draws_by_cell.values().sum::<u64>(), 128);
     }
-
-    #[test]
-    fn a_pooled_barren_class_is_retired_and_the_reset_frees_it() {
-        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 145), (1, 0, 124)];
-        let mut archive = selector_archive(&keys);
-        archive.selector_policy = SelectorPolicy::Retire(RetireThresholds {
-            entry: 64,
-            groups: vec![64, 1, 64],
-        });
-        let barren_draw = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
-            class_rank: None,
-            preference: None,
-        };
-        archive.record_selection(0, &barren_draw);
-        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e30);
-        let mut fell_through = 0;
-        for _ in 0..64 {
-            let (id, draw) = archive
-                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
-                .expect("selection");
-            if draw.path == SelectorPath::HierarchyWalk {
-                assert_eq!(id, 2, "cell draws must fall through to the 124 band");
-                assert_eq!(draw.classes_skipped, 0);
-                assert!(!draw.counter_reset);
-                fell_through += 1;
-            }
-        }
-        assert!(fell_through > 0);
-        archive.record_selection(1, &barren_draw);
-        archive.record_selection_outcome(1, true, u32::MAX);
-        let mut upper_band_seen = false;
-        for _ in 0..64 {
-            let (id, draw) = archive
-                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
-                .expect("selection after reset");
-            if draw.path == SelectorPath::HierarchyWalk && (id == 0 || id == 1) {
-                upper_band_seen = true;
-            }
-        }
-        assert!(
-            upper_band_seen,
-            "a keeper must return its band to selection"
-        );
-        let accounting = archive.selector_report();
-        let retirement = accounting.retirement.expect("retirement accounting");
-        assert_eq!(retirement.groups_over_threshold[1], 0);
-    }
-
-    fn depth_archive() -> Archive<u8, FlatKey<4>, (), ()> {
-        let mut archive = Archive::<u8, FlatKey<4>, (), ()>::new(|_| 1);
-        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 1_024,
-            groups: vec![1_024; 3],
-        });
-        archive
-    }
-
-    fn insert_depth_child(
-        archive: &mut Archive<u8, FlatKey<4>, (), ()>,
-        parent: Option<usize>,
-        suffix: u8,
-        key: [u16; 4],
-    ) -> usize {
-        archive
-            .insert(
-                parent,
-                u64::from(suffix),
-                ArchiveCandidate {
-                    suffix: vec![suffix],
-                    key: FlatKey(key),
-                    milestones: (),
-                },
-                (),
-            )
-            .expect("insert depth entry")
-            .expect("retain depth entry")
-    }
-
-    #[test]
-    fn a_child_new_at_one_depth_clears_only_that_depth() {
-        let mut archive = depth_archive();
-        let parent = insert_depth_child(&mut archive, None, 0, [0, 0, 0, 0]);
-        let child = insert_depth_child(&mut archive, Some(parent), 1, [0, 1, 0, 0]);
-        let opened = archive.opened_depths(child);
-        assert_eq!(opened, 0b11);
-        archive.record_selection_outcome(parent, true, opened);
-        let accounting = archive.selector_report();
-        assert_eq!(accounting.energy_resets, vec![1, 0, 0]);
-        assert_eq!(accounting.productive_by_mask, BTreeMap::from([(0b11, 1)]));
-    }
-
-    #[test]
-    fn a_child_new_at_the_class_depth_clears_every_depth_below_it() {
-        let mut archive = depth_archive();
-        let parent = insert_depth_child(&mut archive, None, 0, [0, 0, 0, 0]);
-        let child = insert_depth_child(&mut archive, Some(parent), 1, [0, 0, 0, 1]);
-        let opened = archive.opened_depths(child);
-        assert_eq!(opened, 0b1111);
-        archive.record_selection_outcome(parent, true, opened);
-        let accounting = archive.selector_report();
-        assert_eq!(accounting.energy_resets, vec![1, 1, 1]);
-    }
-
-    #[test]
-    fn the_productive_mask_histogram_separates_the_depths_a_selection_opened() {
-        let mut archive = depth_archive();
-        let parent = insert_depth_child(&mut archive, None, 0, [0, 0, 0, 0]);
-        let shallow = insert_depth_child(&mut archive, Some(parent), 1, [0, 1, 0, 0]);
-        let deep = insert_depth_child(&mut archive, Some(parent), 2, [0, 0, 1, 0]);
-        let repeat = insert_depth_child(&mut archive, Some(parent), 3, [0, 2, 0, 0]);
-        for child in [shallow, deep, repeat] {
-            let opened = archive.opened_depths(child);
-            archive.record_selection_outcome(parent, true, opened);
-        }
-        let accounting = archive.selector_report();
-        assert_eq!(
-            accounting.productive_by_mask,
-            BTreeMap::from([(0b11, 2), (0b111, 1)])
-        );
-        assert_eq!(accounting.productive_selections, 3);
-        assert_eq!(accounting.energy_resets, vec![3, 1, 0]);
-    }
-
-    #[test]
-    fn a_group_new_at_a_second_depth_charges_novelty_for_both() {
-        let mut archive = depth_archive();
-        let parent = insert_depth_child(&mut archive, None, 0, [0, 0, 0, 0]);
-        let charge = Archive::<u8, FlatKey<4>, (), ()>::historical_group_memory_charge(0);
-        let after_root = archive.novelty_memory_bytes();
-        insert_depth_child(&mut archive, Some(parent), 1, [0, 1, 0, 0]);
-        let after_shallow = archive.novelty_memory_bytes();
-        insert_depth_child(&mut archive, Some(parent), 2, [0, 0, 1, 0]);
-        let after_deep = archive.novelty_memory_bytes();
-        assert_eq!(after_shallow - after_root, charge);
-        assert_eq!(after_deep - after_shallow, 2 * charge);
-    }
-
-    #[test]
-    fn an_energy_barren_band_fades_but_keeps_receiving_draws() {
-        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 145), (1, 0, 124)];
-        let mut archive = selector_archive(&keys);
-        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 1_024,
-            groups: vec![1_024, 1, 1_024],
-        });
-        let barren_draw = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
-            class_rank: None,
-            preference: None,
-        };
-        for _ in 0..9 {
-            archive.record_selection(0, &barren_draw);
-        }
-        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e32);
-        let mut upper = 0_u64;
-        let mut lower = 0_u64;
-        let mut walks = 0_u64;
-        for _ in 0..4_096 {
-            let (id, draw) = archive
-                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
-                .expect("energy selection");
-            if draw.path != SelectorPath::HierarchyWalk {
-                continue;
-            }
-            assert_eq!(draw.classes_skipped, 0);
-            assert!(!draw.counter_reset);
-            walks += 1;
-            if id == 2 {
-                lower += 1;
-            } else {
-                upper += 1;
-            }
-        }
-        assert!(upper > 0, "a barren band must keep a floor share");
-        assert!(
-            upper * 20 < walks,
-            "a barren band at the floor must fade: {upper}/{walks}"
-        );
-        assert!(lower * 2 > walks, "the fresh band must dominate");
-    }
-
-    #[test]
-    fn the_cheapest_concentration_prefers_low_cost_cell_members() {
-        let mut archive = TestArchive::new(|_| 1);
-        for index in 0..40_u8 {
-            let input = Input {
-                actions: vec![0; usize::from(index) + 1],
-            };
-            let key = TestKey {
-                world: 1,
-                level: 0,
-                progress: 144,
-                player_y_bucket: 0,
-                state_fingerprint: index,
-                room_x_bucket: 0,
-                time_bucket: 0,
-                room: [0; 3],
-            };
-            archive
-                .insert(
-                    None,
-                    0,
-                    ArchiveCandidate {
-                        suffix: input.actions,
-                        key,
-                        milestones: (),
-                    },
-                    (),
-                )
-                .expect("insert cell entry");
-        }
-        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 1_024,
-            groups: vec![1_024, 1_024, 1_024],
-        });
-        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e34);
-        let cell = (0..40_usize).collect::<Vec<_>>();
-        let mut cheapest_block = 0_u64;
-        for _ in 0..4_096 {
-            let (id, _, _) = archive
-                .draw_from_cell(&mut rand, cell.clone())
-                .expect("cheapest cell draw");
-            if id < 16 {
-                cheapest_block += 1;
-            }
-        }
-        assert!(
-            cheapest_block > 2_400,
-            "cheapest ranks drew {cheapest_block}/4096"
-        );
-    }
-
-    #[test]
-    fn repeated_draws_release_a_cells_budget_to_untried_members() {
-        let keys: Vec<[u16; 4]> = (0..40).map(|id| [id, 0, 0, 0]).collect();
-        let mut archive = flat_archive::<5>(&keys);
-        let policy = SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
-            entry: 1024,
-            groups: vec![1024, 1024, 1024],
-        });
-        assert_eq!(
-            selector_policy_from_identifier(&super::selector_policy_identifier(&policy), 3)
-                .unwrap(),
-            policy
-        );
-        archive.selector_policy = policy;
-        for id in 0..40 {
-            archive.cost_in_group[id] = id as u64;
-        }
-        for id in 0..4 {
-            archive.selected[id] = 1000;
-        }
-        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e34);
-        let mut repeated = 0;
-        let mut distant = 0;
-        for _ in 0..4096 {
-            let (id, _, _) = archive
-                .draw_from_cell(&mut rand, (0..40).collect())
-                .unwrap();
-            repeated += usize::from(id < 4);
-            distant += usize::from(id >= 32);
-        }
-        assert!(
-            repeated < 200,
-            "frequently drawn members retained {repeated}/4096 draws"
-        );
-        assert!(distant > 0, "expensive alternatives never received work");
-    }
-
-    #[test]
-    fn the_frontier_selector_weights_the_deepest_band_over_a_fresh_shallow_one() {
-        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 145), (1, 0, 124)];
-        let mut archive = selector_archive(&keys);
-        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 1_024,
-            groups: vec![1_024, 1_024, 1_024],
-        });
-        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e33);
-        let mut deep = 0_u64;
-        let mut shallow = 0_u64;
-        let mut walks = 0_u64;
-        for _ in 0..4_096 {
-            let (id, draw) = archive
-                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
-                .expect("frontier selection");
-            if draw.path != SelectorPath::HierarchyWalk {
-                continue;
-            }
-            walks += 1;
-            if id == 2 {
-                shallow += 1;
-            } else {
-                deep += 1;
-            }
-        }
-        assert!(shallow > 0, "the shallow band must keep a floor share");
-        assert!(
-            deep > shallow * 3 / 2,
-            "the deepest band must dominate: {deep}/{shallow} of {walks}"
-        );
-    }
-
-    #[test]
-    fn a_retired_coarse_class_falls_to_the_reset_when_nothing_else_lives() {
-        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 124)];
-        let mut archive = selector_archive(&keys);
-        for entry in &mut archive.entries {
-            entry.key.room = [3, 5, 0];
-        }
-        archive.selector_policy = SelectorPolicy::Retire(RetireThresholds {
-            entry: 64,
-            groups: vec![64, 64, 1],
-        });
-        let barren_draw = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
-            class_rank: None,
-            preference: None,
-        };
-        archive.record_selection(0, &barren_draw);
-        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e31);
-        let mut reset_seen = false;
-        for _ in 0..64 {
-            let (_, draw) = archive
-                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
-                .expect("selection under a retired class");
-            if draw.path == SelectorPath::HierarchyWalk {
-                if draw.counter_reset {
-                    reset_seen = true;
-                    break;
-                }
-                panic!("a cell draw before the reset must not reach a retired class");
-            }
-        }
-        assert!(reset_seen, "the all-exhausted reset must free the class");
-    }
-
-    #[test]
-    fn the_selector_starves_exhausted_parents_and_falls_through() {
-        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 124), (1, 0, 123), (0, 0, 100)];
-        let mut archive = selector_archive(&keys);
-        let exhausting_draw = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
-            class_rank: None,
-            preference: None,
-        };
-        for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
-            archive.record_selection(0, &exhausting_draw);
-        }
-        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e1f);
-        let mut fell_through = 0;
-        for _ in 0..64 {
-            let (id, draw) = archive
-                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
-                .expect("selection");
-            if draw.path == SelectorPath::HierarchyWalk {
-                assert_ne!(id, 0, "an exhausted parent must not be drawn");
-                assert_eq!(draw.classes_skipped, 1);
-                assert!(!draw.counter_reset);
-                if id == 1 || id == 2 {
-                    fell_through += 1;
-                }
-            }
-        }
-        assert!(fell_through > 0, "the 124 band must keep receiving draws");
-        assert_eq!(
-            archive.selector_report().cell_selections,
-            SELECTION_EXHAUSTION_THRESHOLD
-        );
-    }
-
-    #[test]
-    fn the_selector_resets_deterministically_when_all_are_exhausted() {
-        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (0, 0, 100)];
-        let mut archive = selector_archive(&keys);
-        let exhausting_draw = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
-            class_rank: None,
-            preference: None,
-        };
-        for id in 0..keys.len() {
-            for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
-                archive.record_selection(id, &exhausting_draw);
-            }
-        }
-        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e20);
-        let mut reset_seen = false;
-        for _ in 0..256 {
-            let (id, draw) = archive
-                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
-                .expect("selection");
-            if draw.path == SelectorPath::HierarchyWalk {
-                assert!(
-                    draw.counter_reset,
-                    "the first cell draw after full exhaustion must reset"
-                );
-                assert_eq!(draw.classes_skipped, 2);
-                assert_eq!(id, 1);
-                archive.record_selection(id, &draw);
-                reset_seen = true;
-                break;
-            }
-        }
-        assert!(reset_seen);
-        assert_eq!(archive.selector_report().counter_resets, 1);
-    }
-
-    #[test]
-    fn the_cell_draw_samples_only_the_recency_window() {
-        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 124); 140];
-        let mut archive = selector_archive(&keys);
-        for entry in &mut archive.entries {
-            entry.key.player_y_bucket = 0;
-        }
-        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e21);
-        let mut cell_draws = 0;
-        for _ in 0..256 {
-            let (id, draw) = archive
-                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
-                .expect("concentrated selection");
-            match draw.path {
-                SelectorPath::HierarchyWalk => {
-                    cell_draws += 1;
-                    assert!(
-                        id >= 12,
-                        "cell draws must come from the 128 most recent members, got {id}"
-                    );
-                    let concentration = draw.concentration.expect("concentration record");
-                    assert_eq!(concentration.window_size, 128);
-                }
-                SelectorPath::Continuation => panic!("continuations require explicit dispatch"),
-                SelectorPath::Uniform => {
-                    assert!(draw.concentration.is_none());
-                }
-            }
-        }
-        assert!(cell_draws > 0);
-    }
-
-    #[test]
-    fn concentrated_window_slides_off_exhausted_members() {
-        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 124); 129];
-        let mut archive = selector_archive(&keys);
-        for entry in &mut archive.entries {
-            entry.key.player_y_bucket = 0;
-        }
-        let exhausting_draw = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
-            class_rank: None,
-            preference: None,
-        };
-        for id in 1..=128 {
-            for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
-                archive.record_selection(id, &exhausting_draw);
-            }
-        }
-        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e22);
-        let mut slid = false;
-        for _ in 0..64 {
-            let (id, draw) = archive
-                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
-                .expect("concentrated selection");
-            if draw.path == SelectorPath::HierarchyWalk {
-                assert_eq!(id, 0, "the only unexhausted member must be sampled");
-                assert_eq!(draw.classes_skipped, 0);
-                assert!(!draw.counter_reset);
-                let concentration = draw.concentration.expect("concentration record");
-                assert_eq!(concentration.window_size, 1);
-                slid = true;
-            }
-        }
-        assert!(slid);
-    }
-
-    type ChordArchive = Archive<TestAction, TestKey, (), ()>;
 
     fn probe_key(world: u8, level: u8, progress: u16, vertical: u8) -> TestKey {
         TestKey {
@@ -7017,376 +4723,6 @@ mod tests {
         assert_eq!(archive.active_count(), 4);
     }
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-    struct OrderingKey<const PROGRESS: bool> {
-        class_label: u16,
-        class_progress: u16,
-        band_label: u16,
-        band_progress: u16,
-        cell: u16,
-    }
-
-    impl<const PROGRESS: bool> ArchiveKey for OrderingKey<PROGRESS> {
-        type Group = [u16; 5];
-        type Lineage = ();
-
-        fn groups() -> usize {
-            4
-        }
-
-        fn group(self, depth: usize) -> Self::Group {
-            match depth {
-                0 | 1 => [
-                    self.class_label,
-                    self.class_progress,
-                    self.band_label,
-                    self.band_progress,
-                    self.cell,
-                ],
-                2 => [
-                    self.class_label,
-                    self.class_progress,
-                    self.band_label,
-                    self.band_progress,
-                    0,
-                ],
-                _ => [self.class_label, self.class_progress, 0, 0, 0],
-            }
-        }
-
-        fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
-            if PROGRESS {
-                (left[1], left[3]).cmp(&(right[1], right[3]))
-            } else {
-                Ordering::Equal
-            }
-        }
-
-        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
-            self
-        }
-
-        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
-    }
-
-    fn ordering_key<const PROGRESS: bool>(
-        class_label: u16,
-        class_progress: u16,
-        band_label: u16,
-        band_progress: u16,
-        cell: u16,
-    ) -> OrderingKey<PROGRESS> {
-        OrderingKey {
-            class_label,
-            class_progress,
-            band_label,
-            band_progress,
-            cell,
-        }
-    }
-
-    const ORDERING_DRAWS: usize = 12_000;
-    const ORDERING_TOLERANCE: usize = 400;
-
-    fn ordering_walk_counts<const PROGRESS: bool>(keys: &[OrderingKey<PROGRESS>]) -> Vec<usize> {
-        let mut archive = Archive::<u8, OrderingKey<PROGRESS>, (), ()>::new(|_| 1);
-        let mut ids = Vec::new();
-        for (index, key) in keys.iter().enumerate() {
-            let id = archive
-                .insert(
-                    None,
-                    0,
-                    ArchiveCandidate {
-                        suffix: vec![u8::try_from(index).expect("ordering fixture is small")],
-                        key: *key,
-                        milestones: (),
-                    },
-                    (),
-                )
-                .expect("ordering insert")
-                .expect("ordering retention");
-            ids.push(id);
-        }
-        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
-            entry: 1_000_000,
-            groups: vec![1_000_000; 3],
-        });
-        let mut rand = RomuDuoJrRand::with_seed(802);
-        let mut counts = vec![0; keys.len()];
-        for _ in 0..ORDERING_DRAWS {
-            let (id, draw) = archive.select_parent(&mut rand, 64).expect("walk draw");
-            if draw.path == SelectorPath::HierarchyWalk {
-                let index = ids
-                    .iter()
-                    .position(|candidate| *candidate == id)
-                    .expect("draw outside the fixture");
-                counts[index] += 1;
-            }
-        }
-        counts
-    }
-
-    #[test]
-    fn group_labels_do_not_change_walk_draws() {
-        let class_forward = [
-            ordering_key::<true>(1, 2, 0, 0, 0),
-            ordering_key::<true>(2, 2, 0, 0, 1),
-            ordering_key::<true>(3, 1, 0, 0, 2),
-        ];
-        let class_reversed = [
-            ordering_key::<true>(300, 2, 0, 0, 0),
-            ordering_key::<true>(200, 2, 0, 0, 1),
-            ordering_key::<true>(100, 1, 0, 0, 2),
-        ];
-        let forward = ordering_walk_counts(&class_forward);
-        let reversed = ordering_walk_counts(&class_reversed);
-        for index in 0..forward.len() {
-            assert!(
-                forward[index].abs_diff(reversed[index]) < ORDERING_TOLERANCE,
-                "class labels changed the draw at {index}: {forward:?} against {reversed:?}"
-            );
-        }
-
-        let band_forward = [
-            ordering_key::<true>(0, 0, 1, 2, 0),
-            ordering_key::<true>(0, 0, 2, 2, 1),
-            ordering_key::<true>(0, 0, 3, 1, 2),
-        ];
-        let band_reversed = [
-            ordering_key::<true>(0, 0, 300, 2, 0),
-            ordering_key::<true>(0, 0, 200, 2, 1),
-            ordering_key::<true>(0, 0, 100, 1, 2),
-        ];
-        let forward = ordering_walk_counts(&band_forward);
-        let reversed = ordering_walk_counts(&band_reversed);
-        for index in 0..forward.len() {
-            assert!(
-                forward[index].abs_diff(reversed[index]) < ORDERING_TOLERANCE,
-                "band labels changed the draw at {index}: {forward:?} against {reversed:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_band_that_opened_the_newer_cell_takes_more_walk_draws() {
-        let keys = [
-            ordering_key::<true>(0, 0, 1, 0, 0),
-            ordering_key::<true>(0, 0, 1, 0, 1),
-            ordering_key::<true>(0, 0, 2, 0, 2),
-            ordering_key::<true>(0, 0, 2, 0, 3),
-        ];
-        let counts = ordering_walk_counts(&keys);
-        let older = counts[0] + counts[1];
-        let newer = counts[2] + counts[3];
-        assert!(
-            newer > older.saturating_mul(3) / 2 && older > 0,
-            "the band holding the newest cell takes the larger share: {counts:?}"
-        );
-        let reversed = [
-            ordering_key::<true>(0, 0, 2, 0, 0),
-            ordering_key::<true>(0, 0, 2, 0, 1),
-            ordering_key::<true>(0, 0, 1, 0, 2),
-            ordering_key::<true>(0, 0, 1, 0, 3),
-        ];
-        let counts = ordering_walk_counts(&reversed);
-        assert!(
-            counts[2] + counts[3] > (counts[0] + counts[1]).saturating_mul(3) / 2,
-            "the share follows the newest cell, not the label: {counts:?}"
-        );
-    }
-
-    #[test]
-    fn the_leading_class_does_not_take_every_walk_draw() {
-        let mut keys = vec![ordering_key::<true>(1, 2, 0, 0, 0)];
-        for cell in 0..10 {
-            keys.push(ordering_key::<true>(9, 1, 0, 0, cell));
-        }
-        let counts = ordering_walk_counts(&keys);
-        let leading = counts[0];
-        let trailing = counts[1..].iter().sum::<usize>();
-        assert!(
-            leading > 0 && trailing > 0,
-            "every live class takes a share: {counts:?}"
-        );
-        assert!(
-            leading > trailing,
-            "the leading class takes the largest share: {counts:?}"
-        );
-    }
-
-    #[test]
-    fn a_barren_class_loses_its_share_to_a_peer_that_still_produces() {
-        let keys = [
-            ordering_key::<true>(1, 1, 0, 0, 0),
-            ordering_key::<true>(2, 1, 0, 0, 1),
-        ];
-        let mut archive = Archive::<u8, OrderingKey<true>, (), ()>::new(|_| 1);
-        let mut ids = Vec::new();
-        for (index, key) in keys.iter().enumerate() {
-            ids.push(
-                archive
-                    .insert(
-                        None,
-                        0,
-                        ArchiveCandidate {
-                            suffix: vec![u8::try_from(index).expect("fixture is small")],
-                            key: *key,
-                            milestones: (),
-                        },
-                        (),
-                    )
-                    .expect("barren class insert")
-                    .expect("barren class retention"),
-            );
-        }
-        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
-            entry: 1_000_000,
-            groups: vec![1_000_000, 1_000_000, 1],
-        });
-        let class_depth = Archive::<u8, OrderingKey<true>, (), ()>::class_depth();
-        archive.group_barren[class_depth - 1].insert(keys[0].group(class_depth), 8);
-        let mut rand = RomuDuoJrRand::with_seed(802);
-        let mut counts = vec![0_usize; keys.len()];
-        for _ in 0..ORDERING_DRAWS {
-            let (id, draw) = archive.select_parent(&mut rand, 64).expect("walk draw");
-            if draw.path == SelectorPath::HierarchyWalk
-                && let Some(index) = ids.iter().position(|candidate| *candidate == id)
-            {
-                counts[index] += 1;
-            }
-        }
-        assert!(
-            counts[0] > 0 && counts[1] > 0,
-            "a barren class keeps a share: {counts:?}"
-        );
-        assert!(
-            counts[1] > counts[0].saturating_mul(4),
-            "the class that still produces takes the larger share: {counts:?}"
-        );
-    }
-
-    #[test]
-    fn a_key_without_a_progress_notion_ranks_bands_by_their_newest_cell_only() {
-        for bands in [[1_u16, 2], [200, 100]] {
-            let counts = ordering_walk_counts(&[
-                ordering_key::<false>(0, 0, bands[0], 0, 0),
-                ordering_key::<false>(0, 0, bands[1], 0, 1),
-            ]);
-            assert!(
-                counts[1] > counts[0] && counts[1] < counts[0].saturating_mul(3),
-                "the band with the newer cell takes twice the draws: {counts:?} under {bands:?}"
-            );
-        }
-    }
-
-    thread_local! {
-        static PROGRESS_CMP_CALLS: Cell<u64> = const { Cell::new(0) };
-    }
-
-    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-    struct CountedKey {
-        class: u16,
-        band: u16,
-        cell: u16,
-    }
-
-    impl ArchiveKey for CountedKey {
-        type Group = [u16; 3];
-        type Lineage = ();
-
-        fn groups() -> usize {
-            4
-        }
-
-        fn group(self, depth: usize) -> Self::Group {
-            match depth {
-                0 | 1 => [self.class, self.band, self.cell],
-                2 => [self.class, self.band, 0],
-                _ => [self.class, 0, 0],
-            }
-        }
-
-        fn progress_cmp(_left: Self::Group, _right: Self::Group) -> Ordering {
-            PROGRESS_CMP_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
-            Ordering::Equal
-        }
-
-        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
-            self
-        }
-
-        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
-    }
-
-    fn counted_calls_per_draw(keys: &[CountedKey]) -> u64 {
-        const DRAWS: u64 = 256;
-        let mut archive = Archive::<u8, CountedKey, (), ()>::new(|_| 1);
-        for (index, key) in keys.iter().enumerate() {
-            archive
-                .insert(
-                    None,
-                    0,
-                    ArchiveCandidate {
-                        suffix: vec![u8::try_from(index % 251).expect("byte suffix")],
-                        key: *key,
-                        milestones: (),
-                    },
-                    (),
-                )
-                .expect("counted insert")
-                .expect("counted retention");
-        }
-        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
-            entry: 1_000_000,
-            groups: vec![1_000_000; 3],
-        });
-        let mut rand = RomuDuoJrRand::with_seed(451);
-        archive.select_parent(&mut rand, 64).expect("index warmup");
-        PROGRESS_CMP_CALLS.with(|calls| calls.set(0));
-        for _ in 0..DRAWS {
-            archive.select_parent(&mut rand, 64).expect("counted draw");
-        }
-        PROGRESS_CMP_CALLS.with(Cell::get) / DRAWS
-    }
-
-    #[test]
-    fn the_class_draw_costs_one_pass_over_the_live_classes() {
-        let classes = |count: u16| {
-            (0..count)
-                .map(|class| CountedKey {
-                    class,
-                    band: 0,
-                    cell: 0,
-                })
-                .collect::<Vec<_>>()
-        };
-        let small = counted_calls_per_draw(&classes(64));
-        let large = counted_calls_per_draw(&classes(128));
-        assert!(
-            large <= small * 2 + 64,
-            "the class draw is not a pairwise scan: {small} calls at 64 classes, {large} at 128"
-        );
-    }
-
-    #[test]
-    fn the_band_draw_costs_one_pass_over_the_live_bands() {
-        let bands = |count: u16| {
-            (0..count)
-                .map(|band| CountedKey {
-                    class: 0,
-                    band,
-                    cell: 0,
-                })
-                .collect::<Vec<_>>()
-        };
-        let small = counted_calls_per_draw(&bands(64));
-        let large = counted_calls_per_draw(&bands(128));
-        assert!(
-            large <= small * 2 + 64,
-            "the band draw is not a pairwise scan: {small} calls at 64 bands, {large} at 128"
-        );
-    }
-
-    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
     struct SpliceKey {
         class_label: u16,
         class_progress: u16,
@@ -7395,28 +4731,21 @@ mod tests {
     }
 
     impl ArchiveKey for SpliceKey {
-        type Group = [u16; 4];
+        type Place = u16;
+        type Progress = (u16, u16);
+        type Identity = u16;
         type Lineage = ();
 
-        fn groups() -> usize {
-            3
+        fn place(self) -> Self::Place {
+            self.class_label
         }
 
-        fn group(self, depth: usize) -> Self::Group {
-            match depth {
-                0 => [
-                    self.class_label,
-                    self.class_progress,
-                    self.cell_progress,
-                    self.slot,
-                ],
-                1 => [self.class_label, self.class_progress, self.cell_progress, 0],
-                _ => [self.class_label, self.class_progress, 0, 0],
-            }
+        fn progress(self) -> Self::Progress {
+            (self.class_progress, self.cell_progress)
         }
 
-        fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
-            (left[1], left[2]).cmp(&(right[1], right[2]))
+        fn identity(self) -> Self::Identity {
+            self.slot
         }
 
         fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
@@ -7425,7 +4754,6 @@ mod tests {
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
     }
-
     #[test]
     fn a_splice_leaf_advances_by_progress_not_by_label() {
         let mut archive = Archive::<u8, SpliceKey, (), ()>::new(|_| 1);
@@ -7494,5 +4822,159 @@ mod tests {
         assert_eq!(campaign.donor_id, donor);
         assert_eq!(campaign.leaf_id, leaf);
         assert_eq!(campaign.actions, vec![3]);
+    }
+
+    fn tier_archive(keys: &[(u8, u8, u16)]) -> TestArchive {
+        let mut archive = TestArchive::new(|_| 1);
+        for (index, (world, level, progress)) in keys.iter().enumerate() {
+            let mut key = probe_key(*world, *level, *progress, 0);
+            key.state_fingerprint = u8::try_from(index).expect("fingerprint byte");
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![u8::try_from(index).expect("input byte")],
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert tier entry")
+                .expect("retain tier entry");
+        }
+        archive
+    }
+
+    fn draw_counts(archive: &mut TestArchive, seed: u64, draws: usize) -> Vec<u64> {
+        let mut rand = RomuDuoJrRand::with_seed(seed);
+        for _ in 0..draws {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
+                .expect("a tier draw");
+            archive.record_selection(id, &draw);
+        }
+        archive.selected.clone()
+    }
+
+    #[test]
+    fn the_deepest_progress_tier_takes_most_draws_and_lower_tiers_still_draw() {
+        let mut archive = tier_archive(&[(1, 1, 0), (1, 2, 0), (2, 1, 0)]);
+        let counts = draw_counts(&mut archive, 0x7ea1_0001, 4096);
+        assert!(counts[2] > counts[1] && counts[1] > counts[0]);
+        assert!(counts[0] > 0);
+        let report = archive.selector_report();
+        assert_eq!(report.tier_draws_by_rank.len(), 3);
+        assert_eq!(report.tier_draws_by_rank.iter().sum::<u64>(), 4096);
+    }
+
+    #[test]
+    fn the_progress_order_beats_the_key_order_when_choosing_the_top_tier() {
+        let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
+        let counts = draw_counts(&mut archive, 0x7ea1_0002, 1024);
+        assert!(counts[0] > counts[1]);
+    }
+
+    #[test]
+    fn cells_in_one_tier_share_draws_by_their_own_count() {
+        let mut archive = tier_archive(&[(1, 1, 0), (1, 1, 0)]);
+        archive.entries[1].key.room = [1, 0, 0];
+        let key = archive.entries[1].key;
+        archive.deactivate(1);
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![9],
+                    key,
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert second cell")
+            .expect("retain second cell");
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+        };
+        for _ in 0..1000 {
+            archive.record_selection(0, &draw);
+        }
+        let before = archive.selected.clone();
+        let counts = draw_counts(&mut archive, 0x7ea1_0003, 256);
+        let fresh = counts[2] - before[2];
+        let stale = counts[0] - before[0];
+        assert!(fresh > stale * 8, "fresh {fresh} stale {stale}");
+    }
+
+    #[test]
+    fn holders_in_one_cell_share_draws_by_their_own_count() {
+        let mut archive = tier_archive(&[(1, 1, 0), (1, 1, 0)]);
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+        };
+        for _ in 0..1000 {
+            archive.record_selection(0, &draw);
+        }
+        let before = archive.selected.clone();
+        let counts = draw_counts(&mut archive, 0x7ea1_0004, 256);
+        assert!(counts[1] - before[1] > (counts[0] - before[0]) * 8);
+    }
+
+    #[test]
+    fn a_landed_continuation_that_breeds_counts_as_useful() {
+        let mut archive = portfolio_bank();
+        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
+        let neighbour =
+            insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 5, 5).expect("neighbour");
+        archive.record_continuation_outcome(Some(neighbour), true, true, 1);
+        archive.record_continuation_outcome(None, false, false, 1);
+        let report = archive.continuation_report();
+        assert_eq!((report.jobs, report.landed, report.replaced), (2, 1, 1));
+        assert_eq!(report.opened_new_cell, 1);
+        archive.record_selection_outcome(neighbour, true);
+        archive.record_selection_outcome(origin, true);
+        archive.record_selection_outcome(neighbour, false);
+        assert_eq!(archive.continuation_report().useful, 1);
+    }
+
+    #[test]
+    fn an_edge_records_the_preferences_its_tail_gains() {
+        let mut archive = portfolio_bank();
+        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
+        insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 30, 5).expect("gaining");
+        insert_portfolio_at(&mut archive, None, vec![3], 1, 12, 30).expect("improved origin");
+        let taken = archive.pop_continuation(false).expect("the queued source");
+        assert_eq!(taken.gains, 0b01);
+        assert_eq!(taken.destination, 2);
+    }
+
+    #[test]
+    fn exit_sources_ignore_the_resources_a_holder_carries() {
+        let mut archive = portfolio_bank();
+        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
+        insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 5, 5).expect("neighbour");
+        let richer =
+            insert_portfolio_at(&mut archive, None, vec![3], 1, 40, 40).expect("richer origin");
+        assert_eq!(archive.continuation_pending(), 1);
+        let taken = archive
+            .pop_continuation(false)
+            .expect("the richer origin is queued");
+        assert_eq!(archive.index_of_id(taken.parent), Some(richer));
+    }
+
+    #[test]
+    fn a_destination_holder_check_looks_at_every_holder_of_the_place() {
+        let mut archive = portfolio_bank();
+        let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
+        insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 20, 20).expect("holder");
+        let weaker = insert_portfolio_at(&mut archive, None, vec![3], 1, 12, 30).expect("weaker");
+        assert!(!archive.outranks_place_holders(weaker, 2, 0));
+        assert!(archive.outranks_place_holders(weaker, 3, 0));
+        let stronger =
+            insert_portfolio_at(&mut archive, None, vec![4], 1, 30, 40).expect("stronger");
+        assert!(archive.outranks_place_holders(stronger, 2, 0));
     }
 }
