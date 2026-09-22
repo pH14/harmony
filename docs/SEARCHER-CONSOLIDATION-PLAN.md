@@ -345,3 +345,15 @@ diagnose; power-on runs are the only completion test.
   is reached on two seeds at least as fast as the fourteenth build.
   Ladder records carry each cell's continuation jobs, landings,
   replacements and longest wave from now on.
+- 2026-09-22: the fifteenth build's graph works. On ladder root 1 it ran
+  252 to 487 thousand continuation jobs per cell (old build: 199 to 520
+  thousand), landed 41 to 76 thousand, and its longest wave was 19 to 22
+  hops (old build: 18 to 27). Segment 1 passed on seeds 11 and 12 at 2.25
+  and 2.86 million executions, slower than the fourteenth build's 1.59 and
+  1.74 million and the old build's 1.62 and 2.55 million. At 1.5 million
+  executions the fifteenth build had opened 9, 23 and 13 cells against
+  the fourteenth build's 13, 24 and 60, and continuation jobs took 2 to 11
+  percent of draws. The spread between seeds on this root is as wide as
+  the gap between builds, so the full ladder decides. The fourteenth
+  build's ladder stopped at 5 of 51 cells so the box could run the
+  fifteenth build's ladder, six cells at a time, boss roots first.
