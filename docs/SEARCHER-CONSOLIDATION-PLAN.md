@@ -318,3 +318,12 @@ diagnose; power-on runs are the only completion test.
   freshly reset. Fix: a preference improvement resets the cell only when
   the improving holder arrived from another cell. Fourteenth build
   (consol14) reruns segment 1 on seeds 11 to 13.
+- 2026-09-22: the fourteenth build (consol14) passed segment 1 on seeds
+  12 and 13, reaching Brinstar at 1.59 and 1.74 million executions (old
+  build: 1.62 and 2.55 million). Seed 11 missed in three million with
+  forty cells opened; the other two opened 85 and 87. Cell resets fell
+  to 49 to 99 thousand per cell from 77 thousand in a third of the
+  budget. The old build's full ladder finished: segments passed in a
+  row from the seventeen roots are 1, 0, 0, 0, 1, 1, 3, 3, 5, 4, 0, 5,
+  6, 4, 4, 5, 0. The full ladder now runs on the fourteenth build with
+  six cells at a time.
