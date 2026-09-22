@@ -245,24 +245,30 @@ new ground instead of settling to an equal share with every cell behind them.
 `cell_resets`, `tier_draws_by_rank` and the draws each cell received, and
 every live progress line carries it under `selector`.
 
-Continuation replay carries a better state at one place to the places reached
-from it. An exit source is a place paired with an identity, so two holders that
-differ only in what they carry share one set of exits. The archive keeps one
-edge per exit source and destination place holding the cheapest action tail
-observed between them, the donor and leaf it came from, and the preferences the
-tail gained from its source to its arrival. When a replacement wins its slot
-under `preference_cmp` with `Ordering::Greater`, its exit source is queued at
-the index of the lowest preference it took. A reservation that takes the queue
-examines at most 8 exits, skipping stale parents, prefixes already archived and
-parents at the action limit. Among the rest it dispatches the first whose
-holder beats every current holder of the destination place under the
-preference it won, and otherwise the first edge that gains a preference; an
-edge that does neither is skipped. Landing is arrival anywhere in the
-destination place; acceptance there is the ordinary slot rule after replay. A
-result that lands and wins there queues its own source in turn; that chain is a
-wave, and `longest_wave` reports the deepest one.
+Continuation replay carries a better state at one position to the positions
+reached from it. A position is a place paired with an identity, the `Position`
+type, so two holders that differ only in what they carry share one set of
+exits. Every retained parent and child whose positions differ records an edge
+between the two positions, inside one place or across two, holding the
+cheapest action tail observed between them, the donor and leaf it came from,
+and the preferences the tail gained from its source to its arrival. Edges
+inside a place give nearly every position on a route an exit, so an
+improvement anywhere queues. When a replacement wins its slot under
+`preference_cmp` with `Ordering::Greater`, its position is queued at the index
+of the lowest preference it took. A reservation that takes the queue examines
+at most 8 exits, skipping stale parents, prefixes already archived and parents
+at the action limit. Among the rest it dispatches the first whose holder beats
+every current holder of the slot it would land in, the parent's progress at the
+destination position, under the preference it won, and otherwise the first edge
+that gains a preference; an edge that does neither is skipped. An edge inside
+one place lands only on its destination position; an edge into another place
+lands anywhere in that place, and the arrival's own position is what queues
+next. Acceptance there is the ordinary slot rule after replay. Replay runs one
+edge per job, so each hop's landing check stops divergence from compounding. A
+result that lands and wins there queues its own position in turn; that chain is
+a wave, and `longest_wave` reports the deepest one.
 
-The queue holds one entry per exit source, not per edge, ordered by preference
+The queue holds one entry per position, not per edge, ordered by preference
 index and then by arrival. Queuing a source is two map operations whatever its
 degree, and a source queued again under a lower preference index moves to that
 tier keeping its place within it. A pop takes the next exit after the front
@@ -270,7 +276,7 @@ source's cursor, advances the cursor and moves the source to the back of its
 own tier, so sources rotate and a source improved on every reservation cannot
 hold the front. One pop in four takes the highest tier present instead of the
 lowest, so a preference that improves rarely still propagates. A source whose
-exits run out leaves the queue, and removing a source or a place releases its
+exits run out leaves the queue, and removing a position releases its
 edges and the pending entries that depended on them.
 
 One reservation in four attempts a continuation while the queue is not empty.
@@ -283,8 +289,8 @@ recomputes it at each reconstructed reservation and rejects a record whose
 The bank exists only for a workload whose key declares a preference. Without
 one nothing is recorded, nothing is charged, and the stream is unchanged.
 Edges and pending entries are charged as they are held rather than reserved up
-front, and compaction drops the edges of sources and places the archive no
-longer holds. Dispatch records the complete action tail, so later donor
+front, and compaction drops the edges of positions the archive no longer
+holds. Dispatch records the complete action tail, so later donor
 reclamation cannot change serial replay. Only same-place `preference_cmp` is
 consulted; preferences are never compared between unrelated places.
 

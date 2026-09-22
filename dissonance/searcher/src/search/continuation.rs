@@ -10,11 +10,12 @@ const EDGE_NODE_OVERHEAD: usize = 192;
 const PENDING_NODE_OVERHEAD: usize = 128;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Continuation<D, A> {
+pub(crate) struct Continuation<P, A> {
+    pub source: P,
     pub parent: u64,
     pub donor: u64,
     pub leaf: u64,
-    pub destination: D,
+    pub destination: P,
     pub wave: u32,
     pub tier: u8,
     pub gains: u8,
@@ -31,27 +32,27 @@ struct Edge<A> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Pending<D> {
+struct Pending<P> {
     sequence: u64,
     tier: u8,
     parent: u64,
     wave: u32,
-    cursor: Option<D>,
+    cursor: Option<P>,
 }
 
-pub(crate) struct ContinuationBank<S: Ord, D: Ord, A> {
+pub(crate) struct ContinuationBank<P: Ord, A> {
     action_cap: usize,
-    edges: BTreeMap<(S, D), Edge<A>>,
-    exits: BTreeMap<S, BTreeSet<D>>,
-    entrances: BTreeMap<D, BTreeSet<S>>,
-    pending: BTreeMap<(u8, u64), S>,
-    pending_source: BTreeMap<S, Pending<D>>,
+    edges: BTreeMap<(P, P), Edge<A>>,
+    exits: BTreeMap<P, BTreeSet<P>>,
+    entrances: BTreeMap<P, BTreeSet<P>>,
+    pending: BTreeMap<(u8, u64), P>,
+    pending_source: BTreeMap<P, Pending<P>>,
     next_sequence: u64,
     memory_bytes: usize,
     improved_work: u64,
 }
 
-impl<S: Copy + Ord, D: Copy + Ord, A: Clone> ContinuationBank<S, D, A> {
+impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
     pub fn new(action_cap: usize) -> Self {
         Self {
             action_cap,
@@ -67,18 +68,17 @@ impl<S: Copy + Ord, D: Copy + Ord, A: Clone> ContinuationBank<S, D, A> {
     }
 
     fn edge_bytes(actions: usize) -> usize {
-        size_of::<(S, D)>()
+        size_of::<(P, P)>()
             .saturating_add(size_of::<Edge<A>>())
             .saturating_add(actions.saturating_mul(size_of::<A>()))
-            .saturating_add(size_of::<S>())
-            .saturating_add(size_of::<D>())
+            .saturating_add(2 * size_of::<P>())
             .saturating_add(EDGE_NODE_OVERHEAD)
     }
 
     fn pending_bytes() -> usize {
         size_of::<u64>()
-            .saturating_add(2 * size_of::<S>())
-            .saturating_add(size_of::<Pending<D>>())
+            .saturating_add(2 * size_of::<P>())
+            .saturating_add(size_of::<Pending<P>>())
             .saturating_add(PENDING_NODE_OVERHEAD)
     }
 
@@ -107,16 +107,15 @@ impl<S: Copy + Ord, D: Copy + Ord, A: Clone> ContinuationBank<S, D, A> {
     #[allow(clippy::too_many_arguments)]
     pub fn record(
         &mut self,
-        from: S,
-        from_place: D,
-        to: D,
+        from: P,
+        to: P,
         donor: u64,
         leaf: u64,
         actions: &[A],
         cost: u64,
         gains: u8,
     ) {
-        if from_place == to || actions.is_empty() || actions.len() > self.action_cap {
+        if from == to || actions.is_empty() || actions.len() > self.action_cap {
             return;
         }
         let edge = Edge {
@@ -148,7 +147,7 @@ impl<S: Copy + Ord, D: Copy + Ord, A: Clone> ContinuationBank<S, D, A> {
         }
     }
 
-    pub fn improved(&mut self, source: S, parent: u64, wave: u32, tier: u8) {
+    pub fn improved(&mut self, source: P, parent: u64, wave: u32, tier: u8) {
         self.improved_work = self.improved_work.saturating_add(1);
         if !self.exits.contains_key(&source) {
             return;
@@ -185,7 +184,7 @@ impl<S: Copy + Ord, D: Copy + Ord, A: Clone> ContinuationBank<S, D, A> {
         }
     }
 
-    pub fn pop(&mut self, from_highest_tier: bool) -> Option<Continuation<D, A>> {
+    pub fn pop(&mut self, from_highest_tier: bool) -> Option<Continuation<P, A>> {
         loop {
             let (key, source) = self.next_pending(from_highest_tier)?;
             let Some(held) = self.pending_source.get(&source).copied() else {
@@ -211,6 +210,7 @@ impl<S: Copy + Ord, D: Copy + Ord, A: Clone> ContinuationBank<S, D, A> {
                 continue;
             };
             let continuation = Continuation {
+                source,
                 parent: held.parent,
                 donor: edge.donor,
                 leaf: edge.leaf,
@@ -232,7 +232,7 @@ impl<S: Copy + Ord, D: Copy + Ord, A: Clone> ContinuationBank<S, D, A> {
         }
     }
 
-    fn next_pending(&self, from_highest_tier: bool) -> Option<((u8, u64), S)> {
+    fn next_pending(&self, from_highest_tier: bool) -> Option<((u8, u64), P)> {
         if from_highest_tier {
             let (highest, _) = self.pending.keys().next_back().copied()?;
             return self
@@ -247,20 +247,20 @@ impl<S: Copy + Ord, D: Copy + Ord, A: Clone> ContinuationBank<S, D, A> {
             .map(|(key, source)| (*key, *source))
     }
 
-    fn drop_pending(&mut self, source: S) {
+    fn drop_pending(&mut self, source: P) {
         if let Some(held) = self.pending_source.remove(&source) {
             self.pending.remove(&(held.tier, held.sequence));
             self.memory_bytes = self.memory_bytes.saturating_sub(Self::pending_bytes());
         }
     }
 
-    pub fn retain(&mut self, live_sources: &BTreeSet<S>, live_places: &BTreeSet<D>) {
+    pub fn retain(&mut self, live: &BTreeSet<P>) {
         let stale_sources = self
             .exits
             .keys()
             .chain(self.pending_source.keys())
             .copied()
-            .filter(|source| !live_sources.contains(source))
+            .filter(|source| !live.contains(source))
             .collect::<BTreeSet<_>>();
         for source in stale_sources {
             self.remove_source(source);
@@ -269,14 +269,14 @@ impl<S: Copy + Ord, D: Copy + Ord, A: Clone> ContinuationBank<S, D, A> {
             .entrances
             .keys()
             .copied()
-            .filter(|place| !live_places.contains(place))
+            .filter(|place| !live.contains(place))
             .collect::<BTreeSet<_>>();
         for place in stale_places {
             self.remove_place(place);
         }
     }
 
-    pub fn remove_source(&mut self, source: S) {
+    pub fn remove_source(&mut self, source: P) {
         self.drop_pending(source);
         for to in self.exits.remove(&source).unwrap_or_default() {
             self.drop_edge(source, to);
@@ -289,7 +289,7 @@ impl<S: Copy + Ord, D: Copy + Ord, A: Clone> ContinuationBank<S, D, A> {
         }
     }
 
-    pub fn remove_place(&mut self, place: D) {
+    pub fn remove_place(&mut self, place: P) {
         for from in self.entrances.remove(&place).unwrap_or_default() {
             self.drop_edge(from, place);
             if let Some(targets) = self.exits.get_mut(&from) {
@@ -302,7 +302,7 @@ impl<S: Copy + Ord, D: Copy + Ord, A: Clone> ContinuationBank<S, D, A> {
         }
     }
 
-    fn drop_edge(&mut self, from: S, to: D) {
+    fn drop_edge(&mut self, from: P, to: P) {
         if let Some(edge) = self.edges.remove(&(from, to)) {
             self.memory_bytes = self
                 .memory_bytes
@@ -315,12 +315,12 @@ impl<S: Copy + Ord, D: Copy + Ord, A: Clone> ContinuationBank<S, D, A> {
 mod tests {
     use super::*;
 
-    fn bank() -> ContinuationBank<u8, u8, u8> {
+    fn bank() -> ContinuationBank<u8, u8> {
         ContinuationBank::new(4)
     }
 
     fn record(
-        bank: &mut ContinuationBank<u8, u8, u8>,
+        bank: &mut ContinuationBank<u8, u8>,
         from: u8,
         to: u8,
         donor: u64,
@@ -328,7 +328,7 @@ mod tests {
         actions: &[u8],
         cost: u64,
     ) {
-        bank.record(from, from, to, donor, leaf, actions, cost, 0);
+        bank.record(from, to, donor, leaf, actions, cost, 0);
     }
 
     #[test]
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn an_edge_carries_the_resource_change_it_was_recorded_with() {
         let mut bank = bank();
-        bank.record(1, 1, 2, 10, 11, &[7], 100, 0b10);
+        bank.record(1, 2, 10, 11, &[7], 100, 0b10);
         bank.improved(1, 5, 0, 0);
         assert_eq!(bank.pop(false).expect("edge").gains, 0b10);
     }
@@ -397,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edge_longer_than_the_cap_or_onto_its_own_place_is_not_recorded() {
+    fn an_edge_longer_than_the_cap_or_onto_its_own_position_is_not_recorded() {
         let mut bank = bank();
         record(&mut bank, 1, 1, 10, 11, &[7], 1);
         record(&mut bank, 1, 2, 10, 11, &[], 1);
@@ -407,10 +407,10 @@ mod tests {
     }
 
     #[test]
-    fn two_sources_at_one_place_keep_separate_edges() {
+    fn two_sources_into_one_position_keep_separate_edges() {
         let mut bank = bank();
-        bank.record(1, 9, 2, 10, 11, &[7], 1, 0);
-        bank.record(3, 9, 2, 12, 13, &[8], 1, 0);
+        bank.record(1, 2, 10, 11, &[7], 1, 0);
+        bank.record(3, 2, 12, 13, &[8], 1, 0);
         assert_eq!(bank.edge_count(), 2);
         bank.improved(3, 300, 0, 0);
         assert_eq!(bank.pop(false).expect("the improved source").donor, 12);
@@ -517,7 +517,7 @@ mod tests {
         record(&mut bank, 3, 4, 12, 13, &[8], 1);
         bank.improved(1, 100, 0, 0);
         bank.improved(3, 300, 0, 0);
-        bank.retain(&BTreeSet::from([1]), &BTreeSet::from([2]));
+        bank.retain(&BTreeSet::from([1, 2]));
         assert_eq!(bank.edge_count(), 1);
         assert_eq!(bank.pending_count(), 1);
         assert_eq!(bank.pop(false).expect("the live source").destination, 2);

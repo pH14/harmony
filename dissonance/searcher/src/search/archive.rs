@@ -52,7 +52,9 @@ pub type Cell<K> = (<K as ArchiveKey>::Progress, <K as ArchiveKey>::Place);
 
 pub type Slot<K> = (Cell<K>, <K as ArchiveKey>::Identity);
 
-pub type ExitSource<K> = (<K as ArchiveKey>::Place, <K as ArchiveKey>::Identity);
+pub type Position<K> = (<K as ArchiveKey>::Place, <K as ArchiveKey>::Identity);
+
+pub type Edge<K> = (Position<K>, Position<K>);
 
 #[must_use]
 pub fn cell_of<K: ArchiveKey>(key: K) -> Cell<K> {
@@ -65,7 +67,7 @@ pub fn slot_of_key<K: ArchiveKey>(key: K) -> Slot<K> {
 }
 
 #[must_use]
-pub fn exit_source_of<K: ArchiveKey>(key: K) -> ExitSource<K> {
+pub fn position_of<K: ArchiveKey>(key: K) -> Position<K> {
     (key.place(), key.identity())
 }
 
@@ -410,7 +412,6 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     active_count: usize,
     pub slots: BTreeMap<Slot<K>, Vec<usize>>,
     cells: BTreeMap<Cell<K>, CellState>,
-    by_place: BTreeMap<K::Place, BTreeSet<usize>>,
     input_index: InputIndex<A>,
     historical_input_actions: usize,
     stored_input_actions: usize,
@@ -457,7 +458,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     history_compactions: u64,
     historical_entries_dropped: u64,
     input_reconstructions: std::cell::Cell<u64>,
-    continuations: Option<ContinuationBank<ExitSource<K>, K::Place, A>>,
+    continuations: Option<ContinuationBank<Position<K>, A>>,
     continuation_wave: u32,
     continuation_accounting: ContinuationAccounting,
     landed: BTreeSet<u64>,
@@ -754,7 +755,6 @@ where
             active_count: 0,
             slots: BTreeMap::new(),
             cells: BTreeMap::new(),
-            by_place: BTreeMap::new(),
             input_index: InputIndex::default(),
             historical_input_actions: 0,
             stored_input_actions: 0,
@@ -922,12 +922,6 @@ where
         }
         if let Some(state) = self.cells.get_mut(&cell_of(key)) {
             state.active = state.active.saturating_sub(1);
-        }
-        if let Some(holders) = self.by_place.get_mut(&key.place()) {
-            holders.remove(&id);
-            if holders.is_empty() {
-                self.by_place.remove(&key.place());
-            }
         }
         self.index_remove(id);
         if !self.is_liveness_anchor(id) {
@@ -1184,7 +1178,6 @@ where
 
         self.id_to_index.clear();
         self.slots.clear();
-        self.by_place.clear();
         self.resident_snapshot_order.clear();
         self.active_count = 0;
         self.resident_snapshots = 0;
@@ -1205,10 +1198,6 @@ where
                     .or_default()
                     .push(index);
                 self.cells.entry(cell_of(entry.key)).or_default().active += 1;
-                self.by_place
-                    .entry(entry.key.place())
-                    .or_default()
-                    .insert(index);
             }
             if self.snapshot_selectable[index] {
                 self.resident_snapshots = self.resident_snapshots.saturating_add(1);
@@ -1232,17 +1221,12 @@ where
         self.landed.retain(|id| live_ids.contains(id));
 
         if let Some(bank) = &mut self.continuations {
-            let live_sources = self
+            let live = self
                 .entries
                 .iter()
-                .map(|entry| exit_source_of(entry.key))
+                .map(|entry| position_of(entry.key))
                 .collect::<BTreeSet<_>>();
-            let live_places = self
-                .entries
-                .iter()
-                .map(|entry| entry.key.place())
-                .collect::<BTreeSet<_>>();
-            bank.retain(&live_sources, &live_places);
+            bank.retain(&live);
         }
 
         self.deepest_leaf = self
@@ -1519,7 +1503,6 @@ where
         let key = self.entries[index].key;
         self.slots.entry(slot_of_key(key)).or_default().push(index);
         self.cells.entry(cell_of(key)).or_default().active += 1;
-        self.by_place.entry(key.place()).or_default().insert(index);
     }
 
     fn reactivate_liveness_anchor(&mut self, max_actions: usize) -> bool {
@@ -1870,7 +1853,7 @@ where
         if let Some(bank) = &mut self.continuations {
             if let Some(tier) = queue_tier {
                 bank.improved(
-                    exit_source_of(key),
+                    position_of(key),
                     self.next_entry_id,
                     self.continuation_wave,
                     tier,
@@ -1885,9 +1868,8 @@ where
                     })
                     .fold(0_u8, |mask, preference| mask | (1 << preference));
                 bank.record(
-                    exit_source_of(entry.key),
-                    entry.key.place(),
-                    key.place(),
+                    position_of(entry.key),
+                    position_of(key),
                     entry.id,
                     self.next_entry_id,
                     &suffix,
@@ -2305,15 +2287,15 @@ where
     pub(crate) fn pop_continuation(
         &mut self,
         from_highest_tier: bool,
-    ) -> Option<Continuation<K::Place, A>> {
+    ) -> Option<Continuation<Position<K>, A>> {
         self.continuations.as_mut()?.pop(from_highest_tier)
     }
 
     #[must_use]
-    pub(crate) fn outranks_place_holders(
+    pub(crate) fn outranks_slot_holders(
         &self,
         parent_index: usize,
-        destination: K::Place,
+        destination: Position<K>,
         tier: u8,
     ) -> bool {
         let Some(entry) = self.entries.get(parent_index) else {
@@ -2321,7 +2303,9 @@ where
         };
         let key = entry.key;
         let preference = usize::from(tier);
-        self.by_place.get(&destination).is_none_or(|holders| {
+        let (place, identity) = destination;
+        let slot = ((key.progress(), place), identity);
+        self.slots.get(&slot).is_none_or(|holders| {
             holders.iter().all(|held| {
                 self.entries.get(*held).is_none_or(|holder| {
                     key.preference_cmp(preference, holder.key) == Ordering::Greater
@@ -2401,8 +2385,20 @@ where
     }
 
     #[must_use]
-    pub(crate) fn place_of(&self, id: usize) -> Option<K::Place> {
-        self.entries.get(id).map(|entry| entry.key.place())
+    pub(crate) fn lands_on_edge(
+        &self,
+        id: usize,
+        source: Position<K>,
+        destination: Position<K>,
+    ) -> bool {
+        self.entries.get(id).is_some_and(|entry| {
+            let position = position_of(entry.key);
+            if source.0 == destination.0 {
+                position == destination
+            } else {
+                position.0 == destination.0
+            }
+        })
     }
 
     #[must_use]
@@ -3026,6 +3022,102 @@ mod tests {
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
     }
 
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct ScreenKey {
+        screen: u8,
+        spot: u8,
+        missiles: u8,
+    }
+
+    impl ArchiveKey for ScreenKey {
+        type Place = u8;
+        type Progress = ();
+        type Identity = u8;
+
+        fn place(self) -> Self::Place {
+            self.screen
+        }
+
+        fn progress(self) -> Self::Progress {}
+
+        fn identity(self) -> Self::Identity {
+            self.spot
+        }
+
+        fn capacity() -> usize {
+            1
+        }
+
+        fn preferences() -> usize {
+            1
+        }
+
+        fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
+            self.missiles.cmp(&other.missiles)
+        }
+
+        type Lineage = ();
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    fn insert_screen_at(
+        archive: &mut Archive<u8, ScreenKey, (), ()>,
+        parent: Option<usize>,
+        input: u8,
+        (screen, spot, missiles): (u8, u8, u8),
+    ) -> usize {
+        archive
+            .insert(
+                parent,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![input],
+                    key: ScreenKey {
+                        screen,
+                        spot,
+                        missiles,
+                    },
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert screen entry")
+            .expect("the screen entry is kept")
+    }
+
+    #[test]
+    fn a_move_inside_one_screen_records_an_edge_and_an_improvement_there_queues_it() {
+        let mut archive = Archive::<u8, ScreenKey, (), ()>::new(|_| 1);
+        archive.enable_continuations(4);
+        let left = insert_screen_at(&mut archive, None, 1, (1, 0, 5));
+        insert_screen_at(&mut archive, Some(left), 2, (1, 3, 5));
+        assert_eq!(archive.continuation_pending(), 0);
+        let richer = insert_screen_at(&mut archive, None, 3, (1, 0, 9));
+        let taken = archive
+            .pop_continuation(false)
+            .expect("the improved position is queued");
+        assert_eq!((taken.source, taken.destination), ((1, 0), (1, 3)));
+        assert_eq!(archive.index_of_id(taken.parent), Some(richer));
+        assert!(archive.outranks_slot_holders(richer, taken.destination, taken.tier));
+    }
+
+    #[test]
+    fn an_edge_inside_a_screen_lands_on_its_position_and_one_across_lands_anywhere_there() {
+        let mut archive = Archive::<u8, ScreenKey, (), ()>::new(|_| 1);
+        let origin = insert_screen_at(&mut archive, None, 1, (1, 0, 5));
+        let beside = insert_screen_at(&mut archive, Some(origin), 2, (1, 4, 5));
+        let across = insert_screen_at(&mut archive, Some(origin), 3, (2, 6, 5));
+        assert!(archive.lands_on_edge(beside, (1, 0), (1, 4)));
+        assert!(!archive.lands_on_edge(beside, (1, 0), (1, 3)));
+        assert!(archive.lands_on_edge(across, (1, 0), (2, 1)));
+        assert!(!archive.lands_on_edge(beside, (1, 0), (2, 1)));
+    }
+
     fn insert_portfolio(
         archive: &mut Archive<u8, PortfolioKey, (), ()>,
         input: u8,
@@ -3345,7 +3437,7 @@ mod tests {
     }
 
     #[test]
-    fn a_queued_source_reaches_a_neighbour_only_by_beating_every_holder_there() {
+    fn a_queued_source_reaches_a_neighbour_only_by_beating_the_holders_of_its_slot() {
         let mut archive = portfolio_bank();
         let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
         insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 20, 20)
@@ -3354,11 +3446,11 @@ mod tests {
             .expect("a candidate that takes a preference in its own slot");
         assert_eq!(archive.continuation_pending(), 1);
         let taken = archive.pop_continuation(false).expect("the slot is queued");
-        assert_eq!((taken.destination, taken.tier), (2, 0));
-        assert!(!archive.outranks_place_holders(weaker, taken.destination, taken.tier));
+        assert_eq!((taken.destination, taken.tier), ((2, ()), 0));
+        assert!(!archive.outranks_slot_holders(weaker, taken.destination, taken.tier));
         let stronger = insert_portfolio_at(&mut archive, None, vec![4], 1, 30, 40)
             .expect("a candidate that also beats the neighbour");
-        assert!(archive.outranks_place_holders(stronger, taken.destination, taken.tier));
+        assert!(archive.outranks_slot_holders(stronger, taken.destination, taken.tier));
     }
 
     #[test]
@@ -4990,11 +5082,11 @@ mod tests {
         insert_portfolio_at(&mut archive, None, vec![3], 1, 12, 30).expect("improved origin");
         let taken = archive.pop_continuation(false).expect("the queued source");
         assert_eq!(taken.gains, 0b01);
-        assert_eq!(taken.destination, 2);
+        assert_eq!(taken.destination, (2, ()));
     }
 
     #[test]
-    fn exit_sources_ignore_the_resources_a_holder_carries() {
+    fn positions_ignore_the_resources_a_holder_carries() {
         let mut archive = portfolio_bank();
         let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
         insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 5, 5).expect("neighbour");
@@ -5008,15 +5100,15 @@ mod tests {
     }
 
     #[test]
-    fn a_destination_holder_check_looks_at_every_holder_of_the_place() {
+    fn a_destination_holder_check_looks_at_every_holder_of_the_slot() {
         let mut archive = portfolio_bank();
         let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
         insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 20, 20).expect("holder");
         let weaker = insert_portfolio_at(&mut archive, None, vec![3], 1, 12, 30).expect("weaker");
-        assert!(!archive.outranks_place_holders(weaker, 2, 0));
-        assert!(archive.outranks_place_holders(weaker, 3, 0));
+        assert!(!archive.outranks_slot_holders(weaker, (2, ()), 0));
+        assert!(archive.outranks_slot_holders(weaker, (3, ()), 0));
         let stronger =
             insert_portfolio_at(&mut archive, None, vec![4], 1, 30, 40).expect("stronger");
-        assert!(archive.outranks_place_holders(stronger, 2, 0));
+        assert!(archive.outranks_slot_holders(stronger, (2, ()), 0));
     }
 }

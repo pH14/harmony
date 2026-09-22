@@ -16,9 +16,9 @@ use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
     Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, CampaignSpliceTail,
-    ContinuationAccounting, Input, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER,
-    SelectorAccounting, SelectorDraw, SelectorPath, retention_policy_from_identifier,
-    retention_policy_identifier,
+    ContinuationAccounting, Edge, Input, Position, ProgressPoint, RetentionPolicy,
+    SELECTOR_IDENTIFIER, SelectorAccounting, SelectorDraw, SelectorPath,
+    retention_policy_from_identifier, retention_policy_identifier,
 };
 use crate::search::draw::{
     DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
@@ -842,7 +842,8 @@ struct ContinuationReservation<G: Workload + ?Sized> {
     parent_id: u64,
     donor: u64,
     leaf: u64,
-    destination: <G::Key as ArchiveKey>::Place,
+    source: Position<G::Key>,
+    destination: Position<G::Key>,
     wave: u32,
     suffix: Vec<G::Action>,
 }
@@ -869,7 +870,7 @@ fn take_continuation<G: Workload + ?Sized>(
         {
             continue;
         }
-        let outranks = core.archive.outranks_place_holders(
+        let outranks = core.archive.outranks_slot_holders(
             parent_index,
             continuation.destination,
             continuation.tier,
@@ -888,6 +889,7 @@ fn take_continuation<G: Workload + ?Sized>(
             parent_id: continuation.parent,
             donor: continuation.donor,
             leaf: continuation.leaf,
+            source: continuation.source,
             destination: continuation.destination,
             wave: continuation.wave,
             suffix: actions,
@@ -982,10 +984,10 @@ fn continuation_reservation_matches<G: Workload + ?Sized>(
 
 fn continuation_arrival<G: Workload>(
     archive: &Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
-    destination: Option<<G::Key as ArchiveKey>::Place>,
+    edge: Option<Edge<G::Key>>,
     decisions: &[CampaignAdmissionDecision],
 ) -> (Option<usize>, bool) {
-    let Some(destination) = destination else {
+    let Some((source, destination)) = edge else {
         return (None, false);
     };
     decisions
@@ -998,7 +1000,7 @@ fn continuation_arrival<G: Workload>(
             };
             let arrived = archive
                 .index_of_id(id)
-                .filter(|index| archive.place_of(*index) == Some(destination));
+                .filter(|index| archive.lands_on_edge(*index, source, destination));
             (
                 landed.or(arrived),
                 replaced || (arrived.is_some() && retained),
@@ -2284,7 +2286,7 @@ struct PendingJob<G: Workload + ?Sized> {
     parent_id: u64,
     continuation_energy: Option<u16>,
     continuation_wave: u32,
-    continuation_destination: Option<<G::Key as ArchiveKey>::Place>,
+    continuation_edge: Option<Edge<G::Key>>,
     mutation_seed: u64,
     mixture_weight: u8,
     splice_weight: u8,
@@ -2798,7 +2800,10 @@ where
                             parent_id,
                             continuation_energy,
                             continuation_wave: continuation.wave.saturating_add(1),
-                            continuation_destination: Some(continuation.destination),
+                            continuation_edge: Some((
+                                continuation.source,
+                                continuation.destination,
+                            )),
                             mutation_seed,
                             mixture_weight,
                             splice_weight,
@@ -2978,7 +2983,7 @@ where
                             parent_id,
                             continuation_energy,
                             continuation_wave: 0,
-                            continuation_destination: None,
+                            continuation_edge: None,
                             mutation_seed,
                             mixture_weight,
                             splice_weight,
@@ -3166,7 +3171,7 @@ where
                     if isolated_continuation {
                         let (landed, replaced) = continuation_arrival::<G>(
                             &core.archive,
-                            pending_job.continuation_destination,
+                            pending_job.continuation_edge,
                             &decisions,
                         );
                         core.archive.record_continuation_outcome(
@@ -4135,7 +4140,9 @@ where
                         .any(|id| core.archive.opened_new_cell(*id));
                     let (landed, replaced) = continuation_arrival::<G>(
                         &core.archive,
-                        taken_continuation.as_ref().map(|taken| taken.destination),
+                        taken_continuation
+                            .as_ref()
+                            .map(|taken| (taken.source, taken.destination)),
                         &decisions,
                     );
                     core.archive.record_continuation_outcome(
