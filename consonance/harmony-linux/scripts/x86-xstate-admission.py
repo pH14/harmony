@@ -195,6 +195,86 @@ def elf(data):
     }
 
 
+REGISTER_SPILL = r"mov %r(?:[a-d]x|si|di|8|9|10|11),(?:0x[0-9a-f]+)?\(%rsp\)"
+REGISTER_RELOAD = r"mov (?:0x[0-9a-f]+)?\(%rsp\),%r(?:[a-d]x|si|di|8|9|10|11)"
+TRAMPOLINE_PROLOGUE = [
+    (r"mov %rdx,0x[0-9a-f]+\(%rsp\)", 0, 16),
+    (r"xor %edx,%edx", 1, 1),
+    (r"mov \$(0x[0-9a-f]+),%eax", 1, 1),
+    (REGISTER_SPILL, 1, 8),
+    (r"sub \S+,%rsp", 1, 1),
+    (r"and \$0xffffffffffffffc0,%rsp", 1, 1),
+    (r"mov %rsp,%rbx", 1, 1),
+]
+LOADER_TRAMPOLINES = {
+    "eager-resolver": (
+        [(r"push %rbx", 1, 1), (r"endbr64", 0, 1)],
+        [(r"mov 0x10\(%rbx\),%rsi", 1, 1), (r"mov 0x8\(%rbx\),%rdi", 1, 1),
+         (r"call (?:0x)?[0-9a-f]+", 1, 1), (r"mov %rax,%r11", 1, 1),
+         (r"mov \$(0x[0-9a-f]+),%eax", 1, 1), (r"xor %edx,%edx", 1, 1),
+         (r"xrstor 0x40\(%rsp\)", 1, 1), (REGISTER_RELOAD, 1, 8),
+         (r"mov %rbx,%rsp", 1, 1), (r"mov \(%rsp\),%rbx", 1, 1),
+         (r"add \$0x18,%rsp", 1, 1), (r"jmp \*%r11", 1, 1)],
+    ),
+    "unused-tlsdesc": (
+        [(r"mov %rbx,-0x18\(%rsp\)", 1, 1)],
+        [(r"call (?:0x)?[0-9a-f]+", 1, 1), (r"mov %rax,%rcx", 1, 1),
+         (r"mov \$(0x[0-9a-f]+),%eax", 1, 1), (r"xor %edx,%edx", 1, 1),
+         (r"xrstor 0x40\(%rsp\)", 1, 1), (r"mov %rcx,%rax", 1, 1),
+         (REGISTER_RELOAD, 1, 8), (r"mov %rbx,%rsp", 1, 1),
+         (r"mov -0x18\(%rsp\),%rbx", 1, 1), (r"jmp (?:0x)?[0-9a-f]+", 1, 1)],
+    ),
+}
+
+
+def instruction_text(item):
+    operands = re.sub(r"<[^>]*>", "", item["operands"].split("#", 1)[0])
+    text = (item["mnemonic"] + " " + re.sub(r"\s", "", operands)).strip()
+    return re.sub(r"^bnd jmp", "jmp ", text)
+
+
+def match_steps(instructions, start, step, steps):
+    index, masks = start, []
+    for pattern, low, high in steps:
+        count = 0
+        while count < high and 0 <= index < len(instructions):
+            match = re.fullmatch(pattern, instruction_text(instructions[index]))
+            if not match:
+                break
+            masks.extend(match.groups())
+            index += step
+            count += 1
+        if count < low:
+            return None
+    return index - step, masks
+
+
+def loader_trampoline(instructions, index, targets):
+    """Name the glibc loader trampoline holding a save, or None.
+
+    The lazy-binding resolver never runs under LD_BIND_NOW=1, and the dynamic
+    TLS descriptor trampoline never runs without TLSdesc relocations. Both are
+    matched by their complete straight-line shape, so no address is pinned."""
+    if instruction_text(instructions[index]).split(" ", 1)[-1] != "0x40(%rsp)":
+        return None
+    prologue = match_steps(instructions, index - 1, -1, TRAMPOLINE_PROLOGUE)
+    if prologue is None:
+        return None
+    for kind, (entry_steps, body_steps) in LOADER_TRAMPOLINES.items():
+        entry = match_steps(instructions, prologue[0] - 1, -1, entry_steps)
+        body = match_steps(instructions, index + 1, 1, body_steps)
+        if entry is None or body is None or set(prologue[1]) != set(body[1]) or len(set(body[1])) != 1:
+            continue
+        first, last = entry[0], body[0]
+        span_items = instructions[first:last + 1]
+        if any(a["address"] + len(bytes.fromhex(a["bytes"])) != b["address"] for a, b in zip(span_items, span_items[1:])):
+            continue
+        if any(item["address"] in targets for item in span_items[1:]):
+            continue
+        return kind
+    return None
+
+
 def disassemble(data, segments, objdump):
     """Disassemble every file-backed executable load segment, including stripped ELFs."""
     instructions = []
@@ -262,6 +342,8 @@ def disassemble(data, segments, objdump):
             item["straightline_ecx_zero"] = zero
             item["selector_proof_instructions"] = chain if zero else []
             item["requires_reviewed_control_flow_proof"] = True
+        if item["mnemonic"] in SAVE:
+            item["loader_trampoline"] = loader_trampoline(instructions, index, targets)
         sites.append(item)
     return sites
 
@@ -504,6 +586,9 @@ def verify(report):
                 raise Rejected(f"writable executable ELF segment: {name}")
             if any(s["mnemonic"] == "xgetbv" and not s["straightline_ecx_zero"] for s in record["sites"]):
                 raise Rejected(f"unproved XGETBV selector: {name}")
+            for site in record["sites"]:
+                if site["mnemonic"] in SAVE and not site.get("loader_trampoline"):
+                    raise Rejected(f"save instruction outside a loader trampoline: {name}:{site['address']:#x} {site['mnemonic']}")
     except (Rejected, OSError, TypeError, KeyError, ValueError, AttributeError) as error:
         errors.append(str(error))
     report.update(mode="verify", admitted=not errors, errors=errors)

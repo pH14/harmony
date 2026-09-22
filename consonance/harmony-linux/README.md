@@ -161,17 +161,19 @@ recognized straight-line ECX-zero sequence. The bounded recognizer rejects
 intervening ECX writes, branches, calls, unknown instructions and observed
 alternate direct entries. Trusted control flow must also exclude indirect entry
 that bypasses initialization; linear disassembly cannot enforce that condition
-for arbitrary code. XSAVE-family sites are inventoried without rejection: the
-glibc resolver trampolines that hold them never run, because every image boots
-with `LD_BIND_NOW=1` and carries no TLSdesc relocation.
+for arbitrary code.
 
-Save instructions may occur only inside exact digest-bound resolver regions,
-with `kind`, `start`, `size` and `sha256`. `eager-resolver` requires startup eager
-binding and the fixed loading paths to keep the region unreachable.
-`unused-tlsdesc` requires no TLSdesc relocations anywhere in the complete ELF
-closure; the scanner rejects that exception if such relocations are present.
-Eager binding alone does not establish TLS descriptor unreachability. Neither
-exception is a symbol-name allowlist or runtime instruction interception.
+Every XSAVE-family site must sit inside one of glibc's two loader trampolines.
+The scanner recognizes each trampoline by its complete straight-line shape: the
+stack alignment prologue, the register spills, the XSAVE mask setup, a save to
+`0x40(%rsp)`, one direct call, the matching `xrstor`, the register reloads and
+the exit. No branch may enter the trampoline after its first instruction. No
+address or file digest is pinned, so a rebuilt glibc or a static binary passes
+when its trampolines keep this shape. `eager-resolver` is the lazy-binding
+resolver; every image boots with `LD_BIND_NOW=1`, so it never runs.
+`unused-tlsdesc` is the dynamic TLS descriptor trampoline; the scanner rejects
+TLSdesc relocations anywhere in the closure, so it never runs either. A save
+instruction anywhere else rejects the image.
 
 The initramfs adapter accepts one raw newc `070701` archive or its gzip encoding
 and binds the exact input bytes. It inventories device nodes as metadata without

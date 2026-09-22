@@ -32,6 +32,20 @@ def fixture(code=b"\xc3", flags=5, needed=None, soname=None):
     return header + bytes(0x1000 - len(header)) + payload
 
 
+def resolver_trampoline(save=b"\x0f\xae\x64\x24\x40", entry_jump=False):
+    spills = "48890424 48894c2408 4889542410 4889742418 48897c2420 4c89442428 4c894c2430"
+    reloads = "4c8b4c2430 4c8b442428 488b7c2420 488b742418 488b542410 488b4c2408 488b0424"
+    head = bytes.fromhex("f30f1efa 53 4889e3 4883e4c0 482b2500000000 " + spills + " b8ee000800 31d2")
+    head += b"".join(b"\x48\x89\x94\x24" + struct.pack("<I", 0x240 + 8 * i) for i in range(8))
+    head += save + bytes.fromhex("488b7310 488b7b08")
+    tail = bytes.fromhex("4989c3 b8ee000800 31d2 0fae6c2440 " + reloads + " 4889dc 488b1c24 4883c418 41ffe3")
+    call = b"\xe8" + struct.pack("<i", len(tail))
+    code = head + call + tail + b"\xc3"
+    if entry_jump:
+        code = b"\xeb\x04" + code
+    return code
+
+
 def newc(entries):
     output = bytearray()
     for index, (name, mode, content, rdev) in enumerate(entries + [("TRAILER!!!", 0, b"", (0, 0))]):
@@ -68,13 +82,29 @@ class AdmissionTests(unittest.TestCase):
         self.assertFalse(report["admitted"])
         self.assertTrue(self.admitted(report))
 
-    def test_save_instructions_are_reported_without_rejection(self):
+    def test_save_instructions_outside_a_loader_trampoline_rejected(self):
         for opcode in (b"\x0f\xae\x27", b"\x0f\xae\x37", b"\x0f\xc7\x27", b"\x0f\xc7\x2f", b"\x48\x0f\xae\x27"):
             with self.subTest(opcode=opcode.hex()):
                 self.binary.write_bytes(fixture(opcode + b"\xc3"))
                 report, _ = self.scan()
                 self.assertTrue(any(s["mnemonic"] in a.SAVE for s in report["artifacts"]["/unexecutable"]["sites"]))
+                self.assertFalse(self.admitted(report))
+
+    def test_lazy_binding_resolver_trampoline_admitted(self):
+        for save in (b"\x0f\xae\x64\x24\x40", b"\x0f\xc7\x64\x24\x40"):
+            with self.subTest(save=save.hex()):
+                self.binary.write_bytes(fixture(resolver_trampoline(save)))
+                report, _ = self.scan()
+                sites = [s for s in report["artifacts"]["/unexecutable"]["sites"] if s["mnemonic"] in a.SAVE]
+                self.assertEqual([s["loader_trampoline"] for s in sites], ["eager-resolver"])
                 self.assertTrue(self.admitted(report))
+
+    def test_resolver_trampoline_with_other_save_operand_or_entry_branch_rejected(self):
+        for code in (resolver_trampoline(b"\x0f\xae\x64\x24\x48"), resolver_trampoline(entry_jump=True)):
+            with self.subTest(code=code[:8].hex()):
+                self.binary.write_bytes(fixture(code))
+                report, _ = self.scan()
+                self.assertFalse(self.admitted(report))
 
     def test_xgetbv_selector_and_incoming_branch(self):
         for code, accepted in [(b"\x31\xc9\x0f\x01\xd0\xc3", True), (b"\xb9\x01\0\0\0\x0f\x01\xd0\xc3", False), (b"\xeb\x02\x31\xc9\x0f\x01\xd0\xc3", False)]:
