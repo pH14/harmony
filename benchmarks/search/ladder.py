@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Score Metroid ladder runs: segments passed in a row from each chain root.
+
+Each source is a matrix directory written by `eval.py run` over
+`metroid-ladder.json`, or a JSON file this script wrote. A root holds every
+milestone its genesis state already satisfies at execution one. The ladder
+for that root is the chain's milestone sequence from the first milestone the
+root does not hold. A milestone passes when at least two seeds reach it, and
+the score is the number of passed milestones in a row from the front of the
+ladder. Several sources print side by side, one column per build.
+"""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from milestones import last_line, progress_of  # noqa: E402
+
+LADDER = [
+    "brinstar",
+    "norfair",
+    "ridley_defeated",
+    "ice_beam",
+    "tourian",
+    "tourian_far",
+    "tourian_bottom",
+    "tourian_approach",
+    "tourian_end",
+    "zebetite_destroyed",
+    "mother_brain_room",
+    "mother_brain_defeated",
+    "escape_started",
+    "ending",
+]
+
+PASS_SEEDS = 2
+
+
+def first_seen(summary, cell_dir):
+    progress = progress_of(summary, cell_dir) or {}
+    diagnostics = progress.get("workload_diagnostics") or {}
+    named = (diagnostics.get("named_progress") or {}).get("first_seen") or {}
+    return {
+        name: named[name]["execution"]
+        for name in LADDER
+        if named.get(name) and named[name].get("execution") is not None
+    }, progress.get("executions")
+
+
+def collect(source):
+    source = Path(source)
+    if source.is_file():
+        return json.loads(source.read_text())
+    roots = {}
+    build = None
+    for cell in sorted(source.iterdir()):
+        path = cell / "summary.json"
+        if not path.is_file():
+            continue
+        summary = json.loads(path.read_text())
+        request = summary.get("search_request") or {}
+        if request.get("game") != "metroid":
+            continue
+        build = build or ((summary.get("build") or {}).get("binary_sha256") or "")[:12]
+        seen, executions = first_seen(summary, cell)
+        root = roots.setdefault(
+            summary.get("case"),
+            {"root_input": request.get("root_input"), "seeds": {}},
+        )
+        root["seeds"][str(request.get("seed"))] = {
+            "status": summary.get("status"),
+            "exit_code": summary.get("exit_code"),
+            "executions": executions,
+            "first_execution": seen,
+        }
+    return {
+        "format": "harmony-metroid-ladder-v1",
+        "matrix": source.name,
+        "build": build,
+        "ladder": LADDER,
+        "roots": roots,
+    }
+
+
+def score(root):
+    seeds = list(root["seeds"].values())
+    held = {
+        name
+        for name in LADDER
+        if sum(1 for seed in seeds if seed["first_execution"].get(name) == 1) >= PASS_SEEDS
+    }
+    ladder = [name for name in LADDER if name not in held]
+    passed = []
+    for name in ladder:
+        reached = sorted(
+            seed["first_execution"][name]
+            for seed in seeds
+            if seed["first_execution"].get(name, 0) > 1
+        )
+        if len(reached) < PASS_SEEDS:
+            break
+        passed.append((name, reached))
+    return held, ladder, passed
+
+
+def case_order(case):
+    return int(case.split("-seg")[-1])
+
+
+def render(documents):
+    cases = sorted({case for document in documents for case in document["roots"]}, key=case_order)
+    builds = [document.get("build") or document.get("matrix") for document in documents]
+    header = ["root", "next"] + [f"{build} passed" for build in builds]
+    lines = [header]
+    for case in cases:
+        line = [case]
+        first_next = None
+        for document in documents:
+            root = document["roots"].get(case)
+            if root is None:
+                line.append("-")
+                continue
+            held, ladder, passed = score(root)
+            first_next = first_next or (ladder[0] if ladder else "-")
+            last = passed[-1] if passed else None
+            detail = f"{len(passed)}"
+            if last:
+                detail += f" to {last[0]} at {', '.join(f'{value:,}' for value in last[1])}"
+            failures = [
+                seed for seed, cell in root["seeds"].items() if cell.get("exit_code") not in (0, None)
+            ]
+            if failures:
+                detail += f" (exit on seeds {', '.join(failures)})"
+            line.append(detail)
+        line.insert(1, first_next or "-")
+        lines.append(line)
+    widths = [max(len(line[index]) for line in lines) for index in range(len(header))]
+    for line in lines:
+        print("  ".join(part.ljust(width) for part, width in zip(line, widths)))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("sources", nargs="+")
+    parser.add_argument("--out", type=Path)
+    arguments = parser.parse_args()
+    documents = [collect(source) for source in arguments.sources]
+    render(documents)
+    if arguments.out:
+        arguments.out.mkdir(parents=True, exist_ok=True)
+        for document in documents:
+            path = arguments.out / f"{document['matrix']}.json"
+            path.write_text(json.dumps(document, indent=1, sort_keys=True) + "\n")
+            print(f"wrote {path}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

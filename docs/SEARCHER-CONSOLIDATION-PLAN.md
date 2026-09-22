@@ -47,6 +47,18 @@ destination's holders.
 Settings that remain: the tier multiplier, the count decay exponent, the
 continuation share, the capacity.
 
+The trait as built: a key names its place (`place()`, the map screen), its
+progress (`progress()`, an ordered value), and its holder identity
+(`identity()`, the fine state at a place without resources or progress).
+A cell is the pair of progress and place. A retention slot is a cell plus an
+identity. An exit's source is a place plus an identity, so it carries no
+progress or resources; an edge's target is a place. Settings are constants in
+the archive: the tier multiplier is eight per rank capped at eight ranks, the
+count decay is one over one plus the draw count, the continuation share is
+one reservation in four, and the capacity is the key's. One selector
+identifier names this; the stream schema version rises so old recordings are
+rejected before replay.
+
 For Metroid: the cell is area, map screen, items. Boss damage is holder
 identity, so a hit that spent a missile is kept beside the state that did
 not fire. Two preferences, missiles first and health first, with tanks
@@ -128,3 +140,10 @@ diagnose; power-on runs are the only completion test.
   the holder check stays as a priority with resource-gaining edges admitted;
   screen-keyed exits lose entry context, so exit sources keep holder
   identity and only the landing target is the cell.
+- 2026-09-22: branch searcher-consolidation from 09a8bb60b. The ms02 disk
+  was full; the September 1 autoresearch result trees were deleted (578 GB
+  free). The ladder manifest `benchmarks/search/metroid-ladder.json` holds
+  the seventeen distinct chain roots (segments sharing a root give the same
+  run on one build); `ladder.py` scores segments passed in a row from each
+  root on two of three seeds. The old-build baseline (builds/p3-recency17,
+  key v21) launched on ms02 at 02:37 box time, five cells at a time.
