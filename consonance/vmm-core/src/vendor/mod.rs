@@ -89,7 +89,7 @@ pub trait Vendor: Arch + Sized {
 
     fn inject_serial_input(devices: &mut Self::Devices, bytes: &[u8]);
 
-    fn controlled_identity_vcpu(vcpu: &Self::VcpuState) -> Result<Self::VcpuState, VmmError> {
+    fn logical_identity_vcpu(vcpu: &Self::VcpuState) -> Result<Self::VcpuState, VmmError> {
         Ok(vcpu.clone())
     }
 

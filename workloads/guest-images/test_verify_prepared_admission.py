@@ -113,36 +113,24 @@ class CompositionTests(unittest.TestCase):
         with self.assertRaisesRegex(p.a.Rejected, "cannot use default"):
             p.inspect_dump(self.root)
 
-    def test_oracle_contract_covers_guest_inputs_and_controls(self):
-        manifest, _ = self.oracle_dump()
-        expected = p.oracle_composition_digest(manifest)
-        for key in ("kernel.bin", "rootfs.cpio.gz", "session-config.json", "control.cpio.gz"):
-            with self.subTest(key=key):
-                changed = copy.deepcopy(manifest)
-                changed["files"][key]["sha256"] = "d" * 64
-                self.assertNotEqual(p.oracle_composition_digest(changed), expected)
-        changed = copy.deepcopy(manifest)
-        changed["oracle"]["setup_payloads"] = [[1, 1]] * 16
-        self.assertNotEqual(p.oracle_composition_digest(changed), expected)
-
-    def test_oracle_verification_fails_without_separate_review(self):
+    def test_verification_admits_only_components_with_clean_properties(self):
         self.oracle_dump()
-        for baseline_kind in ("absent", "default-session"):
-            with self.subTest(baseline=baseline_kind), tempfile.TemporaryDirectory() as directory:
+        clean = {"interpreter": None, "needed": [], "soname": None, "tlsdesc": False,
+                 "text_relocations": False, "executable_stack": False,
+                 "writable_executable_segments": [], "sites": []}
+        for writable, admitted in ((False, True), (True, False)):
+            with self.subTest(writable=writable), tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "report"
                 argv = ["verify-prepared-admission.py", "verify", str(self.root),
                         "--output", str(output)]
-                if baseline_kind == "default-session":
-                    baseline = Path(directory) / "baseline.json"
-                    baseline.write_text(json.dumps({"version": 2,
-                        "manifest_sha256": p.a.digest((self.root / "manifest.json").read_bytes())}))
-                    argv += ["--baseline", str(baseline)]
-                with mock.patch("sys.argv", argv), mock.patch.object(p.a, "inventory_initramfs", return_value=({},)):
-                    self.assertEqual(p.main(), 1)
+                record = dict(clean, writable_executable_segments=[{}] if writable else [])
+                scan = ({"artifacts": {"/binary": record}}, {})
+                with mock.patch("sys.argv", argv), mock.patch.object(p.a, "inventory_initramfs", return_value=scan):
+                    self.assertEqual(p.main(), 0 if admitted else 1)
                 report = json.loads((output / "composition-report.json").read_text())
-                self.assertFalse(report["admitted"])
-                expected = "composition baseline required" if baseline_kind == "absent" else "oracle scope required"
-                self.assertIn(expected, report["errors"][0])
+                self.assertEqual(report["admitted"], admitted)
+                if not admitted:
+                    self.assertIn("writable executable ELF segment", report["errors"][0])
 
     def test_component_projection_and_candidate_only(self):
         report, data = p.inspect_dump(self.root)

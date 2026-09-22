@@ -62,51 +62,6 @@ pub type VmmFactory<B> = Box<dyn FnMut() -> Result<Vmm<B>, VmmError>>;
 
 pub type RemapVmmFactory<B> = Box<dyn FnMut(snapshot_store::Mapping) -> Result<Vmm<B>, VmmError>>;
 
-fn adopt_controlled_guest_identity<B: Backend<A: Vendor>>(
-    vmm: &mut Vmm<B>,
-    trusted: Option<[u8; 32]>,
-) -> Result<(), VmmError> {
-    validate_controlled_guest_identity(vmm, trusted)?;
-    if trusted.is_some() && vmm.controlled_guest_identity.is_none() {
-        vmm.controlled_guest_identity = trusted;
-    }
-    Ok(())
-}
-
-fn validate_controlled_guest_identity<B: Backend<A: Vendor>>(
-    vmm: &Vmm<B>,
-    trusted: Option<[u8; 32]>,
-) -> Result<(), VmmError> {
-    match (trusted, vmm.controlled_guest_identity) {
-        (Some(_), None) => Ok(()),
-        (Some(expected), Some(actual)) if expected == actual => Ok(()),
-        (Some(_), Some(_)) => Err(VmmError::ContractViolation(
-            "restore factory returned a different controlled guest identity profile".to_owned(),
-        )),
-        (None, None) => Ok(()),
-        (None, Some(_)) => Err(VmmError::ContractViolation(
-            "restore factory returned a controlled guest identity for a generic source".to_owned(),
-        )),
-    }
-}
-
-fn require_recovery_guest_identity<B: Backend<A: Vendor>>(
-    vmm: &Vmm<B>,
-    trusted: Option<[u8; 32]>,
-) -> Result<(), VmmError> {
-    match (trusted, vmm.controlled_guest_identity) {
-        (Some(expected), Some(actual)) if expected == actual => Ok(()),
-        (Some(_), _) => Err(VmmError::ContractViolation(
-            "recovery factory did not return the trusted controlled guest identity profile"
-                .to_owned(),
-        )),
-        (None, None) => Ok(()),
-        (None, Some(_)) => Err(VmmError::ContractViolation(
-            "recovery factory returned a controlled guest identity for a generic source".to_owned(),
-        )),
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RestoreMode {
     InPlace,
@@ -188,7 +143,6 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     factory: VmmFactory<B>,
     service_factory: ServiceFactory,
     remap_factory: Option<RemapVmmFactory<B>>,
-    trusted_controlled_guest_identity: Option<[u8; 32]>,
     restore_mode: RestoreMode,
     engine: SnapshotEngine,
     derive_parent: Option<SnapshotId>,
@@ -289,7 +243,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     pub fn new(mut vmm: Vmm<B>, factory: VmmFactory<B>) -> Self {
         let engine = SnapshotEngine::new(vmm.guest_memory().len());
         let seed = vmm.entropy_state().unwrap_or(0);
-        let trusted_controlled_guest_identity = vmm.controlled_guest_identity;
         let recorded = EnvSpec::seeded(seed);
         vmm.enable_sdk(
             RecordedEnv::new(seed, Box::new(NominalHandler) as Box<dyn ServiceHandler>),
@@ -300,7 +253,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             factory,
             service_factory: nominal_factory(),
             remap_factory: None,
-            trusted_controlled_guest_identity,
             restore_mode: RestoreMode::Memcpy,
             engine,
             derive_parent: None,
@@ -1212,8 +1164,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
 
         let use_remap = self.restore_mode != RestoreMode::Memcpy && self.remap_factory.is_some();
-        let trusted_controlled_guest_identity = self.trusted_controlled_guest_identity;
-        let mut fresh_was_unprofiled = false;
         let (mut fresh, restore_result) = if used_in_place {
             let fresh = self.vmm.take().ok_or(ServeError::Poisoned)?;
             (fresh, Ok(()))
@@ -1224,10 +1174,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     Err(_) => {
                         self.vmm = None;
                         let recovery = (self.factory)()?;
-                        require_recovery_guest_identity(
-                            &recovery,
-                            trusted_controlled_guest_identity,
-                        )?;
                         self.install_recovery_boot(recovery);
                         return Ok(Err(ControlError::RestoreFailed));
                     }
@@ -1243,18 +1189,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     .as_mut()
                     .expect("use_remap checked is_some");
                 let mut fresh = factory(mapping)?;
-                fresh_was_unprofiled = trusted_controlled_guest_identity.is_some()
-                    && fresh.controlled_guest_identity.is_none();
-                adopt_controlled_guest_identity(&mut fresh, trusted_controlled_guest_identity)?;
                 let result = fresh
                     .restore_vm_state(&vm_state)
                     .and_then(|()| fresh.prepare_snapshot());
                 (fresh, result)
             } else {
                 let mut fresh = (self.factory)()?;
-                fresh_was_unprofiled = trusted_controlled_guest_identity.is_some()
-                    && fresh.controlled_guest_identity.is_none();
-                adopt_controlled_guest_identity(&mut fresh, trusted_controlled_guest_identity)?;
                 let result = fresh.restore_snapshot(mapping.as_slice(), &vm_state);
                 (fresh, result)
             }
@@ -1262,17 +1202,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         match restore_result {
             Ok(()) => {}
             Err(error) if restore_error_is_precommit(&error) => {
-                if use_remap || fresh_was_unprofiled {
+                if use_remap {
                     drop(fresh);
                     fresh = (self.factory)()?;
                 }
-                require_recovery_guest_identity(&fresh, trusted_controlled_guest_identity)?;
                 self.install_recovery_boot(fresh);
                 return Ok(Err(ControlError::RestoreFailed));
             }
             Err(error) => return Err(error.into()),
         }
-        adopt_controlled_guest_identity(&mut fresh, trusted_controlled_guest_identity)?;
         if let Some(seed) = seed {
             if reseeds.is_empty() {
                 fresh.reseed_entropy(seed)?;
@@ -1866,26 +1804,6 @@ mod tests {
             Ok(v)
         });
         with_test_service(ControlServer::new(live, factory))
-    }
-
-    fn set_controlled_profile(server: &mut ControlServer<MockBackend>, profile: Option<[u8; 32]>) {
-        server.trusted_controlled_guest_identity = profile;
-        let vmm = server
-            .vmm
-            .as_mut()
-            .expect("profile setup requires a live VM");
-        vmm.controlled_guest_identity = profile;
-        if profile.is_some() {
-            let mut state = vmm.backend.save().unwrap();
-            state.xsave = vec![0; 576];
-            state.xsave[0..2].copy_from_slice(&0x037Fu16.to_le_bytes());
-            state.xsave[24..28].copy_from_slice(&0x1F80u32.to_le_bytes());
-            state.xsave[28..32].copy_from_slice(&0x0000FFFFu32.to_le_bytes());
-            state.xsave[512..520].copy_from_slice(&3u64.to_le_bytes());
-            vmm_backend::arch::x86::canonicalize_xsave(&mut state.xsave);
-            state.xsave_restore_bv = Some(0);
-            vmm.backend.set_state(state);
-        }
     }
 
     #[derive(Clone)]
@@ -2765,137 +2683,6 @@ mod tests {
         assert!(restore_defers_materialization(super::RestoreMode::InPlace));
         assert!(!restore_defers_materialization(super::RestoreMode::Remap));
         assert!(!restore_defers_materialization(super::RestoreMode::Memcpy));
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "snapshot materialization and restore use mmap-backed snapshot storage"
-    )]
-    fn fresh_restore_inherits_the_trusted_controlled_profile() {
-        let profile = Some([0x11; 32]);
-        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
-        set_controlled_profile(&mut server, profile);
-        hello(&mut server);
-        let snapshot = snap(&mut server);
-
-        assert_eq!(
-            server.handle(&Request::Replay(snapshot)).unwrap(),
-            Ok(Reply::Unit)
-        );
-        assert_eq!(server.vmm().unwrap().controlled_guest_identity(), profile);
-    }
-
-    #[test]
-    fn recovery_profile_validation_is_fail_closed_and_does_not_mutate_targets() {
-        let expected = Some([0x55; 32]);
-        let mut blank = vmm_at_sync(vec![Exit::Common(CommonExit::Idle)], 500, 0xBA5E);
-        super::validate_controlled_guest_identity(&blank, expected).unwrap();
-        assert_eq!(blank.controlled_guest_identity, None);
-        assert!(super::require_recovery_guest_identity(&blank, expected).is_err());
-        assert_eq!(blank.controlled_guest_identity, None);
-
-        blank.controlled_guest_identity = Some([0x66; 32]);
-        let before = blank.controlled_guest_identity;
-        assert!(super::validate_controlled_guest_identity(&blank, expected).is_err());
-        assert_eq!(blank.controlled_guest_identity, before);
-        assert!(super::adopt_controlled_guest_identity(&mut blank, expected).is_err());
-        assert_eq!(blank.controlled_guest_identity, before);
-        assert!(super::require_recovery_guest_identity(&blank, expected).is_err());
-        assert_eq!(blank.controlled_guest_identity, before);
-
-        assert!(super::adopt_controlled_guest_identity(&mut blank, None).is_err());
-        assert_eq!(blank.controlled_guest_identity, before);
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "reaches snapshot materialization and restore through mmap-backed storage"
-    )]
-    fn failed_controlled_restore_does_not_install_an_unprofiled_recovery_boot() {
-        let profile = Some([0x77; 32]);
-        let live = vmm_at_sync(vec![Exit::Common(CommonExit::Idle)], 500, 0xBA5E);
-        let factory = Box::new(|| {
-            let mut m = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
-            m.set_policy(&X86Policy {
-                cpuid: vmm_backend::CpuidModel::default(),
-                msr_filter: vmm_backend::MsrFilter::default(),
-            })
-            .unwrap();
-            let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
-            v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 0).unwrap());
-            v.wire_snapshot_hashing();
-            Ok(v)
-        });
-        let mut server = with_test_service(ControlServer::new(live, factory));
-        set_controlled_profile(&mut server, profile);
-        hello(&mut server);
-        let snapshot = snap(&mut server);
-
-        let result = server.handle(&Request::Branch {
-            snap: snapshot,
-            env: seeded_env(1),
-        });
-        assert!(matches!(
-            result,
-            Err(ServeError::Vmm(VmmError::ContractViolation(_)))
-        ));
-        assert!(server.vmm().is_none());
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "snapshot materialization and remap restore use mmap-backed snapshot storage"
-    )]
-    fn remap_restore_inherits_the_trusted_controlled_profile() {
-        let profile = Some([0x22; 32]);
-        let mut server = server_with_remap(vec![Exit::Common(CommonExit::Idle)], false);
-        set_controlled_profile(&mut server, profile);
-        hello(&mut server);
-        let snapshot = snap(&mut server);
-
-        assert_eq!(
-            server.handle(&Request::Replay(snapshot)).unwrap(),
-            Ok(Reply::Unit)
-        );
-        assert_eq!(server.vmm().unwrap().controlled_guest_identity(), profile);
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "portable import materializes snapshot storage through mmap"
-    )]
-    fn portable_import_rejects_generic_and_cross_profile_targets_before_minting() {
-        let profile = Some([0x33; 32]);
-        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
-        set_controlled_profile(&mut source, profile);
-        hello(&mut source);
-        let snapshot = snap(&mut source);
-        let mut artifact = Vec::new();
-        source
-            .export_portable_snapshot(snapshot, &mut artifact)
-            .unwrap();
-
-        for target_profile in [None, Some([0x44; 32])] {
-            let mut target = server(vec![Exit::Common(CommonExit::Idle)]);
-            set_controlled_profile(&mut target, target_profile);
-            hello(&mut target);
-            let before = target.snapshot_store_stats();
-            let before_hash = target.vmm_mut().unwrap().state_hash().unwrap();
-            let result = target.import_portable_snapshot(artifact.as_slice());
-            assert!(matches!(
-                result,
-                Err(PortableSnapshotError::Snapshot(
-                    crate::snapshot::SnapshotError::ContractMismatch
-                ))
-            ));
-            assert_eq!(target.snapshot_store_stats(), before);
-            assert_eq!(target.latest_snapshot(), None);
-            assert_eq!(target.vmm_mut().unwrap().state_hash().unwrap(), before_hash);
-        }
     }
 
     #[test]

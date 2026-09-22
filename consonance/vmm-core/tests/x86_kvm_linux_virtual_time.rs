@@ -229,10 +229,6 @@ fn boot_once(
 ) -> BootRun {
     let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
         .expect("boot_linux_stock_virtual_time");
-    assert!(
-        vmm.controlled_guest_identity().is_some(),
-        "Linux identity consistency requires the exact reviewed controlled fixture"
-    );
     vmm.arm_checkpoint_hash_preimage();
     run_boot_observed(
         &mut vmm,

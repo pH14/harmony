@@ -108,8 +108,7 @@ CR8. This path does not inject queued interrupts or count a guest exit.
 The immediate-exit operation does not guarantee stable XSAVE presence bits,
 either across repeated preparation or subsequent guest entry. Backend snapshots
 retain the complete raw bitmap. The core layer projects only validated init
-x87/SSE restoration metadata for verified controlled guests; generic identity
-remains strict. The reproduced AMD failure and scoped contract are documented under
+x87/SSE restoration metadata. The reproduced AMD failure and its contract are documented under
 [Published XSAVE identity check](../vmm-core/README.md#published-xsave-identity-check). `save()`
 retires an acknowledged write completion with the same guarded entry before it
 reads and is otherwise a read; callers prepare a boundary explicitly after

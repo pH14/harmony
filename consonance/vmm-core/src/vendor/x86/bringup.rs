@@ -215,8 +215,6 @@ fn compose_linux_virtual_time<B: Backend<A = X86>>(
         contract::cpuid_model(),
         Some(&boot_seed),
     )?;
-    vmm.controlled_guest_identity =
-        crate::controlled_guest::linux_identity(kernel, initramfs, guest_ram_len, cmdline);
     vmm.wire_vtime(wiring);
     vmm.enable_pvclock();
     Ok(vmm)

@@ -1,24 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::vendor::x86::contract;
+use super::contract;
 use crate::vmm::{GuestRam, Step, TerminalReason, Vmm};
-use sha2::{Digest, Sha256};
 use vmm_backend::{Backend, Gpa, KvmBackend, X86, X86Policy};
 
 const IA32_EFER: u32 = 0xC000_0080;
-const CONTROLLED_GUEST_IDENTITY: [u8; 32] = [1; 32];
 const PORTABLE_TRACE_FIELDS_START: usize = 68;
 const PORTABLE_STATE_START: usize = 84;
 const PORTABLE_MEMORY_START: usize = 116;
 const PORTABLE_DIGEST_LEN: usize = 32;
-
-fn controlled_contract_hash() -> [u8; 32] {
-    let mut hash = Sha256::new();
-    hash.update(b"harmony.controlled-guest-identity.v1\0");
-    hash.update(crate::vendor::x86::contract::contract_hash());
-    hash.update(CONTROLLED_GUEST_IDENTITY);
-    hash.finalize().into()
-}
 
 fn production_policy() -> X86Policy {
     X86Policy {
@@ -110,8 +100,8 @@ fn compare_public_identity_portable_execution_state(
         right_snapshot.vm_state,
         "right VM state must use the current complete encoding"
     );
-    assert_eq!(left_state.contract_hash, controlled_contract_hash());
-    assert_eq!(right_state.contract_hash, controlled_contract_hash());
+    assert_eq!(left_state.contract_hash, contract::contract_hash());
+    assert_eq!(right_state.contract_hash, contract::contract_hash());
     left_state.xsave_restore_bv =
         vmm_backend::logical_xsave_restore_bv(&left_state.xsave.0, left_state.xsave_restore_bv)
             .expect("validate left XSAVE restore provenance");
@@ -173,7 +163,7 @@ fn public_identity_vmm(active: bool, seed: u64, xcr0: u64) -> Vmm<KvmBackend> {
     put_bytes(bytes, 0x1000, &code);
     let mut vmm = compose(ram, KvmBackend::new().unwrap(), |backend| {
         let mut state = backend.save().unwrap();
-        let entry = crate::vendor::x86::entry::long_mode_entry(0x1000, 0, 0x3000, 0x7000);
+        let entry = super::entry::long_mode_entry(0x1000, 0, 0x3000, 0x7000);
         state.regs = entry.regs;
         state.sregs = entry.sregs;
         state.sregs.cr4 |= (1 << 9) | (1 << 18);
@@ -190,11 +180,10 @@ fn public_identity_vmm(active: bool, seed: u64, xcr0: u64) -> Vmm<KvmBackend> {
         backend.restore(&state).unwrap();
     });
     wire_snapshot_path(&mut vmm);
-    vmm.controlled_guest_identity = Some(CONTROLLED_GUEST_IDENTITY);
     vmm.prepare_snapshot().unwrap();
     assert_eq!(
         vmm.save_vm_state().unwrap().contract_hash,
-        controlled_contract_hash()
+        contract::contract_hash()
     );
     vmm
 }
@@ -492,7 +481,7 @@ fn public_snapshot_replay_recapture_preserves_xsave_identity() {
     }
     assert!(
         failures.is_empty(),
-        "controlled public snapshot failures:\n{}",
+        "logical identity snapshot failures:\n{}",
         failures.join("\n")
     );
 }

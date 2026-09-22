@@ -83,10 +83,9 @@ The x86 Nix OCI producer packs the minimal Linux fixture with the same reviewed
 BusyBox binary as the OCI platform. Its fixed init only mounts proc/sysfs,
 prints readiness and powers off; the archive contains no libvoidstar or dynamic
 dependencies. `build-initramfs.sh --busybox FILE` selects that binary explicitly;
-the standalone builder still builds its own BusyBox. Only the reviewed archive
-qualifies for controlled identity.
+the standalone builder still builds its own BusyBox.
 
-## Controlled x86 XSAVE behavior
+## x86 XSAVE behavior
 
 The guest kernel canonicalizes complete XSAVE buffers while keeping AVX. The
 x86 configuration uses `noxsaveopt noxsaves`; save/canonicalize sequences exclude
@@ -100,7 +99,7 @@ through supervisor startup, workload startup and runc re-execution.
 The general fpstate and user signal-frame paths have distinct layouts and fault
 handling. Successful paths overwrite raw bitmap register aliases and owned
 stack storage before restoring interrupts. A conditional signal checked-access
-failure can retain the raw bitmap in EDX. The controlled execution contract
+failure can retain the raw bitmap in EDX. The x86 execution contract
 excludes that post-success failure: successful mask-7 plain XSAVE has already
 written both possible buffer pages, with one vCPU, disabled local IRQs, fixed
 mappings, no PKU and healthy memory. Initial XSAVE faults precede the bitmap
@@ -108,42 +107,42 @@ read and do not establish coverage of this later conditional failure. External
 NMI/MCE injection and arbitrary imported pending events are outside this
 contract; the generic backend can represent them.
 
-Outside the patched kernel, controlled workloads must not execute XSAVE-family
-saves or XGETBV with ECX=1. XGETBV with a proven zero selector remains allowed.
-Static linking alone does not exclude libc save routines. Loader exceptions
-apply only to pinned code regions whose paths are excluded by the fixed loading
-configuration. Generated code, JITs, code mutation and writable executable memory
-are excluded by policy. These restrictions do not qualify arbitrary images,
-SQL, ROMs or imported machine states.
+Outside the patched kernel, workloads must not execute XSAVE-family saves or
+XGETBV with ECX=1. XGETBV with a proven zero selector remains allowed. Static
+linking alone does not exclude libc save routines; glibc's resolver trampolines
+hold XSAVE instructions but never run, because every image boots with
+`LD_BIND_NOW=1` and the scanner rejects TLSdesc relocations. Generated code,
+JITs, code mutation and writable executable memory are excluded by policy. These
+restrictions do not qualify arbitrary images, SQL, ROMs or imported machine
+states.
 
-Raw XSAVE presence remains in restore data. Generic snapshot identity stays
-strict; exact verified guest compositions can use the core layer's
-[controlled logical identity](../vmm-core/README.md#published-xsave-identity-check),
+Raw XSAVE presence remains in restore data. Snapshot identity uses the core
+layer's [logical identity](../vmm-core/README.md#published-xsave-identity-check),
 which excludes only validated init x87/SSE presence metadata.
 Matching finite executions does not establish general continuation equivalence.
 Outstanding XSAVE and PAE behavior is tracked in
 [#307](https://github.com/pH14/harmony/issues/307) and
 [#314](https://github.com/pH14/harmony/issues/314).
 
-## Controlled x86 userspace admission
+## x86 userspace admission
 
 Run the scanner on complete rootfs trees, including shared libraries and possible
 `dlopen` inputs, with GNU objdump available:
 
 ```sh
 python3 consonance/harmony-linux/scripts/x86-xstate-admission.py inventory ROOTFS --output candidate.json
-python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify ROOTFS --baseline contract.json --output result.json
+python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify ROOTFS --output result.json
 python3 consonance/harmony-linux/scripts/x86-xstate-admission.py inventory-initramfs INITRAMFS --output candidate.json
-python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify-initramfs INITRAMFS --baseline contract.json --output result.json
+python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify-initramfs INITRAMFS --output result.json
 ```
 
 `--objdump` selects the disassembler. Inventory discovers every ELF by file
-contents regardless of executable permissions. Schema-2 contracts bind the exact
-archive, rootfs and complete ELF path-to-SHA256 map, plus small `xstate` exception
-records. Candidate inventory does not generate an accepting contract. File
-contents, metadata and symlink changes invalidate their corresponding digest.
+contents regardless of executable permissions and records file digests, metadata,
+symlink targets and every XSAVE-family instruction site. Verify checks the
+executable properties listed below on that same inventory. It compares nothing
+against a stored digest, so rebuilding an image does not require a new approval.
 Actual launch configuration, kernel, ordered archive composition, ROM and SQL
-inputs are additionally bound by the workload composition checker under
+inputs are additionally checked by the workload composition checker under
 `workloads/guest-images/`.
 
 Dependency analysis resolves symlinks inside the guest root and checks the
@@ -156,13 +155,15 @@ search are unsupported. Launch environment overrides are outside the contract.
 
 Executable segments are scanned for XSAVE-family instructions and XGETBV;
 restore instructions are inventoried separately. Verification rejects W+X
-PT_LOAD segments, executable PT_GNU_STACK and DT_TEXTREL/DF_TEXTREL images.
-Every XGETBV address must be listed in the contract and have a recognized
-straight-line ECX-zero sequence. The bounded recognizer rejects intervening
-ECX writes, branches, calls, unknown instructions and observed alternate direct
-entries. Trusted control flow must also exclude indirect entry that bypasses
-initialization; linear disassembly cannot enforce that condition for arbitrary
-code.
+PT_LOAD segments, executable PT_GNU_STACK, DT_TEXTREL/DF_TEXTREL images and
+TLSdesc relocations anywhere in the closure. Every XGETBV site must have a
+recognized straight-line ECX-zero sequence. The bounded recognizer rejects
+intervening ECX writes, branches, calls, unknown instructions and observed
+alternate direct entries. Trusted control flow must also exclude indirect entry
+that bypasses initialization; linear disassembly cannot enforce that condition
+for arbitrary code. XSAVE-family sites are inventoried without rejection: the
+glibc resolver trampolines that hold them never run, because every image boots
+with `LD_BIND_NOW=1` and carries no TLSdesc relocation.
 
 Save instructions may occur only inside exact digest-bound resolver regions,
 with `kind`, `start`, `size` and `sha256`. `eager-resolver` requires startup eager

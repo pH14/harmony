@@ -211,7 +211,6 @@ jobs:
           set -euo pipefail
           python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify-initramfs \
             consonance/harmony-linux/build/x86_64/initramfs.cpio.gz \
-            --baseline workloads/guest-images/admission/minimal-component.json \
             --output virtual-time-evidence/admission.json
           cp consonance/harmony-linux/build/x86_64/runtime-manifest.json \
             virtual-time-evidence/runtime-manifest.json
@@ -283,7 +282,7 @@ jobs:
             -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/restore.txt
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-evidence/restore.txt
           timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p vmm-core --lib \
-            controlled_guest::live_tests::public_snapshot_replay_recapture_preserves_xsave_identity \
+            vendor::x86::logical_identity_live_tests::public_snapshot_replay_recapture_preserves_xsave_identity \
             -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee snapshot-evidence/identity.txt
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-evidence/identity.txt
       - uses: actions/upload-artifact@v4

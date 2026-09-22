@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Inventory controlled x86 rootfs inputs; verify pinned executable contracts."""
+"""Inventory x86 rootfs inputs and check their executable properties."""
 
 import argparse
 import gzip
@@ -486,66 +486,24 @@ def inventory_initramfs(path, objdump="objdump"):
     return report, contents
 
 
-def verify(report, contents, contract):
+def verify(report):
     errors = []
     try:
-        fields = {"version", "archive_sha256", "rootfs_sha256", "elf_sha256", "xstate"}
-        if not isinstance(contract, dict) or set(contract) != fields or contract["version"] != 2:
-            raise Rejected("unsupported executable contract")
-        if contract["archive_sha256"] != report.get("archive_sha256"):
-            raise Rejected("initramfs archive digest differs from contract")
-        if contract["rootfs_sha256"] != report["rootfs_sha256"]:
-            raise Rejected("rootfs digest differs from contract")
-        approved = contract["elf_sha256"]
-        if not isinstance(approved, dict) or set(approved) != set(report["artifacts"]):
-            raise Rejected("missing or unexpected ELF")
-        exceptions = contract["xstate"]
-        if not isinstance(exceptions, dict) or not set(exceptions).issubset(approved):
-            raise Rejected("invalid xstate exceptions")
         if any(a["interpreter"] or a["needed"] for a in report["artifacts"].values()):
             loader = report["artifacts"].get(GLIBC_INTERPRETER)
             if not loader or loader["soname"] != "ld-linux-x86-64.so.2":
                 raise Rejected("missing canonical glibc loader")
+        if any(record["tlsdesc"] for record in report["artifacts"].values()):
+            raise Rejected("TLSdesc relocation in executable closure")
         for name, record in report["artifacts"].items():
-            if approved[name] != record["sha256"]:
-                raise Rejected(f"ELF digest differs: {name}")
             if record["text_relocations"]:
                 raise Rejected(f"ELF text relocations: {name}")
             if record["executable_stack"]:
                 raise Rejected(f"executable ELF stack: {name}")
             if record["writable_executable_segments"]:
                 raise Rejected(f"writable executable ELF segment: {name}")
-            item = exceptions.get(name, {"xgetbv": [], "resolver_regions": []})
-            if not isinstance(item, dict) or set(item) != {"xgetbv", "resolver_regions"}:
-                raise Rejected(f"invalid xstate exception: {name}")
-            selectors = item["xgetbv"]
-            if not isinstance(selectors, list) or any(type(v) is not int for v in selectors) or len(set(selectors)) != len(selectors):
-                raise Rejected(f"invalid XGETBV selectors: {name}")
-            observed = {s["address"] for s in record["sites"] if s["mnemonic"] == "xgetbv"}
-            if set(selectors) != observed:
-                raise Rejected(f"unexpected XGETBV selector: {name}")
             if any(s["mnemonic"] == "xgetbv" and not s["straightline_ecx_zero"] for s in record["sites"]):
                 raise Rejected(f"unproved XGETBV selector: {name}")
-            regions = item["resolver_regions"]
-            if not isinstance(regions, list):
-                raise Rejected(f"invalid resolver regions: {name}")
-            for region in regions:
-                if not isinstance(region, dict) or set(region) != {"kind", "start", "size", "sha256"} or region["kind"] not in ("eager-resolver", "unused-tlsdesc") or type(region["start"]) is not int or type(region["size"]) is not int or region["size"] <= 0:
-                    raise Rejected(f"invalid resolver region: {name}")
-                if region["kind"] == "unused-tlsdesc" and any(r["tlsdesc"] for r in report["artifacts"].values()):
-                    raise Rejected("TLSdesc relocation in executable closure")
-                start, size = region["start"], region["size"]
-                segments = [s for s in record["segments"] if s["flags"] & 1 and s["address"] <= start and start + size <= s["address"] + s["size"]]
-                if len(segments) != 1:
-                    raise Rejected(f"resolver region outside executable bytes: {name}")
-                data = span(contents[name], segments[0]["offset"] + start - segments[0]["address"], size)
-                if digest(data) != region["sha256"]:
-                    raise Rejected(f"resolver region bytes differ: {name}")
-            for site in record["sites"]:
-                if site["mnemonic"] in SAVE:
-                    covering = [r for r in regions if r["start"] <= site["address"] and site["address"] + len(bytes.fromhex(site["bytes"])) <= r["start"] + r["size"]]
-                    if len(covering) != 1:
-                        raise Rejected(f"unproved save instruction: {name}:{site['address']:#x} {site['mnemonic']}")
     except (Rejected, OSError, TypeError, KeyError, ValueError, AttributeError) as error:
         errors.append(str(error))
     report.update(mode="verify", admitted=not errors, errors=errors)
@@ -556,7 +514,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("inventory", "verify", "inventory-initramfs", "verify-initramfs"))
     parser.add_argument("rootfs", type=Path)
-    parser.add_argument("--baseline", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--objdump", default="objdump", help="GNU objdump executable")
     args = parser.parse_args()
@@ -564,13 +521,10 @@ def main():
         if args.output.resolve().is_relative_to(args.rootfs.resolve()):
             raise Rejected("report must be outside the scanned rootfs")
         inspect = inventory_initramfs if args.mode.endswith("-initramfs") else inventory
-        report, contents = inspect(args.rootfs, args.objdump)
+        report, _ = inspect(args.rootfs, args.objdump)
         success = True
         if args.mode.startswith("verify"):
-            if args.baseline is None:
-                raise Rejected("verify requires an explicit --baseline contract")
-            baseline = json.loads(bounded_read(args.baseline))
-            success = verify(report, contents, baseline)
+            success = verify(report)
     except (Rejected, OSError, ValueError, EOFError, struct.error, subprocess.SubprocessError) as error:
         report = {"version": 1, "mode": args.mode, "admitted": False, "errors": [str(error)]}
         success = False

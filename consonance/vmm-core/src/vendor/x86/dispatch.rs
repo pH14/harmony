@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use hypercall_proto::Service;
-use sha2::{Digest, Sha256};
 use vmm_backend::{Backend, CommonExit, Exit, Gpa, VcpuState, X86, X86Completion, X86Exit};
 use vtime::VClockConfig;
 
@@ -571,17 +570,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     fn snapshot_contract_hash_x86(&self) -> [u8; 32] {
-        let base = contract::contract_hash();
-        match self.controlled_guest_identity {
-            None => base,
-            Some(profile) => {
-                let mut hash = Sha256::new();
-                hash.update(b"harmony.controlled-guest-identity.v1\0");
-                hash.update(base);
-                hash.update(profile);
-                hash.finalize().into()
-            }
-        }
+        contract::contract_hash()
     }
 
     pub(crate) fn validate_restore_x86(
