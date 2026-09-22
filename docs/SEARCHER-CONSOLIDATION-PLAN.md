@@ -53,9 +53,14 @@ progress (`progress()`, an ordered value), and its holder identity
 A cell is the pair of progress and place. A retention slot is a cell plus an
 identity. An exit's source is a place plus an identity, so it carries no
 progress or resources; an edge's target is a place. Settings are constants in
-the archive: the tier multiplier is eight per rank capped at eight ranks, the
-count decay is one over the square of one plus the draw count, the continuation share is
-one reservation in four, and the capacity is the key's. One selector
+the archive: the tier multiplier is eight per rank capped at eight ranks
+unless the key says otherwise, the count decay is one over the square of one
+plus the draw count, the continuation share is one reservation in four, and
+the capacity is the key's. A key supplies its own tier multiplier when its
+progress order has close steps: SMB's tier is the level and a four-screen
+band ranked two to one, because a level alone as the tier failed all three
+SMB cells with every other fix in place (build thirteen, log of 2026-09-22),
+and a band at eight to one starved the maze levels' branch points. One selector
 identifier names this; the stream schema version rises so old recordings are
 rejected before replay.
 
@@ -292,3 +297,13 @@ diagnose; power-on runs are the only completion test.
   1,058,642 executions (old build: 1,430,664), reaching 8-1 at 715
   thousand and leaving it 57 thousand later. The other two SMB seeds and
   then the Metroid ladder run on this build.
+- 2026-09-22: at the other session's request, a thirteenth build
+  (consol13) ran the level alone as the SMB tier with every later fix in
+  place (reset on open, squared decay, the game clock preference, the
+  screen position identity, no band, the default eight to one ratio). It
+  failed all three SMB cells at two million executions: seed 20260905
+  ended in 8-2 at progress 145, seeds 20260906 and 20260907 in 8-4 at
+  273 and 276. Each level took longer than under the band tier; 8-1 took
+  350 to 415 thousand executions against 56 to 102 thousand on the twelfth
+  build. The band tier and the per-key ratio stay; the reason is written
+  beside the setting in the design section.
