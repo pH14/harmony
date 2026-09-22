@@ -307,3 +307,14 @@ diagnose; power-on runs are the only completion test.
   350 to 415 thousand executions against 56 to 102 thousand on the twelfth
   build. The band tier and the per-key ratio stay; the reason is written
   beside the setting in the design section.
+- 2026-09-22: the twelfth build's ladder failed segment 1 on seeds 11 and
+  12 (no Brinstar in three million executions; the old build reached it
+  at 1.62 and 2.55 million). Seed 11's draw table: twelve cells opened,
+  77 thousand cell resets, and the four cells of Kraid's row took 73
+  percent of the draws while the exit shaft's cells took a twelfth each
+  and its last cell fifty draws. The resets come from enemy drops: a
+  missile or energy pickup farmed in place displaces a holder under a
+  preference and resets the cell, so the rows where enemies respawn stay
+  freshly reset. Fix: a preference improvement resets the cell only when
+  the improving holder arrived from another cell. Fourteenth build
+  (consol14) reruns segment 1 on seeds 11 to 13.

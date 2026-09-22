@@ -233,9 +233,11 @@ weighs `1 / (1 + selections)^2` over its own selection count. There is no unifor
 retirement: a cell that stops producing keeps drawing at a share that only
 shrinks with its count.
 
-A cell's draw count resets to zero when an arrival displaces a holder it
-strictly outranks under a preference, so a place reached again with more of
-what the preference counts draws like a place reached for the first time. It
+A cell's draw count resets to zero when an arrival from another cell
+displaces a holder it strictly outranks under a preference, so a place
+reached again with more of what the preference counts draws like a place
+reached for the first time; an improvement whose parent sits in the same
+cell, such as a drop farmed in place, leaves the count alone. It
 also resets when a selection from the cell opens a cell that held nothing, so
 the cells at the edge of explored ground keep drawing while they keep opening
 new ground instead of settling to an equal share with every cell behind them.

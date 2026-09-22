@@ -1985,7 +1985,9 @@ where
                 .and_then(|parent| self.id_to_index.get(&parent).copied());
         }
         self.activate_membership(id);
-        if replacement_preferences != 0 {
+        let carried_in =
+            parent_id.is_some_and(|parent| cell_of(self.entries[parent].key) != cell_of(key));
+        if replacement_preferences != 0 && carried_in {
             self.reset_cell_draws(cell_of(key));
         }
         if new_cell {
@@ -3162,7 +3164,7 @@ mod tests {
             .expect("insert stocked entry")
     }
     #[test]
-    fn a_better_stocked_arrival_resets_its_cells_draw_count() {
+    fn a_better_stocked_arrival_from_another_cell_resets_its_cells_draw_count() {
         let mut archive = Archive::<u8, StockedKey, (), ()>::new(|_| 1);
         archive.rebuild_selector_index(64);
         let first = insert_stocked(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
@@ -3179,7 +3181,11 @@ mod tests {
         assert_eq!(archive.cell_draws(archive.entries[first].key), 5);
         assert!(insert_stocked(&mut archive, Some(first), 3, [1, 1, 1], 5).is_none());
         assert_eq!(archive.cell_draws(archive.entries[first].key), 5);
-        let better = insert_stocked(&mut archive, Some(first), 4, [1, 1, 1], 6).expect("better");
+        let farmed = insert_stocked(&mut archive, Some(first), 4, [1, 1, 1], 6).expect("farmed");
+        assert!(!archive.opened_new_cell(farmed));
+        assert_eq!(archive.cell_draws(archive.entries[farmed].key), 5);
+        assert_eq!(archive.selector_report().cell_resets, 0);
+        let better = insert_stocked(&mut archive, Some(beside), 5, [1, 1, 1], 7).expect("better");
         assert!(!archive.opened_new_cell(better));
         assert_eq!(archive.cell_draws(archive.entries[better].key), 0);
         assert_eq!(archive.selector_report().cell_resets, 1);
@@ -3200,15 +3206,12 @@ mod tests {
         assert_eq!(archive.cell_draws(archive.entries[first].key), 7);
         let same_cell = insert_stocked(&mut archive, Some(first), 2, [1, 1, 1], 6).expect("better");
         assert!(!archive.opened_new_cell(same_cell));
-        for _ in 0..3 {
-            archive.record_selection(first, &draw);
-        }
-        assert_eq!(archive.cell_draws(archive.entries[first].key), 3);
+        assert_eq!(archive.cell_draws(archive.entries[first].key), 7);
         let opened = insert_stocked(&mut archive, Some(first), 3, [2, 1, 1], 5).expect("opened");
         assert!(archive.opened_new_cell(opened));
         assert_eq!(archive.cell_draws(archive.entries[first].key), 0);
         assert_eq!(archive.cell_draws(archive.entries[opened].key), 0);
-        assert_eq!(archive.selector_report().cell_resets, 2);
+        assert_eq!(archive.selector_report().cell_resets, 1);
     }
     #[test]
     fn a_slot_with_no_exits_is_never_queued() {
