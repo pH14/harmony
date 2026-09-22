@@ -165,3 +165,15 @@ diagnose; power-on runs are the only completion test.
   column is held beside the unfired state. Both pass. The new build
   (builds/consol1 on ms02, from commit b596b05d1) runs the three SMB cells
   and then the ladder at three cells at a time beside the baseline.
+- 2026-09-22: the first build (consol1) failed the first SMB cell at two
+  million executions, stalled in world 4-4, where the old build solved at
+  1.43 million. The draws-per-cell heatmap of that cell shows nearly every
+  draw in the two highest progress bands of 4-4 (a wrapped progress value
+  from the maze sending Mario back) and a few hundred draws at the cells
+  where the route branches. A tier of (world, level, band) starves places
+  inside a level. The old build's class was the level alone, so places in a
+  level were peers. Fix: SMB's tier is (world, level) and the banded
+  progress stays in the place; by the same rule Mega Man 2's tier is the
+  bosses cleared alone and boss damage stays in the place. Nova, Smash and
+  faults already follow that rule. The second build (consol2) reruns the
+  three SMB cells before the ladder.

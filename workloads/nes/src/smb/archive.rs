@@ -30,13 +30,12 @@ pub(crate) fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
-const FRONTIER_PROGRESS_BAND: u16 = 4;
 const STATE_FINGERPRINT_MASK: u8 = 0x3f;
 
 pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "frozen_area_span_screen_x_16_clock_100_band_4_progress_tiers_room_place_fingerprint_identity";
+    "frozen_area_span_screen_x_16_clock_100_level_tiers_room_place_fingerprint_identity";
 
 pub type SmbRoomIdentity = [u8; 3];
 
@@ -72,7 +71,7 @@ fn room_x_bucket_is_absent(bucket: &u8) -> bool {
 
 impl ArchiveKey for SmbArchiveKey {
     type Place = (SmbRoomIdentity, u16, u8, u8);
-    type Progress = (u8, u8, u16);
+    type Progress = (u8, u8);
     type Identity = (u8, u8);
 
     fn place(self) -> Self::Place {
@@ -85,11 +84,7 @@ impl ArchiveKey for SmbArchiveKey {
     }
 
     fn progress(self) -> Self::Progress {
-        (
-            self.world,
-            self.level,
-            self.progress.saturating_add(u16::from(self.room_x_bucket)) / FRONTIER_PROGRESS_BAND,
-        )
+        (self.world, self.level)
     }
 
     fn identity(self) -> Self::Identity {
@@ -476,23 +471,23 @@ mod tests {
     }
 
     #[test]
-    fn the_place_carries_the_room_and_the_tier_carries_the_banded_progress() {
+    fn the_place_carries_the_room_and_the_tier_is_the_level() {
         let key = key(153, [3, 5]);
         assert_eq!(key.place(), (key.room, 153, 11, 0));
-        assert_eq!(key.progress(), (7, 3, 153 / 4));
+        assert_eq!(key.progress(), (7, 3));
         assert_eq!(key.identity(), (9, 0));
         let on_screen = SmbArchiveKey {
             room_x_bucket: 6,
             ..key
         };
         assert_eq!(on_screen.place().1, 159);
-        assert_eq!(on_screen.progress(), (7, 3, 159 / 4));
+        assert_eq!(on_screen.progress(), key.progress());
         assert_eq!(on_screen.identity(), (9, 6));
         assert_eq!(SmbArchiveKey::capacity(), 2);
     }
 
     #[test]
-    fn progress_outranks_every_identity_field() {
+    fn the_level_outranks_every_place_inside_it() {
         let behind = key(41, [9, 9]);
         let ahead = SmbArchiveKey {
             player_y_bucket: 0,
@@ -501,6 +496,9 @@ mod tests {
             room: SmbRoomIdentity::default(),
             ..key(900, [0, 0])
         };
-        assert!(ahead.progress() > behind.progress());
+        assert_eq!(ahead.progress(), behind.progress());
+        assert_ne!(ahead.place(), behind.place());
+        let next_level = SmbArchiveKey { level: 4, ..behind };
+        assert!(next_level.progress() > ahead.progress());
     }
 }

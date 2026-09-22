@@ -34,9 +34,9 @@ Boss damage is zero until the boss loads its health, so a Wily boss that spawns
 for its approach with an empty meter reads as no damage rather than a full bar,
 and it is full once the phase byte reports the boss dead. A Wily boss grants no
 weapon, so a cleared boss is a granted weapon or that same defeated phase byte.
-Boss clears and boss damage are the progress tier. The place is the stage,
-screen, room, enemy damage, a two-bucket position, posture, platforms and
-whether the menu is open. The holder identity is the exact position bucket,
+Boss clears are the progress tier. The place is the stage, screen, room, boss
+damage, enemy damage, a two-bucket position, posture, platforms and whether
+the menu is open. The holder identity is the exact position bucket,
 the weapon and the menu state.
 Summed energy remains a documented resource-preference tradeoff, not dominance.
 The v17 prototype is preserved in the preceding commit and benchmark build;

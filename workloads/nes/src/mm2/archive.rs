@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_MM2_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_bosses_damage_tiers_location_enemy_spatial_32_posture_platforms_menu_place_weapon_identity_preference_v20";
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_bosses_tiers_location_boss_damage_enemy_spatial_32_posture_platforms_menu_place_weapon_identity_preference_v20";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
@@ -46,8 +46,8 @@ pub struct Mm2ArchiveKey {
 }
 
 impl ArchiveKey for Mm2ArchiveKey {
-    type Place = (u8, u8, u8, u8, u8, u8, u8, u8, bool);
-    type Progress = (u8, u8);
+    type Place = (u8, u8, u8, u8, u8, u8, u8, u8, u8, bool);
+    type Progress = u8;
     type Identity = (u8, u8, u8, u8);
 
     fn place(self) -> Self::Place {
@@ -55,6 +55,7 @@ impl ArchiveKey for Mm2ArchiveKey {
             self.stage,
             self.screen,
             self.room,
+            self.boss_damage,
             self.enemy_damage,
             self.x / 2,
             self.y / 2,
@@ -65,7 +66,7 @@ impl ArchiveKey for Mm2ArchiveKey {
     }
 
     fn progress(self) -> Self::Progress {
-        (self.bosses, self.boss_damage)
+        self.bosses
     }
 
     fn identity(self) -> Self::Identity {
@@ -298,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn progress_ignores_stage_and_location_labels() {
+    fn the_tier_is_the_bosses_cleared_and_boss_damage_is_a_place() {
         let first = Mm2ArchiveKey {
             stage: 1,
             screen: 10,
@@ -314,14 +315,13 @@ mod tests {
             ..first
         };
         assert_eq!(first.progress(), elsewhere.progress());
-        assert!(
-            Mm2ArchiveKey {
-                boss_damage: 2,
-                ..first
-            }
-            .progress()
-                > elsewhere.progress()
-        );
+        let hurt = Mm2ArchiveKey {
+            boss_damage: 2,
+            ..first
+        };
+        assert_eq!(hurt.progress(), first.progress());
+        assert_ne!(hurt.place(), first.place());
+        assert!(Mm2ArchiveKey { bosses: 3, ..first }.progress() > first.progress());
     }
 
     #[test]
