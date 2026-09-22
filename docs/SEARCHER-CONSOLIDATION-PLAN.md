@@ -196,3 +196,15 @@ diagnose; power-on runs are the only completion test.
   catches up. Fix: the count decay exponent is two, so a fresh or freshly
   reset cell takes most of its tier's draws until it catches up. Selector
   identifier v2. Fourth build (consol4) reruns the SMB cells.
+- 2026-09-22: the fourth build (consol4) reached 8-1 at 543 thousand on the
+  first SMB seed, the old build's pace, and then spent 1.46 million
+  executions inside 8-1 without leaving. Its 8-1 heatmap gives each stretch
+  of the level a share of draws in proportion to how many places the
+  stretch holds; the last forty units of progress hold two hundred places
+  and drew under two percent. With a place per unit of progress, a fresh
+  cell's draws are spread over its neighbours as soon as it opens. Fix: the
+  SMB place is the screen of the level (sixteen units of progress) and the
+  room; the position within the screen, the height band, the clock band
+  and the state fingerprint move to the holder identity. The cell count of
+  a level falls by an order of magnitude and a freshly opened screen keeps
+  its draws. Fifth build (consol5) reruns the SMB cells.
