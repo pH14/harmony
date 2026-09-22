@@ -3,9 +3,11 @@
 
 Each source is a matrix directory written by `eval.py run` over
 `metroid-ladder.json`, or a JSON file this script wrote. A root holds every
-milestone its genesis state already satisfies at execution one. The ladder
-for that root is the chain's milestone sequence from the first milestone the
-root does not hold. A milestone passes when at least two seeds reach it, and
+milestone its genesis state already satisfies at execution one, and every
+milestone before the deepest one it satisfies, because the area milestones
+name where Samus is and a root past an area has left it. The ladder for that
+root is the chain's milestone sequence after the deepest milestone the root
+holds. A milestone passes when at least two seeds reach it, and
 the score is the number of passed milestones in a row from the front of the
 ladder. Several sources print side by side, one column per build. A second
 table gives each root's continuation graph counters per build: jobs,
@@ -95,13 +97,15 @@ def collect(source):
 
 def score(root):
     seeds = list(root["seeds"].values())
-    held = {
-        name
-        for name in LADDER
+    held_at_root = [
+        index
+        for index, name in enumerate(LADDER)
         if sum(1 for seed in seeds if seed["first_execution"].get(name) == 1)
         >= PASS_SEEDS
-    }
-    ladder = [name for name in LADDER if name not in held]
+    ]
+    front = max(held_at_root, default=-1) + 1
+    held = set(LADDER[:front])
+    ladder = LADDER[front:]
     passed = []
     for name in ladder:
         reached = sorted(
