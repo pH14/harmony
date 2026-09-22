@@ -16,6 +16,15 @@ and restores the entry state before returning a `Vmm`.
 Every boot seed, including zero, uses the same domain-separated derivation for
 the DTB `rng-seed`. Linux control bringup passes the requested session seed.
 
+`contract::IDENTITY_BASELINE` is the ID register view every arm64 host presents
+to the guest. Each field must be at or below what every supported host
+implements, because the guest sizes its use of the hardware from these values.
+`ID_AA64MMFR0_EL1.ASIDBits` is 8 bits: Hypervisor.framework on Apple silicon
+implements 8-bit ASIDs and ignores `TCR_EL1.AS`. When the baseline claimed 16
+bits, Linux allocated ASIDs above 255, and two processes whose ASIDs differed by
+256 shared TLB entries with no flush between them. After a `fork`, the parent
+then read the child's copy-on-write stack page.
+
 `dispatch` routes GIC, PL011, doorbell, and pvclock MMIO to the modeled devices.
 The userspace `gicv3` model is used by the HVF composition; stock arm64 KVM
 owns its GIC in the kernel and does not expose an arbitrary userspace INTID
