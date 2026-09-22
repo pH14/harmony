@@ -159,3 +159,9 @@ diagnose; power-on runs are the only completion test.
   faults have no tier, so every place there is a peer, as before. Selector
   flags, identifiers and thresholds are gone from every binary, package and
   manifest. Both workload crates pass their tests and clippy.
+- 2026-09-22: the two retention fixtures are tests on the Metroid key: the
+  stocked-energy arrival at the Tourian shaft bottom is held beside the
+  missile holder in either insertion order, and a fired missile that hit a
+  column is held beside the unfired state. Both pass. The new build
+  (builds/consol1 on ms02, from commit b596b05d1) runs the three SMB cells
+  and then the ladder at three cells at a time beside the baseline.

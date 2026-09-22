@@ -300,6 +300,7 @@ pub fn sample_chord(rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Err
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::archive::ArchiveCandidate;
 
     #[test]
     fn the_area_byte_does_not_rank_one_boss_area_over_the_other() {
@@ -672,6 +673,90 @@ mod tests {
         )));
         assert_eq!(key.boss_health, 0);
         assert_eq!(key.boss_damage, 0);
+    }
+
+    fn tourian(
+        map_x: u8,
+        map_y: u8,
+        health: u16,
+        missiles: u8,
+        boss_health: u16,
+    ) -> MetroidMechanicalState {
+        MetroidMechanicalState {
+            area: 0x14,
+            map_x,
+            map_y,
+            x: 0x40,
+            y: 0xb0,
+            health,
+            missiles,
+            missile_capacity: 175,
+            equipment: 0b1_1111,
+            energy_tanks: 4,
+            boss_health,
+            zebetites_destroyed: 0,
+            zebetite_hits_left: 0,
+            ..MetroidMechanicalState::default()
+        }
+    }
+
+    fn held(
+        archive: &mut MetroidArchive,
+        parent: Option<usize>,
+        execution: u64,
+        suffix: u8,
+        state: MetroidMechanicalState,
+    ) -> Option<usize> {
+        archive
+            .insert(
+                parent,
+                execution,
+                ArchiveCandidate {
+                    suffix: vec![ButtonChord::new(suffix, 4)],
+                    key: archive_key(state),
+                    milestones: MetroidMilestones::default(),
+                },
+                MetroidSnapshot::for_census_tests(state),
+            )
+            .expect("insert")
+    }
+
+    #[test]
+    fn a_stocked_energy_arrival_is_held_beside_the_missile_holder() {
+        for reversed in [false, true] {
+            let mut archive = MetroidArchive::new(chord_time);
+            let root = held(&mut archive, None, 0, 0x00, tourian(10, 8, 300, 20, 0)).expect("root");
+            let mut states = [tourian(10, 11, 534, 39, 0), tourian(10, 11, 834, 9, 0)];
+            if reversed {
+                states.reverse();
+            }
+            let first = held(&mut archive, Some(root), 1, 0x10, states[0]).expect("first");
+            let second = held(&mut archive, Some(root), 2, 0x20, states[1]).expect("second");
+            assert!(archive.active[first], "reversed {reversed}");
+            assert!(archive.active[second], "reversed {reversed}");
+        }
+    }
+
+    #[test]
+    fn a_fired_missile_that_hit_a_column_is_held_beside_the_unfired_state() {
+        let mut archive = MetroidArchive::new(chord_time);
+        let unfired =
+            held(&mut archive, None, 0, 0x00, tourian(4, 11, 266, 7, 32)).expect("unfired");
+        let fired = held(
+            &mut archive,
+            Some(unfired),
+            1,
+            0x20,
+            tourian(4, 11, 266, 6, 28),
+        )
+        .expect("fired");
+        assert_eq!(archive.entry_key(fired).expect("fired key").boss_damage, 1);
+        assert_eq!(
+            archive.entry_key(unfired).expect("unfired key").boss_damage,
+            0
+        );
+        assert!(archive.active[fired]);
+        assert!(archive.active[unfired]);
     }
 
     #[test]
