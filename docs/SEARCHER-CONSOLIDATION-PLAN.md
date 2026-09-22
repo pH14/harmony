@@ -262,3 +262,21 @@ diagnose; power-on runs are the only completion test.
   at two to one. Fix: the key supplies its tier rank shift; the default is
   the same eight to one, and the SMB key halves per band. Tenth build
   (consol10) runs the three SMB cells.
+- 2026-09-22: the tenth build (consol10) crossed 7-4 in 380 thousand
+  executions and reached 8-1 at 790 thousand on the first SMB seed, then
+  stayed in 8-1 to the two million limit at progress 333. Every build of
+  the branch stops in 8-1 between progress 316 and 336; the old build
+  left 8-1 after 770 thousand executions there. Next: film the deepest
+  8-1 tape of the tenth build (diagnostic copy, first seed) and name what
+  the stretch after progress 330 needs.
+- 2026-09-22: film of the tenth build's deepest 8-1 tape (first seed): the
+  tape reaches the frontier stretch with the clock at one and dies to the
+  timer; the last fifty seconds of clock cover the final two screens of
+  progress. Every frontier cell of 8-1 sits in the lowest clock band, and
+  the faster band's deepest place is a hundred units behind. The old build
+  drew the cheapest tape of a group first; the new archive keeps the
+  cheapest holders of a slot but draws slow and fast places alike. Fix:
+  the SMB preference is the game clock, so an arrival with more time left
+  displaces the slower holder of its slot and resets the cell, the same
+  mechanism Metroid uses for health; the clock band stays in the place.
+  Eleventh build (consol11) runs the three SMB cells.

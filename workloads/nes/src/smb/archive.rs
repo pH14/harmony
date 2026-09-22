@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, num::NonZeroUsize};
+use std::{cmp::Ordering, error::Error, num::NonZeroUsize};
 
 use crate::search::archive::{
     Archive, ArchiveEntryReport, ArchiveKey, SelectorAccounting, entries_by_suffix,
@@ -36,7 +36,7 @@ const BAND_RANK_SHIFT: u32 = 1;
 
 pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 
-pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_level_band_64_tiers_rank_2x_room_place_fingerprint_identity";
+pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_level_band_64_tiers_rank_2x_room_place_fingerprint_identity_clock_preference";
 
 pub type SmbRoomIdentity = [u8; 3];
 
@@ -58,6 +58,8 @@ pub struct SmbArchiveKey {
     pub room_x_bucket: u8,
     #[serde(default)]
     pub time_bucket: u8,
+    #[serde(default)]
+    pub clock: u16,
     #[serde(default, skip_serializing_if = "room_is_absent")]
     pub room: SmbRoomIdentity,
 }
@@ -98,6 +100,14 @@ impl ArchiveKey for SmbArchiveKey {
 
     fn tier_rank_shift() -> u32 {
         BAND_RANK_SHIFT
+    }
+
+    fn preferences() -> usize {
+        1
+    }
+
+    fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
+        self.clock.cmp(&other.clock)
     }
 
     type Lineage = Vec<SmbRoomIdentity>;
@@ -206,11 +216,18 @@ pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
         state_fingerprint: digest[0] & STATE_FINGERPRINT_MASK,
         room_x_bucket: screen_x_bucket(wram),
         time_bucket: wram[GAME_TIMER_HUNDREDS_OFFSET],
+        clock: game_clock(wram),
         room: [0; 3],
     }
 }
 
 const GAME_TIMER_HUNDREDS_OFFSET: usize = 0x07f8;
+
+fn game_clock(wram: &[u8; 2_048]) -> u16 {
+    wram[GAME_TIMER_HUNDREDS_OFFSET..GAME_TIMER_HUNDREDS_OFFSET + 3]
+        .iter()
+        .fold(0, |clock, digit| clock * 10 + u16::from(*digit))
+}
 
 pub(crate) fn stamp_arrival_room(
     key: SmbArchiveKey,
@@ -378,6 +395,7 @@ mod tests {
             state_fingerprint: 9,
             room_x_bucket: 0,
             time_bucket: 0,
+            clock: 0,
             room: [
                 area[0],
                 area[1],
@@ -494,6 +512,11 @@ mod tests {
         assert_eq!(on_screen.identity(), (9, 6));
         assert_eq!(SmbArchiveKey::capacity(), 2);
         assert_eq!(SmbArchiveKey::tier_rank_shift(), 1);
+        assert_eq!(SmbArchiveKey::preferences(), 1);
+        let faster = SmbArchiveKey { clock: 250, ..key };
+        assert_eq!(faster.place(), key.place());
+        assert_eq!(faster.identity(), key.identity());
+        assert_eq!(faster.preference_cmp(0, key), std::cmp::Ordering::Greater);
     }
 
     #[test]
@@ -503,6 +526,7 @@ mod tests {
             player_y_bucket: 0,
             state_fingerprint: 0,
             time_bucket: 0,
+            clock: 0,
             room: SmbRoomIdentity::default(),
             ..key(60, [0, 0])
         };
