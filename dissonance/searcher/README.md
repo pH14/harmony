@@ -218,15 +218,15 @@ work changes that replay rejects. It does not measure a workload speedup.
 
 ## Search evaluation policies
 
-One selector exists, `tier_cell_count_decay_v1`, and the stream header names
+One selector exists, `tier_cell_count_decay_v2`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * 3)`, so the leading tier takes most of
 the draws, and no tier holding an entry takes zero. Within the tier each cell
-weighs `1 / (1 + draws)` over the draws it has received since it was last
-reset, so an untried cell outweighs a heavily sampled one and every cell keeps
-a share. Within the cell each holder weighs `1 / (1 + selections)` over its
-own selection count. There is no uniform path, no sampling window and no
+weighs `1 / (1 + draws)^2` over the draws it has received since it was last
+reset, so an untried or freshly reset cell takes most of the tier's draws
+until it catches up and every cell keeps a share. Within the cell each holder
+weighs `1 / (1 + selections)^2` over its own selection count. There is no uniform path, no sampling window and no
 retirement: a cell that stops producing keeps drawing at a share that only
 shrinks with its count.
 

@@ -54,7 +54,7 @@ A cell is the pair of progress and place. A retention slot is a cell plus an
 identity. An exit's source is a place plus an identity, so it carries no
 progress or resources; an edge's target is a place. Settings are constants in
 the archive: the tier multiplier is eight per rank capped at eight ranks, the
-count decay is one over one plus the draw count, the continuation share is
+count decay is one over the square of one plus the draw count, the continuation share is
 one reservation in four, and the capacity is the key's. One selector
 identifier names this; the stream schema version rises so old recordings are
 rejected before replay.
@@ -187,3 +187,12 @@ diagnose; power-on runs are the only completion test.
   reset only on a preference improvement. Fix: a cell's draw count also
   resets when a selection from it opens a cell that held nothing. Third
   build (consol3) reruns the SMB cells.
+- 2026-09-22: the third build (consol3) reached 8-1 at 1.04 million on the
+  first SMB seed and had 8-1 four fifths crossed at the two million limit.
+  Its 8-1 heatmap spreads the draws over 7,700 live places in proportion to
+  how many places each stretch of the level holds; the last sixty units of
+  progress drew seven percent. With a decay of one over one plus the count,
+  a freshly reset cell among thousands takes only a small share until it
+  catches up. Fix: the count decay exponent is two, so a fresh or freshly
+  reset cell takes most of its tier's draws until it catches up. Selector
+  identifier v2. Fourth build (consol4) reruns the SMB cells.

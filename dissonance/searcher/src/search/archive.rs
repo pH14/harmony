@@ -127,13 +127,13 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_cell_count_decay_v1";
+pub const SELECTOR_IDENTIFIER: &str = "tier_cell_count_decay_v2";
 
 const TIER_RANK_CAP: u8 = 8;
 
 const TIER_RANK_SHIFT: u32 = 3;
 
-const COUNT_DECAY_EXPONENT: u32 = 1;
+const COUNT_DECAY_EXPONENT: u32 = 2;
 
 const COUNT_DECAY_SCALE: u64 = 1 << 32;
 

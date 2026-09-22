@@ -5070,7 +5070,7 @@ mod tests {
 "key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
 "chord_policy":"chord_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
-"parent_scheduler":"tier_cell_count_decay_v1","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
+"parent_scheduler":"tier_cell_count_decay_v2","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
 "worker_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 
