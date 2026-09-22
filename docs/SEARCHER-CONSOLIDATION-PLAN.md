@@ -280,3 +280,11 @@ diagnose; power-on runs are the only completion test.
   displaces the slower holder of its slot and resets the cell, the same
   mechanism Metroid uses for health; the clock band stays in the place.
   Eleventh build (consol11) runs the three SMB cells.
+- 2026-09-22: the eleventh build (consol11) stalled in 8-1 at progress 330
+  on the first SMB seed, and its 8-1 draw table shows the faster clock
+  bands no deeper than before. The SMB holder identity was a six bit hash
+  of the whole RAM, so a faster arrival at a place almost never lands in
+  the slot of the slower holder it should displace, and the clock
+  preference never fires. Fix: the SMB holder identity is the screen
+  position alone; the hash leaves the key. Twelfth build (consol12) runs
+  the three SMB cells.

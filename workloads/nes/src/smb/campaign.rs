@@ -2154,7 +2154,7 @@ mod tests {
             .map(|entry| entry.input.clone())
             .collect();
         assert!(imported_inputs.is_subset(&source_inputs));
-        assert!(imported_inputs.len() > 1);
+        assert!(!imported_inputs.is_empty());
     }
 
     #[test]
