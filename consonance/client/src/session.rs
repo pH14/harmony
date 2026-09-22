@@ -1126,8 +1126,6 @@ mod tests {
         assert!(identity(b"a", b"b").contains("consonance-session-v2"));
     }
 
-    #[cfg(target_arch = "x86_64")]
-    #[test]
     #[test]
     fn session_config_is_validated_and_part_of_identity() {
         let default = SessionConfig::default();
