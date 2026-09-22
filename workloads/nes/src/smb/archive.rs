@@ -32,11 +32,11 @@ pub(crate) fn chord_time(action: &ButtonChord) -> u64 {
 
 const STATE_FINGERPRINT_MASK: u8 = 0x3f;
 const PROGRESS_BAND: u16 = 64;
+const BAND_RANK_SHIFT: u32 = 1;
 
 pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 
-pub const KEY_POLICY_IDENTIFIER: &str =
-    "frozen_area_span_screen_x_16_clock_100_level_band_64_tiers_room_place_fingerprint_identity";
+pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_level_band_64_tiers_rank_2x_room_place_fingerprint_identity";
 
 pub type SmbRoomIdentity = [u8; 3];
 
@@ -94,6 +94,10 @@ impl ArchiveKey for SmbArchiveKey {
 
     fn identity(self) -> Self::Identity {
         (self.state_fingerprint, self.room_x_bucket)
+    }
+
+    fn tier_rank_shift() -> u32 {
+        BAND_RANK_SHIFT
     }
 
     type Lineage = Vec<SmbRoomIdentity>;
@@ -489,6 +493,7 @@ mod tests {
         assert_eq!(on_screen.progress(), key.progress());
         assert_eq!(on_screen.identity(), (9, 6));
         assert_eq!(SmbArchiveKey::capacity(), 2);
+        assert_eq!(SmbArchiveKey::tier_rank_shift(), 1);
     }
 
     #[test]

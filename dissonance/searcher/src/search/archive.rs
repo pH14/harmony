@@ -37,6 +37,9 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn preferences() -> usize {
         0
     }
+    fn tier_rank_shift() -> u32 {
+        TIER_RANK_SHIFT
+    }
     fn preference_cmp(self, _preference: usize, _other: Self) -> Ordering {
         Ordering::Equal
     }
@@ -147,8 +150,8 @@ fn count_decay(draws: u64) -> u64 {
 }
 
 #[must_use]
-fn tier_weight(rank: u8) -> u64 {
-    1_u64 << (u32::from(TIER_RANK_CAP.saturating_sub(rank.min(TIER_RANK_CAP))) * TIER_RANK_SHIFT)
+fn tier_weight(rank: u8, shift: u32) -> u64 {
+    1_u64 << (u32::from(TIER_RANK_CAP.saturating_sub(rank.min(TIER_RANK_CAP))) * shift)
 }
 
 fn draw_weighted(rand: &mut RomuDuoJrRand, weights: &[u64]) -> Result<usize, Box<dyn Error>> {
@@ -2117,7 +2120,7 @@ where
     fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
         let tiers = self.tiers.keys().rev().copied().collect::<Vec<_>>();
         let weights = (0..tiers.len())
-            .map(|rank| tier_weight(u8::try_from(rank).unwrap_or(u8::MAX)))
+            .map(|rank| tier_weight(u8::try_from(rank).unwrap_or(u8::MAX), K::tier_rank_shift()))
             .collect::<Vec<_>>();
         let index = draw_weighted(rand, &weights)?;
         Ok((tiers[index], u8::try_from(index).unwrap_or(u8::MAX)))

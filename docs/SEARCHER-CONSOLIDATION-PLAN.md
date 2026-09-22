@@ -252,3 +252,13 @@ diagnose; power-on runs are the only completion test.
   bands to take every draw; four screens keeps a level's branch points
   within two ranks of its frontier. Ninth build (consol9) runs the three
   SMB cells.
+- 2026-09-22: the ninth build (consol9) reached 7-4 on the first SMB seed
+  at 382 thousand executions, faster than every other build including the
+  old one, then spent 1.3 million executions inside 7-4 and ended at two
+  million in 8-1 at progress 336. 7-4 is a maze: a wrong turn keeps the
+  band of the frontier and loops back, so with eight times per rank the
+  looping states in the leading band take almost every draw while the
+  branch point one band behind gets an eighth. The old build ranked bands
+  at two to one. Fix: the key supplies its tier rank shift; the default is
+  the same eight to one, and the SMB key halves per band. Tenth build
+  (consol10) runs the three SMB cells.
