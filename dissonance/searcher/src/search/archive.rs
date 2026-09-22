@@ -1982,13 +1982,14 @@ where
                 .and_then(|parent| self.id_to_index.get(&parent).copied());
         }
         self.activate_membership(id);
-        if replacement_preferences != 0
-            && let Some(state) = self.cells.get_mut(&cell_of(key))
-            && state.draws != 0
-        {
-            state.draws = 0;
-            self.selector_accounting.cell_resets =
-                self.selector_accounting.cell_resets.saturating_add(1);
+        if replacement_preferences != 0 {
+            self.reset_cell_draws(cell_of(key));
+        }
+        if new_cell {
+            self.reset_cell_draws(cell_of(key));
+            if let Some(parent) = parent_id {
+                self.reset_cell_draws(cell_of(self.entries[parent].key));
+            }
         }
         self.history_memory_bytes = self
             .history_memory_bytes
@@ -2196,6 +2197,16 @@ where
             return true;
         };
         self.champions_slot(slot, id, preference)
+    }
+
+    fn reset_cell_draws(&mut self, cell: Cell<K>) {
+        if let Some(state) = self.cells.get_mut(&cell)
+            && state.draws != 0
+        {
+            state.draws = 0;
+            self.selector_accounting.cell_resets =
+                self.selector_accounting.cell_resets.saturating_add(1);
+        }
     }
 
     #[must_use]
@@ -3170,6 +3181,31 @@ mod tests {
         assert_eq!(archive.cell_draws(archive.entries[better].key), 0);
         assert_eq!(archive.selector_report().cell_resets, 1);
         assert_eq!(archive.occupied_cell_count(), 2);
+    }
+    #[test]
+    fn opening_a_new_cell_resets_the_parents_cell_draw_count() {
+        let mut archive = Archive::<u8, StockedKey, (), ()>::new(|_| 1);
+        archive.rebuild_selector_index(64);
+        let first = insert_stocked(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+        };
+        for _ in 0..7 {
+            archive.record_selection(first, &draw);
+        }
+        assert_eq!(archive.cell_draws(archive.entries[first].key), 7);
+        let same_cell = insert_stocked(&mut archive, Some(first), 2, [1, 1, 1], 6).expect("better");
+        assert!(!archive.opened_new_cell(same_cell));
+        for _ in 0..3 {
+            archive.record_selection(first, &draw);
+        }
+        assert_eq!(archive.cell_draws(archive.entries[first].key), 3);
+        let opened = insert_stocked(&mut archive, Some(first), 3, [2, 1, 1], 5).expect("opened");
+        assert!(archive.opened_new_cell(opened));
+        assert_eq!(archive.cell_draws(archive.entries[first].key), 0);
+        assert_eq!(archive.cell_draws(archive.entries[opened].key), 0);
+        assert_eq!(archive.selector_report().cell_resets, 2);
     }
     #[test]
     fn a_slot_with_no_exits_is_never_queued() {

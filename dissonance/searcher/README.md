@@ -232,7 +232,10 @@ shrinks with its count.
 
 A cell's draw count resets to zero when an arrival displaces a holder it
 strictly outranks under a preference, so a place reached again with more of
-what the preference counts draws like a place reached for the first time.
+what the preference counts draws like a place reached for the first time. It
+also resets when a selection from the cell opens a cell that held nothing, so
+the cells at the edge of explored ground keep drawing while they keep opening
+new ground instead of settling to an equal share with every cell behind them.
 `SelectorAccounting` reports `cell_selections`, `productive_selections`,
 `cell_resets`, `tier_draws_by_rank` and the draws each cell received, and
 every live progress line carries it under `selector`.

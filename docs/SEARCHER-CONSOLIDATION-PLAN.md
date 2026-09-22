@@ -177,3 +177,13 @@ diagnose; power-on runs are the only completion test.
   bosses cleared alone and boss damage stays in the place. Nova, Smash and
   faults already follow that rule. The second build (consol2) reruns the
   three SMB cells before the ladder.
+- 2026-09-22: the second build (consol2) reached world 8-1 on the first
+  SMB seed at 1.18 million executions (the old build: 515 thousand) and
+  had not left 8-1 by the wall limit at 1.96 million. Its heatmap shows
+  8-1's draws spread evenly over 7,700 live places, about forty each, with
+  the frontier place drawing no more than the start of the level. The old
+  build reset a group's draw count whenever a selection from it opened a
+  new group, so the edge of explored ground kept drawing. The new archive
+  reset only on a preference improvement. Fix: a cell's draw count also
+  resets when a selection from it opens a cell that held nothing. Third
+  build (consol3) reruns the SMB cells.
