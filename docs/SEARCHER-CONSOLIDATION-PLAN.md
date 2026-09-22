@@ -288,3 +288,7 @@ diagnose; power-on runs are the only completion test.
   preference never fires. Fix: the SMB holder identity is the screen
   position alone; the hash leaves the key. Twelfth build (consol12) runs
   the three SMB cells.
+- 2026-09-22: the twelfth build (consol12) solved the first SMB cell at
+  1,058,642 executions (old build: 1,430,664), reaching 8-1 at 715
+  thousand and leaving it 57 thousand later. The other two SMB seeds and
+  then the Metroid ladder run on this build.
