@@ -327,3 +327,21 @@ diagnose; power-on runs are the only completion test.
   row from the seventeen roots are 1, 0, 0, 0, 1, 1, 3, 3, 5, 4, 0, 5,
   6, 4, 4, 5, 0. The full ladder now runs on the fourteenth build with
   six cells at a time.
+- 2026-09-22: the continuation graph was nearly idle on the fourteenth
+  build. On ladder root 1 it ran 15 to 25 thousand jobs per cell against
+  the old build's 199 to 520 thousand, and its longest wave was 8 against
+  18 to 27. Two causes. First, the bank recorded an edge only when a
+  child reached another screen, so most positions had no exit and an
+  improvement there queued nothing. Second, the pre-replay check
+  compared against every holder in the destination screen, so almost
+  every edge without a resource gain was skipped. Fix, fifteenth build
+  (consol15): edges run between holder positions, a place plus an
+  identity, inside one screen or across two. An edge inside a screen
+  lands only on its destination position. An edge across screens lands
+  anywhere in that screen. The pre-replay check compares against the
+  holders of the slot the replay would land in. Segment 1 reruns on
+  seeds 11 to 13. The graph counts as working when its jobs per cell
+  reach the old build's range, waves run to tens of hops, and Brinstar
+  is reached on two seeds at least as fast as the fourteenth build.
+  Ladder records carry each cell's continuation jobs, landings,
+  replacements and longest wave from now on.
