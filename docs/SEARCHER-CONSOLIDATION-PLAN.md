@@ -217,3 +217,38 @@ diagnose; power-on runs are the only completion test.
   shallower holder of its slot and resets the cell's draws, the same
   mechanism Metroid uses for tanks, missiles and health. Sixth build
   (consol6) reruns the SMB cells.
+- 2026-09-22: the sixth build (consol6) never left world 1-1 on the first
+  SMB seed in 1.4 million executions. A preference on the position within
+  the screen keeps only the rightmost holders of each slot, and the states
+  behind them that a jump needs are displaced. The screen place and the
+  position preference are both withdrawn: the SMB key returns to the fourth
+  build's, a place per unit of progress. The fourth build's 8-1 heatmap
+  says a freshly opened cell takes about fifteen draws before the count
+  decay levels it with the thousands of older cells, and the level needs
+  more per cell. Seventh and eighth builds (consol7, consol8) rerun the
+  first SMB cell side by side with a count decay exponent of three and of
+  four; the one that clears 8-1 at the old build's pace runs the other
+  two cells.
+- 2026-09-22: exponents three and four (consol7, consol8) reached 8-1 on the
+  first SMB seed at 711 thousand and 553 thousand and both stalled inside
+  8-1 at the wall limit, at progress 280 and 322. With the fourth build
+  (543 thousand, stalled at 321) and the third (1.04 million, stalled at
+  316) that is four builds reaching 8-1 at about the old build's pace and
+  none leaving it; the old build left at 1.28 million. The exponent stays
+  at two. Next: film the deepest 8-1 tape of the fourth build (a
+  diagnostic copy that keeps the deepest tape in witness mode) and name
+  what the frontier needs.
+- 2026-09-22: the fourth build's 8-1 draw table, read by room, time band
+  and progress: the frontier stretch of the main level (progress 300 to
+  327) took under two percent of 8-1's draws, every frontier cell has
+  under a hundred seconds on the clock, and the deepest cells sit two
+  screens before the level's widest pit, which needs a running start
+  from those cells. The old build's band rank gave the frontier stretch
+  about half the level's draws. Under count decay a stretch's share is
+  its cell count, and the only persistent gradient in the design is the
+  tier rank. Fix: the SMB tier is (world, level, progress band of sixty
+  four units, four screens); the place keeps the unit progress. The
+  first build's band was four units, fine enough for the top eight
+  bands to take every draw; four screens keeps a level's branch points
+  within two ranks of its frontier. Ninth build (consol9) runs the three
+  SMB cells.

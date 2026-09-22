@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{cmp::Ordering, error::Error, num::NonZeroUsize};
+use std::{error::Error, num::NonZeroUsize};
 
 use crate::search::archive::{
     Archive, ArchiveEntryReport, ArchiveKey, SelectorAccounting, entries_by_suffix,
@@ -31,12 +31,12 @@ pub(crate) fn chord_time(action: &ButtonChord) -> u64 {
 }
 
 const STATE_FINGERPRINT_MASK: u8 = 0x3f;
-const SCREEN_PROGRESS_SPAN: u16 = 16;
+const PROGRESS_BAND: u16 = 64;
 
 pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "frozen_area_span_screen_x_16_clock_100_level_tiers_screen_place_position_preference";
+    "frozen_area_span_screen_x_16_clock_100_level_band_64_tiers_room_place_fingerprint_identity";
 
 pub type SmbRoomIdentity = [u8; 3];
 
@@ -71,34 +71,29 @@ fn room_x_bucket_is_absent(bucket: &u8) -> bool {
 }
 
 impl ArchiveKey for SmbArchiveKey {
-    type Place = (SmbRoomIdentity, u16);
-    type Progress = (u8, u8);
-    type Identity = (u8, u8, u8, u8);
+    type Place = (SmbRoomIdentity, u16, u8, u8);
+    type Progress = (u8, u8, u16);
+    type Identity = (u8, u8);
 
     fn place(self) -> Self::Place {
-        (self.room, self.screen_progress() / SCREEN_PROGRESS_SPAN)
-    }
-
-    fn progress(self) -> Self::Progress {
-        (self.world, self.level)
-    }
-
-    fn identity(self) -> Self::Identity {
         (
+            self.room,
+            self.progress.saturating_add(u16::from(self.room_x_bucket)),
             self.player_y_bucket,
             self.time_bucket,
-            self.state_fingerprint,
-            self.room_x_bucket,
         )
     }
 
-    fn preferences() -> usize {
-        1
+    fn progress(self) -> Self::Progress {
+        (
+            self.world,
+            self.level,
+            self.progress.saturating_add(u16::from(self.room_x_bucket)) / PROGRESS_BAND,
+        )
     }
 
-    fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
-        (self.screen_progress() % SCREEN_PROGRESS_SPAN)
-            .cmp(&(other.screen_progress() % SCREEN_PROGRESS_SPAN))
+    fn identity(self) -> Self::Identity {
+        (self.state_fingerprint, self.room_x_bucket)
     }
 
     type Lineage = Vec<SmbRoomIdentity>;
@@ -134,12 +129,6 @@ impl ArchiveKey for SmbArchiveKey {
         if let Err(slot) = lineage.binary_search(&key.room) {
             lineage.insert(slot, key.room);
         }
-    }
-}
-
-impl SmbArchiveKey {
-    fn screen_progress(self) -> u16 {
-        self.progress.saturating_add(u16::from(self.room_x_bucket))
     }
 }
 
@@ -487,43 +476,35 @@ mod tests {
     }
 
     #[test]
-    fn the_place_is_the_screen_and_the_tier_is_the_level() {
+    fn the_place_carries_the_room_and_the_tier_is_the_level_band() {
         let key = key(153, [3, 5]);
-        assert_eq!(key.place(), (key.room, 153 / 16));
-        assert_eq!(key.progress(), (7, 3));
-        assert_eq!(key.identity(), (11, 0, 9, 0));
+        assert_eq!(key.place(), (key.room, 153, 11, 0));
+        assert_eq!(key.progress(), (7, 3, 2));
+        assert_eq!(key.identity(), (9, 0));
         let on_screen = SmbArchiveKey {
             room_x_bucket: 6,
             ..key
         };
-        assert_eq!(on_screen.place().1, 159 / 16);
+        assert_eq!(on_screen.place().1, 159);
         assert_eq!(on_screen.progress(), key.progress());
-        assert_eq!(on_screen.identity(), (11, 0, 9, 6));
-        assert_eq!(
-            on_screen.preference_cmp(0, key),
-            std::cmp::Ordering::Greater
-        );
-        let next_screen = SmbArchiveKey {
-            progress: 160,
-            ..key
-        };
-        assert_ne!(next_screen.place(), key.place());
-        assert_eq!(SmbArchiveKey::preferences(), 1);
+        assert_eq!(on_screen.identity(), (9, 6));
         assert_eq!(SmbArchiveKey::capacity(), 2);
     }
 
     #[test]
-    fn the_level_outranks_every_place_inside_it() {
+    fn the_band_outranks_every_place_inside_it_and_the_level_outranks_the_band() {
         let behind = key(41, [9, 9]);
-        let ahead = SmbArchiveKey {
+        let beside = SmbArchiveKey {
             player_y_bucket: 0,
             state_fingerprint: 0,
             time_bucket: 0,
             room: SmbRoomIdentity::default(),
-            ..key(900, [0, 0])
+            ..key(60, [0, 0])
         };
-        assert_eq!(ahead.progress(), behind.progress());
-        assert_ne!(ahead.place(), behind.place());
+        assert_eq!(beside.progress(), behind.progress());
+        assert_ne!(beside.place(), behind.place());
+        let ahead = key(900, [0, 0]);
+        assert!(ahead.progress() > beside.progress());
         let next_level = SmbArchiveKey { level: 4, ..behind };
         assert!(next_level.progress() > ahead.progress());
     }
