@@ -208,3 +208,12 @@ diagnose; power-on runs are the only completion test.
   and the state fingerprint move to the holder identity. The cell count of
   a level falls by an order of magnitude and a freshly opened screen keeps
   its draws. Fifth build (consol5) reruns the SMB cells.
+- 2026-09-22: the fifth build (consol5) reached only world 5-2 on the first
+  SMB seed before the frame limit at 1.6 million executions. With the
+  screen as the place, an advance inside a screen opens no cell and resets
+  nothing, so the advancing holder competes evenly with the hundreds of
+  holders its screen already has. Fix: the position within the screen is
+  the SMB preference (one order, capacity two), so an advance displaces the
+  shallower holder of its slot and resets the cell's draws, the same
+  mechanism Metroid uses for tanks, missiles and health. Sixth build
+  (consol6) reruns the SMB cells.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, num::NonZeroUsize};
+use std::{cmp::Ordering, error::Error, num::NonZeroUsize};
 
 use crate::search::archive::{
     Archive, ArchiveEntryReport, ArchiveKey, SelectorAccounting, entries_by_suffix,
@@ -36,7 +36,7 @@ const SCREEN_PROGRESS_SPAN: u16 = 16;
 pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "frozen_area_span_screen_x_16_clock_100_level_tiers_screen_place_position_identity";
+    "frozen_area_span_screen_x_16_clock_100_level_tiers_screen_place_position_preference";
 
 pub type SmbRoomIdentity = [u8; 3];
 
@@ -73,7 +73,7 @@ fn room_x_bucket_is_absent(bucket: &u8) -> bool {
 impl ArchiveKey for SmbArchiveKey {
     type Place = (SmbRoomIdentity, u16);
     type Progress = (u8, u8);
-    type Identity = (u16, u8, u8, u8, u8);
+    type Identity = (u8, u8, u8, u8);
 
     fn place(self) -> Self::Place {
         (self.room, self.screen_progress() / SCREEN_PROGRESS_SPAN)
@@ -85,12 +85,20 @@ impl ArchiveKey for SmbArchiveKey {
 
     fn identity(self) -> Self::Identity {
         (
-            self.screen_progress() % SCREEN_PROGRESS_SPAN,
             self.player_y_bucket,
             self.time_bucket,
             self.state_fingerprint,
             self.room_x_bucket,
         )
+    }
+
+    fn preferences() -> usize {
+        1
+    }
+
+    fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
+        (self.screen_progress() % SCREEN_PROGRESS_SPAN)
+            .cmp(&(other.screen_progress() % SCREEN_PROGRESS_SPAN))
     }
 
     type Lineage = Vec<SmbRoomIdentity>;
@@ -483,19 +491,24 @@ mod tests {
         let key = key(153, [3, 5]);
         assert_eq!(key.place(), (key.room, 153 / 16));
         assert_eq!(key.progress(), (7, 3));
-        assert_eq!(key.identity(), (153 % 16, 11, 0, 9, 0));
+        assert_eq!(key.identity(), (11, 0, 9, 0));
         let on_screen = SmbArchiveKey {
             room_x_bucket: 6,
             ..key
         };
         assert_eq!(on_screen.place().1, 159 / 16);
         assert_eq!(on_screen.progress(), key.progress());
-        assert_eq!(on_screen.identity(), (159 % 16, 11, 0, 9, 6));
+        assert_eq!(on_screen.identity(), (11, 0, 9, 6));
+        assert_eq!(
+            on_screen.preference_cmp(0, key),
+            std::cmp::Ordering::Greater
+        );
         let next_screen = SmbArchiveKey {
             progress: 160,
             ..key
         };
         assert_ne!(next_screen.place(), key.place());
+        assert_eq!(SmbArchiveKey::preferences(), 1);
         assert_eq!(SmbArchiveKey::capacity(), 2);
     }
 
