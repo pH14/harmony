@@ -8,7 +8,7 @@ use crate::{
     search::{
         archive::{
             Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-            SelectorPolicy, entries_by_suffix,
+            entries_by_suffix,
         },
         rand::RomuDuoJrRand,
     },
@@ -18,29 +18,12 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_STB_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "stb_local_ai_spatial_16_preference_v3";
+pub const KEY_POLICY_IDENTIFIER: &str = "stb_local_ai_peer_places_spatial_32_place_preference_v4";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 pub use crate::stb::target::INITIAL_STOCKS;
 
-pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
-    crate::search::archive::selector_policy_from_identifier(
-        identifier,
-        StbArchiveKey::groups().saturating_sub(1),
-    )
-}
-
 pub type StbArchive = Archive<ButtonChord, StbArchiveKey, StbMilestones, StbSnapshot>;
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct StbArchiveGroup {
-    stage: u8,
-    player_a_x: i16,
-    player_a_y: i16,
-    player_b_x: i16,
-    player_b_y: i16,
-    opponent_kos: u8,
-}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StbArchiveKey {
@@ -71,50 +54,33 @@ impl PartialOrd for StbArchiveKey {
 }
 
 impl ArchiveKey for StbArchiveKey {
-    type Group = StbArchiveGroup;
+    type Place = (u8, u8, i16, i16, i16, i16);
+    type Progress = ();
+    type Identity = (i16, i16, i16, i16);
 
-    fn groups() -> usize {
-        5
+    fn place(self) -> Self::Place {
+        (
+            self.stage,
+            self.opponent_kos,
+            self.player_a_x.div_euclid(2),
+            self.player_a_y.div_euclid(2),
+            self.player_b_x.div_euclid(2),
+            self.player_b_y.div_euclid(2),
+        )
     }
 
-    fn group(self, depth: usize) -> Self::Group {
-        let location = StbArchiveGroup {
-            stage: self.stage,
-            player_a_x: self.player_a_x,
-            player_a_y: self.player_a_y,
-            player_b_x: self.player_b_x,
-            player_b_y: self.player_b_y,
-            opponent_kos: self.opponent_kos,
-        };
-        match depth {
-            0 => location,
-            1 => StbArchiveGroup {
-                player_a_x: self.player_a_x.div_euclid(2),
-                player_a_y: self.player_a_y.div_euclid(2),
-                player_b_x: self.player_b_x.div_euclid(2),
-                player_b_y: self.player_b_y.div_euclid(2),
-                ..location
-            },
-            2 => StbArchiveGroup {
-                player_a_x: self.player_a_x.div_euclid(8),
-                player_a_y: self.player_a_y.div_euclid(8),
-                player_b_x: self.player_b_x.div_euclid(8),
-                player_b_y: self.player_b_y.div_euclid(8),
-                ..location
-            },
-            3 => StbArchiveGroup {
-                stage: self.stage,
-                opponent_kos: self.opponent_kos,
-                ..StbArchiveGroup::default()
-            },
-            _ => StbArchiveGroup {
-                opponent_kos: self.opponent_kos,
-                ..StbArchiveGroup::default()
-            },
-        }
+    fn progress(self) -> Self::Progress {}
+
+    fn identity(self) -> Self::Identity {
+        (
+            self.player_a_x,
+            self.player_a_y,
+            self.player_b_x,
+            self.player_b_y,
+        )
     }
 
-    fn slot_capacity() -> usize {
+    fn capacity() -> usize {
         1
     }
 
@@ -365,11 +331,11 @@ mod tests {
     }
 
     #[test]
-    fn coarse_groups_have_uniform_width_on_both_sides_of_zero() {
+    fn the_place_bucket_has_uniform_width_on_both_sides_of_zero() {
         for x in -512_i16..=512 {
             let key = archive_key(state(x, 0, 4)).unwrap();
-            assert_eq!(key.group(1).player_a_x, x.div_euclid(32));
-            assert_eq!(key.group(2).player_a_x, x.div_euclid(128));
+            assert_eq!(key.place().2, x.div_euclid(32));
+            assert_eq!(key.identity().0, x.div_euclid(16));
         }
     }
 
@@ -377,9 +343,10 @@ mod tests {
     fn location_is_separate_from_same_location_preference() {
         let weak = archive_key(state(100, 0, 4)).expect("live archive key");
         let strong = archive_key(state(100, 80, 4)).expect("live archive key");
-        assert_eq!(weak.group(0), strong.group(0));
+        assert_eq!(weak.place(), strong.place());
+        assert_eq!(weak.identity(), strong.identity());
         assert_eq!(strong.preference_cmp(0, weak), Ordering::Greater);
-        assert_eq!(StbArchiveKey::slot_capacity(), 1);
+        assert_eq!(StbArchiveKey::capacity(), 1);
     }
 
     #[test]

@@ -297,7 +297,6 @@ pub struct NovaCampaignConfig {
     pub memory_budget_mib: Option<usize>,
     pub materialize_final_artifacts: bool,
     pub retention: RetentionPolicy,
-    pub selector: crate::search::archive::SelectorPolicy,
     pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub victory_input_path: Option<PathBuf>,
@@ -323,7 +322,6 @@ impl NovaCampaignConfig {
             suffix: self.suffix,
             mixture: self.mixture,
             retention: self.retention,
-            selector: self.selector.clone(),
             objective_witness_path: self.victory_input_path.clone(),
         }
     }

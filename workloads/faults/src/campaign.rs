@@ -4,7 +4,7 @@ use std::{error::Error, io::Write, num::NonZeroU64, path::PathBuf, sync::OnceLoc
 
 use searcher::{
     search::{
-        archive::{RetentionPolicy, SelectorPolicy},
+        archive::RetentionPolicy,
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignConfig,
             CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
@@ -142,7 +142,6 @@ pub struct FaultCampaignConfig {
     pub memory_budget_mib: Option<usize>,
     pub materialize_final_artifacts: bool,
     pub retention: RetentionPolicy,
-    pub selector: SelectorPolicy,
     pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub objective_witness_path: Option<PathBuf>,
@@ -169,7 +168,6 @@ impl FaultCampaignConfig {
             suffix: self.suffix,
             mixture: self.mixture,
             retention: self.retention,
-            selector: self.selector.clone(),
             objective_witness_path: self.objective_witness_path.clone(),
         }
     }

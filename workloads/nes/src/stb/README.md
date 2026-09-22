@@ -132,11 +132,12 @@ payload is phase-invalid; terminal knockout counts come from the validated
 observation event instead.
 
 `StbArchiveKey::Ord` identifies a place and orders the archive's maps. It is not
-a progress measure, and the selector no longer reads it as one. This adapter
-leaves `progress_cmp` at its default, so every STB place is a peer and only
-energy, cell recency and cost decide the draw. Declaring an objective-only
-progress relation needs a separately versioned fixed-policy comparison before it
-can replace this baseline.
+a progress measure. This adapter has no progress tier, so every STB place is a
+peer and only the cell draw count and the holder draw count decide the draw.
+The place is the stage, the opponent knockouts and a two-bucket position of
+both players; the holder identity is the exact position bucket. Declaring an
+objective-only progress tier needs a separately versioned fixed-policy
+comparison before it can replace this baseline.
 
 `ButtonChord` uses the QuickNES/NES serial layout: A `0x01`, B `0x02`, Select
 `0x04`, Start `0x08`, Up `0x10`, Down `0x20`, Left `0x40`, and Right `0x80`.
@@ -166,9 +167,9 @@ damage values. Those are independent maxima across observed branches, not a
 single achieved endpoint; use the champion observation for that endpoint's
 resources. Player stock losses remain in milestones and observations.
 
-Policy `stb_local_ai_spatial_16_preference_v3` fixes the unsolved-champion
-ordering and uses floor division at every pooling depth, including negative
-coordinates. Stream/checkpoint formats are v3 because the progress report
+Policy `stb_local_ai_peer_places_spatial_32_place_preference_v4` fixes the
+unsolved-champion ordering and uses floor division for the place bucket,
+including negative coordinates. Stream/checkpoint formats are v3 because the progress report
 schema also changed. Recordings from the earlier v2 policy require the previous
 implementation; the PR preserves that history and its qualification evidence.
 Compare searcher changes only with the same recorded adapter policy.

@@ -19,7 +19,7 @@ use nes_workload::{
         target::{GenesisDepth, MetroidInput},
     },
     search::{
-        archive::{RetentionPolicy, RetireThresholds, SelectorPolicy},
+        archive::RetentionPolicy,
         campaign::TargetExecution,
         draw::{DrawMixture, SuffixShape, draw_mixture_from_identifier},
     },
@@ -38,7 +38,6 @@ struct Args {
     memory_budget_mib: Option<usize>,
     mixture: DrawMixture,
     verify_replay: bool,
-    selector: SelectorPolicy,
     root_input: Option<PathBuf>,
 }
 
@@ -58,10 +57,6 @@ impl Args {
         let mut memory_budget_mib = None;
         let mut mixture = DrawMixture::AlphabetOnly;
         let mut verify_replay = false;
-        let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 3,
-            groups: vec![6, 12, 2, 16],
-        });
         let mut root_input = None;
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
@@ -85,17 +80,6 @@ impl Args {
                 "--memory-budget-mib" => {
                     memory_budget_mib = Some(parse_number("memory-budget-mib", value)?);
                 }
-                "--selector" => {
-                    let thresholds = RetireThresholds {
-                        entry: 3,
-                        groups: vec![6, 12, 2, 16],
-                    };
-                    selector = match value.to_string_lossy().as_ref() {
-                        "frontier-cheapest" => SelectorPolicy::EnergyFrontierCheapest(thresholds),
-                        "pareto-cheapest" => SelectorPolicy::EnergyFrontierCheapest(thresholds),
-                        other => return Err(format!("unknown selector {other}").into()),
-                    };
-                }
                 "--mixture" => {
                     mixture = draw_mixture_from_identifier(
                         &value.into_string().map_err(|_| "mixture is not UTF-8")?,
@@ -116,7 +100,6 @@ impl Args {
             memory_budget_mib,
             mixture,
             verify_replay,
-            selector,
             root_input,
         })
     }
@@ -180,7 +163,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
         retention: RetentionPolicy::Unprobed,
-        selector: args.selector.clone(),
         suffix: SuffixShape::OneToSix,
         mixture: args.mixture,
         victory_input_path: None,

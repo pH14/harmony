@@ -129,8 +129,8 @@ diagnose; power-on runs are the only completion test.
   than two levels of granularity. Continuation graph measured 2026-09-18:
   24% of replays land at the exact slot, best hideout missiles 11 to 15,
   beat control on five of five roots.
-- 2026-09-21: Paul's call: two levels and a working continuation graph are
-  requirements. Plan rewritten from per-mechanism arms to one build against
+- 2026-09-21: project decision: two levels and a working continuation graph
+  are requirements. Plan rewritten from per-mechanism arms to one build against
   the ladder.
 - 2026-09-21: Astra review (xhigh), four findings, all accepted with edits:
   missiles-first preference discards a fired hit (segment 14), so boss damage
@@ -147,3 +147,15 @@ diagnose; power-on runs are the only completion test.
   run on one build); `ladder.py` scores segments passed in a row from each
   root on two of three seeds. The old-build baseline (builds/p3-recency17,
   key v21) launched on ms02 at 02:37 box time, five cells at a time.
+- 2026-09-22: build items 1 and 2 landed in one commit on the searcher
+  crate (two levels, count decay, continuations keyed on place and holder
+  identity, edge resource gains, gaining edges admitted). Items 3 and 4
+  landed together because the workload crates do not compile against the
+  new trait until every key moves: Metroid's tier is the items held, its
+  place is the area and map cell, its holder identity is position, posture,
+  door and boss damage, and both resource orders are on with tanks ahead.
+  SMB keeps its banded progress as the tier and its room as the place. Mega
+  Man 2 keeps boss clears and boss damage as the tier. Nova, Smash and
+  faults have no tier, so every place there is a peer, as before. Selector
+  flags, identifiers and thresholds are gone from every binary, package and
+  manifest. Both workload crates pass their tests and clippy.

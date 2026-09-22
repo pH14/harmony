@@ -60,11 +60,13 @@ The adapter supplies its controller vocabulary as the alphabet sampler and
 nothing else about drawing; the searcher owns the suffix draw and the
 retained-input table.
 
-`progress_cmp` compares the item count then the boss damage, so that is the
-whole progress relation the selector reads. Tanks are capacity, so they live in
-the preferences, which decide which states keep a location's slots. Field
-declaration order no longer ranks anything: two places with equal items and
-equal boss damage are peers whatever their area byte, map row or column.
+The items held are the progress tier. The place is the area byte and the map
+cell. The holder identity is the position bucket, posture, door state and boss
+damage, so a state that has hurt the boss never displaces one that has not.
+Tanks, missiles and health are the preferences that decide which state holds a
+slot, in two orders: missiles before health, and health before missiles. Two
+places with equal items are peers whatever their area byte, map row or column.
+The Zebetite column count stays on the key for reporting and ranks nothing.
 
 Boss damage is how far a lineage has worn down the mini boss sharing its room.
 In Tourian the coordinate reads Mother Brain's remaining hits while her
@@ -141,8 +143,8 @@ endpoints that can never leave, and the selection count separates a cell the
 selector never drew from one it drew and got nothing from.
 `live_entries_by_map_cell_and_equipment` splits the same census by the equipment
 byte, mapping `area:map_x:map_y:equipment bits` to `[entries, selections]`.
-Endpoints holding different equipment in one cell sit in different archive
-classes and are drawn separately, so a cell's own totals cannot say whether the
+Endpoints holding different equipment in one map cell sit in different progress
+tiers and are drawn separately, so a cell's own totals cannot say whether the
 endpoints that can open the next door are the ones the selector goes back to.
 Both read only cached active endpoints, so they are lower bounds where snapshots
 are missing.

@@ -14,10 +14,7 @@ use nes_workload::{
         target::NovaLevel,
     },
     search::{
-        archive::{
-            ArchiveKey, Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy,
-            selector_policy_from_identifier,
-        },
+        archive::{ArchiveKey, Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy},
         campaign::{
             CampaignConfig, CampaignExecutionOptions, CampaignOrigin, ResultBuffering,
             TargetExecution, Workload, replay_campaign_checkpointed,
@@ -79,7 +76,6 @@ struct Request {
     #[serde(default = "default_result_slots")]
     result_slots: usize,
     wall_seconds: u64,
-    selector: String,
     suffix: String,
     mixture: String,
     verification: String,
@@ -195,10 +191,6 @@ where
         suffix: suffix_shape_from_identifier(&request.suffix)?,
         mixture: draw_mixture_from_identifier(&request.mixture)?,
         retention: RetentionPolicy::Unprobed,
-        selector: selector_policy_from_identifier(
-            &request.selector,
-            G::Key::groups().saturating_sub(1),
-        )?,
         objective_witness_path: Some(out.join("victory-input.json")),
     };
     if request.workers == 0
@@ -220,7 +212,7 @@ where
     };
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
+        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
     )?;
     let mut stream = StreamDigest {
         file: if full {
@@ -261,7 +253,7 @@ where
     if let Some(deepest) = game
         .source_entries(&report.archive)
         .iter()
-        .max_by(|left, right| G::Key::progress_cmp(left.key.group(1), right.key.group(1)))
+        .max_by_key(|entry| entry.key.progress())
     {
         write_json(&out.join("deepest-input.json"), &deepest.input)?;
     }

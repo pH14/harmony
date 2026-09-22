@@ -309,7 +309,6 @@ pub struct SmbCampaignConfig {
     pub vocabulary: SmbButtonVocabulary,
     pub terminal: SmbTerminalPredicate,
     pub retention: RetentionPolicy,
-    pub selector: crate::search::archive::SelectorPolicy,
     pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub victory_input_path: Option<std::path::PathBuf>,
@@ -341,7 +340,6 @@ impl SmbCampaignConfig {
                 terminal: Some(self.terminal),
             },
             retention: self.retention,
-            selector: self.selector.clone(),
             objective_witness_path: self.victory_input_path.clone(),
         }
     }
@@ -1027,7 +1025,6 @@ mod tests {
             memory_budget_mib: None,
             materialize_final_artifacts: true,
             retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission,
-            selector: crate::search::archive::SelectorPolicy::GroupUniform,
             suffix: SuffixShape::default(),
             mixture: DrawMixture::BiasedHalf,
             victory_input_path: None,
@@ -1692,7 +1689,7 @@ mod tests {
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
         for identifier in [
-            "hierarchy_uniform_128",
+            crate::search::archive::SELECTOR_IDENTIFIER,
             "probe_at_admission",
             "fewest_frames_in_level",
             "whole_tree",
@@ -1705,10 +1702,7 @@ mod tests {
         }
         for line in text.lines().skip(1) {
             assert!(line.contains("\"selector\""));
-            assert_eq!(
-                line.contains("\"hierarchy_uniform\""),
-                line.contains("\"concentration\"")
-            );
+            assert!(line.contains("\"tiers\"") || line.contains("\"continuation\""));
         }
         let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay recorded campaign");
         assert_eq!(live, replayed);
@@ -1718,17 +1712,13 @@ mod tests {
         let accounting = live.archive.selector;
         assert_eq!(
             accounting
-                .uniform_selections
-                .checked_add(accounting.cell_selections)
-                .and_then(|drawn| {
-                    drawn.checked_add(accounting.continuation_selections.unwrap_or(0))
-                }),
+                .cell_selections
+                .checked_add(accounting.continuation_selections.unwrap_or(0)),
             live.executions_completed
                 .checked_add(live.duplicates_skipped)
         );
-        assert_eq!(accounting.concentration.window_cap, 128);
         assert_eq!(
-            accounting.concentration.window_draws,
+            accounting.tier_draws_by_rank.iter().sum::<u64>(),
             accounting.cell_selections
         );
     }
@@ -1883,65 +1873,11 @@ mod tests {
     }
 
     #[test]
-    fn retiring_selector_records_counters_and_replays_byte_identically() {
-        let rom = synthetic_nrom();
-        let mut config = genesis_config(0x5eed_ca21, 4, 48);
-        config.selector = crate::search::archive::SelectorPolicy::Retire(
-            crate::search::archive::RetireThresholds {
-                entry: 2,
-                groups: vec![4, 8, 16, 32],
-            },
-        );
-        let mut stream = Vec::new();
-        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
-            .expect("retiring campaign");
-        let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
-        let header = text.lines().next().expect("header");
-        assert!(header.contains("hierarchy_uniform_128_retire:2,4,8,16,32"));
-        assert!(live.archive.selector.retirement.is_some());
-        let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay retiring");
-        assert_eq!(
-            serde_json::to_vec_pretty(&live).expect("serialize live"),
-            serde_json::to_vec_pretty(&replayed).expect("serialize replayed")
-        );
-    }
-
-    #[test]
-    fn energy_selector_records_counters_and_replays_byte_identically() {
-        let rom = synthetic_nrom();
-        let mut config = genesis_config(0x5eed_ca22, 4, 48);
-        config.selector = crate::search::archive::SelectorPolicy::EnergyFrontierCheapest(
-            crate::search::archive::RetireThresholds {
-                entry: 2,
-                groups: vec![4, 8, 16, 32],
-            },
-        );
-        let mut stream = Vec::new();
-        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
-            .expect("energy campaign");
-        let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
-        let header = text.lines().next().expect("header");
-        assert!(header.contains("hierarchy_uniform_128_energy_frontier_cheapest:2,4,8,16,32"));
-        assert!(live.archive.selector.retirement.is_some());
-        let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay energy");
-        assert_eq!(
-            serde_json::to_vec_pretty(&live).expect("serialize live"),
-            serde_json::to_vec_pretty(&replayed).expect("serialize replayed")
-        );
-    }
-
-    #[test]
-    fn retiring_selector_reports_survive_a_seed_sweep() {
+    fn unprobed_reports_survive_a_seed_sweep() {
         let rom = synthetic_nrom();
         for seed in 0..24_u64 {
             let mut config = genesis_config(0x5eed_d000 + seed, 4, 64);
             config.retention = crate::search::archive::RetentionPolicy::Unprobed;
-            config.selector = crate::search::archive::SelectorPolicy::Retire(
-                crate::search::archive::RetireThresholds {
-                    entry: 1,
-                    groups: vec![2, 2, 3, 3],
-                },
-            );
             let mut stream = Vec::new();
             let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
                 .expect("reset-heavy campaign");
@@ -1951,12 +1887,10 @@ mod tests {
     }
 
     #[test]
-    fn retention_and_selector_identifiers_round_trip() {
+    fn retention_identifiers_round_trip() {
         use crate::search::archive::{
-            RetentionPolicy, RetireThresholds, SelectorPolicy, retention_policy_from_identifier,
-            retention_policy_identifier, selector_policy_identifier,
+            RetentionPolicy, retention_policy_from_identifier, retention_policy_identifier,
         };
-        use crate::smb::archive::selector_policy_from_identifier;
         for policy in [RetentionPolicy::ProbeAtAdmission, RetentionPolicy::Unprobed] {
             assert_eq!(
                 retention_policy_from_identifier(retention_policy_identifier(policy))
@@ -1964,36 +1898,7 @@ mod tests {
                 policy
             );
         }
-        for policy in [
-            SelectorPolicy::GroupUniform,
-            SelectorPolicy::Retire(RetireThresholds {
-                entry: 3,
-                groups: vec![6, 12, 2, 4],
-            }),
-            SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
-                entry: 3,
-                groups: vec![6, 12, 2, 4],
-            }),
-            SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
-                entry: 3,
-                groups: vec![6, 12, 2, 4],
-            }),
-            SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-                entry: 3,
-                groups: vec![6, 12, 2, 4],
-            }),
-        ] {
-            assert_eq!(
-                selector_policy_from_identifier(&selector_policy_identifier(&policy))
-                    .expect("selector round trip"),
-                policy
-            );
-        }
         assert!(retention_policy_from_identifier("no_probe").is_err());
-        assert!(selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6,12").is_err());
-        assert!(
-            selector_policy_from_identifier("hierarchy_uniform_128_retire:3,6,12,4,0").is_err()
-        );
     }
 
     #[test]
@@ -2005,7 +1910,10 @@ mod tests {
             .expect("live campaign");
         let text = String::from_utf8(stream).expect("stream is utf-8");
         for (from, to) in [
-            ("hierarchy_uniform_128", "concentrated_recency_128"),
+            (
+                crate::search::archive::SELECTOR_IDENTIFIER,
+                "concentrated_recency_128",
+            ),
             ("probe_at_admission", "probe_at_admission_snapback_16"),
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),

@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_tanks_boss_damage_map_spatial_16_posture_door_area_last_preference_missiles_only_ridley_bit1_tourian_her_hits_in_view_columns_below_the_map_cell_v21";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_progress_area_map_cell_place_spatial_16_posture_door_boss_damage_identity_tanks_missiles_health_two_preferences_v22";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -29,21 +29,6 @@ const BOSS_DAMAGE_BUCKET: u16 = 4;
 
 pub type MetroidArchive =
     Archive<ButtonChord, MetroidArchiveKey, MetroidMilestones, MetroidSnapshot>;
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct MetroidArchiveGroup {
-    items: u8,
-    tanks: u8,
-    boss_damage: u8,
-    map_x: u8,
-    map_y: u8,
-    x: u8,
-    y: u8,
-    posture: u8,
-    door: u8,
-    area: u8,
-    columns: u8,
-}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct MetroidArchiveKey {
@@ -65,68 +50,28 @@ pub struct MetroidArchiveKey {
 }
 
 impl ArchiveKey for MetroidArchiveKey {
-    type Group = MetroidArchiveGroup;
+    type Place = (u8, u8, u8);
+    type Progress = u8;
+    type Identity = (u8, u8, u8, u8, u8);
 
-    fn groups() -> usize {
-        5
+    fn place(self) -> Self::Place {
+        self.cell()
     }
 
-    fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
-        (left.items, left.boss_damage).cmp(&(right.items, right.boss_damage))
+    fn progress(self) -> Self::Progress {
+        self.items
     }
 
-    fn group(self, depth: usize) -> Self::Group {
-        let location = MetroidArchiveGroup {
-            items: self.items,
-            tanks: self.tanks,
-            boss_damage: self.boss_damage,
-            area: self.area,
-            map_x: self.map_x,
-            map_y: self.map_y,
-            x: self.x,
-            y: self.y,
-            posture: self.posture,
-            door: self.door,
-            columns: self.columns,
-        };
-        match depth {
-            0 => location,
-            1 => MetroidArchiveGroup {
-                x: self.x / 2,
-                y: self.y / 2,
-                ..location
-            },
-            2 => MetroidArchiveGroup {
-                x: self.x / 8,
-                y: self.y / 8,
-                posture: 0,
-                door: 0,
-                ..location
-            },
-            3 => MetroidArchiveGroup {
-                items: self.items,
-                tanks: self.tanks,
-                boss_damage: self.boss_damage,
-                area: self.area,
-                map_x: self.map_x,
-                map_y: self.map_y,
-                ..MetroidArchiveGroup::default()
-            },
-            _ => MetroidArchiveGroup {
-                items: self.items,
-                tanks: self.tanks,
-                boss_damage: self.boss_damage,
-                ..MetroidArchiveGroup::default()
-            },
-        }
+    fn identity(self) -> Self::Identity {
+        (self.x, self.y, self.posture, self.door, self.boss_damage)
     }
 
-    fn slot_capacity() -> usize {
+    fn capacity() -> usize {
         1
     }
 
     fn preferences() -> usize {
-        1
+        2
     }
 
     fn preference_cmp(self, preference: usize, other: Self) -> Ordering {
@@ -370,12 +315,8 @@ mod tests {
             map_y: 0,
             ..MetroidMechanicalState::default()
         });
-        assert_eq!(
-            MetroidArchiveKey::progress_cmp(kraid.group(0), ridley.group(0)),
-            Ordering::Equal
-        );
-        assert!(kraid.group(0) > ridley.group(0));
-        assert!(KEY_POLICY_IDENTIFIER.contains("area_last"));
+        assert_eq!(kraid.progress(), ridley.progress());
+        assert_ne!(kraid.place(), ridley.place());
     }
 
     #[test]
@@ -409,22 +350,24 @@ mod tests {
     fn one_location_uses_resources_only_for_preference() {
         let weak = archive_key(state(100, 40, 0));
         let strong = archive_key(state(100, 300, 0));
-        assert_eq!(weak.group(0), strong.group(0));
-        assert_eq!(weak.group(1), strong.group(1));
+        assert_eq!(weak.place(), strong.place());
+        assert_eq!(weak.identity(), strong.identity());
         assert_eq!(strong.preference_cmp(0, weak), Ordering::Greater);
-        assert_eq!(MetroidArchiveKey::slot_capacity(), 1);
+        assert_eq!(strong.preference_cmp(1, weak), Ordering::Greater);
+        assert_eq!(MetroidArchiveKey::capacity(), 1);
     }
 
     #[test]
-    fn the_only_preference_ranks_missiles_before_health() {
+    fn the_two_preferences_disagree_on_missiles_against_health() {
         let mut stocked_state = state(100, 20, 0);
         stocked_state.missiles = 10;
         let mut healthy_state = state(100, 200, 0);
         healthy_state.missiles = 5;
         let stocked = archive_key(stocked_state);
         let healthy = archive_key(healthy_state);
-        assert_eq!(MetroidArchiveKey::preferences(), 1);
+        assert_eq!(MetroidArchiveKey::preferences(), 2);
         assert_eq!(stocked.preference_cmp(0, healthy), Ordering::Greater);
+        assert_eq!(stocked.preference_cmp(1, healthy), Ordering::Less);
     }
 
     #[test]
@@ -442,34 +385,38 @@ mod tests {
     }
 
     #[test]
-    fn column_states_share_a_map_cell_group() {
+    fn column_states_share_a_map_cell_and_a_holder_identity() {
         let clear = archive_key(state(100, 300, 0));
         let mut live = state(100, 300, 0);
         live.zebetite_hits_left = 13;
         let live = archive_key(live);
-        assert_ne!(clear.group(0), live.group(0));
-        assert_ne!(clear.group(2), live.group(2));
-        assert_eq!(clear.group(3), live.group(3));
+        assert_ne!(clear, live);
+        assert_eq!(clear.place(), live.place());
+        assert_eq!(clear.identity(), live.identity());
     }
 
     #[test]
-    fn map_cells_are_separate_groups_below_the_items_held() {
+    fn map_cells_are_separate_places_under_one_items_tier() {
         let here = archive_key(state(100, 300, 0));
         let mut moved = state(100, 300, 0);
         moved.map_x = 4;
         let there = archive_key(moved);
-        assert_ne!(here.group(3), there.group(3));
-        assert_eq!(here.group(4), there.group(4));
+        assert_ne!(here.place(), there.place());
+        assert_eq!(here.progress(), there.progress());
     }
 
     #[test]
-    fn progress_orders_items_then_tanks_ahead_of_position() {
+    fn progress_is_the_items_held_and_tanks_stay_in_the_preference() {
         let mut far = state(0, 300, 0);
         far.map_x = 9;
         let far = archive_key(far);
         let equipped = archive_key(state(0, 300, 0b1));
-        assert!(equipped.group(4) > far.group(4));
-        assert!(equipped.group(3) > far.group(3));
+        assert!(equipped.progress() > far.progress());
+        let mut tanked = state(0, 300, 0);
+        tanked.energy_tanks = 3;
+        let tanked = archive_key(tanked);
+        assert_eq!(tanked.progress(), far.progress());
+        assert_eq!(tanked.preference_cmp(0, far), Ordering::Greater);
     }
 
     #[test]
@@ -497,40 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn the_progress_relation_is_a_total_preorder() {
-        let states = [
-            MetroidMechanicalState::default(),
-            MetroidMechanicalState {
-                area: 0x12,
-                map_x: 3,
-                map_y: 4,
-                ..MetroidMechanicalState::default()
-            },
-            MetroidMechanicalState {
-                equipment: 0b11,
-                energy_tanks: 2,
-                ..MetroidMechanicalState::default()
-            },
-            MetroidMechanicalState {
-                equipment: 0b1,
-                energy_tanks: 5,
-                area: 0x14,
-                ..MetroidMechanicalState::default()
-            },
-        ];
-        let groups = (0..MetroidArchiveKey::groups())
-            .flat_map(|depth| {
-                states
-                    .into_iter()
-                    .map(move |state| archive_key(state).group(depth))
-            })
-            .collect::<Vec<_>>();
-        crate::search::archive::check_total_preorder::<MetroidArchiveKey>(&groups)
-            .expect("Metroid progress relation");
-    }
-
-    #[test]
-    fn damaging_a_boss_advances_progress_within_one_item_count() {
+    fn damaging_a_boss_changes_the_holder_identity_within_one_item_count() {
         let lineage = MetroidLineage {
             boss_health_highest: 64,
             cell: (0, 0, 0),
@@ -553,11 +467,9 @@ mod tests {
         .complete(Some((MetroidArchiveKey::default(), &lineage)));
         assert_eq!(arriving.boss_damage, 0);
         assert_eq!(hurt.boss_damage, 10);
-        assert_eq!(
-            MetroidArchiveKey::progress_cmp(hurt.group(1), arriving.group(1)),
-            Ordering::Greater
-        );
-        assert_ne!(hurt.group(0), arriving.group(0));
+        assert_eq!(hurt.progress(), arriving.progress());
+        assert_eq!(hurt.place(), arriving.place());
+        assert_ne!(hurt.identity(), arriving.identity());
     }
 
     #[test]
@@ -774,9 +686,7 @@ mod tests {
             energy_tanks: 5,
             ..MetroidMechanicalState::default()
         });
-        assert_eq!(
-            MetroidArchiveKey::progress_cmp(five_tanks.group(1), one_tank.group(1)),
-            Ordering::Equal
-        );
+        assert_eq!(five_tanks.progress(), one_tank.progress());
+        assert_eq!(five_tanks.place(), one_tank.place());
     }
 }

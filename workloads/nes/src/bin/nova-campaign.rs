@@ -20,7 +20,7 @@ use nes_workload::{
         target::{NovaInput, NovaLevel, NovaMechanicalState, NovaVideoMetadata},
     },
     search::{
-        archive::{RetentionPolicy, RetireThresholds, SelectorPolicy},
+        archive::RetentionPolicy,
         campaign::TargetExecution,
         draw::{DrawMixture, SuffixShape},
     },
@@ -158,10 +158,6 @@ fn campaign_config(args: &Args) -> NovaCampaignConfig {
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
         retention: RetentionPolicy::Unprobed,
-        selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 3,
-            groups: vec![6, 12, 2, 16],
-        }),
         suffix: SuffixShape::OneToSix,
         mixture: DrawMixture::AlphabetOnly,
         victory_input_path: Some(args.output.join("victory-input.json")),

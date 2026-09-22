@@ -44,7 +44,7 @@ mod real {
             },
         },
         search::{
-            archive::{RetentionPolicy, RetireThresholds, SelectorPolicy},
+            archive::RetentionPolicy,
             draw::{DrawMixture, SuffixShape},
         },
         witness::replay_witness,
@@ -264,10 +264,6 @@ mod real {
             memory_budget_mib: Some(memory_budget.archive_memory_budget_mib),
             materialize_final_artifacts: true,
             retention: RetentionPolicy::Unprobed,
-            selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-                entry: 3,
-                groups: vec![6, 12, 2, 16],
-            }),
             suffix: SuffixShape::OneToSix,
             mixture: DrawMixture::AlphabetOnly,
             victory_input_path: Some(args.output.join("victory-input.json")),

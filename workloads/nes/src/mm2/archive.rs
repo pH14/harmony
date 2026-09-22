@@ -12,7 +12,7 @@ use crate::{
     search::{
         archive::{
             Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-            SelectorPolicy, entries_by_suffix,
+            entries_by_suffix,
         },
         rand::RomuDuoJrRand,
     },
@@ -21,34 +21,11 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_MM2_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "mm2_location_boss_bar_loaded_enemy_spatial_16_posture_weapon_menu_energy_platforms_preference_v19";
+pub const KEY_POLICY_IDENTIFIER: &str = "mm2_bosses_damage_tiers_location_enemy_spatial_32_posture_platforms_menu_place_weapon_identity_preference_v20";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
-pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
-    crate::search::archive::selector_policy_from_identifier(
-        identifier,
-        Mm2ArchiveKey::groups().saturating_sub(1),
-    )
-}
-
 pub type Mm2Archive = Archive<ButtonChord, Mm2ArchiveKey, Mm2Milestones, Mm2Snapshot>;
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct Mm2ArchiveGroup {
-    bosses: u8,
-    stage: u8,
-    screen: u8,
-    room: u8,
-    boss_damage: u8,
-    enemy_damage: u8,
-    x: u8,
-    y: u8,
-    posture: u8,
-    weapon: u8,
-    platforms: u8,
-    menu: u8,
-}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Mm2ArchiveKey {
@@ -69,66 +46,34 @@ pub struct Mm2ArchiveKey {
 }
 
 impl ArchiveKey for Mm2ArchiveKey {
-    type Group = Mm2ArchiveGroup;
+    type Place = (u8, u8, u8, u8, u8, u8, u8, u8, bool);
+    type Progress = (u8, u8);
+    type Identity = (u8, u8, u8, u8);
 
-    fn groups() -> usize {
-        5
+    fn place(self) -> Self::Place {
+        (
+            self.stage,
+            self.screen,
+            self.room,
+            self.enemy_damage,
+            self.x / 2,
+            self.y / 2,
+            self.posture,
+            self.platforms,
+            self.menu != MENU_CLOSED,
+        )
     }
 
-    fn group(self, depth: usize) -> Self::Group {
-        let location = Mm2ArchiveGroup {
-            stage: self.stage,
-            screen: self.screen,
-            room: self.room,
-            boss_damage: self.boss_damage,
-            enemy_damage: self.enemy_damage,
-            x: self.x,
-            y: self.y,
-            posture: self.posture,
-            weapon: self.weapon,
-            platforms: self.platforms,
-            menu: self.menu,
-            ..Mm2ArchiveGroup::default()
-        };
-        match depth {
-            0 => location,
-            1 => Mm2ArchiveGroup {
-                x: self.x / 2,
-                y: self.y / 2,
-                weapon: 0,
-                menu: u8::from(self.menu != MENU_CLOSED),
-                ..location
-            },
-            2 => Mm2ArchiveGroup {
-                bosses: self.bosses,
-                x: self.x / 8,
-                y: self.y / 8,
-                posture: 0,
-                weapon: 0,
-                platforms: 0,
-                menu: 0,
-                ..location
-            },
-            3 => Mm2ArchiveGroup {
-                bosses: self.bosses,
-                stage: self.stage,
-                screen: self.screen,
-                ..Mm2ArchiveGroup::default()
-            },
-            _ => Mm2ArchiveGroup {
-                bosses: self.bosses,
-                stage: self.stage,
-                ..Mm2ArchiveGroup::default()
-            },
-        }
+    fn progress(self) -> Self::Progress {
+        (self.bosses, self.boss_damage)
     }
 
-    fn slot_capacity() -> usize {
+    fn identity(self) -> Self::Identity {
+        (self.x, self.y, self.weapon, self.menu)
+    }
+
+    fn capacity() -> usize {
         1
-    }
-
-    fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
-        (left.bosses, left.boss_damage).cmp(&(right.bosses, right.boss_damage))
     }
 
     fn preferences() -> usize {
@@ -335,26 +280,26 @@ mod tests {
     fn one_location_uses_resources_only_for_preference() {
         let weak = archive_key(state(100, 4, 0));
         let strong = archive_key(state(100, 20, 0x40));
-        assert_eq!(weak.group(0), strong.group(0));
-        assert_eq!(weak.group(1), strong.group(1));
-        assert_ne!(weak.group(2), strong.group(2));
+        assert_eq!(weak.place(), strong.place());
+        assert_eq!(weak.identity(), strong.identity());
+        assert_ne!(weak.progress(), strong.progress());
         assert_eq!(strong.preference_cmp(0, weak), Ordering::Greater);
-        assert_eq!(Mm2ArchiveKey::slot_capacity(), 1);
+        assert_eq!(Mm2ArchiveKey::capacity(), 1);
     }
 
     #[test]
-    fn screens_are_separate_groups_below_the_stage() {
+    fn screens_are_separate_places_under_one_tier() {
         let first = archive_key(state(100, 28, 0));
         let mut next_state = state(100, 28, 0);
         next_state.screen = 3;
         let next = archive_key(next_state);
-        assert_ne!(first.group(3), next.group(3));
-        assert_eq!(first.group(4), next.group(4));
+        assert_ne!(first.place(), next.place());
+        assert_eq!(first.progress(), next.progress());
     }
 
     #[test]
     fn progress_ignores_stage_and_location_labels() {
-        let first = Mm2ArchiveGroup {
+        let first = Mm2ArchiveKey {
             stage: 1,
             screen: 10,
             room: 4,
@@ -362,25 +307,20 @@ mod tests {
             boss_damage: 1,
             ..Default::default()
         };
-        let elsewhere = Mm2ArchiveGroup {
+        let elsewhere = Mm2ArchiveKey {
             stage: 12,
             screen: 99,
             room: 77,
             ..first
         };
-        assert_eq!(
-            Mm2ArchiveKey::progress_cmp(first, elsewhere),
-            Ordering::Equal
-        );
-        assert_eq!(
-            Mm2ArchiveKey::progress_cmp(
-                Mm2ArchiveGroup {
-                    boss_damage: 2,
-                    ..first
-                },
-                elsewhere
-            ),
-            Ordering::Greater
+        assert_eq!(first.progress(), elsewhere.progress());
+        assert!(
+            Mm2ArchiveKey {
+                boss_damage: 2,
+                ..first
+            }
+            .progress()
+                > elsewhere.progress()
         );
     }
 
@@ -416,24 +356,5 @@ mod tests {
             assert_ne!(chord.buttons & 0xc0, 0xc0);
         }
         assert!((40..=140).contains(&starts), "start taps: {starts}");
-    }
-
-    #[test]
-    fn the_progress_relation_is_a_total_preorder() {
-        let keys = [
-            archive_key(state(0x20, 28, 0)),
-            archive_key(state(0x90, 10, 0b1)),
-            archive_key(state(0x90, 28, 0b11)),
-            archive_key(Mm2MechanicalState {
-                stage: 3,
-                boss_health: 12,
-                ..state(0x40, 20, 0b1)
-            }),
-        ];
-        let groups = (0..Mm2ArchiveKey::groups())
-            .flat_map(|depth| keys.iter().map(move |key| key.group(depth)))
-            .collect::<Vec<_>>();
-        crate::search::archive::check_total_preorder::<Mm2ArchiveKey>(&groups)
-            .expect("Mega Man 2 progress relation");
     }
 }

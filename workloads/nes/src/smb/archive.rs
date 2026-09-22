@@ -1,20 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{cmp::Ordering, error::Error, num::NonZeroUsize};
+use std::{error::Error, num::NonZeroUsize};
 
 use crate::search::archive::{
-    Archive, ArchiveEntryReport, ArchiveKey, SelectorAccounting, SelectorPolicy, entries_by_suffix,
+    Archive, ArchiveEntryReport, ArchiveKey, SelectorAccounting, entries_by_suffix,
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub use crate::smb::target::ROOM_IDENTITY_BYTES;
 
-pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
-    crate::search::archive::selector_policy_from_identifier(
-        identifier,
-        SmbArchiveKey::groups().saturating_sub(1),
-    )
-}
 use crate::search::rand::RomuDuoJrRand;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -42,7 +36,7 @@ const STATE_FINGERPRINT_MASK: u8 = 0x3f;
 pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "frozen_area_span_screen_x_16_clock_100_band_4_player_x_cells_no_engine_state";
+    "frozen_area_span_screen_x_16_clock_100_band_4_progress_tiers_room_place_fingerprint_identity";
 
 pub type SmbRoomIdentity = [u8; 3];
 
@@ -77,35 +71,29 @@ fn room_x_bucket_is_absent(bucket: &u8) -> bool {
 }
 
 impl ArchiveKey for SmbArchiveKey {
-    type Group = SmbArchiveKey;
+    type Place = (SmbRoomIdentity, u16, u8, u8);
+    type Progress = (u8, u8, u16);
+    type Identity = (u8, u8);
 
-    fn groups() -> usize {
-        5
+    fn place(self) -> Self::Place {
+        (
+            self.room,
+            self.progress.saturating_add(u16::from(self.room_x_bucket)),
+            self.player_y_bucket,
+            self.time_bucket,
+        )
     }
 
-    fn progress_cmp(left: Self::Group, right: Self::Group) -> Ordering {
-        (left.world, left.level, left.progress).cmp(&(right.world, right.level, right.progress))
+    fn progress(self) -> Self::Progress {
+        (
+            self.world,
+            self.level,
+            self.progress.saturating_add(u16::from(self.room_x_bucket)) / FRONTIER_PROGRESS_BAND,
+        )
     }
 
-    fn group(self, depth: usize) -> Self::Group {
-        let mut group = self;
-        if depth >= 1 {
-            group.state_fingerprint = 0;
-            group.progress = self.progress.saturating_add(u16::from(self.room_x_bucket));
-            group.room_x_bucket = 0;
-        }
-        if depth >= 2 {
-            group.player_y_bucket = 0;
-            group.time_bucket = 0;
-            group.progress /= FRONTIER_PROGRESS_BAND;
-        }
-        if depth >= 3 {
-            group.progress = 0;
-        }
-        if depth >= 4 {
-            group.room = [0; 3];
-        }
-        group
+    fn identity(self) -> Self::Identity {
+        (self.state_fingerprint, self.room_x_bucket)
     }
 
     type Lineage = Vec<SmbRoomIdentity>;
@@ -352,7 +340,7 @@ pub(crate) fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16
 #[cfg(test)]
 mod tests {
     use super::{SmbArchiveKey, SmbRoomIdentity};
-    use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey, check_total_preorder};
+    use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey};
     use crate::smb::target::{SmbObservations, SmbProgressWatermark};
 
     #[test]
@@ -488,49 +476,19 @@ mod tests {
     }
 
     #[test]
-    fn groups_pool_from_slot_to_pair() {
+    fn the_place_carries_the_room_and_the_tier_carries_the_banded_progress() {
         let key = key(153, [3, 5]);
-        assert_eq!(key.group(0), key);
-        assert_eq!(key.group(1).state_fingerprint, 0);
-        assert_eq!(key.group(2).progress, 153 / 4);
+        assert_eq!(key.place(), (key.room, 153, 11, 0));
+        assert_eq!(key.progress(), (7, 3, 153 / 4));
+        assert_eq!(key.identity(), (9, 0));
         let on_screen = SmbArchiveKey {
             room_x_bucket: 6,
             ..key
         };
-        assert_eq!(on_screen.group(1).progress, 159);
-        assert_eq!(on_screen.group(1).room_x_bucket, 0);
-        assert_eq!(on_screen.group(2).progress, 159 / 4);
-        assert_eq!(key.group(2).player_y_bucket, 0);
-        assert_eq!(key.group(3).progress, 0);
-        assert_eq!(key.group(3).room, key.room);
-        assert_eq!(key.group(4).room, [0; 3]);
-        assert_eq!(
-            (key.group(4).world, key.group(4).level),
-            (key.world, key.level)
-        );
-        assert_eq!(SmbArchiveKey::groups(), 5);
-    }
-
-    #[test]
-    fn the_progress_relation_is_a_total_preorder() {
-        let groups = [0_usize, 1, 2, 3, 4]
-            .into_iter()
-            .flat_map(|depth| {
-                [
-                    key(0, [0, 0]),
-                    key(41, [1, 0]),
-                    key(41, [2, 3]),
-                    key(900, [0, 0]),
-                    SmbArchiveKey {
-                        world: 1,
-                        level: 1,
-                        ..key(900, [4, 4])
-                    },
-                ]
-                .map(|candidate| candidate.group(depth))
-            })
-            .collect::<Vec<_>>();
-        check_total_preorder::<SmbArchiveKey>(&groups).expect("SMB progress relation");
+        assert_eq!(on_screen.place().1, 159);
+        assert_eq!(on_screen.progress(), (7, 3, 159 / 4));
+        assert_eq!(on_screen.identity(), (9, 6));
+        assert_eq!(SmbArchiveKey::capacity(), 2);
     }
 
     #[test]
@@ -543,13 +501,6 @@ mod tests {
             room: SmbRoomIdentity::default(),
             ..key(900, [0, 0])
         };
-        assert_eq!(
-            SmbArchiveKey::progress_cmp(ahead.group(0), behind.group(0)),
-            std::cmp::Ordering::Greater
-        );
-        assert_eq!(
-            SmbArchiveKey::progress_cmp(ahead.group(2), behind.group(2)),
-            std::cmp::Ordering::Greater
-        );
+        assert!(ahead.progress() > behind.progress());
     }
 }

@@ -10,15 +10,12 @@ use std::{
 };
 
 use nes_workload::{
-    search::archive::{
-        MAX_ARCHIVE_ENTRIES, RetentionPolicy, RetireThresholds, SelectorPolicy,
-        retention_policy_from_identifier,
-    },
+    search::archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy, retention_policy_from_identifier},
     search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
     search::draw::{
         DrawMixture, SuffixShape, draw_mixture_from_identifier, suffix_shape_from_identifier,
     },
-    smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, selector_policy_from_identifier},
+    smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport},
     smb::campaign::{
         SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignModeReport,
         SmbCampaignOrigin, SmbGame, SmbSnapshotCheckpoint, SmbTerminalPredicate,
@@ -83,10 +80,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
     let mut wall_budget = None;
     let mut retention = RetentionPolicy::Unprobed;
-    let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-        entry: 3,
-        groups: vec![6, 12, 2, 16],
-    });
     let mut vocabulary = SmbButtonVocabulary::default();
     let mut terminal = SmbTerminalPredicate::GameVictory;
     let mut suffix = SuffixShape::default();
@@ -110,13 +103,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                 &args
                     .next()
                     .ok_or("missing --retention value")?
-                    .to_string_lossy(),
-            )?;
-        } else if flag == "--selector" {
-            selector = selector_policy_from_identifier(
-                &args
-                    .next()
-                    .ok_or("missing --selector value")?
                     .to_string_lossy(),
             )?;
         } else if flag == "--vocabulary" {
@@ -208,7 +194,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         memory_budget_mib,
         materialize_final_artifacts: write_final_artifacts,
         retention,
-        selector,
         suffix,
         mixture,
         victory_input_path: Some(output.join("victory-input.json")),
