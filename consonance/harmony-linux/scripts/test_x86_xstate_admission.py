@@ -32,7 +32,7 @@ def fixture(code=b"\xc3", flags=5, needed=None, soname=None):
     return header + bytes(0x1000 - len(header)) + payload
 
 
-def resolver_trampoline(save=b"\x0f\xae\x64\x24\x40", entry_jump=False):
+def resolver_trampoline(save=b"\x0f\xae\x64\x24\x40", entry_jump=b""):
     spills = "48890424 48894c2408 4889542410 4889742418 48897c2420 4c89442428 4c894c2430"
     reloads = "4c8b4c2430 4c8b442428 488b7c2420 488b742418 488b542410 488b4c2408 488b0424"
     head = bytes.fromhex("f30f1efa 53 4889e3 4883e4c0 482b2500000000 " + spills + " b8ee000800 31d2")
@@ -42,7 +42,8 @@ def resolver_trampoline(save=b"\x0f\xae\x64\x24\x40", entry_jump=False):
     call = b"\xe8" + struct.pack("<i", len(tail))
     code = head + call + tail + b"\xc3"
     if entry_jump:
-        code = b"\xeb\x04" + code
+        jump = entry_jump + b"\xe9"
+        code = jump + struct.pack("<i", len(head) - len(save) - 8) + code
     return code
 
 
@@ -100,7 +101,7 @@ class AdmissionTests(unittest.TestCase):
                 self.assertTrue(self.admitted(report))
 
     def test_resolver_trampoline_with_other_save_operand_or_entry_branch_rejected(self):
-        for code in (resolver_trampoline(b"\x0f\xae\x64\x24\x48"), resolver_trampoline(entry_jump=True)):
+        for code in (resolver_trampoline(b"\x0f\xae\x64\x24\x48"), resolver_trampoline(entry_jump=b"\x90"), resolver_trampoline(entry_jump=b"\xf2")):
             with self.subTest(code=code[:8].hex()):
                 self.binary.write_bytes(fixture(code))
                 report, _ = self.scan()

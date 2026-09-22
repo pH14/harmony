@@ -306,10 +306,9 @@ def disassemble(data, segments, objdump):
                 raise Rejected("objdump decoded no instructions")
     targets = set()
     for item in instructions:
-        if item["mnemonic"].startswith("j") or item["mnemonic"].startswith("call") or item["mnemonic"].startswith("loop"):
-            target = re.match(r"(?:0x)?([0-9a-f]+)(?:\s|$)", item["operands"])
-            if target:
-                targets.add(int(target[1], 16))
+        target = re.search(r"\b(?:j[a-z]*|call[a-z]*|loop[a-z]*)\s+(?:0x)?([0-9a-f]+)(?:\s|$)", item["mnemonic"] + " " + item["operands"])
+        if target:
+            targets.add(int(target[1], 16))
     sites = []
     for index, item in enumerate(instructions):
         if item["mnemonic"] not in SAVE | RESTORE | {"xgetbv"}:
