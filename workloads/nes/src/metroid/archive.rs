@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_progress_area_map_cell_place_spatial_16_posture_door_boss_damage_identity_tanks_missiles_health_two_preferences_v22";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_progress_area_map_cell_boss_damage_place_spatial_16_posture_door_identity_tanks_missiles_health_two_preferences_v23";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -50,12 +50,12 @@ pub struct MetroidArchiveKey {
 }
 
 impl ArchiveKey for MetroidArchiveKey {
-    type Place = (u8, u8, u8);
+    type Place = (u8, u8, u8, u8);
     type Progress = u8;
-    type Identity = (u8, u8, u8, u8, u8);
+    type Identity = (u8, u8, u8, u8);
 
     fn place(self) -> Self::Place {
-        self.cell()
+        (self.area, self.map_x, self.map_y, self.boss_damage)
     }
 
     fn progress(self) -> Self::Progress {
@@ -63,7 +63,7 @@ impl ArchiveKey for MetroidArchiveKey {
     }
 
     fn identity(self) -> Self::Identity {
-        (self.x, self.y, self.posture, self.door, self.boss_damage)
+        (self.x, self.y, self.posture, self.door)
     }
 
     fn capacity() -> usize {
@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn damaging_a_boss_changes_the_holder_identity_within_one_item_count() {
+    fn damaging_a_boss_moves_the_state_to_another_place_within_one_item_count() {
         let lineage = MetroidLineage {
             boss_health_highest: 64,
             cell: (0, 0, 0),
@@ -469,8 +469,9 @@ mod tests {
         assert_eq!(arriving.boss_damage, 0);
         assert_eq!(hurt.boss_damage, 10);
         assert_eq!(hurt.progress(), arriving.progress());
-        assert_eq!(hurt.place(), arriving.place());
-        assert_ne!(hurt.identity(), arriving.identity());
+        assert_ne!(hurt.place(), arriving.place());
+        assert_eq!(hurt.identity(), arriving.identity());
+        assert_eq!(hurt.progress(), arriving.progress());
     }
 
     #[test]

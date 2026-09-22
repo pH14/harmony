@@ -34,7 +34,7 @@ Metroid finishes from power-on on one archive with no re-rooting. The
 
 Selection: pick a tier by progress, pick a cell in it by count decay, pick
 one of its holders. Retention: a cell keeps holders distinct by holder
-identity (fine position, posture, door, boss damage), and at each identity
+identity (fine position, posture, door), and at each identity
 up to the capacity under each preference. Propagation: an improved holder
 replays the exits recorded from its identity; a landing is an arrival
 anywhere in the destination cell; an exit's source is keyed on holder
@@ -64,9 +64,11 @@ and a band at eight to one starved the maze levels' branch points. One selector
 identifier names this; the stream schema version rises so old recordings are
 rejected before replay.
 
-For Metroid: the cell is area, map screen, items. Boss damage is holder
-identity, so a hit that spent a missile is kept beside the state that did
-not fire. Two preferences, missiles first and health first, with tanks
+For Metroid: the cell is area, map screen, boss damage, items. Each hit
+opens a new cell, so a fight keeps drawing as it progresses, and a hit that
+spent a missile is kept beside the state that did not fire. As holder
+identity, boss damage opened no cell, and on ladder root 3 Ridley's room
+took under a tenth of a percent of draws and Ridley was never hurt. Two preferences, missiles first and health first, with tanks
 ahead of both. Route milestones and Zebetite columns leave the key and stay
 in reporting; the Tourian boss reading already scores column hits.
 
@@ -357,3 +359,17 @@ diagnose; power-on runs are the only completion test.
   the gap between builds, so the full ladder decides. The fourteenth
   build's ladder stopped at 5 of 51 cells so the box could run the
   fifteenth build's ladder, six cells at a time, boss roots first.
+- 2026-09-22: the ladder script counted an area milestone as missing
+  whenever a root sat past that area, so the Norfair and Tourian roots
+  scored steps back to Brinstar. It now scores each root from the
+  milestone after the deepest one the root holds. The old build's
+  corrected scores from the seventeen roots: 1, 0, 1, 0, 0, 0, 1, 1, 2,
+  1, 0, 2, 3, 1, 0, 2, 0. On root 3 the old build killed Ridley on all
+  three seeds at 741 to 788 thousand executions. The fifteenth build
+  reached his room at 1.5 to 2.1 million and never hurt him. In the old
+  build every hit opened a new group; the room took 10 to 15 percent of
+  draws and each kill came 13 to 32 thousand executions after entering
+  it. On the fifteenth build boss damage was holder identity, a hit
+  opened no cell, and the room took under a tenth of a percent of
+  draws. Fix, sixteenth build (consol16): boss damage joins the Metroid
+  place, so each hit opens a new cell. Root 3 reruns on seeds 11 to 13.

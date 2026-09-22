@@ -60,9 +60,10 @@ The adapter supplies its controller vocabulary as the alphabet sampler and
 nothing else about drawing; the searcher owns the suffix draw and the
 retained-input table.
 
-The items held are the progress tier. The place is the area byte and the map
-cell. The holder identity is the position bucket, posture, door state and boss
-damage, so a state that has hurt the boss never displaces one that has not.
+The items held are the progress tier. The place is the area byte, the map
+cell and boss damage, so every hit on a boss opens a new place whose draw count
+starts fresh, and a state that has hurt the boss never displaces one that has
+not. The holder identity is the position bucket, posture and door state.
 Tanks, missiles and health are the preferences that decide which state holds a
 slot, in two orders: missiles before health, and health before missiles. Two
 places with equal items are peers whatever their area byte, map row or column.
