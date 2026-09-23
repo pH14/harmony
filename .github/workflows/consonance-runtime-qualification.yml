@@ -59,6 +59,12 @@ jobs:
           python3 consonance/harmony-linux/scripts/runtime-artifacts.py verify --architecture x86_64 \
             --artifacts consonance/harmony-linux/build/x86_64 --output platform-smoke/provenance.json
           python3 -c 'import json; assert json.load(open("platform-smoke/provenance.json"))["scope"] == "exact-input"'
+      - name: Reject boot without the Harmony clock
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+          bash consonance/harmony-linux/linux/test-missing-host-clock.sh \
+            "$HARMONY_PLATFORM_KERNEL" "$HARMONY_PLATFORM_INITRAMFS"
       - name: Enable hardware backend
         run: |
           test -c /dev/kvm

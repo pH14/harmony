@@ -1,0 +1,429 @@
+x86: require Harmony guest interfaces without a boot opt-in
+
+The shipped x86 kernel executes only inside Harmony. Enable the deterministic
+clock, entropy timing, execution ticks, flags and XSAVE normalization, and
+userspace counter confinement from the compiled guest configuration rather
+than a kernel command-line token. Stop boot if the required host clock page or
+ABI cannot be registered. Keep CONFIG_HARMONY_USER_COUNTER_TRAPS as the
+explicit N6 negative-control build profile.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+--- a/arch/x86/Kconfig
++++ b/arch/x86/Kconfig
+@@ -840,19 +840,17 @@
+ 	  Clocksource and sched_clock backed by the harmony deterministic
+ 	  hypervisor's materialized exit-count-derived clock page (a seqlock page
+ 	  the host re-stamps at every virtual-time advance; the read path is
+-	  a page load, never a raw counter read). Inert unless the
+-	  harmony_pvclock kernel parameter is present AND the host accepts
+-	  the page registration over the hypercall doorbell; when active the
+-	  TSC is marked unstable so kernel timekeeping can never fall back
+-	  to raw RDTSC. Say N unless building the harmony determinism guest.
++	  a page load, never a raw counter read). Registration over the
++	  hypercall doorbell is required at boot; a missing or incompatible
++	  host interface stops the kernel. Say Y for the Harmony guest.
+ 
+ config HARMONY_USER_COUNTER_TRAPS
+ 	bool "Harmony virtualize ring-3 TSC reads"
+ 	depends on HARMONY_PVCLOCK
+ 	default y
+ 	help
+-	  On an active harmony_pvclock boot, set CR4.TSD for every newly
+-	  executed userspace image and refuse a subsequent PR_TSC_ENABLE.
++	  Set CR4.TSD for every newly executed userspace image and refuse
++	  a subsequent PR_TSC_ENABLE.
+ 	  Harmony's #GP handler serves those reads from the virtual clock.
+ 	  Disable only for the N6 negative control kernel that proves the
+ 	  counter-reading probe detects a live TSC.
+--- a/arch/x86/include/asm/harmony_pvclock.h
++++ b/arch/x86/include/asm/harmony_pvclock.h
+@@ -17,20 +17,13 @@
+ 
+ /*
+  * The harmony determinism guest's time-ownership interface, consumed by the
+- * boot TSC paths (tsc.c) and the entropy-timing accessor (timex.h). Both
+- * calls answer for kernels booted WITHOUT the harmony_pvclock parameter too,
+- * so ordinary kernels built with CONFIG_HARMONY_PVCLOCK behave exactly as
+- * before.
++ * boot TSC paths (tsc.c) and the entropy-timing accessor (timex.h).
++ * The shipped kernel requires CONFIG_HARMONY_PVCLOCK.
+  */
+ #ifdef CONFIG_HARMONY_PVCLOCK
+-bool harmony_pvclock_requested(void);
+ u64 harmony_pvclock_entropy_cycles(void);
+ bool harmony_pvclock_read_user_counter(u64 *value, u32 *aux);
+ #else
+-static inline bool harmony_pvclock_requested(void)
+-{
+-	return false;
+-}
+ static inline u64 harmony_pvclock_entropy_cycles(void)
+ {
+ 	return 0;
+@@ -49,15 +42,12 @@
+  * -- exception and interrupt frames (pt_regs), the syscall R11 image,
+  * local_irq_save() -- would otherwise carry that vendor-specific bit into
+  * guest memory. No 64-bit-mode instruction reads AF, so the deterministic
+- * guest clears it wherever flags become data. The check is a plain
+- * __ro_after_init bool (no call) so noinstr entry paths can use it.
++ * guest clears it wherever flags become data.
+  */
+ #ifdef CONFIG_HARMONY_PVCLOCK
+-extern bool harmony_pvclock_flags_pinned;
+ static __always_inline unsigned long harmony_pin_flags(unsigned long flags)
+ {
+-	if (harmony_pvclock_flags_pinned)
+-		flags &= ~(unsigned long)X86_EFLAGS_AF;
++	flags &= ~(unsigned long)X86_EFLAGS_AF;
+ 	return flags;
+ }
+ #else
+@@ -73,16 +63,14 @@
+  * write is the VM exit; the host assigns it a fixed sub-period duration so
+  * an exit-free execution stretch still reaches an armed clockevent
+  * deadline. The exact port, width, and value are default-denied by the
+- * userspace device model. Same noinstr rules as harmony_pin_flags: the
+- * check is the plain __ro_after_init bool and outl is inline asm.
++ * userspace device model. outl is inline asm for noinstr callers.
+  */
+ #define HARMONY_VIRTUAL_TIME_TICK_PORT 0x0CA3
+ 
+ #ifdef CONFIG_HARMONY_PVCLOCK
+ static __always_inline void harmony_virtual_time_tick(void)
+ {
+-	if (harmony_pvclock_flags_pinned)
+-		outl(1, HARMONY_VIRTUAL_TIME_TICK_PORT);
++	outl(1, HARMONY_VIRTUAL_TIME_TICK_PORT);
+ }
+ #else
+ static __always_inline void harmony_virtual_time_tick(void)
+--- a/arch/x86/include/asm/timex.h
++++ b/arch/x86/include/asm/timex.h
+@@ -15,7 +15,7 @@
+ 	 * would be the one nondeterministic input on an otherwise
+ 	 * deterministic machine.
+ 	 */
+-	if (harmony_pvclock_requested())
++	if (IS_ENABLED(CONFIG_HARMONY_PVCLOCK))
+ 		return harmony_pvclock_entropy_cycles();
+ 	if (!IS_ENABLED(CONFIG_X86_TSC) &&
+ 	    !cpu_feature_enabled(X86_FEATURE_TSC))
+--- a/arch/x86/kernel/fpu/init.c
++++ b/arch/x86/kernel/fpu/init.c
+@@ -118,7 +118,7 @@
+ 		 * kernel frees init data, so its hardware-written mask must be
+ 		 * host-neutral too.
+ 		 */
+-		if (harmony_pvclock_requested())
++		if (IS_ENABLED(CONFIG_HARMONY_PVCLOCK))
+ 			fxregs.mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
+ 
+ 		/*
+@@ -134,7 +134,7 @@
+ 	 * under harmony_pvclock: pin it so vendor-specific bits (AMD's
+ 	 * misaligned-SSE bit 17) read as unsupported everywhere.
+ 	 */
+-	if (harmony_pvclock_requested())
++	if (IS_ENABLED(CONFIG_HARMONY_PVCLOCK))
+ 		mask = HARMONY_MXCSR_MASK_PINNED;
+ 	mxcsr_feature_mask &= mask;
+ }
+--- a/arch/x86/kernel/fpu/legacy.h
++++ b/arch/x86/kernel/fpu/legacy.h
+@@ -64,7 +64,7 @@
+ 		err = user_insn(fxsaveq %[fx], [fx] "=m" (*fx), "m" (*fx));
+ 
+ 	/* See HARMONY_MXCSR_MASK_PINNED: keep the sigframe host-neutral. */
+-	if (!err && harmony_pvclock_requested())
++	if (!err && IS_ENABLED(CONFIG_HARMONY_PVCLOCK))
+ 		err = __put_user(HARMONY_MXCSR_MASK_PINNED, &fx->mxcsr_mask);
+ 
+ 	return err;
+@@ -117,7 +117,7 @@
+ 		asm volatile("fxsaveq %[fx]" : [fx] "=m" (*fx));
+ 
+ 	/* See HARMONY_MXCSR_MASK_PINNED: keep the image host-neutral. */
+-	if (harmony_pvclock_requested())
++	if (IS_ENABLED(CONFIG_HARMONY_PVCLOCK))
+ 		fx->mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
+ }
+ 
+--- a/arch/x86/kernel/fpu/xstate.c
++++ b/arch/x86/kernel/fpu/xstate.c
+@@ -934,7 +934,7 @@
+ 		goto out_disable;
+ 	}
+ 
+-	if (harmony_pvclock_requested() &&
++	if (IS_ENABLED(CONFIG_HARMONY_PVCLOCK) &&
+ 	    (!IS_ENABLED(CONFIG_X86_64) ||
+ 	     fpu_kernel_cfg.max_features != HARMONY_XSTATE_MASK ||
+ 	     fpu_user_cfg.max_features != HARMONY_XSTATE_MASK ||
+@@ -1188,7 +1188,7 @@
+ 		     &xinit->i387, off_mxcsr);
+ 
+ 	/* Harmony saves materialize MXCSR independently of component presence. */
+-	copy_feature((harmony_pvclock_requested() &&
++	copy_feature((IS_ENABLED(CONFIG_HARMONY_PVCLOCK) &&
+ 		      (fpstate->user_xfeatures & XFEATURE_MASK_SSE)) ||
+ 		     (header.xfeatures & (XFEATURE_MASK_SSE | XFEATURE_MASK_YMM)),
+ 		     &to, &xsave->i387.mxcsr, &xinit->i387.mxcsr,
+@@ -1348,7 +1348,7 @@
+ 	/* Validate MXCSR when any of the related features is in use */
+ 	mask = XFEATURE_MASK_FP | XFEATURE_MASK_SSE | XFEATURE_MASK_YMM;
+ 	if ((hdr.xfeatures & mask) ||
+-	    (harmony_pvclock_requested() &&
++	    (IS_ENABLED(CONFIG_HARMONY_PVCLOCK) &&
+ 	     (fpstate->user_xfeatures & XFEATURE_MASK_SSE))) {
+ 		u32 mxcsr[2];
+ 
+@@ -1406,7 +1406,7 @@
+ 	 */
+ 	xsave->header.xfeatures |= hdr.xfeatures;
+ 
+-	if (harmony_pvclock_requested()) {
++	if (IS_ENABLED(CONFIG_HARMONY_PVCLOCK)) {
+ 		if (!harmony_xstate_layout_valid(fpstate->xfeatures, fpstate->size,
+ 				cpu_feature_enabled(X86_FEATURE_XCOMPACTED)))
+ 			return -EINVAL;
+--- a/arch/x86/kernel/fpu/xstate.h
++++ b/arch/x86/kernel/fpu/xstate.h
+@@ -226,7 +226,7 @@
+ 	u32 hmask = mask >> 32;
+ 	unsigned long flags = 0;
+ 	u32 mxcsr;
+-	bool harmony = harmony_pvclock_requested();
++	bool harmony = IS_ENABLED(CONFIG_HARMONY_PVCLOCK);
+ 	int err;
+ 
+ 	WARN_ON_FPU(!alternatives_patched);
+@@ -325,7 +325,7 @@
+ 	u32 mxcsr;
+ 	int err;
+ 
+-	if (harmony_pvclock_requested()) {
++	if (IS_ENABLED(CONFIG_HARMONY_PVCLOCK)) {
+ 		if (!harmony_xstate_layout_valid(mask, fpstate->user_size,
+ 				cpu_feature_enabled(X86_FEATURE_XCOMPACTED)))
+ 			return -EINVAL;
+@@ -356,7 +356,7 @@
+ 		err = update_pkru_in_sigframe(buf, pkru);
+ 
+ 	/* See HARMONY_MXCSR_MASK_PINNED: keep the sigframe host-neutral. */
+-	if (!err && harmony_pvclock_requested())
++	if (!err && IS_ENABLED(CONFIG_HARMONY_PVCLOCK))
+ 		err = __put_user(HARMONY_MXCSR_MASK_PINNED,
+ 				 &buf->i387.mxcsr_mask);
+ 
+--- a/arch/x86/kernel/harmony_pvclock.c
++++ b/arch/x86/kernel/harmony_pvclock.c
+@@ -17,11 +17,8 @@
+  * anywhere else in the system still traps to the hypervisor and returns the
+  * same exit-count-derived value (the enforcement backstop).
+  *
+- * Everything is guarded on the `harmony_pvclock` kernel parameter, which only
+- * the harmony vmm appends to the command line when it offers the page — this
+- * file is dead weight (and this kernel behaves exactly as before) on any
+- * other host, which is what lets one kernel image serve as both the page-on
+- * and page-off arm of the perf measurement.
++ * The shipped kernel registers the clock unconditionally and stops boot if
++ * the Harmony host interface is absent or incompatible.
+  *
+  * Registration transport: the hypercall doorbell (harmony docs/ARCHITECTURE.md)
+  * — stage a request frame at REQ_GPA (0xE000), OUT the frame length to port
+@@ -42,7 +39,6 @@
+ #include <linux/string.h>
+ #include <linux/unaligned.h>
+ 
+-#include <asm/cmdline.h>
+ #include <asm/harmony_pvclock.h>
+ #include <asm/io.h>
+ #include <asm/msr.h>
+@@ -106,35 +102,6 @@
+ } __packed;
+ 
+ /*
+- * Runtime-lived (not __initdata): the boot TSC paths (tsc.c) consult this at
+- * init, and the entropy-timing accessor (timex.h random_get_entropy) consults
+- * it for the machine's whole life.
+- */
+-static bool pvclock_requested __ro_after_init;
+-
+-bool harmony_pvclock_flags_pinned __ro_after_init;
+-
+-static int __init harmony_pvclock_setup(char *arg)
+-{
+-	pvclock_requested = true;
+-	harmony_pvclock_flags_pinned = true;
+-	return 0;
+-}
+-early_param("harmony_pvclock", harmony_pvclock_setup);
+-
+-bool harmony_pvclock_requested(void)
+-{
+-	/* setup_data RNG credit precedes parse_early_param(). Its first
+-	 * extract_entropy() must already avoid native timing. The boot command
+-	 * line has been populated before setup_data is parsed.
+-	 */
+-	return pvclock_requested ||
+-		cmdline_find_option_bool(boot_command_line,
+-					"harmony_pvclock") > 0;
+-}
+-EXPORT_SYMBOL_GPL(harmony_pvclock_requested);
+-
+-/*
+  * The §1 seqlock read. The host writes only while this vCPU is paused at a
+  * VM exit, so on today's single-vCPU machine the retry fires only for a read
+  * that straddled an exit/resume boundary; the loop is the ABI's forward
+@@ -214,8 +181,7 @@
+ /*
+  * Publish the page GPA over the doorbell and validate the answer. Returns 0
+  * with the host's ABI version in *abi on success, -errno on any failure —
+- * every failure path leaves the kernel on its trap-backstopped time (correct,
+- * just slower), never half-registered.
++ * the caller must stop boot rather than run without the required clock.
+  */
+ static int __init harmony_ring_register(phys_addr_t page_pa, u32 *abi)
+ {
+@@ -276,8 +242,7 @@
+ 		goto out;
+ 	}
+ 	if (le16_to_cpu(resp->status) != HC_STATUS_OK) {
+-		/* UnknownService = "not offered": the clean opt-out answer. */
+-		pr_info("host declined registration (status %u)\n",
++		pr_err("host declined required registration (status %u)\n",
+ 			le16_to_cpu(resp->status));
+ 		ret = -ENODEV;
+ 		goto out;
+@@ -306,15 +271,9 @@
+ 
+ 	BUILD_BUG_ON(sizeof(struct harmony_pvclock_page) != PAGE_SIZE);
+ 
+-	if (!harmony_pvclock_requested)
+-		return 0;
+-
+ 	ret = harmony_ring_register(__pa(&harmony_page), &abi);
+-	if (ret) {
+-		pr_warn("registration failed (%d); keeping trap-backstopped time\n",
+-			ret);
+-		return 0;
+-	}
++	if (ret)
++		panic("Harmony pvclock registration failed: %d", ret);
+ 	/*
+ 	 * The REGISTRATION HANDSHAKE (harmony paravirtual clock interface, the r8
+ 	 * ruling). On an rdtsc-intercepting host the doorbell OUT above only
+@@ -343,18 +302,19 @@
+ 
+ 	/*
+ 	 * An ABI mismatch is a hard fault, never a silent reinterpret
+-	 * (paravirtual clock interface): refuse the page entirely — and loudly —
+-	 * rather than read fields whose layout this reader does not know.
+-	 * The trap backstop keeps time correct meanwhile. (The page is now
+-	 * stamped by the handshake above, so these reads see the real values.)
++	 * (paravirtual clock interface): stop before reading an unknown layout.
++	 * The page is stamped by the handshake above.
+ 	 */
+ 	if (abi != HARMONY_PVCLOCK_ABI ||
+ 	    READ_ONCE(harmony_page.abi_version) != HARMONY_PVCLOCK_ABI ||
+-	    READ_ONCE(harmony_page.flags) != HARMONY_FLAGS_V1) {
+-		pr_err("ABI mismatch (host answered %u, page says %u, flags %#x want %#x); refusing the page\n",
+-		       abi, READ_ONCE(harmony_page.abi_version),
+-		       READ_ONCE(harmony_page.flags), HARMONY_FLAGS_V1);
+-		return 0;
++	    READ_ONCE(harmony_page.flags) != HARMONY_FLAGS_V1 ||
++	    READ_ONCE(harmony_page.guest_clock_hz) == 0 ||
++	    READ_ONCE(harmony_page.vcpu_index) != 0) {
++		panic("Harmony pvclock page mismatch: host ABI %u, page ABI %u, flags %#x, clock %llu Hz, vCPU %u",
++		      abi, READ_ONCE(harmony_page.abi_version),
++		      READ_ONCE(harmony_page.flags),
++		      (unsigned long long)READ_ONCE(harmony_page.guest_clock_hz),
++		      READ_ONCE(harmony_page.vcpu_index));
+ 	}
+ 
+ 	/*
+@@ -365,7 +325,9 @@
+ 	 */
+ 	mark_tsc_unstable("harmony-pvclock");
+ 	paravirt_set_sched_clock(harmony_sched_clock);
+-	clocksource_register_hz(&harmony_clocksource, NSEC_PER_SEC);
++	ret = clocksource_register_hz(&harmony_clocksource, NSEC_PER_SEC);
++	if (ret)
++		panic("Harmony pvclock clocksource registration failed: %d", ret);
+ 	pr_info("exit-count clock page registered at %pa (abi %u, counter %llu Hz)\n",
+ 		&(phys_addr_t){ __pa(&harmony_page) }, abi,
+ 		(unsigned long long)READ_ONCE(harmony_page.guest_clock_hz));
+@@ -387,9 +349,6 @@
+ 	u32 seq, abi, flags, vcpu;
+ 	u64 gc, hz;
+ 
+-	if (!harmony_pvclock_requested())
+-		return false;
+-
+ 	do {
+ 		while ((seq = READ_ONCE(p->seq)) & 1)
+ 			cpu_relax();
+--- a/arch/x86/kernel/process.c
++++ b/arch/x86/kernel/process.c
+@@ -335,7 +335,7 @@
+ 		disable_TSC();
+ 	else if (val == PR_TSC_ENABLE) {
+ 		if (IS_ENABLED(CONFIG_HARMONY_USER_COUNTER_TRAPS) &&
+-		    harmony_pvclock_requested())
++		    IS_ENABLED(CONFIG_HARMONY_PVCLOCK))
+ 			return -EPERM;
+ 		enable_TSC();
+ 	} else
+--- a/arch/x86/kernel/process_64.c
++++ b/arch/x86/kernel/process_64.c
+@@ -543,7 +543,7 @@
+ 
+ 	reset_thread_features();
+ 	if (IS_ENABLED(CONFIG_HARMONY_USER_COUNTER_TRAPS) &&
+-	    harmony_pvclock_requested() &&
++	    IS_ENABLED(CONFIG_HARMONY_PVCLOCK) &&
+ 	    WARN_ON_ONCE(set_tsc_mode(PR_TSC_SIGSEGV)))
+ 		return;
+ 
+--- a/arch/x86/kernel/tsc.c
++++ b/arch/x86/kernel/tsc.c
+@@ -215,7 +215,7 @@
+ 	 * tsc_khz.
+ 	 */
+ 	__set_cyc2ns_scale(tsc_khz, smp_processor_id(),
+-			   harmony_pvclock_requested() ? 0 : rdtsc());
++			   IS_ENABLED(CONFIG_HARMONY_PVCLOCK) ? 0 : rdtsc());
+ }
+ 
+ /*
+@@ -1520,7 +1520,7 @@
+ 	 * (stock hosts cannot intercept it). Hold the jiffies fallback until
+ 	 * the harmony clock page routes sched_clock through a page load.
+ 	 */
+-	if (!harmony_pvclock_requested())
++	if (!IS_ENABLED(CONFIG_HARMONY_PVCLOCK))
+ 		static_branch_enable(&__use_tsc);
+ }
+ 
+@@ -1586,7 +1586,7 @@
+ 	 * (its initcall also marks the TSC unstable, so the refined tsc
+ 	 * clocksource never registers later).
+ 	 */
+-	if (!harmony_pvclock_requested())
++	if (!IS_ENABLED(CONFIG_HARMONY_PVCLOCK))
+ 		clocksource_register_khz(&clocksource_tsc_early, tsc_khz);
+ 	detect_art();
+ }
+--- a/crypto/jitterentropy-kcapi.c
++++ b/crypto/jitterentropy-kcapi.c
+@@ -348,7 +348,7 @@
+ 	 * sanity checks could reject the clock. Decline up front; the DRBG
+ 	 * runs without this seed source outside FIPS mode.
+ 	 */
+-	if (harmony_pvclock_requested()) {
++	if (IS_ENABLED(CONFIG_HARMONY_PVCLOCK)) {
+ 		pr_info("jitterentropy: disabled: harmony_pvclock time has no physical jitter\n");
+ 		return -ENODEV;
+ 	}

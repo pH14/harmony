@@ -71,8 +71,8 @@ The timeout is a host resource limit, not guest virtual time or replay state. Th
 mechanism itself lives in [`consonance-client`](../consonance/client/README.md),
 which the neutral session also uses for its own host bound.
 
-The CLI enables `harmony_pvclock` so the kernel uses virtual timing for entropy
-mixing as well as timekeeping. The stock x86 virtual-time boot supplies Linux's `SETUP_RNG_SEED` record from the
+The dedicated Harmony guest kernel uses virtual timing for entropy mixing and
+timekeeping on every boot. The stock x86 virtual-time boot supplies Linux's `SETUP_RNG_SEED` record from the
 VM's seeded entropy stream. This makes the CRNG ready without waiting for timing
 jitter that cannot advance inside a non-exiting guest loop. The boot consumes 64
 bytes from that same stream before guest execution. Hardware RNG instructions stay

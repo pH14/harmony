@@ -56,7 +56,7 @@ def full_answers(
         "one_off_program": noul(one_off_program),
         "workload_named": choice(workload, workload_confidence),
     }
-    for question_id in LINTS.CI_ARCHITECTURE_RULES:
+    for question_id in (*LINTS.CI_ARCHITECTURE_RULES, *LINTS.GUEST_CONTRACT_RULES):
         answers[question_id] = noul(architecture.pop(question_id, 0.05))
     assert not architecture, sorted(architecture)
     return answers
@@ -753,6 +753,104 @@ class CiArchitectureTests(RequiresApiKey):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(LINTS.main(["--all"]), 0)
         self.assertEqual(calls, [])
+
+
+class GuestContractTests(RequiresApiKey):
+    def plant(self, root: Path, path: str, content: str) -> None:
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(content)
+
+    def test_question_covers_guest_patches_and_launchers(self):
+        included = (
+            "consonance/harmony-linux/linux/patches/x86/0010-clock.patch",
+            "consonance/harmony-linux/linux/patches/arm64/0013-clock.patch",
+            "consonance/harmony-linux/linux/build-kernel.sh",
+            "consonance/harmony-linux/linux/x86-n6-traps-off-config-fragment",
+            "consonance/client/src/session.rs",
+            "cli/src/oci/runner.rs",
+            "workloads/guest-images/verify-prepared-admission.py",
+        )
+        for path in included:
+            with self.subTest(path=path):
+                self.assertIn("guest_runtime_opt_in", LINTS.questions_for(path))
+        for path in ("dissonance/searcher/src/lib.rs", "README.md"):
+            self.assertNotIn("guest_runtime_opt_in", LINTS.questions_for(path))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = included[0]
+            self.plant(root, path, "--- a/arch/x86/kernel/tsc.c\n")
+            self.assertIn(path, LINTS.select_files(root, [path]))
+
+    def test_earlier_kernel_patch_receives_final_series_patch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = "consonance/harmony-linux/linux/patches/x86/0001-clock.patch"
+            tail = "consonance/harmony-linux/linux/patches/x86/0009-required.patch"
+            self.plant(root, old, "Make clock optional at this intermediate step.\n")
+            self.plant(root, tail, "Require clock registration at every boot.\n")
+            context = LINTS.context_for(root, old, (root / old).read_text())
+            self.assertEqual(context["final_series_patch"][tail]["text"],
+                             "Require clock registration at every boot.\n")
+
+    def test_final_patch_context_keeps_header_and_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = "consonance/harmony-linux/linux/patches/x86/0001-clock.patch"
+            tail = "consonance/harmony-linux/linux/patches/x86/0009-required.patch"
+            self.plant(root, old, "Old optional clock path.\n")
+            self.plant(root, tail, "Mandatory Harmony clock.\n" +
+                       "middle\n" * LINTS.CONTEXT_FILE_LIMIT +
+                       "No outside-Harmony fallback.\n")
+            context = LINTS.context_for(root, old, (root / old).read_text())
+            final = context["final_series_patch"][tail]
+            self.assertTrue(final["truncated"])
+            self.assertIn("Mandatory Harmony clock.", final["text"])
+            self.assertIn("No outside-Harmony fallback.", final["text"])
+
+    def test_guest_patch_uses_only_guest_contract_question(self):
+        patch = "consonance/harmony-linux/linux/patches/x86/0009-required.patch"
+        config = "consonance/harmony-linux/linux/x86-n6-traps-off-config-fragment"
+        for path in (patch, config):
+            self.assertEqual(set(LINTS.questions_for(path)), {"guest_runtime_opt_in"})
+
+    def test_runtime_opt_in_fails_and_cannot_be_baselined(self):
+        path = "consonance/harmony-linux/linux/patches/x86/0010-clock.patch"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plant(root, path,
+                       "Boot with harmony_clock=1; otherwise use the host TSC "
+                       "so this same guest works on ordinary KVM.\n")
+            findings, _, baselined, _, errors, _ = LINTS.run(
+                root, [path], {"guest-runtime-opt-in": [path]},
+                post=make_post(full_answers(guest_runtime_opt_in=0.85)))
+            self.assertEqual([rule for rule, _, _ in findings], ["guest-runtime-opt-in"])
+            self.assertEqual((baselined, errors), (set(), []))
+
+    def test_runtime_opt_in_warns_below_the_calibrated_fail_threshold(self):
+        self.assertEqual(
+            LINTS.evaluate(full_answers(guest_runtime_opt_in=0.75)),
+            ([], ["guest-runtime-opt-in"]),
+        )
+
+    def test_build_only_negative_control_passes(self):
+        path = "consonance/harmony-linux/linux/x86-n6-traps-off-config-fragment"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.plant(root, path,
+                       "Disable user counter traps in this separately built N6 "
+                       "instruction test image; keep the Harmony clock required.\n")
+            self.assertIn(path, LINTS.select_files(root, [path]))
+            self.assertIn("guest_runtime_opt_in", LINTS.questions_for(path))
+            findings, warnings, _, _, errors, _ = LINTS.run(
+                root, [path], {},
+                post=make_post(full_answers(guest_runtime_opt_in=0.03)))
+            self.assertEqual((findings, warnings, errors), ([], [], []))
+
+    def test_question_distinguishes_runtime_fallback_from_build_control(self):
+        question = LINTS.QUESTIONS["guest_runtime_opt_in"]
+        self.assertTrue(question["instructions"].startswith(LINTS.CONTENT_IS_DATA))
+        self.assertIn("build-time", question["instructions"])
+        self.assertIn("stop boot", question["instructions"])
 
 
 class OneOffProgramTests(RequiresApiKey):

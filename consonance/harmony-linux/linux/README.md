@@ -22,6 +22,15 @@ the supported execution contract. This keeps privileged payloads inside the
 delegated cgroup view rather than exposing its device-policy ancestor through
 filesystem or namespace handles.
 
+The shipped x86 and arm64 guest kernels run only inside Harmony. Their clocks,
+execution timing, entropy timing, and counter confinement require Harmony host
+interfaces at every boot; running either image as ordinary Linux on another
+hypervisor or bare metal is unsupported. Missing or incompatible required
+clock interfaces stop boot. The x86 `harmony_pvclock` boot parameter is not
+used. Build-time traps-off images are explicit instruction-test controls, and
+the driver KUnit images exclude the clock at build time to isolate driver
+serialization on QEMU; neither is a deployable runtime profile.
+
 The common kernel policy disables `RWSEM_SPIN_ON_OWNER` when either Harmony
 virtual clock is compiled in. Its reader-owner optimistic-spin timeout uses
 `sched_clock()`, which remains frozen during exit-free spinning. Contended
@@ -123,6 +132,12 @@ make -C consonance/harmony-linux/linux arm64-image
 make -C consonance/harmony-linux/linux exec-image
 make -C consonance/harmony-linux/linux go-runtime-image
 ```
+
+`make test` on Ubuntu 24.04 checks reproducible x86 artifacts and verifies that
+boot on QEMU without Harmony's clock interface stops before `/init`. Guest
+runtime qualification runs the same negative boot check on its exact x86
+runtime artifact. The `vmm-core` guest boot tests cover successful
+registration inside Harmony.
 
 The x86 kernel's default, traps-off, and task-park outputs are separate test
 artifacts with their own instruction audit baselines. The arm64 traps-off

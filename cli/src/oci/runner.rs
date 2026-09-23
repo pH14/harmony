@@ -178,7 +178,7 @@ pub fn cmdline() -> &'static str {
     if cfg!(target_arch = "x86_64") {
         "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 \
          nokaslr nosmp maxcpus=1 nox2apic hpet=disable cgroup_no_v1=all printk.time=0 \
-         harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 random.trust_bootloader=on rdinit=/init"
+         noxsaveopt noxsaves LD_BIND_NOW=1 random.trust_bootloader=on rdinit=/init"
     } else {
         "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt"
     }
@@ -404,7 +404,7 @@ mod tests {
         if cfg!(target_arch = "x86_64") {
             assert!(cmdline().contains("console=ttyS0"));
             assert!(
-                cmdline()
+                !cmdline()
                     .split_whitespace()
                     .any(|arg| arg == "harmony_pvclock")
             );
