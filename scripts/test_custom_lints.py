@@ -426,6 +426,27 @@ class JobContractTests(unittest.TestCase):
         self.assertFalse(self.check(body, job=job, triggers=("schedule", "workflow_dispatch"),
                                     name="Coverage"))
 
+    def test_a_job_that_runs_ignored_tests_registers_them(self):
+        step = ("    timeout-minutes: 15\n    steps:\n"
+                "      - run: cargo test -p vmm-backend --test kvm_smoke serviced_io -- --ignored --exact\n")
+        self.assertEqual(self.check(step), ["ci-ignored-tests"])
+        exact = ci_contract.Job("Guest Memory", "pr", 15,
+                                ignored_tests=("vmm-backend::kvm_smoke serviced_io",))
+        self.assertFalse(self.check(step, job=exact))
+        whole = ci_contract.Job("Guest Memory", "pr", 15, ignored_tests=("vmm-backend::kvm_smoke *",))
+        self.assertFalse(self.check(step, job=whole))
+
+    def test_a_job_runs_the_ignored_tests_it_registers(self):
+        job = ci_contract.Job("Guest Memory", "pr", 15,
+                              ignored_tests=("vmm-backend::kvm_smoke serviced_mmio",))
+        for body in ("    timeout-minutes: 15\n    steps: []",
+                     "    timeout-minutes: 15\n    steps:\n"
+                     "      - run: cargo test -p vmm-backend --test kvm_smoke serviced_io -- --ignored\n",
+                     "    timeout-minutes: 15\n    steps:\n"
+                     "      - run: cargo test -p vmm-backend --test kvm_smoke_extra serviced_mmio -- --ignored\n"):
+            with self.subTest(body=body):
+                self.assertEqual(self.check(body, job=job), ["ci-ignored-tests"])
+
     def test_ci_errors_cannot_be_hidden_in_baseline(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

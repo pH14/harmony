@@ -140,7 +140,9 @@ restore puts the guest counter back, that saving and restoring between steps or
 branching from a snapshot does not change what the guest computes, that every
 vCPU state class reads back after a restore, that restore rejects timer states
 HVF cannot hold, and that `set_policy` rejects an ID field above the host. The
-tests are ignored because hosted runners have no hypervisor. On Apple silicon:
+tests are ignored because hosted runners have no hypervisor. The pre-push hook
+runs them on Apple silicon, from `HOST_TESTS` in `scripts/ci_contract.py`. To
+run them directly:
 
 ```sh
 cargo test -p vmm-backend --test hvf_smoke -- --ignored

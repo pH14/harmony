@@ -12,6 +12,7 @@ new workflow is registered once.
 from __future__ import annotations
 
 import json
+import platform
 import re
 from pathlib import Path
 from typing import NamedTuple
@@ -75,6 +76,9 @@ class Job(NamedTuple):
     crates: tuple[str, ...] = ()
     # Integration test targets this job owns, as `<package>:<target>`.
     test_targets: tuple[str, ...] = ()
+    # Ignored tests this job runs with `--ignored`, as `<binary-id> <test>`
+    # where `<test>` is `*` when the job runs the whole binary.
+    ignored_tests: tuple[str, ...] = ()
     # Scenario media this job must capture, as registered action or script paths.
     media: tuple[str, ...] = ()
     # Change-selection kind this job passes to `.github/actions/ci-scope`.
@@ -194,6 +198,60 @@ LIB_PARTITIONS = {
     },
 }
 
+ARM64_BASELINE_TEST = (
+    "vmm-core vendor::arm64::contract::tests::"
+    "this_host_implements_the_baseline_and_the_guest_reads_it"
+)
+
+# Ignored tests that need a hypervisor no hosted runner offers, keyed by the
+# `<os>-<arch>` of a machine that has one. The pre-push hook runs the entry for
+# the machine it is on.
+HOST_TESTS = {
+    "macos-aarch64": ("vmm-backend::hvf_smoke *", ARM64_BASELINE_TEST),
+    "linux-aarch64": (ARM64_BASELINE_TEST,),
+}
+
+# Ignored tests a person runs by hand, and what each one is for.
+MANUAL_TESTS = {
+    "snapshot-store::bench *": "prints page store timings to compare by hand",
+    "snapshot-store::bench_production_shape *": "prints page store timings to compare by hand",
+    "vm-state::golden print_golden":
+        "prints a new golden encoding after a reviewed format change",
+    "vmm-core vendor::x86::contract::tests::regen_golden":
+        "rewrites the x86 contract golden file after a reviewed contract change",
+    "vmm-core::arm64_tcg_smoke *":
+        "needs clang, llvm-objcopy and qemu-system-aarch64, which no job installs",
+    "vmm-backend::contract_kvm *": "runs the backend contract exam against stock KVM",
+    "vmm-backend kvm_sys::xsave_diagnostic::"
+    "snapshot_restore_drains_an_acknowledged_write_completion":
+        "checks a KVM restore guard",
+    "vmm-backend kvm_sys::xsave_diagnostic::"
+    "ymm_without_sse_uabi_mxcsr_bytes_survive_capture_and_restore":
+        "writes an MXCSR report to XSAVE_MXCSR_REPORT_DIR",
+    "vmm-backend kvm_sys::xsave_diagnostic::natural_avx_mxcsr_survives_capture_and_restore":
+        "writes an MXCSR report to XSAVE_MXCSR_REPORT_DIR",
+    "vmm-core::x86_kvm_linux_virtual_time x2_component_diff_selected_checkpoint":
+        "localizes a divergence after an X2 boot comparison fails",
+    "vmm-core::x86_kvm_linux_virtual_time "
+    "x2_paired_boots_retain_first_checkpoint_difference":
+        "localizes a divergence after an X2 boot comparison fails",
+}
+
+
+KVM_SERVICED_EXIT_TESTS = (
+    "vmm-backend::kvm_smoke serviced_pio_is_exactly_snapshottable_without_guest_execution",
+    "vmm-backend::kvm_smoke serviced_msr_is_exactly_snapshottable_without_guest_execution",
+    "vmm-backend::kvm_smoke serviced_exception_payload_round_trips_and_empty_restore_clears_it",
+    "vmm-backend::kvm_smoke serviced_mmio_is_exactly_snapshottable_across_scalar_rmw_and_movdqu",
+)
+
+PUBLIC_SNAPSHOT_IDENTITY_TEST = (
+    "vmm-core vendor::x86::logical_identity_live_tests::"
+    "public_snapshot_replay_recapture_preserves_xsave_identity"
+)
+
+OCI_PLATFORM_TESTS = ("oci-support::platform *", "oci-support::process_platform *")
+
 
 def _consonance_crates() -> tuple[str, ...]:
     return (
@@ -217,6 +275,7 @@ CONSONANCE_CHECKS = Workflow(
             crates=("vm-state", "vmm-backend"),
             test_targets=("vmm-core:x86_cpu_snapshots", "vmm-core:arm64_skeleton",
                           "vmm-core:arm64_tcg_smoke", "vmm-backend:kvm_smoke"),
+            ignored_tests=KVM_SERVICED_EXIT_TESTS,
             scope="consonance_kvm"),
         Job("Device State", "pr", 15,
             crates=("lapic", "gicv3", "telemetry")),
@@ -224,10 +283,17 @@ CONSONANCE_CHECKS = Workflow(
             crates=("vtime",),
             test_targets=("vmm-core:virtual_time", "vmm-core:x86_kvm_virtual_time",
                           "vmm-core:x86_kvm_linux_virtual_time"),
+            ignored_tests=(
+                "vmm-core::x86_kvm_virtual_time "
+                "x1_ten_same_seed_runs_produce_one_normalized_log",
+                "vmm-core::x86_kvm_linux_virtual_time x2_same_seed_boots_one_normalized_log",
+            ),
             scope="consonance_platform"),
         Job("Snapshot and Restore", "pr", 15,
             crates=("snapshot-store", "unison"),
             test_targets=("vmm-core:snapshot_branch", "vmm-core:event_loop"),
+            ignored_tests=("vmm-backend::kvm_smoke save_restore_round_trips_on_real_kvm",
+                           PUBLIC_SNAPSHOT_IDENTITY_TEST),
             scope="consonance_kvm"),
         Job("Execution Protocol", "pr", 15,
             crates=("consonance-client", "control-proto", "environment",
@@ -237,6 +303,12 @@ CONSONANCE_CHECKS = Workflow(
         Job("Guest Runtime", "pr", 15),
         Job("Public API", "pr", 15,
             test_targets=("vmm-core:public_api",),
+            ignored_tests=tuple(
+                f"{package}::public_api *" for package in (
+                    "hypercall-proto", "hypercall-doorbell", "snapshot-store", "unison",
+                    "vtime", "vm-state", "vmm-backend", "vmm-core", "lapic", "gicv3",
+                    "telemetry", "environment", "control-proto", "harmony-sdk",
+                )),
             scope="public_api"),
     ),
 )
@@ -266,18 +338,54 @@ CONSONANCE_HARDWARE = Workflow(
     owner="Consonance",
     triggers=("schedule", "workflow_dispatch"),
     jobs=(
-        Job("Runner CPU Features — Replica <N>", "full", 45),
-        Job("Minimal Guest Determinism — Replica <N>", "full", 45),
+        Job("Runner CPU Features — Replica <N>", "full", 45,
+            ignored_tests=("vmm-backend::kvm_smoke *",)),
+        Job("Minimal Guest Determinism — Replica <N>", "full", 45,
+            ignored_tests=("vmm-core::x86_kvm_virtual_time *",)),
         Job("Linux Guest Image", "full", 90),
         Job("Instruction Timing Sweep", "full", 60,
-            test_targets=("vmm-core:n6_x86_instruction_sweep",)),
+            test_targets=("vmm-core:n6_x86_instruction_sweep",),
+            ignored_tests=("vmm-core::n6_x86_instruction_sweep *",)),
         Job("Go Runtime Determinism — Replica <N>", "full", 60,
-            test_targets=("vmm-core:go_runtime_x86",)),
+            test_targets=("vmm-core:go_runtime_x86",),
+            ignored_tests=("vmm-core::go_runtime_x86 *",)),
         Job("Linux Virtual Time — Replica <N>", "full", 90,
-            test_targets=("vmm-core:x86_kvm_linux_virtual_time",)),
-        Job("Intel Determinism Search — Replica <N>", "full", 45),
+            test_targets=("vmm-core:x86_kvm_linux_virtual_time",),
+            ignored_tests=tuple(
+                f"vmm-core::x86_kvm_linux_virtual_time {test}" for test in (
+                    "x2_virtual_time_stock_boot_smoke",
+                    "x2_same_seed_boots_one_normalized_log",
+                    "x2_component_diff_first_checkpoint",
+                    "x2_component_diff_two_boots",
+                ))),
+        Job("Intel Determinism Search — Replica <N>", "full", 45,
+            ignored_tests=("vmm-core::x86_kvm_linux_virtual_time "
+                           "x2_component_diff_first_checkpoint",)),
         Job("Snapshot Identity — Replica <N>", "full", 15,
-            test_targets=("vmm-core:x86_cpu_snapshots",)),
+            test_targets=("vmm-core:x86_cpu_snapshots",),
+            ignored_tests=KVM_SERVICED_EXIT_TESTS + (
+                "vmm-backend::kvm_smoke resume_flag_preserves_instruction_breakpoint_continuation",
+                PUBLIC_SNAPSHOT_IDENTITY_TEST,
+            ) + tuple(
+                f"vmm-core::x86_cpu_snapshots live_kvm::{test}" for test in (
+                    "mmio_rmw_finishes_before_full_vmm_snapshot",
+                    "mmio_init_presence_snapshot_characterization",
+                    "pae_pdpt_reload_preserves_snapshot_continuation",
+                    "pae_cached_pdptrs_survive_full_vmm_snapshot_restore",
+                    "amd_default_npt_pae_guest_write_observations",
+                    "xsave_guest_bytes_survive_cold_continuation",
+                    "xsave_live_registers_survive_cold_continuation",
+                )
+            ) + tuple(
+                f"vmm-backend kvm_sys::xsave_diagnostic::{test}" for test in (
+                    "snapshot_preparation_preserves_state_except_raw_presence",
+                    "snapshot_preparation_raw_presence_stability",
+                    "snapshot_restore_rejects_each_pending_state_without_mutation",
+                    "snapshot_entry_restores_match_uninterrupted_execution",
+                    "snapshot_canonical_entry_restores_match_uninterrupted_execution",
+                    "snapshot_entry_debug_reentry_preserves_guest_observation",
+                    "canonical::snapshot_guest_canonicalization_preserves_complete_endpoints",
+                ))),
         Job("Results", "full", 45),
     ),
 )
@@ -288,7 +396,7 @@ CONSONANCE_RUNTIME = Workflow(
     owner="Consonance",
     triggers=("schedule", "workflow_dispatch"),
     jobs=(
-        Job("Exact Runtime Artifacts", "full", 120),
+        Job("Exact Runtime Artifacts", "full", 120, ignored_tests=OCI_PLATFORM_TESTS),
     ),
 )
 
@@ -300,7 +408,8 @@ CONSONANCE_XSAVE = Workflow(
     jobs=(
         Job("Kernel Fixture", "full", 90),
         Job("Kernel XSAVE — Replica <N>", "full", 20,
-            test_targets=("vmm-core:x86_kvm_xsave_kernel",)),
+            test_targets=("vmm-core:x86_kvm_xsave_kernel",),
+            ignored_tests=("vmm-core::x86_kvm_xsave_kernel *",)),
     ),
 )
 
@@ -369,6 +478,7 @@ REPOSITORY_CHECKS = Workflow(
         Job("Formatting and Lints", "pr", 15),
         Job("Dependency Boundaries", "pr", 15),
         Job("Semantic Lints", "pr", 15),
+        Job("Ignored Tests — <Host>", "pr", 15),
         Job("Tooling", "pr", 15),
     ),
 )
@@ -391,6 +501,8 @@ DISSONANCE_NES_CHECKS = Workflow(
     triggers=("pull_request", "push"),
     jobs=(
         Job("Nova", "pr", 15, media=("workloads/nes/src/bin/nes-film.rs",),
+            ignored_tests=("machine::cartridge_ram "
+                           "declared_cartridge_ram_survives_real_core_restore",),
             scope="dissonance_nes"),
         Job("STB", "pr", 15, media=(".github/actions/stb-evaluation",), scope="dissonance_stb"),
     ),
@@ -418,6 +530,7 @@ HARMONY_OCI_CHECKS = Workflow(
     jobs=(
         Job("Container Execution", "pr", 15,
             test_targets=("oci-support:platform", "oci-support:process_platform"),
+            ignored_tests=OCI_PLATFORM_TESTS,
             scope="consonance_platform"),
         Job("PostgreSQL", "pr", 15, scope="harmony_oci"),
         Job("Docker", "full", 90,
@@ -476,7 +589,7 @@ RELEASE = Workflow(
     triggers=("push",),
     jobs=(
         Job("CLI — <Platform>", "full", 60),
-        Job("Guest Runtime — <Architecture>", "full", 120),
+        Job("Guest Runtime — <Architecture>", "full", 120, ignored_tests=OCI_PLATFORM_TESTS),
         Job("Publish", "full", 30),
     ),
 )
@@ -708,6 +821,52 @@ def nextest_orphan_filter(package: str) -> str:
     return f"not ({_module_expression(owned)})"
 
 
+def ignored_test_runners() -> dict[str, tuple[str, ...]]:
+    """Map every registered ignored-test pattern to what runs it."""
+    runners: dict[str, tuple[str, ...]] = {}
+
+    def add(pattern: str, runner: str) -> None:
+        runners[pattern] = runners.get(pattern, ()) + (runner,)
+
+    for workflow in WORKFLOWS:
+        for job in workflow.jobs:
+            for pattern in job.ignored_tests:
+                add(pattern, f"{workflow.name} / {job.name}")
+    for host, patterns in HOST_TESTS.items():
+        for pattern in patterns:
+            add(pattern, f"pre-push hook on {host}")
+    for pattern, purpose in MANUAL_TESTS.items():
+        add(pattern, f"by hand: {purpose}")
+    return runners
+
+
+def runners_of(binary_id: str, test: str) -> tuple[str, ...]:
+    """What runs one ignored test, from the patterns that select it."""
+    found: list[str] = []
+    for pattern, runners in ignored_test_runners().items():
+        pattern_binary, pattern_test = pattern.split(" ", 1)
+        if pattern_binary == binary_id and pattern_test in ("*", test):
+            found.extend(runners)
+    return tuple(found)
+
+
+def this_host() -> str:
+    """This machine as a `HOST_TESTS` key."""
+    system = {"Darwin": "macos"}.get(platform.system(), platform.system().lower())
+    machine = {"arm64": "aarch64", "AMD64": "x86_64"}.get(platform.machine(), platform.machine())
+    return f"{system}-{machine}"
+
+
+def host_filter(host: str) -> str:
+    """The nextest expression selecting a host's tests, empty when it has none."""
+    terms = []
+    for pattern in HOST_TESTS.get(host, ()):
+        binary_id, test = pattern.split(" ", 1)
+        term = f"binary_id({binary_id})"
+        terms.append(term if test == "*" else f"({term} & test(={test}))")
+    return " | ".join(terms)
+
+
 def _main(argv: list[str]) -> int:
     command = argv[0] if argv else ""
     if command == "manifests":
@@ -725,6 +884,9 @@ def _main(argv: list[str]) -> int:
     if command == "nextest-orphans":
         print(nextest_orphan_filter(argv[1]))
         return 0
+    if command == "host-filter":
+        print(host_filter(argv[1] if len(argv) > 1 else this_host()))
+        return 0
     if command == "workflows":
         for workflow in WORKFLOWS:
             print(f"{workflow.path}\t{workflow.name}")
@@ -733,7 +895,7 @@ def _main(argv: list[str]) -> int:
         "usage: ci_contract.py "
         "{manifests|deny|workflows|package-flags <component>|"
         "nextest-filter <package> <job>|"
-        "nextest-orphans <package>}"
+        "nextest-orphans <package>|host-filter [<os>-<arch>]}"
     )
 
 

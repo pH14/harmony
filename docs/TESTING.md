@@ -115,6 +115,8 @@ suite uses these checks:
 
 - empty manifests, empty oracle lists, and zero-checkpoint identity runs fail;
 - missing hardware prerequisites produce an unrun or inconclusive result;
+- every ignored test has a registered runner, and CI fails on one without, as
+  `docs/WORKFLOWS.md` describes;
 - bounded-prefix results report where verification stopped;
 - seed-sensitivity requires distinct seeds and terminal executions;
 - comparators are exercised against deliberately corrupted state, schedules,

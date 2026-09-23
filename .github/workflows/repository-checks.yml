@@ -94,6 +94,38 @@ jobs:
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
         run: python3 scripts/semantic-lints.py --changed-from HEAD^1
 
+  ignored-tests:
+    name: Ignored Tests — ${{ matrix.host }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            host: Linux x86-64
+          - runner: ubuntu-24.04-arm
+            host: Linux Arm64
+          - runner: macos-14
+            host: macOS Arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ignored-tests-${{ matrix.runner }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Every ignored test that builds on this host has a runner
+        run: python3 scripts/check-test-partition.py ignored
+
   tooling:
     name: Tooling
     runs-on: ubuntu-latest
