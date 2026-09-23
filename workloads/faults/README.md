@@ -36,20 +36,21 @@ a readiness command keep immediate hook launches.
 
 ## Actions
 
-An input records adaptive durations in 10 ms guest ticks. Waits and instrumented
-event holds range from 10 ms through 10.24 seconds. Other actions have a built-in
-500 ms execution window ([`target`](src/target.rs)):
+Every action records its own duration in 10 ms guest ticks, from 10 ms through
+10.24 seconds, and its window lasts that long ([`target`](src/target.rs)). The
+search draws one duration per suffix from the adaptive duration policy, and
+every action in the suffix takes it:
 
 | action | effect |
 |---|---|
-| `Wait(ticks)` | the workload runs undisturbed for the recorded positive duration |
-| `EventKill(node, rarity)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
-| `EventPark(node, edges, hold)` | an instrumented runtime holds the thread that reaches the `edges`-th instrumented edge after arming, for the recorded adaptive duration; the edge count is drawn log-uniform from 1 through `1 << 24` |
-| `Kill(node)` | the node stays down for the whole horizon |
-| `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
-| `Restart(node)` | the node is killed and comes back inside the horizon |
-| `Hook(id)` | the supervisor runs that hook once |
-| `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's snapshot moment when that moment is past the window start |
+| `Wait(ticks)` | the workload runs undisturbed |
+| `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
+| `EventPark(node, edges, hold)` | an instrumented runtime holds the thread that reaches the `edges`-th instrumented edge after arming, for the hold; the edge count is drawn log-uniform from 1 through `1 << 24` |
+| `Kill(node, ticks)` | the node stays down for the window |
+| `Pause(node, ticks)` | the node is stopped for the window, then continued |
+| `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
+| `Hook(id, ticks)` | the supervisor runs that hook once |
+| `Interrupt(vector, ticks)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's snapshot moment when that moment is past the window start |
 
 Each fault action except `Interrupt` becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's

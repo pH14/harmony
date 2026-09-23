@@ -497,10 +497,7 @@ impl Live {
             key: config.key,
             session,
             setup,
-            windows: ActionWindows {
-                root_seal,
-                horizon_nanos: crate::target::DEFAULT_HORIZON_NANOS,
-            },
+            windows: ActionWindows { root_seal },
             snapshots,
             uses: 0,
             horizons_run: 0,
@@ -748,10 +745,9 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
 #[must_use]
 pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> String {
     format!(
-        "faults-consonance-whole-vm-v2;session={};horizon-nanos={};\
-         action=standing-fault-delta-v2;snapshot=portable-prefix-to-vm-snapshot-v1",
+        "faults-consonance-whole-vm-v2;session={};\
+         action=standing-fault-delta-v3;snapshot=portable-prefix-to-vm-snapshot-v1",
         identity_with_config(kernel, initramfs, &config.session_config()),
-        crate::target::DEFAULT_HORIZON_NANOS,
     )
 }
 
@@ -813,7 +809,7 @@ mod tests {
         assert!(target.snapshot().is_none());
         assert!(target.actions.is_empty());
         assert_eq!(target.watchdog_cutoffs(), 1);
-        target.apply(FaultAction::Kill(0));
+        target.apply(FaultAction::Kill(0, std::num::NonZeroU16::new(50).unwrap()));
         assert_eq!(target.execution_ticks(), 17);
         assert_eq!(target.last_action_observations().len(), 1);
         assert!(target.last_action_observations()[0].watchdog_cutoff);
