@@ -373,3 +373,19 @@ diagnose; power-on runs are the only completion test.
   opened no cell, and the room took under a tenth of a percent of
   draws. Fix, sixteenth build (consol16): boss damage joins the Metroid
   place, so each hit opens a new cell. Root 3 reruns on seeds 11 to 13.
+- 2026-09-22: executions on the fifteenth build ran 7.0 to 7.5 input
+  actions and 263 to 297 units of emulator work each, against the old
+  build's 3.3 actions and about 105 units. The cause was a wiring
+  mistake. The input-draw mixture must reward a strategy when its job
+  opens a new slot, as the old build did. The consolidated build
+  rewarded it only for a new cell. New cells are rare, so every strategy
+  looked barren, the energy shares flattened, and splices, which run up
+  to 128 actions, rose to about a third of draws. The seventeenth build
+  (consol17) rewards a new slot again; continuation accounting still
+  counts new cells. The ladder script now prints actions and emulator
+  work per execution for every root, and a seed that reaches the ending
+  passes every milestone before it, which gives the old build 5 on root
+  23. The ladder now runs eight cells at a time in two runner processes,
+  fast roots first (9, 10, 13, 14, 15, then 7, 8, 22, then the roots the
+  old build scored zero on), and skips roots 1 and 3, which were already
+  run on this design.
