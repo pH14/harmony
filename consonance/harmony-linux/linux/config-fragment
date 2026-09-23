@@ -73,15 +73,9 @@ CONFIG_HZ_100=y
 # instead — the hypervisor will simply not expose one, and the boot check
 # passes -machine hpet=off (alternative: the hpet=disable boot parameter).
 # CONFIG_X86_PM_TIMER is not set
-# The harmony paravirt exit-count-derived clock (task 110, consonance/vtime/README.md
-# §3.1): a clocksource + sched_clock whose read path is a seqlock page load —
-# never a raw counter read. The source is added by patches/apply-guest-patches.py
-# before the config merge. Compiled in but RUNTIME-INERT without the
-# harmony_pvclock kernel parameter (which only the vmm appends when it offers
-# the page), so this image boots byte-for-byte as before everywhere else and
-# one image serves as both the page-on and page-off measurement arm. When
-# active it marks the TSC unstable, closing the kernel-timekeeping raw-RDTSC
-# path; the instruction audit excludes native timestamp reads from the guest surface.
+# The required Harmony paravirtual clock routes time and entropy reads through
+# the materialized exit-count page. The kernel stops boot when registration or
+# ABI validation fails; native TSC timekeeping is never a fallback.
 CONFIG_HARMONY_PVCLOCK=y
 
 # Language-agnostic, unprivileged application transport. The built-in misc

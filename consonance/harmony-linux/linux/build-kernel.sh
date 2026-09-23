@@ -73,9 +73,7 @@ assert_off() {
     done
 }
 # Functional must-haves for the boot-to-/init image (provided by Kata and/or overlay).
-# HARMONY_PVCLOCK is compiled in but runtime-inert without the
-# harmony_pvclock kernel parameter, so one image serves as both the page-on
-# and page-off measurement arm.
+# The shipped guest requires the Harmony clock interface at every boot.
 assert_y 64BIT PRINTK TTY SERIAL_8250 SERIAL_8250_CONSOLE BINFMT_ELF \
     BINFMT_SCRIPT BLK_DEV_INITRD RD_GZIP PROC_FS PROC_CHILDREN SYSFS DEVTMPFS ACPI PCI \
     HZ_PERIODIC HZ_100 FUTEX POSIX_TIMERS KERNEL_GZIP X86_IOPL_IOPERM DEVMEM \
