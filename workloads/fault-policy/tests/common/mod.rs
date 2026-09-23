@@ -43,11 +43,11 @@ pub fn arb_proc_fault() -> impl Strategy<Value = Fault> {
         Just(Fault::ProcRestart),
         (0..fault_policy::EVENT_RARITY_LIMIT).prop_map(|rarity| Fault::ProcEventKill { rarity }),
         (
-            0..fault_policy::EVENT_RARITY_LIMIT,
+            1..=fault_policy::EVENT_PARK_EDGE_LIMIT,
             any::<u64>().prop_filter("nonzero hold", |hold| *hold != 0)
         )
-            .prop_map(|(rarity, hold)| Fault::ProcEventPark {
-                rarity,
+            .prop_map(|(edges, hold)| Fault::ProcEventPark {
+                edges,
                 hold: Span(hold),
             },),
         any::<u32>().prop_map(Fault::RunHook),

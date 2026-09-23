@@ -4,8 +4,8 @@
 
 This directory contains the instrumentation runtime composed into fault
 workload binaries. It owns the event-kill and event-park protocol, including
-command validation, the report hello, rarity matching, and the
-report-before-signal rule. `fault_runtime_shim.c` connects that runtime to the
+command validation, the report hello, kill rarity matching, the park edge
+count, and the report-before-signal rule. `fault_runtime_shim.c` connects that runtime to the
 generic `harmony_instrumentation_event` hook supplied by `libvoidstar.so`.
 
 Build and run its portable protocol test with:
@@ -30,7 +30,14 @@ use a 16-byte rarity/site frame and are sent before the requested signal. A
 report write failure leaves the caller alive, so the agent cannot credit an
 injection without runtime acknowledgement.
 
-Rarity is evaluated per instrumentation site. Before each callback the runtime
+An armed park counts instrumented edges across every thread of the process
+and holds the thread that reaches edge `k`, where `k` is from 1 through
+`1 << 24`. Before the hold it writes one JSON line through `fuzz_json_data`:
+`{"harmony_park":{"site":S,"edges":K}}`. The site is the trace-pc-guard index,
+which the image's symbol table maps to a source location. A pending kill takes
+priority over a park on the same edge.
+
+Kill rarity is evaluated per instrumentation site. Before each callback the runtime
 uses the site's saturating visit count; rarity `r` is eligible only while that
 count is below `1 << r`, so rarity zero selects a site's first visit and rarity
 63 remains well-defined for large counts. Counts live in a fixed table of 524,288 hashed `u64` counters

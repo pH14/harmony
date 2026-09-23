@@ -6,16 +6,17 @@ pub const EVENT_CMD_KILL: u64 = 1;
 pub const EVENT_CMD_PARK: u64 = 2;
 pub const EVENT_CMD_PARK_STATUS: u64 = 3;
 pub const EVENT_REPORT_HELLO: u64 = 0x4841_524d_4f4e_5945;
-pub const EVENT_PROTOCOL_VERSION: u64 = 1;
+pub const EVENT_PROTOCOL_VERSION: u64 = 2;
 pub const EVENT_CONTROL_FRAME_SIZE: usize = 24;
 pub const EVENT_REPORT_SIZE: usize = 16;
 pub const EVENT_RARITY_LIMIT: u8 = 64;
+pub const EVENT_PARK_EDGE_LIMIT: u32 = 1 << 24;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Command {
     ArmKill { rarity: u8, start: u64 },
     DisarmKill,
-    ArmPark { rarity: u8, hold_nanos: u64 },
+    ArmPark { edges: u32, hold_nanos: u64 },
     DisarmPark,
     ParkStatus,
 }
@@ -70,7 +71,7 @@ pub fn encode_command(command: Command) -> [u8; EVENT_CONTROL_FRAME_SIZE] {
     let (kind, first, second) = match command {
         Command::ArmKill { rarity, .. } => (EVENT_CMD_KILL, u64::from(rarity), 1),
         Command::DisarmKill => (EVENT_CMD_KILL, 0, 0),
-        Command::ArmPark { rarity, hold_nanos } => (EVENT_CMD_PARK, u64::from(rarity), hold_nanos),
+        Command::ArmPark { edges, hold_nanos } => (EVENT_CMD_PARK, u64::from(edges), hold_nanos),
         Command::DisarmPark => (EVENT_CMD_PARK, 0, 0),
         Command::ParkStatus => (EVENT_CMD_PARK_STATUS, 0, 0),
     };
@@ -176,7 +177,7 @@ mod tests {
         );
         assert_eq!(
             encode_command(Command::ArmPark {
-                rarity: 2,
+                edges: 2,
                 hold_nanos: 9,
             }),
             [
@@ -200,7 +201,7 @@ mod tests {
             Err(ProtocolError::MismatchedReply)
         );
         let park = Command::ArmPark {
-            rarity: 4,
+            edges: 4,
             hold_nanos: 17,
         };
         let mut wrong = encode_command(park);
@@ -257,7 +258,7 @@ mod tests {
         let frame = encode_hello();
         assert_eq!(decode_report(&frame), Ok(Report::Hello));
         let mut invalid = frame;
-        invalid[8..16].copy_from_slice(&2_u64.to_le_bytes());
+        invalid[8..16].copy_from_slice(&1_u64.to_le_bytes());
         assert_eq!(decode_report(&invalid), Err(ProtocolError::InvalidVersion));
     }
 
