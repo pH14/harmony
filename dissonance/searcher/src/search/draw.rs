@@ -138,25 +138,29 @@ pub struct MixtureDraw {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct MixtureEnergy {
-    barren: [u64; 3],
-}
-
-pub(crate) fn energy_share(barren: u64, scale: u64) -> u64 {
-    let halvings = u32::try_from((barren / scale).min(8)).unwrap_or(8);
-    (256_u64 >> halvings).max(1)
+    barren_work: [u64; 3],
+    jobs: u64,
+    work: u64,
 }
 
 impl MixtureEnergy {
+    fn share(&self, index: usize, scale: u64) -> u64 {
+        let spent = u128::from(self.barren_work[index]) * u128::from(self.jobs);
+        let unit = u128::from(scale) * u128::from(self.work);
+        let halvings = spent.checked_div(unit).unwrap_or(0).min(8);
+        (256_u64 >> u32::try_from(halvings).unwrap_or(8)).max(1)
+    }
+
     #[must_use]
     pub(crate) fn biased_weight(&self, scale: u64) -> u8 {
-        let biased = energy_share(self.barren[0], scale);
-        let total = biased + energy_share(self.barren[2], scale);
+        let biased = self.share(0, scale);
+        let total = biased + self.share(2, scale);
         u8::try_from(((256 * biased) / total).clamp(1, 255)).unwrap_or(128)
     }
 
     #[must_use]
     pub(crate) fn splice_weights(&self, scale: u64) -> (u8, u8) {
-        let shares = self.barren.map(|barren| energy_share(barren, scale));
+        let shares = [0, 1, 2].map(|index| self.share(index, scale));
         let total: u64 = shares.iter().sum();
         let weight = |share: u64| ((256 * share) / total).clamp(1, 253);
         let biased = weight(shares[0]);
@@ -167,16 +171,18 @@ impl MixtureEnergy {
         )
     }
 
-    pub(crate) fn record_outcome(&mut self, strategy: EnergyStrategy, new_slot: bool) {
+    pub(crate) fn record_outcome(&mut self, strategy: EnergyStrategy, new_slot: bool, work: u64) {
         let index = match strategy {
             EnergyStrategy::Table => 0,
             EnergyStrategy::Splice => 1,
             EnergyStrategy::Alphabet => 2,
         };
+        self.jobs = self.jobs.saturating_add(1);
+        self.work = self.work.saturating_add(work);
         if new_slot {
-            self.barren[index] = 0;
+            self.barren_work[index] = 0;
         } else {
-            self.barren[index] = self.barren[index].saturating_add(1);
+            self.barren_work[index] = self.barren_work[index].saturating_add(work);
         }
     }
 }
@@ -386,15 +392,36 @@ mod tests {
         let mut energy = MixtureEnergy::default();
         assert_eq!(energy.biased_weight(6), 128);
         for _ in 0..12 {
-            energy.record_outcome(EnergyStrategy::Table, false);
+            energy.record_outcome(EnergyStrategy::Table, false, 10);
         }
         assert!(energy.biased_weight(6) < 70);
-        energy.record_outcome(EnergyStrategy::Table, true);
+        energy.record_outcome(EnergyStrategy::Table, true, 10);
         assert_eq!(energy.biased_weight(6), 128);
         for _ in 0..60 {
-            energy.record_outcome(EnergyStrategy::Alphabet, false);
+            energy.record_outcome(EnergyStrategy::Alphabet, false, 10);
         }
         assert!(energy.biased_weight(6) > 240);
+    }
+
+    #[test]
+    fn a_strategy_that_spends_more_work_per_job_loses_share_sooner() {
+        let mut energy = MixtureEnergy::default();
+        for _ in 0..6 {
+            energy.record_outcome(EnergyStrategy::Table, false, 10);
+            energy.record_outcome(EnergyStrategy::Splice, false, 300);
+            energy.record_outcome(EnergyStrategy::Alphabet, false, 10);
+        }
+        let (table, splice) = energy.splice_weights(6);
+        assert!(
+            splice * 3 < table,
+            "six costly barren splices outweigh six cheap barren draws: {table} {splice}"
+        );
+        energy.record_outcome(EnergyStrategy::Splice, true, 300);
+        let (table, splice) = energy.splice_weights(6);
+        assert_eq!(
+            splice, table,
+            "a splice that opens a slot recovers its share"
+        );
     }
 
     #[test]
@@ -403,12 +430,12 @@ mod tests {
         let (table, splice) = energy.splice_weights(6);
         assert_eq!((table, splice), (85, 85));
         for _ in 0..60 {
-            energy.record_outcome(EnergyStrategy::Splice, false);
+            energy.record_outcome(EnergyStrategy::Splice, false, 10);
         }
         let (table, splice) = energy.splice_weights(6);
         assert!(splice <= 2, "a cold splice share must collapse: {splice}");
         assert!(table > 100);
-        energy.record_outcome(EnergyStrategy::Splice, true);
+        energy.record_outcome(EnergyStrategy::Splice, true, 10);
         let (_, splice) = energy.splice_weights(6);
         assert_eq!(splice, 85);
         let mut counts = [0_u32; 3];

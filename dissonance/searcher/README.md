@@ -245,12 +245,16 @@ new ground instead of settling to an equal share with every cell behind them.
 `cell_resets`, `tier_draws_by_rank` and the draws each cell received, and
 every live progress line carries it under `selector`.
 
-A splice draw appends a donor's recorded route to the parent: the actions
-from the donor to its deepest retained descendant, up to 128 of them. The
-donor must stand at the parent's `Position`, in any progress tier, because a
-route only reproduces its moves from where it was recorded; a draw with no
-such donor runs as an ordinary draw. The live progress line counts
-`splice_jobs`, `splice_actions` and `splice_cost` under `coordinator`.
+The energy mixtures choose among three input strategies: the retained-input
+table, the alphabet, and a splice, which appends to the parent the recorded
+route from another holder in the parent's cell to that holder's deepest
+retained descendant, up to 128 actions. A draw with no such donor runs as an
+ordinary draw. Each strategy's share halves for every `scale` average jobs'
+worth of emulator work it has spent since its last job that opened a new
+slot, so a strategy is judged on new slots per unit of work and a long
+splice that opens nothing loses its share sooner than a short draw. The live
+progress line counts `splice_jobs`, `splice_actions` and `splice_cost` under
+`coordinator`.
 
 Continuation replay carries a better state at one position to the positions
 reached from it. A position is a place paired with an identity, the `Position`

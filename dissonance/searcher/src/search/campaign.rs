@@ -1030,9 +1030,9 @@ fn record_mixture_outcome(
     mixture: DrawMixture,
     path: SelectorPath,
     mutation_seed: u64,
-    mixture_weight: u8,
-    splice_weight: u8,
+    (mixture_weight, splice_weight): (u8, u8),
     new_slot: bool,
+    work: u64,
 ) -> Result<(), Box<dyn Error>> {
     if path == SelectorPath::Continuation {
         return Ok(());
@@ -1044,6 +1044,7 @@ fn record_mixture_outcome(
         energy.record_outcome(
             energy_strategy(mutation_seed, mixture_weight, splice_weight)?,
             new_slot,
+            work,
         );
     }
     Ok(())
@@ -3205,9 +3206,9 @@ where
                         config.mixture,
                         pending_job.selector.path,
                         pending_job.mutation_seed,
-                        pending_job.mixture_weight,
-                        pending_job.splice_weight,
+                        (pending_job.mixture_weight, pending_job.splice_weight),
                         new_slot_descendant,
+                        execution_work,
                     )?;
                     if objectives_before == 0
                         && let (Some(path), Some(input)) =
@@ -5973,9 +5974,9 @@ mod tests {
                 mixture,
                 SelectorPath::Continuation,
                 seed,
-                128,
-                128,
+                (128, 128),
                 seed % 3 == 0,
+                10,
             )
             .expect("continuation outcome");
         }
@@ -5990,9 +5991,9 @@ mod tests {
                 mixture,
                 SelectorPath::Tiers,
                 1,
-                128,
-                128,
+                (128, 128),
                 false,
+                10,
             )
             .expect("ordinary outcome");
         }
