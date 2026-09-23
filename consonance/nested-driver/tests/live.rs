@@ -64,7 +64,7 @@ fn inner_consonance_runs_inner_guest() -> Result<(), Box<dyn std::error::Error>>
     let image = image::stage(&std::env::var("NESTED_DRIVER_IMAGE")?, stage.path())?;
     let prepared = bundle::prepare(&image, &LaunchRequest::default().with_kvm())?;
     let initramfs = prepared.initramfs(&base);
-    let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
+    let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1 rdinit=/init";
     let boot =
         move || boot_linux_nested_host_virtual_time(&kernel, &initramfs, 256 << 20, cmdline, 42);
     let mut server = ControlServer::new(boot()?, Box::new(boot));

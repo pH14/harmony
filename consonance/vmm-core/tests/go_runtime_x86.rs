@@ -14,7 +14,7 @@ const RAM: usize = 256 << 20;
 const SEED: u64 = 0x0047_4f27_65ee_dc01;
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
     no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
-    nox2apic hpet=disable harmony_pvclock";
+    nox2apic hpet=disable";
 const SUCCESS: &[u8] = b"GO_RUNTIME_OK count=12 checksum=2881f549424eb0d1";
 const MAX_STEPS: u64 = 50_000_000;
 

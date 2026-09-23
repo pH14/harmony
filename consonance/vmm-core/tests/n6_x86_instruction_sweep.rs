@@ -13,7 +13,7 @@ const SEED: u64 = 0x004E_365E_EDC0_FFEE;
 const MAX_STEPS: u64 = 50_000_000;
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check \
     lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic \
-    hpet=disable harmony_pvclock";
+    hpet=disable";
 const DONE: &[u8] = b"N6_GUEST_OK arch=x86_64";
 
 fn root() -> PathBuf {
