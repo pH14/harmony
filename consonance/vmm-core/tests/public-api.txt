@@ -232,8 +232,8 @@ pub const vmm_core::vendor::arm64::contract::PARAVIRTUAL_EXIT_VNS: u64
 pub const vmm_core::vendor::arm64::contract::READ_ONLY_IDENTITY_BASELINE: [(u32, u64); 1]
 pub const vmm_core::vendor::arm64::contract::SERIAL_EXIT_VNS: u64
 pub const vmm_core::vendor::arm64::contract::TRAPPED_TIME_READ_VNS: u64
-pub fn vmm_core::vendor::arm64::contract::contract_hash() -> [u8; 32]
-pub fn vmm_core::vendor::arm64::contract::policy() -> vmm_backend::arch::arm64::Arm64Policy
+pub fn vmm_core::vendor::arm64::contract::contract_hash(vmm_backend::arch::arm64::Arm64AsidBits) -> [u8; 32]
+pub fn vmm_core::vendor::arm64::contract::policy(vmm_backend::arch::arm64::Arm64AsidBits) -> vmm_backend::arch::arm64::Arm64Policy
 pub fn vmm_core::vendor::arm64::contract::virtual_time_timing() -> vmm_core::virtual_time::VirtualTimeTiming
 pub mod vmm_core::vendor::arm64::devices
 pub mod vmm_core::vendor::arm64::dispatch
