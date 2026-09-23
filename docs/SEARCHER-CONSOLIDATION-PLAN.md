@@ -457,3 +457,23 @@ diagnose; power-on runs are the only completion test.
   23 thousand executions on seed 13 and 77 thousand on seed 11; film of
   seed 13 shows the right column fall and Samus walk through the next
   door with 59 missiles.
+- 2026-09-23: the twenty-second build (consol22) passed root 15 on all
+  three seeds (23, 77 and 95 thousand executions) and root 14 on two
+  (53 thousand; old build 46 thousand, twentieth build none by 3
+  million). It solved SMB seeds 20260906 and 20260907 at 1.07 and 1.25
+  million. Its seed 20260905 replayed the twentieth build's run line for
+  line and was stopped; that seed's record stays the twentieth build's.
+  The Tourian roots run on it to 3 million executions.
+- 2026-09-23: five root 3 arms reached 1 million executions without a
+  kill: the old class as the tier (with and without the cell recency
+  rank), the missile preference alone, and a recency rank among a cell's
+  holders (with and without replacements inheriting the slot's stamp).
+  Only the first reached Ridley's room, on one seed at 989 thousand.
+- 2026-09-23: the twentieth build's SMB seed 20260905 lost its budget in
+  7-4, which it took 736 thousand executions to leave against 35 to 110
+  thousand on eight of the nine other SMB cells since the twelfth build.
+  Its draws stayed even over every height up to progress 146, just past
+  the level's second loop. The game counts correct passes through that
+  loop's three height checks at `$06D9`, and the key does not carry it,
+  so a state with the right count shares a slot with one without it and
+  the clock preference keeps the faster.
