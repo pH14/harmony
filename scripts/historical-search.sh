@@ -30,8 +30,9 @@ chmod +x "${harmony}"
 test -x "${harmony}" && test -s "${kernel}" && test -s "${base_initramfs}"
 
 mkdir -p reports
-out="reports/${CASE_ID}.search"
-console="reports/${CASE_ID}.search.console.txt"
+run_key=${RUN_KEY:-${CASE_ID}}
+out="reports/${run_key}.search"
+console="reports/${run_key}.search.console.txt"
 rm -rf "${out}"
 
 # The outer bound covers a process that stops answering after the campaign's

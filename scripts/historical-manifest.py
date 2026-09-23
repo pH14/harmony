@@ -140,6 +140,7 @@ def validate(path: Path, case: dict) -> dict:
 
     return {
         "id": case["id"],
+        "run_key": case["id"],
         "dir": str(path.parent.relative_to(ROOT)),
         "software": case["software"],
         "display_name": display_name,
@@ -175,12 +176,36 @@ def main() -> int:
         help="emit a matrix containing only runnable cases",
     )
     parser.add_argument("--check", action="store_true", help="validate manifests without output")
+    parser.add_argument("--case", default="", help="keep only this case id")
+    parser.add_argument(
+        "--seeds",
+        default="",
+        help="comma-separated search seeds; each case runs once per seed",
+    )
     args = parser.parse_args()
     entries = [validate(path, case) for path, case in cases()]
+    if args.case:
+        entries = [entry for entry in entries if entry["id"] == args.case]
+        if not entries:
+            parser.error(f"no case named {args.case}")
     if args.matrix and args.runnable_matrix:
         parser.error("choose only one matrix mode")
     if args.matrix or args.runnable_matrix:
         selected = entries if args.matrix else [entry for entry in entries if entry["ci_status"] == "runnable"]
+        if args.seeds:
+            seeds = [int(seed) for seed in args.seeds.split(",") if seed.strip()]
+            if not seeds or any(seed <= 0 for seed in seeds):
+                parser.error("--seeds takes positive integers")
+            selected = [
+                {
+                    **entry,
+                    "seed": seed,
+                    "run_key": f"{entry['id']}-seed{seed}",
+                    "display_name": f"{entry['display_name']} — Seed {seed}",
+                }
+                for entry in selected
+                for seed in seeds
+            ]
         json.dump({"include": selected}, sys.stdout, separators=(",", ":"))
         sys.stdout.write("\n")
     elif not args.check:
