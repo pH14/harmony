@@ -1,9 +1,7 @@
 {
   "decision-residue": [
     "benchmarks/search/SYNTHESIS.md",
-    "benchmarks/search/results/README.md",
-    "dissonance/AUTORESEARCH-SYNTHESIS-002.toml",
-    "workloads/nes/src/metroid/README.md"
+    "dissonance/AUTORESEARCH-SYNTHESIS-002.toml"
   ],
   "run-record": [
     "benchmarks/search/SYNTHESIS.md",
