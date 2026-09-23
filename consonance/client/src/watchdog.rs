@@ -50,7 +50,7 @@ impl Watchdog {
             .name("harmony-timeout".into())
             .spawn(move || {
                 watch(
-                    receiver,
+                    idle(&receiver),
                     budget,
                     progress.as_deref(),
                     &watched,
@@ -85,8 +85,12 @@ impl Drop for Watchdog {
     }
 }
 
+fn idle(done: &mpsc::Receiver<()>) -> impl FnMut(Duration) -> bool + '_ {
+    |wait| done.recv_timeout(wait) == Err(mpsc::RecvTimeoutError::Timeout)
+}
+
 fn watch(
-    done: mpsc::Receiver<()>,
+    mut idle: impl FnMut(Duration) -> bool,
     budget: Duration,
     progress: Option<&AtomicU64>,
     outcome: &AtomicU8,
@@ -94,17 +98,17 @@ fn watch(
     kick: impl FnMut(),
 ) {
     let Some(progress) = progress else {
-        if done.recv_timeout(budget) != Err(mpsc::RecvTimeoutError::Timeout) {
+        if !idle(budget) {
             return;
         }
-        expire(done, outcome, cancel, kick);
+        expire(idle, outcome, cancel, kick);
         return;
     };
     let mut observed = progress.load(Ordering::Acquire);
     let mut remaining = budget;
     loop {
         let wait = remaining.min(POLL_INTERVAL);
-        if done.recv_timeout(wait) != Err(mpsc::RecvTimeoutError::Timeout) {
+        if !idle(wait) {
             return;
         }
         let current = progress.load(Ordering::Acquire);
@@ -125,11 +129,11 @@ fn watch(
         }
         break;
     }
-    expire(done, outcome, cancel, kick);
+    expire(idle, outcome, cancel, kick);
 }
 
 fn expire(
-    done: mpsc::Receiver<()>,
+    mut idle: impl FnMut(Duration) -> bool,
     outcome: &AtomicU8,
     cancel: &AtomicBool,
     mut kick: impl FnMut(),
@@ -143,7 +147,7 @@ fn expire(
     cancel.store(true, Ordering::Release);
     loop {
         kick();
-        if done.recv_timeout(Duration::from_millis(10)) != Err(mpsc::RecvTimeoutError::Timeout) {
+        if !idle(Duration::from_millis(10)) {
             break;
         }
     }
@@ -198,6 +202,7 @@ fn install_signal() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn completion_and_disconnect_do_not_cancel_or_kick() {
@@ -209,7 +214,7 @@ mod tests {
             drop(tx);
             let cancel = AtomicBool::new(false);
             let outcome = AtomicU8::new(RUNNING);
-            watch(rx, Duration::ZERO, None, &outcome, &cancel, || {
+            watch(idle(&rx), Duration::ZERO, None, &outcome, &cancel, || {
                 panic!("normal completion sent a signal")
             });
             assert!(!cancel.load(Ordering::Acquire));
@@ -223,7 +228,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let outcome = AtomicU8::new(RUNNING);
         let mut signals = 0;
-        watch(rx, Duration::ZERO, None, &outcome, &cancel, || {
+        watch(idle(&rx), Duration::ZERO, None, &outcome, &cancel, || {
             assert!(cancel.load(Ordering::Acquire));
             signals += 1;
             tx.send(()).unwrap();
@@ -238,7 +243,7 @@ mod tests {
         let (_tx, rx) = mpsc::channel();
         let cancel = AtomicBool::new(false);
         let outcome = AtomicU8::new(CLAIMED);
-        watch(rx, Duration::ZERO, None, &outcome, &cancel, || {
+        watch(idle(&rx), Duration::ZERO, None, &outcome, &cancel, || {
             panic!("a claimed run was signaled")
         });
         assert!(!cancel.load(Ordering::Acquire));
@@ -256,10 +261,7 @@ mod tests {
         assert!(!cancel.load(Ordering::Acquire));
 
         let expired = Watchdog::start(Duration::ZERO, Arc::clone(&cancel)).unwrap();
-        for _ in 0..1000 {
-            if cancel.load(Ordering::Acquire) {
-                break;
-            }
+        while !cancel.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(!expired.claim(), "the guard expired first");
@@ -271,10 +273,7 @@ mod tests {
     fn real_signal_cancellation_and_guard_join() {
         let cancel = Arc::new(AtomicBool::new(false));
         let guard = Watchdog::start(Duration::ZERO, Arc::clone(&cancel)).unwrap();
-        for _ in 0..1000 {
-            if cancel.load(Ordering::Acquire) {
-                break;
-            }
+        while !cancel.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(cancel.load(Ordering::Acquire));
@@ -286,53 +285,48 @@ mod tests {
 
     #[test]
     fn virtual_time_progress_postpones_expiry() {
-        let (done, receiver) = mpsc::channel();
-        let progress = Arc::new(AtomicU64::new(0));
-        let watched_progress = Arc::clone(&progress);
-        let outcome = Arc::new(AtomicU8::new(RUNNING));
-        let watched_outcome = Arc::clone(&outcome);
-        let cancel = Arc::new(AtomicBool::new(false));
-        let watched_cancel = Arc::clone(&cancel);
-        let thread = std::thread::spawn(move || {
-            watch(
-                receiver,
-                Duration::from_millis(200),
-                Some(&watched_progress),
-                &watched_outcome,
-                &watched_cancel,
-                || panic!("advancing virtual time expired"),
-            );
-        });
-        std::thread::sleep(Duration::from_millis(100));
-        progress.store(1, Ordering::Release);
-        std::thread::sleep(Duration::from_millis(150));
-        done.send(()).unwrap();
-        thread.join().unwrap();
+        let progress = AtomicU64::new(0);
+        let outcome = AtomicU8::new(RUNNING);
+        let cancel = AtomicBool::new(false);
+        let mut waited = Duration::ZERO;
+        watch(
+            |wait| {
+                waited += wait;
+                if waited == Duration::from_millis(20) {
+                    progress.store(1, Ordering::Release);
+                }
+                waited < Duration::from_millis(50)
+            },
+            Duration::from_millis(30),
+            Some(&progress),
+            &outcome,
+            &cancel,
+            || panic!("advancing virtual time expired"),
+        );
+        assert_eq!(waited, Duration::from_millis(50));
         assert!(!cancel.load(Ordering::Acquire));
         assert_eq!(outcome.load(Ordering::Acquire), RUNNING);
     }
 
     #[test]
     fn unchanged_virtual_time_expires() {
-        let (done, receiver) = mpsc::channel();
-        let finisher = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(100));
-            done.send(()).unwrap();
-        });
         let progress = AtomicU64::new(0);
         let outcome = AtomicU8::new(RUNNING);
         let cancel = AtomicBool::new(false);
-        let mut signals = 0;
+        let waited = Cell::new(Duration::ZERO);
+        let expired_at = Cell::new(None);
         watch(
-            receiver,
+            |wait| {
+                waited.set(waited.get() + wait);
+                expired_at.get().is_none()
+            },
             Duration::from_millis(20),
             Some(&progress),
             &outcome,
             &cancel,
-            || signals += 1,
+            || expired_at.set(Some(waited.get())),
         );
-        finisher.join().unwrap();
-        assert!(signals > 0);
+        assert_eq!(expired_at.get(), Some(Duration::from_millis(20)));
         assert!(cancel.load(Ordering::Acquire));
         assert_eq!(outcome.load(Ordering::Acquire), EXPIRED);
     }
