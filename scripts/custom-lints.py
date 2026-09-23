@@ -1469,10 +1469,6 @@ LAB_NOTE_PATTERNS = [
     re.compile(r"(?:^|/)campaign[_-]results?/", re.IGNORECASE),
 ]
 
-LAB_NOTE_ALLOWLIST = {
-    "benchmarks/search/results/README.md",
-}
-
 
 # ---------------------------------------------------------------------------
 # Golden-output checks: hardcoded execution hashes and generated-file diffs
@@ -1735,8 +1731,6 @@ def check_content_rules(
 def check_lab_notes(files: list[str]) -> list[str]:
     violations = []
     for path in files:
-        if path in LAB_NOTE_ALLOWLIST:
-            continue
         for pattern in LAB_NOTE_PATTERNS:
             if pattern.search(path):
                 violations.append(path)

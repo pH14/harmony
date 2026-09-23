@@ -9,8 +9,8 @@
 .env
 # Spike worktrees and their build output remain untracked on the main checkout.
 spikes/
-/mutants.out
-/mutants.out.old
+mutants.out/
+mutants.out.old/
 
 # Run/telemetry outputs (e.g. k3s-run.*.ndjson) are data, not source.
 *.ndjson
