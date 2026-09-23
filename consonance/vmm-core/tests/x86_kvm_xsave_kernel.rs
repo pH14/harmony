@@ -11,7 +11,7 @@ fn g1_kernel_xsave_functional() {
     let read = |name| std::fs::read(std::env::var(name).expect(name)).expect(name);
     let kernel = read("G1_KERNEL");
     let initramfs = read("G1_INITRAMFS");
-    let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1";
+    let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1";
     let mut vmm = boot_linux_stock_virtual_time(&kernel, &initramfs, 256 << 20, cmdline, 42)
         .expect("boot diagnostic Linux");
     let mut printed = 0;
@@ -40,7 +40,7 @@ fn g1_kernel_xsave_paired_endpoint() {
     let kernel = read("G1_KERNEL");
     let initramfs = read("G1_INITRAMFS");
     let root = std::path::PathBuf::from(std::env::var("G1_REPORT_DIR").expect("G1_REPORT_DIR"));
-    let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1";
+    let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1";
     let mut captures = Vec::new();
     #[allow(unused_mut)]
     let mut variants = vec![

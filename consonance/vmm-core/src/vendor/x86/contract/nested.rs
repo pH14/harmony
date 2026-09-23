@@ -166,7 +166,7 @@ mod tests {
         };
         let kernel = read("NESTED_HOST_KERNEL")?;
         let initramfs = read("NESTED_HOST_INITRAMFS")?;
-        let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 harmony_nested_cache_check";
+        let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1 harmony_nested_cache_check";
         let mut vmm = crate::vendor::x86::bringup::boot_linux_nested_host_virtual_time(
             &kernel,
             &initramfs,
@@ -235,7 +235,7 @@ mod tests {
         };
         let kernel = read("NESTED_HOST_KERNEL")?;
         let initramfs = read("NESTED_HOST_INITRAMFS")?;
-        let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 harmony_nested_cache_check";
+        let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1 harmony_nested_cache_check";
         let mut vmm = crate::vendor::x86::bringup::boot_linux_nested_host_virtual_time(
             &kernel,
             &initramfs,
@@ -453,7 +453,7 @@ mod tests {
         };
         let kernel = read("NESTED_HOST_KERNEL")?;
         let initramfs = read("NESTED_HOST_INITRAMFS")?;
-        let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1 harmony_nested_cache_check";
+        let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1 harmony_nested_cache_check";
         let (inner, nested_host) = crate::vendor::x86::bringup::nested_host_backend()?;
         let armed = std::rc::Rc::new(std::cell::Cell::new(false));
         let delivered = std::rc::Rc::new(std::cell::Cell::new(0));

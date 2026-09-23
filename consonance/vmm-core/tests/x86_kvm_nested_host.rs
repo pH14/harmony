@@ -11,7 +11,7 @@ fn l1_creates_kvm_vm() {
     let read = |name| std::fs::read(std::env::var(name).expect(name)).expect(name);
     let kernel = read("NESTED_HOST_KERNEL");
     let initramfs = read("NESTED_HOST_INITRAMFS");
-    let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable harmony_pvclock noxsaveopt noxsaves LD_BIND_NOW=1";
+    let cmdline = "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable noxsaveopt noxsaves LD_BIND_NOW=1";
     let mut vmm = boot_linux_nested_host_virtual_time(&kernel, &initramfs, 256 << 20, cmdline, 42)
         .expect("boot nested-host Linux");
     let mut printed = 0;
