@@ -38,6 +38,12 @@ jobs:
         uses: ./.github/actions/exact-platform-runtime
         with:
           report: platform-smoke
+      - name: Reject boot without the Harmony clock
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+          bash consonance/harmony-linux/linux/test-missing-host-clock.sh \
+            "$HARMONY_PLATFORM_KERNEL" "$HARMONY_PLATFORM_INITRAMFS"
       - name: Enable hardware backend
         run: |
           test -c /dev/kvm
