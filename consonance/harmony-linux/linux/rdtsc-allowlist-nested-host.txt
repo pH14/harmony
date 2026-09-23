@@ -5,14 +5,14 @@
 #
 # The remaining sites inherit the ordinary guest's frozen CPU, boot and
 # workload scope. This list does not claim a stock-KVM RDTSC trap. Raw fallback
-# branches must remain inactive, or their results must be discarded, under
-# harmony_pvclock. Setup and decompressor remain subject to the raw-byte scan.
+# branches must remain inactive, or their results must be discarded, in the
+# Harmony guest. Setup and decompressor remain subject to the raw-byte scan.
 #
-# GCC 14 inlines quick_pit_calibrate into native_calibrate_cpu_early and emits
-# an out-of-line random_get_entropy. Its raw branch follows an explicit
-# harmony_pvclock_requested check; the active branch reads the clock page.
-# Removing/inlining entropy callers changes site counts without adding an
-# active time input. Relative offsets are specific to this configuration.
+# GCC 14 emits quick_pit_calibrate out of line. native_calibrate_cpu_early
+# calls it only when CPUID and the frequency MSR report nothing, and the pinned
+# CPUID contract always reports a frequency. random_get_entropy compiles to the
+# clock-page read alone, so its entropy callers carry no counter read. Relative
+# offsets are specific to this configuration.
 
 # .altinstr_replacement: ordinary counter alternatives; KVM host accessors contain none.
 # Enabling KVM_AMD shifts 22 sites by 0xfd. Their alternative records retain
@@ -20,16 +20,6 @@
 # bytes as the VMX-only binary. The origins are read_tsc, check_tsc_warp,
 # trace_clock_x86_tsc, pvclock_clocksource_read{,_nowd}, delay_tsc and delay_halt.
 # The six msr_event_{add,start,update} alternatives retain their old offsets.
-vmlinux:.altinstr_replacement+0x201d
-vmlinux:.altinstr_replacement+0x201f
-vmlinux:.altinstr_replacement+0x2025
-vmlinux:.altinstr_replacement+0x2027
-vmlinux:.altinstr_replacement+0x202d
-vmlinux:.altinstr_replacement+0x202f
-vmlinux:.altinstr_replacement+0x2035
-vmlinux:.altinstr_replacement+0x2037
-vmlinux:.altinstr_replacement+0x203d
-vmlinux:.altinstr_replacement+0x203f
 vmlinux:.altinstr_replacement+0x34d
 vmlinux:.altinstr_replacement+0x34f
 vmlinux:.altinstr_replacement+0x355
@@ -38,16 +28,26 @@ vmlinux:.altinstr_replacement+0x35d
 vmlinux:.altinstr_replacement+0x35f
 vmlinux:.altinstr_replacement+0x8ab
 vmlinux:.altinstr_replacement+0x8ad
-vmlinux:.altinstr_replacement+0xbec
+vmlinux:.altinstr_replacement+0xbe6
+vmlinux:.altinstr_replacement+0xbe8
 vmlinux:.altinstr_replacement+0xbee
-vmlinux:.altinstr_replacement+0xbf4
-vmlinux:.altinstr_replacement+0xbf6
-vmlinux:.altinstr_replacement+0xc72
-vmlinux:.altinstr_replacement+0xc74
-vmlinux:.altinstr_replacement+0xc94
+vmlinux:.altinstr_replacement+0xbf0
+vmlinux:.altinstr_replacement+0xc6c
+vmlinux:.altinstr_replacement+0xc6e
+vmlinux:.altinstr_replacement+0xc8e
+vmlinux:.altinstr_replacement+0xc90
 vmlinux:.altinstr_replacement+0xc96
-vmlinux:.altinstr_replacement+0xc9c
-vmlinux:.altinstr_replacement+0xc9e
+vmlinux:.altinstr_replacement+0xc98
+vmlinux:.altinstr_replacement+0x2017
+vmlinux:.altinstr_replacement+0x2019
+vmlinux:.altinstr_replacement+0x201f
+vmlinux:.altinstr_replacement+0x2021
+vmlinux:.altinstr_replacement+0x2027
+vmlinux:.altinstr_replacement+0x2029
+vmlinux:.altinstr_replacement+0x202f
+vmlinux:.altinstr_replacement+0x2031
+vmlinux:.altinstr_replacement+0x2037
+vmlinux:.altinstr_replacement+0x2039
 
 # __dmar_enable_qi: IOMMU polling; no IOMMU is exposed by the nested-host contract
 vmlinux:__dmar_enable_qi+0x84
@@ -60,15 +60,6 @@ vmlinux:__iommu_flush_context+0x93
 # __iommu_flush_iotlb: IOMMU polling; no IOMMU is exposed by the nested-host contract
 vmlinux:__iommu_flush_iotlb+0x9a
 vmlinux:__iommu_flush_iotlb+0xa8
-
-# add_device_randomness: ordinary entropy timing; harmony_pvclock_requested routes active reads to the clock page
-vmlinux:add_device_randomness+0x24
-
-# add_interrupt_randomness: ordinary entropy timing; harmony_pvclock_requested routes active reads to the clock page
-vmlinux:add_interrupt_randomness+0x16
-
-# add_timer_randomness: ordinary entropy timing; harmony_pvclock_requested routes active reads to the clock page
-vmlinux:add_timer_randomness+0x2b
 
 # check_tsc_warp: ordinary calibration/delay/clock path; retains its existing Harmony qualification
 vmlinux:check_tsc_warp+0x4c
@@ -90,7 +81,7 @@ vmlinux:dmar_disable_qi+0xa8
 vmlinux:dmar_disable_qi+0xc4
 
 # do_syscall_64: ordinary entry entropy timing; the Harmony clock branch supplies the value
-vmlinux:do_syscall_64+0x180
+vmlinux:do_syscall_64+0x16d
 
 # ecmd_submit_sync: IOMMU polling; no IOMMU is exposed by the nested-host contract
 vmlinux:ecmd_submit_sync+0x60
@@ -100,11 +91,8 @@ vmlinux:ecmd_submit_sync+0x7b
 vmlinux:ext4_mb_generate_buddy+0x1c1
 vmlinux:ext4_mb_generate_buddy+0x2d
 
-# extract_entropy.constprop.0: ordinary entropy timing; harmony_pvclock_requested routes active reads to the clock page
-vmlinux:extract_entropy.constprop.0+0xce
-
 # harmony_pvclock_init: the two registration reads discard native results on stock KVM
-vmlinux:harmony_pvclock_init+0x1a5
+vmlinux:harmony_pvclock_init+0x1a0
 vmlinux:harmony_pvclock_init+0xe7
 
 # hpet_enable: ordinary calibration/delay/clock path; retains its existing Harmony qualification
@@ -148,9 +136,6 @@ vmlinux:iommu_set_root_entry+0x86
 # irqentry_exit_to_user_mode: ordinary entry entropy timing; the Harmony clock branch supplies the value
 vmlinux:irqentry_exit_to_user_mode+0x96
 
-# jent_get_nstime: ordinary calibration/delay/clock path; retains its existing Harmony qualification
-vmlinux:jent_get_nstime+0xd
-
 # lapic_cal_handler: ordinary calibration/delay/clock path; retains its existing Harmony qualification
 vmlinux:lapic_cal_handler+0x1a
 
@@ -166,20 +151,12 @@ vmlinux:msr_event_start+0xc
 # msr_event_update: ordinary optional perf/trace counter path; outside the fixture workload
 vmlinux:msr_event_update+0x1d
 
-# native_calibrate_cpu_early: inlined quick_pit_calibrate fallback; pinned CPUID frequency returns before this branch.
-# The compiled SVM CPUID guard shifts the same four fallback instructions by
-# 0xb. The ordinary object and alternative instruction bytes are unchanged.
-vmlinux:native_calibrate_cpu_early+0x92
-vmlinux:native_calibrate_cpu_early+0xb4
-vmlinux:native_calibrate_cpu_early+0xdd
-vmlinux:native_calibrate_cpu_early+0x100
-
 # native_sched_clock: ordinary calibration/delay/clock path; retains its existing Harmony qualification
 vmlinux:native_sched_clock+0x2
 
 # pit_hpet_ptimer_calibrate_cpu: ordinary calibration/delay/clock path; retains its existing Harmony qualification
-vmlinux:pit_hpet_ptimer_calibrate_cpu+0xb2
-vmlinux:pit_hpet_ptimer_calibrate_cpu+0xd3
+vmlinux:pit_hpet_ptimer_calibrate_cpu+0xa2
+vmlinux:pit_hpet_ptimer_calibrate_cpu+0xc3
 
 # pvclock_clocksource_read: ordinary alternative-hypervisor clock path; its activation leaves/MSRs are absent
 vmlinux:pvclock_clocksource_read+0x10
@@ -187,8 +164,11 @@ vmlinux:pvclock_clocksource_read+0x10
 # pvclock_clocksource_read_nowd: ordinary alternative-hypervisor clock path; its activation leaves/MSRs are absent
 vmlinux:pvclock_clocksource_read_nowd+0xa
 
-# random_get_entropy: ordinary entropy timing; harmony_pvclock_requested routes active reads to the clock page
-vmlinux:random_get_entropy+0x9
+# quick_pit_calibrate: PIT calibration fallback; pinned CPUID frequency returns before this path
+vmlinux:quick_pit_calibrate+0x38
+vmlinux:quick_pit_calibrate+0x5a
+vmlinux:quick_pit_calibrate+0x83
+vmlinux:quick_pit_calibrate+0xa6
 
 # read_current_timer: ordinary calibration/delay/clock path; retains its existing Harmony qualification
 vmlinux:read_current_timer+0xd
@@ -209,9 +189,6 @@ vmlinux:timer_irq_works+0x48
 
 # trace_clock_x86_tsc: ordinary optional perf/trace counter path; outside the fixture workload
 vmlinux:trace_clock_x86_tsc+0x0
-
-# tsc_enable_sched_clock: ordinary calibration/delay/clock path; retains its existing Harmony qualification
-vmlinux:tsc_enable_sched_clock+0x3b
 
 # tsc_read_refs: ordinary calibration/delay/clock path; retains its existing Harmony qualification
 vmlinux:tsc_read_refs+0x2b
