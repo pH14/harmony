@@ -132,6 +132,8 @@ fn compact_progress_curve<M, P>(
     next_interval
 }
 
+const CELL_DRAWS_INTERVAL: u64 = 100_000;
+
 fn progress_checkpoint_due(executions: u64) -> bool {
     executions > 0 && (executions == 1 || executions.is_multiple_of(PROGRESS_CHECKPOINT_INTERVAL))
 }
@@ -2481,7 +2483,13 @@ fn write_live_progress<G: Workload>(
         input_reconstructions: core.archive.input_reconstructions(),
         input_index_nodes: core.archive.input_index_nodes(),
         historical_cells: core.archive.historical_cell_count(),
-        selector: core.archive.selector_report(),
+        selector: {
+            let mut selector = core.archive.selector_report();
+            if !final_census && !sequence.is_multiple_of(CELL_DRAWS_INTERVAL) {
+                selector.draws_by_cell.clear();
+            }
+            selector
+        },
         continuations: core.archive.continuation_report(),
     })?;
     sink.write_all(line.as_bytes())?;
