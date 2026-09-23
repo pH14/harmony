@@ -183,6 +183,22 @@ and hash comparisons and the MMIO completion/timing assertions. There is no
 extra guest exit, warmup or host restore-bitmap forcing. The original init-only
 program remains an informational characterization using the same exercise.
 
+The original init-only fixture failed once on a Xeon Platinum 8573C at
+`0534d974` ([run 34725789909](https://github.com/pH14/harmony/actions/runs/34725789909)),
+before endpoint artifacts were exported. Its first differing component cannot
+be recovered from that run, so neither MMIO completion nor XSAVE can be assigned
+as the cause. The later required active-XMM fixture and informational init-only
+fixture both passed on the same CPU model at `10de290f` in
+[run 35580705551](https://github.com/pH14/harmony/actions/runs/35580705551)
+and [run 35705481698](https://github.com/pH14/harmony/actions/runs/35705481698).
+Each run retained the original, capture-and-continue and cold endpoint RAM and
+serialized VM state. Their first-difference reports show equality for RAM,
+VM state, state blob, state hash and virtual time at every compared stop and
+endpoint. These observations establish current coverage on that host model;
+they do not identify which intervening change, if any, removed the historical
+failure or prove the failure cannot recur. Keep the active-XMM check required
+and retain the init-only characterization with its raw evidence.
+
 ### Published XSAVE identity check
 
 `vendor::x86::logical_identity_live_tests::public_snapshot_replay_recapture_preserves_xsave_identity`
