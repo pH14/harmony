@@ -46,7 +46,7 @@ campaign and target contracts:
 | Contract | Workload responsibility |
 | --- | --- |
 | `TargetExecution` | Construct, drive, restore, and snapshot targets; capture observations and account for deterministic execution work. |
-| `InputPolicy` | Define the action vocabulary, draw suffixes, retain policy history, and checkpoint draw state. |
+| `InputPolicy` | Define the action vocabulary, draw suffixes, learn from each execution's actions and retained entries, retain policy history, and checkpoint draw state. |
 | `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
 

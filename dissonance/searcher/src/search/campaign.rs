@@ -271,6 +271,15 @@ pub trait InputPolicy: CampaignTypes {
         }
         self.expand_suffix(run, state, shape, mixture, mutation_seed)
     }
+    fn note_executed_actions(
+        &self,
+        run: &Self::Run,
+        state: &mut Self::DrawState,
+        executed: &[Self::Action],
+        retained: &[(usize, &[Self::Action])],
+    ) {
+        let _ = (run, state, executed, retained);
+    }
     fn finish_stream_record(
         &self,
         run: &Self::Run,
@@ -2850,6 +2859,11 @@ where
                         .and_then(|draw| duration_policies.context_checkpoint(draw.context));
                     let objectives_before = core.objectives_reached;
                     let admission_started = profile_now(coordinator_profile.enabled);
+                    let executed = result
+                        .actions
+                        .iter()
+                        .map(|action| action.action)
+                        .collect::<Vec<_>>();
                     let (sequence, decisions, duration_admission) = core.admit_job_tracking(
                         workload,
                         pending_job.parent_id,
@@ -2923,8 +2937,14 @@ where
                     {
                         std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
                     }
-                    let draw_checkpoint_after =
-                        finish_record(workload, &config.run, &mut draw_state, &core, &decisions)?;
+                    let draw_checkpoint_after = finish_record(
+                        workload,
+                        &config.run,
+                        &mut draw_state,
+                        &executed,
+                        &core,
+                        &decisions,
+                    )?;
                     let draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
                     if !draw_state_memory_is_within_reserve(
                         draw_state_memory_bytes,
@@ -3150,6 +3170,7 @@ fn finish_record<G: Workload>(
     workload: &G,
     run: &G::Run,
     draw_state: &mut G::DrawState,
+    executed: &[G::Action],
     core: &CoordinatorCore<G>,
     decisions: &[CampaignAdmissionDecision],
 ) -> Result<Option<G::DrawCheckpoint>, Box<dyn Error>> {
@@ -3192,6 +3213,7 @@ fn finish_record<G: Workload>(
         .iter()
         .map(|(parent_actions, input)| (*parent_actions, input.actions.as_slice()))
         .collect::<Vec<_>>();
+    workload.note_executed_actions(run, draw_state, executed, &retained);
     workload.finish_stream_record(run, draw_state, &retained)
 }
 
@@ -3710,6 +3732,11 @@ where
                     .map(|draw| draw.duration);
                 drop(snapshot);
                 let objectives_before = core.objectives_reached;
+                let executed = result
+                    .actions
+                    .iter()
+                    .map(|action| action.action)
+                    .collect::<Vec<_>>();
                 let (sequence, decisions, duration_admission) =
                     core.admit_job_tracking(workload, job.parent_id, result, |action| {
                         tracked_duration.is_some_and(|duration| {
@@ -3756,8 +3783,14 @@ where
                 if duration_checkpoint_after != job.duration_checkpoint_after {
                     return Err("replayed job duration state diverged after admission".into());
                 }
-                let draw_checkpoint_after =
-                    finish_record(workload, &replay_run, &mut draw_state, &core, &decisions)?;
+                let draw_checkpoint_after = finish_record(
+                    workload,
+                    &replay_run,
+                    &mut draw_state,
+                    &executed,
+                    &core,
+                    &decisions,
+                )?;
                 if draw_checkpoint_after != job.draw_checkpoint_after {
                     return Err(format!(
                         "replayed job {} draw-table checkpoint diverged",
@@ -5176,6 +5209,7 @@ mod tests {
                 &workload,
                 &run,
                 &mut draw_state,
+                &[],
                 &core,
                 &[CampaignAdmissionDecision::Retained { id: u64::MAX }],
             )

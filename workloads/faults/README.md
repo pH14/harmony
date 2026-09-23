@@ -157,7 +157,16 @@ an outer CLI timeout is an infrastructure failure. The reports also expose
 runtime error has a separate SDK status and cannot turn a PID 1 exit into bug
 evidence.
 
-The searcher learns the duration of waits and instrumented event holds from
+The search also learns which action kinds to draw. For each kind, the campaign
+counts the executions whose suffix contained it and the executions that
+retained an archive entry whose suffix contained it. A draw picks among the
+kinds the vocabulary and node state allow, in proportion to each kind's
+posterior mean retention rate under a uniform prior, `(retained + 1) /
+(executed + 2)`. That weight never reaches zero, so every available kind stays
+in the draw. The counts are recorded with every campaign stream record, and a
+replay draws from the recorded counts.
+
+The searcher learns the duration of every action from
 admitted campaign outcomes and logical execution cost. It continues sampling
 short and long logarithmic durations while favoring durations whose own action
 recently produced useful work. The adapter groups this feedback by node liveness

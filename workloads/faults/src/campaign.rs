@@ -25,10 +25,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     archive::{
-        DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord, FaultInput,
-        FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS,
-        REPLACEMENT_IDENTIFIER, action_cost, archive_key, bug_outcome, merge_milestones,
-        merge_progress_watermark, milestone_key, milestones, sample_action,
+        ActionMix, DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord,
+        FaultInput, FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER,
+        MAX_RECORDED_BUGS, REPLACEMENT_IDENTIFIER, action_cost, archive_key, bug_outcome,
+        merge_milestones, merge_progress_watermark, milestone_key, milestones, sample_action,
     },
     assertion::Assertions,
     bundle::FaultVocabulary,
@@ -49,6 +49,8 @@ const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const IMAGE_FIELD: &str = "image";
 const ACTION_FORMAT_FIELD: &str = "action_format";
 const ACTION_FORMAT: &str = "fault-action-duration-v1";
+const ACTION_MIX_FIELD: &str = "action_mix";
+const ACTION_MIX: &str = "kind_retention_posterior_mean_v1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultNoTableHeader;
@@ -294,8 +296,8 @@ impl CampaignTypes for FaultWorkload {
     type Evidence = FaultCampaignEvidence;
     type ArchiveReport = FaultArchiveReport;
     type Run = FaultCampaignRun;
-    type DrawState = ();
-    type DrawCheckpoint = ();
+    type DrawState = ActionMix;
+    type DrawCheckpoint = ActionMix;
     type DrawHeader = FaultNoTableHeader;
 }
 
@@ -376,6 +378,7 @@ impl InputPolicy for FaultWorkload {
         .chain([
             (IMAGE_FIELD.to_owned(), self.identity.clone()),
             (ACTION_FORMAT_FIELD.to_owned(), ACTION_FORMAT.to_owned()),
+            (ACTION_MIX_FIELD.to_owned(), ACTION_MIX.to_owned()),
             (VOCABULARY_FIELD.to_owned(), run.vocabulary.identifier()),
         ])
         .collect()
@@ -407,11 +410,11 @@ impl InputPolicy for FaultWorkload {
         _run: &FaultCampaignRun,
         _max_actions: usize,
     ) -> usize {
-        0
+        std::mem::size_of::<ActionMix>()
     }
 
-    fn draw_state_memory_bytes(&self, _state: &()) -> usize {
-        0
+    fn draw_state_memory_bytes(&self, _state: &ActionMix) -> usize {
+        std::mem::size_of::<ActionMix>()
     }
 
     fn initial_draw_state(
@@ -419,7 +422,7 @@ impl InputPolicy for FaultWorkload {
         _run: &FaultCampaignRun,
         _origin: Option<(&str, &FaultArchiveReport)>,
     ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
-        Ok(((), None))
+        Ok((ActionMix::default(), None))
     }
 
     fn duration_request(
@@ -450,7 +453,7 @@ impl InputPolicy for FaultWorkload {
     fn expand_suffix_duration(
         &self,
         run: &FaultCampaignRun,
-        _state: &(),
+        state: &ActionMix,
         shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
@@ -464,23 +467,31 @@ impl InputPolicy for FaultWorkload {
             mixture.weight,
             mutation_seed,
             |_| Ok(None),
-            |rand| sample_action(rand, &run.vocabulary, draw.context.event_ready, ticks),
+            |rand| {
+                sample_action(
+                    rand,
+                    &run.vocabulary,
+                    draw.context.event_ready,
+                    ticks,
+                    state,
+                )
+            },
         )
     }
 
     fn expand_suffix_recorded_duration(
         &self,
         run: &FaultCampaignRun,
-        state: &(),
+        _state: &ActionMix,
         shape: SuffixShape,
         mixture: MixtureDraw,
-        _before: Option<&()>,
+        before: Option<&ActionMix>,
         mutation_seed: u64,
         draw: Option<DurationDraw<FaultArchiveKey>>,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
         self.expand_suffix_duration(
             run,
-            state,
+            before.ok_or("fault campaign is missing its action mix")?,
             shape,
             mixture,
             mutation_seed,
@@ -503,10 +514,42 @@ impl InputPolicy for FaultWorkload {
         }
     }
 
+    fn draw_checkpoint(&self, state: &ActionMix) -> Result<Option<ActionMix>, Box<dyn Error>> {
+        Ok(Some(*state))
+    }
+
+    fn draw_checkpoint_version(&self, mix: &ActionMix) -> u64 {
+        mix.generation
+    }
+
+    fn note_executed_actions(
+        &self,
+        _run: &FaultCampaignRun,
+        state: &mut ActionMix,
+        executed: &[FaultAction],
+        retained: &[(usize, &[FaultAction])],
+    ) {
+        let retained = retained
+            .iter()
+            .map(|(_, actions)| *actions)
+            .collect::<Vec<_>>();
+        state.note(executed, &retained);
+    }
+
+    fn finish_stream_record(
+        &self,
+        _run: &FaultCampaignRun,
+        state: &mut ActionMix,
+        _retained: &[(usize, &[FaultAction])],
+    ) -> Result<Option<ActionMix>, Box<dyn Error>> {
+        state.generation = state.generation.saturating_add(1);
+        Ok(Some(*state))
+    }
+
     fn expand_suffix(
         &self,
         _run: &FaultCampaignRun,
-        _state: &(),
+        _state: &ActionMix,
         _shape: SuffixShape,
         _mixture: MixtureDraw,
         _mutation_seed: u64,
@@ -861,16 +904,17 @@ mod tests {
         let mut waits = 0;
         let mut event_parks = 0;
         for seed in 0..128 {
+            let mix = ActionMix::default();
             let suffix = game
-                .expand_suffix_duration(&run, &(), SuffixShape::OneOrTwo, mixture, seed, draw)
+                .expand_suffix_duration(&run, &mix, SuffixShape::OneOrTwo, mixture, seed, draw)
                 .unwrap();
             let replay = game
                 .expand_suffix_recorded_duration(
                     &run,
-                    &(),
+                    &ActionMix::default(),
                     SuffixShape::OneOrTwo,
                     mixture,
-                    None,
+                    Some(&mix),
                     seed,
                     Some(draw),
                 )
@@ -897,10 +941,10 @@ mod tests {
         assert!(
             game.expand_suffix_recorded_duration(
                 &run,
-                &(),
+                &ActionMix::default(),
                 SuffixShape::OneOrTwo,
                 mixture,
-                None,
+                Some(&ActionMix::default()),
                 1,
                 None
             )
@@ -911,8 +955,15 @@ mod tests {
             ..draw
         };
         assert!(
-            game.expand_suffix_duration(&run, &(), SuffixShape::OneOrTwo, mixture, 1, out_of_range)
-                .is_err()
+            game.expand_suffix_duration(
+                &run,
+                &ActionMix::default(),
+                SuffixShape::OneOrTwo,
+                mixture,
+                1,
+                out_of_range
+            )
+            .is_err()
         );
     }
 
