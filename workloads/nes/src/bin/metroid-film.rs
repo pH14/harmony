@@ -2,9 +2,12 @@
 
 use std::{env, error::Error, fs, path::PathBuf};
 
+use machine::quicknes::VideoFrame;
 use nes_workload::{
     film::{FPS, Film},
-    metroid::target::{GenesisDepth, MetroidInput, MetroidTarget, MetroidTerminalPolicy},
+    metroid::target::{
+        ButtonChord, GenesisDepth, MetroidInput, MetroidTarget, MetroidTerminalPolicy,
+    },
     target::{ExitKind, Target},
 };
 use sha2::{Digest, Sha256};
@@ -27,6 +30,95 @@ fn parse_intervention(value: &str) -> Result<Intervention, Box<dyn Error>> {
         missiles: missiles.parse()?,
         after: after.parse()?,
     })
+}
+
+struct Played {
+    applied: usize,
+    intervened: bool,
+}
+
+trait Playback {
+    type Action;
+    fn stopped(&self) -> bool;
+    fn apply(&mut self, action: &Self::Action) -> Result<(), Box<dyn Error>>;
+    fn set_resources(&mut self, health: u16, missiles: u8) -> Result<(), Box<dyn Error>>;
+}
+
+fn play<P: Playback>(
+    playback: &mut P,
+    actions: &[P::Action],
+    intervention: Option<&Intervention>,
+) -> Result<Played, Box<dyn Error>> {
+    let mut played = Played {
+        applied: 0,
+        intervened: false,
+    };
+    for action in actions {
+        if playback.stopped() {
+            break;
+        }
+        playback.apply(action)?;
+        played.applied += 1;
+        if let Some(point) = intervention
+            && point.after == played.applied
+        {
+            playback.set_resources(point.health, point.missiles)?;
+            played.intervened = true;
+        }
+    }
+    Ok(played)
+}
+
+struct Filming {
+    film: Option<Film>,
+    video: PathBuf,
+    target: MetroidTarget,
+    applied: usize,
+    recorded: usize,
+}
+
+impl Filming {
+    fn record(&mut self, frames: Vec<VideoFrame>) -> Result<(), Box<dyn Error>> {
+        let film = match &mut self.film {
+            Some(film) => film,
+            None => {
+                let Some(first) = frames.first() else {
+                    return Ok(());
+                };
+                self.film
+                    .insert(Film::start(&self.video, first.width, first.height)?)
+            }
+        };
+        film.write(&frames, &self.target.drain_audio())
+    }
+}
+
+impl Playback for Filming {
+    type Action = ButtonChord;
+
+    fn stopped(&self) -> bool {
+        self.target.is_dead() || self.target.is_victory() || self.target.exit_kind() != ExitKind::Ok
+    }
+
+    fn apply(&mut self, action: &ButtonChord) -> Result<(), Box<dyn Error>> {
+        self.target.apply(action);
+        self.applied += 1;
+        let frames = self.target.drain_frames();
+        self.record(frames)?;
+        if self.applied.is_multiple_of(250) {
+            eprintln!(
+                "action {}/{} frames={}",
+                self.applied,
+                self.recorded,
+                self.film.as_ref().map_or(0, Film::frames)
+            );
+        }
+        Ok(())
+    }
+
+    fn set_resources(&mut self, health: u16, missiles: u8) -> Result<(), Box<dyn Error>> {
+        self.target.diagnostic_set_resources(health, missiles)
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -101,44 +193,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     .with_terminal_policy(terminal_policy);
 
-    let mut opening = target.drain_frames();
-    let mut consumed = 0_usize;
-    if opening.is_empty() {
-        let first_action = input.actions.first().ok_or("the input has no actions")?;
-        target.apply(first_action);
-        consumed = 1;
-        opening = target.drain_frames();
-    }
-    let first = opening.first().ok_or("the run-up captured no video")?;
-    let (width, height) = (first.width, first.height);
-
-    let mut film = Film::start(&video, width, height)?;
-    film.write(&opening, &target.drain_audio())?;
-    drop(opening);
-
-    let mut applied = consumed;
-    let mut intervened = false;
-    for action in &input.actions[consumed..] {
-        if target.is_dead() || target.is_victory() || target.exit_kind() != ExitKind::Ok {
-            break;
-        }
-        target.apply(action);
-        applied += 1;
-        film.write(&target.drain_frames(), &target.drain_audio())?;
-        if let Some(point) = &intervention
-            && point.after == applied
-        {
-            target.diagnostic_set_resources(point.health, point.missiles)?;
-            intervened = true;
-        }
-        if applied.is_multiple_of(250) {
-            eprintln!(
-                "action {applied}/{} frames={}",
-                input.actions.len(),
-                film.frames()
-            );
-        }
-    }
+    let opening = target.drain_frames();
+    let mut filming = Filming {
+        film: None,
+        video: video.clone(),
+        target,
+        applied: 0,
+        recorded: input.actions.len(),
+    };
+    filming.record(opening)?;
+    let played = play(&mut filming, &input.actions, intervention.as_ref())?;
+    let Filming { film, target, .. } = filming;
+    let applied = played.applied;
+    let intervened = played.intervened;
+    let film = film.ok_or("the run captured no video")?;
 
     let film = film.finish()?;
 
@@ -167,4 +235,61 @@ fn main() -> Result<(), Box<dyn Error>> {
         .into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Recorder {
+        events: Vec<String>,
+        stop_after: Option<usize>,
+        applied: usize,
+    }
+
+    impl Playback for Recorder {
+        type Action = u8;
+
+        fn stopped(&self) -> bool {
+            self.stop_after == Some(self.applied)
+        }
+
+        fn apply(&mut self, action: &u8) -> Result<(), Box<dyn Error>> {
+            self.applied += 1;
+            self.events.push(format!("apply {action}"));
+            Ok(())
+        }
+
+        fn set_resources(&mut self, health: u16, missiles: u8) -> Result<(), Box<dyn Error>> {
+            self.events.push(format!("set {health},{missiles}"));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_intervention_at_the_first_action_applies_after_it() {
+        let mut recorder = Recorder::default();
+        let point = parse_intervention("30,5@1").unwrap();
+        let played = play(&mut recorder, &[7, 8, 9], Some(&point)).unwrap();
+        assert!(played.intervened);
+        assert_eq!(played.applied, 3);
+        assert_eq!(
+            recorder.events,
+            ["apply 7", "set 30,5", "apply 8", "apply 9"]
+        );
+    }
+
+    #[test]
+    fn a_stopped_run_ends_before_a_later_intervention() {
+        let mut recorder = Recorder {
+            stop_after: Some(1),
+            ..Recorder::default()
+        };
+        let point = parse_intervention("30,5@2").unwrap();
+        let played = play(&mut recorder, &[7, 8, 9], Some(&point)).unwrap();
+        assert!(!played.intervened);
+        assert_eq!(played.applied, 1);
+        assert_eq!(recorder.events, ["apply 7"]);
+    }
 }

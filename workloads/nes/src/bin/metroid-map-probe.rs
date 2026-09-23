@@ -78,7 +78,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("# root {}", path.display());
     }
     println!(
-        "action frames area map_x map_y x y mode pose health equipment missiles capacity tanks bosses boss_health"
+        "enemy_slots action frames area map_x map_y x y mode pose health equipment missiles capacity tanks bosses boss_health"
     );
     for (index, action) in input.actions.iter().enumerate() {
         if target.is_dead() || target.is_victory() || target.exit_kind() != ExitKind::Ok {
