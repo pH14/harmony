@@ -31,8 +31,8 @@
   },
   "kernel_profile": "faultlab",
   "oracle": {
-    "assertion": 1,
-    "evidence": 11,
+    "assertion": "every etcd member holds each acknowledged write",
+    "evidence": "etcd oracle compared every member",
     "kind": "always",
     "source": "the agent's continuous check, not a drawn hook",
     "journal_format": "key\\tvalue\\tPutResponse.Header.Revision\\n",

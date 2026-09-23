@@ -223,9 +223,34 @@ pub struct SdkCapture {
     pub registers: BTreeMap<u32, u64>,
     pub assertions: Assertions,
     pub setup_complete: bool,
+    pub completed_check: Option<CompletedCheck>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CompletedCheck {
+    pub run: u64,
+    pub start_generation: u64,
+    pub end_generation: u64,
+    pub points: Vec<String>,
 }
 
 impl SdkCapture {
+    fn note_completed_check(&mut self, run: u64, check_passes: &BTreeMap<u64, BTreeSet<String>>) {
+        let register = |id: u32| self.registers.get(&id).copied().unwrap_or_default();
+        let Some(points) = check_passes
+            .get(&register(reg::COMPLETED_CHECK_PID))
+            .filter(|points| !points.is_empty())
+        else {
+            return;
+        };
+        self.completed_check = Some(CompletedCheck {
+            run,
+            start_generation: register(reg::COMPLETED_CHECK_START_GENERATION),
+            end_generation: register(reg::COMPLETED_CHECK_END_GENERATION),
+            points: points.iter().cloned().collect(),
+        });
+    }
+
     pub fn check_infrastructure_status(&self) -> Result<(), String> {
         if self
             .registers
@@ -242,11 +267,17 @@ impl SdkCapture {
 
 pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, String> {
     let mut capture = SdkCapture::default();
+    let mut check_passes: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
     for (_, event_id, bytes) in events {
-        if *event_id == JSON_EVENT_ID && bytes.first() == Some(&b'{') {
+        if *event_id == JSON_EVENT_ID && bytes.trim_ascii_start().first() == Some(&b'{') {
             if let Some(event) = decode_json_event(bytes) {
                 capture.setup_complete |= event.setup_complete;
                 if let Some((id, outcome)) = event.assertion {
+                    if let Some(pid) = event.pid
+                        && outcome.feeds_the_key()
+                    {
+                        check_passes.entry(pid).or_default().insert(id.clone());
+                    }
                     capture.assertions.record(id, outcome);
                 }
             }
@@ -280,7 +311,13 @@ pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, S
                 );
                 match bytes[0] {
                     STATE_SET => {
-                        capture.registers.insert(local, value);
+                        let previous = capture.registers.insert(local, value);
+                        if local == reg::CHECKS_STARTED && previous != Some(value) {
+                            check_passes.clear();
+                        }
+                        if local == reg::COMPLETED_CHECK_RUN {
+                            capture.note_completed_check(value, &check_passes);
+                        }
                     }
                     STATE_MAX => {
                         capture
@@ -351,7 +388,6 @@ pub struct FaultObservations {
     pub checks_started: u64,
     pub checks_finished: u64,
     pub check: Option<CheckEvidence>,
-    pub sometimes_register: u64,
     pub assertions: Assertions,
     pub stop: FaultStop,
     #[serde(default)]
@@ -378,18 +414,17 @@ impl FaultObservations {
             workload_finished: value(reg::WORKLOAD_FINISHED),
             checks_started: value(reg::CHECKS_STARTED),
             checks_finished: value(reg::CHECKS_FINISHED),
-            check: (value(reg::CHECK_ENABLED) != 0).then(|| CheckEvidence {
-                disturbance_generation: value(reg::DISTURBANCE_GENERATION),
-                run: value(reg::COMPLETED_CHECK_RUN),
-                start_generation: value(reg::COMPLETED_CHECK_START_GENERATION),
-                end_generation: value(reg::COMPLETED_CHECK_END_GENERATION),
-                points: (0..48)
-                    .filter(|point| value(reg::COMPLETED_CHECK_POINTS) & (1_u64 << point) != 0)
-                    .map(|point: u32| point.to_string())
-                    .collect(),
-                pending_faults: value(reg::PENDING_FAULTS),
+            check: (value(reg::CHECK_ENABLED) != 0).then(|| {
+                let completed = capture.completed_check.clone().unwrap_or_default();
+                CheckEvidence {
+                    disturbance_generation: value(reg::DISTURBANCE_GENERATION),
+                    run: completed.run,
+                    start_generation: completed.start_generation,
+                    end_generation: completed.end_generation,
+                    points: completed.points,
+                    pending_faults: value(reg::PENDING_FAULTS),
+                }
             }),
-            sometimes_register: value(reg::SOMETIMES),
             assertions: capture.assertions.clone(),
             stop,
             watchdog_cutoff: false,
@@ -778,14 +813,12 @@ mod tests {
             assert_event(64, DISP_HIT),
             state_event(reg::ALIVE, STATE_SET, 0b101),
             state_event(reg::HOOKS_FINISHED, STATE_SET, 2),
-            state_event(reg::SOMETIMES, STATE_SET, 0b11),
         ])
         .expect("decode");
         let observations = FaultObservations::new(77, &capture, FaultStop::Deadline);
         assert_eq!(observations.moment, 77);
         assert_eq!(observations.alive, 0b101);
         assert_eq!(observations.hooks_finished, 2);
-        assert_eq!(observations.sometimes_register, 0b11);
         assert_eq!(
             observations.sometimes(),
             BTreeSet::from(["0".to_owned(), "63".to_owned(), "64".to_owned()])
@@ -794,21 +827,44 @@ mod tests {
         assert_eq!(observations.exit_kind(), ExitKind::Ok);
     }
 
+    fn json_pass(pid: u64, id: &str) -> (u64, u32, Vec<u8>) {
+        (
+            0,
+            JSON_EVENT_ID,
+            format!(
+                r#"{{"harmony_attribution":{{"rip":"0x1","pid":{pid},"comm_hex":"61"}},"antithesis_assert":{{"hit":true,"must_hit":true,"assert_type":"reachability","message":"{id}","condition":true,"id":"{id}"}}}}"#
+            )
+            .into_bytes(),
+        )
+    }
+
+    fn completion(pid: u64, run: u64, generation: u64) -> Vec<(u64, u32, Vec<u8>)> {
+        vec![
+            state_event(reg::COMPLETED_CHECK_PID, STATE_SET, pid),
+            state_event(reg::COMPLETED_CHECK_START_GENERATION, STATE_SET, generation),
+            state_event(reg::COMPLETED_CHECK_END_GENERATION, STATE_SET, generation),
+            state_event(reg::COMPLETED_CHECK_RUN, STATE_SET, run),
+        ]
+    }
+
     #[test]
-    fn completed_check_provenance_is_distinct_from_cumulative_hits() {
-        let capture = decode_sdk_events(&[
-            assert_event(11, DISP_HIT),
+    fn completed_check_provenance_is_the_checks_own_passes() {
+        let mut events = vec![
+            json_pass(9, "elsewhere"),
             state_event(reg::CHECK_ENABLED, STATE_SET, 1),
-            state_event(reg::COMPLETED_CHECK_RUN, STATE_SET, 7),
-            state_event(reg::COMPLETED_CHECK_START_GENERATION, STATE_SET, 2),
-            state_event(reg::COMPLETED_CHECK_END_GENERATION, STATE_SET, 2),
-            state_event(reg::COMPLETED_CHECK_POINTS, STATE_SET, 1 << 11),
+            state_event(reg::CHECKS_STARTED, STATE_SET, 1),
+            json_pass(40, "checked"),
+            json_pass(41, "hook"),
+            state_event(reg::CHECKS_STARTED, STATE_SET, 1),
+        ];
+        events.extend(completion(40, 7, 2));
+        events.extend([
             state_event(reg::DISTURBANCE_GENERATION, STATE_SET, 3),
             state_event(reg::PENDING_FAULTS, STATE_SET, 1),
-        ])
-        .unwrap();
+        ]);
+        let capture = decode_sdk_events(&events).unwrap();
         let observation = FaultObservations::new(77, &capture, FaultStop::Deadline);
-        assert!(observation.sometimes().contains("11"));
+        assert!(observation.sometimes().contains("elsewhere"));
         assert_eq!(
             observation.check,
             Some(CheckEvidence {
@@ -816,11 +872,42 @@ mod tests {
                 run: 7,
                 start_generation: 2,
                 end_generation: 2,
-                points: vec!["11".to_owned()],
+                points: vec!["checked".to_owned()],
                 pending_faults: 1,
             })
         );
         assert!(FaultObservations::default().check.is_none());
+    }
+
+    #[test]
+    fn a_check_without_passes_keeps_the_previous_evidence() {
+        let mut events = vec![
+            state_event(reg::CHECK_ENABLED, STATE_SET, 1),
+            state_event(reg::CHECKS_STARTED, STATE_SET, 1),
+            json_pass(40, "checked"),
+        ];
+        events.extend(completion(40, 1, 1));
+        events.extend([
+            state_event(reg::CHECKS_STARTED, STATE_SET, 2),
+            json_pass(9, "elsewhere"),
+        ]);
+        events.extend(completion(40, 2, 2));
+        let capture = decode_sdk_events(&events).unwrap();
+        let check = FaultObservations::new(1, &capture, FaultStop::Deadline)
+            .check
+            .unwrap();
+        assert_eq!((check.run, check.end_generation), (1, 1));
+        assert_eq!(check.points, ["checked"]);
+        events.extend([
+            state_event(reg::CHECKS_STARTED, STATE_SET, 3),
+            json_pass(40, "checked"),
+        ]);
+        events.extend(completion(40, 3, 2));
+        let capture = decode_sdk_events(&events).unwrap();
+        let check = FaultObservations::new(1, &capture, FaultStop::Deadline)
+            .check
+            .unwrap();
+        assert_eq!((check.run, check.end_generation), (3, 2));
     }
 
     #[test]

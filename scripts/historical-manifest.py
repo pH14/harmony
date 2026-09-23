@@ -62,6 +62,8 @@ def validate(path: Path, case: dict) -> dict:
         raise SystemExit(f"{path}: workload.version must be a non-empty string")
     for key in ("assertion", "evidence"):
         require(case, path, "oracle", key)
+        if not isinstance(case["oracle"][key], str) or not case["oracle"][key]:
+            raise SystemExit(f"{path}: oracle.{key} must be a non-empty assertion id")
     for key in ("ram_mib",):
         require(case, path, "run", key)
     for key in ("seed", "workers", "actions", "wall_minutes"):
