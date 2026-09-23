@@ -59,7 +59,7 @@ mod arm64 {
     fn simd_add_2d(rd: u32, rn: u32, rm: u32) -> u32 {
         0x4ee0_8400 | (rm << 16) | (rn << 5) | rd
     }
-    fn umov_d0(rd: u32, rn: u32) -> u32 {
+    fn umov_low_doubleword(rd: u32, rn: u32) -> u32 {
         0x4e08_3c00 | (rn << 5) | rd
     }
     fn branch_back(words: usize) -> u32 {
@@ -94,7 +94,7 @@ mod arm64 {
             add(8, 8, 7),
             eor(8, 8, 5),
             simd_add_2d(0, 0, 1),
-            umov_d0(10, 0),
+            umov_low_doubleword(10, 0),
             add(8, 8, 10),
             str_off(8, 9),
         ]);
