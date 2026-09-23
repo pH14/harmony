@@ -247,9 +247,10 @@ every live progress line carries it under `selector`.
 
 The energy mixtures choose among three input strategies: the retained-input
 table, the alphabet, and a splice, which appends to the parent the recorded
-route from another holder in the parent's cell to that holder's deepest
-retained descendant, up to 128 actions. A draw with no such donor runs as an
-ordinary draw. Each strategy's share halves for every `scale` average jobs'
+route from another holder of the parent's slot to that holder's deepest
+retained descendant, up to 128 actions. The donor shares the parent's slot
+because a route only reproduces its moves from where it was recorded. A draw
+with no such donor runs as an ordinary draw. Each strategy's share halves for every `scale` average jobs'
 worth of emulator work it has spent since its last job that opened a new
 slot, so a strategy is judged on new slots per unit of work and a long
 splice that opens nothing loses its share sooner than a short draw. The live

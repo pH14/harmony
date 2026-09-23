@@ -434,7 +434,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     live_progress: Option<(K, u64)>,
     frontier_cap: Option<usize>,
     active_ids: ActiveIds,
-    tiers: BTreeMap<K::Progress, BTreeMap<K::Place, CellMembers<K>>>,
+    tiers: BTreeMap<K::Progress, BTreeMap<K::Place, CellMembers>>,
+    donors: BTreeMap<Slot<K>, BTreeSet<DonorRank<K>>>,
     preserve_inactive_snapshots: bool,
     metadata_pins: BTreeMap<u64, u32>,
     inflight_snapshot_pins: BTreeMap<u64, u32>,
@@ -472,9 +473,9 @@ struct CellState {
     draws_total: u64,
 }
 
-struct CellMembers<K: ArchiveKey> {
+#[derive(Default)]
+struct CellMembers {
     ids: BTreeSet<usize>,
-    donors: BTreeSet<DonorRank<K>>,
 }
 
 struct DonorRank<K: ArchiveKey> {
@@ -512,15 +513,6 @@ impl<K: ArchiveKey> Ord for DonorRank<K> {
             (other.leaf_key, other.leaf_id),
         )
         .then_with(|| self.donor_id.cmp(&other.donor_id))
-    }
-}
-
-impl<K: ArchiveKey> Default for CellMembers<K> {
-    fn default() -> Self {
-        Self {
-            ids: BTreeSet::new(),
-            donors: BTreeSet::new(),
-        }
     }
 }
 
@@ -779,6 +771,7 @@ where
             frontier_cap: None,
             active_ids: ActiveIds::default(),
             tiers: BTreeMap::new(),
+            donors: BTreeMap::new(),
             preserve_inactive_snapshots: false,
             metadata_pins: BTreeMap::new(),
             inflight_snapshot_pins: BTreeMap::new(),
@@ -1259,6 +1252,7 @@ where
         let frontier_cap = self.frontier_cap.take();
         self.active_ids = ActiveIds::default();
         self.tiers.clear();
+        self.donors.clear();
         if let Some(cap) = frontier_cap {
             self.rebuild_selector_index(cap);
         }
@@ -1488,6 +1482,7 @@ where
         self.frontier_cap = Some(max_actions);
         self.active_ids = ActiveIds::from_ids(self.active_ids(max_actions));
         self.tiers.clear();
+        self.donors.clear();
         let active = self.active_ids.ids().collect::<Vec<_>>();
         for id in active {
             self.insert_active_cell_member(id);
@@ -1593,17 +1588,23 @@ where
         self.active_ids.remove(id);
         let key = self.entries[id].key;
         let deepest = self.deepest_leaf[id];
+        let slot = slot_of_key(key);
+        if let Some(donors) = self.donors.get_mut(&slot) {
+            donors.remove(&DonorRank {
+                leaf_key: deepest.0,
+                leaf_id: deepest.1,
+                donor_id: id,
+            });
+            if donors.is_empty() {
+                self.donors.remove(&slot);
+            }
+        }
         let Some(places) = self.tiers.get_mut(&key.progress()) else {
             return;
         };
         let mut removed_cell = false;
         if let Some(members) = places.get_mut(&key.place()) {
             members.ids.remove(&id);
-            members.donors.remove(&DonorRank {
-                leaf_key: deepest.0,
-                leaf_id: deepest.1,
-                donor_id: id,
-            });
             removed_cell = members.ids.is_empty();
         }
         if removed_cell {
@@ -1617,18 +1618,21 @@ where
     fn insert_active_cell_member(&mut self, id: usize) {
         let key = self.entries[id].key;
         let deepest = self.deepest_leaf[id];
-        let members = self
-            .tiers
+        self.tiers
             .entry(key.progress())
             .or_default()
             .entry(key.place())
-            .or_default();
-        members.ids.insert(id);
-        members.donors.insert(DonorRank {
-            leaf_key: deepest.0,
-            leaf_id: deepest.1,
-            donor_id: id,
-        });
+            .or_default()
+            .ids
+            .insert(id);
+        self.donors
+            .entry(slot_of_key(key))
+            .or_default()
+            .insert(DonorRank {
+                leaf_key: deepest.0,
+                leaf_id: deepest.1,
+                donor_id: id,
+            });
     }
 
     fn update_index_deepest_leaf(&mut self, id: usize, previous: (K, usize), current: (K, usize)) {
@@ -1636,22 +1640,17 @@ where
             return;
         }
         let key = self.entries[id].key;
-        let Some(members) = self
-            .tiers
-            .get_mut(&key.progress())
-            .and_then(|places| places.get_mut(&key.place()))
-        else {
+        let Some(donors) = self.donors.get_mut(&slot_of_key(key)) else {
             return;
         };
-        if !members.ids.contains(&id) {
-            return;
-        }
-        members.donors.remove(&DonorRank {
+        if !donors.remove(&DonorRank {
             leaf_key: previous.0,
             leaf_id: previous.1,
             donor_id: id,
-        });
-        members.donors.insert(DonorRank {
+        }) {
+            return;
+        }
+        donors.insert(DonorRank {
             leaf_key: current.0,
             leaf_id: current.1,
             donor_id: id,
@@ -2002,12 +2001,9 @@ where
             self.rebuild_selector_index(max_actions);
         }
         let parent_key = self.entries[parent].key;
-        let members = self
-            .tiers
-            .get(&parent_key.progress())?
-            .get(&parent_key.place())?;
-        let donor_id = members
+        let donor_id = self
             .donors
+            .get(&slot_of_key(parent_key))?
             .iter()
             .rev()
             .find_map(|rank| (rank.donor_id != parent).then_some(rank.donor_id))?;
@@ -4444,17 +4440,16 @@ mod tests {
             .expect("insert child")
             .expect("retain child");
 
-        let members = archive
-            .tiers
-            .get(&root_key.progress())
-            .and_then(|places| places.get(&root_key.place()))
-            .expect("root selection cell");
-        assert!(members.donors.contains(&DonorRank {
+        let donors = archive
+            .donors
+            .get(&super::slot_of_key(root_key))
+            .expect("root slot donors");
+        assert!(donors.contains(&DonorRank {
             leaf_key: child_key,
             leaf_id: child,
             donor_id: root,
         }));
-        assert!(!members.donors.contains(&DonorRank {
+        assert!(!donors.contains(&DonorRank {
             leaf_key: root_key,
             leaf_id: root,
             donor_id: root,
@@ -4652,7 +4647,7 @@ mod tests {
     }
 
     #[test]
-    fn a_splice_tail_extends_past_the_parent_from_a_cell_mate() {
+    fn a_splice_tail_extends_past_the_parent_from_a_donor_in_its_slot() {
         let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         let insert = |archive: &mut Archive<u8, FlatKey, (), ()>,
                       parent: Option<usize>,
@@ -4674,7 +4669,8 @@ mod tests {
                 .expect("retain entry")
         };
         let root = insert(&mut archive, None, [1, 2, 3, 4], vec![0]);
-        let arrival = insert(&mut archive, None, [0, 2, 3, 4], vec![9]);
+        let arrival = insert(&mut archive, None, [1, 2, 3, 4], vec![9]);
+        let beside = insert(&mut archive, None, [0, 2, 3, 4], vec![8]);
         let middle = insert(&mut archive, Some(root), [1, 2, 3, 6], vec![0, 1]);
         let leaf = insert(&mut archive, Some(middle), [1, 2, 3, 7], vec![0, 1, 2]);
         let dispatched = archive
@@ -4682,6 +4678,12 @@ mod tests {
             .expect("dispatch-time splice");
         assert_eq!((dispatched.donor_id, dispatched.leaf_id), (root, leaf));
         assert_eq!(dispatched.actions, vec![1, 2]);
+        assert!(
+            archive
+                .splice_tail_for_campaign(beside, MAX_COMPLETION_ACTIONS, 8)
+                .is_none(),
+            "a donor in another slot of the same cell does not splice"
+        );
         assert_eq!(
             archive
                 .recorded_splice_tail(arrival, dispatched.donor_id, dispatched.leaf_id, 1)
@@ -4712,7 +4714,7 @@ mod tests {
             archive
                 .splice_tail_for_campaign(leaf, MAX_COMPLETION_ACTIONS, 8)
                 .is_none(),
-            "the deepest entry has no deeper cell-mate"
+            "the deepest entry has no deeper donor in its slot"
         );
     }
     #[test]
@@ -4950,7 +4952,7 @@ mod tests {
                 class_label: 9,
                 class_progress: 0,
                 cell_progress: 0,
-                slot: 1,
+                slot: 0,
             },
         );
         let leaf = insert(
