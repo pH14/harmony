@@ -121,10 +121,11 @@ mod runtime {
     use harmony_supervisor::regs::{
         REG_ALIVE, REG_CHECK_ENABLED, REG_CHECKS_FINISHED, REG_CHECKS_STARTED,
         REG_COMPLETED_CHECK_END_GENERATION, REG_COMPLETED_CHECK_PID, REG_COMPLETED_CHECK_RUN,
-        REG_COMPLETED_CHECK_START_GENERATION, REG_DISTURBANCE_GENERATION, REG_EVENT_KILL_FIRES,
-        REG_EVENT_KILL_SITE, REG_EVENT_PARK_FIRES, REG_EVENT_READY, REG_HOOKS_FINISHED,
-        REG_HOOKS_STARTED, REG_INFRASTRUCTURE_ERROR, REG_PENDING_FAULTS, REG_RESTARTS, REG_TICKS,
-        REG_UNEXPECTED_DEATHS, REG_WORKLOAD_FINISHED, REG_WORKLOAD_STARTED, Registers,
+        REG_COMPLETED_CHECK_START_GENERATION, REG_DISTURBANCE_GENERATION, REG_EDGE_CROSSINGS,
+        REG_EDGE_DIGEST, REG_EVENT_KILL_FIRES, REG_EVENT_KILL_SITE, REG_EVENT_PARK_FIRES,
+        REG_EVENT_READY, REG_HOOKS_FINISHED, REG_HOOKS_STARTED, REG_INFRASTRUCTURE_ERROR,
+        REG_PENDING_FAULTS, REG_RESTARTS, REG_TICKS, REG_UNEXPECTED_DEATHS, REG_WORKLOAD_FINISHED,
+        REG_WORKLOAD_STARTED, Registers,
     };
     use harmony_supervisor::supervise::{Action, Supervisor};
     use hypercall_doorbell::linux::DeviceTransport;
@@ -144,7 +145,7 @@ mod runtime {
     use std::thread;
     use std::time::Duration;
 
-    const CATALOG: [Point; 22] = [
+    const CATALOG: [Point; 24] = [
         Point::state(REG_TICKS, "supervisor.ticks"),
         Point::state(REG_ALIVE, "supervisor.alive"),
         Point::state(REG_HOOKS_STARTED, "supervisor.hooks_started"),
@@ -176,6 +177,8 @@ mod runtime {
         ),
         Point::state(REG_COMPLETED_CHECK_RUN, "supervisor.completed_check_run"),
         Point::state(REG_PENDING_FAULTS, "supervisor.pending_faults"),
+        Point::state(REG_EDGE_CROSSINGS, "supervisor.edge_crossings"),
+        Point::state(REG_EDGE_DIGEST, "supervisor.edge_digest"),
     ];
 
     type GuestSdk = Sdk<DeviceTransport>;
@@ -219,6 +222,7 @@ mod runtime {
         kill_arm_start: Option<u64>,
         park_armed: bool,
         park_seen: u64,
+        coverage_seen: (u64, u64),
         reported_kill_pending: bool,
         ready: bool,
         deferred: VecDeque<EventCommand>,
@@ -248,6 +252,7 @@ mod runtime {
                 kill_arm_start: None,
                 park_armed: false,
                 park_seen: 0,
+                coverage_seen: (0, 0),
                 reported_kill_pending: false,
                 ready: false,
                 deferred: VecDeque::new(),
@@ -291,12 +296,14 @@ mod runtime {
 
         fn poll_status(&mut self) {
             if self.ready
-                && self.park_armed
                 && self.commands.is_empty()
                 && self.outbound.is_none()
                 && self.pending.is_none()
             {
-                self.commands.push_back(EventCommand::ParkStatus);
+                if self.park_armed {
+                    self.commands.push_back(EventCommand::ParkStatus);
+                }
+                self.commands.push_back(EventCommand::CoverageStatus);
             }
         }
 
@@ -350,17 +357,26 @@ mod runtime {
             }
             let mut pending = u64::from(self.closed.is_some());
             for command in self.commands.iter().chain(self.deferred.iter()) {
-                if !matches!(command, EventCommand::ParkStatus) {
+                if !matches!(
+                    command,
+                    EventCommand::ParkStatus | EventCommand::CoverageStatus
+                ) {
                     pending = pending.saturating_add(1);
                 }
             }
             if let Some((command, _, _)) = self.outbound
-                && !matches!(command, EventCommand::ParkStatus)
+                && !matches!(
+                    command,
+                    EventCommand::ParkStatus | EventCommand::CoverageStatus
+                )
             {
                 pending = pending.saturating_add(1);
             }
             if let Some((command, _, _)) = self.pending
-                && !matches!(command, EventCommand::ParkStatus)
+                && !matches!(
+                    command,
+                    EventCommand::ParkStatus | EventCommand::CoverageStatus
+                )
             {
                 pending = pending.saturating_add(1);
             }
@@ -512,8 +528,18 @@ mod runtime {
                         }
                     }
                 }
-                Ok(EventReply::Echo(EventCommand::ParkStatus)) => {
-                    self.fail_protocol(node, tick, "invalid park status acknowledgement");
+                Ok(EventReply::CoverageStatus { crossings, digest }) => {
+                    let (seen_crossings, seen_digest) = self.coverage_seen;
+                    if crossings >= seen_crossings {
+                        supervisor.note_edge_coverage(
+                            crossings - seen_crossings,
+                            digest.wrapping_sub(seen_digest),
+                        );
+                    }
+                    self.coverage_seen = (crossings, digest);
+                }
+                Ok(EventReply::Echo(EventCommand::ParkStatus | EventCommand::CoverageStatus)) => {
+                    self.fail_protocol(node, tick, "invalid status acknowledgement");
                     return false;
                 }
                 Err(error) => {

@@ -7,7 +7,8 @@ pub use process_proto::registers::{
     COMPLETED_CHECK_END_GENERATION as REG_COMPLETED_CHECK_END_GENERATION,
     COMPLETED_CHECK_PID as REG_COMPLETED_CHECK_PID, COMPLETED_CHECK_RUN as REG_COMPLETED_CHECK_RUN,
     COMPLETED_CHECK_START_GENERATION as REG_COMPLETED_CHECK_START_GENERATION,
-    DISTURBANCE_GENERATION as REG_DISTURBANCE_GENERATION, EVENT_KILL_FIRES as REG_EVENT_KILL_FIRES,
+    DISTURBANCE_GENERATION as REG_DISTURBANCE_GENERATION, EDGE_CROSSINGS as REG_EDGE_CROSSINGS,
+    EDGE_DIGEST as REG_EDGE_DIGEST, EVENT_KILL_FIRES as REG_EVENT_KILL_FIRES,
     EVENT_KILL_SITE as REG_EVENT_KILL_SITE, EVENT_PARK_FIRES as REG_EVENT_PARK_FIRES,
     EVENT_READY as REG_EVENT_READY, HOOKS_FINISHED as REG_HOOKS_FINISHED,
     HOOKS_STARTED as REG_HOOKS_STARTED, INFRASTRUCTURE_ERROR as REG_INFRASTRUCTURE_ERROR,
@@ -40,11 +41,13 @@ pub struct RegisterSnapshot {
     pub completed_check_end_generation: u64,
     pub completed_check_run: u64,
     pub pending_faults: u64,
+    pub edge_crossings: u64,
+    pub edge_digest: u64,
 }
 
 impl RegisterSnapshot {
     #[must_use]
-    pub fn pairs(&self) -> [(u32, u64); 22] {
+    pub fn pairs(&self) -> [(u32, u64); 24] {
         [
             (REG_TICKS, self.ticks),
             (REG_ALIVE, self.alive),
@@ -74,6 +77,8 @@ impl RegisterSnapshot {
             ),
             (REG_COMPLETED_CHECK_RUN, self.completed_check_run),
             (REG_PENDING_FAULTS, self.pending_faults),
+            (REG_EDGE_CROSSINGS, self.edge_crossings),
+            (REG_EDGE_DIGEST, self.edge_digest),
         ]
     }
 }
@@ -147,6 +152,8 @@ mod tests {
                 (REG_COMPLETED_CHECK_END_GENERATION, 0),
                 (REG_COMPLETED_CHECK_RUN, 0),
                 (REG_PENDING_FAULTS, 0),
+                (REG_EDGE_CROSSINGS, 0),
+                (REG_EDGE_DIGEST, 0),
             ]
         );
     }

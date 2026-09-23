@@ -37,7 +37,13 @@ and holds the thread that reaches edge `k`, where `k` is from 1 through
 code address, the site is that address's offset into the loaded module that
 contains it, so parks in different processes of one executable share site
 values and `addr2line` maps them to source lines. Any other site value, such
-as a trace-pc-guard index, is reported unchanged. A pending kill takes
+as a trace-pc-guard index, is reported unchanged. On Linux the control thread
+lists the loaded modules with `dl_iterate_phdr` when it starts and before each
+command that follows a load or unload. It appends new segments to a fixed list
+of 4,096, and callbacks search that list newest first without a lock. Callbacks
+never take the loader lock, so a thread holding it cannot deadlock with an
+instrumented thread. A park in a module loaded since the last command, or on
+another system, reports its address unchanged. A pending kill takes
 priority over a park on the same edge.
 
 Kill rarity is evaluated per instrumentation site. Before each callback the runtime
@@ -48,6 +54,19 @@ count is below `1 << r`, so rarity zero selects a site's first visit and rarity
 sites share a saturating count, so a collision can make a site look hotter but
 cannot make it look rarer. New sites remain eligible after startup rather than
 being excluded by a full exact-site table.
+
+The same table gives the process bucketed edge coverage. Each slot remembers
+the highest AFL hit-count bucket its count has entered: 1, 2, 3, 4-7, 8-15,
+16-31, 32-127, and 128 or more. When a count enters a higher bucket, the
+runtime adds one crossing and adds a hash of the site's module offset and the
+bucket to a wrapping sum. A crossing whose module is missing from the list
+waits in a queue that the control thread resolves after its next module
+listing, before it answers any command. A crossing in a module that unloads
+before then hashes its address. A coverage-status command returns both values.
+They cover the process since it started. Module offsets make each crossing's
+hash independent of where the loader placed the module. Slots are chosen by
+address, so which sites share a slot can change with placement. Another 512 KiB
+of bucket bytes holds the levels.
 
 A claimed kill keeps the callback lock through its report and signal, so a
 later disarm acknowledgement cannot overtake enforcement. Parks release the
