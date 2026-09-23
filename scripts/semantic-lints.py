@@ -907,14 +907,25 @@ def programs_losing_a_caller(repo_root: Path, rev: str) -> list[str]:
         text=True,
         check=True,
     ).stdout
-    removed = "\n".join(
-        line[1:] for line in diff.splitlines()
-        if line.startswith("-") and not line.startswith("---")
-    )
+    removed = []
+    in_hunk = False
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and line.startswith("-"):
+            removed.append(line[1:])
     if not removed:
         return []
-    return [path for path in all_tracked_files(repo_root)
-            if _in_program_scope(path) and _program_pattern(path).search(removed)]
+    programs = []
+    for path in all_tracked_files(repo_root):
+        if not _in_program_scope(path):
+            continue
+        pattern = _program_pattern(path)
+        if any(pattern.search(line) for line in removed):
+            programs.append(path)
+    return programs
 
 
 def dependent_workflows(repo_root: Path, changed: set[str]) -> list[str]:

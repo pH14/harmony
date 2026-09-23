@@ -450,6 +450,31 @@ class ChangedFilesTests(unittest.TestCase):
                 ["scripts/helpers.py", "scripts/sweep.py", "tool/src/bin/probe.rs"],
             )
 
+    def test_a_removed_caller_is_matched_within_one_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._git(root, "init", "-q")
+            self._git(root, "config", "user.email", "test@example.com")
+            self._git(root, "config", "user.name", "Test")
+
+            (root / "scripts").mkdir()
+            (root / "scripts" / "helpers.py").write_text("X = 1\n")
+            (root / "scripts" / "sweep.py").write_text("print()\n")
+            (root / "notes.txt").write_text("we import\nhelpers later\n")
+            (root / "query.sql").write_text("-- python3 scripts/sweep.py\nselect 1;\n")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+
+            (root / "notes.txt").write_text("nothing\n")
+            (root / "query.sql").write_text("select 1;\n")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "edit")
+
+            self.assertEqual(
+                LINTS.programs_losing_a_caller(root, "HEAD~1"),
+                ["scripts/sweep.py"],
+            )
+
     def test_changed_paths_preserve_unicode_and_control_characters(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
