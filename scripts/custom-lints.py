@@ -1511,7 +1511,6 @@ DOCS_ALLOWLIST = {
     "docs/EXPLORATION.md",
     "docs/HARDWARE-TESTING.md",
     "docs/PROTOCOL.md",
-    "docs/SEARCHER-CONSOLIDATION-PLAN.md",
     "docs/TESTING.md",
     "docs/WORKFLOWS.md",
 }
