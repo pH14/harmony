@@ -117,6 +117,20 @@ impl Assertions {
     }
 
     #[must_use]
+    pub fn never_satisfied(&self) -> BTreeSet<String> {
+        self.0
+            .iter()
+            .filter(|(_, outcome)| {
+                matches!(
+                    outcome.kind,
+                    AssertionKind::Sometimes | AssertionKind::Reachable
+                ) && !outcome.satisfied()
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    #[must_use]
     pub fn key(&self) -> AssertionSet {
         AssertionSet::of(self.key_ids())
     }
@@ -338,6 +352,10 @@ mod tests {
         assert_eq!(assertions.key().count, 1);
         assert_eq!(assertions.key(), AssertionSet::of([id.as_str()]));
         assert_eq!(assertions.violations(), BTreeSet::from([always]));
+        assert!(assertions.never_satisfied().is_empty());
+        let (reach, declared) = decode(&record("reachability", true, false, false));
+        assertions.record(reach.clone(), declared);
+        assert_eq!(assertions.never_satisfied(), BTreeSet::from([reach]));
         let many: Vec<String> = (0..100).map(|index| format!("site {index}")).collect();
         let wide = AssertionSet::of(many.iter().map(String::as_str));
         assert_eq!(wide.count, 100);
