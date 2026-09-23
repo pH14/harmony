@@ -785,6 +785,7 @@ def main():
     exp=subs.add_parser('export');exp.add_argument('matrix',type=Path);exp.add_argument('--out',type=Path,required=True)
     reel=subs.add_parser('film');reel.add_argument('matrix',type=Path);reel.add_argument('--binary',type=Path,required=True);reel.add_argument('--max-frames',type=int,default=72000);reel.add_argument('--tail-frames',type=int,default=180)
     build=subs.add_parser('build');build.add_argument('--root',type=Path,default=Path(__file__).resolve().parents[2]);build.add_argument('--out',type=Path,required=True);build.add_argument('--jobs',type=int,default=os.cpu_count())
+    lad=subs.add_parser('ladder');lad.add_argument('sources',nargs='+');lad.add_argument('--out',type=Path)
     identity=subs.add_parser('source');identity.add_argument('root',type=Path);identity.add_argument('--out',type=Path,required=True)
     args=parser.parse_args()
     try:
@@ -794,6 +795,9 @@ def main():
         if args.command=='export':export(args.matrix,args.out)
         if args.command=='film':film(args)
         if args.command=='source':write_json(args.out,source_identity(args.root))
+        if args.command=='ladder':
+            import ladder
+            ladder.score_sources(args.sources,args.out)
     except (ValueError,KeyError,OSError,subprocess.CalledProcessError) as error:
         parser.exit(2,str(error)+'\n')
     return 0

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Collect executions to each Metroid milestone per build, seed and cell.
 
-Each source is either a matrix directory written by `eval.py run` or a
-committed results JSON holding cell summaries under `rows`. For every Metroid
-cell the last progress record supplies `named_progress.first_seen`, which is
-cumulative, so the tail of `campaign/progress.jsonl` is read when it is present
-and the summary's own copy is used otherwise.
+Each source is either a matrix directory written by `eval.py run` or a results
+JSON written by `eval.py` holding cell summaries under `rows`. For every
+Metroid cell the last progress record supplies `named_progress.first_seen`,
+which is cumulative, so the tail of `campaign/progress.jsonl` is read when it
+is present and the summary's own copy is used otherwise.
 """
 
 import argparse

@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
-"""Score Metroid ladder runs: segments passed in a row from each chain root.
+"""Score Metroid ladder runs for `eval.py ladder`: segments passed in a row from
+each chain root.
 
 Each source is a matrix directory written by `eval.py run` over
-`metroid-ladder.json`, or a JSON file this script wrote. A root holds every
+`metroid-ladder.json`, or a JSON file `eval.py ladder --out` wrote. A root holds every
 milestone its genesis state already satisfies at execution one, and every
 milestone before the deepest one it satisfies, because the area milestones
 name where Samus is and a root past an area has left it. The ladder for that
@@ -18,13 +18,12 @@ each cell ran, so builds compare on emulation as well as executions.
 A seed that reaches the ending has passed every milestone before it.
 """
 
-import argparse
 import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from milestones import last_line, progress_of  # noqa: E402
+from milestones import progress_of  # noqa: E402
 
 LADDER = [
     "brinstar",
@@ -248,20 +247,12 @@ def print_table(lines):
         print("  ".join(part.ljust(width) for part, width in zip(line, widths)))
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("sources", nargs="+")
-    parser.add_argument("--out", type=Path)
-    arguments = parser.parse_args()
-    documents = [collect(source) for source in arguments.sources]
+def score_sources(sources, out=None):
+    documents = [collect(source) for source in sources]
     render(documents)
-    if arguments.out:
-        arguments.out.mkdir(parents=True, exist_ok=True)
+    if out:
+        out.mkdir(parents=True, exist_ok=True)
         for document in documents:
-            path = arguments.out / f"{document['matrix']}.json"
+            path = out / f"{document['matrix']}.json"
             path.write_text(json.dumps(document, indent=1, sort_keys=True) + "\n")
             print(f"wrote {path}", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()
