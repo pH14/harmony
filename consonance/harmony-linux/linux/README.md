@@ -68,8 +68,9 @@ closure, and the generated runtime requests neither feature.
 
 The supported workload guest is the shipped 64-bit Linux kernel and its
 initramfs. The x86 loader requires the [64-bit Linux boot entry](https://docs.kernel.org/arch/x86/boot.html).
-The Linux VMM rejects non-long-mode CPU records at snapshot and state-hash
-publication and before snapshot restore. These checks observe boundaries;
+The Linux VMM rejects non-long-mode CPU records at snapshot publication and
+before snapshot restore. State hashes can observe transient CPU modes during
+boot without admitting them as restorable snapshots. These checks observe boundaries;
 they do not trap every guest mode transition. Kernel replacement through either
 kexec syscall or kexec handover is disabled, alongside modules, suspend, and
 hibernation. The kernel builder

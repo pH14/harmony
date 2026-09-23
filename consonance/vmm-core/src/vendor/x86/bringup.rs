@@ -532,9 +532,6 @@ mod tests {
             vmm.save_vm_state(),
             Err(VmmError::ContractViolation(message)) if message.contains("long-mode paging")
         ));
-        assert!(matches!(
-            vmm.state_blob(),
-            Err(VmmError::ContractViolation(message)) if message.contains("long-mode paging")
-        ));
+        assert!(vmm.state_blob().is_ok());
     }
 }

@@ -173,7 +173,9 @@ userspace can run under long-mode paging. [AMD's architecture manual](https://ww
 requires CR4.PAE in long mode, so the bit does not, by itself, select legacy
 32-bit PAE paging. Linux-composed VMs reject
 CPU records without active long-mode paging (CR0.PG, CR4.PAE, EFER.LMA) when
-publishing snapshots or state hashes and before restoring snapshots. Generic
+publishing snapshots and before restoring snapshots. State hashes can still
+observe transient CPU modes during Linux boot; a hash is not a snapshot
+admission decision. Generic
 VMM instances remain available for synthetic CPU-mode diagnostics. The backend
 does not expose every guest mode transition as a checked boundary, so these
 admission checks do not confine

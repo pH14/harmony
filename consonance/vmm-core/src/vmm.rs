@@ -1195,7 +1195,6 @@ where
             Some(state) => state.clone(),
             None => self.backend.save()?,
         };
-        self.check_guest_mode(&vcpu)?;
         let vcpu = <B::A as Vendor>::logical_identity_vcpu(&vcpu)?;
         if let Some(db) = &self.doorbell_pages {
             put_chunk(&mut out, b"DOOR", db.as_bytes());
