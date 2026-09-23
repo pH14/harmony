@@ -109,6 +109,30 @@ class ToplevelDirectoryTests(unittest.TestCase):
                          [("toplevel-dir-allowlist", ".skills"), ("toplevel-dir-allowlist", "notes")])
 
 
+class StorageBugVocabularyTests(unittest.TestCase):
+    def test_fault_search_code_cannot_name_the_storage_bug(self) -> None:
+        rules = {rule.name: rule for rule in LINTS.RULES}
+        fault = rules["fault-search-no-storage-bug-vocabulary"]
+        searcher = rules["searcher-no-storage-bug-vocabulary"]
+        for path in ("workloads/faults/runtime/fault_runtime.c",
+                     "workloads/fault-policy/src/lib.rs",
+                     "consonance/harmony-linux/supervisor/src/main.rs",
+                     "consonance/harmony-linux/linux/patches/common/0001-harmony-character-device.patch"):
+            self.assertTrue(fault.applies(path), path)
+        self.assertFalse(fault.applies("workloads/faults/README.md"))
+        self.assertFalse(fault.applies("workloads/bugs/historical/sqlite-wal-reset/image/bundle"))
+        self.assertTrue(searcher.applies("dissonance/searcher/src/search/campaign.rs"))
+        self.assertTrue(searcher.applies("workloads/faults/src/archive.rs"))
+        self.assertFalse(fault.applies("workloads/faults/src/archive.rs"))
+        for text in ("SQLite", "sqlite3_step", "the WAL", "wal_index", "Backfilled", "checkpoint"):
+            self.assertIsNotNone(fault.pattern.search(text), text)
+        for text in ("walk", "wall_minutes", "tables.checkpoint()"):
+            self.assertIsNone(searcher.pattern.search(text), text)
+        for text in ("run_campaign_checkpointed", "SNAPSHOT_CHECKPOINT_FORMAT", "_checkpoint"):
+            self.assertIsNone(fault.pattern.search(text), text)
+        self.assertIsNotNone(searcher.pattern.search("sqlite"))
+
+
 ROOT = SCRIPT.parent.parent
 sys.path.insert(0, str(SCRIPT.parent))
 import ci_contract

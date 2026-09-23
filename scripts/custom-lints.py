@@ -62,6 +62,22 @@ GAME_VOCABULARY = [
     r"game",
 ]
 
+# Words that describe the historical SQLite WAL-reset bug. The fault search must
+# find that bug without being told what it is, so the code that draws and
+# judges faults may not name the storage engine or its write-ahead log.
+STORAGE_BUG_VOCABULARY = [
+    r"sqlite[a-z0-9]*",
+    r"wal",
+    r"backfill[a-z]*",
+]
+
+
+def _identifier_part_pattern(terms: list[str], words: Sequence[str] = ()) -> re.Pattern[str]:
+    parts = rf"(?<![a-z0-9])(?:{'|'.join(terms)})(?![a-z0-9])"
+    if words:
+        parts += rf"|\b(?:{'|'.join(words)})\b"
+    return re.compile(parts, re.IGNORECASE)
+
 
 def _word_pattern(terms: list[str]) -> re.Pattern[str]:
     joined = "|".join(terms)
@@ -69,6 +85,9 @@ def _word_pattern(terms: list[str]) -> re.Pattern[str]:
 
 
 WORKLOAD_NAME_RE = _word_pattern(WORKLOAD_NAMES)
+STORAGE_BUG_RE = _identifier_part_pattern(STORAGE_BUG_VOCABULARY)
+STORAGE_BUG_WITH_CHECKPOINT_RE = _identifier_part_pattern(
+    STORAGE_BUG_VOCABULARY, words=[r"checkpoints?", r"checkpointed", r"checkpointing"])
 GAME_VOCAB_RE = _word_pattern(GAME_VOCABULARY)
 
 # Personal names and role titles that should not appear in code or docs.
@@ -178,6 +197,29 @@ SEARCHER_DIRS = [
     "dissonance/searcher",
 ]
 
+# The fault adapter drives the searcher and names its campaign checkpoints.
+FAULT_ADAPTER_DIRS = [
+    "workloads/faults/src",
+]
+
+# The code that draws faults, runs them, and decodes what the workload reports.
+FAULT_SEARCH_DIRS = [
+    "workloads/faults/runtime",
+    "workloads/fault-policy",
+    "consonance/harmony-linux/supervisor",
+    "consonance/harmony-linux/libvoidstar",
+    "consonance/harmony-linux/sdk",
+    "consonance/harmony-linux/linux/patches/common/0001-harmony-character-device.patch",
+]
+
+FAULT_SEARCH_SOURCE_EXTENSIONS = {".rs", ".c", ".h", ".py", ".sh", ".patch", ".toml"}
+
+
+def _is_fault_search_source(path: str) -> bool:
+    _, ext = os.path.splitext(path)
+    return ext in FAULT_SEARCH_SOURCE_EXTENSIONS
+
+
 # The guest Linux platform: the SDK and the platform build scripts.
 # Workload-specific image recipes should live under workloads/, not here.
 GUEST_LINUX_DIRS = [
@@ -273,6 +315,34 @@ RULES: list[Rule] = [
         pattern=WORKLOAD_NAME_RE,
         scope_fn=lambda p: _in_dirs(p, GUEST_LINUX_DIRS),
         file_filter=_is_lintable,
+    ),
+    Rule(
+        name="fault-search-no-storage-bug-vocabulary",
+        description="Fault search code must not name the storage engine or its write-ahead log.",
+        remediation=(
+            "The fault runtime, supervisor, fault policy, guest driver, and SDK "
+            "decoding must find bugs without knowing them. Remove "
+            "the reference to SQLite, its WAL, checkpoints, or backfill; describe "
+            "the mechanism in generic terms."
+        ),
+        pattern=STORAGE_BUG_WITH_CHECKPOINT_RE,
+        scope_fn=lambda p: _in_dirs(p, FAULT_SEARCH_DIRS),
+        file_filter=_is_fault_search_source,
+    ),
+    Rule(
+        name="searcher-no-storage-bug-vocabulary",
+        description=(
+            "The searcher and the fault adapter must not name the storage engine "
+            "or its write-ahead log."
+        ),
+        remediation=(
+            "The searcher and the fault adapter find bugs without knowing them. "
+            "Remove the reference to SQLite, its WAL, or backfill. Campaign "
+            "checkpoints keep their name."
+        ),
+        pattern=STORAGE_BUG_RE,
+        scope_fn=lambda p: _in_dirs(p, SEARCHER_DIRS + FAULT_ADAPTER_DIRS),
+        file_filter=_is_fault_search_source,
     ),
     Rule(
         name="no-dead-code-markers",
