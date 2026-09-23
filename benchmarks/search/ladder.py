@@ -11,7 +11,10 @@ holds. A milestone passes when at least two seeds reach it, and
 the score is the number of passed milestones in a row from the front of the
 ladder. Several sources print side by side, one column per build. A second
 table gives each root's continuation graph counters per build: jobs,
-landings, replacements and the longest wave, ranged over the root's seeds.
+landings, replacements and the longest wave, ranged over the root's seeds,
+and a third gives the input actions and emulator work per execution and the
+hours each cell ran, so builds compare on emulation as well as executions.
+A seed that reaches the ending has passed every milestone before it.
 """
 
 import argparse
@@ -56,6 +59,11 @@ def first_seen(summary, cell_dir):
         },
         progress.get("executions"),
         progress.get("continuations") or {},
+        {
+            "suffix_actions": (progress.get("coordinator") or {}).get("suffix_actions"),
+            "suffix_cost": (progress.get("coordinator") or {}).get("suffix_cost"),
+            "elapsed_millis": progress.get("search_elapsed_millis"),
+        },
     )
 
 
@@ -74,7 +82,7 @@ def collect(source):
         if request.get("game") != "metroid":
             continue
         build = build or ((summary.get("build") or {}).get("binary_sha256") or "")[:12]
-        seen, executions, continuations = first_seen(summary, cell)
+        seen, executions, continuations, cost = first_seen(summary, cell)
         root = roots.setdefault(
             summary.get("case"),
             {"root_input": request.get("root_input"), "seeds": {}},
@@ -85,6 +93,7 @@ def collect(source):
             "executions": executions,
             "first_execution": seen,
             "continuations": {name: continuations.get(name) for name in GRAPH},
+            "cost": cost,
         }
     return {
         "format": "harmony-metroid-ladder-v1",
@@ -109,14 +118,26 @@ def score(root):
     passed = []
     for name in ladder:
         reached = sorted(
-            seed["first_execution"][name]
-            for seed in seeds
-            if seed["first_execution"].get(name, 0) > 1
+            execution
+            for execution in (
+                reached_at(seed["first_execution"], name) for seed in seeds
+            )
+            if execution is not None
         )
         if len(reached) < PASS_SEEDS:
             break
         passed.append((name, reached))
     return held, ladder, passed
+
+
+def reached_at(first_execution, name):
+    own = first_execution.get(name, 0)
+    if own > 1:
+        return own
+    ending = first_execution.get("ending", 0)
+    if ending > 1:
+        return ending
+    return None
 
 
 def case_order(case):
@@ -166,6 +187,32 @@ def render(documents):
             line.append(graph_detail(root) if root else "-")
         graph.append(line)
     print_table(graph)
+    print()
+    cost = [["root"] + [f"{build} per execution" for build in builds]]
+    for case in cases:
+        line = [case]
+        for document in documents:
+            root = document["roots"].get(case)
+            line.append(cost_detail(root) if root else "-")
+        cost.append(line)
+    print_table(cost)
+
+
+def cost_detail(root):
+    actions = work = executions = 0
+    hours = []
+    for seed in root["seeds"].values():
+        cost = seed.get("cost") or {}
+        if cost.get("suffix_actions") is None or not seed.get("executions"):
+            return "-"
+        actions += cost["suffix_actions"]
+        work += cost["suffix_cost"]
+        executions += seed["executions"]
+        hours.append((cost.get("elapsed_millis") or 0) / 3_600_000)
+    return (
+        f"actions {actions / executions:.1f}, work {work / executions:.0f}, "
+        f"hours {min(hours):.1f}-{max(hours):.1f}"
+    )
 
 
 def compact(value):
