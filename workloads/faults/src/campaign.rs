@@ -40,7 +40,6 @@ pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v4
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v5";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
-const SUPERVISOR_TICK_MICROS: u64 = crate::target::SUPERVISOR_TICK_NANOS / 1_000;
 
 const VOCABULARY_FIELD: &str = "action_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -48,7 +47,8 @@ const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const IMAGE_FIELD: &str = "image";
-const HORIZON_FIELD: &str = "horizon_nanos";
+const ACTION_FORMAT_FIELD: &str = "action_format";
+const ACTION_FORMAT: &str = "fault-action-duration-v1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultNoTableHeader;
@@ -335,7 +335,6 @@ impl Reporting for FaultWorkload {
         FaultArchiveReport {
             seed: state.seed,
             root_seal: self.root_seal.get().copied().unwrap_or_default(),
-            horizon_nanos: crate::target::DEFAULT_HORIZON_NANOS,
             executions: state.executions,
             milestones: evidence.aggregate,
             progress_watermark: evidence.watermark,
@@ -376,10 +375,7 @@ impl InputPolicy for FaultWorkload {
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .chain([
             (IMAGE_FIELD.to_owned(), self.identity.clone()),
-            (
-                HORIZON_FIELD.to_owned(),
-                crate::target::DEFAULT_HORIZON_NANOS.to_string(),
-            ),
+            (ACTION_FORMAT_FIELD.to_owned(), ACTION_FORMAT.to_owned()),
             (VOCABULARY_FIELD.to_owned(), run.vocabulary.identifier()),
         ])
         .collect()
@@ -461,27 +457,15 @@ impl InputPolicy for FaultWorkload {
         draw: DurationDraw<FaultArchiveKey>,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
         let ticks = std::num::NonZeroU16::new(u16::try_from(draw.duration.get())?)
-            .ok_or("wait duration must be positive")?;
-        let hold_us = u32::try_from(draw.duration.get().saturating_mul(SUPERVISOR_TICK_MICROS))?;
-        let mut suffix = draw_suffix(
+            .ok_or("action duration must be positive")?;
+        draw_suffix(
             shape,
             mixture.mixture,
             mixture.weight,
             mutation_seed,
             |_| Ok(None),
-            |rand| sample_action(rand, &run.vocabulary, draw.context.event_ready),
-        )?;
-        for action in &mut suffix {
-            match action {
-                FaultAction::Wait(_) => *action = FaultAction::Wait(ticks),
-                FaultAction::EventPark {
-                    hold_us: action_hold_us,
-                    ..
-                } => *action_hold_us = hold_us,
-                _ => {}
-            }
-        }
-        Ok(suffix)
+            |rand| sample_action(rand, &run.vocabulary, draw.context.event_ready, ticks),
+        )
     }
 
     fn expand_suffix_recorded_duration(
@@ -510,32 +494,24 @@ impl InputPolicy for FaultWorkload {
         action: &FaultAction,
     ) -> Option<NonZeroU64> {
         match action {
-            FaultAction::Wait(ticks) => NonZeroU64::new(u64::from(ticks.get())),
             FaultAction::EventPark { hold_us, .. }
-                if u64::from(*hold_us).is_multiple_of(SUPERVISOR_TICK_MICROS) =>
+                if !u64::from(*hold_us).is_multiple_of(crate::target::SUPERVISOR_TICK_MICROS) =>
             {
-                NonZeroU64::new(u64::from(*hold_us) / SUPERVISOR_TICK_MICROS)
+                None
             }
-            _ => None,
+            _ => NonZeroU64::new(action.ticks()),
         }
     }
 
     fn expand_suffix(
         &self,
-        run: &FaultCampaignRun,
+        _run: &FaultCampaignRun,
         _state: &(),
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        mutation_seed: u64,
+        _shape: SuffixShape,
+        _mixture: MixtureDraw,
+        _mutation_seed: u64,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-        draw_suffix(
-            shape,
-            mixture.mixture,
-            mixture.weight,
-            mutation_seed,
-            |_| Ok(None),
-            |rand| sample_action(rand, &run.vocabulary, 0),
-        )
+        Err("a fault suffix needs an adaptive duration draw".into())
     }
 }
 
@@ -983,17 +959,17 @@ mod tests {
     }
 
     #[test]
-    fn the_recorded_policies_pin_the_knobs_and_the_horizon() {
+    fn the_recorded_policies_pin_the_knobs_and_the_action_format() {
         let game = game();
         let policies = game.policies(&run(1, vec![1, 2]));
         let tuned = FaultWorkload::new(b"kernel", b"initramfs", &config(&["faultlab.puts=20"]));
         assert!(tuned.resolve_recorded(&policies).is_err());
-        let mut different_timing = policies.clone();
-        different_timing.insert(HORIZON_FIELD.to_owned(), "100000000".to_owned());
-        assert!(game.resolve_recorded(&different_timing).is_err());
+        let mut older = policies.clone();
+        older.insert(ACTION_FORMAT_FIELD.to_owned(), "500000000".to_owned());
+        assert!(game.resolve_recorded(&older).is_err());
         assert_eq!(
-            policies.get(HORIZON_FIELD).map(String::as_str),
-            Some("500000000")
+            policies.get(ACTION_FORMAT_FIELD).map(String::as_str),
+            Some(ACTION_FORMAT)
         );
     }
 }

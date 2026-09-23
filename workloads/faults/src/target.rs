@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU16;
 
 use control_proto::StopReason;
 use fault_policy::{DecisionClass, Fault, HostFault, Span, StandingWindow, process_target};
@@ -10,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::assertion::{AssertionKind, AssertionOutcome, Assertions, decode_json_event};
 
-pub const DEFAULT_HORIZON_NANOS: u64 = 500_000_000;
 pub const SUPERVISOR_TICK_NANOS: u64 = 10_000_000;
+pub const SUPERVISOR_TICK_MICROS: u64 = SUPERVISOR_TICK_NANOS / 1_000;
 const RESTART_DOWN_DIVISOR: u64 = 4;
 pub const MAX_FAULT_ACTIONS: usize = 256;
 
@@ -28,14 +29,63 @@ const STATE_PAYLOAD_LEN: usize = 9;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum FaultAction {
-    Wait(std::num::NonZeroU16),
-    Kill(u16),
-    EventKill { node: u16, rarity: u8 },
-    EventPark { node: u16, edges: u32, hold_us: u32 },
-    Pause(u16, u32),
-    Restart(u16),
-    Hook(u32),
-    Interrupt(u32),
+    Wait(NonZeroU16),
+    Kill(u16, NonZeroU16),
+    EventKill {
+        node: u16,
+        rarity: u8,
+        ticks: NonZeroU16,
+    },
+    EventPark {
+        node: u16,
+        edges: u32,
+        hold_us: u32,
+    },
+    Pause(u16, NonZeroU16),
+    Restart(u16, NonZeroU16),
+    Hook(u32, NonZeroU16),
+    Interrupt(u32, NonZeroU16),
+}
+
+impl FaultAction {
+    #[must_use]
+    pub fn ticks(&self) -> u64 {
+        match *self {
+            Self::Wait(ticks)
+            | Self::Kill(_, ticks)
+            | Self::EventKill { ticks, .. }
+            | Self::Pause(_, ticks)
+            | Self::Restart(_, ticks)
+            | Self::Hook(_, ticks)
+            | Self::Interrupt(_, ticks) => u64::from(ticks.get()),
+            Self::EventPark { hold_us, .. } => {
+                u64::from(hold_us).div_ceil(SUPERVISOR_TICK_MICROS).max(1)
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn with_ticks(self, ticks: NonZeroU16) -> Self {
+        match self {
+            Self::Wait(_) => Self::Wait(ticks),
+            Self::Kill(node, _) => Self::Kill(node, ticks),
+            Self::EventKill { node, rarity, .. } => Self::EventKill {
+                node,
+                rarity,
+                ticks,
+            },
+            Self::EventPark { node, edges, .. } => Self::EventPark {
+                node,
+                edges,
+                hold_us: u32::from(ticks.get())
+                    .saturating_mul(u32::try_from(SUPERVISOR_TICK_MICROS).unwrap_or(u32::MAX)),
+            },
+            Self::Pause(node, _) => Self::Pause(node, ticks),
+            Self::Restart(node, _) => Self::Restart(node, ticks),
+            Self::Hook(id, _) => Self::Hook(id, ticks),
+            Self::Interrupt(vector, _) => Self::Interrupt(vector, ticks),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -60,20 +110,12 @@ pub struct ActionDelta {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ActionWindows {
     pub root_seal: u64,
-    pub horizon_nanos: u64,
 }
 
 impl ActionWindows {
     fn end(self, start: u64, action: &FaultAction) -> Result<u64, String> {
-        let duration = match action {
-            FaultAction::Wait(ticks) => u64::from(ticks.get()) * SUPERVISOR_TICK_NANOS,
-            _ => self.horizon_nanos,
-        };
-        if duration == 0 {
-            return Err("action window must have positive duration".to_owned());
-        }
         start
-            .checked_add(duration)
+            .checked_add(action.ticks() * SUPERVISOR_TICK_NANOS)
             .ok_or_else(|| "action timeline overflows guest time".to_owned())
     }
 
@@ -90,10 +132,7 @@ impl ActionWindows {
 
 #[must_use]
 pub fn action_ticks(action: &FaultAction) -> u64 {
-    match action {
-        FaultAction::Wait(ticks) => u64::from(ticks.get()),
-        _ => DEFAULT_HORIZON_NANOS / SUPERVISOR_TICK_NANOS,
-    }
+    action.ticks()
 }
 
 fn standing(target: Vec<u8>, window: (u64, u64)) -> StandingWindow {
@@ -111,7 +150,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
     let horizon = end.saturating_sub(start);
     match action {
         FaultAction::Wait(_) => ActionDelta::default(),
-        FaultAction::EventKill { node, rarity } => ActionDelta {
+        FaultAction::EventKill { node, rarity, .. } => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcEventKill { rarity }),
                 (start, u64::MAX),
@@ -138,41 +177,40 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                 perturb: None,
             }
         }
-        FaultAction::Kill(node) => ActionDelta {
+        FaultAction::Kill(node, _) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcKill),
                 (start, end),
             )),
             perturb: None,
         },
-        FaultAction::Pause(node, ticks) => {
-            let held = u64::from(ticks)
-                .saturating_mul(SUPERVISOR_TICK_NANOS)
-                .min(horizon.saturating_sub(SUPERVISOR_TICK_NANOS))
-                .max(SUPERVISOR_TICK_NANOS);
-            ActionDelta {
-                standing: Some(standing(
-                    process_target(node, &Fault::ProcPause(Span(held))),
-                    (start, start.saturating_add(held)),
-                )),
-                perturb: None,
-            }
-        }
-        FaultAction::Restart(node) => ActionDelta {
+        FaultAction::Pause(node, _) => ActionDelta {
             standing: Some(standing(
-                process_target(node, &Fault::ProcRestart),
-                (start, start.saturating_add(horizon / RESTART_DOWN_DIVISOR)),
+                process_target(node, &Fault::ProcPause(Span(horizon))),
+                (start, end),
             )),
             perturb: None,
         },
-        FaultAction::Hook(id) => ActionDelta {
+        FaultAction::Restart(node, _) => ActionDelta {
+            standing: Some(standing(
+                process_target(node, &Fault::ProcRestart),
+                (
+                    start,
+                    start.saturating_add(
+                        (horizon / RESTART_DOWN_DIVISOR).max(SUPERVISOR_TICK_NANOS),
+                    ),
+                ),
+            )),
+            perturb: None,
+        },
+        FaultAction::Hook(id, _) => ActionDelta {
             standing: Some(standing(
                 process_target(0, &Fault::RunHook(id)),
                 (start, end),
             )),
             perturb: None,
         },
-        FaultAction::Interrupt(vector) => ActionDelta {
+        FaultAction::Interrupt(vector, _) => ActionDelta {
             standing: None,
             perturb: Some(StagedPerturb {
                 fault: HostFault::InjectInterrupt { vector }.encode(),
@@ -485,10 +523,16 @@ mod tests {
     use fault_policy::decode_process_target;
 
     const ROOT: u64 = 1_000;
-    const WINDOWS: ActionWindows = ActionWindows {
-        root_seal: ROOT,
-        horizon_nanos: DEFAULT_HORIZON_NANOS,
-    };
+    const WINDOWS: ActionWindows = ActionWindows { root_seal: ROOT };
+    const TICK: u64 = SUPERVISOR_TICK_NANOS;
+
+    fn ticks(value: u16) -> NonZeroU16 {
+        NonZeroU16::new(value).unwrap()
+    }
+
+    fn kills(count: usize) -> Vec<FaultAction> {
+        vec![FaultAction::Kill(0, ticks(50)); count]
+    }
 
     fn assert_event(point: u32, disposition: u8) -> (u64, u32, Vec<u8>) {
         (
@@ -505,25 +549,58 @@ mod tests {
     }
 
     #[test]
-    fn windows_tile_the_axis_from_the_root_seal() {
+    fn windows_tile_the_axis_by_each_action_duration() {
         assert_eq!(
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 0).unwrap(),
-            (1_000, 1_000 + DEFAULT_HORIZON_NANOS)
+            WINDOWS.window(&kills(4), 0).unwrap(),
+            (ROOT, ROOT + 50 * TICK)
         );
-        let (start, end) = WINDOWS.window(&[FaultAction::Kill(0); 4], 3).unwrap();
-        assert_eq!(start, 1_000 + 3 * DEFAULT_HORIZON_NANOS);
-        assert_eq!(end, start + DEFAULT_HORIZON_NANOS);
+        let (start, end) = WINDOWS.window(&kills(4), 3).unwrap();
+        assert_eq!(start, ROOT + 150 * TICK);
+        assert_eq!(end, start + 50 * TICK);
+        let mixed = [
+            FaultAction::Kill(0, ticks(3)),
+            FaultAction::Hook(1, ticks(7)),
+            FaultAction::Pause(0, ticks(2)),
+        ];
         assert_eq!(
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 3).unwrap().1,
-            end
+            WINDOWS.window(&mixed, 2).unwrap(),
+            (ROOT + 10 * TICK, ROOT + 12 * TICK)
         );
-        let short = ActionWindows {
-            horizon_nanos: 100_000_000,
-            ..WINDOWS
-        };
+    }
+
+    #[test]
+    fn every_action_takes_a_recorded_duration() {
+        let actions = [
+            FaultAction::Wait(ticks(9)),
+            FaultAction::Kill(1, ticks(9)),
+            FaultAction::EventKill {
+                node: 1,
+                rarity: 3,
+                ticks: ticks(9),
+            },
+            FaultAction::EventPark {
+                node: 1,
+                edges: 5,
+                hold_us: 1,
+            },
+            FaultAction::Pause(1, ticks(9)),
+            FaultAction::Restart(1, ticks(9)),
+            FaultAction::Hook(4, ticks(9)),
+            FaultAction::Interrupt(0x20, ticks(9)),
+        ];
+        for action in actions {
+            let adapted = action.with_ticks(ticks(12));
+            assert_eq!(adapted.ticks(), 12);
+            assert_eq!(action_ticks(&adapted), 12);
+        }
         assert_eq!(
-            short.window(&[FaultAction::Kill(0); 4], 3).unwrap(),
-            (1_000 + 300_000_000, 1_000 + 400_000_000)
+            FaultAction::EventPark {
+                node: 0,
+                edges: 1,
+                hold_us: 10_001,
+            }
+            .ticks(),
+            2
         );
     }
 
@@ -531,30 +608,24 @@ mod tests {
     fn an_overflowing_timeline_is_rejected() {
         let windows = ActionWindows {
             root_seal: u64::MAX - 1,
-            ..WINDOWS
         };
-        assert!(windows.window(&[FaultAction::Kill(0)], 0).is_err());
+        assert!(windows.window(&kills(1), 0).is_err());
         assert!(WINDOWS.window(&[], 0).is_err());
         assert!(serde_json::from_str::<FaultAction>(r#"{"Wait":0}"#).is_err());
         assert!(serde_json::from_str::<FaultAction>(r#"{"Wait":65536}"#).is_err());
+        assert!(serde_json::from_str::<FaultAction>(r#"{"Kill":[0,0]}"#).is_err());
     }
 
     #[test]
     fn short_and_long_waits_shift_later_faults_by_the_recorded_duration() {
         let actions = [
-            FaultAction::Wait(std::num::NonZeroU16::new(8).unwrap()),
-            FaultAction::Kill(0),
-            FaultAction::Wait(std::num::NonZeroU16::new(8192).unwrap()),
-            FaultAction::Hook(1),
+            FaultAction::Wait(ticks(8)),
+            FaultAction::Kill(0, ticks(50)),
+            FaultAction::Wait(ticks(8192)),
+            FaultAction::Hook(1, ticks(50)),
         ];
-        assert_eq!(
-            WINDOWS.window(&actions, 1).unwrap().0,
-            ROOT + 8 * SUPERVISOR_TICK_NANOS
-        );
-        assert_eq!(
-            WINDOWS.window(&actions, 3).unwrap().0,
-            ROOT + 8200 * SUPERVISOR_TICK_NANOS + DEFAULT_HORIZON_NANOS
-        );
+        assert_eq!(WINDOWS.window(&actions, 1).unwrap().0, ROOT + 8 * TICK);
+        assert_eq!(WINDOWS.window(&actions, 3).unwrap().0, ROOT + 8250 * TICK);
         let encoded = serde_json::to_string(&actions).unwrap();
         let replay: Vec<FaultAction> = serde_json::from_str(&encoded).unwrap();
         assert_eq!(
@@ -590,8 +661,8 @@ mod tests {
     fn wait_installs_nothing() {
         assert_eq!(
             action_delta(
-                FaultAction::Wait(std::num::NonZeroU16::MIN),
-                WINDOWS.window(&[FaultAction::Kill(0); 4], 0).unwrap()
+                FaultAction::Wait(NonZeroU16::MIN),
+                WINDOWS.window(&kills(4), 0).unwrap()
             ),
             ActionDelta::default()
         );
@@ -599,8 +670,8 @@ mod tests {
             standing_windows(
                 WINDOWS,
                 &[
-                    FaultAction::Wait(std::num::NonZeroU16::MIN),
-                    FaultAction::Wait(std::num::NonZeroU16::MIN)
+                    FaultAction::Wait(NonZeroU16::MIN),
+                    FaultAction::Wait(NonZeroU16::MIN)
                 ]
             )
             .unwrap()
@@ -609,77 +680,60 @@ mod tests {
     }
 
     #[test]
-    fn kill_holds_the_whole_horizon_for_its_node() {
-        let delta = action_delta(
-            FaultAction::Kill(2),
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 1).unwrap(),
-        );
+    fn kill_holds_its_whole_window_for_its_node() {
+        let window = WINDOWS.window(&kills(4), 1).unwrap();
+        let delta = action_delta(FaultAction::Kill(2, ticks(50)), window);
         let fault = delta.standing.expect("kill installs a standing fault");
         assert_eq!(fault.class, DecisionClass::Process.as_u16());
         assert_eq!(
             decode_process_target(&fault.target),
             Some((2, Fault::ProcKill))
         );
-        assert_eq!(
-            (fault.start, fault.end),
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 1).unwrap()
-        );
+        assert_eq!((fault.start, fault.end), window);
         assert!(delta.perturb.is_none());
     }
 
     #[test]
-    fn pause_lifts_inside_its_own_horizon() {
-        let short = ActionWindows {
-            horizon_nanos: 5 * SUPERVISOR_TICK_NANOS,
-            ..WINDOWS
-        };
-        for windows in [WINDOWS, short] {
-            for ticks in [0_u32, 1, 7, u32::MAX] {
-                let (start, end) = windows.window(&[FaultAction::Kill(0); 4], 0).unwrap();
-                let delta = action_delta(FaultAction::Pause(1, ticks), (start, end));
-                let fault = delta.standing.expect("pause installs a standing fault");
-                let (node, decoded) = decode_process_target(&fault.target).expect("decode");
-                assert_eq!(node, 1);
-                let held = match decoded {
-                    Fault::ProcPause(Span(held)) => held,
-                    other => panic!("pause encoded as {other:?}"),
-                };
-                assert_eq!(fault.start, start);
-                assert_eq!(fault.end, start + held);
-                assert!(fault.end < end, "a pause must lift before the horizon");
-                assert!(
-                    held >= SUPERVISOR_TICK_NANOS,
-                    "a pause must span a whole tick"
-                );
-            }
+    fn pause_holds_its_node_for_its_recorded_duration() {
+        for duration in [1_u16, 7, 1_024] {
+            let actions = [FaultAction::Pause(1, ticks(duration))];
+            let (start, end) = WINDOWS.window(&actions, 0).unwrap();
+            let fault = action_delta(actions[0], (start, end))
+                .standing
+                .expect("pause installs a standing fault");
+            assert_eq!(
+                decode_process_target(&fault.target),
+                Some((1, Fault::ProcPause(Span(u64::from(duration) * TICK))))
+            );
+            assert_eq!((fault.start, fault.end), (start, end));
         }
     }
 
     #[test]
-    fn restart_leaves_its_window_inside_the_horizon() {
-        for horizon_nanos in [DEFAULT_HORIZON_NANOS, 100_000_000] {
-            let windows = ActionWindows {
-                horizon_nanos,
-                ..WINDOWS
-            };
-            let (start, end) = windows.window(&[FaultAction::Kill(0); 4], 0).unwrap();
-            let fault = action_delta(FaultAction::Restart(0), (start, end))
+    fn restart_brings_the_node_back_inside_its_window() {
+        for duration in [1_u16, 4, 50, 1_024] {
+            let actions = [FaultAction::Restart(0, ticks(duration))];
+            let (start, end) = WINDOWS.window(&actions, 0).unwrap();
+            let fault = action_delta(actions[0], (start, end))
                 .standing
                 .expect("restart installs a standing fault");
             assert_eq!(
                 decode_process_target(&fault.target),
                 Some((0, Fault::ProcRestart))
             );
-            assert_eq!(fault.end, start + horizon_nanos / 4);
-            assert!(fault.end < end);
+            assert_eq!(
+                fault.end,
+                start + (u64::from(duration) * TICK / 4).max(TICK)
+            );
+            assert!(fault.end <= end);
         }
     }
 
     #[test]
     fn hook_targets_the_supervisor_rather_than_a_node() {
         let fault = action_delta(
-            FaultAction::Hook(9),
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 0).unwrap(),
+            FaultAction::Hook(9, ticks(50)),
+            WINDOWS.window(&kills(4), 0).unwrap(),
         )
         .standing
         .expect("hook installs a standing fault");
@@ -691,14 +745,11 @@ mod tests {
 
     #[test]
     fn interrupt_stages_a_host_fault_and_no_standing_fault() {
-        let (start, _) = WINDOWS.window(&[FaultAction::Kill(0); 4], 2).unwrap();
-        let delta = action_delta(
-            FaultAction::Interrupt(0x30),
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 2).unwrap(),
-        );
+        let window = WINDOWS.window(&kills(4), 2).unwrap();
+        let delta = action_delta(FaultAction::Interrupt(0x30, ticks(50)), window);
         assert!(delta.standing.is_none());
         let perturb = delta.perturb.expect("interrupt stages a host fault");
-        assert_eq!(perturb.at, start);
+        assert_eq!(perturb.at, window.0);
         assert_eq!(
             HostFault::decode(&perturb.fault),
             Ok(HostFault::InjectInterrupt { vector: 0x30 })
@@ -708,16 +759,16 @@ mod tests {
     #[test]
     fn an_input_installs_one_standing_fault_per_faulting_action() {
         let actions = [
-            FaultAction::Hook(1),
-            FaultAction::Wait(std::num::NonZeroU16::MIN),
-            FaultAction::Interrupt(32),
-            FaultAction::Kill(0),
+            FaultAction::Hook(1, ticks(50)),
+            FaultAction::Wait(NonZeroU16::MIN),
+            FaultAction::Interrupt(32, ticks(50)),
+            FaultAction::Kill(0, ticks(50)),
         ];
         let faults = standing_windows(WINDOWS, &actions).unwrap();
         assert_eq!(faults.len(), 2);
         assert_eq!(
             (faults[0].start, faults[0].end),
-            WINDOWS.window(&[FaultAction::Kill(0); 4], 0).unwrap()
+            WINDOWS.window(&actions, 0).unwrap()
         );
         assert_eq!(
             (faults[1].start, faults[1].end),
@@ -732,7 +783,10 @@ mod tests {
 
     #[test]
     fn the_window_list_round_trips_through_the_shared_codec() {
-        let actions = [FaultAction::Kill(1), FaultAction::Hook(2)];
+        let actions = [
+            FaultAction::Kill(1, ticks(50)),
+            FaultAction::Hook(2, ticks(50)),
+        ];
         let windows = standing_windows(WINDOWS, &actions).unwrap();
         let bytes = fault_policy::encode_windows(&windows).expect("encode");
         assert_eq!(
@@ -744,28 +798,25 @@ mod tests {
     #[test]
     fn the_window_list_is_a_function_of_the_actions_and_the_tiling() {
         let actions = [
-            FaultAction::Restart(3),
-            FaultAction::Wait(std::num::NonZeroU16::MIN),
+            FaultAction::Restart(3, ticks(50)),
+            FaultAction::Wait(NonZeroU16::MIN),
         ];
         assert_eq!(
             standing_windows(WINDOWS, &actions),
             standing_windows(WINDOWS, &actions)
         );
-        let moved = ActionWindows {
-            root_seal: 2_000,
-            ..WINDOWS
-        };
-        let shorter = ActionWindows {
-            horizon_nanos: 100_000_000,
-            ..WINDOWS
-        };
+        let moved = ActionWindows { root_seal: 2_000 };
         assert_ne!(
             standing_windows(WINDOWS, &actions),
             standing_windows(moved, &actions)
         );
+        let shorter = [
+            FaultAction::Restart(3, ticks(10)),
+            FaultAction::Wait(NonZeroU16::MIN),
+        ];
         assert_ne!(
             standing_windows(WINDOWS, &actions),
-            standing_windows(shorter, &actions)
+            standing_windows(WINDOWS, &shorter)
         );
     }
 
