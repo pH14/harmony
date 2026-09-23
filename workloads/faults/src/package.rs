@@ -254,10 +254,13 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
     }
     for action in &actions {
         match action {
-            FaultAction::EventKill { rarity, .. } | FaultAction::EventPark { rarity, .. }
-                if *rarity >= 64 =>
-            {
+            FaultAction::EventKill { rarity, .. } if *rarity >= 64 => {
                 return Err("event rarity exceeds the runtime hash width".into());
+            }
+            FaultAction::EventPark { edges, .. }
+                if *edges == 0 || *edges > fault_policy::EVENT_PARK_EDGE_LIMIT =>
+            {
+                return Err("event park edge count is outside the runtime range".into());
             }
             FaultAction::EventPark { hold_us: 0, .. } => {
                 return Err("event park hold must be positive".into());
@@ -393,6 +396,7 @@ mod live {
             "milestones": archive.milestones,
             "assertions": archive.assertions,
             "never_satisfied": archive.assertions.never_satisfied(),
+            "park_sites": archive.park_sites,
             "bugs_found": campaign_report.bugs_found,
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),

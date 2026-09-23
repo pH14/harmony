@@ -44,7 +44,7 @@ event holds range from 10 ms through 10.24 seconds. Other actions have a built-i
 |---|---|
 | `Wait(ticks)` | the workload runs undisturbed for the recorded positive duration |
 | `EventKill(node, rarity)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
-| `EventPark(node, rarity, hold)` | an instrumented runtime holds a thread at a selected event for the recorded adaptive duration |
+| `EventPark(node, edges, hold)` | an instrumented runtime holds the thread that reaches the `edges`-th instrumented edge after arming, for the recorded adaptive duration; the edge count is drawn log-uniform from 1 through `1 << 24` |
 | `Kill(node)` | the node stays down for the whole horizon |
 | `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
 | `Restart(node)` | the node is killed and comes back inside the horizon |
@@ -100,6 +100,8 @@ distinct assertions a workload declares. Every process's records feed the key.
 passed is a campaign failure: it appears under `never_satisfied` in both
 `campaign-summary.json` and `report.json`, and the search prints one
 `FAIL: assertion never satisfied` line for each.
+`park_sites` in `campaign-summary.json` counts event-park landings by
+trace-pc-guard index.
 
 The generic `execution_work` counter and `report.json`
 `execution_ticks` count the guest ticks requested by successfully applied actions

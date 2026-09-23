@@ -21,8 +21,21 @@ static int controlled_sleep(const struct timespec *request, struct timespec *rem
 static ssize_t acknowledged_write(int fd, const void *data, size_t length);
 #define HARMONY_WRITE(fd, data, length) acknowledged_write((fd), (data), (length))
 #define HARMONY_KILL(pid, signal_number) mock_kill((pid), (signal_number))
+
+static char json_report[128];
+static size_t json_reports;
+static void record_json(const char *data, size_t size);
+#define HARMONY_JSON(data, size) record_json((data), (size))
 #include "../fault_runtime.c"
 #include "../fault_runtime_shim.c"
+
+static void record_json(const char *data, size_t size)
+{
+    assert(size < sizeof(json_report));
+    memcpy(json_report, data, size);
+    json_report[size] = '\0';
+    json_reports++;
+}
 
 static pthread_mutex_t sleep_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t sleep_changed = PTHREAD_COND_INITIALIZER;
@@ -133,7 +146,7 @@ int main(void)
     assert(get_word(report_frame, 8) == 2);
     assert(kill_calls == 1);
 
-    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 1, response);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1, response);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_KILL, 0, 1, response);
     harmony_instrumentation_event(3);
     assert(read_all(report[1], report_frame, sizeof(report_frame)) == 0);
@@ -151,17 +164,25 @@ int main(void)
     harmony_instrumentation_event(4);
     assert(kill_calls == 2);
 
-    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 1, response);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 3, 1, response);
     harmony_instrumentation_event(5);
+    harmony_instrumentation_event(5);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
+    assert(get_word(response, 8) == 0);
+    assert(get_word(response, 16) == 1);
+    assert(json_reports == 0);
+    harmony_instrumentation_event(9);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
     assert(get_word(response, 0) == HARMONY_FAULT_EVENT_CMD_PARK_STATUS);
     assert(get_word(response, 8) == 1);
     assert(get_word(response, 16) == 0);
+    assert(json_reports == 1);
+    assert(strcmp(json_report, "{\"harmony_park\":{\"site\":9,\"edges\":3}}\n") == 0);
 
     {
         pthread_t callback;
         unsigned char request[HARMONY_FAULT_EVENT_CONTROL_FRAME_SIZE] = {0};
-        exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 0, 1234567, response);
+        exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 1, 1234567, response);
         assert(pthread_create(&callback, NULL, park_callback, NULL) == 0);
         assert(pthread_mutex_lock(&sleep_lock) == 0);
         while (!sleep_entered)

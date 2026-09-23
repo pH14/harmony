@@ -213,10 +213,10 @@ fn golden_process_fault_wire_format() {
         (Fault::ProcEventKill { rarity: 0 }, "021400"),
         (
             Fault::ProcEventPark {
-                rarity: 3,
+                edges: 3,
                 hold: Span(2_000_000),
             },
-            "02150380841e0000000000",
+            "02150300000080841e0000000000",
         ),
     ] {
         let got = to_hex(&Answer::Fault(fault).encode());

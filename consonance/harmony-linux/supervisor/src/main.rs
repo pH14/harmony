@@ -1088,7 +1088,7 @@ mod runtime {
                     && let Some(events) = entry.events.as_mut()
                 {
                     events.queue(EventCommand::ArmPark {
-                        rarity: park.rarity,
+                        edges: park.edges,
                         hold_nanos: park.hold_nanos,
                     });
                 }

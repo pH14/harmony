@@ -4,7 +4,7 @@ use process_proto::{ProcessAction, ProcessWindow, WireError, decode_process_wind
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EventPark {
-    pub rarity: u8,
+    pub edges: u32,
     pub hold_nanos: u64,
     pub start: u64,
 }
@@ -87,9 +87,9 @@ impl ActiveWindows {
             ProcessAction::Kill => flags.kill = true,
             ProcessAction::Pause(_) => flags.pause = true,
             ProcessAction::Restart => flags.restart = true,
-            ProcessAction::EventPark { rarity, hold_nanos } => {
+            ProcessAction::EventPark { edges, hold_nanos } => {
                 flags.event_park = Some(EventPark {
-                    rarity: *rarity,
+                    edges: *edges,
                     hold_nanos: *hold_nanos,
                     start,
                 });

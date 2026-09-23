@@ -173,6 +173,13 @@ pub struct JsonEvent {
     pub assertion: Option<(String, AssertionOutcome)>,
     pub setup_complete: bool,
     pub pid: Option<u64>,
+    pub park: Option<ParkReport>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ParkReport {
+    pub site: u64,
+    pub edges: u64,
 }
 
 #[derive(Deserialize)]
@@ -180,6 +187,7 @@ struct RawEvent {
     antithesis_assert: Option<RawAssert>,
     antithesis_setup: Option<serde_json::Value>,
     harmony_attribution: Option<RawAttribution>,
+    harmony_park: Option<ParkReport>,
 }
 
 #[derive(Deserialize)]
@@ -267,6 +275,7 @@ pub fn decode_json_event(bytes: &[u8]) -> Option<JsonEvent> {
         pid: raw
             .harmony_attribution
             .and_then(|attribution| attribution.pid),
+        park: raw.harmony_park,
     })
 }
 
