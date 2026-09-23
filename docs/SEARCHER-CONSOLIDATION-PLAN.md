@@ -477,3 +477,32 @@ diagnose; power-on runs are the only completion test.
   loop's three height checks at `$06D9`, and the key does not carry it,
   so a state with the right count shares a slot with one without it and
   the clock preference keeps the faster.
+- 2026-09-23: six more root 3 arms reached 1 million executions without
+  reaching Ridley's room:
+  - a kept child resets its parent holder's and its cell's draw counts;
+  - that reset plus the old build's streak halving and uniform draw;
+  - progress tiers at twice per rank;
+  - the reset plus twice per rank;
+  - the reset plus holder retirement at 64 draws, which retired no holder;
+  - a reset only when a draw opens a new slot.
+  The first reached the door screen on two seeds. It reset a cell on 37%
+  of draws, so draws spread evenly over the current tier's cells. The
+  hideout took 28 to 59% of draws, against the old build's 72 to 77%.
+  Resetting only on a new slot let the frontier decay with the rest, and
+  draws went back to areas 16 and 18. At twice per rank, the lower
+  tier's extra draws went back into Norfair.
+- 2026-09-23: SMB rooted at the 7-4 load screen (action 4925 of the
+  twelfth build's seed 20260905 tape), 12 seeds to 200 thousand
+  executions. A seed passes when the camera clears the second loop.
+  | Build | Passed | Median |
+  |---|---|---|
+  | consol12 | 11 | 81K |
+  | consol14 | 10 | 71K |
+  | consol15 | 6 | 136K |
+  | consol17 | 7 | 192K |
+  | consol22 | 9 | 141K |
+  Builds before commit 128403231 (continuation edges between positions)
+  pass faster than builds after it (rank test p = 0.011). The
+  fourteenth build's change to the preference reset matches the twelfth
+  (p = 0.98). The seeds that stay stuck spend 61 to 63% of their draws
+  on the second loop section.
