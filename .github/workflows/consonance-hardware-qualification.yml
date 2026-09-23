@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 0beac8cdb
+          ref: 0beac8cdb8ed2834d71ae42e8585822f0eefbd40
       - name: Record exact source and host
         run: |
           set -euo pipefail
