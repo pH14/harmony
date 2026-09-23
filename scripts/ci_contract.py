@@ -211,15 +211,6 @@ HOST_TESTS = {
     "linux-aarch64": (ARM64_BASELINE_TEST,),
 }
 
-# Ignored tests a person runs by hand, and what each one is for.
-MANUAL_TESTS = {
-    "vm-state::golden print_golden":
-        "prints a new golden encoding after a reviewed format change",
-    "vmm-core vendor::x86::contract::tests::regen_golden":
-        "rewrites the x86 contract golden file after a reviewed contract change",
-}
-
-
 KVM_SERVICED_EXIT_TESTS = (
     "vmm-backend::kvm_smoke serviced_pio_is_exactly_snapshottable_without_guest_execution",
     "vmm-backend::kvm_smoke serviced_msr_is_exactly_snapshottable_without_guest_execution",
@@ -820,8 +811,6 @@ def ignored_test_runners() -> dict[str, tuple[str, ...]]:
     for host, patterns in HOST_TESTS.items():
         for pattern in patterns:
             add(pattern, f"pre-push hook on {host}")
-    for pattern, purpose in MANUAL_TESTS.items():
-        add(pattern, f"by hand: {purpose}")
     return runners
 
 

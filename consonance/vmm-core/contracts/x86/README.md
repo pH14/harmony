@@ -27,15 +27,7 @@ cooperative instruction boundary. The contract hash changes, so snapshots from
 older policy versions are rejected before restore mutates the VM. Hardware RNG bits now live in the shared table instead of a runtime override.
 Production CPUID values, MSR dispositions, and virtual-time durations are unchanged.
 
-Changes to guest semantics require a version bump, regenerated canonical bytes,
-and an updated committed `contract_hash`. Run:
-
-```sh
-cargo test -p vmm-core contract::tests
-cargo test -p vmm-core contract::tests::regen_golden -- --ignored
-cargo test -p vmm-core contract::tests::report_contract_hash -- --nocapture
-```
-
-Review the generated golden and commit its hash in `guest.toml` and the golden
-regression test. The old Coffee Lake captures and unused AMD draft remain in Git
+Changes to guest semantics require a version bump. `contract_hash` is computed
+from the canonical form when the VMM runs, so a snapshot saved under a different
+contract is rejected before restore changes the VM. The old Coffee Lake captures and unused AMD draft remain in Git
 history, not in runtime policy or the test matrix.

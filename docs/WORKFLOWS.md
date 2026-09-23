@@ -117,8 +117,8 @@ the job.
 ## Ignored tests
 
 A test marked `#[ignore]` needs something a plain `cargo test` lacks, such as a
-hypervisor, a built guest image, or a person reading its output. Each one has a
-runner in `scripts/ci_contract.py`, named as `<binary-id> <test>` the way
+hypervisor or a built guest image. Each one has a runner in
+`scripts/ci_contract.py`, named as `<binary-id> <test>` the way
 `cargo nextest list` prints it, with `*` for a whole binary:
 
 - `Job.ignored_tests` lists what a CI job runs with `--ignored`.
@@ -128,11 +128,11 @@ runner in `scripts/ci_contract.py`, named as `<binary-id> <test>` the way
   by the `<os>-<arch>` of a machine that has one. The pre-push hook runs the
   entry for the machine it is on, selected by
   `python3 scripts/ci_contract.py host-filter`.
-- `MANUAL_TESTS` lists tests a person runs by hand, each with what it is for.
 
 `Checks / Repository` runs `python3 scripts/check-test-partition.py ignored` on
 x86-64 Linux, arm64 Linux and arm64 macOS. It lists every ignored test that
-builds on that host and fails on one with no runner.
+builds on that host and fails on one with no runner. A test that no job or
+machine runs is deleted.
 
 ## Audiovisual evidence
 

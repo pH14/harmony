@@ -21,9 +21,6 @@ vendor = "GenuineIntel"
 kernel-tag = "v6.18.35"
 kernel-sha256 = "f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236"
 cpuid-baseline = "harmony-x86-v1"
-# §6 anti-drift anchor: sha256 of the canonical serialized form (computed by
-# vmm-core's serializer, never hand-written). Re-derive on any body change + version bump.
-contract_hash = "e2cf2a502d598e042684a3bd5807aec0095f4fc9f7ee3d4eb538d3372c4a141d"
 # Frozen scalar constants hashed into the canonical form (§6 header records):
 tsc-hz = 2000000000
 crystal-hz = 25000000

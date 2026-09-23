@@ -7,9 +7,8 @@ that own its responsibilities. A new module lands with no owner unless something
 notices, so the owning workflow runs this after its own share.
 
 `ignored` lists every ignored test this host builds and requires each one to
-match a job's `ignored_tests`, `ci_contract.HOST_TESTS` or
-`ci_contract.MANUAL_TESTS`. Which ignored tests build depends on the host, so
-CI runs it on every host it has.
+match a job's `ignored_tests` or `ci_contract.HOST_TESTS`. Which ignored tests
+build depends on the host, so CI runs it on every host it has.
 """
 
 from __future__ import annotations
@@ -83,8 +82,6 @@ def ignored_tests(manifest: str) -> list[tuple[str, str]]:
 
 
 def _runner_kind(runner: str) -> str:
-    if runner.startswith("by hand"):
-        return "by hand"
     if runner.startswith("pre-push"):
         return "in the pre-push hook"
     return "in CI"
@@ -104,8 +101,8 @@ def check_ignored() -> int:
         listing = "\n  ".join(unrun)
         raise SystemExit(
             f"{this_host()}: nothing registered runs these ignored tests. Add each to "
-            f"the ignored_tests of the job that runs it, to HOST_TESTS for a machine "
-            f"that can, or to MANUAL_TESTS, in scripts/ci_contract.py:\n  {listing}"
+            f"the ignored_tests of the job that runs it, or to HOST_TESTS for a machine "
+            f"that can, in scripts/ci_contract.py, or delete it:\n  {listing}"
         )
     summary = ", ".join(f"{count} {kind}" for kind, count in sorted(counts.items()))
     print(f"{this_host()}: every ignored test has a runner ({summary})")

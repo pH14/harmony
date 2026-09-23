@@ -254,13 +254,6 @@ class IgnoredTestRegistryTests(unittest.TestCase):
             with self.subTest(host=host):
                 self.assertRegex(host, r"^(?:macos|linux)-(?:aarch64|x86_64)$")
 
-    def test_a_manual_test_says_what_it_is_for_and_nothing_else_runs_it(self):
-        runners = ci_contract.ignored_test_runners()
-        for pattern, purpose in ci_contract.MANUAL_TESTS.items():
-            with self.subTest(pattern=pattern):
-                self.assertTrue(purpose.strip())
-                self.assertEqual(runners[pattern], (f"by hand: {purpose}",))
-
     def test_a_pattern_selects_its_whole_binary_or_one_exact_test(self):
         with mock.patch.object(ci_contract, "ignored_test_runners", lambda: {
                 "vmm-backend::kvm_smoke *": ("A",), "vmm-core live::one": ("B",)}):

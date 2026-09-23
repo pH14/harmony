@@ -1795,7 +1795,7 @@ def main(argv: list[str] | None = None) -> int:
             "file must be registered in scripts/ci_contract.py and every registered job must exist."
         ),
         "ci-scope-routing": "Select work inside the job that owns it: one ./.github/actions/ci-scope step under the registered kind, a complete diff checkout, and selected steps guarded with && on the selector's output.",
-        "ci-ignored-tests": "A job that runs ignored tests lists them in its ignored_tests in scripts/ci_contract.py as '<binary-id> <test>', and its steps name each binary and test it lists. scripts/check-test-partition.py ignored fails on an ignored test that no job, machine or manual entry runs.",
+        "ci-ignored-tests": "A job that runs ignored tests lists them in its ignored_tests in scripts/ci_contract.py as '<binary-id> <test>', and its steps name each binary and test it lists. scripts/check-test-partition.py ignored fails on an ignored test that no job or machine runs.",
         "ci-nes-case-jobs": "Map every public NES manifest case exactly once to the case matrix, select it with --case, disable fail-fast, and retain an always-running Results job.",
         "ci-nes-media": "Both NES compositions publish video with game audio: a bounded capture in the Checks workflow and every scenario in the Benchmarks workflow. Register the capture in scripts/ci_contract.py and check the media with scripts/verify-nes-films.py.",
         "ci-nes-compositions": "Both NES compositions stay: Dissonance runs the game on native QuickNES and Harmony runs it inside a Consonance VM. Each keeps a bounded check and a full benchmark.",
