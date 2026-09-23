@@ -26,7 +26,7 @@ printf x >"${work}/guest/initramfs-oci.cpio.gz"
 printf x >"${work}/oci-images/pgcic-14.3.oci"
 printf '[{"Wait":50}]\n' >"${work}/input.json"
 
-run=$(jq -cn '{run:1,bug:false,stop:"Deadline",state_hash:"abc",violations:[],sometimes:[24],actions_applied:1,settle_actions:0,settle_ticks:0,guest_horizons:1,check:null}')
+run=$(jq -cn '{run:1,bug:false,stop:"Deadline",state_hash:"abc",violations:[],sometimes:["case-evidence"],actions_applied:1,settle_actions:0,settle_ticks:0,guest_horizons:1,check:null}')
 jq -cn --argjson run "${run}" '{mode:"replay",replays:[$run,$run]}' >"${work}/report.json"
 summary="${work}/summary.md"
 
@@ -34,7 +34,7 @@ summary="${work}/summary.md"
     cd "${work}"
     export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
     export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
-    export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence
     export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
     export FAKE_REPORT="${work}/report.json" GITHUB_STEP_SUMMARY="${summary}"
     "${here}/historical-replay.sh" sample "${work}/input.json"
@@ -47,7 +47,7 @@ if (
     cd "${work}"
     export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
     export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
-    export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence
     export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
     export FAKE_REPORT="${work}/report.json" FAKE_EXIT_STATUS=23 GITHUB_STEP_SUMMARY="${summary}"
     "${here}/historical-replay.sh" sample "${work}/input.json"
@@ -61,7 +61,7 @@ if (
     cd "${work}"
     export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
     export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
-    export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence
     export REPLAY_REPEATS=3 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
     export FAKE_REPORT="${work}/report.json" GITHUB_STEP_SUMMARY="${summary}"
     "${here}/historical-replay.sh" sample "${work}/input.json"
@@ -74,7 +74,7 @@ if (
     cd "${work}"
     export CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
     export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
-    export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence
     export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
     export FAKE_REPORT="${work}/report.json" GITHUB_STEP_SUMMARY="${summary}"
     "${here}/historical-replay.sh" discovery "${work}/input.json"
