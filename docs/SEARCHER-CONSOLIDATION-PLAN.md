@@ -389,3 +389,25 @@ diagnose; power-on runs are the only completion test.
   fast roots first (9, 10, 13, 14, 15, then 7, 8, 22, then the roots the
   old build scored zero on), and skips roots 1 and 3, which were already
   run on this design.
+- 2026-09-23: the slot reward alone did not restore execution length. At
+  200 thousand executions the seventeenth build still ran 5.7 to 6.8
+  actions per execution. With splices turned off it ran 3.1 actions and
+  85 to 90 units of emulator work, so splices made the whole gap. The old
+  build took a splice donor from the parent's 32-pixel group, which often
+  held no other entry, and a draw without a donor ran as an ordinary
+  draw. The consolidated build took donors from the whole cell, so almost
+  every splice draw replayed a route recorded somewhere else on the
+  screen. Scoring each draw strategy by the emulator work it spends
+  between new slots (nineteenth build) left splices at a quarter of
+  executions and 4.5 to 6.2 actions. The twentieth build (consol20) keeps
+  that scoring and takes donors from the parent's slot, one of the two
+  levels the key already has. On roots 9 and 10 at 200 thousand
+  executions it runs 3.2 to 3.5 actions and 65 to 103 units of work per
+  execution, against the old build's 3.4 to 3.5 and 96 to 103; a fifth of
+  executions splice. The ladder restarted on it at eight cells, roots 9,
+  10, 13, 14 and 15 first, then 1, 3, 7, 8 and 22, then the rest.
+- 2026-09-23: the sixteenth build fought Ridley on all three seeds of root
+  3, to 25 to 30 damage groups by the 3 million execution cap, against the
+  roughly 34 groups of the old build's kills. It reached his room at 1.5 to
+  2.1 million executions, against 0.75 million on the old build. The
+  twentieth build's ladder decides root 3.
