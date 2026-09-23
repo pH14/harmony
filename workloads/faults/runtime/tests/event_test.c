@@ -178,6 +178,11 @@ int main(void)
     assert(get_word(response, 16) == 0);
     assert(json_reports == 1);
     assert(strcmp(json_report, "{\"harmony_park\":{\"site\":9,\"edges\":3}}\n") == 0);
+    exchange(control[1], HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS, 0, 0, response);
+    assert(get_word(response, 0) == HARMONY_FAULT_EVENT_CMD_COVERAGE_STATUS);
+    assert(get_word(response, 8) == harmony_fault_events.coverage_crossings);
+    assert(get_word(response, 8) != 0);
+    assert(get_word(response, 16) == harmony_fault_events.coverage_digest);
 
     {
         pthread_t callback;
