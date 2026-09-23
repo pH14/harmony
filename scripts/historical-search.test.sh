@@ -65,6 +65,11 @@ jq -e '.watchdog_cutoffs == 3 and .cli_exit_status == 0 and
        .execution_status == "completed_with_watchdog_cutoffs"' \
     "${work}/reports/pgcic.search/panel-status.json" >/dev/null
 
+RUN_KEY=pgcic-seed7 run_search
+jq -e '.oracle == "pass"' \
+    "${work}/reports/pgcic-seed7/pgcic.search/panel-status.json" >/dev/null
+test -f "${work}/reports/pgcic-seed7/pgcic.search.console.txt"
+
 if run_search 23; then
     printf 'FAIL search masked a nonzero CLI exit\n'
     exit 1

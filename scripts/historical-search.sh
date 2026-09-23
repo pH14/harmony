@@ -29,9 +29,13 @@ base_initramfs=${PWD}/guest/initramfs-oci.cpio.gz
 chmod +x "${harmony}"
 test -x "${harmony}" && test -s "${kernel}" && test -s "${base_initramfs}"
 
-mkdir -p reports
-out="reports/${CASE_ID}.search"
-console="reports/${CASE_ID}.search.console.txt"
+report_dir=reports
+if [ "${RUN_KEY:-${CASE_ID}}" != "${CASE_ID}" ]; then
+    report_dir="reports/${RUN_KEY}"
+fi
+mkdir -p "${report_dir}"
+out="${report_dir}/${CASE_ID}.search"
+console="${report_dir}/${CASE_ID}.search.console.txt"
 rm -rf "${out}"
 
 # The outer bound covers a process that stops answering after the campaign's
