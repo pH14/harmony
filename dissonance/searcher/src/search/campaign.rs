@@ -852,7 +852,7 @@ struct ContinuationReservation<G: Workload + ?Sized> {
 
 fn take_continuation<G: Workload + ?Sized>(
     core: &mut CoordinatorCore<G>,
-    from_highest_tier: bool,
+    from_highest_preference: bool,
     suffix: SuffixShape,
     action_cost: fn(&G::Action) -> u64,
     max_action_cost: u64,
@@ -861,7 +861,7 @@ fn take_continuation<G: Workload + ?Sized>(
     let mut examined = 0_usize;
     let mut gaining_fallback = None;
     while examined < CONTINUATION_EXITS_PER_RESERVATION
-        && let Some(continuation) = core.archive.pop_continuation(from_highest_tier)
+        && let Some(continuation) = core.archive.pop_continuation(from_highest_preference)
     {
         examined = examined.saturating_add(1);
         let Some(parent_index) = core.archive.index_of_id(continuation.parent) else {
@@ -875,7 +875,7 @@ fn take_continuation<G: Workload + ?Sized>(
         let outranks = core.archive.outranks_slot_holders(
             parent_index,
             continuation.destination,
-            continuation.tier,
+            continuation.preference,
         );
         let gaining = continuation.gains != 0;
         if !outranks && (!gaining || gaining_fallback.is_some()) {
@@ -924,10 +924,10 @@ fn continuation_attempt<G: Workload + ?Sized>(
     core.archive.record_continuation_reservation(energy, takes);
     let taken = takes
         .then(|| {
-            let from_highest_tier = draws_highest_tier(campaign_seed, reservation);
+            let from_highest_preference = draws_highest_preference(campaign_seed, reservation);
             take_continuation(
                 core,
-                from_highest_tier,
+                from_highest_preference,
                 suffix,
                 action_cost,
                 max_action_cost,
@@ -1075,7 +1075,7 @@ pub(crate) fn draws_continuation(campaign_seed: u64, reservation: u64) -> bool {
 }
 
 #[must_use]
-pub(crate) fn draws_highest_tier(campaign_seed: u64, reservation: u64) -> bool {
+pub(crate) fn draws_highest_preference(campaign_seed: u64, reservation: u64) -> bool {
     draws_one_in(
         campaign_seed ^ reservation ^ CONTINUATION_TIER_SALT,
         CONTINUATION_HIGHEST_TIER_IN,
@@ -4298,7 +4298,7 @@ mod tests {
         MAX_PROGRESS_CURVE_POINTS, Reporting, RomuDuoJrRand, SPLICE_ACTION_CAP, TargetExecution,
         WorkloadPolicies, admission_window_depth, archive_entry_limit_is_valid,
         compact_progress_curve, completed_results_within_bound, draws_continuation,
-        draws_highest_tier, execution_work_delta, finish_record, is_zero_usize,
+        draws_highest_preference, execution_work_delta, finish_record, is_zero_usize,
         live_coordinator_profile, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
         profile_now, progress_checkpoint_due, progress_policy_is_supported,
         record_compaction_elapsed, record_mixture_outcome, replay_campaign_checkpointed,
@@ -5108,7 +5108,7 @@ mod tests {
 "key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
 "chord_policy":"chord_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
-"parent_scheduler":"tier_cell_count_decay_v2","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
+"parent_scheduler":"tier_cell_count_decay_v3","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
 "worker_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 
@@ -5957,16 +5957,16 @@ mod tests {
     }
 
     #[test]
-    fn the_highest_tier_draw_is_one_pop_in_four_and_independent_of_the_attempt() {
+    fn the_highest_preference_draw_is_one_pop_in_four_and_independent_of_the_attempt() {
         let taken = (0..4096)
-            .filter(|reservation| draws_highest_tier(11, *reservation))
+            .filter(|reservation| draws_highest_preference(11, *reservation))
             .count();
         assert!(
             (896..1152).contains(&taken),
             "one in four of 4096 reservations, got {taken}"
         );
         assert!(
-            (0..512).any(|reservation| draws_highest_tier(11, reservation)
+            (0..512).any(|reservation| draws_highest_preference(11, reservation)
                 != draws_continuation(11, reservation))
         );
     }

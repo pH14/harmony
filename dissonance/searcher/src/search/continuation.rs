@@ -17,7 +17,7 @@ pub(crate) struct Continuation<P, A> {
     pub leaf: u64,
     pub destination: P,
     pub wave: u32,
-    pub tier: u8,
+    pub preference: u8,
     pub gains: u8,
     pub actions: Vec<A>,
 }
@@ -34,7 +34,7 @@ struct Edge<A> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Pending<P> {
     sequence: u64,
-    tier: u8,
+    preference: u8,
     parent: u64,
     wave: u32,
     cursor: Option<P>,
@@ -147,33 +147,33 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
         }
     }
 
-    pub fn improved(&mut self, source: P, parent: u64, wave: u32, tier: u8) {
+    pub fn improved(&mut self, source: P, parent: u64, wave: u32, preference: u8) {
         self.improved_work = self.improved_work.saturating_add(1);
         if !self.exits.contains_key(&source) {
             return;
         }
         match self.pending_source.get_mut(&source) {
             Some(held) => {
-                let previous = (held.tier, held.sequence);
+                let previous = (held.preference, held.sequence);
                 held.parent = parent;
                 held.wave = wave;
                 held.cursor = None;
-                if tier < held.tier {
-                    held.tier = tier;
+                if preference != held.preference {
+                    held.preference = preference;
                     let sequence = held.sequence;
                     self.pending.remove(&previous);
-                    self.pending.insert((tier, sequence), source);
+                    self.pending.insert((preference, sequence), source);
                 }
             }
             None => {
                 let sequence = self.next_sequence;
                 self.next_sequence = self.next_sequence.saturating_add(1);
-                self.pending.insert((tier, sequence), source);
+                self.pending.insert((preference, sequence), source);
                 self.pending_source.insert(
                     source,
                     Pending {
                         sequence,
-                        tier,
+                        preference,
                         parent,
                         wave,
                         cursor: None,
@@ -184,9 +184,9 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
         }
     }
 
-    pub fn pop(&mut self, from_highest_tier: bool) -> Option<Continuation<P, A>> {
+    pub fn pop(&mut self, from_highest_preference: bool) -> Option<Continuation<P, A>> {
         loop {
-            let (key, source) = self.next_pending(from_highest_tier)?;
+            let (key, source) = self.next_pending(from_highest_preference)?;
             let Some(held) = self.pending_source.get(&source).copied() else {
                 self.pending.remove(&key);
                 continue;
@@ -216,14 +216,14 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
                 leaf: edge.leaf,
                 destination: to,
                 wave: held.wave,
-                tier: held.tier,
+                preference: held.preference,
                 gains: edge.gains,
                 actions: edge.actions.clone(),
             };
             self.pending.remove(&key);
             let refreshed = self.next_sequence;
             self.next_sequence = self.next_sequence.saturating_add(1);
-            self.pending.insert((held.tier, refreshed), source);
+            self.pending.insert((held.preference, refreshed), source);
             if let Some(entry) = self.pending_source.get_mut(&source) {
                 entry.sequence = refreshed;
                 entry.cursor = Some(to);
@@ -232,8 +232,8 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
         }
     }
 
-    fn next_pending(&self, from_highest_tier: bool) -> Option<((u8, u64), P)> {
-        if from_highest_tier {
+    fn next_pending(&self, from_highest_preference: bool) -> Option<((u8, u64), P)> {
+        if from_highest_preference {
             let (highest, _) = self.pending.keys().next_back().copied()?;
             return self
                 .pending
@@ -249,7 +249,7 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
 
     fn drop_pending(&mut self, source: P) {
         if let Some(held) = self.pending_source.remove(&source) {
-            self.pending.remove(&(held.tier, held.sequence));
+            self.pending.remove(&(held.preference, held.sequence));
             self.memory_bytes = self.memory_bytes.saturating_sub(Self::pending_bytes());
         }
     }
@@ -361,29 +361,29 @@ mod tests {
     }
 
     #[test]
-    fn a_lower_tier_source_is_served_before_an_older_higher_tier_one() {
+    fn a_lower_preference_source_is_served_before_an_older_higher_one() {
         let mut bank = bank();
         record(&mut bank, 1, 2, 10, 11, &[7], 1);
         record(&mut bank, 4, 5, 14, 15, &[9], 1);
         bank.improved(4, 200, 0, 1);
         bank.improved(1, 100, 0, 0);
-        assert_eq!(bank.pop(false).expect("lowest tier first").parent, 100);
-        assert_eq!(bank.pop(false).expect("then the higher tier").parent, 200);
+        assert_eq!(bank.pop(false).expect("lowest preference first").parent, 100);
+        assert_eq!(bank.pop(false).expect("then the higher preference").parent, 200);
     }
 
     #[test]
-    fn the_highest_tier_pop_skips_the_queue_ahead_of_it() {
+    fn the_highest_preference_pop_skips_the_queue_ahead_of_it() {
         let mut bank = bank();
         record(&mut bank, 1, 2, 10, 11, &[7], 1);
         record(&mut bank, 4, 5, 14, 15, &[9], 1);
         bank.improved(1, 100, 0, 0);
         bank.improved(4, 200, 0, 1);
-        let taken = bank.pop(true).expect("highest tier");
-        assert_eq!((taken.parent, taken.tier), (200, 1));
+        let taken = bank.pop(true).expect("highest preference");
+        assert_eq!((taken.parent, taken.preference), (200, 1));
     }
 
     #[test]
-    fn a_better_tier_moves_a_queued_source_forward_and_a_worse_one_leaves_it() {
+    fn a_queued_source_takes_the_preference_of_its_latest_improvement() {
         let mut bank = bank();
         record(&mut bank, 1, 2, 10, 11, &[7], 1);
         record(&mut bank, 4, 5, 14, 15, &[9], 1);
@@ -393,7 +393,8 @@ mod tests {
         assert_eq!(bank.queue_len(), 2);
         assert_eq!(bank.pop(false).expect("promoted source").parent, 300);
         bank.improved(1, 400, 0, 2);
-        assert_eq!(bank.pop(false).expect("still its own tier").tier, 1);
+        let taken = bank.pop(false).expect("the latest holder");
+        assert_eq!((taken.parent, taken.preference), (400, 2));
     }
 
     #[test]

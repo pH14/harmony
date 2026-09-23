@@ -218,7 +218,7 @@ work changes that replay rejects. It does not measure a workload speedup.
 
 ## Search evaluation policies
 
-One selector exists, `tier_cell_count_decay_v2`, and the stream header names
+One selector exists, `tier_cell_count_decay_v3`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
@@ -285,12 +285,14 @@ a wave, and `longest_wave` reports the deepest one.
 
 The queue holds one entry per position, not per edge, ordered by preference
 index and then by arrival. Queuing a source is two map operations whatever its
-degree, and a source queued again under a lower preference index moves to that
-tier keeping its place within it. A pop takes the next exit after the front
-source's cursor, advances the cursor and moves the source to the back of its
-own tier, so sources rotate and a source improved on every reservation cannot
-hold the front. One pop in four takes the highest tier present instead of the
-lowest, so a preference that improves rarely still propagates. A source whose
+degree. A source queued again takes the parent and the preference index of its
+latest improvement and keeps its arrival order, so the check before replay
+compares the parent on the preference it won. A pop takes the next exit after
+the front source's cursor, advances the cursor and moves the source to the back
+of its preference index, so sources rotate and a source improved on every
+reservation cannot hold the front. One pop in four takes the highest preference
+index present instead of the lowest, so a preference that improves rarely still
+propagates. A source whose
 exits run out leaves the queue, and removing a position releases its
 edges and the pending entries that depended on them.
 

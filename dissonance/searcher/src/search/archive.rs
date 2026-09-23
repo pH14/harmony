@@ -132,7 +132,7 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_cell_count_decay_v2";
+pub const SELECTOR_IDENTIFIER: &str = "tier_cell_count_decay_v3";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -2292,9 +2292,9 @@ where
 
     pub(crate) fn pop_continuation(
         &mut self,
-        from_highest_tier: bool,
+        from_highest_preference: bool,
     ) -> Option<Continuation<Position<K>, A>> {
-        self.continuations.as_mut()?.pop(from_highest_tier)
+        self.continuations.as_mut()?.pop(from_highest_preference)
     }
 
     #[must_use]
@@ -3109,7 +3109,7 @@ mod tests {
             .expect("the improved position is queued");
         assert_eq!((taken.source, taken.destination), ((1, 0), (1, 3)));
         assert_eq!(archive.index_of_id(taken.parent), Some(richer));
-        assert!(archive.outranks_slot_holders(richer, taken.destination, taken.tier));
+        assert!(archive.outranks_slot_holders(richer, taken.destination, taken.preference));
     }
 
     #[test]
@@ -3464,11 +3464,11 @@ mod tests {
             .expect("a candidate that takes a preference in its own slot");
         assert_eq!(archive.continuation_pending(), 1);
         let taken = archive.pop_continuation(false).expect("the slot is queued");
-        assert_eq!((taken.destination, taken.tier), ((2, ()), 0));
-        assert!(!archive.outranks_slot_holders(weaker, taken.destination, taken.tier));
+        assert_eq!((taken.destination, taken.preference), ((2, ()), 0));
+        assert!(!archive.outranks_slot_holders(weaker, taken.destination, taken.preference));
         let stronger = insert_portfolio_at(&mut archive, None, vec![4], 1, 30, 40)
             .expect("a candidate that also beats the neighbour");
-        assert!(archive.outranks_slot_holders(stronger, taken.destination, taken.tier));
+        assert!(archive.outranks_slot_holders(stronger, taken.destination, taken.preference));
     }
 
     #[test]
