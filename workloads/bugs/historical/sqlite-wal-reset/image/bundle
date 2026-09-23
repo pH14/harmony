@@ -1,0 +1,4 @@
+setup /usr/local/bin/sqlite-workload init /data/test.db
+node writer-0 /usr/bin/env DB_PATH=/data/test.db WRITER_ID=0 NO_COLOR=1 /usr/local/bin/sqlite-workload
+node writer-1 /usr/bin/env DB_PATH=/data/test.db WRITER_ID=1 NO_COLOR=1 /usr/local/bin/sqlite-workload
+ready /bin/true
