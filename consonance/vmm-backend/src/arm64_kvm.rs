@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::arch::arm64::{
-    Arm64, Arm64GicState, Arm64VcpuState, GicIntId, canonicalize_core_regs,
+    Arm64, Arm64AsidBits, Arm64GicState, Arm64VcpuState, GicIntId, canonicalize_core_regs,
     has_noncanonical_core_regs,
 };
 use crate::backend::Backend;
@@ -772,6 +772,8 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
 pub trait Arm64Kvm {
     fn vcpu_init(&mut self) -> Result<()>;
 
+    fn asid_bits(&self) -> Arm64AsidBits;
+
     /// # Safety
     /// `host` must point to `len` bytes of pinned, page-aligned backing that
     /// stays live and unaliased for the backend's lifetime (the
@@ -1230,6 +1232,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
             name: "kvm-arm64-vgicv3",
             arch: crate::arch::arm64::Arm64Caps {
                 in_kernel_gic: true,
+                asid_bits: self.kvm.asid_bits(),
             },
         }
     }
@@ -1257,6 +1260,7 @@ pub struct FakeKvm {
     pub dirty_clear_fail_on_call: Option<usize>,
     vgic_attrs: std::collections::BTreeMap<(u32, u64, bool), u64>,
     accept_irqs: bool,
+    asid_bits: Arm64AsidBits,
     #[cfg_attr(not(test), allow(dead_code))]
     init_features: [u32; 7],
     initialized: bool,
@@ -1275,6 +1279,11 @@ impl FakeKvm {
 
     pub fn reg(&self, id: u64) -> Option<u64> {
         self.regs.get(&id).copied()
+    }
+
+    pub fn set_asid_bits(&mut self, asid_bits: Arm64AsidBits) -> &mut Self {
+        self.asid_bits = asid_bits;
+        self
     }
 
     pub fn set_accept_irqs(&mut self, accept: bool) -> &mut Self {
@@ -1309,6 +1318,10 @@ impl Arm64Kvm for FakeKvm {
         self.init_features = vcpu_init_features();
         self.initialized = true;
         Ok(())
+    }
+
+    fn asid_bits(&self) -> Arm64AsidBits {
+        self.asid_bits
     }
 
     unsafe fn set_user_memory_region(
@@ -2617,6 +2630,16 @@ mod tests {
         let caps = b.capabilities();
         assert_eq!(caps.name, "kvm-arm64-vgicv3");
         assert!(caps.arch.in_kernel_gic);
+    }
+
+    #[test]
+    fn capabilities_report_the_host_asid_width() {
+        for asid_bits in [Arm64AsidBits::Eight, Arm64AsidBits::Sixteen] {
+            let mut fake = FakeKvm::new();
+            fake.set_asid_bits(asid_bits);
+            let b = Arm64KvmBackend::new(fake);
+            assert_eq!(b.capabilities().arch.asid_bits, asid_bits);
+        }
     }
 
     #[test]

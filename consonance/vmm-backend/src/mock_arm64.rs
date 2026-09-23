@@ -49,6 +49,7 @@ const MOCK_ARM64_CAPS: MockArm64Caps = Capabilities {
     name: "mock-arm64",
     arch: crate::arch::arm64::Arm64Caps {
         in_kernel_gic: false,
+        asid_bits: crate::arch::arm64::Arm64AsidBits::Eight,
     },
 };
 
@@ -459,6 +460,7 @@ mod tests {
             name: "arm64-test",
             arch: crate::arch::arm64::Arm64Caps {
                 in_kernel_gic: true,
+                asid_bits: crate::arch::arm64::Arm64AsidBits::Sixteen,
             },
         };
         let mock = MockArm64Backend::with_capabilities(caps);

@@ -828,7 +828,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             }),
         };
         s.devices = records::encode_device_blob(&dev);
-        s.contract_hash = contract::contract_hash();
+        s.contract_hash = contract::contract_hash(self.backend.capabilities().arch.asid_bits);
         s
     }
 
@@ -836,7 +836,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         &self,
         s: &Arm64VmState,
     ) -> Result<(Arm64VcpuState, u64, Arm64RestorePrep), VmmError> {
-        if s.contract_hash != contract::contract_hash() {
+        if s.contract_hash != contract::contract_hash(self.backend.capabilities().arch.asid_bits) {
             return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
         }
         let dev = records::decode_device_blob(&s.devices.0)?;

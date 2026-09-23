@@ -8,6 +8,7 @@ use kvm_bindings::{
 };
 use kvm_ioctls::{Cap, DeviceFd, Kvm, VcpuFd, VmFd};
 
+use crate::arch::arm64::Arm64AsidBits;
 use crate::arm64_kvm::{Arm64Kvm, KvmRunView, RunOffsets, RunPage};
 use crate::error::{BackendError, Result};
 use crate::types::MpState;
@@ -79,6 +80,7 @@ fn kvm_err(e: kvm_ioctls::Error) -> BackendError {
 
 pub struct LiveKvm {
     vcpu: VcpuFd,
+    asid_bits: Arm64AsidBits,
     vgic: Option<DeviceFd>,
     _vm: VmFd,
     _kvm: Kvm,
@@ -127,6 +129,7 @@ impl LiveKvm {
 
         let mut this = Self {
             vcpu,
+            asid_bits: Arm64AsidBits::Eight,
             vgic: None,
             _vm: vm,
             _kvm: kvm,
@@ -135,6 +138,16 @@ impl LiveKvm {
             cancel_run: std::sync::Arc::default(),
         };
         this.vcpu_init()?;
+        let mmfr0 = this.get_one_reg(
+            crate::arm64_kvm::KVM_REG_ARM64
+                | crate::arm64_kvm::KVM_REG_SIZE_U64
+                | crate::arm64_kvm::KVM_REG_ARM64_SYSREG
+                | u64::from(Arm64AsidBits::ID_AA64MMFR0_EL1),
+        )?;
+        this.asid_bits =
+            Arm64AsidBits::from_id_register(mmfr0).ok_or(BackendError::Capability {
+                cap: "ID_AA64MMFR0_EL1.ASIDBits of 8 or 16",
+            })?;
         this.create_vgic()?;
         Ok(this)
     }
@@ -292,6 +305,10 @@ impl Arm64Kvm for LiveKvm {
         );
         self.vcpu.vcpu_init(&kvi).map_err(kvm_err)?;
         Ok(())
+    }
+
+    fn asid_bits(&self) -> Arm64AsidBits {
+        self.asid_bits
     }
 
     unsafe fn set_user_memory_region(

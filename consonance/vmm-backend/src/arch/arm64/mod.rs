@@ -89,6 +89,36 @@ pub struct SysregTrapPolicy {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Arm64Caps {
     pub in_kernel_gic: bool,
+    pub asid_bits: Arm64AsidBits,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Arm64AsidBits {
+    #[default]
+    Eight,
+    Sixteen,
+}
+
+impl Arm64AsidBits {
+    pub const ID_AA64MMFR0_EL1: u32 = 0xc038;
+    const FIELD_SHIFT: u32 = 4;
+    const FIELD_MASK: u64 = 0xf << Self::FIELD_SHIFT;
+
+    pub fn from_id_register(value: u64) -> Option<Self> {
+        match (value & Self::FIELD_MASK) >> Self::FIELD_SHIFT {
+            0b0000 => Some(Self::Eight),
+            0b0010 => Some(Self::Sixteen),
+            _ => None,
+        }
+    }
+
+    pub fn apply_to_id_register(self, value: u64) -> u64 {
+        let field = match self {
+            Self::Eight => 0b0000,
+            Self::Sixteen => 0b0010,
+        };
+        (value & !Self::FIELD_MASK) | (field << Self::FIELD_SHIFT)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -97,6 +127,27 @@ pub enum Arm64Completion {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asid_bits_round_trip_through_the_id_register() {
+        assert_eq!(
+            Arm64AsidBits::from_id_register(0x0000_0111_0f10_0002),
+            Some(Arm64AsidBits::Eight)
+        );
+        assert_eq!(
+            Arm64AsidBits::from_id_register(0x0000_0111_0f10_0022),
+            Some(Arm64AsidBits::Sixteen)
+        );
+        assert_eq!(Arm64AsidBits::from_id_register(0x10), None);
+        assert_eq!(
+            Arm64AsidBits::Sixteen.apply_to_id_register(0x0000_0111_0f10_0002),
+            0x0000_0111_0f10_0022
+        );
+        assert_eq!(
+            Arm64AsidBits::Eight.apply_to_id_register(0x0000_0111_0f10_0022),
+            0x0000_0111_0f10_0002
+        );
+    }
 
     #[test]
     fn sysreg_exit_reason_and_completion_staging() {

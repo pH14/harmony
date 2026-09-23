@@ -4,8 +4,8 @@ use core::ffi::c_void;
 use std::ptr::{self, NonNull};
 
 use crate::arch::arm64::{
-    Arm64, Arm64Caps, Arm64Exit, Arm64Injection, Arm64Policy, Arm64VcpuState, GicIntId,
-    canonicalize_core_regs, has_noncanonical_core_regs,
+    Arm64, Arm64AsidBits, Arm64Caps, Arm64Exit, Arm64Injection, Arm64Policy, Arm64VcpuState,
+    GicIntId, canonicalize_core_regs, has_noncanonical_core_regs,
 };
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
@@ -1189,6 +1189,7 @@ impl Backend for HvfBackend {
             name: "hvf-arm64-virtual_time",
             arch: Arm64Caps {
                 in_kernel_gic: false,
+                asid_bits: Arm64AsidBits::Eight,
             },
         }
     }

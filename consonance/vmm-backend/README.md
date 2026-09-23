@@ -121,6 +121,13 @@ them. The stage-2 and EL2 fields `MMFR0.TGran*_2`, `MMFR1.VMIDBits`,
 `MMFR1.VH`, `MMFR2.FWB` and `MMFR2.EVT` are not compared because the guest runs
 at EL1 and never uses them.
 
+`Arm64Caps::asid_bits` reports the ASID width each backend's host fixes for the
+guest. Hypervisor.framework implements 8-bit ASIDs, so HVF reports 8 bits. ARM
+KVM leaves `MMFR0.ASIDBits` out of its writable ID register mask and fails
+`KVM_SET_ONE_REG` with `EINVAL` for any value other than the host's, so
+`LiveKvm::new` reads the vCPU's `ID_AA64MMFR0_EL1` after `KVM_ARM_VCPU_INIT` and
+reports that width.
+
 ARM KVM saves the guest's system registers as the guest left them and never
 normalizes a value the guest wrote. TCR_EL1.AS selects 8-bit or 16-bit ASIDs, and
 while the identity baseline advertised 16-bit, clearing it left the guest kernel
