@@ -52,6 +52,13 @@ id in the writer's PID namespace, which the supervisor shares with the children
 it starts.
 Child stdout is discarded; assertions travel only as SDK records.
 
+The supervisor declares one built-in check, the Always assertion
+`workload node ends only by a fault the search injected`. A node that dies
+while no kill, restart or event kill targets it, by a signal its own execution
+raises (`SIGSEGV`, `SIGBUS`, `SIGABRT`, `SIGILL`, `SIGFPE`, `SIGTRAP` or
+`SIGSYS`) or a nonzero exit status, violates it; the record's details name the
+node and the exit.
+
 After initial readiness, an optional `workload` command starts once and remains
 independent of node recovery. An optional `check` command runs serially and
 continuously. The supervisor publishes the checks-started register before it

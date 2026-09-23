@@ -139,8 +139,8 @@ mod runtime {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
     use std::os::unix::net::UnixStream;
     use std::os::unix::process::ExitStatusExt;
-    use std::path::Path;
-    use std::process::{Child, Stdio};
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, ExitStatus, Stdio};
     use std::thread;
     use std::time::Duration;
 
@@ -647,6 +647,8 @@ mod runtime {
             Path::new("/dev/harmony"),
         )
         .map_err(|error| format!("{}: {error}", harmony_supervisor::ANTITHESIS_OUTPUT_DIR))?;
+        process::write_record(&sdk_output(), &process::node_exit_record(None))
+            .map_err(|error| format!("node exit declaration: {error}"))?;
         let mut nodes: Vec<Node> = bundle
             .nodes
             .iter()
@@ -839,7 +841,8 @@ mod runtime {
                 .map_err(|error| format!("state_set({REG_PENDING_FAULTS}): {error}"))?;
             let active = poll_standing(sdk, supervisor.counters().ticks, &mut buffer)?;
             let tick = supervisor.counters().ticks + 1;
-            let deaths = reap_nodes(nodes)?;
+            let exits = reap_nodes(nodes)?;
+            let deaths: Vec<u16> = exits.iter().map(|(node, _)| *node).collect();
             for &node in &deaths {
                 supervisor.note_event_ready(node, false);
                 if let Some(events) = nodes
@@ -860,7 +863,9 @@ mod runtime {
                 sdk,
                 supervisor,
             )?;
-            for action in supervisor.tick(&active, &deaths) {
+            let actions = supervisor.tick(&active, &deaths);
+            report_node_exits(supervisor, &exits, tick)?;
+            for action in actions {
                 log(tick, &action.describe());
                 apply(action, spec, bundle, nodes, supervisor, &mut runtime, tick)?;
             }
@@ -932,23 +937,51 @@ mod runtime {
             .map_err(|error| format!("standing answer: {error}"))
     }
 
-    fn reap_nodes(nodes: &mut [Node]) -> Result<Vec<u16>, String> {
+    fn reap_nodes(nodes: &mut [Node]) -> Result<Vec<(u16, Option<ExitStatus>)>, String> {
         let mut deaths = Vec::new();
         for (id, node) in nodes.iter_mut().enumerate() {
             let Some(child) = node.child.as_mut() else {
                 continue;
             };
-            let exited = match child.try_wait() {
-                Ok(Some(_)) => true,
-                Ok(None) => false,
-                Err(_) => true,
+            let status = match child.try_wait() {
+                Ok(Some(status)) => Some(Some(status)),
+                Ok(None) => None,
+                Err(_) => Some(None),
             };
-            if exited {
+            if let Some(status) = status {
                 node.child = None;
-                deaths.push(id as u16);
+                deaths.push((id as u16, status));
             }
         }
         Ok(deaths)
+    }
+
+    fn report_node_exits(
+        supervisor: &mut Supervisor,
+        deaths: &[(u16, Option<ExitStatus>)],
+        tick: u64,
+    ) -> Result<(), String> {
+        for node in supervisor.take_natural_deaths() {
+            let Some(exit) = deaths
+                .iter()
+                .find(|(id, _)| *id == node)
+                .and_then(|(_, status)| status.as_ref())
+                .and_then(process::unexpected_exit)
+            else {
+                continue;
+            };
+            log(tick, &format!("node {node} ended on its own: {exit}"));
+            process::write_record(
+                &sdk_output(),
+                &process::node_exit_record(Some((node, &exit))),
+            )
+            .map_err(|error| format!("node exit record: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn sdk_output() -> PathBuf {
+        Path::new(harmony_supervisor::ANTITHESIS_OUTPUT_DIR).join("sdk.jsonl")
     }
 
     fn drive_event_channels(

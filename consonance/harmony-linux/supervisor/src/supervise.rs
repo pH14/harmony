@@ -80,6 +80,7 @@ pub struct ProcessSupervisor {
     event_kill_selected: Vec<Option<EventKillWindow>>,
     event_kill_armed: Vec<EventKillWindow>,
     event_kill_fired: Vec<EventKillWindow>,
+    natural_deaths: Vec<u16>,
 }
 
 pub type Supervisor = ProcessSupervisor;
@@ -103,7 +104,12 @@ impl ProcessSupervisor {
             event_kill_selected: vec![None; node_count],
             event_kill_armed: Vec::new(),
             event_kill_fired: Vec::new(),
+            natural_deaths: Vec::new(),
         }
+    }
+
+    pub fn take_natural_deaths(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.natural_deaths)
     }
 
     pub fn tick(&mut self, active: &ActiveWindows, deaths: &[u16]) -> Vec<Action> {
@@ -126,6 +132,7 @@ impl ProcessSupervisor {
             if natural {
                 self.bump_disturbance(1);
                 self.counters.unexpected_deaths += 1;
+                self.natural_deaths.push(node);
             }
         }
 
@@ -467,6 +474,18 @@ mod tests {
             set.insert(*node, action, 0);
         }
         set
+    }
+
+    #[test]
+    fn only_a_death_the_search_did_not_cause_is_natural() {
+        let mut sup = Supervisor::new(2);
+        let killed = active(&[(0, ProcessAction::Kill)]);
+        sup.tick(&killed, &[]);
+        sup.tick(&killed, &[0]);
+        assert!(sup.take_natural_deaths().is_empty());
+        sup.tick(&killed, &[1]);
+        assert_eq!(sup.take_natural_deaths(), [1]);
+        assert!(sup.take_natural_deaths().is_empty());
     }
 
     #[test]
