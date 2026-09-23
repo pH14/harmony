@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use sha2::{Digest, Sha256};
-use vmm_backend::{Arm64Policy, IdRegModel, SysregTrapPolicy};
+use vmm_backend::{Arm64AsidBits, Arm64Policy, IdRegModel, SysregTrapPolicy};
 
 use crate::virtual_time::VirtualTimeTiming;
 
@@ -51,17 +51,26 @@ pub const IDENTITY_BASELINE: [(u32, u64); 21] = [
 
 pub const READ_ONLY_IDENTITY_BASELINE: [(u32, u64); 1] = [(0xd807, 0x0000_0000_0000_0004)];
 
-pub fn policy() -> Arm64Policy {
+pub fn policy(asid_bits: Arm64AsidBits) -> Arm64Policy {
     Arm64Policy {
         id_regs: IdRegModel {
-            regs: IDENTITY_BASELINE.into_iter().collect(),
+            regs: IDENTITY_BASELINE
+                .into_iter()
+                .map(|(encoding, value)| {
+                    if encoding == Arm64AsidBits::ID_AA64MMFR0_EL1 {
+                        (encoding, asid_bits.apply_to_id_register(value))
+                    } else {
+                        (encoding, value)
+                    }
+                })
+                .collect(),
         },
         sysreg_traps: SysregTrapPolicy::default(),
     }
 }
 
-pub fn contract_hash() -> [u8; 32] {
-    let p = policy();
+pub fn contract_hash(asid_bits: Arm64AsidBits) -> [u8; 32] {
+    let p = policy(asid_bits);
     let mut h = Sha256::new();
     h.update(b"harmony-arm64-cross-host-baseline-v3\0");
     h.update((p.id_regs.regs.len() as u64).to_le_bytes());
@@ -99,7 +108,7 @@ mod tests {
 
     #[test]
     fn policy_contains_the_sorted_cross_host_identity_and_empty_trap_table() {
-        let p = policy();
+        let p = policy(Arm64AsidBits::Eight);
         assert_eq!(p.id_regs.regs.len(), IDENTITY_BASELINE.len());
         assert_eq!(
             p.id_regs
@@ -115,18 +124,38 @@ mod tests {
 
     #[test]
     fn contract_hash_is_deterministic_and_row_sensitive() {
-        let frozen = contract_hash();
-        assert_eq!(frozen, contract_hash());
+        let frozen = contract_hash(Arm64AsidBits::Eight);
+        assert_eq!(frozen, contract_hash(Arm64AsidBits::Eight));
+        assert_eq!(
+            frozen,
+            recompute(&policy(Arm64AsidBits::Eight), virtual_time_timing())
+        );
         assert_ne!(frozen, [0; 32]);
         assert_ne!(frozen, [1; 32]);
-        let mut p = policy();
+        let mut p = policy(Arm64AsidBits::Eight);
         p.id_regs.regs.insert(0xc020, 0x1122);
         let with_row = recompute(&p, virtual_time_timing());
-        assert_ne!(contract_hash(), with_row);
+        assert_ne!(frozen, with_row);
         let mut timing = virtual_time_timing();
         timing.serial_mmio_vns += 1;
-        let with_timing = recompute(&policy(), timing);
-        assert_ne!(contract_hash(), with_timing);
+        let with_timing = recompute(&policy(Arm64AsidBits::Eight), timing);
+        assert_ne!(frozen, with_timing);
+    }
+
+    #[test]
+    fn asid_width_changes_only_the_asid_field_and_the_contract_hash() {
+        let eight = policy(Arm64AsidBits::Eight);
+        let sixteen = policy(Arm64AsidBits::Sixteen);
+        assert_eq!(eight.id_regs.regs[&0xc038], 0x0000_0111_0f10_0002);
+        assert_eq!(sixteen.id_regs.regs[&0xc038], 0x0000_0111_0f10_0022);
+        let mut rest = sixteen.id_regs.regs.clone();
+        rest.insert(0xc038, eight.id_regs.regs[&0xc038]);
+        assert_eq!(rest, eight.id_regs.regs);
+        assert_eq!(sixteen.sysreg_traps, eight.sysreg_traps);
+        assert_ne!(
+            contract_hash(Arm64AsidBits::Eight),
+            contract_hash(Arm64AsidBits::Sixteen)
+        );
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
@@ -159,8 +188,14 @@ mod tests {
         const STR_X0_TO_X1: u32 = 0xf900_0020;
         const B_SELF: u32 = 0x1400_0000;
 
-        let registers: Vec<(u32, u64)> = IDENTITY_BASELINE
-            .into_iter()
+        let mut ram = crate::vmm::GuestRam::new(0x10_0000).expect("guest RAM");
+        let mut backend = live_backend();
+        let policy = policy(backend.capabilities().arch.asid_bits);
+        let registers: Vec<(u32, u64)> = policy
+            .id_regs
+            .regs
+            .iter()
+            .map(|(&encoding, &value)| (encoding, value))
             .chain(READ_ONLY_IDENTITY_BASELINE)
             .collect();
         let program: Vec<u32> = registers
@@ -168,13 +203,11 @@ mod tests {
             .flat_map(|&(encoding, _)| [MRS_X0 | (encoding << 5), STR_X0_TO_X1])
             .chain([B_SELF])
             .collect();
-        let mut ram = crate::vmm::GuestRam::new(0x10_0000).expect("guest RAM");
         for (slot, word) in program.iter().enumerate() {
             ram.as_mut_bytes()[slot * 4..slot * 4 + 4].copy_from_slice(&word.to_le_bytes());
         }
 
-        let mut backend = live_backend();
-        if let Err(error) = backend.set_policy(&policy()) {
+        if let Err(error) = backend.set_policy(&policy) {
             panic!("this host must implement every ID field the baseline claims: {error}");
         }
         // SAFETY: `ram` is an anonymous mapping declared before `backend`, so
