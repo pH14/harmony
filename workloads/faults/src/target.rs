@@ -866,6 +866,22 @@ mod tests {
     }
 
     #[test]
+    fn a_supervisor_node_exit_record_is_a_violation() {
+        let capture = decode_sdk_events(&[(
+            5,
+            JSON_EVENT_ID,
+            br#"{"antithesis_assert":{"assert_type":"always","display_type":"AlwaysOrUnreachable","id":"workload node ends only by a fault the search injected","message":"workload node ends only by a fault the search injected","hit":true,"must_hit":false,"condition":false,"location":{"file":"harmony-supervisor","function":"node exit","class":"","begin_line":0,"begin_column":0},"details":{"node":1,"exit":"signal 11"}}}
+"#
+            .to_vec(),
+        )])
+        .unwrap();
+        assert_eq!(
+            capture.assertions.violations(),
+            BTreeSet::from(["workload node ends only by a fault the search injected".to_owned()])
+        );
+    }
+
+    #[test]
     fn park_reports_become_landings_with_their_moment() {
         let capture = decode_sdk_events(&[(
             41,
