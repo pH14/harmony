@@ -49,6 +49,15 @@ sites share a saturating count, so a collision can make a site look hotter but
 cannot make it look rarer. New sites remain eligible after startup rather than
 being excluded by a full exact-site table.
 
+The same table gives the process bucketed edge coverage. Each slot remembers
+the highest AFL hit-count bucket its count has entered: 1, 2, 3, 4-7, 8-15,
+16-31, 32-127, and 128 or more. When a count enters a higher bucket, the
+runtime adds one crossing and adds a hash of the site's module offset and the
+bucket to a wrapping sum. A coverage-status command returns both values. They
+cover the process since it started, and module offsets make them independent
+of where the loader placed the executable. Another 512 KiB of bucket bytes
+holds the levels.
+
 A claimed kill keeps the callback lock through its report and signal, so a
 later disarm acknowledgement cannot overtake enforcement. Parks release the
 lock during the hold: other application threads keep running. Status remains

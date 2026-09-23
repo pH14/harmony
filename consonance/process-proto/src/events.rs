@@ -5,8 +5,9 @@ use core::fmt;
 pub const EVENT_CMD_KILL: u64 = 1;
 pub const EVENT_CMD_PARK: u64 = 2;
 pub const EVENT_CMD_PARK_STATUS: u64 = 3;
+pub const EVENT_CMD_COVERAGE_STATUS: u64 = 4;
 pub const EVENT_REPORT_HELLO: u64 = 0x4841_524d_4f4e_5945;
-pub const EVENT_PROTOCOL_VERSION: u64 = 2;
+pub const EVENT_PROTOCOL_VERSION: u64 = 3;
 pub const EVENT_CONTROL_FRAME_SIZE: usize = 24;
 pub const EVENT_REPORT_SIZE: usize = 16;
 pub const EVENT_RARITY_LIMIT: u8 = 64;
@@ -19,12 +20,14 @@ pub enum Command {
     ArmPark { edges: u32, hold_nanos: u64 },
     DisarmPark,
     ParkStatus,
+    CoverageStatus,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Reply {
     Echo(Command),
     ParkStatus { fires: u64, armed: bool },
+    CoverageStatus { crossings: u64, digest: u64 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,6 +77,7 @@ pub fn encode_command(command: Command) -> [u8; EVENT_CONTROL_FRAME_SIZE] {
         Command::ArmPark { edges, hold_nanos } => (EVENT_CMD_PARK, u64::from(edges), hold_nanos),
         Command::DisarmPark => (EVENT_CMD_PARK, 0, 0),
         Command::ParkStatus => (EVENT_CMD_PARK_STATUS, 0, 0),
+        Command::CoverageStatus => (EVENT_CMD_COVERAGE_STATUS, 0, 0),
     };
     frame[..8].copy_from_slice(&kind.to_le_bytes());
     frame[8..16].copy_from_slice(&first.to_le_bytes());
@@ -98,6 +102,15 @@ pub fn decode_reply(expected: Command, frame: &[u8]) -> Result<Reply, ProtocolEr
         return Ok(Reply::ParkStatus {
             fires: first,
             armed: second != 0,
+        });
+    }
+    if matches!(expected, Command::CoverageStatus) {
+        if kind != EVENT_CMD_COVERAGE_STATUS {
+            return Err(ProtocolError::MismatchedReply);
+        }
+        return Ok(Reply::CoverageStatus {
+            crossings: first,
+            digest: second,
         });
     }
     if frame != encode_command(expected) {
@@ -228,6 +241,27 @@ mod tests {
         assert_eq!(
             decode_reply(Command::ParkStatus, &frame),
             Err(ProtocolError::InvalidArmed)
+        );
+    }
+
+    #[test]
+    fn coverage_status_carries_bucket_crossings_and_digest() {
+        let mut frame = encode_command(Command::CoverageStatus);
+        frame[8..16].copy_from_slice(&5_u64.to_le_bytes());
+        frame[16..24].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(
+            decode_reply(Command::CoverageStatus, &frame),
+            Ok(Reply::CoverageStatus {
+                crossings: 5,
+                digest: u64::MAX
+            })
+        );
+        assert_eq!(
+            decode_reply(
+                Command::CoverageStatus,
+                &encode_command(Command::ParkStatus)
+            ),
+            Err(ProtocolError::MismatchedReply)
         );
     }
 

@@ -28,6 +28,8 @@ pub mod registers {
     pub const COMPLETED_CHECK_END_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 19;
     pub const COMPLETED_CHECK_RUN: u32 = SUPERVISOR_REGISTER_BASE + 20;
     pub const PENDING_FAULTS: u32 = SUPERVISOR_REGISTER_BASE + 21;
+    pub const EDGE_CROSSINGS: u32 = SUPERVISOR_REGISTER_BASE + 22;
+    pub const EDGE_DIGEST: u32 = SUPERVISOR_REGISTER_BASE + 23;
 }
 
 pub const PROCESS_CLASS: u16 = 6;
@@ -390,6 +392,8 @@ mod tests {
                 COMPLETED_CHECK_END_GENERATION,
                 COMPLETED_CHECK_RUN,
                 PENDING_FAULTS,
+                EDGE_CROSSINGS,
+                EDGE_DIGEST,
             ],
             core::array::from_fn(|offset| SUPERVISOR_REGISTER_BASE + offset as u32)
         );

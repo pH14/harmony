@@ -81,6 +81,12 @@ arms, and a reported kill awaiting observed child death contribute to the
 pending-fault fence. A protocol failure while work is outstanding marks the
 execution as an infrastructure failure.
 
+Each tick, a ready channel with nothing in flight also asks its runtime for
+edge-coverage status. The supervisor adds each node's new bucket crossings and
+digest change to the edge-crossings and edge-digest registers. These are
+coverage evidence only: they do not advance the disturbance generation or the
+pending-fault fence.
+
 The faults workload owns the semantic fault policy and composes its optional C
 instrumentation runtime with `libvoidstar`. The supervisor consumes only the
 generic process actions and event protocol and does not depend on that workload.

@@ -83,7 +83,12 @@ with the boot that reaches setup.
 
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
-which captures assertion, liveness, in-flight work, and event-firing state. The
+which captures assertion, liveness, in-flight work, event-firing state, and
+bucketed edge coverage. The edge-digest register sums a hash of every
+(edge, hit-count bucket) pair that instrumented nodes have entered. It
+separates cells only at the finest grouping depth, so an execution that
+drives any edge into a new bucket opens a new cell under its lifecycle group.
+Workloads without the C runtime report a digest of zero. The
 raw instrumented site reported by an event kill remains diagnostic evidence; it
 is not archive novelty because a large instrumented binary can report a
 distinct address at nearly every endpoint.

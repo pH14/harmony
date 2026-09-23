@@ -22,7 +22,7 @@ use crate::target::{FaultAction, FaultObservations};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
-pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_lifecycle_events_v7";
+pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_lifecycle_edge_buckets_v8";
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_guest_ticks";
 pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
@@ -39,6 +39,7 @@ pub struct FaultArchiveGroup {
     checks_finished: u64,
     checks_running: bool,
     workload_running: bool,
+    edges: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -53,6 +54,7 @@ pub struct FaultArchiveKey {
     pub checks_finished: u64,
     pub checks_running: bool,
     pub workload_running: bool,
+    pub edges: u64,
 }
 
 impl ArchiveKey for FaultArchiveKey {
@@ -74,10 +76,15 @@ impl ArchiveKey for FaultArchiveKey {
             checks_finished: self.checks_finished,
             checks_running: self.checks_running,
             workload_running: self.workload_running,
+            edges: self.edges,
         };
         match depth {
             0 => full,
-            1 => FaultArchiveGroup { alive: 0, ..full },
+            1 => FaultArchiveGroup {
+                alive: 0,
+                edges: 0,
+                ..full
+            },
             _ => FaultArchiveGroup {
                 sometimes: self.sometimes,
                 ..FaultArchiveGroup::default()
@@ -114,6 +121,7 @@ pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
         checks_finished: observations.checks_finished.min(HOOKS_FINISHED_KEY_CAP),
         checks_running: observations.checks_started > observations.checks_finished,
         workload_running: observations.workload_started > observations.workload_finished,
+        edges: observations.edge_digest,
     }
 }
 
@@ -484,6 +492,20 @@ mod tests {
         assert_eq!(survived.group(1), lost_a_node.group(1));
         assert_eq!(survived.group(2), lost_a_node.group(2));
         assert_eq!(FaultArchiveKey::slot_capacity(), 1);
+    }
+
+    #[test]
+    fn edge_bucket_coverage_separates_slots_but_pools_one_depth_up() {
+        let before = archive_key(&endpoint(&[1], 2, 0b11));
+        let crossed = archive_key(&FaultObservations {
+            edge_crossings: 3,
+            edge_digest: 0x5eed,
+            ..endpoint(&[1], 2, 0b11)
+        });
+        assert_eq!(crossed.edges, 0x5eed);
+        assert_ne!(before.group(0), crossed.group(0));
+        assert_eq!(before.group(1), crossed.group(1));
+        assert_eq!(before.group(2), crossed.group(2));
     }
 
     #[test]
