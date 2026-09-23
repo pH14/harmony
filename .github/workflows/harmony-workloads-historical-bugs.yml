@@ -22,6 +22,14 @@ on:
         description: Total fresh replay-session cap per case (case default when empty)
         required: false
         type: string
+      case:
+        description: Run only this case id (every runnable case when empty)
+        required: false
+        type: string
+      seeds:
+        description: Comma-separated search seeds, one search job per seed (case seed when empty)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -42,18 +50,24 @@ jobs:
     outputs:
       matrix: ${{ steps.read.outputs.matrix }}
       runnable_matrix: ${{ steps.read.outputs.runnable_matrix }}
+      search_matrix: ${{ steps.read.outputs.search_matrix }}
     steps:
       - uses: actions/checkout@v4
       - name: Validate and expand case manifests
         id: read
+        env:
+          CASE: ${{ inputs.case }}
+          SEEDS: ${{ inputs.seeds }}
         run: |
           set -euo pipefail
           python3 scripts/historical-manifest.py --check
           matrix=$(python3 scripts/historical-manifest.py --matrix)
-          runnable_matrix=$(python3 scripts/historical-manifest.py --runnable-matrix)
+          runnable_matrix=$(python3 scripts/historical-manifest.py --runnable-matrix --case "${CASE}")
+          search_matrix=$(python3 scripts/historical-manifest.py --runnable-matrix --case "${CASE}" --seeds "${SEEDS}")
           {
             printf 'matrix=%s\n' "${matrix}"
             printf 'runnable_matrix=%s\n' "${runnable_matrix}"
+            printf 'search_matrix=%s\n' "${search_matrix}"
           } >>"${GITHUB_OUTPUT}"
       - name: Summarize runnable and deferred cases
         run: |
@@ -191,7 +205,7 @@ jobs:
     needs: [manifest, guest, images, tools]
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.manifest.outputs.runnable_matrix) }}
+      matrix: ${{ fromJSON(needs.manifest.outputs.search_matrix) }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ matrix.job_timeout_minutes }}
     steps:
@@ -219,6 +233,7 @@ jobs:
         env:
           CASE_DIR: ${{ matrix.dir }}
           CASE_ID: ${{ matrix.id }}
+          RUN_KEY: ${{ matrix.run_key }}
           SOFTWARE_NAME: ${{ matrix.software }}
           WORKLOAD_VERSION: ${{ matrix.workload_version }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
@@ -270,7 +285,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: historical-search-${{ matrix.id }}-${{ github.run_id }}
+          name: historical-search-${{ matrix.run_key }}-${{ github.run_id }}
           path: reports
           if-no-files-found: warn
           retention-days: 30
