@@ -63,6 +63,9 @@ cargo test -p vmm-backend --features mock,contract-tests
 cargo clippy -p vmm-backend --all-targets -- -D warnings
 ```
 
+`tests/contract_kvm.rs` runs the same exam against stock KVM. The CPU State job
+in `Checks / Consonance` runs it on the hosted runner's KVM.
+
 KVM restoration invalidates cached guest translations before resuming a reused
 VM. The restore sequence writes a transient CR0 write-protection value and then
 the exact saved special registers, without entering the guest between writes.

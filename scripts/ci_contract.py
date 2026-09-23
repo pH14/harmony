@@ -213,28 +213,10 @@ HOST_TESTS = {
 
 # Ignored tests a person runs by hand, and what each one is for.
 MANUAL_TESTS = {
-    "snapshot-store::bench *": "prints page store timings to compare by hand",
-    "snapshot-store::bench_production_shape *": "prints page store timings to compare by hand",
     "vm-state::golden print_golden":
         "prints a new golden encoding after a reviewed format change",
     "vmm-core vendor::x86::contract::tests::regen_golden":
         "rewrites the x86 contract golden file after a reviewed contract change",
-    "vmm-core::arm64_tcg_smoke *":
-        "needs clang, llvm-objcopy and qemu-system-aarch64, which no job installs",
-    "vmm-backend::contract_kvm *": "runs the backend contract exam against stock KVM",
-    "vmm-backend kvm_sys::xsave_diagnostic::"
-    "snapshot_restore_drains_an_acknowledged_write_completion":
-        "checks a KVM restore guard",
-    "vmm-backend kvm_sys::xsave_diagnostic::"
-    "ymm_without_sse_uabi_mxcsr_bytes_survive_capture_and_restore":
-        "writes an MXCSR report to XSAVE_MXCSR_REPORT_DIR",
-    "vmm-backend kvm_sys::xsave_diagnostic::natural_avx_mxcsr_survives_capture_and_restore":
-        "writes an MXCSR report to XSAVE_MXCSR_REPORT_DIR",
-    "vmm-core::x86_kvm_linux_virtual_time x2_component_diff_selected_checkpoint":
-        "localizes a divergence after an X2 boot comparison fails",
-    "vmm-core::x86_kvm_linux_virtual_time "
-    "x2_paired_boots_retain_first_checkpoint_difference":
-        "localizes a divergence after an X2 boot comparison fails",
 }
 
 
@@ -274,8 +256,8 @@ CONSONANCE_CHECKS = Workflow(
         Job("CPU State", "pr", 15,
             crates=("vm-state", "vmm-backend"),
             test_targets=("vmm-core:x86_cpu_snapshots", "vmm-core:arm64_skeleton",
-                          "vmm-core:arm64_tcg_smoke", "vmm-backend:kvm_smoke"),
-            ignored_tests=KVM_SERVICED_EXIT_TESTS,
+                          "vmm-backend:kvm_smoke"),
+            ignored_tests=KVM_SERVICED_EXIT_TESTS + ("vmm-backend::contract_kvm *",),
             scope="consonance_kvm"),
         Job("Device State", "pr", 15,
             crates=("lapic", "gicv3", "telemetry")),
@@ -381,6 +363,9 @@ CONSONANCE_HARDWARE = Workflow(
                     "snapshot_preparation_preserves_state_except_raw_presence",
                     "snapshot_preparation_raw_presence_stability",
                     "snapshot_restore_rejects_each_pending_state_without_mutation",
+                    "snapshot_restore_drains_an_acknowledged_write_completion",
+                    "ymm_without_sse_uabi_mxcsr_bytes_survive_capture_and_restore",
+                    "natural_avx_mxcsr_survives_capture_and_restore",
                     "snapshot_entry_restores_match_uninterrupted_execution",
                     "snapshot_canonical_entry_restores_match_uninterrupted_execution",
                     "snapshot_entry_debug_reentry_preserves_guest_observation",

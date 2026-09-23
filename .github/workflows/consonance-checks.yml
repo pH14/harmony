@@ -87,7 +87,7 @@ jobs:
           filter=$(python3 scripts/ci_contract.py nextest-filter vmm-core 'CPU State')
           cargo nextest run --release --all-features -p vmm-core --lib -E "$filter"
           cargo nextest run --release --all-features -p vmm-core \
-            --test x86_cpu_snapshots --test arm64_skeleton --test arm64_tcg_smoke
+            --test x86_cpu_snapshots --test arm64_skeleton
       - name: Grant /dev/kvm access
         if: steps.scope.outputs.enabled == 'true'
         run: |
@@ -112,6 +112,15 @@ jobs:
               -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee "cpu-state-evidence/$test.txt"
             grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "cpu-state-evidence/$test.txt"
           done
+      - name: The KVM backend passes the backend contract exam
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          timeout -k 10 300 taskset -c "$cpu" cargo test --locked --release --all-features \
+            -p vmm-backend --test contract_kvm \
+            -- --ignored --test-threads=1 --nocapture 2>&1 | tee cpu-state-evidence/contract_kvm.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' cpu-state-evidence/contract_kvm.txt
       - uses: actions/upload-artifact@v4
         if: always() && steps.scope.outputs.enabled == 'true'
         with:
