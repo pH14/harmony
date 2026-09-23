@@ -62,6 +62,13 @@ jobs:
         uses: ./.github/actions/platform-runtime
         with:
           report: container-execution-evidence
+      - name: Reject boot without the Harmony clock
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+          bash consonance/harmony-linux/linux/test-missing-host-clock.sh \
+            "$HARMONY_PLATFORM_KERNEL" "$HARMONY_PLATFORM_INITRAMFS"
       - name: Enable the hardware backend
         if: steps.scope.outputs.enabled == 'true'
         run: |
