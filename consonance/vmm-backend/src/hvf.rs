@@ -118,6 +118,45 @@ const fn hvf_implicit_identity_value(encoding: u32) -> Option<u64> {
     }
 }
 
+const ID_FEATURE_REGISTERS: core::ops::RangeInclusive<u32> = 0xc020..=0xc03f;
+
+const SIGNED_ID_FIELDS: [(u32, u32); 5] = [
+    (0xc020, 16),
+    (0xc020, 20),
+    (0xc028, 36),
+    (0xc038, 24),
+    (0xc038, 28),
+];
+
+const UNCHECKED_ID_FIELDS: [(u32, u32); 8] = [
+    (0xc020, 24),
+    (0xc038, 32),
+    (0xc038, 36),
+    (0xc038, 40),
+    (0xc039, 4),
+    (0xc039, 8),
+    (0xc03a, 40),
+    (0xc03a, 56),
+];
+
+fn id_field_level(encoding: u32, shift: u32, value: u64) -> i8 {
+    let field = ((value >> shift) & 0xf) as i8;
+    if field >= 8 && SIGNED_ID_FIELDS.contains(&(encoding, shift)) {
+        field - 16
+    } else {
+        field
+    }
+}
+
+fn id_register_within_host(encoding: u32, requested: u64, host: u64) -> bool {
+    !ID_FEATURE_REGISTERS.contains(&encoding)
+        || (0..64).step_by(4).all(|shift| {
+            UNCHECKED_ID_FIELDS.contains(&(encoding, shift))
+                || id_field_level(encoding, shift, requested)
+                    <= id_field_level(encoding, shift, host)
+        })
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct HvExitException {
@@ -370,6 +409,7 @@ pub struct HvfBackend {
     host_ranges: Vec<(usize, usize)>,
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
     flush_stub: Option<FlushStub>,
+    host_id_regs: std::collections::BTreeMap<u16, u64>,
 }
 
 struct FlushStub {
@@ -433,6 +473,7 @@ impl HvfBackend {
             host_ranges: Vec::new(),
             cancel_run: std::sync::Arc::default(),
             flush_stub: None,
+            host_id_regs: std::collections::BTreeMap::new(),
         })
     }
 
@@ -765,6 +806,21 @@ impl Backend for HvfBackend {
                 continue;
             }
             let reg = u16::try_from(encoding).map_err(|_| BackendError::InvalidState)?;
+            let host = match self.host_id_regs.get(&reg) {
+                Some(&host) => host,
+                None => {
+                    let host = self.sysreg(reg)?;
+                    self.host_id_regs.insert(reg, host);
+                    host
+                }
+            };
+            if !id_register_within_host(encoding, value, host) {
+                return Err(BackendError::IdRegisterAboveHost {
+                    encoding,
+                    requested: value,
+                    host,
+                });
+            }
             self.set_sysreg(reg, value)?;
         }
         let _ = &policy.sysreg_traps;
@@ -1203,6 +1259,35 @@ mod tests {
         );
         assert_eq!(hvf_implicit_identity_value(0xc020), None);
         assert_ne!(hvf_implicit_identity_value(0xc032), Some(2));
+    }
+
+    #[test]
+    fn id_register_fields_must_not_exceed_the_host() {
+        let host_mmfr0 = 0x0000_1000_0f10_0002;
+        assert!(id_register_within_host(0xc038, host_mmfr0, host_mmfr0));
+        assert!(!id_register_within_host(
+            0xc038,
+            host_mmfr0 | (2 << 4),
+            host_mmfr0
+        ));
+        assert!(!id_register_within_host(0xc031, 1 << 8, 0));
+        assert!(id_register_within_host(0xc031, 0, 1 << 8));
+    }
+
+    #[test]
+    fn signed_id_fields_treat_all_ones_as_absent() {
+        assert!(id_register_within_host(0xc028, 0xf << 36, 0));
+        assert!(!id_register_within_host(0xc028, 0, 0xf << 36));
+        assert!(!id_register_within_host(0xc031, 0xf << 36, 0));
+    }
+
+    #[test]
+    fn hypervisor_and_emulated_id_fields_are_not_compared() {
+        assert!(id_register_within_host(0xc020, 1 << 24, 0));
+        assert!(id_register_within_host(0xc038, 0x111 << 32, 0));
+        assert!(id_register_within_host(0xc039, 0x21 << 4, 0));
+        assert!(id_register_within_host(0xc03a, (2 << 56) | (1 << 40), 0));
+        assert!(id_register_within_host(0xc000, u64::MAX, 0));
     }
 
     #[test]

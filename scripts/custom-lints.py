@@ -965,6 +965,37 @@ def check_job_contract(rel_path: str, job_id: str, job: dict, registered, pr_tri
             f"job '{job_id}' has timeout-minutes={timeout}; the registry records "
             f"{registered.timeout_minutes}"))
     violations.extend(check_job_scope(rel_path, job_id, job, registered))
+    violations.extend(check_job_ignored_tests(rel_path, job_id, job, registered))
+    return violations
+
+
+def _names_word(text: str, word: str) -> bool:
+    return re.search(r"(?<![\w-])" + re.escape(word) + r"(?![\w-])", text) is not None
+
+
+def check_job_ignored_tests(rel_path: str, job_id: str, job: dict, registered) -> list[Violation]:
+    """A job that runs ignored tests registers them, and runs what it registers."""
+    commands = "\n".join(str(step.get("run", "")) for step in job.get("steps", [])
+                         if isinstance(step, dict))
+    runs_ignored = "--ignored" in commands or "--run-ignored" in commands
+    if runs_ignored and not registered.ignored_tests:
+        return [Violation("ci-ignored-tests", rel_path, 0,
+            f"job '{job_id}' runs ignored tests that are not in its ignored_tests "
+            f"in scripts/ci_contract.py")]
+    if registered.ignored_tests and not runs_ignored:
+        return [Violation("ci-ignored-tests", rel_path, 0,
+            f"job '{job_id}' registers ignored tests but never passes --ignored")]
+    violations = []
+    for pattern in registered.ignored_tests:
+        binary_id, test = pattern.split(" ", 1)
+        names = [binary_id.split("::")[-1]]
+        if test != "*":
+            names.append(test.split("::")[-1])
+        missing = [name for name in names if not _names_word(commands, name)]
+        if missing:
+            violations.append(Violation("ci-ignored-tests", rel_path, 0,
+                f"job '{job_id}' registers '{pattern}' but its steps never name "
+                f"{', '.join(missing)}"))
     return violations
 
 
@@ -1764,6 +1795,7 @@ def main(argv: list[str] | None = None) -> int:
             "file must be registered in scripts/ci_contract.py and every registered job must exist."
         ),
         "ci-scope-routing": "Select work inside the job that owns it: one ./.github/actions/ci-scope step under the registered kind, a complete diff checkout, and selected steps guarded with && on the selector's output.",
+        "ci-ignored-tests": "A job that runs ignored tests lists them in its ignored_tests in scripts/ci_contract.py as '<binary-id> <test>', and its steps name each binary and test it lists. scripts/check-test-partition.py ignored fails on an ignored test that no job or machine runs.",
         "ci-nes-case-jobs": "Map every public NES manifest case exactly once to the case matrix, select it with --case, disable fail-fast, and retain an always-running Results job.",
         "ci-nes-media": "Both NES compositions publish video with game audio: a bounded capture in the Checks workflow and every scenario in the Benchmarks workflow. Register the capture in scripts/ci_contract.py and check the media with scripts/verify-nes-films.py.",
         "ci-nes-compositions": "Both NES compositions stay: Dissonance runs the game on native QuickNES and Harmony runs it inside a Consonance VM. Each keeps a bounded check and a full benchmark.",

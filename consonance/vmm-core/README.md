@@ -118,15 +118,6 @@ retains the corresponding RAM image. Read the record and RAM immediately after
 that `step` returns, before advancing or otherwise mutating the VM; the record
 alone does not freeze RAM. Hashing retains its original RAM-then-CPU-read order.
 
-The ignored `x2_paired_boots_retain_first_checkpoint_difference` diagnostic
-requires `X2_PAIRED_REPORT` to name a fresh directory. It advances two independent
-VMs to their existing synchronous checkpoints and retains one differing pair,
-including RAM and the exact hash suffix. It adds no CPU capture beyond each
-checkpoint's existing read. Reports distinguish the first log difference from
-the retained checkpoint indices and identify terminal cases with no available
-exact pair. This is a fresh paired reproduction, not recovery of an earlier
-sequential run. The ordinary same-input boot check remains the acceptance check.
-
 `Checks / Consonance` combines the portable contract suite with bounded
 hardware checks on every pull request, and `Checks / Consonance / Analysis`
 carries the Miri, coverage, mutation and proof work. The KVM job requires the
@@ -137,12 +128,6 @@ readiness, nonzero events and zero differences. The scheduled and dispatched
 RF, PAE translation and guest-written XSAVE coverage, including dirty reused
 vCPUs, and `Checks / Harmony Workloads / OCI` retains the full-state workload
 restore oracle.
-After a failed bounded check reports a `StateHash` event index, the ignored
-`x2_component_diff_selected_checkpoint` diagnostic replays that boundary with
-`X2_CKPT_EVENT` and retains its reference or first-divergent raw captures under
-`X2_REPORT_DIR`. Each replay finishes its boot and destroys the VM before the
-next replay starts. A no-divergence replay remains diagnostic evidence rather
-than qualification.
 
 Linux snapshot fixtures come from the shared source-keyed platform
 publisher. The bounded check requires exact source provenance, verifies the manifest,

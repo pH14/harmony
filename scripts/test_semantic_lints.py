@@ -43,6 +43,7 @@ def full_answers(
     records_runs=0.05,
     status_narrative=0.05,
     decision_residue=0.05,
+    one_off_program=0.05,
     workload="none",
     workload_confidence=0.9,
     **architecture: float,
@@ -52,6 +53,7 @@ def full_answers(
         "records_runs": noul(records_runs),
         "status_narrative": noul(status_narrative),
         "decision_residue": noul(decision_residue),
+        "one_off_program": noul(one_off_program),
         "workload_named": choice(workload, workload_confidence),
     }
     for question_id in LINTS.CI_ARCHITECTURE_RULES:
@@ -419,6 +421,60 @@ class ChangedFilesTests(unittest.TestCase):
 
             self.assertEqual(candidates, ["new-name.md"])
 
+    def test_a_program_whose_caller_was_removed_is_selected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._git(root, "init", "-q")
+            self._git(root, "config", "user.email", "test@example.com")
+            self._git(root, "config", "user.name", "Test")
+
+            (root / "tool" / "src" / "bin").mkdir(parents=True)
+            (root / "tool" / "src" / "bin" / "probe.rs").write_text("fn main() {}\n")
+            (root / "tool" / "src" / "bin" / "probe_two.rs").write_text("fn main() {}\n")
+            (root / "scripts").mkdir()
+            (root / "scripts" / "sweep.py").write_text("print()\n")
+            (root / "scripts" / "helpers.py").write_text("X = 1\n")
+            (root / "scripts" / "report.py").write_text("import helpers\n")
+            (root / "run.sh").write_text(
+                "cargo run --bin probe\ncargo run --bin probe_two\npython3 scripts/sweep.py\n")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+
+            (root / "run.sh").write_text("cargo run --bin probe_two\n")
+            (root / "scripts" / "report.py").write_text("X = 2\n")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "drop callers")
+
+            self.assertEqual(
+                sorted(LINTS.programs_losing_a_caller(root, "HEAD~1")),
+                ["scripts/helpers.py", "scripts/sweep.py", "tool/src/bin/probe.rs"],
+            )
+
+    def test_a_removed_caller_is_matched_within_one_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._git(root, "init", "-q")
+            self._git(root, "config", "user.email", "test@example.com")
+            self._git(root, "config", "user.name", "Test")
+
+            (root / "scripts").mkdir()
+            (root / "scripts" / "helpers.py").write_text("X = 1\n")
+            (root / "scripts" / "sweep.py").write_text("print()\n")
+            (root / "notes.txt").write_text("we import\nhelpers later\n")
+            (root / "query.sql").write_text("-- python3 scripts/sweep.py\nselect 1;\n")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+
+            (root / "notes.txt").write_text("nothing\n")
+            (root / "query.sql").write_text("select 1;\n")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "edit")
+
+            self.assertEqual(
+                LINTS.programs_losing_a_caller(root, "HEAD~1"),
+                ["scripts/sweep.py"],
+            )
+
     def test_changed_paths_preserve_unicode_and_control_characters(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -678,6 +734,78 @@ class CiArchitectureTests(RequiresApiKey):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(LINTS.main(["--all"]), 0)
         self.assertEqual(calls, [])
+
+
+class OneOffProgramTests(RequiresApiKey):
+    def plant(self, root: Path, path: str, content: str) -> None:
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(content)
+
+    def test_the_question_is_asked_only_of_standalone_programs(self):
+        for path in ("consonance/vmm-backend/src/bin/x86_kvm_probe.rs",
+                     "scripts/ci_contract.py", "consonance/harmony-linux/linux/build-kernel.sh"):
+            with self.subTest(path=path):
+                self.assertIn("one_off_program", LINTS.questions_for(path))
+        for path in ("scripts/test_ci_contract.py", "harmony-cli/src/main.rs",
+                     "workloads/nes/src/bin/smb-probe.rs", "workloads/nes/tools/fm2_to_prefix.py",
+                     "consonance/vmm-backend/tests/hvf_smoke.rs",
+                     "consonance/vmm-backend/src/hvf.rs", "docs/TESTING.md"):
+            with self.subTest(path=path):
+                self.assertNotIn("one_off_program", LINTS.questions_for(path))
+
+    def test_the_context_lists_every_other_line_that_names_the_program(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = "tools/src/bin/page_probe.rs"
+            self.plant(root, path, "fn main() { let page_probe = 1; }\n")
+            self.plant(root, "tools/README.md", "Run `page_probe` to read one page.\n")
+            self.plant(root, ".github/workflows/checks.yml",
+                       "run: cargo run --bin page-probe\nrun: cargo run --bin page_probe_all\n")
+            context = LINTS.context_for(root, path, (root / path).read_text())
+            self.assertEqual(context, {
+                "reference_count": 2,
+                "references": [
+                    ".github/workflows/checks.yml:1: run: cargo run --bin page-probe",
+                    "tools/README.md:1: Run `page_probe` to read one page.",
+                ],
+            })
+
+    def test_a_python_module_is_named_by_its_path_or_an_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = "scripts/scope.py"
+            self.plant(root, path, "print('scope')\n")
+            self.plant(root, "scripts/check.py", "from scope import files\nscope = 3\n")
+            self.plant(root, "scripts/run.sh", "python3 scripts/scope.py\n")
+            context = LINTS.context_for(root, path, (root / path).read_text())
+            self.assertEqual(context["references"], [
+                "scripts/check.py:1: from scope import files",
+                "scripts/run.sh:1: python3 scripts/scope.py",
+            ])
+
+    def test_the_rule_fails_warns_and_passes_by_its_own_threshold(self):
+        self.assertEqual(LINTS.evaluate(full_answers(one_off_program=0.65)),
+                         (["one-off-program"], []))
+        self.assertEqual(LINTS.evaluate(full_answers(one_off_program=0.55)),
+                         ([], ["one-off-program"]))
+        self.assertEqual(LINTS.evaluate(full_answers(one_off_program=0.30)), ([], []))
+
+    def test_a_one_off_program_fails_the_run_unless_baselined(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = "tools/src/bin/page_probe.rs"
+            self.plant(root, path, "fn main() {}\n")
+            answers = full_answers(one_off_program=0.85)
+            failures, _, _, _, _, _ = LINTS.run(root, [path], {}, post=make_post(answers))
+            self.assertEqual([(rule, name) for rule, name, _ in failures],
+                             [("one-off-program", path)])
+            failures, _, baselined, _, _, _ = LINTS.run(
+                root, [path], {"one-off-program": [path]}, post=make_post(answers))
+            self.assertEqual((failures, baselined), ([], {("one-off-program", path)}))
+
+    def test_text_addressed_to_the_judge_is_material_not_instruction(self):
+        self.assertTrue(LINTS.QUESTIONS["one_off_program"]["instructions"]
+                        .startswith(LINTS.CONTENT_IS_DATA))
 
 
 class SkipWithoutKeyTests(unittest.TestCase):

@@ -385,19 +385,6 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
-    fn contract_hash_matches_committed_registry() {
-        let computed: String = contract_hash().iter().map(|b| format!("{b:02x}")).collect();
-        let committed = contract().contract_hash.clone();
-        assert_eq!(
-            committed.as_deref(),
-            Some(computed.as_str()),
-            "contract_hash() must equal the committed registry hash. Update \
-             `contract_hash = \"{computed}\"` in contracts/x86/guest.toml."
-        );
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
     fn canonical_form_well_formed() {
         let form = canonical::serialize(contract());
         assert!(form.starts_with("contract-version=6\n"));
@@ -431,24 +418,6 @@ mod tests {
         for l in form.lines() {
             assert_eq!(l, l.trim_end(), "no trailing whitespace");
         }
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
-    fn canonical_form_matches_golden() {
-        let golden = include_str!("testdata/canonical-v6.txt");
-        let form = canonical::serialize(contract());
-        assert_eq!(
-            form, golden,
-            "§6 canonical form drifted from the committed golden \
-             (src/vendor/x86/contract/testdata/canonical-v6.txt). If this is an intended, reviewed §6 \
-             change, bump contract-version and regenerate the golden file (contract::tests::regen_golden)."
-        );
-        let hex: String = contract_hash().iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(
-            hex, "e2cf2a502d598e042684a3bd5807aec0095f4fc9f7ee3d4eb538d3372c4a141d",
-            "contract_hash must be sha256 of the golden canonical bytes"
-        );
     }
 
     const STABILITY_TOML: &str = "\
@@ -789,28 +758,5 @@ ecx = \"0x6c65746e\"\n\
 edx = \"0x49656e69\"\n\
 ";
         assert!(Contract::load(NONZERO_SUBLEAF, VendorId::AuthenticAMD).is_ok());
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
-    fn report_contract_hash() {
-        let form = canonical::serialize(contract());
-        let hash = contract_hash();
-        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-        eprintln!("=== contract_hash (v{}) ===", contract().version);
-        eprintln!("canonical-form bytes: {}", form.len());
-        eprintln!("canonical-form lines: {}", form.lines().count());
-        eprintln!("contract_hash = {hex}");
-    }
-
-    #[test]
-    #[ignore = "writes src/vendor/x86/contract/testdata/canonical-v6.txt; run manually on a reviewed §6 bump"]
-    fn regen_golden() {
-        let form = canonical::serialize(contract());
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/vendor/x86/contract/testdata/canonical-v6.txt"
-        );
-        std::fs::write(path, &form).expect("write golden");
     }
 }

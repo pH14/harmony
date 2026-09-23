@@ -6,6 +6,7 @@ import json
 import re
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import ci_contract
 import miri_scope
@@ -239,6 +240,46 @@ class HostCompatibilityTests(unittest.TestCase):
                 self.assertNotIn("/dev/kvm", commands)
 
 
+class IgnoredTestRegistryTests(unittest.TestCase):
+    PATTERN = re.compile(r"[a-z][\w-]*(?:::[\w-]+)? (?:\*|\w+(?:::\w+)*)")
+
+    def test_every_pattern_names_a_binary_and_a_test(self):
+        for pattern, runners in ci_contract.ignored_test_runners().items():
+            with self.subTest(pattern=pattern):
+                self.assertRegex(pattern, self.PATTERN)
+                self.assertEqual(len(runners), len(set(runners)))
+
+    def test_host_tests_are_keyed_by_a_machine(self):
+        for host in ci_contract.HOST_TESTS:
+            with self.subTest(host=host):
+                self.assertRegex(host, r"^(?:macos|linux)-(?:aarch64|x86_64)$")
+
+    def test_a_pattern_selects_its_whole_binary_or_one_exact_test(self):
+        with mock.patch.object(ci_contract, "ignored_test_runners", lambda: {
+                "vmm-backend::kvm_smoke *": ("A",), "vmm-core live::one": ("B",)}):
+            self.assertEqual(ci_contract.runners_of("vmm-backend::kvm_smoke", "any"), ("A",))
+            self.assertEqual(ci_contract.runners_of("vmm-core", "live::one"), ("B",))
+            self.assertEqual(ci_contract.runners_of("vmm-core", "live::one_more"), ())
+            self.assertEqual(ci_contract.runners_of("vmm-core::live", "one"), ())
+
+    def test_the_host_filter_selects_each_machines_tests(self):
+        with mock.patch.object(ci_contract, "HOST_TESTS", {
+                "macos-aarch64": ("vmm-backend::hvf_smoke *", "vmm-core live::one")}):
+            self.assertEqual(ci_contract.host_filter("macos-aarch64"),
+                             "binary_id(vmm-backend::hvf_smoke) | "
+                             "(binary_id(vmm-core) & test(=live::one))")
+            self.assertEqual(ci_contract.host_filter("linux-x86_64"), "")
+
+    def test_this_host_uses_the_host_test_spelling(self):
+        for system, machine, expected in (("Darwin", "arm64", "macos-aarch64"),
+                                          ("Linux", "aarch64", "linux-aarch64"),
+                                          ("Linux", "x86_64", "linux-x86_64")):
+            with self.subTest(expected=expected), \
+                 mock.patch.object(ci_contract.platform, "system", lambda: system), \
+                 mock.patch.object(ci_contract.platform, "machine", lambda: machine):
+                self.assertEqual(ci_contract.this_host(), expected)
+
+
 class NamingTests(unittest.TestCase):
     def test_title_case_accepts_canonical_spellings(self):
         for name in ("Checks / Harmony Workloads / OCI", "PostgreSQL Index Corruption",
@@ -268,7 +309,8 @@ class CommandTests(unittest.TestCase):
                                (["workflows"], "Checks / Consonance"),
                                (["package-flags", "Dissonance"], "-p searcher"),
                                (["nextest-filter", "vmm-core", "Virtual Time"], "virtual_time"),
-                               (["nextest-orphans", "vmm-core"], "not (")):
+                               (["nextest-orphans", "vmm-core"], "not ("),
+                               (["host-filter", "macos-aarch64"], "binary_id(vmm-backend::hvf_smoke)")):
             with self.subTest(argv=argv):
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):

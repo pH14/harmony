@@ -28,6 +28,15 @@ pub enum BackendError {
     #[error("invalid vcpu state for restore")]
     InvalidState,
 
+    #[error(
+        "ID register {encoding:#06x} requests {requested:#018x}, above the host's {host:#018x}"
+    )]
+    IdRegisterAboveHost {
+        encoding: u32,
+        requested: u64,
+        host: u64,
+    },
+
     #[error("backend internal error: {0}")]
     Internal(&'static str),
 

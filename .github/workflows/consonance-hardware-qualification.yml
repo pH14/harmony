@@ -57,10 +57,11 @@ jobs:
           ls -l /dev/kvm
       - name: Run probe
         run: ./target/debug/x86_kvm_probe | tee probe-report.txt
-      - name: kvm_smoke (live stock-KVM tests; informational at X0)
+      - name: Stock KVM passes the live kvm_smoke tests
         if: always()
-        continue-on-error: true
-        run: cargo test -p vmm-backend --test kvm_smoke -- --ignored --test-threads=1 2>&1 | tee kvm-smoke.txt
+        run: |
+          set -euo pipefail
+          cargo test -p vmm-backend --test kvm_smoke -- --ignored --test-threads=1 2>&1 | tee kvm-smoke.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -611,7 +612,7 @@ jobs:
                 2>&1 | tee "snapshot-report/xsave-canonical-reuse-$prefault.log"
             grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "snapshot-report/xsave-canonical-reuse-$prefault.log"
           done
-      - name: Require preparation to preserve state except raw presence
+      - name: Require preparation and restore guards to preserve state
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}
         run: |
           set -euo pipefail
@@ -625,6 +626,28 @@ jobs:
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee snapshot-report/snapshot-restore-guards.log
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/snapshot-restore-guards.log
+          timeout -k 10 120 cargo test --locked --release -p vmm-backend --lib \
+            kvm_sys::xsave_diagnostic::snapshot_restore_drains_an_acknowledged_write_completion \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee snapshot-report/snapshot-restore-drain.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/snapshot-restore-drain.log
+      - name: Require MXCSR to survive capture and restore
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        env:
+          XSAVE_ENTRY_LONG_MODE: "1"
+        run: |
+          set -euo pipefail
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          for test in \
+            ymm_without_sse_uabi_mxcsr_bytes_survive_capture_and_restore \
+            natural_avx_mxcsr_survives_capture_and_restore; do
+            XSAVE_MXCSR_REPORT_DIR="$PWD/snapshot-report/mxcsr-$test" \
+              timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p vmm-backend --lib \
+                "kvm_sys::xsave_diagnostic::$test" \
+                -- --ignored --exact --test-threads=1 --nocapture \
+                2>&1 | tee "snapshot-report/mxcsr-$test.log"
+            grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "snapshot-report/mxcsr-$test.log"
+          done
       - name: Record original init-state MMIO snapshot characterization
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}
         continue-on-error: true

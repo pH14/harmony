@@ -52,15 +52,11 @@ jobs:
       - name: Compile and link the macOS backend
         run: |
           set -euo pipefail
-          cargo build -p vmm-backend -p vmm-core --bins
+          cargo build -p harmony-cli
           # hvf.rs is the only caller of Hypervisor.framework, and a missing
           # framework or a changed symbol surfaces at link time on this host
           # alone.
-          otool -L target/debug/hvf_probe | grep -q 'Hypervisor.framework'
-          otool -L target/debug/hvf_state_oracle | grep -q 'Hypervisor.framework'
-          otool -L target/debug/hvf_tlb_probe | grep -q 'Hypervisor.framework'
-          otool -L target/debug/hvf_counter_probe | grep -q 'Hypervisor.framework'
-          otool -L target/debug/hvf_roundtrip_probe | grep -q 'Hypervisor.framework'
+          otool -L target/debug/harmony | grep -q 'Hypervisor.framework'
       - name: Run the portable Consonance, Harmony and Dissonance tests
         run: |
           set -euo pipefail
@@ -106,11 +102,8 @@ jobs:
       - name: Compile and link the Arm64 Linux backend
         run: |
           set -euo pipefail
-          cargo build -p vmm-backend -p vmm-core --bins
-          # These binaries exist only where the Arm64 KVM ioctl surface
-          # compiles, so their absence is the failure this host reports.
-          test -x target/debug/arm64_kvm_id_probe
-          test -x target/debug/kvm_arm64_boot
+          # The CLI builds the Arm64 KVM ioctl surface only on this host.
+          cargo build -p harmony-cli
       - name: Run the portable Consonance, Harmony and Dissonance tests
         run: |
           set -euo pipefail

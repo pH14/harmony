@@ -25,6 +25,18 @@ bits, Linux allocated ASIDs above 255, and two processes whose ASIDs differed by
 256 shared TLB entries with no flush between them. After a `fork`, the parent
 then read the child's copy-on-write stack page.
 
+Both arm64 backends refuse a baseline field above the host when the policy is
+applied, so a baseline that over-claims fails at boot. The ignored test
+`contract::tests::this_host_implements_the_baseline_and_the_guest_reads_it`
+applies the baseline to the host's backend, HVF on macOS or KVM on Linux, and
+has a guest read every baseline register back. The pre-push hook runs it on
+Apple silicon and on arm64 Linux, from `HOST_TESTS` in `scripts/ci_contract.py`.
+To run it directly:
+
+```sh
+cargo test -p vmm-core --lib vendor::arm64::contract -- --ignored
+```
+
 `dispatch` routes GIC, PL011, doorbell, and pvclock MMIO to the modeled devices.
 The userspace `gicv3` model is used by the HVF composition; stock arm64 KVM
 owns its GIC in the kernel and does not expose an arbitrary userspace INTID

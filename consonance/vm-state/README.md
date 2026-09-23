@@ -34,9 +34,8 @@ needs the value the guest was reading.
 
 `peek_version` validates the magic and reads the version without decoding the
 rest of the blob. `VM_STATE_VERSION` identifies the only writer and reader
-format. The golden test pins the bytes of a fully populated current state. The
-restore-bits section is validated for wire shape here; vmm-core owns any
-backend-specific validation of the captured XSAVE image.
+format. The restore-bits section is validated for wire shape here; vmm-core owns
+any backend-specific validation of the captured XSAVE image.
 
 ## Ownership boundaries
 

@@ -114,6 +114,26 @@ still fails its job and still uploads the evidence it produced. A required
 hardware test is never downgraded to a successful skip: missing artifacts fail
 the job.
 
+## Ignored tests
+
+A test marked `#[ignore]` needs something a plain `cargo test` lacks, such as a
+hypervisor or a built guest image. Each one has a runner in
+`scripts/ci_contract.py`, named as `<binary-id> <test>` the way
+`cargo nextest list` prints it, with `*` for a whole binary:
+
+- `Job.ignored_tests` lists what a CI job runs with `--ignored`.
+  `ci-ignored-tests` checks that the job's steps pass `--ignored` and name each
+  binary and test it lists.
+- `HOST_TESTS` lists tests that need a hypervisor no hosted runner offers, keyed
+  by the `<os>-<arch>` of a machine that has one. The pre-push hook runs the
+  entry for the machine it is on, selected by
+  `python3 scripts/ci_contract.py host-filter`.
+
+`Checks / Repository` runs `python3 scripts/check-test-partition.py ignored` on
+x86-64 Linux, arm64 Linux and arm64 macOS. It lists every ignored test that
+builds on that host and fails on one with no runner. A test that no job or
+machine runs is deleted.
+
 ## Audiovisual evidence
 
 Both NES compositions publish video with game audio: a bounded capture in the
@@ -191,8 +211,8 @@ full search lives in Benchmarks and pull requests do not run it.
 
 1. Add or change the `Workflow` and `Job` entries in `scripts/ci_contract.py`:
    the path, the qualified name, the owner, each job's display name, trigger
-   class, budget, any exception, its `ci-scope` kind and any media it must
-   capture.
+   class, budget, any exception, its `ci-scope` kind, the ignored tests it
+   runs and any media it must capture.
 2. Write the workflow file so its name, triggers and job display names match.
 3. Run `python3 scripts/custom-lints.py`. Every difference between the file and
    the registry is reported with the rule that owns it.
@@ -219,6 +239,7 @@ under a `ci-` rule cannot be recorded in the lint baseline.
 | `ci-trigger-routing` | A `pr` job runs on pull requests, a `full` job proves it does not, and no pull request job starts a full search. |
 | `ci-trigger-exception` | Mixed trigger classes carry a registered reason. |
 | `ci-scope-routing` | One selector per job, complete checkout, guarded steps. |
+| `ci-ignored-tests` | A job that runs ignored tests registers them, and its steps name each one it registers. |
 | `ci-analysis-grouping` | Coverage, Miri, mutation and proofs sit in the owning component's Analysis workflow. |
 | `ci-host-compatibility` | Each supported host keeps a bounded job. |
 | `ci-nes-compositions` | Both NES compositions keep a check and a benchmark and run their registered backend. |
@@ -257,6 +278,7 @@ python3 -m unittest discover -s scripts -p 'test_ci_*.py'
 python3 -m unittest discover -s scripts -p 'test_*scope.py'
 python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
 python3 scripts/custom-lints.py
+python3 scripts/check-test-partition.py ignored
 node --test scripts/benchmark-report.test.cjs
 ```
 

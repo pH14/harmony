@@ -6,7 +6,7 @@
 # GitHub-hosted runner / .github/workflows/quality.yml) — it runs the *fast*
 # cross-platform checks so a developer gets early signal:
 #
-#   fmt -> clippy (-D warnings) -> nextest
+#   fmt -> clippy (-D warnings) -> nextest -> this machine's hypervisor tests
 #
 # Miri is deliberately NOT here: it runs only in CI (the nightly.yml miri
 # jobs) — interpreting the unsafe crates costs ~10 minutes locally, which
@@ -35,6 +35,20 @@ if command -v cargo-nextest >/dev/null 2>&1; then
 else
     echo "   (cargo-nextest not installed; falling back to cargo test)"
     cargo test --all-features
+fi
+
+# Hosted runners have no hypervisor for some architectures, so the ignored
+# tests that need one run here on a machine that has it. HOST_TESTS in
+# scripts/ci_contract.py lists them per machine.
+echo "== pre-push: this machine's hypervisor tests"
+filter=$(python3 scripts/ci_contract.py host-filter)
+if [ -z "$filter" ]; then
+    echo "   (no hypervisor tests are registered for this machine)"
+elif command -v cargo-nextest >/dev/null 2>&1; then
+    cargo nextest run --all-features --run-ignored only -E "$filter"
+else
+    echo "   cargo-nextest is required to run this machine's hypervisor tests: cargo install cargo-nextest" >&2
+    exit 1
 fi
 
 echo "== pre-push: all fast checks passed"

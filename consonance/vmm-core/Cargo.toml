@@ -97,7 +97,6 @@ vmm-backend = { path = "../vmm-backend", version = "0.1.0", features = ["mock"] 
 # alongside `path` (cargo-deny wildcard ban).
 lapic = { path = "../lapic", version = "0.1.0" }
 proptest = "1"
-# The `tasks/112` M3 TCG smoke (`tests/arm64_tcg_smoke.rs`, `#[ignore]`d) writes
-# the assembled Image payload + the DTB this vendor emits to a scratch dir and
-# boots them on qemu. Whitelist dev-dependency (rule #5).
+# The witness tests in `tests/x86_kvm_linux_virtual_time.rs` write retained
+# checkpoint witnesses to a scratch dir. Whitelist dev-dependency (rule #5).
 tempfile = "3"

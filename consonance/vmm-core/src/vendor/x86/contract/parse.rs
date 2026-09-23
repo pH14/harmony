@@ -294,8 +294,6 @@ pub(crate) struct Contract {
     pub vtime_arch_control_vns: i64,
     pub vtime_execution_tick_vns: i64,
     pub vtime_clockevent_period_vns: i64,
-    #[cfg(test)]
-    pub contract_hash: Option<String>,
     pub cpuid: Vec<CpuidRow>,
     pub msr: Vec<MsrRow>,
     pub insn: Vec<InsnRow>,
@@ -554,8 +552,6 @@ impl Contract {
                 .get("vtime-clockevent-period-vns")
                 .map(TomlValue::as_int)
                 .unwrap_or_default(),
-            #[cfg(test)]
-            contract_hash: c.get("contract_hash").map(|v| v.as_str().to_string()),
             cpuid,
             msr,
             insn,

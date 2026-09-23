@@ -363,6 +363,10 @@ pub enum vmm_backend::BackendError
 pub vmm_backend::BackendError::BadCompletion
 pub vmm_backend::BackendError::Capability
 pub vmm_backend::BackendError::Capability::cap: &'static str
+pub vmm_backend::BackendError::IdRegisterAboveHost
+pub vmm_backend::BackendError::IdRegisterAboveHost::encoding: u32
+pub vmm_backend::BackendError::IdRegisterAboveHost::host: u64
+pub vmm_backend::BackendError::IdRegisterAboveHost::requested: u64
 pub vmm_backend::BackendError::Internal(&'static str)
 pub vmm_backend::BackendError::InvalidState
 pub vmm_backend::BackendError::Io(std::io::error::Error)

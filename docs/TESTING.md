@@ -115,6 +115,8 @@ suite uses these checks:
 
 - empty manifests, empty oracle lists, and zero-checkpoint identity runs fail;
 - missing hardware prerequisites produce an unrun or inconclusive result;
+- every ignored test has a registered runner, and CI fails on one without, as
+  `docs/WORKFLOWS.md` describes;
 - bounded-prefix results report where verification stopped;
 - seed-sensitivity requires distinct seeds and terminal executions;
 - comparators are exercised against deliberately corrupted state, schedules,
@@ -136,7 +138,12 @@ by asking TypeSafe's Jev model whether a changed file reads as a run record
 or status report, carries decision residue (a rejected alternative, an old
 name, a reviewer-driven change), or names one of the project's own workloads
 (a specific game, database, or distributed system) in workload-agnostic
-code. It needs
+code. It also asks whether a standalone program outside `workloads/` (a
+`src/bin` target or a Python or shell script) is a one-off: nothing in CI,
+build configuration, or a shipped command runs it, and a person starts it by
+hand to read what it prints. The model sees every line elsewhere in the
+repository that names the program. Checks a probe would print belong in tests
+that assert, ignored when they need hardware. It needs
 `TYPESAFE_API_KEY`; without it, it prints a skip message and passes. Known
 semantic violations that predate the check are recorded in
 `docs/semantic-lints-baseline.json`; use `--update-baseline` to refresh reviewed

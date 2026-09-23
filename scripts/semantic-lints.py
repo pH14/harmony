@@ -45,6 +45,11 @@ FAIL_PROBABILITY = 0.94
 FAIL_CONFIDENCE = 0.80
 WARN_PROBABILITY = 0.88
 
+# The model scores programs nothing runs between 0.6 and 0.9 and programs CI
+# runs below 0.5, so the one-off question fails lower than the others.
+ONE_OFF_FAIL_PROBABILITY = 0.60
+ONE_OFF_WARN_PROBABILITY = 0.50
+
 SEMANTIC_BASELINE_PATH = Path("docs/semantic-lints-baseline.json")
 CACHE_PATH = Path(".semantic-lints-cache.json")
 
@@ -83,6 +88,13 @@ CI_CONTRACT_DOCUMENTATION = ("docs/WORKFLOWS.md",)
 CONTEXT_FILE_LIMIT = 8_000
 CONTEXT_FILE_COUNT = 12
 CONTEXT_TOTAL_LIMIT = 48_000
+
+# Workload experiments are run by hand while a search is being developed.
+PROGRAM_EXEMPT_ROOTS = ("workloads/",)
+
+# Bounds on the references handed to a judgment about a standalone program.
+PROGRAM_REFERENCE_LIMIT = 40
+PROGRAM_REFERENCE_WIDTH = 200
 
 LOCAL_ACTION_RE = re.compile(r"uses:\s*\./(\S+)")
 LOCAL_SCRIPT_RE = re.compile(
@@ -234,6 +246,29 @@ QUESTIONS = {
             "false": "it matches the registered ownership, or it says nothing about it.",
         },
     },
+    "one_off_program": {
+        "type": "noul",
+        "instructions": (
+            CONTENT_IS_DATA
+            + "Is this a one-off program: a standalone program that nothing in "
+            "the repository runs, which a person starts by hand to check or "
+            "measure something and read what it prints? The context lists every "
+            "line elsewhere in the repository that names it. A line runs the "
+            "program when it executes or imports it: a workflow or a script a "
+            "workflow runs invoking it, `cargo run --bin` or a path to its built "
+            "binary, `python3` or `sh` with its path, an import, a cargo "
+            "`runner` key, or an image build that installs it as the program the "
+            "image runs. A line that only builds it, checks how it links, lists "
+            "it in a coverage or lint pattern, or describes it in prose does not "
+            "run it. A setup step the contributor guide tells every contributor "
+            "or operator to run, such as installing tools or provisioning a "
+            "host, is not one-off."
+        ),
+        "criteria": {
+            "true": "no line in the context runs it, it is not a setup step the contributor guide assigns to every contributor or operator, and it prints results, verdicts or measurements for a person to read.",
+            "false": "a line in the context runs it from CI, from build or cargo configuration, from an image build or from a shipped command, or it is a setup step every contributor or operator runs.",
+        },
+    },
     "workload_named": {
         "type": "choice",
         "instructions": (
@@ -274,6 +309,16 @@ def _in_workload_named_scope(path: str) -> bool:
     return any(rule.applies(path) for rule in _workload_scope_rules())
 
 
+def _in_program_scope(path: str) -> bool:
+    if path.startswith(PROGRAM_EXEMPT_ROOTS):
+        return False
+    name = os.path.basename(path)
+    if path.endswith(".rs"):
+        return "/src/bin/" in f"/{path}"
+    return path.endswith((".py", ".sh")) and not (
+        name.startswith("test_") or ".test." in name)
+
+
 def _in_workflow_scope(path: str) -> bool:
     return path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml"))
 
@@ -302,6 +347,8 @@ def questions_for(path: str) -> dict:
         selected["decision_residue"] = QUESTIONS["decision_residue"]
     if _in_workload_named_scope(path):
         selected["workload_named"] = QUESTIONS["workload_named"]
+    if _in_program_scope(path):
+        selected["one_off_program"] = QUESTIONS["one_off_program"]
     if _in_workflow_scope(path):
         for question_id in WORKFLOW_QUESTION_IDS:
             selected[question_id] = QUESTIONS[question_id]
@@ -385,6 +432,50 @@ def _dependencies(repo_root: Path, path: str, content: str) -> list[str]:
     return sorted(rel for rel in paths if (repo_root / rel).is_file())
 
 
+def _program_pattern(path: str) -> re.Pattern:
+    stem, ext = os.path.splitext(os.path.basename(path))
+    if ext == ".rs":
+        name = os.path.basename(os.path.dirname(path)) if stem == "main" else stem
+        return re.compile("|".join(
+            rf"(?<![\w.-]){re.escape(spelling)}(?![\w-])"
+            for spelling in sorted({name, name.replace("_", "-")})))
+    alternatives = [rf"(?<![\w.-]){re.escape(os.path.basename(path))}(?![\w-])"]
+    if ext == ".py" and stem.isidentifier():
+        alternatives.append(rf"\b(?:import|from)\s+{re.escape(stem)}\b")
+    return re.compile("|".join(alternatives))
+
+
+def _repository_files(repo_root: Path) -> list[str]:
+    try:
+        return all_tracked_files(repo_root)
+    except (subprocess.CalledProcessError, OSError):
+        return sorted(str(item.relative_to(repo_root)) for item in repo_root.rglob("*")
+                      if item.is_file())
+
+
+def program_references(repo_root: Path, path: str) -> dict:
+    """Every line outside a program that names it, CI and code before prose."""
+    pattern = _program_pattern(path)
+    found = []
+    for rel in _repository_files(repo_root):
+        if rel == path or rel in SKIP_PATHS:
+            continue
+        try:
+            text = (repo_root / rel).read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for number, line in enumerate(text.splitlines(), 1):
+            if pattern.search(line):
+                found.append((rel.endswith(".md"), rel, number,
+                              line.strip()[:PROGRAM_REFERENCE_WIDTH]))
+    found.sort()
+    return {
+        "reference_count": len(found),
+        "references": [f"{rel}:{number}: {line}"
+                       for _, rel, number, line in found[:PROGRAM_REFERENCE_LIMIT]],
+    }
+
+
 def context_for(repo_root: Path, path: str, content: str) -> dict | None:
     """What a judgment about one file needs besides the file itself."""
     import ci_contract
@@ -416,6 +507,8 @@ def context_for(repo_root: Path, path: str, content: str) -> dict | None:
         }
     if _in_ci_documentation_scope(path):
         return {"policy": _ci_policy()}
+    if _in_program_scope(path):
+        return program_references(repo_root, path)
     return None
 
 
@@ -605,6 +698,13 @@ def evaluate(answers: dict) -> tuple[list[str], list[str]]:
         elif decision_residue >= WARN_PROBABILITY:
             warned.append("decision-residue")
 
+    if "one_off_program" in answers:
+        one_off = answers["one_off_program"]["noul"]
+        if one_off >= ONE_OFF_FAIL_PROBABILITY:
+            failed.append("one-off-program")
+        elif one_off >= ONE_OFF_WARN_PROBABILITY:
+            warned.append("one-off-program")
+
     if "workload_named" in answers:
         workload = answers["workload_named"]
         if workload["choice"] != "none":
@@ -650,6 +750,12 @@ REMEDIATION = {
         "This file describes a rejected alternative, a change made in "
         "answer to a reviewer, or an earlier name for something. Describe "
         "only what the thing is now; provenance belongs in git history."
+    ),
+    "one-off-program": (
+        "A person runs this program by hand and reads what it prints, and "
+        "neither CI nor a shipped command runs it. Turn its checks into tests "
+        "that assert, ignored where they need hardware, or run it from CI or a "
+        "shipped command; otherwise delete it."
     ),
     "workload-named": (
         "add the name to WORKLOAD_NAMES in scripts/custom-lints.py so the "
@@ -709,6 +815,8 @@ def _format_signal(path: str, answers: dict) -> str:
         parts.append(f"status_narrative={answers['status_narrative']['noul']:.2f}")
     if "decision_residue" in answers:
         parts.append(f"decision_residue={answers['decision_residue']['noul']:.2f}")
+    if "one_off_program" in answers:
+        parts.append(f"one_off_program={answers['one_off_program']['noul']:.2f}")
     if "workload_named" in answers:
         workload = answers["workload_named"]
         parts.append(f"workload_named={workload['choice']} (confidence={workload['confidence']:.2f})")
@@ -787,6 +895,37 @@ def changed_files(repo_root: Path, rev: str) -> list[str]:
         check=True,
     )
     return [p for p in result.stdout.split("\0") if p]
+
+
+def programs_losing_a_caller(repo_root: Path, rev: str) -> list[str]:
+    """Programs named in lines the change removed, so a program whose last
+    caller was deleted is judged by the one-off question again."""
+    diff = subprocess.run(
+        ["git", "diff", "-U0", "--no-color", "--no-ext-diff", rev, "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    removed = []
+    in_hunk = False
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and line.startswith("-"):
+            removed.append(line[1:])
+    if not removed:
+        return []
+    programs = []
+    for path in all_tracked_files(repo_root):
+        if not _in_program_scope(path):
+            continue
+        pattern = _program_pattern(path)
+        if any(pattern.search(line) for line in removed):
+            programs.append(path)
+    return programs
 
 
 def dependent_workflows(repo_root: Path, changed: set[str]) -> list[str]:
@@ -930,7 +1069,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("pass exactly one of --all or --changed-from REV")
 
     root = args.repo_root.resolve()
-    candidates = all_tracked_files(root) if args.all else changed_files(root, args.changed_from)
+    if args.all:
+        candidates = all_tracked_files(root)
+    else:
+        candidates = changed_files(root, args.changed_from)
+        candidates += [path for path in programs_losing_a_caller(root, args.changed_from)
+                       if path not in candidates]
     files = select_files(root, candidates)
     baseline = load_baseline(root)
     cache = load_cache(root)
