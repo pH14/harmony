@@ -4,6 +4,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+static void ignore_json(const char *data, size_t size)
+{
+    (void)data;
+    (void)size;
+}
+#define HARMONY_JSON(data, size) ignore_json((data), (size))
 #include "../fault_runtime.c"
 
 int main(void)

@@ -5,10 +5,10 @@ use std::sync::Arc;
 use consonance_client::cache::{CacheIndex, Lease, Namespace};
 use control_proto::SnapId;
 
-use crate::target::{FaultAction, actions_key};
+use crate::target::{ACTION_KEY_WIDTH, FaultAction, actions_key};
 
 pub const CHAIN_LIMIT: usize = 32;
-const KEY_WIDTH: usize = size_of::<[u8; 8]>();
+const KEY_WIDTH: usize = ACTION_KEY_WIDTH;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Point {
@@ -243,7 +243,7 @@ mod tests {
             FaultAction::EventKill { node: 3, rarity: 1 },
             FaultAction::EventPark {
                 node: 3,
-                rarity: 1,
+                edges: 1,
                 hold_us: 9,
             },
             FaultAction::Pause(3, 9),

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
+    collections::BTreeMap,
     error::Error,
     io::Write,
     num::NonZeroU64,
@@ -127,6 +128,7 @@ pub struct FaultCampaignEvidence {
     champion_milestones: FaultMilestones,
     bugs: Vec<FaultBugRecord>,
     assertions: Assertions,
+    park_sites: BTreeMap<u64, u64>,
 }
 
 pub type FaultCampaignOrigin = CampaignOrigin<FaultWorkload>;
@@ -361,6 +363,7 @@ impl Reporting for FaultWorkload {
             bugs: evidence.bugs.clone(),
             selector: state.selector,
             assertions: evidence.assertions.clone(),
+            park_sites: evidence.park_sites.clone(),
         }
     }
 }
@@ -743,6 +746,9 @@ impl Evaluation for FaultWorkload {
         merge_milestones(&mut evidence.aggregate, action.milestones);
         for observation in &action.observations {
             evidence.assertions.merge(&observation.assertions);
+            for park in &observation.parks {
+                *evidence.park_sites.entry(park.site).or_default() += 1;
+            }
         }
         evidence.watchdog_cutoffs = evidence.watchdog_cutoffs.saturating_add(
             action

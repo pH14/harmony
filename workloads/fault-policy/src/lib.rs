@@ -25,11 +25,12 @@ pub use standing::{
     encode_standing, encode_windows, parse_standing,
 };
 
-pub const CATALOG_VERSION: u16 = 5;
+pub const CATALOG_VERSION: u16 = 6;
 
 pub const MAX_SUPPLY_LEN: u32 = 1 << 20;
 
 pub const EVENT_RARITY_LIMIT: u8 = 64;
+pub const EVENT_PARK_EDGE_LIMIT: u32 = process_proto::events::EVENT_PARK_EDGE_LIMIT;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Outcome {
