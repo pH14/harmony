@@ -1285,6 +1285,10 @@ def _commands(statement: str):
                 quote = None
         elif char in "'\"":
             quote = char
+        elif char == "\\":
+            command += statement[index:index + 2]
+            index += 2
+            continue
         elif char in ";&|":
             index += 2 if statement[index:index + 2] in ("&&", "||") else 1
             yield command

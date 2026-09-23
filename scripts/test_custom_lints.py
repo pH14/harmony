@@ -390,6 +390,11 @@ class PinnedSeedOutcomeTests(unittest.TestCase):
         content = "grep -Eq 'seed=[0-9a-f]{16}|OK seed=77' report.txt\n"
         self.assertEqual(self.check(rel, content), ["ci-pinned-seed-outcome"])
 
+    def test_a_pinned_seed_after_an_escaped_bar_is_rejected(self):
+        rel = "scripts/example.sh"
+        content = "grep -Eq foo\\|seed=77 report.txt\n"
+        self.assertEqual(self.check(rel, content), ["ci-pinned-seed-outcome"])
+
     def test_a_pinned_seed_across_a_line_continuation_is_rejected(self):
         rel = "scripts/example.sh"
         content = ("grep -Eq \\\n"
