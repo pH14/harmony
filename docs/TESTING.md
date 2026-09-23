@@ -143,12 +143,15 @@ code. It also asks whether a standalone program outside `workloads/` (a
 build configuration, or a shipped command runs it, and a person starts it by
 hand to read what it prints. The model sees every line elsewhere in the
 repository that names the program. Checks a probe would print belong in tests
-that assert, ignored when they need hardware. It needs
-`TYPESAFE_API_KEY`; without it, it prints a skip message and passes. Known
-semantic violations that predate the check are recorded in
-`docs/semantic-lints-baseline.json`; use `--update-baseline` to refresh reviewed
-entries. Static checks use `docs/custom-lints-baseline.json` where permitted;
-repository vocabulary and CI contract violations cannot be baselined.
+that assert, ignored when they need hardware. The judgments need
+`TYPESAFE_API_KEY`; without it, they print a skip message and pass. Semantic
+violations that predate the check are recorded in
+`docs/semantic-lints-baseline.json`, and that file only shrinks. A new finding
+is fixed in the file. `--update-baseline` removes entries for fixed files and
+exits nonzero on a new finding. `--changed-from REV` fails when the baseline
+holds an entry that REV does not, with or without the key. Static checks use
+`docs/custom-lints-baseline.json` where permitted; repository vocabulary and
+CI contract violations cannot be baselined.
 
 Development commands and CI configuration live in contributor guidance and
 automation. Component-specific fixtures and format details live beside their

@@ -544,6 +544,128 @@ class MainChangedFromBaselineTests(RequiresApiKey):
             self.assertEqual(baseline, {"run-record": ["untouched.md"]})
 
 
+class BaselineOnlyShrinksTests(RequiresApiKey):
+    BASELINE = "docs/semantic-lints-baseline.json"
+
+    def _git(self, root: Path, *args: str) -> None:
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True)
+
+    def _commit(self, root: Path, files: dict, message: str) -> None:
+        for name, content in files.items():
+            path = root / name
+            if content is None:
+                path.unlink()
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content if isinstance(content, str) else json.dumps(content))
+        self._git(root, "add", "-A")
+        self._git(root, "commit", "-q", "-m", message)
+
+    def _init(self, root: Path) -> None:
+        self._git(root, "init", "-q")
+        self._git(root, "config", "user.email", "test@example.com")
+        self._git(root, "config", "user.name", "Test")
+
+    def _main(self, args: list[str], post) -> tuple[int, str]:
+        stderr = io.StringIO()
+        with mock.patch.object(LINTS, "_http_post", post), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+            code = LINTS.main(args)
+        return code, stderr.getvalue()
+
+    def test_update_baseline_refuses_a_new_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "docs").mkdir()
+            original = json.dumps({"run-record": ["old.md"]})
+            (root / self.BASELINE).write_text(original)
+            (root / "RUNS.md").write_text("seed 42 reached the boss at 3.1M executions\n")
+            answers = full_answers(file_kind="run_record", file_kind_confidence=0.95)
+            with mock.patch.object(LINTS, "all_tracked_files", return_value=["RUNS.md"]):
+                code, stderr = self._main(
+                    ["--repo-root", directory, "--all", "--update-baseline"], make_post(answers))
+            self.assertEqual(code, 1)
+            self.assertEqual((root / self.BASELINE).read_text(), original)
+            self.assertIn(f"[run-record] {LINTS.REMEDIATION['run-record']}", stderr)
+            self.assertIn("RUNS.md: file_kind=run_record", stderr)
+
+    def test_update_baseline_removes_a_fixed_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "docs").mkdir()
+            (root / self.BASELINE).write_text(
+                json.dumps({"run-record": ["fixed.md", "untouched.md"]}))
+            (root / "fixed.md").write_text("This component does X.\n")
+            answers = full_answers(file_kind="component_reference")
+            with mock.patch.object(LINTS, "all_tracked_files", return_value=["fixed.md"]):
+                code, _ = self._main(
+                    ["--repo-root", directory, "--all", "--update-baseline"], make_post(answers))
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads((root / self.BASELINE).read_text()),
+                             {"run-record": ["untouched.md"]})
+
+    def test_an_entry_absent_at_rev_fails_and_suppresses_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._init(root)
+            self._commit(root, {"old.md": "an old record\n",
+                                self.BASELINE: {"run-record": ["old.md"]}}, "base")
+            self._commit(root, {"new.md": "seed 42 reached the boss\n",
+                                self.BASELINE: {"run-record": ["new.md", "old.md"]}}, "grow")
+            answers = full_answers(file_kind="run_record", file_kind_confidence=0.95)
+            code, stderr = self._main(
+                ["--repo-root", directory, "--changed-from", "HEAD^1"], make_post(answers))
+            self.assertEqual(code, 1)
+            self.assertIn("[baseline-grew]", stderr)
+            self.assertIn("    [run-record] new.md\n", stderr)
+            self.assertNotIn("    [run-record] old.md\n", stderr)
+            self.assertIn(f"[run-record] {LINTS.REMEDIATION['run-record']}", stderr)
+            self.assertIn("new.md: file_kind=run_record", stderr)
+
+    def test_a_baseline_absent_at_rev_is_empty_there(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._init(root)
+            self._commit(root, {"old.md": "an old record\n"}, "base")
+            self._commit(root, {self.BASELINE: {"run-record": ["old.md"]}}, "add baseline")
+            code, stderr = self._main(
+                ["--repo-root", directory, "--changed-from", "HEAD^1"],
+                make_post(full_answers(file_kind="component_reference")))
+            self.assertEqual(code, 1)
+            self.assertIn("[baseline-grew]", stderr)
+            self.assertIn("    [run-record] old.md\n", stderr)
+
+    def test_growth_fails_without_the_api_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._init(root)
+            self._commit(root, {"old.md": "an old record\n",
+                                self.BASELINE: {"run-record": []}}, "base")
+            self._commit(root, {self.BASELINE: {"run-record": ["old.md"]}}, "grow")
+            calls: list = []
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("TYPESAFE_API_KEY", None)
+                code, stderr = self._main(
+                    ["--repo-root", directory, "--changed-from", "HEAD^1"],
+                    make_post(full_answers(), calls))
+            self.assertEqual(code, 1)
+            self.assertIn("    [run-record] old.md\n", stderr)
+            self.assertEqual(calls, [])
+
+    def test_a_shrunk_baseline_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._init(root)
+            self._commit(root, {"gone.md": "a record\n", "old.md": "an old record\n",
+                                self.BASELINE: {"run-record": ["gone.md", "old.md"]}}, "base")
+            self._commit(root, {"gone.md": None,
+                                self.BASELINE: {"run-record": ["old.md"]}}, "shrink")
+            code, stderr = self._main(
+                ["--repo-root", directory, "--changed-from", "HEAD^1"],
+                make_post(full_answers(file_kind="component_reference")))
+            self.assertEqual(code, 0, stderr)
+
+
 class CiArchitectureTests(RequiresApiKey):
     """The CI architecture questions: scope, context, invalidation and verdicts."""
 
