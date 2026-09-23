@@ -80,18 +80,12 @@ a restore rewinds guest RAM and registers while the hardware keeps translations
 the abandoned execution installed, and the guest reads the wrong physical page
 through an address the restored page tables map elsewhere. That reads as
 narrow, register-shaped corruption in an arbitrary guest process rather than as
-a fault. `hvf_tlb_probe` reads a page through a translation it warmed,
-replaces the page-table entry, restores, and reads again; it fails when the
-guest sees the old page. Its second stage repeats the sequence with a
-guest-issued `tlbi` so a stage that cannot observe the replacement at all is
-distinguishable from a stale translation. The `ic ialluis` covers code the
-abandoned execution wrote and ran on a page whose bytes the restore then left
-alone because they already matched the snapshot. Host writes to guest RAM go
-through `Backend::invalidate_instruction_cache`, which HVF clips to the host
-ranges it mapped. Both probe stages need a real
-hypervisor, so they run on a host, not on a CI runner. Stage 2 never changes
-across a restore and needs no maintenance: the host allocation behind guest RAM
-keeps its address.
+a fault. The `ic ialluis` covers code the abandoned execution wrote and ran on
+a page whose bytes the restore then left alone because they already matched
+the snapshot. Host writes to guest RAM go through
+`Backend::invalidate_instruction_cache`, which HVF clips to the host ranges it
+mapped. Stage 2 never changes across a restore and needs no maintenance: the
+host allocation behind guest RAM keeps its address.
 
 A watchdog cancellation requested before the stub's guest entry is consumed by
 that entry and retires no instruction, so the stub entry is retried once. The
@@ -107,19 +101,22 @@ the guest runs, so a save taken after a restore reports a later value than the
 one restored, and it stays out of the state hash and the divergence components
 for that reason.
 
-`hvf_counter_probe` restores one snapshot, reads the counter, burns a scaling
-number of further restores of the same snapshot, and reads again; before the
-rewind the second read ran ahead in proportion to the restores burned.
-`hvf_roundtrip_probe` runs a loop of integer, memory and SIMD work either
-straight through, with a save and restore between every step, or rebranched
-from a mid-loop snapshot, and compares the accumulator the guest computed.
+ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
+so portable snapshot import rejects their known invalid vCPU records before
+guest RAM or backend state is changed.
 
-The HVF state oracle uses the default policy with virtual timer masking enabled.
-It round trips valid general, SIMD/floating-point, system-register, debug,
-timer, and pending-interrupt records up to the counter's advance, and rejects
-unmasked or reserved timer-control states before mutating the vCPU. ARM KVM and HVF expose pure restore-shape checks through the `Backend`
-trait, so portable snapshot import rejects their known invalid vCPU records
-before guest RAM or backend state is changed.
+`HvfBackend::set_policy` reads HVF's own value of each `ID_AA64*` feature
+register before writing the policy's value, and fails with
+`BackendError::IdRegisterAboveHost` when any 4-bit field asks for more than
+the host implements. The guest sizes its use of the hardware from these fields,
+and Hypervisor.framework accepts any value written to them. ARM KVM makes the
+same check inside `KVM_SET_ONE_REG`. Fields compare as unsigned levels, except
+the signed fields `PFR0.FP`, `PFR0.AdvSIMD`, `DFR0.DoubleLock`,
+`MMFR0.TGran64` and `MMFR0.TGran4`, where all ones means absent. `PFR0.GIC` is
+not compared because the VMM implements the GIC system registers by trapping
+them. The stage-2 and EL2 fields `MMFR0.TGran*_2`, `MMFR1.VMIDBits`,
+`MMFR1.VH`, `MMFR2.FWB` and `MMFR2.EVT` are not compared because the guest
+runs at EL1 and never uses them.
 
 ARM KVM saves the guest's system registers as the guest left them and never
 normalizes a value the guest wrote. TCR_EL1.AS selects 8-bit or 16-bit ASIDs, and
@@ -134,6 +131,25 @@ carry their own admission check, and these two do not. ARM KVM does no
 stage-1 translation invalidation on restore either; whether it needs the
 maintenance HVF needs is unmeasured, and an Arm KVM host is where that is
 settled.
+
+## Live HVF tests
+
+`tests/hvf_smoke.rs` runs small hand-assembled guests on Hypervisor.framework.
+It checks that a restore drops guest translations cached before it, that a
+restore puts the guest counter back, that saving and restoring between steps or
+branching from a snapshot does not change what the guest computes, that every
+vCPU state class reads back after a restore, that restore rejects timer states
+HVF cannot hold, and that `set_policy` rejects an ID field above the host. The
+tests are ignored because hosted runners have no hypervisor. On Apple silicon:
+
+```sh
+cargo test -p vmm-backend --test hvf_smoke -- --ignored
+```
+
+The repository's cargo runner for `aarch64-apple-darwin`,
+`scripts/macos-hvf-runner.sh`, signs each binary with `hvf.entitlements.plist`
+before it runs, so these tests and a `cargo run` of the CLI need no manual
+`codesign` step.
 
 ## Preparing x86 KVM snapshot boundaries
 

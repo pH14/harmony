@@ -129,6 +129,80 @@ mod tests {
         assert_ne!(contract_hash(), with_timing);
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+    fn live_backend() -> vmm_backend::HvfBackend {
+        vmm_backend::HvfBackend::new()
+            .expect("HvfBackend::new needs Apple silicon and the hypervisor entitlement")
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+    fn live_backend() -> vmm_backend::Arm64KvmBackend<vmm_backend::LiveKvm> {
+        vmm_backend::Arm64KvmBackend::new(
+            vmm_backend::LiveKvm::new().expect("LiveKvm::new needs /dev/kvm on an arm64 host"),
+        )
+    }
+
+    #[cfg(all(
+        target_arch = "aarch64",
+        any(target_os = "macos", target_os = "linux"),
+        not(miri)
+    ))]
+    #[test]
+    #[ignore = "live arm64 hypervisor; run on Apple silicon or an arm64 KVM host with --ignored"]
+    fn this_host_implements_the_baseline_and_the_guest_reads_it() {
+        use vmm_backend::{Backend, CommonExit, Exit, Gpa};
+
+        const RAM_GPA: u64 = 0x4000_0000;
+        const MMIO_GPA: u64 = 0x0900_0000;
+        const PSTATE_EL1H_MASKED: u64 = 0x3c5;
+        const MRS_X0: u32 = 0xd530_0000;
+        const STR_X0_TO_X1: u32 = 0xf900_0020;
+        const B_SELF: u32 = 0x1400_0000;
+
+        let registers: Vec<(u32, u64)> = IDENTITY_BASELINE
+            .into_iter()
+            .chain(READ_ONLY_IDENTITY_BASELINE)
+            .collect();
+        let program: Vec<u32> = registers
+            .iter()
+            .flat_map(|&(encoding, _)| [MRS_X0 | (encoding << 5), STR_X0_TO_X1])
+            .chain([B_SELF])
+            .collect();
+        let mut ram = crate::vmm::GuestRam::new(0x10_0000).expect("guest RAM");
+        for (slot, word) in program.iter().enumerate() {
+            ram.as_mut_bytes()[slot * 4..slot * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+
+        let mut backend = live_backend();
+        if let Err(error) = backend.set_policy(&policy()) {
+            panic!("this host must implement every ID field the baseline claims: {error}");
+        }
+        // SAFETY: `ram` is an anonymous mapping declared before `backend`, so
+        // it outlives the mapping; it never moves; the host does not touch it
+        // while the guest runs; and mmap returns host-page-aligned memory.
+        unsafe { backend.map_memory(Gpa(RAM_GPA), ram.as_mut_bytes()) }.expect("map_memory");
+        backend.invalidate_instruction_cache(ram.as_bytes().as_ptr() as usize, ram.len());
+        let mut state = backend.save().expect("save");
+        state.core.pc = RAM_GPA;
+        state.core.x[1] = MMIO_GPA;
+        state.core.pstate = PSTATE_EL1H_MASKED;
+        backend.restore(&state).expect("restore");
+
+        for (encoding, expected) in registers {
+            match backend.run() {
+                Ok(Exit::Common(CommonExit::Mmio {
+                    gpa,
+                    write: Some(value),
+                    ..
+                })) if gpa == Gpa(MMIO_GPA) => assert_eq!(
+                    value, expected,
+                    "the guest read ID register {encoding:#06x} as {value:#018x}"
+                ),
+                other => panic!("expected the guest's read of {encoding:#06x}, got {other:?}"),
+            }
+        }
+    }
+
     fn recompute(p: &Arm64Policy, t: VirtualTimeTiming) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update(b"harmony-arm64-cross-host-baseline-v3\0");
