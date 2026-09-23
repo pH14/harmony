@@ -2,7 +2,7 @@
 
 pub mod catalog;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod watchdog;
 
 #[cfg(all(feature = "in-process", not(miri)))]

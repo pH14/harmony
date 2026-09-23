@@ -99,6 +99,12 @@ doubling only while its completed generation is stale or faults remain pending.
 `actions_applied` remains the recorded input prefix, while `settle_actions` and
 `settle_ticks` account for that deterministic validation tail.
 
+## macOS
+
+Hypervisor.framework allows one virtual machine per process, so a macOS run
+takes one worker per process. A worker releases its target when it finishes so
+the next one can boot a virtual machine in that process.
+
 ## Running it
 
 ```

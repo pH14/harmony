@@ -104,6 +104,11 @@ impl Arm64ArchitecturalState {
         write_u64(&mut out, "sysregs.tpidr_el1", self.vcpu.sysregs.tpidr_el1)?;
         write_u64(
             &mut out,
+            "sysregs.tpidrro_el0",
+            self.vcpu.sysregs.tpidrro_el0,
+        )?;
+        write_u64(
+            &mut out,
             "sysregs.cntkctl_el1",
             self.vcpu.sysregs.cntkctl_el1,
         )?;
@@ -159,7 +164,6 @@ impl Arm64ArchitecturalState {
             self.vcpu.vtimer.cntv_cval_el0,
         )?;
         write_bool(&mut out, "vtimer.masked", self.vcpu.vtimer.masked)?;
-        write_u64(&mut out, "vtimer.offset", self.vcpu.vtimer.offset)?;
         write_bool(&mut out, "interrupts.irq", self.vcpu.interrupts.irq)?;
         write_bool(&mut out, "interrupts.fiq", self.vcpu.interrupts.fiq)?;
         writeln!(
@@ -307,6 +311,11 @@ pub fn compare_arm64_architecture(
         b.sysregs.tpidr_el1
     );
     scalar!(
+        "sysregs.tpidrro_el0",
+        a.sysregs.tpidrro_el0,
+        b.sysregs.tpidrro_el0
+    );
+    scalar!(
         "sysregs.cntkctl_el1",
         a.sysregs.cntkctl_el1,
         b.sysregs.cntkctl_el1
@@ -357,7 +366,6 @@ pub fn compare_arm64_architecture(
         b.vtimer.cntv_cval_el0
     );
     scalar!("vtimer.masked", a.vtimer.masked, b.vtimer.masked);
-    scalar!("vtimer.offset", a.vtimer.offset, b.vtimer.offset);
     scalar!("interrupts.irq", a.interrupts.irq, b.interrupts.irq);
     scalar!("interrupts.fiq", a.interrupts.fiq, b.interrupts.fiq);
     scalar!("mp_state", a.mp_state, b.mp_state);

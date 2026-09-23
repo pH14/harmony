@@ -78,8 +78,13 @@ pub struct ReplaySummary {
     test,
     all(
         feature = "consonance",
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64"),
+        any(
+            all(
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            ),
+            all(target_os = "macos", target_arch = "aarch64")
+        ),
         not(miri)
     )
 ))]
@@ -89,8 +94,13 @@ const REPLAY_SETTLE_TICKS: [u16; 13] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1
     test,
     all(
         feature = "consonance",
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64"),
+        any(
+            all(
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            ),
+            all(target_os = "macos", target_arch = "aarch64")
+        ),
         not(miri)
     )
 ))]
@@ -268,8 +278,13 @@ fn state_digest_hex(digest: &[u8; 32]) -> String {
 
 #[cfg(all(
     feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
+    any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
+    ),
     not(miri)
 ))]
 mod live {
@@ -516,8 +531,13 @@ mod live {
 
 #[cfg(all(
     feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
+    any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
+    ),
     not(miri)
 ))]
 pub use live::{replay, search};

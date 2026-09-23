@@ -72,24 +72,68 @@ conditionally in [`__set_sregs2`](https://github.com/torvalds/linux/blob/v6.12/a
 write sequence and error handling; KVM integration coverage exercises restored
 continuations across a branching snapshot tree.
 
-The HVF state oracle uses the default policy with virtual timer masking enabled
-and a zero timer offset. It round trips valid general, SIMD/floating-point,
-system-register, debug, timer, and pending-interrupt records, and rejects
-unmasked, nonzero-offset, or reserved timer-control states before mutating the
-vCPU. ARM KVM and HVF expose pure restore-shape checks through the `Backend`
+HVF restoration invalidates the guest's stage-1 translations before it writes
+the restored vCPU state. Hypervisor.framework exposes no TLB call, so the
+backend maps a private page above the guest's regions holding
+`tlbi vmalle1is; ic ialluis; dsb ish; isb; hvc #0` and runs it with the MMU off. Without it
+a restore rewinds guest RAM and registers while the hardware keeps translations
+the abandoned execution installed, and the guest reads the wrong physical page
+through an address the restored page tables map elsewhere. That reads as
+narrow, register-shaped corruption in an arbitrary guest process rather than as
+a fault. `hvf_tlb_probe` reads a page through a translation it warmed,
+replaces the page-table entry, restores, and reads again; it fails when the
+guest sees the old page. Its second stage repeats the sequence with a
+guest-issued `tlbi` so a stage that cannot observe the replacement at all is
+distinguishable from a stale translation. The `ic ialluis` covers code the
+abandoned execution wrote and ran on a page whose bytes the restore then left
+alone because they already matched the snapshot. Host writes to guest RAM go
+through `Backend::invalidate_instruction_cache`, which HVF clips to the host
+ranges it mapped. Both probe stages need a real
+hypervisor, so they run on a host, not on a CI runner. Stage 2 never changes
+across a restore and needs no maintenance: the host allocation behind guest RAM
+keeps its address.
+
+A watchdog cancellation requested before the stub's guest entry is consumed by
+that entry and retires no instruction, so the stub entry is retried once. The
+cancellation latch outlives the exit and `run` still refuses the guest.
+
+The guest's virtual counter runs off the host counter and neither backend can
+trap a guest read of it, so a restore that left the counter alone handed the
+guest every tick of host time spent between the snapshot and the restore. Both
+arm64 backends record the counter the guest was reading at the snapshot and put
+it back on restore: HVF derives a CNTVOFF_EL2 from the host counter and ARM KVM
+writes KVM_REG_ARM_TIMER_CNT. The counter keeps advancing with host time while
+the guest runs, so a save taken after a restore reports a later value than the
+one restored, and it stays out of the state hash and the divergence components
+for that reason.
+
+`hvf_counter_probe` restores one snapshot, reads the counter, burns a scaling
+number of further restores of the same snapshot, and reads again; before the
+rewind the second read ran ahead in proportion to the restores burned.
+`hvf_roundtrip_probe` runs a loop of integer, memory and SIMD work either
+straight through, with a save and restore between every step, or rebranched
+from a mid-loop snapshot, and compares the accumulator the guest computed.
+
+The HVF state oracle uses the default policy with virtual timer masking enabled.
+It round trips valid general, SIMD/floating-point, system-register, debug,
+timer, and pending-interrupt records up to the counter's advance, and rejects
+unmasked or reserved timer-control states before mutating the vCPU. ARM KVM and HVF expose pure restore-shape checks through the `Backend`
 trait, so portable snapshot import rejects their known invalid vCPU records
 before guest RAM or backend state is changed.
 
 ARM KVM saves the guest's system registers as the guest left them and never
-normalizes a value the guest wrote. TCR_EL1.AS selects 8-bit or 16-bit ASIDs and
-the identity baseline advertises 16-bit, so clearing it left the guest kernel
+normalizes a value the guest wrote. TCR_EL1.AS selects 8-bit or 16-bit ASIDs, and
+while the identity baseline advertised 16-bit, clearing it left the guest kernel
 issuing ASIDs the hardware no longer distinguished and processes shared TLB
 entries. For SCTLR_EL1 and TCR_EL1, `KVM_SET_ONE_REG` and `KVM_GET_ONE_REG`
 read and write the saved vCPU context rather than the architectural register, so
 a restore cannot tell from those calls whether the host implements a field the
 saved value uses. Restoring onto a host that lacks such a feature can therefore
 resume the guest with that field reading zero; the feature identity registers
-carry their own admission check, and these two do not.
+carry their own admission check, and these two do not. ARM KVM does no
+stage-1 translation invalidation on restore either; whether it needs the
+maintenance HVF needs is unmeasured, and an Arm KVM host is where that is
+settled.
 
 ## Preparing x86 KVM snapshot boundaries
 

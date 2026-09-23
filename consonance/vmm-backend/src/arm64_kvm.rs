@@ -421,6 +421,7 @@ const CORE_FPCR: u64 = 213;
 
 const CNTV_CTL_EL0: u64 = sysreg_id(3, 3, 14, 3, 1);
 const CNTV_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 0, 2);
+const CNTVCT_EL0: u64 = sysreg_id(3, 3, 14, 3, 2);
 const MDSCR_EL1: u64 = sysreg_id(2, 0, 0, 2, 2);
 
 const CNTV_CTL_WRITABLE_BITS: u64 = 0b11;
@@ -453,6 +454,7 @@ enum SysSel {
     Esr,
     Far,
     TpidrEl0,
+    TpidrroEl0,
     TpidrEl1,
     Cntkctl,
 }
@@ -468,6 +470,7 @@ const SYSREGS: &[(u64, SysSel)] = &[
     (sysreg_id(3, 0, 5, 2, 0), SysSel::Esr),
     (sysreg_id(3, 0, 6, 0, 0), SysSel::Far),
     (sysreg_id(3, 3, 13, 0, 2), SysSel::TpidrEl0),
+    (sysreg_id(3, 3, 13, 0, 3), SysSel::TpidrroEl0),
     (sysreg_id(3, 0, 13, 0, 4), SysSel::TpidrEl1),
     (sysreg_id(3, 0, 14, 1, 0), SysSel::Cntkctl),
 ];
@@ -484,6 +487,7 @@ fn sys_field(f: &mut crate::arch::arm64::Arm64SysregFile, sel: SysSel) -> &mut u
         SysSel::Esr => &mut f.esr_el1,
         SysSel::Far => &mut f.far_el1,
         SysSel::TpidrEl0 => &mut f.tpidr_el0,
+        SysSel::TpidrroEl0 => &mut f.tpidrro_el0,
         SysSel::TpidrEl1 => &mut f.tpidr_el1,
         SysSel::Cntkctl => &mut f.cntkctl_el1,
     }
@@ -501,6 +505,7 @@ fn sys_value(f: &crate::arch::arm64::Arm64SysregFile, sel: SysSel) -> u64 {
         SysSel::Esr => f.esr_el1,
         SysSel::Far => f.far_el1,
         SysSel::TpidrEl0 => f.tpidr_el0,
+        SysSel::TpidrroEl0 => f.tpidrro_el0,
         SysSel::TpidrEl1 => f.tpidr_el1,
         SysSel::Cntkctl => f.cntkctl_el1,
     }
@@ -611,7 +616,6 @@ pub(crate) fn validate_restore_vcpu_state(s: &Arm64VcpuState) -> Result<()> {
         || s.debug.trap_debug_exceptions
         || s.debug.trap_debug_reg_accesses
         || !s.vtimer.masked
-        || s.vtimer.offset != 0
         || s.vtimer.cntv_ctl_el0 & !CNTV_CTL_WRITABLE_BITS != 0
         || s.interrupts.irq
         || s.interrupts.fiq
@@ -714,6 +718,7 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
     s.debug.mdscr_el1 = k.get_one_reg(MDSCR_EL1)?;
     s.vtimer.cntv_ctl_el0 = k.get_one_reg(CNTV_CTL_EL0)? & CNTV_CTL_WRITABLE_BITS;
     s.vtimer.cntv_cval_el0 = k.get_one_reg(CNTV_CVAL_EL0)?;
+    s.vtimer.counter = k.get_one_reg(CNTVCT_EL0)?;
     s.vtimer.masked = true;
     s.mp_state = k.get_mp_state()?;
     s.gic = Some(save_vgic(k)?);
@@ -755,6 +760,7 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
         k.set_one_reg(dbgwcr(index), s.debug.watchpoint_control[index as usize])?;
     }
     k.set_one_reg(MDSCR_EL1, s.debug.mdscr_el1)?;
+    k.set_one_reg(CNTVCT_EL0, s.vtimer.counter)?;
     k.set_one_reg(CNTV_CVAL_EL0, s.vtimer.cntv_cval_el0)?;
     k.set_one_reg(CNTV_CTL_EL0, s.vtimer.cntv_ctl_el0)?;
     k.set_mp_state(s.mp_state)?;
@@ -2206,8 +2212,6 @@ mod tests {
         trap_debug_reg_accesses.debug.trap_debug_reg_accesses = true;
         let mut timer_unmasked = valid;
         timer_unmasked.vtimer.masked = false;
-        let mut timer_offset = valid;
-        timer_offset.vtimer.offset = 1;
         let mut timer_ctl_reserved = valid;
         timer_ctl_reserved.vtimer.cntv_ctl_el0 = 1 << 2;
         let mut irq = valid;
@@ -2219,7 +2223,6 @@ mod tests {
             ("trap-debug-exceptions", trap_debug_exceptions),
             ("trap-debug-register-accesses", trap_debug_reg_accesses),
             ("host-timer-unmasked", timer_unmasked),
-            ("host-timer-offset", timer_offset),
             ("host-timer-control-reserved", timer_ctl_reserved),
             ("pending IRQ", irq),
             ("pending FIQ", fiq),

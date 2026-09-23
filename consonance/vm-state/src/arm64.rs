@@ -73,6 +73,7 @@ pub struct Arm64Sysregs {
     pub far_el1: u64,
     pub tpidr_el0: u64,
     pub tpidr_el1: u64,
+    pub tpidrro_el0: u64,
     pub cntkctl_el1: u64,
 }
 
@@ -99,7 +100,7 @@ pub struct Arm64Vtimer {
     pub cntv_ctl_el0: u64,
     pub cntv_cval_el0: u64,
     pub masked: bool,
-    pub offset: u64,
+    pub counter: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -162,6 +163,7 @@ struct Arm64SysregsWire {
     far_el1: U64,
     tpidr_el0: U64,
     tpidr_el1: U64,
+    tpidrro_el0: U64,
     cntkctl_el1: U64,
 }
 
@@ -179,6 +181,7 @@ impl From<&Arm64Sysregs> for Arm64SysregsWire {
             far_el1: s.far_el1.into(),
             tpidr_el0: s.tpidr_el0.into(),
             tpidr_el1: s.tpidr_el1.into(),
+            tpidrro_el0: s.tpidrro_el0.into(),
             cntkctl_el1: s.cntkctl_el1.into(),
         }
     }
@@ -198,6 +201,7 @@ impl From<&Arm64SysregsWire> for Arm64Sysregs {
             far_el1: w.far_el1.get(),
             tpidr_el0: w.tpidr_el0.get(),
             tpidr_el1: w.tpidr_el1.get(),
+            tpidrro_el0: w.tpidrro_el0.get(),
             cntkctl_el1: w.cntkctl_el1.get(),
         }
     }
@@ -287,7 +291,7 @@ fn decode_debug(w: &Arm64DebugWire) -> Result<Arm64Debug, VmStateError> {
 struct Arm64VtimerWire {
     cntv_ctl_el0: U64,
     cntv_cval_el0: U64,
-    offset: U64,
+    counter: U64,
     masked: u8,
     reserved: [u8; 7],
 }
@@ -297,7 +301,7 @@ impl From<&Arm64Vtimer> for Arm64VtimerWire {
         Self {
             cntv_ctl_el0: s.cntv_ctl_el0.into(),
             cntv_cval_el0: s.cntv_cval_el0.into(),
-            offset: s.offset.into(),
+            counter: s.counter.into(),
             masked: u8::from(s.masked),
             reserved: [0; 7],
         }
@@ -312,7 +316,7 @@ fn decode_vtimer(w: &Arm64VtimerWire) -> Result<Arm64Vtimer, VmStateError> {
         cntv_ctl_el0: w.cntv_ctl_el0.get(),
         cntv_cval_el0: w.cntv_cval_el0.get(),
         masked: decode_bool(w.masked)?,
-        offset: w.offset.get(),
+        counter: w.counter.get(),
     })
 }
 
@@ -519,6 +523,12 @@ impl SnapshotRecords for Arm64VmState {
         Arm64VmState::encode(self)
     }
 
+    fn encode_for_hash(&self) -> Result<Vec<u8>, VmStateError> {
+        let mut hashed = self.clone();
+        hashed.vtimer.counter = 0;
+        Arm64VmState::encode(&hashed)
+    }
+
     fn decode(bytes: &[u8]) -> Result<Self, VmStateError> {
         Arm64VmState::decode(bytes)
     }
@@ -569,7 +579,7 @@ mod tests {
         s.vtimer.cntv_ctl_el0 = 1;
         s.vtimer.cntv_cval_el0 = 0x1234_5678;
         s.vtimer.masked = true;
-        s.vtimer.offset = 0x8765_4321;
+        s.vtimer.counter = 0x8765_4321;
         s.interrupts.irq = true;
         s.mp_state = MpState::Runnable;
         s.vtime.snapshot_vns = 7;
@@ -577,6 +587,29 @@ mod tests {
         s.devices = DeviceBlob(vec![1, 2, 3, 4]);
         s.contract_hash = [0xAB; 32];
         s
+    }
+
+    #[test]
+    fn the_hashed_encoding_ignores_the_virtual_counter() {
+        let early = sample();
+        let mut late = early.clone();
+        late.vtimer.counter = early.vtimer.counter + 1_000_000;
+
+        assert_ne!(
+            SnapshotRecords::encode(&early).unwrap(),
+            SnapshotRecords::encode(&late).unwrap()
+        );
+        assert_eq!(
+            SnapshotRecords::encode_for_hash(&early).unwrap(),
+            SnapshotRecords::encode_for_hash(&late).unwrap()
+        );
+        assert_eq!(
+            Arm64VmState::decode(&SnapshotRecords::encode(&late).unwrap())
+                .unwrap()
+                .vtimer
+                .counter,
+            late.vtimer.counter
+        );
     }
 
     fn section(blob: &[u8], wanted: u16) -> (usize, usize) {

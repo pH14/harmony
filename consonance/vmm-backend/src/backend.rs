@@ -34,6 +34,8 @@ pub trait Backend {
         })
     }
 
+    fn invalidate_instruction_cache(&mut self, _host_addr: usize, _len: usize) {}
+
     #[cfg(feature = "xsave-diagnostics")]
     fn diagnostic_breakpoint(&mut self, _rip: u64) -> Result<()> {
         Err(crate::error::BackendError::Unsupported {
@@ -112,6 +114,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
         (**self).drain_dirty_pages()
+    }
+
+    fn invalidate_instruction_cache(&mut self, host_addr: usize, len: usize) {
+        (**self).invalidate_instruction_cache(host_addr, len);
     }
 
     #[cfg(feature = "xsave-diagnostics")]

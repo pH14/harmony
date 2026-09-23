@@ -49,9 +49,20 @@ const HV_SYS_REG_VBAR_EL1: u16 = 0xc600;
 const HV_SYS_REG_TPIDR_EL1: u16 = 0xc684;
 const HV_SYS_REG_CNTKCTL_EL1: u16 = 0xc708;
 const HV_SYS_REG_TPIDR_EL0: u16 = 0xde82;
+const HV_SYS_REG_TPIDRRO_EL0: u16 = 0xde83;
 const HV_SYS_REG_CNTV_CTL_EL0: u16 = 0xdf19;
 const HV_SYS_REG_CNTV_CVAL_EL0: u16 = 0xdf1a;
 const HV_SYS_REG_SP_EL1: u16 = 0xe208;
+
+const TLB_FLUSH_STUB: [u32; 5] = [
+    0xd508_831f,
+    0xd508_711f,
+    0xd503_3b9f,
+    0xd503_3fdf,
+    0xd400_0002,
+];
+
+const SCTLR_M: u64 = 1;
 
 const ESR_EC_WFX: u64 = 0x01;
 const ESR_EC_HVC64: u64 = 0x16;
@@ -129,6 +140,10 @@ core::arch::global_asm!(
     "ldr q0, [x2]",
     "b _hv_vcpu_set_simd_fp_reg",
 );
+
+unsafe extern "C" {
+    fn sys_icache_invalidate(start: *mut c_void, len: usize);
+}
 
 #[link(name = "Hypervisor", kind = "framework")]
 unsafe extern "C" {
@@ -266,6 +281,28 @@ fn decode_data_abort(exit: HvVcpuExit) -> Result<DataAbort> {
     })
 }
 
+fn mapped_host_spans(
+    ranges: &[(usize, usize)],
+    host_addr: usize,
+    len: usize,
+) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let end = host_addr.saturating_add(len);
+    ranges.iter().filter_map(move |&(start, size)| {
+        let lo = host_addr.max(start);
+        let hi = end.min(start.saturating_add(size));
+        (lo < hi).then(|| (lo, hi - lo))
+    })
+}
+
+fn flush_stub_gpa(regions: &[(u64, usize)]) -> u64 {
+    regions
+        .iter()
+        .map(|&(gpa, len)| gpa + len as u64)
+        .max()
+        .unwrap_or(0)
+        .next_multiple_of(HV_PAGE_SIZE as u64)
+}
+
 fn canonical_sysreg(iss: u64) -> u32 {
     ((iss & 0x003f_ffff) & !(0x1f << 5) & !1) as u32
 }
@@ -284,11 +321,20 @@ fn accepted_irq_for_sysreg(
         .flatten()
 }
 
+fn host_counter() -> u64 {
+    let value: u64;
+    // SAFETY: CNTPCT_EL0 is a read-only counter register that macOS leaves
+    // readable from EL0, and the read has no side effects.
+    unsafe {
+        core::arch::asm!("isb", "mrs {0}, cntpct_el0", out(reg) value, options(nomem, nostack));
+    }
+    value
+}
+
 fn validate_restore_vcpu_state(state: &Arm64VcpuState) -> Result<()> {
     if has_noncanonical_core_regs(&state.core)
         || state.mp_state != MpState::Runnable
         || !state.vtimer.masked
-        || state.vtimer.offset != 0
         || state.vtimer.cntv_ctl_el0 & !0b11 != 0
     {
         return Err(BackendError::InvalidState);
@@ -321,6 +367,15 @@ pub struct HvfBackend {
     accepted_irq: Option<GicIntId>,
     counts: ExitCounts,
     regions: Vec<(u64, usize)>,
+    host_ranges: Vec<(usize, usize)>,
+    cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    flush_stub: Option<FlushStub>,
+}
+
+struct FlushStub {
+    gpa: u64,
+    page: *mut u8,
+    layout: std::alloc::Layout,
 }
 
 impl HvfBackend {
@@ -375,7 +430,82 @@ impl HvfBackend {
             accepted_irq: None,
             counts: ExitCounts::default(),
             regions: Vec::new(),
+            host_ranges: Vec::new(),
+            cancel_run: std::sync::Arc::default(),
+            flush_stub: None,
         })
+    }
+
+    fn ensure_flush_stub(&mut self) -> Result<u64> {
+        if let Some(stub) = &self.flush_stub {
+            return Ok(stub.gpa);
+        }
+        let gpa = flush_stub_gpa(&self.regions);
+        let layout = std::alloc::Layout::from_size_align(HV_PAGE_SIZE, HV_PAGE_SIZE)
+            .map_err(|_| BackendError::Internal("HVF flush stub layout"))?;
+        // SAFETY: the layout has a non-zero size, so this is a valid allocation
+        // request; the pointer is checked for null before any use.
+        let page = unsafe { std::alloc::alloc_zeroed(layout) };
+        if page.is_null() {
+            return Err(BackendError::Memory("HVF flush stub allocation failed"));
+        }
+        for (slot, word) in TLB_FLUSH_STUB.iter().enumerate() {
+            // SAFETY: the allocation is HV_PAGE_SIZE bytes and the stub is five
+            // words, so every write lands inside it.
+            unsafe { page.add(slot * 4).cast::<u32>().write(*word) };
+        }
+        // SAFETY: the allocation is live for as long as this backend, nothing
+        // else refers to it, and its layout gives it the alignment and length
+        // the framework requires.
+        let mapped = hv("hv_vm_map", unsafe {
+            hv_vm_map(
+                page.cast(),
+                gpa,
+                HV_PAGE_SIZE,
+                HV_MEMORY_READ | HV_MEMORY_EXEC,
+            )
+        });
+        if let Err(error) = mapped {
+            // SAFETY: the allocation came from this layout and nothing mapped it.
+            unsafe { std::alloc::dealloc(page, layout) };
+            return Err(error);
+        }
+        // SAFETY: `page` is a live HV_PAGE_SIZE allocation owned by this
+        // backend, and the call only performs cache maintenance on it.
+        unsafe { sys_icache_invalidate(page.cast(), HV_PAGE_SIZE) };
+        self.flush_stub = Some(FlushStub { gpa, page, layout });
+        Ok(gpa)
+    }
+
+    fn flush_guest_translations(&mut self) -> Result<()> {
+        let gpa = self.ensure_flush_stub()?;
+        let sctlr = self.sysreg(HV_SYS_REG_SCTLR_EL1)?;
+        self.set_sysreg(HV_SYS_REG_SCTLR_EL1, sctlr & !SCTLR_M)?;
+        self.set_reg(HV_REG_CPSR, PSTATE_DAIF | PSTATE_MODE_EL1H)?;
+        self.set_reg(HV_REG_PC, gpa)?;
+        // SAFETY: this is the owning thread and the vCPU is live.
+        hv("hv_vcpu_set_pending_interrupt", unsafe {
+            hv_vcpu_set_pending_interrupt(self.vcpu, HV_INTERRUPT_TYPE_IRQ, false)
+        })?;
+        for _ in 0..2 {
+            // SAFETY: the vCPU is live and this call runs on its owning thread.
+            hv("hv_vcpu_run", unsafe { hv_vcpu_run(self.vcpu) })?;
+            // SAFETY: HVF owns this exit page for the vCPU lifetime and run has
+            // completed its write before returning.
+            let raw = unsafe { *self.exit.as_ptr() };
+            if raw.reason == HV_EXIT_REASON_CANCELED {
+                continue;
+            }
+            if raw.reason == HV_EXIT_REASON_EXCEPTION
+                && exit_ec(raw.exception.syndrome) == ESR_EC_HVC64
+            {
+                return Ok(());
+            }
+            break;
+        }
+        Err(BackendError::Internal(
+            "HVF translation flush stub did not reach its hypercall",
+        ))
     }
 
     pub fn exit_handle(&self) -> HvfExitHandle {
@@ -604,6 +734,14 @@ impl HvfBackend {
 
 impl Drop for HvfBackend {
     fn drop(&mut self) {
+        if let Some(stub) = self.flush_stub.take() {
+            // SAFETY: this backend mapped the stub page at that address and is
+            // the sole owner of the allocation behind it.
+            unsafe {
+                let _ = hv_vm_unmap(stub.gpa, HV_PAGE_SIZE);
+                std::alloc::dealloc(stub.page, stub.layout);
+            }
+        }
         for &(gpa, len) in self.regions.iter().rev() {
             // SAFETY: every entry records a successful map owned by this VM.
             let _ = unsafe { hv_vm_unmap(gpa, len) };
@@ -655,7 +793,13 @@ impl Backend for HvfBackend {
             .0
             .checked_add(host.len() as u64)
             .ok_or(BackendError::Memory("region wraps address space"))?;
-        for &(mapped_gpa, mapped_len) in &self.regions {
+        let stub = self.flush_stub.as_ref().map(|stub| stub.gpa);
+        for (mapped_gpa, mapped_len) in self
+            .regions
+            .iter()
+            .copied()
+            .chain(stub.map(|gpa| (gpa, HV_PAGE_SIZE)))
+        {
             let mapped_end = mapped_gpa + mapped_len as u64;
             if gpa.0 < mapped_end && mapped_gpa < end {
                 return Err(BackendError::Memory("region overlaps an existing map"));
@@ -672,12 +816,30 @@ impl Backend for HvfBackend {
             )
         })?;
         self.regions.push((gpa.0, host.len()));
+        self.host_ranges
+            .push((host.as_mut_ptr() as usize, host.len()));
         Ok(())
     }
 
     fn run(&mut self) -> Result<Exit<Arm64>> {
+        if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(BackendError::Internal("HVF run canceled by host"));
+        }
         self.ensure_runnable()?;
         self.enter_guest()
+    }
+
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        Some(std::sync::Arc::clone(&self.cancel_run))
+    }
+
+    fn invalidate_instruction_cache(&mut self, host_addr: usize, len: usize) {
+        for (start, size) in mapped_host_spans(&self.host_ranges, host_addr, len) {
+            // SAFETY: the span lies inside a host range this backend passed to
+            // `hv_vm_map`, whose caller keeps it pinned while mapped, and the
+            // call only performs cache maintenance on those bytes.
+            unsafe { sys_icache_invalidate(start as *mut c_void, size) };
+        }
     }
 
     fn inject(&mut self, event: Arm64Injection) -> Result<()> {
@@ -811,6 +973,7 @@ impl Backend for HvfBackend {
         state.sysregs.far_el1 = self.sysreg(HV_SYS_REG_FAR_EL1)?;
         state.sysregs.tpidr_el0 = self.sysreg(HV_SYS_REG_TPIDR_EL0)?;
         state.sysregs.tpidr_el1 = self.sysreg(HV_SYS_REG_TPIDR_EL1)?;
+        state.sysregs.tpidrro_el0 = self.sysreg(HV_SYS_REG_TPIDRRO_EL0)?;
         state.sysregs.cntkctl_el1 = self.sysreg(HV_SYS_REG_CNTKCTL_EL1)?;
         for index in 0..16u16 {
             state.debug.breakpoint_value[index as usize] =
@@ -837,11 +1000,13 @@ impl Backend for HvfBackend {
         hv("hv_vcpu_get_vtimer_mask", unsafe {
             hv_vcpu_get_vtimer_mask(self.vcpu, &mut state.vtimer.masked)
         })?;
+        let mut vtimer_offset = 0u64;
         // SAFETY: outputs are live and this is the owning thread.
         hv("hv_vcpu_get_vtimer_offset", unsafe {
-            hv_vcpu_get_vtimer_offset(self.vcpu, &mut state.vtimer.offset)
+            hv_vcpu_get_vtimer_offset(self.vcpu, &mut vtimer_offset)
         })?;
-        if !state.vtimer.masked || state.vtimer.offset != 0 {
+        state.vtimer.counter = host_counter().wrapping_sub(vtimer_offset);
+        if !state.vtimer.masked {
             return Err(BackendError::InvalidState);
         }
         // SAFETY: outputs are live and this is the owning thread.
@@ -873,6 +1038,7 @@ impl Backend for HvfBackend {
             return Err(BackendError::PendingCompletion);
         }
         validate_restore_vcpu_state(state)?;
+        self.flush_guest_translations()?;
         for (reg, value) in state.core.x.iter().copied().enumerate() {
             self.set_reg(reg as u32, value)?;
         }
@@ -902,6 +1068,7 @@ impl Backend for HvfBackend {
         self.set_sysreg(HV_SYS_REG_FAR_EL1, state.sysregs.far_el1)?;
         self.set_sysreg(HV_SYS_REG_TPIDR_EL0, state.sysregs.tpidr_el0)?;
         self.set_sysreg(HV_SYS_REG_TPIDR_EL1, state.sysregs.tpidr_el1)?;
+        self.set_sysreg(HV_SYS_REG_TPIDRRO_EL0, state.sysregs.tpidrro_el0)?;
         self.set_sysreg(HV_SYS_REG_CNTKCTL_EL1, state.sysregs.cntkctl_el1)?;
         for index in 0..16u16 {
             self.set_sysreg(
@@ -938,7 +1105,7 @@ impl Backend for HvfBackend {
         })?;
         // SAFETY: the vCPU is live and this is the owning thread.
         hv("hv_vcpu_set_vtimer_offset", unsafe {
-            hv_vcpu_set_vtimer_offset(self.vcpu, 0)
+            hv_vcpu_set_vtimer_offset(self.vcpu, host_counter().wrapping_sub(state.vtimer.counter))
         })?;
         // SAFETY: the vCPU is live and this is the owning thread.
         hv("hv_vcpu_set_pending_interrupt(IRQ)", unsafe {
@@ -985,6 +1152,44 @@ mod tests {
                 physical_address: ipa,
             },
         }
+    }
+
+    #[test]
+    fn flush_stub_invalidates_translations_and_instruction_cache_then_exits() {
+        let sys = |op0: u32, op1: u32, crn: u32, crm: u32, op2: u32, rt: u32| {
+            0xd500_0000 | (op0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
+        };
+        let barrier = |crm: u32, op2: u32| 0xd503_301f | (crm << 8) | (op2 << 5);
+        assert_eq!(TLB_FLUSH_STUB[0], sys(1, 0, 8, 3, 0, 31));
+        assert_eq!(TLB_FLUSH_STUB[1], sys(1, 0, 7, 1, 0, 31));
+        assert_eq!(TLB_FLUSH_STUB[2], barrier(0b1011, 4));
+        assert_eq!(TLB_FLUSH_STUB[3], barrier(0b1111, 6));
+        assert_eq!(TLB_FLUSH_STUB[4], 0xd400_0002);
+    }
+
+    #[test]
+    fn instruction_cache_spans_stay_inside_mapped_host_ranges() {
+        let ranges = [(0x10_000, 0x4000), (0x40_000, 0x8000)];
+        let spans = |addr, len| mapped_host_spans(&ranges, addr, len).collect::<Vec<_>>();
+        assert_eq!(spans(1, 64), []);
+        assert_eq!(spans(0x10_000, 0), []);
+        assert_eq!(spans(0x10_100, 0x100), [(0x10_100, 0x100)]);
+        assert_eq!(spans(0xf_000, 0x2000), [(0x10_000, 0x1000)]);
+        assert_eq!(
+            spans(0x12_000, 0x40_000),
+            [(0x12_000, 0x2000), (0x40_000, 0x8000)]
+        );
+        assert_eq!(spans(usize::MAX - 4, 64), []);
+    }
+
+    #[test]
+    fn flush_stub_sits_above_every_mapped_region() {
+        assert_eq!(flush_stub_gpa(&[]), 0);
+        assert_eq!(flush_stub_gpa(&[(0x4000_0000, 0x8000_0000)]), 0xc000_0000);
+        assert_eq!(
+            flush_stub_gpa(&[(0x4000_0000, 0x4000), (0x1000_0000, 0x1000_0000)]),
+            0x4000_4000
+        );
     }
 
     #[test]

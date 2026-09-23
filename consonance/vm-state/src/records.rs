@@ -9,6 +9,10 @@ pub trait SnapshotRecords: Sized {
 
     fn encode(&self) -> Result<Vec<u8>, VmStateError>;
 
+    fn encode_for_hash(&self) -> Result<Vec<u8>, VmStateError> {
+        self.encode()
+    }
+
     fn decode(bytes: &[u8]) -> Result<Self, VmStateError>;
 
     fn vtime(&self) -> &VtimeState;

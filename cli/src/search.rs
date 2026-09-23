@@ -55,14 +55,14 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
         Package::Faults => Backend::Consonance,
     });
     if matches!(backend, Backend::Consonance) {
-        require_supported_linux(cfg!(target_os = "linux"))?;
+        require_supported_host(cfg!(any(
+            target_os = "linux",
+            all(target_os = "macos", target_arch = "aarch64")
+        )))?;
         match crate::host::Hypervisor::detect() {
-            crate::host::Hypervisor::Kvm => {}
+            crate::host::Hypervisor::Kvm | crate::host::Hypervisor::Hvf => {}
             crate::host::Hypervisor::Unavailable(reason)
             | crate::host::Hypervisor::Unsupported(reason) => return Err(reason.into()),
-            crate::host::Hypervisor::Hvf => {
-                return Err("Consonance search requires Linux KVM".into());
-            }
         }
     }
     let options = SearchOptions {
@@ -149,9 +149,9 @@ fn faults_options(args: &Args) -> Result<faults_workload::Options, Box<dyn Error
     })
 }
 
-fn require_supported_linux(is_linux: bool) -> Result<(), Box<dyn Error>> {
-    if !is_linux {
-        return Err("Consonance search requires a supported Linux KVM host".into());
+fn require_supported_host(supported: bool) -> Result<(), Box<dyn Error>> {
+    if !supported {
+        return Err("Consonance search requires a Linux KVM or macOS arm64 host".into());
     }
     Ok(())
 }
@@ -210,9 +210,12 @@ fn run_faults_consonance(
     replay: Option<&[faults_workload::FaultAction]>,
     repeat: u32,
 ) -> Result<(), Box<dyn Error>> {
-    #[cfg(all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64")
+    #[cfg(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
     ))]
     {
         let installed =
@@ -243,9 +246,12 @@ fn run_faults_consonance(
         );
         Ok(())
     }
-    #[cfg(not(all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64")
+    #[cfg(not(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
     )))]
     {
         let _ = (input, kernel, base, options, replay, repeat);
@@ -290,9 +296,9 @@ mod tests {
     }
 
     #[test]
-    fn linux_check_accepts_and_rejects_explicit_platform_values() {
-        assert!(require_supported_linux(true).is_ok());
-        assert!(require_supported_linux(false).is_err());
+    fn host_check_accepts_and_rejects_explicit_platform_values() {
+        assert!(require_supported_host(true).is_ok());
+        assert!(require_supported_host(false).is_err());
     }
 
     #[test]

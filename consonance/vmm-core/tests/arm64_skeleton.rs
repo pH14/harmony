@@ -880,7 +880,7 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
     let mut debug = base;
     debug.debug.watchpoint_control[15] = 1;
     let mut vtimer = base;
-    vtimer.vtimer.offset = 1;
+    vtimer.vtimer.cntv_cval_el0 = 1;
     let mut interrupts = base;
     interrupts.interrupts.fiq = true;
 
