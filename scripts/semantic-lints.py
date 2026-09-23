@@ -58,6 +58,11 @@ ONE_OFF_WARN_PROBABILITY = 0.50
 FIXED_RELEASE_FAIL_PROBABILITY = 0.80
 FIXED_RELEASE_WARN_PROBABILITY = 0.75
 
+# Synthetic outside-Harmony fallbacks score 0.84-0.87; separate build-only
+# controls and unrelated options score 0.06-0.09 on the pinned judge.
+GUEST_OPT_IN_FAIL_PROBABILITY = 0.80
+GUEST_OPT_IN_WARN_PROBABILITY = 0.65
+
 CACHE_PATH = Path(".semantic-lints-cache.json")
 
 # Entries kept when the cache is written. The oldest go first, and the file
@@ -928,6 +933,7 @@ CI_ARCHITECTURE_RULES = {
 
 RULE_THRESHOLDS = {
     "fixed_release_run": (FIXED_RELEASE_FAIL_PROBABILITY, FIXED_RELEASE_WARN_PROBABILITY),
+    "guest_runtime_opt_in": (GUEST_OPT_IN_FAIL_PROBABILITY, GUEST_OPT_IN_WARN_PROBABILITY),
 }
 
 
