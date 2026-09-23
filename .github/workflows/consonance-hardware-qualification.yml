@@ -57,10 +57,11 @@ jobs:
           ls -l /dev/kvm
       - name: Run probe
         run: ./target/debug/x86_kvm_probe | tee probe-report.txt
-      - name: kvm_smoke (live stock-KVM tests; informational at X0)
+      - name: Stock KVM passes the live kvm_smoke tests
         if: always()
-        continue-on-error: true
-        run: cargo test -p vmm-backend --test kvm_smoke -- --ignored --test-threads=1 2>&1 | tee kvm-smoke.txt
+        run: |
+          set -euo pipefail
+          cargo test -p vmm-backend --test kvm_smoke -- --ignored --test-threads=1 2>&1 | tee kvm-smoke.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
