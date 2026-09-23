@@ -789,13 +789,37 @@ mod live_kvm {
 
     fn exercise_mmio_snapshot(active_xmm: bool, report_env: &str) {
         require_kvm();
+        let trials = std::env::var("MMIO_SNAPSHOT_TRIALS").map_or(1, |value| {
+            value
+                .parse::<usize>()
+                .expect("MMIO_SNAPSHOT_TRIALS must be an integer")
+        });
+        assert!((1..=32).contains(&trials));
+        let report = report_root(report_env);
+        if let Some(root) = report.as_deref() {
+            std::fs::create_dir_all(root).expect("create MMIO report directory");
+            std::fs::write(root.join("trial-count.txt"), format!("{trials}\n"))
+                .expect("write MMIO trial count");
+        }
+        for trial in 0..trials {
+            let trial_report = report.as_ref().map(|root| {
+                if trials == 1 {
+                    root.clone()
+                } else {
+                    root.join(format!("trial-{trial:02}"))
+                }
+            });
+            exercise_mmio_snapshot_once(active_xmm, trial_report);
+        }
+    }
+
+    fn exercise_mmio_snapshot_once(active_xmm: bool, report: Option<std::path::PathBuf>) {
         let program_len = MMIO_PROGRAM.len()
             + if active_xmm {
                 MMIO_XMM_SEED.len() + MMIO_XMM_STORE.len()
             } else {
                 0
             };
-        let report = report_root(report_env);
 
         let mut uninterrupted = fresh_mmio_vmm(active_xmm);
         let before_vns = uninterrupted
@@ -953,6 +977,44 @@ mod live_kvm {
                 .regs
                 .rbx,
             1
+        );
+
+        save_and_continue
+            .restore_snapshot(&save_stop.memory, &save_stop.state)
+            .expect("restore full MMIO snapshot into the used VMM");
+        let reused_stop = capture_full_vmm(&mut save_and_continue);
+        retain_capture(
+            report.as_deref(),
+            "reused-stop",
+            &reused_stop,
+            &reused_stop.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + program_len],
+        );
+        record_capture_mismatch(
+            report.as_deref(),
+            "save-stop-vs-reused-stop",
+            &save_stop,
+            &reused_stop,
+        );
+        assert_eq!(
+            reused_stop, save_stop,
+            "reused restore reproduces the MMIO stop"
+        );
+        let reused_endpoint = continue_to_hlt(&mut save_and_continue, active_xmm);
+        retain_capture(
+            report.as_deref(),
+            "reused-endpoint",
+            &reused_endpoint,
+            &reused_endpoint.memory[MMIO_CODE_GPA..MMIO_CODE_GPA + program_len],
+        );
+        record_capture_mismatch(
+            report.as_deref(),
+            "uninterrupted-vs-reused-endpoint",
+            &uninterrupted_endpoint,
+            &reused_endpoint,
+        );
+        assert_eq!(
+            uninterrupted_endpoint, reused_endpoint,
+            "reused restore changes the MMIO endpoint"
         );
     }
 

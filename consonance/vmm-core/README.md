@@ -181,7 +181,11 @@ PCMPEQD before the LAPIC read/modify/write. It checks the captured value and a
 subsequent guest MOVDQU store, while retaining exact RAM, CPU, serialized state
 and hash comparisons and the MMIO completion/timing assertions. There is no
 extra guest exit, warmup or host restore-bitmap forcing. The original init-only
-program remains an informational characterization using the same exercise.
+program remains an informational characterization using the same exercise. Both
+fixtures also restore the captured boundary into the vCPU after it has reached
+HLT and compare that reused stop and endpoint against the original. The hosted
+hardware workflow runs 16 independent trials of each fixture; every trial has
+its own retained raw records and first-difference reports.
 
 The original init-only fixture failed once on a Xeon Platinum 8573C at
 `0534d974` ([run 34725789909](https://github.com/pH14/harmony/actions/runs/34725789909)),

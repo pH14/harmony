@@ -457,6 +457,7 @@ jobs:
           CARGO_TERM_COLOR: never
           AMD_NPT: ${{ steps.host.outputs.amd_npt }}
           CPU_VENDOR: ${{ steps.host.outputs.vendor }}
+          MMIO_SNAPSHOT_TRIALS: "16"
         run: |
           set -euo pipefail
           mkdir -p snapshot-report
@@ -653,6 +654,7 @@ jobs:
         continue-on-error: true
         env:
           MMIO_INIT_REPORT_DIR: ${{ github.workspace }}/snapshot-report/mmio-init-presence
+          MMIO_SNAPSHOT_TRIALS: "16"
         run: |
           set -euo pipefail
           timeout -k 10 120 cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
