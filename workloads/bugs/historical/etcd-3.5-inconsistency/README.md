@@ -47,10 +47,11 @@ and symptom direction are different.
 - **Fault surface**: a hard process kill of one member followed by the normal supervisor restart,
   while the clients are applying entries, and a hold that sleeps one member's thread at an
   instrumented site. Together these target the small interval between consistent-index persistence
-  and the corresponding follower entry apply. Dissonance names the crash and hold coordinates by
-  how rare the site is: the Antithesis runtime receives the rarity over an inherited control
-  channel and fires at the first callback after the arm whose own site has been visited at most
-  `1 << rarity` times.
+  and the corresponding follower entry apply. The search names the crash coordinate by how rare
+  the site is: the runtime receives the rarity over an inherited control channel and kills at the
+  first callback after the arm whose own site has been visited at most `1 << rarity` times. It
+  names the hold coordinate by an edge count: the runtime holds the thread that reaches the
+  `k`-th instrumented edge after the arm.
 - **Oracle**: the helper journals each acknowledged put outside etcd as
   `key<TAB>value<TAB>PutResponse.Header.Revision`. The platform supervisor reruns a check that performs
   serializable local reads through each member. It checks new acknowledged records incrementally
