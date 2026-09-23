@@ -10,7 +10,7 @@ python3 "${manifest}" --check
 all=$(python3 "${manifest}" --matrix)
 runnable=$(python3 "${manifest}" --runnable-matrix)
 
-test "$(jq '.include | length' <<<"${all}")" -eq 2
+test "$(jq '.include | length' <<<"${all}")" -eq 3
 test "$(jq -r '[.include[] | select(.ci_status == "runnable")] | length' <<<"${all}")" -eq 2
 test "$(jq -r '.include[] | select(.id == "postgres-cic-corruption") | .job_timeout_minutes' <<<"${all}")" -eq 230
 test "$(jq -r '.include[] | select(.id == "etcd-3.5-inconsistency") | .job_timeout_minutes' <<<"${all}")" -eq 320
