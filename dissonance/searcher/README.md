@@ -16,7 +16,10 @@ and process results in recorded admission order. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
 for replay. Reserved jobs pin the snapshot they actually restore, including a
 parent's keyframe. If retention removes that snapshot from the active population,
-its memory stays charged until the last reservation is admitted. Live execution
+its memory stays charged until the last reservation is admitted. Maintenance
+evicts toward the archive's memory limit but keeps pinned snapshots, the
+liveness anchor, and fixed reserves, so a budget smaller than that working set
+leaves the archive above its limit. Live execution
 and serial replay release these pins at the same recorded boundary, independent
 of worker completion timing. Campaign streams require schedule policy version 3
 and the current bounded progress policy; recordings from superseded policy
@@ -147,6 +150,9 @@ recorded action expansion, and checks those bounded context checkpoints. It
 does not serialize the complete context table for every job.
 Full policy checkpoints contain the policy identity, FIFO context order, and
 bounded histories; decoding rejects oversized context or observation arrays.
+The context table must fit a fixed reserve that the archive's memory budget
+excludes. The coordinator checks the table against that reserve after each
+admission.
 Deterministic continuation still requires the same seed, workload identity,
 stable units, and ordered admission. The policy contains no wall-clock or
 workload-specific vocabulary.

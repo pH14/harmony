@@ -167,7 +167,7 @@ impl DurationPolicy {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            recent: VecDeque::new(),
+            recent: VecDeque::with_capacity(RECENT_OBSERVATIONS),
         }
     }
 
@@ -449,6 +449,27 @@ mod tests {
                 assert!(policy.draw(&mut rand, positive(maximum)) <= maximum);
             }
         }
+    }
+
+    #[test]
+    fn restored_histories_stay_within_the_memory_reserve() {
+        let mut live = DurationPolicies::<u16>::new();
+        for context in 0..MAX_DURATION_CONTEXTS as u16 {
+            for _ in 0..=RECENT_OBSERVATIONS / 2 {
+                live.observe(context, positive(1), true, positive(1))
+                    .expect("observe");
+            }
+        }
+        let mut restored =
+            DurationPolicies::from_checkpoint(live.checkpoint()).expect("restore checkpoint");
+        for context in 0..MAX_DURATION_CONTEXTS as u16 {
+            for _ in 0..RECENT_OBSERVATIONS {
+                restored
+                    .observe(context, positive(2), false, positive(1))
+                    .expect("observe");
+            }
+        }
+        assert!(restored.memory_bytes() <= DurationPolicies::<u16>::memory_reserve_bytes());
     }
 
     #[test]
