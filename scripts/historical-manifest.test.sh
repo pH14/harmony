@@ -105,4 +105,19 @@ else:
     raise SystemExit("manifest accepted a committed seed")
 PY
 
+matrix=$(python3 scripts/historical-manifest.py --runnable-matrix --case etcd-3.5-inconsistency --seeds 3,5)
+python3 - "${matrix}" <<'PY'
+import json
+import sys
+
+entries = json.loads(sys.argv[1])["include"]
+assert [entry["seed"] for entry in entries] == [3, 5], entries
+assert len({entry["run_key"] for entry in entries}) == 2, entries
+assert {entry["id"] for entry in entries} == {"etcd-3.5-inconsistency"}, entries
+PY
+if python3 scripts/historical-manifest.py --runnable-matrix --case no-such-case >/dev/null 2>&1; then
+    printf 'manifest accepted an unknown case filter\n' >&2
+    exit 1
+fi
+
 printf 'historical manifest checks passed\n'
