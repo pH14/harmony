@@ -62,6 +62,8 @@ pub struct Counters {
     pub completed_check_end_generation: u64,
     pub completed_check_pid: u64,
     pub pending_faults: u64,
+    pub edge_crossings: u64,
+    pub edge_digest: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -329,6 +331,11 @@ impl ProcessSupervisor {
         self.bump_disturbance(fires);
     }
 
+    pub fn note_edge_coverage(&mut self, crossings: u64, digest: u64) {
+        self.counters.edge_crossings = self.counters.edge_crossings.saturating_add(crossings);
+        self.counters.edge_digest = self.counters.edge_digest.wrapping_add(digest);
+    }
+
     pub fn note_workload_started(&mut self) {
         self.counters.workload_started = self.counters.workload_started.saturating_add(1);
     }
@@ -431,6 +438,8 @@ impl ProcessSupervisor {
             completed_check_end_generation: self.counters.completed_check_end_generation,
             completed_check_pid: self.counters.completed_check_pid,
             pending_faults: self.counters.pending_faults,
+            edge_crossings: self.counters.edge_crossings,
+            edge_digest: self.counters.edge_digest,
         }
     }
 
@@ -887,6 +896,17 @@ mod tests {
         assert_eq!(snap.workload_finished, 1);
         assert_eq!(snap.checks_started, 1);
         assert_eq!(snap.checks_finished, 1);
+    }
+
+    #[test]
+    fn edge_coverage_sums_across_nodes_without_disturbing() {
+        let mut sup = Supervisor::new(2);
+        sup.note_edge_coverage(3, u64::MAX);
+        sup.note_edge_coverage(2, 2);
+        let snap = sup.snapshot();
+        assert_eq!(snap.edge_crossings, 5);
+        assert_eq!(snap.edge_digest, 1);
+        assert_eq!(snap.disturbance_generation, 0);
     }
 
     #[test]

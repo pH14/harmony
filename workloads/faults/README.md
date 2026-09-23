@@ -83,7 +83,12 @@ with the boot that reaches setup.
 
 [`campaign`](src/campaign.rs) implements the game-neutral campaign interface
 over that target, and [`archive`](src/archive.rs) supplies the endpoint key,
-which captures assertion, liveness, in-flight work, and event-firing state. The
+which captures assertion, liveness, in-flight work, event-firing state, and
+bucketed edge coverage. The edge-digest register sums a hash of every
+(edge, hit-count bucket) pair that instrumented nodes have entered. It is
+part of the holder identity, so an execution that drives any edge into a new
+bucket opens a new slot inside its lifecycle place.
+Workloads without the C runtime report a digest of zero. The
 raw instrumented site reported by an event kill remains diagnostic evidence; it
 is not archive novelty because a large instrumented binary can report a
 distinct address at nearly every endpoint.
@@ -199,8 +204,8 @@ Search also writes
 encoded window list that reproduces it.
 
 `FaultArchiveKey` identifies a place and nothing more. The place is every
-lifecycle count except liveness; liveness is the holder identity inside the
-place. The adapter has no progress tier, so every place is a peer and the
+lifecycle count except liveness; liveness and the edge digest are the holder
+identity inside the place. The adapter has no progress tier, so every place is a peer and the
 selector ranks places only by their draw counts.
 
 The Consonance backend needs Linux and KVM. The action model, the bundle

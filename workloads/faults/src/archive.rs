@@ -23,7 +23,7 @@ use crate::target::{FaultAction, FaultObservations};
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "faultlab_assertion_ids_peer_places_liveness_identity_v8";
+    "faultlab_assertion_ids_peer_places_liveness_edge_buckets_identity_v9";
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_guest_ticks";
 pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
@@ -40,12 +40,13 @@ pub struct FaultArchiveKey {
     pub checks_finished: u64,
     pub checks_running: bool,
     pub workload_running: bool,
+    pub edges: u64,
 }
 
 impl ArchiveKey for FaultArchiveKey {
     type Place = (AssertionSet, u64, u64, u64, u64, u64, u64, bool, bool);
     type Progress = ();
-    type Identity = u64;
+    type Identity = (u64, u64);
 
     fn place(self) -> Self::Place {
         (
@@ -64,7 +65,7 @@ impl ArchiveKey for FaultArchiveKey {
     fn progress(self) -> Self::Progress {}
 
     fn identity(self) -> Self::Identity {
-        self.alive
+        (self.alive, self.edges)
     }
 
     fn capacity() -> usize {
@@ -96,6 +97,7 @@ pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
         checks_finished: observations.checks_finished.min(HOOKS_FINISHED_KEY_CAP),
         checks_running: observations.checks_started > observations.checks_finished,
         workload_running: observations.workload_started > observations.workload_finished,
+        edges: observations.edge_digest,
     }
 }
 
@@ -395,6 +397,19 @@ mod tests {
         assert_ne!(survived.identity(), lost_a_node.identity());
         assert_eq!(survived.place(), lost_a_node.place());
         assert_eq!(FaultArchiveKey::capacity(), 1);
+    }
+
+    #[test]
+    fn edge_bucket_coverage_separates_identities_inside_one_place() {
+        let before = archive_key(&endpoint(&[1], 2, 0b11));
+        let crossed = archive_key(&FaultObservations {
+            edge_crossings: 3,
+            edge_digest: 0x5eed,
+            ..endpoint(&[1], 2, 0b11)
+        });
+        assert_eq!(crossed.edges, 0x5eed);
+        assert_eq!(before.place(), crossed.place());
+        assert_ne!(before.identity(), crossed.identity());
     }
 
     #[test]
