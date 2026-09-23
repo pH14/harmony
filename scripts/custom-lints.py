@@ -1548,6 +1548,8 @@ def check_docs_allowlist(files: list[str]) -> list[Violation]:
 
 TOPLEVEL_DIR_ALLOWLIST = {
     ".cargo",
+    ".claude",
+    ".codex",
     ".config",
     ".githooks",
     ".github",

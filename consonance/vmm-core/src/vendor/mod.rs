@@ -116,6 +116,10 @@ pub trait Vendor: Arch + Sized {
 
     fn check_sealable_vcpu(vcpu: &Self::VcpuState) -> Result<(), VmmError>;
 
+    fn check_long_mode_vcpu(_vcpu: &Self::VcpuState) -> Result<(), VmmError> {
+        Ok(())
+    }
+
     fn build_vm_state<B: Backend<A = Self>>(vmm: &Vmm<B>, vcpu: &Self::VcpuState)
     -> Self::Snapshot;
 

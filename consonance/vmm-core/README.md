@@ -65,7 +65,7 @@ matching fingerprint is not a proof of whole-guest future equivalence; focused
 guest-byte coverage remains required.
 
 Hardware continuation coverage depends on the backend and paging mode. AMD
-default NPT has an unresolved PAE capture divergence
+default NPT has an unresolved legacy 32-bit PAE capture divergence
 ([#314](https://github.com/pH14/harmony/issues/314)); unchanged stopped records
 alone do not prove an unchanged guest future. The separate same-seed XSAVE
 divergence remains tracked in [#307](https://github.com/pH14/harmony/issues/307).
@@ -167,14 +167,28 @@ for related boots and restores; see the backend README for affinity admission an
 its limits. Cross-type migration is not supported. Cross-host placement and broader
 XSAVE state lie outside the qualified set.
 
+The supported x86 workload is the shipped 64-bit Linux kernel and initramfs on
+a 64-bit host. Application bitness is separate: 32-bit compatibility-mode
+userspace can run under long-mode paging. [AMD's architecture manual](https://www.amd.com/content/dam/amd/en/documents/processor-tech-docs/programmer-references/24593.pdf)
+requires CR4.PAE in long mode, so the bit does not, by itself, select legacy
+32-bit PAE paging. Linux-composed VMs reject
+CPU records without active long-mode paging (CR0.PG, CR4.PAE, EFER.LMA) when
+publishing snapshots and before restoring snapshots. State hashes can still
+observe transient CPU modes during Linux boot; a hash is not a snapshot
+admission decision. Generic
+VMM instances remain available for synthetic CPU-mode diagnostics. The backend
+does not expose every guest mode transition as a checked boundary, so these
+admission checks do not confine
+an arbitrary kernel that changes modes between observed boundaries.
+
 The shipped Linux guest follows architectural page-table update and invalidation
 rules and cannot replace its kernel through kexec. Required PAE continuation
 coverage reloads CR3 after a guest-authored PDPT update, comparing reference,
 captured, cold-restored, and reused-restored endpoints. Intel's cached-PDPTR
 preservation regression remains required. AMD NPT fixtures that rely on stale
 PDPTR persistence without invalidation remain recorded informational diagnostics;
-they do not define the supported Linux guest contract. Arbitrary supplied kernels
-are not confined to that contract by their initial long-mode entry.
+they do not define the supported Linux guest contract. The loader's 64-bit entry
+check does not establish the later mode behavior of arbitrary supplied kernels.
 
 The required MMIO full-snapshot fixture creates active XMM0 data with a guest
 PCMPEQD before the LAPIC read/modify/write. It checks the captured value and a

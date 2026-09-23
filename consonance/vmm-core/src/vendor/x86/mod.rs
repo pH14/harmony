@@ -259,6 +259,16 @@ impl Vendor for X86 {
         }
     }
 
+    fn check_long_mode_vcpu(vcpu: &vmm_backend::VcpuState) -> Result<(), VmmError> {
+        let s = &vcpu.sregs;
+        if s.cr0 & (1 << 31) == 0 || s.cr4 & (1 << 5) == 0 || s.efer & (1 << 10) == 0 {
+            return Err(VmmError::ContractViolation(
+                "controlled x86 Linux requires active long-mode paging (CR0.PG, CR4.PAE, EFER.LMA); legacy 32-bit paging is unsupported".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     fn build_vm_state<B: Backend<A = Self>>(
         vmm: &Vmm<B>,
         vcpu: &vmm_backend::VcpuState,

@@ -70,6 +70,7 @@ fn compose_linux_seeded<B: Backend<A = X86>>(
     .map_err(|e| VmmError::ContractViolation(format!("lapic init: {e}")))?;
 
     let mut vmm = Vmm::new(backend, ram);
+    vmm.require_long_mode = true;
     vmm.wire_lapic(lapic);
     Ok(vmm)
 }
@@ -134,6 +135,7 @@ pub fn compose_stock_virtual_time_restore_target(
             msr_filter: contract::msr_filter_allow(),
         },
     )?;
+    vmm.require_long_mode = true;
     vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(
         super::contract_vclock_config(),
         seed,
@@ -483,5 +485,53 @@ mod tests {
             0x5372_6448,
             "boot_params.hdr.header == HdrS"
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Linux composition allocates more than 1 MiB of guest RAM"
+    )]
+    fn controlled_linux_snapshot_admits_long_mode_and_rejects_legacy_paging() {
+        let kernel = synthetic_bzimage(0x10_0000, 0x400);
+        let mut vmm = compose_linux_seeded(
+            MockBackend::new(),
+            &kernel,
+            &[],
+            0x20_0000,
+            "console=ttyS0",
+            contract::cpuid_model(),
+            None,
+        )
+        .unwrap();
+        let original = vmm.save_vm_state().unwrap();
+        vmm.restore_vm_state(&original).unwrap();
+
+        let mut compatibility = original.clone();
+        compatibility.sregs.cs.flags = (compatibility.sregs.cs.flags & !(1 << 1)) | 1;
+        vmm.restore_vm_state(&compatibility).unwrap();
+        assert!(vmm.save_vm_state().is_ok());
+
+        let mut no_paging = original.clone();
+        no_paging.sregs.cr0 &= !(1 << 31);
+        let mut no_pae = original.clone();
+        no_pae.sregs.cr4 &= !(1 << 5);
+        let mut legacy = original.clone();
+        legacy.sregs.efer &= !(1 << 10);
+        for legacy in [no_paging, no_pae, legacy] {
+            assert!(matches!(
+                vmm.restore_vm_state(&legacy),
+                Err(VmmError::ContractViolation(message)) if message.contains("long-mode paging")
+            ));
+        }
+
+        let mut cpu = vmm.vcpu_record().unwrap();
+        cpu.sregs.efer &= !(1 << 10);
+        vmm.backend_mut().restore(&cpu).unwrap();
+        assert!(matches!(
+            vmm.save_vm_state(),
+            Err(VmmError::ContractViolation(message)) if message.contains("long-mode paging")
+        ));
+        assert!(vmm.state_blob().is_ok());
     }
 }
