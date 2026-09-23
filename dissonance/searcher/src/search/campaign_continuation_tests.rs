@@ -667,3 +667,43 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         );
     }
 }
+
+#[test]
+fn history_growth_before_maintenance_does_not_stop_the_campaign() {
+    for workers in [1, 4] {
+        let config = CampaignConfig {
+            campaign_seed: 947,
+            workers,
+            execution_budget: 800,
+            action_limit: 64,
+            host: "test".into(),
+            wall_budget: None,
+            stop_rollout_on_objective: true,
+            stop_campaign_on_objective: true,
+            archive_entry_limit: 128,
+            reservations_per_worker: 2,
+            memory_budget_mib: Some(8),
+            materialize_final_artifacts: true,
+            run: (),
+            suffix: SuffixShape::OneOrTwo,
+            mixture: DrawMixture::EnergySpliceContinuation { scale: 6 },
+            retention: RetentionPolicy::Unprobed,
+            selector: SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
+                entry: 3,
+                groups: vec![],
+            }),
+            objective_witness_path: None,
+        };
+        let (live, _) = run_campaign_checkpointed(
+            &TestWorkload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut Vec::new(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(live.executions_completed, config.execution_budget);
+        assert!(live.history_compactions > 0);
+        assert!(live.snapshot_evictions > 0);
+    }
+}

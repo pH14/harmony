@@ -771,7 +771,7 @@ fn archive_entry_limit_is_valid(limit: usize) -> bool {
     (1..=crate::search::archive::MAX_ARCHIVE_ENTRIES).contains(&limit)
 }
 
-fn draw_state_memory_is_within_reserve(bytes: usize, reserve: usize) -> bool {
+fn memory_is_within_reserve(bytes: usize, reserve: usize) -> bool {
     bytes <= reserve
 }
 
@@ -2344,7 +2344,7 @@ where
     };
     let (mut draw_state, draw_header) = workload.initial_draw_state(&config.run, draw_origin)?;
     let mut duration_policies = DurationPolicies::<G::Key>::new();
-    if !draw_state_memory_is_within_reserve(
+    if !memory_is_within_reserve(
         workload.draw_state_memory_bytes(&draw_state),
         workload.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
     ) {
@@ -2926,7 +2926,7 @@ where
                     let draw_checkpoint_after =
                         finish_record(workload, &config.run, &mut draw_state, &core, &decisions)?;
                     let draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
-                    if !draw_state_memory_is_within_reserve(
+                    if !memory_is_within_reserve(
                         draw_state_memory_bytes,
                         workload.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
                     ) {
@@ -2934,14 +2934,13 @@ where
                             "live draw state exceeds its deterministic memory reserve".into()
                         );
                     }
-                    if !resident_memory_is_within_budget(
-                        core.archive
-                            .resident_memory_bytes()
-                            .saturating_add(draw_state_memory_bytes)
-                            .saturating_add(duration_policies.memory_bytes()),
-                        config.memory_budget_mib,
+                    if !memory_is_within_reserve(
+                        duration_policies.memory_bytes(),
+                        DurationPolicies::<G::Key>::memory_reserve_bytes(),
                     ) {
-                        return Err("live adaptive duration state exceeds its memory budget".into());
+                        return Err(
+                            "live adaptive duration state exceeds its memory reserve".into()
+                        );
                     }
                     core.archive.unpin_job_origin(pending_job.snapshot_id);
                     core.archive.unpin_metadata(pending_job.parent_id);
@@ -3342,7 +3341,7 @@ where
             return Err("recorded memory budget is too small for the bounded draw state".into());
         }
     }
-    if !draw_state_memory_is_within_reserve(
+    if !memory_is_within_reserve(
         workload.draw_state_memory_bytes(&draw_state),
         workload.draw_state_memory_reserve_bytes(&replay_run, header.action_limit),
     ) {
@@ -3766,20 +3765,17 @@ where
                     .into());
                 }
                 let draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
-                if !draw_state_memory_is_within_reserve(
+                if !memory_is_within_reserve(
                     draw_state_memory_bytes,
                     workload.draw_state_memory_reserve_bytes(&replay_run, header.action_limit),
                 ) {
                     return Err("replay draw state exceeds its deterministic memory reserve".into());
                 }
-                if !resident_memory_is_within_budget(
-                    core.archive
-                        .resident_memory_bytes()
-                        .saturating_add(draw_state_memory_bytes)
-                        .saturating_add(duration_policies.memory_bytes()),
-                    header.memory_budget_mib,
+                if !memory_is_within_reserve(
+                    duration_policies.memory_bytes(),
+                    DurationPolicies::<G::Key>::memory_reserve_bytes(),
                 ) {
-                    return Err("replay adaptive duration state exceeds its memory budget".into());
+                    return Err("replay adaptive duration state exceeds its memory reserve".into());
                 }
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector)?;
@@ -3891,9 +3887,9 @@ mod tests {
         EnergyStrategy, Evaluation, InitialDrawState, InputPolicy, LiveCoordinatorProfile,
         MAX_PROGRESS_CURVE_POINTS, Reporting, SPLICE_ACTION_CAP, TargetExecution, WorkloadPolicies,
         admission_window_depth, archive_entry_limit_is_valid, compact_progress_curve,
-        completed_results_within_bound, draw_state_memory_is_within_reserve, execution_work_delta,
-        finish_record, is_zero_usize, live_coordinator_profile, postcard_value_sha256,
-        profile_elapsed, profile_now, progress_checkpoint_due, progress_policy_is_supported,
+        completed_results_within_bound, execution_work_delta, finish_record, is_zero_usize,
+        live_coordinator_profile, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
+        profile_now, progress_checkpoint_due, progress_policy_is_supported,
         record_compaction_elapsed, replay_campaign_checkpointed, replay_splice,
         resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
         schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
@@ -5308,10 +5304,10 @@ mod tests {
         assert!(archive_entry_limit_is_valid(max));
         assert!(!archive_entry_limit_is_valid(max.saturating_add(1)));
 
-        assert!(draw_state_memory_is_within_reserve(0, 0));
-        assert!(draw_state_memory_is_within_reserve(1, 2));
-        assert!(draw_state_memory_is_within_reserve(2, 2));
-        assert!(!draw_state_memory_is_within_reserve(2, 1));
+        assert!(memory_is_within_reserve(0, 0));
+        assert!(memory_is_within_reserve(1, 2));
+        assert!(memory_is_within_reserve(2, 2));
+        assert!(!memory_is_within_reserve(2, 1));
         assert!(resident_memory_is_within_budget(usize::MAX, None));
         assert!(resident_memory_is_within_budget(64 * 1024 * 1024, Some(64)));
         assert!(!resident_memory_is_within_budget(

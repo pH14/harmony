@@ -147,6 +147,9 @@ recorded action expansion, and checks those bounded context checkpoints. It
 does not serialize the complete context table for every job.
 Full policy checkpoints contain the policy identity, FIFO context order, and
 bounded histories; decoding rejects oversized context or observation arrays.
+The context table must fit a fixed reserve that the archive's memory budget
+excludes. The coordinator checks the table against that reserve after each
+admission.
 Deterministic continuation still requires the same seed, workload identity,
 stable units, and ordered admission. The policy contains no wall-clock or
 workload-specific vocabulary.
