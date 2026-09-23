@@ -339,6 +339,12 @@ def _is_text_file(path: str) -> bool:
                 and os.path.basename(path).endswith("config-fragment")))
 
 
+def _is_guest_contract_only_file(path: str) -> bool:
+    return (path.startswith("consonance/harmony-linux/linux/")
+            and (path.endswith(".patch")
+                 or os.path.basename(path).endswith("config-fragment")))
+
+
 def _in_decision_residue_scope(path: str) -> bool:
     _, ext = os.path.splitext(path)
     return ext in DECISION_RESIDUE_EXTENSIONS
@@ -396,6 +402,8 @@ CI_DOCUMENTATION_QUESTION_IDS = ("fixed_version_direction", "boundary_contradict
 
 
 def questions_for(path: str) -> dict:
+    if _is_guest_contract_only_file(path):
+        return {"guest_runtime_opt_in": QUESTIONS["guest_runtime_opt_in"]}
     selected = {
         "file_kind": QUESTIONS["file_kind"],
         "records_runs": QUESTIONS["records_runs"],
@@ -575,10 +583,15 @@ def context_for(repo_root: Path, path: str, content: str) -> dict | None:
             tail = series[-1]
             text = tail.read_text(errors="replace")
             rel = tail.relative_to(repo_root).as_posix()
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            truncated = len(text) > CONTEXT_FILE_LIMIT
+            if truncated:
+                half = CONTEXT_FILE_LIMIT // 2
+                text = text[:half] + "\n[... omitted ...]\n" + text[-half:]
             return {"final_series_patch": {rel: {
-                "sha256": hashlib.sha256(text.encode()).hexdigest(),
-                "text": text[-CONTEXT_FILE_LIMIT:],
-                "truncated": len(text) > CONTEXT_FILE_LIMIT,
+                "sha256": digest,
+                "text": text,
+                "truncated": truncated,
             }}}
     if _in_program_scope(path):
         return program_references(repo_root, path)

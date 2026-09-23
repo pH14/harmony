@@ -133,9 +133,11 @@ make -C consonance/harmony-linux/linux exec-image
 make -C consonance/harmony-linux/linux go-runtime-image
 ```
 
-`make test` checks reproducible x86 artifacts and verifies that boot on QEMU
-without Harmony's clock interface stops before `/init`. The `vmm-core` guest
-boot tests cover successful registration inside Harmony.
+`make test` on Ubuntu 24.04 checks reproducible x86 artifacts and verifies that
+boot on QEMU without Harmony's clock interface stops before `/init`. Guest
+runtime qualification runs the same negative boot check on its exact x86
+runtime artifact. The `vmm-core` guest boot tests cover successful
+registration inside Harmony.
 
 The x86 kernel's default, traps-off, and task-park outputs are separate test
 artifacts with their own instruction audit baselines. The arm64 traps-off

@@ -17,6 +17,11 @@ cd "$(dirname "$0")"
 require_linux_amd64
 require_tools qemu-system-x86_64
 
+# The reproducibility and boot checks use the pinned ubuntu-24.04 toolchain's
+# reviewed opcode baselines. Other build profiles select their own lists.
+export HARMONY_RDTSC_ALLOWLIST=${HARMONY_RDTSC_ALLOWLIST:-$LINUX_DIR/rdtsc-allowlist-gha.txt}
+export HARMONY_RDRAND_ALLOWLIST=${HARMONY_RDRAND_ALLOWLIST:-$LINUX_DIR/rdrand-allowlist-gha.txt}
+
 build_once() {
     ./clean-artifacts.sh
     ./build-kernel.sh
@@ -45,21 +50,5 @@ printf '%s  bzImage\n%s  initramfs.cpio.gz\n' "$k1" "$i1" >MANIFEST.sha256
 echo "ok: two builds bit-identical; MANIFEST.sha256 written"
 
 echo "== missing-host-interface boot test"
-out=$(mktemp)
-status=0
-run_with_timeout 120 qemu-system-x86_64 \
-    -m 512 -nographic -no-reboot \
-    -machine hpet=off \
-    -kernel "$ART_DIR/bzImage" \
-    -initrd "$ART_DIR/initramfs.cpio.gz" \
-    -append "console=ttyS0 panic=1 random.trust_cpu=off" \
-    </dev/null >"$out" 2>&1 || status=$?
-if [ "$status" -eq 124 ] || ! grep -q 'Kernel panic - not syncing: Harmony pvclock registration failed' "$out" || grep -q 'GUEST_READY' "$out"; then
-    echo "FAIL: guest did not reject the missing Harmony host clock" >&2
-    tr -d '\r' <"$out" | tail -30 >&2
-    rm -f "$out"
-    exit 1
-fi
-rm -f "$out"
-echo "ok: missing Harmony clock stopped boot before /init (QEMU status $status)"
+./test-missing-host-clock.sh "$ART_DIR/bzImage" "$ART_DIR/initramfs.cpio.gz"
 echo "PASS: guest Linux image checks"
