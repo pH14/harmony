@@ -12,6 +12,8 @@ const RAM_LEN: usize = 0x1_0000;
 const ENTRY: u64 = 0x1000;
 const DIRTY_ENTRY: u64 = 0x3000;
 const DIRTY_GFNS: [u64; 2] = [2, 5];
+const INTERRUPT_HANDLER: u64 = 0x400;
+const HALT_LOOP: [u8; 3] = [0xF4, 0xEB, 0xFD];
 
 struct GuestMem {
     ptr: *mut u8,
@@ -42,7 +44,6 @@ impl Drop for GuestMem {
 }
 
 fn stub(scenario: Scenario) -> Option<Vec<u8>> {
-    const HALT_LOOP: [u8; 3] = [0xF4, 0xEB, 0xFD];
     let head: Vec<u8> = match scenario {
         Scenario::Idle => Vec::new(),
         Scenario::PortIn => vec![0xBA, 0xF8, 0x03, 0xEC],
@@ -57,6 +58,14 @@ fn stub(scenario: Scenario) -> Option<Vec<u8>> {
     let mut code = head;
     code.extend_from_slice(&HALT_LOOP);
     Some(code)
+}
+
+fn interrupt_vector_table() -> Vec<u8> {
+    let offset = u16::try_from(INTERRUPT_HANDLER).expect("the handler sits in segment 0");
+    let segment = 0u16;
+    (0..256)
+        .flat_map(|_| [offset.to_le_bytes(), segment.to_le_bytes()].concat())
+        .collect()
 }
 
 const DIRTY_STUB: &[u8] = &[
@@ -78,8 +87,7 @@ fn policy() -> X86Policy {
 fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
-        "/dev/kvm missing — the contract exam's hardware leg needs bare-metal x86-64 with \
-         VMX. Run it on the determinism box: taskset -c 1 cargo test -p vmm-backend \
+        "/dev/kvm missing: run it on an x86-64 KVM host with cargo test -p vmm-backend \
          --all-features --test contract_kvm -- --ignored --test-threads=1"
     );
 }
@@ -94,7 +102,7 @@ trait LiveBackend: Backend<A = vmm_backend::X86> + Sized {
 impl LiveBackend for KvmBackend {
     fn open() -> Self {
         KvmBackend::new().unwrap_or_else(|e| {
-            panic!("KvmBackend::new failed ({e}); needs /dev/kvm + VMX on the determinism box")
+            panic!("KvmBackend::new failed ({e}); needs /dev/kvm on an x86-64 host")
         })
     }
     fn enable_dirty_log(&mut self) {
@@ -118,7 +126,7 @@ fn enter_real_mode_at<B: LiveBackend>(backend: &mut B, entry: u64) {
     st.sregs.ds.base = 0;
     st.sregs.ds.selector = 0;
     st.regs.rip = entry;
-    st.regs.rflags = 0x2;
+    st.regs.rflags = 0x202;
     backend.restore(&st).expect("restore setup state");
 }
 
@@ -143,6 +151,8 @@ impl<B: LiveBackend> KvmFixture<B> {
         self.mems.push(GuestMem::new(RAM_LEN));
         let mem = self.mems.last_mut().expect("just pushed");
         backend.map(Gpa(0), mem.as_mut_slice());
+        backend.load(Gpa(0), &interrupt_vector_table());
+        backend.load(Gpa(INTERRUPT_HANDLER), &HALT_LOOP);
         backend.load(Gpa(entry), code);
         enter_real_mode_at(&mut backend, entry);
         backend
@@ -193,7 +203,7 @@ fn assert_ran(report: &ContractReport, exams: &[&'static str]) {
 }
 
 #[test]
-#[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
+#[ignore = "live KVM; the CPU State job in Checks / Consonance runs it with --ignored"]
 fn stock_kvm_backend_passes_the_contract_exam() {
     require_kvm();
     let mut fx: KvmFixture<KvmBackend> = KvmFixture::new("kvm-stock");
