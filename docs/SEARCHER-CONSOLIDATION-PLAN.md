@@ -506,3 +506,22 @@ diagnose; power-on runs are the only completion test.
   fourteenth build's change to the preference reset matches the twelfth
   (p = 0.98). The seeds that stay stuck spend 61 to 63% of their draws
   on the second loop section.
+- 2026-09-23: traced the fourteenth and twenty-second builds on the same
+  12 rooted 7-4 seeds, with each admission's `$06D9` and `$06DA` and each
+  draw's kind; traced reruns match the untraced runs. Up to 40 thousand
+  executions, crossing-edge replays take 12 to 20% of the second loop
+  section's draws on both builds, and inside-edge replays almost none.
+  | Build | Correct count reached the section first | Section slots holding a correct count at 40K, median | Passed |
+  |---|---|---|---|
+  | consol14 | 8 of 12 | 410 | 10 |
+  | consol22 | 5 of 12 | 281 | 9 |
+  The twenty-second build holds fewer correct-count slots (permutation
+  test p = 0.05). Both builds spend 80 to 95% of section draws on states
+  with a wrong count, and ordinary draws opened the first correct state
+  on every seed. The fourteenth build passed all four seeds where a wrong
+  count arrived first, at 35 to 88 thousand; the twenty-second passed
+  four of six such seeds, at 122 to 195 thousand. The fourteenth build's
+  two failures had over 400 correct-count slots, so a later check in the
+  loop also stops seeds. The loss follows from the key: the loop count is
+  not in the slot identity, so the clock preference decides between a
+  right and a wrong count.
