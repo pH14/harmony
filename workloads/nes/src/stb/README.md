@@ -119,23 +119,25 @@ reproducible witness for that event.
 
 ## Archive and input policy
 
-The archive key (`stb_local_ai_spatial_16_preference_v3`) uses one
-representative per location slot. Paired Player-A and
-Player-B signed world-coordinate buckets (16 pixels) plus stage and opponent
-knockout count provide identity; wider groups pool those locations and then
-retain stage/knockout identity. Opponent damage, opponent knockouts, and
-Player-A stocks are the objective progress prefix. Player-B stocks and Player-A
-damage are same-location capability preferences. Player state-machine numbers,
-coordinates outside their documented units, and arbitrary RAM IDs do not rank
-progress. Terminal observations have no archive key because their gameplay
-payload is phase-invalid; terminal knockout counts come from the validated
-observation event instead.
+The archive key (`stb_local_ai_peer_places_spatial_32_place_preference_v4`)
+keeps one endpoint per slot. The key holds the stage, opponent knockouts,
+opponent damage, both players' stocks, Player-A damage, and paired Player-A and
+Player-B signed world-coordinate buckets of 16 pixels. The place is the stage,
+the opponent knockouts and both players' 32-pixel position buckets. The holder
+identity is both players' 16-pixel position buckets. This adapter has no
+progress tier, so every STB place is a peer and only the cell draw count and
+the holder draw count decide the draw. Within a slot the preference orders
+opponent knockouts, fewer Player-B stocks, opponent damage, Player-A stocks and
+less Player-A damage. Player state-machine numbers, coordinates outside their
+documented units, and arbitrary RAM IDs do not enter the key. Terminal
+observations have no archive key because their gameplay payload is
+phase-invalid; terminal knockout counts come from the validated observation
+event instead.
 
-`StbArchiveKey::Ord` identifies a place and orders the archive's maps. It is not
-a progress measure. This adapter has no progress tier, so every STB place is a
-peer and only the cell draw count and the holder draw count decide the draw.
-The place is the stage, the opponent knockouts and a two-bucket position of
-both players; the holder identity is the exact position bucket. Declaring an
+The archive's maps are keyed by place and identity tuples. `StbArchiveKey::Ord`
+compares opponent knockouts, opponent damage and Player-A stocks, then the
+stage, positions, Player-B stocks and Player-A damage; it satisfies the
+`ArchiveKey` bound and orders none of the archive's maps. Declaring an
 objective-only progress tier needs a separately versioned fixed-policy
 comparison before it can replace this baseline.
 

@@ -36,15 +36,14 @@ headers carry the chosen identifier and reject a mismatched replay context.
 Recorded tapes made before this policy existed replay under the historical
 predicate: `nes-progress` names it, and `metroid-film` defaults to it.
 
-`archive.rs` records the experimental adapter policy explicitly. It pools
-16-pixel positions through 32-pixel cells, 128-pixel regions, map cells, and
-inventory counts. Posture and door-transition state distinguish possible
-continuations. Health and missile stock are same-slot preference, not extra
-spatial slots, and the two preferences order that pair against each other in
-opposite ways. The key's tank count subtracts the 75 missiles each boss kill
-awards, so a kill does not relabel every map cell the killer reaches as holding
-fifteen more tanks than the cells beside it; the kill still counts through the
-item term. The Brinstar statue room rewrites both boss bytes to `0x82` when
+`archive.rs` records the experimental adapter policy explicitly. The place is
+the area, the map cell, boss damage and the Zebetite hits still needed. The
+holder identity within a place is the 16-pixel position bucket, posture and
+door-transition state. Health and missile stock are same-slot preferences, and
+the two preferences order that pair against each other in opposite ways. The
+key's tank count subtracts the 75 missiles each boss kill awards, so a kill
+does not relabel every map cell the killer reaches as holding fifteen more
+tanks than the cells beside it; the kill still counts through the item term. The Brinstar statue room rewrites both boss bytes to `0x82` when
 Samus approaches the statues: bit 7 still counts as the defeat, and each raised
 statue adds one more item. The raise opens the passage beneath the statues
 without changing position, health or stock, so without that term the opened

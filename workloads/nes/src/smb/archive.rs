@@ -46,18 +46,17 @@ const VIABILITY_PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
 const VIABILITY_PROBE_FRAMES: u16 = 45;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SmbArchiveKey {
     pub world: u8,
     pub level: u8,
     pub progress: u16,
     pub player_y_bucket: u8,
-    #[serde(default)]
     pub loop_on_path: bool,
     #[serde(default, skip_serializing_if = "room_x_bucket_is_absent")]
     pub room_x_bucket: u8,
     #[serde(default)]
     pub time_bucket: u8,
-    #[serde(default)]
     pub clock: u16,
     #[serde(default, skip_serializing_if = "room_is_absent")]
     pub room: SmbRoomIdentity,
@@ -588,5 +587,46 @@ mod tests {
         assert!(ahead.progress() > beside.progress());
         let next_level = SmbArchiveKey { level: 4, ..behind };
         assert!(next_level.progress() > ahead.progress());
+    }
+
+    #[test]
+    fn the_key_round_trips_through_json() {
+        let bare = key(300, [4, 9]);
+        let full = SmbArchiveKey {
+            loop_on_path: false,
+            room_x_bucket: 5,
+            time_bucket: 2,
+            clock: 381,
+            ..bare
+        };
+        for original in [bare, full] {
+            let encoded = serde_json::to_string(&original).unwrap();
+            let decoded: SmbArchiveKey = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, original);
+        }
+    }
+
+    #[test]
+    fn a_key_in_the_state_fingerprint_format_is_rejected() {
+        let previous = serde_json::json!({
+            "world": 7,
+            "level": 3,
+            "progress": 300,
+            "player_y_bucket": 11,
+            "state_fingerprint": 2,
+            "time_bucket": 0,
+            "room": [4, 9, 18],
+        });
+        assert!(serde_json::from_value::<SmbArchiveKey>(previous.clone()).is_err());
+        let mut extended = previous;
+        let fields = extended.as_object_mut().unwrap();
+        fields.insert("loop_on_path".to_owned(), serde_json::json!(true));
+        fields.insert("clock".to_owned(), serde_json::json!(0));
+        assert!(serde_json::from_value::<SmbArchiveKey>(extended.clone()).is_err());
+        extended
+            .as_object_mut()
+            .unwrap()
+            .remove("state_fingerprint");
+        assert!(serde_json::from_value::<SmbArchiveKey>(extended).is_ok());
     }
 }

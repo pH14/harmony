@@ -794,4 +794,31 @@ mod tests {
         assert_eq!(five_tanks.progress(), one_tank.progress());
         assert_eq!(five_tanks.place(), one_tank.place());
     }
+
+    #[test]
+    fn the_key_round_trips_through_json_and_postcard() {
+        let key = MetroidArchiveKey {
+            items: 3,
+            tanks: 2,
+            boss_damage: 7,
+            boss_health: 60,
+            boss_health_seen: 96,
+            area: 0x11,
+            map_x: 8,
+            map_y: 29,
+            x: 12,
+            y: 9,
+            posture: 1,
+            door: 2,
+            columns: 4,
+            health: 299,
+            missiles: 25,
+        };
+        let json: MetroidArchiveKey =
+            serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
+        assert_eq!(json, key);
+        let postcard: MetroidArchiveKey =
+            postcard::from_bytes(&postcard::to_allocvec(&key).unwrap()).unwrap();
+        assert_eq!(postcard, key);
+    }
 }
