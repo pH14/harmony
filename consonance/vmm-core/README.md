@@ -198,10 +198,20 @@ and [run 35705481698](https://github.com/pH14/harmony/actions/runs/35705481698).
 Each run retained the original, capture-and-continue and cold endpoint RAM and
 serialized VM state. Their first-difference reports show equality for RAM,
 VM state, state blob, state hash and virtual time at every compared stop and
-endpoint. These observations establish current coverage on that host model;
-they do not identify which intervening change, if any, removed the historical
-failure or prove the failure cannot recur. Keep the active-XMM check required
-and retain the init-only characterization with its raw evidence.
+endpoint. A fresh [run 35813011259](https://github.com/pH14/harmony/actions/runs/35813011259)
+at `e7d0266b` ran 16 trials of each fixture on a Xeon Platinum 8573C,
+including restore into the used vCPU. All 768 independently checked pairs of
+retained RAM, VM-state, state-blob and guest-byte files matched. The
+instrumented historical fixture at `0beac8cdb` differs from the failing
+`0534d974` revision by state reporting and diagnostic renames. It passed 32
+trials on Xeon Platinum 8370C across
+[run 35813713948](https://github.com/pH14/harmony/actions/runs/35813713948)
+and [run 35813873588](https://github.com/pH14/harmony/actions/runs/35813873588),
+with all retained raw comparisons equal. The historical fixture was not rerun
+on the original 8573C model. These observations do not identify which
+intervening change, if any, removed the failure or prove it cannot recur. Keep
+the active-XMM check required and retain the init-only characterization with
+its raw evidence.
 
 ### Published XSAVE identity check
 
