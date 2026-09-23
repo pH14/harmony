@@ -33,8 +33,11 @@ injection without runtime acknowledgement.
 An armed park counts instrumented edges across every thread of the process
 and holds the thread that reaches edge `k`, where `k` is from 1 through
 `1 << 24`. Before the hold it writes one JSON line through `fuzz_json_data`:
-`{"harmony_park":{"site":S,"edges":K}}`. The site is the trace-pc-guard index,
-which the image's symbol table maps to a source location. A pending kill takes
+`{"harmony_park":{"site":S,"edges":K}}`. When the instrumentation passes a
+code address, the site is that address's offset into the loaded module that
+contains it, so parks in different processes of one executable share site
+values and `addr2line` maps them to source lines. Any other site value, such
+as a trace-pc-guard index, is reported unchanged. A pending kill takes
 priority over a park on the same edge.
 
 Kill rarity is evaluated per instrumentation site. Before each callback the runtime

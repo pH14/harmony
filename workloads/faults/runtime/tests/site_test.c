@@ -18,6 +18,15 @@ int main(void)
     size_t index;
     size_t slot;
 
+    {
+        uint64_t code = (uint64_t)(uintptr_t)&ignore_json;
+        Dl_info info;
+        assert(dladdr((const void *)(uintptr_t)code, &info) != 0);
+        assert(harmony_fault_site_offset(code) ==
+               code - (uint64_t)(uintptr_t)info.dli_fbase);
+        assert(harmony_fault_site_offset(9) == 9);
+    }
+
     assert(harmony_fault_event_rarity_allows(0, 0) != 0);
     assert(harmony_fault_event_rarity_allows(1, 0) == 0);
     assert(harmony_fault_event_rarity_allows((UINT64_C(1) << 63) - 1, 63) != 0);
