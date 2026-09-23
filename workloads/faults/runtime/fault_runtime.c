@@ -2,6 +2,7 @@
 
 #include "fault_runtime.h"
 
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -289,10 +290,24 @@ static void harmony_fault_event_init(void)
     }
 }
 
+static uint64_t harmony_fault_site_offset(uint64_t site)
+{
+    Dl_info info;
+
+    if (site > UINTPTR_MAX ||
+        dladdr((const void *)(uintptr_t)site, &info) == 0 ||
+        info.dli_fbase == NULL)
+        return site;
+    return site - (uint64_t)(uintptr_t)info.dli_fbase;
+}
+
 static void harmony_fault_park_report(uint64_t site, uint64_t edges)
 {
     char json[96];
-    int length = snprintf(json, sizeof(json),
+    int length;
+
+    site = harmony_fault_site_offset(site);
+    length = snprintf(json, sizeof(json),
                           "{\"harmony_park\":{\"site\":%llu,\"edges\":%llu}}\n",
                           (unsigned long long)site, (unsigned long long)edges);
 
