@@ -16,12 +16,17 @@ and process results in recorded admission order. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
 for replay. Reserved jobs pin the snapshot they actually restore, including a
 parent's keyframe. If retention removes that snapshot from the active population,
-its memory stays charged until the last reservation is admitted. Maintenance
-evicts toward the archive's memory limit but keeps pinned snapshots, the
-liveness anchor, and fixed reserves, so a budget smaller than that working set
-leaves the archive above its limit. Live execution
+its memory stays charged until the last reservation is admitted. Live execution
 and serial replay release these pins at the same recorded boundary, independent
-of worker completion timing. Campaign streams require schedule policy version 3
+of worker completion timing. A memory-bounded archive keeps a liveness anchor,
+a resident entry that stays available as a parent. Maintenance evicts toward
+the archive's memory limit but keeps pinned snapshots, the liveness anchor, and
+fixed reserves, so a budget smaller than that working set leaves the archive
+above its limit. The archive picks the anchor, and reactivates it when no entry
+is expandable, during the maintenance after bootstrap and after each admission
+and skip. Parent selection does not change the archive, so replay reaches the
+same archive state without repeating selection. Campaign streams require
+schedule policy version 3
 and the current bounded progress policy; recordings from superseded policy
 namespaces are rejected before replay because their snapshot accounting differs.
 

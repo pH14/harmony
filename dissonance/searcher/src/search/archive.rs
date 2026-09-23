@@ -1779,6 +1779,14 @@ where
         }
     }
 
+    pub(crate) fn prepare_selection(&mut self, max_actions: usize) {
+        if self.frontier_cap != Some(max_actions) {
+            self.rebuild_selector_index(max_actions);
+        }
+        self.establish_liveness_anchor(max_actions);
+        self.reactivate_liveness_anchor(max_actions);
+    }
+
     fn reactivate_liveness_anchor(&mut self, max_actions: usize) -> bool {
         if !self.active_ids.is_empty() {
             return false;
@@ -2413,7 +2421,7 @@ where
         if self.frontier_cap != Some(max_actions) {
             self.rebuild_selector_index(max_actions);
         }
-        if self.active_ids.is_empty() && !self.reactivate_liveness_anchor(max_actions) {
+        if self.active_ids.is_empty() {
             return Err("archive has no expandable entry".into());
         }
         let use_walk = rand.below(NonZeroUsize::new(4).ok_or("invalid frontier odds")?) != 0;
@@ -4333,7 +4341,7 @@ mod tests {
     }
 
     #[test]
-    fn selector_reactivates_a_budgeted_executable_anchor() {
+    fn selection_preparation_reactivates_a_budgeted_executable_anchor() {
         let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1);
         archive
@@ -4372,6 +4380,10 @@ mod tests {
         archive.active_ids = ActiveIds::default();
 
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_cafe);
+        assert!(archive.select_parent(&mut rand, 1).is_err());
+        assert_eq!(archive.liveness_anchor_reactivations(), 0);
+        archive.prepare_selection(1);
+        assert_eq!(archive.liveness_anchor_reactivations(), 1);
         let (selected, _) = archive
             .select_parent(&mut rand, 1)
             .expect("budgeted anchor keeps selection live");
@@ -4428,6 +4440,7 @@ mod tests {
                 .all(|members| members.len() <= MAX_ENTRIES_PER_KEY)
         );
         archive.active_ids = ActiveIds::default();
+        archive.prepare_selection(1);
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_cafe);
         let (selected, _) = archive
             .select_parent(&mut rand, 1)
