@@ -96,7 +96,10 @@ Sometimes and Reachable assertions that passed enters the archive key as a
 count plus a digest of the sorted ids, so the key has no limit on how many
 distinct assertions a workload declares. Every process's records feed the key.
 `campaign-summary.json` lists every assertion the campaign saw under
-`assertions`.
+`assertions`. A Sometimes or Reachable assertion that was declared but never
+passed is a campaign failure: it appears under `never_satisfied` in both
+`campaign-summary.json` and `report.json`, and the search prints one
+`FAIL: assertion never satisfied` line for each.
 
 The generic `execution_work` counter and `report.json`
 `execution_ticks` count the guest ticks requested by successfully applied actions

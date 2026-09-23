@@ -174,6 +174,8 @@ pub struct Report {
     pub bug_found: bool,
     pub first_bug_execution: Option<u64>,
     pub bugs: Vec<BugSummary>,
+    #[serde(default)]
+    pub never_satisfied: Vec<String>,
     pub replays: Vec<ReplaySummary>,
     pub execution_ticks: u64,
     pub wall_seconds: u64,
@@ -199,6 +201,7 @@ impl Report {
             bug_found: false,
             first_bug_execution: None,
             bugs: Vec::new(),
+            never_satisfied: Vec::new(),
             replays: Vec::new(),
             execution_ticks: 0,
             wall_seconds: 0,
@@ -389,6 +392,7 @@ mod live {
             "progress": archive.progress_watermark,
             "milestones": archive.milestones,
             "assertions": archive.assertions,
+            "never_satisfied": archive.assertions.never_satisfied(),
             "bugs_found": campaign_report.bugs_found,
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),
@@ -399,6 +403,10 @@ mod live {
             options.output.join("campaign-summary.json"),
             serde_json::to_vec_pretty(&summary)?,
         )?;
+        report.never_satisfied = archive.assertions.never_satisfied().into_iter().collect();
+        for id in &report.never_satisfied {
+            eprintln!("FAIL: assertion never satisfied: {id}");
+        }
         report.executions = campaign_report.campaign.executions_completed;
         report.execution_ticks = campaign_report.campaign.execution_work;
         for bug in &written {
