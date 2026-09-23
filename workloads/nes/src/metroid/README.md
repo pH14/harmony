@@ -13,8 +13,7 @@ work RAM. The decoder maps Samus's screen using name-table membership and scroll
 direction, so camera coordinates do not masquerade as player coordinates. All
 source addresses and meanings are documented beside their constants in
 `target.rs`. Zero health is death; the ending flag is victory. The terminal
-identifier is `death_or_ending_v2`, correcting the prototype's stale
-`death_only_v1` label without changing that prototype's predicate.
+identifier is `death_or_ending_v2`.
 
 The default terminal policy is `death_or_bcd_underflow_or_ending_v3`, which also
 marks decoded health >=8000 as terminal. The damage routine stores a BCD
@@ -29,12 +28,11 @@ frame the policy calls terminal while the action itself runs to its end, so a
 terminal endpoint holds an observation and an emulator state from different
 frames. The search neither admits nor snapshots a terminal endpoint, so this
 only reaches replay tools, and only when one is pointed at a policy its tape
-was not recorded under. The historical
-`death_or_ending_v2` predicate is still selectable, through the evaluator's
-`metroid_terminal` request field and `MetroidGame::with_terminal_policy`. Stream
-headers carry the chosen identifier and reject a mismatched replay context.
-Recorded tapes made before this policy existed replay under the historical
-predicate: `nes-progress` names it, and `metroid-film` defaults to it.
+was not recorded under. The `death_or_ending_v2` predicate is also selectable,
+through the evaluator's `metroid_terminal` request field and
+`MetroidGame::with_terminal_policy`. Stream headers carry the chosen identifier
+and reject a mismatched replay context. Tapes recorded under that predicate
+replay under it: `nes-progress` names it, and `metroid-film` defaults to it.
 
 `archive.rs` records the experimental adapter policy explicitly. The place is
 the area, the map cell, boss damage and the Zebetite hits still needed. The
@@ -110,13 +108,13 @@ then ranks missiles before health and the second health before missiles. A
 location keeps the best state under each, so at most two, and one state holds
 both places when it leads on both. The two disagree only on a resource trade:
 ten missiles at twenty health takes the first, five missiles at two hundred
-health takes the second, and a route that needs the survivable state no longer
-loses it to the stocked one.
+health takes the second, and a route that needs the survivable state keeps it
+beside the stocked one.
 
-The legacy primary progress watermark records equipment bit count **plus boss
+The primary progress watermark records equipment bit count **plus boss
 defeats**, and missile capacity.
 The `milestones.tanks` field combines missile capacity divided by five
-and energy tanks (boss capacity bonuses also inflate that legacy field), so it
+and energy tanks (boss capacity bonuses also inflate that field), so it
 can improve while the primary watermark stays fixed.
 `milestones.areas` is an area bitset, not a count: decimal 3 has two area bits
 set. Inspect the individual fields and the verified witness before calling a
@@ -153,8 +151,8 @@ also exposes the native experiment command. The source lineage is documented in
 [the synthesis record](../../../../benchmarks/search/SYNTHESIS.md).
 
 `metroid-film` replays a recorded tape to video. A tape carries no policy
-header and the recorded tapes predate the BCD-borrow predicate, so it defaults
-to the historical one and takes `--terminal-policy` to name another.
+header, so it defaults to `death_or_ending_v2`, the predicate the recorded
+tapes were made under, and takes `--terminal-policy` to name another.
 `--set-resources HEALTH,MISSILES@ACTIONS` repeats a bounded resource
 intervention at that action count, so an input searched from an intervened root
 plays back as the searcher saw it. `MetroidTarget::diagnostic_set_resources`
@@ -167,8 +165,8 @@ it. The intervention point is validated before any output file exists, and a run
 that ends before the point is reported as the unintervened run.
 
 `metroid-map-probe` replays a tape and prints the map cell and resources at each
-action endpoint. Like `metroid-film` it defaults to the historical terminal
-predicate and takes `--terminal-policy`, so a recorded tape is not stopped early
+action endpoint. Like `metroid-film` it defaults to `death_or_ending_v2`
+and takes `--terminal-policy`, so a recorded tape is not stopped early
 by a predicate it was never recorded under. A campaign report names the areas a run entered and counts the
 map cells it observed; neither says which cells a route crossed, so neither can
 say which neighbour of a reached cell was never opened.
@@ -220,26 +218,26 @@ verification phase; the bounded export cost during discovery is part of search.
 A first named discovery reconstructs its tape regardless of output configuration,
 so publication options cannot alter deterministic report counters.
 The live observer includes only observations admitted in this run, not a restored
-archive's complete history. Missing fields in older reports mean **unavailable**,
-not zero. A retained champion replay cannot establish everything an older search
+archive's complete history. A missing field in a report means **unavailable**,
+not zero. A retained champion replay cannot establish everything a search
 explored or prove that no other branch defeated a boss.
 
 The names and boss flags follow
 [`Metroid_Defines.asm`](https://github.com/nmikstas/metroid-disassembly/blob/4270d57f9468daebdeea485686e31e26218a780c/Source_Files/Metroid_Defines.asm),
 with the defeat write in `Bank07.asm` at `LDD75`: `(InArea & 0x0f) >> 1`
-stores 1 at $687B for Kraid and 2 at $687C for Ridley. The previous decoder
-incorrectly tested bit 0 for both bosses. Correcting the count is versioned as
-key policy v8; named boss observation bytes require stream/checkpoint/result
-digest v4 (v2 introduced named Kraid/Ridley flags; v3 added Mother Brain state;
-v4 latches transient Tourian events). Key policy v21 reads Mother Brain's remaining hits into Tourian's
-boss health at four per hit while her status byte says she is in view, with her full health as the ceiling of the highest present reading, keeps the live Zebetite columns' remaining hits in the cell below the map cell, carries a lineage's highest reading across map cells while a reading is present, and named-progress v3 adds the destroyed
-column and binds Mother Brain's room to her status byte. Named-progress v2 and replay-probe v2 also
-correct origin/retrospective route timestamps to exclude genesis setup; the probe
-reports action execution work and setup separately; probes and backend snapshot
-replay are outside the execution-work counter. Earlier v1 timestamps in the 007
-audit are superseded by the corrected audit, not silently rewritten.
-Existing v7 results and the v2 reporting measurements remain immutable. The unrelated legacy combined
-capacity score remains explicit rather than silently redefining past policies.
+stores 1 at $687B for Kraid and 2 at $687C for Ridley. The key reads Mother
+Brain's remaining hits into Tourian's boss health at four per hit while her
+status byte says she is in view, with her full health as the ceiling of the
+highest present reading. It keeps the live Zebetite columns' remaining hits in
+the cell below the map cell, and carries a lineage's highest reading across map
+cells while a reading is present. Named progress
+(`metroid-named-progress-v3`) records the Kraid and Ridley defeat flags, Mother
+Brain's state, latched Tourian events and the destroyed Zebetite column, and
+binds Mother Brain's room to her status byte. Route timestamps exclude genesis
+setup. The replay probe reports action execution work and setup separately, and
+probes and backend snapshot replay are outside the execution-work counter. The
+campaign stream format is v4; the snapshot checkpoint and result digest formats
+are v5. The combined capacity score is a separate named score.
 
 Retrospective replay, without submitting an existing solution to search:
 
