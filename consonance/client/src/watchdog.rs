@@ -204,6 +204,17 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
+    #[cfg(not(miri))]
+    fn wait_for_cancel(cancel: &AtomicBool) -> bool {
+        for _ in 0..30_000 {
+            if cancel.load(Ordering::Acquire) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        cancel.load(Ordering::Acquire)
+    }
+
     #[test]
     fn completion_and_disconnect_do_not_cancel_or_kick() {
         for complete in [true, false] {
@@ -261,9 +272,7 @@ mod tests {
         assert!(!cancel.load(Ordering::Acquire));
 
         let expired = Watchdog::start(Duration::ZERO, Arc::clone(&cancel)).unwrap();
-        while !cancel.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        assert!(wait_for_cancel(&cancel));
         assert!(!expired.claim(), "the guard expired first");
         drop(expired);
     }
@@ -273,10 +282,7 @@ mod tests {
     fn real_signal_cancellation_and_guard_join() {
         let cancel = Arc::new(AtomicBool::new(false));
         let guard = Watchdog::start(Duration::ZERO, Arc::clone(&cancel)).unwrap();
-        while !cancel.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(cancel.load(Ordering::Acquire));
+        assert!(wait_for_cancel(&cancel));
         drop(guard);
         let canceled = Arc::new(AtomicBool::new(false));
         drop(Watchdog::start(Duration::from_secs(60), Arc::clone(&canceled)).unwrap());
