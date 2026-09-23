@@ -50,6 +50,11 @@ WARN_PROBABILITY = 0.88
 ONE_OFF_FAIL_PROBABILITY = 0.60
 ONE_OFF_WARN_PROBABILITY = 0.50
 
+# Synthetic outside-Harmony fallbacks score 0.84-0.87; separate build-only
+# controls and unrelated options score 0.06-0.09 on the pinned judge.
+GUEST_OPT_IN_FAIL_PROBABILITY = 0.80
+GUEST_OPT_IN_WARN_PROBABILITY = 0.65
+
 SEMANTIC_BASELINE_PATH = Path("docs/semantic-lints-baseline.json")
 CACHE_PATH = Path(".semantic-lints-cache.json")
 
@@ -781,7 +786,7 @@ def evaluate(answers: dict) -> tuple[list[str], list[str]]:
             else:
                 warned.append("workload-named")
 
-    for question_id, rule_name in {**CI_ARCHITECTURE_RULES, **GUEST_CONTRACT_RULES}.items():
+    for question_id, rule_name in CI_ARCHITECTURE_RULES.items():
         if question_id not in answers:
             continue
         score = answers[question_id]["noul"]
@@ -789,6 +794,13 @@ def evaluate(answers: dict) -> tuple[list[str], list[str]]:
             failed.append(rule_name)
         elif score >= WARN_PROBABILITY:
             warned.append(rule_name)
+
+    if "guest_runtime_opt_in" in answers:
+        score = answers["guest_runtime_opt_in"]["noul"]
+        if score >= GUEST_OPT_IN_FAIL_PROBABILITY:
+            failed.append("guest-runtime-opt-in")
+        elif score >= GUEST_OPT_IN_WARN_PROBABILITY:
+            warned.append("guest-runtime-opt-in")
 
     return failed, warned
 

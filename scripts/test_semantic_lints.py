@@ -801,9 +801,15 @@ class GuestContractTests(RequiresApiKey):
                        "so this same guest works on ordinary KVM.\n")
             findings, _, baselined, _, errors, _ = LINTS.run(
                 root, [path], {"guest-runtime-opt-in": [path]},
-                post=make_post(full_answers(guest_runtime_opt_in=0.98)))
+                post=make_post(full_answers(guest_runtime_opt_in=0.85)))
             self.assertEqual([rule for rule, _, _ in findings], ["guest-runtime-opt-in"])
             self.assertEqual((baselined, errors), (set(), []))
+
+    def test_runtime_opt_in_warns_below_the_calibrated_fail_threshold(self):
+        self.assertEqual(
+            LINTS.evaluate(full_answers(guest_runtime_opt_in=0.75)),
+            ([], ["guest-runtime-opt-in"]),
+        )
 
     def test_build_only_negative_control_passes(self):
         path = "consonance/harmony-linux/linux/x86-n6-traps-off-config-fragment"
