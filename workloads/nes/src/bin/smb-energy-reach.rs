@@ -149,12 +149,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut cell_streak = BTreeMap::<SmbArchiveKey, u64>::new();
     let mut band_streak = BTreeMap::<(RoomClass, u16), u64>::new();
     let mut room_streak = BTreeMap::<RoomClass, u64>::new();
-    let cell_key_of = |key: &SmbArchiveKey| -> SmbArchiveKey {
-        SmbArchiveKey {
-            state_fingerprint: 0,
-            ..*key
-        }
-    };
     let reader = BufReader::new(fs::File::open(&stream_path)?);
     let mut lines = reader.split(b'\n');
     let header_line = lines.next().ok_or("stream is empty")??;
@@ -191,7 +185,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let room = (key.world, key.level, key.room);
         let band = (room, key.progress / BAND_WIDTH);
         let entry_slot = &mut entry_streak[*index];
-        let cell_slot = cell_streak.entry(cell_key_of(&key)).or_insert(0);
+        let cell_slot = cell_streak.entry(key).or_insert(0);
         let band_slot = band_streak.entry(band).or_insert(0);
         let room_slot = room_streak.entry(room).or_insert(0);
         for slot in [entry_slot, cell_slot, band_slot, room_slot] {
@@ -295,7 +289,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let room = (key.world, key.level, key.room);
         let band = (room, key.progress / BAND_WIDTH);
         entry_streak[index] >= thresholds[0]
-            || cell_streak.get(&cell_key_of(&key)).copied().unwrap_or(0) >= thresholds[1]
+            || cell_streak.get(&key).copied().unwrap_or(0) >= thresholds[1]
             || band_streak.get(&band).copied().unwrap_or(0) >= thresholds[2]
             || room_streak.get(&room).copied().unwrap_or(0) >= thresholds[3]
     };
