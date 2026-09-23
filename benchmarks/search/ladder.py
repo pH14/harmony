@@ -51,7 +51,7 @@ LADDER = [
 
 PASS_SEEDS = 2
 
-FORMAT = "harmony-metroid-ladder-v2"
+FORMAT = "harmony-metroid-ladder-v3"
 
 GRAPH = ["jobs", "landed", "replaced", "longest_wave"]
 
@@ -60,12 +60,14 @@ def first_seen(summary, cell_dir):
     progress = progress_of(summary, cell_dir) or {}
     diagnostics = progress.get("workload_diagnostics") or {}
     named = (diagnostics.get("named_progress") or {}).get("first_seen") or {}
+    stamps = {
+        name: entry["execution"]
+        for name, entry in named.items()
+        if entry and entry.get("execution") is not None
+    }
     return (
-        {
-            name: named[name]["execution"]
-            for name in LADDER
-            if named.get(name) and named[name].get("execution") is not None
-        },
+        {name: stamps[name] for name in LADDER if name in stamps},
+        min(stamps.values(), default=None),
         progress.get("executions"),
         progress.get("continuations") or {},
         {
@@ -102,7 +104,7 @@ def collect(source):
         if request.get("game") != "metroid" or segment(summary.get("case")) is None:
             continue
         build = build or ((summary.get("build") or {}).get("binary_sha256") or "")[:12]
-        seen, executions, continuations, cost = first_seen(summary, cell)
+        seen, observed, executions, continuations, cost = first_seen(summary, cell)
         root = roots.setdefault(
             summary.get("case"),
             {"root_input": request.get("root_input"), "cells": {}},
@@ -113,6 +115,7 @@ def collect(source):
             "exit_code": summary.get("exit_code"),
             "executions": executions,
             "first_execution": seen,
+            "first_observation": observed,
             "continuations": {name: continuations.get(name) for name in GRAPH},
             "cost": cost,
         }
@@ -133,7 +136,9 @@ def score(root):
         for index, name in enumerate(LADDER)
         if reporting
         and all(
-            cell["first_execution"].get(name) == first_stamp(cell) for cell in reporting
+            cell.get("first_observation") is not None
+            and cell["first_execution"].get(name) == cell["first_observation"]
+            for cell in reporting
         )
     ]
     front = max(held_at_root, default=-1) + 1
@@ -152,13 +157,6 @@ def score(root):
             break
         passed.append((name, sorted(earliest.values())))
     return held, ladder, passed
-
-
-def first_stamp(cell):
-    return min(
-        (execution for execution in cell["first_execution"].values() if execution),
-        default=None,
-    )
 
 
 def reached_at(first_execution, name):

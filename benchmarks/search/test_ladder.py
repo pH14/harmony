@@ -77,6 +77,21 @@ class LadderTests(unittest.TestCase):
         self.assertIn('tourian_bottom', held)
         self.assertEqual(remaining[0], 'tourian_approach')
 
+    def test_the_first_observation_counts_milestones_outside_the_ladder(self):
+        for seed, execution in ((11, 900), (12, 700), (13, 800)):
+            write_cell(self.matrix, 'ladder-seg1', seed, first_seen(kraid_defeated=1, brinstar=execution))
+        held, remaining, passed = ladder.score(ladder.collect(self.matrix)['roots']['ladder-seg1'])
+        self.assertEqual(held, set())
+        self.assertEqual(passed, [('brinstar', [700, 800, 900])])
+
+    def test_a_root_with_no_observations_holds_nothing(self):
+        for seed in (11, 12):
+            write_cell(self.matrix, 'ladder-seg2', seed, first_seen())
+        held, remaining, passed = ladder.score(ladder.collect(self.matrix)['roots']['ladder-seg2'])
+        self.assertEqual(held, set())
+        self.assertEqual(remaining, ladder.LADDER)
+        self.assertEqual(passed, [])
+
     def test_a_rung_is_held_only_when_every_seed_shows_it_in_its_first_observation(self):
         write_cell(self.matrix, 'ladder-seg6', 11, first_seen(norfair=1, ridley_defeated=1))
         write_cell(self.matrix, 'ladder-seg6', 12, first_seen(norfair=1, ridley_defeated=4_200))
@@ -132,7 +147,7 @@ class LadderTests(unittest.TestCase):
         self.assertIn('1 to tourian_end at 1,751, 9,614', printed)
         written = out / 'ladder-build.json'
         document = ladder.collect(written)
-        self.assertEqual(document['format'], 'harmony-metroid-ladder-v2')
+        self.assertEqual(document['format'], 'harmony-metroid-ladder-v3')
         self.assertEqual(ladder.score(document['roots']['ladder-seg13'])[2], [('tourian_end', [1_751, 9_614])])
         written.write_text(json.dumps({**document, 'format': 'harmony-metroid-ladder-v1'}))
         with self.assertRaisesRegex(ValueError, 'score its matrix directory again'):
