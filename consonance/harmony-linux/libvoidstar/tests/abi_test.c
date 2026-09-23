@@ -99,6 +99,9 @@ int main(void)
     assert(fuzz_get_random() == UINT64_C(0x0102030405060708));
     fuzz_flush();
     init_coverage_module(NULL, 0);
+    notify_coverage(1);
+    notify_coverage(2);
+    assert(coverage_requests == 0);
     assert(harmony_coverage_configure(7, 3) == 0);
     notify_coverage(1);
     assert(coverage_requests == 1);
