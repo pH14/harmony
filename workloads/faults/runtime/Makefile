@@ -2,7 +2,7 @@
 CC ?= cc
 CFLAGS ?= -O2
 BUILD_DIR ?= build
-WARNINGS := -Wall -Wextra -Werror -Wconversion -Wpedantic
+WARNINGS := -Wall -Wextra -Werror -Wconversion -Wpedantic -D_GNU_SOURCE
 CORE_DIR ?= ../../../consonance/harmony-linux/libvoidstar
 CORE := $(CORE_DIR)/voidstar.c
 MAP := $(CORE_DIR)/libvoidstar.map
