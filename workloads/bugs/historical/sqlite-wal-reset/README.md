@@ -28,10 +28,16 @@ table under `/symbols`, and a bundle:
 | `ready` | `/bin/true` |
 
 Each writer mixes write transactions, checkpoints in all four modes, and
-correctness sweeps. The workload declares six Always, three Sometimes and one
-Reachable assertion through the fallback SDK, which writes JSON lines to
-`$ANTITHESIS_OUTPUT_DIR/sdk.jsonl`. The supervisor links that file to
-`/dev/harmony`, so every declared assertion reaches the search by name.
+correctness sweeps. The fallback SDK writes JSON lines to
+`$ANTITHESIS_OUTPUT_DIR/sdk.jsonl`, and the supervisor links that file to
+`/dev/harmony`, so every declared assertion reaches the search by name. The
+search sees 25 assertions:
+
+| source | assertions |
+|---|---|
+| `antithesis/workload.c` | seven Always, one Always-or-unreachable (`recovery-preserves-committed`), three Sometimes, and the `workload: process started` Reachable |
+| `ANT_REACH` markers in the amalgamation (`SQLITE_ENABLE_ANTITHESIS`) | thirteen Reachable in `walCheckpoint`, `sqlite3WalCheckpoint`, `walTryBeginRead`, `walIndexRecover`, `walRestartHdr` and `walFrames` |
+| the supervisor | the node-exit check |
 
 ## Oracle
 
