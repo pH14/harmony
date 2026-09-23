@@ -48,7 +48,7 @@ use crate::{
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v4";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-checkpoint-v4";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v5";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 const SUPERVISOR_TICK_MICROS: u64 = crate::target::SUPERVISOR_TICK_NANOS / 1_000;
@@ -806,7 +806,7 @@ pub fn run_fault_campaign_checkpointed(
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
 ) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
-    let (report, checkpoint) = run_campaign_checkpointed_with_options(
+    let (report, snapshot) = run_campaign_checkpointed_with_options(
         game,
         &config.generic(),
         origin,
@@ -818,7 +818,7 @@ pub fn run_fault_campaign_checkpointed(
             ..CampaignExecutionOptions::default()
         },
     )?;
-    Ok((FaultCampaignReport::new(report), checkpoint))
+    Ok((FaultCampaignReport::new(report), snapshot))
 }
 
 #[cfg(test)]
