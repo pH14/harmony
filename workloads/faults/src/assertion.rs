@@ -315,7 +315,7 @@ mod tests {
             decode_json_event(br#"{"antithesis_assert":{"assert_type":"odd","hit":true}}"#)
                 .unwrap();
         assert!(unknown.assertion.is_none());
-        let other = decode_json_event(br#"{"sqlite":{"any":1}}"#).unwrap();
+        let other = decode_json_event(br#"{"workload_event":{"any":1}}"#).unwrap();
         assert_eq!(other, JsonEvent::default());
     }
 
