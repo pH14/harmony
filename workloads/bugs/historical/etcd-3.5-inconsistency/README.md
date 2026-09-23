@@ -62,6 +62,8 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
   below a journaled acknowledgement revision is stale and
   remains inconclusive until it catches up. Once a member's response revision fences a record, an
   acknowledged-but-missing or changed value on that member is the case's only failing assertion.
+  The check writes both assertions as Antithesis SDK JSON records to
+  `$ANTITHESIS_OUTPUT_DIR/sdk.jsonl`.
   The complete history is checked after every fault, so records verified before a crash are checked
   again. A down member, empty journal, or failed local read is silent, so a crash alone cannot be
   mistaken for corruption. The multi-member oracle directly observes the follower-local divergence
@@ -79,8 +81,9 @@ data it claims to cover. The case's fault surface therefore pairs the event kill
 ## Discovery contract
 
 The case has one locked execution profile, bounded by wall time alone. CI searches the pinned
-vulnerable image on demand or on schedule. The campaign must find assertion 1 with evidence point
-11 and reproduce it in the package's fresh deterministic self-replay. A search miss or replay
+vulnerable image on demand or on schedule. The campaign must find the Always assertion `every etcd
+member holds each acknowledged write`, with the check's Reachable assertion `etcd oracle compared
+every member` as evidence, and reproduce it in the package's fresh deterministic self-replay. A search miss or replay
 mismatch is a regression in the test machinery, not a request to tune the workload.
 
 The current-branch record at `68840c45` comes from
@@ -90,7 +93,7 @@ The current-branch record at `68840c45` comes from
 |---|---|---|---|---|---|---|---|
 | 3.5.2 | yes | 2216 | 2213 | 490950 | 14 | 961 | 2070 s |
 
-The vulnerable arm's 22-action input reproduces assertion 1 with evidence point 11 and the same
+The vulnerable arm's 22-action input reproduces that assertion with that evidence and the same
 whole-VM state hash as the campaign finding. It combines process kills and restarts, event kills,
 event holds from 40 ms through 2.56 s, interrupts, pauses, and a 1.28 s wait. The campaign sampled
 every adaptive duration from 10 ms through 10.24 s; 574 event-ready executions used at least

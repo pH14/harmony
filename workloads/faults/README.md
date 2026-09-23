@@ -192,10 +192,12 @@ parser, the archive key, the image preparation and the report shapes are
 portable and tested everywhere.
 
 Replay summaries include completed-check provenance automatically for bundles
-with a continuous `check`. The supervisor records the check run, disturbance
-generations at its start and completion, its reached points, and pending process
-faults. A case can require evidence from a successful check that started and
-finished in the final generation with no outstanding fault. Cumulative reached
-points remain exploration evidence and cannot establish this recovery condition.
+with a continuous `check`. The supervisor records the check run, its pid, and
+the disturbance generations at its start and completion. The host adds the
+Sometimes and Reachable assertions that pid passed during the run, and the
+pending process faults. A case can require evidence from a successful check that
+started and finished in the final generation with no outstanding fault.
+Assertions passed anywhere else remain exploration evidence and cannot establish
+this recovery condition.
 Bundles that use drawn hooks have `check: null`; their evidence comes from those
 hooks instead.

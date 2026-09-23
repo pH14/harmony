@@ -45,19 +45,24 @@ Debian base.
 
 ## Check the image without Harmony
 
-Start the churn, start the build while it runs, then check. Hook 3 prints
-`@always 2 0` when it reports a heap tuple with no index entry.
+Start the churn, start the build while it runs, then check. The hooks write
+Antithesis SDK JSON records to `$ANTITHESIS_OUTPUT_DIR/sdk.jsonl`. Hook 3 fails
+the Always assertion `every heap tuple has an index entry` when it reports a
+heap tuple with no index entry.
 
 ```sh
 docker run --rm --privileged harmony-pgcic:14.3 /bin/sh -c '
     /opt/harmony/setup.sh
+    export ANTITHESIS_OUTPUT_DIR=/run/antithesis
+    mkdir -p "$ANTITHESIS_OUTPUT_DIR"
     /opt/harmony/node.sh >/run/node.out 2>&1 &
     until /opt/harmony/ready.sh >/dev/null 2>&1; do sleep 1; done
     /opt/harmony/hooks.sh 1 & churn=$!
     /opt/harmony/hooks.sh 2
     wait $churn
     /opt/harmony/hooks.sh 4
-    /opt/harmony/hooks.sh 3'
+    /opt/harmony/hooks.sh 3
+    grep "\"hit\":true" "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl"'
 ```
 
 `--privileged` is what lets the setup script mount its tmpfs; the guest gives
@@ -77,10 +82,11 @@ the same privileges without it.
 | `hook 3` | `hooks.sh 3` | `pg_amcheck --heapallindexed`; the oracle |
 | `hook 4` | `hooks.sh 4` | `VACUUM cic` |
 
-Hook 3 prints `@always 2 0` only when `pg_amcheck` reports a heap tuple that
-lacks a matching index tuple. It stays silent when the server is down, when
-the connection drops, and when there is no valid index to check, because none
-of those is evidence about the index.
+Hook 3 fails its Always assertion only when `pg_amcheck` reports a heap tuple
+that lacks a matching index tuple. When the server is down, the connection
+drops, or there is no valid index to check, it evaluates no Always assertion
+and reaches only a Reachable assertion naming why, because none of those is
+evidence about the index.
 
 ## Knobs
 

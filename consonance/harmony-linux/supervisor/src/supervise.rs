@@ -46,7 +46,6 @@ pub struct Counters {
     pub hooks_finished: u64,
     pub unexpected_deaths: u64,
     pub restarts: u64,
-    pub sometimes: u64,
     pub event_kill_fires: u64,
     pub event_kill_site: u64,
     pub event_park_fires: u64,
@@ -61,7 +60,7 @@ pub struct Counters {
     pub completed_check_run: u64,
     pub completed_check_start_generation: u64,
     pub completed_check_end_generation: u64,
-    pub completed_check_points: u64,
+    pub completed_check_pid: u64,
     pub pending_faults: u64,
 }
 
@@ -339,15 +338,11 @@ impl ProcessSupervisor {
         self.counters.checks_finished = self.counters.checks_finished.saturating_add(1);
     }
 
-    pub fn note_check_completed(&mut self, evidence: CheckEvidence) -> bool {
-        if evidence.points == 0 {
-            return false;
-        }
+    pub fn note_check_completed(&mut self, evidence: CheckEvidence) {
         self.counters.completed_check_run = evidence.run;
         self.counters.completed_check_start_generation = evidence.start_generation;
         self.counters.completed_check_end_generation = evidence.end_generation;
-        self.counters.completed_check_points = evidence.points;
-        true
+        self.counters.completed_check_pid = evidence.pid;
     }
 
     pub fn set_check_enabled(&mut self, enabled: bool) {
@@ -388,12 +383,6 @@ impl ProcessSupervisor {
         }
     }
 
-    pub fn note_sometimes(&mut self, id: u32) {
-        if let Some(bit) = crate::regs::sometimes_bit(id) {
-            self.counters.sometimes |= bit;
-        }
-    }
-
     #[must_use]
     pub fn alive_bitmap(&self) -> u64 {
         let mut bits = 0;
@@ -417,7 +406,6 @@ impl ProcessSupervisor {
             alive: self.alive_bitmap(),
             hooks_started: self.counters.hooks_started,
             hooks_finished: self.counters.hooks_finished,
-            sometimes: self.counters.sometimes,
             unexpected_deaths: self.counters.unexpected_deaths,
             restarts: self.counters.restarts,
             event_kill_fires: self.counters.event_kill_fires,
@@ -434,7 +422,7 @@ impl ProcessSupervisor {
             completed_check_run: self.counters.completed_check_run,
             completed_check_start_generation: self.counters.completed_check_start_generation,
             completed_check_end_generation: self.counters.completed_check_end_generation,
-            completed_check_points: self.counters.completed_check_points,
+            completed_check_pid: self.counters.completed_check_pid,
             pending_faults: self.counters.pending_faults,
         }
     }
@@ -455,7 +443,22 @@ impl ProcessSupervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evidence::CheckCapture;
+
+    fn started(run: u64, sup: &Supervisor) -> CheckEvidence {
+        CheckEvidence {
+            run,
+            start_generation: sup.disturbance_generation(),
+            end_generation: 0,
+            pid: 7,
+        }
+    }
+
+    fn completed(check: CheckEvidence, sup: &Supervisor) -> CheckEvidence {
+        CheckEvidence {
+            end_generation: sup.disturbance_generation(),
+            ..check
+        }
+    }
     use process_proto::ProcessAction;
 
     fn active(actions: &[(u16, ProcessAction)]) -> ActiveWindows {
@@ -835,29 +838,17 @@ mod tests {
     }
 
     #[test]
-    fn the_sometimes_bitmap_covers_the_first_forty_eight_ids() {
-        let mut sup = Supervisor::new(1);
-        sup.note_sometimes(0);
-        sup.note_sometimes(47);
-        sup.note_sometimes(48);
-        sup.note_sometimes(u32::MAX);
-        assert_eq!(sup.counters().sometimes, 1 | (1 << 47));
-    }
-
-    #[test]
     fn the_snapshot_reports_every_register() {
         let mut sup = Supervisor::new(2);
         sup.tick(&active(&[(1, ProcessAction::RunHook(2))]), &[0]);
         assert_eq!(sup.counters().hooks_started, 0);
         sup.note_hook_started();
         sup.note_hook_finished();
-        sup.note_sometimes(3);
         let snap = sup.snapshot();
         assert_eq!(snap.ticks, 1);
         assert_eq!(snap.alive, 0b11);
         assert_eq!(snap.hooks_started, 1);
         assert_eq!(snap.hooks_finished, 1);
-        assert_eq!(snap.sometimes, 1 << 3);
         assert_eq!(snap.unexpected_deaths, 1);
         assert_eq!(snap.restarts, 1);
     }
@@ -906,14 +897,13 @@ mod tests {
         let mut sup = Supervisor::new(1);
         sup.set_check_enabled(true);
         sup.note_process_transition();
-        let mut capture = CheckCapture::new(1, sup.disturbance_generation());
-        capture.note_success(7);
-        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        let capture = started(1, &sup);
+        sup.note_check_completed(completed(capture, &sup));
         sup.note_process_transition();
         let snap = sup.snapshot();
         assert_eq!(snap.completed_check_start_generation, 1);
         assert_eq!(snap.completed_check_end_generation, 1);
-        assert_eq!(snap.completed_check_points, 1 << 7);
+        assert_eq!(snap.completed_check_pid, 7);
         assert_eq!(snap.disturbance_generation, 2);
         assert_ne!(
             snap.completed_check_end_generation,
@@ -925,10 +915,9 @@ mod tests {
     fn a_check_spanning_a_disturbance_publishes_both_generations() {
         let mut sup = Supervisor::new(1);
         sup.note_process_transition();
-        let mut capture = CheckCapture::new(2, sup.disturbance_generation());
-        capture.note_success(7);
+        let capture = started(2, &sup);
         sup.note_process_transition();
-        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        sup.note_check_completed(completed(capture, &sup));
         let snap = sup.snapshot();
         assert_eq!(snap.completed_check_start_generation, 1);
         assert_eq!(snap.completed_check_end_generation, 2);
@@ -939,9 +928,8 @@ mod tests {
     fn a_late_standing_event_advances_past_completed_check_provenance() {
         let mut sup = Supervisor::new(1);
         sup.note_process_transition();
-        let mut capture = CheckCapture::new(3, sup.disturbance_generation());
-        capture.note_success(7);
-        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        let capture = started(3, &sup);
+        sup.note_check_completed(completed(capture, &sup));
         sup.note_process_transition();
         let snap = sup.snapshot();
         assert_eq!(snap.completed_check_end_generation, 1);
@@ -953,44 +941,11 @@ mod tests {
         let mut sup = Supervisor::new(1);
         sup.note_process_transition();
         sup.note_process_transition();
-        let mut capture = CheckCapture::new(4, sup.disturbance_generation());
-        capture.note_success(7);
-        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        let capture = started(4, &sup);
+        sup.note_check_completed(completed(capture, &sup));
         let snap = sup.snapshot();
         assert_eq!(snap.completed_check_start_generation, 2);
         assert_eq!(snap.completed_check_end_generation, 2);
-        assert_eq!(snap.disturbance_generation, 2);
-    }
-
-    #[test]
-    fn an_empty_check_keeps_same_generation_evidence() {
-        let mut sup = Supervisor::new(1);
-        sup.note_process_transition();
-        let mut capture = CheckCapture::new(4, sup.disturbance_generation());
-        capture.note_success(7);
-        assert!(sup.note_check_completed(capture.complete(sup.disturbance_generation())));
-        let empty = CheckCapture::new(5, sup.disturbance_generation());
-        assert!(!sup.note_check_completed(empty.complete(sup.disturbance_generation())));
-        let snap = sup.snapshot();
-        assert_eq!(snap.completed_check_run, 4);
-        assert_eq!(snap.completed_check_start_generation, 1);
-        assert_eq!(snap.completed_check_end_generation, 1);
-        assert_eq!(snap.completed_check_points, 1 << 7);
-    }
-
-    #[test]
-    fn an_empty_post_disturbance_check_keeps_prior_evidence_stale() {
-        let mut sup = Supervisor::new(1);
-        sup.note_process_transition();
-        let mut capture = CheckCapture::new(4, sup.disturbance_generation());
-        capture.note_success(7);
-        assert!(sup.note_check_completed(capture.complete(sup.disturbance_generation())));
-        sup.note_process_transition();
-        let empty = CheckCapture::new(5, sup.disturbance_generation());
-        assert!(!sup.note_check_completed(empty.complete(sup.disturbance_generation())));
-        let snap = sup.snapshot();
-        assert_eq!(snap.completed_check_run, 4);
-        assert_eq!(snap.completed_check_end_generation, 1);
         assert_eq!(snap.disturbance_generation, 2);
     }
 
@@ -1000,9 +955,8 @@ mod tests {
         let event = active(&[(0, ProcessAction::EventKill { rarity: 0 })]);
         assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
         sup.note_event_kill_armed(0, 0, 0);
-        let mut capture = CheckCapture::new(5, sup.disturbance_generation());
-        capture.note_success(7);
-        sup.note_check_completed(capture.complete(sup.disturbance_generation()));
+        let capture = started(5, &sup);
+        sup.note_check_completed(completed(capture, &sup));
         assert_eq!(sup.snapshot().pending_faults, 1);
         assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
         assert_eq!(sup.tick(&event, &[]), []);
