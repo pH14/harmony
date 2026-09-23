@@ -433,18 +433,21 @@ class ChangedFilesTests(unittest.TestCase):
             (root / "tool" / "src" / "bin" / "probe_two.rs").write_text("fn main() {}\n")
             (root / "scripts").mkdir()
             (root / "scripts" / "sweep.py").write_text("print()\n")
+            (root / "scripts" / "helpers.py").write_text("X = 1\n")
+            (root / "scripts" / "report.py").write_text("import helpers\n")
             (root / "run.sh").write_text(
                 "cargo run --bin probe\ncargo run --bin probe_two\npython3 scripts/sweep.py\n")
             self._git(root, "add", "-A")
             self._git(root, "commit", "-q", "-m", "base")
 
             (root / "run.sh").write_text("cargo run --bin probe_two\n")
+            (root / "scripts" / "report.py").write_text("X = 2\n")
             self._git(root, "add", "-A")
             self._git(root, "commit", "-q", "-m", "drop callers")
 
             self.assertEqual(
                 sorted(LINTS.programs_losing_a_caller(root, "HEAD~1")),
-                ["scripts/sweep.py", "tool/src/bin/probe.rs"],
+                ["scripts/helpers.py", "scripts/sweep.py", "tool/src/bin/probe.rs"],
             )
 
     def test_changed_paths_preserve_unicode_and_control_characters(self):

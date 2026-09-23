@@ -913,14 +913,8 @@ def programs_losing_a_caller(repo_root: Path, rev: str) -> list[str]:
     )
     if not removed:
         return []
-    programs = []
-    for path in all_tracked_files(repo_root):
-        if not _in_program_scope(path):
-            continue
-        name = Path(path).stem if path.endswith(".rs") else os.path.basename(path)
-        if re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w-])", removed):
-            programs.append(path)
-    return programs
+    return [path for path in all_tracked_files(repo_root)
+            if _in_program_scope(path) and _program_pattern(path).search(removed)]
 
 
 def dependent_workflows(repo_root: Path, changed: set[str]) -> list[str]:
