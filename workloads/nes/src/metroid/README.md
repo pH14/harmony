@@ -61,13 +61,12 @@ nothing else about drawing; the searcher owns the suffix draw and the
 retained-input table.
 
 The items held are the progress tier. The place is the area byte, the map
-cell and boss damage, so every hit on a boss opens a new place whose draw count
-starts fresh, and a state that has hurt the boss never displaces one that has
-not. The holder identity is the position bucket, posture and door state.
+cell, boss damage and the Zebetite hits still needed, so every hit on a boss or
+a Zebetite column opens a new place whose draw count starts fresh, and a state
+that has hurt either never displaces one that has not. The holder identity is the position bucket, posture and door state.
 Tanks, missiles and health are the preferences that decide which state holds a
 slot, in two orders: missiles before health, and health before missiles. Two
 places with equal items are peers whatever their area byte, map row or column.
-The Zebetite column count stays on the key for reporting and ranks nothing.
 
 Boss damage is how far a lineage has worn down the mini boss sharing its room.
 In Tourian the coordinate reads Mother Brain's remaining hits while her
@@ -80,14 +79,13 @@ missile does to Kraid or Ridley, so one missile is one boss-damage bucket in
 every boss room. Her full health is the reading's ceiling: an execution's
 highest present reading is at least her full health whenever she is in view,
 so a lineage that leaves her room and returns ranks by her hit count again.
-The Zebetite columns are part of the cell instead:
-the key carries the hits still needed on every live column slot, so a state
-that has hit a column is a different place from one that has not, and a
-column healing or respawning moves the state to another place without ranking
-it above or below the rest of Tourian. The column state sits below the map
-cell in the group order, so the walk's per-cell draw share is not split among
-column states: a screen whose columns heal between draws keeps one share, and
-the entries with the columns down compete inside it. The game keeps five Zebetite slots at
+The Zebetite columns are part of the place: the key carries the hits still
+needed on every live column slot, so a state that has hit a column is a
+different place from one that has not. Without it, a state that fired a
+missile into a column shares a slot with the state that did not fire, and the
+preferences keep the one with more missiles. A column healing or respawning
+moves the state to another place without ranking it above or below the rest of
+Tourian. The game keeps five Zebetite slots at
 `$0758`, eight bytes apart, with the slot's status at offset 0 (low nibble 1
 alive, 2 destroyed) and its missile hit count at offset 3; a column dies at
 eight hits while healing one hit every 64 frames it is not hit, and the game

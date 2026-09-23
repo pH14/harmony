@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_progress_area_map_cell_boss_damage_place_spatial_16_posture_door_identity_tanks_missiles_health_two_preferences_v23";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_two_preferences_v24";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -50,12 +50,18 @@ pub struct MetroidArchiveKey {
 }
 
 impl ArchiveKey for MetroidArchiveKey {
-    type Place = (u8, u8, u8, u8);
+    type Place = (u8, u8, u8, u8, u8);
     type Progress = u8;
     type Identity = (u8, u8, u8, u8);
 
     fn place(self) -> Self::Place {
-        (self.area, self.map_x, self.map_y, self.boss_damage)
+        (
+            self.area,
+            self.map_x,
+            self.map_y,
+            self.boss_damage,
+            self.columns,
+        )
     }
 
     fn progress(self) -> Self::Progress {
@@ -386,13 +392,13 @@ mod tests {
     }
 
     #[test]
-    fn column_states_share_a_map_cell_and_a_holder_identity() {
+    fn column_states_are_separate_places_with_one_holder_identity() {
         let clear = archive_key(state(100, 300, 0));
         let mut live = state(100, 300, 0);
         live.zebetite_hits_left = 13;
         let live = archive_key(live);
         assert_ne!(clear, live);
-        assert_eq!(clear.place(), live.place());
+        assert_ne!(clear.place(), live.place());
         assert_eq!(clear.identity(), live.identity());
     }
 
@@ -756,6 +762,19 @@ mod tests {
             archive.entry_key(unfired).expect("unfired key").boss_damage,
             0
         );
+        assert!(archive.active[fired]);
+        assert!(archive.active[unfired]);
+    }
+
+    #[test]
+    fn a_missile_that_hit_a_zebetite_is_held_beside_the_unfired_state() {
+        let mut archive = MetroidArchive::new(chord_time);
+        let mut before = tourian(4, 11, 266, 7, 0);
+        before.zebetite_hits_left = 8;
+        let unfired = held(&mut archive, None, 0, 0x00, before).expect("unfired");
+        let mut after = tourian(4, 11, 266, 6, 0);
+        after.zebetite_hits_left = 7;
+        let fired = held(&mut archive, Some(unfired), 1, 0x20, after).expect("fired");
         assert!(archive.active[fired]);
         assert!(archive.active[unfired]);
     }
