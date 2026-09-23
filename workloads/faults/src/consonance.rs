@@ -409,7 +409,9 @@ impl FaultTarget {
             Ok((observation, live.horizons_run.saturating_sub(before)))
         });
         match result {
-            Ok((observation, ran)) => {
+            Ok((mut observation, ran)) => {
+                let since = self.observation.moment;
+                observation.parks.retain(|park| park.moment > since);
                 self.actions.push(action);
                 self.execution_ticks = self
                     .execution_ticks
