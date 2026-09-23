@@ -171,11 +171,81 @@ pub fn action_cost(action: &FaultAction) -> u64 {
 
 pub const VECTORS: [u32; 2] = [0x20, 0x30];
 
+pub const ACTION_KINDS: usize = 8;
+
+#[must_use]
+pub fn action_kind(action: &FaultAction) -> usize {
+    match action {
+        FaultAction::Wait(_) => 0,
+        FaultAction::Kill(..) => 1,
+        FaultAction::Pause(..) => 2,
+        FaultAction::Restart(..) => 3,
+        FaultAction::Hook(..) => 4,
+        FaultAction::Interrupt(..) => 5,
+        FaultAction::EventKill { .. } => 6,
+        FaultAction::EventPark { .. } => 7,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ActionMix {
+    pub generation: u64,
+    pub drawn: [u64; ACTION_KINDS],
+    pub useful: [u64; ACTION_KINDS],
+}
+
+impl ActionMix {
+    pub fn note(&mut self, executed: &[FaultAction], retained: &[&[FaultAction]]) {
+        let kinds = |actions: &mut dyn Iterator<Item = &FaultAction>| {
+            let mut present = [false; ACTION_KINDS];
+            for action in actions {
+                present[action_kind(action)] = true;
+            }
+            present
+        };
+        let drawn = kinds(&mut executed.iter());
+        let useful = kinds(&mut retained.iter().flat_map(|actions| actions.iter()));
+        for kind in 0..ACTION_KINDS {
+            self.drawn[kind] = self.drawn[kind].saturating_add(u64::from(drawn[kind]));
+            self.useful[kind] = self.useful[kind].saturating_add(u64::from(useful[kind]));
+        }
+    }
+
+    #[must_use]
+    pub fn weight(&self, kind: usize) -> u128 {
+        ((u128::from(self.useful[kind]) + 1) << 64) / (u128::from(self.drawn[kind]) + 2)
+    }
+
+    fn pick(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        alternatives: &[usize],
+    ) -> Result<usize, Box<dyn Error>> {
+        let total = alternatives
+            .iter()
+            .map(|kind| self.weight(*kind))
+            .sum::<u128>();
+        if total == 0 {
+            return Err("empty fault action alternatives".into());
+        }
+        let mut point = ((u128::from(rand.next_u64()) << 64) | u128::from(rand.next_u64())) % total;
+        for kind in alternatives {
+            let weight = self.weight(*kind);
+            if point < weight {
+                return Ok(*kind);
+            }
+            point -= weight;
+        }
+        Err("fault action draw ran past its alternatives".into())
+    }
+}
+
 pub fn sample_action(
     rand: &mut RomuDuoJrRand,
     vocabulary: &FaultVocabulary,
     event_ready: u64,
     ticks: NonZeroU16,
+    mix: &ActionMix,
 ) -> Result<FaultAction, Box<dyn Error>> {
     let pick = |rand: &mut RomuDuoJrRand, len: usize| -> Result<usize, Box<dyn Error>> {
         Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
@@ -201,7 +271,7 @@ pub fn sample_action(
         }
         Ok(u16::try_from(bits.trailing_zeros())?)
     };
-    let action = match alternatives[pick(rand, alternatives.len())?] {
+    let action = match mix.pick(rand, &alternatives)? {
         0 => FaultAction::Wait(ticks),
         1 => FaultAction::Kill(node, ticks),
         2 => FaultAction::Pause(node, ticks),
@@ -477,7 +547,8 @@ mod tests {
             FaultAction::EventPark { .. } => 7,
         };
         for _ in 0..2_000 {
-            let action = sample_action(&mut rand, &vocabulary, 0, TICKS).expect("draw an action");
+            let action = sample_action(&mut rand, &vocabulary, 0, TICKS, &ActionMix::default())
+                .expect("draw an action");
             kinds.insert(kind(&action));
             assert_eq!(action.ticks(), u64::from(TICKS.get()));
             match action {
@@ -516,7 +587,9 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(19);
         let mut events = 0;
         for _ in 0..2000 {
-            match sample_action(&mut rand, &vocabulary, 0b010, TICKS).unwrap() {
+            match sample_action(&mut rand, &vocabulary, 0b010, TICKS, &ActionMix::default())
+                .unwrap()
+            {
                 FaultAction::EventKill { node, .. } | FaultAction::EventPark { node, .. } => {
                     assert_eq!(node, 1);
                     events += 1;
@@ -524,7 +597,7 @@ mod tests {
                 _ => {}
             }
             assert!(!matches!(
-                sample_action(&mut rand, &vocabulary, 0, TICKS).unwrap(),
+                sample_action(&mut rand, &vocabulary, 0, TICKS, &ActionMix::default()).unwrap(),
                 FaultAction::EventKill { .. } | FaultAction::EventPark { .. }
             ));
         }
@@ -547,13 +620,45 @@ mod tests {
     }
 
     #[test]
+    fn the_mix_counts_each_kind_once_per_execution() {
+        let mut mix = ActionMix::default();
+        let kill = FaultAction::Kill(0, TICKS);
+        let wait = FaultAction::Wait(TICKS);
+        mix.note(&[kill, kill, wait], &[&[kill], &[kill, kill]]);
+        assert_eq!(mix.drawn[action_kind(&kill)], 1);
+        assert_eq!(mix.drawn[action_kind(&wait)], 1);
+        assert_eq!(mix.useful[action_kind(&kill)], 1);
+        assert_eq!(mix.useful[action_kind(&wait)], 0);
+        assert_eq!(mix.generation, 0);
+    }
+
+    #[test]
+    fn the_mix_favours_kinds_that_were_retained_and_keeps_every_kind() {
+        let vocabulary = FaultVocabulary::new(1, Vec::new()).expect("vocabulary");
+        let mut mix = ActionMix::default();
+        for kind in 0..4 {
+            mix.drawn[kind] = 10_000;
+        }
+        mix.useful[1] = 100;
+        let mut rand = RomuDuoJrRand::with_seed(8);
+        let mut counts = [0_u32; ACTION_KINDS];
+        for _ in 0..20_000 {
+            let action = sample_action(&mut rand, &vocabulary, 0, TICKS, &mix).expect("draw");
+            counts[action_kind(&action)] += 1;
+        }
+        assert!(counts[1] > 18_000);
+        assert!(counts[0] > 0 && counts[2] > 0 && counts[3] > 0);
+        assert_eq!(counts[4..], [0; 4]);
+    }
+
+    #[test]
     fn a_wider_bundle_widens_the_node_range() {
         let wide = FaultVocabulary::new(3, vec![9]).expect("vocabulary");
         let mut rand = RomuDuoJrRand::with_seed(3);
         let mut seen = BTreeSet::new();
         for _ in 0..2_000 {
             if let FaultAction::Kill(node, _) =
-                sample_action(&mut rand, &wide, 0, TICKS).expect("draw")
+                sample_action(&mut rand, &wide, 0, TICKS, &ActionMix::default()).expect("draw")
             {
                 seen.insert(node);
             }
@@ -566,7 +671,8 @@ mod tests {
         let hookless = FaultVocabulary::new(1, Vec::new()).expect("vocabulary");
         let mut rand = RomuDuoJrRand::with_seed(4);
         for _ in 0..2_000 {
-            let action = sample_action(&mut rand, &hookless, 0, TICKS).expect("draw");
+            let action =
+                sample_action(&mut rand, &hookless, 0, TICKS, &ActionMix::default()).expect("draw");
             assert!(!matches!(action, FaultAction::Hook(..)));
         }
     }
@@ -576,7 +682,10 @@ mod tests {
         let draw = |seed| {
             let mut rand = RomuDuoJrRand::with_seed(seed);
             (0..64)
-                .map(|_| sample_action(&mut rand, &vocabulary(), 0, TICKS).expect("draw"))
+                .map(|_| {
+                    sample_action(&mut rand, &vocabulary(), 0, TICKS, &ActionMix::default())
+                        .expect("draw")
+                })
                 .collect::<Vec<_>>()
         };
         assert_eq!(draw(5), draw(5));
