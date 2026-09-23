@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, num::NonZeroUsize};
+use std::{collections::BTreeMap, error::Error, num::NonZeroUsize};
 
+use fault_policy::EVENT_PARK_EDGE_LIMIT;
 use serde::{Deserialize, Serialize};
 
 use searcher::search::{
@@ -197,10 +198,25 @@ pub fn sample_action(
         }),
         _ => Ok(FaultAction::EventPark {
             node: event_node(rand)?,
-            rarity: u8::try_from(pick(rand, 64)?)?,
+            edges: park_edges(rand)?,
             hold_us: PARK_HOLD_US[pick(rand, PARK_HOLD_US.len())?],
         }),
     }
+}
+
+fn park_edges(rand: &mut RomuDuoJrRand) -> Result<u32, Box<dyn Error>> {
+    let exponents = EVENT_PARK_EDGE_LIMIT.trailing_zeros() + 1;
+    let exponent = u32::try_from(rand.below(
+        NonZeroUsize::new(usize::try_from(exponents)?).ok_or("empty edge exponent range")?,
+    ))?;
+    let low = 1_u32 << exponent;
+    let high = low
+        .saturating_mul(2)
+        .saturating_sub(1)
+        .min(EVENT_PARK_EDGE_LIMIT);
+    let span = usize::try_from(high - low + 1)?;
+    let offset = u32::try_from(rand.below(NonZeroUsize::new(span).ok_or("empty edge range")?))?;
+    Ok(low + offset)
 }
 
 pub type FaultProgressPoint = ProgressPoint<FaultMilestones, FaultProgressWatermark>;
@@ -247,6 +263,8 @@ pub struct FaultArchiveReport {
     pub selector: SelectorAccounting,
     #[serde(default)]
     pub assertions: Assertions,
+    #[serde(default)]
+    pub park_sites: BTreeMap<u64, u64>,
 }
 
 #[cfg(test)]
@@ -438,11 +456,15 @@ mod tests {
             kinds.insert(kind(&action));
             match action {
                 FaultAction::Wait(_) => {}
-                FaultAction::EventKill { node, rarity }
-                | FaultAction::EventPark { node, rarity, .. } => {
+                FaultAction::EventKill { node, rarity } => {
                     assert!(vocabulary.instrumented_events());
                     assert!(node < vocabulary.nodes());
                     assert!(rarity < 64);
+                }
+                FaultAction::EventPark { node, edges, .. } => {
+                    assert!(vocabulary.instrumented_events());
+                    assert!(node < vocabulary.nodes());
+                    assert!((1..=EVENT_PARK_EDGE_LIMIT).contains(&edges));
                 }
                 FaultAction::Kill(node) | FaultAction::Restart(node) => {
                     assert!(node < vocabulary.nodes());
@@ -483,6 +505,21 @@ mod tests {
             ));
         }
         assert!(events > 0);
+    }
+
+    #[test]
+    fn park_edge_counts_cover_every_power_of_two_up_to_the_limit() {
+        let mut rand = RomuDuoJrRand::with_seed(23);
+        let mut exponents = BTreeSet::new();
+        for _ in 0..5_000 {
+            let edges = park_edges(&mut rand).unwrap();
+            assert!((1..=EVENT_PARK_EDGE_LIMIT).contains(&edges));
+            exponents.insert(edges.ilog2());
+        }
+        assert_eq!(
+            exponents,
+            (0..=EVENT_PARK_EDGE_LIMIT.ilog2()).collect::<BTreeSet<_>>()
+        );
     }
 
     #[test]
