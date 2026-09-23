@@ -5,8 +5,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -24,8 +26,8 @@ const settleInterval = 200 * time.Millisecond
 const disturbanceGenerationEnv = "HARMONY_DISTURBANCE_GENERATION"
 
 const (
-	reachablePoint = 11
-	alwaysPoint    = 1
+	comparedID  = "etcd oracle compared every member"
+	agreementID = "every etcd member holds each acknowledged write"
 )
 
 var (
@@ -66,6 +68,9 @@ func main() {
 }
 
 func run(args []string) error {
+	if err := declareAssertions(); err != nil {
+		return err
+	}
 	if len(args) < 3 {
 		return fmt.Errorf("usage: etcd-oracle check <journal> <endpoint>...")
 	}
@@ -178,13 +183,67 @@ func compareAgainstMembers(
 	if !conclusive {
 		return verdictInconclusive
 	}
-	fmt.Printf("@reachable %d\n", reachablePoint)
+	if err := emitAssertion("reachability", comparedID, true, true); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return verdictInconclusive
+	}
+	if err := emitAssertion("always", agreementID, true, !lost); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return verdictInconclusive
+	}
 	if lost {
-		fmt.Printf("@always %d 0\n", alwaysPoint)
 		return verdictLost
 	}
-	fmt.Printf("@always %d 1\n", alwaysPoint)
 	return verdictAgreed
+}
+
+// The records follow the Antithesis fallback SDK: one JSON object per line in
+// $ANTITHESIS_OUTPUT_DIR/sdk.jsonl, each written with a single write call.
+func declareAssertions() error {
+	if err := emitAssertion("reachability", comparedID, false, false); err != nil {
+		return err
+	}
+	return emitAssertion("always", agreementID, false, false)
+}
+
+func emitAssertion(assertType, id string, hit, condition bool) error {
+	dir := os.Getenv("ANTITHESIS_OUTPUT_DIR")
+	if dir == "" {
+		return nil
+	}
+	display := map[string]string{"always": "Always", "reachability": "Reachable"}[assertType]
+	line, err := json.Marshal(map[string]any{
+		"antithesis_assert": map[string]any{
+			"hit":          hit,
+			"must_hit":     true,
+			"assert_type":  assertType,
+			"display_type": display,
+			"message":      id,
+			"condition":    condition,
+			"id":           id,
+			"location": map[string]any{
+				"class":        "etcd-oracle",
+				"function":     "compareAgainstMembers",
+				"file":         "oracle/main.go",
+				"begin_line":   0,
+				"begin_column": 0,
+			},
+			"details": nil,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	sink, err := os.OpenFile(filepath.Join(dir, "sdk.jsonl"), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return err
+	}
+	_, writeErr := sink.Write(append(line, '\n'))
+	closeErr := sink.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
 }
 
 func compareMember(

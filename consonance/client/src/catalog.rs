@@ -12,6 +12,9 @@ pub struct StateCatalog {
 impl StateCatalog {
     pub fn observe(&mut self, event_id: u32, bytes: &[u8]) -> Result<(), String> {
         if event_id == 0 {
+            if bytes.trim_ascii_start().first() == Some(&b'{') {
+                return Ok(());
+            }
             if self.declared {
                 return Err("multiple SDK publishers are ambiguous on this event wire".into());
             }
@@ -144,6 +147,18 @@ mod tests {
         }
         assert_eq!(c.get("gpa").unwrap(), 50);
         assert!(c.observe(0, &catalog(97)).is_err());
+    }
+
+    #[test]
+    fn json_assertion_records_share_event_zero_with_the_catalog() {
+        let mut c = StateCatalog::default();
+        c.observe(0, &catalog(9)).unwrap();
+        c.observe(0, br#"{"antithesis_assert":{"id":"a"}}"#)
+            .unwrap();
+        c.observe(0, b" {}").unwrap();
+        c.observe(0x0200_0009, &state(0, 4)).unwrap();
+        assert_eq!(c.get("gpa"), Ok(4));
+        assert!(c.observe(0, &catalog(9)).is_err());
     }
 
     #[test]
