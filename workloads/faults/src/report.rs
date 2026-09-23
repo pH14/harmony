@@ -14,7 +14,6 @@ pub struct BugReport {
     pub bug: u64,
     pub execution: u64,
     pub root_seal: u64,
-    pub horizon_nanos: u64,
     pub actions: Vec<FaultAction>,
     pub standing: String,
     pub observations: FaultObservations,
@@ -33,7 +32,6 @@ impl BugReport {
             bug,
             execution,
             root_seal: windows.root_seal,
-            horizon_nanos: windows.horizon_nanos,
             actions: actions.to_vec(),
             standing: hex(&standing),
             observations: observations.clone(),
@@ -99,12 +97,11 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::target::{DEFAULT_HORIZON_NANOS, FaultStop};
+    use crate::target::FaultStop;
+    use std::num::NonZeroU16;
 
-    const WINDOWS: ActionWindows = ActionWindows {
-        root_seal: 1_000,
-        horizon_nanos: DEFAULT_HORIZON_NANOS,
-    };
+    const WINDOWS: ActionWindows = ActionWindows { root_seal: 1_000 };
+    const TICKS: NonZeroU16 = NonZeroU16::new(50).unwrap();
 
     fn sample() -> BugReport {
         let observations = FaultObservations {
@@ -117,7 +114,7 @@ mod tests {
             1,
             42,
             WINDOWS,
-            &[FaultAction::Hook(1), FaultAction::Kill(0)],
+            &[FaultAction::Hook(1, TICKS), FaultAction::Kill(0, TICKS)],
             &observations,
         )
         .expect("build a report")
@@ -129,7 +126,6 @@ mod tests {
         assert_eq!(report.file_name(), "bug-1.json");
         assert_eq!(report.actions.len(), 2);
         let bytes = report.standing_bytes().expect("hex round-trips");
-        assert_eq!(report.horizon_nanos, DEFAULT_HORIZON_NANOS);
         assert_eq!(
             fault_policy::decode_windows(&bytes).expect("the window list decodes"),
             standing_windows(WINDOWS, &report.actions).unwrap(),
@@ -179,13 +175,10 @@ mod tests {
             },
         };
         let bugs = [
-            bug(4, FaultAction::Kill(0)),
-            bug(9, FaultAction::Wait(std::num::NonZeroU16::MIN)),
+            bug(4, FaultAction::Kill(0, TICKS)),
+            bug(9, FaultAction::Wait(NonZeroU16::MIN)),
         ];
-        let windows = ActionWindows {
-            root_seal: 7,
-            ..WINDOWS
-        };
+        let windows = ActionWindows { root_seal: 7 };
         let written = write_bug_reports(windows, &bugs, directory.path()).expect("write");
         assert_eq!(written.len(), 2);
         assert_eq!(written[0].bug, 1);
