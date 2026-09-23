@@ -411,3 +411,49 @@ diagnose; power-on runs are the only completion test.
   roughly 34 groups of the old build's kills. It reached his room at 1.5 to
   2.1 million executions, against 0.75 million on the old build. The
   twentieth build's ladder decides root 3.
+- 2026-09-23: the twentieth build killed Ridley on root 3 on one seed of
+  three by 3 million executions (seed 13 at 2.07 million); the old build
+  killed him on all three by 0.79 million. Every stage of the approach
+  was slower: from the hideout entry to row 29 took 480 thousand to 1.27
+  million executions against 160 to 210 thousand, and from the door
+  screen at (18,29) to the room took 330 to 500 thousand against 54 to
+  100 thousand. The twentieth build spent about 2,400 draws on the door
+  screen before entering the room, against 103 to 736 on the old build.
+  The twenty-first build (consol21) ranked each cell in a tier behind
+  every peer that opened a newer cell more recently. It moved root 3's
+  draws into Brinstar and Kraid's hideout instead of Ridley's, and it
+  was reverted. Four diagnostic arms run root 3 to 1 million executions
+  on local branches: the old class as the tier (with and without the
+  cell rank), the missile preference alone, and a recency rank among a
+  cell's holders (with and without replacements inheriting the slot's
+  stamp).
+- 2026-09-23: SMB on the twenty-first build solved all three seeds (05 at
+  1.51 million, 06 at 1.26 million, 07 at 0.81 million). The twentieth
+  build's seed 05 stopped in 7-3 at 2 million.
+- 2026-09-23: root 15 falls behind on the twentieth build. No seed has
+  destroyed a zebetite by 870 to 900 thousand executions; the old build
+  did at 79 thousand, 394 thousand and 1.78 million. Both builds spread
+  into Brinstar at the same rate. The loss is in Tourian's row 11: the
+  twentieth build gives the cells at its left end 5 to 8.5 thousand draws
+  by 200 to 400 thousand executions and then almost none (21 draws from
+  200 thousand to 917 thousand on seed 11), while the old build keeps
+  giving them 3 to 5 thousand draws every 200 thousand executions. A
+  cell's weight falls with the square of its draws, so a cell drawn a
+  few thousand times loses to every new Brinstar cell. Zebetite hits do
+  not register as boss damage in either build.
+  Computed from the recorded counts near 1 million executions, root 15
+  sits in one tier of 95 to 112 cells, and the left end of row 11 is one
+  cell. Its chance of the next draw is under 0.01% with the squared
+  decay, 0.1 to 0.2% with a linear decay, 0.5 to 0.6% with an inverse
+  square root, and 0.9 to 1.05% with no decay. The old build gave it 1.5
+  to 2.5%, about twice a uniform share, so its walk ranked that screen
+  above its peers, and changing the decay alone does not restore it.
+- 2026-09-23: the consolidated key dropped the Zebetite column count from
+  the place, so a state that fired a missile into a column shared a slot
+  with the state that did not fire, and both preferences kept the one
+  with more missiles. The root 15 screen never opened a new cell and the
+  count decay starved it. Putting the hits still needed in the place
+  (the twenty-second build, consol22) destroyed a column on root 15 at
+  23 thousand executions on seed 13 and 77 thousand on seed 11; film of
+  seed 13 shows the right column fall and Samus walk through the next
+  door with 59 missiles.
