@@ -3161,9 +3161,12 @@ where
                             .record_selection(parent_index, &pending_job.selector);
                     }
                     let retained_ids = retained_archive_indexes(&core, &decisions);
-                    let new_slot_descendant = retained_ids
+                    let new_cell_descendant = retained_ids
                         .iter()
                         .any(|id| core.archive.opened_new_cell(*id));
+                    let new_slot_descendant = retained_ids
+                        .iter()
+                        .any(|id| core.archive.opened_new_slot(*id));
                     if !isolated_continuation {
                         core.archive
                             .record_selection_outcome(parent_index, !retained_ids.is_empty());
@@ -3177,7 +3180,7 @@ where
                         core.archive.record_continuation_outcome(
                             landed,
                             replaced,
-                            new_slot_descendant,
+                            new_cell_descendant,
                             pending_job.continuation_wave,
                         );
                         core.archive.add_continuation_execution_work(execution_work);
@@ -4135,7 +4138,7 @@ where
                 verify_selector_annotation(&job.selector)?;
                 if job.selector.path == SelectorPath::Continuation {
                     core.archive.record_isolated_continuation(parent_index);
-                    let new_slot_descendant = retained_archive_indexes(&core, &decisions)
+                    let new_cell_descendant = retained_archive_indexes(&core, &decisions)
                         .iter()
                         .any(|id| core.archive.opened_new_cell(*id));
                     let (landed, replaced) = continuation_arrival::<G>(
@@ -4148,7 +4151,7 @@ where
                     core.archive.record_continuation_outcome(
                         landed,
                         replaced,
-                        new_slot_descendant,
+                        new_cell_descendant,
                         continuation_wave,
                     );
                     core.archive.add_continuation_execution_work(execution_work);

@@ -421,6 +421,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     selected: Vec<u64>,
     productive: Vec<u64>,
     opened_cell: Vec<bool>,
+    opened_slot: Vec<bool>,
     selector_accounting: SelectorAccounting,
     cost_in_group: Vec<u64>,
     replacement_cost_displaced: u64,
@@ -764,6 +765,7 @@ where
             selected: Vec::new(),
             productive: Vec::new(),
             opened_cell: Vec::new(),
+            opened_slot: Vec::new(),
             selector_accounting: SelectorAccounting::default(),
             cost_in_group: Vec::new(),
             replacement_cost_displaced: 0,
@@ -1163,6 +1165,7 @@ where
         self.selected = retain_marked(std::mem::take(&mut self.selected), &keep);
         self.productive = retain_marked(std::mem::take(&mut self.productive), &keep);
         self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
+        self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.cost_in_group = retain_marked(std::mem::take(&mut self.cost_in_group), &keep);
         self.replacement_preferences =
             retain_marked(std::mem::take(&mut self.replacement_preferences), &keep);
@@ -1792,6 +1795,7 @@ where
             .cells
             .get(&cell_of(key))
             .is_none_or(|state| state.active == 0);
+        let new_slot = slot.is_empty();
         let (ranked, won_preferences) =
             self.rank_slot_preferences(&slot, key, candidate_cost_in_group);
         let admitted = ranked.last().copied().unwrap_or(true);
@@ -1953,6 +1957,7 @@ where
         self.selected.push(0);
         self.productive.push(0);
         self.opened_cell.push(new_cell);
+        self.opened_slot.push(new_slot);
         self.deepest_leaf.push((key, id));
         let mut ancestor = parent_id;
         while let Some(current) = ancestor {
@@ -2199,6 +2204,11 @@ where
     #[must_use]
     pub fn opened_new_cell(&self, id: usize) -> bool {
         self.opened_cell.get(id).copied().unwrap_or(false)
+    }
+
+    #[must_use]
+    pub fn opened_new_slot(&self, id: usize) -> bool {
+        self.opened_slot.get(id).copied().unwrap_or(false)
     }
 
     #[must_use]
@@ -3104,6 +3114,18 @@ mod tests {
         assert_eq!((taken.source, taken.destination), ((1, 0), (1, 3)));
         assert_eq!(archive.index_of_id(taken.parent), Some(richer));
         assert!(archive.outranks_slot_holders(richer, taken.destination, taken.tier));
+    }
+
+    #[test]
+    fn a_new_position_inside_an_open_cell_opens_a_slot_and_no_cell() {
+        let mut archive = Archive::<u8, ScreenKey, (), ()>::new(|_| 1);
+        let origin = insert_screen_at(&mut archive, None, 1, (1, 0, 5));
+        assert!(archive.opened_new_slot(origin) && archive.opened_new_cell(origin));
+        let beside = insert_screen_at(&mut archive, Some(origin), 2, (1, 4, 5));
+        assert!(archive.opened_new_slot(beside));
+        assert!(!archive.opened_new_cell(beside));
+        let richer = insert_screen_at(&mut archive, Some(origin), 3, (1, 4, 9));
+        assert!(!archive.opened_new_slot(richer));
     }
 
     #[test]
