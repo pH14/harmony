@@ -14,7 +14,8 @@ every loop check so far went the right way, and the hundreds digit of the game
 clock. The holder identity is his column on the screen. The game clock is the
 preference, so a faster arrival at a slot displaces the slower holder.
 
-Castle levels that loop check Mario's height at fixed pages. In 7-4 the game
+Some castle levels check Mario's height at fixed pages and send him back when
+he takes the wrong path. In 7-4 the game
 counts the checks passed at `$06DA` and the checks passed on the right path at
 `$06D9`; after the third check it sends Mario back unless both are three. A
 state with the counts equal can still clear the loop, and one with them unequal

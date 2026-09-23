@@ -525,3 +525,18 @@ diagnose; power-on runs are the only completion test.
   loop also stops seeds. The loss follows from the key: the loop count is
   not in the slot identity, so the clock preference decides between a
   right and a wrong count.
+- 2026-09-23: the twenty-third build (commit 4ed3da04c) puts whether every
+  loop check so far went the right way (`$06D9` equal to `$06DA`) in the
+  SMB place, beside the column and height, and deletes the unused state
+  fingerprint. On nine winning tapes only 7-4 moves the two counters; 4-4
+  and 8-4 leave both at zero and send Mario back at a wrong check at once.
+  Rooted at the 7-4 load screen, all 12 seeds cleared the second loop, at
+  a median of 18 thousand executions (3.8 to 36 thousand), against 11 of
+  12 at 81 thousand for the twelfth build and 9 of 12 at 141 thousand for
+  the twenty-second. The three SMB cells all reached the ending:
+  | Seed | Ending | 7-4 | 8-1 |
+  |---|---|---|---|
+  | 20260905 | 1.04M | 44K | 215K |
+  | 20260906 | 1.33M | 20K | 453K |
+  | 20260907 | 1.63M | 20K | 237K |
+  8-1 is now the level that takes longest on every seed.
