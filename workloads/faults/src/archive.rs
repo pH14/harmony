@@ -11,20 +11,21 @@ use searcher::search::{
     rand::RomuDuoJrRand,
 };
 
+use crate::assertion::{AssertionSet, Assertions};
 use crate::bundle::FaultVocabulary;
 use crate::target::{FaultAction, FaultObservations};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "faultlab_lifecycle_events_peer_places_liveness_identity_v7";
+    "faultlab_assertion_ids_peer_places_liveness_identity_v8";
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_guest_ticks";
 pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FaultArchiveKey {
-    pub sometimes: u64,
+    pub sometimes: AssertionSet,
     pub hooks_finished: u64,
     pub hooks_running: u64,
     pub alive: u64,
@@ -37,7 +38,7 @@ pub struct FaultArchiveKey {
 }
 
 impl ArchiveKey for FaultArchiveKey {
-    type Place = (u64, u64, u64, u64, u64, u64, u64, bool, bool);
+    type Place = (AssertionSet, u64, u64, u64, u64, u64, u64, bool, bool);
     type Progress = ();
     type Identity = u64;
 
@@ -77,7 +78,7 @@ impl ArchiveKey for FaultArchiveKey {
 #[must_use]
 pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
     FaultArchiveKey {
-        sometimes: observations.sometimes_bitmap(),
+        sometimes: observations.assertions.key(),
         hooks_finished: observations.hooks_finished.min(HOOKS_FINISHED_KEY_CAP),
         hooks_running: observations
             .hooks_started
@@ -95,7 +96,7 @@ pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultMilestones {
-    pub sometimes: u64,
+    pub sometimes: u32,
     pub hooks_finished: u64,
     pub bug: bool,
 }
@@ -103,21 +104,21 @@ pub struct FaultMilestones {
 #[must_use]
 pub fn milestones(observations: &FaultObservations) -> FaultMilestones {
     FaultMilestones {
-        sometimes: observations.sometimes_bitmap(),
+        sometimes: observations.assertions.key().count,
         hooks_finished: observations.hooks_finished,
         bug: observations.is_bug(),
     }
 }
 
 pub fn merge_milestones(into: &mut FaultMilestones, from: FaultMilestones) {
-    into.sometimes |= from.sometimes;
+    into.sometimes = into.sometimes.max(from.sometimes);
     into.hooks_finished = into.hooks_finished.max(from.hooks_finished);
     into.bug |= from.bug;
 }
 
 #[must_use]
 pub fn milestone_key(value: FaultMilestones) -> (u32, u64) {
-    (value.sometimes.count_ones(), value.hooks_finished)
+    (value.sometimes, value.hooks_finished)
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -133,7 +134,7 @@ pub fn merge_progress_watermark(
 ) {
     for observation in observations {
         *watermark = (*watermark).max(FaultProgressWatermark {
-            sometimes_sites: observation.sometimes_bitmap().count_ones(),
+            sometimes_sites: observation.assertions.key().count,
             hooks_finished: observation.hooks_finished,
             ticks: observation.ticks,
         });
@@ -244,6 +245,8 @@ pub struct FaultArchiveReport {
     pub bugs: Vec<FaultBugRecord>,
     #[serde(default)]
     pub selector: SelectorAccounting,
+    #[serde(default)]
+    pub assertions: Assertions,
 }
 
 #[cfg(test)]
@@ -251,11 +254,25 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+    use crate::assertion::{AssertionKind, AssertionOutcome};
     use crate::target::FaultStop;
 
     fn endpoint(sometimes: &[u32], hooks_finished: u64, alive: u64) -> FaultObservations {
+        let mut assertions = Assertions::default();
+        for id in sometimes {
+            assertions.record(
+                id.to_string(),
+                AssertionOutcome {
+                    kind: AssertionKind::Sometimes,
+                    message: id.to_string(),
+                    location: String::new(),
+                    passed: true,
+                    failed: false,
+                },
+            );
+        }
         FaultObservations {
-            sometimes: sometimes.iter().copied().collect::<BTreeSet<_>>(),
+            assertions,
             hooks_finished,
             alive,
             ..FaultObservations::default()
@@ -268,7 +285,7 @@ mod tests {
         assert_eq!(
             key,
             FaultArchiveKey {
-                sometimes: 0b10_0001,
+                sometimes: AssertionSet::of(["0", "5"]),
                 hooks_finished: 3,
                 hooks_running: 0,
                 alive: 0b11,
@@ -370,7 +387,7 @@ mod tests {
     fn milestones_union_the_sites_and_latch_the_bug() {
         let mut aggregate = milestones(&endpoint(&[0], 1, 1));
         merge_milestones(&mut aggregate, milestones(&endpoint(&[3], 5, 1)));
-        assert_eq!(aggregate.sometimes, 0b1001);
+        assert_eq!(aggregate.sometimes, 1);
         assert_eq!(aggregate.hooks_finished, 5);
         assert!(!aggregate.bug);
         let bug = FaultObservations {

@@ -22,8 +22,8 @@ if [[ ! -s "${report}" ]]; then
 fi
 
 is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
-if ! is_uint "${ORACLE_ASSERTION}" || ! is_uint "${ORACLE_EVIDENCE}"; then
-    echo "fail: infra-failure (oracle ids must be non-negative integers)"
+if [[ -z "${ORACLE_ASSERTION}" || -z "${ORACLE_EVIDENCE}" ]]; then
+    echo "fail: infra-failure (oracle assertion ids must be non-empty)"
     exit 1
 fi
 
@@ -46,15 +46,15 @@ case "${mode}" in
     search)
         check infra-failure '.mode == "search"'
 
-        raw=$(jq -r --argjson id "${assertion}" \
+        raw=$(jq -r --arg id "${assertion}" \
             'any(.bugs[]?; (.violations // [] | index($id)) != null)' "${report}")
         [[ "${raw}" == true ]] || fail search-miss
 
         # The package's campaign already performs one fresh replay for each
         # recorded bug. Its summary must carry the same detector evidence and
         # prove that no cached prefix answered it.
-        verified=$(jq -r --argjson assertion "${assertion}" \
-            --argjson evidence "${evidence}" '
+        verified=$(jq -r --arg assertion "${assertion}" \
+            --arg evidence "${evidence}" '
             any(.bugs[]?;
                 .confirmed == true
                 and ((.violations // []) | index($assertion)) != null
@@ -68,7 +68,7 @@ case "${mode}" in
             )' "${report}")
         [[ "${verified}" == true ]] && { echo pass; exit 0; }
 
-        replayed=$(jq -r --argjson assertion "${assertion}" '
+        replayed=$(jq -r --arg assertion "${assertion}" '
             any(.bugs[]?;
                 .confirmed == true
                 and ((.violations // []) | index($assertion)) != null
@@ -90,22 +90,22 @@ case "${mode}" in
                 and (.actions_applied == ${actions})\
                 and (.settle_actions >= 0)\
                 and (.settle_ticks >= .settle_actions))"
-        if jq -e --argjson assertion "${assertion}" \
-            'any(.replays[]; .bug == true or ((.violations // []) | length) > 0)' \
+        if jq -e 'any(.replays[]; .bug == true or ((.violations // []) | length) > 0)' \
             "${report}" >/dev/null 2>&1; then
             fail sample-violation
         fi
-        check replay-inconclusive \
-            "all(.replays[]; (.sometimes // []) | index(${evidence}) != null)"
+        jq -e --arg evidence "${evidence}" \
+            'all(.replays[]; (.sometimes // []) | index($evidence) != null)' \
+            "${report}" >/dev/null 2>&1 || fail replay-inconclusive
         check infra-failure 'all(.replays[]; has("check"))'
-        check replay-inconclusive \
-            "all(.replays[]; .check == null or (
+        jq -e --arg evidence "${evidence}" \
+            'all(.replays[]; .check == null or (
                 .check.run > 0
                 and .check.start_generation == .check.disturbance_generation
                 and .check.end_generation == .check.disturbance_generation
                 and .check.pending_faults == 0
-                and ((.check.points // []) | index(${evidence})) != null
-            ))"
+                and ((.check.points // []) | index($evidence)) != null
+            ))' "${report}" >/dev/null 2>&1 || fail replay-inconclusive
         check replay-inconclusive \
             'all(.replays[]; .bug == false and ((.violations // []) | length) == 0)'
         check replay-mismatch '[.replays[].state_hash] | unique | length == 1'

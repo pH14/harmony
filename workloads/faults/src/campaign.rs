@@ -41,6 +41,7 @@ use crate::{
         REPLACEMENT_IDENTIFIER, action_cost, archive_key, bug_outcome, merge_milestones,
         merge_progress_watermark, milestone_key, milestones, sample_action,
     },
+    assertion::Assertions,
     bundle::FaultVocabulary,
     consonance::{FaultConfig, FaultTarget, identity, snapshot_memory_charge},
     target::{FaultAction, FaultObservations, FaultSnapshot},
@@ -125,6 +126,7 @@ pub struct FaultCampaignEvidence {
     champion_input: FaultInput,
     champion_milestones: FaultMilestones,
     bugs: Vec<FaultBugRecord>,
+    assertions: Assertions,
 }
 
 pub type FaultCampaignOrigin = CampaignOrigin<FaultWorkload>;
@@ -358,6 +360,7 @@ impl Reporting for FaultWorkload {
             watchdog_cutoffs: evidence.watchdog_cutoffs,
             bugs: evidence.bugs.clone(),
             selector: state.selector,
+            assertions: evidence.assertions.clone(),
         }
     }
 }
@@ -696,6 +699,7 @@ impl Evaluation for FaultWorkload {
             &mut evidence.watermark,
             std::slice::from_ref(target.observation()),
         );
+        evidence.assertions.merge(&target.observation().assertions);
         Ok(())
     }
 
@@ -737,6 +741,9 @@ impl Evaluation for FaultWorkload {
     {
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
+        for observation in &action.observations {
+            evidence.assertions.merge(&observation.assertions);
+        }
         evidence.watchdog_cutoffs = evidence.watchdog_cutoffs.saturating_add(
             action
                 .observations

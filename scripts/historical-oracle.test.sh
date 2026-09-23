@@ -8,7 +8,7 @@ oracle=${here}/historical-oracle.sh
 work=$(mktemp -d)
 trap 'rm -rf "${work}"' EXIT
 
-export ORACLE_ASSERTION=2 ORACLE_EVIDENCE=24
+export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence
 failures=0
 
 expect() {
@@ -41,10 +41,10 @@ replay_report() {
     jq -cn --argjson replays "[$1]" '{mode: "replay", replays: $replays}'
 }
 
-corrupt=$(replay_run true '[2]' '[22,24]' 7 7)
-clean=$(replay_run false '[]' '[22,24]' 7 7)
-silent=$(replay_run false '[]' '[22]' 7 7)
-cached=$(replay_run false '[]' '[22,24]' 5 2)
+corrupt=$(replay_run true '["case-assertion"]' '["other","case-evidence"]' 7 7)
+clean=$(replay_run false '[]' '["other","case-evidence"]' 7 7)
+silent=$(replay_run false '[]' '["other"]' 7 7)
+cached=$(replay_run false '[]' '["other","case-evidence"]' 5 2)
 
 expect pass 'a clean no-find sample on the searched version' \
     "$(replay_report "${clean},${clean}")" sample 2 7
@@ -60,7 +60,7 @@ expect fail 'a replay answered by a cached prefix' \
 
 checked=$(jq '.settle_actions = 3 | .settle_ticks = 7 | .guest_horizons += 3 |
     .check = {disturbance_generation:3, run:7,
-    start_generation:3, end_generation:3, points:[24], pending_faults:0}' <<<"${clean}")
+    start_generation:3, end_generation:3, points:["case-evidence"], pending_faults:0}' <<<"${clean}")
 expect pass 'continuous check completed after the final recovery' \
     "$(replay_report "${checked}")" sample 1 7
 for mutation in \
@@ -90,11 +90,11 @@ search_report() {
         '{mode: "search", bug_found: $found, bugs: $bugs}'
 }
 
-confirmed_replay=$(replay_run true '[2]' '[22,24]' 1 1)
-confirmed=$(bug true '[2]' '[22,24]' "${confirmed_replay}")
-unconfirmed=$(bug false '[2]' '[22,24]')
-wrong_replay=$(replay_run true '[9]' '[22,24]' 1 1)
-wrong=$(bug true '[2]' '[22,24]' "${wrong_replay}")
+confirmed_replay=$(replay_run true '["case-assertion"]' '["other","case-evidence"]' 1 1)
+confirmed=$(bug true '["case-assertion"]' '["other","case-evidence"]' "${confirmed_replay}")
+unconfirmed=$(bug false '["case-assertion"]' '["other","case-evidence"]')
+wrong_replay=$(replay_run true '["another-assertion"]' '["other","case-evidence"]' 1 1)
+wrong=$(bug true '["case-assertion"]' '["other","case-evidence"]' "${wrong_replay}")
 
 expect pass 'a confirmed current-build discovery' \
     "$(search_report true "${confirmed}")" search
