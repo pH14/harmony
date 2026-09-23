@@ -153,7 +153,7 @@ pub enum Fault {
     ProcKill,
     ProcRestart,
     ProcEventKill { rarity: u8 },
-    ProcEventPark { rarity: u8, hold: Span },
+    ProcEventPark { edges: u32, hold: Span },
     BuggifyFire,
     RunHook(u32),
 }

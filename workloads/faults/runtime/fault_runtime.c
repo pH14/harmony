@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -26,15 +27,20 @@
 #ifndef HARMONY_KILL
 #define HARMONY_KILL(pid, signal_number) kill((pid), (signal_number))
 #endif
+#ifndef HARMONY_JSON
+void fuzz_json_data(const char *data, size_t size);
+#define HARMONY_JSON(data, size) fuzz_json_data((data), (size))
+#endif
 
 struct harmony_fault_event_state {
     pthread_mutex_t lock;
     int control_fd;
     int report_fd;
     uint8_t kill_rarity;
-    uint8_t park_rarity;
     uint32_t kill_armed;
     uint32_t park_armed;
+    uint64_t park_edges;
+    uint64_t park_edges_left;
     uint64_t park_hold_nanos;
     uint64_t park_fires;
     uint64_t park_inflight;
@@ -193,7 +199,8 @@ static void *harmony_fault_event_control(void *arg)
                 harmony_fault_events.kill_armed = 1;
             }
         } else if (kind == HARMONY_FAULT_EVENT_CMD_PARK) {
-            if (first >= HARMONY_FAULT_EVENT_RARITY_LIMIT) {
+            if (second != 0 &&
+                (first == 0 || first > HARMONY_FAULT_EVENT_PARK_EDGE_LIMIT)) {
                 valid = 0;
             } else if (second == 0) {
                 harmony_fault_events.park_armed = 0;
@@ -206,7 +213,8 @@ static void *harmony_fault_event_control(void *arg)
                     }
                 }
             } else {
-                harmony_fault_events.park_rarity = (uint8_t)first;
+                harmony_fault_events.park_edges = first;
+                harmony_fault_events.park_edges_left = first;
                 harmony_fault_events.park_hold_nanos = second;
                 harmony_fault_events.park_armed = 1;
             }
@@ -281,6 +289,17 @@ static void harmony_fault_event_init(void)
     }
 }
 
+static void harmony_fault_park_report(uint64_t site, uint64_t edges)
+{
+    char json[96];
+    int length = snprintf(json, sizeof(json),
+                          "{\"harmony_park\":{\"site\":%llu,\"edges\":%llu}}\n",
+                          (unsigned long long)site, (unsigned long long)edges);
+
+    if (length > 0 && (size_t)length < sizeof(json))
+        HARMONY_JSON(json, (size_t)length);
+}
+
 static void harmony_fault_event_sleep(uint64_t hold_nanos)
 {
     const uint64_t nanos_per_second = UINT64_C(1000000000);
@@ -299,6 +318,7 @@ void harmony_fault_runtime_event(uint64_t site)
     uint64_t kill_site = 0;
     int kill_report_fd = -1;
     uint64_t park_hold_nanos = 0;
+    uint64_t park_edges = 0;
     uint32_t kill_claimed = 0;
     uint32_t park_claimed = 0;
 
@@ -320,9 +340,9 @@ void harmony_fault_runtime_event(uint64_t site)
         kill_site = site;
         kill_report_fd = harmony_fault_events.report_fd;
     } else if (harmony_fault_events.park_armed != 0 &&
-             harmony_fault_event_rarity_allows(
-                 before, harmony_fault_events.park_rarity)) {
+               --harmony_fault_events.park_edges_left == 0) {
         harmony_fault_events.park_armed = 0;
+        park_edges = harmony_fault_events.park_edges;
         if (harmony_fault_events.park_fires != UINT64_MAX)
             harmony_fault_events.park_fires++;
         park_claimed = 1;
@@ -345,6 +365,7 @@ void harmony_fault_runtime_event(uint64_t site)
     }
     (void)pthread_mutex_unlock(&harmony_fault_events.lock);
     if (park_claimed != 0) {
+        harmony_fault_park_report(site, park_edges);
         harmony_fault_event_sleep(park_hold_nanos);
         if (pthread_mutex_lock(&harmony_fault_events.lock) == 0) {
             harmony_fault_events.park_inflight--;

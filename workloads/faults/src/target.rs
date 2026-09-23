@@ -29,39 +29,65 @@ pub enum FaultAction {
     Wait(std::num::NonZeroU16),
     Kill(u16),
     EventKill { node: u16, rarity: u8 },
-    EventPark { node: u16, rarity: u8, hold_us: u32 },
+    EventPark { node: u16, edges: u32, hold_us: u32 },
     Pause(u16, u32),
     Restart(u16),
     Hook(u32),
     Interrupt(u32),
 }
 
+pub const ACTION_KEY_WIDTH: usize = 32;
+
 impl FaultAction {
     #[must_use]
-    pub fn key_bytes(&self) -> [u8; 8] {
-        let mut out = [0u8; 8];
-        let (tag, payload): (u8, &[&[u8]]) = match self {
-            Self::Wait(ticks) => (0, &[&ticks.get().to_le_bytes()]),
-            Self::Kill(node) => (1, &[&node.to_le_bytes()]),
-            Self::EventKill { node, rarity } => (2, &[&node.to_le_bytes(), &[*rarity]]),
-            Self::EventPark {
-                node,
-                rarity,
-                hold_us,
-            } => (
-                3,
-                &[&node.to_le_bytes(), &[*rarity], &hold_us.to_le_bytes()],
-            ),
-            Self::Pause(node, micros) => (4, &[&node.to_le_bytes(), &micros.to_le_bytes()]),
-            Self::Restart(node) => (5, &[&node.to_le_bytes()]),
-            Self::Hook(id) => (6, &[&id.to_le_bytes()]),
-            Self::Interrupt(id) => (7, &[&id.to_le_bytes()]),
-        };
-        out[0] = tag;
-        let mut at = 1;
-        for field in payload {
+    pub fn key_bytes(&self) -> [u8; ACTION_KEY_WIDTH] {
+        let mut out = [0u8; ACTION_KEY_WIDTH];
+        let mut at = 0;
+        let mut put = |field: &[u8]| {
             out[at..at + field.len()].copy_from_slice(field);
             at += field.len();
+        };
+        match *self {
+            Self::Wait(ticks) => {
+                put(&[0]);
+                put(&ticks.get().to_le_bytes());
+            }
+            Self::Kill(node) => {
+                put(&[1]);
+                put(&node.to_le_bytes());
+            }
+            Self::EventKill { node, rarity } => {
+                put(&[2]);
+                put(&node.to_le_bytes());
+                put(&[rarity]);
+            }
+            Self::EventPark {
+                node,
+                edges,
+                hold_us,
+            } => {
+                put(&[3]);
+                put(&node.to_le_bytes());
+                put(&edges.to_le_bytes());
+                put(&hold_us.to_le_bytes());
+            }
+            Self::Pause(node, micros) => {
+                put(&[4]);
+                put(&node.to_le_bytes());
+                put(&micros.to_le_bytes());
+            }
+            Self::Restart(node) => {
+                put(&[5]);
+                put(&node.to_le_bytes());
+            }
+            Self::Hook(id) => {
+                put(&[6]);
+                put(&id.to_le_bytes());
+            }
+            Self::Interrupt(vector) => {
+                put(&[7]);
+                put(&vector.to_le_bytes());
+            }
         }
         out
     }
@@ -154,7 +180,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
         },
         FaultAction::EventPark {
             node,
-            rarity,
+            edges,
             hold_us,
         } => {
             let hold = u64::from(hold_us).saturating_mul(1_000);
@@ -163,7 +189,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
                     process_target(
                         node,
                         &Fault::ProcEventPark {
-                            rarity,
+                            edges,
                             hold: Span(hold),
                         },
                     ),
@@ -258,6 +284,14 @@ pub struct SdkCapture {
     pub assertions: Assertions,
     pub setup_complete: bool,
     pub completed_check: Option<CompletedCheck>,
+    pub parks: Vec<ParkLanding>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ParkLanding {
+    pub moment: u64,
+    pub site: u64,
+    pub edges: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -302,10 +336,17 @@ impl SdkCapture {
 pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, String> {
     let mut capture = SdkCapture::default();
     let mut check_passes: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
-    for (_, event_id, bytes) in events {
+    for (moment, event_id, bytes) in events {
         if *event_id == JSON_EVENT_ID && bytes.trim_ascii_start().first() == Some(&b'{') {
             if let Some(event) = decode_json_event(bytes) {
                 capture.setup_complete |= event.setup_complete;
+                if let Some(park) = event.park {
+                    capture.parks.push(ParkLanding {
+                        moment: *moment,
+                        site: park.site,
+                        edges: park.edges,
+                    });
+                }
                 if let Some((id, outcome)) = event.assertion {
                     if let Some(pid) = event.pid
                         && outcome.feeds_the_key()
@@ -426,6 +467,8 @@ pub struct FaultObservations {
     pub stop: FaultStop,
     #[serde(default)]
     pub watchdog_cutoff: bool,
+    #[serde(default)]
+    pub parks: Vec<ParkLanding>,
 }
 
 impl FaultObservations {
@@ -462,6 +505,7 @@ impl FaultObservations {
             assertions: capture.assertions.clone(),
             stop,
             watchdog_cutoff: false,
+            parks: capture.parks.clone(),
         }
     }
 
@@ -583,7 +627,7 @@ mod tests {
     fn an_event_park_stands_until_its_hold_can_finish() {
         let action = FaultAction::EventPark {
             node: 2,
-            rarity: 12,
+            edges: 4_096,
             hold_us: 2_000_000,
         };
         let window = WINDOWS.window(&[action], 0).unwrap();
@@ -595,7 +639,7 @@ mod tests {
             Some((
                 2,
                 Fault::ProcEventPark {
-                    rarity: 12,
+                    edges: 4_096,
                     hold: Span(2_000_000_000),
                 }
             ))
@@ -879,6 +923,27 @@ mod tests {
             state_event(reg::COMPLETED_CHECK_END_GENERATION, STATE_SET, generation),
             state_event(reg::COMPLETED_CHECK_RUN, STATE_SET, run),
         ]
+    }
+
+    #[test]
+    fn park_reports_become_landings_with_their_moment() {
+        let capture = decode_sdk_events(&[(
+            41,
+            JSON_EVENT_ID,
+            br#"{"harmony_attribution":{"rip":"0x1","pid":7,"comm_hex":"61"},"harmony_park":{"site":913,"edges":4096}}
+"#
+            .to_vec(),
+        )])
+        .unwrap();
+        assert_eq!(
+            capture.parks,
+            vec![ParkLanding {
+                moment: 41,
+                site: 913,
+                edges: 4096,
+            }]
+        );
+        assert!(capture.assertions.0.is_empty());
     }
 
     #[test]
