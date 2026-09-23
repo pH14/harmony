@@ -295,6 +295,18 @@ class AnswerValidationTests(RequiresApiKey):
             answers = full_answers(records_runs=value, file_kind_confidence=value)
             self.assertTrue(LINTS._valid_answers(answers, LINTS.QUESTIONS))
 
+    def test_request_sends_a_non_default_user_agent(self):
+        seen = []
+
+        def post(url: str, headers: dict, body: bytes) -> bytes:
+            seen.append(headers)
+            return make_post(full_answers())(url, headers, body)
+
+        LINTS.ask({}, {"records_runs": LINTS.QUESTIONS["records_runs"]}, post=post)
+        user_agent = seen[0].get("User-Agent", "")
+        self.assertTrue(user_agent)
+        self.assertFalse(user_agent.startswith("Python-urllib"))
+
     def test_nonobject_response_is_reported_as_judge_error(self):
         with self.assertRaises(LINTS.JevHTTPError):
             LINTS.ask({}, LINTS.QUESTIONS, post=lambda *_: b"[]")

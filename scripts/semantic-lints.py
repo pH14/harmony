@@ -474,6 +474,8 @@ def ask(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        # Cloudflare rejects urllib's default User-Agent with error 1010.
+        "User-Agent": "harmony-semantic-lints",
     }
     attempt = 0
     while True:
