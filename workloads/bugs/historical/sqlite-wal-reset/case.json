@@ -1,0 +1,64 @@
+{
+  "format": "harmony-historical-case-v1",
+  "id": "sqlite-wal-reset",
+  "title": "SQLite 3.51.2 WAL reset loses committed writes",
+  "software": "sqlite",
+  "sources": {
+    "harness": "https://github.com/antithesishq/sqlite/tree/3ce53bc469dcef8d8c2d90eb59a7d13184e782e5/antithesis",
+    "release_notes": "https://sqlite.org/releaselog/3_51_3.html"
+  },
+  "versions": {
+    "affected": "3.51.2",
+    "fixed": "3.51.3"
+  },
+  "workload": {
+    "version": "3.51.2",
+    "source_commit": "3ce53bc469dcef8d8c2d90eb59a7d13184e782e5",
+    "workload_sha256": "0bc70aa4c180904b3ba7f4b1d7a77fe5f11fe422cd8f34f6fdc4b68b70db433e"
+  },
+  "image": {
+    "context": ".",
+    "dockerfile": "workloads/bugs/historical/sqlite-wal-reset/image/Dockerfile",
+    "build_args": {
+      "WORKLOAD_SHA256": "0bc70aa4c180904b3ba7f4b1d7a77fe5f11fe422cd8f34f6fdc4b68b70db433e"
+    }
+  },
+  "instrumentation": {
+    "tool": "clang -fsanitize-coverage=trace-pc-guard with the fork's antithesis fallback SDK",
+    "license": "public domain"
+  },
+  "kernel_profile": "faultlab",
+  "oracle": {
+    "assertion": "no-lost-committed-writes: all of this writer's committed rows are present with no gaps",
+    "evidence": "workload: process started",
+    "kind": "always",
+    "source": "the fork's own workload assertions, unmodified",
+    "detector": "each writer's periodic sweep counts its committed rows and compares them with its own committed sequence"
+  },
+  "actions": [
+    "Wait",
+    "Kill",
+    "EventKill",
+    "EventPark",
+    "Pause",
+    "Restart"
+  ],
+  "run": {
+    "ram_mib": 1024,
+    "knobs": {}
+  },
+  "search": {
+    "workers": 1,
+    "actions": 48,
+    "executions": 0,
+    "wall_minutes": 240
+  },
+  "discovery_mode": "guided",
+  "status": "searching",
+  "ci": {
+    "status": "deferred",
+    "reason": "the image is built and searched on arm64 hosts; the hosted workflow builds x86_64 images",
+    "display_name": "SQLite WAL Reset",
+    "image_prefix": "sqlite"
+  }
+}

@@ -62,6 +62,7 @@ reports and uploads the result, so the committed table lags the last CI run.
 |---|---|---|---|---|---|---|---|---|
 | [etcd-3.5-inconsistency](etcd-3.5-inconsistency/README.md) | 3.5.2 | 3.5.3 | reproduced | runnable | guided | — | — | `harmony search --package faults IMAGE-3.5.2.oci --backend consonance --kernel bzImage-faultlab --base-initramfs initramfs.cpio.gz --replay OUT/first-bug-input.json --repeat 1 --ram-mib 1024 --out OUT` |
 | [postgres-cic-corruption](postgres-cic-corruption/README.md) | 14.3 | 14.4 | reproduced | runnable | guided | — | — | `harmony search --package faults IMAGE-14.3.oci --backend consonance --kernel bzImage-faultlab --base-initramfs initramfs.cpio.gz --replay OUT/first-bug-input.json --repeat 1 --ram-mib 1024 --knobs "faultlab.churn_rows=20 faultlab.churn_slices=2 faultlab.churn_rounds=1200" --out OUT` |
+| [sqlite-wal-reset](sqlite-wal-reset/README.md) | 3.51.2 | 3.51.3 | searching | deferred: the image is built and searched on arm64 hosts; the hosted workflow builds x86_64 images | guided | — | — | — |
 <!-- render-historical-bugs:end -->
 
 The panel runs on the current default-branch build on a schedule and by manual
