@@ -132,7 +132,7 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_cell_recency_count_decay_v3";
+pub const SELECTOR_IDENTIFIER: &str = "tier_cell_count_decay_v2";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -141,8 +141,6 @@ const TIER_RANK_SHIFT: u32 = 3;
 const COUNT_DECAY_EXPONENT: u32 = 2;
 
 const COUNT_DECAY_SCALE: u64 = 1 << 32;
-
-const CELL_RECENCY_CAP: usize = 8;
 
 #[must_use]
 fn count_decay(draws: u64) -> u64 {
@@ -473,7 +471,6 @@ struct CellState {
     active: usize,
     draws: u64,
     draws_total: u64,
-    opened: u64,
 }
 
 #[derive(Default)]
@@ -1981,10 +1978,8 @@ where
         }
         if new_cell {
             self.reset_cell_draws(cell_of(key));
-            self.stamp_cell_opened(cell_of(key));
             if let Some(parent) = parent_id {
                 self.reset_cell_draws(cell_of(self.entries[parent].key));
-                self.stamp_cell_opened(cell_of(self.entries[parent].key));
             }
         }
         self.history_memory_bytes = self
@@ -2126,22 +2121,14 @@ where
             .get(&progress)
             .ok_or("tier draw chose an absent tier")?;
         let candidates = places.keys().copied().collect::<Vec<_>>();
-        let states = candidates
+        let weights = candidates
             .iter()
             .map(|place| {
-                self.cells
-                    .get(&(progress, *place))
-                    .map_or((0, 0), |state| (state.draws, state.opened))
-            })
-            .collect::<Vec<_>>();
-        let mut newest = states.iter().map(|(_, opened)| *opened).collect::<Vec<_>>();
-        newest.sort_unstable_by(|left, right| right.cmp(left));
-        newest.truncate(CELL_RECENCY_CAP);
-        let weights = states
-            .iter()
-            .map(|(draws, opened)| {
-                let newer = newest.iter().filter(|other| *other > opened).count();
-                count_decay(*draws) << (CELL_RECENCY_CAP - newer)
+                count_decay(
+                    self.cells
+                        .get(&(progress, *place))
+                        .map_or(0, |state| state.draws),
+                )
             })
             .collect::<Vec<_>>();
         let index = draw_weighted(rand, &weights)?;
@@ -2198,13 +2185,6 @@ where
             return true;
         };
         self.champions_slot(slot, id, preference)
-    }
-
-    fn stamp_cell_opened(&mut self, cell: Cell<K>) {
-        let stamp = self.retained.saturating_add(1);
-        if let Some(state) = self.cells.get_mut(&cell) {
-            state.opened = stamp;
-        }
     }
 
     fn reset_cell_draws(&mut self, cell: Cell<K>) {
@@ -3342,37 +3322,6 @@ mod tests {
         assert_eq!(archive.cell_draws(archive.entries[first].key), 0);
         assert_eq!(archive.cell_draws(archive.entries[opened].key), 0);
         assert_eq!(archive.selector_report().cell_resets, 1);
-    }
-    #[test]
-    fn a_cell_draw_ranks_each_cell_behind_every_peer_that_opened_a_newer_cell() {
-        let mut archive = Archive::<u8, StockedKey, (), ()>::new(|_| 1);
-        archive.rebuild_selector_index(64);
-        let first = insert_stocked(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
-        let second = insert_stocked(&mut archive, Some(first), 2, [2, 1, 1], 5).expect("second");
-        let third = insert_stocked(&mut archive, Some(second), 3, [3, 1, 1], 5).expect("third");
-        let draw = SelectorDraw {
-            path: SelectorPath::Tiers,
-            tier_rank: Some(0),
-        };
-        for id in [first, second, third] {
-            for _ in 0..3 {
-                archive.record_selection(id, &draw);
-            }
-        }
-        let mut rand = RomuDuoJrRand::with_seed(0x0bed_cafe);
-        let mut counts = BTreeMap::<[u16; 3], u32>::new();
-        for _ in 0..9000 {
-            let place = archive.draw_cell(&mut rand, ()).expect("cell draw");
-            *counts.entry(place).or_default() += 1;
-        }
-        let oldest = counts.get(&[1, 1, 1]).copied().unwrap_or(0);
-        assert!((600..1400).contains(&oldest), "{counts:?}");
-        for place in [[2, 1, 1], [3, 1, 1]] {
-            assert!(
-                counts.get(&place).copied().unwrap_or(0) > 3500,
-                "{counts:?}"
-            );
-        }
     }
     #[test]
     fn a_slot_with_no_exits_is_never_queued() {

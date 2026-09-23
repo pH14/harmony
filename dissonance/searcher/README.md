@@ -218,7 +218,7 @@ work changes that replay rejects. It does not measure a workload speedup.
 
 ## Search evaluation policies
 
-One selector exists, `tier_cell_recency_count_decay_v3`, and the stream header names
+One selector exists, `tier_cell_count_decay_v2`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
@@ -228,12 +228,7 @@ workload whose progress order has many close steps, such as bands of a level,
 supplies a shift of one so each rank takes half of the one ahead. Within the tier each cell
 weighs `1 / (1 + draws)^2` over the draws it has received since it was last
 reset, so an untried or freshly reset cell takes most of the tier's draws
-until it catches up and every cell keeps a share. That weight halves once for
-each peer in the tier that was opened, or last opened a new cell, more
-recently, up to eight halvings. A count alone gives a cell that needs many
-draws to cross an equal share with every other cell of its tier once it
-catches up; the recency rank keeps the newest ground ahead of older ground
-that the same item made newly reachable. Within the cell each holder
+until it catches up and every cell keeps a share. Within the cell each holder
 weighs `1 / (1 + selections)^2` over its own selection count. There is no uniform path, no sampling window and no
 retirement: a cell that stops producing keeps drawing at a share that only
 shrinks with its count.
