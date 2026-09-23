@@ -67,8 +67,12 @@ closure, and the generated runtime requests neither feature.
 ## Supported x86 guest lifecycle
 
 The supported workload guest is the shipped 64-bit Linux kernel and its
-initramfs. Kernel replacement through either kexec syscall or kexec handover
-is disabled, alongside modules, suspend, and hibernation. The kernel builder
+initramfs. The x86 loader requires the [64-bit Linux boot entry](https://docs.kernel.org/arch/x86/boot.html).
+The Linux VMM rejects non-long-mode CPU records at snapshot and state-hash
+publication and before snapshot restore. These checks observe boundaries;
+they do not trap every guest mode transition. Kernel replacement through either
+kexec syscall or kexec handover is disabled, alongside modules, suspend, and
+hibernation. The kernel builder
 checks the resolved configuration before compiling or publishing an image;
 an older cached image does not qualify a changed configuration.
 
@@ -81,7 +85,8 @@ limitation. Disabling kexec prevents replacing this kernel through its normal
 kernel-loading interfaces; it is not a CPU mode firewall. The 64-bit loader
 entry alone does not constrain arbitrary supplied kernels or imported CPU
 states to remain in long mode. Compatibility-mode userspace under long-mode
-paging is distinct from legacy 32-bit PAE paging.
+paging is distinct from legacy 32-bit PAE paging. Long mode itself requires
+CR4.PAE, so that bit alone is not a legacy-PAE signal.
 
 These constraints define the Linux guest qualification scope, not a claim
 that the generic backend's AMD PAE continuation failure is fixed.

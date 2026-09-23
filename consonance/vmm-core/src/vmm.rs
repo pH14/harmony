@@ -332,6 +332,7 @@ where
     pub(crate) deferred_virtual_time_checkpoints: bool,
     virtual_time_checkpoint_events: BTreeSet<u64>,
     pub(crate) completion_staged: bool,
+    pub(crate) require_long_mode: bool,
     snapshot_ready: bool,
     pub(crate) sdk_snapshot_reentry_required: bool,
     pub(crate) snapshot_hashing: bool,
@@ -398,6 +399,7 @@ where
             deferred_virtual_time_checkpoints: false,
             virtual_time_checkpoint_events: BTreeSet::new(),
             completion_staged: false,
+            require_long_mode: false,
             snapshot_ready: true,
             sdk_snapshot_reentry_required: false,
             snapshot_hashing: false,
@@ -858,7 +860,15 @@ where
             None => self.backend.save()?,
         };
         <B::A as Vendor>::check_sealable_vcpu(&vcpu)?;
+        self.check_guest_mode(&vcpu)?;
         self.build_snapshot_state(&vcpu)
+    }
+
+    fn check_guest_mode(&self, vcpu: &VcpuOf<B>) -> Result<(), VmmError> {
+        if self.require_long_mode {
+            <B::A as Vendor>::check_long_mode_vcpu(vcpu)?;
+        }
+        Ok(())
     }
 
     fn engine_state(&self) -> crate::engine_state::EngineState {
@@ -891,6 +901,7 @@ where
             ));
         }
         let (vcpu, clock_offset, prep) = <B::A as Vendor>::validate_restore(self, s)?;
+        self.check_guest_mode(&vcpu)?;
         self.backend
             .validate_restore_state(&vcpu)
             .map_err(|error| {
@@ -1184,6 +1195,7 @@ where
             Some(state) => state.clone(),
             None => self.backend.save()?,
         };
+        self.check_guest_mode(&vcpu)?;
         let vcpu = <B::A as Vendor>::logical_identity_vcpu(&vcpu)?;
         if let Some(db) = &self.doorbell_pages {
             put_chunk(&mut out, b"DOOR", db.as_bytes());
