@@ -75,7 +75,7 @@ continuations across a branching snapshot tree.
 HVF restoration invalidates the guest's stage-1 translations before it writes
 the restored vCPU state. Hypervisor.framework exposes no TLB call, so the
 backend maps a private page above the guest's regions holding
-`tlbi vmalle1is; dsb ish; isb; hvc #0` and runs it with the MMU off. Without it
+`tlbi vmalle1is; ic ialluis; dsb ish; isb; hvc #0` and runs it with the MMU off. Without it
 a restore rewinds guest RAM and registers while the hardware keeps translations
 the abandoned execution installed, and the guest reads the wrong physical page
 through an address the restored page tables map elsewhere. That reads as
@@ -84,7 +84,11 @@ a fault. `hvf_tlb_probe` reads a page through a translation it warmed,
 replaces the page-table entry, restores, and reads again; it fails when the
 guest sees the old page. Its second stage repeats the sequence with a
 guest-issued `tlbi` so a stage that cannot observe the replacement at all is
-distinguishable from a stale translation. Both probe stages need a real
+distinguishable from a stale translation. The `ic ialluis` covers code the
+abandoned execution wrote and ran on a page whose bytes the restore then left
+alone because they already matched the snapshot. Host writes to guest RAM go
+through `Backend::invalidate_instruction_cache`, which HVF clips to the host
+ranges it mapped. Both probe stages need a real
 hypervisor, so they run on a host, not on a CI runner. Stage 2 never changes
 across a restore and needs no maintenance: the host allocation behind guest RAM
 keeps its address.
@@ -118,8 +122,8 @@ trait, so portable snapshot import rejects their known invalid vCPU records
 before guest RAM or backend state is changed.
 
 ARM KVM saves the guest's system registers as the guest left them and never
-normalizes a value the guest wrote. TCR_EL1.AS selects 8-bit or 16-bit ASIDs and
-the identity baseline advertises 16-bit, so clearing it left the guest kernel
+normalizes a value the guest wrote. TCR_EL1.AS selects 8-bit or 16-bit ASIDs, and
+while the identity baseline advertised 16-bit, clearing it left the guest kernel
 issuing ASIDs the hardware no longer distinguished and processes shared TLB
 entries. For SCTLR_EL1 and TCR_EL1, `KVM_SET_ONE_REG` and `KVM_GET_ONE_REG`
 read and write the saved vCPU context rather than the architectural register, so

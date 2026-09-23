@@ -54,7 +54,13 @@ const HV_SYS_REG_CNTV_CTL_EL0: u16 = 0xdf19;
 const HV_SYS_REG_CNTV_CVAL_EL0: u16 = 0xdf1a;
 const HV_SYS_REG_SP_EL1: u16 = 0xe208;
 
-const TLB_FLUSH_STUB: [u32; 4] = [0xd508_831f, 0xd503_3b9f, 0xd503_3fdf, 0xd400_0002];
+const TLB_FLUSH_STUB: [u32; 5] = [
+    0xd508_831f,
+    0xd508_711f,
+    0xd503_3b9f,
+    0xd503_3fdf,
+    0xd400_0002,
+];
 
 const SCTLR_M: u64 = 1;
 
@@ -275,6 +281,19 @@ fn decode_data_abort(exit: HvVcpuExit) -> Result<DataAbort> {
     })
 }
 
+fn mapped_host_spans(
+    ranges: &[(usize, usize)],
+    host_addr: usize,
+    len: usize,
+) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let end = host_addr.saturating_add(len);
+    ranges.iter().filter_map(move |&(start, size)| {
+        let lo = host_addr.max(start);
+        let hi = end.min(start.saturating_add(size));
+        (lo < hi).then(|| (lo, hi - lo))
+    })
+}
+
 fn flush_stub_gpa(regions: &[(u64, usize)]) -> u64 {
     regions
         .iter()
@@ -348,6 +367,7 @@ pub struct HvfBackend {
     accepted_irq: Option<GicIntId>,
     counts: ExitCounts,
     regions: Vec<(u64, usize)>,
+    host_ranges: Vec<(usize, usize)>,
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
     flush_stub: Option<FlushStub>,
 }
@@ -410,6 +430,7 @@ impl HvfBackend {
             accepted_irq: None,
             counts: ExitCounts::default(),
             regions: Vec::new(),
+            host_ranges: Vec::new(),
             cancel_run: std::sync::Arc::default(),
             flush_stub: None,
         })
@@ -429,7 +450,7 @@ impl HvfBackend {
             return Err(BackendError::Memory("HVF flush stub allocation failed"));
         }
         for (slot, word) in TLB_FLUSH_STUB.iter().enumerate() {
-            // SAFETY: the allocation is HV_PAGE_SIZE bytes and the stub is four
+            // SAFETY: the allocation is HV_PAGE_SIZE bytes and the stub is five
             // words, so every write lands inside it.
             unsafe { page.add(slot * 4).cast::<u32>().write(*word) };
         }
@@ -449,7 +470,9 @@ impl HvfBackend {
             unsafe { std::alloc::dealloc(page, layout) };
             return Err(error);
         }
-        self.invalidate_instruction_cache(page as usize, HV_PAGE_SIZE);
+        // SAFETY: `page` is a live HV_PAGE_SIZE allocation owned by this
+        // backend, and the call only performs cache maintenance on it.
+        unsafe { sys_icache_invalidate(page.cast(), HV_PAGE_SIZE) };
         self.flush_stub = Some(FlushStub { gpa, page, layout });
         Ok(gpa)
     }
@@ -793,6 +816,8 @@ impl Backend for HvfBackend {
             )
         })?;
         self.regions.push((gpa.0, host.len()));
+        self.host_ranges
+            .push((host.as_mut_ptr() as usize, host.len()));
         Ok(())
     }
 
@@ -809,13 +834,12 @@ impl Backend for HvfBackend {
     }
 
     fn invalidate_instruction_cache(&mut self, host_addr: usize, len: usize) {
-        if len == 0 {
-            return;
+        for (start, size) in mapped_host_spans(&self.host_ranges, host_addr, len) {
+            // SAFETY: the span lies inside a host range this backend passed to
+            // `hv_vm_map`, whose caller keeps it pinned while mapped, and the
+            // call only performs cache maintenance on those bytes.
+            unsafe { sys_icache_invalidate(start as *mut c_void, size) };
         }
-        // SAFETY: the range names bytes inside the guest RAM allocation this
-        // backend mapped and still holds, and the call only performs cache
-        // maintenance on them.
-        unsafe { sys_icache_invalidate(host_addr as *mut c_void, len) };
     }
 
     fn inject(&mut self, event: Arm64Injection) -> Result<()> {
@@ -1131,15 +1155,31 @@ mod tests {
     }
 
     #[test]
-    fn flush_stub_broadcasts_a_stage_one_invalidate_then_exits() {
+    fn flush_stub_invalidates_translations_and_instruction_cache_then_exits() {
         let sys = |op0: u32, op1: u32, crn: u32, crm: u32, op2: u32, rt: u32| {
             0xd500_0000 | (op0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
         };
         let barrier = |crm: u32, op2: u32| 0xd503_301f | (crm << 8) | (op2 << 5);
         assert_eq!(TLB_FLUSH_STUB[0], sys(1, 0, 8, 3, 0, 31));
-        assert_eq!(TLB_FLUSH_STUB[1], barrier(0b1011, 4));
-        assert_eq!(TLB_FLUSH_STUB[2], barrier(0b1111, 6));
-        assert_eq!(TLB_FLUSH_STUB[3], 0xd400_0002);
+        assert_eq!(TLB_FLUSH_STUB[1], sys(1, 0, 7, 1, 0, 31));
+        assert_eq!(TLB_FLUSH_STUB[2], barrier(0b1011, 4));
+        assert_eq!(TLB_FLUSH_STUB[3], barrier(0b1111, 6));
+        assert_eq!(TLB_FLUSH_STUB[4], 0xd400_0002);
+    }
+
+    #[test]
+    fn instruction_cache_spans_stay_inside_mapped_host_ranges() {
+        let ranges = [(0x10_000, 0x4000), (0x40_000, 0x8000)];
+        let spans = |addr, len| mapped_host_spans(&ranges, addr, len).collect::<Vec<_>>();
+        assert_eq!(spans(1, 64), []);
+        assert_eq!(spans(0x10_000, 0), []);
+        assert_eq!(spans(0x10_100, 0x100), [(0x10_100, 0x100)]);
+        assert_eq!(spans(0xf_000, 0x2000), [(0x10_000, 0x1000)]);
+        assert_eq!(
+            spans(0x12_000, 0x40_000),
+            [(0x12_000, 0x2000), (0x40_000, 0x8000)]
+        );
+        assert_eq!(spans(usize::MAX - 4, 64), []);
     }
 
     #[test]
