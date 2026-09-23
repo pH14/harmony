@@ -421,6 +421,32 @@ class ChangedFilesTests(unittest.TestCase):
 
             self.assertEqual(candidates, ["new-name.md"])
 
+    def test_a_program_whose_caller_was_removed_is_selected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._git(root, "init", "-q")
+            self._git(root, "config", "user.email", "test@example.com")
+            self._git(root, "config", "user.name", "Test")
+
+            (root / "tool" / "src" / "bin").mkdir(parents=True)
+            (root / "tool" / "src" / "bin" / "probe.rs").write_text("fn main() {}\n")
+            (root / "tool" / "src" / "bin" / "probe_two.rs").write_text("fn main() {}\n")
+            (root / "scripts").mkdir()
+            (root / "scripts" / "sweep.py").write_text("print()\n")
+            (root / "run.sh").write_text(
+                "cargo run --bin probe\ncargo run --bin probe_two\npython3 scripts/sweep.py\n")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+
+            (root / "run.sh").write_text("cargo run --bin probe_two\n")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "drop callers")
+
+            self.assertEqual(
+                sorted(LINTS.programs_losing_a_caller(root, "HEAD~1")),
+                ["scripts/sweep.py", "tool/src/bin/probe.rs"],
+            )
+
     def test_changed_paths_preserve_unicode_and_control_characters(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -897,6 +897,32 @@ def changed_files(repo_root: Path, rev: str) -> list[str]:
     return [p for p in result.stdout.split("\0") if p]
 
 
+def programs_losing_a_caller(repo_root: Path, rev: str) -> list[str]:
+    """Programs named in lines the change removed, so a program whose last
+    caller was deleted is judged by the one-off question again."""
+    diff = subprocess.run(
+        ["git", "diff", "-U0", "--no-color", "--no-ext-diff", rev, "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    removed = "\n".join(
+        line[1:] for line in diff.splitlines()
+        if line.startswith("-") and not line.startswith("---")
+    )
+    if not removed:
+        return []
+    programs = []
+    for path in all_tracked_files(repo_root):
+        if not _in_program_scope(path):
+            continue
+        name = Path(path).stem if path.endswith(".rs") else os.path.basename(path)
+        if re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w-])", removed):
+            programs.append(path)
+    return programs
+
+
 def dependent_workflows(repo_root: Path, changed: set[str]) -> list[str]:
     """Registered workflows whose composed context a changed file is part of."""
     import ci_contract
@@ -1038,7 +1064,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("pass exactly one of --all or --changed-from REV")
 
     root = args.repo_root.resolve()
-    candidates = all_tracked_files(root) if args.all else changed_files(root, args.changed_from)
+    if args.all:
+        candidates = all_tracked_files(root)
+    else:
+        candidates = changed_files(root, args.changed_from)
+        candidates += [path for path in programs_losing_a_caller(root, args.changed_from)
+                       if path not in candidates]
     files = select_files(root, candidates)
     baseline = load_baseline(root)
     cache = load_cache(root)
