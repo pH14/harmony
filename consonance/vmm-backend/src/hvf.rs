@@ -409,6 +409,7 @@ pub struct HvfBackend {
     host_ranges: Vec<(usize, usize)>,
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
     flush_stub: Option<FlushStub>,
+    host_id_regs: std::collections::BTreeMap<u16, u64>,
 }
 
 struct FlushStub {
@@ -472,6 +473,7 @@ impl HvfBackend {
             host_ranges: Vec::new(),
             cancel_run: std::sync::Arc::default(),
             flush_stub: None,
+            host_id_regs: std::collections::BTreeMap::new(),
         })
     }
 
@@ -804,7 +806,14 @@ impl Backend for HvfBackend {
                 continue;
             }
             let reg = u16::try_from(encoding).map_err(|_| BackendError::InvalidState)?;
-            let host = self.sysreg(reg)?;
+            let host = match self.host_id_regs.get(&reg) {
+                Some(&host) => host,
+                None => {
+                    let host = self.sysreg(reg)?;
+                    self.host_id_regs.insert(reg, host);
+                    host
+                }
+            };
             if !id_register_within_host(encoding, value, host) {
                 return Err(BackendError::IdRegisterAboveHost {
                     encoding,

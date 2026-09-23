@@ -496,3 +496,25 @@ fn set_policy_rejects_an_id_field_above_the_host() {
         })
     ));
 }
+
+#[test]
+#[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
+fn set_policy_compares_every_policy_with_the_host() {
+    let _vm = ONE_VM_PER_PROCESS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut backend = HvfBackend::new()
+        .expect("HvfBackend::new needs Apple silicon and the hypervisor entitlement");
+    let isar0 = |value: u64| Arm64Policy {
+        id_regs: IdRegModel {
+            regs: [(0xc030, value)].into_iter().collect(),
+        },
+        ..Arm64Policy::default()
+    };
+    backend
+        .set_policy(&isar0(0))
+        .expect("a policy with every field at zero is within the host");
+    backend
+        .set_policy(&isar0(0x20))
+        .expect("a later policy is checked against the host, not the earlier policy");
+}

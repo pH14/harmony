@@ -109,17 +109,17 @@ so portable snapshot import rejects their known invalid vCPU records before
 guest RAM or backend state is changed.
 
 `HvfBackend::set_policy` reads HVF's own value of each `ID_AA64*` feature
-register before writing the policy's value, and fails with
-`BackendError::IdRegisterAboveHost` when any 4-bit field asks for more than
-the host implements. The guest sizes its use of the hardware from these fields,
-and Hypervisor.framework accepts any value written to them. ARM KVM makes the
-same check inside `KVM_SET_ONE_REG`. Fields compare as unsigned levels, except
-the signed fields `PFR0.FP`, `PFR0.AdvSIMD`, `DFR0.DoubleLock`,
+register before the first policy writes it, and fails with
+`BackendError::IdRegisterAboveHost` when any 4-bit field of a policy asks for
+more than that host value. The guest sizes its use of the hardware from these
+fields, and Hypervisor.framework accepts any value written to them. ARM KVM
+makes the same check inside `KVM_SET_ONE_REG`. Fields compare as unsigned
+levels, except the signed fields `PFR0.FP`, `PFR0.AdvSIMD`, `DFR0.DoubleLock`,
 `MMFR0.TGran64` and `MMFR0.TGran4`, where all ones means absent. `PFR0.GIC` is
 not compared because the VMM implements the GIC system registers by trapping
 them. The stage-2 and EL2 fields `MMFR0.TGran*_2`, `MMFR1.VMIDBits`,
-`MMFR1.VH`, `MMFR2.FWB` and `MMFR2.EVT` are not compared because the guest
-runs at EL1 and never uses them.
+`MMFR1.VH`, `MMFR2.FWB` and `MMFR2.EVT` are not compared because the guest runs
+at EL1 and never uses them.
 
 ARM KVM saves the guest's system registers as the guest left them and never
 normalizes a value the guest wrote. TCR_EL1.AS selects 8-bit or 16-bit ASIDs, and
@@ -142,10 +142,10 @@ It checks that a restore drops guest translations cached before it, that a
 restore puts the guest counter back, that saving and restoring between steps or
 branching from a snapshot does not change what the guest computes, that every
 vCPU state class reads back after a restore, that restore rejects timer states
-HVF cannot hold, and that `set_policy` rejects an ID field above the host. The
-tests are ignored because hosted runners have no hypervisor. The pre-push hook
-runs them on Apple silicon, from `HOST_TESTS` in `scripts/ci_contract.py`. To
-run them directly:
+HVF cannot hold, and that `set_policy` checks every policy against the host's
+ID fields and rejects a field above the host. The tests are ignored because
+hosted runners have no hypervisor. The pre-push hook runs them on Apple
+silicon, from `HOST_TESTS` in `scripts/ci_contract.py`. To run them directly:
 
 ```sh
 cargo test -p vmm-backend --test hvf_smoke -- --ignored
