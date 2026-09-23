@@ -139,8 +139,8 @@ whole-game completion.
 ### Prepared-execution admission
 
 The `prepare-admission` example dumps the actual Rust preparation API outputs
-for the controlled NES and bare-PostgreSQL workloads. It does not launch a VM
-or generate an accepting contract:
+for the NES and bare-PostgreSQL workloads. It does not launch a VM or admit
+the dump it writes:
 
 ```sh
 cargo run --locked --manifest-path workloads/nes/Cargo.toml --example prepare-admission -- \
@@ -171,12 +171,11 @@ overrides and noncanonical writable ROM mounts. A deterministic workload-root
 CPIO view removes only the actual `harmony-oci/rootfs` prefix, preserving entry
 metadata/content so absolute ELF dependency paths resolve in their guest root.
 
-`verify DUMP --baseline CONTRACT.json --output NEW_REPORT_DIR` additionally
-checks the schema-2 composition contract and its platform/workload component
-contracts. Components pin the exact archive/rootfs and every ELF SHA-256, with
-small address/region exceptions for the instruction scanner. The composition
-binds actual kernel, launch configuration, ordered archives and ROM/SQL inputs.
-Candidate generation does not create an accepting contract.
+`verify DUMP --output NEW_REPORT_DIR` additionally runs the executable property
+scan over the platform and workload archives: no W+X segments, no executable
+stack, no text relocations, no TLSdesc relocations, a canonical glibc loader and
+a proven ECX-zero sequence at every XGETBV site. It compares nothing against a
+stored digest, so rebuilding a guest does not require a new approval.
 
 The execution scope requires eager binding before every exec, fixed trusted
 SQL/ROM/code inputs, no JIT/generated code and no code mutation. The OCI root

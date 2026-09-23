@@ -27,7 +27,7 @@ mod platform {
     const SERVICE_IDENTITY: &[u8] = b"oci-process-platform-v1";
     const SERVICE_CONFIGURATION: &[u8] = b"standing-process-windows-v1";
     const BUNDLE: &str = "node worker /app/runtime-fixture node\nready /app/runtime-fixture ready\nhook 7 /app/runtime-fixture hook\n";
-    const REGISTER_NAMES: [&str; 8] = [
+    const REGISTER_NAMES: [&str; 7] = [
         "supervisor.ticks",
         "supervisor.alive",
         "supervisor.hooks_started",
@@ -35,13 +35,7 @@ mod platform {
         "supervisor.sometimes",
         "supervisor.unexpected_deaths",
         "supervisor.restarts",
-        "supervisor.parked",
     ];
-
-    #[cfg(target_arch = "x86_64")]
-    const PARK_STUB_ADDRESS: u64 = 0x4000_0000;
-    #[cfg(target_arch = "aarch64")]
-    const PARK_STUB_ADDRESS: u64 = 0x4000_0000;
 
     #[derive(Clone, Debug)]
     struct StandingService {
@@ -55,11 +49,6 @@ mod platform {
                 2 | 3 => ProcessAction::Pause(40_000_000),
                 5 => ProcessAction::Kill,
                 7 => ProcessAction::Restart,
-                9..=14 => ProcessAction::Park {
-                    addr: PARK_STUB_ADDRESS,
-                    hits: 1,
-                    hold_nanos: 5_000_000,
-                },
                 _ => return Vec::new(),
             };
             vec![ProcessWindow {
@@ -118,7 +107,7 @@ mod platform {
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct Evidence {
         hash: [u8; 32],
-        registers: [u64; 8],
+        registers: [u64; 7],
         console: Vec<u8>,
     }
 
@@ -142,7 +131,7 @@ mod platform {
         for (_, id, bytes) in &events {
             catalog.observe(*id, bytes)?;
         }
-        let registers: [u64; 8] = REGISTER_NAMES
+        let registers: [u64; 7] = REGISTER_NAMES
             .map(|name| catalog.get(name))
             .into_iter()
             .collect::<std::result::Result<Vec<_>, _>>()?
@@ -191,7 +180,6 @@ mod platform {
             sometimes,
             unexpected,
             restarts,
-            parked,
         ] = evidence.registers;
         assert_eq!(alive & 1, 1, "the mapped node must be alive after restart");
         assert_eq!(hooks_started, 1, "the declared hook must launch once");
@@ -206,7 +194,6 @@ mod platform {
             "the mapped node must have no unexpected death"
         );
         assert_eq!(restarts, 1, "the mapped node must restart exactly once");
-        assert!(parked >= 1, "the mapped node must hit the park device");
         let console = String::from_utf8_lossy(&evidence.console);
         for marker in [
             "fixture ready",
@@ -215,8 +202,6 @@ mod platform {
             "resume node 0",
             "kill node 0",
             "run hook 7",
-            "park node 0 hit",
-            "unpark node 0",
         ] {
             assert!(
                 console.contains(marker),
@@ -228,7 +213,7 @@ mod platform {
     }
 
     #[test]
-    #[ignore = "requires exact platform artifacts, KVM, and the park-enabled kernel"]
+    #[ignore = "requires exact platform artifacts and KVM"]
     fn oci_process_platform_replay() -> Result<()> {
         #[expect(
             clippy::disallowed_methods,

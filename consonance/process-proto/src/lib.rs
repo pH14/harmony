@@ -13,23 +13,22 @@ pub mod registers {
     pub const SOMETIMES: u32 = SUPERVISOR_REGISTER_BASE + 4;
     pub const UNEXPECTED_DEATHS: u32 = SUPERVISOR_REGISTER_BASE + 5;
     pub const RESTARTS: u32 = SUPERVISOR_REGISTER_BASE + 6;
-    pub const PARKED: u32 = SUPERVISOR_REGISTER_BASE + 7;
-    pub const EVENT_KILL_FIRES: u32 = SUPERVISOR_REGISTER_BASE + 8;
-    pub const EVENT_KILL_SITE: u32 = SUPERVISOR_REGISTER_BASE + 9;
-    pub const EVENT_PARK_FIRES: u32 = SUPERVISOR_REGISTER_BASE + 10;
-    pub const WORKLOAD_STARTED: u32 = SUPERVISOR_REGISTER_BASE + 11;
-    pub const WORKLOAD_FINISHED: u32 = SUPERVISOR_REGISTER_BASE + 12;
-    pub const CHECKS_STARTED: u32 = SUPERVISOR_REGISTER_BASE + 13;
-    pub const CHECKS_FINISHED: u32 = SUPERVISOR_REGISTER_BASE + 14;
-    pub const INFRASTRUCTURE_ERROR: u32 = SUPERVISOR_REGISTER_BASE + 15;
-    pub const EVENT_READY: u32 = SUPERVISOR_REGISTER_BASE + 16;
-    pub const DISTURBANCE_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 17;
-    pub const CHECK_ENABLED: u32 = SUPERVISOR_REGISTER_BASE + 18;
-    pub const COMPLETED_CHECK_RUN: u32 = SUPERVISOR_REGISTER_BASE + 19;
-    pub const COMPLETED_CHECK_START_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 20;
-    pub const COMPLETED_CHECK_END_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 21;
-    pub const COMPLETED_CHECK_POINTS: u32 = SUPERVISOR_REGISTER_BASE + 22;
-    pub const PENDING_FAULTS: u32 = SUPERVISOR_REGISTER_BASE + 23;
+    pub const EVENT_KILL_FIRES: u32 = SUPERVISOR_REGISTER_BASE + 7;
+    pub const EVENT_KILL_SITE: u32 = SUPERVISOR_REGISTER_BASE + 8;
+    pub const EVENT_PARK_FIRES: u32 = SUPERVISOR_REGISTER_BASE + 9;
+    pub const WORKLOAD_STARTED: u32 = SUPERVISOR_REGISTER_BASE + 10;
+    pub const WORKLOAD_FINISHED: u32 = SUPERVISOR_REGISTER_BASE + 11;
+    pub const CHECKS_STARTED: u32 = SUPERVISOR_REGISTER_BASE + 12;
+    pub const CHECKS_FINISHED: u32 = SUPERVISOR_REGISTER_BASE + 13;
+    pub const INFRASTRUCTURE_ERROR: u32 = SUPERVISOR_REGISTER_BASE + 14;
+    pub const EVENT_READY: u32 = SUPERVISOR_REGISTER_BASE + 15;
+    pub const DISTURBANCE_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 16;
+    pub const CHECK_ENABLED: u32 = SUPERVISOR_REGISTER_BASE + 17;
+    pub const COMPLETED_CHECK_RUN: u32 = SUPERVISOR_REGISTER_BASE + 18;
+    pub const COMPLETED_CHECK_START_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 19;
+    pub const COMPLETED_CHECK_END_GENERATION: u32 = SUPERVISOR_REGISTER_BASE + 20;
+    pub const COMPLETED_CHECK_POINTS: u32 = SUPERVISOR_REGISTER_BASE + 21;
+    pub const PENDING_FAULTS: u32 = SUPERVISOR_REGISTER_BASE + 22;
 }
 
 pub const PROCESS_CLASS: u16 = 6;
@@ -40,7 +39,6 @@ const PAUSE: u8 = 9;
 const KILL: u8 = 10;
 const RESTART: u8 = 11;
 const RUN_HOOK: u8 = 17;
-const PARK: u8 = 19;
 const EVENT_KILL: u8 = 20;
 const EVENT_PARK: u8 = 21;
 
@@ -50,18 +48,8 @@ pub enum ProcessAction {
     Kill,
     Restart,
     RunHook(u32),
-    EventKill {
-        rarity: u8,
-    },
-    EventPark {
-        rarity: u8,
-        hold_nanos: u64,
-    },
-    Park {
-        addr: u64,
-        hits: u32,
-        hold_nanos: u64,
-    },
+    EventKill { rarity: u8 },
+    EventPark { rarity: u8, hold_nanos: u64 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -228,16 +216,6 @@ fn write_action(out: &mut Vec<u8>, action: ProcessAction) {
             out.push(rarity);
             put_u64(out, hold_nanos);
         }
-        ProcessAction::Park {
-            addr,
-            hits,
-            hold_nanos,
-        } => {
-            out.push(PARK);
-            put_u64(out, addr);
-            put_u32(out, hits);
-            put_u64(out, hold_nanos);
-        }
     }
 }
 
@@ -262,11 +240,6 @@ fn read_action(reader: &mut Reader<'_>) -> Result<ProcessAction, WireError> {
             }
             Ok(ProcessAction::EventPark { rarity, hold_nanos })
         }
-        PARK => Ok(ProcessAction::Park {
-            addr: reader.u64()?,
-            hits: reader.u32()?,
-            hold_nanos: reader.u64()?,
-        }),
         _ => Err(WireError::Malformed),
     }
 }
@@ -376,7 +349,7 @@ impl<'a> Reader<'a> {
 mod tests {
     use super::*;
 
-    fn actions() -> [ProcessAction; 7] {
+    fn actions() -> [ProcessAction; 6] {
         [
             ProcessAction::Pause(1234),
             ProcessAction::Kill,
@@ -385,11 +358,6 @@ mod tests {
             ProcessAction::EventKill { rarity: 3 },
             ProcessAction::EventPark {
                 rarity: 5,
-                hold_nanos: 2_000_000,
-            },
-            ProcessAction::Park {
-                addr: 0x4b_0e86,
-                hits: 28,
                 hold_nanos: 2_000_000,
             },
         ]
@@ -408,7 +376,6 @@ mod tests {
                 SOMETIMES,
                 UNEXPECTED_DEATHS,
                 RESTARTS,
-                PARKED,
                 EVENT_KILL_FIRES,
                 EVENT_KILL_SITE,
                 EVENT_PARK_FIRES,

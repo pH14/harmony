@@ -1,7 +1,0 @@
-{
-  "version": 2,
-  "platform_baseline": "platform-component.json",
-  "workload_baseline": "nes-component.json",
-  "engine_scope": "nova-ae-linux-x86_64-kvm-oracle-v1",
-  "composition_sha256": "0e4c4ed4022cd9030464adf0f4a15b7af31a13ef4998f0a67c97825afcf55775"
-}

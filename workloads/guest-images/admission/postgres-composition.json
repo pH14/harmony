@@ -1,6 +1,0 @@
-{
-  "version": 2,
-  "manifest_sha256": "d2032e87e9cdb25242bad9997824db4af42df7202fa85865310ac8f2ab877827",
-  "platform_baseline": "platform-component.json",
-  "workload_baseline": "postgres-component.json"
-}

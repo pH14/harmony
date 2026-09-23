@@ -16,7 +16,6 @@ pub struct Options {
     pub actions: usize,
     pub ram_mib: u32,
     pub knobs: Vec<String>,
-    pub places: Vec<u64>,
     pub wall_minutes: Option<u64>,
     pub output: PathBuf,
 }
@@ -535,7 +534,6 @@ mod tests {
             actions: 4,
             ram_mib: 1024,
             knobs: Vec::new(),
-            places: Vec::new(),
             wall_minutes: None,
             output: PathBuf::from("unused"),
         }

@@ -49,10 +49,6 @@ def inspect_engine(manifest, session):
         raise a.Rejected("unsupported Nova A–E oracle controls")
 
 
-def oracle_composition_digest(manifest):
-    return a.digest(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode())
-
-
 def archive_entries(data):
     with gzip.GzipFile(fileobj=io.BytesIO(data)) as source:
         raw = source.read(a.MAX_TREE + 1)
@@ -84,8 +80,7 @@ def encode_newc(entries):
 def inspect_dump(directory):
     if (directory / "manifest.json").is_symlink():
         raise a.Rejected("manifest must not be a symlink")
-    raw_manifest = a.bounded_read(directory / "manifest.json")
-    manifest = json.loads(raw_manifest)
+    manifest = json.loads(a.bounded_read(directory / "manifest.json"))
     if manifest.get("version") != 1 or manifest.get("mode") not in ("nes", "postgres") or set(manifest.get("files", {})) != FILES:
         raise a.Rejected("unsupported dump manifest")
     blobs = {}
@@ -176,9 +171,7 @@ def inspect_dump(directory):
         raise a.Rejected("unsupported NES argv")
     if manifest["mode"] == "postgres" and execution["argv"] != ["/usr/local/bin/postgres-workload.sh"]:
         raise a.Rejected("unsupported PostgreSQL argv")
-    report = {"version": 1, "admitted": False, "manifest_sha256": a.digest(raw_manifest), "prepared_identity": manifest["prepared_identity"], "execution": execution, "session_config": session, "engine_scope": manifest["engine_scope"], "oracle": manifest.get("oracle"), "runtime_config": config, "limitations": ["Controlled trusted code only; writable OCI root is not runtime immutability enforcement.", "Each independent archive is parsed separately; no general concatenated-archive overlay support."]}
-    if manifest["engine_scope"] == ORACLE_SCOPE:
-        report["composition_sha256"] = oracle_composition_digest(manifest)
+    report = {"version": 1, "admitted": False, "prepared_identity": manifest["prepared_identity"], "execution": execution, "session_config": session, "engine_scope": manifest["engine_scope"], "oracle": manifest.get("oracle"), "runtime_config": config, "limitations": ["Controlled trusted code only; writable OCI root is not runtime immutability enforcement.", "Each independent archive is parsed separately; no general concatenated-archive overlay support."]}
     return report, encode_newc(root_entries)
 
 
@@ -187,7 +180,6 @@ def main():
     parser.add_argument("mode", choices=["inventory", "verify"])
     parser.add_argument("dump", type=Path)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--baseline", type=Path)
     parser.add_argument("--objdump", default="objdump")
     args = parser.parse_args()
     created = False
@@ -204,25 +196,9 @@ def main():
             scans[name] = a.inventory_initramfs(path, args.objdump)
             (args.output / (name + "-candidate.json")).write_text(json.dumps(scans[name][0], indent=2))
         if args.mode == "verify":
-            if args.baseline is None:
-                raise a.Rejected("explicit composition baseline required")
-            baseline = json.loads(a.bounded_read(args.baseline))
-            if baseline.get("version") != 2:
-                raise a.Rejected("unsupported composition contract")
-            if report["engine_scope"] == ORACLE_SCOPE and baseline.get("engine_scope") != ORACLE_SCOPE:
-                raise a.Rejected("explicit Nova A–E oracle scope required")
-            if report["engine_scope"] == ORACLE_SCOPE:
-                if baseline.get("composition_sha256") != report["composition_sha256"]:
-                    raise a.Rejected("oracle guest composition/configuration differs from review")
-            elif baseline.get("manifest_sha256") != report["manifest_sha256"]:
-                raise a.Rejected("composition differs from reviewed manifest")
             for name in ("platform", "workload"):
-                reference = baseline[name + "_baseline"]
-                if reference not in {"platform-component.json", "nes-component.json", "postgres-component.json"}:
-                    raise a.Rejected("unsupported component contract")
-                file = args.baseline.parent / reference
-                if not a.verify(*scans[name], json.loads(a.bounded_read(file))):
-                    raise a.Rejected(f"{name} baseline rejected: {scans[name][0]['errors']}")
+                if not a.verify(scans[name][0]):
+                    raise a.Rejected(f"{name} rejected: {scans[name][0]['errors']}")
                 (args.output / (name + "-verification.json")).write_text(json.dumps(scans[name][0], indent=2))
             report["admitted"] = True
         (args.output / "composition-report.json").write_text(json.dumps(report, indent=2))

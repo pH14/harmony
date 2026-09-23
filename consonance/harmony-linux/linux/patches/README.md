@@ -14,21 +14,19 @@ elsewhere uses the repository license.
 
 ## Common series
 
-The common series owns the architecture-independent Harmony character device,
-observation handles, and process parking ABI. The device allocates and bounds
-its shared pages in the kernel; platform userspace interacts through the
-stable character-device interfaces.
+The common series owns the architecture-independent Harmony character device
+and observation handles. The device allocates and bounds its shared pages in
+the kernel; platform userspace interacts through the stable character-device
+interfaces.
 
 ## Architecture series
 
 The x86 series supplies the paravirtual clock, counter confinement and
-emulation, syscall tick, and x86-specific clock and trap plumbing. Its parking
-patch leaves the generic process device in `common/` and contributes only the
-x86 syscall hook.
+emulation, syscall tick, and x86-specific clock and trap plumbing.
 
 The arm64 series supplies the exit-count clock page, LSE-only atomic contract,
 virtual clock event, fixed counter and cache topology, interrupt handling,
-canonical state, counter trap switch, and the arm64 syscall parking hook.
+canonical state, and counter trap switch.
 
 After a clock or trap patch changes, run the matching instruction reachability
 scan and update its reviewed allowlist when the deliberate instruction count

@@ -533,7 +533,7 @@ jobs:
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           printf 'fixed_cpu=%s\n' "$cpu"
           timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p vmm-core --lib \
-            controlled_guest::live_tests::public_snapshot_replay_recapture_preserves_xsave_identity \
+            vendor::x86::logical_identity_live_tests::public_snapshot_replay_recapture_preserves_xsave_identity \
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee snapshot-report/public-snapshot-identity.log
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/public-snapshot-identity.log

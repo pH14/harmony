@@ -34,9 +34,8 @@
 # BASELINE: captured from the pinned nix toolchain's build of linux-6.18.35
 # under the x86 harmony patch series 0001-0006 as the task-park kernel
 # (x86-task-park-config-fragment), reviewed against the extracted source. The
-# function set is rdtsc-allowlist-gha.txt's; the task park's poll at
-# system-call entry moves do_syscall_64's one reviewed read. The per-function
-# blocks below are the authority on which sites are reviewed.
+# function set is rdtsc-allowlist-gha.txt's. The per-function blocks below are
+# the authority on which sites are reviewed.
 # Offsets are relative to the containing function, so a different
 # compiler version shifts them — and so does the patch series itself, because
 # the pvclock guards inline into these very functions and can move a read
@@ -138,7 +137,7 @@ vmlinux:dmar_disable_qi+0xa8
 vmlinux:dmar_disable_qi+0xc4
 
 # do_syscall_64 # [entry] kstack offset
-vmlinux:do_syscall_64+0x1d1
+vmlinux:do_syscall_64+0x1bd
 
 # ecmd_submit_sync # [iommu]
 vmlinux:ecmd_submit_sync+0x60

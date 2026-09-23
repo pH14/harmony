@@ -36,9 +36,8 @@ its SDK devices; installed kernel and base-image artifacts are discovered
 through `HARMONY_GUEST_DIR`.
 
 Wait durations adapt automatically to campaign feedback and are recorded in each
-input for replay. `--ram-mib` sets guest RAM. `--knobs "k=v k=v"` adds guest command-line words, `--places FILE`
-lists the execution places the park action may hold a node at, and
-`--wall-minutes` bounds a search in host time. `--replay INPUT.json --repeat N`
+input for replay. `--ram-mib` sets guest RAM. `--knobs "k=v k=v"` adds guest
+command-line words, and `--wall-minutes` bounds a search in host time. `--replay INPUT.json --repeat N`
 runs a recorded action list, such as a search's own `bug-1.json`, instead of
 searching. Both modes write `report.json`.
 

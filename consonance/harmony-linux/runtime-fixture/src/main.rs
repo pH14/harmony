@@ -127,66 +127,11 @@ fn run_hook() -> Result<(), Box<dyn std::error::Error>> {
 fn run_node() -> Result<(), Box<dyn std::error::Error>> {
     use std::{io::Write, time::Duration};
 
-    let park = install_park_stub()?;
-    println!("fixture node started at {PARK_STUB_ADDRESS:#x}");
+    println!("fixture node started");
     std::io::stdout().flush()?;
     loop {
-        // SAFETY: `park` is an RX mapping containing one architecture-specific
-        // return instruction installed by `install_park_stub`.
-        unsafe { park() };
         std::thread::sleep(Duration::from_millis(1));
     }
-}
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const PARK_STUB_ADDRESS: usize = 0x4000_0000;
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-const PARK_STUB_ADDRESS: usize = 0x4000_0000;
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const PARK_STUB_CODE: &[u8] = &[0xc3];
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-const PARK_STUB_CODE: &[u8] = &[0xc0, 0x03, 0x5f, 0xd6];
-
-#[cfg(target_os = "linux")]
-type ParkStub = unsafe extern "C" fn();
-
-#[cfg(target_os = "linux")]
-fn install_park_stub() -> Result<ParkStub, Box<dyn std::error::Error>> {
-    use std::{io, ptr};
-
-    const PAGE_SIZE: usize = 4096;
-    // SAFETY: The requested address is a fixed page reserved for this fixture;
-    // map_fixed_noreplace prevents replacing an existing guest mapping.
-    let mapped = unsafe {
-        libc::mmap(
-            PARK_STUB_ADDRESS as *mut libc::c_void,
-            PAGE_SIZE,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED_NOREPLACE,
-            -1,
-            0,
-        )
-    };
-    if mapped == libc::MAP_FAILED {
-        return Err(io::Error::last_os_error().into());
-    }
-    // SAFETY: `mapped` is the writable page returned by mmap and the source
-    // fits within its fixed page.
-    unsafe {
-        ptr::copy_nonoverlapping(PARK_STUB_CODE.as_ptr(), mapped.cast(), PARK_STUB_CODE.len())
-    };
-    // SAFETY: `mapped` names the page just allocated by this function.
-    if unsafe { libc::mprotect(mapped, PAGE_SIZE, libc::PROT_READ | libc::PROT_EXEC) } != 0 {
-        let error = io::Error::last_os_error();
-        // SAFETY: `mapped` is still the page allocated above and no other code
-        // has been given its address.
-        unsafe { libc::munmap(mapped, PAGE_SIZE) };
-        return Err(error.into());
-    }
-    // SAFETY: The mapping is executable, contains a valid return instruction
-    // for the target architecture, and remains live for the node's lifetime.
-    Ok(unsafe { std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn()>(mapped) })
 }
 
 #[cfg(not(target_os = "linux"))]

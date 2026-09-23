@@ -49,7 +49,6 @@ event holds range from 10 ms through 10.24 seconds. Other actions have a built-i
 | `Pause(node, ticks)` | the node is stopped, then continued inside the horizon |
 | `Restart(node)` | the node is killed and comes back inside the horizon |
 | `Hook(id)` | the supervisor runs that hook once |
-| `Park(node, addr, hits, hold)` | guest threads are held at an execution place |
 | `Interrupt(vector)` | a host-plane interrupt is staged at the window start, or at the parent endpoint's snapshot moment when that moment is past the window start |
 
 Each fault action except `Interrupt` becomes a standing-fault window on the shared

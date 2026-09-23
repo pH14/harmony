@@ -12,8 +12,8 @@ pub use process_proto::registers::{
     EVENT_KILL_SITE as REG_EVENT_KILL_SITE, EVENT_PARK_FIRES as REG_EVENT_PARK_FIRES,
     EVENT_READY as REG_EVENT_READY, HOOKS_FINISHED as REG_HOOKS_FINISHED,
     HOOKS_STARTED as REG_HOOKS_STARTED, INFRASTRUCTURE_ERROR as REG_INFRASTRUCTURE_ERROR,
-    PARKED as REG_PARKED, PENDING_FAULTS as REG_PENDING_FAULTS, RESTARTS as REG_RESTARTS,
-    SOMETIMES as REG_SOMETIMES, TICKS as REG_TICKS, UNEXPECTED_DEATHS as REG_UNEXPECTED_DEATHS,
+    PENDING_FAULTS as REG_PENDING_FAULTS, RESTARTS as REG_RESTARTS, SOMETIMES as REG_SOMETIMES,
+    TICKS as REG_TICKS, UNEXPECTED_DEATHS as REG_UNEXPECTED_DEATHS,
     WORKLOAD_FINISHED as REG_WORKLOAD_FINISHED, WORKLOAD_STARTED as REG_WORKLOAD_STARTED,
 };
 
@@ -39,7 +39,6 @@ pub struct RegisterSnapshot {
     pub sometimes: u64,
     pub unexpected_deaths: u64,
     pub restarts: u64,
-    pub parked: u64,
     pub event_kill_fires: u64,
     pub event_kill_site: u64,
     pub event_park_fires: u64,
@@ -60,7 +59,7 @@ pub struct RegisterSnapshot {
 
 impl RegisterSnapshot {
     #[must_use]
-    pub fn pairs(&self) -> [(u32, u64); 24] {
+    pub fn pairs(&self) -> [(u32, u64); 23] {
         [
             (REG_TICKS, self.ticks),
             (REG_ALIVE, self.alive),
@@ -69,7 +68,6 @@ impl RegisterSnapshot {
             (REG_SOMETIMES, self.sometimes),
             (REG_UNEXPECTED_DEATHS, self.unexpected_deaths),
             (REG_RESTARTS, self.restarts),
-            (REG_PARKED, self.parked),
             (REG_EVENT_KILL_FIRES, self.event_kill_fires),
             (REG_EVENT_KILL_SITE, self.event_kill_site),
             (REG_EVENT_PARK_FIRES, self.event_park_fires),
@@ -150,7 +148,6 @@ mod tests {
                 (REG_SOMETIMES, 0),
                 (REG_UNEXPECTED_DEATHS, 0),
                 (REG_RESTARTS, 0),
-                (REG_PARKED, 0),
                 (REG_EVENT_KILL_FIRES, 0),
                 (REG_EVENT_KILL_SITE, 0),
                 (REG_EVENT_PARK_FIRES, 0),
@@ -227,7 +224,7 @@ mod tests {
     #[test]
     fn supervisor_registers_occupy_a_high_reserved_range() {
         assert_eq!(SUPERVISOR_REGISTER_BASE, 0x00ff_f000);
-        assert_eq!(REG_PARKED, SUPERVISOR_REGISTER_BASE + 7);
+        assert_eq!(REG_EVENT_KILL_FIRES, SUPERVISOR_REGISTER_BASE + 7);
     }
 
     #[test]

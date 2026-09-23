@@ -1,6 +1,0 @@
-{
-  "version": 2,
-  "manifest_sha256": "1badf764ae2c833f164bbc1677d6194476658bd3b253567ea222dc762d953dc5",
-  "platform_baseline": "platform-component.json",
-  "workload_baseline": "nes-component.json"
-}

@@ -32,6 +32,21 @@ def fixture(code=b"\xc3", flags=5, needed=None, soname=None):
     return header + bytes(0x1000 - len(header)) + payload
 
 
+def resolver_trampoline(save=b"\x0f\xae\x64\x24\x40", entry_jump=b""):
+    spills = "48890424 48894c2408 4889542410 4889742418 48897c2420 4c89442428 4c894c2430"
+    reloads = "4c8b4c2430 4c8b442428 488b7c2420 488b742418 488b542410 488b4c2408 488b0424"
+    head = bytes.fromhex("f30f1efa 53 4889e3 4883e4c0 482b2500000000 " + spills + " b8ee000800 31d2")
+    head += b"".join(b"\x48\x89\x94\x24" + struct.pack("<I", 0x240 + 8 * i) for i in range(8))
+    head += save + bytes.fromhex("488b7310 488b7b08")
+    tail = bytes.fromhex("4989c3 b8ee000800 31d2 0fae6c2440 " + reloads + " 4889dc 488b1c24 4883c418 41ffe3")
+    call = b"\xe8" + struct.pack("<i", len(tail))
+    code = head + call + tail + b"\xc3"
+    if entry_jump:
+        jump = entry_jump + b"\xe9"
+        code = jump + struct.pack("<i", len(head) - len(save) - 8) + code
+    return code
+
+
 def newc(entries):
     output = bytearray()
     for index, (name, mode, content, rdev) in enumerate(entries + [("TRAILER!!!", 0, b"", (0, 0))]):
@@ -59,46 +74,45 @@ class AdmissionTests(unittest.TestCase):
     def scan(self):
         return a.inventory(self.root, os.environ.get("OBJDUMP", "objdump"))
 
-    def baseline(self, report):
-        return {"version": 2, "archive_sha256": report.get("archive_sha256"),
-                "rootfs_sha256": report["rootfs_sha256"],
-                "elf_sha256": {name: item["sha256"] for name, item in report["artifacts"].items()},
-                "xstate": {name: {"xgetbv": [site["address"] for site in item["sites"] if site["mnemonic"] == "xgetbv"],
-                                  "resolver_regions": []} for name, item in report["artifacts"].items()}}
+    def admitted(self, report):
+        return a.verify(report)
 
-    def admitted(self, report, data, baseline):
-        return a.verify(report, data, baseline)
-
-    def test_nonexecutable_elf_requires_review(self):
-        report, data = self.scan()
+    def test_nonexecutable_elf_is_inventoried_and_admitted(self):
+        report, _ = self.scan()
         self.assertIn("/unexecutable", report["artifacts"])
         self.assertFalse(report["admitted"])
-        self.assertFalse(self.admitted(report, data, {}))
-        self.assertTrue(self.admitted(report, data, self.baseline(report)))
+        self.assertTrue(self.admitted(report))
 
-    def test_changed_hash_rejected_even_with_updated_tree_digest(self):
-        old, _ = self.scan()
-        baseline = self.baseline(old)
-        self.binary.write_bytes(fixture(b"\x90\xc3"))
-        report, data = self.scan()
-        baseline["rootfs_sha256"] = report["rootfs_sha256"]
-        self.assertFalse(self.admitted(report, data, baseline))
-        self.assertIn("ELF digest differs", report["errors"][0])
-
-    def test_new_save_requires_specific_review(self):
+    def test_save_instructions_outside_a_loader_trampoline_rejected(self):
         for opcode in (b"\x0f\xae\x27", b"\x0f\xae\x37", b"\x0f\xc7\x27", b"\x0f\xc7\x2f", b"\x48\x0f\xae\x27"):
             with self.subTest(opcode=opcode.hex()):
                 self.binary.write_bytes(fixture(opcode + b"\xc3"))
-                report, data = self.scan()
+                report, _ = self.scan()
                 self.assertTrue(any(s["mnemonic"] in a.SAVE for s in report["artifacts"]["/unexecutable"]["sites"]))
-                self.assertFalse(self.admitted(report, data, self.baseline(report)))
+                self.assertFalse(self.admitted(report))
+
+    def test_lazy_binding_resolver_trampoline_admitted(self):
+        for save in (b"\x0f\xae\x64\x24\x40", b"\x0f\xc7\x64\x24\x40"):
+            with self.subTest(save=save.hex()):
+                self.binary.write_bytes(fixture(resolver_trampoline(save)))
+                report, _ = self.scan()
+                sites = [s for s in report["artifacts"]["/unexecutable"]["sites"] if s["mnemonic"] in a.SAVE]
+                self.assertEqual([s["loader_trampoline"] for s in sites], ["eager-resolver"])
+                self.assertTrue(self.admitted(report))
+
+    def test_resolver_trampoline_with_other_save_operand_or_entry_branch_rejected(self):
+        for code in (resolver_trampoline(b"\x0f\xae\x64\x24\x48"), resolver_trampoline(entry_jump=b"\x90"), resolver_trampoline(entry_jump=b"\xf2")):
+            with self.subTest(code=code[:8].hex()):
+                self.binary.write_bytes(fixture(code))
+                report, _ = self.scan()
+                self.assertFalse(self.admitted(report))
 
     def test_xgetbv_selector_and_incoming_branch(self):
         for code, accepted in [(b"\x31\xc9\x0f\x01\xd0\xc3", True), (b"\xb9\x01\0\0\0\x0f\x01\xd0\xc3", False), (b"\xeb\x02\x31\xc9\x0f\x01\xd0\xc3", False)]:
             with self.subTest(code=code.hex()):
                 self.binary.write_bytes(fixture(code))
-                report, data = self.scan()
-                self.assertEqual(self.admitted(report, data, self.baseline(report)), accepted)
+                report, _ = self.scan()
+                self.assertEqual(self.admitted(report), accepted)
 
     def test_tlsdesc_relocation_tables(self):
         for address_tag, size_tag, stride in ((7, 8, 24), (17, 18, 16), (23, 2, 24)):
@@ -132,14 +146,12 @@ class AdmissionTests(unittest.TestCase):
         dep = report["artifacts"]["/unexecutable"]["dependencies"][0]
         self.assertEqual(dep["resolved"], "/hidden/library")
         self.assertEqual(dep["symlinks"], [{"path": "/lib/libfixture.so", "target": "/hidden/library"}])
-        baseline = self.baseline(report)
-        del baseline["elf_sha256"]["/hidden/library"]
-        self.assertFalse(self.admitted(report, data, baseline))
+        self.assertIn("/hidden/library", report["artifacts"])
 
     def test_writable_executable_rejected(self):
         self.binary.write_bytes(fixture(flags=7))
-        report, data = self.scan()
-        self.assertFalse(self.admitted(report, data, self.baseline(report)))
+        report, _ = self.scan()
+        self.assertFalse(self.admitted(report))
         self.assertIn("writable executable", report["errors"][0])
 
     def test_executable_stack_rejected(self):
@@ -152,7 +164,7 @@ class AdmissionTests(unittest.TestCase):
                 self.assertEqual(record["executable_stack"], rejected)
                 record.update(sha256=a.digest(data), sites=[], writable_executable_segments=[])
                 report = {"rootfs_sha256": "fixture", "artifacts": {"/fixture": record}}
-                self.assertEqual(self.admitted(report, {"/fixture": bytes(data)}, self.baseline(report)), not rejected)
+                self.assertEqual(self.admitted(report), not rejected)
                 if rejected:
                     self.assertIn("executable ELF stack", report["errors"][0])
 
@@ -164,24 +176,20 @@ class AdmissionTests(unittest.TestCase):
         self.assertIn("xattrs", entry)
 
     @unittest.skipUnless(os.geteuid() == 0, "ownership mutation requires root")
-    def test_ownership_changes_invalidate_review(self):
+    def test_ownership_changes_the_tree_digest(self):
         report, _ = self.scan()
-        baseline = self.baseline(report)
         os.chown(self.binary, self.binary.stat().st_uid, self.binary.stat().st_gid + 1)
-        changed, contents = self.scan()
+        changed, _ = self.scan()
         self.assertNotEqual(report["rootfs_sha256"], changed["rootfs_sha256"])
-        self.assertFalse(self.admitted(changed, contents, baseline))
 
-    def test_xattr_changes_invalidate_review(self):
+    def test_xattr_changes_the_tree_digest(self):
         report, _ = self.scan()
-        baseline = self.baseline(report)
         try:
             os.setxattr(self.binary, "user.admission-test", b"changed")
         except OSError as error:
             self.skipTest(f"test filesystem lacks user xattrs: {error}")
-        changed, contents = self.scan()
+        changed, _ = self.scan()
         self.assertNotEqual(report["rootfs_sha256"], changed["rootfs_sha256"])
-        self.assertFalse(self.admitted(changed, contents, baseline))
 
     def test_unreadable_xattrs_rejected(self):
         with patch.object(os, "listxattr", side_effect=PermissionError("denied")):
@@ -210,13 +218,13 @@ class AdmissionTests(unittest.TestCase):
         (self.root / "lib").mkdir()
         (self.root / "lib/libfixture.so").write_bytes(fixture())
 
-    def test_glibc_requires_exact_loader_digest(self):
+    def test_dynamic_closure_requires_the_canonical_glibc_loader(self):
         self.dynamic_tree()
-        report, data = self.scan()
-        baseline = self.baseline(report)
-        self.assertTrue(self.admitted(report, data, baseline))
-        baseline["elf_sha256"][a.GLIBC_INTERPRETER] = "wrong"
-        self.assertFalse(self.admitted(report, data, baseline))
+        report, _ = self.scan()
+        self.assertTrue(self.admitted(report))
+        report["artifacts"][a.GLIBC_INTERPRETER]["soname"] = "ld-other.so"
+        self.assertFalse(self.admitted(report))
+        self.assertIn("canonical glibc loader", report["errors"][0])
 
     def test_missing_transitive_dependency(self):
         self.dynamic_tree()
@@ -269,8 +277,8 @@ class AdmissionTests(unittest.TestCase):
         for code, accepted in cases:
             with self.subTest(code=code.hex()):
                 self.binary.write_bytes(fixture(code))
-                report, data = self.scan()
-                self.assertEqual(self.admitted(report, data, self.baseline(report)), accepted)
+                report, _ = self.scan()
+                self.assertEqual(self.admitted(report), accepted)
 
     def test_musl_configuration_rejected(self):
         self.binary.write_bytes(fixture(needed="libfixture.so"))
@@ -299,16 +307,6 @@ class AdmissionTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 self.scan()
 
-    def test_resolver_exception_bound_to_bytes(self):
-        self.binary.write_bytes(fixture(b"\x0f\xae\x27\xc3"))
-        report, data = self.scan()
-        baseline = self.baseline(report)
-        region = {"kind": "eager-resolver", "start": 0x400000, "size": 3, "sha256": a.digest(b"\x0f\xae\x27")}
-        baseline["xstate"]["/unexecutable"]["resolver_regions"] = [region]
-        self.assertTrue(self.admitted(report, data, baseline))
-        region["sha256"] = "wrong"
-        self.assertFalse(self.admitted(report, data, baseline))
-
     def initramfs(self, device_minor=3):
         return newc([("bin", stat.S_IFDIR | 0o755, b"", (0, 0)),
                      ("bin/app", stat.S_IFREG | 0o4755, fixture(), (0, 0)),
@@ -324,15 +322,11 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(files["/dev/null"]["rdev"], [1, 3])
         self.assertEqual(files["/bin/app"]["mode"], 0o4755)
         self.assertEqual(files["/bin/sh"]["target"], "/bin/app")
-        baseline = self.baseline(report)
-        baseline["archive_sha256"] = None
-        self.assertFalse(self.admitted(report, data, baseline))
-        baseline["archive_sha256"] = report["archive_sha256"]
-        self.assertTrue(self.admitted(report, data, baseline))
+        self.assertTrue(self.admitted(report))
         archive.write_bytes(gzip.compress(self.initramfs(5), mtime=0))
-        changed, data = a.inventory_initramfs(archive)
+        changed, _ = a.inventory_initramfs(archive)
         self.assertNotEqual(changed["rootfs_sha256"], report["rootfs_sha256"])
-        self.assertFalse(self.admitted(changed, data, baseline))
+        self.assertNotEqual(changed["archive_sha256"], report["archive_sha256"])
 
     def test_newc_duplicates_truncation_and_traversal(self):
         with self.assertRaisesRegex(a.Rejected, "duplicate"):
@@ -359,27 +353,17 @@ class AdmissionTests(unittest.TestCase):
                 data = bytearray(fixture(soname="libfixture.so"))
                 struct.pack_into("<qQ", data, 0x1200, tag, value)
                 self.binary.write_bytes(data)
-                report, contents = self.scan()
+                report, _ = self.scan()
                 self.assertTrue(report["artifacts"]["/unexecutable"]["text_relocations"])
-                self.assertFalse(self.admitted(report, contents, self.baseline(report)))
+                self.assertFalse(self.admitted(report))
                 self.assertIn("text relocations", report["errors"][0])
 
-    def test_tlsdesc_exception_requires_no_tlsdesc_relocations(self):
-        self.binary.write_bytes(fixture(b"\x0f\xae\x27\xc3"))
-        report, data = self.scan()
-        baseline = self.baseline(report)
-        region = {"kind": "unused-tlsdesc", "start": 0x400000, "size": 3,
-                  "sha256": a.digest(b"\x0f\xae\x27")}
-        baseline["xstate"]["/unexecutable"]["resolver_regions"] = [region]
-        self.assertTrue(self.admitted(report, data, baseline))
+    def test_tlsdesc_relocations_rejected(self):
+        report, _ = self.scan()
+        self.assertTrue(self.admitted(report))
         report["artifacts"]["/unexecutable"]["tlsdesc"] = True
-        self.assertFalse(self.admitted(report, data, baseline))
-
-    def test_review_attestations_are_not_contract_fields(self):
-        report, data = self.scan()
-        baseline = self.baseline(report)
-        baseline["reviewed_by"] = "somebody"
-        self.assertFalse(self.admitted(report, data, baseline))
+        self.assertFalse(self.admitted(report))
+        self.assertIn("TLSdesc relocation", report["errors"][0])
 
     def test_newc_kernel_symlink_terminator(self):
         records = a.parse_newc(newc([("link", stat.S_IFLNK | 0o777, b"/bin/app\0", (0, 0))]))
@@ -389,9 +373,8 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(a.Rejected, "symlink target"):
             a.parse_newc(newc([("link", stat.S_IFLNK | 0o777, b"/bin/app\0extra", (0, 0))]))
 
-    def test_malformed_baseline(self):
-        report, data = self.scan()
-        self.assertFalse(self.admitted(report, data, [],))
+    def test_malformed_report_rejected(self):
+        self.assertFalse(self.admitted({"artifacts": {"/fixture": {}}}))
 
 
 if __name__ == "__main__":

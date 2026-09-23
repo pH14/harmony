@@ -2,7 +2,6 @@
 
 pub mod control;
 mod control_state;
-pub mod controlled_guest;
 mod engine_state;
 pub mod exec;
 pub mod portable_snapshot;

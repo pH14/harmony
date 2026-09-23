@@ -12,7 +12,7 @@ pub mod supervise;
 pub use bundle::{Bundle, BundleError, HookSpec, NodeSpec, parse_bundle};
 pub use directive::{Directive, DirectiveError, LineReader, parse_directive};
 pub use evidence::{CheckCapture, CheckEvidence};
-pub use reconcile::{ActiveWindows, EventKillWindow, EventPark, HookWindow, NodeActions, Park};
+pub use reconcile::{ActiveWindows, EventKillWindow, EventPark, HookWindow, NodeActions};
 pub use recovery::{RecoveryError, RecoveryReadiness};
 pub use supervise::{Action, Counters, ProcessSupervisor, Supervisor};
 

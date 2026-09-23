@@ -57,11 +57,6 @@ def selected(paths):
             result["harmony_oci"] = True
         if path.startswith("cli/"):
             result["harmony_oci"] = result["consonance_platform"] = True
-        if path == "workloads/guest-images/admission/minimal-component.json":
-            result["consonance_platform"] = True
-        if path == "workloads/guest-images/admission/controlled-profiles.rs":
-            result["consonance_platform"] = result["consonance_kvm"] = True
-            result["harmony_oci"] = result["public_api"] = True
         if path.startswith("consonance/"):
             result["consonance_platform"] = result["public_api"] = result["harmony_nes"] = True
         if path.startswith(("consonance/vmm-backend/", "consonance/vmm-core/", "consonance/vm-state/", "consonance/vtime/")):

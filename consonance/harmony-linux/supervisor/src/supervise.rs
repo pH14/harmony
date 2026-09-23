@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::evidence::CheckEvidence;
-use crate::reconcile::{ActiveWindows, EventKillWindow, EventPark, Park};
+use crate::reconcile::{ActiveWindows, EventKillWindow, EventPark};
 use crate::regs::RegisterSnapshot;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -11,8 +11,6 @@ pub enum Action {
     Cont(u16),
     Start(u16),
     RunHook(u32),
-    Park(u16, Park),
-    Unpark(u16),
     ArmEventKill(u16, u8),
     DisarmEventKill(u16),
     ArmEventPark(u16, EventPark),
@@ -28,11 +26,6 @@ impl Action {
             Action::Cont(node) => format!("resume node {node}"),
             Action::Start(node) => format!("start node {node}"),
             Action::RunHook(id) => format!("run hook {id}"),
-            Action::Park(node, park) => format!(
-                "park node {node} at {:#x} hit {} hold {}",
-                park.addr, park.hits, park.hold_nanos
-            ),
-            Action::Unpark(node) => format!("unpark node {node}"),
             Action::ArmEventKill(node, rarity) => {
                 format!("arm event kill node {node} rarity {rarity}")
             }
@@ -54,7 +47,6 @@ pub struct Counters {
     pub unexpected_deaths: u64,
     pub restarts: u64,
     pub sometimes: u64,
-    pub parked: u64,
     pub event_kill_fires: u64,
     pub event_kill_site: u64,
     pub event_park_fires: u64,
@@ -165,13 +157,6 @@ impl ProcessSupervisor {
             if !now.pause && was.pause && state.alive && state.paused {
                 actions.push(Action::Cont(node));
                 state.paused = false;
-            }
-            if let Some(park) = now.park {
-                if was.park != Some(park) {
-                    actions.push(Action::Park(node, park));
-                }
-            } else if was.park.is_some() {
-                actions.push(Action::Unpark(node));
             }
             if state.alive {
                 if !state.event_kill_death {
@@ -403,11 +388,6 @@ impl ProcessSupervisor {
         }
     }
 
-    pub fn note_parked(&mut self) {
-        self.counters.parked += 1;
-        self.bump_disturbance(1);
-    }
-
     pub fn note_sometimes(&mut self, id: u32) {
         if let Some(bit) = crate::regs::sometimes_bit(id) {
             self.counters.sometimes |= bit;
@@ -440,7 +420,6 @@ impl ProcessSupervisor {
             sometimes: self.counters.sometimes,
             unexpected_deaths: self.counters.unexpected_deaths,
             restarts: self.counters.restarts,
-            parked: self.counters.parked,
             event_kill_fires: self.counters.event_kill_fires,
             event_kill_site: self.counters.event_kill_site,
             event_park_fires: self.counters.event_park_fires,
@@ -569,31 +548,6 @@ mod tests {
         assert_eq!(sup.tick(&paused, &[0]), []);
         assert_eq!(sup.tick(&paused, &[]), []);
         assert_eq!(sup.tick(&ActiveWindows::new(), &[]), [Action::Start(0)]);
-    }
-
-    #[test]
-    fn a_park_window_arms_on_entry_and_disarms_on_exit() {
-        let mut sup = Supervisor::new(1);
-        let park = Park {
-            addr: 0x4b0e86,
-            hits: 28,
-            hold_nanos: 2_000_000,
-        };
-        let parked = active(&[(
-            0,
-            ProcessAction::Park {
-                addr: 0x4b0e86,
-                hits: 28,
-                hold_nanos: 2_000_000,
-            },
-        )]);
-        assert_eq!(sup.tick(&parked, &[]), [Action::Park(0, park)]);
-        assert_eq!(sup.tick(&parked, &[]), []);
-        assert_eq!(sup.tick(&ActiveWindows::new(), &[]), [Action::Unpark(0)]);
-        assert_eq!(sup.tick(&ActiveWindows::new(), &[]), []);
-        sup.note_parked();
-        assert_eq!(sup.snapshot().parked, 1);
-        assert_eq!(sup.alive_bitmap(), 1);
     }
 
     #[test]
@@ -1091,19 +1045,6 @@ mod tests {
         assert_eq!(Action::Cont(0).describe(), "resume node 0");
         assert_eq!(Action::Start(1).describe(), "start node 1");
         assert_eq!(Action::RunHook(5).describe(), "run hook 5");
-        assert_eq!(
-            Action::Park(
-                0,
-                Park {
-                    addr: 0x4b0e86,
-                    hits: 28,
-                    hold_nanos: 2_000_000
-                }
-            )
-            .describe(),
-            "park node 0 at 0x4b0e86 hit 28 hold 2000000"
-        );
-        assert_eq!(Action::Unpark(0).describe(), "unpark node 0");
         assert_eq!(
             Action::ArmEventKill(0, 3).describe(),
             "arm event kill node 0 rarity 3"

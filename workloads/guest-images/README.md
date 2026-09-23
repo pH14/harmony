@@ -91,20 +91,16 @@ gh workflow run harmony-workloads-oci-checks.yml --ref YOUR_BRANCH
 
 The Nova A–E CI check is `verify-nova-oracle-admission.sh`. It checks the exact
 built oracle executable and downloaded kernel/platform/OCI/ROM immediately
-before execution against `admission/nova-oracle-composition.json`. The baseline
-is a separate review from default-session NES admission; a new publisher output
-must match its reviewed guest composition or fail closed. The check requires
-restore-oracle mode and no tree-seed override, and retains only JSON/log evidence
-rather than the temporary full composition archives. See `workloads/tools/README.md`
-for candidate generation, review boundaries and executable provenance.
+before execution. The check requires restore-oracle mode and no tree-seed
+override, and retains only JSON/log evidence rather than the temporary full
+composition archives. See `workloads/tools/README.md` for candidate generation,
+review boundaries and executable provenance.
 
-The immutable `admission/controlled-profiles.rs` catalog owns the approved input
-policy for logical snapshot identity. Consonance compiles these opaque tuples
-and matches exact kernel/initramfs SHA-256, RAM and command-line inputs; it has
-no application-specific matching branches. The catalog records the reviewed
-minimal Linux fixture and the NES/PostgreSQL composed images. Its application
-entries derive from the composition manifests pinned by `nes-composition.json`
-and `postgres-composition.json`; the minimal entry derives from
-`minimal-component.json`. Changing any tuple requires renewed admission review.
-The catalog is compiled into the host binary, not accepted from runtime callers
-or imported snapshots. Unknown inputs keep generic strict raw identity.
+`verify-prepared-admission.py` checks a prepared dump against its own manifest
+and against the fixed composition rules: archive order and offsets, the prepared
+API identity, the `/harmony-oci` namespace boundary, `LD_BIND_NOW=1` in the
+kernel command line and both process environments, read-only external mounts and
+the expected argv. It then runs the executable property scan from
+`consonance/harmony-linux/scripts/x86-xstate-admission.py` over the platform and
+workload archives. No step compares an image against a stored digest, so
+rebuilding a guest does not require a new approval.

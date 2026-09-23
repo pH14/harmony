@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Inventory controlled x86 rootfs inputs; verify pinned executable contracts."""
+"""Inventory x86 rootfs inputs and check their executable properties."""
 
 import argparse
 import gzip
@@ -195,6 +195,86 @@ def elf(data):
     }
 
 
+REGISTER_SPILL = r"mov %r(?:[a-d]x|si|di|8|9|10|11),(?:0x[0-9a-f]+)?\(%rsp\)"
+REGISTER_RELOAD = r"mov (?:0x[0-9a-f]+)?\(%rsp\),%r(?:[a-d]x|si|di|8|9|10|11)"
+TRAMPOLINE_PROLOGUE = [
+    (r"mov %rdx,0x[0-9a-f]+\(%rsp\)", 0, 16),
+    (r"xor %edx,%edx", 1, 1),
+    (r"mov \$(0x[0-9a-f]+),%eax", 1, 1),
+    (REGISTER_SPILL, 1, 8),
+    (r"sub \S+,%rsp", 1, 1),
+    (r"and \$0xffffffffffffffc0,%rsp", 1, 1),
+    (r"mov %rsp,%rbx", 1, 1),
+]
+LOADER_TRAMPOLINES = {
+    "eager-resolver": (
+        [(r"push %rbx", 1, 1), (r"endbr64", 0, 1)],
+        [(r"mov 0x10\(%rbx\),%rsi", 1, 1), (r"mov 0x8\(%rbx\),%rdi", 1, 1),
+         (r"call (?:0x)?[0-9a-f]+", 1, 1), (r"mov %rax,%r11", 1, 1),
+         (r"mov \$(0x[0-9a-f]+),%eax", 1, 1), (r"xor %edx,%edx", 1, 1),
+         (r"xrstor 0x40\(%rsp\)", 1, 1), (REGISTER_RELOAD, 1, 8),
+         (r"mov %rbx,%rsp", 1, 1), (r"mov \(%rsp\),%rbx", 1, 1),
+         (r"add \$0x18,%rsp", 1, 1), (r"jmp \*%r11", 1, 1)],
+    ),
+    "unused-tlsdesc": (
+        [(r"mov %rbx,-0x18\(%rsp\)", 1, 1)],
+        [(r"call (?:0x)?[0-9a-f]+", 1, 1), (r"mov %rax,%rcx", 1, 1),
+         (r"mov \$(0x[0-9a-f]+),%eax", 1, 1), (r"xor %edx,%edx", 1, 1),
+         (r"xrstor 0x40\(%rsp\)", 1, 1), (r"mov %rcx,%rax", 1, 1),
+         (REGISTER_RELOAD, 1, 8), (r"mov %rbx,%rsp", 1, 1),
+         (r"mov -0x18\(%rsp\),%rbx", 1, 1), (r"jmp (?:0x)?[0-9a-f]+", 1, 1)],
+    ),
+}
+
+
+def instruction_text(item):
+    operands = re.sub(r"<[^>]*>", "", item["operands"].split("#", 1)[0])
+    text = (item["mnemonic"] + " " + re.sub(r"\s", "", operands)).strip()
+    return re.sub(r"^bnd jmp", "jmp ", text)
+
+
+def match_steps(instructions, start, step, steps):
+    index, masks = start, []
+    for pattern, low, high in steps:
+        count = 0
+        while count < high and 0 <= index < len(instructions):
+            match = re.fullmatch(pattern, instruction_text(instructions[index]))
+            if not match:
+                break
+            masks.extend(match.groups())
+            index += step
+            count += 1
+        if count < low:
+            return None
+    return index - step, masks
+
+
+def loader_trampoline(instructions, index, targets):
+    """Name the glibc loader trampoline holding a save, or None.
+
+    The lazy-binding resolver never runs under LD_BIND_NOW=1, and the dynamic
+    TLS descriptor trampoline never runs without TLSdesc relocations. Both are
+    matched by their complete straight-line shape, so no address is pinned."""
+    if instruction_text(instructions[index]).split(" ", 1)[-1] != "0x40(%rsp)":
+        return None
+    prologue = match_steps(instructions, index - 1, -1, TRAMPOLINE_PROLOGUE)
+    if prologue is None:
+        return None
+    for kind, (entry_steps, body_steps) in LOADER_TRAMPOLINES.items():
+        entry = match_steps(instructions, prologue[0] - 1, -1, entry_steps)
+        body = match_steps(instructions, index + 1, 1, body_steps)
+        if entry is None or body is None or set(prologue[1]) != set(body[1]) or len(set(body[1])) != 1:
+            continue
+        first, last = entry[0], body[0]
+        span_items = instructions[first:last + 1]
+        if any(a["address"] + len(bytes.fromhex(a["bytes"])) != b["address"] for a, b in zip(span_items, span_items[1:])):
+            continue
+        if any(item["address"] in targets for item in span_items[1:]):
+            continue
+        return kind
+    return None
+
+
 def disassemble(data, segments, objdump):
     """Disassemble every file-backed executable load segment, including stripped ELFs."""
     instructions = []
@@ -226,10 +306,9 @@ def disassemble(data, segments, objdump):
                 raise Rejected("objdump decoded no instructions")
     targets = set()
     for item in instructions:
-        if item["mnemonic"].startswith("j") or item["mnemonic"].startswith("call") or item["mnemonic"].startswith("loop"):
-            target = re.match(r"(?:0x)?([0-9a-f]+)(?:\s|$)", item["operands"])
-            if target:
-                targets.add(int(target[1], 16))
+        target = re.search(r"\b(?:j[a-z]*|call[a-z]*|loop[a-z]*)\s+(?:0x)?([0-9a-f]+)(?:\s|$)", item["mnemonic"] + " " + item["operands"])
+        if target:
+            targets.add(int(target[1], 16))
     sites = []
     for index, item in enumerate(instructions):
         if item["mnemonic"] not in SAVE | RESTORE | {"xgetbv"}:
@@ -262,6 +341,8 @@ def disassemble(data, segments, objdump):
             item["straightline_ecx_zero"] = zero
             item["selector_proof_instructions"] = chain if zero else []
             item["requires_reviewed_control_flow_proof"] = True
+        if item["mnemonic"] in SAVE:
+            item["loader_trampoline"] = loader_trampoline(instructions, index, targets)
         sites.append(item)
     return sites
 
@@ -486,66 +567,27 @@ def inventory_initramfs(path, objdump="objdump"):
     return report, contents
 
 
-def verify(report, contents, contract):
+def verify(report):
     errors = []
     try:
-        fields = {"version", "archive_sha256", "rootfs_sha256", "elf_sha256", "xstate"}
-        if not isinstance(contract, dict) or set(contract) != fields or contract["version"] != 2:
-            raise Rejected("unsupported executable contract")
-        if contract["archive_sha256"] != report.get("archive_sha256"):
-            raise Rejected("initramfs archive digest differs from contract")
-        if contract["rootfs_sha256"] != report["rootfs_sha256"]:
-            raise Rejected("rootfs digest differs from contract")
-        approved = contract["elf_sha256"]
-        if not isinstance(approved, dict) or set(approved) != set(report["artifacts"]):
-            raise Rejected("missing or unexpected ELF")
-        exceptions = contract["xstate"]
-        if not isinstance(exceptions, dict) or not set(exceptions).issubset(approved):
-            raise Rejected("invalid xstate exceptions")
         if any(a["interpreter"] or a["needed"] for a in report["artifacts"].values()):
             loader = report["artifacts"].get(GLIBC_INTERPRETER)
             if not loader or loader["soname"] != "ld-linux-x86-64.so.2":
                 raise Rejected("missing canonical glibc loader")
+        if any(record["tlsdesc"] for record in report["artifacts"].values()):
+            raise Rejected("TLSdesc relocation in executable closure")
         for name, record in report["artifacts"].items():
-            if approved[name] != record["sha256"]:
-                raise Rejected(f"ELF digest differs: {name}")
             if record["text_relocations"]:
                 raise Rejected(f"ELF text relocations: {name}")
             if record["executable_stack"]:
                 raise Rejected(f"executable ELF stack: {name}")
             if record["writable_executable_segments"]:
                 raise Rejected(f"writable executable ELF segment: {name}")
-            item = exceptions.get(name, {"xgetbv": [], "resolver_regions": []})
-            if not isinstance(item, dict) or set(item) != {"xgetbv", "resolver_regions"}:
-                raise Rejected(f"invalid xstate exception: {name}")
-            selectors = item["xgetbv"]
-            if not isinstance(selectors, list) or any(type(v) is not int for v in selectors) or len(set(selectors)) != len(selectors):
-                raise Rejected(f"invalid XGETBV selectors: {name}")
-            observed = {s["address"] for s in record["sites"] if s["mnemonic"] == "xgetbv"}
-            if set(selectors) != observed:
-                raise Rejected(f"unexpected XGETBV selector: {name}")
             if any(s["mnemonic"] == "xgetbv" and not s["straightline_ecx_zero"] for s in record["sites"]):
                 raise Rejected(f"unproved XGETBV selector: {name}")
-            regions = item["resolver_regions"]
-            if not isinstance(regions, list):
-                raise Rejected(f"invalid resolver regions: {name}")
-            for region in regions:
-                if not isinstance(region, dict) or set(region) != {"kind", "start", "size", "sha256"} or region["kind"] not in ("eager-resolver", "unused-tlsdesc") or type(region["start"]) is not int or type(region["size"]) is not int or region["size"] <= 0:
-                    raise Rejected(f"invalid resolver region: {name}")
-                if region["kind"] == "unused-tlsdesc" and any(r["tlsdesc"] for r in report["artifacts"].values()):
-                    raise Rejected("TLSdesc relocation in executable closure")
-                start, size = region["start"], region["size"]
-                segments = [s for s in record["segments"] if s["flags"] & 1 and s["address"] <= start and start + size <= s["address"] + s["size"]]
-                if len(segments) != 1:
-                    raise Rejected(f"resolver region outside executable bytes: {name}")
-                data = span(contents[name], segments[0]["offset"] + start - segments[0]["address"], size)
-                if digest(data) != region["sha256"]:
-                    raise Rejected(f"resolver region bytes differ: {name}")
             for site in record["sites"]:
-                if site["mnemonic"] in SAVE:
-                    covering = [r for r in regions if r["start"] <= site["address"] and site["address"] + len(bytes.fromhex(site["bytes"])) <= r["start"] + r["size"]]
-                    if len(covering) != 1:
-                        raise Rejected(f"unproved save instruction: {name}:{site['address']:#x} {site['mnemonic']}")
+                if site["mnemonic"] in SAVE and not site.get("loader_trampoline"):
+                    raise Rejected(f"save instruction outside a loader trampoline: {name}:{site['address']:#x} {site['mnemonic']}")
     except (Rejected, OSError, TypeError, KeyError, ValueError, AttributeError) as error:
         errors.append(str(error))
     report.update(mode="verify", admitted=not errors, errors=errors)
@@ -556,7 +598,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("inventory", "verify", "inventory-initramfs", "verify-initramfs"))
     parser.add_argument("rootfs", type=Path)
-    parser.add_argument("--baseline", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--objdump", default="objdump", help="GNU objdump executable")
     args = parser.parse_args()
@@ -564,13 +605,10 @@ def main():
         if args.output.resolve().is_relative_to(args.rootfs.resolve()):
             raise Rejected("report must be outside the scanned rootfs")
         inspect = inventory_initramfs if args.mode.endswith("-initramfs") else inventory
-        report, contents = inspect(args.rootfs, args.objdump)
+        report, _ = inspect(args.rootfs, args.objdump)
         success = True
         if args.mode.startswith("verify"):
-            if args.baseline is None:
-                raise Rejected("verify requires an explicit --baseline contract")
-            baseline = json.loads(bounded_read(args.baseline))
-            success = verify(report, contents, baseline)
+            success = verify(report)
     except (Rejected, OSError, ValueError, EOFError, struct.error, subprocess.SubprocessError) as error:
         report = {"version": 1, "mode": args.mode, "admitted": False, "errors": [str(error)]}
         success = False

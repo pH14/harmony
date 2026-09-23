@@ -19,8 +19,8 @@ namespace. Every child receives the resolved uid, gid, and supplemental groups
 from the execution document. The supervisor retains its own privilege for
 platform device operations. `/dev/harmony` is accessed through the shared
 `hypercall-doorbell::linux::DeviceTransport`; the supervisor has no raw MMIO
-transport. Parking uses the required `/dev/harmony-park` interface. Device errors fail
-execution rather than silently omitting a requested process action.
+transport. Device errors fail execution rather than silently omitting a
+requested process action.
 
 An application exit marker is emitted only after the plain execution command has
 started and returned. Malformed execution input, structured setup errors, and

@@ -42,14 +42,6 @@ class ScopeTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.active(path), {"harmony_oci"})
 
-    def test_minimal_guest_admission_selects_the_platform_scenario(self):
-        self.assertEqual(self.active("workloads/guest-images/admission/minimal-component.json"),
-                         {"consonance_platform"})
-
-    def test_the_controlled_profile_catalog_selects_every_runtime_consumer(self):
-        self.assertEqual(self.active("workloads/guest-images/admission/controlled-profiles.rs"),
-                         {"consonance_platform", "consonance_kvm", "harmony_oci", "public_api"})
-
     def test_backend_changes_select_both_execution_scenarios(self):
         self.assertEqual(self.active("consonance/vmm-backend/src/kvm.rs"),
                          {"consonance_platform", "consonance_kvm", "harmony_nes", "public_api"})

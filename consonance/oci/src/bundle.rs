@@ -14,7 +14,6 @@ pub const ROOTFS_ROOT: &str = "/harmony-oci/rootfs";
 pub const EXECUTION_SOURCE: &str = "/harmony-oci/execution.json";
 pub const EXECUTION_DESTINATION: &str = execution_proto::EXECUTION_PATH;
 pub const SUPERVISOR_PATH: &str = "/usr/lib/harmony/supervisor";
-pub const PARK_DEVICE: &str = "/dev/harmony-park";
 pub const HARMONY_DEVICE: &str = "/dev/harmony";
 const KERNEL_LOG_DEVICE: &str = "/dev/kmsg";
 pub const MAX_EXTERNAL_INPUTS: usize = 256;
@@ -146,7 +145,6 @@ pub fn prepare(
         SUPERVISOR_PATH,
         EXECUTION_DESTINATION,
         HARMONY_DEVICE,
-        PARK_DEVICE,
         KERNEL_LOG_DEVICE,
     ] {
         validate_mount_path(&image.rootfs, destination)?;
@@ -356,12 +354,6 @@ fn runc_spec(external_inputs: &[ValidatedExternalInput]) -> serde_json::Value {
             "options": ["bind"]
         }),
         json!({
-            "destination": PARK_DEVICE,
-            "type": "bind",
-            "source": PARK_DEVICE,
-            "options": ["bind"]
-        }),
-        json!({
             "destination": KERNEL_LOG_DEVICE,
             "type": "bind",
             "source": KERNEL_LOG_DEVICE,
@@ -398,7 +390,6 @@ fn runc_spec(external_inputs: &[ValidatedExternalInput]) -> serde_json::Value {
             "resources": {
                 "devices": [
                     { "allow": true, "type": "c", "major": "HARMONY_SDK_MAJOR", "minor": "HARMONY_SDK_MINOR", "access": "rw" },
-                    { "allow": true, "type": "c", "major": "HARMONY_PARK_MAJOR", "minor": "HARMONY_PARK_MINOR", "access": "rw" },
                     { "allow": true, "type": "c", "major": 1, "minor": 11, "access": "r" }
                 ]
             },
@@ -731,7 +722,6 @@ mod tests {
         assert!(text.contains("harmony-oci/execution.json"));
         assert_eq!(text.matches("/usr/lib/harmony/supervisor").count(), 3);
         assert!(text.contains("/dev/harmony"));
-        assert!(text.contains("/dev/harmony-park"));
         assert!(!text.contains("/dev/mem"));
 
         let config = runc_spec(&[]);

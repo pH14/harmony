@@ -156,7 +156,6 @@ pub enum Fault {
     ProcEventPark { rarity: u8, hold: Span },
     BuggifyFire,
     RunHook(u32),
-    ProcPark { addr: u64, hits: u32, hold: Span },
 }
 
 impl Fault {
@@ -174,8 +173,7 @@ impl Fault {
             | Self::ProcRestart
             | Self::ProcEventKill { .. }
             | Self::ProcEventPark { .. }
-            | Self::RunHook(_)
-            | Self::ProcPark { .. } => DecisionClass::Process,
+            | Self::RunHook(_) => DecisionClass::Process,
             Self::BuggifyFire => DecisionClass::Buggify,
         }
     }

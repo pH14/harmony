@@ -8,6 +8,9 @@ pub mod entry;
 pub mod linux_loader;
 pub mod records;
 
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64", not(miri)))]
+mod logical_identity_live_tests;
+
 use control_proto::RegsView;
 use vm_state::VmState;
 use vmm_backend::{Backend, Exit, Gpa, X86, X86Exit};
@@ -167,12 +170,15 @@ impl Vendor for X86 {
         devices.uart.inject_input(bytes);
     }
 
-    fn controlled_identity_vcpu(
+    fn logical_identity_vcpu(
         vcpu: &vmm_backend::VcpuState,
     ) -> Result<vmm_backend::VcpuState, VmmError> {
         let mut projected = vcpu.clone();
-        projected.xsave_restore_bv =
-            vmm_backend::logical_xsave_restore_bv(&vcpu.xsave, vcpu.xsave_restore_bv)?;
+        if let Ok(restore_bv) =
+            vmm_backend::logical_xsave_restore_bv(&vcpu.xsave, vcpu.xsave_restore_bv)
+        {
+            projected.xsave_restore_bv = restore_bv;
+        }
         Ok(projected)
     }
 

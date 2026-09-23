@@ -88,10 +88,6 @@ CONFIG_HARMONY_PVCLOCK=y
 # driver owns the fixed doorbell pages and stamps pid/comm/userspace-RIP into
 # Antithesis JSON before emitting it at the synchronous write(2) Moment.
 CONFIG_HARMONY_DEVICE=y
-# The platform supervisor uses the kernel-owned parking device for bounded
-# process control. Keep it in the standard runtime image; test profiles may
-# still alter unrelated determinism controls without becoming dependencies.
-CONFIG_HARMONY_PARK=y
 
 ## Entropy / randomness
 # No hardware RNG drivers — entropy must come from our hypercall channel.
