@@ -237,19 +237,24 @@ mod tests {
 
     #[test]
     fn action_keys_are_fixed_width_and_distinct() {
+        let tick = NonZeroU16::new(9).unwrap();
         let actions = [
             wait(3),
-            FaultAction::Kill(3),
-            FaultAction::EventKill { node: 3, rarity: 1 },
+            FaultAction::Kill(3, tick),
+            FaultAction::EventKill {
+                node: 3,
+                rarity: 1,
+                ticks: tick,
+            },
             FaultAction::EventPark {
                 node: 3,
                 edges: 1,
                 hold_us: 9,
             },
-            FaultAction::Pause(3, 9),
-            FaultAction::Restart(3),
-            FaultAction::Hook(3),
-            FaultAction::Interrupt(3),
+            FaultAction::Pause(3, tick),
+            FaultAction::Restart(3, tick),
+            FaultAction::Hook(3, tick),
+            FaultAction::Interrupt(3, tick),
         ];
         let keys: std::collections::BTreeSet<_> =
             actions.iter().map(FaultAction::key_bytes).collect();
