@@ -35,6 +35,7 @@ pub fn command(spec: &ExecutionSpec, argv: &[String]) -> io::Result<Command> {
         })?;
         command.env(key, value);
     }
+    command.env("ANTITHESIS_OUTPUT_DIR", crate::ANTITHESIS_OUTPUT_DIR);
     #[cfg(unix)]
     {
         let uid = spec.uid;
@@ -138,6 +139,21 @@ pub fn run_argv_once(spec: &ExecutionSpec, argv: &[String]) -> io::Result<ExitSt
     let _ = signal_group(child.id(), libc::SIGKILL);
     reap_descendants(child.id())?;
     Ok(status)
+}
+
+#[cfg(unix)]
+pub fn prepare_antithesis_output(
+    dir: &std::path::Path,
+    device: &std::path::Path,
+) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let sink = dir.join("sdk.jsonl");
+    match std::fs::remove_file(&sink) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    std::os::unix::fs::symlink(device, sink)
 }
 
 pub fn enable_subreaper() -> io::Result<()> {
@@ -282,6 +298,24 @@ mod tests {
         assert!(command.get_envs().any(|(key, value)| {
             key == "HS_PROCESS_TEST" && value.and_then(|value| value.to_str()) == Some("present")
         }));
+        assert!(command.get_envs().any(|(key, value)| {
+            key == "ANTITHESIS_OUTPUT_DIR"
+                && value.and_then(|value| value.to_str()) == Some(crate::ANTITHESIS_OUTPUT_DIR)
+        }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_antithesis_sink_is_a_link_to_the_device() {
+        let root = std::env::temp_dir().join(format!("hs-antithesis-{}", std::process::id()));
+        let dir = root.join("antithesis");
+        let device = root.join("device");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&device, b"").unwrap();
+        prepare_antithesis_output(&dir, &device).unwrap();
+        prepare_antithesis_output(&dir, &device).unwrap();
+        assert_eq!(std::fs::read_link(dir.join("sdk.jsonl")).unwrap(), device);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

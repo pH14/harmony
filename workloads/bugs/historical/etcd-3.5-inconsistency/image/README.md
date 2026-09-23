@@ -75,7 +75,10 @@ changed value is conclusive data loss. The persisted journal watermark is an opt
 a missing or malformed watermark causes a full scan, and an incomplete final record stays before
 the watermark until a later invocation completes it.
 
-The process emits `@reachable 11` and `@always 1 1` only after every member agrees. A conclusive
-loss emits `@always 1 0`; an empty journal, a down member, or an inconclusive read is silent. A
+The process writes Antithesis SDK JSON records to `$ANTITHESIS_OUTPUT_DIR/sdk.jsonl`. It declares
+both assertions at startup. After every member was read conclusively it reaches `etcd oracle
+compared every member` and evaluates the Always assertion `every etcd member holds each
+acknowledged write`, which fails on a conclusive loss. An empty journal, a down member, or an
+inconclusive read evaluates neither. A
 passing check reports `verified` with the number of acknowledged records confirmed on every
 member.

@@ -82,8 +82,8 @@ pages, so a build's heap scans take longer than one churn cycle.
 | ready | `pg_isready` on the unix socket |
 | hook 1 | HOT-update churn: the seeded `churn` procedure re-updates a small set of rows spread across the table, one short transaction per slice |
 | hook 2 | `DROP INDEX` + `CREATE INDEX CONCURRENTLY` round |
-| hook 3 | `pg_amcheck --heapallindexed`; `@reachable 24` on every verdict it reached and `@always 2 0` when it reports a heap tuple with no index entry; silent when it could not run (server down, connection lost, no valid index) |
-| hook 4 | `VACUUM`; `@sometimes 25` so a pruned state is a search goal |
+| hook 3 | `pg_amcheck --heapallindexed`; Reachable `amcheck compared the index` on every verdict it reached, and the Always assertion `every heap tuple has an index entry` fails when it reports a heap tuple with no index entry; a run that could not compare (server down, connection lost, no valid index) reaches only a Reachable naming why |
+| hook 4 | `VACUUM`; Reachable `vacuum finished` so a pruned state is a search goal |
 
 The churn updates a column that is not in the index being built, so the updates
 are eligible for HOT and their pruning during a concurrent build is the

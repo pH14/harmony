@@ -1,8 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Hook dispatcher for the CREATE INDEX CONCURRENTLY workload. One argument: the
-# hook id from /etc/harmony/bundle. Directives go to stdout, diagnostics to
-# /run/hook.err.
+# hook id from /etc/harmony/bundle. Assertions go to the Antithesis SDK sink,
+# diagnostics to /run/hook.err.
 set -u
 
 PGBIN=/usr/lib/postgresql/bin
@@ -17,6 +17,35 @@ faultlab_arg() {
         case "$_word" in "$1"=*) echo "${_word#*=}" ;; esac
     done | tail -1)
     if [ -z "$_value" ]; then echo "$2"; else echo "$_value"; fi
+}
+
+CHURN_FINISHED="churn finished"
+BUILD_FINISHED="concurrent index build finished"
+VACUUM_FINISHED="vacuum finished"
+AMCHECK_COMPARED="amcheck compared the index"
+AMCHECK_SERVER_DOWN="amcheck found the server down"
+AMCHECK_FAILED="amcheck failed without a finding"
+INDEX_COMPLETE="every heap tuple has an index entry"
+
+# antithesis_assert <type> <id> <hit> <condition>: one record in the Antithesis
+# fallback SDK format. A single printf writes the whole line in one write call.
+antithesis_assert() {
+    [ -n "${ANTITHESIS_OUTPUT_DIR:-}" ] || return 0
+    case "$1" in always) _display=Always ;; *) _display=Reachable ;; esac
+    printf '{"antithesis_assert":{"hit":%s,"must_hit":true,"assert_type":"%s","display_type":"%s","message":"%s","condition":%s,"id":"%s","location":{"class":"postgres-hooks","function":"","file":"hooks.sh","begin_line":0,"begin_column":0},"details":null}}\n' \
+        "$3" "$1" "$_display" "$2" "$4" "$2" >>"$ANTITHESIS_OUTPUT_DIR/sdk.jsonl"
+}
+
+reached() {
+    antithesis_assert reachability "$1" true true
+}
+
+declare_assertions() {
+    for _id in "$CHURN_FINISHED" "$BUILD_FINISHED" "$VACUUM_FINISHED" \
+        "$AMCHECK_COMPARED" "$AMCHECK_SERVER_DOWN" "$AMCHECK_FAILED"; do
+        antithesis_assert reachability "$_id" false false
+    done
+    antithesis_assert always "$INDEX_COMPLETE" false false
 }
 
 as_postgres() {
@@ -47,8 +76,7 @@ hook_churn() {
     psql_faultlab -c "SET synchronous_commit = off;" \
         -c "CALL churn($rows, $slices, $rounds);" \
         >/dev/null 2>>/run/hook.err || return 1
-    echo "@reachable 20"
-    echo "@sometimes 21"
+    reached "$CHURN_FINISHED"
     return 0
 }
 
@@ -57,8 +85,7 @@ hook_cic() {
         >/dev/null 2>>/run/hook.err || return 1
     psql_faultlab -c "CREATE INDEX CONCURRENTLY cic_k_idx ON cic(k);" \
         >/dev/null 2>>/run/hook.err || return 1
-    echo "@reachable 22"
-    echo "@sometimes 23"
+    reached "$BUILD_FINISHED"
     return 0
 }
 
@@ -71,7 +98,7 @@ hook_cic() {
 hook_amcheck() {
     if ! as_postgres "$PGBIN/pg_isready" -h /tmp -U postgres -d faultlab \
         >/dev/null 2>&1; then
-        echo "@reachable 26"
+        reached "$AMCHECK_SERVER_DOWN"
         return 0
     fi
     # The output file is private to this instance; several instances of the hook
@@ -81,13 +108,13 @@ hook_amcheck() {
         --heapallindexed --index=cic_k_idx >"$out" 2>&1
     status=$?
     if grep -q "lacks matching index tuple" "$out"; then
-        echo "@reachable 24"
-        echo "@always 2 0"
+        reached "$AMCHECK_COMPARED"
+        antithesis_assert always "$INDEX_COMPLETE" true false
     elif [ "$status" -eq 0 ]; then
-        echo "@reachable 24"
-        echo "@always 2 1"
+        reached "$AMCHECK_COMPARED"
+        antithesis_assert always "$INDEX_COMPLETE" true true
     else
-        echo "@reachable 27"
+        reached "$AMCHECK_FAILED"
     fi
     return 0
 }
@@ -96,10 +123,11 @@ hook_amcheck() {
 # state where it has run is a coverage goal in its own right.
 hook_vacuum() {
     psql_faultlab -c "VACUUM cic;" >/dev/null 2>>/run/hook.err || return 1
-    echo "@reachable 25"
-    echo "@sometimes 25"
+    reached "$VACUUM_FINISHED"
     return 0
 }
+
+declare_assertions
 
 case "$1" in
     1) hook_churn ;;

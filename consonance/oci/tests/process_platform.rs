@@ -27,12 +27,12 @@ mod platform {
     const SERVICE_IDENTITY: &[u8] = b"oci-process-platform-v1";
     const SERVICE_CONFIGURATION: &[u8] = b"standing-process-windows-v1";
     const BUNDLE: &str = "node worker /app/runtime-fixture node\nready /app/runtime-fixture ready\nhook 7 /app/runtime-fixture hook\n";
-    const REGISTER_NAMES: [&str; 7] = [
+    const HOOK_ASSERTION: &[u8] = b"\"id\":\"runtime fixture hook ran\"";
+    const REGISTER_NAMES: [&str; 6] = [
         "supervisor.ticks",
         "supervisor.alive",
         "supervisor.hooks_started",
         "supervisor.hooks_finished",
-        "supervisor.sometimes",
         "supervisor.unexpected_deaths",
         "supervisor.restarts",
     ];
@@ -107,7 +107,8 @@ mod platform {
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct Evidence {
         hash: [u8; 32],
-        registers: [u64; 7],
+        registers: [u64; 6],
+        hook_assertion: bool,
         console: Vec<u8>,
     }
 
@@ -131,7 +132,13 @@ mod platform {
         for (_, id, bytes) in &events {
             catalog.observe(*id, bytes)?;
         }
-        let registers: [u64; 7] = REGISTER_NAMES
+        let hook_assertion = events.iter().any(|(_, id, bytes)| {
+            *id == 0
+                && bytes
+                    .windows(HOOK_ASSERTION.len())
+                    .any(|window| window == HOOK_ASSERTION)
+        });
+        let registers: [u64; 6] = REGISTER_NAMES
             .map(|name| catalog.get(name))
             .into_iter()
             .collect::<std::result::Result<Vec<_>, _>>()?
@@ -140,6 +147,7 @@ mod platform {
         Ok(Evidence {
             hash: session.state_hash()?,
             registers,
+            hook_assertion,
             console: session.console_tail()?,
         })
     }
@@ -177,17 +185,15 @@ mod platform {
             alive,
             hooks_started,
             hooks_finished,
-            sometimes,
             unexpected,
             restarts,
         ] = evidence.registers;
         assert_eq!(alive & 1, 1, "the mapped node must be alive after restart");
         assert_eq!(hooks_started, 1, "the declared hook must launch once");
         assert_eq!(hooks_finished, 1, "the quick hook must be reaped once");
-        assert_ne!(
-            sometimes & (1 << 7),
-            0,
-            "the completed hook directive was lost"
+        assert!(
+            evidence.hook_assertion,
+            "the completed hook's assertion was lost"
         );
         assert_eq!(
             unexpected, 0,
