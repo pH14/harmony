@@ -8,8 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  historical-mmio:
-    name: Historical MMIO — Replica ${{ matrix.replica }}
+  paired-mmio:
+    name: Paired Historical and Current MMIO — Replica ${{ matrix.replica }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -20,18 +20,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: 0beac8cdb8ed2834d71ae42e8585822f0eefbd40
-      - name: Record exact source and host
+          path: historical
+      - uses: actions/checkout@v4
+        with:
+          ref: 978120768d52926eaa76b29fcd8e514a8e0407c4
+          path: current
+      - name: Record source, host, and CPU allocation
         run: |
           set -euo pipefail
-          mkdir -p mmio-history-report
-          git rev-parse HEAD > mmio-history-report/source-revision.txt
-          git show -s --format='%H%n%P%n%ci%n%s' HEAD > mmio-history-report/source-commit.txt
-          printf 'replica=%s\n' '${{ matrix.replica }}' > mmio-history-report/replica.txt
-          uname -a > mmio-history-report/host.txt
-          lscpu >> mmio-history-report/host.txt
-          cat /proc/cpuinfo > mmio-history-report/cpuinfo.txt
+          mkdir -p mmio-pair-report
+          git -C historical rev-parse HEAD > mmio-pair-report/historical-source.txt
+          git -C current rev-parse HEAD > mmio-pair-report/current-source.txt
+          printf 'replica=%s\n' '${{ matrix.replica }}' > mmio-pair-report/replica.txt
+          uname -a > mmio-pair-report/host.txt
+          lscpu >> mmio-pair-report/host.txt
+          cat /proc/cpuinfo > mmio-pair-report/cpuinfo.txt
+          python3 -c 'import os; print(min(os.sched_getaffinity(0)))' > mmio-pair-report/fixed-cpu.txt
           if test -r /sys/module/kvm_intel/parameters/ept; then
-            cat /sys/module/kvm_intel/parameters/ept > mmio-history-report/intel-ept.txt
+            cat /sys/module/kvm_intel/parameters/ept > mmio-pair-report/intel-ept.txt
           fi
       - name: Install toolchain
         run: |
@@ -43,29 +49,42 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           test -c /dev/kvm
-      - name: Run 16 instrumented historical MMIO trials
+      - name: Build both revisions
         run: |
           set -euo pipefail
-          cargo test --locked --release -p vmm-core --test x86_cpu_snapshots --no-run > mmio-history-report/build.log 2>&1
+          (cd historical && cargo test --locked --release -p vmm-core --test x86_cpu_snapshots --no-run) > mmio-pair-report/historical-build.log 2>&1
+          (cd current && cargo test --locked --release -p vmm-core --test x86_cpu_snapshots --no-run) > mmio-pair-report/current-build.log 2>&1
+      - name: Compare 16 trials per revision on one fixed CPU
+        run: |
+          set -euo pipefail
+          cpu=$(cat mmio-pair-report/fixed-cpu.txt)
           failed=0
           for trial in $(seq -w 0 15); do
-            directory="$PWD/mmio-history-report/trial-$trial"
-            mkdir -p "$directory"
-            set +e
-            MMIO_CONTINUATION_REPORT_DIR="$directory" timeout -k 10 60 \
-              cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
-              live_kvm::mmio_rmw_finishes_before_full_vmm_snapshot \
-              -- --ignored --exact --test-threads=1 --nocapture \
-              > "$directory/test.log" 2>&1
-            result=$?
-            set -e
-            printf 'exit=%s\n' "$result" > "$directory/status.txt"
-            if [[ "$result" -ne 0 ]]; then failed=1; fi
+            for revision in historical current; do
+              directory="$PWD/mmio-pair-report/$revision/trial-$trial"
+              mkdir -p "$directory"
+              if [[ "$revision" == historical ]]; then
+                variable=MMIO_CONTINUATION_REPORT_DIR
+                test_name=live_kvm::mmio_rmw_finishes_before_full_vmm_snapshot
+              else
+                variable=MMIO_INIT_REPORT_DIR
+                test_name=live_kvm::mmio_init_presence_snapshot_characterization
+              fi
+              set +e
+              (cd "$revision" && env "$variable=$directory" timeout -k 10 60 taskset -c "$cpu" \
+                cargo test --locked --release -p vmm-core --test x86_cpu_snapshots \
+                "$test_name" -- --ignored --exact --test-threads=1 --nocapture) \
+                > "$directory/test.log" 2>&1
+              result=$?
+              set -e
+              printf 'exit=%s\n' "$result" > "$directory/status.txt"
+              if [[ "$result" -ne 0 ]]; then failed=1; fi
+            done
           done
           exit "$failed"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: historical-mmio-${{ github.run_id }}-replica-${{ matrix.replica }}
-          path: mmio-history-report
+          name: paired-mmio-${{ github.run_id }}-replica-${{ matrix.replica }}
+          path: mmio-pair-report
           if-no-files-found: error
