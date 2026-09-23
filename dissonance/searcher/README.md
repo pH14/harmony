@@ -9,8 +9,8 @@ recording, and replay. Workloads supply associated types through `CampaignTypes`
 and implement four contracts. `Workload` composes those contracts for a full campaign.
 
 The archive keeps entries in cells, a cell being one place at one progress
-level, and ranks the cells in progress tiers. A workload provides the key, a
-progress order and an ordered list of same-place state preferences; the generic
+value, and ranks the cells in progress tiers. A workload provides the key, a
+progress order and an ordered list of state preferences; the generic
 archive uses only those and retains bounded representatives. Campaigns reserve jobs
 in a deterministic admission window, allow physical workers to execute them,
 and process results in recorded admission order. The stream records the
@@ -224,8 +224,10 @@ progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
 `tier_rank_shift` is three unless the workload says otherwise, so the leading
 tier takes most of the draws, and no tier holding an entry takes zero. A
-workload whose progress order has many close steps, such as bands of a level,
-supplies a shift of one so each rank takes half of the one ahead. Within the tier each cell
+workload whose progress order has many close steps, such as fine progress
+bands, supplies a shift of one so each rank takes half of the one ahead. The
+largest accepted shift is seven, because a larger one overflows the leading
+tier's 64-bit weight; a draw under a larger shift fails with an error. Within the tier each cell
 weighs `1 / (1 + draws)^2` over the draws it has received since it was last
 reset, so an untried or freshly reset cell takes most of the tier's draws
 until it catches up and every cell keeps a share. Within the cell each holder
@@ -237,7 +239,8 @@ A cell's draw count resets to zero when an arrival from another cell
 displaces a holder it strictly outranks under a preference, so a place
 reached again with more of what the preference counts draws like a place
 reached for the first time; an improvement whose parent sits in the same
-cell, such as a drop farmed in place, leaves the count alone. It
+cell, such as a resource gained by repeating an action in one place, leaves
+the count alone. It
 also resets when a selection from the cell opens a cell that held nothing, so
 the cells at the edge of explored ground keep drawing while they keep opening
 new ground instead of settling to an equal share with every cell behind them.
@@ -254,7 +257,7 @@ route from another holder of the parent's slot to that holder's deepest
 retained descendant, up to 128 actions. The donor shares the parent's slot
 because a route only reproduces its moves from where it was recorded. A draw
 with no such donor runs as an ordinary draw. Each strategy's share halves for every `scale` average jobs'
-worth of emulator work it has spent since its last job that opened a new
+worth of execution work it has spent since its last job that opened a new
 slot, so a strategy is judged on new slots per unit of work and a long
 splice that opens nothing loses its share sooner than a short draw. The live
 progress line counts `splice_jobs`, `splice_actions` and `splice_cost` under
@@ -308,8 +311,11 @@ one nothing is recorded, nothing is charged, and the stream is unchanged.
 Edges and pending entries are charged as they are held rather than reserved up
 front, and compaction drops the edges of positions the archive no longer
 holds. Dispatch records the complete action tail, so later donor
-reclamation cannot change serial replay. Only same-place `preference_cmp` is
-consulted; preferences are never compared between unrelated places.
+reclamation cannot change serial replay. The check before dispatch compares
+the parent's key at the source position with the holders of the destination
+slot under `preference_cmp`, and for an edge into another place those keys sit
+in different places. This assumes a workload's preferences compare the same way
+in every place.
 
 `ContinuationAccounting` rides every live progress line under `continuations`:
 `edges` and `pending` for the bank's size, `jobs`, `execution_work`, `landed`,

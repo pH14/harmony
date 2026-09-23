@@ -138,6 +138,8 @@ const TIER_RANK_CAP: u8 = 8;
 
 const TIER_RANK_SHIFT: u32 = 3;
 
+const MAX_TIER_RANK_SHIFT: u32 = (u64::BITS - 1) / TIER_RANK_CAP as u32;
+
 const COUNT_DECAY_EXPONENT: u32 = 2;
 
 const COUNT_DECAY_SCALE: u64 = 1 << 32;
@@ -149,6 +151,16 @@ fn count_decay(draws: u64) -> u64 {
         .saturating_pow(COUNT_DECAY_EXPONENT)
         .max(1);
     (COUNT_DECAY_SCALE / divisor).max(1)
+}
+
+fn checked_tier_rank_shift(shift: u32) -> Result<u32, Box<dyn Error>> {
+    if shift > MAX_TIER_RANK_SHIFT {
+        return Err(format!(
+            "tier rank shift {shift} exceeds the largest supported shift {MAX_TIER_RANK_SHIFT}"
+        )
+        .into());
+    }
+    Ok(shift)
 }
 
 #[must_use]
@@ -2103,9 +2115,10 @@ where
     }
 
     fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
+        let shift = checked_tier_rank_shift(K::tier_rank_shift())?;
         let tiers = self.tiers.keys().rev().copied().collect::<Vec<_>>();
         let weights = (0..tiers.len())
-            .map(|rank| tier_weight(u8::try_from(rank).unwrap_or(u8::MAX), K::tier_rank_shift()))
+            .map(|rank| tier_weight(u8::try_from(rank).unwrap_or(u8::MAX), shift))
             .collect::<Vec<_>>();
         let index = draw_weighted(rand, &weights)?;
         Ok((tiers[index], u8::try_from(index).unwrap_or(u8::MAX)))
@@ -2610,8 +2623,8 @@ mod tests {
 
     use super::{
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, DonorRank, HISTORY_COMPACTION_MIN_DROPS,
-        Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting,
-        SelectorDraw, SelectorPath,
+        Input, InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, MAX_TIER_RANK_SHIFT,
+        SelectorAccounting, SelectorDraw, SelectorPath, checked_tier_rank_shift, tier_weight,
     };
     use crate::search::rand::RomuDuoJrRand;
     use serde::{Deserialize, Serialize};
@@ -2619,20 +2632,20 @@ mod tests {
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
     struct TestAction {
-        buttons: u8,
-        hold_frames: u8,
+        code: u8,
+        length: u8,
     }
 
     impl TestAction {
-        fn new(buttons: u8, hold_frames: u8) -> Self {
+        fn new(code: u8, length: u8) -> Self {
             Self {
-                buttons,
-                hold_frames: hold_frames.max(1),
+                code,
+                length: length.max(1),
             }
         }
 
         fn duration(action: &Self) -> u64 {
-            u64::from(action.hold_frames)
+            u64::from(action.length)
         }
     }
 
@@ -2640,14 +2653,14 @@ mod tests {
         Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize,
     )]
     struct TestKey {
-        world: u8,
-        level: u8,
+        major: u8,
+        minor: u8,
         progress: u16,
-        player_y_bucket: u8,
+        y_bucket: u8,
         state_fingerprint: u8,
-        room_x_bucket: u8,
+        x_bucket: u8,
         time_bucket: u8,
-        room: [u8; 3],
+        region: [u8; 3],
     }
 
     impl ArchiveKey for TestKey {
@@ -2657,16 +2670,16 @@ mod tests {
 
         fn place(self) -> Self::Place {
             (
-                self.room,
+                self.region,
                 self.progress,
-                self.room_x_bucket,
-                self.player_y_bucket,
+                self.x_bucket,
+                self.y_bucket,
                 self.time_bucket,
             )
         }
 
         fn progress(self) -> Self::Progress {
-            (self.world, self.level)
+            (self.major, self.minor)
         }
 
         fn identity(self) -> Self::Identity {
@@ -2686,7 +2699,7 @@ mod tests {
 
     type TestArchive = Archive<u8, TestKey, (), ()>;
 
-    type ChordArchive = Archive<TestAction, TestKey, (), ()>;
+    type TimedArchive = Archive<TestAction, TestKey, (), ()>;
 
     #[test]
     fn input_index_walk_owner_and_pruning_are_exact() {
@@ -2924,6 +2937,78 @@ mod tests {
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct WideShiftKey(u8);
+
+    impl ArchiveKey for WideShiftKey {
+        type Place = u8;
+        type Progress = u8;
+        type Identity = ();
+
+        fn place(self) -> Self::Place {
+            self.0
+        }
+
+        fn progress(self) -> Self::Progress {
+            self.0
+        }
+
+        fn identity(self) -> Self::Identity {}
+
+        fn tier_rank_shift() -> u32 {
+            MAX_TIER_RANK_SHIFT + 1
+        }
+
+        type Lineage = ();
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn tier_weights_keep_their_values_and_an_overflowing_shift_is_rejected() {
+        assert_eq!(MAX_TIER_RANK_SHIFT, 7);
+        assert_eq!(
+            (0..=9).map(|rank| tier_weight(rank, 1)).collect::<Vec<_>>(),
+            vec![256, 128, 64, 32, 16, 8, 4, 2, 1, 1]
+        );
+        assert_eq!(
+            (0..=9).map(|rank| tier_weight(rank, 3)).collect::<Vec<_>>(),
+            [24, 21, 18, 15, 12, 9, 6, 3, 0, 0].map(|exponent| 1_u64 << exponent)
+        );
+        assert_eq!(tier_weight(0, MAX_TIER_RANK_SHIFT), 1 << 56);
+        assert_eq!(checked_tier_rank_shift(MAX_TIER_RANK_SHIFT).ok(), Some(7));
+
+        let mut archive = Archive::<u8, WideShiftKey, (), ()>::new(|_| 1);
+        for place in [1, 2] {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![place],
+                        key: WideShiftKey(place),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert a wide-shift entry")
+                .expect("retain a wide-shift entry");
+        }
+        let mut rand = RomuDuoJrRand::with_seed(0x5417_0008);
+        let error = archive
+            .select_parent(&mut rand, 64)
+            .expect_err("a shift above the largest supported one is rejected")
+            .to_string();
+        assert_eq!(
+            error,
+            "tier rank shift 8 exceeds the largest supported shift 7"
+        );
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
     struct PreferredKey {
         slot: u8,
         quality: u8,
@@ -2987,8 +3072,8 @@ mod tests {
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
     struct PortfolioKey {
         slot: u8,
-        missiles: u8,
-        health: u8,
+        first: u8,
+        second: u8,
     }
 
     impl ArchiveKey for PortfolioKey {
@@ -3014,8 +3099,8 @@ mod tests {
 
         fn preference_cmp(self, preference: usize, other: Self) -> Ordering {
             match preference {
-                0 => (self.missiles, self.health).cmp(&(other.missiles, other.health)),
-                _ => (self.health, self.missiles).cmp(&(other.health, other.missiles)),
+                0 => (self.first, self.second).cmp(&(other.first, other.second)),
+                _ => (self.second, self.first).cmp(&(other.second, other.first)),
             }
         }
 
@@ -3029,19 +3114,19 @@ mod tests {
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-    struct ScreenKey {
-        screen: u8,
+    struct RegionKey {
+        region: u8,
         spot: u8,
-        missiles: u8,
+        first: u8,
     }
 
-    impl ArchiveKey for ScreenKey {
+    impl ArchiveKey for RegionKey {
         type Place = u8;
         type Progress = ();
         type Identity = u8;
 
         fn place(self) -> Self::Place {
-            self.screen
+            self.region
         }
 
         fn progress(self) -> Self::Progress {}
@@ -3059,7 +3144,7 @@ mod tests {
         }
 
         fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
-            self.missiles.cmp(&other.missiles)
+            self.first.cmp(&other.first)
         }
 
         type Lineage = ();
@@ -3071,11 +3156,11 @@ mod tests {
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
     }
 
-    fn insert_screen_at(
-        archive: &mut Archive<u8, ScreenKey, (), ()>,
+    fn insert_region_at(
+        archive: &mut Archive<u8, RegionKey, (), ()>,
         parent: Option<usize>,
         input: u8,
-        (screen, spot, missiles): (u8, u8, u8),
+        (region, spot, first): (u8, u8, u8),
     ) -> usize {
         archive
             .insert(
@@ -3083,27 +3168,27 @@ mod tests {
                 0,
                 ArchiveCandidate {
                     suffix: vec![input],
-                    key: ScreenKey {
-                        screen,
+                    key: RegionKey {
+                        region,
                         spot,
-                        missiles,
+                        first,
                     },
                     milestones: (),
                 },
                 (),
             )
-            .expect("insert screen entry")
-            .expect("the screen entry is kept")
+            .expect("insert region entry")
+            .expect("the region entry is kept")
     }
 
     #[test]
-    fn a_move_inside_one_screen_records_an_edge_and_an_improvement_there_queues_it() {
-        let mut archive = Archive::<u8, ScreenKey, (), ()>::new(|_| 1);
+    fn a_move_inside_one_region_records_an_edge_and_an_improvement_there_queues_it() {
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
         archive.enable_continuations(4);
-        let left = insert_screen_at(&mut archive, None, 1, (1, 0, 5));
-        insert_screen_at(&mut archive, Some(left), 2, (1, 3, 5));
+        let left = insert_region_at(&mut archive, None, 1, (1, 0, 5));
+        insert_region_at(&mut archive, Some(left), 2, (1, 3, 5));
         assert_eq!(archive.continuation_pending(), 0);
-        let richer = insert_screen_at(&mut archive, None, 3, (1, 0, 9));
+        let richer = insert_region_at(&mut archive, None, 3, (1, 0, 9));
         let taken = archive
             .pop_continuation(false)
             .expect("the improved position is queued");
@@ -3114,22 +3199,22 @@ mod tests {
 
     #[test]
     fn a_new_position_inside_an_open_cell_opens_a_slot_and_no_cell() {
-        let mut archive = Archive::<u8, ScreenKey, (), ()>::new(|_| 1);
-        let origin = insert_screen_at(&mut archive, None, 1, (1, 0, 5));
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        let origin = insert_region_at(&mut archive, None, 1, (1, 0, 5));
         assert!(archive.opened_new_slot(origin) && archive.opened_new_cell(origin));
-        let beside = insert_screen_at(&mut archive, Some(origin), 2, (1, 4, 5));
+        let beside = insert_region_at(&mut archive, Some(origin), 2, (1, 4, 5));
         assert!(archive.opened_new_slot(beside));
         assert!(!archive.opened_new_cell(beside));
-        let richer = insert_screen_at(&mut archive, Some(origin), 3, (1, 4, 9));
+        let richer = insert_region_at(&mut archive, Some(origin), 3, (1, 4, 9));
         assert!(!archive.opened_new_slot(richer));
     }
 
     #[test]
-    fn an_edge_inside_a_screen_lands_on_its_position_and_one_across_lands_anywhere_there() {
-        let mut archive = Archive::<u8, ScreenKey, (), ()>::new(|_| 1);
-        let origin = insert_screen_at(&mut archive, None, 1, (1, 0, 5));
-        let beside = insert_screen_at(&mut archive, Some(origin), 2, (1, 4, 5));
-        let across = insert_screen_at(&mut archive, Some(origin), 3, (2, 6, 5));
+    fn an_edge_inside_a_region_lands_on_its_position_and_one_across_lands_anywhere_there() {
+        let mut archive = Archive::<u8, RegionKey, (), ()>::new(|_| 1);
+        let origin = insert_region_at(&mut archive, None, 1, (1, 0, 5));
+        let beside = insert_region_at(&mut archive, Some(origin), 2, (1, 4, 5));
+        let across = insert_region_at(&mut archive, Some(origin), 3, (2, 6, 5));
         assert!(archive.lands_on_edge(beside, (1, 0), (1, 4)));
         assert!(!archive.lands_on_edge(beside, (1, 0), (1, 3)));
         assert!(archive.lands_on_edge(across, (1, 0), (2, 1)));
@@ -3139,8 +3224,8 @@ mod tests {
     fn insert_portfolio(
         archive: &mut Archive<u8, PortfolioKey, (), ()>,
         input: u8,
-        missiles: u8,
-        health: u8,
+        first: u8,
+        second: u8,
     ) -> Option<usize> {
         archive
             .insert(
@@ -3150,8 +3235,8 @@ mod tests {
                     suffix: vec![input],
                     key: PortfolioKey {
                         slot: 7,
-                        missiles,
-                        health,
+                        first,
+                        second,
                     },
                     milestones: (),
                 },
@@ -3165,8 +3250,8 @@ mod tests {
         parent: Option<usize>,
         suffix: Vec<u8>,
         slot: u8,
-        missiles: u8,
-        health: u8,
+        first: u8,
+        second: u8,
     ) -> Option<usize> {
         archive
             .insert(
@@ -3176,8 +3261,8 @@ mod tests {
                     suffix,
                     key: PortfolioKey {
                         slot,
-                        missiles,
-                        health,
+                        first,
+                        second,
                     },
                     milestones: (),
                 },
@@ -3214,12 +3299,12 @@ mod tests {
     }
 
     #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-    struct StockedKey {
+    struct ResourceKey {
         place: [u16; 3],
-        stock: u8,
+        amount: u8,
     }
 
-    impl ArchiveKey for StockedKey {
+    impl ArchiveKey for ResourceKey {
         type Place = [u16; 3];
         type Progress = ();
         type Identity = ();
@@ -3241,7 +3326,7 @@ mod tests {
         }
 
         fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
-            self.stock.cmp(&other.stock)
+            self.amount.cmp(&other.amount)
         }
 
         type Lineage = ();
@@ -3253,12 +3338,12 @@ mod tests {
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
     }
 
-    fn insert_stocked(
-        archive: &mut Archive<u8, StockedKey, (), ()>,
+    fn insert_resource(
+        archive: &mut Archive<u8, ResourceKey, (), ()>,
         parent: Option<usize>,
         input: u8,
         place: [u16; 3],
-        stock: u8,
+        amount: u8,
     ) -> Option<usize> {
         archive
             .insert(
@@ -3266,20 +3351,20 @@ mod tests {
                 0,
                 ArchiveCandidate {
                     suffix: vec![input],
-                    key: StockedKey { place, stock },
+                    key: ResourceKey { place, amount },
                     milestones: (),
                 },
                 (),
             )
-            .expect("insert stocked entry")
+            .expect("insert resource entry")
     }
     #[test]
-    fn a_better_stocked_arrival_from_another_cell_resets_its_cells_draw_count() {
-        let mut archive = Archive::<u8, StockedKey, (), ()>::new(|_| 1);
+    fn a_richer_arrival_from_another_cell_resets_its_cells_draw_count() {
+        let mut archive = Archive::<u8, ResourceKey, (), ()>::new(|_| 1);
         archive.rebuild_selector_index(64);
-        let first = insert_stocked(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
+        let first = insert_resource(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
         assert!(archive.opened_new_cell(first));
-        let beside = insert_stocked(&mut archive, Some(first), 2, [2, 1, 1], 5).expect("beside");
+        let beside = insert_resource(&mut archive, Some(first), 2, [2, 1, 1], 5).expect("beside");
         assert!(archive.opened_new_cell(beside));
         let draw = SelectorDraw {
             path: SelectorPath::Tiers,
@@ -3289,13 +3374,14 @@ mod tests {
             archive.record_selection(first, &draw);
         }
         assert_eq!(archive.cell_draws(archive.entries[first].key), 5);
-        assert!(insert_stocked(&mut archive, Some(first), 3, [1, 1, 1], 5).is_none());
+        assert!(insert_resource(&mut archive, Some(first), 3, [1, 1, 1], 5).is_none());
         assert_eq!(archive.cell_draws(archive.entries[first].key), 5);
-        let farmed = insert_stocked(&mut archive, Some(first), 4, [1, 1, 1], 6).expect("farmed");
-        assert!(!archive.opened_new_cell(farmed));
-        assert_eq!(archive.cell_draws(archive.entries[farmed].key), 5);
+        let repeated =
+            insert_resource(&mut archive, Some(first), 4, [1, 1, 1], 6).expect("repeated");
+        assert!(!archive.opened_new_cell(repeated));
+        assert_eq!(archive.cell_draws(archive.entries[repeated].key), 5);
         assert_eq!(archive.selector_report().cell_resets, 0);
-        let better = insert_stocked(&mut archive, Some(beside), 5, [1, 1, 1], 7).expect("better");
+        let better = insert_resource(&mut archive, Some(beside), 5, [1, 1, 1], 7).expect("better");
         assert!(!archive.opened_new_cell(better));
         assert_eq!(archive.cell_draws(archive.entries[better].key), 0);
         assert_eq!(archive.selector_report().cell_resets, 1);
@@ -3303,9 +3389,9 @@ mod tests {
     }
     #[test]
     fn opening_a_new_cell_resets_the_parents_cell_draw_count() {
-        let mut archive = Archive::<u8, StockedKey, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, ResourceKey, (), ()>::new(|_| 1);
         archive.rebuild_selector_index(64);
-        let first = insert_stocked(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
+        let first = insert_resource(&mut archive, None, 1, [1, 1, 1], 5).expect("first");
         let draw = SelectorDraw {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
@@ -3314,10 +3400,11 @@ mod tests {
             archive.record_selection(first, &draw);
         }
         assert_eq!(archive.cell_draws(archive.entries[first].key), 7);
-        let same_cell = insert_stocked(&mut archive, Some(first), 2, [1, 1, 1], 6).expect("better");
+        let same_cell =
+            insert_resource(&mut archive, Some(first), 2, [1, 1, 1], 6).expect("better");
         assert!(!archive.opened_new_cell(same_cell));
         assert_eq!(archive.cell_draws(archive.entries[first].key), 7);
-        let opened = insert_stocked(&mut archive, Some(first), 3, [2, 1, 1], 5).expect("opened");
+        let opened = insert_resource(&mut archive, Some(first), 3, [2, 1, 1], 5).expect("opened");
         assert!(archive.opened_new_cell(opened));
         assert_eq!(archive.cell_draws(archive.entries[first].key), 0);
         assert_eq!(archive.cell_draws(archive.entries[opened].key), 0);
@@ -3392,8 +3479,8 @@ mod tests {
                 .expect("draw a portfolio parent");
             drawn[id] += 1;
         }
-        assert!(drawn[0] > 0, "missile champion was never drawn");
-        assert!(drawn[1] > 0, "health champion was never drawn");
+        assert!(drawn[0] > 0, "the first-resource champion was never drawn");
+        assert!(drawn[1] > 0, "the second-resource champion was never drawn");
     }
 
     #[test]
@@ -3446,7 +3533,7 @@ mod tests {
             "recording an exit queues nothing on its own"
         );
         insert_portfolio_at(&mut archive, None, vec![3], 7, 5, 200)
-            .expect("the health candidate is admitted beside the missile holder");
+            .expect("the second-resource candidate is admitted beside the first-resource holder");
         assert_eq!(archive.slots.get(&(((), 7), ())).map(Vec::len), Some(2));
         assert!(
             archive.pop_continuation(false).is_some(),
@@ -3459,7 +3546,7 @@ mod tests {
         let mut archive = portfolio_bank();
         let origin = insert_portfolio_at(&mut archive, None, vec![1], 1, 10, 20).expect("origin");
         insert_portfolio_at(&mut archive, Some(origin), vec![2], 2, 20, 20)
-            .expect("the neighbour slot holds a stocked state");
+            .expect("the neighbour slot holds a state with more of the resource");
         let weaker = insert_portfolio_at(&mut archive, None, vec![3], 1, 12, 30)
             .expect("a candidate that takes a preference in its own slot");
         assert_eq!(archive.continuation_pending(), 1);
@@ -3509,7 +3596,7 @@ mod tests {
         let surviving = archive
             .entries
             .iter()
-            .position(|entry| entry.key.missiles == 9)
+            .position(|entry| entry.key.first == 9)
             .expect("the replacement survives compaction");
         assert_eq!(archive.replacement_preferences(surviving), marked);
         assert_eq!(archive.replacement_preferences.len(), archive.entries.len());
@@ -3543,8 +3630,9 @@ mod tests {
         insert_portfolio(&mut archive, 2, 5, 200);
         assert_eq!(archive.replacement_preferences(0), 0);
         assert_eq!(archive.replacement_preferences(1), 0);
-        let took_missiles = insert_portfolio(&mut archive, 3, 11, 21).expect("missile champion");
-        assert_eq!(archive.replacement_preferences(took_missiles), 0b01);
+        let took_first =
+            insert_portfolio(&mut archive, 3, 11, 21).expect("first-resource champion");
+        assert_eq!(archive.replacement_preferences(took_first), 0b01);
         let took_both = insert_portfolio(&mut archive, 4, 60, 240).expect("both champions");
         assert_eq!(archive.replacement_preferences(took_both), 0b11);
     }
@@ -4735,35 +4823,35 @@ mod tests {
         assert_eq!(report.draws_by_cell.values().sum::<u64>(), 128);
     }
 
-    fn probe_key(world: u8, level: u8, progress: u16, vertical: u8) -> TestKey {
+    fn probe_key(major: u8, minor: u8, progress: u16, vertical: u8) -> TestKey {
         TestKey {
-            world,
-            level,
+            major,
+            minor,
             progress,
-            player_y_bucket: vertical,
+            y_bucket: vertical,
             state_fingerprint: 0,
-            room_x_bucket: 0,
+            x_bucket: 0,
             time_bucket: 0,
-            room: [0; 3],
+            region: [0; 3],
         }
     }
 
     fn chain_insert(
-        archive: &mut ChordArchive,
+        archive: &mut TimedArchive,
         parent: Option<usize>,
         prefix: &Input<TestAction>,
-        buttons: u8,
+        code: u8,
         hold: u8,
         key: TestKey,
     ) -> (Option<usize>, Input<TestAction>) {
         let mut input = prefix.clone();
-        input.actions.push(TestAction::new(buttons, hold));
+        input.actions.push(TestAction::new(code, hold));
         let id = archive
             .insert(
                 parent,
                 0,
                 ArchiveCandidate {
-                    suffix: vec![TestAction::new(buttons, hold)],
+                    suffix: vec![TestAction::new(code, hold)],
                     key,
                     milestones: (),
                 },
@@ -4775,7 +4863,7 @@ mod tests {
 
     #[test]
     fn cost_in_group_counts_from_the_recorded_coarse_transition() {
-        let mut archive = ChordArchive::new(TestAction::duration);
+        let mut archive = TimedArchive::new(TestAction::duration);
         let genesis = archive
             .insert(
                 None,
@@ -4834,7 +4922,7 @@ mod tests {
     #[test]
     fn the_time_rule_displaces_a_slower_route_into_a_full_slot() {
         let slot = probe_key(0, 0, 16, 0);
-        let mut archive = ChordArchive::new(TestAction::duration);
+        let mut archive = TimedArchive::new(TestAction::duration);
         let genesis = archive
             .insert(
                 None,
@@ -4848,12 +4936,12 @@ mod tests {
             )
             .expect("genesis insert")
             .expect("genesis retained");
-        for buttons in [0x01_u8, 0x02] {
+        for code in [0x01_u8, 0x02] {
             chain_insert(
                 &mut archive,
                 Some(genesis),
                 &Input::default(),
-                buttons,
+                code,
                 120,
                 slot,
             );
@@ -4869,7 +4957,7 @@ mod tests {
         );
         let admitted = chain_insert(&mut archive, fast, &input, 0x04, 6, slot)
             .0
-            .expect("the eleven-frame route displaces a slower one");
+            .expect("the route of cost eleven displaces a slower one");
         assert_eq!(archive.entry_cost_in_group(admitted), 11);
         assert_eq!(archive.replacement_cost_displaced(), 1);
         assert_eq!(archive.active_count(), 4);
@@ -4984,8 +5072,8 @@ mod tests {
 
     fn tier_archive(keys: &[(u8, u8, u16)]) -> TestArchive {
         let mut archive = TestArchive::new(|_| 1);
-        for (index, (world, level, progress)) in keys.iter().enumerate() {
-            let mut key = probe_key(*world, *level, *progress, 0);
+        for (index, (major, minor, progress)) in keys.iter().enumerate() {
+            let mut key = probe_key(*major, *minor, *progress, 0);
             key.state_fingerprint = u8::try_from(index).expect("fingerprint byte");
             archive
                 .insert(
@@ -5036,7 +5124,7 @@ mod tests {
     #[test]
     fn cells_in_one_tier_share_draws_by_their_own_count() {
         let mut archive = tier_archive(&[(1, 1, 0), (1, 1, 0)]);
-        archive.entries[1].key.room = [1, 0, 0];
+        archive.entries[1].key.region = [1, 0, 0];
         let key = archive.entries[1].key;
         archive.deactivate(1);
         archive

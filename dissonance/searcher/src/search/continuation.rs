@@ -367,8 +367,14 @@ mod tests {
         record(&mut bank, 4, 5, 14, 15, &[9], 1);
         bank.improved(4, 200, 0, 1);
         bank.improved(1, 100, 0, 0);
-        assert_eq!(bank.pop(false).expect("lowest preference first").parent, 100);
-        assert_eq!(bank.pop(false).expect("then the higher preference").parent, 200);
+        assert_eq!(
+            bank.pop(false).expect("lowest preference first").parent,
+            100
+        );
+        assert_eq!(
+            bank.pop(false).expect("then the higher preference").parent,
+            200
+        );
     }
 
     #[test]

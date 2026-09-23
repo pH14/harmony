@@ -281,7 +281,7 @@ mod tests {
             "retained_suffix_table_v1:0,128,3,1,64",
             "retained_suffix_table_v1:0,128,3,1,64,1024,7",
             "retained_suffix_table_v1:0,0,3,1,64,1024",
-            "chord_draw_recorded_53:all,0,128,3,1,64,1024",
+            "unknown_table_v1:0,128,3,1,64,1024",
         ] {
             assert!(
                 draw_table_from_identifier(bad).is_err(),
@@ -314,10 +314,25 @@ mod tests {
                 .expect("fold a record");
         }
         let checkpoint = checkpoints.first().expect("one checkpoint").clone();
+        assert_eq!(checkpoint.records, 1);
+        let sequence = |view: EmpiricalStepTableRef<'_, u8>| -> Result<Vec<u8>, Box<dyn Error>> {
+            Ok((0..view.mixed_len()?)
+                .map(|index| *view.mixed_step(index).expect("a step inside the table"))
+                .collect())
+        };
+        let mut named = tables();
+        named
+            .finish_record(&[(0, [0_u8].as_slice())])
+            .expect("fold a record");
+        let expected = named.draw(None, false, sequence).expect("read one record");
+        let latest = replay
+            .draw(None, false, sequence)
+            .expect("read four records");
+        assert_ne!(expected, latest);
         let drawn = replay
-            .draw(Some(&checkpoint), true, |view| Ok(view.mixed_len()?))
+            .draw(Some(&checkpoint), true, sequence)
             .expect("read the named version");
-        assert!(drawn > 0);
+        assert_eq!(drawn, expected);
         let tampered = EmpiricalStepCheckpoint {
             table_sha256: "0".repeat(64),
             ..checkpoint.clone()

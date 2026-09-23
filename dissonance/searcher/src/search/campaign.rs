@@ -545,11 +545,11 @@ impl<S: Serialize + DeserializeOwned> SnapshotCheckpoint<S> {
     }
 
     pub fn from_bytes(bytes: &[u8], expected_format: &str) -> Result<Self, Box<dyn Error>> {
-        let checkpoint: Self = postcard::from_bytes(bytes)?;
-        if checkpoint.format != expected_format {
+        let (format, _) = postcard::take_from_bytes::<&str>(bytes)?;
+        if format != expected_format {
             return Err("snapshot checkpoint format is not recognized".into());
         }
-        Ok(checkpoint)
+        Ok(postcard::from_bytes(bytes)?)
     }
 }
 
@@ -4295,12 +4295,12 @@ mod tests {
         CampaignTypes, ContinuationAccounting, CoordinatorCore,
         DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, DrawTables, DurationAdmission,
         EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LiveCoordinatorProfile,
-        MAX_PROGRESS_CURVE_POINTS, Reporting, RomuDuoJrRand, SPLICE_ACTION_CAP, TargetExecution,
-        WorkloadPolicies, admission_window_depth, archive_entry_limit_is_valid,
-        compact_progress_curve, completed_results_within_bound, draws_continuation,
-        draws_highest_preference, execution_work_delta, finish_record, is_zero_usize,
-        live_coordinator_profile, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
-        profile_now, progress_checkpoint_due, progress_policy_is_supported,
+        MAX_PROGRESS_CURVE_POINTS, Reporting, RomuDuoJrRand, SPLICE_ACTION_CAP, SnapshotCheckpoint,
+        SnapshotCheckpointEntry, TargetExecution, WorkloadPolicies, admission_window_depth,
+        archive_entry_limit_is_valid, compact_progress_curve, completed_results_within_bound,
+        draws_continuation, draws_highest_preference, execution_work_delta, finish_record,
+        is_zero_usize, live_coordinator_profile, memory_is_within_reserve, postcard_value_sha256,
+        profile_elapsed, profile_now, progress_checkpoint_due, progress_policy_is_supported,
         record_compaction_elapsed, record_mixture_outcome, replay_campaign_checkpointed,
         replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
         run_campaign_checkpointed, schedule_policy_identifier, schedule_policy_is_supported,
@@ -4315,6 +4315,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
     use std::{
+        collections::BTreeSet,
         error::Error,
         time::{Duration, Instant},
     };
@@ -5104,9 +5105,9 @@ mod tests {
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
-"action_limit":64,"archive_entry_limit":128,"controller_vocabulary":"test_inputs",
+"action_limit":64,"archive_entry_limit":128,"action_vocabulary":"test_inputs",
 "key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
-"chord_policy":"chord_uniform","replacement_policy":"least_cost_per_group",
+"step_policy":"step_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
 "parent_scheduler":"tier_cell_count_decay_v3","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
 "worker_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
@@ -5759,10 +5760,10 @@ mod tests {
         assert_eq!(header.schema_version, super::CAMPAIGN_SCHEMA_VERSION);
         assert_eq!(header.draw_header, None);
         let expected: WorkloadPolicies = [
-            ("controller_vocabulary", "test_inputs"),
+            ("action_vocabulary", "test_inputs"),
             ("key_policy", "test_key"),
             ("duration_policy", "stratified"),
-            ("chord_policy", "chord_uniform"),
+            ("step_policy", "step_uniform"),
             ("replacement_policy", "least_cost_per_group"),
         ]
         .into_iter()
@@ -5778,7 +5779,14 @@ mod tests {
                 Some(expected[field].as_str())
             );
         }
-        assert!(!object.contains_key("chord_table"));
+        let recorded: serde_json::Value =
+            serde_json::from_str(&compact).expect("recorded header parses");
+        let recorded_fields: BTreeSet<&String> = recorded
+            .as_object()
+            .expect("recorded header is an object")
+            .keys()
+            .collect();
+        assert_eq!(object.keys().collect::<BTreeSet<_>>(), recorded_fields);
     }
 
     #[test]
@@ -5823,6 +5831,45 @@ mod tests {
     }
 
     #[test]
+    fn a_checkpoint_in_an_older_layout_fails_on_its_format() {
+        #[derive(Serialize)]
+        struct OlderLayout {
+            format: &'static str,
+            ids: Vec<u64>,
+        }
+        let older = postcard::to_allocvec(&OlderLayout {
+            format: "test-checkpoint-v0",
+            ids: vec![7],
+        })
+        .expect("older layout encodes");
+        assert!(postcard::from_bytes::<SnapshotCheckpoint<u8>>(&older).is_err());
+        let error = SnapshotCheckpoint::<u8>::from_bytes(&older, "test-checkpoint-v1")
+            .expect_err("an older checkpoint is rejected")
+            .to_string();
+        assert_eq!(error, "snapshot checkpoint format is not recognized");
+
+        let current = SnapshotCheckpoint {
+            format: "test-checkpoint-v1".to_owned(),
+            entries: vec![SnapshotCheckpointEntry {
+                id: 7,
+                snapshot: 9_u8,
+            }],
+        };
+        let bytes = current.to_bytes().expect("checkpoint encodes");
+        assert_eq!(
+            SnapshotCheckpoint::<u8>::from_bytes(&bytes, "test-checkpoint-v1")
+                .expect("current checkpoint decodes"),
+            current
+        );
+        assert_eq!(
+            SnapshotCheckpoint::<u8>::from_bytes(&bytes, "test-checkpoint-v2")
+                .expect_err("a different format is rejected")
+                .to_string(),
+            "snapshot checkpoint format is not recognized"
+        );
+    }
+
+    #[test]
     fn a_recorded_job_keeps_its_draw_checkpoint_field_names() {
         let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":0,"mutation_seed":9,
 "execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":128,"splice_weight":128,
@@ -5850,9 +5897,14 @@ mod tests {
         );
         let written = serde_json::to_value(&job).expect("job serializes");
         let object = written.as_object().expect("job is an object");
-        assert!(object.contains_key("draw_checkpoint_before"));
-        assert!(object.contains_key("draw_checkpoint_after"));
-        assert!(!object.contains_key("chord_table_before"));
+        let recorded: serde_json::Value = serde_json::from_str(&line).expect("record parses");
+        let recorded_fields: BTreeSet<&String> = recorded
+            .as_object()
+            .expect("recorded job is an object")
+            .keys()
+            .filter(|field| field.as_str() != "event")
+            .collect();
+        assert_eq!(object.keys().collect::<BTreeSet<_>>(), recorded_fields);
         let round_trip: CampaignJobRecord<EmpiricalStepCheckpoint> =
             serde_json::from_value(written).expect("job round-trips");
         assert_eq!(round_trip, job);

@@ -161,21 +161,6 @@ impl InputPolicy for TestWorkload {
     fn max_action_cost(&self) -> u64 {
         2
     }
-
-    fn remember_draw_version(
-        &self,
-        state: &mut DrawTables<Self::Action>,
-        schedule: &DrawVersionSchedule,
-    ) -> Result<(), Box<dyn Error>> {
-        state.remember_version(schedule)?;
-        REPLAY_DRAW_VERSIONS.with_borrow_mut(|counts| counts.push(state.version_count()));
-        Ok(())
-    }
-}
-
-thread_local! {
-    static REPLAY_DRAW_VERSIONS: std::cell::RefCell<Vec<usize>> =
-        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 impl TargetExecution for TestWorkload {
@@ -370,19 +355,28 @@ fn a_tampered_continuation_record_fails_its_replay() {
     )
     .unwrap();
     let text = std::str::from_utf8(&bytes).unwrap().to_owned();
-    for (label, tamper) in [
+    for (label, expected, tamper) in [
         (
             "tail",
+            "disagrees with the replayed queue entry",
             (|value: &mut serde_json::Value| {
                 value["splice"]["tail_postcard"] = serde_json::json!([1, 255, 120]);
             }) as fn(&mut serde_json::Value),
         ),
-        ("path", |value: &mut serde_json::Value| {
-            value["selector"]["path"] = serde_json::json!("hierarchy_walk");
-        }),
-        ("share", |value: &mut serde_json::Value| {
-            value["continuation_energy"] = serde_json::json!(3);
-        }),
+        (
+            "path",
+            "which is an ordinary job",
+            |value: &mut serde_json::Value| {
+                value["selector"]["path"] = serde_json::json!("tiers");
+            },
+        ),
+        (
+            "share",
+            "disagrees with the rebuilt continuation share",
+            |value: &mut serde_json::Value| {
+                value["continuation_energy"] = serde_json::json!(3);
+            },
+        ),
     ] {
         let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
         let line = lines
@@ -396,12 +390,10 @@ fn a_tampered_continuation_record_fails_its_replay() {
             replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
                 .expect_err(&format!("replay accepted a tampered {label}"))
                 .to_string();
-        if label == "share" {
-            assert!(
-                error.contains("rebuilt continuation share"),
-                "a tampered share failed for another reason: {error}"
-            );
-        }
+        assert!(
+            error.contains(expected),
+            "a tampered {label} failed for another reason: {error}"
+        );
     }
 }
 
@@ -431,4 +423,113 @@ fn a_progress_line_reports_the_continuation_accounting() {
     assert!(accounting.replaced <= accounting.landed);
     assert!(accounting.opened_new_cell <= accounting.jobs);
     assert!(accounting.energy <= 256);
+}
+
+fn replay_error(lines: &[String]) -> String {
+    replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
+        .expect_err("replay accepted a tampered stream")
+        .to_string()
+}
+
+fn with_header_field(lines: &[String], field: &str, value: &str) -> Vec<String> {
+    let mut changed = lines.to_vec();
+    let mut header: serde_json::Value = serde_json::from_str(&changed[0]).unwrap();
+    header[field] = serde_json::json!(value);
+    changed[0] = serde_json::to_string(&header).unwrap();
+    changed
+}
+
+#[test]
+fn replay_rejects_a_stream_whose_header_or_draw_state_was_changed() {
+    let config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut bytes = Vec::new();
+    let live = run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        replay_campaign_checkpointed(&TestWorkload, &bytes, None, None).unwrap(),
+        live
+    );
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(!text.contains("workload_diagnostics"));
+    let lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+
+    let mut with_sidecar = Vec::new();
+    let mut sidecar = Vec::new();
+    let observed = run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut with_sidecar,
+        Some(&mut sidecar),
+    )
+    .unwrap();
+    assert_eq!(with_sidecar, bytes);
+    assert_eq!(observed, live);
+    let final_point: serde_json::Value = serde_json::from_str(
+        std::str::from_utf8(&sidecar)
+            .unwrap()
+            .lines()
+            .last()
+            .expect("a progress line"),
+    )
+    .unwrap();
+    assert_eq!(final_point["workload_diagnostics"]["observed"], 42);
+
+    for (field, expected) in [
+        (
+            "action_cost_unit",
+            "campaign replay action-cost unit does not match the recorded stream",
+        ),
+        (
+            "execution_work_unit",
+            "campaign replay execution-work unit does not match the recorded stream",
+        ),
+    ] {
+        let error = replay_error(&with_header_field(&lines, field, "wrong-unit"));
+        assert_eq!(error, expected, "a changed {field}");
+    }
+
+    for event in ["job", "skip"] {
+        let mut changed = lines.clone();
+        let line = changed
+            .iter_mut()
+            .find(|line| {
+                line.contains(&format!("\"event\":\"{event}\""))
+                    && line.contains("\"draw_checkpoint_after\":{")
+            })
+            .unwrap_or_else(|| panic!("the stream records a {event} with a draw checkpoint"));
+        let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+        value["draw_checkpoint_after"]["table_sha256"] = serde_json::json!("0".repeat(64));
+        *line = serde_json::to_string(&value).unwrap();
+        let error = replay_error(&changed);
+        assert!(
+            error.starts_with(&format!("replayed {event} "))
+                && error.ends_with("draw-table checkpoint diverged"),
+            "a changed {event} checkpoint failed for another reason: {error}"
+        );
+    }
+
+    let recorded = draw_mixture_identifier(config.mixture);
+    assert!(text.contains(&format!("\"mixture_policy\":\"{recorded}\"")));
+    let error = replay_error(&with_header_field(
+        &lines,
+        "mixture_policy",
+        "alphabet_only",
+    ));
+    assert!(
+        error.contains("result digest") && error.contains("diverged"),
+        "a swapped mixture failed for another reason: {error}"
+    );
+    let error = replay_error(&with_header_field(
+        &lines,
+        "mixture_policy",
+        "unknown_mixture",
+    ));
+    assert_eq!(error, "draw mixture unknown_mixture is not recognized");
 }
