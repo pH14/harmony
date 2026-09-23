@@ -1191,10 +1191,12 @@ def main(argv: list[str] | None = None) -> int:
                 f.write("\t".join(row) + "\n")
 
     if args.update_baseline:
-        if new_failures:
-            print(f"cannot add findings to {SEMANTIC_BASELINE_PATH}; it only shrinks. "
+        if new_failures or grown:
+            print(f"cannot add entries to {SEMANTIC_BASELINE_PATH}; it only shrinks. "
                   "Fix each finding in the file:", file=sys.stderr)
             _print_findings(new_failures)
+            if grown:
+                _print_growth(grown, args.changed_from)
             _print_usage(usage_totals)
             return 1
         # A baseline entry for a file this run didn't judge (--changed-from

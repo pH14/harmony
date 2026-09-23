@@ -635,6 +635,21 @@ class BaselineOnlyShrinksTests(RequiresApiKey):
             self.assertIn("[baseline-grew]", stderr)
             self.assertIn("    [run-record] old.md\n", stderr)
 
+    def test_update_baseline_refuses_growth_since_rev(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._init(root)
+            self._commit(root, {"old.md": "an old record\n", "changed.md": "original\n",
+                                self.BASELINE: {"run-record": []}}, "base")
+            grown = json.dumps({"run-record": ["old.md"]})
+            self._commit(root, {"changed.md": "modified\n", self.BASELINE: grown}, "grow")
+            code, stderr = self._main(
+                ["--repo-root", directory, "--changed-from", "HEAD^1", "--update-baseline"],
+                make_post(full_answers(file_kind="component_reference")))
+            self.assertEqual(code, 1)
+            self.assertIn("    [run-record] old.md\n", stderr)
+            self.assertEqual((root / self.BASELINE).read_text(), grown)
+
     def test_growth_fails_without_the_api_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
