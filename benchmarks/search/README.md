@@ -122,8 +122,9 @@ A Metroid case may carry `root_input`, the path to a milestone input recorded
 by an earlier run. The campaign then starts from the state that input reaches
 instead of power-on, every recorded input is relative to that state, and
 `gained` counts items and tanks taken beyond it. `{seed}` in the path is
-replaced with the cell's seed, so each seed can continue its own line. The
-workload identity names the root, so `compare` refuses to combine a rooted run
+replaced with the cell's seed, so each seed can continue its own line.
+`compare` reads each cell's `summary.json` and refuses two matrices whose cells
+for one case name different root inputs, so it never combines a rooted run
 with a power-on run.
 
 ## Registered panels
@@ -134,7 +135,10 @@ with a power-on run.
 | `ci.json` | Source-built Nova (level and whole-game origins) and STB through the common runner, with full small-campaign replay and a frame cap. No licensed commercial ROM is used. |
 | `nightly.json` | Scheduled/manual source-built capability panel: the five registered isolated Nova levels, whole-game Nova, and STB Easy/Fair/Hard across seeds 1–3. Long runs use bounded witness replay; isolated levels and STB Hard retain their distinct outcome semantics. |
 | `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
+| `alphabet-control.json` | The same development pilot origins and budgets with alphabet-only mutation. This exploratory panel does not require every case to solve. |
+| `metroid-long-horizon.json` | Metroid new game on three reused development seeds at 3 million executions, 4 workers and 8 GiB, with alphabet-only mutation. |
 | `metroid-long-horizon-energy-splice.json` | The same three seeds and budgets drawing through the retained-input table, against the alphabet-only arm of `metroid-long-horizon.json`. |
+| `metroid-ladder.json` | One case per Metroid chain segment, each starting from that segment's recorded `root_input`, on seeds 11–13 at 4 workers, 6 GiB and 3 million executions. Score it with `eval.py ladder`. |
 | `throughput-checkpoint.json` | The 18-cell throughput panel with the adopted two-result-slot profile, for an isolated comparison of unchanged policies before and after implementation changes. |
 | `evaluation.json` | Main-mechanism control: five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
 | `smb-reference.json` | Practical fresh whole-game SMB recipe: 24 workers, 2,048 MiB, count weighting, two-reservation window/two result slots, 600,000 executions and 120 million frames. Five fresh validation seeds; every cell must solve. |
@@ -185,6 +189,27 @@ remains an explicit experiment. The qualified native execution profile and
 SMB reference are the recommended adoption results. These seed panels are now
 observed regression references; register new unseen seeds before another
 promotion decision.
+
+## Metroid ladder
+
+```sh
+python3 benchmarks/search/eval.py ladder /private/runs/ladder-001 \
+  /private/runs/ladder-002 --out /private/ladder-scores
+```
+
+`ladder` scores matrices run over `metroid-ladder.json`, one column per
+source. It reads only cases whose id names a segment, such as `ladder-seg4`.
+Every seed of a root starts from the same state, so a root holds a milestone
+when every seed that reported progress shows it at execution 1, along with
+every milestone before it. The root's ladder is the rest of the chain's
+milestone sequence. A milestone passes when at least two distinct seeds reach
+it, and the score counts passed milestones in a row from the front of the
+ladder. Reaching the ending passes every milestone before it. Two more tables
+give each root's continuation graph counters and its emulator work per
+execution. `--out` writes one JSON document per source, and `ladder` accepts
+those documents as sources in place of a matrix directory.
+`milestones.py` prints the execution at which each Metroid cell first reached
+each named milestone.
 
 ## Evidence and resource accounting
 

@@ -22,7 +22,7 @@ import sys
 import time
 
 SCHEMA = 'harmony-search-eval-v1'
-ALLOWED_SEARCH = {'seed','workers','executions','frames','actions','memory_mib','window','result_slots','wall_seconds','selector','suffix','mixture','verification'}
+ALLOWED_SEARCH = {'seed','workers','executions','frames','actions','memory_mib','window','result_slots','wall_seconds','suffix','mixture','verification'}
 
 
 def valid_id(value):
@@ -137,7 +137,8 @@ def expand_suite(suite, selected=None):
         names.add(name)
         if selected and name not in selected: continue
         settings={**suite['search'],**case.get('search',{})}
-        if set(settings)-ALLOWED_SEARCH: raise ValueError('unknown search settings')
+        if 'selector' in settings: raise ValueError('case '+name+' sets search.selector; nes-eval takes no selector, so remove it from the manifest')
+        if set(settings)-ALLOWED_SEARCH: raise ValueError('unknown search settings: '+', '.join(sorted(set(settings)-ALLOWED_SEARCH)))
         for seed,workers,memory in itertools.product(suite['seeds'],suite['workers'],suite['memory_mib']):
             request={**settings,**{k:case[k] for k in ('game','level','stage','ai','whole_game','root_input') if k in case},'seed':seed,'workers':workers,'memory_mib':memory}
             if 'root_input' in request: request['root_input']=str(request['root_input']).format(seed=seed)
@@ -368,6 +369,10 @@ def compare(base, candidate):
         a, b = left[cell], right[cell]
         if a['origin'] != b['origin']:
             raise ValueError('origin mismatch: ' + cell)
+        roots = [(read_json(matrix / cell / 'summary.json') or item).get('search_request', {}).get('root_input')
+                 for matrix, item in ((base, a), (candidate, b))]
+        if roots[0] != roots[1]:
+            raise ValueError(f'root input changed for {cell}: {roots[0] or "power-on"} versus {roots[1] or "power-on"}')
         if not a.get('identity') or not b.get('identity'):
             rows.append({'cell': cell, 'comparable': False, 'baseline_status': a['status'], 'candidate_status': b['status']})
             continue
@@ -407,9 +412,19 @@ METROID_MILESTONES = {
     'wave_beam': 'Wave Beam', 'ice_beam': 'Ice Beam', 'brinstar': 'Brinstar',
     'norfair': 'Norfair', 'kraid_area': "Kraid's area", 'ridley_area': "Ridley's area",
     'kraid_door': "Kraid's door", 'kraid_room': "Kraid's room", 'ridley_room': "Ridley's room",
-    'tourian': 'Tourian', 'kraid_defeated': 'Kraid defeated', 'ridley_defeated': 'Ridley defeated',
-    'mother_brain_defeated': 'Mother Brain defeated', 'escape_started': 'Escape started',
-    'ending': 'Ending', 'missile_capacity': 'Missile capacity gained', 'energy_tank': 'Energy tank gained',
+    'tourian': 'Tourian', 'tourian_corridor': 'Tourian corridor', 'tourian_far': 'Tourian far corridor',
+    'tourian_bottom': 'Tourian bottom', 'tourian_approach': 'Tourian approach', 'tourian_end': 'Tourian end',
+    'mother_brain_room': "Mother Brain's room", 'kraid_defeated': 'Kraid defeated', 'ridley_defeated': 'Ridley defeated',
+    'zebetite_destroyed': 'Zebetite destroyed', 'mother_brain_defeated': 'Mother Brain defeated',
+    'escape_started': 'Escape started', 'ending': 'Ending', 'missile_capacity': 'Missile capacity gained',
+    'energy_tank': 'Energy tank gained',
+}
+METROID_COLUMNS = {
+    'gear': ['morph_ball', 'bombs', 'long_beam', 'high_jump', 'screw_attack', 'varia_suit', 'wave_beam', 'ice_beam',
+             'missile_capacity', 'energy_tank'],
+    'areas': ['brinstar', 'norfair', 'kraid_area', 'ridley_area', 'kraid_door', 'kraid_room', 'ridley_room', 'tourian',
+              'tourian_corridor', 'tourian_far', 'tourian_bottom', 'tourian_approach', 'tourian_end', 'mother_brain_room'],
+    'bosses': ['kraid_defeated', 'ridley_defeated', 'zebetite_destroyed', 'mother_brain_defeated', 'escape_started', 'ending'],
 }
 
 
@@ -418,7 +433,7 @@ def named_progress(item, witness=False):
     diagnostics = ((result.get('witness') or {}).get('diagnostics') if witness else
                    item.get('last_progress', {}).get('workload_diagnostics')) or {}
     value = diagnostics.get('named_progress') or {}
-    return value if value.get('format') in {'metroid-named-progress-v1', 'metroid-named-progress-v2'} else None
+    return value if value.get('format') in {'metroid-named-progress-v1', 'metroid-named-progress-v2', 'metroid-named-progress-v3'} else None
 
 
 RESOURCE_HEADERS = '<th>Peak RSS MiB</th><th>Last logical memory MiB</th><th>Peak output disk MiB</th>'
@@ -579,9 +594,7 @@ def metroid_html(results):
                                 if value['first_seen'].get(key) is not None) or 'none observed'
             unknown = ', '.join(html.escape(METROID_MILESTONES[key]) for key in keys if key not in value['first_seen'])
             return observed + ('; not recorded: ' + unknown if unknown else '')
-        gear = list(METROID_MILESTONES)[:8]
-        areas = list(METROID_MILESTONES)[8:13]
-        bosses = ['kraid_defeated', 'ridley_defeated', 'mother_brain_defeated', 'escape_started', 'ending']
+        gear, areas, bosses = METROID_COLUMNS['gear'], METROID_COLUMNS['areas'], METROID_COLUMNS['bosses']
         for scope, value in [('Search branches', progress), ('Champion/victory replay', witnessed)]:
             rows.append('<tr>' + ''.join('<td>' + text + '</td>' for text in [
                 cell, scope, names(value, gear), names(value, areas), names(value, bosses),

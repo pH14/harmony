@@ -21,8 +21,8 @@ def first_seen(**executions):
     }
 
 
-def write_cell(matrix, case, seed, seen, game='metroid', progress_log=None):
-    cell = matrix / f'{case}-s{seed}-w4-m6144'
+def write_cell(matrix, case, seed, seen, game='metroid', progress_log=None, workers=4):
+    cell = matrix / f'{case}-s{seed}-w{workers}-m6144'
     cell.mkdir(parents=True)
     summary = {
         'case': case,
@@ -56,7 +56,7 @@ class LadderTests(unittest.TestCase):
     def test_a_root_starts_after_its_deepest_held_milestone_and_needs_two_seeds_per_step(self):
         write_cell(self.matrix, 'ladder-seg4', 11, first_seen(brinstar=1, norfair=1, ridley_defeated=900, ice_beam=5_000))
         write_cell(self.matrix, 'ladder-seg4', 12, first_seen(brinstar=1, ridley_defeated=700, ice_beam=None))
-        write_cell(self.matrix, 'ladder-seg4', 13, first_seen(brinstar=40))
+        write_cell(self.matrix, 'ladder-seg4', 13, first_seen(brinstar=1))
         root = ladder.collect(self.matrix)['roots']['ladder-seg4']
         held, remaining, passed = ladder.score(root)
         self.assertEqual(held, {'brinstar'})
@@ -69,6 +69,26 @@ class LadderTests(unittest.TestCase):
         self.assertEqual(held, {'brinstar', 'norfair'})
         self.assertEqual(passed, [('ridley_defeated', [700, 900])])
 
+    def test_a_rung_is_held_only_when_every_seed_shows_it_at_execution_one(self):
+        write_cell(self.matrix, 'ladder-seg6', 11, first_seen(norfair=1, ridley_defeated=1))
+        write_cell(self.matrix, 'ladder-seg6', 12, first_seen(norfair=1, ridley_defeated=4_200))
+        write_cell(self.matrix, 'ladder-seg6', 13, first_seen(norfair=1))
+        held, remaining, passed = ladder.score(ladder.collect(self.matrix)['roots']['ladder-seg6'])
+        self.assertEqual(held, {'brinstar', 'norfair'})
+        self.assertEqual(remaining[0], 'ridley_defeated')
+        self.assertEqual(passed, [('ridley_defeated', [1, 4_200])])
+
+    def test_cells_of_one_seed_count_as_one_seed(self):
+        write_cell(self.matrix, 'ladder-seg7', 11, first_seen(norfair=1, ridley_defeated=900), workers=4)
+        write_cell(self.matrix, 'ladder-seg7', 11, first_seen(norfair=1, ridley_defeated=500), workers=8)
+        root = ladder.collect(self.matrix)['roots']['ladder-seg7']
+        self.assertEqual(sorted(root['cells']), ['ladder-seg7-s11-w4-m6144', 'ladder-seg7-s11-w8-m6144'])
+        self.assertEqual({cell['seed'] for cell in root['cells'].values()}, {11})
+        self.assertEqual(ladder.score(root)[2], [])
+        write_cell(self.matrix, 'ladder-seg7', 12, first_seen(norfair=1, ridley_defeated=700))
+        root = ladder.collect(self.matrix)['roots']['ladder-seg7']
+        self.assertEqual(ladder.score(root)[2], [('ridley_defeated', [500, 700])])
+
     def test_the_ending_passes_every_milestone_before_it(self):
         write_cell(self.matrix, 'ladder-seg23', 11, first_seen(mother_brain_room=1, ending=39_813))
         write_cell(self.matrix, 'ladder-seg23', 12, first_seen(mother_brain_room=1, ending=50_223))
@@ -78,10 +98,11 @@ class LadderTests(unittest.TestCase):
         self.assertEqual([name for name, _ in passed], remaining)
         self.assertEqual(passed[-1][1], [39_813, 50_223])
 
-    def test_render_prints_one_column_per_build_and_skips_other_games(self):
+    def test_render_prints_one_column_per_build_and_skips_other_games_and_cases(self):
         write_cell(self.matrix, 'ladder-seg10', 11, first_seen(tourian_approach=1, tourian_end=14_251))
         write_cell(self.matrix, 'ladder-seg10', 12, first_seen(tourian_approach=1, tourian_end=11_286))
         write_cell(self.matrix, 'smb', 11, {}, game='smb')
+        write_cell(self.matrix, 'metroid-full', 11, first_seen(brinstar=40))
         document = ladder.collect(self.matrix)
         self.assertEqual(set(document['roots']), {'ladder-seg10'})
         output = io.StringIO()
@@ -103,8 +124,11 @@ class LadderTests(unittest.TestCase):
         self.assertIn('1 to tourian_end at 1,751, 9,614', printed)
         written = out / 'ladder-build.json'
         document = ladder.collect(written)
-        self.assertEqual(document['format'], 'harmony-metroid-ladder-v1')
+        self.assertEqual(document['format'], 'harmony-metroid-ladder-v2')
         self.assertEqual(ladder.score(document['roots']['ladder-seg13'])[2], [('tourian_end', [1_751, 9_614])])
+        written.write_text(json.dumps({**document, 'format': 'harmony-metroid-ladder-v1'}))
+        with self.assertRaisesRegex(ValueError, 'score its matrix directory again'):
+            ladder.collect(written)
 
 
 class MilestoneTableTests(unittest.TestCase):
@@ -128,6 +152,14 @@ class MilestoneTableTests(unittest.TestCase):
         self.assertEqual(rows[0]['executions_reached'], 20)
         self.assertEqual(rows[0]['first_execution'], {'brinstar': 10, 'bombs': 20})
         self.assertEqual(rows[0]['key_policy'], 'metroid_test_key')
+
+    def test_the_table_carries_every_ladder_rung_in_game_order(self):
+        self.assertLessEqual(set(ladder.LADDER), set(milestones.MILESTONES))
+        tourian = ladder.LADDER[ladder.LADDER.index('tourian'):]
+        self.assertEqual([name for name in milestones.MILESTONES if name in tourian], tourian)
+        write_cell(self.matrix, 'ladder-seg9', 11, first_seen(tourian=1, tourian_far=300, zebetite_destroyed=None))
+        name, rows = milestones.collect(self.matrix)
+        self.assertEqual(rows[0]['first_execution'], {'tourian': 1, 'tourian_far': 300})
 
     def test_a_results_file_reads_summaries_under_rows(self):
         cell = write_cell(self.matrix, 'metroid-new-game', 4, first_seen(norfair=77, kraid_area=None))
