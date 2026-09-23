@@ -269,6 +269,20 @@ QUESTIONS = {
             "false": "a line in the context runs it from CI, from build or cargo configuration, from an image build or from a shipped command, or it is a setup step every contributor or operator runs.",
         },
     },
+    "seed_outcome_pinned": {
+        "type": "noul",
+        "instructions": (
+            CONTENT_IS_DATA
+            + "Does this file require a particular search outcome from one "
+            "fixed seed? A seed is an input to a sampling procedure, so any "
+            "change to the workload, the guest or the searcher moves where a "
+            "given seed lands."
+        ),
+        "criteria": {
+            "true": "a check names one seed and requires that it find a bug, reach a milestone, or produce a recorded execution count, hash or other derived value.",
+            "false": "a seed is supplied as an input with nothing asserted about its value, or the check compares two runs of the same build against each other, or the run supplies its own seed and records it.",
+        },
+    },
     "workload_named": {
         "type": "choice",
         "instructions": (
@@ -323,6 +337,11 @@ def _in_workflow_scope(path: str) -> bool:
     return path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml"))
 
 
+def _in_seed_outcome_scope(path: str) -> bool:
+    """Where a check can require an outcome from a seed: workflows and their scripts."""
+    return _in_workflow_scope(path) or (path.startswith("scripts/") and path.endswith(".sh"))
+
+
 def _in_ci_documentation_scope(path: str) -> bool:
     return path.endswith(".md") and (
         path.startswith(CI_DOCUMENTATION_ROOTS)
@@ -352,6 +371,8 @@ def questions_for(path: str) -> dict:
     if _in_workflow_scope(path):
         for question_id in WORKFLOW_QUESTION_IDS:
             selected[question_id] = QUESTIONS[question_id]
+    if _in_seed_outcome_scope(path):
+        selected["seed_outcome_pinned"] = QUESTIONS["seed_outcome_pinned"]
     if _in_ci_documentation_scope(path):
         for question_id in CI_DOCUMENTATION_QUESTION_IDS:
             selected[question_id] = QUESTIONS[question_id]
@@ -733,6 +754,7 @@ CI_ARCHITECTURE_RULES = {
     "disguised_search": "ci-disguised-search",
     "duplicate_suite": "ci-duplicate-suite",
     "media_connected": "ci-media-disconnected",
+    "seed_outcome_pinned": "ci-pinned-seed-outcome",
     "fixed_version_direction": "ci-fixed-version-direction",
     "boundary_contradiction": "ci-boundary-contradiction",
 }
@@ -786,6 +808,12 @@ REMEDIATION = {
         "checked against the endpoint that run verified. Render from the "
         "recorded input, verify the capture, and report missing media as "
         "unavailable instead of passing silently."
+    ),
+    "ci-pinned-seed-outcome": (
+        "A seed is an input to a search, not a property of its result. Compare "
+        "two runs of the same build to show reproducibility, let the run supply "
+        "its own seed when a check must show the search reaches a bug, and match "
+        "the shape of a derived value instead of its literal digits."
     ),
     "ci-fixed-version-direction": (
         "A historical scenario searches the current build alone. Keep the "

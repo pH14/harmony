@@ -223,7 +223,7 @@ jobs:
           WORKLOAD_VERSION: ${{ matrix.workload_version }}
           IMAGE_PREFIX: ${{ matrix.image_prefix }}
           RAM_MIB: ${{ matrix.ram_mib }}
-          SEED: ${{ matrix.seed }}
+          SEED: ${{ github.run_id }}
           WORKERS: ${{ matrix.workers }}
           ACTIONS: ${{ matrix.actions }}
           EXECUTIONS: ${{ inputs.executions || matrix.executions }}
