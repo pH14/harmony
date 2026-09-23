@@ -16,7 +16,8 @@ The fixture requires a real platform guest. Building it or checking archive
 contents does not constitute SDK, time, or snapshot qualification.
 
 The same binary also provides the lifecycle commands used by the process
-platform smoke: `ready` exits successfully, `hook` emits a `@sometimes 7`
-directive, and `node` sleeps in a loop. The supervisor can therefore exercise
-pause, kill, and restart against a real process. Packaging creates
-`/etc/harmony` so the host can mount the external execution bundle there.
+platform smoke: `ready` exits successfully, `hook` writes a Sometimes assertion
+as Antithesis JSON to `$ANTITHESIS_OUTPUT_DIR/sdk.jsonl`, and `node` sleeps in a
+loop. The supervisor can therefore exercise pause, kill, and restart against a
+real process. Packaging creates `/etc/harmony` so the host can mount the
+external execution bundle there.

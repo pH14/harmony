@@ -7,7 +7,8 @@ preserves protocol failures as errors distinct from workload stops. The optional
 The SDK catalog decoder resolves named state registers and validates declarations
 and values. The current SDK event stream carries no publisher identity; this
 reader accepts one catalog per evidence stream and rejects multiple publishers
-rather than merging ambiguous register coordinates. Read a fresh catalog/state
+rather than merging ambiguous register coordinates. Event 0 also carries
+Antithesis JSON records; the reader skips payloads that begin with `{`. Read a fresh catalog/state
 view at the stopped snapshot evidence cut when constructing a workload driver.
 
 `session::Session` is the optional in-process composition layer used by

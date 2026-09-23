@@ -43,19 +43,27 @@ were already running retain their results. The hooks-started register advances
 only after a queued or immediate request successfully spawns. A bundle without
 a readiness command launches hooks immediately.
 
+Every child the supervisor starts receives `ANTITHESIS_OUTPUT_DIR=/run/antithesis`.
+The supervisor links `/run/antithesis/sdk.jsonl` to `/dev/harmony` at startup
+and again after the setup command, because setup may mount a fresh `/run`, so a
+process that follows the Antithesis fallback SDK writes each JSON record
+straight to the host. The driver attributes each record to its writer's process
+id in the writer's PID namespace, which the supervisor shares with the children
+it starts.
+Child stdout is discarded; assertions travel only as SDK records.
+
 After initial readiness, an optional `workload` command starts once and remains
 independent of node recovery. An optional `check` command runs serially and
-continuously; its directives carry the run number and disturbance-generation
-range that produced the latest successful evidence. Process transitions and
-accepted instrumentation reports advance that generation, which keeps stale
-pre-fault evidence distinct from a check completed after recovery. Each check
-receives its starting generation in `HARMONY_DISTURBANCE_GENERATION`, allowing a
-stateful checker to invalidate cached results without importing process-fault
-semantics. A successful check replaces the completed evidence only after it
-publishes at least one supported assertion point; an empty check leaves prior
-evidence intact. The supervisor unlinks each check's output file after opening
-its read and write descriptors, so completed checks do not accumulate in the
-guest tmpfs.
+continuously. The supervisor publishes the checks-started register before it
+spawns each check, and after a check exits successfully it publishes the run
+number, the check's pid, and the disturbance-generation range the check
+spanned. The host treats the Sometimes and Reachable assertions that pid passed
+after that start as the check's evidence; a check that passed none leaves the
+prior evidence intact. Process transitions and accepted instrumentation reports
+advance the disturbance generation, which keeps stale pre-fault evidence
+distinct from a check completed after recovery. Each check receives its starting
+generation in `HARMONY_DISTURBANCE_GENERATION`, allowing a stateful checker to
+invalidate cached results without importing process-fault semantics.
 
 Instrumented nodes receive a pair of inherited event descriptors. The generic
 control and report frames live in `process-proto`; the supervisor acknowledges
@@ -73,7 +81,7 @@ The faults workload owns the semantic fault policy and composes its optional C
 instrumentation runtime with `libvoidstar`. The supervisor consumes only the
 generic process actions and event protocol and does not depend on that workload.
 
-`bundle`, `directive`, `reconcile`, `recovery`, and `supervise` are portable library
+`bundle`, `reconcile`, `recovery`, and `supervise` are portable library
 modules. Linux device and process wiring is isolated to the binary. The
 standalone crate can be checked on a development host with:
 
