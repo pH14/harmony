@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod archive;
+pub mod assertion;
 pub mod bundle;
 pub mod package;
 pub mod prepare;

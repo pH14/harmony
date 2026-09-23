@@ -8,12 +8,15 @@ use process_proto::registers as reg;
 use searcher::target::ExitKind;
 use serde::{Deserialize, Serialize};
 
+use crate::assertion::{AssertionKind, AssertionOutcome, Assertions, decode_json_event};
+
 pub const DEFAULT_HORIZON_NANOS: u64 = 500_000_000;
 pub const SUPERVISOR_TICK_NANOS: u64 = 10_000_000;
 const RESTART_DOWN_DIVISOR: u64 = 4;
 pub const MAX_FAULT_ACTIONS: usize = 256;
 
 const NS_SHIFT: u32 = 24;
+const JSON_EVENT_ID: u32 = 0;
 const NS_ASSERT: u8 = 1;
 const NS_STATE: u8 = 2;
 const DISP_HIT: u8 = 0;
@@ -22,8 +25,6 @@ const STATE_SET: u8 = 0;
 const STATE_MAX: u8 = 1;
 const ASSERT_PAYLOAD_LEN: usize = 3;
 const STATE_PAYLOAD_LEN: usize = 9;
-
-pub const SOMETIMES_KEY_BITS: u32 = 64;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum FaultAction {
@@ -213,15 +214,15 @@ pub struct CheckEvidence {
     pub run: u64,
     pub start_generation: u64,
     pub end_generation: u64,
-    pub points: Vec<u32>,
+    pub points: Vec<String>,
     pub pending_faults: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SdkCapture {
     pub registers: BTreeMap<u32, u64>,
-    pub sometimes: BTreeSet<u32>,
-    pub violations: BTreeSet<u32>,
+    pub assertions: Assertions,
+    pub setup_complete: bool,
 }
 
 impl SdkCapture {
@@ -242,18 +243,35 @@ impl SdkCapture {
 pub fn decode_sdk_events(events: &[(u64, u32, Vec<u8>)]) -> Result<SdkCapture, String> {
     let mut capture = SdkCapture::default();
     for (_, event_id, bytes) in events {
+        if *event_id == JSON_EVENT_ID && bytes.first() == Some(&b'{') {
+            if let Some(event) = decode_json_event(bytes) {
+                capture.setup_complete |= event.setup_complete;
+                if let Some((id, outcome)) = event.assertion {
+                    capture.assertions.record(id, outcome);
+                }
+            }
+            continue;
+        }
         let namespace = (event_id >> NS_SHIFT) as u8;
         let local = event_id & ((1 << NS_SHIFT) - 1);
         match namespace {
-            NS_ASSERT if bytes.len() == ASSERT_PAYLOAD_LEN => match bytes[0] {
-                DISP_HIT => {
-                    capture.sometimes.insert(local);
-                }
-                DISP_VIOLATION => {
-                    capture.violations.insert(local);
-                }
-                _ => return Err("SDK assertion event has an unknown disposition".to_owned()),
-            },
+            NS_ASSERT if bytes.len() == ASSERT_PAYLOAD_LEN => {
+                let (kind, passed) = match bytes[0] {
+                    DISP_HIT => (AssertionKind::Sometimes, true),
+                    DISP_VIOLATION => (AssertionKind::Always, false),
+                    _ => return Err("SDK assertion event has an unknown disposition".to_owned()),
+                };
+                capture.assertions.record(
+                    local.to_string(),
+                    AssertionOutcome {
+                        kind,
+                        message: local.to_string(),
+                        location: String::new(),
+                        passed,
+                        failed: !passed,
+                    },
+                );
+            }
             NS_STATE if bytes.len() == STATE_PAYLOAD_LEN => {
                 let value = u64::from_le_bytes(
                     bytes[1..STATE_PAYLOAD_LEN]
@@ -334,8 +352,7 @@ pub struct FaultObservations {
     pub checks_finished: u64,
     pub check: Option<CheckEvidence>,
     pub sometimes_register: u64,
-    pub sometimes: BTreeSet<u32>,
-    pub violations: BTreeSet<u32>,
+    pub assertions: Assertions,
     pub stop: FaultStop,
     #[serde(default)]
     pub watchdog_cutoff: bool,
@@ -368,28 +385,34 @@ impl FaultObservations {
                 end_generation: value(reg::COMPLETED_CHECK_END_GENERATION),
                 points: (0..48)
                     .filter(|point| value(reg::COMPLETED_CHECK_POINTS) & (1_u64 << point) != 0)
+                    .map(|point: u32| point.to_string())
                     .collect(),
                 pending_faults: value(reg::PENDING_FAULTS),
             }),
             sometimes_register: value(reg::SOMETIMES),
-            sometimes: capture.sometimes.clone(),
-            violations: capture.violations.clone(),
+            assertions: capture.assertions.clone(),
             stop,
             watchdog_cutoff: false,
         }
     }
 
     #[must_use]
-    pub fn sometimes_bitmap(&self) -> u64 {
-        self.sometimes
-            .iter()
-            .filter(|id| **id < SOMETIMES_KEY_BITS)
-            .fold(0_u64, |bits, id| bits | (1_u64 << id))
+    pub fn sometimes(&self) -> BTreeSet<String> {
+        self.assertions
+            .key_ids()
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[must_use]
+    pub fn violations(&self) -> BTreeSet<String> {
+        self.assertions.violations()
     }
 
     #[must_use]
     pub fn is_bug(&self) -> bool {
-        self.stop.is_bug() || !self.violations.is_empty()
+        self.stop.is_bug() || !self.violations().is_empty()
     }
 
     #[must_use]
@@ -697,7 +720,7 @@ mod tests {
     fn a_reported_runtime_failure_is_not_bug_evidence() {
         let capture =
             decode_sdk_events(&[state_event(reg::INFRASTRUCTURE_ERROR, STATE_SET, 1)]).unwrap();
-        assert!(capture.violations.is_empty());
+        assert!(capture.assertions.violations().is_empty());
         assert!(capture.check_infrastructure_status().is_err());
         assert!(SdkCapture::default().check_infrastructure_status().is_ok());
     }
@@ -712,8 +735,11 @@ mod tests {
             state_event(reg::HOOKS_FINISHED, STATE_SET, 4),
         ])
         .expect("decode");
-        assert_eq!(capture.sometimes, BTreeSet::from([3, 70]));
-        assert_eq!(capture.violations, BTreeSet::from([5]));
+        assert_eq!(capture.assertions.key_ids(), BTreeSet::from(["3", "70"]));
+        assert_eq!(
+            capture.assertions.violations(),
+            BTreeSet::from(["5".to_owned()])
+        );
         assert_eq!(capture.registers.get(&reg::HOOKS_FINISHED), Some(&4));
     }
 
@@ -760,11 +786,9 @@ mod tests {
         assert_eq!(observations.alive, 0b101);
         assert_eq!(observations.hooks_finished, 2);
         assert_eq!(observations.sometimes_register, 0b11);
-        assert_eq!(observations.sometimes, BTreeSet::from([0, 63, 64]));
         assert_eq!(
-            observations.sometimes_bitmap(),
-            (1_u64 << 63) | 1,
-            "a site past the key width stays in the observation only"
+            observations.sometimes(),
+            BTreeSet::from(["0".to_owned(), "63".to_owned(), "64".to_owned()])
         );
         assert!(!observations.is_bug());
         assert_eq!(observations.exit_kind(), ExitKind::Ok);
@@ -784,7 +808,7 @@ mod tests {
         ])
         .unwrap();
         let observation = FaultObservations::new(77, &capture, FaultStop::Deadline);
-        assert!(observation.sometimes.contains(&11));
+        assert!(observation.sometimes().contains("11"));
         assert_eq!(
             observation.check,
             Some(CheckEvidence {
@@ -792,7 +816,7 @@ mod tests {
                 run: 7,
                 start_generation: 2,
                 end_generation: 2,
-                points: vec![11],
+                points: vec!["11".to_owned()],
                 pending_faults: 1,
             })
         );
@@ -828,6 +852,27 @@ mod tests {
                 .is_continuable()
         );
         assert!(!FaultStop::from_stop_reason(&StopReason::Quiescent { vtime: Moment(1) }).is_bug());
+    }
+
+    #[test]
+    fn json_assertions_arriving_on_event_zero_are_decoded() {
+        let json = |text: &str| (0, JSON_EVENT_ID, text.as_bytes().to_vec());
+        let capture = decode_sdk_events(&[
+            json(r#"{"antithesis_assert":{"id":"reached","assert_type":"reachability","must_hit":true,"hit":true,"condition":true}}"#),
+            json(r#"{"antithesis_assert":{"id":"kept","assert_type":"always","must_hit":true,"hit":true,"condition":false}}"#),
+            json(r#"{"antithesis_setup":{"status":"complete"}}"#),
+            json("{not json}"),
+            (0, JSON_EVENT_ID, b"SDKC".to_vec()),
+        ])
+        .expect("decode");
+        assert!(capture.setup_complete);
+        assert_eq!(capture.assertions.key_ids(), BTreeSet::from(["reached"]));
+        let observation = FaultObservations::new(0, &capture, FaultStop::Deadline);
+        assert_eq!(
+            observation.violations(),
+            BTreeSet::from(["kept".to_owned()])
+        );
+        assert!(observation.is_bug());
     }
 
     #[test]

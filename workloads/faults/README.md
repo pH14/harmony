@@ -87,6 +87,17 @@ raw instrumented site reported by an event kill remains diagnostic evidence; it
 is not archive novelty because a large instrumented binary can report a
 distinct address at nearly every endpoint.
 
+Assertions arrive as Antithesis SDK JSON records written to `/dev/harmony`.
+The host keys each assertion by its `id` (the message when the id is empty)
+and keeps its kind, message, and source location. An Always or
+AlwaysOrUnreachable assertion evaluated false, or an Unreachable assertion that
+was reached, is a violation and marks the execution as a bug. The set of
+Sometimes and Reachable assertions that passed enters the archive key as a
+count plus a digest of the sorted ids, so the key has no limit on how many
+distinct assertions a workload declares. Every process's records feed the key.
+`campaign-summary.json` lists every assertion the campaign saw under
+`assertions`.
+
 The generic `execution_work` counter and `report.json`
 `execution_ticks` count the guest ticks requested by successfully applied actions
 after setup. This logical counter is monotonic across target reset and snapshot
