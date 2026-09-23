@@ -27,6 +27,71 @@ env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
+  observatory:
+    name: Observatory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Determine whether this check is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: dissonance_nes
+      - name: Install pinned Rust toolchain
+        if: steps.scope.outputs.enabled == true
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == true
+        with:
+          shared-key: dissonance-nes-observatory
+          workspaces: |
+            dissonance -> target
+            workloads/nes -> target
+            workloads/nes-observatory -> target
+      - name: Check Rust and synthetic tests
+        if: steps.scope.outputs.enabled == true
+        run: |
+          cargo fmt --manifest-path workloads/nes-observatory/Cargo.toml --check
+          cargo clippy --locked --manifest-path workloads/nes-observatory/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path workloads/nes-observatory/Cargo.toml
+      - name: Start pinned ClickHouse
+        if: steps.scope.outputs.enabled == true
+        run: |
+          docker run -d --name observatory-clickhouse --cpus=4 --memory=8g \
+            -p 127.0.0.1:8123:8123 \
+            -e CLICKHOUSE_USER=observatory -e CLICKHOUSE_PASSWORD=ci-observatory \
+            docker.io/library/clickhouse:26.3.33.24
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent --user observatory:ci-observatory \
+              http://127.0.0.1:8123/ping >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          docker logs observatory-clickhouse
+          exit 1
+      - name: Verify retries and historical queries
+        if: steps.scope.outputs.enabled == true
+        env:
+          HARMONY_CLICKHOUSE_URL: http://127.0.0.1:8123
+          HARMONY_CLICKHOUSE_USER: observatory
+          HARMONY_CLICKHOUSE_PASSWORD: ci-observatory
+        run: cargo test --locked --manifest-path workloads/nes-observatory/Cargo.toml --test clickhouse -- --ignored --test-threads=1
+      - uses: actions/setup-node@v4
+        if: steps.scope.outputs.enabled == true
+        with:
+          node-version: 22.12.0
+          cache: npm
+          cache-dependency-path: website/observatory/package-lock.json
+      - name: Build viewer
+        if: steps.scope.outputs.enabled == true
+        working-directory: website/observatory
+        run: npm ci && npm run build
+
   nova:
     name: Nova
     runs-on: ubuntu-24.04

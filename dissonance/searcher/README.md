@@ -38,6 +38,8 @@ memory is outside the archive's logical budget and must be measured in host RSS.
 Benchmark callers record this physical execution choice in their run identity.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
+Campaign callers may pass a reporting-only `CampaignObserver` through `run_campaign_checkpointed_with_observer`. It receives genesis, each selection including skipped duplicates, and ordered admission with measured execution work and result observations. The default `()` observer is a no-op. Observers must not change campaign state or block selection; a caller can use a bounded send and do serialization, disk, and network work off the search thread. Observer timing is wall-clock telemetry and never enters deterministic streams or reports.
+
 ## Workload boundary
 
 `searcher` is independently buildable. Workload packages implement its typed

@@ -42,6 +42,8 @@ def selected(paths):
             return dict.fromkeys(result, True)
         if path.startswith(("dissonance/", "cli/")):
             result["dissonance_nes"] = result["harmony_nes"] = True
+        if path.startswith("workloads/nes-observatory/") or path.startswith("website/observatory/"):
+            result["dissonance_nes"] = True
         if path.startswith(("workloads/nes/", "workloads/nes-machine/", "workloads/nes-protocol/", "workloads/nes-guest/")):
             if path.startswith(("workloads/nes/src/stb/", "workloads/nes/src/bin/stb-")) or "/stb-" in path or path.endswith("build-stb-rom.sh"):
                 result["dissonance_stb"] = True

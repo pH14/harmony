@@ -129,6 +129,7 @@ CARGO_MANIFESTS = (
     "workloads/fault-policy/Cargo.toml",
     "workloads/faults/Cargo.toml",
     "workloads/nes/Cargo.toml",
+    "workloads/nes-observatory/Cargo.toml",
     "workloads/nes-guest/Cargo.toml",
     "workloads/nes-machine/Cargo.toml",
     "workloads/nes-protocol/Cargo.toml",
@@ -143,6 +144,7 @@ DENY_COMMANDS = (
     "--manifest-path Cargo.toml check",
     "--manifest-path dissonance/Cargo.toml check",
     "--manifest-path workloads/nes/Cargo.toml check --config deny.toml",
+    "--manifest-path workloads/nes-observatory/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/nes-protocol/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/fault-policy/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/faults/Cargo.toml check --config deny.toml",
@@ -393,6 +395,8 @@ DISSONANCE_NES_CHECKS = Workflow(
         Job("Nova", "pr", 15, media=("workloads/nes/src/bin/nes-film.rs",),
             scope="dissonance_nes"),
         Job("STB", "pr", 15, media=(".github/actions/stb-evaluation",), scope="dissonance_stb"),
+        Job("Observatory", "pr", 15, test_targets=("nes-observatory:clickhouse",),
+            scope="dissonance_nes"),
     ),
 )
 
