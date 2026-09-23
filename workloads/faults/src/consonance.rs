@@ -715,9 +715,16 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
         .saturating_add(
             snapshot
                 .observation
-                .sometimes
-                .len()
-                .saturating_mul(size_of::<u32>()),
+                .assertions
+                .0
+                .iter()
+                .map(|(id, outcome)| {
+                    id.len()
+                        + outcome.message.len()
+                        + outcome.location.len()
+                        + size_of::<crate::assertion::AssertionOutcome>()
+                })
+                .sum::<usize>(),
         )
         .saturating_add(snapshot.observation.check.as_ref().map_or(0, |check| {
             check.points.capacity().saturating_mul(size_of::<u32>())

@@ -40,8 +40,8 @@ pub struct BugSummary {
     pub execution: u64,
     pub actions: Vec<FaultAction>,
     pub stop: FaultStop,
-    pub violations: Vec<u32>,
-    pub sometimes: Vec<u32>,
+    pub violations: Vec<String>,
+    pub sometimes: Vec<String>,
     pub state_hash: String,
     #[serde(default)]
     pub state_hash_encoding: StateHashEncoding,
@@ -65,8 +65,8 @@ pub struct ReplaySummary {
     pub state_hash: String,
     #[serde(default)]
     pub state_hash_encoding: StateHashEncoding,
-    pub violations: Vec<u32>,
-    pub sometimes: Vec<u32>,
+    pub violations: Vec<String>,
+    pub sometimes: Vec<String>,
     pub actions_applied: u64,
     pub settle_actions: u64,
     pub settle_ticks: u64,
@@ -127,8 +127,8 @@ impl ReplaySummary {
             stop: observation.stop,
             state_hash: state_digest_hex(&state_digest),
             state_hash_encoding: StateHashEncoding::EngineDigest,
-            violations: observation.violations.iter().copied().collect(),
-            sometimes: observation.sometimes.iter().copied().collect(),
+            violations: observation.violations().into_iter().collect(),
+            sometimes: observation.sometimes().into_iter().collect(),
             actions_applied,
             settle_actions: 0,
             settle_ticks: 0,
@@ -141,7 +141,7 @@ impl ReplaySummary {
 #[must_use]
 pub fn replay_confirms_bug(
     recorded_stop: FaultStop,
-    recorded_violations: &[u32],
+    recorded_violations: &[String],
     replay: &ReplaySummary,
 ) -> bool {
     replay.bug
@@ -388,6 +388,7 @@ mod live {
             "archive_entries": archive.entries.len(),
             "progress": archive.progress_watermark,
             "milestones": archive.milestones,
+            "assertions": archive.assertions,
             "bugs_found": campaign_report.bugs_found,
             "executions_to_first_bug": campaign_report.executions_to_first_bug,
             "bug_reports": written.iter().map(BugReport::file_name).collect::<Vec<_>>(),
@@ -401,7 +402,7 @@ mod live {
         report.executions = campaign_report.campaign.executions_completed;
         report.execution_ticks = campaign_report.campaign.execution_work;
         for bug in &written {
-            let violations: Vec<u32> = bug.observations.violations.iter().copied().collect();
+            let violations: Vec<String> = bug.observations.violations().into_iter().collect();
             let witness = match replay_once(artifacts, &config, &bug.actions) {
                 Ok(summary) => Some(summary),
                 Err(error) => {
@@ -423,7 +424,7 @@ mod live {
                 actions: bug.actions.clone(),
                 stop: bug.observations.stop,
                 violations,
-                sometimes: bug.observations.sometimes.iter().copied().collect(),
+                sometimes: bug.observations.sometimes().into_iter().collect(),
                 state_hash: witness
                     .as_ref()
                     .map(|witness| witness.state_hash.clone())
@@ -566,7 +567,7 @@ mod tests {
             run: 3,
             start_generation: 7,
             end_generation: 7,
-            points: vec![11],
+            points: ids(&[11]),
             pending_faults: 0,
         };
         let observation = |check| FaultObservations {
@@ -692,6 +693,10 @@ mod tests {
         assert!(parse_recorded_input("{}").is_err());
     }
 
+    fn ids(values: &[u32]) -> Vec<String> {
+        values.iter().map(u32::to_string).collect()
+    }
+
     fn replay_summary(bug: bool, stop: FaultStop, violations: &[u32]) -> ReplaySummary {
         ReplaySummary {
             check: None,
@@ -700,8 +705,8 @@ mod tests {
             stop,
             state_hash: "hash".to_owned(),
             state_hash_encoding: StateHashEncoding::LegacySha256OfDigest,
-            violations: violations.to_vec(),
-            sometimes: vec![24],
+            violations: ids(violations),
+            sometimes: ids(&[24]),
             actions_applied: 3,
             settle_actions: 0,
             settle_ticks: 0,
@@ -714,8 +719,8 @@ mod tests {
             execution,
             actions: vec![FaultAction::Hook(3)],
             stop: FaultStop::Assertion { point: 2 },
-            violations: vec![2],
-            sometimes: vec![24],
+            violations: ids(&[2]),
+            sometimes: ids(&[24]),
             state_hash: "hash".to_owned(),
             state_hash_encoding: StateHashEncoding::LegacySha256OfDigest,
             confirmed,
@@ -727,25 +732,29 @@ mod tests {
     fn a_replay_confirms_a_bug_only_by_reproducing_its_evidence() {
         let violated = FaultStop::Assertion { point: 2 };
         assert!(
-            replay_confirms_bug(violated, &[2], &replay_summary(true, violated, &[2])),
+            replay_confirms_bug(violated, &ids(&[2]), &replay_summary(true, violated, &[2])),
             "the recorded assertion fired again"
         );
         assert!(
             !replay_confirms_bug(
                 violated,
-                &[2],
+                &ids(&[2]),
                 &replay_summary(false, FaultStop::Deadline, &[])
             ),
             "a clean replay confirms nothing"
         );
         assert!(
-            !replay_confirms_bug(violated, &[2], &replay_summary(true, FaultStop::Crash, &[])),
+            !replay_confirms_bug(
+                violated,
+                &ids(&[2]),
+                &replay_summary(true, FaultStop::Crash, &[])
+            ),
             "a crash is not the assertion the campaign recorded"
         );
         assert!(
             !replay_confirms_bug(
                 violated,
-                &[2],
+                &ids(&[2]),
                 &replay_summary(true, FaultStop::Assertion { point: 7 }, &[7])
             ),
             "another assertion is another bug"
@@ -756,13 +765,13 @@ mod tests {
     fn a_stop_only_bug_is_confirmed_by_the_same_stop() {
         assert!(replay_confirms_bug(
             FaultStop::Crash,
-            &[],
+            &ids(&[]),
             &replay_summary(true, FaultStop::Crash, &[])
         ));
         assert!(
             !replay_confirms_bug(
                 FaultStop::Crash,
-                &[],
+                &ids(&[]),
                 &replay_summary(true, FaultStop::Assertion { point: 2 }, &[2])
             ),
             "a crash and an assertion are different evidence"
@@ -831,7 +840,7 @@ mod tests {
         let observation = FaultObservations {
             check: Some(crate::target::CheckEvidence {
                 run: 3,
-                points: vec![7, 11],
+                points: ids(&[7, 11]),
                 ..Default::default()
             }),
             ..Default::default()
