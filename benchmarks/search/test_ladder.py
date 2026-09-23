@@ -69,7 +69,15 @@ class LadderTests(unittest.TestCase):
         self.assertEqual(held, {'brinstar', 'norfair'})
         self.assertEqual(passed, [('ridley_defeated', [700, 900])])
 
-    def test_a_rung_is_held_only_when_every_seed_shows_it_at_execution_one(self):
+    def test_a_seed_whose_first_observation_comes_late_still_shows_the_held_rungs(self):
+        write_cell(self.matrix, 'ladder-seg22', 11, first_seen(tourian=4, tourian_bottom=4, escape_started=900))
+        write_cell(self.matrix, 'ladder-seg22', 12, first_seen(tourian=1, tourian_bottom=1, escape_started=1_300))
+        write_cell(self.matrix, 'ladder-seg22', 13, first_seen(tourian=1, tourian_bottom=1))
+        held, remaining, passed = ladder.score(ladder.collect(self.matrix)['roots']['ladder-seg22'])
+        self.assertIn('tourian_bottom', held)
+        self.assertEqual(remaining[0], 'tourian_approach')
+
+    def test_a_rung_is_held_only_when_every_seed_shows_it_in_its_first_observation(self):
         write_cell(self.matrix, 'ladder-seg6', 11, first_seen(norfair=1, ridley_defeated=1))
         write_cell(self.matrix, 'ladder-seg6', 12, first_seen(norfair=1, ridley_defeated=4_200))
         write_cell(self.matrix, 'ladder-seg6', 13, first_seen(norfair=1))

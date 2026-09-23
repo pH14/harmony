@@ -200,8 +200,8 @@ python3 benchmarks/search/eval.py ladder /private/runs/ladder-001 \
 `ladder` scores matrices run over `metroid-ladder.json`, one column per
 source. It reads only cases whose id names a segment, such as `ladder-seg4`.
 Every seed of a root starts from the same state, so a root holds a milestone
-when every seed that reported progress shows it at execution 1, along with
-every milestone before it. The root's ladder is the rest of the chain's
+when every seed that reported progress shows it in that seed's first recorded
+observation, along with every milestone before it. The root's ladder is the rest of the chain's
 milestone sequence. A milestone passes when at least two distinct seeds reach
 it, and the score counts passed milestones in a row from the front of the
 ladder. Reaching the ending passes every milestone before it. Two more tables

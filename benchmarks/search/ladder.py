@@ -5,9 +5,11 @@ Each source is a matrix directory written by `eval.py run` over
 `metroid-ladder.json`, or a JSON file `eval.py ladder --out` wrote. Only cases
 whose id names a segment, such as `ladder-seg4`, are scored. Every seed of a
 root starts from the same state, so a root holds a milestone when every seed
-that reported progress shows it at execution one. It also holds every
-milestone before the deepest one it holds, because the area milestones name
-where Samus is and a root past an area has left it. The ladder for that root
+that reported progress shows it in that seed's first recorded observation. That
+observation usually carries execution one, and later when the first jobs report
+nothing. A root also holds every milestone before the deepest one it holds,
+because the area milestones name where Samus is and a root past an area has
+left it. The ladder for that root
 is the chain's milestone sequence after the deepest milestone the root holds.
 Any other arrival at execution one counts as a reach at execution one, since
 the first searched job carries that stamp too. A milestone passes when at
@@ -130,7 +132,9 @@ def score(root):
         index
         for index, name in enumerate(LADDER)
         if reporting
-        and all(cell["first_execution"].get(name) == 1 for cell in reporting)
+        and all(
+            cell["first_execution"].get(name) == first_stamp(cell) for cell in reporting
+        )
     ]
     front = max(held_at_root, default=-1) + 1
     held = set(LADDER[:front])
@@ -148,6 +152,13 @@ def score(root):
             break
         passed.append((name, sorted(earliest.values())))
     return held, ladder, passed
+
+
+def first_stamp(cell):
+    return min(
+        (execution for execution in cell["first_execution"].values() if execution),
+        default=None,
+    )
 
 
 def reached_at(first_execution, name):
