@@ -12,8 +12,9 @@ the score is the number of passed milestones in a row from the front of the
 ladder. Several sources print side by side, one column per build. A second
 table gives each root's continuation graph counters per build: jobs,
 landings, replacements and the longest wave, ranged over the root's seeds,
-and a third gives the input actions and emulator work per execution and the
-hours each cell ran, so builds compare on emulation as well as executions.
+and a third gives the input actions and emulator work per execution, the
+share of executions that replayed a splice donor's route, and the hours
+each cell ran, so builds compare on emulation as well as executions.
 A seed that reaches the ending has passed every milestone before it.
 """
 
@@ -62,6 +63,7 @@ def first_seen(summary, cell_dir):
         {
             "suffix_actions": (progress.get("coordinator") or {}).get("suffix_actions"),
             "suffix_cost": (progress.get("coordinator") or {}).get("suffix_cost"),
+            "splice_jobs": (progress.get("coordinator") or {}).get("splice_jobs"),
             "elapsed_millis": progress.get("search_elapsed_millis"),
         },
     )
@@ -199,7 +201,7 @@ def render(documents):
 
 
 def cost_detail(root):
-    actions = work = executions = 0
+    actions = work = executions = splices = 0
     hours = []
     for seed in root["seeds"].values():
         cost = seed.get("cost") or {}
@@ -208,10 +210,11 @@ def cost_detail(root):
         actions += cost["suffix_actions"]
         work += cost["suffix_cost"]
         executions += seed["executions"]
+        splices += cost.get("splice_jobs") or 0
         hours.append((cost.get("elapsed_millis") or 0) / 3_600_000)
     return (
         f"actions {actions / executions:.1f}, work {work / executions:.0f}, "
-        f"hours {min(hours):.1f}-{max(hours):.1f}"
+        f"splices {splices / executions:.0%}, hours {min(hours):.1f}-{max(hours):.1f}"
     )
 
 

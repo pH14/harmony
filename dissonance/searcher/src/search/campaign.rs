@@ -2048,12 +2048,16 @@ struct LiveCoordinatorProfile {
     replay_cost: u64,
     suffix_actions: u64,
     suffix_cost: u64,
+    splice_jobs: u64,
+    splice_actions: u64,
+    splice_cost: u64,
 }
 
 impl LiveCoordinatorProfile {
     fn note_dispatch<G: Workload + ?Sized>(
         &mut self,
         spec: &JobSpec<G>,
+        spliced: bool,
         cost: fn(&G::Action) -> u64,
     ) {
         if !self.enabled {
@@ -2071,6 +2075,13 @@ impl LiveCoordinatorProfile {
             .suffix_actions
             .saturating_add(u64::try_from(spec.suffix.len()).unwrap_or(u64::MAX));
         self.suffix_cost = self.suffix_cost.saturating_add(total(&spec.suffix));
+        if spliced {
+            self.splice_jobs = self.splice_jobs.saturating_add(1);
+            self.splice_actions = self
+                .splice_actions
+                .saturating_add(u64::try_from(spec.suffix.len()).unwrap_or(u64::MAX));
+            self.splice_cost = self.splice_cost.saturating_add(total(&spec.suffix));
+        }
     }
 }
 
@@ -3026,7 +3037,11 @@ where
                 let Some((mut spec, pending_job)) = selected else {
                     break;
                 };
-                coordinator_profile.note_dispatch(&spec, action_cost);
+                coordinator_profile.note_dispatch(
+                    &spec,
+                    matches!(pending_job.splice, Some(CampaignSpliceRecord::Tail { .. })),
+                    action_cost,
+                );
                 let reservation = usize::try_from(reserved.saturating_sub(1))?;
                 spec.reservation = reservation;
                 if pending.insert(reservation, pending_job).is_some() {
@@ -3344,7 +3359,11 @@ where
                     coordinator_profile.selections =
                         coordinator_profile.selections.saturating_add(1);
                     if let Some((mut spec, pending_job)) = selected {
-                        coordinator_profile.note_dispatch(&spec, action_cost);
+                        coordinator_profile.note_dispatch(
+                            &spec,
+                            matches!(pending_job.splice, Some(CampaignSpliceRecord::Tail { .. })),
+                            action_cost,
+                        );
                         let reservation = usize::try_from(reserved.saturating_sub(1))?;
                         spec.reservation = reservation;
                         if pending.insert(reservation, pending_job).is_some() {
