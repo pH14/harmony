@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::BTreeMap, error::Error, num::NonZeroUsize};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    num::{NonZeroU16, NonZeroUsize},
+};
 
 use fault_policy::EVENT_PARK_EDGE_LIMIT;
 use serde::{Deserialize, Serialize};
@@ -165,14 +169,13 @@ pub fn action_cost(action: &FaultAction) -> u64 {
     crate::target::action_ticks(action)
 }
 
-pub const PAUSE_TICKS: [u32; 4] = [1, 5, 25, 100];
 pub const VECTORS: [u32; 2] = [0x20, 0x30];
-pub const PARK_HOLD_US: [u32; 3] = [500, 2_000, 10_000];
 
 pub fn sample_action(
     rand: &mut RomuDuoJrRand,
     vocabulary: &FaultVocabulary,
     event_ready: u64,
+    ticks: NonZeroU16,
 ) -> Result<FaultAction, Box<dyn Error>> {
     let pick = |rand: &mut RomuDuoJrRand, len: usize| -> Result<usize, Box<dyn Error>> {
         Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault vocabulary alternative")?))
@@ -198,28 +201,29 @@ pub fn sample_action(
         }
         Ok(u16::try_from(bits.trailing_zeros())?)
     };
-    match alternatives[pick(rand, alternatives.len())?] {
-        0 => Ok(FaultAction::Wait(std::num::NonZeroU16::MIN)),
-        1 => Ok(FaultAction::Kill(node)),
-        2 => Ok(FaultAction::Pause(
-            node,
-            PAUSE_TICKS[pick(rand, PAUSE_TICKS.len())?],
-        )),
-        3 => Ok(FaultAction::Restart(node)),
-        4 => Ok(FaultAction::Hook(
+    let action = match alternatives[pick(rand, alternatives.len())?] {
+        0 => FaultAction::Wait(ticks),
+        1 => FaultAction::Kill(node, ticks),
+        2 => FaultAction::Pause(node, ticks),
+        3 => FaultAction::Restart(node, ticks),
+        4 => FaultAction::Hook(
             vocabulary.hooks()[pick(rand, vocabulary.hooks().len())?],
-        )),
-        5 => Ok(FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?])),
-        6 => Ok(FaultAction::EventKill {
+            ticks,
+        ),
+        5 => FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?], ticks),
+        6 => FaultAction::EventKill {
             node: event_node(rand)?,
             rarity: u8::try_from(pick(rand, 64)?)?,
-        }),
-        _ => Ok(FaultAction::EventPark {
+            ticks,
+        },
+        _ => FaultAction::EventPark {
             node: event_node(rand)?,
             edges: park_edges(rand)?,
-            hold_us: PARK_HOLD_US[pick(rand, PARK_HOLD_US.len())?],
-        }),
-    }
+            hold_us: 0,
+        }
+        .with_ticks(ticks),
+    };
+    Ok(action)
 }
 
 fn park_edges(rand: &mut RomuDuoJrRand) -> Result<u32, Box<dyn Error>> {
@@ -263,7 +267,6 @@ pub fn bug_outcome(bugs: &[FaultBugRecord]) -> (u64, Option<u64>) {
 pub struct FaultArchiveReport {
     pub seed: u64,
     pub root_seal: u64,
-    pub horizon_nanos: u64,
     pub executions: u64,
     pub milestones: FaultMilestones,
     pub progress_watermark: FaultProgressWatermark,
@@ -452,6 +455,8 @@ mod tests {
         );
     }
 
+    const TICKS: NonZeroU16 = NonZeroU16::new(50).unwrap();
+
     fn vocabulary() -> FaultVocabulary {
         FaultVocabulary::new(1, vec![1, 2]).expect("vocabulary")
     }
@@ -463,20 +468,21 @@ mod tests {
         let mut kinds = BTreeSet::new();
         let kind = |action: &FaultAction| match action {
             FaultAction::Wait(_) => 0,
-            FaultAction::Kill(_) => 1,
+            FaultAction::Kill(..) => 1,
             FaultAction::Pause(..) => 2,
-            FaultAction::Restart(_) => 3,
-            FaultAction::Hook(_) => 4,
-            FaultAction::Interrupt(_) => 5,
+            FaultAction::Restart(..) => 3,
+            FaultAction::Hook(..) => 4,
+            FaultAction::Interrupt(..) => 5,
             FaultAction::EventKill { .. } => 6,
             FaultAction::EventPark { .. } => 7,
         };
         for _ in 0..2_000 {
-            let action = sample_action(&mut rand, &vocabulary, 0).expect("draw an action");
+            let action = sample_action(&mut rand, &vocabulary, 0, TICKS).expect("draw an action");
             kinds.insert(kind(&action));
+            assert_eq!(action.ticks(), u64::from(TICKS.get()));
             match action {
                 FaultAction::Wait(_) => {}
-                FaultAction::EventKill { node, rarity } => {
+                FaultAction::EventKill { node, rarity, .. } => {
                     assert!(vocabulary.instrumented_events());
                     assert!(node < vocabulary.nodes());
                     assert!(rarity < 64);
@@ -486,15 +492,13 @@ mod tests {
                     assert!(node < vocabulary.nodes());
                     assert!((1..=EVENT_PARK_EDGE_LIMIT).contains(&edges));
                 }
-                FaultAction::Kill(node) | FaultAction::Restart(node) => {
+                FaultAction::Kill(node, _)
+                | FaultAction::Restart(node, _)
+                | FaultAction::Pause(node, _) => {
                     assert!(node < vocabulary.nodes());
                 }
-                FaultAction::Pause(node, ticks) => {
-                    assert!(node < vocabulary.nodes());
-                    assert!(PAUSE_TICKS.contains(&ticks));
-                }
-                FaultAction::Hook(id) => assert!(vocabulary.hooks().contains(&id)),
-                FaultAction::Interrupt(vector) => assert!(VECTORS.contains(&vector)),
+                FaultAction::Hook(id, _) => assert!(vocabulary.hooks().contains(&id)),
+                FaultAction::Interrupt(vector, _) => assert!(VECTORS.contains(&vector)),
             }
         }
         assert_eq!(
@@ -512,7 +516,7 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(19);
         let mut events = 0;
         for _ in 0..2000 {
-            match sample_action(&mut rand, &vocabulary, 0b010).unwrap() {
+            match sample_action(&mut rand, &vocabulary, 0b010, TICKS).unwrap() {
                 FaultAction::EventKill { node, .. } | FaultAction::EventPark { node, .. } => {
                     assert_eq!(node, 1);
                     events += 1;
@@ -520,7 +524,7 @@ mod tests {
                 _ => {}
             }
             assert!(!matches!(
-                sample_action(&mut rand, &vocabulary, 0).unwrap(),
+                sample_action(&mut rand, &vocabulary, 0, TICKS).unwrap(),
                 FaultAction::EventKill { .. } | FaultAction::EventPark { .. }
             ));
         }
@@ -548,7 +552,9 @@ mod tests {
         let mut rand = RomuDuoJrRand::with_seed(3);
         let mut seen = BTreeSet::new();
         for _ in 0..2_000 {
-            if let FaultAction::Kill(node) = sample_action(&mut rand, &wide, 0).expect("draw") {
+            if let FaultAction::Kill(node, _) =
+                sample_action(&mut rand, &wide, 0, TICKS).expect("draw")
+            {
                 seen.insert(node);
             }
         }
@@ -560,8 +566,8 @@ mod tests {
         let hookless = FaultVocabulary::new(1, Vec::new()).expect("vocabulary");
         let mut rand = RomuDuoJrRand::with_seed(4);
         for _ in 0..2_000 {
-            let action = sample_action(&mut rand, &hookless, 0).expect("draw");
-            assert!(!matches!(action, FaultAction::Hook(_)));
+            let action = sample_action(&mut rand, &hookless, 0, TICKS).expect("draw");
+            assert!(!matches!(action, FaultAction::Hook(..)));
         }
     }
 
@@ -570,7 +576,7 @@ mod tests {
         let draw = |seed| {
             let mut rand = RomuDuoJrRand::with_seed(seed);
             (0..64)
-                .map(|_| sample_action(&mut rand, &vocabulary(), 0).expect("draw"))
+                .map(|_| sample_action(&mut rand, &vocabulary(), 0, TICKS).expect("draw"))
                 .collect::<Vec<_>>()
         };
         assert_eq!(draw(5), draw(5));
@@ -597,7 +603,7 @@ mod tests {
             action_cost(&FaultAction::Wait(std::num::NonZeroU16::MIN)),
             1
         );
-        assert_eq!(action_cost(&FaultAction::Kill(4)), 50);
+        assert_eq!(action_cost(&FaultAction::Kill(4, TICKS)), 50);
         assert_eq!(
             action_cost(&FaultAction::Wait(std::num::NonZeroU16::new(8192).unwrap())),
             8192

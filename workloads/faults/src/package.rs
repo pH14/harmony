@@ -168,7 +168,6 @@ pub struct Report {
     pub identity: String,
     pub seed: u64,
     pub workers: u32,
-    pub horizon_ms: u64,
     pub ram_mib: u32,
     pub executions: u64,
     pub bug_found: bool,
@@ -195,7 +194,6 @@ impl Report {
             identity,
             seed: options.seed,
             workers: options.workers,
-            horizon_ms: crate::target::DEFAULT_HORIZON_NANOS / 1_000_000,
             ram_mib: options.ram_mib,
             executions: 0,
             bug_found: false,
@@ -226,25 +224,17 @@ pub struct Artifacts {
 #[serde(untagged)]
 enum RecordedInput {
     Actions(Vec<FaultAction>),
-    Report {
-        actions: Vec<FaultAction>,
-        horizon_nanos: Option<u64>,
-    },
+    Report { actions: Vec<FaultAction> },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecordedActions {
     pub actions: Vec<FaultAction>,
-    pub horizon_nanos: Option<u64>,
 }
 
 pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error>> {
-    let (actions, horizon_nanos) = match serde_json::from_str::<RecordedInput>(text)? {
-        RecordedInput::Actions(actions) => (actions, None),
-        RecordedInput::Report {
-            actions,
-            horizon_nanos,
-        } => (actions, horizon_nanos),
+    let actions = match serde_json::from_str::<RecordedInput>(text)? {
+        RecordedInput::Actions(actions) | RecordedInput::Report { actions } => actions,
     };
     if actions.is_empty() {
         return Err("the recorded input names no actions".into());
@@ -268,10 +258,7 @@ pub fn parse_recorded_input(text: &str) -> Result<RecordedActions, Box<dyn Error
             _ => {}
         }
     }
-    Ok(RecordedActions {
-        actions,
-        horizon_nanos,
-    })
+    Ok(RecordedActions { actions })
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -376,13 +363,11 @@ mod live {
         let archive = &campaign_report.campaign.archive;
         let windows = ActionWindows {
             root_seal: archive.root_seal,
-            horizon_nanos: archive.horizon_nanos,
         };
         let written = write_bug_reports(windows, &archive.bugs, &options.output)?;
         let summary = json!({
             "mode": "faultlab_campaign",
             "image": game.image_identity(),
-            "horizon_nanos": archive.horizon_nanos,
             "root_seal": archive.root_seal,
             "vocabulary": vocabulary.identifier(),
             "campaign_seed": campaign_report.campaign.campaign_seed,
@@ -675,13 +660,13 @@ mod tests {
 
     #[test]
     fn a_recorded_input_reads_as_a_bug_report_or_a_bare_action_list() {
-        let actions = vec![FaultAction::Hook(1), FaultAction::Kill(0)];
+        let ticks = std::num::NonZeroU16::new(50).unwrap();
+        let actions = vec![FaultAction::Hook(1, ticks), FaultAction::Kill(0, ticks)];
         let bare = serde_json::to_string(&actions).expect("serialize");
         assert_eq!(
             parse_recorded_input(&bare).expect("bare"),
             RecordedActions {
                 actions: actions.clone(),
-                horizon_nanos: None,
             }
         );
         let report = serde_json::json!({ "bug": 1, "actions": actions }).to_string();
@@ -689,18 +674,7 @@ mod tests {
             parse_recorded_input(&report).expect("report").actions,
             actions
         );
-        let timed = serde_json::json!({
-            "bug": 1,
-            "actions": actions,
-            "horizon_nanos": 250_000_000_u64,
-        })
-        .to_string();
-        assert_eq!(
-            parse_recorded_input(&timed)
-                .expect("timed report")
-                .horizon_nanos,
-            Some(250_000_000)
-        );
+        assert!(parse_recorded_input(r#"[{"Kill":0}]"#).is_err());
         assert!(parse_recorded_input("[]").is_err());
         assert!(parse_recorded_input("{}").is_err());
     }
@@ -729,7 +703,7 @@ mod tests {
     fn bug_summary(execution: u64, confirmed: bool) -> BugSummary {
         BugSummary {
             execution,
-            actions: vec![FaultAction::Hook(3)],
+            actions: vec![FaultAction::Hook(3, std::num::NonZeroU16::new(50).unwrap())],
             stop: FaultStop::Assertion { point: 2 },
             violations: ids(&[2]),
             sometimes: ids(&[24]),

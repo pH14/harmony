@@ -83,7 +83,6 @@
     "Interrupt"
   ],
   "run": {
-    "horizon_ms": 500,
     "ram_mib": 1024,
     "knobs": {
       "faultlab.churn_rows": 20,

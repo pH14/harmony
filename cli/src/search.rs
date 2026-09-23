@@ -92,10 +92,7 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
         }
         (Package::Faults, Backend::Consonance) => {
             let faults = faults_options(&args)?;
-            let replay = read_replay(
-                args.replay.as_deref(),
-                faults_workload::target::DEFAULT_HORIZON_NANOS,
-            )?;
+            let replay = read_replay(args.replay.as_deref())?;
             run_faults_consonance(
                 &args.input,
                 args.kernel,
@@ -112,21 +109,11 @@ pub fn run(args: Args) -> Result<ExitCode, Box<dyn Error>> {
 
 fn read_replay(
     path: Option<&std::path::Path>,
-    horizon_nanos: u64,
 ) -> Result<Option<Vec<faults_workload::FaultAction>>, Box<dyn Error>> {
     let Some(path) = path else {
         return Ok(None);
     };
     let recorded = faults_workload::parse_recorded_input(&std::fs::read_to_string(path)?)?;
-    if let Some(recorded_horizon) = recorded.horizon_nanos
-        && recorded_horizon != horizon_nanos
-    {
-        return Err(format!(
-            "{} uses an incompatible action duration format ({recorded_horizon} ns)",
-            path.display()
-        )
-        .into());
-    }
     Ok(Some(recorded.actions))
 }
 
@@ -361,9 +348,10 @@ mod tests {
 
     #[test]
     fn a_replay_input_is_a_recorded_action_list_or_a_bug_report() {
+        let ticks = std::num::NonZeroU16::new(50).unwrap();
         let actions = vec![
-            faults_workload::FaultAction::Hook(1),
-            faults_workload::FaultAction::Kill(0),
+            faults_workload::FaultAction::Hook(1, ticks),
+            faults_workload::FaultAction::Kill(0, ticks),
         ];
         let file = tempfile::NamedTempFile::new().expect("temp file");
         std::fs::write(
@@ -372,34 +360,19 @@ mod tests {
         )
         .expect("write");
         assert_eq!(
-            read_replay(Some(file.path()), 500_000_000).expect("read"),
+            read_replay(Some(file.path())).expect("read"),
             Some(actions.clone())
         );
-        assert_eq!(read_replay(None, 500_000_000).expect("read"), None);
-        assert!(
-            read_replay(
-                Some(std::path::Path::new("missing-replay.json")),
-                500_000_000
-            )
-            .is_err()
-        );
+        assert_eq!(read_replay(None).expect("read"), None);
+        assert!(read_replay(Some(std::path::Path::new("missing-replay.json"))).is_err());
 
         std::fs::write(
             file.path(),
-            serde_json::json!({ "actions": actions, "horizon_nanos": 250_000_000_u64 }).to_string(),
+            serde_json::json!({ "bug": 1, "actions": actions }).to_string(),
         )
         .expect("write");
-        assert_eq!(
-            read_replay(Some(file.path()), 250_000_000).expect("read"),
-            Some(actions)
-        );
-        let mismatch = read_replay(Some(file.path()), 500_000_000)
-            .expect_err("a recorded horizon the run does not match is refused");
-        assert!(
-            mismatch
-                .to_string()
-                .contains("incompatible action duration format"),
-            "{mismatch}"
-        );
+        assert_eq!(read_replay(Some(file.path())).expect("read"), Some(actions));
+        std::fs::write(file.path(), r#"[{"Kill":0}]"#).expect("write");
+        assert!(read_replay(Some(file.path())).is_err());
     }
 }

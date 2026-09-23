@@ -123,8 +123,8 @@ supervisor bundle to the guest.
 
 `case.json` is the machine-readable form of all of this: the pins, the node and
 hook table, the oracle, the run settings and the search budget. `probe.json` is
-the hand-written overlap — hook 1, hook 2, wait, wait, hook 3, wait, wait, at
-500 ms horizons — that trips the oracle on 14.3. It is a historical reachability
+the hand-written overlap — hook 1, hook 2, wait, wait, hook 3, wait, wait, each
+500 ms long — that trips the oracle on 14.3. It is a historical reachability
 reference; CI discovers a fresh input on the current build instead of gating on
 this committed sequence.
 
