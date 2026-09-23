@@ -1249,12 +1249,12 @@ SEED_ASSERTION_RE = re.compile(
     r"(?<![\w-])(?:grep|rg|jq\s+-e|assert\w*|expect\w*)(?![\w-])"
 )
 PINNED_SEED_RE = re.compile(
-    r"seed\s*[=:]\s*[\"\']?(?:0x)?[0-9a-fA-F]{2,}(?![\w\-.])", re.IGNORECASE
+    r"seed\s*[=:]\s*[\"\']?(?:0x)?[0-9a-fA-F]+(?![\w\-.])", re.IGNORECASE
 )
 
 
 def _seed_assertion_file(path: str) -> bool:
-    if path.startswith(".github/workflows/") and path.endswith(".yml"):
+    if path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml")):
         return True
     return path.startswith("scripts/") and path.endswith(".sh")
 
@@ -1275,6 +1275,26 @@ def _statements(lines: list[str]):
         yield start, buffer
 
 
+def _commands(statement: str):
+    """Each command of a shell statement, split on unquoted ;, &&, || and |."""
+    command, quote, index = "", None, 0
+    while index < len(statement):
+        char = statement[index]
+        if quote:
+            if char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        elif char in ";&|":
+            index += 2 if statement[index:index + 2] in ("&&", "||") else 1
+            yield command
+            command = ""
+            continue
+        command += char
+        index += 1
+    yield command
+
+
 def check_pinned_seed_outcomes(repo_root: Path, files: list[str]) -> list[Violation]:
     """No check requires a literal seed to produce a particular result."""
     violations = []
@@ -1287,12 +1307,14 @@ def check_pinned_seed_outcomes(repo_root: Path, files: list[str]) -> list[Violat
         except OSError:
             continue
         for number, statement in _statements(lines):
-            if not SEED_ASSERTION_RE.search(statement):
-                continue
-            match = PINNED_SEED_RE.search(statement)
-            if match:
-                violations.append(Violation("ci-pinned-seed-outcome", rel_path, number,
-                                            match.group(0)))
+            for command in _commands(statement):
+                assertion = SEED_ASSERTION_RE.search(command)
+                if not assertion:
+                    continue
+                match = PINNED_SEED_RE.search(command, assertion.end())
+                if match:
+                    violations.append(Violation("ci-pinned-seed-outcome", rel_path, number,
+                                                match.group(0)))
     return violations
 
 

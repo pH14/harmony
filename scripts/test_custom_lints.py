@@ -370,6 +370,26 @@ class PinnedSeedOutcomeTests(unittest.TestCase):
         content = "          tools/campaign --seed 20260901 --executions 10\n"
         self.assertFalse(self.check(rel, content))
 
+    def test_a_one_digit_seed_in_an_expected_pattern_is_rejected(self):
+        rel = ".github/workflows/example-benchmarks.yml"
+        content = "          grep -Eq 'OK seed=1' report.txt\n"
+        self.assertEqual(self.check(rel, content), ["ci-pinned-seed-outcome"])
+
+    def test_a_yaml_workflow_is_checked(self):
+        rel = ".github/workflows/example-benchmarks.yaml"
+        content = "          grep -Eq 'OK seed=1352825' report.txt\n"
+        self.assertEqual(self.check(rel, content), ["ci-pinned-seed-outcome"])
+
+    def test_a_seed_input_after_an_unrelated_check_is_accepted(self):
+        rel = "scripts/example.sh"
+        content = "grep -q READY report.txt && harmony search --seed=123\n"
+        self.assertFalse(self.check(rel, content))
+
+    def test_a_pinned_seed_in_a_quoted_alternation_is_rejected(self):
+        rel = "scripts/example.sh"
+        content = "grep -Eq 'seed=[0-9a-f]{16}|OK seed=77' report.txt\n"
+        self.assertEqual(self.check(rel, content), ["ci-pinned-seed-outcome"])
+
     def test_a_pinned_seed_across_a_line_continuation_is_rejected(self):
         rel = "scripts/example.sh"
         content = ("grep -Eq \\\n"
