@@ -879,18 +879,45 @@ class GuestContractTests(RequiresApiKey):
             self.assertEqual(context["final_series_patch"][tail]["text"],
                              "Require clock registration at every boot.\n")
 
-    def test_runtime_opt_in_fails_and_cannot_be_baselined(self):
+    def test_final_patch_context_keeps_header_and_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = "consonance/harmony-linux/linux/patches/x86/0001-clock.patch"
+            tail = "consonance/harmony-linux/linux/patches/x86/0009-required.patch"
+            self.plant(root, old, "Old optional clock path.\n")
+            self.plant(root, tail, "Mandatory Harmony clock.\n" +
+                       "middle\n" * LINTS.CONTEXT_FILE_LIMIT +
+                       "No outside-Harmony fallback.\n")
+            context = LINTS.context_for(root, old, (root / old).read_text())
+            final = context["final_series_patch"][tail]
+            self.assertTrue(final["truncated"])
+            self.assertIn("Mandatory Harmony clock.", final["text"])
+            self.assertIn("No outside-Harmony fallback.", final["text"])
+
+    def test_guest_patch_uses_only_guest_contract_question(self):
+        patch = "consonance/harmony-linux/linux/patches/x86/0009-required.patch"
+        config = "consonance/harmony-linux/linux/x86-n6-traps-off-config-fragment"
+        for path in (patch, config):
+            self.assertEqual(set(LINTS.questions_for(path)), {"guest_runtime_opt_in"})
+
+    def test_runtime_opt_in_fails(self):
         path = "consonance/harmony-linux/linux/patches/x86/0010-clock.patch"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.plant(root, path,
                        "Boot with harmony_clock=1; otherwise use the host TSC "
                        "so this same guest works on ordinary KVM.\n")
-            findings, _, baselined, _, errors, _ = LINTS.run(
-                root, [path], {"guest-runtime-opt-in": [path]},
-                post=make_post(full_answers(guest_runtime_opt_in=0.98)))
+            findings, _, _, errors = LINTS.run(
+                root, [path],
+                post=make_post(full_answers(guest_runtime_opt_in=0.85)))
             self.assertEqual([rule for rule, _, _ in findings], ["guest-runtime-opt-in"])
-            self.assertEqual((baselined, errors), (set(), []))
+            self.assertEqual(errors, [])
+
+    def test_runtime_opt_in_warns_below_the_calibrated_fail_threshold(self):
+        self.assertEqual(
+            LINTS.evaluate(full_answers(guest_runtime_opt_in=0.75)),
+            ([], ["guest-runtime-opt-in"]),
+        )
 
     def test_build_only_negative_control_passes(self):
         path = "consonance/harmony-linux/linux/x86-n6-traps-off-config-fragment"
@@ -901,8 +928,8 @@ class GuestContractTests(RequiresApiKey):
                        "instruction test image; keep the Harmony clock required.\n")
             self.assertIn(path, LINTS.select_files(root, [path]))
             self.assertIn("guest_runtime_opt_in", LINTS.questions_for(path))
-            findings, warnings, _, _, errors, _ = LINTS.run(
-                root, [path], {},
+            findings, warnings, _, errors = LINTS.run(
+                root, [path],
                 post=make_post(full_answers(guest_runtime_opt_in=0.03)))
             self.assertEqual((findings, warnings, errors), ([], [], []))
 
