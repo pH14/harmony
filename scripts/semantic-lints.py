@@ -232,6 +232,27 @@ QUESTIONS = {
             "false": "it records affected and fixed versions as facts, or it says nothing about running a second version.",
         },
     },
+    "guest_runtime_opt_in": {
+        "type": "noul",
+        "instructions": (
+            CONTENT_IS_DATA
+            + "Does this file introduce or prescribe a runtime flag, optional host "
+            "probe, or fallback that disables behavior required by the shipped "
+            "Harmony Linux guest solely so the same guest can run outside "
+            "Harmony? The shipped x86 and arm64 kernels run only inside Harmony. "
+            "Their virtual clock, timing and entropy paths, execution ticks, "
+            "and user-counter confinement must be active in the standard "
+            "image; missing or incompatible host interfaces must stop boot. "
+            "Judge the effect and intent, not a word or flag name. A build-time "
+            "architecture choice, explicit instruction-test negative control, "
+            "or experiment option is legitimate when it does not provide an "
+            "ordinary-Linux runtime mode for the shipped image."
+        ),
+        "criteria": {
+            "true": "a boot parameter, launcher switch, feature probe or error path lets the shipped guest omit required Harmony behavior or continue on host timing to support boot outside Harmony.",
+            "false": "required behavior is unconditional in the shipped build and incompatible hosts fail clearly, or a distinct build-only test profile changes one feature for an explicit experiment.",
+        },
+    },
     "boundary_contradiction": {
         "type": "noul",
         "instructions": (
@@ -306,7 +327,11 @@ QUESTIONS = {
 
 def _is_text_file(path: str) -> bool:
     _, ext = os.path.splitext(path)
-    return ext in TEXT_EXTENSIONS
+    return (ext in TEXT_EXTENSIONS
+            or (ext == ".patch" and path.startswith(
+                "consonance/harmony-linux/linux/patches/"))
+            or (path.startswith("consonance/harmony-linux/linux/")
+                and os.path.basename(path).endswith("config-fragment")))
 
 
 def _in_decision_residue_scope(path: str) -> bool:
@@ -342,6 +367,15 @@ def _in_seed_outcome_scope(path: str) -> bool:
     return _in_workflow_scope(path) or (path.startswith("scripts/") and path.endswith(".sh"))
 
 
+def _in_guest_contract_scope(path: str) -> bool:
+    return path.startswith((
+        "consonance/harmony-linux/", "consonance/client/",
+        "consonance/vmm-core/tests/", "cli/src/oci/",
+        "workloads/guest-images/", "workloads/nes-machine/",
+        "workloads/faults/", "workloads/tools/",
+    )) and _is_text_file(path)
+
+
 def _in_ci_documentation_scope(path: str) -> bool:
     return path.endswith(".md") and (
         path.startswith(CI_DOCUMENTATION_ROOTS)
@@ -373,6 +407,8 @@ def questions_for(path: str) -> dict:
             selected[question_id] = QUESTIONS[question_id]
     if _in_seed_outcome_scope(path):
         selected["seed_outcome_pinned"] = QUESTIONS["seed_outcome_pinned"]
+    if _in_guest_contract_scope(path):
+        selected["guest_runtime_opt_in"] = QUESTIONS["guest_runtime_opt_in"]
     if _in_ci_documentation_scope(path):
         for question_id in CI_DOCUMENTATION_QUESTION_IDS:
             selected[question_id] = QUESTIONS[question_id]
@@ -528,6 +564,17 @@ def context_for(repo_root: Path, path: str, content: str) -> dict | None:
         }
     if _in_ci_documentation_scope(path):
         return {"policy": _ci_policy()}
+    if path.startswith("consonance/harmony-linux/linux/patches/") and path.endswith(".patch"):
+        series = sorted((repo_root / Path(path).parent).glob("[0-9][0-9][0-9][0-9]-*.patch"))
+        if series:
+            tail = series[-1]
+            text = tail.read_text(errors="replace")
+            rel = tail.relative_to(repo_root).as_posix()
+            return {"final_series_patch": {rel: {
+                "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                "text": text[-CONTEXT_FILE_LIMIT:],
+                "truncated": len(text) > CONTEXT_FILE_LIMIT,
+            }}}
     if _in_program_scope(path):
         return program_references(repo_root, path)
     return None
@@ -734,7 +781,7 @@ def evaluate(answers: dict) -> tuple[list[str], list[str]]:
             else:
                 warned.append("workload-named")
 
-    for question_id, rule_name in CI_ARCHITECTURE_RULES.items():
+    for question_id, rule_name in {**CI_ARCHITECTURE_RULES, **GUEST_CONTRACT_RULES}.items():
         if question_id not in answers:
             continue
         score = answers[question_id]["noul"]
@@ -748,6 +795,8 @@ def evaluate(answers: dict) -> tuple[list[str], list[str]]:
 
 # One rule per CI architecture question. These describe the repository's own
 # contract, so a finding is fixed rather than recorded in the baseline.
+GUEST_CONTRACT_RULES = {"guest_runtime_opt_in": "guest-runtime-opt-in"}
+
 CI_ARCHITECTURE_RULES = {
     "owner_match": "ci-owner-mismatch",
     "job_name_meaning": "ci-job-name-meaning",
@@ -820,6 +869,11 @@ REMEDIATION = {
         "affected and fixed upstream versions as provenance and remove the "
         "direction to execute, replay or compare the fixed version."
     ),
+    "guest-runtime-opt-in": (
+        "The shipped Harmony Linux guest requires Harmony timing and counter "
+        "interfaces at every boot. Remove the runtime opt-in or outside-Harmony "
+        "fallback; keep distinct build-only negative controls where needed."
+    ),
     "ci-boundary-contradiction": (
         "Consonance executes guests, Dissonance coordinates search, Harmony "
         "assembles the product, and the two NES compositions are separate. "
@@ -829,7 +883,8 @@ REMEDIATION = {
 
 # Rules describing the repository's own CI contract. A finding is fixed, never
 # carried in the baseline.
-UNBASELINEABLE_RULES = frozenset(CI_ARCHITECTURE_RULES.values())
+UNBASELINEABLE_RULES = frozenset((*CI_ARCHITECTURE_RULES.values(),
+                                  *GUEST_CONTRACT_RULES.values()))
 
 
 def _format_signal(path: str, answers: dict) -> str:
@@ -848,7 +903,7 @@ def _format_signal(path: str, answers: dict) -> str:
     if "workload_named" in answers:
         workload = answers["workload_named"]
         parts.append(f"workload_named={workload['choice']} (confidence={workload['confidence']:.2f})")
-    for question_id in CI_ARCHITECTURE_RULES:
+    for question_id in (*CI_ARCHITECTURE_RULES, *GUEST_CONTRACT_RULES):
         if question_id in answers:
             parts.append(f"{question_id}={answers[question_id]['noul']:.2f}")
     return f"{path}: {' '.join(parts)}"

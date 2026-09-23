@@ -262,8 +262,11 @@ media, and `docs/WORKFLOWS.md`. A composite action is followed into its own
 file, so a script the workflow reaches only through an action counts too. The
 prompt carries a bounded excerpt of each of those files and the digest of the
 whole file, so a change anywhere in one reselects the workflow and invalidates
-its cached judgment. Findings under these rules are fixed rather than recorded
-in the semantic baseline.
+its cached judgment. Guest kernel patches, launchers, and nearby build inputs are also judged for
+runtime switches that contradict the dedicated Harmony guest contract. The
+judge sees the final numbered patch in each kernel series when checking an
+earlier patch. Findings under these rules are fixed rather than recorded in
+the semantic baseline.
 
 | Rule | Asks |
 | --- | --- |
@@ -275,6 +278,7 @@ in the semantic baseline.
 | `ci-fixed-version-direction` | Does documentation direct a fixed-version comparison campaign? |
 | `ci-boundary-contradiction` | Does documentation contradict the component and composition boundaries? |
 | `ci-pinned-seed-outcome` | Does a check require a particular search outcome from one fixed seed? |
+| `guest-runtime-opt-in` | Does a guest kernel patch, launcher, or adjacent build path make required Harmony guest behavior optional to run the shipped image outside Harmony? Build-only test controls remain valid. |
 
 ## Verification
 
