@@ -254,16 +254,17 @@ under a `ci-` rule cannot be recorded in the lint baseline.
 | `ci-historical-arms` | No case or matrix restores a fixed-version comparison arm. |
 | `ci-pinned-seed-outcome` | No expected-output pattern pins a literal seed value. |
 
-`scripts/semantic-lints.py` asks a judge what a parser cannot decide. It skips
-without `TYPESAFE_API_KEY`, so deterministic correctness never depends on it. A
-workflow is judged alongside its registry entry, the ownership policy, the local
-actions, scripts and manifests it runs, the renderers its jobs register as
-media, and `docs/WORKFLOWS.md`. A composite action is followed into its own
-file, so a script the workflow reaches only through an action counts too. The
-prompt carries a bounded excerpt of each of those files and the digest of the
-whole file, so a change anywhere in one reselects the workflow and invalidates
-its cached judgment. Findings under these rules are fixed rather than recorded
-in the semantic baseline.
+`scripts/semantic-lints.py` asks a judge what a parser cannot decide. Its
+judgments skip without `TYPESAFE_API_KEY`, so deterministic correctness never
+depends on them. Its semantic baseline only shrinks, and that check runs without
+the key. A workflow is judged alongside its registry entry, the ownership
+policy, the local actions, scripts and manifests it runs, the renderers its jobs
+register as media, and `docs/WORKFLOWS.md`. A composite action is followed into
+its own file, so a script the workflow reaches only through an action counts
+too. The prompt carries a bounded excerpt of each of those files and the digest
+of the whole file, so a change anywhere in one reselects the workflow and
+invalidates its cached judgment. Findings under these rules are fixed rather
+than recorded in the semantic baseline.
 
 | Rule | Asks |
 | --- | --- |
