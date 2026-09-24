@@ -45,7 +45,7 @@ every action in the suffix takes it:
 |---|---|
 | `Wait(ticks)` | the workload runs undisturbed |
 | `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
-| `EventPark(node, edges, hold)` | an instrumented runtime holds the thread that reaches the `edges`-th instrumented edge after arming, for the hold; the edge count is drawn log-uniform from 1 through `1 << 24` |
+| `EventPark(node, edges, hold)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold; each edge counts one over its site's visit count, and `edges` is drawn log-uniform from 1 through `1 << 24` |
 | `Kill(node, ticks)` | the node stays down for the window |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
@@ -106,8 +106,10 @@ distinct assertions a workload declares. Every process's records feed the key.
 passed is a campaign failure: it appears under `never_satisfied` in both
 `campaign-summary.json` and `report.json`, and the search prints one
 `FAIL: assertion never satisfied` line for each.
-`park_sites` in `campaign-summary.json` counts event-park landings by
-trace-pc-guard index.
+`park_sites` in `campaign-summary.json` counts event-park landings by site.
+`park_thresholds` counts, for each `floor(log2(edges))`, the parks armed at
+that threshold and the parks that fired, so the fired share at each threshold
+shows which part of the drawn range a workload's executions reach.
 
 The generic `execution_work` counter and `report.json`
 `execution_ticks` count the guest ticks requested by successfully applied actions

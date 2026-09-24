@@ -270,6 +270,19 @@ pub struct FaultArchiveReport {
     pub assertions: Assertions,
     #[serde(default)]
     pub park_sites: BTreeMap<u64, u64>,
+    #[serde(default)]
+    pub park_thresholds: BTreeMap<u32, ParkThresholds>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ParkThresholds {
+    pub armed: u64,
+    pub fired: u64,
+}
+
+#[must_use]
+pub fn park_threshold_bucket(edges: u64) -> u32 {
+    edges.max(1).ilog2()
 }
 
 #[cfg(test)]
@@ -397,6 +410,15 @@ mod tests {
         assert_ne!(survived.identity(), lost_a_node.identity());
         assert_eq!(survived.place(), lost_a_node.place());
         assert_eq!(FaultArchiveKey::capacity(), 1);
+    }
+
+    #[test]
+    fn park_thresholds_bucket_by_power_of_two() {
+        assert_eq!(park_threshold_bucket(0), 0);
+        assert_eq!(park_threshold_bucket(1), 0);
+        assert_eq!(park_threshold_bucket(3), 1);
+        assert_eq!(park_threshold_bucket(4), 2);
+        assert_eq!(park_threshold_bucket(u64::from(EVENT_PARK_EDGE_LIMIT)), 24);
     }
 
     #[test]

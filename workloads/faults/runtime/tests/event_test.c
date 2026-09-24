@@ -167,6 +167,8 @@ int main(void)
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK, 3, 1, response);
     harmony_instrumentation_event(5);
     harmony_instrumentation_event(5);
+    harmony_instrumentation_event(5);
+    harmony_instrumentation_event(10);
     exchange(control[1], HARMONY_FAULT_EVENT_CMD_PARK_STATUS, 0, 0, response);
     assert(get_word(response, 8) == 0);
     assert(get_word(response, 16) == 1);
