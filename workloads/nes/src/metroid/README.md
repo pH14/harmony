@@ -9,7 +9,11 @@ controller interpretation, RAM decoding, setup, and outcome evidence stay in
 The registered workload starts a new game through ordinary power-on menus.
 Equipment, tanks, boss defeat flags, and the ending flag come from cartridge
 work RAM. The decoder maps Samus's screen using name-table membership and scroll
-direction, so camera coordinates do not masquerade as player coordinates. All
+direction, so camera coordinates do not masquerade as player coordinates.
+While Samus touches a door, which sets bit 7 of the door state at `$56`, the
+decoder keeps the map cell of the last frame before the touch. A touch in a
+vertically scrolling room flips the scroll direction, and the screen decode
+can then name the screen above the one Samus stands in. All
 source addresses and meanings are documented beside their constants in
 `target.rs`. Zero health is death; the ending flag is victory. The terminal
 identifier is `death_or_ending_v2`.
@@ -243,7 +247,7 @@ Brain's state, latched Tourian events and the destroyed Zebetite column, and
 binds Mother Brain's room to her status byte. Route timestamps exclude genesis
 setup. The replay probe reports action execution work and setup separately, and
 probes and backend snapshot replay are outside the execution-work counter. The
-campaign stream format is v4, the snapshot checkpoint format is v6, and the
+campaign stream format is v4, the snapshot checkpoint format is v7, and the
 result digest format is v5. The combined capacity score is a separate named score.
 
 Retrospective replay, without submitting an existing solution to search:

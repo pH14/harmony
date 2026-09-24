@@ -29,6 +29,7 @@ const SAMUS_NAME_TABLE: usize = 0x30c;
 const SAMUS_Y: usize = 0x30d;
 const SAMUS_X: usize = 0x30e;
 const DOOR_STATE: usize = 0x56;
+const DOOR_TOUCHED: u8 = 0x80;
 const AREA: usize = 0x74;
 const AREA_BRINSTAR: u8 = 0x10;
 const POSE: usize = 0x300;
@@ -894,7 +895,7 @@ fn decode_action_observations(
     let mut observations = Vec::new();
     let mut tourian_events = TourianEvents::default();
     for (offset, wram) in frames.iter().enumerate() {
-        let state = decode_state(wram, cartridge)?;
+        let state = keep_cell_through_door_touch(decode_state(wram, cartridge)?, prior_state);
         let frame_count = initial.frame_count + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
         tourian_events.observe(state, wram[0x98]);
         boss_health_seen = boss_health_seen.max(state.boss_health_ceiling());
@@ -920,6 +921,17 @@ fn decode_action_observations(
         }
     }
     Ok((observations, prior_wram))
+}
+
+fn keep_cell_through_door_touch(
+    mut state: MetroidMechanicalState,
+    prior: MetroidMechanicalState,
+) -> MetroidMechanicalState {
+    if state.door & DOOR_TOUCHED != 0 {
+        state.map_x = prior.map_x;
+        state.map_y = prior.map_y;
+    }
+    state
 }
 
 fn resource_ram_payload(bytes: &[u8], cartridge: bool) -> Option<usize> {
@@ -1290,6 +1302,48 @@ mod observation_tests {
         .unwrap();
         assert_eq!(observations[0].decoded.boss_health, 0x30);
         assert_eq!(observations[0].boss_health_seen, 0x30);
+    }
+
+    #[test]
+    fn a_door_touch_keeps_the_room_being_left() {
+        let cartridge = [0; 8192];
+        let mut walking = [0; WRAM_SIZE];
+        walking[GAME_MODE] = GAME_MODE_PLAYING;
+        walking[HEALTH_LOW] = 0x50;
+        walking[AREA] = 0x12;
+        walking[SCROLL_DIRECTION] = SCROLL_DOWN;
+        walking[MAP_Y] = 0x1d;
+        walking[MAP_X] = 0x09;
+        walking[SCROLL_Y..=PPU_CONTROL].copy_from_slice(&[0x00, 0x00, 0x1e, 0x93]);
+        walking[SAMUS_NAME_TABLE..=SAMUS_X].copy_from_slice(&[0x01, 0x71, 0x24]);
+        let mut touched = walking;
+        touched[SCROLL_DIRECTION] = SCROLL_UP;
+        touched[MAP_Y] = 0x1c;
+        touched[DOOR_STATE] = 0x83;
+        touched[SCROLL_Y..=PPU_CONTROL].copy_from_slice(&[0xef, 0x00, 0x1e, 0x90]);
+        touched[SAMUS_NAME_TABLE..=SAMUS_X].copy_from_slice(&[0x00, 0x6c, 0xfd]);
+        let raw = decode_state(&touched, &cartridge).unwrap();
+        assert_eq!((raw.map_x, raw.map_y), (9, 28));
+        let initial = MetroidTarget::make_observation(
+            0,
+            decode_state(&walking, &cartridge).unwrap(),
+            0,
+            &walking,
+            &walking,
+            BossDefeats::default(),
+            TourianEvents::default(),
+        );
+        assert_eq!((initial.decoded.map_x, initial.decoded.map_y), (9, 29));
+        let (observations, _) = decode_action_observations(
+            &[touched],
+            &cartridge,
+            &initial,
+            walking,
+            MetroidTerminalPolicy::Legacy,
+        )
+        .unwrap();
+        let last = observations.last().unwrap().decoded;
+        assert_eq!((last.map_x, last.map_y, last.door), (9, 29, 0x83));
     }
 }
 
