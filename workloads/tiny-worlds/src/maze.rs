@@ -133,6 +133,7 @@ impl Config {
     pub(crate) fn state_is_bounded(&self, state: State) -> bool {
         let history_mask = (1u16 << self.length) - 1;
         state.place <= self.length + 1
+            && state.goal == (state.place == self.length + 1)
             && state.history & !history_mask == 0
             && (state.place >= self.length || state.history >> state.place == 0)
     }

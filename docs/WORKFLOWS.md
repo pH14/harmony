@@ -69,9 +69,10 @@ bounded Checks workflow and a full Benchmarks workflow, and requires each
 workflow to actually run its registered backend. A Harmony composition reduced
 to native execution alone fails `ci-nes-compositions`.
 
-`Checks / Dissonance Workloads / Tiny Worlds` builds the standalone workload
-with Rust 1.97.0, runs release tests, formatting and Clippy checks, runs the
-Python supervisor tests, then runs only the registered development panel. Each
+`Checks / Dissonance Workloads / Tiny Worlds` verifies registered source hashes,
+builds the standalone workload with Rust 1.97.0, runs release tests, formatting
+and Clippy checks, runs the Python supervisor tests, then runs only the
+registered development panel. Each
 command uses one CPU slot with 2 GB memory and disk reservations. The development
 panel has a 58-second wall limit; CI never runs its held-out validation split
 and uploads only the bounded logs and summaries, not build or cache contents.

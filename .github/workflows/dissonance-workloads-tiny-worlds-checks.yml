@@ -66,6 +66,7 @@ jobs:
               -- "$@"
           }
 
+          run_bounded source-registration 30 python3 benchmarks/tiny_worlds/register.py --check
           run_bounded build 120 cargo "+$HARMONY_RUST_TOOLCHAIN" build --locked --release \
             --manifest-path workloads/tiny-worlds/Cargo.toml --bin tiny-worlds --jobs 1
           run_bounded rust-tests 120 cargo "+$HARMONY_RUST_TOOLCHAIN" test --locked --release \
@@ -84,6 +85,7 @@ jobs:
           name: dissonance-tiny-worlds-${{ github.run_id }}
           path: |
             tiny-worlds-evidence/**/stdout.log
+            tiny-worlds-evidence/**/stderr.log
             tiny-worlds-evidence/**/summary.json
           if-no-files-found: warn
           retention-days: 14

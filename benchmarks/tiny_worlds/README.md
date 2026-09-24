@@ -95,7 +95,8 @@ are required and bounded; zero refill health cost preserves the first slice.
 After an intentional workload change, run `python3 benchmarks/tiny_worlds/register.py`
 once before the corresponding validation. It updates only the workload source
 hash and refuses engine drift. It never changes seeds, instances, budgets or
-endpoints. CI does not re-register sources. The held-out set remains untouched
+endpoints. CI uses `register.py --check` to verify both source identities without
+re-registering them. The held-out set remains untouched
 until the implementation is frozen; development seeds become regression seeds
 once observed.
 

@@ -125,6 +125,7 @@ impl Config {
 
     pub(crate) fn state_is_bounded(&self, state: State) -> bool {
         state.place <= self.corridor_len.saturating_add(1)
+            && state.goal == (state.place == self.corridor_len.saturating_add(1))
             && state.charge <= self.max_charge
             && state.health <= self.initial_health
     }

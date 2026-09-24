@@ -561,7 +561,18 @@ mod tests {
         w.restore(&mut target, &State::Maze(prefix)).unwrap();
         assert!(w.rollout_observations(&target).is_empty());
         assert!(!w.objective_reached(&(), &target).unwrap());
-        assert_root_objective(w, State::Maze(config.step(prefix, 0)));
+        let terminal = config.step(prefix, 0);
+        assert!(
+            w.restore(
+                &mut target,
+                &State::Maze(maze::State {
+                    goal: false,
+                    ..terminal
+                })
+            )
+            .is_err()
+        );
+        assert_root_objective(w, State::Maze(terminal));
     }
 
     #[test]
@@ -585,6 +596,26 @@ mod tests {
         };
         invalid.charge = 255;
         assert!(w.restore(&mut target, &State::Resource(invalid)).is_err());
+        let World::Resource(config) = w.config else {
+            unreachable!()
+        };
+        let terminal = resource::State {
+            place: config.corridor_len + 1,
+            charge: 0,
+            health: 1,
+            goal: true,
+        };
+        w.restore(&mut target, &State::Resource(terminal)).unwrap();
+        assert!(
+            w.restore(
+                &mut target,
+                &State::Resource(resource::State {
+                    goal: false,
+                    ..terminal
+                })
+            )
+            .is_err()
+        );
     }
 
     #[test]

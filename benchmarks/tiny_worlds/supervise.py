@@ -371,20 +371,6 @@ def _run(args, out, state_dir, roots, token, cpu_ids, host):
     with telemetry_path.open('w') as telemetry:
         initial_disk = disk_usage(roots)
         started = time.monotonic()
-        def child_limits():
-            if platform.system() == 'Linux' and hasattr(os, 'sched_setaffinity'):
-                _child_affinity(cpu_ids)
-            resource.setrlimit(resource.RLIMIT_FSIZE, (256 * 1024 * 1024, 256 * 1024 * 1024))
-            if hasattr(resource, 'RLIMIT_CORE'):
-                resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        process = subprocess.Popen(args.command, cwd=args.cwd, env=env, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
-                                   preexec_fn=child_limits)
-        _attach_process_group(state_dir, token, process.pid)
-        stdout.pipe, stderr.pipe = process.stdout, process.stderr
-        log_threads = [threading.Thread(target=log.drain, daemon=True) for log in (stdout, stderr)]
-        for thread in log_threads:
-            thread.start()
         status = 'complete'
         reason = None
         peak_rss = None
@@ -395,13 +381,39 @@ def _run(args, out, state_dir, roots, token, cpu_ids, host):
         telemetry_truncated = False
         deadline = started + args.seconds
         previous_sigterm = signal.getsignal(signal.SIGTERM)
+        cancellation = [False]
 
         def request_cleanup(_signum, _frame):
-            raise KeyboardInterrupt
+            # Do not raise from a signal handler: Popen may already have made
+            # the child, but not yet returned its Process object to this frame.
+            # A flag also makes repeated SIGTERM harmless during group cleanup.
+            cancellation[0] = True
 
+        def child_limits():
+            if platform.system() == 'Linux' and hasattr(os, 'sched_setaffinity'):
+                _child_affinity(cpu_ids)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (256 * 1024 * 1024, 256 * 1024 * 1024))
+            if hasattr(resource, 'RLIMIT_CORE'):
+                resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         signal.signal(signal.SIGTERM, request_cleanup)
+        process = None
+        log_threads = []
         try:
+            process = subprocess.Popen(args.command, cwd=args.cwd, env=env, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+                                       preexec_fn=child_limits)
+            _attach_process_group(state_dir, token, process.pid)
+            stdout.pipe, stderr.pipe = process.stdout, process.stderr
+            for log in (stdout, stderr):
+                thread = threading.Thread(target=log.drain, daemon=True)
+                log_threads.append(thread)
+                thread.start()
+
             while True:
+                if cancellation[0]:
+                    status, reason = 'incomplete', 'supervisor_cancelled'
+                    _stop_group(process)
+                    break
                 elapsed = time.monotonic() - started
                 current_rss = process_group_rss(process.pid)
                 current_disk = disk_usage(roots)
@@ -455,15 +467,27 @@ def _run(args, out, state_dir, roots, token, cpu_ids, host):
                         _stop_group(process)
                     break
                 time.sleep(SAMPLE_SECONDS)
+            # A signal can arrive while a resource probe or process poll is in
+            # progress. Preserve the cancellation outcome even if the command
+            # exits during that sample.
+            if cancellation[0]:
+                status, reason = 'incomplete', 'supervisor_cancelled'
+                if process is not None and _group_exists(process.pid):
+                    _stop_group(process)
         except BaseException:
-            _stop_group(process)
+            if process is not None:
+                _stop_group(process)
             raise
         finally:
             signal.signal(signal.SIGTERM, previous_sigterm)
             for thread in log_threads:
-                thread.join(timeout=2)
-            process.stdout.close()
-            process.stderr.close()
+                if thread.ident is not None:
+                    thread.join(timeout=2)
+            if process is not None:
+                process.stdout.close()
+                process.stderr.close()
+        if process is None:
+            raise RuntimeError('command process was not created')
         return_code = process.poll()
         final_disk = disk_usage(roots)
         peak_disk = {key: max(peak_disk[key], final_disk[key]) for key in peak_disk}

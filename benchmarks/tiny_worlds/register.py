@@ -25,12 +25,19 @@ def source_hash(root, workspace=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--panel', type=Path, default=Path(__file__).with_name('panel.json'))
+    parser.add_argument('--check', action='store_true', help='verify registration without changing it')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     panel = json.loads(args.panel.read_text())
     if panel['engine_source_sha256'] != source_hash(root / 'dissonance/searcher', True):
         raise ValueError('engine differs from pinned baseline; register that experiment separately')
-    panel['workload_source_sha256'] = source_hash(root / 'workloads/tiny-worlds')
+    workload_hash = source_hash(root / 'workloads/tiny-worlds')
+    if args.check:
+        if panel['workload_source_sha256'] != workload_hash:
+            raise ValueError('workload differs from registered source')
+        print('Registered engine and workload source identities match.')
+        return
+    panel['workload_source_sha256'] = workload_hash
     args.panel.write_text(json.dumps(panel, indent=2) + '\n')
     print('Workload source identity frozen; seeds, instances, budgets and endpoints unchanged.')
 
