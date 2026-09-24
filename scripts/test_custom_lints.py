@@ -158,6 +158,27 @@ class WorkflowFileTests(unittest.TestCase):
                                               "    timeout-minutes: 15\n    timeout-minutes: 90"))
         self.assertIn("ci-workflow-parse", [v.rule for v in self.check(content)])
 
+    def test_each_push_gets_its_own_concurrency_group(self):
+        key = ci_contract.PUSH_CONCURRENCY_KEY
+        jobs = "  guest-memory:\n    name: Guest Memory\n    timeout-minutes: 15\n    steps: []\n"
+        for block, expected in (
+            (f"concurrency:\n  group: checks-{key}\n  cancel-in-progress: true\n", []),
+            ("concurrency:\n  group: checks-${{ github.ref }}\n  cancel-in-progress: true\n",
+             ["ci-push-concurrency"]),
+            ("concurrency:\n  group: checks-${{ github.ref }}\n  cancel-in-progress: false\n",
+             ["ci-push-concurrency"]),
+            ("concurrency: checks-${{ github.ref }}\n", ["ci-push-concurrency"]),
+        ):
+            with self.subTest(block=block):
+                content = workflow_text().replace("jobs:\n", block + "jobs:\n")
+                self.assertEqual([v.rule for v in self.check(content)], expected)
+        job_group = jobs + "    concurrency: memory-${{ github.ref }}\n"
+        self.assertEqual([v.rule for v in self.check(workflow_text(jobs=job_group))],
+                         ["ci-push-concurrency"])
+        pr_only = workflow_text(triggers=("pull_request",)).replace(
+            "jobs:\n", "concurrency:\n  group: checks-${{ github.ref }}\n  cancel-in-progress: true\njobs:\n")
+        self.assertFalse(self.check(pr_only, registered(triggers=("pull_request",))))
+
     def test_missing_parser_is_an_error(self):
         with mock.patch.dict(sys.modules, {"yaml": None}):
             self.assertIn("ci-workflow-parse", [v.rule for v in self.check(workflow_text())])

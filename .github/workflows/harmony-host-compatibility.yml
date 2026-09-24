@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: harmony-host-compatibility-${{ github.ref }}
+  group: harmony-host-compatibility-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 defaults:

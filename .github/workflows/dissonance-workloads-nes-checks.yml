@@ -15,7 +15,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: dissonance-nes-checks-${{ github.ref }}
+  group: dissonance-nes-checks-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 defaults:

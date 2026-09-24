@@ -62,6 +62,11 @@ PR_BOUNDED_MINUTES = 15
 # dispatch and declare their own ceiling.
 TRIGGER_CLASSES = ("pr", "full")
 
+# The concurrency group key of every workflow a push reaches. Each push gets a
+# group of its own, so a later push never cancels or replaces its run, and
+# checks that read only what a push changed see every pushed commit.
+PUSH_CONCURRENCY_KEY = "${{ github.event_name == 'push' && github.sha || github.ref }}"
+
 
 class Job(NamedTuple):
     """One job's registered responsibility, routing and budget."""

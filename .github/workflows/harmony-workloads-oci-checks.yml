@@ -18,7 +18,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: harmony-oci-checks-${{ github.event_name }}-${{ github.ref }}
+  group: harmony-oci-checks-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 defaults:
