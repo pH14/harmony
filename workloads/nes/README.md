@@ -14,6 +14,39 @@ native execution. SMB and Nova support native QuickNES and whole-VM Consonance e
 Mega Man 2, Metroid, and Super Tilt Bro currently use their native campaigns or
 the common `nes-eval` runner; shared CLI dispatch and Consonance execution are
 not implemented for them.
+`smb-calibrate REQUEST.json OUTPUT_DIRECTORY` runs bounded private comparisons
+directly through native QuickNES and the real campaign engine. It needs no guest
+image. The strict request supplies ROM/core paths and SHA-256 hashes, an ordinary
+recorded `prefix_input`, `mode` (`history` or `actions`), `broken`, `seed`,
+`work_budget_frames` (1–20000), `action_hold_frames` (1–16), `root_expected`
+(`world`, `level`, `area_type`), and `objective` (those same raw RAM fields plus
+`absolute_player_x_min`). World and level bytes are zero-based. Optional fields
+are `source_revision` (a caller claim, not verified build provenance) and
+`retain_stream` (false by default). Keep requests and results outside the repository.
+
+Both arms replay the prefix and use one worker, one admission reservation, and
+the same fixed-hold alphabet and `biased_half` mixture. The history control clears
+only the existing `loop_on_path` archive-key bit. The action control restricts
+the alphabet to right; its normal arm samples eight fixed button masks. Objectives
+require a living player and are evaluator-only. Each run verifies campaign replay,
+witness execution from the prefix snapshot, and independent stream work totals.
+The 32 MB stream stays in memory unless explicitly retained. Summary diagnostics
+distinguish observed history collisions from exported snapshot histories, which
+include nonselectable ancestry and do not measure active portfolio retention.
+These are local mechanism comparisons, not full-game or learned-adaptation claims.
+Use the resource supervisor in `benchmarks/tiny_worlds` for builds and runs.
+
+`metroid-retention-calibrate REQUEST.json OUTPUT_DIRECTORY` verifies a real
+replenishment transition and tests snapshot retention in both insertion orders
+and a populated archive. Its strict request supplies `rom_path`, `rom_sha256`,
+`core_path`, `core_sha256`, `prefix_input`, consecutive `before_actions` and
+`after_actions` counts, `seed`, and `broken`. The ordinary input must end exactly
+at `after_actions`. It uses the current BCD-underflow terminal policy, checks
+snapshot restore and one-action replay, and compares the production key with
+a control that zeros only missiles. Selection samples read actual emulator
+snapshots. This diagnostic establishes neither door opening nor route completion.
+It writes only a compact summary; keep the request, prefix, and output private.
+
 The Consonance backend uses the `consonance` feature and requires Linux/KVM
 and matching guest artifacts; `harmony search --package nes --backend
 consonance ROM` selects it through the shared CLI.

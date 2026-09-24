@@ -67,11 +67,17 @@ claim: Metroid Zebetite column damage is separate from boss health, and SMB 7-4
 requires earlier correct-check history. Historical reports are leads, not fresh
 calibration of the pinned engine.
 
-The resource barrier's correspondence to a missile door remains open until a
-local native run verifies resource consumption/replenishment and a meaningful
-comparison at a real root. Maze and water-transition fixtures also need verified
-local roots and traces. Missing assets or unsupported native execution blocks
-that correspondence, not independent public harness work. Track the missing
+Local licensed ROMs and the native QuickNES core are available. Ordinary recorded
+inputs have been replayed to SMB maze and water roots, including a real wrong-path
+loop reset. A frame-level Metroid trace isolates a missile replenishment while
+health and archive location/identity stay unchanged. These verified events are
+mechanical evidence, not completed comparative calibration.
+
+The resource barrier's correspondence to a five-missile door remains open until
+a local native run verifies the actual barrier and a meaningful comparison at
+that root. Maze and water comparisons use the native `smb-calibrate` binary
+documented in `workloads/nes/README.md`; no guest image is required. Mixed or
+inconclusive comparisons leave calibration open. Track the missing
 correspondence in [#393](https://github.com/pH14/harmony/issues/393) and the ranked
 post-five-family expansion in [#394](https://github.com/pH14/harmony/issues/394).
 
