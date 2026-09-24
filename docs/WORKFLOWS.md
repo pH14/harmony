@@ -278,8 +278,8 @@ in the semantic baseline.
 
 The `Semantic Lints` job in `Checks / Repository` judges a pull request against
 the tip of its base branch. It judges a push to main against the commit before
-the push, so every commit in the push is covered. After a force push, that
-commit is missing from the checkout, so the job fetches it from GitHub by SHA
+the push, so every commit in the push is covered. When that commit is missing
+from the checkout, as after a force push, the job fetches it from GitHub by SHA
 and fails if GitHub no longer has it. When that commit is all zeros, as when
 the branch is new, the job judges every tracked file, and that run can exceed
 the 15-minute limit.
