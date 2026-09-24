@@ -1464,6 +1464,13 @@ mod observation_tests {
         );
         assert_eq!(
             kept(MetroidMechanicalState {
+                area: AREA_RIDLEY,
+                ..absent
+            }),
+            0
+        );
+        assert_eq!(
+            kept(MetroidMechanicalState {
                 boss_health: 44,
                 ..kraid
             }),
