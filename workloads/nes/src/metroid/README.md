@@ -14,7 +14,9 @@ From a door touch until the arrival state, while the door state at `$56` is
 neither 0 nor 5, the decoder keeps the map cell of the last frame before the
 touch. A touch in a vertically scrolling room flips the scroll direction, and
 the screen decode can then name the screen above the one Samus stands in until
-the room scroll starts. All
+the room scroll starts. The decoder applies this rule and the absent boss
+reading rule below to every frame, a rooted target's prefix included, so a root
+decodes the same as an action that ends at that frame. All
 source addresses and meanings are documented beside their constants in
 `target.rs`. Zero health is death; the ending flag is victory. The terminal
 identifier is `death_or_ending_v2`.

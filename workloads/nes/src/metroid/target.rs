@@ -536,10 +536,16 @@ impl MetroidTarget {
     ) -> Result<Self, MachineError> {
         machine.capture_save_ram_per_frame(CARTRIDGE_FRAME_RANGE);
         let mut genesis_prefix = prefix.to_vec();
-        let mut outside_door = None;
+        let mut frame_cartridge = vec![0; CARTRIDGE_RAM_SIZE];
+        let mut followed = None;
         for chunk in prefix.chunks(64) {
             run_chords(&mut machine, chunk)?;
-            outside_door = last_frame_outside_door(machine.frames()).or(outside_door);
+            followed = follow_frames(
+                machine.frames(),
+                machine.save_ram_frames(),
+                &mut frame_cartridge,
+                followed,
+            )?;
         }
         let mut waited = 0;
         loop {
@@ -557,13 +563,19 @@ impl MetroidTarget {
                 )));
             }
             run_chords(&mut machine, &[ButtonChord::new(0, 1)])?;
-            outside_door = last_frame_outside_door(machine.frames()).or(outside_door);
+            followed = follow_frames(
+                machine.frames(),
+                machine.save_ram_frames(),
+                &mut frame_cartridge,
+                followed,
+            )?;
             waited += 1;
         }
         genesis_prefix.extend(idle_chords(waited));
         let wram = machine.read_wram()?;
         let cartridge = machine.read_save_ram()?;
-        let state = rooted_state(&wram, outside_door.as_ref(), &cartridge)?;
+        let raw = decode_state(&wram, &cartridge)?;
+        let state = followed.map_or(raw, |prior| follow_frame(raw, prior));
         let genesis = machine.snapshot()?;
         let observation = MetroidObservations {
             frame_count: 0,
@@ -932,10 +944,7 @@ fn decode_action_observations(
             .ok_or(MachineError::MalformedEnv)?
             .copy_from_slice(frame_bytes);
         let boss_defeats = decode_boss_defeats(&frame_cartridge)?;
-        let state = keep_boss_reading_while_absent(
-            keep_cell_through_door(decode_state(wram, &frame_cartridge)?, prior_state),
-            prior_state,
-        );
+        let state = follow_frame(decode_state(wram, &frame_cartridge)?, prior_state);
         let frame_count = initial.frame_count + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
         tourian_events.observe(state, wram[0x98]);
         if state.area != prior_state.area {
@@ -966,27 +975,36 @@ fn decode_action_observations(
     Ok((observations, prior_wram))
 }
 
-fn last_frame_outside_door(frames: &[[u8; WRAM_SIZE]]) -> Option<[u8; WRAM_SIZE]> {
-    frames
+fn follow_frames(
+    frames: &[[u8; WRAM_SIZE]],
+    cartridge_frames: &[u8],
+    cartridge: &mut [u8],
+    mut prior: Option<MetroidMechanicalState>,
+) -> Result<Option<MetroidMechanicalState>, MachineError> {
+    if cartridge_frames.len() != frames.len() * CARTRIDGE_FRAME_RANGE.len() {
+        return Err(MachineError::Backend(
+            "Metroid cartridge RAM capture does not match the frame count".to_owned(),
+        ));
+    }
+    for (wram, frame_bytes) in frames
         .iter()
-        .rev()
-        .find(|wram| !in_door_transition(wram[DOOR_STATE]))
-        .copied()
+        .zip(cartridge_frames.chunks_exact(CARTRIDGE_FRAME_RANGE.len()))
+    {
+        cartridge
+            .get_mut(CARTRIDGE_FRAME_RANGE)
+            .ok_or(MachineError::MalformedEnv)?
+            .copy_from_slice(frame_bytes);
+        let state = decode_state(wram, cartridge)?;
+        prior = Some(prior.map_or(state, |prior| follow_frame(state, prior)));
+    }
+    Ok(prior)
 }
 
-fn rooted_state(
-    wram: &[u8],
-    outside_door: Option<&[u8; WRAM_SIZE]>,
-    cartridge: &[u8],
-) -> Result<MetroidMechanicalState, MachineError> {
-    let state = decode_state(wram, cartridge)?;
-    match outside_door {
-        Some(before) if in_door_transition(state.door) => Ok(keep_cell_through_door(
-            state,
-            decode_state(before, cartridge)?,
-        )),
-        _ => Ok(state),
-    }
+fn follow_frame(
+    state: MetroidMechanicalState,
+    prior: MetroidMechanicalState,
+) -> MetroidMechanicalState {
+    keep_boss_reading_while_absent(keep_cell_through_door(state, prior), prior)
 }
 
 fn consistent_with(
@@ -994,7 +1012,7 @@ fn consistent_with(
     cartridge: &[u8],
     state: MetroidMechanicalState,
 ) -> Result<bool, MachineError> {
-    Ok(keep_cell_through_door(decode_state(wram, cartridge)?, state) == state)
+    Ok(follow_frame(decode_state(wram, cartridge)?, state) == state)
 }
 
 fn keep_cell_through_door(
@@ -1758,25 +1776,64 @@ mod observation_tests {
             )
             .unwrap()
         );
-        assert_eq!(last_frame_outside_door(&[walking, touched]), Some(walking));
-        assert_eq!(last_frame_outside_door(&[touched]), None);
-        assert_eq!(
-            last_frame_outside_door(&[walking, touched, scrolling]),
-            Some(walking)
-        );
-        assert_eq!(
-            last_frame_outside_door(&[walking, touched, scrolling, arrived]),
-            Some(arrived)
-        );
-        let rooted = rooted_state(&touched, Some(&walking), &cartridge).unwrap();
+        let followed = |frames: &[[u8; WRAM_SIZE]]| {
+            follow_frames(
+                frames,
+                &cartridge[CARTRIDGE_FRAME_RANGE].repeat(frames.len()),
+                &mut cartridge.to_vec(),
+                None,
+            )
+            .unwrap()
+        };
+        assert_eq!(followed(&[]), None);
+        let rooted = followed(&[walking, touched]).unwrap();
         assert_eq!((rooted.map_x, rooted.map_y, rooted.door), (9, 29, 0x83));
-        let rooted = rooted_state(&scrolling, Some(&walking), &cartridge).unwrap();
+        let rooted = followed(&[walking, touched, scrolling]).unwrap();
         assert_eq!((rooted.map_x, rooted.map_y, rooted.door), (9, 29, 0x03));
         assert!(consistent_with(&scrolling, &cartridge, rooted).unwrap());
-        let rooted = rooted_state(&arrived, Some(&walking), &cartridge).unwrap();
+        let rooted = followed(&[walking, touched, scrolling, arrived]).unwrap();
         assert_eq!((rooted.map_x, rooted.map_y), (9, 28));
-        let unrooted = rooted_state(&touched, None, &cartridge).unwrap();
+        let unrooted = followed(&[touched]).unwrap();
         assert_eq!((unrooted.map_x, unrooted.map_y), (9, 28));
+    }
+
+    #[test]
+    fn a_rooted_state_and_its_consistency_check_keep_an_absent_boss_reading() {
+        let mut cartridge = [0; 8192];
+        cartridge[ENEMY_STATUS_BASE + 2 * ENEMY_SLOT_STRIDE] = 0x01;
+        cartridge[ENEMY_TYPE_BASE + 2 * ENEMY_SLOT_STRIDE] = 0x08;
+        let slot = ENEMY_SLOT_BASE + 2 * ENEMY_SLOT_STRIDE;
+        let mut hurt = [0; WRAM_SIZE];
+        hurt[GAME_MODE] = GAME_MODE_PLAYING;
+        hurt[HEALTH_LOW] = 0x50;
+        hurt[AREA] = AREA_KRAID;
+        hurt[slot + ENEMY_SPECIAL_ATTRIBUTES] = ENEMY_MINI_BOSS_BIT;
+        hurt[slot + ENEMY_HIT_POINTS] = 0x30;
+        let mut flash = hurt;
+        flash[slot + ENEMY_HIT_POINTS] = ENEMY_HIT_POINTS_ABSENT;
+        assert_eq!(decode_state(&flash, &cartridge).unwrap().boss_health, 0);
+        let rooted = follow_frames(
+            &[hurt, flash],
+            &cartridge[CARTRIDGE_FRAME_RANGE].repeat(2),
+            &mut cartridge.to_vec(),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(rooted.boss_health, 0x30);
+        assert!(consistent_with(&flash, &cartridge, rooted).unwrap());
+        assert!(
+            !consistent_with(
+                &hurt,
+                &cartridge,
+                MetroidMechanicalState {
+                    boss_health: 0x2c,
+                    ..rooted
+                }
+            )
+            .unwrap()
+        );
+        assert!(follow_frames(&[hurt], &[], &mut cartridge.to_vec(), None).is_err());
     }
 }
 
