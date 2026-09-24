@@ -566,26 +566,7 @@ fn a_budget_that_fits_the_bootstrap_state_finishes_the_campaign() {
     for (workers, campaign_seed) in [(1, 2), (1, 3), (2, 0), (2, 1), (3, 1), (4, 1)] {
         let config = CampaignConfig {
             campaign_seed,
-            workers,
-            execution_budget: 800,
-            action_limit: 64,
-            host: "test".into(),
-            wall_budget: None,
-            stop_rollout_on_objective: true,
-            stop_campaign_on_objective: true,
-            archive_entry_limit: 128,
-            reservations_per_worker: 2,
-            memory_budget_mib: Some(7),
-            materialize_final_artifacts: true,
-            run: (),
-            suffix: SuffixShape::OneOrTwo,
-            mixture: DrawMixture::EnergySpliceContinuation { scale: 6 },
-            retention: RetentionPolicy::Unprobed,
-            selector: SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
-                entry: 3,
-                groups: vec![],
-            }),
-            objective_witness_path: None,
+            ..continuation_config(workers, DrawMixture::EnergySplice { scale: 6 }, 7)
         };
         let mut stream = Vec::new();
         let (live, checkpoint) = run_campaign_checkpointed(

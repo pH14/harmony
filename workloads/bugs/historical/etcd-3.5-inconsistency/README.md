@@ -1,8 +1,5 @@
 # etcd v3.5.0–3.5.2 — silent data inconsistency after untimely crash
 
-**Status: reproduced — current-branch nightly verification passed.** The execution record below
-comes from the locked campaign profile on the current implementation.
-
 ## The bug
 
 etcd v3.5.0 (PR [#12855](https://github.com/etcd-io/etcd/pull/12855)) introduced backend hooks
@@ -31,8 +28,8 @@ acknowledged-before-follower-apply divergence, and retrying a failed request can
 
 ⚠️ Do not conflate with the **separate, later** consistent-index bug (crash during
 **defragmentation**, `unsafeCommit` skipping `OnPreCommitUnsafe`, entries *re-applied*, revision
-runs *higher*; affects ≤ v3.5.5, fixed ~v3.5.6 / PR #14730). That one is a candidate for a
-second entry — its trigger (kill during defrag) and symptom direction are different.
+runs *higher*; affects ≤ v3.5.5, fixed ~v3.5.6 / PR #14730). Its trigger (kill during defrag)
+and symptom direction are different.
 
 ## The triple
 
@@ -83,25 +80,5 @@ vulnerable image on demand or on schedule. The campaign must find assertion 1 wi
 11 and reproduce it in the package's fresh deterministic self-replay. A search miss or replay
 mismatch is a regression in the test machinery, not a request to tune the workload.
 
-The current-branch record at `68840c45` comes from
-[historical run 34784000429](https://github.com/pH14/harmony/actions/runs/34784000429):
-
-| arm | bug found | executions | first hit | execution ticks | watchdog cutoffs | archive entries | wall time |
-|---|---|---|---|---|---|---|---|
-| 3.5.2 | yes | 2216 | 2213 | 490950 | 14 | 961 | 2070 s |
-
-The vulnerable arm's 22-action input reproduces assertion 1 with evidence point 11 and the same
-whole-VM state hash as the campaign finding. It combines process kills and restarts, event kills,
-event holds from 40 ms through 2.56 s, interrupts, pauses, and a 1.28 s wait. The campaign sampled
-every adaptive duration from 10 ms through 10.24 s; 574 event-ready executions used at least
-1.28 s. Its watchdog cutoffs were explicit no-virtual-time-progress failures; all other executions
-continued, and the campaign recorded no non-watchdog execution failure.
-
 Performance experiments may add separate profiles later, but they cannot alter the correctness or
 portability contract of this case.
-
-## Why this entry is first
-
-Single binary, no kernel or version gymnastics, a generic instrumented event coordinate, and a cheap
-oracle make this a useful first target. It also has a natural sibling in the later defragmentation
-bug once this lands.

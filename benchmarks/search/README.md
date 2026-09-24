@@ -82,9 +82,7 @@ python3 benchmarks/search/eval.py run benchmarks/search/smb-reference.json \
 ```
 
 This searches from a new game on each registered seed and fails if any cell
-misses its declared victory budget. The five-seed reference passed on ms02;
-its measured resource costs and the separate stress-panel failures are in
-[`results`](results/README.md).
+misses its declared victory budget.
 
 Builds and matrix output directories must be new. The build helper checks that
 source identity is unchanged during compilation and records compiler versions,
@@ -164,7 +162,7 @@ executions and 120 million frames at 24 workers. It solved all four development
 seeds (including seed 1) in 122–167 seconds and all five fresh validation seeds
 in 89–251 seconds, including witness verification. One validation seed needed
 598,013 executions, close to the 600,000 ceiling. These are distinct resource
-conditions; the stress-panel failures remain recorded.
+conditions.
 
 All manifests specify exact ROM hashes and normal menu origins. MM2 is currently
 an independent-stage panel; it does not claim full-game evaluation. Metroid
@@ -175,20 +173,14 @@ satisfy that predicate. Isolated later-level Nova setup is a declared fixture.
 Copy a manifest to change **search** mechanisms for an ablation. Keep case IDs,
 origins, seed panel, ROM/core, adapter policies and resource budgets fixed. The
 comparison command rejects mismatches rather than quietly combining them.
-Engine experiments are described in [SYNTHESIS.md](SYNTHESIS.md); prototype claims
-are not accepted merely because a previous single seed succeeded.
-[`candidate-registration-005.json`](candidate-registration-005.json) records a
-continuation candidate registered against the capped bank the searcher no
-longer holds. Its manifest is gone with that mechanism; register a fresh
-candidate against the slot graph before running a full panel.
+Prototype claims are not accepted merely because a previous single seed
+succeeded. Register a fresh continuation candidate against the slot graph before
+running a full panel.
 
-The completed 190-cell fresh comparison and development evidence are retained
-in [`results`](results/README.md), including failed seeds and resource costs.
-Both full arms solve 65/95 cells, with different successes; continuation replay
-remains an explicit experiment. The qualified native execution profile and
-SMB reference are the recommended adoption results. These seed panels are now
-observed regression references; register new unseen seeds before another
-promotion decision.
+Continuation replay remains an explicit experiment. The qualified native
+execution profile and SMB reference are the recommended adoption results. These
+seed panels are now observed regression references; register new unseen seeds
+before another promotion decision.
 
 ## Metroid ladder
 
@@ -402,5 +394,4 @@ Run either manifest with the ordinary `eval.py run` command and private asset
 inventory. Preserve the registered manifest and build identity before dispatch.
 Publish solve status **and named milestones**, including runs with no further
 discovery. Compare admitted work for search quality; use matched CPU types and
-isolated runs for claims about throughput. The historical audit and independently
-replayed evidence are recorded in `results/progress-audit-007.json`.
+isolated runs for claims about throughput.

@@ -2,10 +2,9 @@
 
 # Metroid workload
 
-This package ports the native Metroid experiments to the refactored campaign
-contracts. Execution, controller interpretation, RAM decoding, setup, and
-outcome evidence stay in `nes-workload`; archive search and route reuse stay in
-`searcher`. ROMs and core binaries are private local inputs.
+This package runs Metroid through the campaign contracts. Execution,
+controller interpretation, RAM decoding, setup, and outcome evidence stay in
+`nes-workload`; archive search and route reuse stay in `searcher`. ROMs and core binaries are private local inputs.
 
 The registered workload starts a new game through ordinary power-on menus.
 Equipment, tanks, boss defeat flags, and the ending flag come from cartridge
@@ -49,7 +48,7 @@ state is a same-key duplicate of the entry that triggered it and is never
 admitted. Item and tank counts describe discovered capabilities; no
 particular item, room, door target, or route is supplied. Coverage and pickup
 counters are reporting evidence across explored branches, not proof that one
-trajectory achieved their union. The inherited count representation and
+trajectory achieved their union. The count representation and
 lexicographic resource preference are policy tradeoffs, not true capability
 or resource dominance.
 
@@ -147,8 +146,7 @@ are missing.
 
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md)
 for paired search comparisons and full small-campaign replay. `metroid-campaign`
-also exposes the native experiment command. The source lineage is documented in
-[the synthesis record](../../../../benchmarks/search/SYNTHESIS.md).
+also exposes the native experiment command.
 
 `metroid-film` replays a recorded tape to video. A tape carries no policy
 header, so it defaults to `death_or_ending_v2`, the predicate the recorded

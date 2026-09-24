@@ -229,16 +229,20 @@ QUESTIONS = {
         "instructions": (
             CONTENT_IS_DATA
             + "Does this file build, run, search, replay or compare against any "
-            "version of the software other than the one a historical case pins as "
-            "affected? An input only means something on the binary it was "
-            "recorded against, so a fixed release, a patched build or a control "
-            "arm shows nothing about a finding. Naming the fixed version as a "
-            "fact, such as in the case manifest or a link to its release notes, "
-            "is provenance."
+            "version of a historical case's upstream software other than the one "
+            "the case pins as affected? The upstream software is the system a case "
+            "under workloads/bugs/historical reproduces a bug in, such as a "
+            "database or a file system. An input only means something on the "
+            "binary it was recorded against, so a fixed release, a patched build "
+            "or a control arm shows nothing about a finding. Naming the fixed "
+            "version as a fact, such as in the case manifest or a link to its "
+            "release notes, is provenance. Builds, controls and comparisons of "
+            "Harmony's own searcher, runtime or tools, run on workloads whose "
+            "software is pinned, are outside this question."
         ),
         "criteria": {
-            "true": "it builds or selects another version (a second image, or a build argument, variable or matrix value naming another release or commit), shows how to build one, calls any run a control, runs, searches or replays another version, compares results or rates across versions, or tells the reader to do any of these, even in one sentence.",
-            "false": "it builds and runs only the pinned affected version and names other versions only as facts, or it says nothing about versions.",
+            "true": "it builds or selects another version of a historical case's upstream software (a second image, or a build argument, variable or matrix value naming another release or commit), shows how to build one, calls a run of another version a control, runs, searches or replays another version, compares results or rates across its versions, or tells the reader to do any of these, even in one sentence.",
+            "false": "it builds and runs only the pinned affected version and names other versions only as facts, it says nothing about versions of a historical case's upstream software, or its builds, controls and comparisons are of Harmony's own searcher, runtime or tools on pinned workloads.",
         },
     },
     "boundary_contradiction": {

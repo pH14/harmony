@@ -61,5 +61,3 @@ wall needs still has ammunition. Both stop once a boss is down, because the
 target refuses actions from there.
 
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md).
-The source lineage and discarded search claims are listed in the
-[synthesis record](../../../../benchmarks/search/SYNTHESIS.md).

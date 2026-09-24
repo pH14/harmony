@@ -3849,7 +3849,7 @@ mod tests {
 
     #[test]
     fn the_final_compaction_releases_an_inactive_liveness_anchor() {
-        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 1 << 20);
         for index in 0_u8..2 {
             archive
