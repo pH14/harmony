@@ -425,6 +425,7 @@ impl FaultTarget {
                 if error.starts_with(WATCHDOG_CUTOFF) {
                     self.watchdog_cutoffs = self.watchdog_cutoffs.saturating_add(1);
                     let mut observation = self.observation.clone();
+                    observation.parks.clear();
                     observation.watchdog_cutoff = true;
                     self.action_observations.push(observation);
                 }

@@ -30,8 +30,9 @@ use crate::{
     archive::{
         DURATION_IDENTIFIER, FaultArchiveKey, FaultArchiveReport, FaultBugRecord, FaultInput,
         FaultMilestones, FaultProgressWatermark, KEY_POLICY_IDENTIFIER, MAX_RECORDED_BUGS,
-        REPLACEMENT_IDENTIFIER, action_cost, archive_key, bug_outcome, merge_milestones,
-        merge_progress_watermark, milestone_key, milestones, sample_action,
+        ParkThresholds, REPLACEMENT_IDENTIFIER, action_cost, archive_key, bug_outcome,
+        merge_milestones, merge_progress_watermark, milestone_key, milestones,
+        park_threshold_bucket, sample_action,
     },
     assertion::Assertions,
     bundle::FaultVocabulary,
@@ -104,6 +105,7 @@ pub struct FaultCampaignEvidence {
     bugs: Vec<FaultBugRecord>,
     assertions: Assertions,
     park_sites: BTreeMap<u64, u64>,
+    park_thresholds: BTreeMap<u32, ParkThresholds>,
 }
 
 pub type FaultCampaignOrigin = CampaignOrigin<FaultWorkload>;
@@ -346,6 +348,7 @@ impl Reporting for FaultWorkload {
             selector: state.selector,
             assertions: evidence.assertions.clone(),
             park_sites: evidence.park_sites.clone(),
+            park_thresholds: evidence.park_thresholds.clone(),
         }
     }
 }
@@ -712,10 +715,27 @@ impl Evaluation for FaultWorkload {
     {
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
+        if let FaultAction::EventPark { edges, .. } = action.action
+            && action
+                .observations
+                .iter()
+                .any(|observation| !observation.watchdog_cutoff)
+        {
+            evidence
+                .park_thresholds
+                .entry(park_threshold_bucket(u64::from(edges)))
+                .or_default()
+                .armed += 1;
+        }
         for observation in &action.observations {
             evidence.assertions.merge(&observation.assertions);
             for park in &observation.parks {
                 *evidence.park_sites.entry(park.site).or_default() += 1;
+                evidence
+                    .park_thresholds
+                    .entry(park_threshold_bucket(park.edges))
+                    .or_default()
+                    .fired += 1;
             }
         }
         evidence.watchdog_cutoffs = evidence.watchdog_cutoffs.saturating_add(
@@ -823,6 +843,50 @@ mod tests {
         assert!(evidence.bugs.is_empty());
         assert_eq!(evidence.aggregate, FaultMilestones::default());
         assert_eq!(evidence.watermark, FaultProgressWatermark::default());
+    }
+
+    #[test]
+    fn park_thresholds_count_parks_the_guest_ran_and_each_landing_once() {
+        let game = game();
+        let mut evidence = FaultCampaignEvidence::default();
+        let park = FaultAction::EventPark {
+            node: 0,
+            edges: 5,
+            hold_us: 0,
+        };
+        let result = |observations| FaultCampaignActionResult {
+            action: park,
+            observations,
+            milestones: FaultMilestones::default(),
+            outcome: Outcome {
+                objective_reached: false,
+                disposition: ExecutionDisposition::Runnable,
+            },
+            candidate: None,
+        };
+        let landed = FaultObservations {
+            parks: vec![crate::target::ParkLanding {
+                moment: 1,
+                site: 9,
+                edges: 5,
+            }],
+            ..FaultObservations::default()
+        };
+        let cutoff = FaultObservations {
+            watchdog_cutoff: true,
+            ..FaultObservations::default()
+        };
+        for observations in [vec![landed], vec![cutoff], vec![]] {
+            game.merge_action_evidence(&mut evidence, &result(observations), 0, || {
+                Err("no input".into())
+            })
+            .unwrap();
+        }
+        assert_eq!(
+            evidence.park_thresholds.get(&2),
+            Some(&ParkThresholds { armed: 1, fired: 1 })
+        );
+        assert_eq!(evidence.park_sites.get(&9), Some(&1));
     }
 
     #[test]

@@ -37,6 +37,7 @@ void fuzz_json_data(const char *data, size_t size);
 #endif
 
 #define HARMONY_FAULT_MODULE_LIMIT 4096
+#define HARMONY_FAULT_PARK_WEIGHT_SHIFT 20
 
 struct harmony_fault_module {
     uint64_t start;
@@ -57,7 +58,7 @@ struct harmony_fault_event_state {
     uint32_t kill_armed;
     uint32_t park_armed;
     uint64_t park_edges;
-    uint64_t park_edges_left;
+    uint64_t park_weight_left;
     uint64_t park_hold_nanos;
     uint64_t park_fires;
     uint64_t park_inflight;
@@ -172,6 +173,21 @@ static int harmony_fault_parse_fd(const char *name)
 static int harmony_fault_event_rarity_allows(uint64_t before, uint8_t rarity)
 {
     return before < (UINT64_C(1) << rarity);
+}
+
+static int harmony_fault_park_spend(uint64_t before)
+{
+    uint64_t visits = before == UINT64_MAX ? before : before + 1;
+    uint64_t weight = (UINT64_C(1) << HARMONY_FAULT_PARK_WEIGHT_SHIFT) / visits;
+
+    if (weight == 0)
+        weight = 1;
+    if (harmony_fault_events.park_weight_left <= weight) {
+        harmony_fault_events.park_weight_left = 0;
+        return 1;
+    }
+    harmony_fault_events.park_weight_left -= weight;
+    return 0;
 }
 
 static uint64_t harmony_fault_event_mix(uint64_t value)
@@ -432,7 +448,8 @@ static void *harmony_fault_event_control(void *arg)
                 }
             } else {
                 harmony_fault_events.park_edges = first;
-                harmony_fault_events.park_edges_left = first;
+                harmony_fault_events.park_weight_left =
+                    first << HARMONY_FAULT_PARK_WEIGHT_SHIFT;
                 harmony_fault_events.park_hold_nanos = second;
                 harmony_fault_events.park_armed = 1;
             }
@@ -567,7 +584,7 @@ void harmony_fault_runtime_event(uint64_t site)
         kill_site = site;
         kill_report_fd = harmony_fault_events.report_fd;
     } else if (harmony_fault_events.park_armed != 0 &&
-               --harmony_fault_events.park_edges_left == 0) {
+               harmony_fault_park_spend(before)) {
         harmony_fault_events.park_armed = 0;
         park_edges = harmony_fault_events.park_edges;
         if (harmony_fault_events.park_fires != UINT64_MAX)
