@@ -6,7 +6,6 @@ use std::{
     num::{NonZeroU16, NonZeroUsize},
 };
 
-use fault_policy::EVENT_PARK_EDGE_LIMIT;
 use serde::{Deserialize, Serialize};
 
 use searcher::search::{
@@ -210,18 +209,19 @@ pub fn sample_action(
     Ok(action)
 }
 
+const PARK_EDGE_EXPONENTS: u32 = 14;
+
 fn park_edges(rand: &mut RomuDuoJrRand) -> Result<u32, Box<dyn Error>> {
-    let exponents = EVENT_PARK_EDGE_LIMIT.trailing_zeros() + 1;
-    let exponent = u32::try_from(rand.below(
-        NonZeroUsize::new(usize::try_from(exponents)?).ok_or("empty edge exponent range")?,
-    ))?;
+    let exponent = u32::try_from(
+        rand.below(
+            NonZeroUsize::new(usize::try_from(PARK_EDGE_EXPONENTS)?)
+                .ok_or("empty edge exponent range")?,
+        ),
+    )?;
     let low = 1_u32 << exponent;
-    let high = low
-        .saturating_mul(2)
-        .saturating_sub(1)
-        .min(EVENT_PARK_EDGE_LIMIT);
-    let span = usize::try_from(high - low + 1)?;
-    let offset = u32::try_from(rand.below(NonZeroUsize::new(span).ok_or("empty edge range")?))?;
+    let offset = u32::try_from(
+        rand.below(NonZeroUsize::new(usize::try_from(low)?).ok_or("empty edge range")?),
+    )?;
     Ok(low + offset)
 }
 
@@ -418,7 +418,10 @@ mod tests {
         assert_eq!(park_threshold_bucket(1), 0);
         assert_eq!(park_threshold_bucket(3), 1);
         assert_eq!(park_threshold_bucket(4), 2);
-        assert_eq!(park_threshold_bucket(u64::from(EVENT_PARK_EDGE_LIMIT)), 24);
+        assert_eq!(
+            park_threshold_bucket(u64::from(fault_policy::EVENT_PARK_EDGE_LIMIT)),
+            24
+        );
     }
 
     #[test]
@@ -507,7 +510,7 @@ mod tests {
                 FaultAction::EventPark { node, edges, .. } => {
                     assert!(vocabulary.instrumented_events());
                     assert!(node < vocabulary.nodes());
-                    assert!((1..=EVENT_PARK_EDGE_LIMIT).contains(&edges));
+                    assert!((1..1 << PARK_EDGE_EXPONENTS).contains(&edges));
                 }
                 FaultAction::Kill(node, _)
                 | FaultAction::Restart(node, _)
@@ -549,18 +552,15 @@ mod tests {
     }
 
     #[test]
-    fn park_edge_counts_cover_every_power_of_two_up_to_the_limit() {
+    fn park_edge_counts_cover_every_power_of_two_below_the_draw_limit() {
         let mut rand = RomuDuoJrRand::with_seed(23);
         let mut exponents = BTreeSet::new();
         for _ in 0..5_000 {
             let edges = park_edges(&mut rand).unwrap();
-            assert!((1..=EVENT_PARK_EDGE_LIMIT).contains(&edges));
+            assert!((1..1 << PARK_EDGE_EXPONENTS).contains(&edges));
             exponents.insert(edges.ilog2());
         }
-        assert_eq!(
-            exponents,
-            (0..=EVENT_PARK_EDGE_LIMIT.ilog2()).collect::<BTreeSet<_>>()
-        );
+        assert_eq!(exponents, (0..PARK_EDGE_EXPONENTS).collect::<BTreeSet<_>>());
     }
 
     #[test]

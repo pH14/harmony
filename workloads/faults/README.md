@@ -45,7 +45,7 @@ every action in the suffix takes it:
 |---|---|
 | `Wait(ticks)` | the workload runs undisturbed |
 | `EventKill(node, rarity, ticks)` | an instrumented runtime kills the node at a selected event, reporting the claimed site before termination |
-| `EventPark(node, edges, hold)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold; each edge counts one over its site's visit count, and `edges` is drawn log-uniform from 1 through `1 << 24` |
+| `EventPark(node, edges, hold)` | an instrumented runtime holds the thread whose instrumented edge brings the count since arming to `edges`, for the hold; each edge counts one over its site's visit count, and `edges` is drawn log-uniform from 1 through `(1 << 14) - 1` |
 | `Kill(node, ticks)` | the node stays down for the window |
 | `Pause(node, ticks)` | the node is stopped for the window, then continued |
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
@@ -109,7 +109,9 @@ passed is a campaign failure: it appears under `never_satisfied` in both
 `park_sites` in `campaign-summary.json` counts event-park landings by site.
 `park_thresholds` counts, for each `floor(log2(edges))`, the parks the guest
 ran at that threshold and the parks that fired, so the fired share at each
-threshold shows which part of the drawn range a workload's executions reach.
+threshold shows which part of the drawn range a workload's executions reach. On
+the SQLite WAL reset and etcd cases no park with a threshold of `1 << 14` or
+more fired, which sets the top of the drawn range.
 
 The generic `execution_work` counter and `report.json`
 `execution_ticks` count the guest ticks requested by successfully applied actions
