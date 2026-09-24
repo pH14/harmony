@@ -8,7 +8,7 @@ use nes_workload::{
 };
 use sha2::{Digest, Sha256};
 
-const WATCHED: [(&str, usize); 16] = [
+const WATCHED: [(&str, usize); 18] = [
     ("0770", 0x0770),
     ("0772", 0x0772),
     ("000e", 0x000e),
@@ -25,6 +25,8 @@ const WATCHED: [(&str, usize); 16] = [
     ("006d", 0x006d),
     ("0086", 0x0086),
     ("07f8", 0x07f8),
+    ("06d9", 0x06d9),
+    ("06da", 0x06da),
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {

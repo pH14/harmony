@@ -153,9 +153,14 @@ Instrumentation actions become available automatically when the staged image
 contains the runtime bridge, nonempty event symbols, and an executable whose
 hash matches its instrumentation attestation. A runtime hello identifies the
 ready nodes in each incarnation; event faults select only those nodes, so mixed
-instrumented and uninstrumented bundles share the same search policy. Backend capabilities determine
+instrumented and uninstrumented bundles share the same search policy. A step
+drawn from the retained-input table is held to the same rule and falls through
+to the alphabet when its node is not ready, so the readiness a run recorded
+bounds every draw rather than the alphabet alone. Backend capabilities determine
 whether host interrupt actions are available. Unsupported alternatives are
-excluded from the alphabet. The continuous client and oracle remain image-owned
+excluded from the alphabet. The adapter supplies that alphabet and the duration
+each drawn action carries; the searcher owns the suffix draw and the
+retained-input table. The continuous client and oracle remain image-owned
 commands; the oracle decides when its observations are conclusive, including
 when some nodes are down.
 
@@ -175,6 +180,11 @@ Search also writes
 `first-bug-input.json`, and one `bug-N.json` per recorded bug
 ([`report`](src/report.rs)); each of those carries the action list and the
 encoded window list that reproduces it.
+
+`FaultArchiveKey` identifies a place and nothing more. The place is every
+lifecycle count except liveness; liveness is the holder identity inside the
+place. The adapter has no progress tier, so every place is a peer and the
+selector ranks places only by their draw counts.
 
 The Consonance backend needs Linux and KVM. The action model, the bundle
 parser, the archive key, the image preparation and the report shapes are

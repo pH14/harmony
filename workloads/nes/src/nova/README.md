@@ -12,7 +12,10 @@ only actions, ordered keys, observations, snapshots, and policy identifiers.
 Nova retains one scheduled representative per 16-pixel location. At the same
 location, the adapter prefers states with more cleared levels, collectibles,
 available levels, carried abilities, health, and puzzle chips, in that order.
-Coarser archive groups represent durable progress and level identity.
+The place is the cleared, collectible and available counts, the level identity
+and a two-bucket position; the holder identity is the exact position bucket.
+The adapter has no progress tier, so the selector treats every Nova place as a
+peer and ranks places only by their draw counts.
 
 Reports may record progress reached inside an action. Reproducer selection uses
 action endpoints, where the serialized input identifies the complete state.
@@ -51,7 +54,9 @@ The adapter performs a bounded title, main-menu, level-select, pre-level, and
 gameplay sequence with release frames between edge-triggered presses. Genesis
 is sealed after health and coordinates confirm gameplay. Search actions exclude
 Start and Select. They combine nine non-conflicting directional states with the
-four A/B button states.
+four A/B button states. The adapter supplies that vocabulary as its alphabet
+sampler and nothing else about drawing; the searcher owns the suffix draw and
+the retained-input table.
 
 ## Level and whole-game evaluation
 

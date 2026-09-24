@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::cmp::Reverse;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     error::Error,
     io::Write,
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -21,8 +22,8 @@ use crate::{
         },
         progress::NamedProgress,
         target::{
-            ButtonChord, MetroidInput, MetroidObservations, MetroidSnapshot, MetroidTarget,
-            MetroidTerminalPolicy, power_on_walk, preference_tuple,
+            ButtonChord, GenesisDepth, MetroidInput, MetroidObservations, MetroidSnapshot,
+            MetroidTarget, MetroidTerminalPolicy, power_on_walk, preference_tuple,
         },
     },
     search::{
@@ -34,14 +35,16 @@ use crate::{
             Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
             postcard_value_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
         },
-        draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        draw::{DrawMixture, SuffixShape},
+        draw_tables::DrawTableHeader,
+        rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v4";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v5";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -54,9 +57,6 @@ const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_select_tap
 type MetroidPreference = (u8, u8, u16, u8);
 type MetroidChampionKey = (MetroidProgressWatermark, MetroidPreference);
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct MetroidNoTableHeader;
-
 pub struct MetroidGame {
     rom: Vec<u8>,
     core_path: PathBuf,
@@ -66,6 +66,7 @@ pub struct MetroidGame {
     champion_input_path: Option<PathBuf>,
     milestone_input_dir: Option<PathBuf>,
     terminal_policy: MetroidTerminalPolicy,
+    depth: GenesisDepth,
 }
 
 impl MetroidGame {
@@ -81,15 +82,30 @@ impl MetroidGame {
         core_sha256: &str,
         prefix: Vec<ButtonChord>,
     ) -> Self {
+        Self::new_rooted(rom, core_path, core_sha256, prefix, GenesisDepth::NewGame)
+    }
+
+    #[must_use]
+    pub fn new_rooted(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        prefix: Vec<ButtonChord>,
+        depth: GenesisDepth,
+    ) -> Self {
         let mut prefix_digest = Sha256::new();
         for chord in &prefix {
             prefix_digest.update([chord.buttons, chord.hold_frames]);
         }
+        let genesis = match depth {
+            GenesisDepth::NewGame => "metroid-new-game-v1",
+            GenesisDepth::Rooted => "metroid-rooted-v1",
+        };
         let identity = format!(
             "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;\
-             genesis=metroid-new-game-v1:prefix-sha256={:x};\
+             genesis={genesis}:prefix-sha256={:x};\
              image=cartridge-ram-declared-v1;\
-             result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v4;sha256={core_sha256}",
+             result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v5;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
@@ -104,6 +120,7 @@ impl MetroidGame {
             champion_input_path: None,
             milestone_input_dir: None,
             terminal_policy: MetroidTerminalPolicy::default(),
+            depth,
         }
     }
 
@@ -145,6 +162,26 @@ impl MetroidGame {
         Ok(())
     }
 
+    fn publish_stocked(
+        &self,
+        improved: &[(&str, &str)],
+        input: &MetroidInput,
+    ) -> Result<(), Box<dyn Error>> {
+        if improved.is_empty() {
+            return Ok(());
+        }
+        if let Some(directory) = &self.milestone_input_dir {
+            std::fs::create_dir_all(directory)?;
+            for (name, stock) in improved {
+                let path = directory.join(format!("{name}-{stock}.json"));
+                let temporary = path.with_extension("json.tmp");
+                std::fs::write(&temporary, serde_json::to_vec(input)?)?;
+                std::fs::rename(temporary, path)?;
+            }
+        }
+        Ok(())
+    }
+
     fn publish_champion(&self, input: &MetroidInput) -> Result<(), Box<dyn Error>> {
         if let Some(path) = &self.champion_input_path {
             std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
@@ -178,6 +215,9 @@ pub struct MetroidCampaignEvidence {
     champion_milestones: MetroidMilestones,
     champion_key: Option<MetroidChampionKey>,
     genesis_area: Option<u8>,
+    best_energy: BTreeMap<&'static str, (u16, u8)>,
+    best_missiles: BTreeMap<&'static str, (u8, u16)>,
+    best_boss: BTreeMap<&'static str, (Reverse<u16>, u8, u16)>,
 }
 
 #[derive(Clone)]
@@ -205,7 +245,7 @@ impl MapCoverage {
 pub type MetroidCampaignOrigin = CampaignOrigin<MetroidGame>;
 pub type MetroidCampaignCheckpoint = CampaignCheckpoint<MetroidSnapshot>;
 pub type MetroidSnapshotCheckpoint = SnapshotCheckpoint<MetroidSnapshot>;
-pub type MetroidCampaignStreamHeader = CampaignStreamHeader<MetroidNoTableHeader>;
+pub type MetroidCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
 pub type MetroidCampaignModeReport = CampaignModeReport<ButtonChord, MetroidArchiveReport>;
 pub type MetroidCampaignProgressRecord = CampaignProgressRecord<MetroidArchiveKey>;
 type MetroidCampaignActionResult = CampaignActionResult<MetroidGame>;
@@ -264,7 +304,6 @@ pub struct MetroidCampaignConfig {
     pub memory_budget_mib: Option<usize>,
     pub materialize_final_artifacts: bool,
     pub retention: RetentionPolicy,
-    pub selector: crate::search::archive::SelectorPolicy,
     pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub victory_input_path: Option<PathBuf>,
@@ -290,7 +329,6 @@ impl MetroidCampaignConfig {
             suffix: self.suffix,
             mixture: self.mixture,
             retention: self.retention,
-            selector: self.selector.clone(),
             objective_witness_path: self.victory_input_path.clone(),
         }
     }
@@ -387,7 +425,8 @@ fn execute_suffix(
                 .snapshot()
                 .ok_or("failed to snapshot Metroid suffix")?;
             Some(CampaignCandidate {
-                key: archive_key(target.mechanical_state()),
+                key: archive_key(target.mechanical_state())
+                    .with_boss_health_seen(target.boss_health_seen()),
                 viable: true,
                 snapshot,
             })
@@ -451,9 +490,6 @@ impl CampaignTypes for MetroidGame {
     type Evidence = MetroidCampaignEvidence;
     type ArchiveReport = MetroidArchiveReport;
     type Run = MetroidCampaignRun;
-    type DrawState = ();
-    type DrawHeader = MetroidNoTableHeader;
-    type DrawCheckpoint = ();
 }
 
 impl Reporting for MetroidGame {
@@ -607,18 +643,6 @@ impl InputPolicy for MetroidGame {
         u64::from(crate::metroid::archive::LONGEST_HOLD_FRAMES)
     }
 
-    fn draw_state_memory_reserve_bytes(
-        &self,
-        _run: &MetroidCampaignRun,
-        _max_actions: usize,
-    ) -> usize {
-        0
-    }
-
-    fn draw_state_memory_bytes(&self, _state: &()) -> usize {
-        0
-    }
-
     fn policies(&self, _run: &MetroidCampaignRun) -> WorkloadPolicies {
         [
             (
@@ -655,74 +679,12 @@ impl InputPolicy for MetroidGame {
         Ok(MetroidCampaignRun)
     }
 
-    fn initial_draw_state(
+    fn sample_alphabet(
         &self,
         _run: &MetroidCampaignRun,
-        _origin: Option<(&str, &MetroidArchiveReport)>,
-    ) -> Result<((), Option<MetroidNoTableHeader>), Box<dyn Error>> {
-        Ok(((), None))
-    }
-
-    fn draw_checkpoint(&self, _state: &()) -> Result<Option<()>, Box<dyn Error>> {
-        Ok(None)
-    }
-
-    fn expand_suffix(
-        &self,
-        _run: &MetroidCampaignRun,
-        _state: &(),
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        mutation_seed: u64,
-    ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        draw_suffix(
-            shape,
-            mixture.mixture,
-            mixture.weight,
-            mutation_seed,
-            |_| Ok(None),
-            sample_chord,
-        )
-    }
-
-    fn expand_suffix_recorded(
-        &self,
-        run: &MetroidCampaignRun,
-        state: &(),
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        before: Option<&()>,
-        mutation_seed: u64,
-    ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        if before.is_some() {
-            return Err("Metroid stream unexpectedly records a draw table".into());
-        }
-        self.expand_suffix(run, state, shape, mixture, mutation_seed)
-    }
-
-    fn finish_stream_record(
-        &self,
-        _run: &MetroidCampaignRun,
-        _state: &mut (),
-        _retained: &[(usize, &[ButtonChord])],
-    ) -> Result<Option<()>, Box<dyn Error>> {
-        Ok(None)
-    }
-
-    fn retained_inputs_need_full(&self, _run: &MetroidCampaignRun) -> bool {
-        false
-    }
-
-    fn remember_draw_version(
-        &self,
-        _state: &mut (),
-        required: &BTreeSet<u64>,
-    ) -> Result<(), Box<dyn Error>> {
-        if required.is_empty() {
-            Ok(())
-        } else {
-            Err("Metroid stream requires an unsupported draw-table version".into())
-        }
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<ButtonChord, Box<dyn Error>> {
+        sample_chord(rand)
     }
 }
 
@@ -736,11 +698,12 @@ impl TargetExecution for MetroidGame {
     }
 
     fn new_target(&self) -> Result<MetroidTarget, String> {
-        MetroidTarget::from_rom_bytes_after(
+        MetroidTarget::from_rom_bytes_rooted(
             &self.rom,
             &self.core_path,
             &self.core_sha256,
             &self.prefix,
+            self.depth,
         )
         .map(|target| target.with_terminal_policy(self.terminal_policy))
         .map_err(|error| error.to_string())
@@ -833,7 +796,7 @@ impl Evaluation for MetroidGame {
     }
 
     fn current_key(&self, target: &MetroidTarget) -> Result<MetroidArchiveKey, Box<dyn Error>> {
-        Ok(archive_key(target.mechanical_state()))
+        Ok(archive_key(target.mechanical_state()).with_boss_health_seen(target.boss_health_seen()))
     }
 
     fn complete_candidate_key(
@@ -938,9 +901,49 @@ impl Evaluation for MetroidGame {
             || (action.milestones.gained && evidence.first_inputs.first_gain.is_none());
         let champion = action_champion_key(&action.observations)
             .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
-        if first_input_needed || champion.is_some() || !discoveries.is_empty() {
+        let mut improved = Vec::new();
+        if let Some(last) = action.observations.last().filter(|last| !last.dead) {
+            let state = last.decoded;
+            for name in NamedProgress::reached(last) {
+                let by_energy = (state.health, state.missiles);
+                if evidence
+                    .best_energy
+                    .get(name)
+                    .is_none_or(|best| by_energy > *best)
+                {
+                    evidence.best_energy.insert(name, by_energy);
+                    improved.push((name, "energy"));
+                }
+                let by_missiles = (state.missiles, state.health);
+                if evidence
+                    .best_missiles
+                    .get(name)
+                    .is_none_or(|best| by_missiles > *best)
+                {
+                    evidence.best_missiles.insert(name, by_missiles);
+                    improved.push((name, "missiles"));
+                }
+                if state.boss_health > 0 {
+                    let by_boss = (Reverse(state.boss_health), state.missiles, state.health);
+                    if evidence
+                        .best_boss
+                        .get(name)
+                        .is_none_or(|best| by_boss > *best)
+                    {
+                        evidence.best_boss.insert(name, by_boss);
+                        improved.push((name, "boss"));
+                    }
+                }
+            }
+        }
+        if first_input_needed
+            || champion.is_some()
+            || !discoveries.is_empty()
+            || !improved.is_empty()
+        {
             let input = input()?;
             self.publish_milestones(&discoveries, &input)?;
+            self.publish_stocked(&improved, &input)?;
             update_first_inputs(
                 &mut evidence.first_reached,
                 &mut evidence.first_inputs,
@@ -1020,6 +1023,7 @@ mod tests {
         let observation = MetroidObservations {
             frame_count: 99,
             decoded: decode_state(&wram, &[0; 8192]).unwrap(),
+            boss_health_seen: 0,
             boss_defeats: BossDefeats::default(),
             mother_brain_status: 0,
             tourian_events: TourianEvents::default(),
@@ -1062,7 +1066,124 @@ mod tests {
             );
         }
         assert!(directory.join("ridley_area.json").is_file());
+        assert!(directory.join("ridley_area-energy.json").is_file());
+        assert!(directory.join("ridley_area-missiles.json").is_file());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_better_stocked_arrival_at_a_milestone_republishes_its_tape() {
+        use crate::metroid::{
+            progress::{BossDefeats, TourianEvents},
+            target::decode_state,
+        };
+        let directory =
+            std::env::temp_dir().join(format!("metroid-stocked-test-{}", std::process::id()));
+        let mut wram = [0; 2048];
+        let mut cartridge = [0; 8192];
+        wram[0x1e] = 3;
+        wram[0x107] = 3;
+        wram[0x74] = 0x14;
+        let observe = |wram: &[u8; 2048], cartridge: &[u8; 8192]| MetroidObservations {
+            frame_count: 99,
+            decoded: decode_state(wram, cartridge).unwrap(),
+            boss_health_seen: 0,
+            boss_defeats: BossDefeats::default(),
+            mother_brain_status: 0,
+            tourian_events: TourianEvents::default(),
+            changed_indices: Vec::new(),
+            dead: false,
+            log_line: String::new(),
+        };
+        let action_with = |observation: MetroidObservations, actions: usize| {
+            (
+                MetroidCampaignActionResult {
+                    action: ButtonChord::new(0, 1),
+                    observations: vec![observation],
+                    milestones: MetroidMilestones::default(),
+                    outcome: Outcome::default(),
+                    candidate: None,
+                },
+                MetroidInput {
+                    actions: vec![ButtonChord::new(0, 1); actions],
+                },
+            )
+        };
+        let game = MetroidGame::new(&[], Path::new("unused"), "unused")
+            .with_milestone_input_dir(directory.clone());
+        let mut evidence = MetroidCampaignEvidence::default();
+        let (first, first_input) = action_with(observe(&wram, &cartridge), 1);
+        game.merge_action_evidence(&mut evidence, &first, 1, || Ok(first_input.clone()))
+            .unwrap();
+        let first_health = first.observations[0].decoded.health;
+        let first_missiles = first.observations[0].decoded.missiles;
+        wram[0x107] = 4;
+        let (healthier, healthier_input) = action_with(observe(&wram, &cartridge), 2);
+        assert!(healthier.observations[0].decoded.health > first_health);
+        game.merge_action_evidence(&mut evidence, &healthier, 2, || Ok(healthier_input.clone()))
+            .unwrap();
+        wram[0x107] = 3;
+        cartridge[0x879] = 9;
+        let (stocked, stocked_input) = action_with(observe(&wram, &cartridge), 3);
+        assert!(stocked.observations[0].decoded.missiles > first_missiles);
+        game.merge_action_evidence(&mut evidence, &stocked, 3, || Ok(stocked_input.clone()))
+            .unwrap();
+        game.merge_action_evidence(&mut evidence, &first, 4, || {
+            panic!("a worse-stocked arrival must not reconstruct")
+        })
+        .unwrap();
+        let read = |name: &str| -> MetroidInput {
+            serde_json::from_slice(&std::fs::read(directory.join(name)).unwrap()).unwrap()
+        };
+        assert_eq!(read("ridley_area.json").actions.len(), 1);
+        assert_eq!(read("ridley_area-energy.json").actions.len(), 2);
+        assert_eq!(read("ridley_area-missiles.json").actions.len(), 3);
+        assert!(!directory.join("ridley_area-boss.json").is_file());
+        wram[0x40b] = 40;
+        wram[0x40f] = 0x40;
+        let (fighting, fighting_input) = action_with(observe(&wram, &cartridge), 4);
+        assert_eq!(fighting.observations[0].decoded.boss_health, 40);
+        game.merge_action_evidence(&mut evidence, &fighting, 5, || Ok(fighting_input.clone()))
+            .unwrap();
+        wram[0x40b] = 20;
+        let (hurting, hurting_input) = action_with(observe(&wram, &cartridge), 5);
+        game.merge_action_evidence(&mut evidence, &hurting, 6, || Ok(hurting_input.clone()))
+            .unwrap();
+        game.merge_action_evidence(&mut evidence, &fighting, 7, || {
+            panic!("a boss with more health left must not reconstruct")
+        })
+        .unwrap();
+        assert_eq!(read("ridley_area-boss.json").actions.len(), 5);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_checkpoint_from_the_previous_snapshot_layout_is_rejected_by_its_format() {
+        use crate::{
+            metroid::target::MetroidMechanicalState, search::campaign::SnapshotCheckpointEntry,
+        };
+
+        let checkpoint = |format: &str| MetroidSnapshotCheckpoint {
+            format: format.to_owned(),
+            entries: vec![SnapshotCheckpointEntry {
+                id: 0,
+                snapshot: MetroidSnapshot::for_census_tests(MetroidMechanicalState::default()),
+            }],
+        };
+        let current = checkpoint(SNAPSHOT_CHECKPOINT_FORMAT).to_bytes().unwrap();
+        assert_eq!(
+            MetroidSnapshotCheckpoint::from_bytes(&current, SNAPSHOT_CHECKPOINT_FORMAT).unwrap(),
+            checkpoint(SNAPSHOT_CHECKPOINT_FORMAT)
+        );
+        let previous = checkpoint("metroid-quicknes-snapshot-checkpoint-v4")
+            .to_bytes()
+            .unwrap();
+        let error = MetroidSnapshotCheckpoint::from_bytes(&previous, SNAPSHOT_CHECKPOINT_FORMAT)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "snapshot checkpoint format is not recognized"
+        );
     }
 
     #[test]

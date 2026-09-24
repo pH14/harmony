@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     error::Error,
     fmt::Debug,
     io::Write,
-    num::NonZeroU64,
+    num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -15,19 +15,25 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
-    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, CampaignSpliceTail, Input,
-    ProgressPoint, RetentionPolicy, SelectorAccounting, SelectorDraw, SelectorPath, SelectorPolicy,
-    retention_policy_from_identifier, retention_policy_identifier, selector_policy_identifier,
+    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, CampaignSpliceTail,
+    ContinuationAccounting, Edge, Input, Position, ProgressPoint, RetentionPolicy,
+    SELECTOR_IDENTIFIER, SelectorAccounting, SelectorDraw, SelectorPath,
+    retention_policy_from_identifier, retention_policy_identifier,
 };
 use crate::search::draw::{
     DrawMixture, EnergyStrategy, MixtureDraw, MixtureEnergy, SuffixShape,
-    draw_mixture_from_identifier, draw_mixture_identifier, energy_strategy,
+    draw_mixture_from_identifier, draw_mixture_identifier, draw_suffix, energy_strategy,
     suffix_shape_from_identifier, suffix_shape_identifier,
+};
+use crate::search::draw_tables::{
+    DEFAULT_DRAW_TABLE_PARAMETERS, DRAW_TABLE_POLICY_FIELD, DrawTableHeader, DrawTables,
+    DrawVersionSchedule, biased_step, draw_table_from_identifier, draw_table_identifier,
 };
 use crate::search::duration::{
     DurationCheckpoint, DurationContextCheckpoint, DurationDraw, DurationPolicies, DurationPolicy,
     DurationRequest,
 };
+use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParameters};
 
 pub const SPLICE_ACTION_CAP: usize = 128;
 use crate::search::parallel::{ResultSlots, with_worker_pool};
@@ -39,11 +45,11 @@ pub type CampaignOutcome<G> = (
 );
 
 pub type InitialDrawState<G> = (
-    <G as CampaignTypes>::DrawState,
-    Option<<G as CampaignTypes>::DrawHeader>,
+    DrawTables<<G as CampaignTypes>::Action>,
+    Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 2;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 7;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window and admitted in reservation order; physical workers drain the window dynamically, \
@@ -126,6 +132,8 @@ fn compact_progress_curve<M, P>(
     next_interval
 }
 
+const CELL_DRAWS_INTERVAL: u64 = 100_000;
+
 fn progress_checkpoint_due(executions: u64) -> bool {
     executions > 0 && (executions == 1 || executions.is_multiple_of(PROGRESS_CHECKPOINT_INTERVAL))
 }
@@ -147,9 +155,6 @@ pub trait CampaignTypes: Sync {
     type Evidence: Clone + Default;
     type ArchiveReport: Clone;
     type Run: Clone + Sync;
-    type DrawState;
-    type DrawCheckpoint: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
-    type DrawHeader: Clone + Debug + Eq + Serialize + DeserializeOwned;
 }
 
 pub trait Reporting: CampaignTypes {
@@ -188,14 +193,23 @@ pub trait InputPolicy: CampaignTypes {
     fn max_action_cost(&self) -> u64;
     fn policies(&self, run: &Self::Run) -> WorkloadPolicies;
     fn resolve_recorded(&self, policies: &WorkloadPolicies) -> Result<Self::Run, Box<dyn Error>>;
-    fn draw_state_memory_reserve_bytes(&self, run: &Self::Run, max_actions: usize) -> usize;
-    fn draw_state_memory_bytes(&self, state: &Self::DrawState) -> usize;
-
-    fn initial_draw_state(
+    fn sample_alphabet(
         &self,
         run: &Self::Run,
-        origin: Option<(&str, &Self::ArchiveReport)>,
-    ) -> Result<InitialDrawState<Self>, Box<dyn Error>>;
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<Self::Action, Box<dyn Error>>;
+
+    fn draw_table_parameters(&self, run: &Self::Run) -> EmpiricalStepParameters {
+        let _ = run;
+        DEFAULT_DRAW_TABLE_PARAMETERS
+    }
+    fn draw_state_memory_reserve_bytes(&self, run: &Self::Run, max_actions: usize) -> usize {
+        let _ = (run, max_actions);
+        DrawTables::<Self::Action>::memory_reserve_bytes()
+    }
+    fn draw_state_memory_bytes(&self, state: &DrawTables<Self::Action>) -> usize {
+        state.memory_bytes()
+    }
     fn duration_request(
         &self,
         run: &Self::Run,
@@ -208,32 +222,62 @@ pub trait InputPolicy: CampaignTypes {
     fn expand_suffix_duration(
         &self,
         run: &Self::Run,
-        state: &Self::DrawState,
+        state: &DrawTables<Self::Action>,
         shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
         draw: DurationDraw<Self::Key>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        let _ = draw;
-        self.expand_suffix(run, state, shape, mixture, mutation_seed)
+        self.expand_duration_recorded_or_live(
+            run,
+            state,
+            shape,
+            mixture,
+            None,
+            mutation_seed,
+            draw,
+            false,
+        )
     }
     #[allow(clippy::too_many_arguments)]
     fn expand_suffix_recorded_duration(
         &self,
         run: &Self::Run,
-        state: &Self::DrawState,
+        state: &DrawTables<Self::Action>,
         shape: SuffixShape,
         mixture: MixtureDraw,
-        before: Option<&Self::DrawCheckpoint>,
+        before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
         draw: Option<DurationDraw<Self::Key>>,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         match draw {
-            Some(draw) => {
-                self.expand_suffix_duration(run, state, shape, mixture, mutation_seed, draw)
-            }
+            Some(draw) => self.expand_duration_recorded_or_live(
+                run,
+                state,
+                shape,
+                mixture,
+                before,
+                mutation_seed,
+                draw,
+                true,
+            ),
             None => self.expand_suffix_recorded(run, state, shape, mixture, before, mutation_seed),
         }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn expand_duration_recorded_or_live(
+        &self,
+        run: &Self::Run,
+        state: &DrawTables<Self::Action>,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        before: Option<&EmpiricalStepCheckpoint>,
+        mutation_seed: u64,
+        draw: DurationDraw<Self::Key>,
+        replay: bool,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        let _ = draw;
+        self.expand_recorded_or_live(run, state, shape, mixture, before, mutation_seed, replay)
     }
     fn duration_of_action(&self, run: &Self::Run, action: &Self::Action) -> Option<NonZeroU64> {
         let _ = (run, action);
@@ -241,55 +285,71 @@ pub trait InputPolicy: CampaignTypes {
     }
     fn draw_checkpoint(
         &self,
-        state: &Self::DrawState,
-    ) -> Result<Option<Self::DrawCheckpoint>, Box<dyn Error>> {
-        let _ = state;
-        Ok(None)
+        state: &DrawTables<Self::Action>,
+    ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
+        state.checkpoint().map(Some)
     }
-    fn draw_checkpoint_version(&self, _checkpoint: &Self::DrawCheckpoint) -> u64 {
-        0
+    fn draw_checkpoint_version(&self, checkpoint: &EmpiricalStepCheckpoint) -> u64 {
+        checkpoint.records
     }
     fn expand_suffix(
         &self,
         run: &Self::Run,
-        state: &Self::DrawState,
+        state: &DrawTables<Self::Action>,
         shape: SuffixShape,
         mixture: MixtureDraw,
         mutation_seed: u64,
-    ) -> Result<Vec<Self::Action>, Box<dyn Error>>;
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        self.expand_recorded_or_live(run, state, shape, mixture, None, mutation_seed, false)
+    }
     fn expand_suffix_recorded(
         &self,
         run: &Self::Run,
-        state: &Self::DrawState,
+        state: &DrawTables<Self::Action>,
         shape: SuffixShape,
         mixture: MixtureDraw,
-        before: Option<&Self::DrawCheckpoint>,
+        before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        if before.is_some() {
-            return Err("recorded stream carries an unsupported draw checkpoint".into());
-        }
-        self.expand_suffix(run, state, shape, mixture, mutation_seed)
+        self.expand_recorded_or_live(run, state, shape, mixture, before, mutation_seed, true)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn expand_recorded_or_live(
+        &self,
+        run: &Self::Run,
+        state: &DrawTables<Self::Action>,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        before: Option<&EmpiricalStepCheckpoint>,
+        mutation_seed: u64,
+        replay: bool,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        state.draw(before, replay, |view| {
+            draw_suffix(
+                shape,
+                mixture.mixture,
+                mixture.weight,
+                mutation_seed,
+                |rand| biased_step(view, rand),
+                |rand| self.sample_alphabet(run, rand),
+            )
+        })
     }
     fn finish_stream_record(
         &self,
         run: &Self::Run,
-        state: &mut Self::DrawState,
+        state: &mut DrawTables<Self::Action>,
         retained: &[(usize, &[Self::Action])],
-    ) -> Result<Option<Self::DrawCheckpoint>, Box<dyn Error>> {
-        let _ = (run, state, retained);
-        Ok(None)
-    }
-    fn retained_inputs_need_full(&self, _run: &Self::Run) -> bool {
-        false
+    ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
+        let _ = run;
+        state.finish_record(retained)
     }
     fn remember_draw_version(
         &self,
-        state: &mut Self::DrawState,
-        required: &BTreeSet<u64>,
+        state: &mut DrawTables<Self::Action>,
+        schedule: &DrawVersionSchedule,
     ) -> Result<(), Box<dyn Error>> {
-        let _ = (state, required);
-        Ok(())
+        state.remember_version(schedule)
     }
 }
 
@@ -485,11 +545,11 @@ impl<S: Serialize + DeserializeOwned> SnapshotCheckpoint<S> {
     }
 
     pub fn from_bytes(bytes: &[u8], expected_format: &str) -> Result<Self, Box<dyn Error>> {
-        let checkpoint: Self = postcard::from_bytes(bytes)?;
-        if checkpoint.format != expected_format {
+        let (format, _) = postcard::take_from_bytes::<&str>(bytes)?;
+        if format != expected_format {
             return Err("snapshot checkpoint format is not recognized".into());
         }
-        Ok(checkpoint)
+        Ok(postcard::from_bytes(bytes)?)
     }
 }
 
@@ -510,7 +570,6 @@ pub struct CampaignConfig<G: Workload + ?Sized> {
     pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub retention: RetentionPolicy,
-    pub selector: SelectorPolicy,
     pub objective_witness_path: Option<PathBuf>,
 }
 
@@ -552,6 +611,7 @@ pub struct CampaignStreamHeader<T> {
     pub draw_header: Option<T>,
     pub retention_policy: String,
     pub parent_scheduler: String,
+    pub preference_portfolio: String,
     pub executor_mode: String,
     pub worker_seed_derivation: String,
     pub workload_identity_sha256: String,
@@ -586,6 +646,8 @@ pub struct CampaignJobRecord<C, K = ()> {
     pub sequence: u64,
     pub worker: u32,
     pub parent_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_energy: Option<u16>,
     pub mutation_seed: u64,
     pub execution_work: u64,
     pub result_sha256: String,
@@ -739,8 +801,6 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub input_index_nodes: usize,
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub historical_cells: usize,
-    #[serde(default, skip_serializing_if = "is_zero_usize")]
-    pub barren_groups: usize,
     pub jobs_per_worker: Vec<u64>,
     pub skips_per_worker: Vec<u64>,
     pub stream_sha256: String,
@@ -779,6 +839,177 @@ fn resident_memory_is_within_budget(bytes: usize, memory_budget_mib: Option<usiz
     memory_budget_mib.is_none_or(|budget_mib| bytes <= budget_mib.saturating_mul(1024 * 1024))
 }
 
+struct ContinuationReservation<G: Workload + ?Sized> {
+    parent_index: usize,
+    parent_id: u64,
+    donor: u64,
+    leaf: u64,
+    source: Position<G::Key>,
+    destination: Position<G::Key>,
+    wave: u32,
+    suffix: Vec<G::Action>,
+}
+
+fn take_continuation<G: Workload + ?Sized>(
+    core: &mut CoordinatorCore<G>,
+    from_highest_preference: bool,
+    suffix: SuffixShape,
+    action_cost: fn(&G::Action) -> u64,
+    max_action_cost: u64,
+) -> Option<ContinuationReservation<G>> {
+    let max_actions = core.max_actions;
+    let mut examined = 0_usize;
+    let mut gaining_fallback = None;
+    while examined < CONTINUATION_EXITS_PER_RESERVATION
+        && let Some(continuation) = core.archive.pop_continuation(from_highest_preference)
+    {
+        examined = examined.saturating_add(1);
+        let Some(parent_index) = core.archive.index_of_id(continuation.parent) else {
+            continue;
+        };
+        if !core.archive.active[parent_index]
+            || core.archive.entries[parent_index].input_len >= max_actions
+        {
+            continue;
+        }
+        let outranks = core.archive.outranks_slot_holders(
+            parent_index,
+            continuation.destination,
+            continuation.preference,
+        );
+        let gaining = continuation.gains != 0;
+        if !outranks && (!gaining || gaining_fallback.is_some()) {
+            continue;
+        }
+        let mut actions = continuation.actions;
+        suffix.bound_cost(&mut actions, action_cost, max_action_cost);
+        if core.all_prefixes_archived(parent_index, &actions) {
+            continue;
+        }
+        let reservation = ContinuationReservation {
+            parent_index,
+            parent_id: continuation.parent,
+            donor: continuation.donor,
+            leaf: continuation.leaf,
+            source: continuation.source,
+            destination: continuation.destination,
+            wave: continuation.wave,
+            suffix: actions,
+        };
+        if outranks {
+            core.archive.record_continuation_dispatch(false);
+            return Some(reservation);
+        }
+        gaining_fallback = Some(reservation);
+    }
+    if gaining_fallback.is_some() {
+        core.archive.record_continuation_dispatch(true);
+    }
+    gaining_fallback
+}
+
+fn continuation_attempt<G: Workload + ?Sized>(
+    core: &mut CoordinatorCore<G>,
+    campaign_seed: u64,
+    reservation: u64,
+    suffix: SuffixShape,
+    action_cost: fn(&G::Action) -> u64,
+    max_action_cost: u64,
+) -> (Option<u16>, Option<ContinuationReservation<G>>) {
+    if core.archive.continuation_pending() == 0 {
+        return (None, None);
+    }
+    let energy = CONTINUATION_ATTEMPT_SHARE;
+    let takes = draws_continuation(campaign_seed, reservation);
+    core.archive.record_continuation_reservation(energy, takes);
+    let taken = takes
+        .then(|| {
+            let from_highest_preference = draws_highest_preference(campaign_seed, reservation);
+            take_continuation(
+                core,
+                from_highest_preference,
+                suffix,
+                action_cost,
+                max_action_cost,
+            )
+        })
+        .flatten();
+    (Some(energy), taken)
+}
+
+fn continuation_reservation_matches<G: Workload + ?Sized>(
+    taken: Option<&ContinuationReservation<G>>,
+    energy: Option<u16>,
+    selector: &SelectorDraw,
+    splice: Option<&CampaignSpliceRecord>,
+    recorded_energy: Option<u16>,
+    sequence: u64,
+) -> Result<(), Box<dyn Error>> {
+    if recorded_energy != energy {
+        return Err(
+            format!("record {sequence} disagrees with the rebuilt continuation share").into(),
+        );
+    }
+    let recorded = selector.path == SelectorPath::Continuation;
+    match (taken, recorded) {
+        (None, false) => Ok(()),
+        (None, true) => Err(format!(
+            "record {sequence} is a continuation job the replayed queue did not produce"
+        )
+        .into()),
+        (Some(_), false) => Err(format!(
+            "the replayed queue produced a continuation at record {sequence}, which is an ordinary job"
+        )
+        .into()),
+        (Some(taken), true) => {
+            let Some(CampaignSpliceRecord::Tail {
+                donor_id,
+                leaf_id,
+                tail_postcard,
+            }) = splice
+            else {
+                return Err(
+                    format!("continuation record {sequence} lacks its complete tail").into(),
+                );
+            };
+            let tail: Vec<G::Action> = postcard::from_bytes(tail_postcard)?;
+            if *donor_id != taken.donor || *leaf_id != taken.leaf || tail != taken.suffix {
+                return Err(format!(
+                    "continuation record {sequence} disagrees with the replayed queue entry"
+                )
+                .into());
+            }
+            Ok(())
+        }
+    }
+}
+
+fn continuation_arrival<G: Workload>(
+    archive: &Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
+    edge: Option<Edge<G::Key>>,
+    decisions: &[CampaignAdmissionDecision],
+) -> (Option<usize>, bool) {
+    let Some((source, destination)) = edge else {
+        return (None, false);
+    };
+    decisions
+        .iter()
+        .fold((None, false), |(landed, replaced), decision| {
+            let (id, retained) = match decision {
+                CampaignAdmissionDecision::Retained { id } => (*id, true),
+                CampaignAdmissionDecision::Duplicate { id } => (*id, false),
+                _ => return (landed, replaced),
+            };
+            let arrived = archive
+                .index_of_id(id)
+                .filter(|index| archive.lands_on_edge(*index, source, destination));
+            (
+                landed.or(arrived),
+                replaced || (arrived.is_some() && retained),
+            )
+        })
+}
+
 fn retained_archive_indexes<G: Workload>(
     core: &CoordinatorCore<G>,
     decisions: &[CampaignAdmissionDecision],
@@ -801,26 +1032,54 @@ fn record_mixture_outcome(
     mixture: DrawMixture,
     path: SelectorPath,
     mutation_seed: u64,
-    mixture_weight: u8,
-    splice_weight: u8,
+    (mixture_weight, splice_weight): (u8, u8),
     new_slot: bool,
+    work: u64,
 ) -> Result<(), Box<dyn Error>> {
-    if mixture.isolates_continuations() && path == SelectorPath::Continuation {
+    if path == SelectorPath::Continuation {
         return Ok(());
     }
     if matches!(
         mixture,
-        DrawMixture::Energy { .. }
-            | DrawMixture::EnergySplice { .. }
-            | DrawMixture::EnergySpliceContinuation { .. }
-            | DrawMixture::EnergySpliceContinuationIsolated { .. }
+        DrawMixture::Energy { .. } | DrawMixture::EnergySplice { .. }
     ) {
         energy.record_outcome(
             energy_strategy(mutation_seed, mixture_weight, splice_weight)?,
             new_slot,
+            work,
         );
     }
     Ok(())
+}
+
+pub(crate) const CONTINUATION_EXITS_PER_RESERVATION: usize = 8;
+
+pub(crate) const CONTINUATION_ATTEMPT_IN: usize = 4;
+
+pub(crate) const CONTINUATION_HIGHEST_TIER_IN: usize = 4;
+
+const CONTINUATION_ATTEMPT_SHARE: u16 = 64;
+
+const CONTINUATION_TIER_SALT: u64 = 0x9e37_79b9_7f4a_7c15;
+
+fn draws_one_in(seed: u64, one_in: usize) -> bool {
+    let Some(bound) = NonZeroUsize::new(one_in) else {
+        return false;
+    };
+    RomuDuoJrRand::with_seed(seed).below(bound) == 0
+}
+
+#[must_use]
+pub(crate) fn draws_continuation(campaign_seed: u64, reservation: u64) -> bool {
+    draws_one_in(campaign_seed ^ reservation, CONTINUATION_ATTEMPT_IN)
+}
+
+#[must_use]
+pub(crate) fn draws_highest_preference(campaign_seed: u64, reservation: u64) -> bool {
+    draws_one_in(
+        campaign_seed ^ reservation ^ CONTINUATION_TIER_SALT,
+        CONTINUATION_HIGHEST_TIER_IN,
+    )
 }
 
 fn stop_reservations_after_objective(
@@ -946,12 +1205,10 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignJobResult<G> {
 }
 
 fn verify_selector_annotation(draw: &SelectorDraw) -> Result<(), Box<dyn Error>> {
-    match (draw.path, draw.concentration) {
-        (SelectorPath::HierarchyWalk, None) => {
-            Err("cell draw is missing its concentration record".into())
-        }
-        (SelectorPath::Uniform | SelectorPath::Continuation, Some(_)) => {
-            Err("non-cell draw carries a concentration record".into())
+    match (draw.path, draw.tier_rank) {
+        (SelectorPath::Tiers, None) => Err("tier draw is missing its rank".into()),
+        (SelectorPath::Continuation, Some(_)) => {
+            Err("continuation draw carries a tier rank".into())
         }
         _ => Ok(()),
     }
@@ -1410,7 +1667,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 .record_progress
                 .then(|| G::aggregate_progress(&self.evidence)),
             active_entries: self.archive.active_count(),
-            occupied_cells: self.archive.slots.len(),
+            occupied_cells: self.archive.occupied_cell_count(),
             terminal_endpoints: self.terminal_endpoints,
             execution_failures: self.execution_failures,
         });
@@ -1453,6 +1710,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         campaign_seed: u64,
         materialize_final_artifacts: bool,
     ) -> (G::ArchiveReport, Vec<(u64, G::Snapshot)>) {
+        let selector = self.archive.selector_report();
         let (entries, snapshots) = if materialize_final_artifacts {
             self.archive.take_entry_reports_and_snapshots()
         } else {
@@ -1470,7 +1728,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 terminal_endpoints: self.terminal_endpoints,
                 terminal_objectives: self.terminal_objectives,
                 execution_failures: self.execution_failures,
-                selector: self.archive.selector_report(),
+                selector,
             },
         );
         (report, snapshots)
@@ -1530,12 +1788,23 @@ fn resolve_origin<G: Workload>(
     })
 }
 
+pub const PREFERENCE_PORTFOLIO_PREFIX: &str = "preference_portfolio_v1:";
+
+#[must_use]
+pub fn preference_portfolio_identifier<K: ArchiveKey>() -> String {
+    format!(
+        "{PREFERENCE_PORTFOLIO_PREFIX}{},{}",
+        K::preferences(),
+        K::capacity().max(1)
+    )
+}
+
 fn stream_header<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
     origin: &CampaignOriginRecord,
-    draw_header: Option<G::DrawHeader>,
-) -> CampaignStreamHeader<G::DrawHeader> {
+    draw_header: Option<DrawTableHeader>,
+) -> CampaignStreamHeader<DrawTableHeader> {
     CampaignStreamHeader {
         schema_version: CAMPAIGN_SCHEMA_VERSION,
         format: workload.stream_format().to_owned(),
@@ -1566,10 +1835,11 @@ fn stream_header<G: Workload>(
         },
         suffix_policy: suffix_shape_identifier(config.suffix).to_owned(),
         mixture_policy: draw_mixture_identifier(config.mixture),
-        workload_policies: workload.policies(&config.run),
+        workload_policies: recorded_policies(workload, &config.run),
         draw_header,
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
-        parent_scheduler: selector_policy_identifier(&config.selector),
+        parent_scheduler: SELECTOR_IDENTIFIER.to_owned(),
+        preference_portfolio: preference_portfolio_identifier::<G::Key>(),
         executor_mode: "snapshot_resume_archive".to_owned(),
         worker_seed_derivation: "sha256(campaign_seed_le || worker_index_le)[0..8] as u64 le"
             .to_owned(),
@@ -1781,12 +2051,16 @@ struct LiveCoordinatorProfile {
     replay_cost: u64,
     suffix_actions: u64,
     suffix_cost: u64,
+    splice_jobs: u64,
+    splice_actions: u64,
+    splice_cost: u64,
 }
 
 impl LiveCoordinatorProfile {
     fn note_dispatch<G: Workload + ?Sized>(
         &mut self,
         spec: &JobSpec<G>,
+        spliced: bool,
         cost: fn(&G::Action) -> u64,
     ) {
         if !self.enabled {
@@ -1804,6 +2078,13 @@ impl LiveCoordinatorProfile {
             .suffix_actions
             .saturating_add(u64::try_from(spec.suffix.len()).unwrap_or(u64::MAX));
         self.suffix_cost = self.suffix_cost.saturating_add(total(&spec.suffix));
+        if spliced {
+            self.splice_jobs = self.splice_jobs.saturating_add(1);
+            self.splice_actions = self
+                .splice_actions
+                .saturating_add(u64::try_from(spec.suffix.len()).unwrap_or(u64::MAX));
+            self.splice_cost = self.splice_cost.saturating_add(total(&spec.suffix));
+        }
     }
 }
 
@@ -1862,7 +2143,7 @@ impl CampaignCounters {
 
 fn build_report<G: Workload>(
     workload: &G,
-    header: &CampaignStreamHeader<G::DrawHeader>,
+    header: &CampaignStreamHeader<DrawTableHeader>,
     origin: CampaignOriginRecord,
     core: CoordinatorCore<G>,
     counters: &CampaignCounters,
@@ -1893,7 +2174,6 @@ fn build_report<G: Workload>(
     let input_reconstructions = core.archive.input_reconstructions();
     let input_index_nodes = core.archive.input_index_nodes();
     let historical_cells = core.archive.historical_cell_count();
-    let barren_groups = core.archive.barren_group_count();
     let (archive, snapshots) = core.into_archive_report_and_snapshots(
         workload,
         header.campaign_seed,
@@ -1961,7 +2241,6 @@ fn build_report<G: Workload>(
         input_reconstructions,
         input_index_nodes,
         historical_cells,
-        barren_groups,
         jobs_per_worker: counters.jobs_per_worker.clone(),
         skips_per_worker: counters.skips_per_worker.clone(),
         stream_sha256,
@@ -2019,12 +2298,15 @@ struct PendingJob<G: Workload + ?Sized> {
     snapshot_id: u64,
     worker: u32,
     parent_id: u64,
+    continuation_energy: Option<u16>,
+    continuation_wave: u32,
+    continuation_edge: Option<Edge<G::Key>>,
     mutation_seed: u64,
     mixture_weight: u8,
     splice_weight: u8,
     splice: Option<CampaignSpliceRecord>,
     selector: SelectorDraw,
-    draw_checkpoint_before: Option<G::DrawCheckpoint>,
+    draw_checkpoint_before: Option<EmpiricalStepCheckpoint>,
     duration_draw: Option<DurationDraw<G::Key>>,
     duration_admission_sequence_at_draw: Option<u64>,
     duration_remaining_work: Option<NonZeroU64>,
@@ -2112,9 +2394,7 @@ pub struct CampaignProgressRecord<K> {
     #[serde(default)]
     pub input_index_memory_bytes: usize,
     #[serde(default)]
-    pub novelty_memory_bytes: usize,
-    #[serde(default)]
-    pub barren_memory_bytes: usize,
+    pub cell_memory_bytes: usize,
     #[serde(default)]
     pub resident_memory_bytes: usize,
     #[serde(default)]
@@ -2134,7 +2414,9 @@ pub struct CampaignProgressRecord<K> {
     #[serde(default)]
     pub historical_cells: usize,
     #[serde(default)]
-    pub barren_groups: usize,
+    pub selector: SelectorAccounting,
+    #[serde(default)]
+    pub continuations: ContinuationAccounting,
 }
 
 fn write_live_progress<G: Workload>(
@@ -2188,8 +2470,7 @@ fn write_live_progress<G: Workload>(
         draw_state_memory_bytes,
         entry_metadata_memory_bytes: core.archive.entry_metadata_memory_bytes(),
         input_index_memory_bytes: core.archive.input_index_memory_bytes(),
-        novelty_memory_bytes: core.archive.novelty_memory_bytes(),
-        barren_memory_bytes: core.archive.barren_memory_bytes(),
+        cell_memory_bytes: core.archive.cell_memory_bytes(),
         resident_memory_bytes: core
             .archive
             .resident_memory_bytes()
@@ -2202,7 +2483,14 @@ fn write_live_progress<G: Workload>(
         input_reconstructions: core.archive.input_reconstructions(),
         input_index_nodes: core.archive.input_index_nodes(),
         historical_cells: core.archive.historical_cell_count(),
-        barren_groups: core.archive.barren_group_count(),
+        selector: {
+            let mut selector = core.archive.selector_report();
+            if !final_census && !sequence.is_multiple_of(CELL_DRAWS_INTERVAL) {
+                selector.draws_by_cell.clear();
+            }
+            selector
+        },
+        continuations: core.archive.continuation_report(),
     })?;
     sink.write_all(line.as_bytes())?;
     sink.write_all(b"\n")?;
@@ -2342,7 +2630,7 @@ where
             ..
         } => Some((file_sha256.as_str(), report.as_ref())),
     };
-    let (mut draw_state, draw_header) = workload.initial_draw_state(&config.run, draw_origin)?;
+    let (mut draw_state, draw_header) = initial_draw_state(workload, &config.run, draw_origin)?;
     let mut duration_policies = DurationPolicies::<G::Key>::new();
     if !memory_is_within_reserve(
         workload.draw_state_memory_bytes(&draw_state),
@@ -2362,9 +2650,8 @@ where
         config.archive_entry_limit,
         config.memory_budget_mib,
     );
-    core.archive.selector_policy = config.selector.clone();
     core.archive
-        .enable_continuations(config.mixture.uses_continuations());
+        .enable_continuations(config.suffix.max_actions());
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the bootstrap target: {error}").into()
@@ -2455,7 +2742,7 @@ where
         |pool| -> Result<(), Box<dyn Error>> {
             let select = |core: &mut CoordinatorCore<G>,
                           rands: &mut [RomuDuoJrRand],
-                          draw_state: &mut G::DrawState,
+                          draw_state: &mut DrawTables<G::Action>,
                           duration_policies: &DurationPolicies<G::Key>,
                           writer: &mut StreamWriter<'_>,
                           counters: &mut CampaignCounters,
@@ -2484,75 +2771,71 @@ where
                 let rand = &mut rands[worker as usize];
                 let max_actions = core.max_actions;
                 let mut consecutive_skips = 0_u64;
-                if reserved.wrapping_add(1).is_multiple_of(4) {
-                    while let Some(continuation) = core.archive.pop_continuation() {
-                        let Some(parent_index) = core.archive.index_of_id(continuation.parent)
-                        else {
-                            continue;
-                        };
-                        if !core.archive.active[parent_index]
-                            || core.archive.entries[parent_index].input_len >= max_actions
-                        {
-                            continue;
-                        }
-                        let mut suffix = continuation.actions;
-                        config
-                            .suffix
-                            .bound_cost(&mut suffix, action_cost, max_action_cost);
-                        if core.all_prefixes_archived(parent_index, &suffix) {
-                            continue;
-                        }
-                        let (mixture_weight, splice_weight) = (0, u8::MAX);
-                        let mut mutation_seed = rand.next_u64();
-                        while energy_strategy(mutation_seed, mixture_weight, splice_weight)?
-                            != EnergyStrategy::Splice
-                        {
-                            mutation_seed = rand.next_u64();
-                        }
-                        let parent_id = continuation.parent;
-                        let selector = SelectorDraw {
-                            path: SelectorPath::Continuation,
-                            classes_skipped: 0,
-                            counter_reset: false,
-                            concentration: None,
-                        };
-                        let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
-                        let splice = Some(CampaignSpliceRecord::Tail {
-                            donor_id: continuation.donor,
-                            leaf_id: continuation.leaf,
-                            tail_postcard: postcard::to_allocvec(&suffix)?,
-                        });
-                        *reserved = reserved.saturating_add(1);
-                        core.archive.pin_metadata(parent_id)?;
-                        let (snapshot, replay, snapshot_id) =
-                            core.archive.pin_job_origin(parent_index)?;
-                        let entry = &core.archive.entries[parent_index];
-                        return Ok(Some((
-                            JobSpec {
-                                reservation: 0,
-                                snapshot,
-                                replay,
-                                parent_actions: entry.input_len,
-                                parent_milestones: entry.milestones,
-                                suffix,
-                            },
-                            PendingJob {
-                                snapshot_id,
-                                worker,
-                                parent_id,
-                                mutation_seed,
-                                mixture_weight,
-                                splice_weight,
-                                splice,
-                                selector,
-                                draw_checkpoint_before,
-                                duration_draw: None,
-                                duration_admission_sequence_at_draw: None,
-                                duration_remaining_work: None,
-                                duration_checkpoint_at_draw: None,
-                            },
-                        )));
+                let (continuation_energy, continuation) = continuation_attempt(
+                    core,
+                    config.campaign_seed,
+                    *reserved,
+                    config.suffix,
+                    action_cost,
+                    max_action_cost,
+                );
+                if let Some(continuation) = continuation {
+                    let parent_index = continuation.parent_index;
+                    let suffix = continuation.suffix;
+                    let (mixture_weight, splice_weight) = (0, u8::MAX);
+                    let mut mutation_seed = rand.next_u64();
+                    while energy_strategy(mutation_seed, mixture_weight, splice_weight)?
+                        != EnergyStrategy::Splice
+                    {
+                        mutation_seed = rand.next_u64();
                     }
+                    let parent_id = continuation.parent_id;
+                    let selector = SelectorDraw {
+                        path: SelectorPath::Continuation,
+                        tier_rank: None,
+                    };
+                    let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
+                    let splice = Some(CampaignSpliceRecord::Tail {
+                        donor_id: continuation.donor,
+                        leaf_id: continuation.leaf,
+                        tail_postcard: postcard::to_allocvec(&suffix)?,
+                    });
+                    *reserved = reserved.saturating_add(1);
+                    core.archive.pin_metadata(parent_id)?;
+                    let (snapshot, replay, snapshot_id) =
+                        core.archive.pin_job_origin(parent_index)?;
+                    let entry = &core.archive.entries[parent_index];
+                    return Ok(Some((
+                        JobSpec {
+                            reservation: 0,
+                            snapshot,
+                            replay,
+                            parent_actions: entry.input_len,
+                            parent_milestones: entry.milestones,
+                            suffix,
+                        },
+                        PendingJob {
+                            snapshot_id,
+                            worker,
+                            parent_id,
+                            continuation_energy,
+                            continuation_wave: continuation.wave.saturating_add(1),
+                            continuation_edge: Some((
+                                continuation.source,
+                                continuation.destination,
+                            )),
+                            mutation_seed,
+                            mixture_weight,
+                            splice_weight,
+                            splice,
+                            selector,
+                            draw_checkpoint_before,
+                            duration_draw: None,
+                            duration_admission_sequence_at_draw: None,
+                            duration_remaining_work: None,
+                            duration_checkpoint_at_draw: None,
+                        },
+                    )));
                 }
                 loop {
                     let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
@@ -2565,9 +2848,7 @@ where
                         DrawMixture::Energy { scale } => {
                             (core.mixture_energy.biased_weight(scale), 0)
                         }
-                        DrawMixture::EnergySplice { scale }
-                        | DrawMixture::EnergySpliceContinuation { scale }
-                        | DrawMixture::EnergySpliceContinuationIsolated { scale } => {
+                        DrawMixture::EnergySplice { scale } => {
                             core.mixture_energy.splice_weights(scale)
                         }
                         _ => (DEFAULT_MIXTURE_WEIGHT, 0),
@@ -2720,6 +3001,9 @@ where
                             snapshot_id,
                             worker,
                             parent_id,
+                            continuation_energy,
+                            continuation_wave: 0,
+                            continuation_edge: None,
                             mutation_seed,
                             mixture_weight,
                             splice_weight,
@@ -2762,7 +3046,11 @@ where
                 let Some((mut spec, pending_job)) = selected else {
                     break;
                 };
-                coordinator_profile.note_dispatch(&spec, action_cost);
+                coordinator_profile.note_dispatch(
+                    &spec,
+                    matches!(pending_job.splice, Some(CampaignSpliceRecord::Tail { .. })),
+                    action_cost,
+                );
                 let reservation = usize::try_from(reserved.saturating_sub(1))?;
                 spec.reservation = reservation;
                 if pending.insert(reservation, pending_job).is_some() {
@@ -2851,6 +3139,8 @@ where
                         .and_then(|draw| duration_policies.context_checkpoint(draw.context));
                     let objectives_before = core.objectives_reached;
                     let admission_started = profile_now(coordinator_profile.enabled);
+                    core.archive
+                        .set_admission_wave(pending_job.continuation_wave);
                     let (sequence, decisions, duration_admission) = core.admit_job_tracking(
                         workload,
                         pending_job.parent_id,
@@ -2886,8 +3176,8 @@ where
                         .archive
                         .index_of_id(pending_job.parent_id)
                         .ok_or("completed job parent is no longer resident")?;
-                    let isolated_continuation = config.mixture.isolates_continuations()
-                        && pending_job.selector.path == SelectorPath::Continuation;
+                    let isolated_continuation =
+                        pending_job.selector.path == SelectorPath::Continuation;
                     if isolated_continuation {
                         core.archive.record_isolated_continuation(parent_index);
                     } else {
@@ -2895,28 +3185,38 @@ where
                             .record_selection(parent_index, &pending_job.selector);
                     }
                     let retained_ids = retained_archive_indexes(&core, &decisions);
-                    let new_slot_descendant = retained_ids
-                        .iter()
-                        .any(|id| core.archive.opened_new_slot(*id));
                     let new_cell_descendant = retained_ids
                         .iter()
                         .any(|id| core.archive.opened_new_cell(*id));
+                    let new_slot_descendant = retained_ids
+                        .iter()
+                        .any(|id| core.archive.opened_new_slot(*id));
                     if !isolated_continuation {
-                        core.archive.record_selection_outcome(
-                            parent_index,
-                            !retained_ids.is_empty(),
-                            new_slot_descendant,
-                            new_cell_descendant,
+                        core.archive
+                            .record_selection_outcome(parent_index, !retained_ids.is_empty());
+                    }
+                    if isolated_continuation {
+                        let (landed, replaced) = continuation_arrival::<G>(
+                            &core.archive,
+                            pending_job.continuation_edge,
+                            &decisions,
                         );
+                        core.archive.record_continuation_outcome(
+                            landed,
+                            replaced,
+                            new_cell_descendant,
+                            pending_job.continuation_wave,
+                        );
+                        core.archive.add_continuation_execution_work(execution_work);
                     }
                     record_mixture_outcome(
                         &mut core.mixture_energy,
                         config.mixture,
                         pending_job.selector.path,
                         pending_job.mutation_seed,
-                        pending_job.mixture_weight,
-                        pending_job.splice_weight,
+                        (pending_job.mixture_weight, pending_job.splice_weight),
                         new_slot_descendant,
+                        execution_work,
                     )?;
                     if objectives_before == 0
                         && let (Some(path), Some(input)) =
@@ -2937,7 +3237,7 @@ where
                     }
                     if !memory_is_within_reserve(
                         duration_policies.memory_bytes(),
-                        DurationPolicies::<G::Key>::memory_reserve_bytes(),
+                        duration_memory_reserve,
                     ) {
                         return Err(
                             "live adaptive duration state exceeds its memory reserve".into()
@@ -2960,6 +3260,7 @@ where
                         .saturating_add(profile_elapsed(bookkeeping_started));
                     let stream_started = profile_now(coordinator_profile.enabled);
                     writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
+                        continuation_energy: pending_job.continuation_energy,
                         sequence,
                         worker: pending_job.worker,
                         parent_id: pending_job.parent_id,
@@ -3006,7 +3307,7 @@ where
                         )?;
                         if coordinator_profile.enabled {
                             eprintln!(
-                                "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} available_result_slots={} queued_specs={} completed_buffered={} job_execution_work={} replay_jobs={} replay_actions={} replay_cost={} suffix_actions={} suffix_cost={}",
+                                "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} cell_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} available_result_slots={} queued_specs={} completed_buffered={} job_execution_work={} replay_jobs={} replay_actions={} replay_cost={} suffix_actions={} suffix_cost={}",
                                 coordinator_profile.receive_wait_ns,
                                 coordinator_profile.admission_ns,
                                 coordinator_profile.bookkeeping_ns,
@@ -3025,8 +3326,7 @@ where
                                 core.archive.resident_snapshot_bytes(),
                                 core.archive.entry_metadata_memory_bytes(),
                                 core.archive.input_index_memory_bytes(),
-                                core.archive.novelty_memory_bytes(),
-                                core.archive.barren_memory_bytes(),
+                                core.archive.cell_memory_bytes(),
                                 core.archive.history_memory_bytes(),
                                 draw_state_memory_bytes,
                                 core.archive
@@ -3068,7 +3368,11 @@ where
                     coordinator_profile.selections =
                         coordinator_profile.selections.saturating_add(1);
                     if let Some((mut spec, pending_job)) = selected {
-                        coordinator_profile.note_dispatch(&spec, action_cost);
+                        coordinator_profile.note_dispatch(
+                            &spec,
+                            matches!(pending_job.splice, Some(CampaignSpliceRecord::Tail { .. })),
+                            action_cost,
+                        );
                         let reservation = usize::try_from(reserved.saturating_sub(1))?;
                         spec.reservation = reservation;
                         if pending.insert(reservation, pending_job).is_some() {
@@ -3150,11 +3454,10 @@ where
 fn finish_record<G: Workload>(
     workload: &G,
     run: &G::Run,
-    draw_state: &mut G::DrawState,
+    draw_state: &mut DrawTables<G::Action>,
     core: &CoordinatorCore<G>,
     decisions: &[CampaignAdmissionDecision],
-) -> Result<Option<G::DrawCheckpoint>, Box<dyn Error>> {
-    let needs_full = workload.retained_inputs_need_full(run);
+) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
     let mut retained_inputs = Vec::new();
     for decision in decisions {
         let CampaignAdmissionDecision::Retained { id } = decision else {
@@ -3169,31 +3472,79 @@ fn finish_record<G: Workload>(
             .entries
             .get(index)
             .ok_or("retained draw-table entry is missing from the run archive")?;
-        let input = if needs_full {
-            core.archive
-                .materialize_input(index)
-                .map_err(|error| -> Box<dyn Error> { error.into() })?
-        } else {
-            Input {
-                actions: entry.input_suffix.clone(),
-            }
-        };
-        let parent_actions = if needs_full {
-            entry
-                .parent_id
-                .and_then(|parent| core.archive.index_of_id(parent))
-                .and_then(|parent| core.archive.entries.get(parent))
-                .map_or(0, |parent| parent.input_len)
-        } else {
-            0
-        };
-        retained_inputs.push((parent_actions, input));
+        retained_inputs.push(entry.input_suffix.clone());
     }
     let retained = retained_inputs
         .iter()
-        .map(|(parent_actions, input)| (*parent_actions, input.actions.as_slice()))
+        .map(|suffix| (0, suffix.as_slice()))
         .collect::<Vec<_>>();
     workload.finish_stream_record(run, draw_state, &retained)
+}
+
+fn recorded_policies<G: Workload>(workload: &G, run: &G::Run) -> WorkloadPolicies {
+    let mut policies = workload.policies(run);
+    policies.insert(
+        DRAW_TABLE_POLICY_FIELD.to_owned(),
+        draw_table_identifier(workload.draw_table_parameters(run)),
+    );
+    policies
+}
+
+fn resolve_recorded_policies<G: Workload>(
+    workload: &G,
+    policies: &WorkloadPolicies,
+) -> Result<G::Run, Box<dyn Error>> {
+    let mut workload_policies = policies.clone();
+    let recorded = workload_policies
+        .remove(DRAW_TABLE_POLICY_FIELD)
+        .ok_or("campaign stream is missing its draw table policy")?;
+    let parameters = draw_table_from_identifier(&recorded)?;
+    let run = workload.resolve_recorded(&workload_policies)?;
+    if workload.draw_table_parameters(&run) != parameters {
+        return Err("campaign stream draw table policy does not match this build".into());
+    }
+    Ok(run)
+}
+
+fn initial_draw_state<G: Workload>(
+    workload: &G,
+    run: &G::Run,
+    origin: Option<(&str, &G::ArchiveReport)>,
+) -> Result<InitialDrawState<G>, Box<dyn Error>> {
+    let parameters = workload.draw_table_parameters(run);
+    let mut tables = DrawTables::new(parameters)?;
+    let source_sha256 = match origin {
+        None => format!("{:x}", Sha256::digest([])),
+        Some((file_sha256, report)) => {
+            let entries = workload.source_entries(report);
+            let parent_len: BTreeMap<u64, usize> = entries
+                .iter()
+                .map(|entry| (entry.id, entry.input.actions.len()))
+                .collect();
+            let mut pending = 0_u64;
+            for entry in entries {
+                let prefix = entry
+                    .parent_id
+                    .and_then(|parent| parent_len.get(&parent).copied())
+                    .unwrap_or(0);
+                tables.fold_source(entry.input.actions.get(prefix..).unwrap_or(&[]))?;
+                pending = pending.saturating_add(1);
+                if pending >= parameters.update_every_records {
+                    tables.flush()?;
+                    pending = 0;
+                }
+            }
+            file_sha256.to_owned()
+        }
+    };
+    tables.flush()?;
+    let initial = tables.checkpoint()?;
+    let header = DrawTableHeader {
+        source_sha256,
+        parameters,
+        initial,
+    };
+    Ok((tables, Some(header)))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3210,10 +3561,13 @@ where
     let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
     let text = std::str::from_utf8(stream_bytes)?;
     let mut lines = text.lines();
-    let header: CampaignStreamHeader<G::DrawHeader> =
+    let header: CampaignStreamHeader<DrawTableHeader> =
         serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
     if header.schema_version != CAMPAIGN_SCHEMA_VERSION {
         return Err("campaign stream schema version is not recognized".into());
+    }
+    if header.preference_portfolio != preference_portfolio_identifier::<G::Key>() {
+        return Err("campaign stream preference portfolio does not match the key".into());
     }
     if !archive_entry_limit_is_valid(header.archive_entry_limit) {
         return Err("recorded archive entry limit is outside the compiled bound".into());
@@ -3245,11 +3599,12 @@ where
         );
     }
     let record_lines = lines.collect::<Vec<_>>();
-    let mut required_draw_versions = BTreeSet::new();
+    let mut required_draw_versions = DrawVersionSchedule::default();
     let mut replay_job_parents = Vec::<u64>::new();
     let mut replay_job_metadata = Vec::<Vec<u64>>::new();
-    for line in &record_lines {
-        let record: CampaignStreamRecord<G::DrawCheckpoint, G::Key> = serde_json::from_str(line)?;
+    for (index, line) in record_lines.iter().enumerate() {
+        let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
+            serde_json::from_str(line)?;
         let before = match record {
             CampaignStreamRecord::Job(job) => {
                 replay_job_parents.push(job.parent_id);
@@ -3259,7 +3614,7 @@ where
             CampaignStreamRecord::Skip(skip) => skip.draw_checkpoint_before,
         };
         if let Some(before) = before {
-            required_draw_versions.insert(workload.draw_checkpoint_version(&before));
+            required_draw_versions.require(workload.draw_checkpoint_version(&before), index);
         }
     }
     let resume_input = match header.origin_kind.as_str() {
@@ -3296,10 +3651,9 @@ where
     }
 
     let replay_retention = retention_policy_from_identifier(&header.retention_policy)?;
-    let replay_selector = crate::search::archive::selector_policy_from_identifier(
-        &header.parent_scheduler,
-        G::Key::groups().saturating_sub(2),
-    )?;
+    if header.parent_scheduler != SELECTOR_IDENTIFIER {
+        return Err("campaign stream parent scheduler is not recognized".into());
+    }
     let expected_resume = if header.origin_kind == ORIGIN_SNAPSHOT_ROOT {
         SNAPSHOT_ROOT_RESUME_IDENTIFIER
     } else {
@@ -3310,7 +3664,7 @@ where
     }
     let replay_suffix = suffix_shape_from_identifier(&header.suffix_policy)?;
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
-    let replay_run = workload.resolve_recorded(&header.workload_policies)?;
+    let replay_run = resolve_recorded_policies(workload, &header.workload_policies)?;
     let action_cost = workload.action_cost_fn();
     let max_action_cost = workload.max_action_cost();
     if let Some(checkpoint) = origin_checkpoint {
@@ -3331,7 +3685,7 @@ where
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     let (mut draw_state, replay_draw_header) =
-        workload.initial_draw_state(&replay_run, draw_origin)?;
+        initial_draw_state(workload, &replay_run, draw_origin)?;
     let mut duration_policies = DurationPolicies::<G::Key>::new();
     if let Some(memory_budget_mib) = header.memory_budget_mib {
         let budget = memory_budget_mib.saturating_mul(1024 * 1024);
@@ -3362,9 +3716,8 @@ where
     );
     core.record_progress = true;
     core.bounded_progress_curve = true;
-    core.archive.selector_policy = replay_selector.clone();
     core.archive
-        .enable_continuations(replay_mixture.uses_continuations());
+        .enable_continuations(replay_suffix.max_actions());
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = workload.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
@@ -3424,12 +3777,26 @@ where
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
     let mut replay_job_snapshots =
         BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, u64)>::new();
+    let mut replay_continuations = BTreeMap::<usize, ContinuationReservation<G>>::new();
+    let mut replay_continuation_energy = BTreeMap::<usize, Option<u16>>::new();
     core.archive.preserve_inactive_snapshots(false)?;
     for (job_slot, parent_id) in replay_job_parents
         .iter()
         .take(replay_window_depth)
         .enumerate()
     {
+        let (energy, continuation) = continuation_attempt(
+            &mut core,
+            header.campaign_seed,
+            u64::try_from(job_slot)?,
+            replay_suffix,
+            action_cost,
+            max_action_cost,
+        );
+        replay_continuation_energy.insert(job_slot, energy);
+        if let Some(continuation) = continuation {
+            replay_continuations.insert(job_slot, continuation);
+        }
         let parent_index = core
             .archive
             .index_of_id(*parent_id)
@@ -3446,8 +3813,10 @@ where
         .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
 
     let mut replay_job_index = 0_usize;
-    for line in record_lines {
-        let record: CampaignStreamRecord<G::DrawCheckpoint, G::Key> = serde_json::from_str(line)?;
+    for (replay_record_index, line) in record_lines.into_iter().enumerate() {
+        draw_state.release_versions(&required_draw_versions, replay_record_index);
+        let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
+            serde_json::from_str(line)?;
         match record {
             CampaignStreamRecord::Skip(skip) => {
                 let parent_index = core
@@ -3567,9 +3936,7 @@ where
             }
             CampaignStreamRecord::Job(job) => {
                 if job.selector.path == SelectorPath::Continuation
-                    && (!replay_mixture.uses_continuations()
-                        || !job.sequence.is_multiple_of(4)
-                        || job.mixture_weight != 0
+                    && (job.mixture_weight != 0
                         || job.splice_weight != u8::MAX
                         || !matches!(&job.splice, Some(CampaignSpliceRecord::Tail { .. })))
                 {
@@ -3579,6 +3946,17 @@ where
                 }
                 let replay_job_slot = replay_job_index;
                 replay_job_index = replay_job_index.saturating_add(1);
+                let taken_continuation = replay_continuations.remove(&replay_job_slot);
+                continuation_reservation_matches::<G>(
+                    taken_continuation.as_ref(),
+                    replay_continuation_energy
+                        .remove(&replay_job_slot)
+                        .ok_or("recorded job has no reconstructed reservation")?,
+                    &job.selector,
+                    job.splice.as_ref(),
+                    job.continuation_energy,
+                    job.sequence,
+                )?;
                 let parent_index = core
                     .archive
                     .index_of_id(job.parent_id)
@@ -3712,6 +4090,10 @@ where
                     .map(|draw| draw.duration);
                 drop(snapshot);
                 let objectives_before = core.objectives_reached;
+                let continuation_wave = taken_continuation
+                    .as_ref()
+                    .map_or(0, |taken| taken.wave.saturating_add(1));
+                core.archive.set_admission_wave(continuation_wave);
                 let (sequence, decisions, duration_admission) =
                     core.admit_job_tracking(workload, job.parent_id, result, |action| {
                         tracked_duration.is_some_and(|duration| {
@@ -3776,29 +4158,36 @@ where
                 }
                 if !memory_is_within_reserve(
                     duration_policies.memory_bytes(),
-                    DurationPolicies::<G::Key>::memory_reserve_bytes(),
+                    duration_memory_reserve,
                 ) {
                     return Err("replay adaptive duration state exceeds its memory reserve".into());
                 }
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector)?;
-                if replay_mixture.isolates_continuations()
-                    && job.selector.path == SelectorPath::Continuation
-                {
+                if job.selector.path == SelectorPath::Continuation {
                     core.archive.record_isolated_continuation(parent_index);
+                    let new_cell_descendant = retained_archive_indexes(&core, &decisions)
+                        .iter()
+                        .any(|id| core.archive.opened_new_cell(*id));
+                    let (landed, replaced) = continuation_arrival::<G>(
+                        &core.archive,
+                        taken_continuation
+                            .as_ref()
+                            .map(|taken| (taken.source, taken.destination)),
+                        &decisions,
+                    );
+                    core.archive.record_continuation_outcome(
+                        landed,
+                        replaced,
+                        new_cell_descendant,
+                        continuation_wave,
+                    );
+                    core.archive.add_continuation_execution_work(execution_work);
                 } else {
                     core.archive.record_selection(parent_index, &job.selector);
                     let retained_ids = retained_archive_indexes(&core, &decisions);
-                    core.archive.record_selection_outcome(
-                        parent_index,
-                        !retained_ids.is_empty(),
-                        retained_ids
-                            .iter()
-                            .any(|id| core.archive.opened_new_slot(*id)),
-                        retained_ids
-                            .iter()
-                            .any(|id| core.archive.opened_new_cell(*id)),
-                    );
+                    core.archive
+                        .record_selection_outcome(parent_index, !retained_ids.is_empty());
                 }
                 core.archive.unpin_job_origin(snapshot_id);
                 core.archive.unpin_metadata(job.parent_id);
@@ -3816,6 +4205,18 @@ where
                     replay_job_parents.get(replay_job_slot.saturating_add(replay_window_depth))
                 {
                     let next_slot = replay_job_slot.saturating_add(replay_window_depth);
+                    let (energy, continuation) = continuation_attempt(
+                        &mut core,
+                        header.campaign_seed,
+                        u64::try_from(next_slot)?,
+                        replay_suffix,
+                        action_cost,
+                        max_action_cost,
+                    );
+                    replay_continuation_energy.insert(next_slot, energy);
+                    if let Some(continuation) = continuation {
+                        replay_continuations.insert(next_slot, continuation);
+                    }
                     let parent_index = core
                         .archive
                         .index_of_id(*parent_id)
@@ -3882,33 +4283,39 @@ where
 }
 
 #[cfg(test)]
+#[path = "campaign_continuation_tests.rs"]
+mod continuation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
         CampaignConfig, CampaignCounters, CampaignJobRecord, CampaignJobResult, CampaignOrigin,
-        CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes,
-        CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, DurationAdmission,
-        EnergyStrategy, Evaluation, InitialDrawState, InputPolicy, LiveCoordinatorProfile,
-        MAX_PROGRESS_CURVE_POINTS, Reporting, SPLICE_ACTION_CAP, TargetExecution, WorkloadPolicies,
-        admission_window_depth, archive_entry_limit_is_valid, compact_progress_curve,
-        completed_results_within_bound, execution_work_delta, finish_record, is_zero_usize,
-        live_coordinator_profile, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
-        profile_now, progress_checkpoint_due, progress_policy_is_supported,
-        record_compaction_elapsed, replay_campaign_checkpointed, replay_splice,
-        resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
-        schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
-        stop_reservations_after_objective,
+        CampaignProgressRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
+        CampaignTypes, ContinuationAccounting, CoordinatorCore,
+        DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, DrawTables, DurationAdmission,
+        EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LiveCoordinatorProfile,
+        MAX_PROGRESS_CURVE_POINTS, Reporting, RomuDuoJrRand, SPLICE_ACTION_CAP, SnapshotCheckpoint,
+        SnapshotCheckpointEntry, TargetExecution, WorkloadPolicies, admission_window_depth,
+        archive_entry_limit_is_valid, compact_progress_curve, completed_results_within_bound,
+        draws_continuation, draws_highest_preference, execution_work_delta, finish_record,
+        is_zero_usize, live_coordinator_profile, memory_is_within_reserve, postcard_value_sha256,
+        profile_elapsed, profile_now, progress_checkpoint_due, progress_policy_is_supported,
+        record_compaction_elapsed, record_mixture_outcome, replay_campaign_checkpointed,
+        replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
+        run_campaign_checkpointed, schedule_policy_identifier, schedule_policy_is_supported,
+        schedule_policy_window, stop_reservations_after_objective,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
-        SelectorPath, SelectorPolicy, entries_by_suffix,
+        SelectorPath, entries_by_suffix,
     };
-    use crate::search::draw::{DrawMixture, MixtureDraw, SuffixShape};
-    use crate::search::empirical_steps::EmpiricalStepCheckpoint;
+    use crate::search::draw::{DrawMixture, MixtureDraw, MixtureEnergy, SuffixShape};
     use crate::search::rollout::{ExecutionDisposition, Outcome, Rollout, execute_suffix};
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
     use std::{
+        collections::BTreeSet,
         error::Error,
         time::{Duration, Instant},
     };
@@ -3936,16 +4343,17 @@ mod tests {
     struct TestKey(u8);
 
     impl ArchiveKey for TestKey {
-        type Group = u8;
+        type Place = u8;
+        type Progress = ();
+        type Identity = ();
 
-        fn groups() -> usize {
-            1
-        }
-
-        fn group(self, depth: usize) -> Self::Group {
-            assert_eq!(depth, 0);
+        fn place(self) -> Self::Place {
             self.0
         }
+
+        fn progress(self) -> Self::Progress {}
+
+        fn identity(self) -> Self::Identity {}
 
         type Lineage = ();
 
@@ -3995,9 +4403,6 @@ mod tests {
         type Evidence = ();
         type ArchiveReport = TestArchiveReport;
         type Run = ();
-        type DrawState = ();
-        type DrawCheckpoint = ();
-        type DrawHeader = ();
     }
 
     impl Reporting for TestWorkload {
@@ -4035,12 +4440,6 @@ mod tests {
     }
 
     impl InputPolicy for TestWorkload {
-        fn draw_state_memory_reserve_bytes(&self, _run: &Self::Run, _max_actions: usize) -> usize {
-            0
-        }
-        fn draw_state_memory_bytes(&self, _state: &Self::DrawState) -> usize {
-            0
-        }
         fn policies(&self, _run: &Self::Run) -> WorkloadPolicies {
             WorkloadPolicies::new()
         }
@@ -4050,22 +4449,33 @@ mod tests {
         ) -> Result<Self::Run, Box<dyn Error>> {
             Ok(())
         }
-        fn initial_draw_state(
+        fn sample_alphabet(
             &self,
             _run: &Self::Run,
-            _origin: Option<(&str, &Self::ArchiveReport)>,
-        ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
-            Ok(((), None))
+            rand: &mut RomuDuoJrRand,
+        ) -> Result<Self::Action, Box<dyn Error>> {
+            Ok(TestAction::new(rand.next_u64() as u8, 1))
         }
         fn expand_suffix(
             &self,
             _run: &Self::Run,
-            _state: &Self::DrawState,
+            _state: &DrawTables<Self::Action>,
             _shape: SuffixShape,
             _mixture: MixtureDraw,
             mutation_seed: u64,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
             Ok(vec![TestAction::new(mutation_seed as u8, 1)])
+        }
+        fn expand_suffix_recorded(
+            &self,
+            run: &Self::Run,
+            state: &DrawTables<Self::Action>,
+            shape: SuffixShape,
+            mixture: MixtureDraw,
+            _before: Option<&EmpiricalStepCheckpoint>,
+            mutation_seed: u64,
+        ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+            self.expand_suffix(run, state, shape, mixture, mutation_seed)
         }
 
         fn max_action_limit(&self) -> usize {
@@ -4653,7 +5063,6 @@ mod tests {
                 suffix: SuffixShape::OneOrTwo,
                 mixture: DrawMixture::AlphabetOnly,
                 retention: RetentionPolicy::Unprobed,
-                selector: SelectorPolicy::GroupUniform,
                 objective_witness_path: Some(witness_path.clone()),
             };
             let workload = TestWorkload {
@@ -4692,15 +5101,15 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":2,"format":"campaign-v1","campaign_seed":7,"workers":2,
+    const RECORDED_HEADER: &str = r#"{"schema_version":7,"format":"campaign-v1","campaign_seed":7,"workers":2,
 "schedule_policy":"deterministic_window_1_per_worker_v3","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
-"action_limit":64,"archive_entry_limit":128,"controller_vocabulary":"test_inputs",
+"action_limit":64,"archive_entry_limit":128,"action_vocabulary":"test_inputs",
 "key_policy":"test_key","duration_policy":"stratified","suffix_policy":"one_or_two",
-"chord_policy":"chord_uniform","replacement_policy":"least_cost_per_group",
+"step_policy":"step_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
-"parent_scheduler":"hierarchy_uniform_128","executor_mode":"snapshot_resume_archive",
+"parent_scheduler":"tier_cell_count_decay_v3","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
 "worker_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 
@@ -5168,9 +5577,8 @@ mod tests {
         ];
         assert_eq!(retained_archive_indexes(&core, &decisions), vec![0, 1]);
 
-        let (mut draw_state, _header) = workload
-            .initial_draw_state(&run, None)
-            .expect("initialize draw state");
+        let (mut draw_state, _header) =
+            super::initial_draw_state(&workload, &run, None).expect("initialize draw state");
         assert!(
             finish_record(
                 &workload,
@@ -5352,10 +5760,10 @@ mod tests {
         assert_eq!(header.schema_version, super::CAMPAIGN_SCHEMA_VERSION);
         assert_eq!(header.draw_header, None);
         let expected: WorkloadPolicies = [
-            ("controller_vocabulary", "test_inputs"),
+            ("action_vocabulary", "test_inputs"),
             ("key_policy", "test_key"),
             ("duration_policy", "stratified"),
-            ("chord_policy", "chord_uniform"),
+            ("step_policy", "step_uniform"),
             ("replacement_policy", "least_cost_per_group"),
         ]
         .into_iter()
@@ -5371,7 +5779,14 @@ mod tests {
                 Some(expected[field].as_str())
             );
         }
-        assert!(!object.contains_key("chord_table"));
+        let recorded: serde_json::Value =
+            serde_json::from_str(&compact).expect("recorded header parses");
+        let recorded_fields: BTreeSet<&String> = recorded
+            .as_object()
+            .expect("recorded header is an object")
+            .keys()
+            .collect();
+        assert_eq!(object.keys().collect::<BTreeSet<_>>(), recorded_fields);
     }
 
     #[test]
@@ -5416,10 +5831,49 @@ mod tests {
     }
 
     #[test]
+    fn a_checkpoint_in_an_older_layout_fails_on_its_format() {
+        #[derive(Serialize)]
+        struct OlderLayout {
+            format: &'static str,
+            ids: Vec<u64>,
+        }
+        let older = postcard::to_allocvec(&OlderLayout {
+            format: "test-checkpoint-v0",
+            ids: vec![7],
+        })
+        .expect("older layout encodes");
+        assert!(postcard::from_bytes::<SnapshotCheckpoint<u8>>(&older).is_err());
+        let error = SnapshotCheckpoint::<u8>::from_bytes(&older, "test-checkpoint-v1")
+            .expect_err("an older checkpoint is rejected")
+            .to_string();
+        assert_eq!(error, "snapshot checkpoint format is not recognized");
+
+        let current = SnapshotCheckpoint {
+            format: "test-checkpoint-v1".to_owned(),
+            entries: vec![SnapshotCheckpointEntry {
+                id: 7,
+                snapshot: 9_u8,
+            }],
+        };
+        let bytes = current.to_bytes().expect("checkpoint encodes");
+        assert_eq!(
+            SnapshotCheckpoint::<u8>::from_bytes(&bytes, "test-checkpoint-v1")
+                .expect("current checkpoint decodes"),
+            current
+        );
+        assert_eq!(
+            SnapshotCheckpoint::<u8>::from_bytes(&bytes, "test-checkpoint-v2")
+                .expect_err("a different format is rejected")
+                .to_string(),
+            "snapshot checkpoint format is not recognized"
+        );
+    }
+
+    #[test]
     fn a_recorded_job_keeps_its_draw_checkpoint_field_names() {
         let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":0,"mutation_seed":9,
 "execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":128,"splice_weight":128,
-"selector":{"path":"hierarchy_uniform","classes_skipped":0,"counter_reset":false},
+"selector":{"path":"tiers","tier_rank":0},
 "draw_checkpoint_before":{"records":3,"retained_successes":1,"table_sha256":"aa"},
 "draw_checkpoint_after":{"records":4,"retained_successes":2,"table_sha256":"bb"}}"#
             .replace('\n', "");
@@ -5432,7 +5886,7 @@ mod tests {
             job.splice, None,
             "jobs without a splice carry no splice evidence"
         );
-        assert_eq!(job.selector.path, SelectorPath::HierarchyWalk);
+        assert_eq!(job.selector.path, SelectorPath::Tiers);
         assert_eq!(
             job.draw_checkpoint_before,
             Some(EmpiricalStepCheckpoint {
@@ -5443,17 +5897,20 @@ mod tests {
         );
         let written = serde_json::to_value(&job).expect("job serializes");
         let object = written.as_object().expect("job is an object");
-        assert!(object.contains_key("draw_checkpoint_before"));
-        assert!(object.contains_key("draw_checkpoint_after"));
-        assert!(!object.contains_key("chord_table_before"));
+        let recorded: serde_json::Value = serde_json::from_str(&line).expect("record parses");
+        let recorded_fields: BTreeSet<&String> = recorded
+            .as_object()
+            .expect("recorded job is an object")
+            .keys()
+            .filter(|field| field.as_str() != "event")
+            .collect();
+        assert_eq!(object.keys().collect::<BTreeSet<_>>(), recorded_fields);
         let round_trip: CampaignJobRecord<EmpiricalStepCheckpoint> =
             serde_json::from_value(written).expect("job round-trips");
         assert_eq!(round_trip, job);
         let _ = SelectorDraw {
-            path: SelectorPath::HierarchyWalk,
-            classes_skipped: 0,
-            counter_reset: false,
-            concentration: None,
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
         };
     }
 
@@ -5462,7 +5919,7 @@ mod tests {
         let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":3,"mutation_seed":9,
 "execution_work":12,"result_sha256":"ef","decisions":[],"mixture_weight":85,"splice_weight":85,
 "splice":{"outcome":"tail","donor_id":4,"leaf_id":9,"tail_postcard":[1,2]},
-"selector":{"path":"uniform","classes_skipped":0,"counter_reset":false}}"#
+"selector":{"path":"tiers","tier_rank":1}}"#
             .replace('\n', "");
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint> =
             serde_json::from_str(&line).expect("record parses");
@@ -5482,8 +5939,124 @@ mod tests {
             serde_json::from_slice(&written).expect("job round-trips");
         assert_eq!(round_trip, job);
     }
-}
+    #[test]
+    fn a_key_without_a_preference_runs_and_replays_with_no_continuation_bank() {
+        let config = CampaignConfig {
+            campaign_seed: 31,
+            workers: 2,
+            execution_budget: 200,
+            action_limit: 32,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: false,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 32,
+            reservations_per_worker: 2,
+            memory_budget_mib: Some(8),
+            materialize_final_artifacts: true,
+            run: (),
+            suffix: SuffixShape::OneOrTwo,
+            mixture: DrawMixture::EnergySplice { scale: 6 },
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+        };
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+        };
+        let mut stream = Vec::new();
+        let mut progress = Vec::new();
+        let live = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            Some(&mut progress),
+        )
+        .expect("campaign without a preference");
+        let text = std::str::from_utf8(&stream).expect("stream is utf-8");
+        assert!(!text.contains("\"path\":\"continuation\""));
+        assert!(!text.contains("continuation_energy"));
+        let progress = String::from_utf8(progress).expect("progress is utf-8");
+        let last: CampaignProgressRecord<serde_json::Value> =
+            serde_json::from_str(progress.lines().last().expect("a progress line"))
+                .expect("progress record parses");
+        assert_eq!(last.continuations, ContinuationAccounting::default());
+        assert_eq!(
+            replay_campaign_checkpointed(&workload, &stream, None, None)
+                .expect("replay without a preference"),
+            live
+        );
+    }
 
-#[cfg(test)]
-#[path = "campaign_continuation_tests.rs"]
-mod continuation_tests;
+    #[test]
+    fn the_continuation_draw_takes_a_fixed_one_reservation_in_four() {
+        let taken = (0..4096)
+            .filter(|reservation| draws_continuation(11, *reservation))
+            .count();
+        assert!(
+            (896..1152).contains(&taken),
+            "one in four of 4096 reservations, got {taken}"
+        );
+    }
+
+    #[test]
+    fn the_continuation_draw_is_seeded_by_the_campaign_and_the_reservation() {
+        assert_eq!(draws_continuation(11, 3), draws_continuation(11, 3));
+        assert!(
+            (0..512).any(|reservation| draws_continuation(11, reservation)
+                != draws_continuation(12, reservation))
+        );
+    }
+
+    #[test]
+    fn the_highest_preference_draw_is_one_pop_in_four_and_independent_of_the_attempt() {
+        let taken = (0..4096)
+            .filter(|reservation| draws_highest_preference(11, *reservation))
+            .count();
+        assert!(
+            (896..1152).contains(&taken),
+            "one in four of 4096 reservations, got {taken}"
+        );
+        assert!(
+            (0..512).any(|reservation| draws_highest_preference(11, reservation)
+                != draws_continuation(11, reservation))
+        );
+    }
+
+    #[test]
+    fn a_continuation_outcome_leaves_the_draw_weights_alone() {
+        let mut energy = MixtureEnergy::default();
+        let mixture = DrawMixture::EnergySplice { scale: 4 };
+        let before = energy.splice_weights(4);
+        for seed in 0..64_u64 {
+            record_mixture_outcome(
+                &mut energy,
+                mixture,
+                SelectorPath::Continuation,
+                seed,
+                (128, 128),
+                seed % 3 == 0,
+                10,
+            )
+            .expect("continuation outcome");
+        }
+        assert_eq!(energy.splice_weights(4), before);
+        assert_eq!(
+            energy.biased_weight(4),
+            MixtureEnergy::default().biased_weight(4)
+        );
+        for _ in 0..16 {
+            record_mixture_outcome(
+                &mut energy,
+                mixture,
+                SelectorPath::Tiers,
+                1,
+                (128, 128),
+                false,
+                10,
+            )
+            .expect("ordinary outcome");
+        }
+        assert_ne!(energy.splice_weights(4), before);
+    }
+}

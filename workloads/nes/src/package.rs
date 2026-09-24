@@ -6,7 +6,7 @@ use crate::{
     witness::replay_witness,
 };
 use searcher::search::{
-    archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy, SelectorPolicy},
+    archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
     campaign::{
         CampaignConfig, CampaignOrigin, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
         run_campaign_checkpointed,
@@ -152,7 +152,6 @@ where
         suffix: SuffixShape::default(),
         mixture: DrawMixture::default(),
         retention: RetentionPolicy::Unprobed,
-        selector: SelectorPolicy::GroupUniform,
         objective_witness_path: Some(options.output.join("victory.json")),
     };
     let (report, checkpoint) =
@@ -194,7 +193,6 @@ where
 }
 fn smb_run() -> SmbCampaignRun {
     SmbCampaignRun {
-        chord: Default::default(),
         vocabulary: Default::default(),
         terminal: None,
     }

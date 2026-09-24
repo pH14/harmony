@@ -3,7 +3,7 @@
 use nes_workload::{
     metroid::{
         campaign::{MetroidCampaignRun, MetroidGame},
-        target::MetroidTerminalPolicy,
+        target::{GenesisDepth, MetroidInput, MetroidTerminalPolicy},
     },
     mm2::{
         campaign::{Mm2CampaignRun, Mm2Game},
@@ -14,13 +14,11 @@ use nes_workload::{
         target::NovaLevel,
     },
     search::{
-        archive::{
-            ArchiveKey, Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy,
-            selector_policy_from_identifier,
-        },
+        archive::{ArchiveKey, Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy},
         campaign::{
-            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, ResultBuffering, Workload,
-            replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
+            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, ResultBuffering,
+            TargetExecution, Workload, replay_campaign_checkpointed,
+            run_campaign_checkpointed_with_options,
         },
         draw::{draw_mixture_from_identifier, suffix_shape_from_identifier},
     },
@@ -37,7 +35,7 @@ use sha2::{Digest, Sha256};
 use std::{
     error::Error,
     fs,
-    io::{self, BufWriter, LineWriter, Write},
+    io::{self, BufReader, BufWriter, LineWriter, Write},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -78,7 +76,6 @@ struct Request {
     #[serde(default = "default_result_slots")]
     result_slots: usize,
     wall_seconds: u64,
-    selector: String,
     suffix: String,
     mixture: String,
     verification: String,
@@ -90,6 +87,8 @@ struct Request {
     ai: Option<String>,
     #[serde(default)]
     metroid_terminal: Option<String>,
+    #[serde(default)]
+    root_input: Option<PathBuf>,
 }
 
 struct StreamDigest {
@@ -112,6 +111,33 @@ impl Write for StreamDigest {
         }
         Ok(())
     }
+}
+
+fn metroid_game(
+    rom: &[u8],
+    core_path: &Path,
+    core_sha256: &str,
+    root_input: Option<&Path>,
+) -> Result<MetroidGame> {
+    let Some(root_input) = root_input else {
+        return Ok(MetroidGame::new(rom, core_path, core_sha256));
+    };
+    let input: MetroidInput = serde_json::from_reader(BufReader::new(fs::File::open(root_input)?))?;
+    if input.actions.is_empty() {
+        return Err("root input carries no actions".into());
+    }
+    let mut prefix = MetroidGame::new(rom, core_path, core_sha256)
+        .new_target()?
+        .genesis_prefix()
+        .to_vec();
+    prefix.extend(input.actions.iter().copied());
+    Ok(MetroidGame::new_rooted(
+        rom,
+        core_path,
+        core_sha256,
+        prefix,
+        GenesisDepth::Rooted,
+    ))
 }
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -165,10 +191,6 @@ where
         suffix: suffix_shape_from_identifier(&request.suffix)?,
         mixture: draw_mixture_from_identifier(&request.mixture)?,
         retention: RetentionPolicy::Unprobed,
-        selector: selector_policy_from_identifier(
-            &request.selector,
-            G::Key::groups().saturating_sub(2),
-        )?,
         objective_witness_path: Some(out.join("victory-input.json")),
     };
     if request.workers == 0
@@ -190,7 +212,7 @@ where
     };
     write_json(
         &out.join("identity.json"),
-        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "selector":request.selector, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
+        &json!({"format":"nes-eval-identity-v1", "game":request.game, "whole_game":request.whole_game, "level":request.level, "stage":request.stage, "ai":request.ai, "rom_sha256":request.rom_sha256, "core_sha256":request.core_sha256, "backend":"native", "source_tree_sha256":option_env!("HARMONY_SEARCH_SOURCE_SHA256"), "policies":game.policies(&run), "seed":request.seed, "workers":request.workers, "executions":request.executions, "frames":request.frames, "actions":request.actions, "memory_mib":request.memory_mib, "window":request.window, "result_slots":request.result_slots, "wall_seconds":request.wall_seconds, "suffix":request.suffix, "mixture":request.mixture, "verification":request.verification}),
     )?;
     let mut stream = StreamDigest {
         file: if full {
@@ -228,6 +250,13 @@ where
         serde_json::from_value(value["archive"]["champion_input"].clone())?
     };
     write_json(&out.join("witness-input.json"), &witness)?;
+    if let Some(deepest) = game
+        .source_entries(&report.archive)
+        .iter()
+        .max_by_key(|entry| entry.key.progress())
+    {
+        write_json(&out.join("deepest-input.json"), &deepest.input)?;
+    }
     if full {
         write_json(&out.join("checkpoint.json"), &checkpoint)?;
     }
@@ -274,7 +303,10 @@ where
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .ok_or("invalid milestone name")?;
-            if replay["diagnostics"]["named_progress"]["first_seen"][name].is_null() {
+            let milestone = name
+                .split_once('-')
+                .map_or(name, |(milestone, _)| milestone);
+            if replay["diagnostics"]["named_progress"]["first_seen"][milestone].is_null() {
                 return Err(format!("milestone witness did not reproduce {name}").into());
             }
             milestone_witnesses.insert(
@@ -359,7 +391,6 @@ fn main() -> Result<()> {
         "smb" => evaluate(
             SmbGame::new(&rom, p, h),
             SmbCampaignRun {
-                chord: Default::default(),
                 vocabulary: Default::default(),
                 terminal: Some(SmbTerminalPredicate::GameVictory),
             },
@@ -399,7 +430,7 @@ fn main() -> Result<()> {
             started,
         ),
         "metroid" => evaluate(
-            MetroidGame::new(&rom, p, h)
+            metroid_game(&rom, p, h, request.root_input.as_deref())?
                 .with_milestone_input_dir(out.join("milestone-inputs"))
                 .with_terminal_policy(match request.metroid_terminal.as_deref() {
                     Some(identifier) => MetroidTerminalPolicy::parse(identifier)?,

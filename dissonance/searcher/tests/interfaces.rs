@@ -21,16 +21,17 @@ struct TinySnapshot {
 struct TinyKey(u8);
 
 impl ArchiveKey for TinyKey {
-    type Group = u8;
+    type Place = u8;
+    type Progress = ();
+    type Identity = ();
 
-    fn groups() -> usize {
-        1
-    }
-
-    fn group(self, depth: usize) -> Self::Group {
-        assert_eq!(depth, 0);
+    fn place(self) -> Self::Place {
         self.0
     }
+
+    fn progress(self) -> Self::Progress {}
+
+    fn identity(self) -> Self::Identity {}
 
     type Lineage = ();
 
@@ -60,9 +61,6 @@ impl CampaignTypes for TinyExecution {
     type Evidence = ();
     type ArchiveReport = ();
     type Run = ();
-    type DrawState = ();
-    type DrawCheckpoint = ();
-    type DrawHeader = ();
 }
 
 fn action_cost(action: &TinyAction) -> u64 {

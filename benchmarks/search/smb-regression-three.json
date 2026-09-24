@@ -1,0 +1,34 @@
+{
+ "format": "harmony-search-eval-v1",
+ "id": "smb-regression-three-v1",
+ "seeds": [
+  20260905,
+  20260906,
+  20260907
+ ],
+ "workers": [
+  24
+ ],
+ "memory_mib": [
+  256
+ ],
+ "search": {
+  "executions": 2000000,
+  "actions": 8192,
+  "window": 1,
+  "wall_seconds": 1800,
+  "suffix": "one_to_six_within_3_max_action_cost_full_hold",
+  "mixture": "energy_splice:6",
+  "verification": "witness",
+  "frames": 400000000
+ },
+ "cases": [
+  {
+   "id": "smb-full",
+   "game": "smb",
+   "origin": "power-on gameplay genesis",
+   "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+   "require_solved": true
+  }
+ ]
+}

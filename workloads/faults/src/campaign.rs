@@ -4,16 +4,19 @@ use std::{error::Error, io::Write, num::NonZeroU64, path::PathBuf, sync::OnceLoc
 
 use searcher::{
     search::{
-        archive::{RetentionPolicy, SelectorPolicy},
+        archive::RetentionPolicy,
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignConfig,
             CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
             CampaignStreamHeader, CampaignTypes, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
-            Evaluation, InitialDrawState, InputPolicy, Reporting, SnapshotCheckpoint,
-            TargetExecution, WorkloadPolicies, postcard_result_sha256, run_campaign_checkpointed,
+            Evaluation, InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution,
+            WorkloadPolicies, postcard_result_sha256, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        draw_tables::{DrawTableHeader, DrawTables, biased_step},
         duration::{DurationDraw, DurationRequest},
+        empirical_steps::EmpiricalStepCheckpoint,
+        rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
     target::ExitKind,
@@ -46,9 +49,6 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const IMAGE_FIELD: &str = "image";
 const HORIZON_FIELD: &str = "horizon_nanos";
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct FaultNoTableHeader;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultCampaignRun {
@@ -103,7 +103,7 @@ pub struct FaultCampaignEvidence {
 
 pub type FaultCampaignOrigin = CampaignOrigin<FaultWorkload>;
 pub type FaultSnapshotCheckpoint = SnapshotCheckpoint<FaultSnapshot>;
-pub type FaultCampaignStreamHeader = CampaignStreamHeader<FaultNoTableHeader>;
+pub type FaultCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
 pub type FaultCampaignModeReport = CampaignModeReport<FaultAction, FaultArchiveReport>;
 pub type FaultCampaignProgressRecord = CampaignProgressRecord<FaultArchiveKey>;
 type FaultCampaignActionResult = CampaignActionResult<FaultWorkload>;
@@ -142,7 +142,6 @@ pub struct FaultCampaignConfig {
     pub memory_budget_mib: Option<usize>,
     pub materialize_final_artifacts: bool,
     pub retention: RetentionPolicy,
-    pub selector: SelectorPolicy,
     pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub objective_witness_path: Option<PathBuf>,
@@ -169,7 +168,6 @@ impl FaultCampaignConfig {
             suffix: self.suffix,
             mixture: self.mixture,
             retention: self.retention,
-            selector: self.selector.clone(),
             objective_witness_path: self.objective_witness_path.clone(),
         }
     }
@@ -289,9 +287,6 @@ impl CampaignTypes for FaultWorkload {
     type Evidence = FaultCampaignEvidence;
     type ArchiveReport = FaultArchiveReport;
     type Run = FaultCampaignRun;
-    type DrawState = ();
-    type DrawCheckpoint = ();
-    type DrawHeader = FaultNoTableHeader;
 }
 
 impl Reporting for FaultWorkload {
@@ -399,24 +394,12 @@ impl InputPolicy for FaultWorkload {
         Ok(run)
     }
 
-    fn draw_state_memory_reserve_bytes(
+    fn sample_alphabet(
         &self,
-        _run: &FaultCampaignRun,
-        _max_actions: usize,
-    ) -> usize {
-        0
-    }
-
-    fn draw_state_memory_bytes(&self, _state: &()) -> usize {
-        0
-    }
-
-    fn initial_draw_state(
-        &self,
-        _run: &FaultCampaignRun,
-        _origin: Option<(&str, &FaultArchiveReport)>,
-    ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
-        Ok(((), None))
+        run: &FaultCampaignRun,
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<FaultAction, Box<dyn Error>> {
+        sample_action(rand, &run.vocabulary, 0)
     }
 
     fn duration_request(
@@ -444,56 +427,50 @@ impl InputPolicy for FaultWorkload {
         })
     }
 
-    fn expand_suffix_duration(
-        &self,
-        run: &FaultCampaignRun,
-        _state: &(),
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        mutation_seed: u64,
-        draw: DurationDraw<FaultArchiveKey>,
-    ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-        let ticks = std::num::NonZeroU16::new(u16::try_from(draw.duration.get())?)
-            .ok_or("wait duration must be positive")?;
-        let hold_us = u32::try_from(draw.duration.get().saturating_mul(SUPERVISOR_TICK_MICROS))?;
-        let mut suffix = draw_suffix(
-            shape,
-            mixture.mixture,
-            mixture.weight,
-            mutation_seed,
-            |_| Ok(None),
-            |rand| sample_action(rand, &run.vocabulary, draw.context.event_ready),
-        )?;
-        for action in &mut suffix {
-            match action {
-                FaultAction::Wait(_) => *action = FaultAction::Wait(ticks),
-                FaultAction::EventPark {
-                    hold_us: action_hold_us,
-                    ..
-                } => *action_hold_us = hold_us,
-                _ => {}
-            }
-        }
-        Ok(suffix)
-    }
-
+    #[allow(clippy::too_many_arguments)]
     fn expand_suffix_recorded_duration(
         &self,
         run: &FaultCampaignRun,
-        state: &(),
+        state: &DrawTables<FaultAction>,
         shape: SuffixShape,
         mixture: MixtureDraw,
-        _before: Option<&()>,
+        before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
         draw: Option<DurationDraw<FaultArchiveKey>>,
     ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-        self.expand_suffix_duration(
+        self.expand_duration_recorded_or_live(
             run,
             state,
             shape,
             mixture,
+            before,
             mutation_seed,
             draw.ok_or("fault campaign is missing its duration choice")?,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn expand_duration_recorded_or_live(
+        &self,
+        run: &FaultCampaignRun,
+        state: &DrawTables<FaultAction>,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        before: Option<&EmpiricalStepCheckpoint>,
+        mutation_seed: u64,
+        draw: DurationDraw<FaultArchiveKey>,
+        replay: bool,
+    ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
+        held_suffix(
+            run,
+            state,
+            shape,
+            mixture,
+            before,
+            mutation_seed,
+            replay,
+            draw,
         )
     }
 
@@ -512,24 +489,57 @@ impl InputPolicy for FaultWorkload {
             _ => None,
         }
     }
+}
 
-    fn expand_suffix(
-        &self,
-        run: &FaultCampaignRun,
-        _state: &(),
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        mutation_seed: u64,
-    ) -> Result<Vec<FaultAction>, Box<dyn Error>> {
-        draw_suffix(
-            shape,
-            mixture.mixture,
-            mixture.weight,
-            mutation_seed,
-            |_| Ok(None),
-            |rand| sample_action(rand, &run.vocabulary, 0),
-        )
+fn event_is_ready(action: &FaultAction, event_ready: u64) -> bool {
+    match action {
+        FaultAction::EventKill { node, .. } | FaultAction::EventPark { node, .. } => 1_u64
+            .checked_shl(u32::from(*node))
+            .is_some_and(|bit| event_ready & bit != 0),
+        _ => true,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn held_suffix(
+    run: &FaultCampaignRun,
+    state: &DrawTables<FaultAction>,
+    shape: SuffixShape,
+    mixture: MixtureDraw,
+    before: Option<&EmpiricalStepCheckpoint>,
+    mutation_seed: u64,
+    replay: bool,
+    draw: DurationDraw<FaultArchiveKey>,
+) -> Result<Vec<FaultAction>, Box<dyn Error>> {
+    let ticks = std::num::NonZeroU16::new(u16::try_from(draw.duration.get())?)
+        .ok_or("wait duration must be positive")?;
+    let hold_us = u32::try_from(draw.duration.get().saturating_mul(SUPERVISOR_TICK_MICROS))?;
+    let event_ready = draw.context.event_ready;
+    let mut suffix =
+        state.draw(before, replay, |view| {
+            draw_suffix(
+                shape,
+                mixture.mixture,
+                mixture.weight,
+                mutation_seed,
+                |rand| {
+                    Ok(biased_step(view, rand)?
+                        .filter(|action| event_is_ready(action, event_ready)))
+                },
+                |rand| sample_action(rand, &run.vocabulary, event_ready),
+            )
+        })?;
+    for action in &mut suffix {
+        match action {
+            FaultAction::Wait(_) => *action = FaultAction::Wait(ticks),
+            FaultAction::EventPark {
+                hold_us: action_hold_us,
+                ..
+            } => *action_hold_us = hold_us,
+            _ => {}
+        }
+    }
+    Ok(suffix)
 }
 
 impl TargetExecution for FaultWorkload {
@@ -778,6 +788,7 @@ pub fn run_fault_campaign_checkpointed(
 mod tests {
     use super::*;
     use crate::consonance::DEFAULT_RAM_MIB;
+    use searcher::search::draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawVersionSchedule};
 
     fn config(knobs: &[&str]) -> FaultConfig {
         FaultConfig {
@@ -868,19 +879,25 @@ mod tests {
             max_duration: NonZeroU64::new(ADAPTIVE_DURATION_MAX_TICKS).unwrap(),
             duration: NonZeroU64::new(256).unwrap(),
         };
+        let mut tables =
+            DrawTables::<FaultAction>::new(DEFAULT_DRAW_TABLE_PARAMETERS).expect("draw tables");
+        let checkpoint = tables.checkpoint().expect("initial checkpoint");
+        let mut schedule = DrawVersionSchedule::default();
+        schedule.require(checkpoint.records, 0);
+        tables.remember_version(&schedule).expect("keep a version");
         let mut waits = 0;
         let mut event_parks = 0;
         for seed in 0..128 {
             let suffix = game
-                .expand_suffix_duration(&run, &(), SuffixShape::OneOrTwo, mixture, seed, draw)
+                .expand_suffix_duration(&run, &tables, SuffixShape::OneOrTwo, mixture, seed, draw)
                 .unwrap();
             let replay = game
                 .expand_suffix_recorded_duration(
                     &run,
-                    &(),
+                    &tables,
                     SuffixShape::OneOrTwo,
                     mixture,
-                    None,
+                    Some(&checkpoint),
                     seed,
                     Some(draw),
                 )
@@ -907,10 +924,10 @@ mod tests {
         assert!(
             game.expand_suffix_recorded_duration(
                 &run,
-                &(),
+                &tables,
                 SuffixShape::OneOrTwo,
                 mixture,
-                None,
+                Some(&checkpoint),
                 1,
                 None
             )
@@ -921,8 +938,15 @@ mod tests {
             ..draw
         };
         assert!(
-            game.expand_suffix_duration(&run, &(), SuffixShape::OneOrTwo, mixture, 1, out_of_range)
-                .is_err()
+            game.expand_suffix_duration(
+                &run,
+                &tables,
+                SuffixShape::OneOrTwo,
+                mixture,
+                1,
+                out_of_range
+            )
+            .is_err()
         );
     }
 

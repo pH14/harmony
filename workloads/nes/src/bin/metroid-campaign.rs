@@ -16,9 +16,11 @@ use nes_workload::{
             MetroidCampaignConfig, MetroidCampaignOrigin, MetroidGame,
             replay_metroid_campaign_checkpointed, run_metroid_campaign_checkpointed,
         },
+        target::{GenesisDepth, MetroidInput},
     },
     search::{
-        archive::{RetentionPolicy, RetireThresholds, SelectorPolicy},
+        archive::RetentionPolicy,
+        campaign::TargetExecution,
         draw::{DrawMixture, SuffixShape, draw_mixture_from_identifier},
     },
 };
@@ -36,7 +38,7 @@ struct Args {
     memory_budget_mib: Option<usize>,
     mixture: DrawMixture,
     verify_replay: bool,
-    selector: SelectorPolicy,
+    root_input: Option<PathBuf>,
 }
 
 impl Args {
@@ -55,10 +57,7 @@ impl Args {
         let mut memory_budget_mib = None;
         let mut mixture = DrawMixture::AlphabetOnly;
         let mut verify_replay = false;
-        let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 3,
-            groups: vec![6, 12, 2],
-        });
+        let mut root_input = None;
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             if flag == "--verify-replay" {
@@ -72,6 +71,7 @@ impl Args {
                 "--core" => core = Some(PathBuf::from(value)),
                 "--rom" => rom = Some(PathBuf::from(value)),
                 "--output" => output = Some(PathBuf::from(value)),
+                "--root-input" => root_input = Some(PathBuf::from(value)),
                 "--seed" => seed = parse_number("seed", value)?,
                 "--executions" => executions = parse_number("executions", value)?,
                 "--workers" => workers = parse_number("workers", value)?,
@@ -79,19 +79,6 @@ impl Args {
                 "--host" => host = value.into_string().map_err(|_| "host is not UTF-8")?,
                 "--memory-budget-mib" => {
                     memory_budget_mib = Some(parse_number("memory-budget-mib", value)?);
-                }
-                "--selector" => {
-                    let thresholds = RetireThresholds {
-                        entry: 3,
-                        groups: vec![6, 12, 2],
-                    };
-                    selector = match value.to_string_lossy().as_ref() {
-                        "energy" => SelectorPolicy::Energy(thresholds),
-                        "frontier" => SelectorPolicy::EnergyFrontier(thresholds),
-                        "frontier-cheapest" => SelectorPolicy::EnergyFrontierCheapest(thresholds),
-                        "pareto-cheapest" => SelectorPolicy::EnergyFrontierCheapest(thresholds),
-                        other => return Err(format!("unknown selector {other}").into()),
-                    };
                 }
                 "--mixture" => {
                     mixture = draw_mixture_from_identifier(
@@ -113,7 +100,7 @@ impl Args {
             memory_budget_mib,
             mixture,
             verify_replay,
-            selector,
+            root_input,
         })
     }
 }
@@ -130,12 +117,39 @@ where
         .map_err(|error| format!("{name}: {error}").into())
 }
 
+fn metroid_game(
+    rom: &[u8],
+    core_path: &std::path::Path,
+    core_sha256: &str,
+    root_input: Option<&std::path::Path>,
+) -> Result<MetroidGame, Box<dyn Error>> {
+    let Some(root_input) = root_input else {
+        return Ok(MetroidGame::new(rom, core_path, core_sha256));
+    };
+    let input: MetroidInput = serde_json::from_slice(&fs::read(root_input)?)?;
+    if input.actions.is_empty() {
+        return Err("root input carries no actions".into());
+    }
+    let mut prefix = MetroidGame::new(rom, core_path, core_sha256)
+        .new_target()?
+        .genesis_prefix()
+        .to_vec();
+    prefix.extend(input.actions.iter().copied());
+    Ok(MetroidGame::new_rooted(
+        rom,
+        core_path,
+        core_sha256,
+        prefix,
+        GenesisDepth::Rooted,
+    ))
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse_from(env::args_os().skip(1))?;
     fs::create_dir_all(&args.output)?;
     let rom = fs::read(&args.rom)?;
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&args.core)?));
-    let game = MetroidGame::new(&rom, &args.core, &core_sha256)
+    let game = metroid_game(&rom, &args.core, &core_sha256, args.root_input.as_deref())?
         .with_champion_input_path(args.output.join("champion-input.json"));
     let config = MetroidCampaignConfig {
         campaign_seed: args.seed,
@@ -149,7 +163,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
         retention: RetentionPolicy::Unprobed,
-        selector: args.selector.clone(),
         suffix: SuffixShape::OneToSix,
         mixture: args.mixture,
         victory_input_path: None,

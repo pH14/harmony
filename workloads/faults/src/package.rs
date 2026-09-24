@@ -291,7 +291,7 @@ mod live {
     use std::{error::Error, io::BufWriter, time::Instant};
 
     use searcher::search::{
-        archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy, RetireThresholds, SelectorPolicy},
+        archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
         campaign::CampaignOrigin,
         draw::{DrawMixture, SuffixShape},
     };
@@ -310,13 +310,6 @@ mod live {
     };
 
     const MEMORY_BUDGET_MIB: usize = 512;
-
-    fn retire_thresholds() -> RetireThresholds {
-        RetireThresholds {
-            entry: 3,
-            groups: vec![6, 2],
-        }
-    }
 
     fn config(options: &Options) -> FaultConfig {
         FaultConfig {
@@ -350,7 +343,6 @@ mod live {
             memory_budget_mib: Some(MEMORY_BUDGET_MIB),
             materialize_final_artifacts: true,
             retention: RetentionPolicy::Unprobed,
-            selector: SelectorPolicy::EnergyFrontierCheapest(retire_thresholds()),
             suffix: SuffixShape::OneToSix,
             mixture: DrawMixture::AlphabetOnly,
             objective_witness_path: Some(options.output.join("first-bug-input.json")),

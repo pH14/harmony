@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::BTreeSet,
     error::Error,
     io::Write,
     path::{Path, PathBuf},
 };
 
 use machine::Machine;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -21,7 +20,9 @@ use crate::{
             SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_value_sha256,
             replay_campaign_checkpointed, run_campaign_checkpointed,
         },
-        draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        draw::{DrawMixture, SuffixShape},
+        draw_tables::DrawTableHeader,
+        rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
     stb::{
@@ -49,9 +50,6 @@ const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_no_start_select_v1";
 const TERMINAL_POLICY_IDENTIFIER: &str = "local_match_gameover_player_a_win_v2";
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct StbNoTableHeader;
 
 pub struct StbGame {
     rom: Vec<u8>,
@@ -124,7 +122,7 @@ pub struct StbCampaignEvidence {
 pub type StbCampaignOrigin = CampaignOrigin<StbGame>;
 pub type StbCampaignCheckpoint = CampaignCheckpoint<StbSnapshot>;
 pub type StbSnapshotCheckpoint = SnapshotCheckpoint<StbSnapshot>;
-pub type StbCampaignStreamHeader = CampaignStreamHeader<StbNoTableHeader>;
+pub type StbCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
 pub type StbCampaignModeReport = CampaignModeReport<ButtonChord, StbArchiveReport>;
 type StbCampaignActionResult = CampaignActionResult<StbGame>;
 type StbCampaignJobResult = CampaignJobResult<StbGame>;
@@ -182,7 +180,6 @@ pub struct StbCampaignConfig {
     pub memory_budget_mib: Option<usize>,
     pub materialize_final_artifacts: bool,
     pub retention: RetentionPolicy,
-    pub selector: crate::search::archive::SelectorPolicy,
     pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub victory_input_path: Option<PathBuf>,
@@ -208,7 +205,6 @@ impl StbCampaignConfig {
             suffix: self.suffix,
             mixture: self.mixture,
             retention: self.retention,
-            selector: self.selector.clone(),
             objective_witness_path: self.victory_input_path.clone(),
         }
     }
@@ -377,9 +373,6 @@ impl CampaignTypes for StbGame {
     type Evidence = StbCampaignEvidence;
     type ArchiveReport = StbArchiveReport;
     type Run = StbCampaignRun;
-    type DrawState = ();
-    type DrawCheckpoint = ();
-    type DrawHeader = StbNoTableHeader;
 }
 
 impl Reporting for StbGame {
@@ -439,14 +432,6 @@ impl InputPolicy for StbGame {
         u64::from(crate::stb::archive::LONGEST_HOLD_FRAMES)
     }
 
-    fn draw_state_memory_reserve_bytes(&self, _run: &StbCampaignRun, _max_actions: usize) -> usize {
-        0
-    }
-
-    fn draw_state_memory_bytes(&self, _state: &()) -> usize {
-        0
-    }
-
     fn policies(&self, _run: &StbCampaignRun) -> WorkloadPolicies {
         [
             (
@@ -483,74 +468,12 @@ impl InputPolicy for StbGame {
         Ok(StbCampaignRun)
     }
 
-    fn initial_draw_state(
+    fn sample_alphabet(
         &self,
         _run: &StbCampaignRun,
-        _origin: Option<(&str, &StbArchiveReport)>,
-    ) -> Result<((), Option<StbNoTableHeader>), Box<dyn Error>> {
-        Ok(((), None))
-    }
-
-    fn draw_checkpoint(&self, _state: &()) -> Result<Option<()>, Box<dyn Error>> {
-        Ok(None)
-    }
-
-    fn expand_suffix(
-        &self,
-        _run: &StbCampaignRun,
-        _state: &(),
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        mutation_seed: u64,
-    ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        draw_suffix(
-            shape,
-            mixture.mixture,
-            mixture.weight,
-            mutation_seed,
-            |_| Ok(None),
-            sample_chord,
-        )
-    }
-
-    fn expand_suffix_recorded(
-        &self,
-        run: &StbCampaignRun,
-        state: &(),
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        before: Option<&()>,
-        mutation_seed: u64,
-    ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        if before.is_some() {
-            return Err("Stb stream unexpectedly records a draw table".into());
-        }
-        self.expand_suffix(run, state, shape, mixture, mutation_seed)
-    }
-
-    fn finish_stream_record(
-        &self,
-        _run: &StbCampaignRun,
-        _state: &mut (),
-        _retained: &[(usize, &[ButtonChord])],
-    ) -> Result<Option<()>, Box<dyn Error>> {
-        Ok(None)
-    }
-
-    fn retained_inputs_need_full(&self, _run: &StbCampaignRun) -> bool {
-        false
-    }
-
-    fn remember_draw_version(
-        &self,
-        _state: &mut (),
-        required: &BTreeSet<u64>,
-    ) -> Result<(), Box<dyn Error>> {
-        if required.is_empty() {
-            Ok(())
-        } else {
-            Err("Stb stream requires an unsupported draw-table version".into())
-        }
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<ButtonChord, Box<dyn Error>> {
+        sample_chord(rand)
     }
 }
 

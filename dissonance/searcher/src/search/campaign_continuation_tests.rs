@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
-use crate::search::archive::{RetireThresholds, SelectorAccounting, entries_by_suffix};
+use crate::search::archive::{SelectorAccounting, entries_by_suffix};
 use crate::search::rollout::ExecutionDisposition;
-use std::collections::{BTreeSet, VecDeque};
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 struct TestAction {
     input: u8,
@@ -22,44 +22,30 @@ fn test_action_cost(action: &TestAction) -> u64 {
     u64::from(action.work_units).saturating_mul(2)
 }
 
-fn test_draw_action(fingerprint: u32, mutation_seed: u64) -> TestAction {
-    TestAction::new((mutation_seed as u8).wrapping_add(fingerprint as u8), 1)
-}
-
-const TEST_DRAW_VERSION_CAP: usize = 16;
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct TestDrawCheckpoint {
-    generation: u64,
-    fingerprint: u32,
-}
-
-#[derive(Default)]
-struct TestDrawState {
-    generation: u64,
-    fingerprint: u32,
-    versions: VecDeque<TestDrawCheckpoint>,
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 struct TestKey(u8);
 
 impl ArchiveKey for TestKey {
-    type Group = u8;
+    type Place = u8;
+    type Progress = ();
+    type Identity = ();
 
-    fn groups() -> usize {
-        1
-    }
-
-    fn group(self, depth: usize) -> Self::Group {
-        assert_eq!(depth, 0);
+    fn place(self) -> Self::Place {
         self.0 % 16
     }
 
-    fn slot_capacity() -> usize {
+    fn progress(self) -> Self::Progress {}
+
+    fn identity(self) -> Self::Identity {}
+
+    fn capacity() -> usize {
         1
     }
-    fn preference_cmp(self, other: Self) -> std::cmp::Ordering {
+    fn preferences() -> usize {
+        1
+    }
+
+    fn preference_cmp(self, _preference: usize, other: Self) -> std::cmp::Ordering {
         (self.0 / 16).cmp(&(other.0 / 16))
     }
     type Lineage = ();
@@ -109,9 +95,6 @@ impl CampaignTypes for TestWorkload {
     type Evidence = ();
     type ArchiveReport = TestArchiveReport;
     type Run = ();
-    type DrawState = TestDrawState;
-    type DrawCheckpoint = TestDrawCheckpoint;
-    type DrawHeader = ();
 }
 
 impl Reporting for TestWorkload {
@@ -150,109 +133,25 @@ impl Reporting for TestWorkload {
 }
 
 impl InputPolicy for TestWorkload {
-    fn draw_state_memory_reserve_bytes(&self, _run: &Self::Run, _max_actions: usize) -> usize {
-        std::mem::size_of::<TestDrawState>()
-            + TEST_DRAW_VERSION_CAP * std::mem::size_of::<TestDrawCheckpoint>()
-    }
-    fn draw_state_memory_bytes(&self, _state: &Self::DrawState) -> usize {
-        std::mem::size_of::<TestDrawState>()
-            + TEST_DRAW_VERSION_CAP * std::mem::size_of::<TestDrawCheckpoint>()
-    }
     fn policies(&self, _run: &Self::Run) -> WorkloadPolicies {
         WorkloadPolicies::new()
     }
     fn resolve_recorded(&self, _policies: &WorkloadPolicies) -> Result<Self::Run, Box<dyn Error>> {
         Ok(())
     }
-    fn initial_draw_state(
+    fn sample_alphabet(
         &self,
         _run: &Self::Run,
-        _origin: Option<(&str, &Self::ArchiveReport)>,
-    ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
-        let mut state = TestDrawState::default();
-        state.versions.push_back(TestDrawCheckpoint {
-            generation: 0,
-            fingerprint: 0,
-        });
-        Ok((state, None))
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<Self::Action, Box<dyn Error>> {
+        Ok(TestAction::new(rand.next_u64() as u8, 1))
     }
-    fn expand_suffix(
-        &self,
-        _run: &Self::Run,
-        state: &Self::DrawState,
-        _shape: SuffixShape,
-        _mixture: MixtureDraw,
-        mutation_seed: u64,
-    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        Ok(vec![test_draw_action(state.fingerprint, mutation_seed)])
-    }
-
-    fn draw_checkpoint(
-        &self,
-        state: &Self::DrawState,
-    ) -> Result<Option<Self::DrawCheckpoint>, Box<dyn Error>> {
-        Ok(Some(TestDrawCheckpoint {
-            generation: state.generation,
-            fingerprint: state.fingerprint,
-        }))
-    }
-
-    fn draw_checkpoint_version(&self, checkpoint: &Self::DrawCheckpoint) -> u64 {
-        checkpoint.generation
-    }
-
-    fn expand_suffix_recorded(
-        &self,
-        run: &Self::Run,
-        state: &Self::DrawState,
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        before: Option<&Self::DrawCheckpoint>,
-        mutation_seed: u64,
-    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
-        let Some(before) = before else {
-            return Err("stateful fixture omitted its draw checkpoint".into());
-        };
-        if !state.versions.iter().any(|checkpoint| checkpoint == before) {
-            return Err("recorded draw checkpoint does not match live state".into());
+    fn draw_table_parameters(&self, _run: &Self::Run) -> EmpiricalStepParameters {
+        EmpiricalStepParameters {
+            update_every_records: 1,
+            hash_every_records: 1,
+            ..DEFAULT_DRAW_TABLE_PARAMETERS
         }
-        let _ = (run, shape, mixture);
-        Ok(vec![test_draw_action(before.fingerprint, mutation_seed)])
-    }
-
-    fn finish_stream_record(
-        &self,
-        _run: &Self::Run,
-        state: &mut Self::DrawState,
-        retained: &[(usize, &[Self::Action])],
-    ) -> Result<Option<Self::DrawCheckpoint>, Box<dyn Error>> {
-        let contribution = retained
-            .iter()
-            .flat_map(|(_, actions)| actions.iter())
-            .fold(0_u32, |fingerprint, action| {
-                fingerprint.wrapping_add(u32::from(action.input))
-            });
-        state.generation = state.generation.saturating_add(1);
-        state.fingerprint = state.fingerprint.wrapping_add(contribution);
-        let checkpoint = self
-            .draw_checkpoint(state)?
-            .ok_or("stateful fixture omitted its draw checkpoint")?;
-        if state.versions.len() == TEST_DRAW_VERSION_CAP {
-            state.versions.pop_front();
-        }
-        state.versions.push_back(checkpoint.clone());
-        Ok(Some(checkpoint))
-    }
-
-    fn remember_draw_version(
-        &self,
-        state: &mut Self::DrawState,
-        required: &BTreeSet<u64>,
-    ) -> Result<(), Box<dyn Error>> {
-        state
-            .versions
-            .retain(|checkpoint| required.contains(&checkpoint.generation));
-        Ok(())
     }
 
     fn max_action_limit(&self) -> usize {
@@ -378,113 +277,42 @@ impl Evaluation for TestWorkload {
             .ok_or_else(|| "test fixture has no source archive".into())
     }
 }
-#[test]
-fn isolated_continuation_admission_does_not_tune_the_next_ordinary_splice_draw() {
-    let seed = (0..512)
-        .find(|seed| energy_strategy(*seed, 0, 255).unwrap() == EnergyStrategy::Splice)
-        .unwrap();
-    let mut energy = MixtureEnergy::default();
-    energy.record_outcome(EnergyStrategy::Splice, false);
-    let before = energy.splice_weights(1);
-    let isolated = DrawMixture::EnergySpliceContinuationIsolated { scale: 1 };
-    for productive in [false, true] {
-        record_mixture_outcome(
-            &mut energy,
-            isolated,
-            SelectorPath::Continuation,
-            seed,
-            0,
-            255,
-            productive,
-        )
-        .unwrap();
-        assert_eq!(energy.splice_weights(1), before);
+
+fn continuation_config(
+    workers: u32,
+    mixture: DrawMixture,
+    budget_mib: usize,
+) -> CampaignConfig<TestWorkload> {
+    CampaignConfig {
+        campaign_seed: 947,
+        workers,
+        execution_budget: 800,
+        action_limit: 64,
+        host: "test".into(),
+        wall_budget: None,
+        stop_rollout_on_objective: true,
+        stop_campaign_on_objective: true,
+        archive_entry_limit: 128,
+        reservations_per_worker: 2,
+        memory_budget_mib: Some(budget_mib),
+        materialize_final_artifacts: true,
+        run: (),
+        suffix: SuffixShape::OneOrTwo,
+        mixture,
+        retention: RetentionPolicy::Unprobed,
+        objective_witness_path: None,
     }
-    let mut legacy = energy;
-    record_mixture_outcome(
-        &mut legacy,
-        DrawMixture::EnergySpliceContinuation { scale: 1 },
-        SelectorPath::Continuation,
-        seed,
-        0,
-        255,
-        false,
-    )
-    .unwrap();
-    assert_ne!(
-        legacy.splice_weights(1),
-        before,
-        "the legacy identifier keeps its old coupling"
-    );
-    record_mixture_outcome(
-        &mut energy,
-        isolated,
-        SelectorPath::HierarchyWalk,
-        seed,
-        0,
-        255,
-        false,
-    )
-    .unwrap();
-    assert_eq!(
-        energy.splice_weights(1),
-        legacy.splice_weights(1),
-        "ordinary splice outcomes must still tune the mixture"
-    );
 }
 
 #[test]
-fn continuations_and_count_selection_replay_under_snapshot_pressure() {
-    for (workers, semantic, persistent, mode) in [
-        (1, false, false, 0),
-        (4, false, false, 0),
-        (4, true, false, 0),
-        (4, false, true, 0),
-        (1, false, false, 1),
-        (4, false, false, 1),
-        (4, false, true, 1),
-        (1, false, false, 2),
-        (4, false, false, 2),
+fn continuations_replay_exactly_under_snapshot_pressure() {
+    for (workers, mixture, budget_mib) in [
+        (1, DrawMixture::EnergySplice { scale: 6 }, 12),
+        (4, DrawMixture::EnergySplice { scale: 6 }, 12),
+        (4, DrawMixture::Energy { scale: 6 }, 18),
+        (4, DrawMixture::BiasedHalf, 12),
     ] {
-        let config = CampaignConfig {
-            campaign_seed: 947,
-            workers,
-            execution_budget: 800,
-            action_limit: 64,
-            host: "test".into(),
-            wall_budget: None,
-            stop_rollout_on_objective: true,
-            stop_campaign_on_objective: true,
-            archive_entry_limit: 128,
-            reservations_per_worker: 2,
-            memory_budget_mib: Some(if persistent { 18 } else { 12 }),
-            materialize_final_artifacts: true,
-            run: (),
-            suffix: SuffixShape::OneOrTwo,
-            mixture: match mode {
-                1 => DrawMixture::AlphabetContinuation,
-                2 => DrawMixture::EnergySpliceContinuationIsolated { scale: 6 },
-                _ => DrawMixture::EnergySpliceContinuation { scale: 6 },
-            },
-            retention: RetentionPolicy::Unprobed,
-            selector: if persistent {
-                SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
-                    entry: 3,
-                    groups: vec![],
-                })
-            } else if semantic {
-                SelectorPolicy::EnergyProgressCheapestCount(RetireThresholds {
-                    entry: 3,
-                    groups: vec![],
-                })
-            } else {
-                SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
-                    entry: 3,
-                    groups: vec![],
-                })
-            },
-            objective_witness_path: None,
-        };
+        let config = continuation_config(workers, mixture, budget_mib);
         let mut bytes = Vec::new();
         let (live, checkpoint) = run_campaign_checkpointed(
             &TestWorkload,
@@ -494,178 +322,216 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             None,
         )
         .unwrap();
-        let mut buffered_bytes = Vec::new();
-        let buffered = run_campaign_checkpointed_with_options(
-            &TestWorkload,
-            &config,
-            &CampaignOrigin::Genesis,
-            &mut buffered_bytes,
-            None,
-            CampaignExecutionOptions {
-                work_budget: None,
-                result_buffering: ResultBuffering::TwoPerWorker,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            buffered_bytes, bytes,
-            "physical overlap changed search order"
-        );
-        assert_eq!(buffered, (live.clone(), checkpoint.clone()));
         let text = std::str::from_utf8(&bytes).unwrap();
-        if workers == 1 && !semantic && !persistent && mode == 0 {
-            for field in ["action_cost_unit", "execution_work_unit"] {
-                let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
-                let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
-                header[field] = serde_json::Value::String("wrong-unit".to_owned());
-                lines[0] = serde_json::to_string(&header).unwrap();
-                assert!(
-                    replay_campaign_checkpointed(
-                        &TestWorkload,
-                        lines.join("\n").as_bytes(),
-                        None,
-                        None,
-                    )
-                    .is_err(),
-                    "replay accepted a mismatched {field}"
-                );
-            }
-        }
-        if workers == 1 {
-            let mut with_sidecar = Vec::new();
-            let mut sidecar = Vec::new();
-            let observed = run_campaign_checkpointed(
-                &TestWorkload,
-                &config,
-                &CampaignOrigin::Genesis,
-                &mut with_sidecar,
-                Some(&mut sidecar),
-            )
-            .unwrap();
-            assert_eq!(with_sidecar, bytes);
-            assert_eq!(observed, (live.clone(), checkpoint.clone()));
-            let final_point: serde_json::Value = serde_json::from_str(
-                std::str::from_utf8(&sidecar)
-                    .unwrap()
-                    .lines()
-                    .last()
-                    .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(final_point["workload_diagnostics"]["observed"], 42);
-        }
-        let continuation_count = text
+        let continuations = text
             .lines()
             .filter(|line| line.contains("\"path\":\"continuation\""))
             .count();
         assert!(
-            continuation_count > 0,
-            "fixture must actually exercise continuation dispatch"
-        );
-        assert!(
-            continuation_count <= 200,
-            "continuations exceeded their quarter share"
+            continuations > 0,
+            "{workers} workers never dispatched a continuation"
         );
         assert!(
             live.snapshot_evictions > 0,
-            "fixture must exercise memory pressure"
+            "{workers} workers never met memory pressure"
         );
         let (replayed, replay_checkpoint) =
             replay_campaign_checkpointed(&TestWorkload, &bytes, None, None).unwrap();
-        assert_eq!(live, replayed);
+        assert_eq!(live, replayed, "{workers} workers diverged on replay");
         assert_eq!(checkpoint, replay_checkpoint);
-        let mut corrupted = text.lines().map(str::to_owned).collect::<Vec<_>>();
-        let checkpoint_line = corrupted
-            .iter_mut()
-            .find(|line| line.contains("\"draw_checkpoint_after\""))
-            .expect("stateful fixture records a draw checkpoint");
-        let mut checkpoint_value: serde_json::Value =
-            serde_json::from_str(checkpoint_line).expect("checkpoint record parses");
-        let fingerprint = checkpoint_value["draw_checkpoint_after"]["fingerprint"]
-            .as_u64()
-            .expect("checkpoint fingerprint is numeric");
-        checkpoint_value["draw_checkpoint_after"]["fingerprint"] =
-            serde_json::json!(fingerprint.saturating_add(1));
-        *checkpoint_line = serde_json::to_string(&checkpoint_value).expect("checkpoint re-encodes");
-        assert!(
-            replay_campaign_checkpointed(
-                &TestWorkload,
-                corrupted.join("\n").as_bytes(),
-                None,
-                None
-            )
-            .is_err(),
-            "replay accepted a corrupted typed draw checkpoint"
-        );
-        if persistent {
-            let counts = live
-                .archive
-                .entries
-                .iter()
-                .map(|entry| entry.selector.map_or(0, |counters| counters.selected))
-                .sum::<u64>();
-            assert!(
-                counts < live.executions_completed,
-                "replacement must remove entry-local sampling history"
-            );
-            let history = live.archive.selector.key_counts.as_ref().unwrap();
-            assert!(history.keys > 0 && history.hits > 0);
-        }
-        let mut bounded_stream = Vec::new();
-        let (bounded, bounded_checkpoint) = run_campaign_checkpointed_with_options(
-            &TestWorkload,
-            &config,
-            &CampaignOrigin::Genesis,
-            &mut bounded_stream,
-            None,
-            CampaignExecutionOptions {
-                work_budget: Some(128),
-                result_buffering: ResultBuffering::OnePerWorker,
+    }
+}
+
+#[test]
+fn a_tampered_continuation_record_fails_its_replay() {
+    let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut bytes = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        None,
+    )
+    .unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap().to_owned();
+    for (label, expected, tamper) in [
+        (
+            "tail",
+            "disagrees with the replayed queue entry",
+            (|value: &mut serde_json::Value| {
+                value["splice"]["tail_postcard"] = serde_json::json!([1, 255, 120]);
+            }) as fn(&mut serde_json::Value),
+        ),
+        (
+            "path",
+            "which is an ordinary job",
+            |value: &mut serde_json::Value| {
+                value["selector"]["path"] = serde_json::json!("tiers");
             },
-        )
-        .unwrap();
-        assert_eq!(bounded.work_budget, Some(128));
-        assert!(bounded.execution_work >= 128);
-        assert!(bounded.executions_completed < config.execution_budget);
-        let mut bounded_buffered_bytes = Vec::new();
-        let bounded_buffered = run_campaign_checkpointed_with_options(
-            &TestWorkload,
-            &config,
-            &CampaignOrigin::Genesis,
-            &mut bounded_buffered_bytes,
-            None,
-            CampaignExecutionOptions {
-                work_budget: Some(128),
-                result_buffering: ResultBuffering::TwoPerWorker,
+        ),
+        (
+            "share",
+            "disagrees with the rebuilt continuation share",
+            |value: &mut serde_json::Value| {
+                value["continuation_energy"] = serde_json::json!(3);
             },
-        )
-        .unwrap();
-        assert_eq!(bounded_buffered_bytes, bounded_stream);
-        assert_eq!(
-            bounded_buffered,
-            (bounded.clone(), bounded_checkpoint.clone())
-        );
-        assert_eq!(
-            replay_campaign_checkpointed(&TestWorkload, &bounded_stream, None, None).unwrap(),
-            (bounded, bounded_checkpoint)
-        );
-        let tampered = text.replacen(&draw_mixture_identifier(config.mixture), "alphabet_only", 1);
-        assert!(
-            replay_campaign_checkpointed(&TestWorkload, tampered.as_bytes(), None, None).is_err()
-        );
+        ),
+    ] {
         let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
         let line = lines
             .iter_mut()
             .find(|line| line.contains("\"path\":\"continuation\""))
-            .unwrap();
+            .expect("a continuation record");
         let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
-        value["splice"]["tail_postcard"] = serde_json::json!([1, 255, 120]);
+        tamper(&mut value);
         *line = serde_json::to_string(&value).unwrap();
-        assert!(
+        let error =
             replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
-                .is_err()
+                .expect_err(&format!("replay accepted a tampered {label}"))
+                .to_string();
+        assert!(
+            error.contains(expected),
+            "a tampered {label} failed for another reason: {error}"
         );
     }
+}
+
+#[test]
+fn a_progress_line_reports_the_continuation_accounting() {
+    let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut bytes = Vec::new();
+    let mut progress = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        Some(&mut progress),
+    )
+    .unwrap();
+    let text = String::from_utf8(progress).unwrap();
+    let last = text.lines().last().expect("a progress line");
+    let record: CampaignProgressRecord<serde_json::Value> = serde_json::from_str(last).unwrap();
+    let accounting = record.continuations;
+    assert!(accounting.edges > 0);
+    assert!(accounting.jobs > 0);
+    assert!(accounting.execution_work > 0);
+    assert!(accounting.reservations_taken > 0);
+    assert!(accounting.reservations_taken <= accounting.reservations_drawn);
+    assert!(accounting.landed <= accounting.jobs);
+    assert!(accounting.replaced <= accounting.landed);
+    assert!(accounting.opened_new_cell <= accounting.jobs);
+    assert!(accounting.energy <= 256);
+}
+
+fn replay_error(lines: &[String]) -> String {
+    replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
+        .expect_err("replay accepted a tampered stream")
+        .to_string()
+}
+
+fn with_header_field(lines: &[String], field: &str, value: &str) -> Vec<String> {
+    let mut changed = lines.to_vec();
+    let mut header: serde_json::Value = serde_json::from_str(&changed[0]).unwrap();
+    header[field] = serde_json::json!(value);
+    changed[0] = serde_json::to_string(&header).unwrap();
+    changed
+}
+
+#[test]
+fn replay_rejects_a_stream_whose_header_or_draw_state_was_changed() {
+    let config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut bytes = Vec::new();
+    let live = run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut bytes,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        replay_campaign_checkpointed(&TestWorkload, &bytes, None, None).unwrap(),
+        live
+    );
+    let text = std::str::from_utf8(&bytes).unwrap();
+    assert!(!text.contains("workload_diagnostics"));
+    let lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+
+    let mut with_sidecar = Vec::new();
+    let mut sidecar = Vec::new();
+    let observed = run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut with_sidecar,
+        Some(&mut sidecar),
+    )
+    .unwrap();
+    assert_eq!(with_sidecar, bytes);
+    assert_eq!(observed, live);
+    let final_point: serde_json::Value = serde_json::from_str(
+        std::str::from_utf8(&sidecar)
+            .unwrap()
+            .lines()
+            .last()
+            .expect("a progress line"),
+    )
+    .unwrap();
+    assert_eq!(final_point["workload_diagnostics"]["observed"], 42);
+
+    for (field, expected) in [
+        (
+            "action_cost_unit",
+            "campaign replay action-cost unit does not match the recorded stream",
+        ),
+        (
+            "execution_work_unit",
+            "campaign replay execution-work unit does not match the recorded stream",
+        ),
+    ] {
+        let error = replay_error(&with_header_field(&lines, field, "wrong-unit"));
+        assert_eq!(error, expected, "a changed {field}");
+    }
+
+    for event in ["job", "skip"] {
+        let mut changed = lines.clone();
+        let line = changed
+            .iter_mut()
+            .find(|line| {
+                line.contains(&format!("\"event\":\"{event}\""))
+                    && line.contains("\"draw_checkpoint_after\":{")
+            })
+            .unwrap_or_else(|| panic!("the stream records a {event} with a draw checkpoint"));
+        let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+        value["draw_checkpoint_after"]["table_sha256"] = serde_json::json!("0".repeat(64));
+        *line = serde_json::to_string(&value).unwrap();
+        let error = replay_error(&changed);
+        assert!(
+            error.starts_with(&format!("replayed {event} "))
+                && error.ends_with("draw-table checkpoint diverged"),
+            "a changed {event} checkpoint failed for another reason: {error}"
+        );
+    }
+
+    let recorded = draw_mixture_identifier(config.mixture);
+    assert!(text.contains(&format!("\"mixture_policy\":\"{recorded}\"")));
+    let error = replay_error(&with_header_field(
+        &lines,
+        "mixture_policy",
+        "alphabet_only",
+    ));
+    assert!(
+        error.contains("result digest") && error.contains("diverged"),
+        "a swapped mixture failed for another reason: {error}"
+    );
+    let error = replay_error(&with_header_field(
+        &lines,
+        "mixture_policy",
+        "unknown_mixture",
+    ));
+    assert_eq!(error, "draw mixture unknown_mixture is not recognized");
 }
 
 #[test]
@@ -673,26 +539,7 @@ fn history_growth_before_maintenance_does_not_stop_the_campaign() {
     for (workers, campaign_seed) in [(1, 947), (2, 947), (2, 11), (2, 12), (4, 947)] {
         let config = CampaignConfig {
             campaign_seed,
-            workers,
-            execution_budget: 800,
-            action_limit: 64,
-            host: "test".into(),
-            wall_budget: None,
-            stop_rollout_on_objective: true,
-            stop_campaign_on_objective: true,
-            archive_entry_limit: 128,
-            reservations_per_worker: 2,
-            memory_budget_mib: Some(8),
-            materialize_final_artifacts: true,
-            run: (),
-            suffix: SuffixShape::OneOrTwo,
-            mixture: DrawMixture::EnergySpliceContinuation { scale: 6 },
-            retention: RetentionPolicy::Unprobed,
-            selector: SelectorPolicy::EnergyFrontierCheapestCount(RetireThresholds {
-                entry: 3,
-                groups: vec![],
-            }),
-            objective_witness_path: None,
+            ..continuation_config(workers, DrawMixture::EnergySplice { scale: 6 }, 8)
         };
         let mut stream = Vec::new();
         let live = run_campaign_checkpointed(

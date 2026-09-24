@@ -67,7 +67,7 @@ pub struct NamedProgress {
 impl Default for NamedProgress {
     fn default() -> Self {
         Self {
-            format: "metroid-named-progress-v2",
+            format: "metroid-named-progress-v3",
             first_seen: GEAR
                 .iter()
                 .map(|(_, name)| *name)
@@ -76,7 +76,17 @@ impl Default for NamedProgress {
                     "norfair",
                     "kraid_area",
                     "ridley_area",
+                    "kraid_door",
+                    "kraid_room",
+                    "ridley_room",
                     "tourian",
+                    "tourian_corridor",
+                    "tourian_far",
+                    "tourian_bottom",
+                    "tourian_approach",
+                    "tourian_end",
+                    "zebetite_destroyed",
+                    "mother_brain_room",
                     "mother_brain_defeated",
                     "escape_started",
                     "kraid_defeated",
@@ -100,16 +110,17 @@ impl NamedProgress {
         execution: u64,
         route_action_end_frame: u64,
     ) -> Vec<&'static str> {
-        let state = observation.decoded;
-        if observation.dead || (!state.in_play() && !state.ending) {
-            return Vec::new();
+        let reached = Self::reached(observation);
+        if reached.is_empty() {
+            return reached;
         }
+        let state = observation.decoded;
         let stamp = FirstSeen {
             execution,
             route_action_end_frame,
         };
         let mut discoveries = Vec::new();
-        let mut note = |name| {
+        for name in reached {
             let first = self
                 .first_seen
                 .get_mut(name)
@@ -118,7 +129,20 @@ impl NamedProgress {
                 *first = Some(stamp);
                 discoveries.push(name);
             }
-        };
+        }
+        self.max_missile_capacity = self.max_missile_capacity.max(state.missile_capacity);
+        self.max_energy_tanks = self.max_energy_tanks.max(state.energy_tanks);
+        discoveries
+    }
+
+    #[must_use]
+    pub fn reached(observation: &MetroidObservations) -> Vec<&'static str> {
+        let state = observation.decoded;
+        if observation.dead || (!state.in_play() && !state.ending) {
+            return Vec::new();
+        }
+        let mut reached = Vec::new();
+        let mut note = |name| reached.push(name);
         for (bit, name) in GEAR {
             if state.equipment & bit != 0 {
                 note(name);
@@ -126,6 +150,41 @@ impl NamedProgress {
         }
         if let Some(area) = area_name(state.area) {
             note(area);
+        }
+        if state.area == 0x12 && state.map_x == 9 && state.map_y == 29 {
+            note("kraid_door");
+        }
+        if state.boss_health > 0 {
+            match state.area {
+                0x12 => note("kraid_room"),
+                0x14 => note("ridley_room"),
+                _ => {}
+            }
+        }
+        if state.area == 0x13 {
+            if state.zebetites_destroyed > 0 {
+                note("zebetite_destroyed");
+            }
+            if matches!(observation.mother_brain_status, 1 | 2) {
+                note("mother_brain_room");
+            }
+        }
+        if state.area == 0x13 && state.map_y == 7 {
+            if state.map_x >= 5 {
+                note("tourian_corridor");
+            }
+            if state.map_x >= 8 {
+                note("tourian_far");
+            }
+        }
+        if state.area == 0x13 && state.map_y >= 11 {
+            note("tourian_bottom");
+            if state.map_x <= 8 {
+                note("tourian_approach");
+            }
+            if state.map_x <= 4 {
+                note("tourian_end");
+            }
         }
         if observation.boss_defeats.kraid {
             note("kraid_defeated");
@@ -150,9 +209,7 @@ impl NamedProgress {
         if state.energy_tanks > 0 {
             note("energy_tank");
         }
-        self.max_missile_capacity = self.max_missile_capacity.max(state.missile_capacity);
-        self.max_energy_tanks = self.max_energy_tanks.max(state.energy_tanks);
-        discoveries
+        reached
     }
 }
 
@@ -173,9 +230,10 @@ mod tests {
         MetroidObservations {
             frame_count: 10,
             decoded: decode_state(&wram, &cartridge).unwrap(),
+            boss_health_seen: 0,
             boss_defeats: BossDefeats {
-                kraid: kraid & 1 != 0,
-                ridley: ridley & 2 != 0,
+                kraid: kraid & 0x81 != 0,
+                ridley: ridley & 0x82 != 0,
             },
             mother_brain_status: 0,
             tourian_events: TourianEvents::default(),
@@ -202,13 +260,13 @@ mod tests {
     }
 
     #[test]
-    fn boss_bits_are_distinct_and_statue_bits_are_not_defeats() {
+    fn boss_bits_are_distinct_and_the_statue_room_rewrite_counts_both() {
         for (kraid, ridley, count) in [
             (0, 0, 0),
             (1, 0, 1),
             (0, 2, 1),
             (1, 2, 2),
-            (0x80, 0x80, 0),
+            (0x82, 0x82, 2),
             (0, 1, 0),
         ] {
             let observation = observation(0, 0x10, kraid, ridley);
@@ -217,11 +275,11 @@ mod tests {
             progress.observe(&observation, 1, 10);
             assert_eq!(
                 progress.first_seen["kraid_defeated"].is_some(),
-                kraid & 1 != 0
+                kraid & 0x81 != 0
             );
             assert_eq!(
                 progress.first_seen["ridley_defeated"].is_some(),
-                ridley & 2 != 0
+                ridley & 0x82 != 0
             );
         }
     }
@@ -238,6 +296,48 @@ mod tests {
             }
             assert_eq!(progress.first_seen[name].unwrap().execution, 12);
         }
+    }
+
+    #[test]
+    fn tourian_rooms_are_named_from_position_and_her_presence() {
+        let mut observation = observation(0, 0x13, 0x82, 0x82);
+        observation.decoded.map_x = 3;
+        observation.decoded.map_y = 7;
+        let mut progress = NamedProgress::default();
+        progress.observe(&observation, 1, 10);
+        assert!(progress.first_seen["tourian_corridor"].is_none());
+        assert!(progress.first_seen["mother_brain_room"].is_none());
+        observation.decoded.map_x = 5;
+        progress.observe(&observation, 2, 20);
+        assert!(progress.first_seen["tourian_corridor"].is_some());
+        assert!(progress.first_seen["tourian_far"].is_none());
+        observation.decoded.map_x = 8;
+        observation.decoded.boss_health = 32;
+        progress.observe(&observation, 3, 30);
+        assert!(progress.first_seen["tourian_far"].is_some());
+        assert!(progress.first_seen["mother_brain_room"].is_none());
+        assert!(progress.first_seen["zebetite_destroyed"].is_none());
+        observation.decoded.zebetites_destroyed = 1;
+        observation.mother_brain_status = 1;
+        progress.observe(&observation, 3, 31);
+        assert!(progress.first_seen["zebetite_destroyed"].is_some());
+        assert!(progress.first_seen["mother_brain_room"].is_some());
+        observation.decoded.zebetites_destroyed = 0;
+        observation.mother_brain_status = 0;
+        assert!(progress.first_seen["mother_brain_defeated"].is_none());
+        assert!(progress.first_seen["tourian_bottom"].is_none());
+        observation.decoded.map_x = 10;
+        observation.decoded.map_y = 11;
+        progress.observe(&observation, 4, 40);
+        assert!(progress.first_seen["tourian_bottom"].is_some());
+        assert!(progress.first_seen["tourian_approach"].is_none());
+        observation.decoded.map_x = 8;
+        progress.observe(&observation, 5, 50);
+        assert!(progress.first_seen["tourian_approach"].is_some());
+        assert!(progress.first_seen["tourian_end"].is_none());
+        observation.decoded.map_x = 4;
+        progress.observe(&observation, 6, 60);
+        assert!(progress.first_seen["tourian_end"].is_some());
     }
 
     #[test]

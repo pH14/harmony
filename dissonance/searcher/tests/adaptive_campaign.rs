@@ -3,18 +3,19 @@
 use std::{collections::BTreeSet, error::Error, num::NonZeroU64};
 
 use searcher::search::{
-    archive::{
-        ArchiveEntryReport, ArchiveKey, Input, RetentionPolicy, SelectorPolicy, entries_by_suffix,
-    },
+    archive::{ArchiveEntryReport, ArchiveKey, Input, RetentionPolicy, entries_by_suffix},
     campaign::{
         ArchiveReportState, CampaignActionResult, CampaignConfig, CampaignExecutionOptions,
-        CampaignJobResult, CampaignOrigin, CampaignTypes, Evaluation, InitialDrawState,
-        InputPolicy, Reporting, ResultBuffering, TargetExecution, WorkloadPolicies,
-        postcard_result_sha256, postcard_value_sha256, replay_campaign_checkpointed,
+        CampaignJobResult, CampaignOrigin, CampaignTypes, Evaluation, InputPolicy, Reporting,
+        ResultBuffering, TargetExecution, WorkloadPolicies, postcard_result_sha256,
+        postcard_value_sha256, replay_campaign_checkpointed,
         run_campaign_checkpointed_with_options,
     },
     draw::{DrawMixture, MixtureDraw, SuffixShape},
+    draw_tables::DrawTables,
     duration::{DurationDraw, DurationRequest},
+    empirical_steps::EmpiricalStepCheckpoint,
+    rand::RomuDuoJrRand,
     rollout::ExecutionDisposition,
 };
 use serde::{Deserialize, Serialize};
@@ -30,16 +31,17 @@ struct TimedAction {
 struct TimingKey(u8);
 
 impl ArchiveKey for TimingKey {
-    type Group = u8;
+    type Place = u8;
+    type Progress = ();
+    type Identity = ();
 
-    fn groups() -> usize {
-        1
-    }
-
-    fn group(self, depth: usize) -> Self::Group {
-        assert_eq!(depth, 0);
+    fn place(self) -> Self::Place {
         self.0
     }
+
+    fn progress(self) -> Self::Progress {}
+
+    fn identity(self) -> Self::Identity {}
 
     type Lineage = ();
 
@@ -89,9 +91,6 @@ impl CampaignTypes for TimingWorkload {
     type Evidence = TimingEvidence;
     type ArchiveReport = TimingArchiveReport;
     type Run = ();
-    type DrawState = ();
-    type DrawCheckpoint = ();
-    type DrawHeader = ();
 }
 
 impl Reporting for TimingWorkload {
@@ -151,20 +150,15 @@ impl InputPolicy for TimingWorkload {
         Ok(())
     }
 
-    fn draw_state_memory_reserve_bytes(&self, _run: &Self::Run, _max_actions: usize) -> usize {
-        0
-    }
-
-    fn draw_state_memory_bytes(&self, _state: &Self::DrawState) -> usize {
-        0
-    }
-
-    fn initial_draw_state(
+    fn sample_alphabet(
         &self,
         _run: &Self::Run,
-        _origin: Option<(&str, &Self::ArchiveReport)>,
-    ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
-        Ok(((), None))
+        _rand: &mut RomuDuoJrRand,
+    ) -> Result<Self::Action, Box<dyn Error>> {
+        Ok(TimedAction {
+            context: 0,
+            duration: NonZeroU64::MIN,
+        })
     }
 
     fn duration_request(
@@ -185,7 +179,7 @@ impl InputPolicy for TimingWorkload {
     fn expand_suffix(
         &self,
         _run: &Self::Run,
-        _state: &Self::DrawState,
+        _state: &DrawTables<Self::Action>,
         _shape: SuffixShape,
         _mixture: MixtureDraw,
         _mutation_seed: u64,
@@ -196,14 +190,29 @@ impl InputPolicy for TimingWorkload {
         }])
     }
 
-    fn expand_suffix_duration(
+    fn expand_suffix_recorded(
+        &self,
+        run: &Self::Run,
+        state: &DrawTables<Self::Action>,
+        shape: SuffixShape,
+        mixture: MixtureDraw,
+        _before: Option<&EmpiricalStepCheckpoint>,
+        mutation_seed: u64,
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        self.expand_suffix(run, state, shape, mixture, mutation_seed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn expand_duration_recorded_or_live(
         &self,
         _run: &Self::Run,
-        _state: &Self::DrawState,
+        _state: &DrawTables<Self::Action>,
         _shape: SuffixShape,
         _mixture: MixtureDraw,
+        _before: Option<&EmpiricalStepCheckpoint>,
         draw_seed: u64,
         draw: DurationDraw<Self::Key>,
+        _replay: bool,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
         let _ = draw_seed;
         if self.fail_timed_action {
@@ -408,7 +417,6 @@ fn fixture_config() -> CampaignConfig<TimingWorkload> {
         suffix: SuffixShape::OneOrTwo,
         mixture: DrawMixture::AlphabetOnly,
         retention: RetentionPolicy::Unprobed,
-        selector: SelectorPolicy::GroupUniform,
         objective_witness_path: None,
     }
 }

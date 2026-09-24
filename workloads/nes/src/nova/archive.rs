@@ -12,7 +12,7 @@ use crate::{
     search::{
         archive::{
             Archive, ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting,
-            SelectorPolicy, entries_by_suffix,
+            entries_by_suffix,
         },
         rand::RomuDuoJrRand,
     },
@@ -21,29 +21,11 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_NOVA_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "nova_spatial_16_preference_v1";
+pub const KEY_POLICY_IDENTIFIER: &str = "nova_peer_places_level_spatial_32_place_preference_v2";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
-pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
-    crate::search::archive::selector_policy_from_identifier(
-        identifier,
-        NovaArchiveKey::groups().saturating_sub(2),
-    )
-}
-
 pub type NovaArchive = Archive<ButtonChord, NovaArchiveKey, NovaMilestones, NovaSnapshot>;
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct NovaArchiveGroup {
-    cleared: u8,
-    collectibles: u8,
-    available: u8,
-    started_level: u8,
-    level: u8,
-    x: u16,
-    y: u16,
-}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct NovaArchiveKey {
@@ -60,57 +42,37 @@ pub struct NovaArchiveKey {
 }
 
 impl ArchiveKey for NovaArchiveKey {
-    type Group = NovaArchiveGroup;
+    type Place = (u8, u8, u8, u8, u8, u16, u16);
+    type Progress = ();
+    type Identity = (u16, u16);
 
-    fn groups() -> usize {
-        5
+    fn place(self) -> Self::Place {
+        (
+            self.cleared,
+            self.collectibles,
+            self.available,
+            self.started_level,
+            self.level,
+            self.x / 2,
+            self.y / 2,
+        )
     }
 
-    fn group(self, depth: usize) -> Self::Group {
-        let location = NovaArchiveGroup {
-            started_level: self.started_level,
-            level: self.level,
-            x: self.x,
-            y: self.y,
-            ..NovaArchiveGroup::default()
-        };
-        match depth {
-            0 => location,
-            1 => NovaArchiveGroup {
-                x: self.x / 2,
-                y: self.y / 2,
-                ..location
-            },
-            2 => NovaArchiveGroup {
-                cleared: self.cleared,
-                collectibles: self.collectibles,
-                available: self.available,
-                x: self.x / 8,
-                y: self.y / 8,
-                ..location
-            },
-            3 => NovaArchiveGroup {
-                cleared: self.cleared,
-                collectibles: self.collectibles,
-                available: self.available,
-                started_level: self.started_level,
-                level: self.level,
-                ..NovaArchiveGroup::default()
-            },
-            _ => NovaArchiveGroup {
-                cleared: self.cleared,
-                collectibles: self.collectibles,
-                available: self.available,
-                ..NovaArchiveGroup::default()
-            },
-        }
+    fn progress(self) -> Self::Progress {}
+
+    fn identity(self) -> Self::Identity {
+        (self.x, self.y)
     }
 
-    fn slot_capacity() -> usize {
+    fn capacity() -> usize {
         1
     }
 
-    fn preference_cmp(self, other: Self) -> Ordering {
+    fn preferences() -> usize {
+        1
+    }
+
+    fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
     }
 
@@ -293,11 +255,14 @@ mod tests {
     #[test]
     fn one_location_uses_opaque_resources_only_for_preference() {
         let weak = archive_key(state(100, 2, 0));
-        let strong = archive_key(state(100, 4, 1));
-        assert_eq!(weak.group(0), strong.group(0));
-        assert_eq!(weak.group(1), strong.group(1));
-        assert_eq!(strong.preference_cmp(weak), Ordering::Greater);
-        assert_eq!(NovaArchiveKey::slot_capacity(), 1);
+        let strong = archive_key(state(100, 4, 0));
+        assert_eq!(weak.place(), strong.place());
+        assert_eq!(weak.identity(), strong.identity());
+        assert_eq!(strong.preference_cmp(0, weak), Ordering::Greater);
+        let cleared = archive_key(state(100, 4, 1));
+        assert_ne!(cleared.place(), strong.place());
+        assert_eq!(cleared.preference_cmp(0, strong), Ordering::Greater);
+        assert_eq!(NovaArchiveKey::capacity(), 1);
     }
 
     #[test]

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     error::Error,
     io::Write,
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -33,7 +33,9 @@ use crate::{
             Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
             postcard_value_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
         },
-        draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
+        draw::{DrawMixture, SuffixShape},
+        draw_tables::DrawTableHeader,
+        rand::RomuDuoJrRand,
         rollout::{ExecutionDisposition, Outcome},
     },
     target::{ExitKind, Target},
@@ -56,9 +58,6 @@ const VIABILITY_PROBE_FRAMES: u16 = 60;
 
 type Mm2Preference = (u8, u8, u16);
 type Mm2ChampionKey = (Mm2ProgressWatermark, Mm2Preference);
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Mm2NoTableHeader;
 
 pub struct Mm2Game {
     rom: Vec<u8>,
@@ -166,7 +165,7 @@ pub struct Mm2CampaignEvidence {
 pub type Mm2CampaignOrigin = CampaignOrigin<Mm2Game>;
 pub type Mm2CampaignCheckpoint = CampaignCheckpoint<Mm2Snapshot>;
 pub type Mm2SnapshotCheckpoint = SnapshotCheckpoint<Mm2Snapshot>;
-pub type Mm2CampaignStreamHeader = CampaignStreamHeader<Mm2NoTableHeader>;
+pub type Mm2CampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
 pub type Mm2CampaignModeReport = CampaignModeReport<ButtonChord, Mm2ArchiveReport>;
 pub type Mm2CampaignProgressRecord = CampaignProgressRecord<Mm2ArchiveKey>;
 type Mm2CampaignActionResult = CampaignActionResult<Mm2Game>;
@@ -225,7 +224,6 @@ pub struct Mm2CampaignConfig {
     pub memory_budget_mib: Option<usize>,
     pub materialize_final_artifacts: bool,
     pub retention: RetentionPolicy,
-    pub selector: crate::search::archive::SelectorPolicy,
     pub suffix: SuffixShape,
     pub mixture: DrawMixture,
     pub victory_input_path: Option<PathBuf>,
@@ -251,7 +249,6 @@ impl Mm2CampaignConfig {
             suffix: self.suffix,
             mixture: self.mixture,
             retention: self.retention,
-            selector: self.selector.clone(),
             objective_witness_path: self.victory_input_path.clone(),
         }
     }
@@ -422,9 +419,6 @@ impl CampaignTypes for Mm2Game {
     type Evidence = Mm2CampaignEvidence;
     type ArchiveReport = Mm2ArchiveReport;
     type Run = Mm2CampaignRun;
-    type DrawState = ();
-    type DrawHeader = Mm2NoTableHeader;
-    type DrawCheckpoint = ();
 }
 
 impl Reporting for Mm2Game {
@@ -544,14 +538,6 @@ impl InputPolicy for Mm2Game {
         u64::from(crate::mm2::archive::LONGEST_HOLD_FRAMES)
     }
 
-    fn draw_state_memory_reserve_bytes(&self, _run: &Mm2CampaignRun, _max_actions: usize) -> usize {
-        0
-    }
-
-    fn draw_state_memory_bytes(&self, _state: &()) -> usize {
-        0
-    }
-
     fn policies(&self, _run: &Mm2CampaignRun) -> WorkloadPolicies {
         [
             (
@@ -590,74 +576,12 @@ impl InputPolicy for Mm2Game {
         Ok(Mm2CampaignRun)
     }
 
-    fn initial_draw_state(
+    fn sample_alphabet(
         &self,
         _run: &Mm2CampaignRun,
-        _origin: Option<(&str, &Mm2ArchiveReport)>,
-    ) -> Result<((), Option<Mm2NoTableHeader>), Box<dyn Error>> {
-        Ok(((), None))
-    }
-
-    fn draw_checkpoint(&self, _state: &()) -> Result<Option<()>, Box<dyn Error>> {
-        Ok(None)
-    }
-
-    fn expand_suffix(
-        &self,
-        _run: &Mm2CampaignRun,
-        _state: &(),
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        mutation_seed: u64,
-    ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        draw_suffix(
-            shape,
-            mixture.mixture,
-            mixture.weight,
-            mutation_seed,
-            |_| Ok(None),
-            sample_chord,
-        )
-    }
-
-    fn expand_suffix_recorded(
-        &self,
-        run: &Mm2CampaignRun,
-        state: &(),
-        shape: SuffixShape,
-        mixture: MixtureDraw,
-        before: Option<&()>,
-        mutation_seed: u64,
-    ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        if before.is_some() {
-            return Err("Mega Man 2 stream unexpectedly records a draw table".into());
-        }
-        self.expand_suffix(run, state, shape, mixture, mutation_seed)
-    }
-
-    fn finish_stream_record(
-        &self,
-        _run: &Mm2CampaignRun,
-        _state: &mut (),
-        _retained: &[(usize, &[ButtonChord])],
-    ) -> Result<Option<()>, Box<dyn Error>> {
-        Ok(None)
-    }
-
-    fn retained_inputs_need_full(&self, _run: &Mm2CampaignRun) -> bool {
-        false
-    }
-
-    fn remember_draw_version(
-        &self,
-        _state: &mut (),
-        required: &BTreeSet<u64>,
-    ) -> Result<(), Box<dyn Error>> {
-        if required.is_empty() {
-            Ok(())
-        } else {
-            Err("Mega Man 2 stream requires an unsupported draw-table version".into())
-        }
+        rand: &mut RomuDuoJrRand,
+    ) -> Result<ButtonChord, Box<dyn Error>> {
+        sample_chord(rand)
     }
 }
 

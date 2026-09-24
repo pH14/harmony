@@ -189,7 +189,9 @@ LIB_PARTITIONS = {
         ),
     },
     "searcher": {
-        "Archive": ("search::archive", "search::key_counts", "search::draw"),
+        "Archive": (
+            "search::archive", "search::draw", "search::draw_tables",
+        ),
         "Scheduling": (
             "search::duration", "search::empirical_steps", "search::parallel",
         ),

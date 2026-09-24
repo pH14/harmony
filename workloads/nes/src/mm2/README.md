@@ -19,12 +19,13 @@ corrects wrapped coordinates and transition states that caused false deaths in
 the earlier experiments. Controller sampling covers nine directions times four
 A/B combinations plus ordinary Start taps; Start is necessary to operate the
 weapon menu. The v2 controller identifier corrects the prototype's stale
-`no_start` label. No control is selected based on a named situation.
+`no_start` label. No control is selected based on a named situation. That
+vocabulary is the adapter's alphabet sampler and nothing else about drawing;
+the searcher owns the suffix draw and the retained-input table.
 
-The v19 key uses 16-pixel retention slots pooled into 32-pixel cells,
-128-pixel regions, screens, and stages. Weapon/menu rows distinguish local
-endpoints but are pooled at coarser levels. Health and energy prefer
-representatives without multiplying spatial slots. It removes the prototype's
+The v20 key buckets position at 16 pixels. Health and weapon energy are
+same-slot preferences: they choose which endpoint holds a slot and add no
+slots. It removes the prototype's
 rooms-visited lineage reward: returning to the same endpoint has the same key,
 regardless of the number of rooms visited. Stage, room and screen bytes identify
 locations; the progress relation uses boss clears and current boss damage.
@@ -32,8 +33,10 @@ Boss damage is zero until the boss loads its health, so a Wily boss that spawns
 for its approach with an empty meter reads as no damage rather than a full bar,
 and it is full once the phase byte reports the boss dead. A Wily boss grants no
 weapon, so a cleared boss is a granted weapon or that same defeated phase byte.
-The generic progress-aware selector consumes that relation. Historical frontier
-selectors retain their original identity ordering for controlled baselines.
+Boss clears are the progress tier. The place is the stage, screen, room, boss
+damage, enemy damage, the 32-pixel position bucket, posture, platforms and
+whether the menu is open. The holder identity is the 16-pixel position bucket,
+the weapon and the menu state.
 Summed energy remains a documented resource-preference tradeoff, not dominance.
 The v17 prototype is preserved in the preceding commit and benchmark build;
 replay rejects a different recorded policy instead of silently reinterpreting it.

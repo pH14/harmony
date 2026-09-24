@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -81,6 +82,40 @@ class EvaluationTests(unittest.TestCase):
         text = eval.report_html([item], 'Resources')
         self.assertIn('Last logical memory MiB', text)
         self.assertIn('<td rowspan="1">2.0</td><td rowspan="1">1.0</td><td rowspan="1">0.0</td>', text)
+
+    def test_every_metroid_milestone_lands_in_its_named_column(self):
+        columns = [name for names in eval.METROID_COLUMNS.values() for name in names]
+        self.assertEqual(sorted(columns), sorted(eval.METROID_MILESTONES))
+        progress = {'format':'metroid-named-progress-v3', 'first_seen':{
+            name:None for name in eval.METROID_MILESTONES}, 'max_missile_capacity':0, 'max_energy_tanks':0}
+        for name in ('brinstar', 'tourian', 'tourian_far', 'kraid_room', 'bombs', 'zebetite_destroyed'):
+            progress['first_seen'][name] = {'execution':7, 'route_action_end_frame':90}
+        item = {'cell':'ladder-seg5-s11', 'search_request':{'game':'metroid'}, 'result':{},
+                'last_progress':{'workload_diagnostics':{'named_progress':progress}}}
+        row = re.search(r'<td>ladder-seg5-s11</td><td>Search branches</td>'
+                        r'<td>(.*?)</td><td>(.*?)</td><td>(.*?)</td>', eval.metroid_html([item]))
+        gear, areas, bosses = row.groups()
+        self.assertEqual(gear, 'Bombs')
+        self.assertEqual(areas, 'Brinstar, Kraid&#x27;s room, Tourian, Tourian far corridor')
+        self.assertEqual(bosses, 'Zebetite destroyed')
+
+    def test_a_manifest_selector_is_rejected_by_name(self):
+        self.suite['search']['selector'] = 'depth'
+        with self.assertRaisesRegex(ValueError, 'sets search.selector'): eval.expand_suite(self.suite)
+
+    def test_comparison_refuses_a_changed_root_input(self):
+        a, b = self.root/'a', self.root/'b'
+        original = self.matrix(a)
+        self.matrix(b)
+        for root in ('/roots/other-s1.json', None):
+            changed = copy.deepcopy(original)
+            changed['search_request']['root_input'] = '/roots/kraid-s1.json'
+            eval.write_json(a/original['cell']/'summary.json', changed)
+            changed['search_request']['root_input'] = root
+            eval.write_json(b/original['cell']/'summary.json', changed)
+            with self.assertRaisesRegex(ValueError, 'root input changed for smb-s1-w1-m16'): eval.compare(a, b)
+        eval.write_json(b/original['cell']/'summary.json', eval.read_json(a/original['cell']/'summary.json'))
+        self.assertTrue(eval.compare(a, b)['pairs'][0]['comparable'])
 
     def test_export_includes_only_named_milestone_tapes_and_rejects_symlinks(self):
         matrix = self.root/'matrix'

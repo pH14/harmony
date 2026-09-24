@@ -1,23 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, num::NonZeroUsize};
+use std::{cmp::Ordering, error::Error, num::NonZeroUsize};
 
 use crate::search::archive::{
-    Archive, ArchiveEntryReport, ArchiveKey, SelectorAccounting, SelectorPolicy, entries_by_suffix,
+    Archive, ArchiveEntryReport, ArchiveKey, SelectorAccounting, entries_by_suffix,
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub use crate::smb::target::ROOM_IDENTITY_BYTES;
 
-pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
-    crate::search::archive::selector_policy_from_identifier(
-        identifier,
-        SmbArchiveKey::groups().saturating_sub(2),
-    )
-}
 use crate::search::rand::RomuDuoJrRand;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{
     nes_backend::{NesBackend, SnapshotState},
@@ -36,13 +29,12 @@ pub(crate) fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
-const FRONTIER_PROGRESS_BAND: u16 = 4;
-const STATE_FINGERPRINT_MASK: u8 = 0x3f;
+const PROGRESS_BAND: u16 = 64;
+const BAND_RANK_SHIFT: u32 = 1;
 
 pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 
-pub const KEY_POLICY_IDENTIFIER: &str =
-    "frozen_area_span_screen_x_16_clock_100_band_4_player_x_cells_no_engine_state";
+pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_level_band_64_tiers_rank_2x_room_loop_path_place_screen_x_identity_clock_preference";
 
 pub type SmbRoomIdentity = [u8; 3];
 
@@ -54,16 +46,18 @@ const VIABILITY_PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
 const VIABILITY_PROBE_FRAMES: u16 = 45;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SmbArchiveKey {
     pub world: u8,
     pub level: u8,
     pub progress: u16,
     pub player_y_bucket: u8,
-    pub state_fingerprint: u8,
+    pub loop_on_path: bool,
     #[serde(default, skip_serializing_if = "room_x_bucket_is_absent")]
     pub room_x_bucket: u8,
     #[serde(default)]
     pub time_bucket: u8,
+    pub clock: u16,
     #[serde(default, skip_serializing_if = "room_is_absent")]
     pub room: SmbRoomIdentity,
 }
@@ -77,31 +71,42 @@ fn room_x_bucket_is_absent(bucket: &u8) -> bool {
 }
 
 impl ArchiveKey for SmbArchiveKey {
-    type Group = SmbArchiveKey;
+    type Place = (SmbRoomIdentity, u16, u8, bool, u8);
+    type Progress = (u8, u8, u16);
+    type Identity = u8;
 
-    fn groups() -> usize {
-        5
+    fn place(self) -> Self::Place {
+        (
+            self.room,
+            self.progress.saturating_add(u16::from(self.room_x_bucket)),
+            self.player_y_bucket,
+            self.loop_on_path,
+            self.time_bucket,
+        )
     }
 
-    fn group(self, depth: usize) -> Self::Group {
-        let mut group = self;
-        if depth >= 1 {
-            group.state_fingerprint = 0;
-            group.progress = self.progress.saturating_add(u16::from(self.room_x_bucket));
-            group.room_x_bucket = 0;
-        }
-        if depth >= 2 {
-            group.player_y_bucket = 0;
-            group.time_bucket = 0;
-            group.progress /= FRONTIER_PROGRESS_BAND;
-        }
-        if depth >= 3 {
-            group.progress = 0;
-        }
-        if depth >= 4 {
-            group.room = [0; 3];
-        }
-        group
+    fn progress(self) -> Self::Progress {
+        (
+            self.world,
+            self.level,
+            self.progress.saturating_add(u16::from(self.room_x_bucket)) / PROGRESS_BAND,
+        )
+    }
+
+    fn identity(self) -> Self::Identity {
+        self.room_x_bucket
+    }
+
+    fn tier_rank_shift() -> u32 {
+        BAND_RANK_SHIFT
+    }
+
+    fn preferences() -> usize {
+        1
+    }
+
+    fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
+        self.clock.cmp(&other.clock)
     }
 
     type Lineage = Vec<SmbRoomIdentity>;
@@ -201,20 +206,28 @@ pub(crate) fn merge_progress_watermark(
 
 pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
     let state = smb_mechanical_state_from_wram(wram);
-    let digest = Sha256::digest(wram);
     SmbArchiveKey {
         world: state.world,
         level: state.level,
         progress: state.progress,
         player_y_bucket: state.player_y_bucket,
-        state_fingerprint: digest[0] & STATE_FINGERPRINT_MASK,
+        loop_on_path: wram[LOOP_CORRECT_PASSES_OFFSET] == wram[LOOP_PASSES_OFFSET],
         room_x_bucket: screen_x_bucket(wram),
         time_bucket: wram[GAME_TIMER_HUNDREDS_OFFSET],
+        clock: game_clock(wram),
         room: [0; 3],
     }
 }
 
 const GAME_TIMER_HUNDREDS_OFFSET: usize = 0x07f8;
+const LOOP_CORRECT_PASSES_OFFSET: usize = 0x06d9;
+const LOOP_PASSES_OFFSET: usize = 0x06da;
+
+fn game_clock(wram: &[u8; 2_048]) -> u16 {
+    wram[GAME_TIMER_HUNDREDS_OFFSET..GAME_TIMER_HUNDREDS_OFFSET + 3]
+        .iter()
+        .fold(0, |clock, digit| clock * 10 + u16::from(*digit))
+}
 
 pub(crate) fn stamp_arrival_room(
     key: SmbArchiveKey,
@@ -379,9 +392,10 @@ mod tests {
             level: 3,
             progress,
             player_y_bucket: 11,
-            state_fingerprint: 9,
+            loop_on_path: true,
             room_x_bucket: 0,
             time_bucket: 0,
+            clock: 0,
             room: [
                 area[0],
                 area[1],
@@ -484,26 +498,135 @@ mod tests {
     }
 
     #[test]
-    fn groups_pool_from_slot_to_pair() {
+    fn the_place_carries_the_room_and_the_tier_is_the_level_band() {
         let key = key(153, [3, 5]);
-        assert_eq!(key.group(0), key);
-        assert_eq!(key.group(1).state_fingerprint, 0);
-        assert_eq!(key.group(2).progress, 153 / 4);
+        assert_eq!(key.place(), (key.room, 153, 11, true, 0));
+        assert_eq!(key.progress(), (7, 3, 2));
+        assert_eq!(key.identity(), 0);
         let on_screen = SmbArchiveKey {
             room_x_bucket: 6,
             ..key
         };
-        assert_eq!(on_screen.group(1).progress, 159);
-        assert_eq!(on_screen.group(1).room_x_bucket, 0);
-        assert_eq!(on_screen.group(2).progress, 159 / 4);
-        assert_eq!(key.group(2).player_y_bucket, 0);
-        assert_eq!(key.group(3).progress, 0);
-        assert_eq!(key.group(3).room, key.room);
-        assert_eq!(key.group(4).room, [0; 3]);
-        assert_eq!(
-            (key.group(4).world, key.group(4).level),
-            (key.world, key.level)
-        );
-        assert_eq!(SmbArchiveKey::groups(), 5);
+        assert_eq!(on_screen.place().1, 159);
+        assert_eq!(on_screen.progress(), key.progress());
+        assert_eq!(on_screen.identity(), 6);
+        assert_eq!(SmbArchiveKey::capacity(), 2);
+        assert_eq!(SmbArchiveKey::tier_rank_shift(), 1);
+        assert_eq!(SmbArchiveKey::preferences(), 1);
+        let faster = SmbArchiveKey { clock: 250, ..key };
+        assert_eq!(faster.place(), key.place());
+        assert_eq!(faster.identity(), key.identity());
+        assert_eq!(faster.preference_cmp(0, key), std::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn the_loop_path_bit_is_set_while_every_loop_check_passed_on_the_right_path() {
+        let mut wram = [0_u8; 2_048];
+        assert!(super::archive_key(&wram).loop_on_path);
+        wram[0x06d9] = 2;
+        wram[0x06da] = 2;
+        assert!(super::archive_key(&wram).loop_on_path);
+        wram[0x06d9] = 1;
+        assert!(!super::archive_key(&wram).loop_on_path);
+    }
+
+    #[test]
+    fn a_slower_state_on_the_loop_path_is_held_beside_faster_states_off_it() {
+        let mut archive: Archive<u8, SmbArchiveKey, (), ()> = Archive::new(|_| 1);
+        let mut held = |parent: Option<usize>, suffix: u8, key| {
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![suffix],
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert")
+        };
+        let root = held(None, 0, key(100, [3, 5])).expect("root");
+        let off_path = |clock| SmbArchiveKey {
+            loop_on_path: false,
+            clock,
+            ..key(130, [3, 5])
+        };
+        let fast = held(Some(root), 1, off_path(300)).expect("fast");
+        let faster = held(Some(root), 2, off_path(310)).expect("faster");
+        assert!(held(Some(root), 3, off_path(200)).is_none());
+        let on_path = held(
+            Some(root),
+            4,
+            SmbArchiveKey {
+                clock: 200,
+                ..key(130, [3, 5])
+            },
+        )
+        .expect("on path");
+        for id in [fast, faster, on_path] {
+            assert!(archive.active[id]);
+        }
+    }
+
+    #[test]
+    fn the_band_outranks_every_place_inside_it_and_the_level_outranks_the_band() {
+        let behind = key(41, [9, 9]);
+        let beside = SmbArchiveKey {
+            player_y_bucket: 0,
+            loop_on_path: true,
+            time_bucket: 0,
+            clock: 0,
+            room: SmbRoomIdentity::default(),
+            ..key(60, [0, 0])
+        };
+        assert_eq!(beside.progress(), behind.progress());
+        assert_ne!(beside.place(), behind.place());
+        let ahead = key(900, [0, 0]);
+        assert!(ahead.progress() > beside.progress());
+        let next_level = SmbArchiveKey { level: 4, ..behind };
+        assert!(next_level.progress() > ahead.progress());
+    }
+
+    #[test]
+    fn the_key_round_trips_through_json() {
+        let bare = key(300, [4, 9]);
+        let full = SmbArchiveKey {
+            loop_on_path: false,
+            room_x_bucket: 5,
+            time_bucket: 2,
+            clock: 381,
+            ..bare
+        };
+        for original in [bare, full] {
+            let encoded = serde_json::to_string(&original).unwrap();
+            let decoded: SmbArchiveKey = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, original);
+        }
+    }
+
+    #[test]
+    fn a_key_in_the_state_fingerprint_format_is_rejected() {
+        let previous = serde_json::json!({
+            "world": 7,
+            "level": 3,
+            "progress": 300,
+            "player_y_bucket": 11,
+            "state_fingerprint": 2,
+            "time_bucket": 0,
+            "room": [4, 9, 18],
+        });
+        assert!(serde_json::from_value::<SmbArchiveKey>(previous.clone()).is_err());
+        let mut extended = previous;
+        let fields = extended.as_object_mut().unwrap();
+        fields.insert("loop_on_path".to_owned(), serde_json::json!(true));
+        fields.insert("clock".to_owned(), serde_json::json!(0));
+        assert!(serde_json::from_value::<SmbArchiveKey>(extended.clone()).is_err());
+        extended
+            .as_object_mut()
+            .unwrap()
+            .remove("state_fingerprint");
+        assert!(serde_json::from_value::<SmbArchiveKey>(extended).is_ok());
     }
 }

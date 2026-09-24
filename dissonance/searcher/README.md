@@ -8,9 +8,10 @@ campaign coordination, worker execution, seeded draws, checkpoints, stream
 recording, and replay. Workloads supply associated types through `CampaignTypes`
 and implement four contracts. `Workload` composes those contracts for a full campaign.
 
-The archive groups entries at several ordered depths. A workload provides the
-key and any same-location state preference; the generic archive uses only the
-resulting ordering and retains bounded representatives. Campaigns reserve jobs
+The archive keeps entries in cells, a cell being one place at one progress
+value, and ranks the cells in progress tiers. A workload provides the key, a
+progress order and an ordered list of state preferences; the generic
+archive uses only those and retains bounded representatives. Campaigns reserve jobs
 in a deterministic admission window, allow physical workers to execute them,
 and process results in recorded admission order. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
@@ -32,8 +33,12 @@ namespaces are rejected before replay because their snapshot accounting differs.
 
 Empirical step tables fold retained suffixes into an incremental hash and a
 deterministic frequency map capped at 4,096 distinct steps. The compact table
-is the only supported representation. Workloads identify their input policies
-and reject unknown or retired identifiers during replay.
+is the only supported representation. Every campaign keeps one, in
+`search::draw_tables`, so a workload gets the biased draw without owning any of
+the bookkeeping. `DrawTables` folds each retained suffix as its record closes,
+publishes an `EmpiricalStepCheckpoint` the stream records beside every draw,
+and keeps the table versions a serial replay still needs. Workloads identify
+their input policies and reject unknown or retired identifiers during replay.
 
 Physical executors default to at most one running or completed-but-unadmitted
 job each. `run_campaign_checkpointed_with_options` can explicitly allow two
@@ -46,6 +51,20 @@ memory is outside the archive's logical budget and must be measured in host RSS.
 Benchmark callers record this physical execution choice in their run identity.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
+`memory_budget_mib` is split before bootstrap: the workload's draw-state reserve
+and the adaptive duration reserve are subtracted, and the archive gets the rest
+as its own limit. The draw state and the duration histories are checked against
+their reserves on every admission and fail the campaign when either exceeds one.
+The archive's limit is enforced incrementally, a bounded number of eviction
+visits per admission, so resident bytes sit above the limit while maintenance
+catches up. Maintenance does not always converge below the limit: history
+compaction batches and declines to run below `HISTORY_COMPACTION_MIN_DROPS`,
+and entry dropping stops at one surviving active entry, so a campaign can
+carry an over-budget tail of retained history to its end. Final compaction
+bypasses the batching threshold and rejects an archive that is still over its
+limit. Because of that lag, the archive's resident bytes are not checked
+against the whole budget during the campaign.
+
 ## Workload boundary
 
 `searcher` is independently buildable. Workload packages implement its typed
@@ -54,21 +73,49 @@ campaign and target contracts:
 | Contract | Workload responsibility |
 | --- | --- |
 | `TargetExecution` | Construct, drive, restore, and snapshot targets; capture observations and account for deterministic execution work. |
-| `InputPolicy` | Define the action vocabulary, draw suffixes, retain policy history, and checkpoint draw state. |
+| `InputPolicy` | Define the action vocabulary and the policy identifiers a recording must match. |
 | `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
+
+An `ArchiveKey` names three things about a state, and nothing else reads a
+key as a magnitude:
+
+| Question | Answered by |
+| --- | --- |
+| Where is this state? | `ArchiveKey::place`. A place is compared with `Eq`; `Ord` only lets maps store it. |
+| How far along is it? | `ArchiveKey::progress`, an `Ord` value. `()` for a workload with no progress notion. |
+| Which same-place states are distinct? | `ArchiveKey::identity`. Two entries at one place and progress with different identities hold separate slots. |
+| Which states at one slot survive? | `ArchiveKey::preference_cmp` at each of `ArchiveKey::preferences()` indices; the default declares none and compares `Ordering::Equal`. |
+
+A cell is a progress value paired with a place. A slot is a cell paired with
+an identity. A slot keeps the top `capacity()` entries under each preference,
+and its contents are the union of those sets. A candidate enters when it
+reaches that set under any one preference; an entry leaves when it holds a
+place under none. One entry can hold a place under several preferences and is
+stored once. The stream header carries `preference_portfolio`, and a recording whose
+portfolio differs from the compiled key is rejected. `selector.portfolio`
+reports the preference count, holders held under one preference and under
+several, replacements per preference, and admissions that improved
+more than one preference at once.
 
 Each contract depends on `CampaignTypes` and can be implemented independently.
 A complete adapter receives the aggregate `Workload` implementation automatically.
 The `tests/interfaces.rs` fixture implements execution alone and exercises it
 through a function bounded only by `TargetExecution`.
 
-Stateful input policies provide a serializable `DrawCheckpoint` and optional
-`DrawHeader`. Campaign records carry those types directly; the coordinator
-only asks the policy for a checkpoint's history version when retaining replay
-state. It does not interpret the checkpoint payload. Stateless policies use
-`()`. Policy state and retained checkpoint history must fit the declared memory
-reserve.
+`InputPolicy` requires four things of a workload: the action limit, the action
+cost ceiling, the policy identifiers a recording must match, and
+`sample_alphabet`, which draws one action from the workload's vocabulary. The
+searcher supplies the rest. `expand_suffix` mixes `sample_alphabet` with a step
+drawn from the retained-input table, `finish_stream_record` folds the record's
+retained suffixes back into it, and `remember_draw_version` keeps the versions
+a replay still names. A workload that embeds a duration choice in its actions
+overrides `expand_duration_recorded_or_live` and draws through
+`DrawTables::draw` itself. That one method serves the live and replay paths,
+so a recorded run reaches the workload with the table version the stream
+named.
+`draw_table_parameters` sizes the table; its default reserve is 2 MiB and must
+fit the campaign's memory budget.
 
 Streams require the current engine `schema_version` in addition to the
 workload's format identifier. Missing or unsupported engine versions are
@@ -171,66 +218,118 @@ work changes that replay rejects. It does not measure a workload speedup.
 
 ## Search evaluation policies
 
-Selector identifiers describe the generic hierarchy and retain their exact
-selection behavior. Search experiments use independent versioned identifiers:
+One selector exists, `tier_cell_count_decay_v3`, and the stream header names
+it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
+progress values held by selectable entries, ranked from the deepest; a tier at
+rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
+`tier_rank_shift` is three unless the workload says otherwise, so the leading
+tier takes most of the draws, and no tier holding an entry takes zero. A
+workload whose progress order has many close steps, such as fine progress
+bands, supplies a shift of one so each rank takes half of the one ahead. The
+largest accepted shift is seven, because a larger one overflows the leading
+tier's 64-bit weight; a draw under a larger shift fails with an error. Within the tier each cell
+weighs `1 / (1 + draws)^2` over the draws it has received since it was last
+reset, so an untried or freshly reset cell takes most of the tier's draws
+until it catches up and every cell keeps a share. Within the cell each holder
+weighs `1 / (1 + selections)^2` over its own selection count. There is no uniform path, no sampling window and no
+retirement: a cell that stops producing keeps drawing at a share that only
+shrinks with its count.
 
-- `hierarchy_uniform_128_energy_frontier_cheapest_count_v1:<thresholds>` divides
-  each within-cell cost weight by one plus that entry's admitted selections.
-  Cheap members get early attempts, while repeatedly sampled members yield some
-  probability to alternatives. No workload field is added.
-- `energy_splice_continuation_v1:<scale>` retries transitions learned during the
-  current campaign when a strictly preferred state replaces a same-slot holder.
-  At most one in four reservations can do this; empty queues use ordinary energy
-  splice draws. This is continuation replay: applying a previously discovered
-  action tail from a new state and evaluating the resulting state normally.
-  It is distinct from verification replay, which checks a recorded execution.
-- `alphabet_continuation_v1` uses the same bounded, quarter-share learned exits
-  with alphabet-only ordinary draws. A retry increments only continuation
-  accounting and the cache-use bit; it does not consume entry/key selection
-  counts, mark exploration barren, or reward the ordinary mutation strategy.
-  Results still pass through normal retention and may trigger another improved
-  same-slot continuation. This separates route repair from ordinary exploration
-  without adding a workload preference tier. The older energy-splice continuation
-  identifier preserves its original combined accounting and mutation behavior.
+A cell's draw count resets to zero when an arrival from another cell
+displaces a holder it strictly outranks under a preference, so a place
+reached again with more of what the preference counts draws like a place
+reached for the first time; an improvement whose parent sits in the same
+cell, such as a resource gained by repeating an action in one place, leaves
+the count alone. It
+also resets when a selection from the cell opens a cell that held nothing, so
+the cells at the edge of explored ground keep drawing while they keep opening
+new ground instead of settling to an equal share with every cell behind them.
+`SelectorAccounting` reports `cell_selections`, `productive_selections`,
+`cell_resets`, `tier_draws_by_rank` and the draws each cell received, and
+every live progress line carries it under `selector`. The draws each cell
+received appear only on every 100,000th execution's line and the final line,
+because a search with tens of thousands of cells would otherwise write
+gigabytes of progress log.
 
-`energy_splice_continuation_v2:<scale>` applies the same separate accounting
-with ordinary energy-splice mutation. Its continuation outcomes neither reward
-nor penalize the ordinary splice strategy. Version 1 had credited those outcomes
-to splice energy, so its existing comparisons describe that combined mechanism;
-they do not isolate the effect of triggered replay. The v2 identifier enables a
-paired test of the separation while preserving recorded v1 behavior.
+The energy mixtures choose among three input strategies: the retained-input
+table, the alphabet, and a splice, which appends to the parent the recorded
+route from another holder of the parent's slot to that holder's deepest
+retained descendant, up to 128 actions. The donor shares the parent's slot
+because a route only reproduces its moves from where it was recorded. A draw
+with no such donor runs as an ordinary draw. Each strategy's share halves for every `scale` average jobs'
+worth of execution work it has spent since its last job that opened a new
+slot, so a strategy is judged on new slots per unit of work and a long
+splice that opens nothing loses its share sooner than a short draw. The live
+progress line counts `splice_jobs`, `splice_actions` and `splice_cost` under
+`coordinator`.
 
-The continuation bank retains at most 8,192 observed exits, eight destinations
-per source slot, 128 actions per exit, and 1,024 pending attempts. It charges a
-fixed conservative capacity reserve against the logical memory budget before
-bootstrap. Pending attempts do not pin historical snapshots: stale parents are
-skipped. Dispatch records the complete action tail, so later donor reclamation
-cannot change serial replay. Only same-slot `preference_cmp` is consulted;
-preferences are never compared between unrelated locations. A workload that
-reports no preference improvements gets no continuation attempts.
+Continuation replay carries a better state at one position to the positions
+reached from it. A position is a place paired with an identity, the `Position`
+type, so two holders that differ only in what they carry share one set of
+exits. Every retained parent and child whose positions differ records an edge
+between the two positions, inside one place or across two, holding the
+cheapest action tail observed between them, the donor and leaf it came from,
+and the preferences the tail gained from its source to its arrival. Edges
+inside a place give nearly every position on a route an exit, so an
+improvement anywhere queues. When a replacement wins its slot under
+`preference_cmp` with `Ordering::Greater`, its position is queued at the index
+of the lowest preference it took. A reservation that takes the queue examines
+at most 8 exits, skipping stale parents, prefixes already archived and parents
+at the action limit. Among the rest it dispatches the first whose holder beats
+every current holder of the slot it would land in, the parent's progress at the
+destination position, under the preference it won, and otherwise the first edge
+that gains a preference; an edge that does neither is skipped. An edge inside
+one place lands only on its destination position; an edge into another place
+lands anywhere in that place, and the arrival's own position is what queues
+next. Acceptance there is the ordinary slot rule after replay. Replay runs one
+edge per job, so each hop's landing check stops divergence from compounding. A
+result that lands and wins there queues its own position in turn; that chain is
+a wave, and `longest_wave` reports the deepest one.
 
-These are experiments, not new defaults. Promote policies based on paired workload
-panels, fresh completion results, and resource costs through
+The queue holds one entry per position, not per edge, ordered by preference
+index and then by arrival. Queuing a source is two map operations whatever its
+degree. A source queued again takes the parent and the preference index of its
+latest improvement and keeps its arrival order, so the check before replay
+compares the parent on the preference it won. A pop takes the next exit after
+the front source's cursor, advances the cursor and moves the source to the back
+of its preference index, so sources rotate and a source improved on every
+reservation cannot hold the front. One pop in four takes the highest preference
+index present instead of the lowest, so a preference that improves rarely still
+propagates. A source whose
+exits run out leaves the queue, and removing a position releases its
+edges and the pending entries that depended on them.
+
+One reservation in four attempts a continuation while the queue is not empty.
+The share is fixed rather than fed back from how the replays are doing: one in
+eight starves the chain and one in two crowds out ordinary exploration. The
+draw is `RomuDuoJrRand::with_seed(campaign_seed ^ reservation)`, so replay
+recomputes it at each reconstructed reservation and rejects a record whose
+`continuation_energy` disagrees; the tier draw salts the same seed.
+
+The bank exists only for a workload whose key declares a preference. Without
+one nothing is recorded, nothing is charged, and the stream is unchanged.
+Edges and pending entries are charged as they are held rather than reserved up
+front, and compaction drops the edges of positions the archive no longer
+holds. Dispatch records the complete action tail, so later donor
+reclamation cannot change serial replay. The check before dispatch compares
+the parent's key at the source position with the holders of the destination
+slot under `preference_cmp`, and for an edge into another place those keys sit
+in different places. This assumes a workload's preferences compare the same way
+in every place.
+
+`ContinuationAccounting` rides every live progress line under `continuations`:
+`edges` and `pending` for the bank's size, `jobs`, `execution_work`, `landed`,
+`replaced`, `opened_new_cell` and `useful` for what the replays did, where a
+useful landing is one whose entry later bred a retained child,
+`gaining_dispatched` for edges dispatched on their gain alone, `longest_wave`,
+and `energy`, `reservations_drawn` and `reservations_taken` for the share.
+
+Search experiments are promoted through paired workload panels, fresh
+completion results, and resource costs in
 [`benchmarks/search`](../../benchmarks/search/README.md). The generic resource
 fixture exercises actual continuation dispatch, snapshot eviction, concurrent
 reservations, exact report/checkpoint replay, and planted recording corruption
 without a workload runtime or external artifact.
-
-`hierarchy_uniform_128_energy_frontier_cheapest_key_count_v1:<thresholds>` is a
-separate count-history experiment. It uses the larger of an entry's selection
-count and the remembered count of its depth-0 retention key. A cache of 16,384
-recently selected keys survives entry replacement and metadata compaction within
-the campaign. Least-recently-selected keys are evicted when it fills; an entry's
-own count remains a floor. Counts saturate and a fixed conservative reserve for
-both ordered indexes is charged before bootstrap. Recorded skips also count as
-selections. Reports include capacity,
-occupancy, cache hits, evictions and that reserve. The cache starts empty for a
-new campaign, including an archive-origin run, and never pins old entries.
-
-This tests whether archive churn repeatedly gives an already-sampled state a
-fresh sampling count. It also carries history across same-slot resource
-improvements, which may reduce their ordinary draw share; the companion workload
-panels must check that tradeoff. No default change is implied by the mechanism.
 
 Progress sidecars carry objective workload evidence, actual admitted execution
 work, terminal endpoint and execution-failure totals, final totals, logical
@@ -262,19 +361,6 @@ Genesis and snapshot-root bootstrap still require a current key and retained
 snapshot; a terminal target without a snapshot is reported as an execution
 error.
 
-`hierarchy_uniform_128_energy_progress_cheapest_count_v1:<thresholds>` is a
-separate experiment that uses `ArchiveKey::progress_cmp` for class preference
-and frontier weighting. Equivalent/incomparable coarsest classes share draws;
-identity still orders maps, never the potentially partial progress relation.
-Each selection draws one maximal eligible class; it does not fall through to
-other classes when that class yields no cell. Semantic frontier rank saturates
-at 16, matching the weighting span, rather than counting the entire tail.
-Within a pooled subtree it chooses a maximal observed descendant as its progress
-representative. Generic tests relabel locations and expose the numeric-label
-bias in the legacy control. This policy changes parent selection; ordinary
-splice donor ranking retains its historical key ordering and remains a separate
-ablation concern for nonlinear workloads.
-
 `run_campaign_checkpointed_with_options` accepts an optional deterministic work
 budget without changing existing `CampaignConfig` callers. The stream and
 report record that budget only when present. Already reserved jobs drain
@@ -282,12 +368,3 @@ normally; evaluators must score first-objective work against the threshold and
 account for any drained overshoot. Omitting the option leaves the campaign
 without a work-budget cutoff.
 
-`hierarchy_uniform_128_energy_progress_cheapest_v1:<thresholds>` isolates semantic
-progress weighting from entry-count weighting. It uses the same progress walk
-and cheapest-cell preference as the count variant, with the original per-entry
-weights. This recovers the location-neutral frontier behavior of the historical
-Pareto experiment: within an inventory class, its declared progress
-relation considers map cells equal, so no map cell can dominate another. It is
-not the full historical cross-location preference/Pareto implementation, and
-it does not restore the prototype's improvement-replay queues. Its separate
-identifier permits an ablation without changing any existing selector's behavior.

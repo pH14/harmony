@@ -1,0 +1,164 @@
+{
+ "cases": [
+  {
+   "game": "metroid",
+   "id": "ladder-seg1",
+   "origin": "chain root of segment 1: Kraid's room (8,29) after the kill, 8.3 energy, 75 missiles; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/kraid-dead-s13-seg1.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg2",
+   "origin": "chain root of segment 2: Brinstar elevator (7,19), 11.1 energy, 29 missiles; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/brinstar-elevator-s11-seg2.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg3",
+   "origin": "chain root of segment 3: Norfair (27,15), 47.3 energy, 10 missiles; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/norfair-s13-seg3.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg4",
+   "origin": "chain root of segment 4: Ridley's lair after the kill; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/ridley-dead-s13-seg4.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg5",
+   "origin": "chain root of segment 5: Brinstar after both bosses; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/brinstar-s13-seg5.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg6",
+   "origin": "chain root of segment 6: Brinstar (21,3) with the ice beam, 41.0 energy, 0 missiles; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/icebeam-s13-seg6.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg7",
+   "origin": "chain root of segment 7: Tourian entrance; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/tourian-s13-seg7.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg8",
+   "origin": "chain root of segment 8: Tourian (8,7), 37.4 energy, 3 missiles; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/tourian-far-s12-seg8.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg9",
+   "origin": "chain root of segment 9: Tourian shaft bottom (10,11), 26.6 energy, 17 missiles; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/tourian-bottom-s12-seg9.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg10",
+   "origin": "chain root of segment 10: Tourian (8,11), 26.6 energy, 7 missiles; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/tourian-approach-s11-seg10.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg11",
+   "origin": "chain root of segment 11: Zebetite room (4,11), 26.6 energy, 0 missiles, mid door transition; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/tourian-end-s12-seg11.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg13",
+   "origin": "chain root of segment 13: Tourian shaft bottom (10,11), 83.4 energy, 9 missiles; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/tourian-bottom-energy-s11-seg13.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg14",
+   "origin": "chain root of segment 14: Tourian shaft bottom (10,11), 71.4 energy, 57 missiles; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/tourian-bottom-missiles-s11-seg14.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg15",
+   "origin": "chain root of segment 15: Zebetite room (4,11), 69.8 energy, 70 missiles, both columns at 16 hits; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/tourian-end-missiles-s12-seg15.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg17",
+   "origin": "chain root of segment 17: Mother Brain's east screen (3,11), 9.8 energy, 70 missiles; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/tourian-mother-room-missiles-s11-seg17.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg22",
+   "origin": "chain root of segment 22: Mother Brain's east screen (3,11), 9.8 energy, 159 missiles; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/tourian-mother-room-missiles-s11-seg22.json",
+   "search": {}
+  },
+  {
+   "game": "metroid",
+   "id": "ladder-seg23",
+   "origin": "chain root of segment 23: Mother Brain's tank screen (2,11) after her death, escape timer running, 3.5 energy, 113 missiles; the full prefix from power-on",
+   "rom_sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6",
+   "root_input": "/root/groundwork/roots/boss/tourian-escape-energy-s13-seg23.json",
+   "search": {}
+  }
+ ],
+ "format": "harmony-search-eval-v1",
+ "id": "metroid-ladder-v1",
+ "memory_mib": [
+  6144
+ ],
+ "search": {
+  "actions": 4096,
+  "executions": 3000000,
+  "frames": 1000000000,
+  "mixture": "energy_splice:6",
+  "result_slots": 2,
+  "suffix": "one_to_six",
+  "verification": "witness",
+  "wall_seconds": 14400,
+  "window": 2
+ },
+ "seeds": [
+  11,
+  12,
+  13
+ ],
+ "workers": [
+  4
+ ]
+}

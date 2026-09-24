@@ -62,9 +62,9 @@ semantic progress increases Metroid coverage at matched work but substantially
 increases Metal Man cost. They remain named experiments. The independent,
 qualified 24-worker SMB reference keeps its count-weighted recipe.
 
-`evaluation.json` is the main-mechanism control; `evaluation-continuation.json`
-is the frozen candidate. Their five seeds, 20260920–20260924, are disjoint from
-all development and SMB reference validation seeds. Candidate choice is fixed
+`evaluation.json` is the main-mechanism control. Its five seeds,
+20260920–20260924, are disjoint from all development and SMB reference
+validation seeds. Candidate choice is fixed
 before examining any completed full-panel outcome. Retain all full-panel
 failures and do not retune the candidate from those validation results.
 

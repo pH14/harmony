@@ -20,7 +20,7 @@ use nes_workload::{
         target::{Mm2Input, Mm2MechanicalState, Mm2Stage, Mm2VideoMetadata, power_on_walk},
     },
     search::{
-        archive::{RetentionPolicy, RetireThresholds, SelectorPolicy},
+        archive::RetentionPolicy,
         campaign::TargetExecution,
         draw::{DrawMixture, SuffixShape, draw_mixture_from_identifier},
     },
@@ -180,10 +180,6 @@ fn campaign_config(args: &Args) -> Mm2CampaignConfig {
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
         retention: RetentionPolicy::Unprobed,
-        selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 3,
-            groups: vec![6, 12, 2],
-        }),
         suffix: SuffixShape::OneToSix,
         mixture: args.mixture,
         victory_input_path: Some(args.output.join("victory-input.json")),

@@ -118,6 +118,15 @@ slots after the isolated 18-pair execution comparison reproduced every stream.
 The dedicated SMB regression panel retains its original one-reservation profile
 as a separate stress condition.
 
+A Metroid case may carry `root_input`, the path to a milestone input recorded
+by an earlier run. The campaign then starts from the state that input reaches
+instead of power-on, every recorded input is relative to that state, and
+`gained` counts items and tanks taken beyond it. `{seed}` in the path is
+replaced with the cell's seed, so each seed can continue its own line.
+`compare` reads each cell's `summary.json` and refuses two matrices whose cells
+for one case name different root inputs, so it never combines a rooted run
+with a power-on run.
+
 ## Registered panels
 
 | Manifest | Purpose |
@@ -126,14 +135,15 @@ as a separate stress condition.
 | `ci.json` | Source-built Nova (level and whole-game origins) and STB through the common runner, with full small-campaign replay and a frame cap. No licensed commercial ROM is used. |
 | `nightly.json` | Scheduled/manual source-built capability panel: the five registered isolated Nova levels, whole-game Nova, and STB Easy/Fair/Hard across seeds 1–3. Long runs use bounded witness replay; isolated levels and STB Hard retain their distinct outcome semantics. |
 | `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
-| `alphabet-control.json`, `alphabet-continuation.json` | The same development pilot origins and budgets, comparing alphabet-only mutation with separately accounted quarter-share continuation replay. These exploratory panels do not require every case to solve. |
-| `continuation-accounting-control.json`, `continuation-accounting-isolated.json` | The same development sample comparing original energy-splice continuation accounting with v2, which keeps triggered outcomes separate from ordinary exploration and mutation energy. |
-| `metroid-long-horizon-semantic.json`, `metroid-long-horizon-continuation.json` | Three reused development seeds at 3 million executions, 4 workers and 8 GiB; semantic parent selection with alphabet-only mutation versus the new continuation policy. |
+| `alphabet-control.json` | The same development pilot origins and budgets with alphabet-only mutation. This exploratory panel does not require every case to solve. |
+| `metroid-long-horizon.json` | Metroid new game on three reused development seeds at 3 million executions, 4 workers and 8 GiB, with alphabet-only mutation. |
+| `metroid-long-horizon-energy-splice.json` | The same three seeds and budgets drawing through the retained-input table, against the alphabet-only arm of `metroid-long-horizon.json`. |
+| `metroid-ladder.json` | One case per Metroid chain segment, each starting from that segment's recorded `root_input`, on seeds 11–13 at 4 workers, 6 GiB and 3 million executions. Score it with `eval.py ladder`. |
 | `throughput-checkpoint.json` | The 18-cell throughput panel with the adopted two-result-slot profile, for an isolated comparison of unchanged policies before and after implementation changes. |
-| `evaluation-continuation.json` | Frozen candidate for the full panel: learned continuation replay with the original parent selector. Selected from the completed pilots before any full-panel outcome was observed. |
 | `evaluation.json` | Main-mechanism control: five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
 | `smb-reference.json` | Practical fresh whole-game SMB recipe: 24 workers, 2,048 MiB, count weighting, two-reservation window/two result slots, 600,000 executions and 120 million frames. Five fresh validation seeds; every cell must solve. |
 | `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, five seeds. Every cell must solve within its declared budget. |
+| `smb-regression-three.json` | The same case at 256 MiB on the first three seeds, the check run on every build that changes only the Metroid side. Every cell must solve. |
 | `throughput.json` | Short isolated 24-worker runs across all five games, three seeds, a two-reservation window and 512 MiB. Copy it and change only `result_slots` from 1 to 2 to measure physical overlap. Whole-game completion is not required in this work-limited panel. |
 
 Seeds 20260905–20260907 form the development pilot. The dedicated SMB check adds
@@ -142,9 +152,14 @@ The practical SMB reference validates on 20260910–20260914. Before any broad
 evaluation cell ran, its seeds were moved to the separate, preregistered panel
 20260920–20260924, preserving unobserved trials for
 validating a mechanism selected from the development runs. Performance panels have explicit
-frame, execution and wall ceilings. SMB's dedicated regression panel keeps the
-400,000-execution check; the broad eight-worker panel allows 600,000 executions
-under an 80-million-frame cap. The practical SMB reference allows 600,000
+frame, execution and wall ceilings. SMB's dedicated regression panel allows
+2,000,000 executions under a 400-million-frame cap and a 1,800-second wall; the
+broad eight-worker panel allows 600,000 executions under an 80-million-frame
+cap. The regression panel's earlier 400,000-execution ceiling sat inside the
+spread of its own solve points, measured from 267,067 to 685,954 executions
+across its ten cells, so which cells solved varied run to run. Its ceiling is a
+floor for whether a run completes at all; compare runs by the recorded
+`executions_to_first_victory`, not by whether a cell cleared the ceiling. The practical SMB reference allows 600,000
 executions and 120 million frames at 24 workers. It solved all four development
 seeds (including seed 1) in 122–167 seconds and all five fresh validation seeds
 in 89–251 seconds, including witness verification. One validation seed needed
@@ -162,11 +177,10 @@ origins, seed panel, ROM/core, adapter policies and resource budgets fixed. The
 comparison command rejects mismatches rather than quietly combining them.
 Engine experiments are described in [SYNTHESIS.md](SYNTHESIS.md); prototype claims
 are not accepted merely because a previous single seed succeeded.
-The full candidate is frozen in `evaluation-continuation.json`;
-[`candidate-registration-005.json`](candidate-registration-005.json) records
-the choice before any completed full-panel outcome was observed. Run it with
-the same runner allocation as `evaluation.json`, changing only the output
-directory, then compare the complete matrices.
+[`candidate-registration-005.json`](candidate-registration-005.json) records a
+continuation candidate registered against the capped bank the searcher no
+longer holds. Its manifest is gone with that mechanism; register a fresh
+candidate against the slot graph before running a full panel.
 
 The completed 190-cell fresh comparison and development evidence are retained
 in [`results`](results/README.md), including failed seeds and resource costs.
@@ -175,6 +189,27 @@ remains an explicit experiment. The qualified native execution profile and
 SMB reference are the recommended adoption results. These seed panels are now
 observed regression references; register new unseen seeds before another
 promotion decision.
+
+## Metroid ladder
+
+```sh
+python3 benchmarks/search/eval.py ladder /private/runs/ladder-001 \
+  /private/runs/ladder-002 --out /private/ladder-scores
+```
+
+`ladder` scores matrices run over `metroid-ladder.json`, one column per
+source. It reads only cases whose id names a segment, such as `ladder-seg4`.
+Every seed of a root starts from the same state, so a root holds a milestone
+when every seed that reported progress shows it in that seed's first recorded
+observation, along with every milestone before it. The root's ladder is the rest of the chain's
+milestone sequence. A milestone passes when at least two distinct seeds reach
+it, and the score counts passed milestones in a row from the front of the
+ladder. Reaching the ending passes every milestone before it. Two more tables
+give each root's continuation graph counters and its emulator work per
+execution. `--out` writes one JSON document per source, and `ladder` accepts
+those documents as sources in place of a matrix directory.
+`milestones.py` prints the execution at which each Metroid cell first reached
+each named milestone.
 
 ## Evidence and resource accounting
 
@@ -351,14 +386,14 @@ The HTML export includes these fields and links to verified tapes. Older missing
 observations display as unavailable. Resource figures, budgets, stop reasons, and
 failures remain in every row; milestone timings are censored at each run's budget.
 
-`metroid-long-horizon.json` and `metroid-long-horizon-semantic.json` register a
-**development diagnostic** using historical seeds 3, 4, and 5: four workers,
-8 GiB logical archive, 3 million executions, 400 million admitted frames, 4096
-actions, `one_to_six`, and alphabet draws. Both arms use the same current adapter
-and executable. Only the parent selector differs. These restore the earlier
-work/memory scale and isolate semantic frontier weighting without count weighting.
-They do not reproduce the historical improvement-replay implementation, exact
-reservation schedule, platform, or action stream. These reused seeds are not
+`metroid-long-horizon.json` and `metroid-long-horizon-energy-splice.json`
+register a **development diagnostic**
+using historical seeds 3, 4, and 5: four workers, 8 GiB logical archive,
+3 million executions, 400 million admitted frames, 4096 actions, and
+`one_to_six`. Every arm uses the same current adapter and executable. Only the
+mutation mixture differs. These restore the earlier
+work/memory scale. They do not reproduce the historical improvement-replay
+implementation, exact reservation schedule, platform, or action stream. These reused seeds are not
 fresh validation evidence. The earlier 005 Metroid panel used 500,000 executions,
 2 GiB, eight workers, a capped suffix, and energy splice; it cannot establish
 preservation of the earlier 3-million-execution results.

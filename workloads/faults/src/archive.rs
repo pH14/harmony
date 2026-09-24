@@ -16,24 +16,11 @@ use crate::target::{FaultAction, FaultObservations};
 
 pub use searcher::search::archive::MAX_ARCHIVE_ENTRIES;
 
-pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_lifecycle_events_v6";
+pub const KEY_POLICY_IDENTIFIER: &str =
+    "faultlab_lifecycle_events_peer_places_liveness_identity_v7";
 pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_guest_ticks";
 pub const DURATION_IDENTIFIER: &str = "adaptive_action_ticks_v3";
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct FaultArchiveGroup {
-    sometimes: u64,
-    hooks_finished: u64,
-    hooks_running: u64,
-    alive: u64,
-    event_ready: u64,
-    event_kill_fires: u64,
-    event_park_fires: u64,
-    checks_finished: u64,
-    checks_running: bool,
-    workload_running: bool,
-}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FaultArchiveKey {
@@ -50,36 +37,31 @@ pub struct FaultArchiveKey {
 }
 
 impl ArchiveKey for FaultArchiveKey {
-    type Group = FaultArchiveGroup;
+    type Place = (u64, u64, u64, u64, u64, u64, u64, bool, bool);
+    type Progress = ();
+    type Identity = u64;
 
-    fn groups() -> usize {
-        3
+    fn place(self) -> Self::Place {
+        (
+            self.sometimes,
+            self.hooks_finished,
+            self.hooks_running,
+            self.event_ready,
+            self.event_kill_fires,
+            self.event_park_fires,
+            self.checks_finished,
+            self.checks_running,
+            self.workload_running,
+        )
     }
 
-    fn group(self, depth: usize) -> Self::Group {
-        let full = FaultArchiveGroup {
-            sometimes: self.sometimes,
-            hooks_finished: self.hooks_finished,
-            hooks_running: self.hooks_running,
-            alive: self.alive,
-            event_ready: self.event_ready,
-            event_kill_fires: self.event_kill_fires,
-            event_park_fires: self.event_park_fires,
-            checks_finished: self.checks_finished,
-            checks_running: self.checks_running,
-            workload_running: self.workload_running,
-        };
-        match depth {
-            0 => full,
-            1 => FaultArchiveGroup { alive: 0, ..full },
-            _ => FaultArchiveGroup {
-                sometimes: self.sometimes,
-                ..FaultArchiveGroup::default()
-            },
-        }
+    fn progress(self) -> Self::Progress {}
+
+    fn identity(self) -> Self::Identity {
+        self.alive
     }
 
-    fn slot_capacity() -> usize {
+    fn capacity() -> usize {
         1
     }
 
@@ -369,21 +351,19 @@ mod tests {
     }
 
     #[test]
-    fn liveness_separates_slots_but_pools_one_depth_up() {
+    fn liveness_is_the_holder_identity_inside_one_place() {
         let survived = archive_key(&endpoint(&[1], 2, 0b11));
         let lost_a_node = archive_key(&endpoint(&[1], 2, 0b01));
-        assert_ne!(survived.group(0), lost_a_node.group(0));
-        assert_eq!(survived.group(1), lost_a_node.group(1));
-        assert_eq!(survived.group(2), lost_a_node.group(2));
-        assert_eq!(FaultArchiveKey::slot_capacity(), 1);
+        assert_ne!(survived.identity(), lost_a_node.identity());
+        assert_eq!(survived.place(), lost_a_node.place());
+        assert_eq!(FaultArchiveKey::capacity(), 1);
     }
 
     #[test]
-    fn hook_progress_separates_the_middle_depth() {
+    fn hook_progress_separates_places_inside_one_tier() {
         let early = archive_key(&endpoint(&[1], 1, 0b1));
         let late = archive_key(&endpoint(&[1], 4, 0b1));
-        assert_ne!(early.group(1), late.group(1));
-        assert_eq!(early.group(2), late.group(2));
+        assert_ne!(early.place(), late.place());
     }
 
     #[test]
