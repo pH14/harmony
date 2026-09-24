@@ -48,6 +48,12 @@ const ENEMY_HIT_POINTS: usize = 0x0b;
 const ENEMY_SPECIAL_ATTRIBUTES: usize = 0x0f;
 const ENEMY_MINI_BOSS_BIT: u8 = 1 << 6;
 const ENEMY_HIT_POINTS_ABSENT: u8 = 0xff;
+const ENEMY_STATUS_BASE: usize = 0xaf4;
+const ENEMY_STATUS_UNUSED: u8 = 0;
+const ENEMY_TYPE_BASE: usize = 0xb02;
+const AREA_KRAID: u8 = 0x12;
+const AREA_RIDLEY: u8 = 0x14;
+const BOSS_ENEMY_TYPES: [(u8, u8); 2] = [(AREA_KRAID, 0x08), (AREA_RIDLEY, 0x09)];
 
 const HEALTH_HIGH: usize = 0x107;
 const HEALTH_LOW: usize = 0x106;
@@ -225,10 +231,18 @@ fn bcd(byte: u8) -> u16 {
     u16::from(byte >> 4) * 10 + u16::from(byte & 0x0f)
 }
 
-fn mini_boss_health(wram: &[u8]) -> Result<u8, MachineError> {
+fn mini_boss_health(wram: &[u8], cartridge: &[u8], area: u8) -> Result<u8, MachineError> {
     for slot in 0..ENEMY_SLOTS {
         let base = ENEMY_SLOT_BASE + slot * ENEMY_SLOT_STRIDE;
         if read_byte(wram, base + ENEMY_SPECIAL_ATTRIBUTES)? & ENEMY_MINI_BOSS_BIT == 0 {
+            continue;
+        }
+        let offset = slot * ENEMY_SLOT_STRIDE;
+        if read_byte(cartridge, ENEMY_STATUS_BASE + offset)? == ENEMY_STATUS_UNUSED {
+            continue;
+        }
+        let enemy_type = read_byte(cartridge, ENEMY_TYPE_BASE + offset)?;
+        if !BOSS_ENEMY_TYPES.contains(&(area, enemy_type)) {
             continue;
         }
         let health = read_byte(wram, base + ENEMY_HIT_POINTS)?;
@@ -256,9 +270,9 @@ fn zebetite_slots(wram: &[u8]) -> Result<(u8, u8), MachineError> {
     Ok((remaining, destroyed))
 }
 
-fn boss_health(wram: &[u8], area: u8) -> Result<u16, MachineError> {
+fn boss_health(wram: &[u8], cartridge: &[u8], area: u8) -> Result<u16, MachineError> {
     if area != AREA_TOURIAN {
-        return mini_boss_health(wram).map(u16::from);
+        return mini_boss_health(wram, cartridge, area).map(u16::from);
     }
     let status = read_byte(wram, MOTHER_BRAIN_STATUS)?;
     if !MOTHER_BRAIN_IN_VIEW_STATUSES.contains(&status) {
@@ -293,7 +307,7 @@ pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalSt
         missiles: read_byte(cartridge, MISSILES)?,
         missile_capacity: read_byte(cartridge, MISSILE_CAPACITY)?,
         energy_tanks: read_byte(cartridge, ENERGY_TANKS)?,
-        boss_health: boss_health(wram, area)?,
+        boss_health: boss_health(wram, cartridge, area)?,
         zebetites_destroyed: zebetites.1,
         zebetite_hits_left: zebetites.0,
         bosses: u8::from(boss_defeated(
@@ -1294,10 +1308,13 @@ mod observation_tests {
 
     #[test]
     fn an_execution_keeps_its_highest_present_boss_reading() {
-        let cartridge = [0; 8192];
+        let mut cartridge = [0; 8192];
+        cartridge[ENEMY_STATUS_BASE + 2 * ENEMY_SLOT_STRIDE] = 0x01;
+        cartridge[ENEMY_TYPE_BASE + 2 * ENEMY_SLOT_STRIDE] = 0x08;
         let mut entry = [0; WRAM_SIZE];
         entry[GAME_MODE] = GAME_MODE_PLAYING;
         entry[HEALTH_LOW] = 0x50;
+        entry[AREA] = AREA_KRAID;
         let slot = ENEMY_SLOT_BASE + 2 * ENEMY_SLOT_STRIDE;
         entry[slot + ENEMY_SPECIAL_ATTRIBUTES] = ENEMY_MINI_BOSS_BIT;
         entry[slot + ENEMY_HIT_POINTS] = 0x60;
@@ -1336,6 +1353,51 @@ mod observation_tests {
         .unwrap();
         assert_eq!(observations[0].decoded.boss_health, 0x30);
         assert_eq!(observations[0].boss_health_seen, 0x30);
+    }
+
+    #[test]
+    fn boss_health_reads_only_an_in_use_boss_slot() {
+        let slots = |slot_bytes: [(u8, u8, u8, u8); 6], area: u8| {
+            let mut wram = [0; WRAM_SIZE];
+            wram[GAME_MODE] = GAME_MODE_PLAYING;
+            wram[AREA] = area;
+            let mut cartridge = [0; 8192];
+            for (slot, (hit_points, attributes, status, enemy_type)) in
+                slot_bytes.into_iter().enumerate()
+            {
+                let base = ENEMY_SLOT_BASE + slot * ENEMY_SLOT_STRIDE;
+                wram[base + ENEMY_HIT_POINTS] = hit_points;
+                wram[base + ENEMY_SPECIAL_ATTRIBUTES] = attributes;
+                cartridge[ENEMY_STATUS_BASE + slot * ENEMY_SLOT_STRIDE] = status;
+                cartridge[ENEMY_TYPE_BASE + slot * ENEMY_SLOT_STRIDE] = enemy_type;
+            }
+            decode_state(&wram, &cartridge).unwrap().boss_health
+        };
+        let fight = [
+            (0x60, 0x40, 0x01, 0x08),
+            (0xff, 0x00, 0x01, 0x09),
+            (0xff, 0x00, 0x01, 0x09),
+            (0xff, 0x00, 0x01, 0x09),
+            (0xff, 0x00, 0x02, 0x0a),
+            (0xff, 0x00, 0x02, 0x0a),
+        ];
+        assert_eq!(slots(fight, AREA_KRAID), 0x60);
+        assert_eq!(slots(fight, AREA_RIDLEY), 0);
+        let after_kill = [
+            (0x10, 0x40, 0x00, 0x00),
+            (0xff, 0x00, 0x00, 0x09),
+            (0x01, 0x00, 0x02, 0x07),
+            (0x02, 0x00, 0x00, 0x04),
+            (0x10, 0x80, 0x00, 0x00),
+            (0x02, 0x80, 0x00, 0xff),
+        ];
+        assert_eq!(slots(after_kill, AREA_KRAID), 0);
+        let mut left_behind = fight;
+        left_behind[0].2 = 0x00;
+        assert_eq!(slots(left_behind, AREA_KRAID), 0);
+        let mut ridley = after_kill;
+        ridley[3] = (0x30, 0x40, 0x01, 0x09);
+        assert_eq!(slots(ridley, AREA_RIDLEY), 0x30);
     }
 
     #[test]

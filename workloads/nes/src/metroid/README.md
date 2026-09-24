@@ -99,7 +99,11 @@ loads the columns of each screen as Samus enters it. The state also counts the
 destroyed columns for the `zebetite_destroyed` milestone.
 The game keeps six enemy slots at `$0400`, sixteen bytes apart, with the current
 hit points at offset `$0b` and a mini-boss mark in bit 6 of offset `$0f`; `$ff`
-hit points mean the slot holds nothing that can be hurt. The key carries the
+hit points mean the slot holds nothing that can be hurt. Cartridge RAM holds
+each slot's status at `$6AF4` (0 when unused) and its enemy type at `$6B02`,
+with the same spacing. A freed slot keeps its old hit points and mini-boss mark,
+so the boss reading comes only from an in-use slot holding Kraid (type 8 in area
+`$12`) or Ridley (type 9 in area `$14`). The key carries the
 remaining hit points and the highest present reading over the execution's
 frames, and the lineage carries the highest reading it has seen, so the damage
 is the difference between that highest and the remaining hit points in buckets
@@ -247,7 +251,7 @@ Brain's state, latched Tourian events and the destroyed Zebetite column, and
 binds Mother Brain's room to her status byte. Route timestamps exclude genesis
 setup. The replay probe reports action execution work and setup separately, and
 probes and backend snapshot replay are outside the execution-work counter. The
-campaign stream format is v4, the snapshot checkpoint format is v7, and the
+campaign stream format is v4, the snapshot checkpoint format is v8, and the
 result digest format is v5. The combined capacity score is a separate named score.
 
 Retrospective replay, without submitting an existing solution to search:
