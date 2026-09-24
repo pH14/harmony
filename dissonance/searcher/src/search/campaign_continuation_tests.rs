@@ -533,3 +533,30 @@ fn replay_rejects_a_stream_whose_header_or_draw_state_was_changed() {
     ));
     assert_eq!(error, "draw mixture unknown_mixture is not recognized");
 }
+
+#[test]
+fn history_growth_before_maintenance_does_not_stop_the_campaign() {
+    for (workers, campaign_seed) in [(1, 947), (2, 947), (2, 11), (2, 12), (4, 947)] {
+        let config = CampaignConfig {
+            campaign_seed,
+            ..continuation_config(workers, DrawMixture::EnergySplice { scale: 6 }, 8)
+        };
+        let mut stream = Vec::new();
+        let live = run_campaign_checkpointed(
+            &TestWorkload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .unwrap();
+        assert_eq!(live.0.executions_completed, config.execution_budget);
+        assert!(live.0.history_compactions > 0);
+        assert!(live.0.snapshot_evictions > 0);
+        assert_eq!(
+            replay_campaign_checkpointed(&TestWorkload, &stream, None, None).unwrap(),
+            live,
+            "workers {workers} seed {campaign_seed}"
+        );
+    }
+}
