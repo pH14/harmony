@@ -160,7 +160,8 @@ development seeds. Treat known development configurations as regression cases,
 not fresh validation. Use a 300-second supervisor limit for the broader split.
 
 Register each manifest with `register.py --panel PATH` before its validation;
-CI checks both registrations without modifying them. Large comparative reports
+The existing CI Rust tests exercise chain mechanics, replay, and accounting;
+chain manifest checks and comparative panels run locally. Large comparative reports
 can be redirected to a file inside an inventoried private artifact root to
 avoid truncating the supervisor's bounded stdout log. Results and calibration
 claims belong in the PR description, not committed run records. Composed
