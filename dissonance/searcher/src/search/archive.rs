@@ -1071,6 +1071,7 @@ where
 
     pub(crate) fn compact_history_for_final_report(&mut self) -> Result<(), &'static str> {
         self.metadata_pins.clear();
+        self.liveness_anchor = None;
         loop {
             let before = self.maintenance_state();
             self.compact_history(true)?;
@@ -3817,14 +3818,14 @@ mod tests {
             }
         };
         let mut floor = anchored();
-        floor.memory_limit = Some(floor.liveness_anchor_memory_bytes());
+        let lower_bound = floor.liveness_anchor_memory_bytes();
+        floor.memory_limit = Some(lower_bound);
         sweep(&mut floor);
         floor.memory_limit = None;
         floor
             .compact_history_for_final_report()
             .expect("an unbudgeted archive compacts");
         let floor_bytes = floor.resident_memory_bytes();
-        let lower_bound = floor.liveness_anchor_memory_bytes();
         assert!(
             lower_bound < floor_bytes,
             "the anchor bound {lower_bound} should undercount the compacted charge {floor_bytes}"
@@ -3844,6 +3845,47 @@ mod tests {
         affordable
             .compact_history_for_final_report()
             .expect("a budget that holds the compacted archive is satisfiable");
+    }
+
+    #[test]
+    fn the_final_compaction_releases_an_inactive_liveness_anchor() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1 << 20);
+        for index in 0_u8..2 {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+        archive.establish_liveness_anchor(64);
+        let anchor = archive
+            .liveness_anchor
+            .expect("an active entry anchors the run");
+        let anchor_index = archive.index_of_id(anchor).expect("anchor is archived");
+        archive.deactivate(anchor_index);
+        assert_eq!(archive.active_count, 1);
+        assert_eq!(
+            archive.resident_snapshots, 2,
+            "the inactive anchor keeps its snapshot"
+        );
+
+        archive.memory_limit = Some(archive.resident_memory_bytes() - (1 << 19));
+        archive
+            .compact_history_for_final_report()
+            .expect("the final report does not need the inactive anchor");
+        assert_eq!(archive.liveness_anchor, None);
+        assert_eq!(archive.entries.len(), 1);
+        assert_eq!(archive.resident_snapshots, 1);
+        assert!(archive.index_of_id(anchor).is_none());
     }
 
     #[test]
