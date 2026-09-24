@@ -1367,6 +1367,8 @@ mod observation_tests {
         assert_eq!((raw.map_x, raw.map_y), (9, 28));
         let raw = decode_state(&scrolling, &cartridge).unwrap();
         assert_eq!((raw.map_x, raw.map_y), (9, 28));
+        let mut arrived = scrolling;
+        arrived[DOOR_STATE] = DOOR_ARRIVED;
         let initial = MetroidTarget::make_observation(
             0,
             decode_state(&walking, &cartridge).unwrap(),
@@ -1403,6 +1405,19 @@ mod observation_tests {
                 )
         );
         assert_eq!(observations.last().unwrap().decoded.door, 0x03);
+        let (observations, _) = decode_action_observations(
+            &[touched, scrolling, arrived],
+            &cartridge,
+            &initial,
+            walking,
+            MetroidTerminalPolicy::Legacy,
+        )
+        .unwrap();
+        let arrival = observations.last().unwrap().decoded;
+        assert_eq!(
+            (arrival.map_x, arrival.map_y, arrival.door),
+            (9, 28, DOOR_ARRIVED)
+        );
         assert!(consistent_with(&touched, &cartridge, last).unwrap());
         assert!(
             !consistent_with(
@@ -1418,11 +1433,17 @@ mod observation_tests {
             last_frame_outside_door(&[walking, touched, scrolling]),
             Some(walking)
         );
+        assert_eq!(
+            last_frame_outside_door(&[walking, touched, scrolling, arrived]),
+            Some(arrived)
+        );
         let rooted = rooted_state(&touched, Some(&walking), &cartridge).unwrap();
         assert_eq!((rooted.map_x, rooted.map_y, rooted.door), (9, 29, 0x83));
         let rooted = rooted_state(&scrolling, Some(&walking), &cartridge).unwrap();
         assert_eq!((rooted.map_x, rooted.map_y, rooted.door), (9, 29, 0x03));
         assert!(consistent_with(&scrolling, &cartridge, rooted).unwrap());
+        let rooted = rooted_state(&arrived, Some(&walking), &cartridge).unwrap();
+        assert_eq!((rooted.map_x, rooted.map_y), (9, 28));
         let unrooted = rooted_state(&touched, None, &cartridge).unwrap();
         assert_eq!((unrooted.map_x, unrooted.map_y), (9, 28));
     }
