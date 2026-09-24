@@ -144,14 +144,9 @@ build configuration, or a shipped command runs it, and a person starts it by
 hand to read what it prints. The model sees every line elsewhere in the
 repository that names the program. Checks a probe would print belong in tests
 that assert, ignored when they need hardware. The judgments need
-`TYPESAFE_API_KEY`; without it, they print a skip message and pass. Semantic
-violations that predate the check are recorded in
-`docs/semantic-lints-baseline.json`, and that file only shrinks. A new finding
-is fixed in the file. `--update-baseline` removes entries for fixed files and
-exits nonzero on a new finding. `--changed-from REV` fails when the baseline
-holds an entry that REV does not, with or without the key. Static checks use
-`docs/custom-lints-baseline.json` where permitted; repository vocabulary and
-CI contract violations cannot be baselined.
+`TYPESAFE_API_KEY`; without it, they print a skip message and pass. Neither
+lint has a baseline or an exemption list: every finding fails, and the fix
+goes in the file.
 
 Development commands and CI configuration live in contributor guidance and
 automation. Component-specific fixtures and format details live beside their
@@ -161,5 +156,4 @@ Repository vocabulary is checked by `scripts/custom-lints.py` in every tracked
 UTF-8 text file and filename, including extensionless files and the checker
 itself. The prohibited term encoded by `PROHIBITED_WORD` is rejected as a word,
 plural, or snake/camel-case identifier component. Larger words such as
-`aggregate` and `propagate` remain valid. Vocabulary violations cannot be
-suppressed through the custom-lint baseline.
+`aggregate` and `propagate` remain valid.

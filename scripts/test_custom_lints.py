@@ -58,7 +58,7 @@ class RepositoryVocabularyTests(unittest.TestCase):
             violations = LINTS.check_repository_vocabulary(root, [name, "asset.bin"])
             self.assertEqual([(v.path, v.line) for v in violations], [(name, 0)])
 
-    def test_checker_is_in_scope_and_vocabulary_cannot_be_baselined(self):
+    def test_checker_is_in_scope_of_the_vocabulary_rule(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = "scripts/custom-lints.py"
@@ -66,12 +66,8 @@ class RepositoryVocabularyTests(unittest.TestCase):
             (root / path).write_text(LINTS.PROHIBITED_WORD)
             with mock.patch.object(LINTS, "tracked_files", return_value=[]), \
                  mock.patch.object(LINTS, "check_workflow_rules", return_value=[]), \
-                 mock.patch.object(LINTS, "load_baseline", return_value={LINTS.VOCABULARY_RULE: [path + ":1"]}), \
-                 mock.patch.object(LINTS, "save_baseline") as save, \
                  contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(LINTS.main(["--repo-root", directory]), 1)
-                self.assertEqual(LINTS.main(["--repo-root", directory, "--update-baseline"]), 1)
-                save.assert_not_called()
 
 
 class PlatformBoundaryLintTests(unittest.TestCase):
@@ -533,7 +529,7 @@ class JobContractTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertEqual(self.check(body, job=job), ["ci-ignored-tests"])
 
-    def test_ci_errors_cannot_be_hidden_in_baseline(self):
+    def test_a_ci_violation_fails_the_run(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = ".github/workflows/example-checks.yml"
@@ -544,12 +540,8 @@ class JobContractTests(unittest.TestCase):
             with mock.patch.object(LINTS, "tracked_files", return_value=[path]), \
                  mock.patch.object(ci_contract, "registered_paths", lambda: (path,)), \
                  mock.patch.object(ci_contract, "by_path", lambda _: workflow), \
-                 mock.patch.object(LINTS, "load_baseline", return_value={"ci-pr-job-timeout": [path + ":0"]}), \
-                 mock.patch.object(LINTS, "save_baseline") as save, \
                  contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(LINTS.main(["--repo-root", directory]), 1)
-                self.assertEqual(LINTS.main(["--repo-root", directory, "--update-baseline"]), 1)
-                save.assert_not_called()
 
 
 class DisplayNameTests(unittest.TestCase):

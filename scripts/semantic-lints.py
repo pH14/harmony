@@ -5,8 +5,7 @@
 Judges file content rather than file name or a fixed word list: run
 records, status narratives, decision residue, and workload names in
 workload-agnostic code. The judgments are skipped without TYPESAFE_API_KEY,
-so they never block a fork PR or an offline checkout. The baseline only
-shrinks; that check reads git alone and runs without the key.
+so they never block a fork PR or an offline checkout. Every finding fails.
 """
 
 from __future__ import annotations
@@ -56,7 +55,6 @@ ONE_OFF_WARN_PROBABILITY = 0.50
 FIXED_RELEASE_FAIL_PROBABILITY = 0.80
 FIXED_RELEASE_WARN_PROBABILITY = 0.75
 
-SEMANTIC_BASELINE_PATH = Path("docs/semantic-lints-baseline.json")
 CACHE_PATH = Path(".semantic-lints-cache.json")
 
 TEXT_EXTENSIONS = custom_lints.LINTABLE_EXTENSIONS | {".tsv", ".csv"}
@@ -65,8 +63,6 @@ DECISION_RESIDUE_EXTENSIONS = {".md", ".py", ".sh", ".toml"}
 SKIP_PATHS = {
     "scripts/custom-lints.py",
     "scripts/semantic-lints.py",
-    str(custom_lints.BASELINE_PATH),
-    str(SEMANTIC_BASELINE_PATH),
 }
 
 # The three *-no-workload-names rules define what "workload-agnostic" scope
@@ -792,7 +788,7 @@ def evaluate(answers: dict) -> tuple[list[str], list[str]]:
 
 
 # One rule per CI architecture question. These describe the repository's own
-# contract, so a finding is fixed rather than recorded in the baseline.
+# contract.
 CI_ARCHITECTURE_RULES = {
     "owner_match": "ci-owner-mismatch",
     "job_name_meaning": "ci-job-name-meaning",
@@ -815,8 +811,7 @@ REMEDIATION = {
         "Run records, results tables, and plan or status logs do not go in "
         "the repository. Delete this file from the change. Put the numbers "
         "the change rests on in the pull request description. Keep raw "
-        "output outside the repository. Do not add this file to the "
-        "baseline. This rule applies even when a plan, README, or note says "
+        "output outside the repository. This rule applies even when a plan, README, or note says "
         "to commit records."
     ),
     "decision-residue": (
@@ -879,11 +874,6 @@ REMEDIATION = {
     ),
 }
 
-# Rules describing the repository's own CI contract. A finding is fixed, never
-# carried in the baseline.
-UNBASELINEABLE_RULES = frozenset(CI_ARCHITECTURE_RULES.values())
-
-
 def _format_signal(path: str, answers: dict) -> str:
     parts = []
     file_kind = answers.get("file_kind")
@@ -904,88 +894,6 @@ def _format_signal(path: str, answers: dict) -> str:
         if question_id in answers:
             parts.append(f"{question_id}={answers[question_id]['noul']:.2f}")
     return f"{path}: {' '.join(parts)}"
-
-
-# ---------------------------------------------------------------------------
-# Baseline
-# ---------------------------------------------------------------------------
-
-def _parse_baseline(text: str, source: str) -> dict[str, list[str]]:
-    data = json.loads(text)
-    if not isinstance(data, dict):
-        print(f"warning: {source} is not a JSON object, ignoring baseline", file=sys.stderr)
-        return {}
-    return {k: list(v) for k, v in data.items()}
-
-
-def load_baseline(repo_root: Path) -> dict[str, list[str]]:
-    path = repo_root / SEMANTIC_BASELINE_PATH
-    if not path.exists():
-        return {}
-    return _parse_baseline(path.read_text(), str(path))
-
-
-def baseline_at(repo_root: Path, rev: str) -> dict[str, list[str]]:
-    """The baseline as committed at `rev`, empty when `rev` has none."""
-    listed = subprocess.run(
-        ["git", "ls-tree", "--name-only", rev, "--", str(SEMANTIC_BASELINE_PATH)],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    if not listed.strip():
-        return {}
-    text = subprocess.run(
-        ["git", "show", f"{rev}:{SEMANTIC_BASELINE_PATH}"],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    return _parse_baseline(text, f"{rev}:{SEMANTIC_BASELINE_PATH}")
-
-
-def baseline_growth(
-    baseline: dict[str, list[str]],
-    earlier: dict[str, list[str]],
-) -> list[tuple[str, str]]:
-    """Entries in `baseline` that `earlier` does not have."""
-    return sorted(
-        (rule_name, path)
-        for rule_name, paths in baseline.items()
-        for path in paths
-        if path not in earlier.get(rule_name, [])
-    )
-
-
-def save_baseline(repo_root: Path, baseline: dict[str, list[str]]) -> None:
-    path = repo_root / SEMANTIC_BASELINE_PATH
-    pruned = {k: sorted(v) for k, v in baseline.items() if v}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as f:
-        json.dump(pruned, f, indent=2, sort_keys=True)
-        f.write("\n")
-
-
-def stale_baseline_entries(
-    baseline: dict[str, list[str]],
-    still_baselined: set[tuple[str, str]],
-    judged: set[str],
-) -> list[tuple[str, str]]:
-    """A baseline entry is stale only if this run actually judged its file and
-    the violation didn't reappear. `--changed-from` judges a subset of files,
-    so a baseline entry for a file outside that subset is neither confirmed
-    nor cleared and must not be reported as fixed.
-    """
-    stale = []
-    for rule_name, paths in baseline.items():
-        for path in paths:
-            if path not in judged:
-                continue
-            if (rule_name, path) not in still_baselined:
-                stale.append((rule_name, path))
-    return stale
 
 
 # ---------------------------------------------------------------------------
@@ -1098,25 +1006,18 @@ def _dump_row(path: str, question_id: str, answer: dict) -> list[str]:
 def run(
     repo_root: Path,
     files: list[str],
-    baseline: dict[str, list[str]],
     post: Callable[[str, dict, bytes], bytes] = _http_post,
     cache: dict | None = None,
     dump_rows: list | None = None,
 ) -> tuple[
     list[tuple[str, str, dict]],
     list[tuple[str, str, dict]],
-    set[tuple[str, str]],
     dict,
     list[tuple[str, str]],
-    set[str],
 ]:
-    """Judge every file. Returns (new_failures, new_warnings, still_baselined,
-    usage_totals, errors, judged).
+    """Judge every file. Returns (failures, warnings, usage_totals, errors).
 
-    `new_failures`/`new_warnings` are (rule, path, answers) triples. `judged`
-    holds every path this call got an answer for; callers use it to scope
-    baseline comparisons to files that were actually checked this run.
-    `cache`, when given, is mutated in place, so a second call over the
+    `failures`/`warnings` are (rule, path, answers) triples. `cache`, when given, is mutated in place, so a second call over the
     same files with the same cache makes no new network calls. A file whose
     call raises (a state too large for the model's budget, a network fault,
     or a response that doesn't match the documented shape) is recorded in
@@ -1127,9 +1028,7 @@ def run(
     usage_totals: dict[str, int] = {}
     new_failures: list[tuple[str, str, dict]] = []
     new_warnings: list[tuple[str, str, dict]] = []
-    still_baselined: set[tuple[str, str]] = set()
     errors: list[tuple[str, str]] = []
-    judged: set[str] = set()
 
     for path in files:
         try:
@@ -1137,20 +1036,16 @@ def run(
         except (JevHTTPError, OSError) as error:
             errors.append((path, str(error)))
             continue
-        judged.add(path)
         if dump_rows is not None:
             for question_id, answer in answers.items():
                 dump_rows.append(_dump_row(path, question_id, answer))
         failed_rules, warned_rules = evaluate(answers)
         for rule_name in failed_rules:
-            if rule_name not in UNBASELINEABLE_RULES and path in baseline.get(rule_name, []):
-                still_baselined.add((rule_name, path))
-            else:
-                new_failures.append((rule_name, path, answers))
+            new_failures.append((rule_name, path, answers))
         for rule_name in warned_rules:
             new_warnings.append((rule_name, path, answers))
 
-    return new_failures, new_warnings, still_baselined, usage_totals, errors, judged
+    return new_failures, new_warnings, usage_totals, errors
 
 
 # ---------------------------------------------------------------------------
@@ -1174,17 +1069,6 @@ def _print_findings(findings: list[tuple[str, str, dict]]) -> None:
             print(f"    {_format_signal(path, answers)}", file=sys.stderr)
 
 
-def _print_growth(grown: list[tuple[str, str]], rev: str) -> None:
-    print(
-        f"\n  [baseline-grew] {SEMANTIC_BASELINE_PATH} lists files from before "
-        f"the semantic lint, and it only shrinks. These entries are absent at "
-        f"{rev}. Remove them from the baseline and fix each finding in the file.",
-        file=sys.stderr,
-    )
-    for rule_name, path in grown:
-        print(f"    [{rule_name}] {path}", file=sys.stderr)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1194,28 +1078,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--changed-from", metavar="REV")
     parser.add_argument("--all", action="store_true")
-    parser.add_argument("--update-baseline", action="store_true")
     parser.add_argument("--dump", type=Path, help="Write a raw answer per file/question as TSV; do not commit it.")
     args = parser.parse_args(argv)
     if bool(args.all) == bool(args.changed_from):
         parser.error("pass exactly one of --all or --changed-from REV")
 
     root = args.repo_root.resolve()
-    baseline = load_baseline(root)
-    grown: list[tuple[str, str]] = []
-    if args.changed_from:
-        earlier = baseline_at(root, args.changed_from)
-        grown = baseline_growth(baseline, earlier)
-        # An entry added since REV suppresses nothing, so its file's finding
-        # is reported under its own rule with that rule's remediation.
-        baseline = {rule_name: [path for path in paths if path in earlier.get(rule_name, [])]
-                    for rule_name, paths in baseline.items()}
-
     if not os.environ.get("TYPESAFE_API_KEY"):
-        if grown:
-            print(f"semantic lints failed with {len(grown)} issue(s):", file=sys.stderr)
-            _print_growth(grown, args.changed_from)
-            return 1
         print("semantic lints skipped: TYPESAFE_API_KEY is not set")
         return 0
 
@@ -1229,8 +1098,8 @@ def main(argv: list[str] | None = None) -> int:
     cache = load_cache(root)
     dump_rows: list | None = [] if args.dump else None
 
-    new_failures, new_warnings, still_baselined, usage_totals, errors, judged = run(
-        root, files, baseline, post=_http_post, cache=cache, dump_rows=dump_rows,
+    new_failures, new_warnings, usage_totals, errors = run(
+        root, files, post=_http_post, cache=cache, dump_rows=dump_rows,
     )
     save_cache(root, cache)
 
@@ -1240,47 +1109,10 @@ def main(argv: list[str] | None = None) -> int:
             for row in dump_rows:
                 f.write("\t".join(row) + "\n")
 
-    if args.update_baseline:
-        if new_failures or grown:
-            print(f"cannot add entries to {SEMANTIC_BASELINE_PATH}; it only shrinks. "
-                  "Fix each finding in the file:", file=sys.stderr)
-            _print_findings(new_failures)
-            if grown:
-                _print_growth(grown, args.changed_from)
-            _print_usage(usage_totals)
-            return 1
-        # A baseline entry for a file this run didn't judge (--changed-from
-        # skips most of the tree) carries forward unchanged; only a judged
-        # file's entries are confirmed or dropped.
-        full = {rule_name: [p for p in paths if p not in judged or (rule_name, p) in still_baselined]
-                for rule_name, paths in baseline.items()}
-        save_baseline(root, full)
-        count = sum(len(v) for v in full.values())
-        print(f"semantic baseline updated: {count} known violation(s) in {SEMANTIC_BASELINE_PATH}")
-        if errors:
-            print(f"warning: {len(errors)} file(s) could not be judged and are not reflected:", file=sys.stderr)
-            for path, message in errors:
-                print(f"  {path}: {message}", file=sys.stderr)
-        _print_usage(usage_totals)
-        return 0
-
-    stale = stale_baseline_entries(baseline, still_baselined, judged)
-
-    if new_failures or grown or stale or errors:
-        count = len(new_failures) + len(grown) + len(stale) + len(errors)
+    if new_failures or errors:
+        count = len(new_failures) + len(errors)
         print(f"semantic lints failed with {count} issue(s):", file=sys.stderr)
         _print_findings(new_failures)
-        if grown:
-            _print_growth(grown, args.changed_from)
-        if stale:
-            print(
-                f"\n  [stale-baseline] These baseline entries no longer match a "
-                f"violation. The underlying file was fixed; remove them from "
-                f"{SEMANTIC_BASELINE_PATH}.",
-                file=sys.stderr,
-            )
-            for rule_name, path in stale:
-                print(f"    [{rule_name}] {path}", file=sys.stderr)
         if errors:
             print(
                 f"\n  [judge-error] Jev could not judge this file (state too large "
@@ -1299,8 +1131,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {_format_signal(path, answers)}", file=sys.stderr)
 
     print(
-        f"semantic lints passed ({len(files)} files, {len(still_baselined)} baselined, "
-        f"{len(new_warnings)} warnings)"
+        f"semantic lints passed ({len(files)} files, {len(new_warnings)} warnings)"
     )
     _print_usage(usage_totals)
     return 0
