@@ -76,7 +76,10 @@ registered development panel. Each
 command uses one CPU slot with 2 GB memory and disk reservations. The development
 panel has a 58-second wall limit; CI never runs its held-out validation split
 and uploads only the bounded logs and summaries, not build or cache contents.
-The registered panel covers five families and the two initial interactions.
+The registered panels cover five families, the two initial interactions, and
+scenario chains. The same job checks `chains.json` source registration and runs
+its development split under a separate 58-second limit; validation and scaling
+comparisons remain local.
 Private game correspondence and its limitations belong in the
 [pull request evidence](https://github.com/pH14/harmony/pull/395); licensed games
 are not part of this CI job.

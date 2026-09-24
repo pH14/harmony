@@ -108,6 +108,7 @@ impl Config {
 
     pub fn key(&self, state: State, _lossy: bool) -> crate::Key {
         crate::Key {
+            stock: 0,
             place: u16::from(state.position),
             context: if self.observable {
                 u16::from(state.regime)

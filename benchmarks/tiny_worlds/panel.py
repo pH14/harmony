@@ -21,7 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--panel', type=Path, default=Path(__file__).with_name('panel.json'))
-    parser.add_argument('--split', choices=('development', 'validation', 'sweep'), default='development')
+    parser.add_argument('--split', choices=('development', 'validation', 'sweep', 'scaling'), default='development')
     args = parser.parse_args()
     raw = args.panel.read_bytes()
     manifest = json.loads(raw)
@@ -30,6 +30,8 @@ def main():
     cases = manifest[args.split] if args.split != 'sweep' else [
         dict(id=case['id'] + '-work-' + str(budget), config=case['config'], work_budget=budget)
         for case in manifest['sweep_cases'] for budget in manifest['sweep_budgets']]
+    if not cases:
+        raise ValueError("selected split has no registered cases")
     results = []
     started = time.monotonic()
     for case in cases:

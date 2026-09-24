@@ -143,3 +143,25 @@ The broader sweep varies deadline length, delayed horizon, and interaction lengt
 as well as the original three families. Search quality remains descriptive;
 exact replay, accounting, objective validity and registered source identity are
 the required checks. Unsolved stress cases are retained rather than weakened.
+
+## Composed scenarios
+
+`chains.json` registers independent repeated, alternating, and mixed-family
+chains, plus ammunition carried from an early station through other scenarios
+to a barrier with no local refill. Stage contracts, controls, path limits, and
+diagnostic definitions are in `workloads/tiny-worlds/README.md`.
+
+Use `panel.py --panel benchmarks/tiny_worlds/chains.json --split development`
+with the same bounded supervisor invocation above. The frozen validation panel
+uses different scenario parameters, orders/lengths, and seeds. The `scaling`
+split compares lengths 1, 2, 4, 8, and 16 at both 4,000 total transitions and
+1,000 transitions per stage, with one shared budget per campaign. It uses only
+development seeds. Treat known development configurations as regression cases,
+not fresh validation. Use a 300-second supervisor limit for the broader split.
+
+Register each manifest with `register.py --panel PATH` before its validation;
+CI checks both registrations without modifying them. Large comparative reports
+can be redirected to a file inside an inventoried private artifact root to
+avoid truncating the supervisor's bounded stdout log. Results and calibration
+claims belong in the PR description, not committed run records. Composed
+synthetic success does not establish an equivalent full-game route.

@@ -134,3 +134,50 @@ The shared request now carries a tagged `config` with `family` and `parameters`,
 and `broken` selects the family's documented control. Every nested parameter is
 required and unknown fields are rejected. No compatibility path is retained for
 the initial resource-only request.
+
+## Scenario chains
+
+A `chain` config contains one to sixteen `stages`, each with a leaf `world` and
+an explicit `refill_available` flag. Nested chains are rejected. Completing a
+stage enters the next stage during the same action; only the last stage's goal
+is the campaign objective. The entire chain uses one campaign, archive, work
+budget, and start-to-end witness. Snapshots contain the active stage, local
+state, and carried charge. Stage-local health, history, and environmental clocks
+reset on entry; this version does not model physical movement back to prior
+stages. The archive can still restore earlier states.
+
+With `carry_charge=false`, each stage starts from its declared initial state
+and chain `initial_charge` must be zero. The normal key namespaces place by
+stage; the broken control omits only that namespace. Local mechanics and local
+representation stay unchanged. With `carry_charge=true`, chain `initial_charge`
+initializes ammunition, resource stages consume/replenish it, and other stages
+preserve it. Resource stages must share their capacity and declare local
+`initial_charge=0`, since chain entry explicitly overrides that field. The
+broken control omits carried stock from retention preferences; ordinary local
+charge/time/health preferences remain intact. It tests carrying useful stock
+through intervening stages, not eliminating replenishment at its source.
+
+`refill_available=false` disables action 1 only in a resource stage, allowing a
+late barrier without a second replenishment station. Other families require
+that flag to be true. This boundary contract is part of the world mechanics,
+identical in both comparison arms. Whole-chain reachability is enumerated with
+a 100,000-state limit; individual stage reachability is not sufficient.
+
+All chains use the uniform four-action alphabet and a 512-action path limit,
+including the one-stage chain baseline. Standalone worlds retain their existing
+samplers and 128-action limit. Chain work-admission overshoot is consequently
+bounded by 511 transitions. Stage number distinguishes places but is not a
+progress score or retention preference. Carried stock adds the leading component
+to the charge-first preference and the last component to the health-first one;
+standalone worlds have zero stock, preserving their existing preference order.
+
+Diagnostics record first observed stage-entry work, entry charge distributions,
+suffix actions per stage, and nonempty executed jobs classified by their actual
+parent stage/charge. Separate pre-objective counters exclude post-completion
+work; their sum is checked against work to the first objective, or total work
+when unsolved. Parent work includes replay and is checked against the
+independent campaign-stream work sum. It is not a count of all selector attempts
+or skipped jobs. First-entry work uses the single worker's cumulative execution
+counter; restoring a snapshot does not rewind it. These measurements never feed
+selection. Intermediate stage completion is not a terminal objective or a new
+search invocation. Known paths are used only in mechanics/replay verification.

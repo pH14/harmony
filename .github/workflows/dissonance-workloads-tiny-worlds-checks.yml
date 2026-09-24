@@ -67,6 +67,7 @@ jobs:
           }
 
           run_bounded source-registration 30 python3 benchmarks/tiny_worlds/register.py --check
+          run_bounded chain-source-registration 30 python3 benchmarks/tiny_worlds/register.py --panel benchmarks/tiny_worlds/chains.json --check
           run_bounded build 120 cargo "+$HARMONY_RUST_TOOLCHAIN" build --locked --release \
             --manifest-path workloads/tiny-worlds/Cargo.toml --bin tiny-worlds --jobs 1
           run_bounded rust-tests 120 cargo "+$HARMONY_RUST_TOOLCHAIN" test --locked --release \
@@ -79,6 +80,9 @@ jobs:
             benchmarks.tiny_worlds.test_supervise
           run_bounded development-panel 58 python3 benchmarks/tiny_worlds/panel.py \
             --binary workloads/tiny-worlds/target/release/tiny-worlds --split development
+          run_bounded chain-development-panel 58 python3 benchmarks/tiny_worlds/panel.py \
+            --binary workloads/tiny-worlds/target/release/tiny-worlds \
+            --panel benchmarks/tiny_worlds/chains.json --split development
       - uses: actions/upload-artifact@v4
         if: always()
         with:

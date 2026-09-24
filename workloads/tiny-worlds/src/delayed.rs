@@ -117,6 +117,7 @@ impl Config {
 
     pub fn key(&self, state: State, lossy: bool) -> crate::Key {
         crate::Key {
+            stock: 0,
             place: u16::from(state.lane),
             context: if lossy { 0 } else { u16::from(state.progress) },
             charge: 0,

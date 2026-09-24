@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod actions;
+pub mod chain;
 pub mod deadline;
 pub mod deadline_actions;
 pub mod delayed;
@@ -26,6 +27,7 @@ use std::{error::Error, io::Write, num::NonZeroUsize};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Key {
+    pub stock: u8,
     pub place: u16,
     pub context: u16,
     pub charge: u8,
@@ -54,9 +56,9 @@ impl ArchiveKey for Key {
     }
     fn preference_cmp(self, preference: usize, other: Self) -> std::cmp::Ordering {
         if preference == 0 {
-            (self.charge, self.health).cmp(&(other.charge, other.health))
+            (self.stock, self.charge, self.health).cmp(&(other.stock, other.charge, other.health))
         } else {
-            (self.health, self.charge).cmp(&(other.health, other.charge))
+            (self.health, self.charge, self.stock).cmp(&(other.health, other.charge, other.stock))
         }
     }
     fn complete(self, _: Option<(Self, &())>) -> Self {
@@ -68,6 +70,15 @@ impl ArchiveKey for Key {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Evidence {
     pub observations: u64,
+    pub chain_stage_actions: Vec<u64>,
+    pub chain_parent_selections: Vec<u64>,
+    pub chain_pre_objective_parent_selections: Vec<u64>,
+    pub chain_pre_objective_work_by_parent_stage: Vec<u64>,
+    pub chain_work_by_parent_stage: Vec<u64>,
+    pub chain_selected_charge: Vec<Vec<u64>>,
+    pub chain_first_reach_work: Vec<Option<u64>>,
+    pub chain_stage_entries: Vec<u64>,
+    pub chain_entry_charge: Vec<Vec<u64>>,
     pub arrivals: [u64; 32],
     pub refills: u64,
     pub objectives: u64,
@@ -96,6 +107,8 @@ pub struct ArchiveReport {
 pub struct Observation {
     before: State,
     after: State,
+    execution_work: u64,
+    job_work: Option<u64>,
 }
 pub struct Target {
     state: State,
@@ -151,7 +164,7 @@ impl Reporting for Workload {
 }
 impl InputPolicy for Workload {
     fn max_action_limit(&self) -> usize {
-        128
+        self.config.action_limit()
     }
     fn max_action_cost(&self) -> u64 {
         1
@@ -221,6 +234,8 @@ impl TargetExecution for Workload {
         target.observation = Some(Observation {
             before,
             after: target.state,
+            execution_work: target.work + 1,
+            job_work: None,
         });
         target.work += 1;
         *milestones |= self.config.goal(target.state);
@@ -228,6 +243,48 @@ impl TargetExecution for Workload {
     }
     fn rollout_observations(&self, target: &Target) -> Vec<Observation> {
         target.observation.iter().cloned().collect()
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn execute_job(
+        &self,
+        run: &(),
+        target: &mut Target,
+        origin_snapshot: &State,
+        replay: &[u8],
+        parent_actions: usize,
+        parent_milestones: bool,
+        suffix: &[u8],
+        max_actions: usize,
+        retention: RetentionPolicy,
+        stop_rollout_on_objective: bool,
+    ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
+        let start_work = target.work;
+        let mut result = searcher::search::rollout::execute_job(
+            self,
+            run,
+            target,
+            origin_snapshot,
+            replay,
+            parent_actions,
+            parent_milestones,
+            suffix,
+            max_actions,
+            retention,
+            stop_rollout_on_objective,
+        )?;
+        if matches!(self.config, World::Chain(_)) {
+            let work = target.work - start_work;
+            if let Some(observation) = result
+                .actions
+                .first_mut()
+                .and_then(|a| a.observations.first_mut())
+            {
+                observation.job_work = Some(work);
+            } else if work != 0 {
+                return Err("chain job executed work without an observation".into());
+            }
+        }
+        Ok(result)
     }
     fn snapshot(&self, target: &mut Target) -> Result<State, Box<dyn Error>> {
         Ok(target.state)
@@ -281,7 +338,7 @@ impl Evaluation for Workload {
     {
         for observation in &a.observations {
             e.observations += 1;
-            match (self.config, observation.before, observation.after) {
+            match (&self.config, observation.before, observation.after) {
                 (World::Resource(w), State::Resource(before), State::Resource(after)) => {
                     if after.place == w.corridor_len && before.place != after.place {
                         e.arrivals[usize::from(after.charge)] += 1;
@@ -344,6 +401,42 @@ impl Evaluation for Workload {
                             e.deadline_arrivals_by_remaining[usize::from(after.remaining)] += 1;
                         }
                         e.deadline_expirations += u64::from(after.remaining == 0 && !w.goal(after));
+                    }
+                }
+                (World::Chain(w), State::Chain(before), State::Chain(after)) => {
+                    e.chain_parent_selections.resize(w.stages.len(), 0);
+                    e.chain_pre_objective_parent_selections
+                        .resize(w.stages.len(), 0);
+                    e.chain_pre_objective_work_by_parent_stage
+                        .resize(w.stages.len(), 0);
+                    e.chain_work_by_parent_stage.resize(w.stages.len(), 0);
+                    e.chain_selected_charge
+                        .resize_with(w.stages.len(), || vec![0; 32]);
+                    if let Some(work) = observation.job_work {
+                        let stage = usize::from(before.stage);
+                        e.chain_parent_selections[stage] += 1;
+                        if e.objectives == 0 {
+                            e.chain_pre_objective_parent_selections[stage] += 1;
+                            e.chain_pre_objective_work_by_parent_stage[stage] += work;
+                        }
+                        e.chain_work_by_parent_stage[stage] += work;
+                        e.chain_selected_charge[stage][usize::from(before.charge)] += 1;
+                    }
+                    e.chain_first_reach_work.resize(w.stages.len(), None);
+                    e.chain_first_reach_work[0] = Some(0);
+                    e.chain_stage_actions.resize(w.stages.len(), 0);
+                    e.chain_stage_entries.resize(w.stages.len(), 0);
+                    e.chain_entry_charge
+                        .resize_with(w.stages.len(), || vec![0; 32]);
+                    if !w.goal(before) {
+                        e.chain_stage_actions[usize::from(before.stage)] += 1;
+                    }
+                    if after.stage != before.stage {
+                        e.chain_first_reach_work[usize::from(after.stage)]
+                            .get_or_insert(observation.execution_work);
+                        e.chain_stage_entries[usize::from(after.stage)] += 1;
+                        e.chain_entry_charge[usize::from(after.stage)]
+                            [usize::from(after.charge)] += 1;
                     }
                 }
                 _ => return Err("observation family mismatch".into()),
@@ -457,7 +550,7 @@ pub fn run(
             }
         }
     }
-    if work > budget + 127 {
+    if work > budget + workload.config.action_limit() as u64 - 1 {
         return Err("one-reservation work overshoot exceeded the action bound".into());
     }
     if work != report.execution_work {
@@ -468,10 +561,36 @@ pub fn run(
     {
         return Err("independent first-objective scoring mismatch".into());
     }
+    if matches!(workload.config, World::Chain(_))
+        && report
+            .archive
+            .evidence
+            .chain_work_by_parent_stage
+            .iter()
+            .sum::<u64>()
+            != work
+    {
+        return Err("chain parent work differs from independently summed execution work".into());
+    }
+    if matches!(workload.config, World::Chain(_))
+        && report
+            .archive
+            .evidence
+            .chain_pre_objective_work_by_parent_stage
+            .iter()
+            .sum::<u64>()
+            != first_objective_work.unwrap_or(work)
+    {
+        return Err("chain pre-objective work differs from first-objective accounting".into());
+    }
     Ok(
         serde_json::json!({"engine_source_sha256":env!("TINY_ENGINE_SOURCE_SHA256"),
         "workload_source_sha256":env!("TINY_WORKLOAD_SOURCE_SHA256"),"seed":seed,"broken":workload.broken,
         "config":workload.config,"work_budget":budget,"work":work,"work_overshoot":work.saturating_sub(budget),
+        "chain_parent_selections":report.archive.evidence.chain_parent_selections,
+        "chain_work_by_parent_stage":report.archive.evidence.chain_work_by_parent_stage,
+        "chain_selected_charge":report.archive.evidence.chain_selected_charge,
+        "action_limit":workload.config.action_limit(),
         "continuation_work":continuation_work,"continuation_jobs":continuation_jobs,
         "first_objective_work":first_objective_work,
         "success":first_objective_work.is_some_and(|w|w<=budget),
@@ -486,7 +605,7 @@ fn campaign_config(workload: &Workload, seed: u64, budget: u64) -> CampaignConfi
         campaign_seed: seed,
         workers: 1,
         execution_budget: budget,
-        action_limit: 128,
+        action_limit: workload.config.action_limit(),
         host: "tiny-worlds".into(),
         wall_budget: None,
         stop_rollout_on_objective: true,
@@ -758,7 +877,10 @@ mod tests {
         ];
         for config in configs {
             for broken in [false, true] {
-                let workload = Workload { config, broken };
+                let workload = Workload {
+                    config: config.clone(),
+                    broken,
+                };
                 let report = run(&workload, 17, 1000, true).unwrap();
                 assert_eq!(report["verified"], true);
             }
@@ -913,6 +1035,8 @@ mod tests {
                 let result = CampaignActionResult::<Workload> {
                     action,
                     observations: vec![Observation {
+                        execution_work: 0,
+                        job_work: None,
                         before: State::Maze(before),
                         after: State::Maze(after),
                     }],
@@ -934,6 +1058,8 @@ mod tests {
                 let result = CampaignActionResult::<Workload> {
                     action,
                     observations: vec![Observation {
+                        execution_work: 0,
+                        job_work: None,
                         before: State::Maze(before),
                         after: State::Maze(config.step(before, action)),
                     }],

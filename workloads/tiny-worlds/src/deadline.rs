@@ -139,6 +139,7 @@ impl Config {
 
     pub fn key(&self, state: State, broken: bool) -> crate::Key {
         crate::Key {
+            stock: 0,
             place: u16::from(state.position),
             context: u16::from(state.phase),
             charge: if broken { 0 } else { state.remaining },

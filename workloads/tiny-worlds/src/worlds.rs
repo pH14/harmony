@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::{Key, actions, deadline, deadline_actions, delayed, maze, resource};
+use crate::{Key, actions, chain, deadline, deadline_actions, delayed, maze, resource};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     tag = "family",
     content = "parameters",
@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
     deny_unknown_fields
 )]
 pub enum World {
+    Chain(chain::Config),
     Resource(resource::Config),
     Maze(maze::Config),
     Actions(actions::Config),
@@ -21,6 +22,7 @@ pub enum World {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum State {
+    Chain(chain::State),
     Resource(resource::State),
     Maze(maze::State),
     Actions(actions::State),
@@ -32,6 +34,7 @@ pub enum State {
 impl World {
     pub fn validate(&self) -> Result<(), String> {
         match self {
+            Self::Chain(w) => w.validate(),
             Self::Resource(w) => w.validate(),
             Self::Maze(w) => w.validate(),
             Self::Actions(w) => w.validate(),
@@ -43,6 +46,7 @@ impl World {
     pub fn valid_state(&self, state: State) -> bool {
         self.validate().is_ok()
             && match (self, state) {
+                (Self::Chain(w), State::Chain(s)) => w.valid_state(s),
                 (Self::Resource(w), State::Resource(s)) => {
                     w.state_is_bounded(s) && (!s.goal || w.goal(s))
                 }
@@ -58,6 +62,7 @@ impl World {
     }
     pub fn initial(&self) -> State {
         match self {
+            Self::Chain(w) => State::Chain(w.initial()),
             Self::Resource(w) => State::Resource(w.initial()),
             Self::Maze(w) => State::Maze(w.initial()),
             Self::Actions(w) => State::Actions(w.initial()),
@@ -68,6 +73,7 @@ impl World {
     }
     pub fn step(&self, state: State, action: u8) -> State {
         match (self, state) {
+            (Self::Chain(w), State::Chain(s)) => State::Chain(w.step(s, action)),
             (Self::Resource(w), State::Resource(s)) => State::Resource(w.step(s, action)),
             (Self::Maze(w), State::Maze(s)) => State::Maze(w.step(s, action)),
             (Self::Actions(w), State::Actions(s)) => State::Actions(w.step(s, action)),
@@ -81,6 +87,7 @@ impl World {
     }
     pub fn goal(&self, state: State) -> bool {
         match (self, state) {
+            (Self::Chain(w), State::Chain(s)) => w.goal(s),
             (Self::Resource(w), State::Resource(s)) => w.goal(s),
             (Self::Maze(w), State::Maze(s)) => w.goal(s),
             (Self::Actions(w), State::Actions(s)) => w.goal(s),
@@ -92,6 +99,7 @@ impl World {
     }
     pub fn reachable(&self) -> Result<bool, String> {
         match self {
+            Self::Chain(w) => w.reachable(),
             Self::Resource(w) => w.reachable(),
             Self::Maze(w) => w.reachable(),
             Self::Actions(w) => w.reachable(),
@@ -102,7 +110,9 @@ impl World {
     }
     pub fn key(&self, state: State, broken: bool) -> Key {
         match (self, state) {
+            (Self::Chain(w), State::Chain(s)) => w.key(s, broken),
             (Self::Resource(_), State::Resource(s)) => Key {
+                stock: 0,
                 place: u16::from(s.place),
                 context: 0,
                 charge: if broken { 0 } else { s.charge },
@@ -115,6 +125,13 @@ impl World {
             (Self::Delayed(w), State::Delayed(s)) => w.key(s, broken),
             (Self::DeadlineActions(w), State::DeadlineActions(s)) => w.key(s, broken),
             _ => panic!("world and state family mismatch"),
+        }
+    }
+    pub fn action_limit(&self) -> usize {
+        if matches!(self, Self::Chain(_)) {
+            512
+        } else {
+            128
         }
     }
     pub fn changes_actions(&self) -> bool {
