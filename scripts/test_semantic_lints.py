@@ -614,8 +614,8 @@ class CiArchitectureTests(RequiresApiKey):
             root = Path(directory)
             path = "workloads/bugs/historical/example/README.md"
             self.plant(root, path, "Pass --build-arg COMMIT=<fixed> for the control.\n")
-            failures, _, _, _, _, _ = LINTS.run(
-                root, [path], {},
+            failures, _, _, _ = LINTS.run(
+                root, [path],
                 post=make_post(full_answers(file_kind="instructions",
                                             fixed_release_run=0.85)))
             self.assertEqual([rule for rule, _, _ in failures], ["ci-fixed-release-run"])
