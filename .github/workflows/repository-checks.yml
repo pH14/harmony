@@ -98,10 +98,16 @@ jobs:
           set -euo pipefail
           if [ "$EVENT_NAME" = pull_request ]; then
             python3 scripts/semantic-lints.py --changed-from HEAD^1
-          elif git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
-            python3 scripts/semantic-lints.py --changed-from "$BEFORE_SHA"
-          else
+          elif [ "$BEFORE_SHA" = 0000000000000000000000000000000000000000 ]; then
             python3 scripts/semantic-lints.py --all
+          else
+            if ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$BEFORE_SHA" || {
+                echo "::error::The commit before this push, $BEFORE_SHA, is not on GitHub, so the push cannot be judged."
+                exit 1
+              }
+            fi
+            python3 scripts/semantic-lints.py --changed-from "$BEFORE_SHA"
           fi
 
   ignored-tests:
