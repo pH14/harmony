@@ -11,7 +11,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: consonance-checks-${{ github.ref }}
+  group: consonance-checks-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 defaults:

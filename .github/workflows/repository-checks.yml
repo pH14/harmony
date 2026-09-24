@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: repository-checks-${{ github.ref }}
+  group: repository-checks-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 defaults:

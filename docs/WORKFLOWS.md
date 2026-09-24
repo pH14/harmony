@@ -108,6 +108,14 @@ it once, unconditionally, under the id `scope`, after a complete-history
 checkout, and guards its own steps with `steps.scope.outputs.enabled` joined by
 `&&`. `ci_contract.SCOPE_KINDS` records which workflow owns each kind.
 
+On a push to main, change selection and `Semantic Lints` read only what that
+push changed, so every push runs to completion. A workflow a push reaches keys
+its concurrency group by `ci_contract.PUSH_CONCURRENCY_KEY`, which gives each
+push a group of its own and keeps pull requests and scheduled runs grouped by
+ref. In a group that pushes share, a later push cancels a running push run and
+replaces a pending one, and the commits of the dropped push are never selected
+or judged on main.
+
 An unselected job finishes successfully with a summary saying it was not
 applicable. A selection or diff error fails closed. A selected test that fails
 still fails its job and still uploads the evidence it produced. A required
@@ -244,6 +252,7 @@ under a `ci-` rule cannot be recorded in the lint baseline.
 | `ci-trigger-routing` | A `pr` job runs on pull requests, a `full` job proves it does not, and no pull request job starts a full search. |
 | `ci-trigger-exception` | Mixed trigger classes carry a registered reason. |
 | `ci-scope-routing` | One selector per job, complete checkout, guarded steps. |
+| `ci-push-concurrency` | Each push to main has its own concurrency group. |
 | `ci-ignored-tests` | A job that runs ignored tests registers them, and its steps name each one it registers. |
 | `ci-analysis-grouping` | Coverage, Miri, mutation and proofs sit in the owning component's Analysis workflow. |
 | `ci-host-compatibility` | Each supported host keeps a bounded job. |

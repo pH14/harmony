@@ -879,7 +879,27 @@ def check_workflow_file(repo_root: Path, rel_path: str, workflow) -> list[Violat
     if triggers != set(workflow.triggers):
         violations.append(Violation("ci-workflow-triggers", rel_path, 0,
             f"triggers {sorted(triggers)} do not match the registered {sorted(workflow.triggers)}"))
+    if "push" in triggers:
+        violations.extend(check_push_concurrency(rel_path, data))
     violations.extend(check_workflow_jobs(rel_path, workflow, data, bool(triggers & PR_EVENTS)))
+    return violations
+
+
+def check_push_concurrency(rel_path: str, data: dict) -> list[Violation]:
+    """A push run is never cancelled or replaced by a later push."""
+    import ci_contract
+
+    scopes = [("workflow", data.get("concurrency"))]
+    scopes += [(f"job '{job_id}'", job.get("concurrency")) for job_id, job in data["jobs"].items()]
+    violations = []
+    for owner, concurrency in scopes:
+        if concurrency is None:
+            continue
+        group = concurrency.get("group") if isinstance(concurrency, dict) else concurrency
+        if ci_contract.PUSH_CONCURRENCY_KEY not in str(group):
+            violations.append(Violation("ci-push-concurrency", rel_path, 0,
+                f"{owner} concurrency group '{group}' is shared by pushes; key it by "
+                f"{ci_contract.PUSH_CONCURRENCY_KEY}"))
     return violations
 
 
@@ -1878,6 +1898,7 @@ def main(argv: list[str] | None = None) -> int:
             "Testing methods belong in step names, triggers belong in nothing. Every job in a "
             "file must be registered in scripts/ci_contract.py and every registered job must exist."
         ),
+        "ci-push-concurrency": "Every push to main runs to completion. A workflow a push reaches keys each concurrency group by scripts/ci_contract.py PUSH_CONCURRENCY_KEY, because a later push in a shared group cancels a running push run and replaces a pending one, and change selection then never sees the commits of the dropped push.",
         "ci-scope-routing": "Select work inside the job that owns it: one ./.github/actions/ci-scope step under the registered kind, a complete diff checkout, and selected steps guarded with && on the selector's output.",
         "ci-ignored-tests": "A job that runs ignored tests lists them in its ignored_tests in scripts/ci_contract.py as '<binary-id> <test>', and its steps name each binary and test it lists. scripts/check-test-partition.py ignored fails on an ignored test that no job or machine runs.",
         "ci-nes-case-jobs": "Map every public NES manifest case exactly once to the case matrix, select it with --case, disable fail-fast, and retain an always-running Results job.",
