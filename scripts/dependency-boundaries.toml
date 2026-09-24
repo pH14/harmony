@@ -49,6 +49,7 @@ workload_packages = [
     "workloads/fault-policy",
     "workloads/faults",
     "workloads/nes",
+    "workloads/tiny-worlds",
 ]
 composition_apps_tests = [
     "workloads/tools",

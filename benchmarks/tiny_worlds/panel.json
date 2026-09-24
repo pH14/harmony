@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "baseline": "67f65bbce5ee84b57cd91aaceb49350325eb49b9",
+  "development_seeds": [
+    17,
+    29,
+    43
+  ],
+  "validation_seeds": [
+    2026092401,
+    2026092407,
+    2026092419,
+    2026092431,
+    2026092443
+  ],
+  "work_budget": 4000,
+  "arms": [
+    false,
+    true
+  ],
+  "endpoint": "objective witness reached at or before the logical work budget",
+  "acceptance": "Exact invariants gate; search quality is descriptive, with every unsolved run censored.",
+  "development": [
+    {
+      "id": "resource-five-charge",
+      "config": {
+        "initial_charge": 0,
+        "initial_health": 3,
+        "barrier_charge": 5,
+        "route_cost": 0,
+        "health_cost": 0,
+        "refill_amount": 1,
+        "max_charge": 8,
+        "corridor_len": 1
+      }
+    },
+    {
+      "id": "resource-route",
+      "config": {
+        "initial_charge": 0,
+        "initial_health": 3,
+        "barrier_charge": 5,
+        "route_cost": 1,
+        "health_cost": 1,
+        "refill_amount": 1,
+        "max_charge": 10,
+        "corridor_len": 2
+      }
+    }
+  ],
+  "validation": [
+    {
+      "id": "resource-held-out-route",
+      "config": {
+        "initial_charge": 1,
+        "initial_health": 4,
+        "barrier_charge": 5,
+        "route_cost": 1,
+        "health_cost": 2,
+        "refill_amount": 2,
+        "max_charge": 12,
+        "corridor_len": 3
+      }
+    },
+    {
+      "id": "resource-unnecessary-refill",
+      "config": {
+        "initial_charge": 8,
+        "initial_health": 3,
+        "barrier_charge": 5,
+        "route_cost": 1,
+        "health_cost": 1,
+        "refill_amount": 1,
+        "max_charge": 10,
+        "corridor_len": 2
+      }
+    }
+  ],
+  "engine_source_sha256": "98577556455bbca4109eb7ec7a93217dd71100e061f464de6f42ada785df7a70",
+  "workload_source_sha256": "771c5a88efab9904aea11ce8e0844817e9105819d3fc1d4c9002b4729fda4eda"
+}

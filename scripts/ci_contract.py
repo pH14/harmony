@@ -142,6 +142,7 @@ CARGO_MANIFESTS = (
     "workloads/nes-machine/Cargo.toml",
     "workloads/nes-protocol/Cargo.toml",
     "workloads/tools/Cargo.toml",
+    "workloads/tiny-worlds/Cargo.toml",
 )
 
 # Every `cargo deny` invocation, as the arguments that follow `cargo deny`.
@@ -156,6 +157,7 @@ DENY_COMMANDS = (
     "--manifest-path workloads/fault-policy/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/faults/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/tools/Cargo.toml check --config deny.toml",
+    "--manifest-path workloads/tiny-worlds/Cargo.toml check --config deny.toml",
     "--manifest-path consonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses",
     "--manifest-path consonance/harmony-linux/sdk/Cargo.toml check --config deny.toml licenses",
     "--manifest-path consonance/harmony-linux/supervisor/Cargo.toml check --config deny.toml licenses",

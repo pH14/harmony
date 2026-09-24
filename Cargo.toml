@@ -15,6 +15,7 @@ exclude = [
   "dissonance",
   "workloads/nes",
   "workloads/tools",
+  "workloads/tiny-worlds",
   "workloads/nes-machine",
   "workloads/nes-protocol",
   "workloads/nes-guest",
