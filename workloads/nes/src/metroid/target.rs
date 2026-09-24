@@ -54,6 +54,8 @@ const ENEMY_TYPE_BASE: usize = 0xb02;
 const AREA_KRAID: u8 = 0x12;
 const AREA_RIDLEY: u8 = 0x14;
 const BOSS_ENEMY_TYPES: [(u8, u8); 2] = [(AREA_KRAID, 0x08), (AREA_RIDLEY, 0x09)];
+const ENEMY_SLOT_CARTRIDGE: std::ops::Range<usize> =
+    ENEMY_STATUS_BASE..ENEMY_TYPE_BASE + (ENEMY_SLOTS - 1) * ENEMY_SLOT_STRIDE + 1;
 
 const HEALTH_HIGH: usize = 0x107;
 const HEALTH_LOW: usize = 0x106;
@@ -532,6 +534,7 @@ impl MetroidTarget {
         prefix: &[ButtonChord],
         depth: GenesisDepth,
     ) -> Result<Self, MachineError> {
+        machine.capture_save_ram_per_frame(ENEMY_SLOT_CARTRIDGE);
         let mut genesis_prefix = prefix.to_vec();
         let mut untouched = None;
         for chunk in prefix.chunks(64) {
@@ -780,7 +783,7 @@ impl MetroidTarget {
         }
     }
 
-    fn run_action(&mut self, action: &ButtonChord) -> Option<Vec<[u8; WRAM_SIZE]>> {
+    fn run_action(&mut self, action: &ButtonChord) -> Option<(Vec<[u8; WRAM_SIZE]>, Vec<u8>)> {
         let start = self.machine.snapshot().ok()?;
         let branched = self
             .machine
@@ -792,7 +795,8 @@ impl MetroidTarget {
             return None;
         }
         let frames = self.machine.frames().to_vec();
-        (!frames.is_empty()).then_some(frames)
+        let enemy_slots = self.machine.save_ram_frames().to_vec();
+        (!frames.is_empty()).then_some((frames, enemy_slots))
     }
 }
 
@@ -813,7 +817,7 @@ impl Target for MetroidTarget {
         if self.failed || self.is_dead() {
             return;
         }
-        let Some(frames) = self.run_action(action) else {
+        let Some((frames, enemy_slots)) = self.run_action(action) else {
             self.failed = true;
             return;
         };
@@ -826,6 +830,7 @@ impl Target for MetroidTarget {
         };
         match decode_action_observations(
             &frames,
+            &enemy_slots,
             &cartridge,
             &self.observation,
             self.current_wram,
@@ -901,18 +906,34 @@ impl Target for MetroidTarget {
 
 fn decode_action_observations(
     frames: &[[u8; WRAM_SIZE]],
+    enemy_slots: &[u8],
     cartridge: &[u8],
     initial: &MetroidObservations,
     mut prior_wram: [u8; WRAM_SIZE],
     policy: MetroidTerminalPolicy,
 ) -> Result<(Vec<MetroidObservations>, [u8; WRAM_SIZE]), MachineError> {
+    if enemy_slots.len() != frames.len() * ENEMY_SLOT_CARTRIDGE.len() {
+        return Err(MachineError::Backend(
+            "Metroid enemy slot capture does not match the frame count".to_owned(),
+        ));
+    }
     let boss_defeats = decode_boss_defeats(cartridge)?;
+    let mut frame_cartridge = cartridge.to_vec();
     let mut prior_state = initial.decoded;
     let mut boss_health_seen = initial.boss_health_seen;
     let mut observations = Vec::new();
     let mut tourian_events = TourianEvents::default();
-    for (offset, wram) in frames.iter().enumerate() {
-        let state = keep_cell_through_door_touch(decode_state(wram, cartridge)?, prior_state);
+    for (offset, (wram, slots)) in frames
+        .iter()
+        .zip(enemy_slots.chunks_exact(ENEMY_SLOT_CARTRIDGE.len()))
+        .enumerate()
+    {
+        frame_cartridge
+            .get_mut(ENEMY_SLOT_CARTRIDGE)
+            .ok_or(MachineError::MalformedEnv)?
+            .copy_from_slice(slots);
+        let state =
+            keep_cell_through_door_touch(decode_state(wram, &frame_cartridge)?, prior_state);
         let frame_count = initial.frame_count + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
         tourian_events.observe(state, wram[0x98]);
         boss_health_seen = boss_health_seen.max(state.boss_health_ceiling());
@@ -1090,6 +1111,17 @@ mod observation_tests {
     use super::*;
     use crate::metroid::progress::NamedProgress;
 
+    fn decode_with_fixed_slots(
+        frames: &[[u8; WRAM_SIZE]],
+        cartridge: &[u8],
+        initial: &MetroidObservations,
+        prior_wram: [u8; WRAM_SIZE],
+        policy: MetroidTerminalPolicy,
+    ) -> Result<(Vec<MetroidObservations>, [u8; WRAM_SIZE]), MachineError> {
+        let enemy_slots = cartridge[ENEMY_SLOT_CARTRIDGE].repeat(frames.len());
+        decode_action_observations(frames, &enemy_slots, cartridge, initial, prior_wram, policy)
+    }
+
     fn resource_fixture() -> MetroidTarget {
         let mut machine = QuickNesMachine::loopback_for_tests(&[0]).unwrap();
         machine.write_save_ram(0, &[0; CARTRIDGE_RAM_SIZE]).unwrap();
@@ -1217,7 +1249,7 @@ mod observation_tests {
         underflow[HEALTH_HIGH] = 0x98;
         let mut cleared = underflow;
         cleared[HEALTH_HIGH] = 0;
-        let (legacy, _) = decode_action_observations(
+        let (legacy, _) = decode_with_fixed_slots(
             &[underflow],
             &cartridge,
             &initial,
@@ -1226,7 +1258,7 @@ mod observation_tests {
         )
         .unwrap();
         assert!(!legacy[0].dead);
-        let (corrected, stopped_wram) = decode_action_observations(
+        let (corrected, stopped_wram) = decode_with_fixed_slots(
             &[underflow, cleared],
             &cartridge,
             &initial,
@@ -1244,7 +1276,7 @@ mod observation_tests {
             let mut live = start;
             live[HEALTH_HIGH] = high;
             live[HEALTH_LOW] = low;
-            let (observations, _) = decode_action_observations(
+            let (observations, _) = decode_with_fixed_slots(
                 &[live],
                 &cartridge,
                 &initial,
@@ -1281,7 +1313,7 @@ mod observation_tests {
                     frame
                 })
                 .collect();
-            let (observations, _) = decode_action_observations(
+            let (observations, _) = decode_with_fixed_slots(
                 &frames,
                 &cartridge,
                 &initial,
@@ -1332,7 +1364,7 @@ mod observation_tests {
             TourianEvents::default(),
         );
         initial.boss_health_seen = 0x20;
-        let (observations, _) = decode_action_observations(
+        let (observations, _) = decode_with_fixed_slots(
             &[entry, hurt, flash],
             &cartridge,
             &initial,
@@ -1343,7 +1375,7 @@ mod observation_tests {
         let last = observations.last().unwrap();
         assert_eq!(last.decoded.boss_health, 0);
         assert_eq!(last.boss_health_seen, 0x60);
-        let (observations, _) = decode_action_observations(
+        let (observations, _) = decode_with_fixed_slots(
             &[hurt],
             &cartridge,
             &initial,
@@ -1353,6 +1385,61 @@ mod observation_tests {
         .unwrap();
         assert_eq!(observations[0].decoded.boss_health, 0x30);
         assert_eq!(observations[0].boss_health_seen, 0x30);
+    }
+
+    #[test]
+    fn a_boss_slot_freed_within_an_action_keeps_its_earlier_readings() {
+        let slot = ENEMY_SLOT_BASE + 2 * ENEMY_SLOT_STRIDE;
+        let status = ENEMY_STATUS_BASE + 2 * ENEMY_SLOT_STRIDE - ENEMY_SLOT_CARTRIDGE.start;
+        let enemy_type = ENEMY_TYPE_BASE + 2 * ENEMY_SLOT_STRIDE - ENEMY_SLOT_CARTRIDGE.start;
+        let mut fight = [0; WRAM_SIZE];
+        fight[GAME_MODE] = GAME_MODE_PLAYING;
+        fight[HEALTH_LOW] = 0x50;
+        fight[AREA] = AREA_KRAID;
+        fight[slot + ENEMY_SPECIAL_ATTRIBUTES] = ENEMY_MINI_BOSS_BIT;
+        fight[slot + ENEMY_HIT_POINTS] = 0x20;
+        let mut freed = fight;
+        freed[slot + ENEMY_HIT_POINTS] = 0x10;
+        let mut in_use = vec![0; ENEMY_SLOT_CARTRIDGE.len()];
+        in_use[status] = 0x01;
+        in_use[enemy_type] = 0x08;
+        let mut released = in_use.clone();
+        released[status] = 0x00;
+        let mut cartridge = [0; 8192];
+        cartridge[ENEMY_SLOT_CARTRIDGE].copy_from_slice(&released);
+        let initial = MetroidTarget::make_observation(
+            0,
+            decode_state(&fight, &cartridge).unwrap(),
+            0,
+            &fight,
+            &fight,
+            BossDefeats::default(),
+            TourianEvents::default(),
+        );
+        assert_eq!(initial.decoded.boss_health, 0);
+        let (observations, _) = decode_action_observations(
+            &[fight, freed],
+            &[in_use, released.clone()].concat(),
+            &cartridge,
+            &initial,
+            fight,
+            MetroidTerminalPolicy::Legacy,
+        )
+        .unwrap();
+        let last = observations.last().unwrap();
+        assert_eq!(last.decoded.boss_health, 0);
+        assert_eq!(last.boss_health_seen, 0x20);
+        assert!(
+            decode_action_observations(
+                &[fight, freed],
+                &released,
+                &cartridge,
+                &initial,
+                fight,
+                MetroidTerminalPolicy::Legacy,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1430,7 +1517,7 @@ mod observation_tests {
             TourianEvents::default(),
         );
         assert_eq!((initial.decoded.map_x, initial.decoded.map_y), (9, 29));
-        let (observations, _) = decode_action_observations(
+        let (observations, _) = decode_with_fixed_slots(
             &[touched],
             &cartridge,
             &initial,

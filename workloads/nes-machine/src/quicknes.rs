@@ -456,6 +456,8 @@ pub struct QuickNesMachine {
     input: u8,
     vtime: u64,
     frames: Vec<[u8; WRAM_SIZE]>,
+    save_ram_frame_range: std::ops::Range<usize>,
+    save_ram_frames: Vec<u8>,
     capture_video: bool,
     capture_audio: bool,
     _not_sync: PhantomData<Cell<()>>,
@@ -563,6 +565,8 @@ impl QuickNesMachine {
             input: 0,
             vtime: 0,
             frames: Vec::new(),
+            save_ram_frame_range: 0..0,
+            save_ram_frames: Vec::new(),
             capture_video: false,
             capture_audio: false,
             _not_sync: PhantomData,
@@ -577,6 +581,16 @@ impl QuickNesMachine {
     #[must_use]
     pub fn frames(&self) -> &[[u8; WRAM_SIZE]] {
         &self.frames
+    }
+
+    pub fn capture_save_ram_per_frame(&mut self, range: std::ops::Range<usize>) {
+        self.save_ram_frame_range = range;
+        self.save_ram_frames.clear();
+    }
+
+    #[must_use]
+    pub fn save_ram_frames(&self) -> &[u8] {
+        &self.save_ram_frames
     }
 
     pub fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError> {
@@ -598,6 +612,10 @@ impl QuickNesMachine {
     }
 
     pub fn read_save_ram(&self) -> Result<Vec<u8>, MachineError> {
+        self.with_save_ram(<[u8]>::to_vec)
+    }
+
+    fn with_save_ram<T>(&self, read: impl FnOnce(&[u8]) -> T) -> Result<T, MachineError> {
         self.api.activate();
         // SAFETY: both calls are synchronous libretro memory queries on this
         // machine's exclusively owned core image. The pointer is checked and
@@ -614,8 +632,9 @@ impl QuickNesMachine {
             )));
         }
         // SAFETY: the checked non-null region is readable for the bounded
-        // length reported by the same core and is copied immediately.
-        Ok(unsafe { std::slice::from_raw_parts(memory, length) }.to_vec())
+        // length reported by the same core. `read` gets only a shared slice
+        // and no core call runs before it returns, so the region stays valid.
+        Ok(read(unsafe { std::slice::from_raw_parts(memory, length) }))
     }
 
     pub fn write_save_ram(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MachineError> {
@@ -806,6 +825,21 @@ impl QuickNesMachine {
             return Err(MachineError::Backend(detail));
         }
         self.frames.push(self.read_wram()?);
+        if !self.save_ram_frame_range.is_empty() {
+            let range = self.save_ram_frame_range.clone();
+            let mut captured = std::mem::take(&mut self.save_ram_frames);
+            let fits = self.with_save_ram(|ram| {
+                ram.get(range)
+                    .map(|bytes| captured.extend_from_slice(bytes))
+                    .is_some()
+            })?;
+            self.save_ram_frames = captured;
+            if !fits {
+                return Err(MachineError::Backend(
+                    "save RAM capture range exceeds save RAM".to_owned(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -933,6 +967,7 @@ impl Machine for QuickNesMachine {
         resolve: Option<&Answer>,
     ) -> Result<StopReason, MachineError> {
         self.frames.clear();
+        self.save_ram_frames.clear();
         if resolve.is_some() {
             return Err(MachineError::ResolveWithoutDecision);
         }
@@ -1861,6 +1896,24 @@ mod tests {
         );
         assert!(machine.write_save_ram(8 * 1024, &[1]).is_err());
         assert!(machine.write_save_ram(usize::MAX, &[1]).is_err());
+        machine.capture_save_ram_per_frame(7..9);
+        machine
+            .branch(base, &nes::reproducer(&[nes::ButtonChord::new(0, 2)]))
+            .expect("stage captured frames");
+        machine
+            .write_save_ram(7, &[1, 2])
+            .expect("captured save RAM write");
+        machine
+            .run(StopConditions::default(), None)
+            .expect("run captured frames");
+        assert_eq!(machine.frames().len(), 2);
+        assert_eq!(machine.save_ram_frames(), &[1, 2, 1, 2]);
+        machine.capture_save_ram_per_frame(8 * 1024 - 1..8 * 1024 + 1);
+        machine
+            .branch(base, &nes::reproducer(&[nes::ButtonChord::new(0, 1)]))
+            .expect("stage an oversized capture");
+        assert!(machine.run(StopConditions::default(), None).is_err());
+        machine.capture_save_ram_per_frame(0..0);
 
         let base_portable = machine.export(base, None).expect("base portable");
         assert!(
