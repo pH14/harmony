@@ -21,8 +21,10 @@ NES targets interpret this format; Dissonance sees typed workload actions.
 
 On Unix, `quicknes::QuickNesMachine` loads a private copy of the pinned
 libretro QuickNES shared object, validates its revision and supplied SHA-256,
-and exposes the core's 2 KiB system RAM. Search runs with audio and video
-disabled. Replay-only callers can capture video and stereo PCM.
+and exposes the core's 2 KiB system RAM. Each run records system RAM after every
+frame, and a caller can also name a cartridge RAM range to record after every
+frame. Search runs with audio and video disabled. Replay-only callers can
+capture video and stereo PCM.
 
 Snapshots contain a format marker, the QuickNES revision, core hash, fixed
 serialized-state length, and canonicalized core state. Restore rejects a

@@ -44,7 +44,7 @@ use crate::{
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v8";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v9";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -1141,6 +1141,8 @@ mod tests {
         assert!(!directory.join("ridley_area-boss.json").is_file());
         wram[0x40b] = 40;
         wram[0x40f] = 0x40;
+        cartridge[0xaf4] = 0x01;
+        cartridge[0xb02] = 0x09;
         let (fighting, fighting_input) = action_with(observe(&wram, &cartridge), 4);
         assert_eq!(fighting.observations[0].decoded.boss_health, 40);
         game.merge_action_evidence(&mut evidence, &fighting, 5, || Ok(fighting_input.clone()))
@@ -1175,7 +1177,7 @@ mod tests {
             MetroidSnapshotCheckpoint::from_bytes(&current, SNAPSHOT_CHECKPOINT_FORMAT).unwrap(),
             checkpoint(SNAPSHOT_CHECKPOINT_FORMAT)
         );
-        let previous = checkpoint("metroid-quicknes-snapshot-checkpoint-v7")
+        let previous = checkpoint("metroid-quicknes-snapshot-checkpoint-v8")
             .to_bytes()
             .unwrap();
         let error = MetroidSnapshotCheckpoint::from_bytes(&previous, SNAPSHOT_CHECKPOINT_FORMAT)
