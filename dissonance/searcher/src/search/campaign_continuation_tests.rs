@@ -670,9 +670,9 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
 
 #[test]
 fn history_growth_before_maintenance_does_not_stop_the_campaign() {
-    for workers in [1, 4] {
+    for (workers, campaign_seed) in [(1, 947), (2, 947), (2, 11), (2, 12), (4, 947)] {
         let config = CampaignConfig {
-            campaign_seed: 947,
+            campaign_seed,
             workers,
             execution_budget: 800,
             action_limit: 64,
@@ -694,16 +694,22 @@ fn history_growth_before_maintenance_does_not_stop_the_campaign() {
             }),
             objective_witness_path: None,
         };
-        let (live, _) = run_campaign_checkpointed(
+        let mut stream = Vec::new();
+        let live = run_campaign_checkpointed(
             &TestWorkload,
             &config,
             &CampaignOrigin::Genesis,
-            &mut Vec::new(),
+            &mut stream,
             None,
         )
         .unwrap();
-        assert_eq!(live.executions_completed, config.execution_budget);
-        assert!(live.history_compactions > 0);
-        assert!(live.snapshot_evictions > 0);
+        assert_eq!(live.0.executions_completed, config.execution_budget);
+        assert!(live.0.history_compactions > 0);
+        assert!(live.0.snapshot_evictions > 0);
+        assert_eq!(
+            replay_campaign_checkpointed(&TestWorkload, &stream, None, None).unwrap(),
+            live,
+            "workers {workers} seed {campaign_seed}"
+        );
     }
 }

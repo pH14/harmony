@@ -2397,6 +2397,7 @@ where
     if !resident_memory_is_within_budget(bootstrap_memory_bytes, config.memory_budget_mib) {
         return Err("campaign bootstrap state exceeds its deterministic memory budget".into());
     }
+    core.archive.prepare_selection(core.max_actions);
 
     let workers = config.workers as usize;
     let mut rands = Vec::with_capacity(workers);
@@ -2482,7 +2483,6 @@ where
                 }
                 let rand = &mut rands[worker as usize];
                 let max_actions = core.max_actions;
-                core.archive.establish_liveness_anchor(max_actions);
                 let mut consecutive_skips = 0_u64;
                 if reserved.wrapping_add(1).is_multiple_of(4) {
                     while let Some(continuation) = core.archive.pop_continuation() {
@@ -2695,6 +2695,7 @@ where
                         }))?;
                         core.archive.record_selection(parent_index, &selector);
                         core.archive.maintain_memory_budget()?;
+                        core.archive.prepare_selection(max_actions);
                         counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                         counters.skips_per_worker[worker as usize] =
                             counters.skips_per_worker[worker as usize].saturating_add(1);
@@ -2947,6 +2948,7 @@ where
                     let compaction_started = profile_now(coordinator_profile.enabled);
                     let compactions_before = core.archive.history_compactions();
                     core.archive.maintain_memory_budget()?;
+                    core.archive.prepare_selection(core.max_actions);
                     record_compaction_elapsed(
                         &mut coordinator_profile,
                         compactions_before,
@@ -3410,7 +3412,7 @@ where
         );
     }
 
-    core.archive.establish_liveness_anchor(header.action_limit);
+    core.archive.prepare_selection(core.max_actions);
 
     let replay_window_depth = admission_window_depth(
         usize::try_from(header.workers)?,
@@ -3547,6 +3549,7 @@ where
                 verify_selector_annotation(&skip.selector)?;
                 core.archive.record_selection(parent_index, &skip.selector);
                 core.archive.maintain_memory_budget()?;
+                core.archive.prepare_selection(core.max_actions);
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                 counters.skips_per_worker[worker] =
                     counters.skips_per_worker[worker].saturating_add(1);
@@ -3800,6 +3803,7 @@ where
                 core.archive.unpin_job_origin(snapshot_id);
                 core.archive.unpin_metadata(job.parent_id);
                 core.archive.maintain_memory_budget()?;
+                core.archive.prepare_selection(core.max_actions);
                 for metadata_id in &replay_job_metadata[replay_job_slot] {
                     if let Some(uses) = replay_metadata_uses.get_mut(metadata_id) {
                         *uses = uses.saturating_sub(1);
