@@ -47,6 +47,28 @@ a control that zeros only missiles. Selection samples read actual emulator
 snapshots. This diagnostic establishes neither door opening nor route completion.
 It writes only a compact summary; keep the request, prefix, and output private.
 
+`smb-history-retention REQUEST.json OUTPUT_DIRECTORY` compares natural SMB
+prefixes in the production archive. Its strict request supplies ROM/core paths
+and SHA-256 hashes, `useful_prefix`, `other_prefix`, `competitor_prefix`, a
+shared `continuation`, `objective` (`world`, `level`, `area_type`, and
+`absolute_player_x_min`), `population_start_action`, `seed`, and `broken`.
+Prefixes and the suffix are bounded recorded button inputs; the output records
+their hashes so the fixture set can be pinned with the request. All three live
+endpoints must share the normalized archive place, progress, and identity; the
+useful endpoint must have `loop_on_path` set, while the other two must not.
+The third, independently replayed competitor shares the other endpoint's
+normalized slot and is inserted first. Preceding natural snapshots populate an
+512-entry archive with the production two-per-key limit, and the useful
+and other endpoints are inserted in both orders. `broken` changes only the
+archive key by clearing `loop_on_path`.
+
+The same supplied suffix is replayed from the endpoints and selected actual
+archive snapshots. It is a mechanics/retention diagnostic, not searcher input
+or an autonomous-search result. Use the resource supervisor in
+`benchmarks/tiny_worlds` for the build and run, following its documented
+artifact and output handling; keep the request, input fixtures, and results
+private.
+
 The Consonance backend uses the `consonance` feature and requires Linux/KVM
 and matching guest artifacts; `harmony search --package nes --backend
 consonance ROM` selects it through the shared CLI.
