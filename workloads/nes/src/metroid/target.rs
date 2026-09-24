@@ -932,9 +932,15 @@ fn decode_action_observations(
             .ok_or(MachineError::MalformedEnv)?
             .copy_from_slice(frame_bytes);
         let boss_defeats = decode_boss_defeats(&frame_cartridge)?;
-        let state = keep_cell_through_door(decode_state(wram, &frame_cartridge)?, prior_state);
+        let state = keep_boss_reading_while_absent(
+            keep_cell_through_door(decode_state(wram, &frame_cartridge)?, prior_state),
+            prior_state,
+        );
         let frame_count = initial.frame_count + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
         tourian_events.observe(state, wram[0x98]);
+        if state.area != prior_state.area {
+            boss_health_seen = 0;
+        }
         boss_health_seen = boss_health_seen.max(state.boss_health_ceiling());
         let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
             || policy.is_dead(state) != policy.is_dead(prior_state);
@@ -998,6 +1004,26 @@ fn keep_cell_through_door(
     if in_door_transition(state.door) {
         state.map_x = prior.map_x;
         state.map_y = prior.map_y;
+    }
+    state
+}
+
+fn keep_boss_reading_while_absent(
+    mut state: MetroidMechanicalState,
+    prior: MetroidMechanicalState,
+) -> MetroidMechanicalState {
+    let fight_continues = if state.area == AREA_TOURIAN {
+        prior.area == AREA_TOURIAN && !state.mother_brain_defeated
+    } else {
+        !in_door_transition(state.door)
+            && (state.area, state.map_x, state.map_y) == (prior.area, prior.map_x, prior.map_y)
+    };
+    if state.boss_health == 0
+        && prior.boss_health > 0
+        && state.items() == prior.items()
+        && fight_continues
+    {
+        state.boss_health = prior.boss_health;
     }
     state
 }
@@ -1112,7 +1138,7 @@ pub fn spatial_bucket(state: MetroidMechanicalState) -> (u8, u8, u8, u8, u8, u8,
 #[cfg(test)]
 mod observation_tests {
     use super::*;
-    use crate::metroid::progress::NamedProgress;
+    use crate::{metroid::progress::NamedProgress, search::rand::RomuDuoJrRand};
 
     fn decode_with_fixed_slots(
         frames: &[[u8; WRAM_SIZE]],
@@ -1383,7 +1409,7 @@ mod observation_tests {
         )
         .unwrap();
         let last = observations.last().unwrap();
-        assert_eq!(last.decoded.boss_health, 0);
+        assert_eq!(last.decoded.boss_health, 0x30);
         assert_eq!(last.boss_health_seen, 0x60);
         let (observations, _) = decode_with_fixed_slots(
             &[hurt],
@@ -1395,6 +1421,120 @@ mod observation_tests {
         .unwrap();
         assert_eq!(observations[0].decoded.boss_health, 0x30);
         assert_eq!(observations[0].boss_health_seen, 0x30);
+    }
+
+    #[test]
+    fn an_absent_boss_reading_keeps_its_last_value_until_the_fight_ends() {
+        let kraid = MetroidMechanicalState {
+            area: AREA_KRAID,
+            map_x: 8,
+            map_y: 29,
+            boss_health: 48,
+            ..MetroidMechanicalState::default()
+        };
+        let absent = MetroidMechanicalState {
+            boss_health: 0,
+            ..kraid
+        };
+        let kept = |state| keep_boss_reading_while_absent(state, kraid).boss_health;
+        assert_eq!(kept(absent), 48);
+        assert_eq!(kept(MetroidMechanicalState { door: 1, ..absent }), 0);
+        assert_eq!(kept(MetroidMechanicalState { map_x: 9, ..absent }), 0);
+        assert_eq!(
+            kept(MetroidMechanicalState {
+                bosses: 1,
+                ..absent
+            }),
+            0
+        );
+        assert_eq!(
+            kept(MetroidMechanicalState {
+                boss_health: 44,
+                ..kraid
+            }),
+            44
+        );
+        let mother_brain = MetroidMechanicalState {
+            area: AREA_TOURIAN,
+            map_x: 3,
+            map_y: 11,
+            boss_health: 80,
+            ..MetroidMechanicalState::default()
+        };
+        let other_screen = MetroidMechanicalState {
+            map_x: 4,
+            boss_health: 0,
+            ..mother_brain
+        };
+        let kept = |state| keep_boss_reading_while_absent(state, mother_brain).boss_health;
+        assert_eq!(kept(other_screen), 80);
+        assert_eq!(
+            kept(MetroidMechanicalState {
+                door: 1,
+                ..other_screen
+            }),
+            80
+        );
+        assert_eq!(
+            kept(MetroidMechanicalState {
+                mother_brain_defeated: true,
+                ..other_screen
+            }),
+            0
+        );
+        assert_eq!(
+            kept(MetroidMechanicalState {
+                area: AREA_BRINSTAR,
+                ..other_screen
+            }),
+            0
+        );
+    }
+
+    #[test]
+    fn the_highest_boss_reading_starts_over_in_a_new_area() {
+        let slot = ENEMY_SLOT_BASE + 2 * ENEMY_SLOT_STRIDE;
+        let status = ENEMY_STATUS_BASE + 2 * ENEMY_SLOT_STRIDE - CARTRIDGE_FRAME_RANGE.start;
+        let enemy_type = ENEMY_TYPE_BASE + 2 * ENEMY_SLOT_STRIDE - CARTRIDGE_FRAME_RANGE.start;
+        let mut ridley = [0; WRAM_SIZE];
+        ridley[GAME_MODE] = GAME_MODE_PLAYING;
+        ridley[HEALTH_LOW] = 0x50;
+        ridley[AREA] = AREA_RIDLEY;
+        ridley[slot + ENEMY_SPECIAL_ATTRIBUTES] = ENEMY_MINI_BOSS_BIT;
+        ridley[slot + ENEMY_HIT_POINTS] = 0x8c;
+        let mut kraid = ridley;
+        kraid[AREA] = AREA_KRAID;
+        kraid[slot + ENEMY_HIT_POINTS] = 0x60;
+        let mut ridley_slot = vec![0; CARTRIDGE_FRAME_RANGE.len()];
+        ridley_slot[status] = 0x01;
+        ridley_slot[enemy_type] = 0x09;
+        let mut kraid_slot = ridley_slot.clone();
+        kraid_slot[enemy_type] = 0x08;
+        let mut cartridge = [0; 8192];
+        cartridge[CARTRIDGE_FRAME_RANGE].copy_from_slice(&ridley_slot);
+        let initial = MetroidTarget::make_observation(
+            0,
+            decode_state(&ridley, &cartridge).unwrap(),
+            0x8c,
+            &ridley,
+            &ridley,
+            BossDefeats::default(),
+            TourianEvents::default(),
+        );
+        cartridge[CARTRIDGE_FRAME_RANGE].copy_from_slice(&kraid_slot);
+        let (observations, _) = decode_action_observations(
+            &[ridley, kraid],
+            &[ridley_slot, kraid_slot].concat(),
+            &cartridge,
+            &initial,
+            ridley,
+            MetroidTerminalPolicy::Legacy,
+        )
+        .unwrap();
+        let last = observations.last().unwrap();
+        assert_eq!(last.decoded.area, AREA_KRAID);
+        assert_eq!(last.decoded.boss_health, 0x60);
+        assert_eq!(last.boss_health_seen, 0x60);
     }
 
     #[test]
@@ -1460,26 +1600,31 @@ mod observation_tests {
     }
 
     #[test]
-    fn every_decoded_cartridge_field_is_captured_each_frame() {
-        let slot_ends = (0..ENEMY_SLOTS).flat_map(|slot| {
-            [
-                ENEMY_STATUS_BASE + slot * ENEMY_SLOT_STRIDE,
-                ENEMY_TYPE_BASE + slot * ENEMY_SLOT_STRIDE,
-            ]
-        });
-        for address in [
-            EQUIPMENT,
-            MISSILES,
-            MISSILE_CAPACITY,
-            ENERGY_TANKS,
-            KRAID_STATUS,
-            RIDLEY_STATUS,
-            ENDING,
-        ]
-        .into_iter()
-        .chain(slot_ends)
-        {
-            assert!(CARTRIDGE_FRAME_RANGE.contains(&address), "{address:#x}");
+    fn the_decoder_reads_no_cartridge_byte_outside_the_per_frame_range() {
+        let mut rand = RomuDuoJrRand::with_seed(11);
+        let mut byte = move || u8::try_from(rand.next_u64() & 0xff).unwrap();
+        for area in [AREA_BRINSTAR, AREA_KRAID, AREA_TOURIAN, AREA_RIDLEY] {
+            let mut wram = [0; WRAM_SIZE];
+            wram.iter_mut().for_each(|value| *value = byte());
+            wram[AREA] = area;
+            for slot in 0..ENEMY_SLOTS {
+                let base = ENEMY_SLOT_BASE + slot * ENEMY_SLOT_STRIDE;
+                wram[base + ENEMY_SPECIAL_ATTRIBUTES] = ENEMY_MINI_BOSS_BIT;
+            }
+            let mut cartridge = [0; CARTRIDGE_RAM_SIZE];
+            cartridge.iter_mut().for_each(|value| *value = byte());
+            let mut outside_changed = [0; CARTRIDGE_RAM_SIZE];
+            outside_changed.iter_mut().for_each(|value| *value = byte());
+            outside_changed[CARTRIDGE_FRAME_RANGE]
+                .copy_from_slice(&cartridge[CARTRIDGE_FRAME_RANGE]);
+            assert_eq!(
+                decode_state(&wram, &cartridge).unwrap(),
+                decode_state(&wram, &outside_changed).unwrap()
+            );
+            assert_eq!(
+                decode_boss_defeats(&cartridge).unwrap(),
+                decode_boss_defeats(&outside_changed).unwrap()
+            );
         }
     }
 

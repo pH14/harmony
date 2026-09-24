@@ -62,7 +62,7 @@ nothing else about drawing; the searcher owns the suffix draw and the
 retained-input table.
 
 The progress tier is the items held and whether the lineage has damaged the
-boss in its room. Mother Brain's defeat counts as one more item: in Tourian,
+boss of its area. Mother Brain's defeat counts as one more item: in Tourian,
 her status byte at `$98` reads 3 to 7, 9 or 10, or the high byte of the escape
 timer at `$010B` reads anything but `$ff`. The place is the area byte, the map
 cell, boss damage and the Zebetite hits still needed, so every hit on a boss or
@@ -75,17 +75,17 @@ Tanks, missiles and health are the preferences that decide which state holds a
 slot, in two orders: missiles before health, and health before missiles. Two
 places in the same tier are peers whatever their area byte, map row or column.
 
-Boss damage is how far a lineage has worn down the mini boss sharing its room.
+Boss damage is how far a lineage has worn down the boss of its area.
 In Tourian the coordinate reads Mother Brain's remaining hits while her
 status byte at `$98` says she is in view (1 idle, 2 hit): 32 minus her hit
 count at `$99`, the count she dies at. The status byte clears whenever Samus
-is in the other half of her room and once her death sequence starts, and the
-reading is absent then; her hit count persists, so the reading falls as
+is in the other half of her room and once her death sequence starts; her hit
+count persists, so the reading falls as
 missiles land on her and never rises. It counts four per hit, the damage one
 missile does to Kraid or Ridley, so one missile is one boss-damage bucket in
 every boss room. Her full health is the reading's ceiling: an execution's
-highest present reading is at least her full health whenever she is in view,
-so a lineage that leaves her room and returns ranks by her hit count again.
+highest reading is at least her full health whenever she has a reading, so a
+lineage that leaves her room and returns ranks by her hit count again.
 The Zebetite columns are part of the place: the key carries the hits still
 needed on every live column slot, so a state that has hit a column is a
 different place from one that has not. Without it, a state that fired a
@@ -108,18 +108,20 @@ so the boss reading comes only from an in-use slot holding Kraid (type 8 in area
 `$6877` through `$6B52`, which holds every cartridge byte the decoder reads, on
 every frame, because a boss can die and free his slot partway through an
 action. The key carries the
-remaining hit points and the highest present reading over the execution's
-frames, and the lineage carries the highest reading it has seen, so the damage
-is the difference between that highest and the remaining hit points in buckets
-of four. A reading of nothing keeps the parent's damage, because a hit flashes
-the slot empty for a few frames. A lineage that leaves the boss's room, reading
-nothing in a different map cell, starts from zero, because the boss regains
-full health when the room is re-entered. The damage also starts from zero
-when the item count changes, because a kill adds an item and the next boss is
-untouched; without that, a lineage that killed Mother Brain would carry her
-damage into the escape. While the reading stays present the
-highest carries across map cells, so Mother Brain's reading ranks both
-screens of her room on the same ladder. Without the coordinate a state that has landed ten hits on
+remaining hit points and the highest reading over the execution's frames in
+the current area, and the lineage carries the highest reading it has seen in
+its current area. The damage is the difference between that highest and the
+remaining hit points, rounded up to buckets of four, so any hit, such as a
+one-point bomb hit on Kraid, puts the state in the engaged tier. Each area
+holds one boss, so the highest starts from zero when the area changes. A
+reading that goes absent keeps its last value while the fight continues,
+because a hit flashes Kraid's or Ridley's slot empty for a few frames and
+Mother Brain's hit count persists while she is off screen. Kraid's or Ridley's
+fight continues while Samus stays in the same map cell outside a door
+transition, because the boss regains full health when his room is re-entered.
+Mother Brain's fight continues anywhere in Tourian until she is defeated. The
+reading also drops when the item count changes, because a kill adds an item.
+With no reading the damage is zero. Without the coordinate a state that has landed ten hits on
 Kraid shares a cell with one standing in the doorway, and no ordering can
 prefer the first.
 
@@ -247,16 +249,16 @@ with the defeat write in `Bank07.asm` at `LDD75`: `(InArea & 0x0f) >> 1`
 stores 1 at $687B for Kraid and 2 at $687C for Ridley. The key reads Mother
 Brain's remaining hits into Tourian's boss health at four per hit while her
 status byte says she is in view, with her full health as the ceiling of the
-highest present reading. It keeps the live Zebetite columns' remaining hits in
-the cell below the map cell, and carries a lineage's highest reading across map
-cells while a reading is present. Named progress
+highest reading. It keeps the live Zebetite columns' remaining hits in the
+cell below the map cell, and carries a lineage's highest reading across map
+cells within one area. Named progress
 (`metroid-named-progress-v3`) records the Kraid and Ridley defeat flags, Mother
 Brain's state, latched Tourian events and the destroyed Zebetite column, and
 binds Mother Brain's room to her status byte. Route timestamps exclude genesis
 setup. The replay probe reports action execution work and setup separately, and
 probes and backend snapshot replay are outside the execution-work counter. The
-campaign stream format is v4, the snapshot checkpoint format is v9, and the
-result digest format is v5. The combined capacity score is a separate named score.
+campaign stream format is v4, the snapshot checkpoint format is v10, and the
+result digest format is v6. The combined capacity score is a separate named score.
 
 Retrospective replay, without submitting an existing solution to search:
 

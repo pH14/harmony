@@ -44,7 +44,7 @@ use crate::{
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v9";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v10";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -105,7 +105,7 @@ impl MetroidGame {
             "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;\
              genesis={genesis}:prefix-sha256={:x};\
              image=cartridge-ram-declared-v1;\
-             result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v5;sha256={core_sha256}",
+             result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v6;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
@@ -1177,7 +1177,7 @@ mod tests {
             MetroidSnapshotCheckpoint::from_bytes(&current, SNAPSHOT_CHECKPOINT_FORMAT).unwrap(),
             checkpoint(SNAPSHOT_CHECKPOINT_FORMAT)
         );
-        let previous = checkpoint("metroid-quicknes-snapshot-checkpoint-v8")
+        let previous = checkpoint("metroid-quicknes-snapshot-checkpoint-v9")
             .to_bytes()
             .unwrap();
         let error = MetroidSnapshotCheckpoint::from_bytes(&previous, SNAPSHOT_CHECKPOINT_FORMAT)
