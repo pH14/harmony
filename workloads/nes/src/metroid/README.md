@@ -103,8 +103,9 @@ hit points mean the slot holds nothing that can be hurt. Cartridge RAM holds
 each slot's status at `$6AF4` (0 when unused) and its enemy type at `$6B02`,
 with the same spacing. A freed slot keeps its old hit points and mini-boss mark,
 so the boss reading comes only from an in-use slot holding Kraid (type 8 in area
-`$12`) or Ridley (type 9 in area `$14`). The machine records these cartridge
-bytes on every frame, because a boss slot can be freed partway through an
+`$12`) or Ridley (type 9 in area `$14`). The machine records cartridge RAM from
+`$6877` through `$6B52`, which holds every cartridge byte the decoder reads, on
+every frame, because a boss can die and free his slot partway through an
 action. The key carries the
 remaining hit points and the highest present reading over the execution's
 frames, and the lineage carries the highest reading it has seen, so the damage

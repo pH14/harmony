@@ -54,8 +54,6 @@ const ENEMY_TYPE_BASE: usize = 0xb02;
 const AREA_KRAID: u8 = 0x12;
 const AREA_RIDLEY: u8 = 0x14;
 const BOSS_ENEMY_TYPES: [(u8, u8); 2] = [(AREA_KRAID, 0x08), (AREA_RIDLEY, 0x09)];
-const ENEMY_SLOT_CARTRIDGE: std::ops::Range<usize> =
-    ENEMY_STATUS_BASE..ENEMY_TYPE_BASE + (ENEMY_SLOTS - 1) * ENEMY_SLOT_STRIDE + 1;
 
 const HEALTH_HIGH: usize = 0x107;
 const HEALTH_LOW: usize = 0x106;
@@ -218,6 +216,8 @@ impl MetroidMechanicalState {
 const MISSILE_TANK_STEP: u8 = 5;
 const MAX_ENERGY_TANKS: u8 = 6;
 const CARTRIDGE_RAM_SIZE: usize = 8192;
+const CARTRIDGE_FRAME_RANGE: std::ops::Range<usize> =
+    ENERGY_TANKS..ENEMY_TYPE_BASE + (ENEMY_SLOTS - 1) * ENEMY_SLOT_STRIDE + 1;
 
 fn health_cap(energy_tanks: u8) -> u16 {
     (u16::from(energy_tanks) + 1) * 1000 - 1
@@ -534,7 +534,7 @@ impl MetroidTarget {
         prefix: &[ButtonChord],
         depth: GenesisDepth,
     ) -> Result<Self, MachineError> {
-        machine.capture_save_ram_per_frame(ENEMY_SLOT_CARTRIDGE);
+        machine.capture_save_ram_per_frame(CARTRIDGE_FRAME_RANGE);
         let mut genesis_prefix = prefix.to_vec();
         let mut untouched = None;
         for chunk in prefix.chunks(64) {
@@ -795,8 +795,8 @@ impl MetroidTarget {
             return None;
         }
         let frames = self.machine.frames().to_vec();
-        let enemy_slots = self.machine.save_ram_frames().to_vec();
-        (!frames.is_empty()).then_some((frames, enemy_slots))
+        let cartridge_frames = self.machine.save_ram_frames().to_vec();
+        (!frames.is_empty()).then_some((frames, cartridge_frames))
     }
 }
 
@@ -817,7 +817,7 @@ impl Target for MetroidTarget {
         if self.failed || self.is_dead() {
             return;
         }
-        let Some((frames, enemy_slots)) = self.run_action(action) else {
+        let Some((frames, cartridge_frames)) = self.run_action(action) else {
             self.failed = true;
             return;
         };
@@ -830,7 +830,7 @@ impl Target for MetroidTarget {
         };
         match decode_action_observations(
             &frames,
-            &enemy_slots,
+            &cartridge_frames,
             &cartridge,
             &self.observation,
             self.current_wram,
@@ -906,32 +906,32 @@ impl Target for MetroidTarget {
 
 fn decode_action_observations(
     frames: &[[u8; WRAM_SIZE]],
-    enemy_slots: &[u8],
+    cartridge_frames: &[u8],
     cartridge: &[u8],
     initial: &MetroidObservations,
     mut prior_wram: [u8; WRAM_SIZE],
     policy: MetroidTerminalPolicy,
 ) -> Result<(Vec<MetroidObservations>, [u8; WRAM_SIZE]), MachineError> {
-    if enemy_slots.len() != frames.len() * ENEMY_SLOT_CARTRIDGE.len() {
+    if cartridge_frames.len() != frames.len() * CARTRIDGE_FRAME_RANGE.len() {
         return Err(MachineError::Backend(
-            "Metroid enemy slot capture does not match the frame count".to_owned(),
+            "Metroid cartridge RAM capture does not match the frame count".to_owned(),
         ));
     }
-    let boss_defeats = decode_boss_defeats(cartridge)?;
     let mut frame_cartridge = cartridge.to_vec();
     let mut prior_state = initial.decoded;
     let mut boss_health_seen = initial.boss_health_seen;
     let mut observations = Vec::new();
     let mut tourian_events = TourianEvents::default();
-    for (offset, (wram, slots)) in frames
+    for (offset, (wram, frame_bytes)) in frames
         .iter()
-        .zip(enemy_slots.chunks_exact(ENEMY_SLOT_CARTRIDGE.len()))
+        .zip(cartridge_frames.chunks_exact(CARTRIDGE_FRAME_RANGE.len()))
         .enumerate()
     {
         frame_cartridge
-            .get_mut(ENEMY_SLOT_CARTRIDGE)
+            .get_mut(CARTRIDGE_FRAME_RANGE)
             .ok_or(MachineError::MalformedEnv)?
-            .copy_from_slice(slots);
+            .copy_from_slice(frame_bytes);
+        let boss_defeats = decode_boss_defeats(&frame_cartridge)?;
         let state =
             keep_cell_through_door_touch(decode_state(wram, &frame_cartridge)?, prior_state);
         let frame_count = initial.frame_count + u64::try_from(offset).unwrap_or(u64::MAX) + 1;
@@ -1118,8 +1118,15 @@ mod observation_tests {
         prior_wram: [u8; WRAM_SIZE],
         policy: MetroidTerminalPolicy,
     ) -> Result<(Vec<MetroidObservations>, [u8; WRAM_SIZE]), MachineError> {
-        let enemy_slots = cartridge[ENEMY_SLOT_CARTRIDGE].repeat(frames.len());
-        decode_action_observations(frames, &enemy_slots, cartridge, initial, prior_wram, policy)
+        let cartridge_frames = cartridge[CARTRIDGE_FRAME_RANGE].repeat(frames.len());
+        decode_action_observations(
+            frames,
+            &cartridge_frames,
+            cartridge,
+            initial,
+            prior_wram,
+            policy,
+        )
     }
 
     fn resource_fixture() -> MetroidTarget {
@@ -1388,10 +1395,10 @@ mod observation_tests {
     }
 
     #[test]
-    fn a_boss_slot_freed_within_an_action_keeps_its_earlier_readings() {
+    fn a_boss_killed_within_an_action_keeps_its_earlier_frames() {
         let slot = ENEMY_SLOT_BASE + 2 * ENEMY_SLOT_STRIDE;
-        let status = ENEMY_STATUS_BASE + 2 * ENEMY_SLOT_STRIDE - ENEMY_SLOT_CARTRIDGE.start;
-        let enemy_type = ENEMY_TYPE_BASE + 2 * ENEMY_SLOT_STRIDE - ENEMY_SLOT_CARTRIDGE.start;
+        let status = ENEMY_STATUS_BASE + 2 * ENEMY_SLOT_STRIDE - CARTRIDGE_FRAME_RANGE.start;
+        let enemy_type = ENEMY_TYPE_BASE + 2 * ENEMY_SLOT_STRIDE - CARTRIDGE_FRAME_RANGE.start;
         let mut fight = [0; WRAM_SIZE];
         fight[GAME_MODE] = GAME_MODE_PLAYING;
         fight[HEALTH_LOW] = 0x50;
@@ -1400,23 +1407,26 @@ mod observation_tests {
         fight[slot + ENEMY_HIT_POINTS] = 0x20;
         let mut freed = fight;
         freed[slot + ENEMY_HIT_POINTS] = 0x10;
-        let mut in_use = vec![0; ENEMY_SLOT_CARTRIDGE.len()];
+        let mut in_use = vec![0; CARTRIDGE_FRAME_RANGE.len()];
         in_use[status] = 0x01;
         in_use[enemy_type] = 0x08;
         let mut released = in_use.clone();
         released[status] = 0x00;
+        released[KRAID_STATUS - CARTRIDGE_FRAME_RANGE.start] = KRAID_DEFEATED_BIT;
+        let mut before = [0; 8192];
+        before[CARTRIDGE_FRAME_RANGE].copy_from_slice(&in_use);
         let mut cartridge = [0; 8192];
-        cartridge[ENEMY_SLOT_CARTRIDGE].copy_from_slice(&released);
+        cartridge[CARTRIDGE_FRAME_RANGE].copy_from_slice(&released);
         let initial = MetroidTarget::make_observation(
             0,
-            decode_state(&fight, &cartridge).unwrap(),
+            decode_state(&fight, &before).unwrap(),
             0,
             &fight,
             &fight,
             BossDefeats::default(),
             TourianEvents::default(),
         );
-        assert_eq!(initial.decoded.boss_health, 0);
+        assert_eq!(initial.decoded.boss_health, 0x20);
         let (observations, _) = decode_action_observations(
             &[fight, freed],
             &[in_use, released.clone()].concat(),
@@ -1426,8 +1436,12 @@ mod observation_tests {
             MetroidTerminalPolicy::Legacy,
         )
         .unwrap();
-        let last = observations.last().unwrap();
+        assert_eq!(observations.len(), 1);
+        let last = &observations[0];
+        assert_eq!(last.frame_count, 2);
         assert_eq!(last.decoded.boss_health, 0);
+        assert_eq!(last.decoded.bosses, 1);
+        assert!(last.boss_defeats.kraid);
         assert_eq!(last.boss_health_seen, 0x20);
         assert!(
             decode_action_observations(
@@ -1440,6 +1454,30 @@ mod observation_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn every_decoded_cartridge_field_is_captured_each_frame() {
+        let slot_ends = (0..ENEMY_SLOTS).flat_map(|slot| {
+            [
+                ENEMY_STATUS_BASE + slot * ENEMY_SLOT_STRIDE,
+                ENEMY_TYPE_BASE + slot * ENEMY_SLOT_STRIDE,
+            ]
+        });
+        for address in [
+            EQUIPMENT,
+            MISSILES,
+            MISSILE_CAPACITY,
+            ENERGY_TANKS,
+            KRAID_STATUS,
+            RIDLEY_STATUS,
+            ENDING,
+        ]
+        .into_iter()
+        .chain(slot_ends)
+        {
+            assert!(CARTRIDGE_FRAME_RANGE.contains(&address), "{address:#x}");
+        }
     }
 
     #[test]
