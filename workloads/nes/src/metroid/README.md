@@ -56,10 +56,18 @@ The adapter supplies its controller vocabulary as the alphabet sampler and
 nothing else about drawing; the searcher owns the suffix draw and the
 retained-input table.
 
-The items held are the progress tier. The place is the area byte, the map
+The progress tier is the items held and whether the lineage has damaged the
+boss in its room. Mother Brain's defeat counts as one more item: in Tourian,
+her status byte at `$98` reads 3 to 7, 9 or 10, or the high byte of the escape
+timer at `$010B` reads anything but `$ff`. The place is the area byte, the map
 cell, boss damage and the Zebetite hits still needed, so every hit on a boss or
 a Zebetite column opens a new place whose draw count starts fresh, and a state
-that has hurt either never displaces one that has not. The holder identity is the position bucket, posture and door state.
+that has hurt either never displaces one that has not. A damaged boss lifts
+the state into the tier above its item count, so a fight in progress ranks
+above the rest of the map, while each damage level stays a separate place in
+that tier and draws spread across the levels. The deepest damage level
+often holds a state that has spent its missiles, and a boss that only missiles
+hurt cannot die from there. The holder identity is the position bucket, posture and door state.
 Tanks, missiles and health are the preferences that decide which state holds a
 slot, in two orders: missiles before health, and health before missiles. Two
 places with equal items are peers whatever their area byte, map row or column.
@@ -96,7 +104,10 @@ is the difference between that highest and the remaining hit points in buckets
 of four. A reading of nothing keeps the parent's damage, because a hit flashes
 the slot empty for a few frames. A lineage that leaves the boss's room, reading
 nothing in a different map cell, starts from zero, because the boss regains
-full health when the room is re-entered; while the reading stays present the
+full health when the room is re-entered. The damage also starts from zero
+when the item count changes, because a kill adds an item and the next boss is
+untouched; without that, a lineage that killed Mother Brain would carry her
+damage into the escape. While the reading stays present the
 highest carries across map cells, so Mother Brain's reading ranks both
 screens of her room on the same ladder. Without the coordinate a state that has landed ten hits on
 Kraid shares a cell with one standing in the doorway, and no ordering can

@@ -121,6 +121,9 @@ const TOURIAN_HEALTH_PER_HIT: u16 = 4;
 const MOTHER_BRAIN_IN_VIEW_STATUSES: [u8; 2] = [1, 2];
 const MOTHER_BRAIN_FULL_HEALTH: u16 = MOTHER_BRAIN_HITS_TO_KILL as u16 * TOURIAN_HEALTH_PER_HIT;
 const AREA_TOURIAN: u8 = 0x13;
+const ESCAPE_TIMER_HIGH: usize = 0x10b;
+const ESCAPE_TIMER_IDLE: u8 = 0xff;
+const MOTHER_BRAIN_DEFEATED_STATUSES: [u8; 7] = [3, 4, 5, 6, 7, 9, 10];
 const ENERGY_TANKS: usize = 0x877;
 
 const JOYPAD_START: u8 = 1 << 3;
@@ -147,6 +150,7 @@ pub struct MetroidMechanicalState {
     pub zebetite_hits_left: u8,
     pub bosses: u8,
     pub statues: u8,
+    pub mother_brain_defeated: bool,
     pub ending: bool,
 }
 
@@ -300,8 +304,15 @@ pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalSt
         )),
         statues: u8::from(statue_raised(read_byte(cartridge, KRAID_STATUS)?))
             + u8::from(statue_raised(read_byte(cartridge, RIDLEY_STATUS)?)),
+        mother_brain_defeated: mother_brain_defeated(wram, area)?,
         ending: read_byte(cartridge, ENDING)? != 0,
     })
+}
+
+fn mother_brain_defeated(wram: &[u8], area: u8) -> Result<bool, MachineError> {
+    Ok(area == AREA_TOURIAN
+        && (read_byte(wram, ESCAPE_TIMER_HIGH)? != ESCAPE_TIMER_IDLE
+            || MOTHER_BRAIN_DEFEATED_STATUSES.contains(&read_byte(wram, MOTHER_BRAIN_STATUS)?)))
 }
 
 fn boss_defeated(status: u8, defeated_bit: u8) -> bool {
@@ -1331,6 +1342,32 @@ mod boss_status_tests {
             assert_eq!(
                 state.boss_health, expected,
                 "area {area:#x} status {status} hits {hits}"
+            );
+        }
+    }
+
+    #[test]
+    fn mother_brain_counts_as_defeated_from_her_status_or_a_running_escape_timer_in_tourian() {
+        let cartridge = vec![0u8; CARTRIDGE_RAM_SIZE];
+        for (area, status, timer, expected) in [
+            (0x13, 0, ESCAPE_TIMER_IDLE, false),
+            (0x13, 1, ESCAPE_TIMER_IDLE, false),
+            (0x13, 2, ESCAPE_TIMER_IDLE, false),
+            (0x13, 3, ESCAPE_TIMER_IDLE, true),
+            (0x13, 8, ESCAPE_TIMER_IDLE, false),
+            (0x13, 10, ESCAPE_TIMER_IDLE, true),
+            (0x13, 0, 0x99, true),
+            (0x13, 0, 0x00, true),
+            (0x10, 5, 0x99, false),
+        ] {
+            let mut wram = vec![0u8; 0x800];
+            wram[AREA] = area;
+            wram[MOTHER_BRAIN_STATUS] = status;
+            wram[ESCAPE_TIMER_HIGH] = timer;
+            let state = decode_state(&wram, &cartridge).unwrap();
+            assert_eq!(
+                state.mother_brain_defeated, expected,
+                "area {area:#x} status {status} timer {timer:#x}"
             );
         }
     }

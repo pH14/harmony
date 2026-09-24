@@ -21,7 +21,7 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 pub const MAX_METROID_ACTIONS: usize = 8_192;
-pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_two_preferences_v24";
+pub const KEY_POLICY_IDENTIFIER: &str = "metroid_items_progress_area_map_cell_boss_damage_columns_place_spatial_16_posture_door_identity_tanks_missiles_health_two_preferences_tier_items_boss_engaged_mother_brain_defeat_item";
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 
 const AREAS: u16 = 8;
@@ -51,7 +51,7 @@ pub struct MetroidArchiveKey {
 
 impl ArchiveKey for MetroidArchiveKey {
     type Place = (u8, u8, u8, u8, u8);
-    type Progress = u8;
+    type Progress = (u8, bool);
     type Identity = (u8, u8, u8, u8);
 
     fn place(self) -> Self::Place {
@@ -65,7 +65,7 @@ impl ArchiveKey for MetroidArchiveKey {
     }
 
     fn progress(self) -> Self::Progress {
-        self.items
+        (self.items, self.boss_damage > 0)
     }
 
     fn identity(self) -> Self::Identity {
@@ -93,11 +93,9 @@ impl ArchiveKey for MetroidArchiveKey {
         let same_cell = parent.is_some_and(|(key, _)| key.cell() == self.cell());
         if self.boss_health == 0 {
             return Self {
-                boss_damage: if same_cell {
-                    parent.map_or(0, |(key, _)| key.boss_damage)
-                } else {
-                    0
-                },
+                boss_damage: parent
+                    .filter(|(key, _)| same_cell && key.items == self.items)
+                    .map_or(0, |(key, _)| key.boss_damage),
                 ..self
             };
         }
@@ -158,7 +156,7 @@ const POSITION_BUCKET: u8 = 16;
 pub fn archive_key(state: MetroidMechanicalState) -> MetroidArchiveKey {
     let (items, tanks, health, missiles) = preference_tuple(state);
     MetroidArchiveKey {
-        items,
+        items: items.saturating_add(u8::from(state.mother_brain_defeated)),
         tanks,
         boss_damage: 0,
         boss_health: state.boss_health,
@@ -451,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn damaging_a_boss_moves_the_state_to_another_place_within_one_item_count() {
+    fn damaging_a_boss_moves_the_state_to_the_engaged_tier_and_a_place_per_damage_level() {
         let lineage = MetroidLineage {
             boss_health_highest: 64,
             cell: (0, 0, 0),
@@ -459,25 +457,52 @@ mod tests {
         let arriving = archive_key(MetroidMechanicalState {
             equipment: 0b1,
             boss_health: 64,
-            zebetites_destroyed: 0,
-            zebetite_hits_left: 0,
             ..MetroidMechanicalState::default()
         })
         .complete(Some((MetroidArchiveKey::default(), &lineage)));
         let hurt = archive_key(MetroidMechanicalState {
             equipment: 0b1,
             boss_health: 24,
-            zebetites_destroyed: 0,
-            zebetite_hits_left: 0,
             ..MetroidMechanicalState::default()
         })
         .complete(Some((MetroidArchiveKey::default(), &lineage)));
-        assert_eq!(arriving.boss_damage, 0);
-        assert_eq!(hurt.boss_damage, 10);
-        assert_eq!(hurt.progress(), arriving.progress());
+        let harder = archive_key(MetroidMechanicalState {
+            equipment: 0b1,
+            boss_health: 4,
+            ..MetroidMechanicalState::default()
+        })
+        .complete(Some((MetroidArchiveKey::default(), &lineage)));
+        assert_eq!(arriving.progress(), (1, false));
+        assert_eq!(hurt.progress(), (1, true));
+        assert_eq!(harder.progress(), hurt.progress());
         assert_ne!(hurt.place(), arriving.place());
+        assert_ne!(harder.place(), hurt.place());
         assert_eq!(hurt.identity(), arriving.identity());
-        assert_eq!(hurt.progress(), arriving.progress());
+    }
+
+    #[test]
+    fn mother_brain_defeat_adds_an_item_and_clears_the_boss_damage() {
+        let parent = MetroidArchiveKey {
+            items: 1,
+            boss_damage: 31,
+            area: 0x13,
+            ..MetroidArchiveKey::default()
+        };
+        let lineage = MetroidLineage::default();
+        let state = MetroidMechanicalState {
+            area: 0x13,
+            equipment: 0b1,
+            ..MetroidMechanicalState::default()
+        };
+        let before = archive_key(state).complete(Some((parent, &lineage)));
+        let after = archive_key(MetroidMechanicalState {
+            mother_brain_defeated: true,
+            ..state
+        })
+        .complete(Some((parent, &lineage)));
+        assert_eq!(before.progress(), (1, true));
+        assert_eq!(after.progress(), (2, false));
+        assert_eq!(after.boss_damage, 0);
     }
 
     #[test]

@@ -44,7 +44,7 @@ use crate::{
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v5";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v6";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -1175,7 +1175,7 @@ mod tests {
             MetroidSnapshotCheckpoint::from_bytes(&current, SNAPSHOT_CHECKPOINT_FORMAT).unwrap(),
             checkpoint(SNAPSHOT_CHECKPOINT_FORMAT)
         );
-        let previous = checkpoint("metroid-quicknes-snapshot-checkpoint-v4")
+        let previous = checkpoint("metroid-quicknes-snapshot-checkpoint-v5")
             .to_bytes()
             .unwrap();
         let error = MetroidSnapshotCheckpoint::from_bytes(&previous, SNAPSHOT_CHECKPOINT_FORMAT)
