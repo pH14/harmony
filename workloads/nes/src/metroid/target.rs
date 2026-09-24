@@ -519,8 +519,10 @@ impl MetroidTarget {
         depth: GenesisDepth,
     ) -> Result<Self, MachineError> {
         let mut genesis_prefix = prefix.to_vec();
+        let mut untouched = None;
         for chunk in prefix.chunks(64) {
             run_chords(&mut machine, chunk)?;
+            untouched = last_untouched_frame(machine.frames()).or(untouched);
         }
         let mut waited = 0;
         loop {
@@ -538,12 +540,13 @@ impl MetroidTarget {
                 )));
             }
             run_chords(&mut machine, &[ButtonChord::new(0, 1)])?;
+            untouched = last_untouched_frame(machine.frames()).or(untouched);
             waited += 1;
         }
         genesis_prefix.extend(idle_chords(waited));
         let wram = machine.read_wram()?;
         let cartridge = machine.read_save_ram()?;
-        let state = decode_state(&wram, &cartridge)?;
+        let state = rooted_state(&wram, untouched.as_ref(), &cartridge)?;
         let genesis = machine.snapshot()?;
         let observation = MetroidObservations {
             frame_count: 0,
@@ -666,7 +669,7 @@ impl MetroidTarget {
         }
         let wram = self.machine.read_wram()?;
         let cartridge = self.cartridge()?;
-        if decode_state(&wram, &cartridge)? != state || wram != self.current_wram {
+        if !consistent_with(&wram, &cartridge, state)? || wram != self.current_wram {
             return Err("resource intervention requires a consistent paused boundary".into());
         }
         let before = self
@@ -698,7 +701,7 @@ impl MetroidTarget {
             let mut expected_state = state;
             expected_state.health = health;
             expected_state.missiles = missiles;
-            if decode_state(&expected_wram, &expected_cartridge)? != expected_state {
+            if !consistent_with(&expected_wram, &expected_cartridge, expected_state)? {
                 return Err("resource intervention changed another mechanical field".into());
             }
             let after = self.snapshot().ok_or("intervened snapshot failed")?;
@@ -921,6 +924,37 @@ fn decode_action_observations(
         }
     }
     Ok((observations, prior_wram))
+}
+
+fn last_untouched_frame(frames: &[[u8; WRAM_SIZE]]) -> Option<[u8; WRAM_SIZE]> {
+    frames
+        .iter()
+        .rev()
+        .find(|wram| wram[DOOR_STATE] & DOOR_TOUCHED == 0)
+        .copied()
+}
+
+fn rooted_state(
+    wram: &[u8],
+    untouched: Option<&[u8; WRAM_SIZE]>,
+    cartridge: &[u8],
+) -> Result<MetroidMechanicalState, MachineError> {
+    let state = decode_state(wram, cartridge)?;
+    match untouched {
+        Some(before) if state.door & DOOR_TOUCHED != 0 => Ok(keep_cell_through_door_touch(
+            state,
+            decode_state(before, cartridge)?,
+        )),
+        _ => Ok(state),
+    }
+}
+
+fn consistent_with(
+    wram: &[u8],
+    cartridge: &[u8],
+    state: MetroidMechanicalState,
+) -> Result<bool, MachineError> {
+    Ok(keep_cell_through_door_touch(decode_state(wram, cartridge)?, state) == state)
 }
 
 fn keep_cell_through_door_touch(
@@ -1344,6 +1378,21 @@ mod observation_tests {
         .unwrap();
         let last = observations.last().unwrap().decoded;
         assert_eq!((last.map_x, last.map_y, last.door), (9, 29, 0x83));
+        assert!(consistent_with(&touched, &cartridge, last).unwrap());
+        assert!(
+            !consistent_with(
+                &touched,
+                &cartridge,
+                MetroidMechanicalState { health: 1, ..last }
+            )
+            .unwrap()
+        );
+        assert_eq!(last_untouched_frame(&[walking, touched]), Some(walking));
+        assert_eq!(last_untouched_frame(&[touched]), None);
+        let rooted = rooted_state(&touched, Some(&walking), &cartridge).unwrap();
+        assert_eq!((rooted.map_x, rooted.map_y, rooted.door), (9, 29, 0x83));
+        let unrooted = rooted_state(&touched, None, &cartridge).unwrap();
+        assert_eq!((unrooted.map_x, unrooted.map_y), (9, 28));
     }
 }
 
