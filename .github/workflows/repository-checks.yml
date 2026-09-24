@@ -85,14 +85,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Judge changed file content
         env:
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
-        run: python3 scripts/semantic-lints.py --changed-from HEAD^1
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = pull_request ]; then
+            python3 scripts/semantic-lints.py --changed-from HEAD^1
+          elif [ "$BEFORE_SHA" = 0000000000000000000000000000000000000000 ]; then
+            python3 scripts/semantic-lints.py --all
+          else
+            if ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$BEFORE_SHA" || {
+                echo "::error::The commit before this push, $BEFORE_SHA, is not on GitHub, so the push cannot be judged."
+                exit 1
+              }
+            fi
+            python3 scripts/semantic-lints.py --changed-from "$BEFORE_SHA"
+          fi
 
   ignored-tests:
     name: Ignored Tests — ${{ matrix.host }}
