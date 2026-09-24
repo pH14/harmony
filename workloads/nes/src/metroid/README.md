@@ -116,14 +116,15 @@ its current area. The damage is the difference between that highest and the
 remaining hit points, rounded up to buckets of four, so any hit, such as a
 one-point bomb hit on Kraid, puts the state in the engaged tier. Each area
 holds one boss, so the highest starts from zero when the area changes. A
-reading that goes absent keeps its last value while the fight continues,
-because a hit flashes Kraid's or Ridley's slot empty for a few frames and
-Mother Brain's hit count persists while she is off screen. Kraid's or Ridley's
-fight continues while Samus stays in the same map cell outside a door
-transition, because the boss regains full health when his room is re-entered.
-Mother Brain's fight continues anywhere in Tourian until she is defeated. The
-reading also drops when the item count changes, because a kill adds an item.
-With no reading the damage is zero. Without the coordinate a state that has landed ten hits on
+reading that goes absent keeps its last value while Samus stays in the same
+map cell outside a door transition, because a hit flashes Kraid's or Ridley's
+slot empty for a few frames. Kraid and Ridley regain full health when their
+room is re-entered. Mother Brain follows the same rule until
+she is defeated. Her hit count persists while she is off screen, but keeping her
+reading in other map cells spreads the engaged tier's draws over the Tourian
+corridor, where no missile reaches her. The reading also drops when the item
+count changes, because a kill adds an item. With no reading the damage is
+zero. Without the coordinate a state that has landed ten hits on
 Kraid shares a cell with one standing in the doorway, and no ordering can
 prefer the first.
 
@@ -259,8 +260,8 @@ Brain's state, latched Tourian events and the destroyed Zebetite column, and
 binds Mother Brain's room to her status byte. Route timestamps exclude genesis
 setup. The replay probe reports action execution work and setup separately, and
 probes and backend snapshot replay are outside the execution-work counter. The
-campaign stream format is v4, the snapshot checkpoint format is v10, and the
-result digest format is v6. The combined capacity score is a separate named score.
+campaign stream format is v4, the snapshot checkpoint format is v11, and the
+result digest format is v7. The combined capacity score is a separate named score.
 
 Retrospective replay, without submitting an existing solution to search:
 

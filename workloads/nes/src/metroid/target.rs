@@ -1030,12 +1030,9 @@ fn keep_boss_reading_while_absent(
     mut state: MetroidMechanicalState,
     prior: MetroidMechanicalState,
 ) -> MetroidMechanicalState {
-    let fight_continues = if state.area == AREA_TOURIAN {
-        prior.area == AREA_TOURIAN && !state.mother_brain_defeated
-    } else {
-        !in_door_transition(state.door)
-            && (state.area, state.map_x, state.map_y) == (prior.area, prior.map_x, prior.map_y)
-    };
+    let fight_continues = !in_door_transition(state.door)
+        && !state.mother_brain_defeated
+        && (state.area, state.map_x, state.map_y) == (prior.area, prior.map_x, prior.map_y);
     if state.boss_health == 0
         && prior.boss_health > 0
         && state.items() == prior.items()
@@ -1485,25 +1482,23 @@ mod observation_tests {
             ..mother_brain
         };
         let kept = |state| keep_boss_reading_while_absent(state, mother_brain).boss_health;
-        assert_eq!(kept(other_screen), 80);
+        let same_screen = MetroidMechanicalState {
+            boss_health: 0,
+            ..mother_brain
+        };
+        assert_eq!(kept(same_screen), 80);
+        assert_eq!(kept(other_screen), 0);
         assert_eq!(
             kept(MetroidMechanicalState {
                 door: 1,
-                ..other_screen
-            }),
-            80
-        );
-        assert_eq!(
-            kept(MetroidMechanicalState {
-                mother_brain_defeated: true,
-                ..other_screen
+                ..same_screen
             }),
             0
         );
         assert_eq!(
             kept(MetroidMechanicalState {
-                area: AREA_BRINSTAR,
-                ..other_screen
+                mother_brain_defeated: true,
+                ..same_screen
             }),
             0
         );
