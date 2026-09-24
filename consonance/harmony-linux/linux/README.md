@@ -55,6 +55,8 @@ pins in `versions.lock`. Internal re-execution preserves `LD_BIND_NOW=1`
 before child startup even when the runtime constructs a minimal environment.
 Each build tests that command environment and emits `runc-build.manifest`.
 The x86 builder, `build-x86-runc.sh`, uses pinned musl 1.2.6 for static linking.
+The platform BusyBox links the same musl on both architectures, so a host libc
+update cannot change the initramfs bytes.
 
 The arm64 runtime uses `build-arm64-runc.sh`. The script exports UAPI
 headers from the pinned kernel, builds a fresh LSE-only musl toolchain, applies

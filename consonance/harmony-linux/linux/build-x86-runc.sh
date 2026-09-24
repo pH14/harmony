@@ -17,28 +17,18 @@ rm -rf "$go_toolchain"
 mkdir -p "$go_toolchain"
 tar -xf "$go_archive" -C "$go_toolchain" --strip-components=1
 extract_runc_source
-extract_musl
 extract_kernel
 kernel_headers=$BUILD_ROOT/kernel-headers-x86-runc
 kernel_headers_obj=$BUILD_ROOT/kernel-headers-obj-x86-runc
 mkdir -p "$kernel_headers" "$kernel_headers_obj"
 make -C "$KSRC" O="$kernel_headers_obj" ARCH=x86 INSTALL_HDR_PATH="$kernel_headers" headers_install >/dev/null
-musl_source=$BUILD_ROOT/musl-x86-runc
-musl_prefix=$BUILD_ROOT/musl-x86-runc-prefix
-rm -rf "$musl_source" "$musl_prefix"
-cp -a "$MUSLSRC" "$musl_source"
-(
-    cd "$musl_source"
-    CC=cc CFLAGS='-O2 -march=x86-64' ./configure --prefix="$musl_prefix" --disable-shared >/dev/null
-    make -j4 >/dev/null
-    make install >/dev/null
-)
+build_x86_musl
 export GOCACHE="$BUILD_ROOT/go-build-cache"
 export GOPATH="$BUILD_ROOT/go-workspace"
 export GOROOT=$go_toolchain
 export PATH=$GOROOT/bin:$PATH
 export GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=1
-export CC=$musl_prefix/bin/musl-gcc
+export CC=$X86_MUSL_PREFIX/bin/musl-gcc
 export CGO_CFLAGS="-O2 -march=x86-64 -isystem $kernel_headers/include"
 export GOENV=off GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GOWORK=off GOFLAGS=
 runc_output=$BUILD_ROOT/runc-x86
