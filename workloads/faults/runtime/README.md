@@ -31,8 +31,13 @@ report write failure leaves the caller alive, so the agent cannot credit an
 injection without runtime acknowledgement.
 
 An armed park counts instrumented edges across every thread of the process
-and holds the thread that reaches edge `k`, where `k` is from 1 through
-`1 << 24`. Before the hold it writes one JSON line through `fuzz_json_data`:
+and holds the thread whose edge brings the count to `k`, where `k` is from 1
+through `1 << 24`. Each edge counts one over its site's visit count, including
+this visit, so the first visit to a site counts 1 and the hundredth counts
+1/100. A site visited at a steady rate therefore draws parks at the same rate
+as any other active site, and code that runs once per operation competes with
+the loops inside that operation. The count is kept in units of 2^-20, so a
+visit to a site past its millionth visit counts 2^-20. Before the hold it writes one JSON line through `fuzz_json_data`:
 `{"harmony_park":{"site":S,"edges":K}}`. When the instrumentation passes a
 code address, the site is that address's offset into the loaded module that
 contains it, so parks in different processes of one executable share site
