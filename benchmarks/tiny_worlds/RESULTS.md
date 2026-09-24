@@ -121,6 +121,15 @@ memory cap. Each job used one reserved CPU slot, 1 GB memory reservation, and
 0.1 GB artifact-disk reservation; these are bounded local synthetic tests, not
 hardware-independent performance claims.
 
+An asset-free Git archive of the completed implementation also passed source
+registration, a fresh-target offline release build, and all 84 development
+runs. Compilation took 34.54 seconds with cached dependency downloads; the
+clean-checkout panel took 7.14 seconds. This measures a fresh build directory,
+not dependency download time. The final local checks passed 66 tiny-world Rust
+tests, the native calibration helper tests, formatting, Clippy, repository
+lints, six supervisor tests, 106 custom-lint tests, and 34 CI-contract tests.
+No new unsafe code was introduced.
+
 The following path-independent hashes identify the engine, workload, panel,
 and compiled panel executable used in all three splits:
 
