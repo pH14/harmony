@@ -65,12 +65,10 @@ a Zebetite column opens a new place whose draw count starts fresh, and a state
 that has hurt either never displaces one that has not. A damaged boss lifts
 the state into the tier above its item count, so a fight in progress ranks
 above the rest of the map, while each damage level stays a separate place in
-that tier and draws spread across the levels. The deepest damage level
-often holds a state that has spent its missiles, and a boss that only missiles
-hurt cannot die from there. The holder identity is the position bucket, posture and door state.
+that tier and draws spread across the levels. The holder identity is the position bucket, posture and door state.
 Tanks, missiles and health are the preferences that decide which state holds a
 slot, in two orders: missiles before health, and health before missiles. Two
-places with equal items are peers whatever their area byte, map row or column.
+places in the same tier are peers whatever their area byte, map row or column.
 
 Boss damage is how far a lineage has worn down the mini boss sharing its room.
 In Tourian the coordinate reads Mother Brain's remaining hits while her
