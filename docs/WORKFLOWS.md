@@ -42,6 +42,7 @@ what owns it, and the linter rejects them.
 | `Checks / Harmony` | `harmony-checks.yml` | pull_request, push |
 | `Checks / Harmony / Analysis` | `harmony-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Dissonance Workloads / NES` | `dissonance-workloads-nes-checks.yml` | pull_request, push |
+| `Checks / Dissonance Workloads / Tiny Worlds` | `dissonance-workloads-tiny-worlds-checks.yml` | pull_request, push |
 | `Checks / Harmony Workloads / NES` | `harmony-workloads-nes-checks.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Harmony Workloads / OCI` | `harmony-workloads-oci-checks.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Benchmarks / Dissonance Workloads / NES` | `dissonance-workloads-nes-benchmarks.yml` | schedule, workflow_dispatch |
@@ -67,6 +68,16 @@ backend each one runs, and the linter requires each composition to keep a
 bounded Checks workflow and a full Benchmarks workflow, and requires each
 workflow to actually run its registered backend. A Harmony composition reduced
 to native execution alone fails `ci-nes-compositions`.
+
+`Checks / Dissonance Workloads / Tiny Worlds` builds the standalone workload
+with Rust 1.97.0, runs release tests, formatting and Clippy checks, runs the
+Python supervisor tests, then runs only the registered development panel. Each
+command uses one CPU slot with 2 GB memory and disk reservations. The development
+panel has a 58-second wall limit; CI never runs its held-out validation split
+and uploads only the bounded logs and summaries, not build or cache contents.
+The first three-family M2 game-calibration requirement remains open, and the M3 deadline
+and delayed-progress families have not started. This workflow does not claim a
+complete five-family suite.
 
 ## Bounded checks and full benchmarks
 
